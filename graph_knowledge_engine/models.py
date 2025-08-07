@@ -2,6 +2,10 @@ from typing import List, Optional, Dict, Any, Union
 from pydantic import BaseModel, Field
 import uuid
 
+class ReferenceSession(BaseModel):
+    collection_page_url: str  # Link to the collection page (external/static)
+    document_page_url: str    # Link to the document page
+
 class Domain(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     name: str
@@ -14,13 +18,14 @@ class Node(BaseModel):
     domain_id: Optional[str] = None
     properties: Optional[Dict[str, Any]] = None
     embedding: Optional[List[float]] = None
+    references: Optional[List[ReferenceSession]] = None  # List of references to information sources
 
 class Edge(Node):
     # In a hypergraph, edges are also nodes
     source_ids: List[str]
     target_ids: List[str]
     relation: str  # e.g., 'related_to', 'part_of', etc.
-
+    # references inherited from Node
 
 class Document(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
