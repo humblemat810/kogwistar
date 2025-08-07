@@ -1,0 +1,4 @@
+.venv
+.venv312
+.pytest_cache
+chroma_db

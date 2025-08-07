@@ -7,12 +7,12 @@ class ReferenceSession(BaseModel):
     document_page_url: str    # Link to the document page
 
 class Domain(BaseModel):
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    id: str = Field(default_factory=lambda: str(uuid.uuid1()))
     name: str
     description: Optional[str] = None
 
 class Node(BaseModel):
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    id: str = Field(default_factory=lambda: str(uuid.uuid1()))
     label: str
     type: str  # e.g., 'entity', 'idea', 'relationship', etc.
     domain_id: Optional[str] = None
@@ -28,9 +28,31 @@ class Edge(Node):
     # references inherited from Node
 
 class Document(BaseModel):
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    id: str = Field(default_factory=lambda: str(uuid.uuid1()))
     content: str
     type: str  # e.g., 'ocr', 'pdf', 'image', etc.
     metadata: Optional[Dict[str, Any]] = None
     domain_id: Optional[str] = None
     processed: bool = False
+
+# LLM output models (no id fields)
+class LLMNode(BaseModel):
+    label: str
+    type: str
+    domain_id: Optional[str] = None
+    properties: Optional[Dict[str, Any]] = None
+    references: Optional[List[ReferenceSession]] = None
+
+class LLMEdge(BaseModel):
+    label: str
+    type: str
+    domain_id: Optional[str] = None
+    properties: Optional[Dict[str, Any]] = None
+    references: Optional[List[ReferenceSession]] = None
+    source_ids: List[str]
+    target_ids: List[str]
+    relation: str
+
+class LLMGraphExtraction(BaseModel):
+    nodes: List[LLMNode]
+    edges: List[LLMEdge]

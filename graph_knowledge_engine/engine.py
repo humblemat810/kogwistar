@@ -1,14 +1,15 @@
 from typing import List, Optional, Dict, Any
 from chromadb import Client
 from chromadb.config import Settings
-from .models import Node, Edge, Document, Domain, ReferenceSession
+from .models import Node, Edge, Document, Domain, ReferenceSession, LLMNode, LLMEdge, LLMGraphExtraction
 from langchain_openai import AzureChatOpenAI
 from langchain.prompts import ChatPromptTemplate
-from langchain.output_parsers import StructuredOutputParser, ResponseSchema
+from langchain.output_parsers import with_structured_output
 
 import json
 import os
 from dotenv import load_dotenv
+import uuid
 
 class GraphKnowledgeEngine:
     def chroma_sanitize_metadata(self, metadata):
@@ -108,42 +109,25 @@ class GraphKnowledgeEngine:
         # Add the document to the collection
         self.add_document(document)
 
-        # Define the output schema for the LLM
-        node_schema = ResponseSchema(
-            name="nodes",
-            description="A list of nodes, each with label, type, domain_id (optional), properties (optional)"
-        )
-        edge_schema = ResponseSchema(
-            name="edges",
-            description="A list of edges, each with source_ids, target_ids, relation, type, domain_id (optional), properties (optional)"
-        )
-        parser = StructuredOutputParser.from_response_schemas([node_schema, edge_schema])
-
         # Prompt template for LLM
         prompt = ChatPromptTemplate.from_messages([
             (
                 "system",
-                "You are an expert knowledge graph extractor. Given a document, extract all entities, ideas, and relationships as nodes and edges in a hypergraph. Output as JSON with 'nodes' and 'edges'."
+                "You are an expert knowledge graph extractor. Given a document, extract all entities, ideas, and relationships as nodes and edges in a hypergraph. Output as JSON with 'nodes' and 'edges'. Do not include any ID fields."
             ),
             (
                 "human",
-                "Document:\n{document}\n\n{format_instructions}"
+                "Document:\n{document}\n\nReturn only the structured JSON as specified."
             )
         ])
 
-        # Format the prompt
-        format_instructions = parser.get_format_instructions()
-        chain = prompt | self.llm | parser
+        # Use with_structured_output for parsing
+        chain = prompt | with_structured_output(LLMGraphExtraction, self.llm)
 
         # Run the chain
-        result = chain.invoke({
-            "document": document.content,
-            "format_instructions": format_instructions
+        result: LLMGraphExtraction = chain.invoke({
+            "document": document.content
         })
-
-        # Parse and store nodes and edges
-        nodes = result.get("nodes", [])
-        edges = result.get("edges", [])
 
         # Build a ReferenceSession for this document
         ref_session = None
@@ -159,20 +143,38 @@ class GraphKnowledgeEngine:
                 document_page_url=f"document/{document.id}"
             )
 
-        for node_data in nodes:
-            if "references" not in node_data or not node_data["references"]:
-                node_data["references"] = [ref_session]
-            node = Node(**node_data)
+        # Map LLM output to internal models, generate IDs
+        nodes_added = 0
+        for llm_node in result.nodes:
+            node = Node(
+                id=str(uuid.uuid1()),
+                label=llm_node.label,
+                type=llm_node.type,
+                domain_id=llm_node.domain_id,
+                properties=llm_node.properties,
+                references=llm_node.references or [ref_session]
+            )
             self.add_node(node)
+            nodes_added += 1
 
-        for edge_data in edges:
-            if "references" not in edge_data or not edge_data["references"]:
-                edge_data["references"] = [ref_session]
-            edge = Edge(**edge_data)
+        edges_added = 0
+        for llm_edge in result.edges:
+            edge = Edge(
+                id=str(uuid.uuid1()),
+                label=llm_edge.label,
+                type=llm_edge.type,
+                domain_id=llm_edge.domain_id,
+                properties=llm_edge.properties,
+                references=llm_edge.references or [ref_session],
+                source_ids=llm_edge.source_ids,
+                target_ids=llm_edge.target_ids,
+                relation=llm_edge.relation
+            )
             self.add_edge(edge)
+            edges_added += 1
 
         return {
             "document_id": document.id,
-            "nodes_added": len(nodes),
-            "edges_added": len(edges)
+            "nodes_added": nodes_added,
+            "edges_added": edges_added
         }
