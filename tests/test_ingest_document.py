@@ -52,4 +52,15 @@ def test_ingest_document_with_llm(engine):
             assert "collection_page_url" in ref and "document_page_url" in ref
     assert edge_found, "No edge with references found"
 
+    for node_json in nodes["documents"]:
+        node = json.loads(node_json)
+        assert "id" in node and isinstance(node["id"], str)
+        assert node["label"] and node["type"]
+
+    for edge_json in edges["documents"]:
+        edge = json.loads(edge_json)
+        assert isinstance(edge.get("source_ids", []), list)
+        assert isinstance(edge.get("target_ids", []), list)
+        assert isinstance(edge.get("relation", ""), str)
     print("Ingested document:", result)
+

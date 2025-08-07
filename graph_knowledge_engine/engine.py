@@ -4,12 +4,13 @@ from chromadb.config import Settings
 from .models import Node, Edge, Document, Domain, ReferenceSession, LLMNode, LLMEdge, LLMGraphExtraction
 from langchain_openai import AzureChatOpenAI
 from langchain.prompts import ChatPromptTemplate
-from langchain.output_parsers import with_structured_output
-
+# from langchain.output_parsers import with_structured_output
+from joblib import Memory
 import json
 import os
 from dotenv import load_dotenv
 import uuid
+memory = Memory(location=os.path.join(".cache", "my_cache"), verbose=0)
 
 class GraphKnowledgeEngine:
     def chroma_sanitize_metadata(self, metadata):
@@ -108,27 +109,31 @@ class GraphKnowledgeEngine:
         """
         # Add the document to the collection
         self.add_document(document)
+        # @memory.cache
+        def _inner_cache(document):
+            # Prompt template for LLM
+            prompt = ChatPromptTemplate.from_messages([
+                (
+                    "system",
+                    "You are an expert knowledge graph extractor. Given a document, extract all entities, ideas, and relationships as nodes and edges in a hypergraph. Output as JSON with 'nodes' and 'edges'. Do not include any ID fields."
+                ),
+                (
+                    "human",
+                    "Document:\n{document}\n\nReturn only the structured JSON as specified."
+                )
+            ])
 
-        # Prompt template for LLM
-        prompt = ChatPromptTemplate.from_messages([
-            (
-                "system",
-                "You are an expert knowledge graph extractor. Given a document, extract all entities, ideas, and relationships as nodes and edges in a hypergraph. Output as JSON with 'nodes' and 'edges'. Do not include any ID fields."
-            ),
-            (
-                "human",
-                "Document:\n{document}\n\nReturn only the structured JSON as specified."
-            )
-        ])
+            # Use with_structured_output for parsing
+            chain = prompt | self.llm.with_structured_output(LLMGraphExtraction, include_raw=True)
+            
 
-        # Use with_structured_output for parsing
-        chain = prompt | with_structured_output(LLMGraphExtraction, self.llm)
-
-        # Run the chain
-        result: LLMGraphExtraction = chain.invoke({
-            "document": document.content
-        })
-
+            # Run the chain
+            result: LLMGraphExtraction = chain.invoke({
+                "document": document.content
+            })
+            return result
+        result = _inner_cache(document)
+        raw, parsed, error = result["raw"], result["parsed"], result["parsing_error"]
         # Build a ReferenceSession for this document
         ref_session = None
         if document.metadata and "collection_page_url" in document.metadata and "document_page_url" in document.metadata:
