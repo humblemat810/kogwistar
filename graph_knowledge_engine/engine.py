@@ -11,6 +11,9 @@ from .models import (
     LLMNode,
     LLMEdge,
     AdjudicationCandidate,
+    AdjudicationQuestionCode,
+    QUESTION_KEY,
+    QUESTION_DESC,
     AdjudicationVerdict,
     LLMMergeAdjudication,
 )
@@ -55,6 +58,7 @@ class GraphKnowledgeEngine:
         )
         self.node_collection = self.chroma_client.get_or_create_collection("nodes")
         self.edge_collection = self.chroma_client.get_or_create_collection("edges")
+        self.edge_endpoints_collection = self.chroma_client.get_or_create_collection("edge_endpoints")
         self.document_collection = self.chroma_client.get_or_create_collection("documents")
         self.domain_collection = self.chroma_client.get_or_create_collection("domains")
 
@@ -74,7 +78,7 @@ class GraphKnowledgeEngine:
     # ----------------------------
     # Chroma adders
     # ----------------------------
-    def add_node(self, node: Node):
+    def add_node(self, node: Node, doc_id: Optional[str] = None):
         self.node_collection.add(
             ids=[node.id],
             documents=[node.model_dump_json()],
@@ -82,6 +86,7 @@ class GraphKnowledgeEngine:
             metadatas=[
                 self.chroma_sanitize_metadata(
                     {
+                        "doc_id": doc_id,
                         "label": node.label,
                         "type": node.type,
                         "summary": node.summary,
@@ -96,7 +101,7 @@ class GraphKnowledgeEngine:
             ],
         )
 
-    def add_edge(self, edge: Edge):
+    def add_edge(self, edge: Edge, doc_id: Optional[str] = None):
         self.edge_collection.add(
             ids=[edge.id],
             documents=[edge.model_dump_json()],
@@ -104,6 +109,7 @@ class GraphKnowledgeEngine:
             metadatas=[
                 self.chroma_sanitize_metadata(
                     {
+                        "doc_id": doc_id,
                         "relation": edge.relation,
                         "source_ids": self._json_or_none(edge.source_ids),
                         "target_ids": self._json_or_none(edge.target_ids),
@@ -119,21 +125,17 @@ class GraphKnowledgeEngine:
                 )
             ],
         )
-
     def add_document(self, document: Document):
         self.document_collection.add(
             ids=[document.id],
             documents=[document.content],
-            metadatas=[
-                self.chroma_sanitize_metadata(
-                    {
-                        "type": document.type,
-                        "metadata": self._json_or_none(document.metadata),
-                        "domain_id": document.domain_id,
-                        "processed": document.processed,
-                    }
-                )
-            ],
+            metadatas=[self.chroma_sanitize_metadata({
+                "doc_id": document.id,  # document points to itself
+                "type": document.type,
+                "metadata": json.dumps(document.metadata) if document.metadata is not None else None,
+                "domain_id": document.domain_id,
+                "processed": document.processed
+            })]
         )
 
     def add_domain(self, domain: Domain):
@@ -220,7 +222,7 @@ class GraphKnowledgeEngine:
                 properties=llm_node.properties,
                 references=llm_node.references or [ref_session],
             )
-            self.add_node(node)
+            self.add_node(node, doc_id=document.id)
             nodes_added += 1
 
         edges_added = 0
@@ -237,11 +239,32 @@ class GraphKnowledgeEngine:
                 target_ids=llm_edge.target_ids,
                 relation=llm_edge.relation,
             )
-            self.add_edge(edge)
+            self.add_edge(edge, doc_id=document.id)
             edges_added += 1
 
         return {"document_id": document.id, "nodes_added": nodes_added, "edges_added": edges_added}
+    def rollback_document(self, document_id: str):
+        """
+        Remove a document and all nodes/edges derived from it.
+        """
+        self.node_collection.delete(where={"doc_id": document_id})
+        self.edge_collection.delete(where={"doc_id": document_id})
+        self.document_collection.delete(where={"doc_id": document_id})
+        # You can also delete from domain_collection if needed, but normally domains are shared
+        return {"rolled_back_doc_id": document_id}
+    def rollback_many(self, document_ids: list[str]):
+        """
+        Remove all nodes, edges, and documents for a list of document IDs.
+        """
+        if not document_ids:
+            return {"rolled_back_doc_ids": []}
 
+        # Delete in one Chroma where clause
+        self.node_collection.delete(where={"doc_id": {"$in": document_ids}})
+        self.edge_collection.delete(where={"doc_id": {"$in": document_ids}})
+        self.document_collection.delete(where={"doc_id": {"$in": document_ids}})
+
+        return {"rolled_back_doc_ids": document_ids}
     # ----------------------------
     # Adjudication (LLM-assisted merge decision)
     # ----------------------------
@@ -295,3 +318,60 @@ class GraphKnowledgeEngine:
         )
         self.add_edge(same_as)
         return canonical_id
+
+    def generate_merge_candidates(self, new_node: Node, top_k: int = 5, similarity_threshold: float = 0.85) -> List[Tuple[Node, Node]]:
+        """
+        Given a new node, find likely duplicates in Chroma for adjudication.
+        Returns a list of (existing_node, new_node) pairs.
+        """
+        if not new_node.embedding:
+            # Skip vector search if no embedding
+            return []
+
+        results = self.node_collection.query(
+            query_embeddings=[new_node.embedding],
+            n_results=top_k
+        )
+
+        candidates = []
+        for idx, doc_json in enumerate(results["documents"][0]):
+            score = results["distances"][0][idx]
+            if score >= similarity_threshold:
+                existing_node = Node(**json.loads(doc_json))
+                # Don't match against itself
+                if existing_node.id != new_node.id:
+                    candidates.append((existing_node, new_node))
+        return candidates
+    
+    def batch_adjudicate_merges(self, pairs, question_code=AdjudicationQuestionCode.SAME_ENTITY):
+        if not pairs:
+            return []
+
+        mapping_table = [
+            {"code": int(code), "key": QUESTION_KEY[code], "description": QUESTION_DESC[code]}
+            for code in AdjudicationQuestionCode
+        ]
+
+        adjudication_inputs = [
+            {
+                "left": left.model_dump(),
+                "right": right.model_dump(),
+                "question_code": int(question_code),
+            }
+            for left, right in pairs
+        ]
+
+        prompt = ChatPromptTemplate.from_messages([
+            ("system",
+            "You adjudicate candidate pairs. Use the mapping table to interpret question_code. "
+            "Return only the structured JSON per schema."),
+            ("human",
+            "Mapping table:\n{mapping}\n\nPairs:\n{pairs}")
+        ])
+
+        chain = prompt | self.llm.with_structured_output(LLMMergeAdjudication, many=True)
+        results = chain.invoke({"mapping": mapping_table, "pairs": adjudication_inputs})
+
+        # (Optional) convert code → key on the backend if you store it
+        qkey = QUESTION_KEY[AdjudicationQuestionCode(question_code)]
+        return results, qkey
