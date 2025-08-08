@@ -1,7 +1,7 @@
 # ✅ Models for Chroma + LLM with optional embeddings and adjudication
 
 from typing import List, Literal, Optional, Dict, Any, Union
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator, field_validator
 import uuid
 from enum import IntEnum
 
@@ -47,13 +47,39 @@ def generate_id() -> str:
 # -------------------------
 # Provenance / reference (with optional spans)
 # -------------------------
+class MentionVerification(BaseModel):
+    """Result of verifying a mention span against the source text."""
+    method: Literal["llm", "levenshtein", "regex", "heuristic", "human"] = Field(
+        ..., description="How the mention was verified"
+    )
+    is_verified: bool = Field(..., description="Whether the mention appears correct")
+    score: Optional[float] = Field(
+        None, ge=0.0, le=1.0, description="Confidence score (if applicable)"
+    )
+    notes: Optional[str] = Field(None, description="Free-text rationale or hints")
+
 class ReferenceSession(BaseModel):
+    """Locatable evidence for a node/edge mention within a specific document."""
     collection_page_url: str = Field(..., description="Link to the collection page")
     document_page_url: str = Field(..., description="Link to the document page")
-    page: Optional[int] = Field(None, description="Page number in the source document, if applicable")
-    start_char: Optional[int] = Field(None, description="Start character offset of the evidence span")
-    end_char: Optional[int] = Field(None, description="End character offset of the evidence span")
-    snippet: Optional[str] = Field(None, description="Short text snippet of the evidence")
+    # Required locators (may span pages)
+    start_page: int = Field(..., ge=1, description="1-based page index where the mention starts")
+    end_page: int = Field(..., ge=1, description="1-based page index where the mention ends (>= start_page)")
+    start_char: int = Field(..., ge=0, description="Character offset within start_page")
+    end_char: int = Field(..., ge=0, description="Character offset within end_page")
+    # Optional extras
+    snippet: Optional[str] = Field(None, description="Short text snippet for quick preview")
+    verification: Optional[MentionVerification] = Field(
+        None, description="Result of validating the mention correctness"
+    )
+
+    @model_validator(mode="after")
+    def _check_span_consistency(self):
+        if self.end_page < self.start_page:
+            raise ValueError("end_page must be >= start_page")
+        if self.start_page == self.end_page and self.end_char < self.start_char:
+            raise ValueError("end_char must be >= start_char when start_page == end_page")
+        return self
 
 # -------------------------
 # Domain
@@ -68,17 +94,27 @@ class Domain(BaseModel):
 # -------------------------
 class GraphEntityBase(BaseModel):
     label: str = Field(..., description="Human-readable label for the node or edge")
-    type: Literal['entity', 'relationship'] = Field(..., description="Type of entity.")
+    type: Literal['entity', 'relationship'] = Field(..., description="Type of entity")
     summary: str = Field(..., description="Summary of the node/relationship")
-    domain_id: Optional[str] = Field(None, description="Optional domain ID this entity belongs to")
+    domain_id: Optional[str] = Field(None, description="Domain ID this entity belongs to")
     canonical_entity_id: Optional[str] = Field(
-        None,
-        description="External or internal canonical ID to link equivalent entities across documents (e.g., Wikidata QID or internal UUID)",
+        None, description="Canonical ID to link equivalents (e.g., Wikidata QID or internal UUID)"
     )
     properties: Optional[Dict[str, JsonPrimitive]] = Field(
-        None, description="Optional properties of the entity (flat primitives only)"
+        None, description="Optional flat properties (JSON primitives only)"
     )
-    references: Optional[List[ReferenceSession]] = Field(None, description="References to information sources")
+    # 🔴 NOW REQUIRED: LLM must always provide locatable evidence
+    references: List[ReferenceSession] = Field(
+        ..., min_items=1, description="One or more locatable mentions supporting this entity"
+    )
+
+    @field_validator("references")
+    @classmethod
+    def _require_non_empty_refs(cls, refs: List[ReferenceSession]):
+        if not refs:
+            raise ValueError("At least one ReferenceSession is required")
+        return refs
+
 
 class EdgeMixin(BaseModel):
     source_ids: List[str] = Field(..., description="List of source node IDs")
@@ -90,20 +126,18 @@ class EdgeMixin(BaseModel):
 # -------------------------
 class ChromaMixin(BaseModel):
     id: str = Field(default_factory=generate_id, description="Unique identifier")
-    # Embedding is OPTIONAL. Chroma can compute via its default embedding function or we can omit at retrieval time.
-    embedding: Optional[List[float]] = Field(
-        None, description="Vector embedding for the entity (optional; may be omitted)"
-    )
+    embedding: Optional[List[float]] = Field(None, description="Vector embedding for the entity")
+    # Optional but handy to keep JSON and Chroma metadata aligned
     doc_id: Optional[str] = Field(None, description="Document ID from which this entity was extracted")
+
 
 # -------------------------
 # LLM-facing mixin (NO embedding field to keep schema tight)
 # -------------------------
 class LLMMixin(BaseModel):
-    id: Optional[str] = Field(
-        None,
-        description="None if referring to a new object; use existing IDs for existing objects",
-    )
+    id: Optional[str] = Field(None, description="None for new object; use existing IDs to upsert")
+    # No embedding in LLM schema to avoid bloating the output
+
 
 # -------------------------
 # Final models
@@ -119,6 +153,7 @@ class LLMNode(LLMMixin, GraphEntityBase):
     Represents a node extracted by an LLM from a document.
     Contains label, type, summary, optional domain, and properties.
     ID is optional and will be added post-processing.
+    Node extracted by the LLM. Must include at least one ReferenceSession with precise span.
     """
     pass
 
@@ -127,6 +162,7 @@ class LLMEdge(LLMMixin, EdgeMixin, GraphEntityBase):
     Represents an edge extracted by an LLM from a document.
     Inherits node fields and adds source/target relationships and relation type.
     ID is optional and will be added post-processing.
+    Edge extracted by the LLM. Must include at least one ReferenceSession with precise span.
     """
     pass
 
