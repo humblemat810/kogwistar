@@ -22,7 +22,7 @@ def test_default_sentence_transformer_embedder(tmp_path):
     eng.add_node(n, doc_id=doc.id)
 
     got = eng.node_collection.get(ids=[n.id], include=["embeddings", "documents"])
-    assert got["embeddings"] and len(got["embeddings"][0]) > 0  # auto-embedded
+    assert got["embeddings"].shape[0] and len(got["embeddings"][0]) > 0  # auto-embedded
     # Verify mention (embedding similarity included)
     out = eng.verify_mentions_for_doc(doc.id, min_ngram=4, threshold=0.3)
     assert out["updated_nodes"] >= 1
@@ -32,3 +32,23 @@ def test_default_sentence_transformer_embedder(tmp_path):
     detail = json.loads(node.references[0].verification.notes)
     # embedding score may be present if model ran
     assert "coverage" in detail
+    
+def test_default_embedder_autoruns(tmp_path):
+    from graph_knowledge_engine.engine import GraphKnowledgeEngine
+    from graph_knowledge_engine.models import Document, Node, ReferenceSession
+
+    eng = GraphKnowledgeEngine(persist_directory=str(tmp_path / "chroma"))
+    doc = Document(content="Chlorophyll absorbs light.", type="text")
+    eng.add_document(doc)
+
+    ref = ReferenceSession(collection_page_url="c", document_page_url=f"document/{doc.id}",
+                           start_page=1, end_page=1, start_char=0, end_char=10)
+    n = Node(label="Chlorophyll", type="entity", summary="absorbs light", references=[ref])
+    eng.add_node(n, doc_id=doc.id)  # embeddings=None -> auto-embed via DefaultEmbeddingFunction
+
+    got = eng.node_collection.get(ids=[n.id], include=["embeddings"])
+    assert got["embeddings"] is not None and len(got["embeddings"][0]) > 0  # vector was created
+
+    # embedding similarity is also available to verifier now
+    out = eng.verify_mentions_for_doc(doc.id, min_ngram=4, threshold=0.3)
+    assert out["updated_nodes"] >= 1

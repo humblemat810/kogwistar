@@ -1,3 +1,31 @@
+"""_summary_
+
+Raises:
+    ValueError: _description_
+    ValueError: _description_
+    ValueError: _description_
+    ValueError: _description_
+
+Returns:
+    _type_: _description_
+    
+sample usage:
+from graph_knowledge_engine.strategies import candidate_proposals as CP
+from graph_knowledge_engine.strategies import adjudicators as AJ
+from graph_knowledge_engine.strategies import merge_policies as MP
+from graph_knowledge_engine.strategies import verifiers as VF
+from graph_knowledge_engine.engine import GraphKnowledgeEngine
+
+engine = GraphKnowledgeEngine(
+    persist_directory="./chroma_db",
+    candidate_generator=CP.hybrid,         # or CP.by_vector_similarity
+    adjudicator=AJ.llm_pair,               # or AJ.rule_first_token / AJ.llm_batch in your batch path
+    merge_policy=MP.prefer_existing_canonical,
+    verifier=VF.ensemble_default,          # or VF.coverage_only / VF.strict_with_min_span
+)
+"""
+
+
 from typing import List, Optional, Dict, Any, Tuple
 from chromadb import Client
 from chromadb.config import Settings
@@ -30,6 +58,7 @@ from .models import ReferenceSession, MentionVerification, LLMGraphExtraction, L
 from typing import Callable, Optional, List, Tuple, Any, Dict
 import math
 from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction
+from chromadb.utils import embedding_functions
 # Optional: RapidFuzz
 try:
     from rapidfuzz import fuzz
@@ -43,46 +72,101 @@ try:
     _HAS_AZURE_EMB = True
 except Exception:
     _HAS_AZURE_EMB = False
+from typing import List, Type, TypeVar
 
+T = TypeVar("T", Node, Edge)
 
+def chroma_docs_to_pydantic(objs: dict, model_cls: Type[T]) -> List[T]:
+    """
+    Convert Chroma get()/query() results to a list of Pydantic models.
+    
+    `objs` is the dict returned by collection.get()/query(), 
+    `model_cls` is Node or Edge.
+    """
+    docs = objs.get("documents") or []
+    # query() returns [[...]] for documents, so flatten
+    if docs and isinstance(docs[0], list):
+        docs = docs[0]
+    return [model_cls.model_validate_json(doc) for doc in docs]
+def _normalize_chroma_result(objs: Dict[str, Any]) -> Tuple[List[str], List[str], List[Dict[str, Any]]]:
+    """
+    Normalize Chroma get()/query() outputs into parallel lists:
+    ids: List[str], documents: List[str], metadatas: List[dict]
+    """
+    ids = objs.get("ids") or []
+    docs = objs.get("documents") or []
+    metas = objs.get("metadatas") or []
+
+    # query() returns nested lists; flatten the first level if present
+    if ids and isinstance(ids[0], list):
+        ids = ids[0]
+    if docs and isinstance(docs[0], list):
+        docs = docs[0]
+    if metas and isinstance(metas[0], list):
+        metas = metas[0]
+
+    # Make lengths match (Chroma can omit metadatas if not requested)
+    if not metas:
+        metas = [{} for _ in docs]
+
+    return ids, docs, metas
+
+def chroma_to_models(objs: Dict[str, Any], model_cls: Type[T]) -> List[T]:
+    """
+    Convert Chroma results to a list of Pydantic models (Node/Edge).
+    """
+    _, docs, _ = _normalize_chroma_result(objs)
+    return [model_cls.model_validate_json(doc) for doc in docs]
+
+def chroma_to_models_with_meta(objs: Dict[str, Any], model_cls: Type[T]) -> List[Tuple[str, T, Dict[str, Any]]]:
+    """
+    Convert Chroma results to (id, model, metadata) tuples.
+    """
+    ids, docs, metas = _normalize_chroma_result(objs)
+    out: List[Tuple[str, T, Dict[str, Any]]] = []
+    for rid, doc, meta in zip(ids, docs, metas):
+        out.append((rid, model_cls.model_validate_json(doc), meta or {}))
+    return out
 _DOC_URL = "document/{doc_id}"
-def _choose_anchor(self, node_ids: list[str]) -> str:
-    """Pick a stable anchor: prefer a node that already has canonical_entity_id; else min UUID."""
-    if not node_ids:
-        raise ValueError("No nodes to anchor")
-    # Try to find a node with a non-empty canonical_entity_id
-    nodes = self.node_collection.get(ids=node_ids, include=["ids", "documents"])
-    for nid, ndoc in zip(nodes.get("ids") or [], nodes.get("documents") or []):
-        n = Node.model_validate_json(ndoc)
-        if n.canonical_entity_id:
-            return nid
-    # Fallback: stable min UUID to avoid churn
-    return sorted(node_ids)[0]
 
-def _rebalance_same_as_edge(self, e: Edge, removed_node_id: str) -> tuple[bool, Edge | None]:
-    """
-    Remove removed_node_id from e; if equality still has >=2 nodes, normalize to star form.
-    Returns (deleted, updated_edge).
-    """
-    S = [x for x in (e.source_ids or []) + (e.target_ids or []) if x != removed_node_id]
-    S = list(dict.fromkeys(S))  # dedupe, keep order
-    if len(S) < 2:
-        # No equality relation left
-        return True, None
-
-    anchor = self._choose_anchor(S)
-    rest = [x for x in S if x != anchor]
-    e.source_ids = [anchor]
-    e.target_ids = rest
-    # Optional: tweak summary to reflect normalization
-    if not e.summary:
-        e.summary = "Normalized same_as"
-    return False, e
 def _strip_none(d: dict) -> dict:
     return {k: v for k, v in d.items() if v is not None}
 
 def _json_or_none(v):
     return None if v is None else json.dumps(v)
+
+def _node_doc_and_meta(n: "Node") -> tuple[str, dict]:
+    """Return (documents_string, metadata_dict) for Chroma."""
+    doc = n.model_dump_json()
+    meta = _strip_none({
+        "doc_id": getattr(n, "doc_id", None),
+        "label": n.label,
+        "type": n.type,
+        "summary": n.summary,
+        "domain_id": n.domain_id,
+        "canonical_entity_id": getattr(n, "canonical_entity_id", None),
+        "properties": _json_or_none(getattr(n, "properties", None)),
+        "references": _json_or_none([r.model_dump() for r in (n.references or [])]),
+        # add any other flat, filterable fields you rely on
+    })
+    return doc, meta
+
+def _edge_doc_and_meta(e: "Edge") -> tuple[str, dict]:
+    """Return (documents_string, metadata_dict) for Chroma."""
+    doc = e.model_dump_json()
+    meta = _strip_none({
+        "doc_id": getattr(e, "doc_id", None),
+        "relation": e.relation,
+        "source_ids": _json_or_none(e.source_ids),
+        "target_ids": _json_or_none(e.target_ids),
+        "type": e.type,
+        "summary": e.summary,
+        "domain_id": e.domain_id,
+        "canonical_entity_id": getattr(e, "canonical_entity_id", None),
+        "properties": _json_or_none(getattr(e, "properties", None)),
+        "references": _json_or_none([r.model_dump() for r in (e.references or [])]),
+    })
+    return doc, meta
 
 def _default_verification(note: str = "fallback span") -> MentionVerification:
     return MentionVerification(method="heuristic", is_verified=False, score=None, notes=note)
@@ -121,10 +205,24 @@ def _normalize_refs(refs: Optional[List[ReferenceSession]], doc_id: str, fallbac
     if not refs or len(refs) == 0:
         return [_default_ref(doc_id, snippet=fallback_snippet)]
     return [_ensure_ref_span(ref, doc_id) for ref in refs]
-# Simple on-disk cache dir (optional)
-memory = Memory(location=os.path.join(".cache", "my_cache"), verbose=0)
+import re, uuid
 
-import itertools
+_UUID_RE = re.compile(r"^[0-9a-fA-F\-]{36}$")
+
+def _is_uuid(x: str | None) -> bool:
+    return bool(x and _UUID_RE.match(x))
+
+def _is_alias(x: str | None) -> bool:
+    # Accept session aliases N\d+, E\d+ and base62 N~..., E~...
+    return bool(x) and (x.startswith("N") or x.startswith("E"))
+
+def _is_new_node(x: str | None) -> bool:
+    return bool(x) and x.startswith("nn:")
+
+def _is_new_edge(x: str | None) -> bool:
+    return bool(x) and x.startswith("ne:")
+# Simple on-disk cache dir (optional)
+
 
 def build_aliases(node_ids, edge_ids):
     node_aliases = {rid: f"N{i}" for i, rid in enumerate(node_ids, start=1)}
@@ -237,7 +335,7 @@ class AliasBook:
 # "session_alias" -> N#/E# with session-stable AliasBook (+ delta legend)
 # "base62"        -> N~<22ch> / E~<22ch> (no legend, fully deterministic)
 ID_STRATEGY = "session_alias"  # or "base62"
-
+from typing import Literal
 class GraphKnowledgeEngine:
     """High-level orchestration for extracting, storing, and adjudicating knowledge graph data."""
 
@@ -272,6 +370,133 @@ class GraphKnowledgeEngine:
             edge_items.append({"id": eid, "relation": e.relation, "source_ids": e.source_ids or [], "target_ids": e.target_ids or []})
 
         return node_items, edge_items
+
+    def _preflight_validate(self, parsed: LLMGraphExtraction, doc_id: str):
+        """Ensure every endpoint refers to a real id (in-batch or already in DB)."""
+        self._resolve_llm_ids(doc_id, parsed)  # allocate/resolve first
+
+        batch_node_ids = {n.id for n in parsed.nodes}
+        batch_edge_ids = {e.id for e in parsed.edges}
+
+        need_nodes, need_edges = set(), set()
+        for e in parsed.edges:
+            need_nodes.update(e.source_ids or [])
+            need_nodes.update(e.target_ids or [])
+            if getattr(e, "source_edge_ids", None):
+                need_edges.update(e.source_edge_ids)
+            if getattr(e, "target_edge_ids", None):
+                need_edges.update(e.target_edge_ids)
+
+        # Remove the ones we are about to write
+        need_nodes -= batch_node_ids
+        need_edges -= batch_edge_ids
+
+        missing_nodes, missing_edges = set(), set()
+        if need_nodes:
+            got = set(self.node_collection.get(ids=list(need_nodes)).get("ids") or [])
+            missing_nodes = need_nodes - got
+        if need_edges:
+            got = set(self.edge_collection.get(ids=list(need_edges)).get("ids") or [])
+            missing_edges = need_edges - got
+
+        if missing_nodes or missing_edges:
+            raise ValueError(f"Dangling references: nodes={sorted(missing_nodes)}, edges={sorted(missing_edges)}")
+
+        return batch_node_ids, batch_edge_ids
+    def _assert_endpoints_exist(self, edge: Edge):
+        need_nodes = set((edge.source_ids or []) + (edge.target_ids or []))
+        if need_nodes:
+            got = set(self.node_collection.get(ids=list(need_nodes)).get("ids") or [])
+            if got != need_nodes:
+                raise ValueError(f"Missing node endpoints: {sorted(need_nodes - got)}")
+
+        for attr in ("source_edge_ids", "target_edge_ids"):
+            ids = getattr(edge, attr, None) or []
+            if ids:
+                got = set(self.edge_collection.get(ids=ids).get("ids") or [])
+                if got != set(ids):
+                    raise ValueError(f"Missing edge endpoints in {attr}: {sorted(set(ids)-got)}")    
+    def _resolve_llm_ids(self, doc_id: str, parsed: LLMGraphExtraction) -> None:
+        """
+        In-place:
+        - allocate UUIDs for all new nodes (nn:*) and new edges (ne:*),
+        - de-alias existing N*/E* to UUIDs,
+        - resolve edge endpoints (node + edge).
+        """
+        # alias book → real ids
+        book = self._alias_book(doc_id)
+        alias_to_real = book.alias_to_real
+
+        def de_alias(x: str) -> str:
+            if not x:
+                return x
+            if _is_uuid(x):
+                return x
+            return alias_to_real.get(x, x)
+
+        # First pass: nodes → IDs
+        nn2uuid: dict[str, str] = {}
+        for n in parsed.nodes:
+            tok = n.id or getattr(n, "local_id", None)
+            if _is_new_node(tok):
+                rid = nn2uuid.get(tok) or str(uuid.uuid4())
+                nn2uuid[tok] = rid
+                n.id = rid
+            elif tok:
+                n.id = de_alias(tok)
+            else:
+                n.id = str(uuid.uuid4())
+
+        # Second pass: edges → IDs
+        ne2uuid: dict[str, str] = {}
+        for e in parsed.edges:
+            tok = e.id
+            if (not tok) or _is_new_edge(tok):
+                rid = ne2uuid.get(tok or "") or str(uuid.uuid4())
+                if tok:
+                    ne2uuid[tok] = rid
+                e.id = rid
+            else:
+                e.id = de_alias(tok)
+
+        # Third pass: endpoints
+        def _res(xs: list[str] | None, kind: str) -> list[str] | None:
+            if not xs:
+                return None
+            out: list[str] = []
+            for x in xs:
+                if kind == "node":
+                    if _is_new_node(x):
+                        rid = nn2uuid.get(x)
+                        if not rid:
+                            raise ValueError(f"Unknown temp node id: {x}")
+                        out.append(rid)
+                    elif _is_alias(x) or _is_uuid(x):
+                        out.append(de_alias(x))
+                    else:
+                        # last-resort: label match within this parsed batch
+                        key = (x or "").strip().lower()
+                        rid = next((n.id for n in parsed.nodes if (n.label or "").strip().lower() == key), None)
+                        if not rid:
+                            raise ValueError(f"Unresolvable node endpoint token: {x}")
+                        out.append(rid)
+                else:  # kind == "edge"
+                    if _is_new_edge(x):
+                        rid = ne2uuid.get(x)
+                        if not rid:
+                            raise ValueError(f"Unknown temp edge id: {x}")
+                        out.append(rid)
+                    elif _is_alias(x) or _is_uuid(x):
+                        out.append(de_alias(x))
+                    else:
+                        raise ValueError(f"Unresolvable edge endpoint token: {x}")
+            return out
+
+        for e in parsed.edges:
+            e.source_ids       = _res(e.source_ids, kind="node") or []
+            e.target_ids       = _res(e.target_ids, kind="node") or []
+            e.source_edge_ids  = _res(getattr(e, "source_edge_ids", None), kind="edge")
+            e.target_edge_ids  = _res(getattr(e, "target_edge_ids", None), kind="edge")
     def _aliasify_for_prompt(self, doc_id: str, ctx_nodes: list[dict], ctx_edges: list[dict]):
         """Return aliased nodes/edges + prompt strings, using configured ID_STRATEGY."""
         if ID_STRATEGY == "base62":
@@ -395,10 +620,17 @@ class GraphKnowledgeEngine:
     # ----------------------------
     # Init
     # ----------------------------
-    def __init__(self, 
-                 embedding_function: Optional[Callable[[list[str]], list[list[float]]]] = None,
-                 persist_directory: Optional[str] = None,
-                 default_st_model: Optional[str] = None,):
+    
+    def __init__(
+        self,
+        persist_directory: str | None = None,
+        embedding_function=None,
+        candidate_generator=None,
+        adjudicator=None,            # callable(left: Node, right: Node) -> AdjudicationVerdict
+        batch_adjudicator=None,      # callable(pairs) -> List[LLMMergeAdjudication]
+        merge_policy=None,           # callable(left, right, verdict) -> str (canonical_id)
+        verifier=None,               # callable(extracted, full_text, ref, **kw) -> ReferenceSession
+    ):
         """
         embedding_function: callable(texts: List[str]) -> List[List[float]].
           If None, defaults to SentenceTransformerEmbeddingFunction with model:
@@ -406,26 +638,20 @@ class GraphKnowledgeEngine:
           - ENV SENTENCE_TRANSFORMERS_MODEL, or
           - "all-MiniLM-L6-v2".
         """
+        self.candidate_generator = candidate_generator or self.generate_merge_candidates
+        self.adjudicator = adjudicator or self.adjudicate_merge
+        self.batch_adjudicator = batch_adjudicator or self.batch_adjudicate_merges
+        self.merge_policy = merge_policy or self.commit_merge
+        self.verify_reference: Callable = verifier or self._verify_one_reference
         load_dotenv()
+        
         self._alias_books: dict[str, AliasBook] = {}
-        # 1) Choose embedder (callable). If user didn’t pass one, build ST embedder.
-        if embedding_function is None:
-            model_name = (
-                default_st_model
-                or os.getenv("SENTENCE_TRANSFORMERS_MODEL")
-                or "all-MiniLM-L6-v2"
-            )
-            # this object is itself a callable: ef(texts) -> vectors
-            ef = SentenceTransformerEmbeddingFunction(model_name=model_name)
-            embedding_function = ef  # keep as callable
-        self.embedding_function = embedding_function
+        self._ef = embedding_function or embedding_functions.DefaultEmbeddingFunction()
         # Keep a 1-string convenience to reuse in cosine checks
-        def _embed_one(text: str) -> Optional[list[float]]:
-            try:
-                vecs = embedding_function([text])
-                return vecs[0] if vecs else None
-            except Exception:
-                return None
+        # convenience: single-string embed for verifiers
+        def _embed_one(text: str):
+            vecs = self._ef([text])  # DefaultEmbeddingFunction is callable(texts: List[str]) -> List[List[float]]
+            return vecs[0] if vecs else None
         self._embed_one = _embed_one
 
         # 2) Chroma client + collections; inject embedder on vectorized collections
@@ -438,10 +664,10 @@ class GraphKnowledgeEngine:
         )
         # IMPORTANT: pass embedding_function to vector collections
         self.node_collection = self.chroma_client.get_or_create_collection(
-            "nodes", embedding_function=embedding_function
+            "nodes", embedding_function=self._ef
         )
         self.edge_collection = self.chroma_client.get_or_create_collection(
-            "edges", embedding_function=embedding_function
+            "edges", embedding_function=self._ef
         )
         self.edge_endpoints_collection = self.chroma_client.get_or_create_collection("edge_endpoints")
         self.document_collection = self.chroma_client.get_or_create_collection("documents")
@@ -547,10 +773,16 @@ class GraphKnowledgeEngine:
         hit = sum(1 for x in covered if x)
         return hit / total if total > 0 else None
 
-    def _score_embedding(self, extracted: str, cited: str) -> Optional[float]:
+    def _score_embedding(self, extracted: str, cited: str) -> float | None:
         u = self._embed_one(extracted or "")
         v = self._embed_one(cited or "")
-        return self._cosine(u, v) if (u and v) else None
+        if u is None or v is None: 
+            return None
+        # cosine
+        dot = sum(a*b for a, b in zip(u, v))
+        nu = (sum(a*a for a in u)) ** 0.5
+        nv = (sum(b*b for b in v)) ** 0.5
+        return float((dot / (nu * nv))) if nu and nv else None
 
     def _ensemble(self, scores: Dict[str, Optional[float]], weights: Dict[str, float]) -> Optional[float]:
         """Weighted average over available (non-None) scores."""
@@ -564,7 +796,7 @@ class GraphKnowledgeEngine:
             den += w
         if den == 0:
             return None
-        return num / den
+        return float(num / den)
 
     def _verify_one_reference(
         self,
@@ -619,23 +851,55 @@ class GraphKnowledgeEngine:
     # ----------------------------
     def add_node(self, node: Node, doc_id: Optional[str] = None):
         node.doc_id = doc_id
+        doc, meta = _node_doc_and_meta(node)
         self.node_collection.add(
             ids=[node.id],
-            documents=[node.model_dump_json()],
+            documents=[doc],
             embeddings=[node.embedding] if node.embedding else None,
-            metadatas=[_strip_none({
-                "doc_id": doc_id,
-                "label": node.label,
-                "type": node.type,
-                "summary": node.summary,
-                "domain_id": node.domain_id,
-                "canonical_entity_id": node.canonical_entity_id,
-                "properties": _json_or_none(node.properties),
-                "references": _json_or_none([r.model_dump() for r in node.references]),
-            })],
+            metadatas=[meta],
         )
+    def _fanout_endpoints_rows(self, edge: Edge, doc_id: str):
+        rows = []
+
+        # node endpoints
+        for role, node_ids in (("src", edge.source_ids or []), ("tgt", edge.target_ids or [])):
+            for nid in node_ids:
+                rows.append({
+                    "id": f"{edge.id}::{role}::node::{nid}",
+                    "edge_id": edge.id,
+                    "endpoint_id": nid,
+                    "endpoint_type": "node",
+                    "role": role,
+                    "relation": edge.relation,
+                    "doc_id": doc_id,
+                })
+
+        # edge endpoints (meta)
+        for role, eids in (("src", getattr(edge, "source_edge_ids", []) or []),
+                        ("tgt", getattr(edge, "target_edge_ids", []) or [])):
+            for mid in eids:
+                rows.append({
+                    "id": f"{edge.id}::{role}::edge::{mid}",
+                    "edge_id": edge.id,
+                    "endpoint_id": mid,
+                    "endpoint_type": "edge",
+                    "role": role,
+                    "relation": edge.relation,
+                    "doc_id": doc_id,
+                })
+        return rows
     def add_edge(self, edge: Edge, doc_id: Optional[str] = None):
         edge.doc_id = doc_id
+
+        # single-call safety for ad-hoc usage
+        self._assert_endpoints_exist(edge)
+
+        # receptive range counts
+        node_endpoint_count = len(edge.source_ids or []) + len(edge.target_ids or [])
+        edge_endpoint_count = len(getattr(edge, "source_edge_ids", []) or []) + len(getattr(edge, "target_edge_ids", []) or [])
+        total_endpoint_count = node_endpoint_count + edge_endpoint_count
+
+        # main edge row
         self.edge_collection.add(
             ids=[edge.id],
             documents=[edge.model_dump_json()],
@@ -645,37 +909,27 @@ class GraphKnowledgeEngine:
                 "relation": edge.relation,
                 "source_ids": _json_or_none(edge.source_ids),
                 "target_ids": _json_or_none(edge.target_ids),
+                "source_edge_ids": _json_or_none(getattr(edge, "source_edge_ids", None)),
+                "target_edge_ids": _json_or_none(getattr(edge, "target_edge_ids", None)),
                 "type": edge.type,
                 "summary": edge.summary,
                 "domain_id": edge.domain_id,
                 "canonical_entity_id": edge.canonical_entity_id,
                 "properties": _json_or_none(edge.properties),
-                "references": _json_or_none([r.model_dump() for r in edge.references]),
+                "references": _json_or_none([r.model_dump() for r in (edge.references or [])]),
+                "node_endpoint_count": node_endpoint_count,   # receptive range
+                "edge_endpoint_count": edge_endpoint_count,
+                "total_endpoint_count": total_endpoint_count,
             })],
         )
 
-        # write edge_endpoints fanout (strip None so Chroma doesn’t choke)
-        ep_ids, ep_docs, ep_meta = [], [], []
-        for role, node_ids in (("src", edge.source_ids or []), ("tgt", edge.target_ids or [])):
-            for nid in node_ids:
-                eid = f"{edge.id}::{role}::{nid}"
-                m = _strip_none({
-                    "id": eid,
-                    "edge_id": edge.id,
-                    "node_id": nid,
-                    "role": role,
-                    "relation": edge.relation,
-                    "doc_id": doc_id,
-                })
-                ep_ids.append(eid)
-                ep_docs.append(json.dumps(m))
-                ep_meta.append(m)
-
-        if ep_ids:
+        # endpoints fan-out
+        rows = self._fanout_endpoints_rows(edge, doc_id)
+        if rows:
             self.edge_endpoints_collection.add(
-                ids=ep_ids,
-                documents=ep_docs,
-                metadatas=ep_meta,
+                ids=[r["id"] for r in rows],
+                documents=[json.dumps(r) for r in rows],
+                metadatas=rows,
             )
     def add_document(self, document: Document):
         self.document_collection.add(
@@ -817,9 +1071,9 @@ class GraphKnowledgeEngine:
 
         # de-alias
         parsed = self._de_alias_ids_in_result(doc_id, parsed)
-
+        self._preflight_validate(parsed, doc_id)
         # persist
-        fallback_snip = (content[:160] + "…") if content else None
+        fallback_snip = (content[:160] + ("…" if len(content) > 160 else "")) if content else None
         nodes_added = edges_added = 0
         for ln in parsed.nodes:
             nid = ln.id or str(uuid.uuid4())
@@ -833,13 +1087,16 @@ class GraphKnowledgeEngine:
             nodes_added += 1
 
         for le in parsed.edges:
-            eid = le.id or str(uuid.uuid4())
-            refs = _normalize_refs(le.references, doc_id, fallback_snip)
             edge = Edge(
-                id=eid, label=le.label, type=le.type, summary=le.summary,
+                id=le.id, label=le.label, type=le.type, summary=le.summary,
                 domain_id=le.domain_id, canonical_entity_id=le.canonical_entity_id,
-                properties=le.properties, references=refs, relation=le.relation,
-                source_ids=le.source_ids, target_ids=le.target_ids, doc_id=doc_id
+                properties=le.properties,
+                references=_normalize_refs(le.references, doc_id, fallback_snip),
+                relation=le.relation,
+                source_ids=le.source_ids, target_ids=le.target_ids,
+                source_edge_ids=getattr(le, "source_edge_ids", None),
+                target_edge_ids=getattr(le, "target_edge_ids", None),
+                doc_id=doc_id
             )
             self.add_edge(edge, doc_id=doc_id)
             edges_added += 1
@@ -981,24 +1238,7 @@ class GraphKnowledgeEngine:
             "deleted_edges": removed_edge_ids,
             "updated_edges": updated_edge_ids - removed_edge_ids,  # in case something was updated then later deleted
         }
-    def verify_mentions_for_doc(self, document_id: str, method: str = "levenshtein"):
-        """Run a verifier over all nodes/edges of a doc and update their references.verification."""
-        # Fetch nodes for this doc
-        nodes = self.node_collection.get(where={"doc_id": document_id}, include=["ids", "documents"])
-        for node_id, doc_json in zip(nodes["ids"], nodes["documents"]):
-            node = Node.model_validate_json(doc_json)
-            updated = False
-            for ref in node.references:
-                if ref.verification and ref.verification.is_verified is not False:
-                    continue
-                # TODO: implement your method here against source text
-                ref.verification = MentionVerification(method=method, is_verified=False, notes="not implemented")
-                updated = True
-            if updated:
-                self.node_collection.update(
-                    ids=[node_id],
-                    documents=[node.model_dump_json()],
-                )
+
     def rollback_document(self, document_id: str):
         # 1) nodes by flat doc_id
         nodes = self.node_collection.get(where={"doc_id": document_id})
@@ -1312,7 +1552,7 @@ class GraphKnowledgeEngine:
             "Mapping table:\n{mapping}\n\nPairs:\n{pairs}")
         ])
 
-        chain = prompt | self.llm.with_structured_output(LLMMergeAdjudication, many=True)
+        chain = prompt | self.llm.with_structured_output(List[LLMMergeAdjudication])
         results = chain.invoke({"mapping": mapping_table, "pairs": adjudication_inputs})
 
         # (Optional) convert code → key on the backend if you store it
@@ -1367,30 +1607,34 @@ class GraphKnowledgeEngine:
         upd_nodes = upd_edges = 0
 
         # Nodes
-        got = self.node_collection.get(where={"doc_id": document_id}, include=["ids", "documents"])
+        got = self.node_collection.get(where={"doc_id": document_id}, include=["documents"])
         for nid, ndoc in zip(got.get("ids") or [], got.get("documents") or []):
             n = Node.model_validate_json(ndoc)
             # what text do we try to validate? prioritize summary, then label
             extracted = n.summary or n.label or ""
             if not (n.references and extracted):
                 continue
-            new_refs = [self._verify_one_reference(extracted, full_text, r, min_ngram=min_ngram, weights=weights, threshold=threshold)
+            new_refs = [self.verify_reference(extracted, full_text, r, min_ngram=min_ngram, weights=weights, threshold=threshold)
                         for r in n.references]
             n.references = new_refs
-            self.node_collection.update(ids=[nid], documents=[n.model_dump_json()])
+            doc, meta = _node_doc_and_meta(n)
+            self.node_collection.update(ids=[nid], documents=[doc], metadatas=[meta])
             upd_nodes += 1
 
         if update_edges:
-            got = self.edge_collection.get(where={"doc_id": document_id}, include=["ids", "documents"])
+            got = self.edge_collection.get(where={"doc_id": document_id}, include=["documents"])
             for eid, edoc in zip(got.get("ids") or [], got.get("documents") or []):
                 e = Edge.model_validate_json(edoc)
                 extracted = e.summary or e.label or e.relation or ""
                 if not (e.references and extracted):
                     continue
-                new_refs = [self._verify_one_reference(extracted, full_text, r, min_ngram=min_ngram, weights=weights, threshold=threshold)
+                new_refs = [self.verify_reference(extracted, full_text, r, min_ngram=min_ngram, weights=weights, threshold=threshold)
+                            for r in e.references]
+                new_refs = [self.verify_reference(extracted, full_text, r, min_ngram=min_ngram, weights=weights, threshold=threshold)
                             for r in e.references]
                 e.references = new_refs
-                self.edge_collection.update(ids=[eid], documents=[e.model_dump_json()])
+                doc, meta = _edge_doc_and_meta(e)
+                self.edge_collection.update(ids=[eid], documents=[doc], metadatas=[meta])
                 upd_edges += 1
 
         return {"updated_nodes": upd_nodes, "updated_edges": upd_edges}
@@ -1422,7 +1666,8 @@ class GraphKnowledgeEngine:
                     continue
                 n.references = [self._verify_one_reference(extracted, full_text, r, min_ngram=min_ngram, weights=weights, threshold=threshold)
                                 for r in n.references]
-                self.node_collection.update(ids=[rid], documents=[n.model_dump_json()])
+                doc, meta = _node_doc_and_meta(n)
+                self.node_collection.update(ids=[rid], documents=[doc], metadatas=[meta])
                 upd_nodes += 1
             elif kind == "edge":
                 got = self.edge_collection.get(ids=[rid], include=["documents", "metadatas"])
@@ -1436,6 +1681,7 @@ class GraphKnowledgeEngine:
                     continue
                 e.references = [self._verify_one_reference(extracted, full_text, r, min_ngram=min_ngram, weights=weights, threshold=threshold)
                                 for r in e.references]
-                self.edge_collection.update(ids=[rid], documents=[e.model_dump_json()])
+                doc, meta = _edge_doc_and_meta(e)
+                self.edge_collection.update(ids=[rid], documents=[doc], metadatas=[meta])
                 upd_edges += 1
         return {"updated_nodes": upd_nodes, "updated_edges": upd_edges}

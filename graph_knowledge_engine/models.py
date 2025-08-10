@@ -49,7 +49,7 @@ def generate_id() -> str:
 # -------------------------
 class MentionVerification(BaseModel):
     """Result of verifying a mention span against the source text."""
-    method: Literal["llm", "levenshtein", "regex", "heuristic", "human"] = Field(
+    method: Literal["llm", "levenshtein", "regex", "heuristic", "human", "ensemble"] = Field(
         ..., description="How the mention was verified"
     )
     is_verified: bool = Field(..., description="Whether the mention appears correct")
@@ -120,7 +120,8 @@ class EdgeMixin(BaseModel):
     source_ids: List[str] = Field(..., description="List of source node IDs")
     target_ids: List[str] = Field(..., description="List of target node IDs")
     relation: str = Field(..., description="Type of relationship between source and target nodes")
-
+    source_edge_ids: Optional[List[str]] = Field(..., description="List of source edge IDs")
+    target_edge_ids: Optional[List[str]] = Field(..., description="List of target edge IDs")
 # -------------------------
 # Storage-facing mixin (embedding OPTIONAL)
 # -------------------------
@@ -137,7 +138,14 @@ class ChromaMixin(BaseModel):
 class LLMMixin(BaseModel):
     id: Optional[str] = Field(None, description="None for new object; use existing IDs to upsert")
     # No embedding in LLM schema to avoid bloating the output
-
+    local_id: Optional[str] = Field(
+        None,
+        description="Optional within-output temp id for new edge, e.g., 'ne:moon'. set it when this edge is referred by other edges. "
+    )
+    local_id: Optional[str] = Field(
+        None,
+        description="Optional within-output temp id for new nodes, e.g., 'nn:moon'. Need to be set when is referred by new edges. "
+    )
 
 # -------------------------
 # Final models
@@ -154,7 +162,12 @@ class LLMNode(LLMMixin, GraphEntityBase):
     Contains label, type, summary, optional domain, and properties.
     ID is optional and will be added post-processing.
     Node extracted by the LLM. Must include at least one ReferenceSession with precise span.
+    If this is a new node, set either:
+      - id = "nn:<slug>"  (preferred), or
+      - leave id empty and set local_id = "nn:<slug>"
+    If this references an existing node, set id to the provided alias (e.g., N3, N~abc, or UUID).
     """
+    
     pass
 
 class LLMEdge(LLMMixin, EdgeMixin, GraphEntityBase):
@@ -163,7 +176,14 @@ class LLMEdge(LLMMixin, EdgeMixin, GraphEntityBase):
     Inherits node fields and adds source/target relationships and relation type.
     ID is optional and will be added post-processing.
     Edge extracted by the LLM. Must include at least one ReferenceSession with precise span.
+    For a new edge, set id='ne:<slug>' or leave empty.
+    For endpoints, use existing node aliases (N#/UUID) or temp ids 'nn:<slug>'.
+    If this is a new edge, set either:
+      - id = "ne:<slug>"  (preferred), or
+      - leave id empty and set local_id = "ne:<slug>"
+    If this references an existing edge, set id to the provided alias (e.g., N3, N~abc, or UUID).
     """
+    
     pass
 
 class LLMGraphExtraction(BaseModel):

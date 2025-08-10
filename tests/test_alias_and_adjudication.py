@@ -82,7 +82,7 @@ def test_commit_merge_creates_same_as_and_endpoints():
     eng.commit_merge(a, b, V)  # should create same_as edge with left_id/right_id or endpoints
 
     # verify an edge exists that ties a<->b
-    edges = eng.edge_collection.get(include=["ids","metadatas","documents"])
+    edges = eng.edge_collection.get(include=["metadatas","documents"])
     found = False
     for eid, meta, docj in zip(edges["ids"], edges["metadatas"], edges["documents"]):
         if (meta or {}).get("relation") == "same_as":

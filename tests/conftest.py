@@ -116,5 +116,5 @@ def tmp_chroma_dir(tmp_path_factory):
 def engine(tmp_chroma_dir, monkeypatch):
     eng = GraphKnowledgeEngine(persist_directory=tmp_chroma_dir)
     # Patch the real LLM with a deterministic fake
-    eng.llm = _CompositeFakeLLM()
+    #eng.llm = _CompositeFakeLLM()
     return eng

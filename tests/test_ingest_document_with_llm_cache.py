@@ -1,15 +1,25 @@
-# tests/test_ingest_document_mock.py
+# tests/test_ingest_document_with_llm_cache.py
 import json
 from graph_knowledge_engine.models import Document
+from joblib import Memory
+import os, pathlib
 
-def test_ingest_document_with_llm_mock(engine):
+def test_ingest_document_with_llm_cache(engine):
     doc = Document(
         content="Plants convert light energy. Chlorophyll absorbs sunlight.",
         type="ocr",
         metadata={"source": "test"},
         processed=False
     )
-    result = engine.ingest_document_with_llm(doc)
+    
+    location=os.path.join(".cache", "test", pathlib.Path(__file__).parts[-1], "get_result")
+    os.makedirs(location, exist_ok = True)
+    memory = Memory(location=location, verbose=0)
+    @memory.cache
+    def get_result(doc):
+        result = engine.ingest_document_with_llm(doc)
+        return result
+    result = get_result(doc)
     assert result["document_id"] == doc.id
     assert result["nodes_added"] >= 1
     assert result["edges_added"] >= 1

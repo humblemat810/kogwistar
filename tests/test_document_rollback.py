@@ -2,16 +2,30 @@ from graph_knowledge_engine.models import (
     Node,
     Edge,
     Document)
+from joblib import Memory
+import os
+import pathlib
+
 def test_document_rollback(engine):
     # Create and ingest a dummy document
+    
     doc = Document(
         content="The moon orbits the Earth.",
         type="test",
         metadata={"source": "rollback_test"}
     )
-    result = engine.ingest_document_with_llm(doc)
-
+    doc.id = 'a882ec6b-75e1-11f0-87ad-0456e5e49702'
+    engine.node_collection.delete(where={"doc_id": doc.id})
+    location = os.path.join(".cache", "test", pathlib.Path(__file__).parts[-1], "test_document_rollback")
+    os.makedirs(location, exist_ok=True)
+    # memory = Memory(location=location, verbose=0)
+    # @memory.cache
+    def ingest_with_doc_with_llm(docd):
+        doc = Document.model_validate(docd)
+        result = engine.ingest_document_with_llm(doc)
+        return result
     # Ensure data exists
+    result = ingest_with_doc_with_llm(doc.model_dump())
     nodes_before = engine.node_collection.get(where={"doc_id": doc.id})
     assert len(nodes_before["ids"]) > 0
 
