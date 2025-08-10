@@ -1,0 +1,51 @@
+from graph_knowledge_engine.models import (
+    Node,
+    Edge,
+    Document)
+def test_document_rollback(engine):
+    # Create and ingest a dummy document
+    doc = Document(
+        content="The moon orbits the Earth.",
+        type="test",
+        metadata={"source": "rollback_test"}
+    )
+    result = engine.ingest_document_with_llm(doc)
+
+    # Ensure data exists
+    nodes_before = engine.node_collection.get(where={"doc_id": doc.id})
+    assert len(nodes_before["ids"]) > 0
+
+    # Rollback
+    engine.rollback_document(doc.id)
+
+    # Ensure all related data is gone
+    nodes_after = engine.node_collection.get(where={"doc_id": doc.id})
+    edges_after = engine.edge_collection.get(where={"doc_id": doc.id})
+    docs_after = engine.document_collection.get(where={"doc_id": doc.id})
+
+    assert len(nodes_after["ids"]) == 0
+    assert len(edges_after["ids"]) == 0
+    assert len(docs_after["ids"]) == 0
+    
+def test_batch_document_rollback(engine):
+    docs = [
+        Document(content=f"Fake content {i}", type="test")
+        for i in range(3)
+    ]
+
+    for doc in docs:
+        engine.ingest_document_with_llm(doc)
+
+    # Ensure they are in DB
+    for doc in docs:
+        assert engine.node_collection.get(where={"doc_id": doc.id})["ids"]
+
+    # Rollback in batch
+    ids_to_remove = [doc.id for doc in docs]
+    engine.rollback_many(ids_to_remove)
+
+    # Verify deletion
+    for doc in docs:
+        assert not engine.node_collection.get(where={"doc_id": doc.id})["ids"]
+        assert not engine.edge_collection.get(where={"doc_id": doc.id})["ids"]
+        assert not engine.document_collection.get(where={"doc_id": doc.id})["ids"]

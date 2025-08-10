@@ -27,9 +27,57 @@ from joblib import Memory
 import json, re, uuid
 from typing import Optional, List
 from .models import ReferenceSession, MentionVerification, LLMGraphExtraction, LLMNode, LLMEdge, Node, Edge, Document
+from typing import Callable, Optional, List, Tuple, Any, Dict
+import math
+from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction
+# Optional: RapidFuzz
+try:
+    from rapidfuzz import fuzz
+    _HAS_RAPIDFUZZ = True
+except Exception:
+    _HAS_RAPIDFUZZ = False
+
+# Optional: Azure embeddings (only if you set env for embeddings)
+try:
+    from langchain_openai import AzureOpenAIEmbeddings
+    _HAS_AZURE_EMB = True
+except Exception:
+    _HAS_AZURE_EMB = False
+
 
 _DOC_URL = "document/{doc_id}"
+def _choose_anchor(self, node_ids: list[str]) -> str:
+    """Pick a stable anchor: prefer a node that already has canonical_entity_id; else min UUID."""
+    if not node_ids:
+        raise ValueError("No nodes to anchor")
+    # Try to find a node with a non-empty canonical_entity_id
+    nodes = self.node_collection.get(ids=node_ids, include=["ids", "documents"])
+    for nid, ndoc in zip(nodes.get("ids") or [], nodes.get("documents") or []):
+        n = Node.model_validate_json(ndoc)
+        if n.canonical_entity_id:
+            return nid
+    # Fallback: stable min UUID to avoid churn
+    return sorted(node_ids)[0]
 
+def _rebalance_same_as_edge(self, e: Edge, removed_node_id: str) -> tuple[bool, Edge | None]:
+    """
+    Remove removed_node_id from e; if equality still has >=2 nodes, normalize to star form.
+    Returns (deleted, updated_edge).
+    """
+    S = [x for x in (e.source_ids or []) + (e.target_ids or []) if x != removed_node_id]
+    S = list(dict.fromkeys(S))  # dedupe, keep order
+    if len(S) < 2:
+        # No equality relation left
+        return True, None
+
+    anchor = self._choose_anchor(S)
+    rest = [x for x in S if x != anchor]
+    e.source_ids = [anchor]
+    e.target_ids = rest
+    # Optional: tweak summary to reflect normalization
+    if not e.summary:
+        e.summary = "Normalized same_as"
+    return False, e
 def _strip_none(d: dict) -> dict:
     return {k: v for k, v in d.items() if v is not None}
 
@@ -347,9 +395,40 @@ class GraphKnowledgeEngine:
     # ----------------------------
     # Init
     # ----------------------------
-    def __init__(self, persist_directory: Optional[str] = None):
+    def __init__(self, 
+                 embedding_function: Optional[Callable[[list[str]], list[list[float]]]] = None,
+                 persist_directory: Optional[str] = None,
+                 default_st_model: Optional[str] = None,):
+        """
+        embedding_function: callable(texts: List[str]) -> List[List[float]].
+          If None, defaults to SentenceTransformerEmbeddingFunction with model:
+          - default_st_model argument, or
+          - ENV SENTENCE_TRANSFORMERS_MODEL, or
+          - "all-MiniLM-L6-v2".
+        """
         load_dotenv()
         self._alias_books: dict[str, AliasBook] = {}
+        # 1) Choose embedder (callable). If user didn’t pass one, build ST embedder.
+        if embedding_function is None:
+            model_name = (
+                default_st_model
+                or os.getenv("SENTENCE_TRANSFORMERS_MODEL")
+                or "all-MiniLM-L6-v2"
+            )
+            # this object is itself a callable: ef(texts) -> vectors
+            ef = SentenceTransformerEmbeddingFunction(model_name=model_name)
+            embedding_function = ef  # keep as callable
+        self.embedding_function = embedding_function
+        # Keep a 1-string convenience to reuse in cosine checks
+        def _embed_one(text: str) -> Optional[list[float]]:
+            try:
+                vecs = embedding_function([text])
+                return vecs[0] if vecs else None
+            except Exception:
+                return None
+        self._embed_one = _embed_one
+
+        # 2) Chroma client + collections; inject embedder on vectorized collections
         self.chroma_client = Client(
             Settings(
                 is_persistent=True,
@@ -357,8 +436,13 @@ class GraphKnowledgeEngine:
                 anonymized_telemetry=False,
             )
         )
-        self.node_collection = self.chroma_client.get_or_create_collection("nodes")
-        self.edge_collection = self.chroma_client.get_or_create_collection("edges")
+        # IMPORTANT: pass embedding_function to vector collections
+        self.node_collection = self.chroma_client.get_or_create_collection(
+            "nodes", embedding_function=embedding_function
+        )
+        self.edge_collection = self.chroma_client.get_or_create_collection(
+            "edges", embedding_function=embedding_function
+        )
         self.edge_endpoints_collection = self.chroma_client.get_or_create_collection("edge_endpoints")
         self.document_collection = self.chroma_client.get_or_create_collection("documents")
         self.domain_collection = self.chroma_client.get_or_create_collection("domains")
@@ -375,7 +459,161 @@ class GraphKnowledgeEngine:
             max_tokens=12000,
             openai_api_type="azure",
         )
+        self.embeddings: Optional[Callable[[str], Optional[List[float]]]] = None
+        if _HAS_AZURE_EMB:
+            emb_deployment = os.getenv("OPENAI_EMBED_DEPLOYMENT")
+            emb_endpoint   = os.getenv("OPENAI_EMBED_ENDPOINT")
+            emb_api_key    = os.getenv("OPENAI_API_KEY_GPT4_1") or os.getenv("OPENAI_API_KEY")
+            emb_api_ver    = os.getenv("OPENAI_EMBED_API_VERSION", "2024-08-01-preview")
+            if emb_deployment and emb_endpoint and emb_api_key:
+                _emb = AzureOpenAIEmbeddings(
+                    azure_deployment=emb_deployment,
+                    openai_api_key=emb_api_key,
+                    azure_endpoint=emb_endpoint,
+                    openai_api_version=emb_api_ver,
+                )
+                def _embed_fn(text: str) -> Optional[List[float]]:
+                    try:
+                        v = _emb.embed_query(text)
+                        return v
+                    except Exception:
+                        return None
+                self.embeddings = _embed_fn
+    # ----------------------------
+    # Mention / citation verification
+    # ----------------------------
+    @staticmethod
+    def _normalize(s: str) -> str:
+        return " ".join((s or "").split()).strip().lower()
 
+    @staticmethod
+    def _slice_span(full_text: str, start: int, end: int) -> str:
+        start = max(0, start or 0)
+        end = max(start, end or start)
+        end = min(len(full_text), end)
+        return full_text[start:end]
+
+    def _fetch_document_text(self, document_id: str) -> str:
+        got = self.document_collection.get(ids=[document_id], include=["documents"])
+        if got and got.get("documents"):
+            return got["documents"][0] or ""
+        # fallback: try lookup by where
+        got = self.document_collection.get(where={"doc_id": document_id}, include=["documents"])
+        if got and got.get("documents"):
+            return got["documents"][0] or ""
+        return ""
+
+    @staticmethod
+    def _cosine(u: List[float], v: List[float]) -> Optional[float]:
+        if not u or not v or len(u) != len(v):
+            return None
+        dot = sum(a*b for a,b in zip(u,v))
+        nu = math.sqrt(sum(a*a for a in u))
+        nv = math.sqrt(sum(b*b for b in v))
+        if nu == 0 or nv == 0:
+            return None
+        return dot / (nu * nv)
+
+    def _score_rapidfuzz(self, a: str, b: str) -> Optional[float]:
+        if not _HAS_RAPIDFUZZ:
+            return None
+        a, b = self._normalize(a), self._normalize(b)
+        if not a or not b:
+            return None
+        # token_set_ratio is robust to word order/noise; scale 0..100 -> 0..1
+        return float(fuzz.token_set_ratio(a, b)) / 100.0
+
+    @staticmethod
+    def _score_coverage(extracted: str, cited: str, min_ngram: int = 5) -> Optional[float]:
+        """
+        Percent of extracted characters covered by any n-gram (len>=min_ngram)
+        that also appears in cited. Simple, fast lower bound for span support.
+        """
+        ex_norm = " ".join((extracted or "").split())
+        ci_norm = " ".join((cited or "").split())
+        if not ex_norm or not ci_norm:
+            return None
+        n = max(1, min_ngram)
+        covered = [False] * len(ex_norm)
+        # greedy n-gram cover: slide windows, mark matches
+        for i in range(0, len(ex_norm) - n + 1):
+            gram = ex_norm[i:i+n]
+            if gram in ci_norm:
+                for j in range(i, i+n):
+                    covered[j] = True
+        # expand matches (optional): if surrounded by covered, keep filling
+        # (skip for speed; baseline is fine)
+        total = len(ex_norm)
+        hit = sum(1 for x in covered if x)
+        return hit / total if total > 0 else None
+
+    def _score_embedding(self, extracted: str, cited: str) -> Optional[float]:
+        u = self._embed_one(extracted or "")
+        v = self._embed_one(cited or "")
+        return self._cosine(u, v) if (u and v) else None
+
+    def _ensemble(self, scores: Dict[str, Optional[float]], weights: Dict[str, float]) -> Optional[float]:
+        """Weighted average over available (non-None) scores."""
+        num = 0.0
+        den = 0.0
+        for k, w in weights.items():
+            s = scores.get(k)
+            if s is None:
+                continue
+            num += w * s
+            den += w
+        if den == 0:
+            return None
+        return num / den
+
+    def _verify_one_reference(
+        self,
+        extracted_text: str,
+        full_text: str,
+        ref: ReferenceSession,
+        *,
+        min_ngram: int = 5,
+        weights: Dict[str, float] = {"rapidfuzz": 0.5, "coverage": 0.3, "embedding": 0.2},
+        threshold: float = 0.70,
+    ) -> ReferenceSession:
+        """
+        Compute per-reference metrics & write a single ensemble MentionVerification
+        back into the ReferenceSession (copy), preserving other fields.
+        """
+        span = self._slice_span(full_text, ref.start_char or 0, ref.end_char or 0)
+        # fallbacks: if spans are empty, use entire doc (not ideal, but keeps pipeline moving)
+        cited_text = span if span else full_text
+
+        rf = self._score_rapidfuzz(extracted_text, cited_text)
+        cv = self._score_coverage(extracted_text, cited_text, min_ngram=min_ngram)
+        em = self._score_embedding(extracted_text, cited_text)
+
+        score = self._ensemble({"rapidfuzz": rf, "coverage": cv, "embedding": em}, weights) or 0.0
+        is_ok = score >= threshold
+
+        out = ref.model_copy(deep=True)
+        # compact, machine-readable notes for reuse later
+        detail = {
+            "rapidfuzz": rf,
+            "coverage": cv,
+            "embedding": em,
+            "weights": weights,
+            "threshold": threshold,
+        }
+        note = json.dumps(detail, separators=(",", ":"))
+        if out.verification is None:
+            out.verification = MentionVerification(
+                method="ensemble",
+                is_verified=is_ok,
+                score=score,
+                notes=note,
+            )
+        else:
+            out.verification.method = "ensemble"
+            out.verification.is_verified = is_ok
+            out.verification.score = score
+            out.verification.notes = note
+        return out
     # ----------------------------
     # Chroma adders
     # ----------------------------
@@ -490,8 +728,33 @@ class GraphKnowledgeEngine:
 
     def vector_search_edges(self, embedding: List[float], top_k: int = 5):
         return self.edge_collection.query(query_embeddings=[embedding], n_results=top_k)
-
-    
+    def _choose_anchor(self, node_ids: list[str]) -> str:
+        """Pick a stable anchor for same_as rebalancing: prefer a node with a canonical id; else min UUID."""
+        if not node_ids:
+            raise ValueError("No nodes to anchor")
+        nodes = self.node_collection.get(ids=node_ids, include=["ids", "documents"])
+        for nid, ndoc in zip(nodes.get("ids") or [], nodes.get("documents") or []):
+            n = Node.model_validate_json(ndoc)
+            if n.canonical_entity_id:
+                return nid
+        return min(node_ids)  # stable fallback
+    def _rebalance_same_as_edge(self, e: Edge, removed_node_id: str) -> tuple[bool, Edge | None]:
+        """
+        Remove removed_node_id from a same_as edge. If >=2 nodes remain, normalize to star form.
+        Returns (deleted, updated_edge_or_None).
+        """
+        S = [x for x in (e.source_ids or []) + (e.target_ids or []) if x != removed_node_id]
+        # dedupe while preserving order
+        S = list(dict.fromkeys(S))
+        if len(S) < 2:
+            return True, None  # nothing meaningful left
+        anchor = self._choose_anchor(S)
+        rest = [x for x in S if x != anchor]
+        e.source_ids = [anchor]
+        e.target_ids = rest
+        if not e.summary:
+            e.summary = "Normalized same_as"
+        return False, e
     # def _extract_graph_with_llm_aliases(self, content: str, alias_nodes_str: str, alias_edges_str: str):
     #     """
     #     Ask the LLM to extract nodes/edges but require it to use ID aliases we provide.
@@ -540,125 +803,150 @@ class GraphKnowledgeEngine:
         err = result.get("parsing_error") if isinstance(result, dict) else None
         return raw, parsed, err
 
-    def _ingest_text_with_llm(
-        self,
-        *,
-        doc_id: str,
-        content: str,
-        auto_adjudicate: bool = False,
-        context_nodes_limit: int = 200,
-        context_edges_limit: int = 400,
-    ):
-        """
-        Shared ingestion path:
-        - Build small doc-scoped context
-        - Alias IDs to save tokens
-        - Instruct LLM to use aliases
-        - Parse, de-alias, normalize refs, and store
-        - Optionally auto-adjudicate (within this document)
-        """
-        # 1) Context + aliases
-        ctx_nodes, ctx_edges = self._select_doc_context(doc_id, context_nodes_limit, context_edges_limit)
-        alias_for_real, real_for_alias = build_aliases([n["id"] for n in ctx_nodes], [e["id"] for e in ctx_edges])
-        aliased_nodes, aliased_edges = aliasify_graph(ctx_nodes, ctx_edges, alias_for_real)
-        alias_nodes_str, alias_edges_str = self._alias_legend_strings(aliased_nodes, aliased_edges)
+    def _ingest_text_with_llm(self, *, doc_id: str, content: str, auto_adjudicate: bool):
+        # context
+        ctx_nodes, ctx_edges = self._select_doc_context(doc_id)
+        aliased_nodes, aliased_edges, alias_nodes_str, alias_edges_str = self._aliasify_for_prompt(doc_id, ctx_nodes, ctx_edges)
 
-        # 2) Extract with aliases
+        # extract
         raw, parsed, error = self._extract_graph_with_llm_aliases(content, alias_nodes_str, alias_edges_str)
         if error:
             raise ValueError(f"LLM parsing error: {error}")
         if not isinstance(parsed, LLMGraphExtraction):
             parsed = LLMGraphExtraction.model_validate(parsed)
 
-        # 3) De-alias the result
-        parsed = de_alias_ids(parsed, real_for_alias)
+        # de-alias
+        parsed = self._de_alias_ids_in_result(doc_id, parsed)
 
-        # 4) Normalize refs and persist
+        # persist
         fallback_snip = (content[:160] + "…") if content else None
-        nodes_added, edges_added = 0, 0
+        nodes_added = edges_added = 0
         for ln in parsed.nodes:
-            nid = ln.id or str(uuid.uuid1())
+            nid = ln.id or str(uuid.uuid4())
             refs = _normalize_refs(ln.references, doc_id, fallback_snip)
             node = Node(
-                id=nid,
-                label=ln.label,
-                type=ln.type,
-                summary=ln.summary,
-                domain_id=ln.domain_id,
-                canonical_entity_id=ln.canonical_entity_id,
-                properties=ln.properties,
-                references=refs,
-                embedding=None,
-                doc_id=doc_id,
+                id=nid, label=ln.label, type=ln.type, summary=ln.summary,
+                domain_id=ln.domain_id, canonical_entity_id=ln.canonical_entity_id,
+                properties=ln.properties, references=refs, doc_id=doc_id
             )
             self.add_node(node, doc_id=doc_id)
             nodes_added += 1
 
         for le in parsed.edges:
-            eid = le.id or str(uuid.uuid1())
+            eid = le.id or str(uuid.uuid4())
             refs = _normalize_refs(le.references, doc_id, fallback_snip)
             edge = Edge(
-                id=eid,
-                label=le.label,
-                type=le.type,
-                summary=le.summary,
-                domain_id=le.domain_id,
-                canonical_entity_id=le.canonical_entity_id,
-                properties=le.properties,
-                references=refs,
-                source_ids=le.source_ids,
-                target_ids=le.target_ids,
-                relation=le.relation,
-                embedding=None,
-                doc_id=doc_id,
+                id=eid, label=le.label, type=le.type, summary=le.summary,
+                domain_id=le.domain_id, canonical_entity_id=le.canonical_entity_id,
+                properties=le.properties, references=refs, relation=le.relation,
+                source_ids=le.source_ids, target_ids=le.target_ids, doc_id=doc_id
             )
             self.add_edge(edge, doc_id=doc_id)
             edges_added += 1
 
-        # 5) Optional within-doc auto-adjudication
+        # optional within-doc adjudication
         if auto_adjudicate:
-            # simple within-doc candidate generation: label buckets + type match
-            new_nodes = self.node_collection.get(where={"doc_id": doc_id}, include=["ids", "documents"])
-            by_key = {}
-            for nid, ndoc in zip(new_nodes.get("ids", []), new_nodes.get("documents", [])):
+            # naive label+type buckets; you can plug your candidate generator here
+            data = self.node_collection.get(where={"doc_id": doc_id}, include=["ids", "documents"])
+            buckets = {}
+            for ndoc in (data.get("documents") or []):
                 n = Node.model_validate_json(ndoc)
-                key = (n.type, n.label.strip().lower())
-                by_key.setdefault(key, []).append(n)
-
+                buckets.setdefault((n.type, n.label.strip().lower()), []).append(n)
             pairs = []
-            for _, bucket in by_key.items():
+            for _, bucket in buckets.items():
                 if len(bucket) > 1:
-                    # naive pairwise; you can prune by summary similarity later
                     for i in range(len(bucket)):
-                        for j in range(i + 1, len(bucket)):
+                        for j in range(i+1, len(bucket)):
                             pairs.append((bucket[i], bucket[j]))
-
             if pairs:
                 verdicts, _ = self.batch_adjudicate_merges(pairs)
-                # commit only positive merges
-                for pair, out in zip(pairs, verdicts):
-                    v = out.verdict if hasattr(out, "verdict") else out  # LC variant safety
-                    if v.same_entity:
-                        try:
-                            self.commit_merge(pair[0], pair[1], v)
-                        except Exception:
-                            pass
+                for (left, right), out in zip(pairs, verdicts):
+                    verdict = getattr(out, "verdict", out)
+                    if verdict.same_entity:
+                        self.commit_merge(left, right, verdict)
 
         return {"nodes_added": nodes_added, "edges_added": edges_added, "raw": raw}
 
+
     def prune_node_from_edges(self, node_id: str):
-        # find edges via endpoints (fast, indexed)
+        """
+        Remove a node from all edges that reference it.
+        - For normal edges: delete if one side becomes empty; else update endpoints.
+        - For same_as hyperedges: if >=2 nodes remain, rebalance into star; else delete.
+        Returns sets of edge IDs: {'deleted_edges': set, 'updated_edges': set}
+        """
         eps = self.edge_endpoints_collection.get(where={"node_id": node_id}, include=["documents"])
         if not eps["ids"]:
             return {"deleted_edges": set(), "updated_edges": set()}
 
         edge_ids = list({json.loads(doc)["edge_id"] for doc in eps["documents"]})
-        edges = self.edge_collection.get(ids=edge_ids, include=["documents", "metadatas"])
-        updated_edge_ids = set()
-        removed_edge_ids = set()
-        deleted = updated = 0
-        for eid, edoc, meta in zip(edges["ids"], edges["documents"], edges["metadatas"]):
+        edges = self.edge_collection.get(ids=edge_ids, include=["ids", "documents", "metadatas"])
+
+        removed_edge_ids: set[str] = set()
+        updated_edge_ids: set[str] = set()
+
+        for eid, edoc, meta in zip(edges.get("ids") or [], edges.get("documents") or [], edges.get("metadatas") or []):
             e = Edge.model_validate_json(edoc)
+            relation = (meta or {}).get("relation") or e.relation  # be resilient to missing meta
+
+            if relation == "same_as":
+                # Special rebalancing for equality hyperedges
+                edge_deleted, new_edge = self._rebalance_same_as_edge(e, removed_node_id=node_id)
+                if edge_deleted:
+                    self.edge_collection.delete(ids=[eid])
+                    self.edge_endpoints_collection.delete(where={"edge_id": eid})
+                    removed_edge_ids.add(eid)
+                else:
+                    # Update the edge
+                    new_edge: Edge # help pylance
+                    self.edge_collection.update(
+                        ids=[eid],
+                        documents=[new_edge.model_dump_json()],
+                        metadatas=[_strip_none({
+                            "doc_id": (meta or {}).get("doc_id"),
+                            "relation": new_edge.relation,
+                            "source_ids": _json_or_none(new_edge.source_ids),
+                            "target_ids": _json_or_none(new_edge.target_ids),
+                            "type": new_edge.type,
+                            "summary": new_edge.summary,
+                            "domain_id": new_edge.domain_id,
+                            "canonical_entity_id": new_edge.canonical_entity_id,
+                            "properties": _json_or_none(new_edge.properties),
+                            "references": _json_or_none([ref.model_dump() for ref in (new_edge.references or [])]),
+                        })],
+                    )
+                    # Rebuild endpoints from scratch to match new star form
+                    self.edge_endpoints_collection.delete(where={"edge_id": eid})
+                    ep_ids, ep_docs, ep_metas = [], [], []
+                    for role, node_ids in (("src", new_edge.source_ids or []), ("tgt", new_edge.target_ids or [])):
+                        for nid in node_ids:
+                            ep_id = f"{eid}::{role}::{nid}"
+                            # derive per-endpoint doc_id from node JSON if available
+                            node_doc = self.node_collection.get(ids=[nid], include=["documents"])
+                            per_doc_id = None
+                            if node_doc.get("documents"):
+                                try:
+                                    n = Node.model_validate_json(node_doc["documents"][0])
+                                    per_doc_id = getattr(n, "doc_id", None)
+                                except Exception:
+                                    per_doc_id = None
+                            meta_ep = _strip_none({
+                                "id": ep_id,
+                                "edge_id": eid,
+                                "node_id": nid,
+                                "role": role,
+                                "relation": new_edge.relation,
+                                "doc_id": per_doc_id,
+                            })
+                            ep_ids.append(ep_id)
+                            ep_docs.append(json.dumps(meta_ep))
+                            ep_metas.append(meta_ep)
+                    if ep_ids:
+                        self.edge_endpoints_collection.add(ids=ep_ids, documents=ep_docs, metadatas=ep_metas)
+                    updated_edge_ids.add(eid)
+                continue
+
+            # ---- Normal (non-same_as) edges ----
             new_src = [x for x in (e.source_ids or []) if x != node_id]
             new_tgt = [x for x in (e.target_ids or []) if x != node_id]
 
@@ -666,15 +954,14 @@ class GraphKnowledgeEngine:
                 # delete the whole edge + its endpoint rows
                 self.edge_collection.delete(ids=[eid])
                 self.edge_endpoints_collection.delete(where={"edge_id": eid})
-                deleted += 1
-                removed_edge_ids.update([eid])
+                removed_edge_ids.add(eid)
             else:
                 e.source_ids, e.target_ids = new_src, new_tgt
                 self.edge_collection.update(
                     ids=[eid],
                     documents=[e.model_dump_json()],
                     metadatas=[_strip_none({
-                        "doc_id": meta.get("doc_id"),
+                        "doc_id": (meta or {}).get("doc_id"),
                         "relation": e.relation,
                         "source_ids": _json_or_none(e.source_ids),
                         "target_ids": _json_or_none(e.target_ids),
@@ -686,13 +973,14 @@ class GraphKnowledgeEngine:
                         "references": _json_or_none([ref.model_dump() for ref in (e.references or [])]),
                     })],
                 )
-                updated_edge_ids.add([eid])
                 # remove only the touched endpoint rows
                 self.edge_endpoints_collection.delete(where={"$and": [{"edge_id": eid}, {"node_id": node_id}]})
-                updated += 1
+                updated_edge_ids.add(eid)
 
-        return {"deleted_edges": removed_edge_ids, 
-                "updated_edges": updated_edge_ids - removed_edge_ids} # a multiedge may update first and then deleted
+        return {
+            "deleted_edges": removed_edge_ids,
+            "updated_edges": updated_edge_ids - removed_edge_ids,  # in case something was updated then later deleted
+        }
     def verify_mentions_for_doc(self, document_id: str, method: str = "levenshtein"):
         """Run a verifier over all nodes/edges of a doc and update their references.verification."""
         # Fetch nodes for this doc
@@ -780,10 +1068,83 @@ class GraphKnowledgeEngine:
         )
         return result.verdict
 
+    def _primary_doc_id_from_node(self, n: Node) -> str | None:
+        # Prefer explicit doc_id on the node JSON; else infer from references
+        if getattr(n, "doc_id", None):
+            return n.doc_id
+        for r in (n.references or []):
+            if r.document_page_url:
+                m = re.search(r"document/([A-Za-z0-9\-]+)", r.document_page_url)
+                if m:
+                    return m.group(1)
+        return None
+
+    def _best_ref(self, n: Node) -> ReferenceSession:
+        # Choose one ref to copy to the edge (earliest page, earliest char)
+        if n.references:
+            refs = sorted(
+                n.references,
+                key=lambda r: (getattr(r, "start_page", 10**9), getattr(r, "start_char", 10**9))
+            )
+            # Shallow copy + annotate verification that this ref is used for adjudication evidence
+            ref = refs[0].model_copy(deep=True)
+            if ref.verification is None:
+                ref.verification = MentionVerification(method="heuristic", is_verified=True, score=0.5, notes="used as adjudication evidence")
+            else:
+                # don’t flip existing flags, just add note
+                ref.verification.notes = (ref.verification.notes or "") + " | used as adjudication evidence"
+            return ref
+        # Fallback if somehow node has no refs (shouldn’t happen with your model)
+        doc_id = self._primary_doc_id_from_node(n) or "unknown"
+        return _default_ref(doc_id, snippet=n.summary if hasattr(n, "summary") else None)
+    def add_edge_with_endpoint_docs(self, edge: Edge, endpoint_doc_ids: dict[str, str | None]):
+        # Add the main edge row (neutral doc_id)
+        self.edge_collection.add(
+            ids=[edge.id],
+            documents=[edge.model_dump_json()],
+            embeddings=[edge.embedding] if edge.embedding else None,
+            metadatas=[self.chroma_sanitize_metadata({
+                "doc_id": getattr(edge, "doc_id", None),
+                "relation": edge.relation,
+                "source_ids": json.dumps(edge.source_ids),
+                "target_ids": json.dumps(edge.target_ids),
+                "type": edge.type,
+                "summary": edge.summary,
+                "domain_id": edge.domain_id,
+                "canonical_entity_id": edge.canonical_entity_id,
+                "properties": json.dumps(edge.properties) if edge.properties is not None else None,
+                "references": json.dumps([ref.model_dump() for ref in (edge.references or [])]),
+            })],
+        )
+
+        # Fan-out edge_endpoints; each endpoint gets the *node's* doc_id for rollback
+        ep_ids, ep_docs, ep_metas = [], [], []
+        for role, node_ids in (("src", edge.source_ids or []), ("tgt", edge.target_ids or [])):
+            for nid in node_ids:
+                eid = f"{edge.id}::{role}::{nid}"
+                doc_id = endpoint_doc_ids.get(nid)
+                meta_ep = self.chroma_sanitize_metadata({
+                    "id": eid,
+                    "edge_id": edge.id,
+                    "node_id": nid,
+                    "role": role,
+                    "relation": edge.relation,
+                    "doc_id": doc_id,  # <-- specific to that node's document
+                })
+                ep_ids.append(eid)
+                ep_docs.append(json.dumps(meta_ep))
+                ep_metas.append(meta_ep)
+
+        if ep_ids:
+            self.edge_endpoints_collection.add(
+                ids=ep_ids,
+                documents=ep_docs,
+                metadatas=ep_metas,
+            )
     def commit_merge(self, left: Node, right: Node, verdict: AdjudicationVerdict) -> str:
         """
         Apply a positive adjudication by assigning/propagating a canonical_entity_id
-        and recording a `same_as` edge with provenance.
+        and recording a `same_as` edge with provenance. Persists changes to Chroma.
         Returns the canonical id used.
         """
         if not verdict.same_entity:
@@ -793,11 +1154,55 @@ class GraphKnowledgeEngine:
         if not canonical_id:
             canonical_id = str(uuid.uuid1())
 
-        # Update in-memory nodes (caller is responsible for persisting updates to DB)
+        # 1) Update in-memory nodes
         left.canonical_entity_id = canonical_id
         right.canonical_entity_id = canonical_id
 
-        # Record a same_as edge for auditability
+        # 2) Persist node updates to Chroma (documents + metadatas)
+        def _persist_node(n: Node):
+            # Try to retain prior metadata (esp. doc_id)
+            prior = self.node_collection.get(ids=[n.id], include=["metadatas"])
+            doc_id = None
+            if prior.get("metadatas") and prior["metadatas"][0]:
+                doc_id = prior["metadatas"][0].get("doc_id")
+            # Update document JSON
+            self.node_collection.update(
+                ids=[n.id],
+                documents=[n.model_dump_json()],
+                metadatas=[_strip_none({
+                    "doc_id": doc_id,
+                    "label": n.label,
+                    "type": n.type,
+                    "summary": n.summary,
+                    "domain_id": n.domain_id,
+                    "canonical_entity_id": n.canonical_entity_id,
+                    "properties": _json_or_none(n.properties),
+                    "references": _json_or_none([ref.model_dump() for ref in (n.references or [])]),
+                })],
+            )
+            # also mirror back onto the object for future calls
+            n.doc_id = doc_id
+
+        _persist_node(left)
+        _persist_node(right)
+
+        # 3) Build edge references from each side (pick a “best” mention per node)
+        def _best_ref(n: Node) -> ReferenceSession:
+            if n.references:
+                refs = sorted(n.references, key=lambda r: (getattr(r, "start_page", 10**9), getattr(r, "start_char", 10**9)))
+                ref = refs[0].model_copy(deep=True)
+                if ref.verification is None:
+                    ref.verification = MentionVerification(method="heuristic", is_verified=True, score=0.5, notes="adjudication evidence")
+                else:
+                    ref.verification.notes = (ref.verification.notes or "") + " | adjudication evidence"
+                return ref
+            # Fallback if ever empty (shouldn’t with your schema)
+            did = getattr(n, "doc_id", None) or "unknown"
+            return _default_ref(did, snippet=n.summary if hasattr(n, "summary") else None)
+
+        left_ref = _best_ref(left)
+        right_ref = _best_ref(right)
+
         same_as = Edge(
             id=str(uuid.uuid1()),
             label="same_as",
@@ -808,9 +1213,53 @@ class GraphKnowledgeEngine:
             source_ids=[left.id],
             target_ids=[right.id],
             properties={"confidence": verdict.confidence},
-            references=None,
+            references=[left_ref, right_ref],
+            doc_id="__adjudication__",   # neutral; endpoints will carry per-node doc_id
         )
-        self.add_edge(same_as)
+
+        # 4) Persist the same_as edge and per-endpoint rows
+        #    Main edge row
+        self.edge_collection.add(
+            ids=[same_as.id],
+            documents=[same_as.model_dump_json()],
+            metadatas=[_strip_none({
+                "doc_id": getattr(same_as, "doc_id", None),
+                "relation": same_as.relation,
+                "source_ids": _json_or_none(same_as.source_ids),
+                "target_ids": _json_or_none(same_as.target_ids),
+                "type": same_as.type,
+                "summary": same_as.summary,
+                "domain_id": same_as.domain_id,
+                "canonical_entity_id": same_as.canonical_entity_id,
+                "properties": _json_or_none(same_as.properties),
+                "references": _json_or_none([ref.model_dump() for ref in (same_as.references or [])]),
+            })],
+        )
+
+        #    Endpoint fanout with per-endpoint doc_id
+        ep_ids, ep_docs, ep_metas = [], [], []
+        for role, node_ids in (("src", same_as.source_ids or []), ("tgt", same_as.target_ids or [])):
+            for nid in node_ids:
+                ep_id = f"{same_as.id}::{role}::{nid}"
+                n_meta = self.node_collection.get(ids=[nid], include=["metadatas"])
+                per_doc = None
+                if n_meta.get("metadatas") and n_meta["metadatas"][0]:
+                    per_doc = n_meta["metadatas"][0].get("doc_id")
+                m = _strip_none({
+                    "id": ep_id,
+                    "edge_id": same_as.id,
+                    "node_id": nid,
+                    "role": role,
+                    "relation": same_as.relation,
+                    "doc_id": per_doc,
+                })
+                ep_ids.append(ep_id)
+                ep_docs.append(json.dumps(m))
+                ep_metas.append(m)
+
+        if ep_ids:
+            self.edge_endpoints_collection.add(ids=ep_ids, documents=ep_docs, metadatas=ep_metas)
+
         return canonical_id
 
     def generate_merge_candidates(self, new_node: Node, top_k: int = 5, similarity_threshold: float = 0.85) -> List[Tuple[Node, Node]]:
@@ -899,3 +1348,94 @@ class GraphKnowledgeEngine:
         # If you want to force mention spans to that page when missing,
         # you could post-process the brand-new nodes/edges and ensure refs' start_page/end_page = page_number.
         return {"document_id": document_id, "page": page_number, **res}
+    
+    def verify_mentions_for_doc(
+        self,
+        document_id: str,
+        *,
+        source_text: Optional[str] = None,
+        min_ngram: int = 5,
+        threshold: float = 0.70,
+        weights: Dict[str, float] = {"rapidfuzz": 0.5, "coverage": 0.3, "embedding": 0.2},
+        update_edges: bool = True,
+    ) -> Dict[str, int]:
+        """
+        Verify all references in nodes (and edges if update_edges=True) for a doc.
+        Returns counts of updated items.
+        """
+        full_text = source_text if source_text is not None else self._fetch_document_text(document_id)
+        upd_nodes = upd_edges = 0
+
+        # Nodes
+        got = self.node_collection.get(where={"doc_id": document_id}, include=["ids", "documents"])
+        for nid, ndoc in zip(got.get("ids") or [], got.get("documents") or []):
+            n = Node.model_validate_json(ndoc)
+            # what text do we try to validate? prioritize summary, then label
+            extracted = n.summary or n.label or ""
+            if not (n.references and extracted):
+                continue
+            new_refs = [self._verify_one_reference(extracted, full_text, r, min_ngram=min_ngram, weights=weights, threshold=threshold)
+                        for r in n.references]
+            n.references = new_refs
+            self.node_collection.update(ids=[nid], documents=[n.model_dump_json()])
+            upd_nodes += 1
+
+        if update_edges:
+            got = self.edge_collection.get(where={"doc_id": document_id}, include=["ids", "documents"])
+            for eid, edoc in zip(got.get("ids") or [], got.get("documents") or []):
+                e = Edge.model_validate_json(edoc)
+                extracted = e.summary or e.label or e.relation or ""
+                if not (e.references and extracted):
+                    continue
+                new_refs = [self._verify_one_reference(extracted, full_text, r, min_ngram=min_ngram, weights=weights, threshold=threshold)
+                            for r in e.references]
+                e.references = new_refs
+                self.edge_collection.update(ids=[eid], documents=[e.model_dump_json()])
+                upd_edges += 1
+
+        return {"updated_nodes": upd_nodes, "updated_edges": upd_edges}
+
+    def verify_mentions_for_items(
+        self,
+        items: List[Tuple[str, str]],  # list of ("node"|"edge", id)
+        *,
+        source_text_by_doc: Optional[Dict[str, str]] = None,
+        min_ngram: int = 5,
+        threshold: float = 0.70,
+        weights: Dict[str, float] = {"rapidfuzz": 0.5, "coverage": 0.3, "embedding": 0.2},
+    ) -> Dict[str, int]:
+        """
+        Targeted verification for a mixed set of nodes/edges.
+        source_text_by_doc lets you pass pre-fetched doc text keyed by doc_id.
+        """
+        upd_nodes = upd_edges = 0
+        for kind, rid in items:
+            if kind == "node":
+                got = self.node_collection.get(ids=[rid], include=["documents", "metadatas"])
+                if not got.get("documents"):
+                    continue
+                n = Node.model_validate_json(got["documents"][0])
+                doc_id = (got["metadatas"][0] or {}).get("doc_id")
+                full_text = (source_text_by_doc or {}).get(doc_id) or self._fetch_document_text(doc_id) if doc_id else ""
+                extracted = n.summary or n.label or ""
+                if not (n.references and extracted):
+                    continue
+                n.references = [self._verify_one_reference(extracted, full_text, r, min_ngram=min_ngram, weights=weights, threshold=threshold)
+                                for r in n.references]
+                self.node_collection.update(ids=[rid], documents=[n.model_dump_json()])
+                upd_nodes += 1
+            elif kind == "edge":
+                got = self.edge_collection.get(ids=[rid], include=["documents", "metadatas"])
+                if not got.get("documents"):
+                    continue
+                e = Edge.model_validate_json(got["documents"][0])
+                doc_id = (got["metadatas"][0] or {}).get("doc_id")
+                full_text = (source_text_by_doc or {}).get(doc_id) or self._fetch_document_text(doc_id) if doc_id else ""
+                extracted = e.summary or e.label or e.relation or ""
+                if not (e.references and extracted):
+                    continue
+                e.references = [self._verify_one_reference(extracted, full_text, r, min_ngram=min_ngram, weights=weights, threshold=threshold)
+                                for r in e.references]
+                self.edge_collection.update(ids=[rid], documents=[e.model_dump_json()])
+                upd_edges += 1
+        return {"updated_nodes": upd_nodes, "updated_edges": upd_edges}
