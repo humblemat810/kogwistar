@@ -8,7 +8,7 @@ from conftest import FakeLLMForAdjudication  # ensure this is the Runnable versi
 def _ref_for(doc_id: str) -> ReferenceSession:
     return ReferenceSession(
         collection_page_url="c",
-        document_page_url=f"document/{doc_id}",
+        document_page_url=f"document/{doc_id}", doc_id = doc_id,
         start_page=1, end_page=1, start_char=0, end_char=0,
     )
 
@@ -86,7 +86,7 @@ def _ref_for(doc_id: str) -> ReferenceSession:
         end_page=1,
         start_char=0,
         end_char=5,
-        snippet="dummy snippet"
+        snippet="dummy snippet", doc_id = doc_id
     )
 
 def test_commit_cross_kind_creates_reifies(engine):

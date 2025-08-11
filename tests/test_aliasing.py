@@ -77,7 +77,9 @@ def _ref_for(doc_id: str) -> ReferenceSession:
         collection_page_url="c",
         document_page_url=f"document/{doc_id}",
         start_page=1, end_page=1, start_char=0, end_char=1,
-        verification=MentionVerification(method="heuristic", is_verified=False)
+        verification=MentionVerification(method="heuristic", is_verified=False), 
+        doc_id = doc_id
+        
     )
 
 def test_de_alias_ids_in_result_session_alias(monkeypatch):
@@ -91,7 +93,7 @@ def test_de_alias_ids_in_result_session_alias(monkeypatch):
     eng.add_node(n1, doc_id=doc.id)
     eng.add_node(n2, doc_id=doc.id)
     e = Edge(label="A->B", type="relationship", summary="ab", relation="rel",
-             source_ids=[n1.id], target_ids=[n2.id],
+             source_ids=[n1.id], target_ids=[n2.id], source_edge_ids = [], target_edge_ids = [],
              references=[_ref_for(doc.id)])
     eng.add_edge(e, doc_id=doc.id)
 
@@ -115,6 +117,7 @@ def test_de_alias_ids_in_result_session_alias(monkeypatch):
                 relation="rel",
                 source_ids=[book.real_to_alias[n1.id]],
                 target_ids=[book.real_to_alias[n2.id]],
+                source_edge_ids = [], target_edge_ids = [],
                 references=[_ref_for(doc.id)]
             )
         ]

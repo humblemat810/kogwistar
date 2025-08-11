@@ -10,7 +10,7 @@ def engine_tmp(tmp_path):
 def _ref(doc_id, start=0, end=40, snippet=None):
     return ReferenceSession(
         collection_page_url=f"document_collection/{doc_id}",
-        document_page_url=f"document/{doc_id}",
+        document_page_url=f"document/{doc_id}", doc_id = doc_id,
         start_page=1, end_page=1, start_char=start, end_char=end,
         snippet=snippet or None
     )

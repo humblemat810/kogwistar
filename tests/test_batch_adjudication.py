@@ -91,7 +91,7 @@ def _ref_for(doc_id: str) -> ReferenceSession:
     return ReferenceSession(
         collection_page_url="c",
         document_page_url=f"document/{doc_id}",
-        start_page=1, end_page=1, start_char=0, end_char=1,
+        start_page=1, end_page=1, start_char=0, end_char=1, doc_id = doc_id,
     )
 
 def test_batch_adjudication_and_commit(engine, monkeypatch):

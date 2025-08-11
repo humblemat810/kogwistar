@@ -54,9 +54,9 @@ from dotenv import load_dotenv
 import uuid
 from joblib import Memory
 import json, re, uuid
-from typing import Optional, List
+
 from .models import ReferenceSession, MentionVerification, LLMGraphExtraction, LLMNode, LLMEdge, Node, Edge, Document
-from typing import Callable, Optional, List, Tuple, Any, Dict
+from typing import Callable, Optional, List, Tuple, Any, Dict, Iterable
 import math
 from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction
 from chromadb.utils import embedding_functions
@@ -76,7 +76,61 @@ except Exception:
 from typing import List, Type, TypeVar
 
 T = TypeVar("T", Node, Edge)
+from graphlib import TopologicalSorter
+import uuid, json
+def _fmt_ref_short(r: dict) -> str:
+    # expects a dict (already model_dump()'d) ReferenceSession
+    pg = ""
+    if r.get("start_page") is not None and r.get("end_page") is not None:
+        if r["start_page"] == r["end_page"]:
+            pg = f"p{r['start_page']}"
+        else:
+            pg = f"p{r['start_page']}-{r['end_page']}"
+    span = ""
+    if r.get("start_char") is not None and r.get("end_char") is not None:
+        span = f":{r['start_char']}-{r['end_char']}"
+    url = r.get("document_page_url") or r.get("collection_page_url") or ""
+    snip = r.get("snippet") or ""
+    snip = (snip[:60] + "…") if len(snip) > 60 else snip
+    return f"{pg}{span} @{url}  “{snip}”".strip()
+def _is_nn(x: str) -> bool: return isinstance(x, str) and x.startswith("nn:")
+def _is_ne(x: str) -> bool: return isinstance(x, str) and x.startswith("ne:")
+def _merge_refs(old_refs_json: str | None, new_refs):
+    old = []
+    if old_refs_json:
+        try: old = json.loads(old_refs_json)
+        except Exception: old = []
+    # de-dup by (document_page_url, start_page, start_char, end_page, end_char)
+    def key(r):
+        return (
+            r.get("document_page_url"),
+            r.get("start_page"), r.get("start_char"),
+            r.get("end_page"), r.get("end_char")
+        )
+    seen = {key(r): r for r in old}
+    for r in (new_refs or []):
+        seen[key(r.model_dump())] = r.model_dump()
+    merged = list(seen.values())
+    return merged, json.dumps(merged)
+def _alloc_real_ids(parsed):
+    """Map explicit nn:/ne: → fresh UUIDs; rewrite in-place."""
+    nn2id, ne2id = {}, {}
+    def map_id(x: str) -> str:
+        if _is_nn(x): nn2id.setdefault(x, str(uuid.uuid4())); return nn2id[x]
+        if _is_ne(x): ne2id.setdefault(x, str(uuid.uuid4())); return ne2id[x]
+        return x
 
+    for n in parsed.nodes or []:
+        if n.id: n.id = map_id(n.id)
+    for e in parsed.edges or []:
+        if e.id: e.id = map_id(e.id)
+        e.source_ids = [map_id(x) for x in (e.source_ids or [])]
+        e.target_ids = [map_id(x) for x in (e.target_ids or [])]
+        if hasattr(e, "source_edge_ids"):
+            e.source_edge_ids = [map_id(x) for x in (e.source_edge_ids or [])]
+        if hasattr(e, "target_edge_ids"):
+            e.target_edge_ids = [map_id(x) for x in (e.target_edge_ids or [])]
+    return nn2id, ne2id
 def chroma_docs_to_pydantic(objs: dict, model_cls: Type[T]) -> List[T]:
     """
     Convert Chroma get()/query() results to a list of Pydantic models.
@@ -136,6 +190,19 @@ def _strip_none(d: dict) -> dict:
 def _json_or_none(v):
     return None if v is None else json.dumps(v)
 
+
+def _extract_doc_ids_from_refs(refs) -> list[str]:
+    out = []
+    for r in refs or []:
+        did = getattr(r, "doc_id", None)
+        if not did and getattr(r, "document_page_url", None):
+            m = re.search(r"document/([A-Za-z0-9\-]+)", r.document_page_url)
+            if m:
+                did = m.group(1)
+        if did:
+            out.append(did)
+    # unique + stable order
+    return sorted(dict.fromkeys(out))
 def _node_doc_and_meta(n: "Node") -> tuple[str, dict]:
     """Return (documents_string, metadata_dict) for Chroma."""
     doc = n.model_dump_json()
@@ -336,7 +403,7 @@ class AliasBook:
 # "session_alias" -> N#/E# with session-stable AliasBook (+ delta legend)
 # "base62"        -> N~<22ch> / E~<22ch> (no legend, fully deterministic)
 ID_STRATEGY = "session_alias"  # or "base62"
-
+_DOC_ALIAS = "::DOC::"  # short, token-friendly
 class GraphKnowledgeEngine:
     """High-level orchestration for extracting, storing, and adjudicating knowledge graph data."""
 
@@ -351,7 +418,16 @@ class GraphKnowledgeEngine:
     @staticmethod
     def _json_or_none(obj: Any) -> Optional[str]:
         return json.dumps(obj) if obj is not None else None
-    
+    def _exists_node(self, rid: str) -> bool:
+        g = self.node_collection.get(ids=[rid])
+        return (g.get("ids") or [None])[0] == rid
+
+    def _exists_edge(self, rid: str) -> bool:
+        g = self.edge_collection.get(ids=[rid])
+        return (g.get("ids") or [None])[0] == rid
+
+    def _exists_any(self, rid: str) -> bool:
+        return self._exists_node(rid) or self._exists_edge(rid)
     def _select_doc_context(self, doc_id: str, max_nodes: int = 200, max_edges: int = 400):
         nodes = self.node_collection.get(where={"doc_id": doc_id}, include=["documents"])
         edges = self.edge_collection.get(where={"doc_id": doc_id}, include=["documents"])
@@ -416,7 +492,131 @@ class GraphKnowledgeEngine:
             if ids:
                 got = set(self.edge_collection.get(ids=ids).get("ids") or [])
                 if got != set(ids):
-                    raise ValueError(f"Missing edge endpoints in {attr}: {sorted(set(ids)-got)}")    
+                    raise ValueError(f"Missing edge endpoints in {attr}: {sorted(set(ids)-got)}")
+    def _build_deps(self, parsed):
+        """Dependencies only among *new* objects. Existing ids create no deps."""
+        ts = TopologicalSorter()
+        id2kind, id2obj = {}, {}
+
+        # register new nodes
+        for n in parsed.nodes or []:
+            rid = n.id or str(uuid.uuid4())
+            id2kind[rid], id2obj[rid] = "node", n
+            # if it already exists, no need to sort it; but we keep it to merge refs if provided
+            ts.add(rid)
+
+        # index for quick membership
+        new_ids = set(id2obj.keys())
+
+        # register edges with deps on *new* endpoints present in this batch
+        def deps_for_edge(e):
+            deps = set()
+            for x in (e.source_ids or []) + (e.target_ids or []):
+                if x in new_ids and not self._exists_any(x):
+                    deps.add(x)
+            for x in getattr(e, "source_edge_ids", []) or []:
+                if x in new_ids and not self._exists_any(x):
+                    deps.add(x)
+            for x in getattr(e, "target_edge_ids", []) or []:
+                if x in new_ids and not self._exists_any(x):
+                    deps.add(x)
+            return deps
+
+        for e in parsed.edges or []:
+            rid = e.id or str(uuid.uuid4())
+            id2kind[rid], id2obj[rid] = "edge", e
+            ts.add(rid, *deps_for_edge(e))
+
+        order = list(ts.static_order())  # raises if cycle
+        return order, id2kind, id2obj
+
+    def ingest_with_toposort(self, parsed, *, doc_id: str):
+        """
+        Single entrypoint:
+        1) map nn:/ne: → UUIDs
+        2) topologically sort by deps among new items
+        3) apply per-kind rules:
+            - existing node: merge refs
+            - new node: add
+            - existing edge: merge refs / (optional) update endpoints
+            - new edge: add
+        """
+        _ = _alloc_real_ids(parsed)  # rewrite in place
+        order, id2kind, id2obj = self._build_deps(parsed)
+
+        nodes_added = edges_added = 0
+        for rid in order:
+            kind, obj = id2kind[rid], id2obj[rid]
+
+            if kind == "node":
+                ln = obj
+                # existing?
+                if self._exists_node(rid):
+                    # merge refs only if present
+                    if ln.references:
+                        prior = self.node_collection.get(ids=[rid], include=["documents", "metadatas"])
+                        prior_meta = (prior.get("metadatas") or [None])[0] or {}
+                        merged_list, merged_json = _merge_refs(prior_meta.get("references"), ln.references)
+                        # update JSON & metadata refs
+                        n = Node.model_validate_json(prior["documents"][0])
+                        n.references = [ReferenceSession(**r) for r in merged_list]
+                        self.node_collection.update(
+                            ids=[rid],
+                            documents=[n.model_dump_json()],
+                            metadatas=[{
+                                **{k:v for k,v in prior_meta.items() if v is not None},
+                                "references": merged_json
+                            }]
+                        )
+                        # sync node_docs index
+                        self._index_node_docs(n)
+                    continue
+
+                # new node
+                refs = _normalize_refs(ln.references, doc_id, ln.summary)
+                node = Node(
+                    id=rid, label=ln.label, type=ln.type, summary=ln.summary,
+                    domain_id=ln.domain_id, canonical_entity_id=ln.canonical_entity_id,
+                    properties=ln.properties, references=refs, doc_id=doc_id,
+                )
+                self.add_node(node, doc_id=doc_id)
+                nodes_added += 1
+
+            else:  # edge
+                le = obj
+                if self._exists_edge(rid):
+                    # merge refs; optionally reconcile endpoints if you permit LLM to edit them
+                    if le.references:
+                        prior = self.edge_collection.get(ids=[rid], include=["documents", "metadatas"])
+                        prior_meta = (prior.get("metadatas") or [None])[0] or {}
+                        merged_list, merged_json = _merge_refs(prior_meta.get("references"), le.references)
+                        e = Edge.model_validate_json(prior["documents"][0])
+                        e.references = [ReferenceSession(**r) for r in merged_list]
+                        self.edge_collection.update(
+                            ids=[rid],
+                            documents=[e.model_dump_json()],
+                            metadatas=[{
+                                **{k:v for k,v in prior_meta.items() if v is not None},
+                                "references": merged_json
+                            }]
+                        )
+                    continue
+
+                # new edge
+                refs = _normalize_refs(le.references, doc_id, le.summary)
+                edge = Edge(
+                    id=rid, label=le.label, type=le.type, summary=le.summary,
+                    domain_id=le.domain_id, canonical_entity_id=le.canonical_entity_id,
+                    properties=le.properties, references=refs, relation=le.relation,
+                    source_ids=le.source_ids, target_ids=le.target_ids,
+                    source_edge_ids=getattr(le, "source_edge_ids", []) or [],
+                    target_edge_ids=getattr(le, "target_edge_ids", []) or [],
+                    doc_id=doc_id,
+                )
+                self.add_edge(edge, doc_id=doc_id)
+                edges_added += 1
+
+        return {"nodes_added": nodes_added, "edges_added": edges_added}
     def _resolve_llm_ids(self, doc_id: str, parsed: LLMGraphExtraction) -> None:
         """
         In-place:
@@ -559,14 +759,19 @@ class GraphKnowledgeEngine:
             "1) When referring to existing items, use ONLY the given aliases.\n"
             "2) If creating new items, omit their id.\n"
             "3) Each node/edge MUST include at least one ReferenceSession with spans.\n"
-            "4) Do not invent aliases; use the provided ones only."),
+            "4) Do not invent aliases; use the provided ones only."
+            "5) Do NOT invent real UUIDs or external URLs.\n"
+            "6) Each node/edge MUST include at least one ReferenceSession with spans."
+            "- Always use the token '{_DOC_ALIAS}' to refer to the current document in every ReferenceSession.\n"
+            "- For example: document_page_url='document/{_DOC_ALIAS}', "
+            "collection_page_url='document_collection/{_DOC_ALIAS}'.\n"),
             ("human",
             "Aliases (delta for this turn):\n{alias_nodes}\n\n{alias_edges}\n\n"
             "Document chunk:\n{document}\n\n"
             "Return only the structured JSON for the schema.")
         ])
         chain = prompt | self.llm.with_structured_output(LLMGraphExtraction, include_raw=True)
-        result = chain.invoke({"alias_nodes": alias_nodes_str, "alias_edges": alias_edges_str, "document": content})
+        result = chain.invoke({"alias_nodes": alias_nodes_str, "alias_edges": alias_edges_str, "document": content, "_DOC_ALIAS" : _DOC_ALIAS})
         return result.get("raw"), result.get("parsed"), result.get("parsing_error")
     def _de_alias_ids_in_result(self, doc_id: str, parsed: LLMGraphExtraction) -> LLMGraphExtraction:
         """Map aliases back to real UUIDs according to strategy."""
@@ -675,7 +880,7 @@ class GraphKnowledgeEngine:
         self.edge_endpoints_collection = self.chroma_client.get_or_create_collection("edge_endpoints")
         self.document_collection = self.chroma_client.get_or_create_collection("documents")
         self.domain_collection = self.chroma_client.get_or_create_collection("domains")
-
+        self.node_docs_collection = self.chroma_client.get_or_create_collection("node_docs")
         self.llm = AzureChatOpenAI(
             deployment_name=os.getenv("OPENAI_DEPLOYMENT_NAME_GPT4_1"),
             model_name=os.getenv("OPENAI_MODEL_NAME_GPT4_1"),
@@ -714,7 +919,40 @@ class GraphKnowledgeEngine:
     @staticmethod
     def _normalize(s: str) -> str:
         return " ".join((s or "").split()).strip().lower()
+    
 
+    def _alias_doc_in_prompt(self) -> str:
+        # A tiny legend we show to the LLM so it knows the alias to use
+        return f"Use '{_DOC_ALIAS}' whenever you need to reference the current document in ReferenceSession fields."
+
+    def _dealias_one_ref(self, ref: ReferenceSession, real_doc_id: str) -> ReferenceSession:
+        r = ref.model_copy(deep=True)
+        # swap token in URLs
+        if r.document_page_url and _DOC_ALIAS in r.document_page_url:
+            r.document_page_url = r.document_page_url.replace(_DOC_ALIAS, real_doc_id)
+        if r.collection_page_url and _DOC_ALIAS in r.collection_page_url:
+            r.collection_page_url = r.collection_page_url.replace(_DOC_ALIAS, real_doc_id)
+        # align explicit doc_id if model carries it
+        if getattr(r, "doc_id", None) == _DOC_ALIAS or getattr(r, "doc_id", None) is None:
+            r.doc_id = real_doc_id
+        # basic span normalization (keeps your existing behavior)
+        if getattr(r, "page", None) is not None:
+            # if you split start/end page fields, keep your existing normalization here
+            pass
+        if r.start_char is not None and r.end_char is not None and r.end_char < r.start_char:
+            r.end_char = r.start_char
+        return r
+
+    def _dealias_refs(self, refs: list[ReferenceSession] | None, real_doc_id: str, fallback_snip: str | None):
+        if not refs or len(refs) == 0:
+            # produce a default reference using the real doc id
+            return [ReferenceSession(
+                collection_page_url=f"document_collection/{real_doc_id}",
+                document_page_url=f"document/{real_doc_id}",
+                snippet=fallback_snip or None,
+                doc_id=real_doc_id,
+            )]
+        return [self._dealias_one_ref(r, real_doc_id) for r in refs]
     @staticmethod
     def _slice_span(full_text: str, start: int, end: int) -> str:
         start = max(0, start or 0)
@@ -967,14 +1205,8 @@ class GraphKnowledgeEngine:
             embeddings=[node.embedding] if node.embedding else None,
             metadatas=[meta],
         )
+        self._index_node_docs(node)
     def _fanout_endpoints_rows(self, edge: Edge, doc_id: str | None):
-        def _maybe_doc_for_node(nid: str) -> str | None:
-            if doc_id is not None:
-                return doc_id
-            meta = self.node_collection.get(ids=[nid], include=["metadatas"])
-            if meta.get("metadatas") and meta["metadatas"][0]:
-                return meta["metadatas"][0].get("doc_id")
-            return None
 
         def _maybe_doc_for_edge(eid: str) -> str | None:
             if doc_id is not None:
@@ -986,6 +1218,15 @@ class GraphKnowledgeEngine:
 
         rows = []
 
+        def _per_node_doc(nid: str) -> str | None:
+            if doc_id is not None:
+                return doc_id
+            meta = self.node_collection.get(ids=[nid], include=["metadatas"])
+            if meta.get("metadatas") and meta["metadatas"][0]:
+                return meta["metadatas"][0].get("doc_id")
+            return None
+
+        rows = []
         # node endpoints
         for role, node_ids in (("src", edge.source_ids or []), ("tgt", edge.target_ids or [])):
             for nid in node_ids:
@@ -997,11 +1238,10 @@ class GraphKnowledgeEngine:
                     "role": role,
                     "relation": edge.relation,
                 }
-                did = _maybe_doc_for_node(nid)
+                did = _per_node_doc(nid)
                 if did is not None:
                     r["doc_id"] = did
-                rows.append(r)
-
+                rows.append({k: v for k, v in r.items() if v is not None})
         # edge endpoints (meta)
         for role, eids in (("src", getattr(edge, "source_edge_ids", []) or []),
                         ("tgt", getattr(edge, "target_edge_ids", []) or [])):
@@ -1017,7 +1257,7 @@ class GraphKnowledgeEngine:
                 did = _maybe_doc_for_edge(mid)
                 if did is not None:
                     r["doc_id"] = did
-                rows.append(r)
+                rows.append({k: v for k, v in r.items() if v is not None})
 
         # strip Nones just in case
         return [{k: v for k, v in r.items() if v is not None} for r in rows]
@@ -1025,9 +1265,9 @@ class GraphKnowledgeEngine:
         edge.doc_id = doc_id
         s_nodes, s_edges, t_nodes, t_edges = self._split_endpoints(edge.source_ids, edge.target_ids)
         edge.source_ids = s_nodes
-        edge.source_edge_ids = getattr(edge, "source_edge_ids", []) + s_edges
+        edge.source_edge_ids = getattr(edge, "source_edge_ids", []) or [] + s_edges
         edge.target_ids = t_nodes
-        edge.target_edge_ids = getattr(edge, "target_edge_ids", []) + t_edges
+        edge.target_edge_ids = getattr(edge, "target_edge_ids", []) or [] + t_edges
         edge.doc_id = doc_id
         # single-call safety for ad-hoc usage
         self._assert_endpoints_exist(edge)
@@ -1099,6 +1339,58 @@ class GraphKnowledgeEngine:
                 )
             ],
         )
+    def _index_node_docs(self, node: Node) -> list[str]:
+        """Rebuild (node_id, doc_id) rows for this node and denormalize doc_ids on node metadata."""
+        doc_ids = _extract_doc_ids_from_refs(node.references)
+
+        # 1) Rebuild the (node_id, doc_id) index rows
+        self.node_docs_collection.delete(where={"node_id": node.id})
+        if doc_ids:
+            ids, docs, metas = [], [], []
+            for did in doc_ids:
+                rid = f"{node.id}::{did}"
+                row = {"id": rid, "node_id": node.id, "doc_id": did, "mention_count": 1}
+                ids.append(rid)
+                docs.append(json.dumps(row))
+                metas.append(row)
+            self.node_docs_collection.add(ids=ids, documents=docs, metadatas=metas)
+
+        # 2) Denormalize onto node metadata (convenience only)
+        #    Fetch current to avoid writing the same value repeatedly.
+        current = self.node_collection.get(ids=[node.id], include=["metadatas"])
+        cur_meta = (current.get("metadatas") or [None])[0] or {}
+        new_doc_ids_json = json.dumps(doc_ids)
+        if cur_meta.get("doc_ids") != new_doc_ids_json:
+            self.node_collection.update(
+                ids=[node.id],
+                metadatas=[{"doc_ids": new_doc_ids_json}]
+            )
+
+        return doc_ids
+
+    def _nodes_by_doc(self, doc_id: str) -> list[str]:
+        rows = self.node_docs_collection.get(where={"doc_id": doc_id}, include=["metadatas"])
+        return [m["node_id"] for m in (rows.get("metadatas") or [])]
+
+    def _prune_node_refs_for_doc(self, node_id: str, doc_id: str) -> bool:
+        """Remove references to doc_id from node; delete node_docs link; refresh denormalized meta."""
+        got = self.node_collection.get(ids=[node_id], include=["documents", 'metadatas'])
+        if not (got.get("documents") and got["documents"][0]):
+            return False
+        node = Node.model_validate_json(got["documents"][0])
+        before = len(node.references or [])
+        node.references = [r for r in (node.references or []) if r.doc_id != doc_id 
+                           or   (bool(getattr(r, "document_page_url", None) 
+                                 and (getattr(r, "document_page_url").rsplit('/',1)[-1] != doc_id)))]
+        changed = len(node.references or []) != before
+        if changed:
+            # Update node JSON
+            self.node_collection.update(ids=[node_id], documents=[node.model_dump_json()])
+            # Drop (node,doc) link
+            self.node_docs_collection.delete(where={"$and": [{"node_id": node_id}, {"doc_id": doc_id}]})
+            # Refresh denormalized doc_ids meta
+            self._index_node_docs(node)
+        return changed
     # ----------------------------
     # helpers for rollback
     # ----------------------------
@@ -1128,7 +1420,7 @@ class GraphKnowledgeEngine:
         """Pick a stable anchor for same_as rebalancing: prefer a node with a canonical id; else min UUID."""
         if not node_ids:
             raise ValueError("No nodes to anchor")
-        nodes = self.node_collection.get(ids=node_ids, include=["ids", "documents"])
+        nodes = self.node_collection.get(ids=node_ids, include=["documents"])
         for nid, ndoc in zip(nodes.get("ids") or [], nodes.get("documents") or []):
             n = Node.model_validate_json(ndoc)
             if n.canonical_entity_id:
@@ -1151,36 +1443,12 @@ class GraphKnowledgeEngine:
         if not e.summary:
             e.summary = "Normalized same_as"
         return False, e
-    # def _extract_graph_with_llm_aliases(self, content: str, alias_nodes_str: str, alias_edges_str: str):
-    #     """
-    #     Ask the LLM to extract nodes/edges but require it to use ID aliases we provide.
-    #     """
-    #     prompt = ChatPromptTemplate.from_messages(
-    #         [
-    #             ("system",
-    #             "You are an expert knowledge graph extractor. "
-    #             "Extract entities and relationships as nodes and edges in a hypergraph.\n\n"
-    #             "RULES:\n"
-    #             "1) When referring to any existing node/edge, use ONLY the aliases provided below.\n"
-    #             "2) If you must create a new node/edge, omit its id (we will assign one).\n"
-    #             "3) Each node/edge MUST include at least one ReferenceSession with start_page, end_page, start_char, end_char.\n"),
-    #             ("human",
-    #             "Use these aliases (do not invent new aliases):\n\n"
-    #             "{alias_nodes}\n\n{alias_edges}\n\n"
-    #             "Now extract from this content:\n{document}\n\nReturn only the structured JSON for the schema.")
-    #         ]
-    #     )
-    #     chain = prompt | self.llm.with_structured_output(LLMGraphExtraction, include_raw=True)
-    #     result = chain.invoke({"alias_nodes": alias_nodes_str, "alias_edges": alias_edges_str, "document": content})
-    #     raw = result.get("raw") if isinstance(result, dict) else None
-    #     parsed = result.get("parsed") if isinstance(result, dict) else result
-    #     err = result.get("parsing_error") if isinstance(result, dict) else None
-    #     return raw, parsed, err
-    def extract_graph_with_llm(self, *, content: str):
+    
+    def extract_graph_with_llm(self, *, content: str, alias_nodes_str = "[Empty]" , alias_edges_str = "[Empty]"):
         """Pure: run LLM + parse + alias resolution. No writes."""
         # (reuse your existing prompt + alias path)
         raw, parsed, error = self._extract_graph_with_llm_aliases(
-            content, alias_nodes_str="...", alias_edges_str="..."
+            content, alias_nodes_str=alias_nodes_str, alias_edges_str=alias_edges_str
         )
         if error:
             raise ValueError(error)
@@ -1203,12 +1471,14 @@ class GraphKnowledgeEngine:
         """
         doc_id = document.id
 
-        # ensure doc row exists (idempotent)
-        self.add_document(document)
-
         # if replace, rollback prior doc content first
         if mode == "replace":
             self.rollback_document(doc_id)
+
+        # ensure doc row exists (idempotent)
+        self.add_document(document)
+
+        
 
         # now validate (ensures no dangling refs to *other* docs)
         self._preflight_validate(parsed, doc_id)
@@ -1218,9 +1488,10 @@ class GraphKnowledgeEngine:
         fallback_snip = (document.content[:160] + "…") if document.content else None
 
         for ln in parsed.nodes:
+            ln.references = self._dealias_refs(ln.references, document.id, fallback_snip)
             # skip-if-exists mode
             if mode == "skip-if-exists":
-                got = self.node_collection.get(ids=[ln.id], include=["ids"])
+                got = self.node_collection.get(ids=[ln.id])
                 if got.get("ids"):  # already there
                     node_ids.append(ln.id)
                     continue
@@ -1236,8 +1507,9 @@ class GraphKnowledgeEngine:
             node_ids.append(n.id)
 
         for le in parsed.edges:
+            le.references = self._dealias_refs(le.references, document.id, fallback_snip)
             if mode == "skip-if-exists":
-                got = self.edge_collection.get(ids=[le.id], include=["ids"])
+                got = self.edge_collection.get(ids=[le.id])
                 if got.get("ids"):
                     edge_ids.append(le.id)
                     continue
@@ -1280,22 +1552,25 @@ class GraphKnowledgeEngine:
             parsed=parsed,
             mode=mode,
         )
-    def _extract_graph_with_llm(self, content: str) -> Tuple[Any, Optional[LLMGraphExtraction], Optional[str]]:
-        """Call LLM for structured extraction. Returns (raw, parsed, parsing_error)."""
-        prompt = ChatPromptTemplate.from_messages(
-            [
-                (
-                    "system",
-                    "You are an expert knowledge graph extractor. Given a document, extract entities and relationships as nodes and edges in a hypergraph.\n"
-                    "For each node/edge include: label, type ('entity' or 'relationship'), and a concise 'summary'.\n"
-                    "Each node/edge MUST include at least one ReferenceSession with start_page, end_page, start_char, end_char."
-                ),
-                ("human", "Document:\n{document}\n\nReturn only the structured JSON as specified."),
-                
-            ]
-        )
+    def _extract_graph_with_llm(self, content: str, doc: Document) -> Tuple[Any, Optional[LLMGraphExtraction], Optional[str]]:
+        """Call LLM for structured extractio without alias. Returns (raw, parsed, parsing_error)."""
+
+        prompt = ChatPromptTemplate.from_messages([
+            ("system",
+            "You are an expert knowledge graph extractor. "
+            "Given a document, extract entities and relationships as nodes and edges in a hypergraph.\n"
+            "For each node/edge include: label, type ('entity' or 'relationship'), and a concise 'summary'.\n"
+            "Each node/edge MUST include at least one ReferenceSession with start_page, end_page, start_char, end_char."
+            "IMPORTANT:\n"
+            "- Do NOT invent real UUIDs or external URLs.\n"
+            "Each node/edge MUST include at least one ReferenceSession with spans."),
+            ("human",
+            "Document:\n{document}\n\n"
+            "Document ID {document_id}\n\n"
+            "Return only the structured JSON for the schema.")
+        ])
         chain = prompt | self.llm.with_structured_output(LLMGraphExtraction, include_raw=True)
-        result = chain.invoke({"document": content})
+        result = chain.invoke({"doc_alias_note": self._alias_doc_in_prompt(), "document": content, "document_id": str(doc.id)})
         # result is a dict when include_raw=True
         raw = result.get("raw") if isinstance(result, dict) else None
         parsed = result.get("parsed") if isinstance(result, dict) else result
@@ -1317,39 +1592,42 @@ class GraphKnowledgeEngine:
         # de-alias
         parsed = self._de_alias_ids_in_result(doc_id, parsed)
         self._preflight_validate(parsed, doc_id)
-        # persist
-        fallback_snip = (content[:160] + ("…" if len(content) > 160 else "")) if content else None
-        nodes_added = edges_added = 0
-        for ln in parsed.nodes:
-            nid = ln.id or str(uuid.uuid4())
-            refs = _normalize_refs(ln.references, doc_id, fallback_snip)
-            node = Node(
-                id=nid, label=ln.label, type=ln.type, summary=ln.summary,
-                domain_id=ln.domain_id, canonical_entity_id=ln.canonical_entity_id,
-                properties=ln.properties, references=refs, doc_id=doc_id
-            )
-            self.add_node(node, doc_id=doc_id)
-            nodes_added += 1
+        
+        res = self.ingest_with_toposort( parsed, doc_id=doc_id)
+        res['raw'] = raw
+        # # persist
+        # fallback_snip = (content[:160] + ("…" if len(content) > 160 else "")) if content else None
+        # nodes_added = edges_added = 0
+        # for ln in parsed.nodes:
+        #     nid = ln.id or str(uuid.uuid4())
+        #     refs = _normalize_refs(ln.references, doc_id, fallback_snip)
+        #     node = Node(
+        #         id=nid, label=ln.label, type=ln.type, summary=ln.summary,
+        #         domain_id=ln.domain_id, canonical_entity_id=ln.canonical_entity_id,
+        #         properties=ln.properties, references=refs, doc_id=doc_id
+        #     )
+        #     self.add_node(node, doc_id=doc_id)
+        #     nodes_added += 1
 
-        for le in parsed.edges:
-            edge = Edge(
-                id=le.id, label=le.label, type=le.type, summary=le.summary,
-                domain_id=le.domain_id, canonical_entity_id=le.canonical_entity_id,
-                properties=le.properties,
-                references=_normalize_refs(le.references, doc_id, fallback_snip),
-                relation=le.relation,
-                source_ids=le.source_ids, target_ids=le.target_ids,
-                source_edge_ids=getattr(le, "source_edge_ids", None),
-                target_edge_ids=getattr(le, "target_edge_ids", None),
-                doc_id=doc_id
-            )
-            self.add_edge(edge, doc_id=doc_id)
-            edges_added += 1
+        # for le in parsed.edges:
+        #     edge = Edge(
+        #         id=le.id, label=le.label, type=le.type, summary=le.summary,
+        #         domain_id=le.domain_id, canonical_entity_id=le.canonical_entity_id,
+        #         properties=le.properties,
+        #         references=_normalize_refs(le.references, doc_id, fallback_snip),
+        #         relation=le.relation,
+        #         source_ids=le.source_ids, target_ids=le.target_ids,
+        #         source_edge_ids=getattr(le, "source_edge_ids", None),
+        #         target_edge_ids=getattr(le, "target_edge_ids", None),
+        #         doc_id=doc_id
+        #     )
+        #     self.add_edge(edge, doc_id=doc_id)
+        #     edges_added += 1
 
         # optional within-doc adjudication
         if auto_adjudicate:
             # naive label+type buckets; you can plug your candidate generator here
-            data = self.node_collection.get(where={"doc_id": doc_id}, include=["ids", "documents"])
+            data = self.node_collection.get(where={"doc_id": doc_id}, include=["documents"])
             buckets = {}
             for ndoc in (data.get("documents") or []):
                 n = Node.model_validate_json(ndoc)
@@ -1367,7 +1645,7 @@ class GraphKnowledgeEngine:
                     if verdict.same_entity:
                         self.commit_merge(left, right, verdict)
 
-        return {"nodes_added": nodes_added, "edges_added": edges_added, "raw": raw}
+        return res
 
 
     def prune_node_from_edges(self, node_id: str):
@@ -1377,12 +1655,14 @@ class GraphKnowledgeEngine:
         - For same_as hyperedges: if >=2 nodes remain, rebalance into star; else delete.
         Returns sets of edge IDs: {'deleted_edges': set, 'updated_edges': set}
         """
-        eps = self.edge_endpoints_collection.get(where={"node_id": node_id}, include=["documents"])
+        eps = self.edge_endpoints_collection.get(
+            where={"$and": [{"endpoint_id": node_id}, {"endpoint_type" : "node"}]}, include=["documents"]
+            )
         if not eps["ids"]:
             return {"deleted_edges": set(), "updated_edges": set()}
 
         edge_ids = list({json.loads(doc)["edge_id"] for doc in eps["documents"]})
-        edges = self.edge_collection.get(ids=edge_ids, include=["ids", "documents", "metadatas"])
+        edges = self.edge_collection.get(ids=edge_ids, include=[ "documents", "metadatas"])
 
         removed_edge_ids: set[str] = set()
         updated_edge_ids: set[str] = set()
@@ -1486,8 +1766,8 @@ class GraphKnowledgeEngine:
 
     def rollback_document(self, document_id: str):
         # 1) nodes by flat doc_id
-        nodes = self.node_collection.get(where={"doc_id": document_id})
-        node_ids = nodes.get("ids", []) or []
+
+        node_ids = self._nodes_by_doc(document_id)
 
         # 2) prune each node from edges
         deleted_edges = set()
@@ -1509,15 +1789,27 @@ class GraphKnowledgeEngine:
             deleted_edges.update(edge_ids)
         updated_edges = updated_edges - deleted_edges
         # 4) delete nodes and the document
-        if node_ids:
-            self.node_collection.delete(ids=node_ids)
+        deleted_node_ids = []
+        for nid in node_ids:
+            # remove only refs for this doc
+            self._prune_node_refs_for_doc(nid, document_id)
+            # if node has no refs left, delete it
+            got = self.node_collection.get(ids=[nid], include=["documents"])
+            if got.get("documents") and got["documents"][0]:
+                # n = Node.model_validate_json(got["documents"][0])
+                if not json.loads(got["documents"][0]).get('references') : # none or empty list
+                    self.node_collection.delete(ids=[nid])
+                    deleted_node_ids.append(nid)
+        doc_ids = set(self.document_collection.get(where={"doc_id": document_id})['ids'])
         self.document_collection.delete(where={"doc_id": document_id})
-
+        doc_ids_after = set(self.document_collection.get(where={"doc_id": document_id})['ids'])
         return {
-            "rolled_back_doc_id": document_id,
+            "roll"
+            "rolled_back_doc_id": doc_ids - doc_ids_after,
             "updated_edge_ids": list(updated_edges),
             "deleted_edge_ids": list(deleted_edges),
-            "deleted_node_ids": node_ids,
+            "deleted_docs": len(doc_ids - doc_ids_after),
+            "deleted_node_ids": deleted_node_ids,
             "deleted_nodes": len(node_ids),
             "deleted_edges": len(deleted_edges),
             "updated_edges": len(updated_edges),
@@ -1576,6 +1868,7 @@ class GraphKnowledgeEngine:
                     "references": _json_or_none([ref.model_dump() for ref in (l.references or [])]),
                 })],
             )
+            self._index_node_docs(l)
             self.node_collection.update(
                 ids=[r.id],
                 documents=[r.model_dump_json()],
@@ -1587,6 +1880,7 @@ class GraphKnowledgeEngine:
                     "references": _json_or_none([ref.model_dump() for ref in (r.references or [])]),
                 })],
             )
+            self._index_node_docs(r)
             # record same_as (node↔node)
             left_ref = self._best_ref(l)
             right_ref = self._best_ref(r)
@@ -1780,6 +2074,7 @@ class GraphKnowledgeEngine:
                     "references": _json_or_none([ref.model_dump() for ref in (n.references or [])]),
                 })],
             )
+            self._index_node_docs(n)
             # also mirror back onto the object for future calls
             n.doc_id = doc_id
 
@@ -2040,6 +2335,7 @@ class GraphKnowledgeEngine:
             n.references = new_refs
             doc, meta = _node_doc_and_meta(n)
             self.node_collection.update(ids=[nid], documents=[doc], metadatas=[meta])
+            self._index_node_docs(n)
             upd_nodes += 1
 
         if update_edges:
@@ -2089,6 +2385,7 @@ class GraphKnowledgeEngine:
                                 for r in n.references]
                 doc, meta = _node_doc_and_meta(n)
                 self.node_collection.update(ids=[rid], documents=[doc], metadatas=[meta])
+                self._index_node_docs(n)
                 upd_nodes += 1
             elif kind == "edge":
                 got = self.edge_collection.get(ids=[rid], include=["documents", "metadatas"])
@@ -2106,3 +2403,234 @@ class GraphKnowledgeEngine:
                 self.edge_collection.update(ids=[rid], documents=[doc], metadatas=[meta])
                 upd_edges += 1
         return {"updated_nodes": upd_nodes, "updated_edges": upd_edges}
+    # ----------------------------
+    # Visualization 
+    # ----------------------------
+    def _load_node_map(self, ids: Iterable[str]) -> dict[str, dict]:
+        """Return {id: {'label':..., 'type':..., 'summary':..., 'doc_ids': [...]}}, missing ids omitted."""
+        ids = list(dict.fromkeys([i for i in ids if i]))  # dedupe/preserve order, drop falsy
+        out: dict[str, dict] = {}
+        if not ids:
+            return out
+        got = self.node_collection.get(ids=ids, include=["documents", "metadatas"])
+        for nid, ndoc, meta in zip(got.get("ids") or [], got.get("documents") or [], got.get("metadatas") or []):
+            if not nid: 
+                continue
+            try:
+                n = Node.model_validate_json(ndoc)
+                out[nid] = {
+                    "label": n.label,
+                    "type": n.type,
+                    "summary": getattr(n, "summary", "") or "",
+                    "doc_ids": json.loads((meta or {}).get("doc_ids") or "[]"),
+                }
+            except Exception:
+                # fallback if pydantic fails
+                out[nid] = {
+                    "label": (meta or {}).get("label") or "(node)",
+                    "type": (meta or {}).get("type") or "entity",
+                    "summary": (meta or {}).get("summary") or "",
+                    "doc_ids": json.loads((meta or {}).get("doc_ids") or "[]"),
+                }
+        return out
+
+    def _load_edge_map(self, ids: Iterable[str]) -> dict[str, dict]:
+        """Return {id: {'relation':..., 'source_ids':[...], 'target_ids':[...], 'label':..., 'summary':...}}."""
+        ids = list(dict.fromkeys([i for i in ids if i]))
+        out: dict[str, dict] = {}
+        if not ids:
+            return out
+        got = self.edge_collection.get(ids=ids, include=["documents", "metadatas"])
+        for eid, edoc, meta in zip(got.get("ids") or [], got.get("documents") or [], got.get("metadatas") or []):
+            if not eid:
+                continue
+            try:
+                e = Edge.model_validate_json(edoc)
+                out[eid] = {
+                    "label": e.label,
+                    "relation": e.relation,
+                    "summary": getattr(e, "summary", "") or "",
+                    "source_ids": e.source_ids or [],
+                    "target_ids": e.target_ids or [],
+                    "source_edge_ids": getattr(e, "source_edge_ids", []) or [],
+                    "target_edge_ids": getattr(e, "target_edge_ids", []) or [],
+                }
+            except Exception:
+                # metadata fallback (source/target ids may be stored as JSON strings)
+                def parse_ids(k):
+                    v = (meta or {}).get(k)
+                    try:
+                        return json.loads(v) if isinstance(v, str) else (v or [])
+                    except Exception:
+                        return v or []
+                out[eid] = {
+                    "label": (meta or {}).get("label") or "(edge)",
+                    "relation": (meta or {}).get("relation") or "",
+                    "summary": (meta or {}).get("summary") or "",
+                    "source_ids": parse_ids("source_ids"),
+                    "target_ids": parse_ids("target_ids"),
+                    "source_edge_ids": parse_ids("source_edge_ids"),
+                    "target_edge_ids": parse_ids("target_edge_ids"),
+                }
+        return out
+
+    def resolve_readable(
+        self,
+        *,
+        node_ids: Optional[Iterable[str]] = None,
+        edge_ids: Optional[Iterable[str]] = None,
+        by_doc_id: Optional[str] = None,
+        include_refs: bool = False,
+    ) -> dict:
+        """
+        Structured, human-readable snapshot.
+        - If by_doc_id is given, it overrides explicit node_ids/edge_ids (it pulls all linked).
+        - include_refs: adds compact reference strings (can be heavy).
+        Returns:
+        {
+            "nodes": [{"id":..., "label":..., "type":..., "summary":..., "doc_ids":[...] , "refs":[...] }],
+            "edges": [{"id":..., "relation":..., "summary":..., "sources":[{"id":..., "kind":"node|edge", "label":...}], "targets":[...], "refs":[...]}]
+        }
+        """
+        # 1) Fetch ids from a doc if requested
+        if by_doc_id:
+            # Pull all node_ids linked to the given doc_id from the fast index
+            n_links = self.node_docs_collection.get(where={"doc_id": by_doc_id}, include=["documents"])
+            node_ids = [json.loads(doc)["node_id"] for doc in (n_links.get("documents") or [])]
+
+            # Pull edge_ids by scanning edge_endpoints for that doc_id
+            e_links = self.edge_endpoints_collection.get(where={"doc_id": by_doc_id}, include=["documents"])
+            edge_ids = list({
+                json.loads(doc)["edge_id"] for doc in (e_links.get("documents") or [])
+            })
+        node_ids = list(dict.fromkeys(node_ids or []))
+        edge_ids = list(dict.fromkeys(edge_ids or []))
+
+        # 2) Build maps
+        node_map = self._load_node_map(node_ids)
+        edge_map = self._load_edge_map(edge_ids)
+
+        # 3) If edges point to additional nodes/edges not explicitly requested, load them too
+        extra_nodes, extra_edges = set(), set()
+        for em in edge_map.values():
+            extra_nodes.update(em.get("source_ids", []))
+            extra_nodes.update(em.get("target_ids", []))
+            extra_edges.update(em.get("source_edge_ids", []))
+            extra_edges.update(em.get("target_edge_ids", []))
+        # load missing
+        missing_nodes = [i for i in extra_nodes if i not in node_map]
+        missing_edges = [i for i in extra_edges if i not in edge_map]
+        node_map.update(self._load_node_map(missing_nodes))
+        edge_map.update(self._load_edge_map(missing_edges))
+
+        # 4) Optionally load refs for nodes/edges
+        node_out = []
+        if node_map:
+            got = self.node_collection.get(ids=list(node_map.keys()), include=["metadatas", "documents"])
+            for nid, meta, ndoc in zip(got.get("ids") or [], got.get("metadatas") or [], got.get("documents") or []):
+                m = node_map.get(nid, {})
+                entry = {"id": nid, **m}
+                if include_refs:
+                    try:
+                        n = Node.model_validate_json(ndoc)
+                        entry["refs"] = [_fmt_ref_short(r.model_dump()) for r in (n.references or [])]
+                    except Exception:
+                        # try metadata path
+                        refs = []
+                        raw = (meta or {}).get("references")
+                        if isinstance(raw, str):
+                            try:
+                                for r in json.loads(raw) or []:
+                                    refs.append(_fmt_ref_short(r))
+                            except Exception:
+                                pass
+                        entry["refs"] = refs
+                node_out.append(entry)
+
+        edge_out = []
+        if edge_map:
+            got = self.edge_collection.get(ids=list(edge_map.keys()), include=["metadatas", "documents"])
+            for eid, meta, edoc in zip(got.get("ids") or [], got.get("metadatas") or [], got.get("documents") or []):
+                m = edge_map.get(eid, {})
+                # resolve endpoint labels
+                def resolve_list(ids, kind_hint: str):
+                    items = []
+                    for rid in ids:
+                        if rid in node_map:
+                            items.append({"id": rid, "kind": "node", "label": node_map[rid]["label"]})
+                        elif rid in edge_map:
+                            items.append({"id": rid, "kind": "edge", "label": edge_map[rid]["label"]})
+                        else:
+                            items.append({"id": rid, "kind": kind_hint, "label": "(missing)"})
+                    return items
+
+                entry = {
+                    "id": eid,
+                    "relation": m.get("relation", ""),
+                    "label": m.get("label", ""),
+                    "summary": m.get("summary", ""),
+                    "sources": resolve_list(m.get("source_ids", []), "node"),
+                    "targets": resolve_list(m.get("target_ids", []), "node"),
+                }
+                # include edge-endpoint edges if you use them
+                se = m.get("source_edge_ids") or []
+                te = m.get("target_edge_ids") or []
+                if se or te:
+                    entry["source_edges"] = resolve_list(se, "edge")
+                    entry["target_edges"] = resolve_list(te, "edge")
+
+                if include_refs:
+                    try:
+                        e = Edge.model_validate_json(edoc)
+                        entry["refs"] = [_fmt_ref_short(r.model_dump()) for r in (e.references or [])]
+                    except Exception:
+                        refs = []
+                        raw = (meta or {}).get("references")
+                        if isinstance(raw, str):
+                            try:
+                                for r in json.loads(raw) or []:
+                                    refs.append(_fmt_ref_short(r))
+                            except Exception:
+                                pass
+                        entry["refs"] = refs
+
+                edge_out.append(entry)
+
+        return {"nodes": node_out, "edges": edge_out}
+
+    def pretty_print_graph(self, **kwargs) -> str:
+        """
+        Thin wrapper over resolve_readable() that renders a compact text block.
+        kwargs are passed to resolve_readable (node_ids, edge_ids, by_doc_id, include_refs).
+        """
+        data = self.resolve_readable( **kwargs)
+        lines = []
+        if data["nodes"]:
+            lines.append("Nodes:")
+            for n in data["nodes"]:
+                line = f"  • {n['id']}  [{n['type']}]  {n['label']}"
+                if n.get("summary"): line += f" — {n['summary']}"
+                if n.get("doc_ids"): line += f"  (docs: {', '.join(n['doc_ids'])})"
+                lines.append(line)
+                if kwargs.get("include_refs") and n.get("refs"):
+                    for r in n["refs"]:
+                        lines.append(f"     ↳ {r}")
+        if data["edges"]:
+            lines.append("Edges:")
+            for e in data["edges"]:
+                def fmt_endpoints(items):
+                    return ", ".join([f"{i['label']}({i['id'][:8]})" for i in items])
+                src = fmt_endpoints(e.get("sources", []))
+                tgt = fmt_endpoints(e.get("targets", []))
+                line = f"  → {e['id']}  [{e.get('relation','')}]  {src}  ->  {tgt}"
+                if e.get("summary"): line += f" — {e['summary']}"
+                lines.append(line)
+                if e.get("source_edges") or e.get("target_edges"):
+                    ss = fmt_endpoints(e.get("source_edges", []))
+                    tt = fmt_endpoints(e.get("target_edges", []))
+                    if ss: lines.append(f"     (source-edges: {ss})")
+                    if tt: lines.append(f"     (target-edges: {tt})")
+                if kwargs.get("include_refs") and e.get("refs"):
+                    for r in e["refs"]:
+                        lines.append(f"     ↳ {r}")
+        return "\n".join(lines) or "(empty)"

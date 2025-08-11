@@ -62,6 +62,7 @@ class ReferenceSession(BaseModel):
     """Locatable evidence for a node/edge mention within a specific document."""
     collection_page_url: str = Field(..., description="Link to the collection page")
     document_page_url: str = Field(..., description="Link to the document page")
+    doc_id : str  = Field(..., description="document id")
     # Required locators (may span pages)
     start_page: int = Field(..., ge=1, description="1-based page index where the mention starts")
     end_page: int = Field(..., ge=1, description="1-based page index where the mention ends (>= start_page)")

@@ -4,9 +4,12 @@ import json
 import uuid
 import shutil
 import pytest
+import ast
 from typing import List
-
+from pydantic import BaseModel
 from langchain_core.runnables import Runnable
+from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.prompt_values import ChatPromptValue
 from graph_knowledge_engine.engine import GraphKnowledgeEngine
 from graph_knowledge_engine.models import (
     Document,
@@ -26,50 +29,65 @@ def _ref_for(doc_id: str) -> ReferenceSession:
         end_page=1,
         start_char=0,
         end_char=1,
+        doc_id = doc_id
     )
 
 # A deterministic, Runnable-compatible fake that mimics:
 # llm.with_structured_output(BatchAdjudications).invoke(...)
-class _DeterministicBatchLLM(Runnable):
-    def __init__(self):
-        self._schema = None
-        self._many = True  # we expect a list-like structured output
+class BatchAdjudications(BaseModel):
+    items: List[LLMMergeAdjudication]
 
-    # langchain pattern: return self configured for structured output
-    def with_structured_output(self, schema, include_raw: bool = False, many: bool = False):
+class _DeterministicBatchLLM(Runnable):
+    """Runnable fake that supports prompt|llm composition and dict inputs."""
+    def with_structured_output(self, schema, **_):
+        # Keep parity with LangChain’s API; we’ll just remember the schema.
         self._schema = schema
-        self._many = many
         return self
 
-    # input: {"mapping": [...], "pairs": [{"left":..., "right":..., "question_code":...}, ...]}
-    def invoke(self, input, config=None, **kwargs):
-        pairs = input["pairs"]
-        items: List[LLMMergeAdjudication] = []
+    def _extract_pairs_from_prompt(self, cpv: ChatPromptValue):
+        # Find the last HumanMessage and parse the JSON (or Python-literal) after "Pairs:\n"
+        msgs = cpv.to_messages()
+        human = next((m for m in msgs[::-1] if isinstance(m, HumanMessage)), None)
+        if not human:
+            raise ValueError("No HumanMessage found in ChatPromptValue")
+        text = human.content
+        marker = "Pairs:\n"
+        i = text.find(marker)
+        if i < 0:
+            raise ValueError("Could not find 'Pairs:' in the HumanMessage")
+        payload = text[i + len(marker):].strip()
+        # Be robust to models that emit Python-ish literals
+        try:
+            pairs = json.loads(payload)
+        except Exception:
+            pairs = ast.literal_eval(payload)
+        return pairs
 
-        # Rule: if both labels start with "Chlorophyll", mark same_entity=True (high confidence),
-        # else False (low confidence)
+    def invoke(self, input, config=None, **kwargs):
+        if isinstance(input, ChatPromptValue):
+            pairs = self._extract_pairs_from_prompt(input)
+        elif isinstance(input, dict):
+            pairs = input["pairs"]
+        else:
+            raise TypeError(f"Unsupported input type: {type(input)}")
+
+        items = []
         for item in pairs:
-            l = item["left"]["label"]
-            r = item["right"]["label"]
-            if l.startswith("Chlorophyll") and r.startswith("Chlorophyll"):
-                ver = AdjudicationVerdict(
-                    same_entity=True,
-                    confidence=0.93,
-                    reason="Deterministic test: both start with 'Chlorophyll'",
-                    canonical_entity_id=str(uuid.uuid4()),
-                )
-            else:
-                ver = AdjudicationVerdict(
-                    same_entity=False,
-                    confidence=0.20,
-                    reason="Deterministic test: different families",
-                    canonical_entity_id=None,
-                )
+            left = item["left"]; right = item["right"]
+            # Simple deterministic rule: first token of labels equal => same
+            ltok = (left.get("label") or "").split()[:1]
+            rtok = (right.get("label") or "").split()[:1]
+            same = bool(ltok and rtok and ltok[0].lower() == rtok[0].lower())
+            ver = AdjudicationVerdict(
+                same_entity=same,
+                confidence=0.95 if same else 0.20,
+                reason="first-token match" if same else "first-token differs",
+                canonical_entity_id=None,
+            )
             items.append(LLMMergeAdjudication(verdict=ver))
 
-        # The schema we pass from the test will be a pydantic model with field `items`
-        # that holds List[LLMMergeAdjudication]. Construct it.
-        return self._schema(items=items)
+        # Return the Pydantic wrapper the test expects
+        return BatchAdjudications(items=items)
 
 @pytest.fixture(scope="function")
 def engine(tmp_path):

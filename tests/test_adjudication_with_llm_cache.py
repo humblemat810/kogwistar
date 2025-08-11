@@ -39,6 +39,7 @@ def _ref_for(doc_id: str) -> ReferenceSession:
         end_page=1,
         start_char=0,
         end_char=1,
+        doc_id = doc_id
     )
 from typing import List
 from pydantic import BaseModel
