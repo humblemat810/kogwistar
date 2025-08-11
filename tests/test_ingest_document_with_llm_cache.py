@@ -5,24 +5,29 @@ from joblib import Memory
 import os, pathlib
 
 def test_ingest_document_with_llm_cache(engine):
-    doc = Document(
-        content="Plants convert light energy. Chlorophyll absorbs sunlight.",
-        type="ocr",
-        metadata={"source": "test"},
-        processed=False
-    )
-    
-    location=os.path.join(".cache", "test", pathlib.Path(__file__).parts[-1], "get_result")
+    doc = Document(content="Plants convert light energy. Chlorophyll absorbs sunlight.",
+                   type="ocr", metadata={"source":"test"})
+
+    # cache ONLY the pure extraction on the doc content
+    cache_dir = os.path.join(".cache","test",pathlib.Path(__file__).name,"extract")
+    memory = Memory(location=cache_dir, verbose=0)
+
+    location=os.path.join(".cache", "test", pathlib.Path(__file__).parts[-1], "_extract_only")
     os.makedirs(location, exist_ok = True)
     memory = Memory(location=location, verbose=0)
     @memory.cache
-    def get_result(doc):
-        result = engine.ingest_document_with_llm(doc)
-        return result
-    result = get_result(doc)
-    assert result["document_id"] == doc.id
-    assert result["nodes_added"] >= 1
-    assert result["edges_added"] >= 1
+    def _extract_only(content: str):
+        return engine.extract_graph_with_llm(content=content)
+
+    extracted = _extract_only(doc.content)
+    parsed = extracted["parsed"]
+
+    # persist deterministically (choose replace/append/skip-if-exists)
+    out = engine.persist_graph_extraction(document=doc, parsed=parsed, mode="replace")
+
+    assert out["document_id"] == doc.id
+    assert len(out["node_ids"]) >= 1
+    assert len(out["edge_ids"]) >= 1
 
     nodes = engine.node_collection.get()
     edges = engine.edge_collection.get()

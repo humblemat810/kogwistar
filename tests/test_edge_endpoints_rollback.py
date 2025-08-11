@@ -34,15 +34,16 @@ def test_rollback_single_document():
     engine.add_document(doc)
 
     # Create two nodes belonging to the doc
-    ref = ReferenceSession(collection_page_url="c", document_page_url=f"document/{doc.id}")
-    node1 = Node(label="A", type="entity", summary="n1", references=[ref])
-    node2 = Node(label="B", type="entity", summary="n2", references=[ref], doc_id = doc.id)
+    ref1 = ReferenceSession(collection_page_url="c", document_page_url=f"document/{doc.id}", start_page=13,end_page=14,start_char=24,end_char=17)
+    ref1 = ReferenceSession(collection_page_url="c", document_page_url=f"document/{doc.id}", start_page=15,end_page=15,start_char=4,end_char=45)
+    node1 = Node(label="A", type="entity", summary="n1", references=[ref1], doc_id = doc.id)
+    node2 = Node(label="B", type="entity", summary="n2", references=[ref2], doc_id = doc.id)
     engine.add_node(node1)
     engine.add_node(node2)
 
     # Create an edge between them
     edge = Edge(label="A->B", type="relationship", summary="edge",
-                source_ids=[node1.id], target_ids=[node2.id], relation="related")
+                source_ids=[node1.id], target_ids=[node2.id], source_edge_ids= [], target_edge_ids=[], relation="related")
     engine.add_edge(edge)
 
     # Rollback document
@@ -64,13 +65,13 @@ def test_rollback_multiple_documents():
     for d in docs:
         engine.add_document(d)
 
-    ref1 = ReferenceSession(collection_page_url="c", document_page_url=f"document/{docs[0].id}")
-    ref2 = ReferenceSession(collection_page_url="c", document_page_url=f"document/{docs[1].id}")
+    ref1 = ReferenceSession(collection_page_url="c", document_page_url=f"document/{docs[0].id}", 
+                            start_page=1,end_page=1,start_char=0,end_char=1, doc_id = docs[0].id)
+    ref2 = ReferenceSession(collection_page_url="c", document_page_url=f"document/{docs[1].id}", 
+                            start_page=3,end_page=5,start_char=24,end_char=17, doc_id = docs[1].id)
 
-    # Shared node between two docs in an edge
     shared_node = Node(label="X", type="entity", summary="shared", references=[ref1, ref2])
     engine.add_node(shared_node)
-
     # Node for doc1
     n1 = Node(label="Y", type="entity", summary="n1", references=[ref1])
     engine.add_node(n1)
@@ -81,9 +82,9 @@ def test_rollback_multiple_documents():
 
     # Edge between shared node and n1, n2
     e1 = Edge(label="shared->n1", type="relationship", summary="e1",
-              source_ids=[shared_node.id], target_ids=[n1.id], relation="related")
+              source_ids=[n1.id], target_ids=[n1.id], relation="related", source_edge_ids= [], target_edge_ids=[], references = [ref1])
     e2 = Edge(label="n2->shared", type="relationship", summary="e2",
-              source_ids=[n2.id], target_ids=[shared_node.id], relation="related")
+              source_ids=[n2.id], target_ids=[shared_node.id], relation="related", source_edge_ids= [], target_edge_ids=[], references = [ref2])
     engine.add_edge(e1)
     engine.add_edge(e2)
 

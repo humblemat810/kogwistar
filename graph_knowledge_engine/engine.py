@@ -38,6 +38,7 @@ from .models import (
     LLMGraphExtraction,
     LLMNode,
     LLMEdge,
+    AdjudicationTarget,
     AdjudicationCandidate,
     AdjudicationQuestionCode,
     QUESTION_KEY,
@@ -335,7 +336,7 @@ class AliasBook:
 # "session_alias" -> N#/E# with session-stable AliasBook (+ delta legend)
 # "base62"        -> N~<22ch> / E~<22ch> (no legend, fully deterministic)
 ID_STRATEGY = "session_alias"  # or "base62"
-from typing import Literal
+
 class GraphKnowledgeEngine:
     """High-level orchestration for extracting, storing, and adjudicating knowledge graph data."""
 
@@ -638,6 +639,8 @@ class GraphKnowledgeEngine:
           - ENV SENTENCE_TRANSFORMERS_MODEL, or
           - "all-MiniLM-L6-v2".
         """
+        self.allow_cross_kind_adjudication = True  # can be set by user
+        self.cross_kind_strategy = "reifies"       # "reifies" | "equivalent" (default "reifies")
         self.candidate_generator = candidate_generator or self.generate_merge_candidates
         self.adjudicator = adjudicator or self.adjudicate_merge
         self.batch_adjudicator = batch_adjudicator or self.batch_adjudicate_merges
@@ -718,7 +721,113 @@ class GraphKnowledgeEngine:
         end = max(start, end or start)
         end = min(len(full_text), end)
         return full_text[start:end]
+    
+    def _target_from_node(self, n: "Node") -> "AdjudicationTarget":
+        return AdjudicationTarget(
+            kind="node", id=n.id, label=n.label, type=n.type, summary=n.summary,
+            domain_id=n.domain_id, canonical_entity_id=n.canonical_entity_id, properties=n.properties
+        )
 
+    def _target_from_edge(self, e: "Edge") -> "AdjudicationTarget":
+        return AdjudicationTarget(
+            kind="edge", id=e.id, label=e.label, type=e.type, summary=e.summary,
+            relation=e.relation,
+            source_ids=e.source_ids or [], target_ids=e.target_ids or [],
+            source_edge_ids=e.source_edge_ids or [], target_edge_ids=e.target_edge_ids or [],
+            domain_id=e.domain_id, canonical_entity_id=e.canonical_entity_id, properties=e.properties
+        )
+    def generate_cross_kind_candidates(self, scope_doc_id: str | None = None, limit_per_bucket: int = 50):
+        """
+        Propose node↔edge pairs where labels/summaries suggest reification.
+        Heuristic: node.label or summary overlaps edge.label/summary or edge.relation text.
+        """
+        if not self.allow_cross_kind_adjudication:
+            return []
+
+        # fetch scope
+        nres = self.node_collection.get(where=({"doc_id": scope_doc_id} if scope_doc_id else None),
+                                        include=["documents"])
+        eres = self.edge_collection.get(where=({"doc_id": scope_doc_id} if scope_doc_id else None),
+                                        include=["documents"])
+
+        nodes = [Node.model_validate_json(js) for js in (nres.get("documents") or [])]
+        edges = [Edge.model_validate_json(js) for js in (eres.get("documents") or [])]
+
+        # cheap blocking: lowercase tokens of node.label & edge.label/relation
+        def toks(s): return set((s or "").lower().split())
+
+        pairs = []
+        for n in nodes:
+            nt = toks(n.label) | toks(n.summary)
+            for e in edges:
+                et = toks(e.label) | toks(e.summary) | toks(e.relation)
+                if nt and et and (nt & et):
+                    pairs.append(AdjudicationCandidate(
+                        left=self._target_from_node(n),
+                        right=self._target_from_edge(e),
+                        question="node_edge_equivalence"
+                    ))
+                    if len(pairs) >= limit_per_bucket:
+                        break
+        return pairs
+    def generate_merge_candidates(
+        self,
+        kind: str = "node",            # "node" or "edge"
+        scope_doc_id: str | None = None,
+        top_k: int = 200,
+    ) -> list[AdjudicationCandidate]:
+        """
+        Offline candidate generator. For nodes: block by (type,label lower).
+        For edges: block by (relation, sorted endpoints).
+        """
+        candidates: list[AdjudicationCandidate] = []
+
+        if kind == "node":
+            q = self.node_collection.get(
+                where=({"doc_id": scope_doc_id} if scope_doc_id else None),
+                include=["documents"]
+            )
+            bucket: dict[tuple, list] = {}
+            for js in (q.get("documents") or []):
+                n = Node.model_validate_json(js)
+                key = (n.type, (n.label or "").strip().lower())
+                bucket.setdefault(key, []).append(n)
+            for items in bucket.values():
+                if len(items) > 1:
+                    for i in range(len(items)):
+                        for j in range(i+1, len(items)):
+                            candidates.append(AdjudicationCandidate(
+                                left=self._target_from_node(items[i]),
+                                right=self._target_from_node(items[j]),
+                                question="same_entity"
+                            ))
+            return candidates
+
+        # kind == "edge"
+        q = self.edge_collection.get(
+            where=({"doc_id": scope_doc_id} if scope_doc_id else None),
+            include=["documents"]
+        )
+        bucket: dict[tuple, list] = {}
+        for js in (q.get("documents") or []):
+            e = Edge.model_validate_json(js)
+            # normalize endpoint signatures (IDs only; meta-edges included)
+            sig = (
+                e.relation,
+                tuple(sorted((e.source_ids or []) + (e.target_ids or []))),
+                tuple(sorted((e.source_edge_ids or []) + (e.target_edge_ids or []))),
+            )
+            bucket.setdefault(sig, []).append(e)
+        for items in bucket.values():
+            if len(items) > 1:
+                for i in range(len(items)):
+                    for j in range(i+1, len(items)):
+                        candidates.append(AdjudicationCandidate(
+                            left=self._target_from_edge(items[i]),
+                            right=self._target_from_edge(items[j]),
+                            question="same_relation"   # edges: equivalence of relation instance
+                        ))
+        return candidates
     def _fetch_document_text(self, document_id: str) -> str:
         got = self.document_collection.get(ids=[document_id], include=["documents"])
         if got and got.get("documents"):
@@ -858,39 +967,68 @@ class GraphKnowledgeEngine:
             embeddings=[node.embedding] if node.embedding else None,
             metadatas=[meta],
         )
-    def _fanout_endpoints_rows(self, edge: Edge, doc_id: str):
+    def _fanout_endpoints_rows(self, edge: Edge, doc_id: str | None):
+        def _maybe_doc_for_node(nid: str) -> str | None:
+            if doc_id is not None:
+                return doc_id
+            meta = self.node_collection.get(ids=[nid], include=["metadatas"])
+            if meta.get("metadatas") and meta["metadatas"][0]:
+                return meta["metadatas"][0].get("doc_id")
+            return None
+
+        def _maybe_doc_for_edge(eid: str) -> str | None:
+            if doc_id is not None:
+                return doc_id
+            meta = self.edge_collection.get(ids=[eid], include=["metadatas"])
+            if meta.get("metadatas") and meta["metadatas"][0]:
+                return meta["metadatas"][0].get("doc_id")
+            return None
+
         rows = []
 
         # node endpoints
         for role, node_ids in (("src", edge.source_ids or []), ("tgt", edge.target_ids or [])):
             for nid in node_ids:
-                rows.append({
+                r = {
                     "id": f"{edge.id}::{role}::node::{nid}",
                     "edge_id": edge.id,
                     "endpoint_id": nid,
                     "endpoint_type": "node",
                     "role": role,
                     "relation": edge.relation,
-                    "doc_id": doc_id,
-                })
+                }
+                did = _maybe_doc_for_node(nid)
+                if did is not None:
+                    r["doc_id"] = did
+                rows.append(r)
 
         # edge endpoints (meta)
         for role, eids in (("src", getattr(edge, "source_edge_ids", []) or []),
                         ("tgt", getattr(edge, "target_edge_ids", []) or [])):
             for mid in eids:
-                rows.append({
+                r = {
                     "id": f"{edge.id}::{role}::edge::{mid}",
                     "edge_id": edge.id,
                     "endpoint_id": mid,
                     "endpoint_type": "edge",
                     "role": role,
                     "relation": edge.relation,
-                    "doc_id": doc_id,
-                })
-        return rows
+                }
+                did = _maybe_doc_for_edge(mid)
+                if did is not None:
+                    r["doc_id"] = did
+                rows.append(r)
+
+        # strip Nones just in case
+        return [{k: v for k, v in r.items() if v is not None} for r in rows]
     def add_edge(self, edge: Edge, doc_id: Optional[str] = None):
         edge.doc_id = doc_id
-
+        s_nodes, s_edges, t_nodes, t_edges = self._split_endpoints(edge.source_ids, edge.target_ids)
+        edge.source_ids = s_nodes
+        edge.source_edge_ids = getattr(edge, "source_edge_ids", []) + s_edges
+        edge.target_ids = t_nodes
+        edge.target_edge_ids = getattr(edge, "target_edge_ids", []) + t_edges
+        edge.doc_id = doc_id
         # single-call safety for ad-hoc usage
         self._assert_endpoints_exist(edge)
 
@@ -898,7 +1036,7 @@ class GraphKnowledgeEngine:
         node_endpoint_count = len(edge.source_ids or []) + len(edge.target_ids or [])
         edge_endpoint_count = len(getattr(edge, "source_edge_ids", []) or []) + len(getattr(edge, "target_edge_ids", []) or [])
         total_endpoint_count = node_endpoint_count + edge_endpoint_count
-
+        
         # main edge row
         self.edge_collection.add(
             ids=[edge.id],
@@ -924,12 +1062,16 @@ class GraphKnowledgeEngine:
         )
 
         # endpoints fan-out
+        
         rows = self._fanout_endpoints_rows(edge, doc_id)
         if rows:
+            ep_ids   = [r["id"] for r in rows]
+            ep_docs  = [json.dumps(r) for r in rows]
+            ep_metas = rows  # already sanitized (no None)
             self.edge_endpoints_collection.add(
-                ids=[r["id"] for r in rows],
-                documents=[json.dumps(r) for r in rows],
-                metadatas=rows,
+                ids=ep_ids,
+                documents=ep_docs,
+                metadatas=ep_metas,
             )
     def add_document(self, document: Document):
         self.document_collection.add(
@@ -1034,7 +1176,110 @@ class GraphKnowledgeEngine:
     #     parsed = result.get("parsed") if isinstance(result, dict) else result
     #     err = result.get("parsing_error") if isinstance(result, dict) else None
     #     return raw, parsed, err
+    def extract_graph_with_llm(self, *, content: str):
+        """Pure: run LLM + parse + alias resolution. No writes."""
+        # (reuse your existing prompt + alias path)
+        raw, parsed, error = self._extract_graph_with_llm_aliases(
+            content, alias_nodes_str="...", alias_edges_str="..."
+        )
+        if error:
+            raise ValueError(error)
+        if not isinstance(parsed, LLMGraphExtraction):
+            parsed = LLMGraphExtraction.model_validate(parsed)
 
+        # resolve nn:/ne:/aliases -> UUIDs here
+        # and run self._preflight_validate(parsed, doc_id) LATER (we don’t know doc_id yet)
+        return {"raw": raw, "parsed": parsed}
+    def persist_graph_extraction(
+        self,
+        *,
+        document: Document,
+        parsed: LLMGraphExtraction,
+        mode: str = "append",   # "replace" | "append" | "skip-if-exists"
+    ) -> dict:
+        """
+        Write nodes/edges/endpoints for `document.id`.
+        Returns concrete ids written for idempotent tests.
+        """
+        doc_id = document.id
+
+        # ensure doc row exists (idempotent)
+        self.add_document(document)
+
+        # if replace, rollback prior doc content first
+        if mode == "replace":
+            self.rollback_document(doc_id)
+
+        # now validate (ensures no dangling refs to *other* docs)
+        self._preflight_validate(parsed, doc_id)
+
+        # persist and collect ids
+        node_ids, edge_ids = [], []
+        fallback_snip = (document.content[:160] + "…") if document.content else None
+
+        for ln in parsed.nodes:
+            # skip-if-exists mode
+            if mode == "skip-if-exists":
+                got = self.node_collection.get(ids=[ln.id], include=["ids"])
+                if got.get("ids"):  # already there
+                    node_ids.append(ln.id)
+                    continue
+
+            n = Node(
+                id=ln.id, label=ln.label, type=ln.type, summary=ln.summary,
+                domain_id=ln.domain_id, canonical_entity_id=ln.canonical_entity_id,
+                properties=ln.properties,
+                references=_normalize_refs(ln.references, doc_id, fallback_snip),
+                doc_id=doc_id,
+            )
+            self.add_node(n, doc_id=doc_id)
+            node_ids.append(n.id)
+
+        for le in parsed.edges:
+            if mode == "skip-if-exists":
+                got = self.edge_collection.get(ids=[le.id], include=["ids"])
+                if got.get("ids"):
+                    edge_ids.append(le.id)
+                    continue
+
+            e = Edge(
+                id=le.id, label=le.label, type=le.type, summary=le.summary,
+                domain_id=le.domain_id, canonical_entity_id=le.canonical_entity_id,
+                properties=le.properties,
+                references=_normalize_refs(le.references, doc_id, fallback_snip),
+                relation=le.relation,
+                source_ids=le.source_ids, target_ids=le.target_ids,
+                source_edge_ids=getattr(le, "source_edge_ids", None),
+                target_edge_ids=getattr(le, "target_edge_ids", None),
+                doc_id=doc_id,
+            )
+            self.add_edge(e, doc_id=doc_id)
+            edge_ids.append(e.id)
+
+        return {
+            "document_id": doc_id,
+            "node_ids": node_ids,
+            "edge_ids": edge_ids,
+            "nodes_added": len(node_ids),
+            "edges_added": len(edge_ids),
+        }
+    def ingest_document_with_llm(self, document: Document, *, mode: str = "append"):
+        """Convenience: extract + persist. Still returns concrete ids written."""
+        # add doc row now so fallback refs have URLs
+        self.add_document(document)
+
+        # build context & aliases as you already do, then:
+        extracted = self.extract_graph_with_llm(content=document.content)
+        parsed = extracted["parsed"]
+
+        # de-alias against this doc scope & validate
+        self._preflight_validate(parsed, document.id)
+
+        return self.persist_graph_extraction(
+            document=document,
+            parsed=parsed,
+            mode=mode,
+        )
     def _extract_graph_with_llm(self, content: str) -> Tuple[Any, Optional[LLMGraphExtraction], Optional[str]]:
         """Call LLM for structured extraction. Returns (raw, parsed, parsing_error)."""
         prompt = ChatPromptTemplate.from_messages(
@@ -1290,23 +1535,122 @@ class GraphKnowledgeEngine:
     # ----------------------------
     # Adjudication (LLM-assisted merge decision)
     # ----------------------------
-    def adjudicate_merge(self, left: Node, right: Node) -> AdjudicationVerdict:
-        """Use the LLM to decide if two nodes are the SAME real-world entity."""
-        prompt = ChatPromptTemplate.from_messages(
-            [
-                (
-                    "system",
-                    "You are a careful adjudicator. Decide if two nodes refer to the SAME real-world entity.\n"
-                    "Be conservative: only return true if confident. Return a structured JSON verdict.",
-                ),
-                ("human", "Left:\n{left}\n\nRight:\n{right}\n\nReturn only the structured JSON."),
-            ]
+    def _fetch_target(self, t: AdjudicationTarget) -> Node | Edge:
+        if t.kind == "node":
+            got = self.node_collection.get(ids=[t.id], include=["documents"])
+            if not got.get("documents"): raise ValueError(f"Node {t.id} not found")
+            return Node.model_validate_json(got["documents"][0])
+        got = self.edge_collection.get(ids=[t.id], include=["documents"])
+        if not got.get("documents"): raise ValueError(f"Edge {t.id} not found")
+        return Edge.model_validate_json(got["documents"][0])
+
+    def commit_merge_target(self, left: AdjudicationTarget, right: AdjudicationTarget, verdict: AdjudicationVerdict) -> str:
+        """Generalized merge: node↔node or edge↔edge. Returns canonical id."""
+        if not verdict.same_entity:
+            raise ValueError("Verdict not positive; will not merge.")
+        if left.kind != right.kind:
+            raise ValueError("Cannot merge cross-kind (node vs edge).")
+
+        # Decide canonical id
+        canonical_id = verdict.canonical_entity_id
+        if not canonical_id:
+            # prefer any existing canonical; else new
+            l = self._fetch_target(left)
+            r = self._fetch_target(right)
+            canonical_id = getattr(l, "canonical_entity_id", None) or getattr(r, "canonical_entity_id", None) or str(uuid.uuid4())
+
+        if left.kind == "node":
+            # --- Node merge: as you already do ---
+            l = self._fetch_target(left)
+            r = self._fetch_target(right)
+            l.canonical_entity_id = r.canonical_entity_id = canonical_id
+            # persist
+            self.node_collection.update(
+                ids=[l.id],
+                documents=[l.model_dump_json()],
+                metadatas=[_strip_none({
+                    "doc_id": getattr(l, "doc_id", None),
+                    "label": l.label, "type": l.type, "summary": l.summary,
+                    "domain_id": l.domain_id, "canonical_entity_id": l.canonical_entity_id,
+                    "properties": _json_or_none(l.properties),
+                    "references": _json_or_none([ref.model_dump() for ref in (l.references or [])]),
+                })],
+            )
+            self.node_collection.update(
+                ids=[r.id],
+                documents=[r.model_dump_json()],
+                metadatas=[_strip_none({
+                    "doc_id": getattr(r, "doc_id", None),
+                    "label": r.label, "type": r.type, "summary": r.summary,
+                    "domain_id": r.domain_id, "canonical_entity_id": r.canonical_entity_id,
+                    "properties": _json_or_none(r.properties),
+                    "references": _json_or_none([ref.model_dump() for ref in (r.references or [])]),
+                })],
+            )
+            # record same_as (node↔node)
+            left_ref = self._best_ref(l)
+            right_ref = self._best_ref(r)
+            same_as = Edge(
+                id=str(uuid.uuid4()),
+                label="same_as", type="relationship", summary=verdict.reason or "merge",
+                relation="same_as",
+                source_ids=[l.id], target_ids=[r.id],
+                source_edge_ids=[], target_edge_ids=[],
+                properties={"confidence": verdict.confidence},
+                references=[left_ref, right_ref],
+                doc_id="__adjudication__",
+            )
+            self.add_edge(same_as, doc_id=same_as.doc_id)
+            return canonical_id
+
+        # --- Edge merge: mirror the same pattern, but meta-edge same_as(edge, edge) ---
+        le = self._fetch_target(left)
+        re = self._fetch_target(right)
+        le.canonical_entity_id = re.canonical_entity_id = canonical_id
+        # persist edge updates
+        self.edge_collection.update(
+            ids=[le.id],
+            documents=[le.model_dump_json()],
+            metadatas=[_strip_none({
+                "doc_id": getattr(le, "doc_id", None),
+                "relation": le.relation,
+                "source_ids": _json_or_none(le.source_ids),
+                "target_ids": _json_or_none(le.target_ids),
+                "type": le.type, "summary": le.summary,
+                "domain_id": le.domain_id, "canonical_entity_id": le.canonical_entity_id,
+                "properties": _json_or_none(le.properties),
+                "references": _json_or_none([ref.model_dump() for ref in (le.references or [])]),
+            })],
         )
-        chain = prompt | self.llm.with_structured_output(LLMMergeAdjudication)
-        result: LLMMergeAdjudication = chain.invoke(
-            {"left": left.model_dump(), "right": right.model_dump()}
+        self.edge_collection.update(
+            ids=[re.id],
+            documents=[re.model_dump_json()],
+            metadatas=[_strip_none({
+                "doc_id": getattr(re, "doc_id", None),
+                "relation": re.relation,
+                "source_ids": _json_or_none(re.source_ids),
+                "target_ids": _json_or_none(re.target_ids),
+                "type": re.type, "summary": re.summary,
+                "domain_id": re.domain_id, "canonical_entity_id": re.canonical_entity_id,
+                "properties": _json_or_none(re.properties),
+                "references": _json_or_none([ref.model_dump() for ref in (re.references or [])]),
+            })],
         )
-        return result.verdict
+        # meta same_as: edge↔edge (use edge-endpoint lists)
+        same_as_meta = Edge(
+            id=str(uuid.uuid4()),
+            label="same_as",
+            type="relationship",
+            summary=verdict.reason or "merge",
+            relation="same_as",
+            source_ids=[], target_ids=[],
+            source_edge_ids=[le.id], target_edge_ids=[re.id],
+            properties={"confidence": verdict.confidence},
+            references=[],  # you can copy best refs from both edges if you desire
+            doc_id="__adjudication__",
+        )
+        self.add_edge(same_as_meta, doc_id=same_as_meta.doc_id)
+        return canonical_id
 
     def _primary_doc_id_from_node(self, n: Node) -> str | None:
         # Prefer explicit doc_id on the node JSON; else infer from references
@@ -1381,6 +1725,22 @@ class GraphKnowledgeEngine:
                 documents=ep_docs,
                 metadatas=ep_metas,
             )
+    def _classify_endpoint_id(self, rid: str) -> str:
+        """Return 'node' or 'edge' by checking collections; raise if not found."""
+        hit = self.node_collection.get(ids=[rid])
+        if (hit.get("ids") or [None])[0] == rid:
+            return "node"
+        hit = self.edge_collection.get(ids=[rid])
+        if (hit.get("ids") or [None])[0] == rid:
+            return "edge"
+        raise ValueError(f"Unknown endpoint id {rid!r} (not a node or edge)")
+    def _split_endpoints(self, src_ids: list[str] | None, tgt_ids: list[str] | None):
+        s_nodes, s_edges, t_nodes, t_edges = [], [], [], []
+        for rid in (src_ids or []):
+            (s_nodes if self._classify_endpoint_id(rid) == "node" else s_edges).append(rid)
+        for rid in (tgt_ids or []):
+            (t_nodes if self._classify_endpoint_id(rid) == "node" else t_edges).append(rid)
+        return s_nodes, s_edges, t_nodes, t_edges
     def commit_merge(self, left: Node, right: Node, verdict: AdjudicationVerdict) -> str:
         """
         Apply a positive adjudication by assigning/propagating a canonical_entity_id
@@ -1442,6 +1802,7 @@ class GraphKnowledgeEngine:
 
         left_ref = _best_ref(left)
         right_ref = _best_ref(right)
+        s_nodes, s_edges, t_nodes, t_edges = self._split_endpoints([left.id], [right.id])
 
         same_as = Edge(
             id=str(uuid.uuid1()),
@@ -1450,11 +1811,13 @@ class GraphKnowledgeEngine:
             summary=verdict.reason or "Adjudicated same entity",
             domain_id=None,
             relation="same_as",
-            source_ids=[left.id],
-            target_ids=[right.id],
+            source_ids=s_nodes,
+            target_ids=t_nodes,
             properties={"confidence": verdict.confidence},
             references=[left_ref, right_ref],
             doc_id="__adjudication__",   # neutral; endpoints will carry per-node doc_id
+            source_edge_ids=s_edges,
+            target_edge_ids=t_edges,
         )
 
         # 4) Persist the same_as edge and per-endpoint rows
@@ -1502,30 +1865,88 @@ class GraphKnowledgeEngine:
 
         return canonical_id
 
-    def generate_merge_candidates(self, new_node: Node, top_k: int = 5, similarity_threshold: float = 0.85) -> List[Tuple[Node, Node]]:
-        """
-        Given a new node, find likely duplicates in Chroma for adjudication.
-        Returns a list of (existing_node, new_node) pairs.
-        """
-        if not new_node.embedding:
-            # Skip vector search if no embedding
-            return []
+    # def generate_merge_candidates(self, new_node: Node, top_k: int = 5, similarity_threshold: float = 0.85) -> List[Tuple[Node, Node]]:
+    #     """
+    #     Given a new node, find likely duplicates in Chroma for adjudication.
+    #     Returns a list of (existing_node, new_node) pairs.
+    #     """
+    #     if not new_node.embedding:
+    #         # Skip vector search if no embedding
+    #         return []
 
-        results = self.node_collection.query(
-            query_embeddings=[new_node.embedding],
-            n_results=top_k
+    #     results = self.node_collection.query(
+    #         query_embeddings=[new_node.embedding],
+    #         n_results=top_k
+    #     )
+
+    #     candidates = []
+    #     for idx, doc_json in enumerate(results["documents"][0]):
+    #         score = results["distances"][0][idx]
+    #         if score >= similarity_threshold:
+    #             existing_node = Node(**json.loads(doc_json))
+    #             # Don't match against itself
+    #             if existing_node.id != new_node.id:
+    #                 candidates.append((existing_node, new_node))
+    #     return candidates
+    def commit_cross_kind(self, node_t: AdjudicationTarget, edge_t: AdjudicationTarget,
+                        verdict: AdjudicationVerdict) -> str:
+        if not verdict.same_entity:
+            raise ValueError("Verdict not positive")
+        if node_t.kind != "node" or edge_t.kind != "edge":
+            raise ValueError("commit_cross_kind expects (node, edge)")
+
+        # (Optionally) if user explicitly requested 'equivalent', you could propagate a canonical,
+        # but usually we DO NOT mix canonical namespaces. So we default to a linking meta-edge.
+
+        relation_name = "reifies" if self.cross_kind_strategy == "reifies" else "equivalent_node_edge"
+
+        node = self._fetch_target(node_t)   # Node
+        edge = self._fetch_target(edge_t)   # Edge
+
+        # evidence: copy best ref from both sides
+        left_ref = self._best_ref(node)
+        right_ref = self._best_ref(edge) if edge.references else left_ref
+
+        link = Edge(
+            id=str(uuid.uuid4()),
+            label=relation_name,
+            type="relationship",
+            summary=verdict.reason or "Node reifies edge",
+            relation=relation_name,
+            source_ids=[node.id], target_ids=[],
+            source_edge_ids=[], target_edge_ids=[edge.id],   # <-- node → (meta)edge
+            properties={"confidence": verdict.confidence},
+            references=[left_ref, right_ref],
+            doc_id="__adjudication__",
         )
+        self.add_edge(link, doc_id=link.doc_id)
+        return link.id
+    def adjudicate_pair(self, left: AdjudicationTarget, right: AdjudicationTarget, question: str):
+        if (left.kind != right.kind) and question != "node_edge_equivalence":
+            raise ValueError("Cross-kind only allowed for 'node_edge_equivalence'")
+        if not self.allow_cross_kind_adjudication and question == "node_edge_equivalence":
+            raise ValueError("Cross-kind adjudication disabled")
 
-        candidates = []
-        for idx, doc_json in enumerate(results["documents"][0]):
-            score = results["distances"][0][idx]
-            if score >= similarity_threshold:
-                existing_node = Node(**json.loads(doc_json))
-                # Don't match against itself
-                if existing_node.id != new_node.id:
-                    candidates.append((existing_node, new_node))
-        return candidates
-    
+        prompt = ChatPromptTemplate.from_messages([
+            ("system",
+            "You are a careful adjudicator. Decide if LEFT and RIGHT correspond as the question specifies.\n"
+            "- If question == 'same_entity': same real-world entity (node↔node).\n"
+            "- If question == 'same_relation': same logical relation instance (edge↔edge) including endpoints.\n"
+            "- If question == 'node_edge_equivalence': determine if the NODE is a named reification/denotation "
+            "  of the EDGE (i.e., the node represents that specific relation instance). "
+            "Be conservative; return JSON verdict."),
+            ("human", "Question: {question}\nLeft:\n{left}\nRight:\n{right}")
+        ])
+        chain = prompt | self.llm.with_structured_output(LLMMergeAdjudication)
+        return chain.invoke({"question": question,
+                            "left": left.model_dump(),
+                            "right": right.model_dump()})
+    def adjudicate_merge(self, left_node: Node | Edge, right_node: Node | Edge):
+        # Back-compat wrapper if you still call with concrete models
+        left = self._target_from_node(left_node) if isinstance(left_node, Node) else self._target_from_edge(left_node)
+        right = self._target_from_node(right_node) if isinstance(right_node, Node) else self._target_from_edge(right_node)
+        question = "same_entity" if left.kind == "node" else "same_relation"
+        return self.adjudicate_pair(left, right, question=question)
     def batch_adjudicate_merges(self, pairs, question_code=AdjudicationQuestionCode.SAME_ENTITY):
         if not pairs:
             return []
@@ -1559,14 +1980,14 @@ class GraphKnowledgeEngine:
         qkey = QUESTION_KEY[AdjudicationQuestionCode(question_code)]
         return results, qkey
         
-    def ingest_document_with_llm(self, document: Document):
-        self.add_document(document)
-        res = self._ingest_text_with_llm(
-            doc_id=document.id,
-            content=document.content,
-            auto_adjudicate=False,  # leave adjudication choice to user at document level
-        )
-        return {"document_id": document.id, **res}
+    # def ingest_document_with_llm(self, document: Document):
+    #     self.add_document(document)
+    #     res = self._ingest_text_with_llm(
+    #         doc_id=document.id,
+    #         content=document.content,
+    #         auto_adjudicate=False,  # leave adjudication choice to user at document level
+    #     )
+    #     return {"document_id": document.id, **res}
 
     def add_page(self, *, document_id: str, page_text: str, page_number: int, auto_adjudicate: bool = True):
         """

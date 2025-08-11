@@ -56,7 +56,7 @@ def test_batch_document_rollback(engine):
 
     # Rollback in batch
     ids_to_remove = [doc.id for doc in docs]
-    engine.rollback_many(ids_to_remove)
+    engine.rollback_many_documents(ids_to_remove)
 
     # Verify deletion
     for doc in docs:

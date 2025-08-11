@@ -197,13 +197,13 @@ class LLMGraphExtraction(BaseModel):
 # -------------------------
 # Adjudication structures
 # -------------------------
-class AdjudicationCandidate(BaseModel):
-    left: Node = Field(..., description="First node candidate")
-    right: Node = Field(..., description="Second node candidate")
-    question_code: int = Field(
-        AdjudicationQuestionCode.SAME_ENTITY,
-        description="Integer question code from the mapping table"
-    )
+# class AdjudicationCandidate(BaseModel):
+#     left: Node = Field(..., description="First node candidate")
+#     right: Node = Field(..., description="Second node candidate")
+#     question_code: int = Field(
+#         AdjudicationQuestionCode.SAME_ENTITY,
+#         description="Integer question code from the mapping table"
+#     )
 
 class AdjudicationVerdict(BaseModel):
     """Structured decision returned by an adjudicator (LLM+rules)."""
@@ -218,7 +218,34 @@ class AdjudicationVerdict(BaseModel):
 class LLMMergeAdjudication(BaseModel):
     """LLM-structured output wrapper for a single merge adjudication."""
     verdict: AdjudicationVerdict = Field(..., description="Final adjudication verdict")
+from typing import Literal, Optional, Dict, Any, List
+from pydantic import BaseModel, Field
 
+class AdjudicationTarget(BaseModel):
+    """A reference to either a node or an edge to be adjudicated."""
+    kind: Literal["node", "edge"] = Field(..., description="What is being adjudicated")
+    id: str = Field(..., description="UUID of the node or edge")
+    # Optional snapshot fields help the LLM (and offline rules) decide without re-fetching.
+    label: Optional[str] = None
+    type: Optional[str] = None
+    summary: Optional[str] = None
+    relation: Optional[str] = None                 # for edges
+    source_ids: Optional[List[str]] = None         # for edges
+    target_ids: Optional[List[str]] = None         # for edges
+    source_edge_ids: Optional[List[str]] = None    # for meta-edges
+    target_edge_ids: Optional[List[str]] = None    # for meta-edges
+    domain_id: Optional[str] = None
+    canonical_entity_id: Optional[str] = None
+    properties: Optional[Dict[str, Any]] = None
+
+class AdjudicationCandidate(BaseModel):
+    """A pair of adjudication targets (same kind: node↔node or edge↔edge)."""
+    left: AdjudicationTarget
+    right: AdjudicationTarget
+    question: str = Field(
+        "same_entity",
+        description="Question key, e.g., 'same_entity' for nodes or 'same_relation' for edges"
+    )
 # -------------------------
 # Document
 # -------------------------

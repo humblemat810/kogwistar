@@ -2,8 +2,8 @@
 from __future__ import annotations
 from typing import Dict, Optional
 from ..models import ReferenceSession, MentionVerification
-
-def ensemble_default(engine, extracted_text: str, full_text: str, ref: ReferenceSession,
+from ..engine import GraphKnowledgeEngine
+def ensemble_default(engine: GraphKnowledgeEngine, extracted_text: str, full_text: str, ref: ReferenceSession,
                      *, min_ngram: int = 5,
                      weights: Dict[str, float] = {"rapidfuzz":0.5,"coverage":0.3,"embedding":0.2},
                      threshold: float = 0.70) -> ReferenceSession:
@@ -13,7 +13,7 @@ def ensemble_default(engine, extracted_text: str, full_text: str, ref: Reference
         min_ngram=min_ngram, weights=weights, threshold=threshold
     )
 
-def coverage_only(engine, extracted_text: str, full_text: str, ref: ReferenceSession,
+def coverage_only(engine: GraphKnowledgeEngine, extracted_text: str, full_text: str, ref: ReferenceSession,
                   *, min_ngram: int = 7, threshold: float = 0.50) -> ReferenceSession:
     """Fast, no-ML fallback: only n-gram coverage; marks verified if above threshold."""
     # This reuses engine’s coverage function and writes a MentionVerification.
@@ -22,7 +22,7 @@ def coverage_only(engine, extracted_text: str, full_text: str, ref: ReferenceSes
     out.verification = MentionVerification(method="coverage", is_verified=(cv >= threshold), score=cv, notes=f"min_ngram={min_ngram}")
     return out
 
-def strict_with_min_span(engine, extracted_text: str, full_text: str, ref: ReferenceSession,
+def strict_with_min_span(engine: GraphKnowledgeEngine, extracted_text: str, full_text: str, ref: ReferenceSession,
                          *, min_span_chars: int = 24, min_score: float = 0.8) -> ReferenceSession:
     """Require a minimal span and high ensemble score."""
     if (ref.end_char or 0) - (ref.start_char or 0) < min_span_chars:
