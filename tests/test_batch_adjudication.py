@@ -95,6 +95,17 @@ def _ref_for(doc_id: str) -> ReferenceSession:
     )
 
 def test_batch_adjudication_and_commit(engine, monkeypatch):
+    """ test batch_adjudication with the adjudication decision maker being fake LLM response, not cached
+    This test only test the engines own internal processing pipeline before and after llm call.
+
+    Args:
+        engine (_type_): _description_
+        monkeypatch (_type_): _description_
+
+    Returns:
+        _type_: _description_
+    """
+    
     # Create a document so nodes/edges can carry doc_id
     doc = Document(content="dummy", type="text")
     engine.add_document(doc)

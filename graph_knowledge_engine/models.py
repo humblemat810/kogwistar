@@ -239,6 +239,8 @@ class AdjudicationTarget(BaseModel):
     canonical_entity_id: Optional[str] = None
     properties: Optional[Dict[str, Any]] = None
 
+class BatchAdjudications(BaseModel):
+    merge_adjudications: List[LLMMergeAdjudication]
 class AdjudicationCandidate(BaseModel):
     """A pair of adjudication targets (same kind: node↔node or edge↔edge)."""
     left: AdjudicationTarget
