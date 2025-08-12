@@ -460,10 +460,16 @@ class GraphKnowledgeEngine:
     # Utilities
     # ----------------------------
     @staticmethod
+    def _default_ref(doc_id, snippet):
+        return _default_ref(doc_id, snippet)
+        pass
+    @staticmethod
     def chroma_sanitize_metadata(metadata: Dict[str, Any]) -> Dict[str, Any]:
         """Drop keys whose values are None. ChromaDB metadata rejects None values."""
         return _strip_none(metadata) #{k: v for k, v in metadata.items() if v is not None}
-
+    @staticmethod
+    def _strip_none(d: dict):
+        return _strip_none(d)
     @staticmethod
     def _json_or_none(obj: Any) -> Optional[str]:
         return json.dumps(obj) if obj is not None else None
@@ -899,7 +905,7 @@ class GraphKnowledgeEngine:
         self.cross_kind_strategy = "reifies"       # "reifies" | "equivalent" (default "reifies")
         # to do- refractor via composition. protocol template in strategies.py, strategies helper in ./strategies/
         # strategies now are function objects
-        from strategies import CompositeProposer, VectorProposer, PairAdjudicator, BatchAdjudicator, Verifier
+        from strategies import CompositeProposer, VectorProposer, PairAdjudicator, BatchAdjudicator, Verifier, PreferExistingCanonical
         from .strategies.adjudicators import LLMPairAdjudicatorImpl, LLMBatchAdjudicatorImpl
         from .strategies.verifiers import DefaultVerifier, VerifierConfig
 
@@ -907,6 +913,7 @@ class GraphKnowledgeEngine:
         self.pair_adjudicator: PairAdjudicator = adjudicator or LLMPairAdjudicatorImpl(self)
         self.batch_adjudicator: BatchAdjudicator = batch_adjudicator or LLMBatchAdjudicatorImpl(self)
         self.verifier: Verifier = verifier or DefaultVerifier(self, VerifierConfig(use_embeddings=False))
+        self.merge_policy = merge_policy or PreferExistingCanonical()
         load_dotenv()
         
         self._alias_books: dict[str, AliasBook] = {}
@@ -1036,35 +1043,7 @@ class GraphKnowledgeEngine:
         Heuristic: node.label or summary overlaps edge.label/summary or edge.relation text.
         """
         self.proposer.cross_kind_in_doc(engine = self, doc_id = scope_doc_id)
-        # if not self.allow_cross_kind_adjudication:
-        #     return []
-
-        # # fetch scope
-        # nres = self.node_collection.get(where=({"doc_id": scope_doc_id} if scope_doc_id else None),
-        #                                 include=["documents"])
-        # eres = self.edge_collection.get(where=({"doc_id": scope_doc_id} if scope_doc_id else None),
-        #                                 include=["documents"])
-
-        # nodes = [Node.model_validate_json(js) for js in (nres.get("documents") or [])]
-        # edges = [Edge.model_validate_json(js) for js in (eres.get("documents") or [])]
-
-        # # cheap blocking: lowercase tokens of node.label & edge.label/relation
-        # def toks(s): return set((s or "").lower().split())
-
-        # pairs = []
-        # for n in nodes:
-        #     nt = toks(n.label) | toks(n.summary)
-        #     for e in edges:
-        #         et = toks(e.label) | toks(e.summary) | toks(e.relation)
-        #         if nt and et and (nt & et):
-        #             pairs.append(AdjudicationCandidate(
-        #                 left=self._target_from_node(n),
-        #                 right=self._target_from_edge(e),
-        #                 question="node_edge_equivalence"
-        #             ))
-        #             if len(pairs) >= limit_per_bucket:
-        #                 break
-        # return pairs
+        
     def generate_merge_candidates_doc_brute_force(
         self,
         kind: str = "node",            # "node" or "edge"
@@ -1075,54 +1054,8 @@ class GraphKnowledgeEngine:
         Offline candidate generator. For nodes: block by (type,label lower).
         For edges: block by (relation, sorted endpoints).
         """
-        candidates: list[AdjudicationCandidate] = []
-
-        if kind == "node":
-            q = self.node_collection.get(
-                where=({"doc_id": scope_doc_id} if scope_doc_id else None),
-                include=["documents"]
-            )
-            bucket: dict[tuple, list] = {}
-            for js in (q.get("documents") or []):
-                n = Node.model_validate_json(js)
-                key = (n.type, (n.label or "").strip().lower())
-                bucket.setdefault(key, []).append(n)
-            for items in bucket.values():
-                if len(items) > 1:
-                    for i in range(len(items)):
-                        for j in range(i+1, len(items)):
-                            candidates.append(AdjudicationCandidate(
-                                left=self._target_from_node(items[i]),
-                                right=self._target_from_node(items[j]),
-                                question="same_entity"
-                            ))
-            return candidates
-
-        # kind == "edge"
-        q = self.edge_collection.get(
-            where=({"doc_id": scope_doc_id} if scope_doc_id else None),
-            include=["documents"]
-        )
-        bucket: dict[tuple, list] = {}
-        for js in (q.get("documents") or []):
-            e = Edge.model_validate_json(js)
-            # normalize endpoint signatures (IDs only; meta-edges included)
-            sig = (
-                e.relation,
-                tuple(sorted((e.source_ids or []) + (e.target_ids or []))),
-                tuple(sorted((e.source_edge_ids or []) + (e.target_edge_ids or []))),
-            )
-            bucket.setdefault(sig, []).append(e)
-        for items in bucket.values():
-            if len(items) > 1:
-                for i in range(len(items)):
-                    for j in range(i+1, len(items)):
-                        candidates.append(AdjudicationCandidate(
-                            left=self._target_from_edge(items[i]),
-                            right=self._target_from_edge(items[j]),
-                            question="same_relation"   # edges: equivalence of relation instance
-                        ))
-        return candidates
+        return self.proposer.same_kind_in_doc(self, doc_id = scope_doc_id, kind = kind)
+        
     def _fetch_document_text(self, document_id: str) -> str:
         got = self.document_collection.get(ids=[document_id], include=["documents"])
         if got and got.get("documents"):
@@ -2086,7 +2019,7 @@ class GraphKnowledgeEngine:
         if (hit.get("ids") or [None])[0] == rid:
             return "edge"
         raise ValueError(f"Unknown endpoint id {rid!r} (not a node or edge)")
-    def _split_endpoints(self, src_ids: list[str] | None, tgt_ids: list[str] | None):
+    def _split_endpoints(self, src_ids: list[str] | None, tgt_ids: list[str] | None):# -> tuple[list[Any], list[Any], list[Any], list[Any]]:
         s_nodes, s_edges, t_nodes, t_edges = [], [], [], []
         for rid in (src_ids or []):
             (s_nodes if self._classify_endpoint_id(rid) == "node" else s_edges).append(rid)
@@ -2094,159 +2027,19 @@ class GraphKnowledgeEngine:
             (t_nodes if self._classify_endpoint_id(rid) == "node" else t_edges).append(rid)
         return s_nodes, s_edges, t_nodes, t_edges
     def commit_merge(self, left: Node, right: Node, verdict: AdjudicationVerdict) -> str:
-        """
-        Apply a positive adjudication by assigning/propagating a canonical_entity_id
-        and recording a `same_as` edge with provenance. Persists changes to Chroma.
-        Returns the canonical id used.
-        """
-        if not verdict.same_entity:
-            raise ValueError("Verdict not positive; will not merge.")
-
-        canonical_id = verdict.canonical_entity_id or (left.canonical_entity_id or right.canonical_entity_id)
-        if not canonical_id:
-            canonical_id = str(uuid.uuid1())
-
-        # 1) Update in-memory nodes
-        left.canonical_entity_id = canonical_id
-        right.canonical_entity_id = canonical_id
-
-        # 2) Persist node updates to Chroma (documents + metadatas)
-        def _persist_node(n: Node):
-            # Try to retain prior metadata (esp. doc_id)
-            prior = self.node_collection.get(ids=[n.id], include=["metadatas"])
-            doc_id = None
-            if prior.get("metadatas") and prior["metadatas"][0]:
-                doc_id = prior["metadatas"][0].get("doc_id")
-            # Update document JSON
-            self.node_collection.update(
-                ids=[n.id],
-                documents=[n.model_dump_json()],
-                metadatas=[_strip_none({
-                    "doc_id": doc_id,
-                    "label": n.label,
-                    "type": n.type,
-                    "summary": n.summary,
-                    "domain_id": n.domain_id,
-                    "canonical_entity_id": n.canonical_entity_id,
-                    "properties": _json_or_none(n.properties),
-                    "references": _json_or_none([ref.model_dump() for ref in (n.references or [])]),
-                })],
-            )
-            self._index_node_docs(n)
-            # also mirror back onto the object for future calls
-            n.doc_id = doc_id
-
-        _persist_node(left)
-        _persist_node(right)
-
-        # 3) Build edge references from each side (pick a “best” mention per node)
-        def _best_ref(n: Node) -> ReferenceSession:
-            if n.references:
-                refs = sorted(n.references, key=lambda r: (getattr(r, "start_page", 10**9), getattr(r, "start_char", 10**9)))
-                ref = refs[0].model_copy(deep=True)
-                if ref.verification is None:
-                    ref.verification = MentionVerification(method="heuristic", is_verified=True, score=0.5, notes="adjudication evidence")
-                else:
-                    ref.verification.notes = (ref.verification.notes or "") + " | adjudication evidence"
-                return ref
-            # Fallback if ever empty (shouldn’t with your schema)
-            did = getattr(n, "doc_id", None) or "unknown"
-            return _default_ref(did, snippet=n.summary if hasattr(n, "summary") else None)
-
-        left_ref = _best_ref(left)
-        right_ref = _best_ref(right)
-        s_nodes, s_edges, t_nodes, t_edges = self._split_endpoints([left.id], [right.id])
-
-        same_as = Edge(
-            id=str(uuid.uuid1()),
-            label="same_as",
-            type="relationship",
-            summary=verdict.reason or "Adjudicated same entity",
-            domain_id=None,
-            relation="same_as",
-            source_ids=s_nodes,
-            target_ids=t_nodes,
-            properties={"confidence": verdict.confidence},
-            references=[left_ref, right_ref],
-            doc_id="__adjudication__",   # neutral; endpoints will carry per-node doc_id
-            source_edge_ids=s_edges,
-            target_edge_ids=t_edges,
-        )
-
-        # 4) Persist the same_as edge and per-endpoint rows
-        #    Main edge row
-        self.edge_collection.add(
-            ids=[same_as.id],
-            documents=[same_as.model_dump_json()],
-            metadatas=[_strip_none({
-                "doc_id": getattr(same_as, "doc_id", None),
-                "relation": same_as.relation,
-                "source_ids": _json_or_none(same_as.source_ids),
-                "target_ids": _json_or_none(same_as.target_ids),
-                "type": same_as.type,
-                "summary": same_as.summary,
-                "domain_id": same_as.domain_id,
-                "canonical_entity_id": same_as.canonical_entity_id,
-                "properties": _json_or_none(same_as.properties),
-                "references": _json_or_none([ref.model_dump() for ref in (same_as.references or [])]),
-            })],
-        )
-
-        #    Endpoint fanout with per-endpoint doc_id
-        ep_ids, ep_docs, ep_metas = [], [], []
-        for role, node_ids in (("src", same_as.source_ids or []), ("tgt", same_as.target_ids or [])):
-            for nid in node_ids:
-                ep_id = f"{same_as.id}::{role}::{nid}"
-                n_meta = self.node_collection.get(ids=[nid], include=["metadatas"])
-                per_doc = None
-                if n_meta.get("metadatas") and n_meta["metadatas"][0]:
-                    per_doc = n_meta["metadatas"][0].get("doc_id")
-                m = _strip_none({
-                    "id": ep_id,
-                    "edge_id": same_as.id,
-                    "node_id": nid,
-                    "role": role,
-                    "relation": same_as.relation,
-                    "doc_id": per_doc,
-                })
-                ep_ids.append(ep_id)
-                ep_docs.append(json.dumps(m))
-                ep_metas.append(m)
-
-        if ep_ids:
-            self.edge_endpoints_collection.add(ids=ep_ids, documents=ep_docs, metadatas=ep_metas)
-
+        canonical_id = self.merge_policy.commit_merge()
         return canonical_id
-
+    def commit_any_kind(self, node_or_edge_l: AdjudicationTarget, node_or_edge_r: AdjudicationTarget,
+                        verdict: AdjudicationVerdict) -> str:
+        self.merge_policy.commit_any_kind(self, node_or_edge_l, node_or_edge_r,
+                        verdict)
     def generate_merge_candidates(self, new_node: Node, top_k: int = 5, similarity_threshold: float = 0.85) -> List[Tuple[Node, Node]]:
         """
         Given a new node, find likely duplicates in Chroma for adjudication.
         Returns a list of (existing_node, new_node) pairs.
         """
         return self.proposer.for_new_node(self, new_node, top_k, similarity_threshold)
-        if not new_node.embedding:
-            # Skip vector search if no embedding
-            return []
-
         
-
-        candidates = []
-        for col, NodeOrEdgeModel in [(self.node_collection, Node), (self.edge_collection, Edge)]:
-            NodeOrEdgeType = type[Node] | type[Edge]
-            col: chromadb.Collection
-            NodeOrEdgeModel: NodeOrEdgeType
-            results = col.query(
-                query_embeddings=[new_node.embedding],
-                n_results=top_k
-            )
-            for idx, doc_json in enumerate(results["documents"][0]):
-                score = results["distances"][0][idx]
-                if score >= similarity_threshold:
-                    existing_node = NodeOrEdgeModel(**json.loads(doc_json))
-                    # Don't match against itself
-                    if existing_node.id != new_node.id:
-                        candidates.append((existing_node, new_node))
-        return candidates
     
     def adjudicate_pair(self, left: AdjudicationTarget, right: AdjudicationTarget, question: str):
         if (left.kind != right.kind) and question != "node_edge_equivalence":

@@ -9,7 +9,7 @@ from ..models import (
     Edge,
     AdjudicationVerdict,
     LLMMergeAdjudication,
-    AdjudicationQuestionCode,
+    AdjudicationQuestionCode,ReferenceSession,AdjudicationTarget
 )
 from typing import Any, List, Protocol, Tuple, Sequence
 
@@ -17,14 +17,12 @@ from ..typing_interfaces import (
     ChatModelLike,
     NodeLike,
     EdgeLike,
-    AdjudicationTarget,
 )
 from pydantic import BaseModel
 from graph_knowledge_engine.strategies.proposer import CompositeProposer, VectorProposer
 from adjudicators import LLMPairAdjudicatorImpl, LLMBatchAdjudicatorImpl
 from verifiers import DefaultVerifier, VerifierConfig
 from merge_policies import PreferExistingCanonical
-
 
 # ---------- Proposer ----------
 @runtime_checkable
@@ -74,7 +72,7 @@ class BatchAdjudicator(Protocol):
 # ---------- Merge policy ----------
 @runtime_checkable
 class MergePolicy(Protocol):
-    def commit(self, engine: EngineLike, left: Node, right: Node, verdict: AdjudicationVerdict) -> str: ...
+    def commit_merge_target(self, left: AdjudicationTarget, right: AdjudicationTarget, verdict: AdjudicationVerdict) -> str:...
 
 
 @runtime_checkable
@@ -95,11 +93,21 @@ class Verifier(Protocol):
 from ..typing_interfaces import CollectionLike
 class EngineLike(Protocol):
     """Narrow surface area your strategies depend on."""
-
+    def _fetch_target(self, t: AdjudicationTarget) -> Node | Edge:...
     # helpers the strategies call
-    def chroma_sanitize_metadata(self, metadata: Dict[str, Any]) -> Dict[str, Any]: ...
-    def _json_or_none(self, obj: Any) -> Optional[str]: ...
-    
+    @staticmethod
+    def chroma_sanitize_metadata(metadata: Dict[str, Any]) -> Dict[str, Any]: ...
+    @staticmethod
+    def _json_or_none(obj: Any) -> Optional[str]: ...
+    @staticmethod
+    def _default_ref(doc_id: str, snippet: Optional[str] = None) -> ReferenceSession: ...
+    def _split_endpoints(self, src_ids: list[str] | None, tgt_ids: list[str] | None) -> tuple[list[Any], list[Any], list[Any], list[Any]]: ...
+    def _index_node_docs(self, node: Node) -> list[str]:...
+    def _best_ref(self, n: Node | Edge) -> ReferenceSession:...
+    @staticmethod
+    def _strip_none(d: dict) -> dict: ...
+    def add_edge(self, edge: Edge, doc_id: Optional[str] = None): ...
+    def add_node(self, node: Node, doc_id: Optional[str] = None): ...
     # node, edge to common type
     def _target_from_node(self, n : Node) -> AdjudicationTarget: ...
     def _target_from_edge(self, e: Edge) -> AdjudicationTarget: ...
@@ -128,12 +136,12 @@ class EngineLike(Protocol):
     edge_collection: CollectionLike
     edge_endpoints_collection: CollectionLike
     document_collection: CollectionLike
-    
+    cross_kind_strategy: str
     # optional indexes
     node_docs_collection: CollectionLike
 
 
-__all__ = ['DefaultProposer', "LLMPairAdjudicatorImpl", "LLMBatchAdjudicatorImpl",
+__all__ = ['VectorProposer', "CompositeProposer", "LLMPairAdjudicatorImpl", "LLMBatchAdjudicatorImpl",
            "DefaultVerifier", "VerifierConfig", "PreferExistingCanonical", "EngineLike",
             "NodeLike",
             "EdgeLike", "AdjudicationTarget"]
