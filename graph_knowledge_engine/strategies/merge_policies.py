@@ -1,8 +1,7 @@
 # strategies/merge_policies.py
 from __future__ import annotations
-from ..strategies import MergePolicy
 from ..models import AdjudicationVerdict, AdjudicationTarget, Edge, Node, ReferenceSession, MentionVerification
-from strategies import EngineLike
+from .types import EngineLike, MergePolicy
 import uuid
 class PreferExistingCanonical(MergePolicy):
     def __init__(self, engine: EngineLike):

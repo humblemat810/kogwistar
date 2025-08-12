@@ -5,7 +5,7 @@ import itertools
 from typing import List, Tuple, Any, Dict, Optional
 
 from ..models import Node, Edge, AdjudicationCandidate
-from ..strategies import MergeCandidateProposer, EngineLike
+from .types import MergeCandidateProposer, EngineLike
 
 
 # ------------------------
@@ -80,7 +80,8 @@ class VectorProposer(MergeCandidateProposer):
     """
     Existing single-node vector proposer (unchanged behavior from engine.generate_merge_candidates).
     """
-    def __init__(self):
+    def __init__(self, engine):
+        self.e = engine
         self.limit_per_bucket = 100
     def for_new_node(
         self,
@@ -96,7 +97,7 @@ class VectorProposer(MergeCandidateProposer):
         import chromadb
 
         candidates = []
-        for col, NodeOrEdgeModel in [(self.node_collection, Node), (self.edge_collection, Edge)]:
+        for col, NodeOrEdgeModel in [(self.e.node_collection, Node), (self.e.edge_collection, Edge)]:
             NodeOrEdgeType = type[Node] | type[Edge]
             col: chromadb.Collection
             NodeOrEdgeModel: NodeOrEdgeType

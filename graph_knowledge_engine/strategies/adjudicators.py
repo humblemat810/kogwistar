@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Tuple
 from pydantic import BaseModel
 from langchain.prompts import ChatPromptTemplate
 
-from graph_knowledge_engine.strategies import EngineLike, IAdjudicator
+from .types import EngineLike, IAdjudicator
 
 from ..models import (
     LLMMergeAdjudication,

@@ -24,13 +24,12 @@ engine = GraphKnowledgeEngine(
     verifier=VF.ensemble_default,          # or VF.coverage_only / VF.strict_with_min_span
 )
 """
-
+from __future__ import annotations
 
 from typing import List, Optional, Dict, Any, Tuple, TypeAlias
 
 import chromadb
 
-from graph_knowledge_engine.strategies import IAdjudicator
 from .graph_query import GraphQuery
 from chromadb import Client
 from chromadb.config import Settings
@@ -892,11 +891,12 @@ class GraphKnowledgeEngine:
         self.cross_kind_strategy = "reifies"       # "reifies" | "equivalent" (default "reifies")
         # to do- refractor via composition. protocol template in strategies.py, strategies helper in ./strategies/
         # strategies now are function objects
-        from strategies import CompositeProposer, VectorProposer, PairAdjudicator, BatchAdjudicator, Verifier, PreferExistingCanonical, Adjudicator
-        from .strategies.adjudicators import LLMPairAdjudicatorImpl, LLMBatchAdjudicatorImpl
+        from .strategies import CompositeProposer, VectorProposer, DefaultVerifier, PreferExistingCanonical, Adjudicator
+        # from .strategies.adjudicators import LLMPairAdjudicatorImpl, LLMBatchAdjudicatorImpl
         from .strategies.verifiers import DefaultVerifier, VerifierConfig
-        
-        self.proposer = proposer or VectorProposer()
+        from .strategies.types import Verifier
+        from graph_knowledge_engine.strategies import IAdjudicator
+        self.proposer = proposer or VectorProposer(self)
         self.adjudicator : IAdjudicator = adjudicator or Adjudicator(self)
         # self.pair_adjudicator: PairAdjudicator = adjudicator or LLMPairAdjudicatorImpl(self)
         # self.batch_adjudicator: BatchAdjudicator = batch_adjudicator or LLMBatchAdjudicatorImpl(self)

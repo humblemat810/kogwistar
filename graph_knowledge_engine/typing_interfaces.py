@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from typing import Any, Callable, Dict, List, Optional, Protocol, TypedDict, Union, runtime_checkable
-from models import AdjudicationVerdict
+from .models import AdjudicationVerdict
 # -------------------------
 # Collection / Vector store
 # -------------------------

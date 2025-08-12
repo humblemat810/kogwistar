@@ -1,8 +1,10 @@
 import logging
+from graph_knowledge_engine.engine import GraphKnowledgeEngine
 from graph_knowledge_engine.models import Document
+from graph_knowledge_engine.visualization.basic_visualization import Visualizer
 from joblib import Memory
 import pathlib
-def test_pretty_print_graph(engine):
+def test_pretty_print_graph(engine: GraphKnowledgeEngine):
     import os
     
     doc_content = (
@@ -28,11 +30,11 @@ def test_pretty_print_graph(engine):
 
     extracted = _extract_only(doc.content)
     parsed = extracted["parsed"]
-
+    visualiser = Visualizer(engine=engine)
     # persist deterministically (choose replace/append/skip-if-exists)
     out = engine.persist_graph_extraction(document=doc, parsed=parsed, mode="replace")
 
-    txt = engine.pretty_print_graph(by_doc_id=doc.id, include_refs=True)
+    txt = visualiser.pretty_print_graph(by_doc_id=doc.id, include_refs=True)
     print(txt)
     logging.info(txt)
     

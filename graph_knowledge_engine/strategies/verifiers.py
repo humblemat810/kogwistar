@@ -4,7 +4,7 @@ from __future__ import annotations
 from typing import Dict, Optional, List, Tuple
 from dataclasses import dataclass
 import math
-from strategies import EngineLike
+from .types import EngineLike, Verifier
 import json
 
 try:
@@ -27,7 +27,7 @@ class VerifierConfig:
     use_embeddings: bool = False  # only if engine has embedding_fn
     min_embed_cosine: float = 0.5
 
-class DefaultVerifier:
+class DefaultVerifier(Verifier):
     """
     Offline verification (no web calls). Combines:
       - span sanity (page and char ordering)
