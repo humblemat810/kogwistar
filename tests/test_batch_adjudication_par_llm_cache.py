@@ -296,7 +296,7 @@ def test_batch_adjudication_par_llm_cache_full(engine: GraphKnowledgeEngine, tmp
     # node_pairs = node_node_pairs
     # for (pair, res) in zip(node_pairs, results[i_nn]):
     #     if res.verdict.same_entity:
-    #         canon = engine.commit_any_kind(engine._target_from_node(pair[0]), 
+    #         canon = engine.commit_merge_target(engine._target_from_node(pair[0]), 
     #                                        engine._target_from_node(pair[1]), res.verdict)
     #         assert canon
 

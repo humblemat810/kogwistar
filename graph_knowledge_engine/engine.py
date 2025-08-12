@@ -26,7 +26,9 @@ engine = GraphKnowledgeEngine(
 """
 
 
-from typing import List, Optional, Dict, Any, Tuple
+from typing import List, Optional, Dict, Any, Tuple, TypeAlias
+
+import chromadb
 from .graph_query import GraphQuery
 from chromadb import Client
 from chromadb.config import Settings
@@ -57,7 +59,8 @@ from joblib import Memory
 import json, re, uuid
 
 from .models import ReferenceSession, MentionVerification, LLMGraphExtraction, LLMNode, LLMEdge, Node, Edge, Document
-from typing import Callable, Optional, List, Tuple, Any, Dict, Iterable
+from typing import (Callable, Optional, Tuple, Any, Dict, Iterable, Sequence,
+                    List, Type, TypeVar, Union)
 import math
 from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction
 from chromadb.utils import embedding_functions
@@ -74,8 +77,8 @@ try:
     _HAS_AZURE_EMB = True
 except Exception:
     _HAS_AZURE_EMB = False
-from typing import List, Type, TypeVar
 
+NodeOrEdge: TypeAlias =  Node | Edge
 T = TypeVar("T", Node, Edge)
 from graphlib import TopologicalSorter
 import uuid, json
@@ -408,6 +411,51 @@ _DOC_ALIAS = "::DOC::"  # short, token-friendly
 class GraphKnowledgeEngine:
     """High-level orchestration for extracting, storing, and adjudicating knowledge graph data."""
 
+    #--------------------
+    # Puhlic Interface
+    #--------------------
+    
+    def node_ids_by_doc(self, doc_id: str) -> List[str]:
+        # got = self.node_docs_collection.get(where={"doc_id": doc_id}, include=["metadatas"])
+        # metas = got.get("metadatas") or []
+        # return [m["node_id"] for m in metas if m and "node_id" in m]
+        return self._nodes_by_doc(doc_id)
+
+    def edge_ids_by_doc(self, doc_id: str) -> List[str]:
+        # eps = self.edge_endpoints_collection.get(where={"doc_id": doc_id}, include=["metadatas"])
+        # metas = eps.get("metadatas") or []
+        # # dedupe across endpoints
+        # return list({m["edge_id"] for m in metas if m and "edge_id" in m})
+        return self._edge_ids_by_doc(doc_id)
+
+    @property
+    def embedding_function(self):
+        return self._ef
+    @embedding_function.setter
+    def embedding_function(self, val):
+        self._ef = val
+        
+        
+    
+    def get_nodes(self, ids: Sequence[str]) -> List[Node]:
+        if not ids: return []
+        got = self.node_collection.get(ids=list(ids), include=["documents"])
+        docs = got.get("documents") or []
+        return [Node.model_validate_json(d) for d in docs]
+
+    def get_edges(self, ids: Sequence[str]) -> List[Edge]:
+        if not ids: return []
+        got = self.edge_collection.get(ids=list(ids), include=["documents"])
+        docs = got.get("documents") or []
+        return [Edge.model_validate_json(d) for d in docs]
+
+    def all_nodes_for_doc(self, doc_id: str) -> List[Node]:
+        return self.get_nodes(self._nodes_by_doc(doc_id))
+
+    def all_edges_for_doc(self, doc_id: str) -> List[Edge]:
+        return self.get_edges(self._edge_ids_by_doc(doc_id))
+    
+    
     # ----------------------------
     # Utilities
     # ----------------------------
@@ -832,7 +880,7 @@ class GraphKnowledgeEngine:
         self,
         persist_directory: str | None = None,
         embedding_function=None,
-        candidate_generator=None,
+        proposer=None,
         adjudicator=None,            # callable(left: Node, right: Node) -> AdjudicationVerdict
         batch_adjudicator=None,      # callable(pairs) -> List[LLMMergeAdjudication]
         merge_policy=None,           # callable(left, right, verdict) -> str (canonical_id)
@@ -851,11 +899,15 @@ class GraphKnowledgeEngine:
         self.cross_kind_strategy = "reifies"       # "reifies" | "equivalent" (default "reifies")
         # to do- refractor via composition. protocol template in strategies.py, strategies helper in ./strategies/
         # strategies now are function objects
-        self.candidate_generator = candidate_generator or self.generate_merge_candidates
-        self.adjudicator = adjudicator or self.adjudicate_merge
-        self.batch_adjudicator = batch_adjudicator or self.batch_adjudicate_merges
-        self.merge_policy = merge_policy or self.commit_merge
-        self.verify_reference: Callable = verifier or self._verify_one_reference
+        from strategies import Proposer, PairAdjudicator, BatchAdjudicator, Verifier
+        from .strategies.candidate_proposals import DefaultProposer
+        from .strategies.adjudicators import LLMPairAdjudicatorImpl, LLMBatchAdjudicatorImpl
+        from .strategies.verifiers import DefaultVerifier, VerifierConfig
+
+        self.proposer: Proposer = proposer or DefaultProposer(self)
+        self.pair_adjudicator: PairAdjudicator = adjudicator or LLMPairAdjudicatorImpl(self)
+        self.batch_adjudicator: BatchAdjudicator = batch_adjudicator or LLMBatchAdjudicatorImpl(self)
+        self.verifier: Verifier = verifier or DefaultVerifier(self, VerifierConfig(use_embeddings=False))
         load_dotenv()
         
         self._alias_books: dict[str, AliasBook] = {}
@@ -1013,7 +1065,7 @@ class GraphKnowledgeEngine:
                     if len(pairs) >= limit_per_bucket:
                         break
         return pairs
-    def generate_merge_candidates(
+    def generate_merge_candidates_doc_brute_force(
         self,
         kind: str = "node",            # "node" or "edge"
         scope_doc_id: str | None = None,
@@ -2166,60 +2218,35 @@ class GraphKnowledgeEngine:
 
         return canonical_id
 
-    # def generate_merge_candidates(self, new_node: Node, top_k: int = 5, similarity_threshold: float = 0.85) -> List[Tuple[Node, Node]]:
-    #     """
-    #     Given a new node, find likely duplicates in Chroma for adjudication.
-    #     Returns a list of (existing_node, new_node) pairs.
-    #     """
-    #     if not new_node.embedding:
-    #         # Skip vector search if no embedding
-    #         return []
+    def generate_merge_candidates(self, new_node: Node, top_k: int = 5, similarity_threshold: float = 0.85) -> List[Tuple[Node, Node]]:
+        """
+        Given a new node, find likely duplicates in Chroma for adjudication.
+        Returns a list of (existing_node, new_node) pairs.
+        """
+        if not new_node.embedding:
+            # Skip vector search if no embedding
+            return []
 
-    #     results = self.node_collection.query(
-    #         query_embeddings=[new_node.embedding],
-    #         n_results=top_k
-    #     )
+        
 
-    #     candidates = []
-    #     for idx, doc_json in enumerate(results["documents"][0]):
-    #         score = results["distances"][0][idx]
-    #         if score >= similarity_threshold:
-    #             existing_node = Node(**json.loads(doc_json))
-    #             # Don't match against itself
-    #             if existing_node.id != new_node.id:
-    #                 candidates.append((existing_node, new_node))
-    #     return candidates
-    def commit_any_kind(self, node_or_edge_l: AdjudicationTarget, node_or_edge_r: AdjudicationTarget,
-                        verdict: AdjudicationVerdict) -> str:
-        if not verdict.same_entity:
-            raise ValueError("Verdict not positive")
-
-        # (Optionally) if user explicitly requested 'equivalent', you could propagate a canonical,
-        # but usually we DO NOT mix canonical namespaces. So we default to a linking meta-edge.
-
-        relation_name = "reifies" if self.cross_kind_strategy == "reifies" else "equivalent_node_edge"
-
-        l = self._fetch_target(node_or_edge_l)   # Node
-        r = self._fetch_target(node_or_edge_r)   # Edge
-
-        # evidence: copy best ref from both sides
-        left_ref = self._best_ref(l)
-        right_ref = self._best_ref(r) if r.references else left_ref
-
-        link = Edge(
-            id=str(uuid.uuid4()),
-            label=relation_name,
-            type="relationship",
-            summary=verdict.reason,
-            relation=relation_name,
-            source_ids=[l.id], target_ids=[],
-            source_edge_ids=[], target_edge_ids=[r.id],   # <-- node → (meta)edge
-            properties={"confidence": verdict.confidence},
-            references=[left_ref, right_ref],
-            doc_id="__adjudication__",
-        )
-        self.add_edge(link, doc_id=link.doc_id)
-        return link.id
+        candidates = []
+        for col, NodeOrEdgeModel in [(self.node_collection, Node), (self.edge_collection, Edge)]:
+            NodeOrEdgeType = type[Node] | type[Edge]
+            col: chromadb.Collection
+            NodeOrEdgeModel: NodeOrEdgeType
+            results = col.query(
+                query_embeddings=[new_node.embedding],
+                n_results=top_k
+            )
+            for idx, doc_json in enumerate(results["documents"][0]):
+                score = results["distances"][0][idx]
+                if score >= similarity_threshold:
+                    existing_node = NodeOrEdgeModel(**json.loads(doc_json))
+                    # Don't match against itself
+                    if existing_node.id != new_node.id:
+                        candidates.append((existing_node, new_node))
+        return candidates
+    
     def adjudicate_pair(self, left: AdjudicationTarget, right: AdjudicationTarget, question: str):
         if (left.kind != right.kind) and question != "node_edge_equivalence":
             raise ValueError("Cross-kind only allowed for 'node_edge_equivalence'")

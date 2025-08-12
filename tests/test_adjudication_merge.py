@@ -117,7 +117,7 @@ def test_commit_cross_kind_creates_reifies(engine):
     engine.add_edge(edge_b, doc_id=doc.id)
 
     verdict = AdjudicationVerdict(same_entity=True, confidence=0.95, reason="same idea", canonical_entity_id = 'pctt')
-    engine.commit_any_kind(
+    engine.commit_merge_target(
         engine._target_from_node(node_a),
         engine._target_from_edge(edge_b),
         verdict,
