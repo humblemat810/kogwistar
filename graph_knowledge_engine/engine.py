@@ -899,12 +899,11 @@ class GraphKnowledgeEngine:
         self.cross_kind_strategy = "reifies"       # "reifies" | "equivalent" (default "reifies")
         # to do- refractor via composition. protocol template in strategies.py, strategies helper in ./strategies/
         # strategies now are function objects
-        from strategies import Proposer, PairAdjudicator, BatchAdjudicator, Verifier
-        from .strategies.candidate_proposals import DefaultProposer
+        from strategies import CompositeProposer, VectorProposer, PairAdjudicator, BatchAdjudicator, Verifier
         from .strategies.adjudicators import LLMPairAdjudicatorImpl, LLMBatchAdjudicatorImpl
         from .strategies.verifiers import DefaultVerifier, VerifierConfig
 
-        self.proposer: Proposer = proposer or DefaultProposer(self)
+        self.proposer = proposer or VectorProposer()
         self.pair_adjudicator: PairAdjudicator = adjudicator or LLMPairAdjudicatorImpl(self)
         self.batch_adjudicator: BatchAdjudicator = batch_adjudicator or LLMBatchAdjudicatorImpl(self)
         self.verifier: Verifier = verifier or DefaultVerifier(self, VerifierConfig(use_embeddings=False))
@@ -1036,35 +1035,36 @@ class GraphKnowledgeEngine:
         Propose node↔edge pairs where labels/summaries suggest reification.
         Heuristic: node.label or summary overlaps edge.label/summary or edge.relation text.
         """
-        if not self.allow_cross_kind_adjudication:
-            return []
+        self.proposer.cross_kind_in_doc(engine = self, doc_id = scope_doc_id)
+        # if not self.allow_cross_kind_adjudication:
+        #     return []
 
-        # fetch scope
-        nres = self.node_collection.get(where=({"doc_id": scope_doc_id} if scope_doc_id else None),
-                                        include=["documents"])
-        eres = self.edge_collection.get(where=({"doc_id": scope_doc_id} if scope_doc_id else None),
-                                        include=["documents"])
+        # # fetch scope
+        # nres = self.node_collection.get(where=({"doc_id": scope_doc_id} if scope_doc_id else None),
+        #                                 include=["documents"])
+        # eres = self.edge_collection.get(where=({"doc_id": scope_doc_id} if scope_doc_id else None),
+        #                                 include=["documents"])
 
-        nodes = [Node.model_validate_json(js) for js in (nres.get("documents") or [])]
-        edges = [Edge.model_validate_json(js) for js in (eres.get("documents") or [])]
+        # nodes = [Node.model_validate_json(js) for js in (nres.get("documents") or [])]
+        # edges = [Edge.model_validate_json(js) for js in (eres.get("documents") or [])]
 
-        # cheap blocking: lowercase tokens of node.label & edge.label/relation
-        def toks(s): return set((s or "").lower().split())
+        # # cheap blocking: lowercase tokens of node.label & edge.label/relation
+        # def toks(s): return set((s or "").lower().split())
 
-        pairs = []
-        for n in nodes:
-            nt = toks(n.label) | toks(n.summary)
-            for e in edges:
-                et = toks(e.label) | toks(e.summary) | toks(e.relation)
-                if nt and et and (nt & et):
-                    pairs.append(AdjudicationCandidate(
-                        left=self._target_from_node(n),
-                        right=self._target_from_edge(e),
-                        question="node_edge_equivalence"
-                    ))
-                    if len(pairs) >= limit_per_bucket:
-                        break
-        return pairs
+        # pairs = []
+        # for n in nodes:
+        #     nt = toks(n.label) | toks(n.summary)
+        #     for e in edges:
+        #         et = toks(e.label) | toks(e.summary) | toks(e.relation)
+        #         if nt and et and (nt & et):
+        #             pairs.append(AdjudicationCandidate(
+        #                 left=self._target_from_node(n),
+        #                 right=self._target_from_edge(e),
+        #                 question="node_edge_equivalence"
+        #             ))
+        #             if len(pairs) >= limit_per_bucket:
+        #                 break
+        # return pairs
     def generate_merge_candidates_doc_brute_force(
         self,
         kind: str = "node",            # "node" or "edge"
@@ -2223,6 +2223,7 @@ class GraphKnowledgeEngine:
         Given a new node, find likely duplicates in Chroma for adjudication.
         Returns a list of (existing_node, new_node) pairs.
         """
+        return self.proposer.for_new_node(self, new_node, top_k, similarity_threshold)
         if not new_node.embedding:
             # Skip vector search if no embedding
             return []
