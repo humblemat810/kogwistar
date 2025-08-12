@@ -20,7 +20,7 @@ from ..typing_interfaces import (
 )
 from pydantic import BaseModel
 from graph_knowledge_engine.strategies.proposer import CompositeProposer, VectorProposer
-from adjudicators import LLMPairAdjudicatorImpl, LLMBatchAdjudicatorImpl
+from adjudicators import LLMPairAdjudicatorImpl, LLMBatchAdjudicatorImpl, Adjudicator
 from verifiers import DefaultVerifier, VerifierConfig
 from merge_policies import PreferExistingCanonical
 
@@ -55,6 +55,16 @@ class MergeCandidateProposer(Protocol):
 
 # ---------- Adjudicator ----------
 @runtime_checkable
+class IAdjudicator(Protocol):
+    def batch_adjudicate_merges(
+        self,
+        pairs: List[Tuple["Node", "Node"]],
+        question_code: "AdjudicationQuestionCode" = AdjudicationQuestionCode.SAME_ENTITY,
+    )-> list[Any] | tuple[list[Any], str] | tuple[list[None], str]: ...# 
+    def adjudicate_pair(self, left: AdjudicationTarget, right: AdjudicationTarget, question: str)-> Dict[Any, Any] | BaseModel: ...
+    def adjudicate_merge(self, left_node: Node | Edge, right_node: Node | Edge) -> Dict[Any, Any] | BaseModel:...
+    
+@runtime_checkable
 class PairAdjudicator(Protocol):
     def adjudicate(self, engine: EngineLike, left: Any, right: Any) -> AdjudicationVerdict: ...
 
@@ -88,9 +98,38 @@ class VerificationReport(BaseModel):
 
 @runtime_checkable
 class Verifier(Protocol):
-    def verify_document(self, engine: EngineLike, document_id: str, method: str = "levenshtein") -> VerificationReport: ...
-
+    # def verify_document(self, engine: EngineLike, document_id: str, method: str = "levenshtein") -> VerificationReport: ...
+    def _verify_one_reference(
+        self,
+        extracted_text: str,
+        full_text: str,
+        ref: ReferenceSession,
+        *,
+        min_ngram: int = 5,
+        weights: Dict[str, float] = {"rapidfuzz": 0.5, "coverage": 0.3, "embedding": 0.2},
+        threshold: float = 0.70,
+    ) -> ReferenceSession: ...
+    def verify_mentions_for_doc(
+        self,
+        document_id: str,
+        *,
+        source_text: Optional[str] = None,
+        min_ngram: int = 5,
+        threshold: float = 0.70,
+        weights: Dict[str, float] = {"rapidfuzz": 0.5, "coverage": 0.3, "embedding": 0.2},
+        update_edges: bool = True,
+    ) -> Dict[str, int]: ...
+    def verify_mentions_for_items(
+        self,
+        items: List[Tuple[str, str]],  # list of ("node"|"edge", id)
+        *,
+        source_text_by_doc: Optional[Dict[str, str]] = None,
+        min_ngram: int = 5,
+        threshold: float = 0.70,
+        weights: Dict[str, float] = {"rapidfuzz": 0.5, "coverage": 0.3, "embedding": 0.2},
+    ) -> Dict[str, int]: ...
 from ..typing_interfaces import CollectionLike
+from langchain_core.language_models.chat_models import BaseChatModel
 class EngineLike(Protocol):
     """Narrow surface area your strategies depend on."""
     def _fetch_target(self, t: AdjudicationTarget) -> Node | Edge:...
@@ -113,7 +152,7 @@ class EngineLike(Protocol):
     def _target_from_edge(self, e: Edge) -> AdjudicationTarget: ...
     
     # llm runner
-    llm: ChatModelLike
+    llm: BaseChatModel
     # --- Graph reads ---
     def get_nodes(self, ids: Sequence[str]) -> List[Node]: ...
     def get_edges(self, ids: Sequence[str]) -> List[Edge]: ...
@@ -129,9 +168,15 @@ class EngineLike(Protocol):
     # --- Write paths used by adjudication/merge policies ---
     def commit_merge(self, left: Node, right: Node, verdict: AdjudicationVerdict) -> str: ...
     def commit_merge_target(self, left: AdjudicationTarget, right: AdjudicationTarget, verdict: AdjudicationVerdict) -> str: ...
-
+    def _fetch_document_text(self, document_id: str) -> str:...
     def embedding_function(self, documents_or_texts: list[str]) -> list[list[float]]: ...
+    @staticmethod
+    def _node_doc_and_meta(n: "Node") -> tuple[str, dict]: ...
+    @staticmethod
+    def _edge_doc_and_meta(e: "Edge") -> tuple[str, dict]:...
         # vector-store collections
+        
+    allow_cross_kind_adjudication: bool
     node_collection: CollectionLike
     edge_collection: CollectionLike
     edge_endpoints_collection: CollectionLike
@@ -143,5 +188,5 @@ class EngineLike(Protocol):
 
 __all__ = ['VectorProposer', "CompositeProposer", "LLMPairAdjudicatorImpl", "LLMBatchAdjudicatorImpl",
            "DefaultVerifier", "VerifierConfig", "PreferExistingCanonical", "EngineLike",
-            "NodeLike",
+            "NodeLike", "Adjudcator", "IAdjudicator",
             "EdgeLike", "AdjudicationTarget"]
