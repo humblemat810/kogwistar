@@ -9,10 +9,10 @@ import json
 
 try:
     from rapidfuzz.fuzz import ratio as fuzz_ratio
+    from rapidfuzz import fuzz
     _HAS_RAPIDFUZZ = True
 except ImportError:
     _HAS_RAPIDFUZZ = False
-    from rapidfuzz import fuzz
     def fuzz_ratio(a: str, b: str) -> float:
         # very small fallback
         return 100.0 if a == b else 0.0
