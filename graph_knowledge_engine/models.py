@@ -151,6 +151,14 @@ class LLMMixin(BaseModel):
 # -------------------------
 # Final models
 # -------------------------
+
+
+class DocNodeMixin():
+    type: Literal['page', 'chunk', "summary"] = Field(..., description = "type of data")
+    doc_id: str = Field(..., description = "document ID")
+    pass
+class DocNode(DocNodeMixin, GraphEntityBase):
+    pass
 class Node(ChromaMixin, GraphEntityBase):
     pass
 
