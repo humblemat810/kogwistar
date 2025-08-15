@@ -1,5 +1,8 @@
 # tests/conftest.py
 import os, shutil, uuid, json
+import sys
+import pathlib
+sys.path.insert(0, str(pathlib.Path(__file__).parent.parents))
 import pytest
 from graph_knowledge_engine.engine import GraphKnowledgeEngine
 from graph_knowledge_engine.models import (
