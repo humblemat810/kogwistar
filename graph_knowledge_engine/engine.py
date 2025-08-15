@@ -60,7 +60,7 @@ from joblib import Memory
 import json, re, uuid
 
 from .models import ReferenceSession, MentionVerification, LLMGraphExtraction, LLMNode, LLMEdge, Node, Edge, Document
-from typing import (Callable, Optional, Tuple, Any, Dict, Iterable, Sequence,
+from typing import (Callable, Optional, Tuple, Any, Dict, Iterable, Sequence, Literal,
                     List, Type, TypeVar, Union)
 import math
 from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction
@@ -903,9 +903,27 @@ class GraphKnowledgeEngine:
         self.verifier: Verifier = verifier or DefaultVerifier(self, VerifierConfig(use_embeddings=False))
         self.merge_policy = merge_policy or PreferExistingCanonical(self)
         load_dotenv()
-        
+        from chromadb.utils.embedding_functions import ONNXMiniLM_L6_V2
+        ef = ONNXMiniLM_L6_V2(preferred_providers=["CUDAExecutionProvider", ]) # 'TensorrtExecutionProvider'
+        try:
+            ef('test')
+        except:
+            ef = ONNXMiniLM_L6_V2(preferred_providers=['CPUExecutionProvider'])
+            try:
+                ef("test")
+            except:
+                pro = ef.ort.get_available_providers()[0]
+                ef = ONNXMiniLM_L6_V2(preferred_providers=[pro])
+                ef("test")
         self._alias_books: dict[str, AliasBook] = {}
-        self._ef = embedding_function or embedding_functions.DefaultEmbeddingFunction()
+        import ollama
+        # ollama.embeddings(model='all-minilm:l6-v2', prompt='The sky is blue because of Rayleigh scattering')
+        import functools
+        _emb = functools.partial(ollama.embeddings, model='all-minilm:l6-v2')
+        def ef(prompt):
+            return _emb(prompt = prompt)
+            
+        self._ef = ef#embedding_function or ef #embedding_functions.DefaultEmbeddingFunction()
         # Keep a 1-string convenience to reuse in cosine checks
         # convenience: single-string embed for verifiers
         def _embed_one(text: str):
@@ -1371,6 +1389,7 @@ class GraphKnowledgeEngine:
                 properties=ln.properties,
                 references=_normalize_refs(ln.references, doc_id, fallback_snip),
                 doc_id=doc_id,
+                embedding=self._ef(f"{ln.label}: {ln.summary}")[0]
             )
             self.add_node(n, doc_id=doc_id)
             node_ids.append(n.id)
@@ -1393,6 +1412,7 @@ class GraphKnowledgeEngine:
                 source_edge_ids=getattr(le, "source_edge_ids", None),
                 target_edge_ids=getattr(le, "target_edge_ids", None),
                 doc_id=doc_id,
+                embedding=self._ef(f"{ln.label}: {ln.summary}")[0]
             )
             self.add_edge(e, doc_id=doc_id)
             edge_ids.append(e.id)

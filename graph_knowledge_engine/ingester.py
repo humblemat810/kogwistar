@@ -171,7 +171,7 @@ class BaseDocumentGraphIngestor:
             
         final = current_layer[0]
         final_node_id = self._ensure_node(document.id, final)  # ensures final chunk node
-        docnode_id = self._ensure_document_node(document.id, title=document.metadata.get("title") if document.metadata else None)
+        docnode_id = self._ensure_document_node(document.id, title=document.metadata.get("title") if document.metadata else None, leaves = leaves)
 
         # wire asymmetric, document-level relationship
         self._bi_edge(
@@ -187,10 +187,11 @@ class BaseDocumentGraphIngestor:
             "levels": level,
             "final_node_id": self._as_node(document.id, current_layer[0]).id if current_layer else None,
         }
-    def _ensure_document_node(self, doc_id: str, *, title: str | None = None) -> str:
+    def _ensure_document_node(self, doc_id: str, *, title: str | None = None, leaves) -> str:
         node_id = f"docnode:{doc_id}"
         if not self.engine._exists_node(node_id):
             from graph_knowledge_engine.models import Node, ReferenceSession
+            embeddings = self.engine.document_collection.get(doc_id, include = ['embeddings'])['embeddings'][0]
             n = Node(
                 id=node_id,
                 label=title or f"Document {doc_id}",
@@ -199,10 +200,12 @@ class BaseDocumentGraphIngestor:
                 references=[ReferenceSession(
                     collection_page_url=f"document_collection/{doc_id}",
                     document_page_url=f"document/{doc_id}",
-                    start_page=1, end_page=1, start_char=0, end_char=0, snippet=None
+                    start_page=1, end_page=len(leaves), start_char=0, end_char=len(leaves[-1].text), snippet=None,
+                    doc_id = doc_id
                 )],
                 doc_id=doc_id,
-                properties={"kind": "document_root"}
+                properties={"kind": "document_root"},
+                embedding = embeddings
             )
             self.engine.add_node(n, doc_id=doc_id)
         return node_id
@@ -416,7 +419,7 @@ class BaseDocumentGraphIngestor:
                 id=f"leafnode:{uuid.uuid4() if self.use_uuid else i}",
                 label=f"raw_text_chunk {i}",
                 type="entity",
-                summary=(leaf.text[:240] + "…") if len(leaf.text) > 240 else leaf.text,
+                summary=leaf.text,
                 references=[
                     self._ref(doc_id, leaf.span, snippet=leaf.text[:160])
                 ],
@@ -425,6 +428,7 @@ class BaseDocumentGraphIngestor:
                     "level": -1,
                     "source_leaf_id": leaf.id,
                 },
+                # embedding = self.engine._ef(leaf.text)[0]
             )
             if not self.engine._exists_node(n.id):
                 self.engine.add_node(n, doc_id=doc_id)
@@ -432,14 +436,17 @@ class BaseDocumentGraphIngestor:
         return nodes
 
     def _as_node(self, doc_id: str, ch: SummaryChunk) -> Node:
+        label = f"summary:{ch.title}"
+        
         return Node(
             id=f"{ch.id}",  # stable per chunk
-            label=f"summary:{ch.title}",
+            label=label,
             type="entity",
             summary=ch.summary,
             references=[self._ref(doc_id, ch.span, snippet=ch.summary[:160])],
             doc_id=doc_id,
             properties={"level": ch.level},
+            # embedding=self.engine._ef(f"{label}: {ch.summary}")[0]
         )
 
     def _ensure_node(self, doc_id: str, ch: SummaryChunk) -> str:
@@ -497,6 +504,7 @@ class BaseDocumentGraphIngestor:
                 summary=ch.summary,
                 references=[ref],
                 doc_id=doc_id,                     # will also be set by engine.add_node(doc_id=...) but harmless here
+                # embedding = self.engine._ef(ch.summary)[0]
             )
 
             # Idempotent add (don’t recreate if present)

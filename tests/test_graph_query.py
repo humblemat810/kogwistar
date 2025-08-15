@@ -45,6 +45,15 @@ class FakeCollection:
         if include and "metadatas" in include:
             out["metadatas"] = metas
         return out
+    def query(self, query_texts=None, query_embeddings=None, n_results=5):
+        """Very small stub: if text provided, returns ids whose document JSON contains the text (case-insensitive)."""
+        if query_texts:
+            text = (query_texts[0] or "").lower()
+            ranked = [rid for rid, doc in self._docs.items() if isinstance(doc, str) and text in doc.lower()]
+        else:
+            # if embeddings are provided, just return the first n ids deterministically
+            ranked = list(self._docs.keys())
+        return {"ids": [ranked[: max(1, int(n_results))]]}
 
 # very small subset of Chroma's where filter: supports equality on flat keys, $and, and $in
 
@@ -187,3 +196,10 @@ def test_document_subgraph(small_graph):
     assert "A" in sg["seed_ids"]
     # should pull B via E1
     assert any(n.id == "B" for n in sg["nodes"])
+
+def test_semantic_seed_then_expand_text(small_graph):
+    e, doc_id = small_graph
+    gq = GraphQuery(e)
+    out = gq.semantic_seed_then_expand_text("smok", top_k=5, hops=1)
+    assert out["seeds"]  # should find A or related
+    assert isinstance(out["layers"], list) and out["layers"]

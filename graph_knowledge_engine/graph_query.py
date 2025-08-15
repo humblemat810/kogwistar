@@ -21,6 +21,7 @@ class GraphQuery:
       - shortest_path(src_id, dst_id, doc_id=None, max_depth=8)
       - find_edges(relation=None, src_label_contains=None, tgt_label_contains=None, doc_id=None)
       - semantic_seed_then_expand(query_embedding, top_k=5, hops=1)
+      - semantic_seed_then_expand_text(query_text, top_k=5, hops=1)
 
     New higher‑level helpers:
       - nodes_in_doc(doc_id) / edges_in_doc(doc_id)
@@ -285,5 +286,13 @@ class GraphQuery:
     def semantic_seed_then_expand(self, query_embedding: List[float], *, top_k: int = 5, hops: int = 1):
         hits = self.e.node_collection.query(query_embeddings=[query_embedding], n_results=top_k)
         seed_ids = [nid for nid in (hits.get("ids") or [[]])[0]]
+        layers = self.k_hop(seed_ids, k=hops)
+        return {"seeds": seed_ids, "layers": layers}
+    def semantic_seed_then_expand_text(self, query_text: str, *, top_k: int = 5, hops: int = 1):
+        """Seed by a TEXT query using the collection's default embedding function, then expand K hops.
+        This avoids any custom embedding pipeline and uses the underlying vector store's default embeddings.
+        """
+        hits = self.e.node_collection.query(query_texts=[query_text], n_results=top_k)
+        seed_ids = [nid for nid in (hits.get("ids") or [[]])[0] if nid]
         layers = self.k_hop(seed_ids, k=hops)
         return {"seeds": seed_ids, "layers": layers}
