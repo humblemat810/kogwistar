@@ -195,7 +195,7 @@ class BaseDocumentGraphIngestor:
             n = Node(
                 id=node_id,
                 label=title or f"Document {doc_id}",
-                type="document",
+                type="entity",
                 summary="Represents the whole source document.",
                 references=[ReferenceSession(
                     collection_page_url=f"document_collection/{doc_id}",

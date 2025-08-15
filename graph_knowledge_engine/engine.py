@@ -395,6 +395,45 @@ class AliasBook:
 # "base62"        -> N~<22ch> / E~<22ch> (no legend, fully deterministic)
 ID_STRATEGY = "session_alias"  # or "base62"
 _DOC_ALIAS = "::DOC::"  # short, token-friendly
+
+from chromadb.api.types import EmbeddingFunction, Documents, Embeddings
+import ollama
+# ollama.embeddings(model='all-minilm:l6-v2', prompt='The sky is blue because of Rayleigh scattering')
+import functools
+
+
+class CustomEmbeddingFunction(EmbeddingFunction):
+    @staticmethod
+    def name():
+        return "default"
+    def __init__(self, model_name: str = 'all-minilm:l6-v2'):
+        import numpy as np
+        _emb = functools.partial(ollama.embeddings, model=model_name)
+        def ef(prompts: list[str]):
+            
+            res = []
+            for p in prompts:
+                r = _emb(prompt = p).embedding
+                norm_val = np.linalg.norm(r)
+                res.append(r / norm_val)
+            
+            return res
+        self._emb = ef
+        # Initialize your embedding model here
+        # For example, if using Sentence Transformers:
+        # from sentence_transformers import SentenceTransformer
+        # self.model = SentenceTransformer(model_name)
+        pass
+
+    def __call__(self, input: Documents) -> Embeddings:
+        # Implement your embedding logic here
+        # This method should take a list of strings (documents)
+        # and return a list of lists of floats (embeddings)
+
+        # Example with a placeholder for your model's embedding logic:
+        embeddings = self._emb(input)
+        return embeddings
+
 class GraphKnowledgeEngine:
     """High-level orchestration for extracting, storing, and adjudicating knowledge graph data."""
 
@@ -903,25 +942,20 @@ class GraphKnowledgeEngine:
         self.verifier: Verifier = verifier or DefaultVerifier(self, VerifierConfig(use_embeddings=False))
         self.merge_policy = merge_policy or PreferExistingCanonical(self)
         load_dotenv()
-        from chromadb.utils.embedding_functions import ONNXMiniLM_L6_V2
-        ef = ONNXMiniLM_L6_V2(preferred_providers=["CUDAExecutionProvider", ]) # 'TensorrtExecutionProvider'
-        try:
-            ef('test')
-        except:
-            ef = ONNXMiniLM_L6_V2(preferred_providers=['CPUExecutionProvider'])
-            try:
-                ef("test")
-            except:
-                pro = ef.ort.get_available_providers()[0]
-                ef = ONNXMiniLM_L6_V2(preferred_providers=[pro])
-                ef("test")
-        self._alias_books: dict[str, AliasBook] = {}
-        import ollama
-        # ollama.embeddings(model='all-minilm:l6-v2', prompt='The sky is blue because of Rayleigh scattering')
-        import functools
-        _emb = functools.partial(ollama.embeddings, model='all-minilm:l6-v2')
-        def ef(prompt):
-            return _emb(prompt = prompt)
+        # from chromadb.utils.embedding_functions import ONNXMiniLM_L6_V2
+        # ef = ONNXMiniLM_L6_V2(preferred_providers=["CUDAExecutionProvider", ]) # 'TensorrtExecutionProvider'
+        # try:
+        #     ef('test')
+        # except:
+        #     ef = ONNXMiniLM_L6_V2(preferred_providers=['CPUExecutionProvider'])
+        #     try:
+        #         ef("test")
+        #     except:
+        #         pro = ef.ort.get_available_providers()[0]
+        #         ef = ONNXMiniLM_L6_V2(preferred_providers=[pro])
+        #         ef("test")
+        # self._alias_books: dict[str, AliasBook] = {}
+        ef = CustomEmbeddingFunction()
             
         self._ef = ef#embedding_function or ef #embedding_functions.DefaultEmbeddingFunction()
         # Keep a 1-string convenience to reuse in cosine checks
@@ -943,13 +977,15 @@ class GraphKnowledgeEngine:
         self.node_collection = self.chroma_client.get_or_create_collection(
             "nodes", embedding_function=self._ef
         )
+        self.node_collection.get(limit = 1)
+        self.node_collection.query(query_texts = ['hello world'])
         self.edge_collection = self.chroma_client.get_or_create_collection(
             "edges", embedding_function=self._ef
         )
-        self.edge_endpoints_collection = self.chroma_client.get_or_create_collection("edge_endpoints")
-        self.document_collection = self.chroma_client.get_or_create_collection("documents")
-        self.domain_collection = self.chroma_client.get_or_create_collection("domains")
-        self.node_docs_collection = self.chroma_client.get_or_create_collection("node_docs")
+        self.edge_endpoints_collection = self.chroma_client.get_or_create_collection("edge_endpoints", embedding_function=self._ef)
+        self.document_collection = self.chroma_client.get_or_create_collection("documents", embedding_function=self._ef)
+        self.domain_collection = self.chroma_client.get_or_create_collection("domains", embedding_function=self._ef)
+        self.node_docs_collection = self.chroma_client.get_or_create_collection("node_docs", embedding_function=self._ef)
         self.llm = AzureChatOpenAI(
             deployment_name=os.getenv("OPENAI_DEPLOYMENT_NAME_GPT4_1"),
             model_name=os.getenv("OPENAI_MODEL_NAME_GPT4_1"),
