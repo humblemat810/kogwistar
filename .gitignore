@@ -5,3 +5,4 @@ chroma_db
 __pycache__
 doc_chroma*
 .chroma-test
+small_graph
