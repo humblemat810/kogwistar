@@ -975,17 +975,21 @@ class GraphKnowledgeEngine:
         )
         # IMPORTANT: pass embedding_function to vector collections
         self.node_collection = self.chroma_client.get_or_create_collection(
-            "nodes", embedding_function=self._ef
+            "nodes", embedding_function=self._ef, metadata={"hnsw:space": "cosine"}
         )
         self.node_collection.get(limit = 1)
         self.node_collection.query(query_texts = ['hello world'])
         self.edge_collection = self.chroma_client.get_or_create_collection(
-            "edges", embedding_function=self._ef
+            "edges", embedding_function=self._ef, metadata={"hnsw:space": "cosine"}
         )
-        self.edge_endpoints_collection = self.chroma_client.get_or_create_collection("edge_endpoints", embedding_function=self._ef)
-        self.document_collection = self.chroma_client.get_or_create_collection("documents", embedding_function=self._ef)
-        self.domain_collection = self.chroma_client.get_or_create_collection("domains", embedding_function=self._ef)
-        self.node_docs_collection = self.chroma_client.get_or_create_collection("node_docs", embedding_function=self._ef)
+        self.edge_endpoints_collection = self.chroma_client.get_or_create_collection("edge_endpoints", embedding_function=self._ef, 
+                                metadata={"hnsw:space": "cosine"})
+        self.document_collection = self.chroma_client.get_or_create_collection("documents", embedding_function=self._ef, 
+                                metadata={"hnsw:space": "cosine"})
+        self.domain_collection = self.chroma_client.get_or_create_collection("domains", embedding_function=self._ef, 
+                                metadata={"hnsw:space": "cosine"})
+        self.node_docs_collection = self.chroma_client.get_or_create_collection("node_docs", embedding_function=self._ef, 
+                                metadata={"hnsw:space": "cosine"})
         self.llm = AzureChatOpenAI(
             deployment_name=os.getenv("OPENAI_DEPLOYMENT_NAME_GPT4_1"),
             model_name=os.getenv("OPENAI_MODEL_NAME_GPT4_1"),
