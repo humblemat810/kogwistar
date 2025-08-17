@@ -185,6 +185,7 @@ class BaseDocumentGraphIngestor:
             "document_id": document.id,
             "leaf_count": len(leaves),
             "levels": level,
+            "chunk_ids" : [n.id for n in leaf_nodes],
             "final_node_id": self._as_node(document.id, current_layer[0]).id if current_layer else None,
         }
     def _ensure_document_node(self, doc_id: str, *, title: str | None = None, leaves) -> str:

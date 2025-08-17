@@ -954,7 +954,7 @@ class GraphKnowledgeEngine:
         #         pro = ef.ort.get_available_providers()[0]
         #         ef = ONNXMiniLM_L6_V2(preferred_providers=[pro])
         #         ef("test")
-        # self._alias_books: dict[str, AliasBook] = {}
+        self._alias_books: dict[str, AliasBook] = {}
         ef = CustomEmbeddingFunction()
             
         self._ef = ef#embedding_function or ef #embedding_functions.DefaultEmbeddingFunction()

@@ -4,7 +4,57 @@
     // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
     "version": "0.2.0",
     "configurations": [
-        {"name":"Python Debugger: Current File","type":"debugpy","request":"launch","program":"${file}","console":"integratedTerminal"},
+        {
+            "name": "server mcp with admin",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "uvicorn",
+            "args": [
+                "server_mcp_with_admin:app",
+                // "--reload",
+                "--port",
+                "8765",
+                "--log-level", "debug"
+            ],
+            "jinja": true
+        },
+        {
+            "name": "Diagnostic, insert and check relationship exist",
+            "type": "debugpy",
+            "request": "launch",
+            "program": ".\\diagnostic\\mcp_diag_seed.py",
+            "console": "integratedTerminal",
+            "args": ["--url", "http://127.0.0.1:8765/mcp/", "--doc-id", "D1", "--text", "Smoking causes lung cancer.", "--relation", "causes"]
+        },
+        {
+            "name": "Diagnostic, delete inserted",
+            "type": "debugpy",
+            "request": "launch",
+            "program": ".\\diagnostic\\mcp_diag_seed.py",
+            "console": "integratedTerminal",
+            "args": ["--url", "http://127.0.0.1:8765/mcp/", "--doc-id", "D1", "--delete"]
+        },
+        {
+            "name": "FastMCP tool server",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "uvicorn",
+            "args": [
+                "server_mcp:mcp.streamable_http_app",
+                "--reload",
+                "--factory",
+                "--port",
+                "8765"
+            ],
+            "jinja": true
+        },
+        {
+            "name": "AgentMCP ",
+            "type": "debugpy",
+            "request": "launch",
+            "program": ".\\graph_navigation_agent\\agent_mcp_l.py",
+            "console": "integratedTerminal"
+        },
         {
             "name": "Python Debugger: Current File",
             "type": "debugpy",
