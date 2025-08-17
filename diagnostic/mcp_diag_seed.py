@@ -136,7 +136,7 @@ async def main():
 
     finally:
         # Properly EXIT the context (so sockets/processes are cleaned up)
-        await asyncio.gather(*(s.__aexit__(None, None, None) for s in ctxs ))
+        await asyncio.gather(*(s.__aexit__(None, None, None) for s in sessions ))
 
     
 
