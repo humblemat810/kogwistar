@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=69", "wheel", "setuptools-scm[toml]>=8"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "Kogwita"
+dynamic = ["version"]
+description = "Knowledge engine + MCP server for graph & document querying"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+authors = [{ name = "Peter Chan", email = "humblemat@gmail.com" }]
+
+dependencies = [
+  "pydantic>=2.6",
+  "chromadb>=0.5",
+  "anyio>=4.0",
+  "fastapi>=0.111",
+  "uvicorn[standard]>=0.30",
+  "mcp>=1.2",
+  "langchain>=0.3.27",
+  "langgraph>=0.6.5",
+  "ollama>=0.5.3",
+  "pygraphviz>=1.14",
+  "RapidFuzz>=3.13.0",
+  "chromadb>=1.0.15",
+  "fastmcp==2.11.3",
+  "httpx>=0.28.1"
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-asyncio>=1.1.0", "ruff>=0.5", "mypy>=1.8", "build", "twine"]
+mcp-adapter = ["langchain-mcp-adapters>=0.0.8"]
+
+
+[project.scripts]
+knowledge-mcp = "server_mcp_with_admin:app"
+
+
+[tool.setuptools]
+package-dir = {"" = ""}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["graph_knowledge_engine*"]
+exclude = ["*.tests*", "*.test*", "tests*", "examples*", "diagnostic*"]
