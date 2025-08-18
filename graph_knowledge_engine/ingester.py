@@ -105,6 +105,44 @@ class BaseDocumentGraphIngestor:
         self._cached_summarize = self.memory.cache(self._summarize_call, ignore=["self"])
         self._cached_group = self.memory.cache(self._group_call, ignore=["self"])
 
+    # ---------- NEW: page coercion helper ----------
+    def _coerce_pages(
+        self,
+        *,
+        document: Document,
+        pages: Optional[Sequence[str]] = None,
+    ) -> Optional[List[str]]:
+        """
+        Best-effort normalize "pages" input:
+          - if pages argument is provided -> list[str]
+          - elif document.content is a JSON array string -> list[str]
+          - elif content contains form-feed '\f' -> split into pages
+          - else -> None (fall back to greedy paragraph chunking)
+        """
+        if pages is not None:
+            # Ensure it's a list[str]
+            out = [str(p) for p in pages if isinstance(p, (str, bytes))]
+            return out if out else None
+
+        content = document.content or ""
+        # JSON array? (e.g. '["page1", "page2"]' or [{"text": "..."}])
+        if content.lstrip().startswith("["):
+            try:
+                arr = json.loads(content)
+                if isinstance(arr, list):
+                    if arr and isinstance(arr[0], dict) and "text" in arr[0]:
+                        return [str(x.get("text", "")) for x in arr]
+                    return [str(x) for x in arr]
+            except Exception:
+                pass  # not fatal; we fall through to the other heuristics
+
+        # Form-feed page breaks respected (existing behavior)
+        if "\f" in content:
+            raw_pages = [p for p in (seg.strip() for seg in content.split("\f")) if p]
+            return raw_pages if raw_pages else None
+
+        # No explicit page structure
+        return None
     # ---------- public entrypoints ----------
 
     def ingest_document(
@@ -115,6 +153,7 @@ class BaseDocumentGraphIngestor:
         group_size: int = 5,
         max_levels: int = 6,
         force_concat_after_levels: int = 3,
+        pages: Optional[Sequence[str]] = None,
     ) -> dict:
         """
         Full side-car pipeline:
@@ -128,8 +167,9 @@ class BaseDocumentGraphIngestor:
         # Ensure the raw document row exists (this does not trigger any LLM extraction)
         self.engine.add_document(document)
 
+        coerced_pages = self._coerce_pages(document=document, pages=pages)
         # Step 1: split
-        leaves = self._split_into_leaves(document.content or "", split_max_chars, document.id)
+        leaves = self._split_into_leaves(document.content or "", split_max_chars, document.id, pages=coerced_pages)
 
         # Persist leaf nodes (type="page" or "leaf") so relationships have concrete endpoints
         leaf_nodes = self._persist_leaf_nodes(document.id, leaves)
@@ -212,7 +252,17 @@ class BaseDocumentGraphIngestor:
         return node_id
     # ---------- splitting ----------
 
-    def _split_into_leaves(self, text: str, max_chars: int, doc_id) -> List[LeafChunk]:
+    def _split_into_leaves(self, text: str, max_chars: int, doc_id, 
+                *,
+                pages: Optional[List[str]] = None,) -> List[LeafChunk]:
+        if pages:
+            leaves: List[LeafChunk] = []
+            for i, page in enumerate(pages, start=1):
+                pid = f"leaf:{uuid.uuid4() if self.use_uuid else i}|doc:{doc_id}"
+                span = Span(start_page=i, end_page=i, start_char=0, end_char=len(page))
+                leaves.append(LeafChunk(id=pid, text=page, span=span))
+            return leaves
+        
         if "\f" in text:  # respect page breaks if present
             raw_pages = [p for p in (seg.strip() for seg in text.split("\f")) if p]
             leaves: List[LeafChunk] = []

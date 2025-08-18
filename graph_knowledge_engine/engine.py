@@ -134,6 +134,130 @@ def chroma_docs_to_pydantic(objs: dict, model_cls: Type[T]) -> List[T]:
     if docs and isinstance(docs[0], list):
         docs = docs[0]
     return [model_cls.model_validate_json(doc) for doc in docs]
+
+from __future__ import annotations
+import json, re
+from typing import Any, Iterable, List, Dict, Union, Optional
+
+PageLike = Union[str, Dict[str, Any]]
+
+def _split_pages_from_text(raw: str) -> List[Dict[str, Any]]:
+    """
+    Heuristics:
+      - Prefer form-feed splits (\f) if present.
+      - Else split on common page headers like 'Page 1', 'Page: 2', etc.
+      - Else treat whole text as page 1.
+    """
+    if not raw:
+        return []
+
+    # 1) Form-feed first (common in OCR / PDFs)
+    if "\f" in raw:
+        parts = raw.split("\f")
+        return [{"page_number": i+1, "text": p.strip()} for i, p in enumerate(parts) if p.strip()]
+
+    # 2) Simple page header detection
+    p = re.split(r"(?:^|\n)\s*Page[:\s]+(\d+)\s*(?:\n|$)", raw, flags=re.IGNORECASE)
+    if len(p) > 1:
+        out, i = [], 0
+        # p looks like [prefix, num1, chunk1, num2, chunk2, ...]
+        while i < len(p):
+            if i == 0 and p[i].strip():
+                out.append({"page_number": 1, "text": p[i].strip()})
+                i += 1
+                continue
+            if i + 2 <= len(p)-1:
+                try:
+                    num = int(p[i+1])
+                except Exception:
+                    num = None
+                txt = p[i+2].strip()
+                if txt:
+                    out.append({"page_number": num or (len(out)+1), "text": txt})
+                i += 3
+            else:
+                break
+        if out:
+            return out
+
+    # 3) Fallback: one page
+    return [{"page_number": 1, "text": raw.strip()}]
+
+def _coerce_pages(content_or_pages: Any, *, default_page_start: int = 1) -> List[Dict[str, Any]]:
+    """
+    Normalize many shapes to a list of {'page_number': int, 'text': str}.
+
+    Accepts:
+      - raw string (split by \f or headers → pages)
+      - list[str] (each element is page text)
+      - list[dict] with keys {'page'|'page_number', 'text'|'content'}
+      - dict with a 'pages' field (any of the above inside)
+      - JSON string of any of the above
+
+    NEVER raises on shape; returns [] if nothing usable.
+    """
+    def as_page_dict(x: PageLike, idx0: int) -> Optional[Dict[str, Any]]:
+        if isinstance(x, str):
+            t = x.strip()
+            if not t:
+                return None
+            return {"page_number": default_page_start + idx0, "text": t}
+        if isinstance(x, dict):
+            # map flexible keys
+            num = x.get("page_number") or x.get("pdf_page_number")
+            if num is None:
+                num = x.get("page")
+            try:
+                num = int(num) if num is not None else (default_page_start + idx0)
+            except Exception:
+                num = default_page_start + idx0
+            txt = x.get("text")
+            if txt is None:
+                txt = x.get("content")
+            if isinstance(txt, str) and txt.strip():
+                return {"page_number": num, "text": txt.strip()}
+            return None
+        return None
+
+    # JSON string wrapper?
+    if isinstance(content_or_pages, str):
+        s = content_or_pages.strip()
+        # if it looks like json pages, try parse; else split text
+        if s and s[:1] in "[{" and s[-1:] in "]}" :
+            try:
+                parsed = json.loads(s)
+                return _coerce_pages(parsed, default_page_start=default_page_start)
+            except Exception:
+                pass
+        # treat as raw document text
+        return _split_pages_from_text(s)
+
+    # dict with 'pages'
+    if isinstance(content_or_pages, dict):
+        if "pages" in content_or_pages:
+            pages = content_or_pages.get("pages") or []
+            out: List[Dict[str, Any]] = []
+            for i, item in enumerate(pages):
+                row = as_page_dict(item, i)
+                if row:
+                    out.append(row)
+            return out
+        # or a single page-like dict
+        row = as_page_dict(content_or_pages, 0)
+        return [row] if row else []
+
+    # list input
+    if isinstance(content_or_pages, list):
+        out: List[Dict[str, Any]] = []
+        for i, item in enumerate(content_or_pages):
+            row = as_page_dict(item, i)
+            if row:
+                out.append(row)
+        return out
+
+    # unknown shape → empty (caller decides fallback)
+    return []
+
 def _normalize_chroma_result(objs: Dict[str, Any]) -> Tuple[List[str], List[str], List[Dict[str, Any]]]:
     """
     Normalize Chroma get()/query() outputs into parallel lists:
@@ -696,7 +820,13 @@ class GraphKnowledgeEngine:
                 )
                 self.add_edge(edge, doc_id=doc_id)
                 edges_added += 1
-
+        return {
+            "document_id": doc_id,
+            "node_ids": nodes_added,
+            "edge_ids": edges_added,
+            "nodes_added": len(nodes_added),
+            "edges_added": len(edges_added),
+        }
         return {"nodes_added": nodes_added, "edges_added": edges_added}
     def _resolve_llm_ids(self, doc_id: str, parsed: LLMGraphExtraction) -> None:
         """
@@ -904,6 +1034,63 @@ class GraphKnowledgeEngine:
         if key not in self._alias_books:
             self._alias_books[key] = AliasBook()
         return self._alias_books[key]
+    
+    @classmethod
+    def _coerce_pages(cls, content_or_pages):# -> list[tuple[int, str]] | list[Any] | Any:
+        """
+        Normalize many shapes into a list[(page_no:int, text:str)].
+
+        Accepts:
+        - str (raw text)                      ->  [(1, text)] or split on \f if present
+        - str (JSON)                          ->  tries json.loads:
+                * ["page text", ...]
+                * [{"page": 3, "text": "..."}, ...]
+                * {"1": "text", "2": "text"} (mapping of page->text)
+        - list[str]                           ->  [(1, item1), (2, item2), ...]
+        - list[tuple[int, str]] or list[list] ->  as-is (page, text)
+        - dict[int|str, str]                  ->  sorted by page key
+        """
+        import json, re
+
+        # (A) Python containers first
+        if isinstance(content_or_pages, dict):
+            items = sorted(((int(k), v) for k, v in content_or_pages.items()), key=lambda x: x[0])
+            return [(p, str(t or "")) for p, t in items]
+
+        if isinstance(content_or_pages, (list, tuple)):
+            if not content_or_pages:
+                return []
+            first = content_or_pages[0]
+            # list of (page, text)
+            if isinstance(first, (list, tuple)) and len(first) == 2:
+                return [(int(p), str(t or "")) for p, t in content_or_pages]
+            # list of dicts with page/text
+            if isinstance(first, dict) and "text" in first:
+                out = []
+                for i, item in enumerate(content_or_pages, start=1):
+                    p = int(item.get("page", i))
+                    out.append((p, str(item.get("text", "") or "")))
+                return out
+            # list of plain page texts
+            return [(i, str(t or "")) for i, t in enumerate(content_or_pages, start=1)]
+
+        # (B) Strings: try JSON first
+        if isinstance(content_or_pages, str):
+            s = content_or_pages.strip()
+            if s.startswith("{") or s.startswith("["):
+                try:
+                    loaded = json.loads(s)
+                    return cls._coerce_pages(loaded)
+                except Exception:
+                    pass
+            # raw text with optional form-feed page breaks
+            if "\f" in s:
+                parts = s.split("\f")
+                return [(i, p) for i, p in enumerate(parts, start=1)]
+            return [(1, s)]
+
+        # fallback: one page
+        return [(1, str(content_or_pages))]
     # ----------------------------
     # Init
     # ----------------------------
@@ -1404,58 +1591,66 @@ class GraphKnowledgeEngine:
 
         # ensure doc row exists (idempotent)
         self.add_document(document)
-
-        
-
         # now validate (ensures no dangling refs to *other* docs)
         self._preflight_validate(parsed, doc_id)
+        self.ingest_with_toposort(parsed, doc_id = doc_id)
+
+        
 
         # persist and collect ids
         node_ids, edge_ids = [], []
         fallback_snip = (document.content[:160] + "…") if document.content else None
+        _ = _alloc_real_ids(parsed)  # rewrite in place
+        order, id2kind, id2obj = self._build_deps(parsed)
 
-        for ln in parsed.nodes:
-            ln.references = self._dealias_refs(ln.references, document.id, fallback_snip)
-            # skip-if-exists mode
-            if mode == "skip-if-exists":
-                got = self.node_collection.get(ids=[ln.id])
-                if got.get("ids"):  # already there
-                    node_ids.append(ln.id)
-                    continue
+        nodes_added = edges_added = 0
+        for rid in order:
+            kind, obj = id2kind[rid], id2obj[rid]
+            # for ln in parsed.nodes:
+            if kind == 'node':
+                ln: Node = obj
+                ln.references = self._dealias_refs(ln.references, document.id, fallback_snip)
+                # skip-if-exists mode
+                if mode == "skip-if-exists":
+                    got = self.node_collection.get(ids=[ln.id])
+                    if got.get("ids"):  # already there
+                        node_ids.append(ln.id)
+                        continue
 
-            n = Node(
-                id=ln.id, label=ln.label, type=ln.type, summary=ln.summary,
-                domain_id=ln.domain_id, canonical_entity_id=ln.canonical_entity_id,
-                properties=ln.properties,
-                references=_normalize_refs(ln.references, doc_id, fallback_snip),
-                doc_id=doc_id,
-                embedding=self._ef(f"{ln.label}: {ln.summary}")[0]
-            )
-            self.add_node(n, doc_id=doc_id)
-            node_ids.append(n.id)
+                n = Node(
+                    id=ln.id, label=ln.label, type=ln.type, summary=ln.summary,
+                    domain_id=ln.domain_id, canonical_entity_id=ln.canonical_entity_id,
+                    properties=ln.properties,
+                    references=_normalize_refs(ln.references, doc_id, fallback_snip),
+                    doc_id=doc_id,
+                    embedding=self._ef(f"{ln.label}: {ln.summary}")[0]
+                )
+                self.add_node(n, doc_id=doc_id)
+                node_ids.append(n.id)
+            elif kind == 'edge':
+            # for le in parsed.edges:
+                le: Edge = obj
+                le.references = self._dealias_refs(le.references, document.id, fallback_snip)
+                if mode == "skip-if-exists":
+                    got = self.edge_collection.get(ids=[le.id])
+                    if got.get("ids"):
+                        edge_ids.append(le.id)
+                        continue
 
-        for le in parsed.edges:
-            le.references = self._dealias_refs(le.references, document.id, fallback_snip)
-            if mode == "skip-if-exists":
-                got = self.edge_collection.get(ids=[le.id])
-                if got.get("ids"):
-                    edge_ids.append(le.id)
-                    continue
-
-            e = Edge(
-                id=le.id, label=le.label, type=le.type, summary=le.summary,
-                domain_id=le.domain_id, canonical_entity_id=le.canonical_entity_id,
-                properties=le.properties,
-                references=_normalize_refs(le.references, doc_id, fallback_snip),
-                relation=le.relation,
-                source_ids=le.source_ids, target_ids=le.target_ids,
-                source_edge_ids=getattr(le, "source_edge_ids", None),
-                target_edge_ids=getattr(le, "target_edge_ids", None),
-                doc_id=doc_id,
-                embedding=self._ef(f"{ln.label}: {ln.summary}")[0]
-            )
-            self.add_edge(e, doc_id=doc_id)
-            edge_ids.append(e.id)
+                e = Edge(
+                    id=le.id, label=le.label, type=le.type, summary=le.summary,
+                    domain_id=le.domain_id, canonical_entity_id=le.canonical_entity_id,
+                    properties=le.properties,
+                    references=_normalize_refs(le.references, doc_id, fallback_snip),
+                    relation=le.relation,
+                    source_ids=le.source_ids, target_ids=le.target_ids,
+                    source_edge_ids=getattr(le, "source_edge_ids", None),
+                    target_edge_ids=getattr(le, "target_edge_ids", None),
+                    doc_id=doc_id,
+                    embedding=self._ef(f"{ln.label}: {ln.summary}")[0]
+                )
+                self.add_edge(e, doc_id=doc_id)
+                edge_ids.append(e.id)
 
         return {
             "document_id": doc_id,
@@ -1888,26 +2083,40 @@ class GraphKnowledgeEngine:
         return self.adjudicator.batch_adjudicate_merges(pairs, question_code)
         
 
-    def add_page(self, *, document_id: str, page_text: str, page_number: int, auto_adjudicate: bool = True):
+    def add_page(self, *, document_id: str, page_text: str | List[str] | Dict[str, Any], page_number: int | None = None, auto_adjudicate: bool = True):
         """
         Ingest a single page of an existing document.
         - Reuses doc-scoped context with aliases (cheap tokens)
         - Stores nodes/edges tagged with doc_id
         - Auto-adjudicates within the document by default
         """
-        if not page_text or not isinstance(page_text, str):
+    
+        pages = _coerce_pages(
+            {"pages": [{"page_number": page_number, "text": page_text}]}
+            if isinstance(page_text, str)
+            else page_text  # already a list/dict form
+        )
+        if not pages:
             return {"document_id": document_id, "nodes_added": 0, "edges_added": 0}
 
-        # Optionally, you could attach a page-level Document record (virtual).
-        # For now we just ingest content with doc_id and normalize refs as usual.
-        res = self._ingest_text_with_llm(
-            doc_id=document_id,
-            content=page_text,
-            auto_adjudicate=auto_adjudicate,
-        )
-        # If you want to force mention spans to that page when missing,
-        # you could post-process the brand-new nodes/edges and ensure refs' start_page/end_page = page_number.
-        return {"document_id": document_id, "page": page_number, **res}
+        total_nodes = total_edges = 0
+        raw_by_page = []
+        for pg in pages:
+            res = self._ingest_text_with_llm(
+                doc_id=document_id,
+                content=pg["text"],
+                auto_adjudicate=auto_adjudicate,
+            )
+            total_nodes += res["nodes_added"]
+            total_edges += res["edges_added"]
+            raw_by_page.append({"page": pg["page_number"], "raw": res.get("raw")})
+
+        return {
+            "document_id": document_id,
+            "nodes_added": total_nodes,
+            "edges_added": total_edges,
+            "raw_by_page": raw_by_page,
+        }
     
     def verify_mentions_for_doc(
         self,
