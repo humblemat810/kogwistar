@@ -1,3 +1,4 @@
+from __future__ import annotations
 """_summary_
 
 Raises:
@@ -24,7 +25,7 @@ engine = GraphKnowledgeEngine(
     verifier=VF.ensemble_default,          # or VF.coverage_only / VF.strict_with_min_span
 )
 """
-from __future__ import annotations
+
 
 from typing import List, Optional, Dict, Any, Tuple, TypeAlias
 
@@ -135,7 +136,6 @@ def chroma_docs_to_pydantic(objs: dict, model_cls: Type[T]) -> List[T]:
         docs = docs[0]
     return [model_cls.model_validate_json(doc) for doc in docs]
 
-from __future__ import annotations
 import json, re
 from typing import Any, Iterable, List, Dict, Union, Optional
 

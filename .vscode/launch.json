@@ -10,7 +10,7 @@
             "request": "launch",
             "module": "uvicorn",
             "args": [
-                "server_mcp_with_admin:app",
+                "graph_knowledge_engine.server_mcp_with_admin:app",
                 // "--reload",
                 "--port",
                 "8765",
