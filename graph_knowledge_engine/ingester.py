@@ -7,7 +7,7 @@ from typing import Iterable, List, Optional, Sequence, Tuple
 from joblib import Memory
 from pydantic import BaseModel, Field
 from langchain_core.language_models import BaseChatModel
-
+import json
 from .engine import GraphKnowledgeEngine
 from .models import (
     Document,
@@ -45,6 +45,10 @@ class MiniChunk(BaseModel):
     start_char: int = Field(..., ge=0)
     end_char: int = Field(..., ge=0)
 
+class FinalSummariseResponse(BaseModel):
+    micro_chunks: MiniChunk = Field(
+        ..., description="Overall summarised content"
+    )
 class SummarizeResponse(BaseModel):
     micro_chunks: List[MiniChunk] = Field(
         ..., description="Ordered micro-chunks covering the input span without large overlap."
@@ -83,6 +87,7 @@ class SummaryChunk(BaseModel):
     summary: str
     span: Span
     level: int  # 0 for micro from leaf, 1 for first grouping, etc.
+    parent_ids : list[str]
 
 # -----------------------------
 # Core side-car ingestor
@@ -98,6 +103,7 @@ class BaseDocumentGraphIngestor:
         self.use_uuid = False
         self.memory = Memory(self.cache_dir or _default_cache_dir(getattr(self.engine, "persist_directory", None)), verbose=0)
         # prepare structured-output chains once to make cache keys stable
+        self._coerce_summarized_one_chain = self.llm.with_structured_output(FinalSummariseResponse, include_raw=False)
         self._summarize_chain = self.llm.with_structured_output(SummarizeResponse, include_raw=False)
         self._group_chain = self.llm.with_structured_output(GroupResponse, include_raw=False)
 
@@ -258,7 +264,7 @@ class BaseDocumentGraphIngestor:
         if pages:
             leaves: List[LeafChunk] = []
             for i, page in enumerate(pages, start=1):
-                pid = f"leaf:{uuid.uuid4() if self.use_uuid else i}|doc:{doc_id}"
+                pid = f"doc:{doc_id}|leaf:{uuid.uuid4() if self.use_uuid else i}"
                 span = Span(start_page=i, end_page=i, start_char=0, end_char=len(page))
                 leaves.append(LeafChunk(id=pid, text=page, span=span))
             return leaves
@@ -268,7 +274,7 @@ class BaseDocumentGraphIngestor:
             leaves: List[LeafChunk] = []
             pos_char = 0
             for i, page in enumerate(raw_pages, start=1):
-                pid = f"leaf:{uuid.uuid4() if self.use_uuid else i}"
+                pid = f"doc:{doc_id}|leaf:{uuid.uuid4() if self.use_uuid else i}"
                 span = Span(start_page=i, end_page=i, start_char=0, end_char=len(page))
                 leaves.append(LeafChunk(id=pid, text=page, span=span))
                 pos_char += len(page) + 1
@@ -287,8 +293,8 @@ class BaseDocumentGraphIngestor:
             if buf and cur_len + 2 + p_len > max_chars:
                 i += 1
                 chunk_text = "\n\n".join(buf)
-                cid = f"leaf:{uuid.uuid4() if self.use_uuid else i}"
-                span = Span(start_page=page_counter, end_page=page_counter, start_char=0, end_char=len(chunk_text))
+                cid = f"doc:{doc_id}|leaf:{uuid.uuid4() if self.use_uuid else i}"
+                span = Span(start_page=page_counter, end_page=page_counter, start_char=start_char_global, end_char=start_char_global+len(chunk_text))
                 leaves.append(LeafChunk(id=cid, text=chunk_text, span=span))
                 start_char_global += len(chunk_text) + 2
                 buf, cur_len = [p], p_len
@@ -301,15 +307,15 @@ class BaseDocumentGraphIngestor:
         if buf:
             i +=1
             chunk_text = "\n\n".join(buf)
-            cid = f"leaf:{uuid.uuid4() if self.use_uuid else i}|doc:{doc_id}"
-            span = Span(start_page=page_counter, end_page=page_counter, start_char=0, end_char=len(chunk_text))
+            cid = f"doc:{doc_id}|leaf:{uuid.uuid4() if self.use_uuid else i}"
+            span = Span(start_page=page_counter, end_page=page_counter, start_char=start_char_global, end_char=start_char_global +len(chunk_text))
             leaves.append(LeafChunk(id=cid, text=chunk_text, span=span))
 
-        return leaves or [LeafChunk(id=f"leaf:{uuid.uuid4() if self.use_uuid else i+1}|doc:{doc_id}", text=text.strip(), span=Span(start_page=1, end_page=1, start_char=0, end_char=len(text.strip())))]
+        return leaves or [LeafChunk(id=f"doc:{doc_id}|leaf:{uuid.uuid4() if self.use_uuid else i+1}", text=text.strip(), span=Span(start_page=1, end_page=1, start_char=0, end_char=len(text.strip())))]
 
     # ---------- LLM calls (cached) ----------
 
-    def _summarize_call(self, prompt_key: str, content: str): # -> SummarizeResponse:
+    def _summarize_call(self, prompt_key: str, content: str, final_summary = False): # -> SummarizeResponse | FinalSummariseResponse:
         # single, stable prompt
         system = (
             "You are a precise technical summarizer. "
@@ -322,7 +328,10 @@ class BaseDocumentGraphIngestor:
             ("system", system),
             ("human", f"TEXT:\n{content}"),
         ]
-        chain = self._summarize_chain  # structured to SummarizeResponse
+        if final_summary:
+            chain = self._coerce_summarized_one_chain  # structured to SummarizeResponse
+        else:
+            chain = self._summarize_chain # structured to SummarizeResponse
         to_return = chain.invoke(messages)
         return to_return
 
@@ -344,8 +353,10 @@ class BaseDocumentGraphIngestor:
     def _force_summarize(self, doc_id: str, chunks: list[SummaryChunk], *, level: int) -> SummaryChunk:
         combined_text = "\n".join(f"{i+1}. {c.summary}" for i, c in enumerate(chunks))
         key = f"force_sum:v1|doc:{doc_id}|level:{level}"
-        res = self._cached_summarize(key, combined_text)
-        summary_resp: SummarizeResponse = SummarizeResponse.model_validate(res)
+        res = self._cached_summarize(key, combined_text, final_summary = True)
+        temp = res.model_dump()
+        temp['micro_chunks'] = [temp['micro_chunks']]
+        summary_resp: SummarizeResponse = SummarizeResponse.model_validate(temp)
         # expect exactly one micro_chunk back
         mc = summary_resp.micro_chunks[0]
         final_span = Span(
@@ -359,7 +370,8 @@ class BaseDocumentGraphIngestor:
             title=mc.title or "Final Summary",
             summary=mc.summary,
             span=final_span,
-            level=level
+            level=level,
+            parent_ids = [ch.id for ch in chunks]
         )
         self._ensure_node(doc_id, final_chunk)
         for c in chunks:
@@ -367,6 +379,14 @@ class BaseDocumentGraphIngestor:
                         relation=REL_SUMMARIZES, reverse_relation=REL_DETAILS)
         return final_chunk
     def _summarize_layer(self, doc_id: str, leaves: Sequence[LeafChunk], *, level: int) -> List[SummaryChunk]:
+        """_summary_
+
+        branch out
+        
+        Returns:
+            List[SummaryChunk]: _description_
+        """
+        
         out: List[SummaryChunk] = []
         counts_per_leaf: List[int] = []
 
@@ -387,16 +407,17 @@ class BaseDocumentGraphIngestor:
                 )
                 out.append(
                     SummaryChunk(
-                        id=(f"sum:{uuid.uuid4()}" if self.use_uuid else f"sum|doc:{doc_id}|level:{level}|c{i}"),
+                        id=(f"sum:{uuid.uuid4()}" if self.use_uuid else f"sum|doc:{doc_id}|level:{level}|leave:{leaf.id.split('|')[-1].split(':')[-1]}|c{i}"),
                         title=(m.title or "").strip()[:120] or "Untitled",
                         summary=(m.summary or "").strip(),
                         span=span,
                         level=level,
+                        parent_ids = [leaf.id]
                     )
                 )
                 local_cnt += 1
             counts_per_leaf.append(local_cnt)
-
+        # each leave can summarize several nodes out
         # 2) Persist micro-chunk nodes, then sibling adjacency per leaf
         offset = 0
         for cnt in counts_per_leaf:
@@ -422,6 +443,7 @@ class BaseDocumentGraphIngestor:
         for i, g in enumerate(res.groups):
             # derive span as min..max of member spans
             members = [current[i] for i in g.member_indices if 0 <= i < len(current)]
+            parent_ids = [m.id for m in members]
             if not members:
                 continue
             start_page = min(m.span.start_page for m in members)
@@ -433,7 +455,7 @@ class BaseDocumentGraphIngestor:
                 title=g.title.strip()[:120] or "Group",
                 summary=g.summary.strip(),
                 span=Span(start_page=start_page, end_page=end_page, start_char=start_char, end_char=end_char),
-                level=level,
+                level=level, parent_ids = parent_ids
             )
             children.append(child)
             self._ensure_node(doc_id, child)
@@ -467,7 +489,7 @@ class BaseDocumentGraphIngestor:
         nodes: List[Node] = []
         for i, leaf in enumerate(leaves, start=1):
             n = Node(
-                id=f"leafnode:{uuid.uuid4() if self.use_uuid else i}",
+                id=f"doc:{doc_id}|leaf:{uuid.uuid4() if self.use_uuid else i}",
                 label=f"raw_text_chunk {i}",
                 type="entity",
                 summary=leaf.text,
@@ -523,8 +545,9 @@ class BaseDocumentGraphIngestor:
 
         # Now it’s safe to create edges: parent -(summarizes)-> child, child -(details)-> parent
         child_ids = [self._as_node(doc_id, c).id for c in children]
-        for cid in child_ids:
-            for pid in parent_ids:
+        for c in children:
+            cid = c.id
+            for pid in c.parent_ids:
                 self._bi_edge(doc_id, src=pid, tgt=cid, relation=REL_SUMMARIZES, reverse_relation=REL_DETAILS)
 
         # Sibling order on children (precedes/after)

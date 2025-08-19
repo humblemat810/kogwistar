@@ -4,7 +4,6 @@ from typing import List, Literal, Optional, Dict, Any, Union
 from pydantic import BaseModel, Field, model_validator, field_validator
 import uuid
 from enum import IntEnum
-
 JsonPrimitive = Union[str, int, float, bool, None]
 
 
@@ -229,7 +228,7 @@ class LLMMergeAdjudication(BaseModel):
     verdict: AdjudicationVerdict = Field(..., description="Final adjudication verdict")
 from typing import Literal, Optional, Dict, Any, List
 from pydantic import BaseModel, Field
-
+from pydantic_extension.model_slicing import ModeSlicingMixin, DtoType, BackendType
 class AdjudicationTarget(BaseModel):
     """A reference to either a node or an edge to be adjudicated."""
     kind: Literal["node", "edge"] = Field(..., description="What is being adjudicated")
@@ -260,12 +259,12 @@ class AdjudicationCandidate(BaseModel):
 # -------------------------
 # Document
 # -------------------------
-class Document(BaseModel):
-    id: str = Field(default_factory=generate_id, description="Unique document identifier")
-    content: str = Field(..., description="Text content of the document")
-    type: str = Field(..., description="Type of document, e.g., 'ocr', 'pdf'")
-    metadata: Optional[Dict[str, Any]] = Field(None, description="Additional metadata for the document")
-    domain_id: Optional[str] = Field(None, description="Optional domain this document belongs to")
-    processed: bool = Field(False, description="Whether the document has been processed")
+class Document(ModeSlicingMixin, BaseModel):
+    id: BackendType[str] = Field(default_factory=generate_id, description="Unique document identifier")
+    content: BackendType[DtoType[str]] = Field(..., description="Text content of the document")
+    type: BackendType[DtoType[str]] = Field(..., description="Type of document, e.g., 'ocr', 'pdf'")
+    metadata: BackendType[DtoType[Optional[Dict[str, Any]]]] = Field(None, description="Additional metadata for the document")
+    domain_id: BackendType[Optional[str]] = Field(None, description="Optional domain this document belongs to")
+    processed: BackendType[bool] = Field(False, description="Whether the document has been processed")
 
 # LLM-facing candidate (int code, not Literal)

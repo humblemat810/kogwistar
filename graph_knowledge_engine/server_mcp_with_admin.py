@@ -82,8 +82,9 @@ def kg_semantic_seed_then_expand_text(text: str, top_k: int = 5, hops: int = 1, 
     return SeedExpandOut(seeds=out["seeds"], layers=layers)
 
 # ---- Ingestion tools ----
-class DocParseIn(BaseModel):
-    doc_id: str
+from .models import Document
+class DocParseIn(Document['dto']):
+    id: Optional[str]
     content: str
     type: str = "plain"
 
@@ -94,14 +95,14 @@ class DocParseOut(BaseModel):
 from graph_knowledge_engine.ingester import PagewiseSummaryIngestor
 @mcp.tool()
 def doc_parse(inp: DocParseIn) -> DocParseOut:
-    doc = Document(id=inp.doc_id, content=inp.content, type=inp.type)
+    doc = Document(id=inp.id, content=inp.content, type=inp.type)
     ingester = PagewiseSummaryIngestor(engine=engine, llm=engine.llm, cache_dir=str(os.path.join(".",".llm_cache")))
     res: dict = ingester.ingest_document(document = doc)
     # plug your real chunker/summary tree here and populate outputs
     return DocParseOut(doc_id=doc.id, chunk_ids=res.get("chunk_ids"), summary_node_id=res.get("final_node_id"))
 
 class KGExtractIn(BaseModel):
-    doc_id: str
+    doc_id: Optional[str]
     mode: str = "replace"  # "append" | "replace" | "skip-if-exists"
 
 class KGExtractOut(BaseModel):
@@ -120,7 +121,7 @@ def kg_extract(inp: KGExtractIn) -> KGExtractOut:
     parsed = extracted["parsed"]
     engine._preflight_validate(parsed, inp.doc_id)
     persisted = engine.persist_graph_extraction(
-        document=Document(id=inp.doc_id, content=content, type="plain"),
+        document=Document(id=inp.id, content=content, type="plain"),
         parsed=parsed, mode=inp.mode,
     )
     return KGExtractOut(

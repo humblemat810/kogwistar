@@ -13,7 +13,7 @@
                 "graph_knowledge_engine.server_mcp_with_admin:app",
                 // "--reload",
                 "--port",
-                "8765",
+                "28110",
                 "--log-level", "debug"
             ],
             "jinja": true
