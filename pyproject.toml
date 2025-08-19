@@ -38,7 +38,7 @@ knowledge-mcp = "server_mcp_with_admin:app"
 
 
 [tool.setuptools]
-package-dir = {"" = ""}
+package-dir = {"" = "."}
 
 [tool.setuptools.packages.find]
 where = ["src"]
