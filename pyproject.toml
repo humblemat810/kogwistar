@@ -21,7 +21,6 @@ dependencies = [
   "langchain>=0.3.27",
   "langgraph>=0.6.5",
   "ollama>=0.5.3",
-  "pygraphviz>=1.14",
   "RapidFuzz>=3.13.0",
   "chromadb>=1.0.15",
   "fastmcp==2.11.3",
@@ -31,7 +30,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest>=8", "pytest-asyncio>=1.1.0", "ruff>=0.5", "mypy>=1.8", "build", "twine"]
 mcp-adapter = ["langchain-mcp-adapters>=0.0.8"]
-
+viz = ["pygraphviz>=1.14"]
 
 [project.scripts]
 knowledge-mcp = "server_mcp_with_admin:app"
