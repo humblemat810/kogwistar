@@ -84,8 +84,42 @@ except Exception:
 NodeOrEdge: TypeAlias =  Node | Edge
 T = TypeVar("T", Node, Edge)
 from graphlib import TopologicalSorter
-import uuid, json
+def _refs_hash(refs) -> str:
+    import hashlib, json
+    return hashlib.sha1(json.dumps(
+        [r.model_dump() for r in (refs or [])],
+        sort_keys=True
+    ).encode()).hexdigest()
 
+
+def _safe_snippet(s: str | None, max_len: int = 200) -> str | None:
+    if not s:
+        return None
+    s = s.strip()
+    if len(s) > max_len:
+        return s[: max_len - 1] + "…"
+    return s
+
+def _ref_doc_id(ref) -> str | None:
+    # Try explicit doc_id on the ReferenceSession if your model has it
+    did = getattr(ref, "doc_id", None)
+    if did:
+        return did
+    # Else try to extract from document_page_url like "document/<uuid>"
+    url = getattr(ref, "document_page_url", None) or ""
+    m = re.search(r"document/([A-Za-z0-9\-]+)", url)
+    return m.group(1) if m else None
+
+def _ref_insertion_method(ref) -> str:
+    # If your ReferenceSession has 'insertion_method', use it
+    m = getattr(ref, "insertion_method", None)
+    if m:
+        return str(m)
+    # Fallbacks (optional): derive from verification.method or unknown
+    ver = getattr(ref, "verification", None)
+    if ver and getattr(ver, "method", None):
+        return str(ver.method)
+    return "unknown"
 def _is_nn(x: str) -> bool: return isinstance(x, str) and x.startswith("nn:")
 def _is_ne(x: str) -> bool: return isinstance(x, str) and x.startswith("ne:")
 def _merge_refs(old_refs_json: str | None, new_refs):
@@ -734,7 +768,7 @@ class GraphKnowledgeEngine:
 
         order = list(ts.static_order())  # raises if cycle
         return order, id2kind, id2obj
-
+    
     def ingest_with_toposort(self, parsed, *, doc_id: str):
         """
         Single entrypoint:
@@ -805,6 +839,7 @@ class GraphKnowledgeEngine:
                                 "references": merged_json
                             }]
                         )
+                        self._maybe_reindex_edge_refs(e)
                     continue
 
                 # new edge
@@ -1197,6 +1232,8 @@ class GraphKnowledgeEngine:
                                 metadata={"hnsw:space": "cosine"})
         self.node_docs_collection = self.chroma_client.get_or_create_collection("node_docs", embedding_function=self._ef, 
                                 metadata={"hnsw:space": "cosine"})
+        self.node_refs_collection = self.chroma_client.get_or_create_collection("node_refs")
+        self.edge_refs_collection = self.chroma_client.get_or_create_collection("edge_refs")
         self.llm = AzureChatOpenAI(
             deployment_name=os.getenv("OPENAI_DEPLOYMENT_NAME_GPT4_1"),
             model_name=os.getenv("OPENAI_MODEL_NAME_GPT4_1"),
@@ -1257,6 +1294,104 @@ class GraphKnowledgeEngine:
     @staticmethod
     def _edge_doc_and_meta(e: "Edge") -> tuple[str, dict]:
         return _edge_doc_and_meta(e)
+    def _maybe_reindex_node_refs(self, node: Node) -> None:
+        """Skip rebuild if references didn’t change (cheap hash on canonical refs)."""
+        new_h = _refs_hash(node.references or [])
+        got = self.node_collection.get(ids=[node.id], include=["metadatas"])
+        old_h = None
+        if got.get("metadatas") and got["metadatas"][0]:
+            old_h = got["metadatas"][0].get("refs_hash")
+        if new_h != old_h:
+            self.node_collection.update(ids=[node.id], metadatas=[{"refs_hash": new_h}])
+            self._index_node_refs(node)
+    def _maybe_reindex_edge_refs(self, edge: Edge) -> None:
+        new_h = _refs_hash(edge.references or [])
+        got = self.edge_collection.get(ids=[edge.id], include=["metadatas"])
+        old_h = None
+        if got.get("metadatas") and got["metadatas"][0]:
+            old_h = got["metadatas"][0].get("refs_hash")
+        if new_h != old_h:
+            # write the hash and rebuild index
+            self.edge_collection.update(ids=[edge.id], metadatas=[{"refs_hash": new_h}])
+            edge = Edge.model_validate_json(got["documents"][0])
+            self._index_edge_refs(edge)
+    def _index_edge_refs(self, edge: Edge) -> None:
+        """Write-through index for an edge's references: one row per ReferenceSession."""
+        # Remove previous rows for this edge
+        self.edge_refs_collection.delete(where={"edge_id": edge.id})
+
+        rows_ids, rows_docs, rows_meta = [], [], []
+        for i, ref in enumerate(edge.references or []):
+            # Build a stable row id; include doc_id if present
+            rid = f"{edge.id}::ref::{i}"
+            did = getattr(ref, "doc_id", None)
+
+            # Flatten verification & spans
+            ver = getattr(ref, "verification", None)
+            row = _strip_none({
+                "id": rid,
+                "edge_id": edge.id,
+                "doc_id": did,
+                "insertion_method": getattr(ver, "method", None),
+                "is_verified": getattr(ver, "is_verified", None),
+                "score": getattr(ver, "score", None),
+                "start_page": getattr(ref, "start_page", None),
+                "end_page": getattr(ref, "end_page", None),
+                "start_char": getattr(ref, "start_char", None),
+                "end_char": getattr(ref, "end_char", None),
+                "snippet": _safe_snippet(getattr(ref, "snippet", None)),
+            })
+
+            rows_ids.append(rid)
+            rows_docs.append(json.dumps(row))
+            rows_meta.append(row)
+
+        if rows_ids:
+            self.edge_refs_collection.add(
+                ids=rows_ids,
+                documents=rows_docs,
+                metadatas=rows_meta,
+            )
+    def _index_node_refs(self, node: Node) -> list[str]:
+        """
+        Create 0..N rows in node_refs, one per reference (= per mention).
+        Row id: f"{node.id}::{doc_id}::{i}"
+        """
+        # Drop prior rows for this node id (safe upsert behavior)
+        self.node_refs_collection.delete(where={"node_id": node.id})
+
+        ref_ids: list[str] = []
+        if not node.references:
+            return ref_ids
+
+        ids, docs, metas = [], [], []
+        for i, ref in enumerate(node.references):
+            did = _ref_doc_id(ref)
+            if not did:
+                continue  # skip refs we can't tie to a doc id
+            rid = f"{node.id}::{did}::{i}"
+            meta = {
+                "id": rid,
+                "node_id": node.id,
+                "doc_id": did,
+                "insertion_method": _ref_insertion_method(ref),
+                "start_page": getattr(ref, "start_page", None),
+                "end_page": getattr(ref, "end_page", None),
+                "start_char": getattr(ref, "start_char", None),
+                "end_char": getattr(ref, "end_char", None),
+            }
+            # Chroma rejects None in metadata — strip them
+            meta = {k: v for k, v in meta.items() if v is not None}
+            ids.append(rid)
+            docs.append(json.dumps(meta))
+            metas.append(meta)
+            ref_ids.append(rid)
+
+        if ids:
+            self.node_refs_collection.add(ids=ids, documents=docs, metadatas=metas)
+
+        return ref_ids    
+    
     def _alias_doc_in_prompt(self) -> str:
         # A tiny legend we show to the LLM so it knows the alias to use
         return f"Use '{_DOC_ALIAS}' whenever you need to reference the current document in ReferenceSession fields."
@@ -1363,6 +1498,7 @@ class GraphKnowledgeEngine:
             metadatas=[meta],
         )
         self._index_node_docs(node)
+        self._maybe_reindex_node_refs(node)
     def _fanout_endpoints_rows(self, edge: Edge, doc_id: str | None):
 
         def _maybe_doc_for_edge(eid: str) -> str | None:
@@ -1457,7 +1593,7 @@ class GraphKnowledgeEngine:
                 "total_endpoint_count": total_endpoint_count,
             })],
         )
-
+        self._maybe_reindex_edge_refs(edge)
         # endpoints fan-out
         
         rows = self._fanout_endpoints_rows(edge, doc_id)
@@ -1525,9 +1661,15 @@ class GraphKnowledgeEngine:
 
         return doc_ids
 
-    def _nodes_by_doc(self, doc_id: str) -> list[str]:
-        rows = self.node_docs_collection.get(where={"doc_id": doc_id}, include=["metadatas"])
-        return [m["node_id"] for m in (rows.get("metadatas") or [])]
+    def _nodes_by_doc(self, document_id: str, insertion_method: str | None = None) -> list[str]:
+        if insertion_method is None:
+            rows = self.node_docs_collection.get(where={"doc_id": document_id}, include=["documents"])
+            return [] if not rows.get("documents") else list({json.loads(d)["node_id"] for d in rows["documents"]})
+        rows = self.node_refs_collection.get(
+            where={"$and": [{"doc_id": document_id}, {"insertion_method": insertion_method}]},
+            include=["documents"]
+        )
+        return [] if not rows.get("documents") else list({json.loads(d)["node_id"] for d in rows["documents"]})
 
     def _prune_node_refs_for_doc(self, node_id: str, doc_id: str) -> bool:
         """Remove references to doc_id from node; delete node_docs link; refresh denormalized meta."""
@@ -1548,6 +1690,88 @@ class GraphKnowledgeEngine:
             # Refresh denormalized doc_ids meta
             self._index_node_docs(node)
         return changed
+    def rebuild_edge_refs_for_doc(self, doc_id: str) -> int:
+        # Prefer endpoints index to discover edges touching the doc quickly
+        eps = self.edge_endpoints_collection.get(where={"doc_id": doc_id}, include=["documents"])
+        edge_ids = list({json.loads(d)["edge_id"] for d in (eps.get("documents") or [])})
+        if not edge_ids:
+            return 0
+        got = self.edge_collection.get(ids=edge_ids, include=["documents"])
+        cnt = 0
+        for js in (got.get("documents") or []):
+            e = Edge.model_validate_json(js)
+            self._index_edge_refs(e)
+            cnt += 1
+        return cnt
+
+    def rebuild_all_edge_refs(self) -> int:
+        got = self.edge_collection.get(include=["ids"])
+        total = 0
+        for eid in (got.get("ids") or []):
+            edoc = self.edge_collection.get(ids=[eid], include=["documents"])
+            if edoc.get("documents"):
+                e = Edge.model_validate_json(edoc["documents"][0])
+                self._index_edge_refs(e)
+                total += 1
+        return total
+    def edges_by_doc(self, doc_id: str, insertion_method: str | None = None) -> list[str]:
+        where = {"doc_id": doc_id} if not insertion_method else {
+            "$and": [{"doc_id": doc_id}, {"insertion_method": insertion_method}]
+        }
+        rows = self.edge_refs_collection.get(where=where, include=["documents"])
+        return list({json.loads(d)["edge_id"] for d in (rows.get("documents") or [])})
+
+    def list_edges_with_ref_filter(self, doc_id: str, insertion_method: str | None = None) -> list[Edge]:
+        ids = self.edges_by_doc(doc_id, insertion_method)
+        if not ids:
+            return []
+        got = self.edge_collection.get(ids=ids, include=["documents"])
+        return [Edge.model_validate_json(js) for js in (got.get("documents") or [])]
+    def nodes_by_doc(self, doc_id: str, insertion_method: str | None = None) -> list[str]:
+        where = {"doc_id": doc_id} if not insertion_method else {
+            "$and": [{"doc_id": doc_id}, {"insertion_method": insertion_method}]
+        }
+        rows = self.node_refs_collection.get(where=where, include=["documents"])
+        return list({json.loads(d)["node_id"] for d in (rows.get("documents") or [])})
+
+    def list_nodes_with_ref_filter(self, doc_id: str, insertion_method: str | None = None) -> list[Node]:
+        ids = self.nodes_by_doc(doc_id, insertion_method)
+        if not ids:
+            return []
+        got = self.node_collection.get(ids=ids, include=["documents"])
+        return [Node.model_validate_json(js) for js in (got.get("documents") or [])]
+    
+    def rebuild_node_refs_for_doc(self, doc_id: str) -> int:
+        # Use node_docs index if you have it; else fall back to where on nodes
+        node_ids = []
+        if hasattr(self, "node_docs_collection"):
+            rows = self.node_docs_collection.get(where={"doc_id": doc_id}, include=["documents"])
+            node_ids = list({json.loads(d)["node_id"] for d in (rows.get("documents") or [])})
+        else:
+            got = self.node_collection.get(where={"doc_id": doc_id}, include=["ids", "documents"])
+            node_ids = list(got.get("ids") or [])
+
+        if not node_ids:
+            return 0
+
+        got = self.node_collection.get(ids=node_ids, include=["documents"])
+        cnt = 0
+        for js in (got.get("documents") or []):
+            n = Node.model_validate_json(js)
+            self._index_node_refs(n)
+            cnt += 1
+        return cnt
+
+    def rebuild_all_node_refs(self) -> int:
+        got = self.node_collection.get(include=["ids"])
+        total = 0
+        for nid in (got.get("ids") or []):
+            doc = self.node_collection.get(ids=[nid], include=["documents"])
+            if doc.get("documents"):
+                n = Node.model_validate_json(doc["documents"][0])
+                self._index_node_refs(n)
+                total += 1
+        return total
     # ----------------------------
     # helpers for rollback
     # ----------------------------
@@ -1870,6 +2094,7 @@ class GraphKnowledgeEngine:
                             "references": _json_or_none([ref.model_dump() for ref in (new_edge.references or [])]),
                         })],
                     )
+                    self._index_edge_refs(new_edge)
                     # Rebuild endpoints from scratch to match new star form
                     self.edge_endpoints_collection.delete(where={"edge_id": eid})
                     ep_ids, ep_docs, ep_metas = [], [], []
@@ -1931,6 +2156,7 @@ class GraphKnowledgeEngine:
                 # remove only the touched endpoint rows
                 self.edge_endpoints_collection.delete(where={"$and": [{"edge_id": eid}, {"node_id": node_id}]})
                 updated_edge_ids.add(eid)
+                self._index_edge_refs(e)
 
         return {
             "deleted_edges": removed_edge_ids,
@@ -1973,6 +2199,7 @@ class GraphKnowledgeEngine:
                 if not json.loads(got["documents"][0]).get('references') : # none or empty list
                     self.node_collection.delete(ids=[nid])
                     deleted_node_ids.append(nid)
+                self.node_refs_collection.delete(where={"node_id": {"$in": node_ids}})
         doc_ids = set(self.document_collection.get(where={"doc_id": document_id})['ids'])
         self.document_collection.delete(where={"doc_id": document_id})
         doc_ids_after = set(self.document_collection.get(where={"doc_id": document_id})['ids'])

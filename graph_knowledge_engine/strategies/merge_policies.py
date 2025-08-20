@@ -46,6 +46,7 @@ class PreferExistingCanonical(MergePolicy):
                 })],
             )
             self.e._index_node_docs(n)
+            self.e._index_node_refs(n)
             # also mirror back onto the object for future calls
             n.doc_id = doc_id
 
@@ -85,25 +86,25 @@ class PreferExistingCanonical(MergePolicy):
             source_edge_ids=s_edges,
             target_edge_ids=t_edges,
         )
-
+        self.e.add_edge(same_as)
         # 4) Persist the same_as edge and per-endpoint rows
         #    Main edge row
-        self.e.edge_collection.add(
-            ids=[same_as.id],
-            documents=[same_as.model_dump_json()],
-            metadatas=[self.e._strip_none({
-                "doc_id": getattr(same_as, "doc_id", None),
-                "relation": same_as.relation,
-                "source_ids": self.e._json_or_none(same_as.source_ids),
-                "target_ids": self.e._json_or_none(same_as.target_ids),
-                "type": same_as.type,
-                "summary": same_as.summary,
-                "domain_id": same_as.domain_id,
-                "canonical_entity_id": same_as.canonical_entity_id,
-                "properties": self.e._json_or_none(same_as.properties),
-                "references": self.e._json_or_none([ref.model_dump() for ref in (same_as.references or [])]),
-            })],
-        )
+        # self.e.edge_collection.add(
+        #     ids=[same_as.id],
+        #     documents=[same_as.model_dump_json()],
+        #     metadatas=[self.e._strip_none({
+        #         "doc_id": getattr(same_as, "doc_id", None),
+        #         "relation": same_as.relation,
+        #         "source_ids": self.e._json_or_none(same_as.source_ids),
+        #         "target_ids": self.e._json_or_none(same_as.target_ids),
+        #         "type": same_as.type,
+        #         "summary": same_as.summary,
+        #         "domain_id": same_as.domain_id,
+        #         "canonical_entity_id": same_as.canonical_entity_id,
+        #         "properties": self.e._json_or_none(same_as.properties),
+        #         "references": self.e._json_or_none([ref.model_dump() for ref in (same_as.references or [])]),
+        #     })],
+        # )
 
         #    Endpoint fanout with per-endpoint doc_id
         ep_ids, ep_docs, ep_metas = [], [], []
@@ -254,6 +255,8 @@ class PreferExistingCanonical(MergePolicy):
                 "references": self.e._json_or_none([ref.model_dump() for ref in (re.references or [])]),
             })],
         )
+        self.e._index_edge_refs(le)
+        self.e._index_edge_refs(re)
         # meta same_as: edge↔edge (use edge-endpoint lists)
         same_as_meta = Edge(
             id=str(uuid.uuid4()),
@@ -268,6 +271,7 @@ class PreferExistingCanonical(MergePolicy):
             doc_id="__adjudication__",
         )
         self.e.add_edge(same_as_meta, doc_id=same_as_meta.doc_id)
+        self.e._index_edge_refs(same_as_meta)
         return canonical_id
     def merge(self, left, right, verdict: AdjudicationVerdict) -> str:
         # node↔node, edge↔edge, cross-kind is handled inside engine methods you already wrote
