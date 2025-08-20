@@ -30,7 +30,7 @@ engine = GraphKnowledgeEngine(
 from typing import List, Optional, Dict, Any, Tuple, TypeAlias
 
 import chromadb
-
+from dataclasses import dataclass, field
 from .graph_query import GraphQuery
 from chromadb import Client
 from chromadb.config import Settings
@@ -74,6 +74,7 @@ except Exception:
     _HAS_RAPIDFUZZ = False
 
 # Optional: Azure embeddings (only if you set env for embeddings)
+from langchain_google_genai import ChatGoogleGenerativeAI
 try:
     from langchain_openai import AzureOpenAIEmbeddings
     _HAS_AZURE_EMB = True
@@ -448,7 +449,7 @@ def de_alias_ids(llm_result, real_for_alias):
         e.source_ids = [r(x) for x in e.source_ids]
         e.target_ids = [r(x) for x in e.target_ids]
     return llm_result
-from dataclasses import dataclass, field
+
 
 ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
 
@@ -547,7 +548,6 @@ class CustomEmbeddingFunction(EmbeddingFunction):
         # For example, if using Sentence Transformers:
         # from sentence_transformers import SentenceTransformer
         # self.model = SentenceTransformer(model_name)
-        pass
 
     def __call__(self, input: Documents) -> Embeddings:
         # Implement your embedding logic here
@@ -557,7 +557,7 @@ class CustomEmbeddingFunction(EmbeddingFunction):
         # Example with a placeholder for your model's embedding logic:
         embeddings = self._emb(input)
         return embeddings
-
+@dataclass
 class GraphKnowledgeEngine:
     """High-level orchestration for extracting, storing, and adjudicating knowledge graph data."""
 
@@ -965,7 +965,19 @@ class GraphKnowledgeEngine:
         prompt = ChatPromptTemplate.from_messages([
             ("system",
             "You are an expert knowledge graph extractor. "
-            "Extract entities and relationships as nodes and edges in a hypergraph.\n\n"
+            "You are an information extraction system that converts legal contracts into a knowledge graph.  "
+            "Your task: extract ALL entities (nodes) and relationships (edges) from the text.  "
+            "Nodes should include at least: Parties, Obligations, Rights, Deliverables, Payment Terms, Termination Conditions, Confidentiality Clauses, Governing Law, Dates, and Penalties.  "
+            "Edges should capture: (Party → Obligation), (Obligation → Condition), (Party → Right), (Obligation → Deliverable), (Clause → Governing Law).  "
+            "Also pay attention to monetary terms, numbers. Be aware if they are definite, indefitite. Once off or recurrent. Keep a sharp eye one numbers. "
+            "For any signatories with blank to sign, or signed. They are equally important to note."
+            "Extract all nodes and edges from the following contract section.  "
+            "Be exhaustive and granular:"
+            "- Every obligation, right, condition, exception, penalty, deadline, and reference must become a separate node.  "
+            "- Each clause and sub-clause should yield at least one node.  "
+            "- Do not merge or summarize multiple obligations.  "
+            "- Aim for at least 20 nodes per section, if possible."
+            "Extract entities and terms as nodes, relationships edges in a hypergraph.\n\n"
             "Rules:\n"
             "1) When referring to existing items, use ONLY the given aliases.\n"
             "2) If creating new items, omit their id.\n"
@@ -981,8 +993,16 @@ class GraphKnowledgeEngine:
             "Document chunk:\n{document}\n\n"
             "Return only the structured JSON for the schema.")
         ])
-        chain = prompt | self.llm.with_structured_output(LLMGraphExtraction, include_raw=True)
-        result = chain.invoke({"alias_nodes": alias_nodes_str, "alias_edges": alias_edges_str, "document": content, "_DOC_ALIAS" : _DOC_ALIAS})
+        try:
+            chain = prompt | self.llm.with_structured_output(LLMGraphExtraction['llm'], 
+                                                             include_raw=True)
+            steps = chain.steps
+            realised_prmopt = steps[0].invoke({"alias_nodes": alias_nodes_str, "alias_edges": alias_edges_str, "document": content, "_DOC_ALIAS" : _DOC_ALIAS})
+            llm_raw = steps[1].invoke(realised_prmopt)
+            result = steps[2].invoke(llm_raw)
+            # result = chain.invoke({"alias_nodes": alias_nodes_str, "alias_edges": alias_edges_str, "document": content, "_DOC_ALIAS" : _DOC_ALIAS})
+        except Exception as e:
+            raise
         return result.get("raw"), result.get("parsed"), result.get("parsing_error")
     def _de_alias_ids_in_result(self, doc_id: str, parsed: LLMGraphExtraction) -> LLMGraphExtraction:
         """Map aliases back to real UUIDs according to strategy."""
@@ -1186,9 +1206,24 @@ class GraphKnowledgeEngine:
             api_version="2024-08-01-preview",
             model_version=os.getenv("OPENAI_DEPLOYMENT_VERSION_GPT4_1"),
             temperature=0.1,
-            max_tokens=12000,
+            max_tokens=30000,
             openai_api_type="azure",
         )
+        # self.llm = ChatGoogleGenerativeAI(
+        #                 #model = "gemini-2.5-pro-preview-05-06",
+        #                 # model = "gemini-2.5-pro",
+        #                 model = "gemini-2.5-pro",
+        #                 # model = model_name,
+        #                 #model="gemini-1.5-pro",
+        #                 #model="gemini-2.0-pro",
+        #                 #model="gemini-2.5-pro-preview-03-25",
+        #                 temperature=0.1,
+        #                 max_tokens=None,
+        #                 timeout=None,
+        #                 max_retries=2,
+                        
+        #                 # other params...
+        #                 )
         self.embeddings: Optional[Callable[[str], Optional[List[float]]]] = None
         if _HAS_AZURE_EMB:
             emb_deployment = os.getenv("OPENAI_EMBED_DEPLOYMENT")
@@ -1209,6 +1244,10 @@ class GraphKnowledgeEngine:
                     except Exception:
                         return None
                 self.embeddings = _embed_fn
+        from joblib import Memory
+        
+        self.memory = Memory(location = os.path.join('.', '.kg_cache'))
+        self._cached_extract_graph_with_llm = self.memory.cache(self.extract_graph_with_llm, ignore = ["self"])
     # ----------------------------
     # Mention / citation verification
     # ----------------------------
@@ -1284,6 +1323,10 @@ class GraphKnowledgeEngine:
         For edges: block by (relation, sorted endpoints).
         """
         return self.proposer.same_kind_in_doc(self, doc_id = scope_doc_id, kind = kind)
+    def check_document_exist(self, document_id : str | list[str]):
+        doc_ids = [document_id] if type(document_id) is str else document_id
+        got = self.document_collection.get(ids=doc_ids, include=[])
+        return set(got['ids']).union(set(document_id))
         
     def _fetch_document_text(self, document_id: str) -> str:
         got = self.document_collection.get(ids=[document_id], include=["documents"])
@@ -1558,7 +1601,7 @@ class GraphKnowledgeEngine:
             e.summary = "Normalized same_as"
         return False, e
     
-    def extract_graph_with_llm(self, *, content: str, alias_nodes_str = "[Empty]" , alias_edges_str = "[Empty]"):
+    def extract_graph_with_llm(self, *, content: str, alias_nodes_str = "[Empty]" , alias_edges_str = "[Empty]", with_parsed = True):
         """Pure: run LLM + parse + alias resolution. No writes."""
         # (reuse your existing prompt + alias path)
         raw, parsed, error = self._extract_graph_with_llm_aliases(
@@ -1566,12 +1609,18 @@ class GraphKnowledgeEngine:
         )
         if error:
             raise ValueError(error)
-        if not isinstance(parsed, LLMGraphExtraction):
-            parsed = LLMGraphExtraction.model_validate(parsed)
+        # if not isinstance(parsed, LLMGraphExtraction):
+        #     dumped = parsed.model_dump(field_mode = 'backend')
+            
+            
+        #     parsed = LLMGraphExtraction.model_validate(parsed, context={'insertion_method', 'llm_graph_extraction'})
 
         # resolve nn:/ne:/aliases -> UUIDs here
         # and run self._preflight_validate(parsed, doc_id) LATER (we don’t know doc_id yet)
-        return {"raw": raw, "parsed": parsed}
+        if with_parsed:
+            return {"raw": raw, "parsed": parsed}
+        else:
+            return {"raw": raw}
     def persist_graph_extraction(
         self,
         *,
@@ -1593,7 +1642,7 @@ class GraphKnowledgeEngine:
         self.add_document(document)
         # now validate (ensures no dangling refs to *other* docs)
         self._preflight_validate(parsed, doc_id)
-        self.ingest_with_toposort(parsed, doc_id = doc_id)
+        # self.ingest_with_toposort(parsed, doc_id = doc_id)
 
         
 

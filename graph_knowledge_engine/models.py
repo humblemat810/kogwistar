@@ -1,9 +1,16 @@
 # ✅ Models for Chroma + LLM with optional embeddings and adjudication
 
-from typing import List, Literal, Optional, Dict, Any, Union
-from pydantic import BaseModel, Field, model_validator, field_validator
+from typing import List, Literal, Optional, Dict, Any, Union, Annotated, ClassVar
+from pydantic import BaseModel, Field, model_validator, field_validator, ValidationInfo
 import uuid
 from enum import IntEnum
+from pydantic_extension.model_slicing import (ModeSlicingMixin, NotMode, FrontendField, BackendField, LLMField,
+                DtoType,
+                BackendType,
+                FrontendType,
+                LLMType,
+                use_mode)
+from pydantic_extension.model_slicing.mixin import ExcludeMode, DtoField
 JsonPrimitive = Union[str, int, float, bool, None]
 
 
@@ -57,11 +64,14 @@ class MentionVerification(BaseModel):
     )
     notes: Optional[str] = Field(None, description="Free-text rationale or hints")
 
-class ReferenceSession(BaseModel):
+class ReferenceSession(ModeSlicingMixin, BaseModel):
+    default_include_modes: ClassVar[set[str]] = {"frontend", "backend", "dto", "llm"}
+    include_unmarked_for_modes: ClassVar[set[str]] = {"frontend", "backend", "dto", "llm"}
     """Locatable evidence for a node/edge mention within a specific document."""
     collection_page_url: str = Field(..., description="Link to the collection page")
     document_page_url: str = Field(..., description="Link to the document page")
     doc_id : str  = Field(..., description="document id")
+    insertion_method : Annotated[str, BackendField(), ExcludeMode("llm")]  = Field(..., description="insertion_method")
     # Required locators (may span pages)
     start_page: int = Field(..., ge=1, description="1-based page index where the mention starts")
     end_page: int = Field(..., ge=1, description="1-based page index where the mention ends (>= start_page)")
@@ -69,10 +79,10 @@ class ReferenceSession(BaseModel):
     end_char: int = Field(..., ge=0, description="Character offset within end_page")
     # Optional extras
     snippet: Optional[str] = Field(None, description="Short text snippet for quick preview")
-    verification: Optional[MentionVerification] = Field(
-        None, description="Result of validating the mention correctness"
-    )
-
+    verification: Annotated[Optional[MentionVerification], BackendField(), ExcludeMode("llm")] = Field(
+                                        None, description="Result of validating the mention correctness"
+                                    )
+            
     @model_validator(mode="after")
     def _check_span_consistency(self):
         if self.end_page < self.start_page:
@@ -92,7 +102,7 @@ class Domain(BaseModel):
 # -------------------------
 # Core graph entities
 # -------------------------
-class GraphEntityBase(BaseModel):
+class GraphEntityBase(ModeSlicingMixin, BaseModel):
     label: str = Field(..., description="Human-readable label for the node or edge")
     type: Literal['entity', 'relationship'] = Field(..., description="Type of entity")
     summary: str = Field(..., description="Summary of the node/relationship")
@@ -104,19 +114,22 @@ class GraphEntityBase(BaseModel):
         None, description="Optional flat properties (JSON primitives only)"
     )
     # 🔴 NOW REQUIRED: LLM must always provide locatable evidence
-    references: List[ReferenceSession] = Field(
+    
+    references: Annotated[List[ReferenceSession], FrontendField(),BackendField(),DtoField(),LLMField()] = Field(
         ..., min_items=1, description="One or more locatable mentions supporting this entity"
     )
 
     @field_validator("references")
     @classmethod
-    def _require_non_empty_refs(cls, refs: List[ReferenceSession]):
+    def _require_non_empty_refs(cls, refs: List[ReferenceSession],info: ValidationInfo):
+        for r in refs:
+            pass
         if not refs:
             raise ValueError("At least one ReferenceSession is required")
         return refs
 
 
-class EdgeMixin(BaseModel):
+class EdgeMixin(ModeSlicingMixin, BaseModel):
     source_ids: List[str] = Field(..., description="List of source node IDs")
     target_ids: List[str] = Field(..., description="List of target node IDs")
     relation: str = Field(..., description="Type of relationship between source and target nodes")
@@ -135,17 +148,17 @@ class ChromaMixin(BaseModel):
 # -------------------------
 # LLM-facing mixin (NO embedding field to keep schema tight)
 # -------------------------
-class LLMMixin(BaseModel):
+class LLMMixin(ModeSlicingMixin, BaseModel):
+    default_include_modes: ClassVar[set[str]] = {"llm"}
+    include_unmarked_for_modes: ClassVar[set[str]] = {"llm"}
     id: Optional[str] = Field(None, description="None for new object; use existing IDs to upsert")
     # No embedding in LLM schema to avoid bloating the output
     local_id: Optional[str] = Field(
         None,
-        description="Optional within-output temp id for new edge, e.g., 'ne:moon'. set it when this edge is referred by other edges. "
+        description=("Optional within-output temp id for new edge, e.g., 'ne:moon', use `nn:` for new nodes (nn stand for new node, ne stand for new edge. ). "
+                     "Set it when this edge is referred by other edges. ")
     )
-    local_id: Optional[str] = Field(
-        None,
-        description="Optional within-output temp id for new nodes, e.g., 'nn:moon'. Need to be set when is referred by new edges. "
-    )
+    
 
 # -------------------------
 # Final models
@@ -164,7 +177,7 @@ class Node(ChromaMixin, GraphEntityBase):
 class Edge(ChromaMixin, EdgeMixin, GraphEntityBase):
     pass
 
-class LLMNode(LLMMixin, GraphEntityBase):
+class LLMNode( LLMMixin, GraphEntityBase):
     """
     Represents a node extracted by an LLM from a document.
     Contains label, type, summary, optional domain, and properties.
@@ -178,7 +191,7 @@ class LLMNode(LLMMixin, GraphEntityBase):
     
     pass
 
-class LLMEdge(LLMMixin, EdgeMixin, GraphEntityBase):
+class LLMEdge( LLMMixin, EdgeMixin, GraphEntityBase):
     """
     Represents an edge extracted by an LLM from a document.
     Inherits node fields and adds source/target relationships and relation type.
@@ -194,14 +207,36 @@ class LLMEdge(LLMMixin, EdgeMixin, GraphEntityBase):
     
     pass
 
-class LLMGraphExtraction(BaseModel):
+class LLMGraphExtraction(ModeSlicingMixin, BaseModel):
     """
     Top-level structured output from LLM for knowledge graph extraction.
     Contains lists of nodes and edges.
     """
+    include_unmarked_for_modes: ClassVar[set[str]] = {"llm"}
     nodes: List[LLMNode] = Field(..., description="List of extracted nodes")
     edges: List[LLMEdge] = Field(..., description="List of extracted edges")
-
+    @model_validator(mode="before")
+    @classmethod
+    def inject_context_on_children_before(cls, data: dict, info: ValidationInfo):
+        # You can inspect context and even transform incoming data
+        # (not required—context is already auto-propagated)
+        _ = info.context or {}
+        return data
+    @model_validator(mode="after")
+    def inject_context_on_children_after(self, info: ValidationInfo):
+        # You can inspect context and even transform incoming data
+        # (not required—context is already auto-propagated)
+        _ = info.context or {}
+        return self
+    @classmethod
+    def FromLLMSlice(cls, sliced, insertion_method):
+        sliced: LLMGraphExtraction['llm']
+        dumped = sliced.model_dump()
+        for ne in dumped['nodes'] + dumped['edges']:
+            for r in ne['references']:
+                r['insertion_method'] = insertion_method
+        return cls.model_validate(dumped, context = {})
+                
 # -------------------------
 # Adjudication structures
 # -------------------------

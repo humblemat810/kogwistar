@@ -102,8 +102,8 @@ def doc_parse(inp: DocParseIn) -> DocParseOut:
     return DocParseOut(doc_id=doc.id, chunk_ids=res.get("chunk_ids"), summary_node_id=res.get("final_node_id"))
 
 class KGExtractIn(BaseModel):
-    doc_id: Optional[str]
-    mode: str = "replace"  # "append" | "replace" | "skip-if-exists"
+    id: Optional[str]
+    mode: str = "skip-if-exists"  # "append" | "replace" | "skip-if-exists"
 
 class KGExtractOut(BaseModel):
     doc_id: str
@@ -114,18 +114,41 @@ class KGExtractOut(BaseModel):
 
 @mcp.tool()
 def kg_extract(inp: KGExtractIn) -> KGExtractOut:
-    content = engine._fetch_document_text(inp.doc_id)
+    content = engine._fetch_document_text(inp.id)
     if not content:
-        raise ValueError(f"Document '{inp.doc_id}' not found; run doc_parse first.")
-    extracted = engine.extract_graph_with_llm(content=content)
-    parsed = extracted["parsed"]
-    engine._preflight_validate(parsed, inp.doc_id)
+        raise ValueError(f"Document '{inp.id}' not found; run doc_parse first.")
+    from .models import LLMGraphExtraction
+    # import pickle, os
+    # cdir = os.path.join('.', '.kg_extract_cache')
+    # os.makedirs(cdir, exist_ok = True)
+    # if inp.id in os.listdir(cdir):
+    #     res = pickle.load(os.path.join(cdir, inp.id))
+        
+    # extract_graph_with_llm
+    # extracted: LLMGraphExtraction = engine.extract_graph_with_llm(content=content)
+    from joblib import Memory
+    location = os.path.join(".", '.kg_extract')
+    os.makedirs(location, exist_ok = True)
+    memory = Memory(location = location)
+    @memory.cache()
+    def get_reparsed_extraction(content):
+        extracted = engine._cached_extract_graph_with_llm(content=content)
+        # parsed = extracted["parsed"]
+        # if not isinstance(parsed, LLMGraphExtraction):
+        #     dumped = parsed.model_dump(field_mode = 'backend')
+        parsed_LLM: LLMGraphExtraction['llm'] = extracted["parsed"]
+        # ctx = {"insertion_method": "graph_extractor"}
+        # dumped = parsed_LLM.model_dump()
+        parsed = LLMGraphExtraction.FromLLMSlice(parsed_LLM, insertion_method = "graph_extractor")
+        return parsed
+    parsed = get_reparsed_extraction(content)
+    batch_node_ids, batch_edge_ids = engine._preflight_validate(parsed, inp.id)
     persisted = engine.persist_graph_extraction(
         document=Document(id=inp.id, content=content, type="plain"),
         parsed=parsed, mode=inp.mode,
     )
     return KGExtractOut(
-        doc_id=inp.doc_id,
+        doc_id=inp.id,
         node_ids=persisted["node_ids"],
         edge_ids=persisted["edge_ids"],
         nodes_added=persisted.get("nodes_added", len(persisted["node_ids"])),
@@ -214,7 +237,7 @@ def admin_delete_doc(doc_id: str):
         "deleted": {"nodes": len(node_ids), "edges": len(edge_ids)},
     }
 
-
+# http://localhost:28110/api/viz/d3.json?doc_id=&mode=reify
 @app.get("/api/viz/cytoscape.json")
 def api_viz_cytoscape(doc_id: Optional[str] = None, mode: str = "reify"):
     payload = to_cytoscape(engine, doc_id=doc_id, mode=mode)

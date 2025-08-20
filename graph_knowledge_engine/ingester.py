@@ -183,7 +183,7 @@ class BaseDocumentGraphIngestor:
         # Build "next_to" adjacency among leaves (bidirectional)
         self._persist_adjacency(document.id, [n.id for n in leaf_nodes])
 
-        # Current layer = leaves -> summarize into micro-chunks (level 0)
+        # Current layer = leaves -> summarize into micro-chunks (level 0)   # self.engine.node_ids_by_doc(document.id)
         current_layer: List[SummaryChunk] = self._summarize_layer(document.id, leaves, level=0)
 
         # Persist summarization edges (leaf <-> micro)
