@@ -12,6 +12,7 @@ from graph_knowledge_engine.engine import GraphKnowledgeEngine
 from graph_knowledge_engine.graph_query import GraphQuery
 from graph_knowledge_engine.models import Document
 from graph_knowledge_engine.visualization.graph_viz import to_cytoscape, to_d3_force
+import json
 # ---- Engine + MCP ----
 persist_directory = os.environ.get("MCP_CHROMA_DIR") or "./.chroma-mcp"
 engine = GraphKnowledgeEngine(persist_directory=persist_directory)
@@ -111,7 +112,14 @@ class KGExtractOut(BaseModel):
     edge_ids: List[str]
     nodes_added: int
     edges_added: int
-
+class DocStoreOut(BaseModel):
+    success: bool
+    
+@mcp.tool()
+def store_document(inp: DocParseIn):
+    doc = Document(id=inp.id, content=inp.content, type=inp.type)
+    engine.add_document(doc)
+    return DocStoreOut(**{"success": True})
 @mcp.tool()
 def kg_extract(inp: KGExtractIn) -> KGExtractOut:
     content = engine._fetch_document_text(inp.id)
@@ -250,21 +258,38 @@ def api_viz_d3(doc_id: Optional[str] = None, mode: str = "reify"):
 
 # --- quick Cytoscape viewer page ---
 @app.get("/viz/cytoscape", response_class=HTMLResponse)
-def viz_cytoscape(doc_id: Optional[str] = None, mode: str = "reify"):
+def viz_cytoscape(
+    doc_id: Optional[str] = None,
+    mode: str = "reify",
+    insertion_method: Optional[str] = None,  # <-- new filter
+):
+    
+    # Keep it simple: carry current query params into the fetch()
     return f"""
 <!doctype html>
 <html>
   <head>
     <meta charset="utf-8"/>
     <title>Cytoscape viz</title>
-    <style> #cy {{ width:100vw; height:100vh; }} </style>
+    <style> #cy {{ width:100vw; height:100vh; margin:0; }} #bar {{ position:fixed; top:8px; left:8px; background:#fff9; padding:6px 8px; border-radius:6px; font: 12px/1.2 sans-serif; }}</style>
     <script src="https://unpkg.com/cytoscape@3.26.0/dist/cytoscape.min.js"></script>
   </head>
   <body>
+    <div id="bar">
+      <b>doc_id</b>=<code>{doc_id or ''}</code>&nbsp;|&nbsp;
+      <b>mode</b>=<code>{mode}</code>&nbsp;|&nbsp;
+      <b>insertion_method</b>=<code>{insertion_method or ''}</code>
+    </div>
     <div id="cy"></div>
     <script>
       async function main(){{
-        const params = new URLSearchParams({{"doc_id": "{doc_id or ''}", "mode": "{mode}"}});
+        const params = new URLSearchParams({{
+          "doc_id": "{doc_id or ''}",
+          "mode": "{mode}",
+        }});
+        const insertionMethod = {json.dumps(insertion_method) if insertion_method is not None else "null"};
+        if (insertionMethod) params.set("insertion_method", insertionMethod);
+
         const res = await fetch("/api/viz/cytoscape.json?" + params.toString());
         const data = await res.json();
 
@@ -273,11 +298,11 @@ def viz_cytoscape(doc_id: Optional[str] = None, mode: str = "reify"):
           elements: data.elements,
           layout: {{ name: 'cose' }},
           style: [
-            {{ selector: 'node', style: {{ 'label': 'data(label)', 'font-size': 10 }} }},
-            {{ selector: '.edge-node', style: {{ 'shape': 'diamond', 'background-color': '#999' }} }},
-            {{ selector: 'edge', style: {{ 'curve-style': 'bezier', 'target-arrow-shape': 'triangle', 'label': 'data(label)', 'font-size': 8 }} }},
-            {{ selector: '.src', style: {{ 'line-color': '#4a8', 'target-arrow-color': '#4a8' }} }},
-            {{ selector: '.tgt', style: {{ 'line-color': '#a48', 'target-arrow-color': '#a48' }} }},
+            {{ selector: 'node',      style: {{ 'label': 'data(label)', 'font-size': 10 }} }},
+            {{ selector: '.edge-node',style: {{ 'shape': 'diamond', 'background-color': '#999' }} }},
+            {{ selector: 'edge',      style: {{ 'curve-style': 'bezier', 'target-arrow-shape': 'triangle', 'label': 'data(label)', 'font-size': 8 }} }},
+            {{ selector: '.src',      style: {{ 'line-color': '#4a8', 'target-arrow-color': '#4a8' }} }},
+            {{ selector: '.tgt',      style: {{ 'line-color': '#a48', 'target-arrow-color': '#a48' }} }},
           ],
         }});
       }}
@@ -289,25 +314,47 @@ def viz_cytoscape(doc_id: Optional[str] = None, mode: str = "reify"):
 
 # --- quick D3 viewer page ---
 @app.get("/viz/d3", response_class=HTMLResponse)
-def viz_d3(doc_id: Optional[str] = None, mode: str = "reify"):
+def viz_d3(
+    doc_id: Optional[str] = None,
+    mode: str = "reify",
+    insertion_method: Optional[str] = None,  # <-- new filter
+):
     return f"""
 <!doctype html>
 <html>
   <head>
     <meta charset="utf-8"/>
     <title>D3 force viz</title>
-    <style> body {{ margin:0; }} svg {{ width:100vw; height:100vh; }} text {{ font: 10px sans-serif; }} </style>
+    <style>
+      body {{ margin:0; }}
+      svg {{ width:100vw; height:100vh; }}
+      #bar {{ position:fixed; top:8px; left:8px; background:#fff9; padding:6px 8px; border-radius:6px; font: 12px/1.2 sans-serif; z-index:10; }}
+      text {{ font: 10px sans-serif; }}
+    </style>
     <script src="https://unpkg.com/d3@7"></script>
   </head>
   <body>
+    <div id="bar">
+      <b>doc_id</b>=<code>{doc_id or ''}</code>&nbsp;|&nbsp;
+      <b>mode</b>=<code>{mode}</code>&nbsp;|&nbsp;
+      <b>insertion_method</b>=<code>{insertion_method or ''}</code>
+    </div>
     <svg></svg>
     <script>
       async function main(){{
-        const params = new URLSearchParams({{"doc_id":"{doc_id or ''}","mode":"{mode}"}});
+        const params = new URLSearchParams({{
+          "doc_id":"{doc_id or ''}",
+          "mode":"{mode}"
+        }});
+        const insertionMethod = {json.dumps(insertion_method) if insertion_method is not None else "null"};
+        if (insertionMethod) params.set("insertion_method", insertionMethod);
+
         const res = await fetch("/api/viz/d3.json?" + params.toString());
         const data = await res.json();
 
-        const svg = d3.select("svg"), width=window.innerWidth, height=window.innerHeight;
+        const svg = d3.select("svg"),
+              width = window.innerWidth,
+              height = window.innerHeight;
 
         const sim = d3.forceSimulation(data.nodes)
           .force("charge", d3.forceManyBody().strength(-120))
@@ -341,7 +388,6 @@ def viz_d3(doc_id: Optional[str] = None, mode: str = "reify"):
   </body>
 </html>
 """
-
 
 # mcp = FastMCP.from_fastapi(app=app)
 # Mount the MCP server

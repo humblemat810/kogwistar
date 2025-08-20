@@ -90,6 +90,27 @@ def _refs_hash(refs) -> str:
         [r.model_dump() for r in (refs or [])],
         sort_keys=True
     ).encode()).hexdigest()
+import hashlib, json
+
+def _refs_fingerprint(refs) -> str:
+    # Normalize minimal fields that affect the index rows, order-sensitive
+    payload = [
+        {
+            "doc_id": getattr(r, "doc_id", None),
+            "method": getattr(getattr(r, "verification", None), "method", None),
+            "is_verified": getattr(getattr(r, "verification", None), "is_verified", None),
+            "score": getattr(getattr(r, "verification", None), "score", None),
+            "sp": getattr(r, "start_page", None),
+            "ep": getattr(r, "end_page", None),
+            "sc": getattr(r, "start_char", None),
+            "ec": getattr(r, "end_char", None),
+            "snip": (getattr(r, "snippet", None) or "")[:64],  # cap; avoid huge digests
+        }
+        for r in (refs or [])
+    ]
+    blob = json.dumps(payload, sort_keys=False, separators=(",", ":")).encode("utf-8")
+    # 128-bit BLAKE2b: fast + collision resistant enough for cache guards
+    return hashlib.blake2b(blob, digest_size=16).hexdigest()
 
 
 def _safe_snippet(s: str | None, max_len: int = 200) -> str | None:
@@ -355,7 +376,7 @@ def _extract_doc_ids_from_refs(refs) -> list[str]:
     return sorted(dict.fromkeys(out))
 def _node_doc_and_meta(n: "Node") -> tuple[str, dict]:
     """Return (documents_string, metadata_dict) for Chroma."""
-    doc = n.model_dump_json()
+    doc = n.model_dump_json(field_mode = 'backend')
     meta = _strip_none({
         "doc_id": getattr(n, "doc_id", None),
         "label": n.label,
@@ -371,7 +392,7 @@ def _node_doc_and_meta(n: "Node") -> tuple[str, dict]:
 
 def _edge_doc_and_meta(e: "Edge") -> tuple[str, dict]:
     """Return (documents_string, metadata_dict) for Chroma."""
-    doc = e.model_dump_json()
+    doc = e.model_dump_json(field_mode = 'backend')
     meta = _strip_none({
         "doc_id": getattr(e, "doc_id", None),
         "relation": e.relation,
@@ -639,6 +660,18 @@ class GraphKnowledgeEngine:
     def all_edges_for_doc(self, doc_id: str) -> List[Edge]:
         return self.get_edges(self._edge_ids_by_doc(doc_id))
     
+    def _delete_edge_ref_rows(self, edge_id: str) -> None:
+        # Deleting by where sometimes misses rows on some backends; prefer id list
+        got = self.edge_refs_collection.get(where={"edge_id": edge_id}, include=[])
+        ids = got.get("ids") or []
+        if ids:
+            self.edge_refs_collection.delete(ids=ids)
+
+    def _delete_node_ref_rows(self, node_id: str) -> None:
+        got = self.node_refs_collection.get(where={"node_id": node_id}, include=[])
+        ids = got.get("ids") or []
+        if ids:
+            self.node_refs_collection.delete(ids=ids)
     
     # ----------------------------
     # Utilities
@@ -801,7 +834,7 @@ class GraphKnowledgeEngine:
                         n.references = [ReferenceSession(**r) for r in merged_list]
                         self.node_collection.update(
                             ids=[rid],
-                            documents=[n.model_dump_json()],
+                            documents=[n.model_dump_json(field_mode='backend')],
                             metadatas=[{
                                 **{k:v for k,v in prior_meta.items() if v is not None},
                                 "references": merged_json
@@ -833,7 +866,7 @@ class GraphKnowledgeEngine:
                         e.references = [ReferenceSession(**r) for r in merged_list]
                         self.edge_collection.update(
                             ids=[rid],
-                            documents=[e.model_dump_json()],
+                            documents=[e.model_dump_json(field_mode='backend')],
                             metadatas=[{
                                 **{k:v for k,v in prior_meta.items() if v is not None},
                                 "references": merged_json
@@ -1001,9 +1034,13 @@ class GraphKnowledgeEngine:
             ("system",
             "You are an expert knowledge graph extractor. "
             "You are an information extraction system that converts legal contracts into a knowledge graph.  "
-            "Your task: extract ALL entities (nodes) and relationships (edges) from the text.  "
+            "Your task: extract ALL entities (nodes) and relationships (edges) from the text. "
             "Nodes should include at least: Parties, Obligations, Rights, Deliverables, Payment Terms, Termination Conditions, Confidentiality Clauses, Governing Law, Dates, and Penalties.  "
             "Edges should capture: (Party → Obligation), (Obligation → Condition), (Party → Right), (Obligation → Deliverable), (Clause → Governing Law).  "
+            "Allow multiple edge between the same nodes. Allow hypergraph. Allow edge pointing to other edge. "
+            "Allow same label but different content. "
+            "Breakdown A is obligated to do work for B as A -> B : relation = do work for 100 dollar. You can create another edge. "
+            "Build relationship triplets of SVO. "
             "Also pay attention to monetary terms, numbers. Be aware if they are definite, indefitite. Once off or recurrent. Keep a sharp eye one numbers. "
             "For any signatories with blank to sign, or signed. They are equally important to note."
             "Extract all nodes and edges from the following contract section.  "
@@ -1234,33 +1271,33 @@ class GraphKnowledgeEngine:
                                 metadata={"hnsw:space": "cosine"})
         self.node_refs_collection = self.chroma_client.get_or_create_collection("node_refs")
         self.edge_refs_collection = self.chroma_client.get_or_create_collection("edge_refs")
-        self.llm = AzureChatOpenAI(
-            deployment_name=os.getenv("OPENAI_DEPLOYMENT_NAME_GPT4_1"),
-            model_name=os.getenv("OPENAI_MODEL_NAME_GPT4_1"),
-            azure_endpoint=os.getenv("OPENAI_DEPLOYMENT_ENDPOINT_GPT4_1"),
-            cache=None,
-            openai_api_key=os.getenv("OPENAI_API_KEY_GPT4_1"),
-            api_version="2024-08-01-preview",
-            model_version=os.getenv("OPENAI_DEPLOYMENT_VERSION_GPT4_1"),
-            temperature=0.1,
-            max_tokens=30000,
-            openai_api_type="azure",
-        )
-        # self.llm = ChatGoogleGenerativeAI(
-        #                 #model = "gemini-2.5-pro-preview-05-06",
-        #                 # model = "gemini-2.5-pro",
-        #                 model = "gemini-2.5-pro",
-        #                 # model = model_name,
-        #                 #model="gemini-1.5-pro",
-        #                 #model="gemini-2.0-pro",
-        #                 #model="gemini-2.5-pro-preview-03-25",
-        #                 temperature=0.1,
-        #                 max_tokens=None,
-        #                 timeout=None,
-        #                 max_retries=2,
+        # self.llm = AzureChatOpenAI(
+        #     deployment_name=os.getenv("OPENAI_DEPLOYMENT_NAME_GPT4_1"),
+        #     model_name=os.getenv("OPENAI_MODEL_NAME_GPT4_1"),
+        #     azure_endpoint=os.getenv("OPENAI_DEPLOYMENT_ENDPOINT_GPT4_1"),
+        #     cache=None,
+        #     openai_api_key=os.getenv("OPENAI_API_KEY_GPT4_1"),
+        #     api_version="2024-08-01-preview",
+        #     model_version=os.getenv("OPENAI_DEPLOYMENT_VERSION_GPT4_1"),
+        #     temperature=0.1,
+        #     max_tokens=30000,
+        #     openai_api_type="azure",
+        # )
+        self.llm = ChatGoogleGenerativeAI(
+                        #model = "gemini-2.5-pro-preview-05-06",
+                        # model = "gemini-2.5-pro",
+                        model = "gemini-2.5-pro",
+                        # model = model_name,
+                        #model="gemini-1.5-pro",
+                        #model="gemini-2.0-pro",
+                        #model="gemini-2.5-pro-preview-03-25",
+                        temperature=0.1,
+                        max_tokens=None,
+                        timeout=None,
+                        max_retries=2,
                         
-        #                 # other params...
-        #                 )
+                        # other params...
+                        )
         self.embeddings: Optional[Callable[[str], Optional[List[float]]]] = None
         if _HAS_AZURE_EMB:
             emb_deployment = os.getenv("OPENAI_EMBED_DEPLOYMENT")
@@ -1294,39 +1331,49 @@ class GraphKnowledgeEngine:
     @staticmethod
     def _edge_doc_and_meta(e: "Edge") -> tuple[str, dict]:
         return _edge_doc_and_meta(e)
-    def _maybe_reindex_node_refs(self, node: Node) -> None:
-        """Skip rebuild if references didn’t change (cheap hash on canonical refs)."""
-        new_h = _refs_hash(node.references or [])
-        got = self.node_collection.get(ids=[node.id], include=["metadatas"])
-        old_h = None
-        if got.get("metadatas") and got["metadatas"][0]:
-            old_h = got["metadatas"][0].get("refs_hash")
-        if new_h != old_h:
-            self.node_collection.update(ids=[node.id], metadatas=[{"refs_hash": new_h}])
-            self._index_node_refs(node)
-    def _maybe_reindex_edge_refs(self, edge: Edge) -> None:
-        new_h = _refs_hash(edge.references or [])
-        got = self.edge_collection.get(ids=[edge.id], include=["metadatas"])
-        old_h = None
-        if got.get("metadatas") and got["metadatas"][0]:
-            old_h = got["metadatas"][0].get("refs_hash")
-        if new_h != old_h:
-            # write the hash and rebuild index
-            self.edge_collection.update(ids=[edge.id], metadatas=[{"refs_hash": new_h}])
-            edge = Edge.model_validate_json(got["documents"][0])
-            self._index_edge_refs(edge)
-    def _index_edge_refs(self, edge: Edge) -> None:
-        """Write-through index for an edge's references: one row per ReferenceSession."""
-        # Remove previous rows for this edge
-        self.edge_refs_collection.delete(where={"edge_id": edge.id})
+    def _maybe_reindex_edge_refs(self, edge: Edge, *, force: bool = False) -> None:
+        new_fp = _refs_fingerprint(edge.references or [])
+        meta = self.edge_collection.get(ids=[edge.id], include=["metadatas"])
+        old_fp = None
+        if meta.get("metadatas") and meta["metadatas"][0]:
+            old_fp = meta["metadatas"][0].get("edge_refs_fp")
 
-        rows_ids, rows_docs, rows_meta = [], [], []
+        # Secondary guards: row-count & doc_id set must match
+        got = self.edge_refs_collection.get(where={"edge_id": edge.id}, include=["documents"])
+        current_rows = got.get("documents") or []
+        current_doc_ids = {json.loads(d).get("doc_id") for d in current_rows}
+        expect_doc_ids = {getattr(r, "doc_id", None) for r in (edge.references or [])}
+        count_ok = (len(current_rows) == len(edge.references or []))
+        docset_ok = (current_doc_ids == expect_doc_ids)
+
+        if force or (new_fp != old_fp) or (not count_ok) or (not docset_ok):
+            self.edge_collection.update(ids=[edge.id], metadatas=[{"edge_refs_fp": new_fp}])
+            self._index_edge_refs(edge)
+
+    def _maybe_reindex_node_refs(self, node: Node, *, force: bool = False) -> None:
+        new_fp = _refs_fingerprint(node.references or [])
+        meta = self.node_collection.get(ids=[node.id], include=["metadatas"])
+        old_fp = None
+        if meta.get("metadatas") and meta["metadatas"][0]:
+            old_fp = meta["metadatas"][0].get("node_refs_fp")
+
+        got = self.node_refs_collection.get(where={"node_id": node.id}, include=["documents"])
+        current_rows = got.get("documents") or []
+        current_doc_ids = {json.loads(d).get("doc_id") for d in current_rows}
+        expect_doc_ids = {getattr(r, "doc_id", None) for r in (node.references or [])}
+        count_ok = (len(current_rows) == len(node.references or []))
+        docset_ok = (current_doc_ids == expect_doc_ids)
+
+        if force or (new_fp != old_fp) or (not count_ok) or (not docset_ok):
+            self.node_collection.update(ids=[node.id], metadatas=[{"node_refs_fp": new_fp}])
+            self._index_node_refs(node)
+    def _index_edge_refs(self, edge: Edge) -> None:
+        self._delete_edge_ref_rows(edge.id)
+
+        ids, docs, metas = [], [], []
         for i, ref in enumerate(edge.references or []):
-            # Build a stable row id; include doc_id if present
             rid = f"{edge.id}::ref::{i}"
             did = getattr(ref, "doc_id", None)
-
-            # Flatten verification & spans
             ver = getattr(ref, "verification", None)
             row = _strip_none({
                 "id": rid,
@@ -1339,58 +1386,35 @@ class GraphKnowledgeEngine:
                 "end_page": getattr(ref, "end_page", None),
                 "start_char": getattr(ref, "start_char", None),
                 "end_char": getattr(ref, "end_char", None),
-                "snippet": _safe_snippet(getattr(ref, "snippet", None)),
             })
+            ids.append(rid); docs.append(json.dumps(row)); metas.append(row)
 
-            rows_ids.append(rid)
-            rows_docs.append(json.dumps(row))
-            rows_meta.append(row)
-
-        if rows_ids:
-            self.edge_refs_collection.add(
-                ids=rows_ids,
-                documents=rows_docs,
-                metadatas=rows_meta,
-            )
-    def _index_node_refs(self, node: Node) -> list[str]:
-        """
-        Create 0..N rows in node_refs, one per reference (= per mention).
-        Row id: f"{node.id}::{doc_id}::{i}"
-        """
-        # Drop prior rows for this node id (safe upsert behavior)
-        self.node_refs_collection.delete(where={"node_id": node.id})
-
-        ref_ids: list[str] = []
-        if not node.references:
-            return ref_ids
+        if ids:
+            self.edge_refs_collection.add(ids=ids, documents=docs, metadatas=metas)
+    def _index_node_refs(self, node: Node) -> None:
+        self._delete_node_ref_rows(node.id)
 
         ids, docs, metas = [], [], []
-        for i, ref in enumerate(node.references):
-            did = _ref_doc_id(ref)
-            if not did:
-                continue  # skip refs we can't tie to a doc id
-            rid = f"{node.id}::{did}::{i}"
-            meta = {
+        for i, ref in enumerate(node.references or []):
+            rid = f"{node.id}::ref::{i}"
+            did = getattr(ref, "doc_id", None)
+            ver = getattr(ref, "verification", None)
+            row = _strip_none({
                 "id": rid,
                 "node_id": node.id,
                 "doc_id": did,
-                "insertion_method": _ref_insertion_method(ref),
+                "insertion_method": getattr(ver, "method", None),
+                "is_verified": getattr(ver, "is_verified", None),
+                "score": getattr(ver, "score", None),
                 "start_page": getattr(ref, "start_page", None),
                 "end_page": getattr(ref, "end_page", None),
                 "start_char": getattr(ref, "start_char", None),
                 "end_char": getattr(ref, "end_char", None),
-            }
-            # Chroma rejects None in metadata — strip them
-            meta = {k: v for k, v in meta.items() if v is not None}
-            ids.append(rid)
-            docs.append(json.dumps(meta))
-            metas.append(meta)
-            ref_ids.append(rid)
+            })
+            ids.append(rid); docs.append(json.dumps(row)); metas.append(row)
 
         if ids:
             self.node_refs_collection.add(ids=ids, documents=docs, metadatas=metas)
-
-        return ref_ids    
     
     def _alias_doc_in_prompt(self) -> str:
         # A tiny legend we show to the LLM so it knows the alias to use
@@ -1573,7 +1597,7 @@ class GraphKnowledgeEngine:
         # main edge row
         self.edge_collection.add(
             ids=[edge.id],
-            documents=[edge.model_dump_json()],
+            documents=[edge.model_dump_json(field_mode='backend')],
             embeddings=[edge.embedding] if edge.embedding else None,
             metadatas=[_strip_none({
                 "doc_id": doc_id,
@@ -1684,7 +1708,7 @@ class GraphKnowledgeEngine:
         changed = len(node.references or []) != before
         if changed:
             # Update node JSON
-            self.node_collection.update(ids=[node_id], documents=[node.model_dump_json()])
+            self.node_collection.update(ids=[node_id], documents=[node.model_dump_json(field_mode='backend')])
             # Drop (node,doc) link
             self.node_docs_collection.delete(where={"$and": [{"node_id": node_id}, {"doc_id": doc_id}]})
             # Refresh denormalized doc_ids meta
@@ -1896,7 +1920,7 @@ class GraphKnowledgeEngine:
                     properties=ln.properties,
                     references=_normalize_refs(ln.references, doc_id, fallback_snip),
                     doc_id=doc_id,
-                    embedding=self._ef(f"{ln.label}: {ln.summary}")[0]
+                    embedding=self._ef([f"{ln.label}: {ln.summary}"])[0]
                 )
                 self.add_node(n, doc_id=doc_id)
                 node_ids.append(n.id)
@@ -1920,7 +1944,7 @@ class GraphKnowledgeEngine:
                     source_edge_ids=getattr(le, "source_edge_ids", None),
                     target_edge_ids=getattr(le, "target_edge_ids", None),
                     doc_id=doc_id,
-                    embedding=self._ef(f"{ln.label}: {ln.summary}")[0]
+                    embedding=self._ef([f"{ln.label}: {ln.summary}"])[0]
                 )
                 self.add_edge(e, doc_id=doc_id)
                 edge_ids.append(e.id)
@@ -2080,7 +2104,7 @@ class GraphKnowledgeEngine:
                     new_edge: Edge # help pylance
                     self.edge_collection.update(
                         ids=[eid],
-                        documents=[new_edge.model_dump_json()],
+                        documents=[new_edge.model_dump_json(field_mode='backend')],
                         metadatas=[_strip_none({
                             "doc_id": (meta or {}).get("doc_id"),
                             "relation": new_edge.relation,
@@ -2139,7 +2163,7 @@ class GraphKnowledgeEngine:
                 e.source_ids, e.target_ids = new_src, new_tgt
                 self.edge_collection.update(
                     ids=[eid],
-                    documents=[e.model_dump_json()],
+                    documents=[e.model_dump_json(field_mode='backend')],
                     metadatas=[_strip_none({
                         "doc_id": (meta or {}).get("doc_id"),
                         "relation": e.relation,
@@ -2274,7 +2298,7 @@ class GraphKnowledgeEngine:
         # Add the main edge row (neutral doc_id)
         self.edge_collection.add(
             ids=[edge.id],
-            documents=[edge.model_dump_json()],
+            documents=[edge.model_dump_json(field_mode='backend')],
             embeddings=[edge.embedding] if edge.embedding else None,
             metadatas=[self.chroma_sanitize_metadata({
                 "doc_id": getattr(edge, "doc_id", None),
