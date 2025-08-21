@@ -13,11 +13,13 @@ from graph_knowledge_engine.graph_query import GraphQuery
 from graph_knowledge_engine.models import Document
 from graph_knowledge_engine.visualization.graph_viz import to_cytoscape, to_d3_force
 import json
+from fastapi.templating import Jinja2Templates
+from fastapi import Request
 # ---- Engine + MCP ----
 persist_directory = os.environ.get("MCP_CHROMA_DIR") or "./.chroma-mcp"
 engine = GraphKnowledgeEngine(persist_directory=persist_directory)
 gq = GraphQuery(engine)
-
+templates = Jinja2Templates(directory=os.path.join(".","templates"))
 # Fastapi
 
 mcp = FastMCP("KnowledgeEngine + MCP + Admin")
@@ -256,138 +258,29 @@ def api_viz_d3(doc_id: Optional[str] = None, mode: str = "reify"):
     payload = to_d3_force(engine, doc_id=doc_id, mode=mode)
     return JSONResponse(payload)
 
-# --- quick Cytoscape viewer page ---
 @app.get("/viz/cytoscape", response_class=HTMLResponse)
 def viz_cytoscape(
+    request: Request,
     doc_id: Optional[str] = None,
     mode: str = "reify",
-    insertion_method: Optional[str] = None,  # <-- new filter
+    insertion_method: Optional[str] = None,
 ):
-    
-    # Keep it simple: carry current query params into the fetch()
-    return f"""
-<!doctype html>
-<html>
-  <head>
-    <meta charset="utf-8"/>
-    <title>Cytoscape viz</title>
-    <style> #cy {{ width:100vw; height:100vh; margin:0; }} #bar {{ position:fixed; top:8px; left:8px; background:#fff9; padding:6px 8px; border-radius:6px; font: 12px/1.2 sans-serif; }}</style>
-    <script src="https://unpkg.com/cytoscape@3.26.0/dist/cytoscape.min.js"></script>
-  </head>
-  <body>
-    <div id="bar">
-      <b>doc_id</b>=<code>{doc_id or ''}</code>&nbsp;|&nbsp;
-      <b>mode</b>=<code>{mode}</code>&nbsp;|&nbsp;
-      <b>insertion_method</b>=<code>{insertion_method or ''}</code>
-    </div>
-    <div id="cy"></div>
-    <script>
-      async function main(){{
-        const params = new URLSearchParams({{
-          "doc_id": "{doc_id or ''}",
-          "mode": "{mode}",
-        }});
-        const insertionMethod = {json.dumps(insertion_method) if insertion_method is not None else "null"};
-        if (insertionMethod) params.set("insertion_method", insertionMethod);
+    return templates.TemplateResponse(
+        "cytoscape.html",
+        {"request": request, "doc_id": doc_id, "mode": mode, "insertion_method": insertion_method},
+    )
 
-        const res = await fetch("/api/viz/cytoscape.json?" + params.toString());
-        const data = await res.json();
-
-        const cy = cytoscape({{
-          container: document.getElementById('cy'),
-          elements: data.elements,
-          layout: {{ name: 'cose' }},
-          style: [
-            {{ selector: 'node',      style: {{ 'label': 'data(label)', 'font-size': 10 }} }},
-            {{ selector: '.edge-node',style: {{ 'shape': 'diamond', 'background-color': '#999' }} }},
-            {{ selector: 'edge',      style: {{ 'curve-style': 'bezier', 'target-arrow-shape': 'triangle', 'label': 'data(label)', 'font-size': 8 }} }},
-            {{ selector: '.src',      style: {{ 'line-color': '#4a8', 'target-arrow-color': '#4a8' }} }},
-            {{ selector: '.tgt',      style: {{ 'line-color': '#a48', 'target-arrow-color': '#a48' }} }},
-          ],
-        }});
-      }}
-      main();
-    </script>
-  </body>
-</html>
-"""
-
-# --- quick D3 viewer page ---
 @app.get("/viz/d3", response_class=HTMLResponse)
 def viz_d3(
+    request: Request,
     doc_id: Optional[str] = None,
     mode: str = "reify",
-    insertion_method: Optional[str] = None,  # <-- new filter
+    insertion_method: Optional[str] = None,
 ):
-    return f"""
-<!doctype html>
-<html>
-  <head>
-    <meta charset="utf-8"/>
-    <title>D3 force viz</title>
-    <style>
-      body {{ margin:0; }}
-      svg {{ width:100vw; height:100vh; }}
-      #bar {{ position:fixed; top:8px; left:8px; background:#fff9; padding:6px 8px; border-radius:6px; font: 12px/1.2 sans-serif; z-index:10; }}
-      text {{ font: 10px sans-serif; }}
-    </style>
-    <script src="https://unpkg.com/d3@7"></script>
-  </head>
-  <body>
-    <div id="bar">
-      <b>doc_id</b>=<code>{doc_id or ''}</code>&nbsp;|&nbsp;
-      <b>mode</b>=<code>{mode}</code>&nbsp;|&nbsp;
-      <b>insertion_method</b>=<code>{insertion_method or ''}</code>
-    </div>
-    <svg></svg>
-    <script>
-      async function main(){{
-        const params = new URLSearchParams({{
-          "doc_id":"{doc_id or ''}",
-          "mode":"{mode}"
-        }});
-        const insertionMethod = {json.dumps(insertion_method) if insertion_method is not None else "null"};
-        if (insertionMethod) params.set("insertion_method", insertionMethod);
-
-        const res = await fetch("/api/viz/d3.json?" + params.toString());
-        const data = await res.json();
-
-        const svg = d3.select("svg"),
-              width = window.innerWidth,
-              height = window.innerHeight;
-
-        const sim = d3.forceSimulation(data.nodes)
-          .force("charge", d3.forceManyBody().strength(-120))
-          .force("link", d3.forceLink(data.links).id(d=>d.id).distance(80))
-          .force("center", d3.forceCenter(width/2, height/2));
-
-        const link = svg.append("g").attr("stroke","#999").attr("stroke-opacity",0.6)
-          .selectAll("line").data(data.links).join("line").attr("stroke-width",1.5);
-
-        const node = svg.append("g").attr("stroke","#fff").attr("stroke-width",1.5)
-          .selectAll("circle").data(data.nodes).join("circle")
-          .attr("r", d => d.type==="edge-node" ? 6 : 4)
-          .attr("fill", d => d.type==="edge-node" ? "#999" : "#69b")
-          .call(d3.drag()
-            .on("start", (event,d)=>{{ if(!event.active) sim.alphaTarget(0.3).restart(); d.fx=d.x; d.fy=d.y; }})
-            .on("drag", (event,d)=>{{ d.fx=event.x; d.fy=event.y; }})
-            .on("end", (event,d)=>{{ if(!event.active) sim.alphaTarget(0); d.fx=null; d.fy=null; }}));
-
-        const labels = svg.append("g").selectAll("text").data(data.nodes).join("text")
-          .text(d=>d.label||d.id);
-
-        sim.on("tick", ()=>{{
-          link.attr("x1", d=>d.source.x).attr("y1", d=>d.source.y)
-              .attr("x2", d=>d.target.x).attr("y2", d=>d.target.y);
-          node.attr("cx", d=>d.x).attr("cy", d=>d.y);
-          labels.attr("x", d=>d.x+6).attr("y", d=>d.y+3);
-        }});
-      }}
-      main();
-    </script>
-  </body>
-</html>
-"""
+    return templates.TemplateResponse(
+        "d3.html",
+        {"request": request, "doc_id": doc_id, "mode": mode, "insertion_method": insertion_method},
+    )
 
 # mcp = FastMCP.from_fastapi(app=app)
 # Mount the MCP server

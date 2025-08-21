@@ -1,0 +1,114 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8"/>
+    <title>D3 force viz</title>
+    <style>
+      body { margin:0; }
+      svg { width:100vw; height:100vh; }
+      #bar {
+        position:fixed; top:8px; left:8px; z-index: 10;
+        background:#fff9; padding:8px 10px; border-radius:8px;
+        font: 12px/1.3 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+        box-shadow: 0 2px 8px rgba(0,0,0,.15);
+      }
+      #bar label { margin-right:8px; }
+      #bar input[type=range] { width:110px; vertical-align: middle; }
+      #bar button { margin-right:6px; }
+      code { background:#eef; padding:1px 4px; border-radius:4px; }
+    </style>
+    <script src="https://unpkg.com/d3@7"></script>
+  </head>
+  <body>
+    <div id="bar">
+      <div style="margin-bottom:6px;">
+        <b>doc_id</b>=<code>{{ doc_id or '' }}</code> &nbsp;|&nbsp;
+        <b>mode</b>=<code>{{ mode }}</code> &nbsp;|&nbsp;
+        <b>insertion_method</b>=<code>{{ insertion_method or '' }}</code>
+      </div>
+      <button id="zoomIn">＋</button>
+      <button id="zoomOut">－</button>
+      <button id="resetZoom">Reset</button>
+      <label>Label font <input id="fontSize" type="range" min="8" max="18" value="10"></label>
+      <label>Link dist <input id="linkDist" type="range" min="30" max="200" value="80"></label>
+      <label>Charge <input id="charge" type="range" min="-400" max="-20" value="-120"></label>
+    </div>
+    <svg></svg>
+    <script>
+      async function main(){
+        const params = new URLSearchParams({
+          "doc_id":"{{ doc_id or '' }}",
+          "mode":"{{ mode }}"
+        });
+        const insertionMethod = {{ (insertion_method or none) | tojson }};
+        if (insertionMethod) params.set("insertion_method", insertionMethod);
+
+        const res = await fetch("/api/viz/d3.json?" + params.toString());
+        const data = await res.json();
+
+        const svg = d3.select("svg"),
+              width = window.innerWidth,
+              height = window.innerHeight;
+
+        // zoom/pan container
+        const g = svg.append("g");
+        const zoom = d3.zoom().scaleExtent([0.2, 5]).on("zoom", (event) => {
+          g.attr("transform", event.transform);
+        });
+        svg.call(zoom);
+
+        const linkForce = d3.forceLink(data.links).id(d => d.id).distance(80);
+        const chargeForce = d3.forceManyBody().strength(-120);
+
+        const sim = d3.forceSimulation(data.nodes)
+          .force("charge", chargeForce)
+          .force("link", linkForce)
+          .force("center", d3.forceCenter(width/2, height/2));
+
+        const link = g.append("g").attr("stroke","#999").attr("stroke-opacity",0.6)
+          .selectAll("line").data(data.links).join("line").attr("stroke-width",1.5);
+
+        const node = g.append("g").attr("stroke","#fff").attr("stroke-width",1.5)
+          .selectAll("circle").data(data.nodes).join("circle")
+          .attr("r", d => d.type==="edge-node" ? 6 : 4)
+          .attr("fill", d => d.type==="edge-node" ? "#999" : "#69b")
+          .call(d3.drag()
+            .on("start", (event,d)=>{ if(!event.active) sim.alphaTarget(0.3).restart(); d.fx=d.x; d.fy=d.y; })
+            .on("drag", (event,d)=>{ d.fx=event.x; d.fy=event.y; })
+            .on("end", (event,d)=>{ if(!event.active) sim.alphaTarget(0); d.fx=null; d.fy=null; }));
+
+        const labels = g.append("g").selectAll("text").data(data.nodes).join("text")
+          .text(d=>d.label||d.id)
+          .style("font", "10px sans-serif");
+
+        sim.on("tick", ()=>{
+          link.attr("x1", d=>d.source.x).attr("y1", d=>d.source.y)
+              .attr("x2", d=>d.target.x).attr("y2", d=>d.target.y);
+          node.attr("cx", d=>d.x).attr("cy", d=>d.y);
+          labels.attr("x", d=>d.x+6).attr("y", d=>d.y+3);
+        });
+
+        // controls
+        document.getElementById('zoomIn').onclick  = () => svg.transition().call(zoom.scaleBy, 1.2);
+        document.getElementById('zoomOut').onclick = () => svg.transition().call(zoom.scaleBy, 1/1.2);
+        document.getElementById('resetZoom').onclick = () => svg.transition().call(zoom.transform, d3.zoomIdentity);
+
+        const fontSize = document.getElementById('fontSize');
+        fontSize.oninput = () => { labels.style("font", fontSize.value + "px sans-serif"); };
+
+        const linkDist = document.getElementById('linkDist');
+        linkDist.oninput = () => {
+          linkForce.distance(parseInt(linkDist.value, 10));
+          sim.alpha(0.6).restart();
+        };
+
+        const charge = document.getElementById('charge');
+        charge.oninput = () => {
+          chargeForce.strength(parseInt(charge.value, 10));
+          sim.alpha(0.6).restart();
+        };
+      }
+      main();
+    </script>
+  </body>
+</html>
