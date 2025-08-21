@@ -1685,15 +1685,23 @@ class GraphKnowledgeEngine:
 
         return doc_ids
 
-    def _nodes_by_doc(self, document_id: str, insertion_method: str | None = None) -> list[str]:
-        if insertion_method is None:
-            rows = self.node_docs_collection.get(where={"doc_id": document_id}, include=["documents"])
-            return [] if not rows.get("documents") else list({json.loads(d)["node_id"] for d in rows["documents"]})
-        rows = self.node_refs_collection.get(
-            where={"$and": [{"doc_id": document_id}, {"insertion_method": insertion_method}]},
-            include=["documents"]
-        )
-        return [] if not rows.get("documents") else list({json.loads(d)["node_id"] for d in rows["documents"]})
+    def _nodes_by_doc(self, doc_id: str, insertion_method: Optional[str] = None) -> list[str]:
+        if insertion_method:
+            return self.ids_with_insertion_method(kind="node", insertion_method=insertion_method, doc_id=doc_id)
+        # original behavior (fast if you have node_docs table; else scan)
+        if hasattr(self, "node_docs_collection"):
+            rows = self.node_docs_collection.get(where={"doc_id": doc_id}, include=["metadatas"])
+            return sorted({m.get("node_id") for m in (rows.get("metadatas") or []) if m and m.get("node_id")})
+        # slow fallback:
+        got = self.node_collection.get(where={"doc_id": doc_id}, include=["ids"])
+        return got.get("ids") or []
+
+    def _edge_ids_by_doc(self, doc_id: str, insertion_method: Optional[str] = None) -> list[str]:
+        if insertion_method:
+            return self.ids_with_insertion_method(kind="edge", insertion_method=insertion_method, doc_id=doc_id)
+        # original behavior via endpoints table:
+        eps = self.edge_endpoints_collection.get(where={"doc_id": doc_id}, include=["metadatas"])
+        return sorted({m.get("edge_id") for m in (eps.get("metadatas") or []) if m and m.get("edge_id")})
 
     def _prune_node_refs_for_doc(self, node_id: str, doc_id: str) -> bool:
         """Remove references to doc_id from node; delete node_docs link; refresh denormalized meta."""
@@ -1799,11 +1807,6 @@ class GraphKnowledgeEngine:
     # ----------------------------
     # helpers for rollback
     # ----------------------------
-    def _edge_ids_by_doc(self, document_id: str) -> list[str]:
-        eps = self.edge_endpoints_collection.get(where={"doc_id": document_id})
-        if not eps["documents"]:
-            return []
-        return list({json.loads(doc)["edge_id"] for doc in eps["documents"]})
 
     def _delete_edges_by_ids(self, edge_ids: list[str]):
         if not edge_ids:
@@ -2435,6 +2438,64 @@ class GraphKnowledgeEngine:
                                                           update_edges = update_edges
                                                           )
         return to_return
+    def ids_with_insertion_method(
+        self,
+        *,
+        kind: str,                           # "node" | "edge"
+        insertion_method: str,
+        ids: Optional[Iterable[str]] = None, # optionally restrict to this set
+        doc_id: Optional[str] = None,        # optionally restrict to a document
+    ) -> list[str]:
+        """
+        Return distinct node_ids (or edge_ids) that have at least one ReferenceSession
+        with insertion_method == <value> (and optionally within doc_id).
+        Fast path uses the ref index; fallback scans the primary collection.
+        """
+        assert kind in ("node", "edge"), f"kind must be 'node' or 'edge', got {kind!r}"
+
+        # Choose index & key
+        if kind == "node":
+            idx = getattr(self, "node_refs_collection", None)
+            key = "node_id"
+            primary = self.node_collection
+            model_cls = Node
+        else:
+            idx = getattr(self, "edge_refs_collection", None)
+            key = "edge_id"
+            primary = self.edge_collection
+            model_cls = Edge
+
+        # ---------- Fast path: indexed rows ----------
+        if idx is not None:
+            where = {"insertion_method": insertion_method}
+            if doc_id:
+                where["doc_id"] = doc_id
+            if ids:
+                where[key] = {"$in": list(ids)}
+            rows = idx.get(where=where, include=["metadatas"])
+            picked = {m.get(key) for m in (rows.get("metadatas") or []) if m and m.get(key)}
+            return sorted(picked)
+
+        # ---------- Fallback: scan primary JSON ----------
+        # (only used if you didn’t create the index collection)
+        if ids:
+            got = primary.get(ids=list(ids), include=["documents"])
+            documents = got.get("documents") or []
+            entity_ids = got.get("ids") or []
+        else:
+            got = primary.get(include=["ids", "documents"])
+            documents = got.get("documents") or []
+            entity_ids = got.get("ids") or []
+
+        keep: set[str] = set()
+        for eid, blob in zip(entity_ids, documents):
+            ent = model_cls.model_validate_json(blob)
+            for ref in (ent.references or []):
+                im = getattr(ref, "insertion_method", None)
+                if im == insertion_method and (not doc_id or _ref_doc_id(ref) == doc_id):
+                    keep.add(eid)
+                    break
+        return sorted(keep)
     def _verify_one_reference(
         self,
         extracted_text: str,

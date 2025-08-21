@@ -107,11 +107,16 @@ def small_graph():
     doc_id = "D1"
     # nodes
     def add_node(nid, label):
-        n = Node(id=nid, label=label, type="entity", summary=label, references=[ReferenceSession(
-            collection_page_url=f"document_collection/{doc_id}", document_page_url=f"document/{doc_id}", doc_id=doc_id,
-            start_page=1, end_page=1, start_char=0, end_char=1
-        )], doc_id=doc_id)
-        e.node_collection.add(ids=[nid], documents=[n.model_dump_json()], metadatas=[{"doc_id": doc_id, "label": n.label, "type": n.type}])
+        n = Node(id=nid, label=label, type="entity", summary=label, 
+                    references=[ReferenceSession(
+                                        collection_page_url=f"document_collection/{doc_id}", 
+                                        document_page_url=f"document/{doc_id}", 
+                                        doc_id=doc_id, 
+                                        insertion_method = "manual", # document insertion
+                                        start_page=1, end_page=1, start_char=0, end_char=1
+                    )], doc_id=doc_id)
+        e.node_collection.add(ids=[nid], documents=[n.model_dump_json(field_mode="backend")], metadatas=[{"doc_id": doc_id, "label": n.label, 
+                                        "type": n.type}])
         # node_docs link
         ndid = f"{nid}::{doc_id}"
         row = {"id": ndid, "node_id": nid, "doc_id": doc_id}
@@ -127,7 +132,7 @@ def small_graph():
     edge = Edge(id=e_id, label="Smoking causes Lung Cancer", type="relationship", summary="causal", relation="causes",
                 source_ids=["A"], target_ids=["B"], source_edge_ids=[], target_edge_ids=[],
                 references=A.references, doc_id=doc_id)
-    e.edge_collection.add(ids=[e_id], documents=[edge.model_dump_json()], metadatas=[{"doc_id": doc_id, "relation": "causes"}])
+    e.edge_collection.add(ids=[e_id], documents=[edge.model_dump_json(field_mode = 'backend')], metadatas=[{"doc_id": doc_id, "relation": "causes"}])
     # endpoints fan-out
     rows = [
         {"id": f"{e_id}::src::node::A", "edge_id": e_id, "endpoint_id": "A", "endpoint_type": "node", "role": "src", "relation": "causes", "doc_id": doc_id},
@@ -141,7 +146,7 @@ def small_graph():
     e.edge_collection.add(ids=[e_id2], documents=[Edge(
         id=e_id2, label="summarizes_document", type="relationship", summary="S summarizes document", relation="summarizes_document",
         source_ids=["S"], target_ids=[f"docnode:{doc_id}"], source_edge_ids=[], target_edge_ids=[], references=S.references, doc_id=doc_id
-    ).model_dump_json()], metadatas=[{"doc_id": doc_id, "relation": "summarizes_document"}])
+    ).model_dump_json(field_mode = 'backend')], metadatas=[{"doc_id": doc_id, "relation": "summarizes_document"}])
     rows2 = [
         {"id": f"{e_id2}::src::node::S", "edge_id": e_id2, "endpoint_id": "S", "endpoint_type": "node", "role": "src", "relation": "summarizes_document", "doc_id": doc_id},
         {"id": f"{e_id2}::tgt::node::docnode:{doc_id}", "edge_id": e_id2, "endpoint_id": f"docnode:{doc_id}", "endpoint_type": "node", "role": "tgt", "relation": "summarizes_document", "doc_id": doc_id},
@@ -166,8 +171,8 @@ def test_neighbors_and_khop(small_graph):
     nbrs = gq.neighbors("A", doc_id=doc_id)
     assert "E1" in nbrs["edges"]
     assert "B" in nbrs["nodes"]
-    layers = gq.k_hop(["A"], k=1, doc_id=doc_id)
-    assert layers and "B" in layers[0]["nodes"]
+    layers = gq.k_hop(["A"], k=2, doc_id=doc_id)
+    assert layers and "B" in layers[1]["nodes"]
 
 
 def test_shortest_path_and_find_edges(small_graph):
@@ -192,7 +197,7 @@ def test_final_summary_helpers(small_graph):
 def test_document_subgraph(small_graph):
     e, doc_id = small_graph
     gq = GraphQuery(e)
-    sg = gq.document_subgraph(doc_id, center_ids=["A"], hops=1)
+    sg = gq.document_subgraph(doc_id, center_ids=["A"], hops=2)
     assert "A" in sg["seed_ids"]
     # should pull B via E1
     assert any(n.id == "B" for n in sg["nodes"])

@@ -21,4 +21,4 @@ def test_custom_embedder(tmp_path):
 
     got = eng.node_collection.get(ids=[node.id], include=["embeddings"])
     emb = got["embeddings"][0]
-    assert len(emb) == 2 and emb[0] == float(len(node.model_dump_json())) or len(emb) == 2  # allow toy impl variance
+    assert len(emb) == 2 and emb[0] == float(len(node.model_dump_json(field_mode = 'backend'))) or len(emb) == 2  # allow toy impl variance
