@@ -20,9 +20,6 @@
         position:fixed; display:none; pointer-events:none;
         background:#222; color:#fff; padding:6px 8px; border-radius:6px; font:12px/1.3 sans-serif; white-space:pre; z-index:20;
       }
-      #legend {
-        position:fixed; right:8px; top:8px; background:#fff9; padding:8px 10px; border-radius:6px; font:12px/1.2 sans-serif; z-index:11;
-      }
     </style>
     <script src="https://unpkg.com/d3@7"></script>
   </head>
@@ -39,14 +36,6 @@
       <label>Label font <input id="fontSize" type="range" min="8" max="18" value="10"></label>
       <label>Link dist <input id="linkDist" type="range" min="30" max="200" value="80"></label>
       <label>Charge <input id="charge" type="range" min="-400" max="-20" value="-120"></label>
-    </div>
-    <div id="legend">
-      <div><span style="display:inline-block;width:10px;height:10px;background:#69b;border-radius:50%;margin-right:6px;"></span> entity node</div>
-      <div style="display:flex;align-items:center;gap:6px;">
-        <svg width="14" height="14"><path transform="translate(7,7)" d="M0,-6 6,0 0,6 -6,0 Z" fill="#999" stroke="#fff" stroke-width="1"/></svg>
-        edge-node (reified relation)
-      </div>
-      <div style="margin-top:6px;"><span style="border-bottom:2px solid #999;">&nbsp;&nbsp;&nbsp;</span> link<br/><small>hover link or diamond for details</small></div>
     </div>
     <div id="tt"></div>
     <svg></svg>
@@ -107,22 +96,31 @@
             .on("drag",  (event,d)=>{ d.fx=event.x; d.fy=event.y; })
             .on("end",   (event,d)=>{ if(!event.active) sim.alphaTarget(0); d.fx=null; d.fy=null; }));
 
+        // minimal addition: native tooltip with label/summary/id
+        nodeCircle.append("title").text(d => {
+          return [d.label || d.id, d.summary, d.id].filter(Boolean).join('\n');
+        });
+
         const diamond = d3.symbol().type(d3.symbolDiamond).size(90);
         const nodeDiamond = g.append("g").attr("stroke","#fff").attr("stroke-width",1.0)
           .selectAll("path").data(edgeNodes, d => d.id).join("path")
           .attr("d", diamond)
-          .attr("fill", "#999")
+          .attr("fill", "#d77") /* different from link grey so nodes vs edges are distinct */
           .call(d3.drag()
             .on("start", (event,d)=>{ if(!event.active) sim.alphaTarget(0.3).restart(); d.fx=d.x; d.fy=d.y; })
             .on("drag",  (event,d)=>{ d.fx=event.x; d.fy=event.y; })
             .on("end",   (event,d)=>{ if(!event.active) sim.alphaTarget(0); d.fx=null; d.fy=null; }));
 
+        // minimal addition: native tooltip for edge-nodes with label/summary/id
+        nodeDiamond.append("title").text(d => {
+          return [d.label || "edge-node", d.summary, d.id].filter(Boolean).join('\n');
+        });
         // node labels
         const labels = g.append("g").selectAll("text").data(data.nodes, d => d.id).join("text")
           .text(d=>d.label||d.id)
           .style("font", "10px sans-serif");
 
-        // diamond tooltips (reify)
+        // diamond tooltips (keep existing behavior)
         if (isReify) {
           const tt = document.getElementById('tt');
           const show = (txt, evt) => { tt.textContent = txt; tt.style.display = 'block'; tt.style.left=(evt.clientX+12)+'px'; tt.style.top=(evt.clientY+12)+'px'; };
@@ -130,8 +128,11 @@
           nodeDiamond
             .on("mouseover", (evt, d) => {
               const title = d.label || "edge-node";
+              const summary = d.summary;
               const props = d.properties ? Object.entries(d.properties).map(([k,v]) => `${k}: ${v}`).join('\n') : '';
-              show([title, props].filter(Boolean).join('\n'), evt);
+              show([title, props, summary].filter(Boolean).join('\n'), evt);
+              console.log(title)
+              console.log(d)
             })
             .on("mousemove", (evt) => { tt.style.left=(evt.clientX+12)+'px'; tt.style.top=(evt.clientY+12)+'px'; })
             .on("mouseout", hide);

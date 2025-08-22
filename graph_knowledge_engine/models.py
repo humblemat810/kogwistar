@@ -197,7 +197,7 @@ class Edge(ChromaMixin, EdgeMixin, GraphEntityBase):
     #             f"Edge {edge.relation} ({edge.label}) must have at least one source and one target"
     #         )
     #     return self
-
+    pass
 class LLMNode( LLMMixin, GraphEntityBase):
     """
     Represents a node extracted by an LLM from a document.

@@ -195,6 +195,7 @@ def to_d3_force(
             "id": nid,
             "label": n.label,
             "type": "entity",
+            "summary" : n.summary
         }
 
     if mode.lower() == "reify":
@@ -204,6 +205,7 @@ def to_d3_force(
                     "id": eid,
                     "label": e.relation or e.label or "edge",
                     "type": "edge-node",
+                    "summary" : e.summary,
                     "properties": e.properties or {},
                 }
             # node sources
@@ -241,6 +243,7 @@ def to_d3_force(
                             "source": s, "target": t,
                             "relation": e.relation or e.label,
                             "properties": e.properties or {},
+                            
                         })
 
     return {
