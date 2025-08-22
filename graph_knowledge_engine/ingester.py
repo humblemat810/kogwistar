@@ -244,9 +244,11 @@ class BaseDocumentGraphIngestor:
                 label=title or f"Document {doc_id}",
                 type="entity",
                 summary="Represents the whole source document.",
+                
                 references=[ReferenceSession(
                     collection_page_url=f"document_collection/{doc_id}",
                     document_page_url=f"document/{doc_id}",
+                    insertion_method = "chunk-summary",
                     start_page=1, end_page=len(leaves), start_char=0, end_char=len(leaves[-1].text), snippet=None,
                     doc_id = doc_id
                 )],

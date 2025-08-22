@@ -82,13 +82,28 @@ class ReferenceSession(ModeSlicingMixin, BaseModel):
     verification: Annotated[Optional[MentionVerification], BackendField(), ExcludeMode("llm")] = Field(
                                         None, description="Result of validating the mention correctness"
                                     )
-            
+    @model_validator(mode="before")
+    @classmethod
+    def missing_fields(cls, data, info: ValidationInfo):
+        
+        # data_dump = data.model_dump()
+        if data.get('insertion_method') is None:
+            insertion_method = info.context["insertion_method"]
+            data['insertion_method'] = insertion_method
+        return data
     @model_validator(mode="after")
     def _check_span_consistency(self):
         if self.end_page < self.start_page:
             raise ValueError("end_page must be >= start_page")
         if self.start_page == self.end_page and self.end_char < self.start_char:
             raise ValueError("end_char must be >= start_char when start_page == end_page")
+        from .engine import _default_verification
+        if (not hasattr(self, 'verification') and self.__class__.__name__.endswith("LlmSlice")):
+            pass # ok LLM ok to have no such field
+        elif hasattr(self, 'verification') and self.verification is None: # ok
+            self.verification = _default_verification("no explicit verification from LLM")
+        else:
+            pass # already has verification filled in
         return self
 
 # -------------------------

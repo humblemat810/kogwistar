@@ -436,8 +436,12 @@ def _ensure_ref_span(ref: ReferenceSession, doc_id: str) -> ReferenceSession:
     if r.start_char is None or r.end_char is None:
         r.start_char, r.end_char = 0, 0
     # Default verification if absent
-    if r.verification is None:
+    if (not hasattr(r, 'verification') and r.__class__.__name__.endswith("LlmSlice")):  # llm slice no such field
+        pass
+    elif (hasattr(r, 'verification') and r.verification is None): # ok
         r.verification = _default_verification("no explicit verification from LLM")
+    else: # ok defined
+        pass
     return r
 
 def _normalize_refs(refs: Optional[List[ReferenceSession]], doc_id: str, fallback_snippet: Optional[str]) -> List[ReferenceSession]:
@@ -1923,12 +1927,12 @@ class GraphKnowledgeEngine:
                     if got.get("ids"):  # already there
                         node_ids.append(ln.id)
                         continue
-
+                refs = [ReferenceSession.model_validate(i.model_dump(), context={'insertion_method': 'llm_graph_extraction'}) for i in ln.references]
                 n = Node(
                     id=ln.id, label=ln.label, type=ln.type, summary=ln.summary,
                     domain_id=ln.domain_id, canonical_entity_id=ln.canonical_entity_id,
                     properties=ln.properties,
-                    references=_normalize_refs(ln.references, doc_id, fallback_snip),
+                    references= _normalize_refs(refs, doc_id, fallback_snip),
                     doc_id=doc_id,
                     embedding=self._ef([f"{ln.label}: {ln.summary}"])[0]
                 )
@@ -1943,12 +1947,12 @@ class GraphKnowledgeEngine:
                     if got.get("ids"):
                         edge_ids.append(le.id)
                         continue
-
+                refs = [ReferenceSession.model_validate(i.model_dump(), context={'insertion_method': 'llm_graph_extraction'}) for i in le.references]
                 e = Edge(
                     id=le.id, label=le.label, type=le.type, summary=le.summary,
                     domain_id=le.domain_id, canonical_entity_id=le.canonical_entity_id,
                     properties=le.properties,
-                    references=_normalize_refs(le.references, doc_id, fallback_snip),
+                    references=_normalize_refs(refs, doc_id, fallback_snip),
                     relation=le.relation,
                     source_ids=le.source_ids, target_ids=le.target_ids,
                     source_edge_ids=getattr(le, "source_edge_ids", None),

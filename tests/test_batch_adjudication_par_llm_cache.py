@@ -41,6 +41,7 @@ def _ref_for(doc_id: str,
         end_page=end_page,
         start_char=start_char,
         end_char=end_char,
+        insertion_method="pytest-manual"
         snippet=snippet,
     )
 

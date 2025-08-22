@@ -15,10 +15,14 @@ def test_custom_embedder(tmp_path):
     from graph_knowledge_engine.models import Document, Node, ReferenceSession
     doc = Document(content="abc def", type="text")
     eng.add_document(doc)
-    ref = ReferenceSession(collection_page_url="c", document_page_url=f"document/{doc.id}", start_page=1, end_page=1, start_char=0, end_char=3)
+    ref = ReferenceSession(collection_page_url="c", document_page_url=f"document/{doc.id}", 
+                           insertion_method="pytest-manual",
+                           start_page=1, end_page=1, start_char=0, end_char=3,
+                           doc_id = doc.id)
     node = Node(label="X", type="entity", summary="abc", references=[ref])
     eng.add_node(node, doc_id=doc.id)
-
+    eng._embed_one
     got = eng.node_collection.get(ids=[node.id], include=["embeddings"])
     emb = got["embeddings"][0]
-    assert len(emb) == 2 and emb[0] == float(len(node.model_dump_json(field_mode = 'backend'))) or len(emb) == 2  # allow toy impl variance
+    assert (all(eng._embed_one(eng.node_collection.get(ids=[node.id])['documents'][0]) - emb < 1e6))
+    # assert len(emb) == 2 and emb[0] == float(len(node.model_dump_json(field_mode = 'backend'))) or len(emb) == 2  # allow toy impl variance

@@ -43,12 +43,12 @@ def test_document_rollback(engine):
     
 def test_batch_document_rollback(engine):
     docs = [
-        Document(content=f"Fake content {i}", type="test")
+        Document(content=f"title test Document {i}, Content : test content {i}, this is first sentence of test doc{i}", type="test")
         for i in range(3)
     ]
-
+    inserted = []
     for doc in docs:
-        engine.ingest_document_with_llm(doc)
+        inserted.append(engine.ingest_document_with_llm(doc))
 
     # Ensure they are in DB
     for doc in docs:
