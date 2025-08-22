@@ -1579,6 +1579,13 @@ class GraphKnowledgeEngine:
         # strip Nones just in case
         return [{k: v for k, v in r.items() if v is not None} for r in rows]
     def add_edge(self, edge: Edge, doc_id: Optional[str] = None):
+        # if not (
+        #     (edge.source_ids or edge.source_edge_ids)
+        #     and (edge.target_ids or edge.target_edge_ids)
+        # ):
+        #     raise ValueError(
+        #         f"Edge {edge.id} ({edge.label}) must have at least one source and one target"
+        #     )
         edge.doc_id = doc_id
         s_nodes, s_edges, t_nodes, t_edges = self._split_endpoints(edge.source_ids, edge.target_ids)
         edge.source_ids = s_nodes

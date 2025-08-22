@@ -1,132 +1,321 @@
-# graph_knowledge_engine/graph_viz.py
+# graph_knowledge_engine/visualization/graph_viz.py
 from __future__ import annotations
 
-from typing import Dict, List, Optional, Tuple, Set
 import json
-from graph_knowledge_engine.engine import GraphKnowledgeEngine
+from typing import Dict, List, Optional, Tuple
+
 from ..models import Node, Edge
 
-# -----------------------------
-# Cytoscape format
-# -----------------------------
-# graph_knowledge_engine/visualization/graph_viz.py
-from typing import Optional, Iterable, Tuple
-from graph_knowledge_engine.models import Node, Edge
 
-def _entity_has_insertion_method(engine, kind: str, rid: str, value: str) -> bool:
-    """Slow-but-correct fallback: read JSON and scan references."""
-    coll = engine.edge_collection if kind == "edge" else engine.node_collection
-    got = coll.get(ids=[rid], include=["documents"])
-    if not got.get("documents"):
-        return False
-    model_cls = Edge if kind == "edge" else Node
-    ent = model_cls.model_validate_json(got["documents"][0])
-    refs = getattr(ent, "references", None) or []
-    for r in refs:
-        # support both attribute and dict forms
-        im = getattr(r, "insertion_method", None)
-        if im is None and isinstance(r, dict):
-            im = r.get("insertion_method")
-        if im == value:
-            return True
-    return False
+def _safe_iter(x):
+    return x if isinstance(x, list) and x else []
 
-def _filter_ids_by_insertion_method(
-    engine,
-    node_ids: Iterable[str],
-    edge_ids: Iterable[str],
-    insertion_method: Optional[str],
-    doc_id: Optional[str],
-) -> Tuple[list[str], list[str]]:
-    if not insertion_method:
-        return list(node_ids), list(edge_ids)
 
-    # Fast path if you added ref indexes:
-    # try engine.ids_with_insertion_method(...). If not present, fall back:
+def _load_node_map(engine, ids: List[str]) -> Dict[str, Node]:
+    """Robustly load Node models by ids."""
+    if not ids:
+        return {}
     try:
-        keep_nodes = set(engine.ids_with_insertion_method(
-            kind="node", ids=list(node_ids), insertion_method=insertion_method, doc_id=doc_id
-        ))
-        keep_edges = set(engine.ids_with_insertion_method(
-            kind="edge", ids=list(edge_ids), insertion_method=insertion_method, doc_id=doc_id
-        ))
-    except AttributeError:
-        keep_nodes = {nid for nid in node_ids if _entity_has_insertion_method(engine, "node", nid, insertion_method)}
-        keep_edges = {eid for eid in edge_ids if _entity_has_insertion_method(engine, "edge", eid, insertion_method)}
+        # Prefer engine helper if available
+        return engine._load_node_map(ids)
+    except Exception:
+        got = engine.node_collection.get(ids=ids, include=["documents"])
+        out = {}
+        for rid, doc in zip(got.get("ids") or [], got.get("documents") or []):
+            try:
+                out[rid] = Node.model_validate_json(doc)
+            except Exception:
+                pass
+        return out
 
-    # Optional: prune edges whose endpoints are gone (nicer drawings)
-    if keep_edges:
-        # load endpoints cheaply from edge_endpoints table if available
-        eps = engine.edge_endpoints_collection.get(
-            where={"edge_id": {"$in": list(keep_edges)}}, include=["metadatas"]
+
+def _load_edge_map(engine, ids: List[str]) -> Dict[str, Edge]:
+    """Robustly load Edge models by ids."""
+    if not ids:
+        return {}
+    try:
+        return engine._load_edge_map(ids)
+    except Exception:
+        got = engine.edge_collection.get(ids=ids, include=["documents"])
+        out = {}
+        for rid, doc in zip(got.get("ids") or [], got.get("documents") or []):
+            try:
+                out[rid] = Edge.model_validate_json(doc)
+            except Exception:
+                pass
+        return out
+
+
+def _ids_by_doc(engine, doc_id: Optional[str]) -> Tuple[List[str], List[str]]:
+    """Find ids scoped to a doc (fallback-safe)."""
+    if not doc_id:
+        # whole-graph fallback (cheap)
+        n = engine.node_collection.get(include=["ids"])
+        e = engine.edge_collection.get(include=["ids"])
+        return (n.get("ids") or []), (e.get("ids") or [])
+    # Prefer engine helpers if present
+    try:
+        node_ids = engine._nodes_by_doc(doc_id)
+    except Exception:
+        # fallback: query node_docs table if present
+        try:
+            rows = engine.node_docs_collection.get(where={"doc_id": doc_id}, include=["metadatas"])
+            node_ids = list({(m or {}).get("node_id") for m in (rows.get("metadatas") or []) if m and m.get("node_id")})
+        except Exception:
+            node_ids = []
+    try:
+        edge_ids = engine._edge_ids_by_doc(doc_id)
+    except Exception:
+        # fallback: query endpoints table if present
+        try:
+            eps = engine.edge_endpoints_collection.get(where={"doc_id": doc_id}, include=["metadatas"])
+            edge_ids = list({(m or {}).get("edge_id") for m in (eps.get("metadatas") or []) if m and m.get("edge_id")})
+        except Exception:
+            edge_ids = []
+    return node_ids, edge_ids
+
+
+def _filter_by_insertion_method(
+    engine,
+    ids: List[str],
+    kind: str,  # "node" | "edge"
+    insertion_method: Optional[str],
+    by_doc_id: Optional[str] = None,
+) -> List[str]:
+    """Filter ids to those that have at least one ReferenceSession with insertion_method (and optional doc)."""
+    if not insertion_method or not ids:
+        return ids
+
+    # Fast path: use refs index if present
+    coll_attr = "node_refs_collection" if kind == "node" else "edge_refs_collection"
+    try:
+        coll = getattr(engine, coll_attr)
+        where = {"insertion_method": insertion_method}
+        if by_doc_id:
+            where["doc_id"] = by_doc_id
+        rows = coll.get(where=where, include=["metadatas"])
+        idx_ids = set(
+            (m.get("node_id") if kind == "node" else m.get("edge_id"))
+            for m in (rows.get("metadatas") or [])
+            if m
         )
-        ok_nodes = keep_nodes
-        pruned_edges = set()
-        for meta in eps.get("metadatas") or []:
-            eid = meta.get("edge_id")
-            nid = meta.get("node_id")
-            if eid and (nid is None or nid in ok_nodes):
-                pruned_edges.add(eid)
-        keep_edges = pruned_edges or keep_edges
+        return [rid for rid in ids if rid in idx_ids]
+    except Exception:
+        pass
 
-    return sorted(keep_nodes), sorted(keep_edges)
-from .basic_visualization import Visualizer
+    # Fallback: scan JSON documents
+    store = engine.node_collection if kind == "node" else engine.edge_collection
+    got = store.get(ids=ids, include=["ids", "documents"])
+    keep = []
+    for rid, doc in zip(got.get("ids") or [], got.get("documents") or []):
+        try:
+            obj = json.loads(doc)
+            refs = obj.get("references") or []
+            ok = False
+            for r in refs:
+                if r.get("insertion_method") != insertion_method:
+                    continue
+                if by_doc_id:
+                    # match direct 'doc_id' or document_page_url that contains doc_id token
+                    if r.get("doc_id") == by_doc_id:
+                        ok = True
+                        break
+                    dp = r.get("document_page_url") or ""
+                    if by_doc_id in dp:
+                        ok = True
+                        break
+                else:
+                    ok = True
+                    break
+            if ok:
+                keep.append(rid)
+        except Exception:
+            pass
+    return keep
 
-def to_cytoscape(engine, doc_id: Optional[str] = None, mode: str = "reify",
-                 insertion_method: Optional[str] = None):
-    visualiser = Visualizer(engine=engine)
+
+def _collect_ids(
+    engine,
+    doc_id: Optional[str],
+    insertion_method: Optional[str],
+) -> Tuple[List[str], List[str]]:
+    """Base selection (doc filter) then optional insertion_method filter."""
+    node_ids, edge_ids = _ids_by_doc(engine, doc_id)
+    node_ids = _filter_by_insertion_method(engine, node_ids, "node", insertion_method, by_doc_id=doc_id)
+    edge_ids = _filter_by_insertion_method(engine, edge_ids, "edge", insertion_method, by_doc_id=doc_id)
+    return node_ids, edge_ids
+def _emit_hyper_links(edge, add_link):
     """
-    Build Cytoscape JSON. If `insertion_method` is provided, only include
-    nodes/edges that have at least one ReferenceSession with that value.
+    edge: your persisted edge record (already 'reified' as an edge-node elsewhere)
+          with fields: id (edge-node id), relation, source_ids, target_ids,
+          source_edge_ids, target_edge_ids
+    add_link: callable(source_id, target_id, relation, role) to append a link
     """
-    # 1) get the raw ids you would normally visualize (whatever you do today)
-    ids = visualiser.resolve_readable(by_doc_id=doc_id)  # or your existing way
-    node_ids = [n["id"] for n in ids["nodes"]]
-    edge_ids = [e["id"] for e in ids["edges"]]
+    eid = edge.id  # this is the edge-node id used in the viz
 
-    # 2) filter (server-side)
-    node_ids, edge_ids = _filter_ids_by_insertion_method(engine, node_ids, edge_ids, insertion_method, doc_id)
+    # All sources (nodes + edges) connect INTO the edge-node
+    for s in (edge.source_ids or []):
+        add_link(s, eid, edge.relation, "src")
+    for se in (edge.source_edge_ids or []):
+        add_link(se, eid, edge.relation, "src")
 
-    # 3) build the actual elements using your existing logic, but only for filtered ids
-    #    (pseudocode below — adapt to your current builder)
-    elements = []
-    node_map = visualiser._load_node_map(node_ids)
-    for nid in node_ids:
-        n = node_map[nid]
-        elements.append({"data": {"id": nid, "label": n["label"]}, "classes": ""})
+    # All targets (nodes + edges) connect OUT OF the edge-node
+    for t in (edge.target_ids or []):
+        add_link(eid, t, edge.relation, "tgt")
+    for te in (edge.target_edge_ids or []):
+        add_link(eid, te, edge.relation, "tgt")
 
-    edge_map = visualiser._load_edge_map(edge_ids)
-    for eid in edge_ids:
-        e = edge_map[eid]
-        # normal edge
-        for s in e["source_ids"] or []:
-            for t in e["target_ids"] or []:
-                if s in node_ids and t in node_ids:
-                    elements.append({
-                        "data": {"id": f"{eid}:{s}->{t}", "source": s, "target": t, "label": e["relation"]},
-                    })
-        # (if you draw reified “edge-nodes”, keep your existing logic here)
+def to_d3_force(
+    engine,
+    doc_id: Optional[str] = None,
+    mode: str = "reify",  # "reify" | "classic"
+    insertion_method: Optional[str] = None,
+) -> Dict:
+    """
+    D3 payload.
+
+    reify:
+      - nodes: entity nodes + edge-nodes (type="edge-node")
+      - links: entity_src -> edge-node (role=src), edge-node -> entity_tgt (role=tgt)
+
+    classic:
+      - nodes: entity nodes
+      - links: entity_src -> entity_tgt
+    """
+    node_ids, edge_ids = _collect_ids(engine, doc_id, insertion_method)
+    node_map = _load_node_map(engine, node_ids)
+    edge_map = _load_edge_map(engine, edge_ids)
+
+    nodes: Dict[str, Dict] = {}
+    links: List[Dict] = []
+
+    # materialize entity nodes
+    for nid, n in node_map.items():
+        nodes[nid] = {
+            "id": nid,
+            "label": n.label,
+            "type": "entity",
+        }
+
+    if mode.lower() == "reify":
+        for eid, e in edge_map.items():
+            if eid not in nodes:
+                nodes[eid] = {
+                    "id": eid,
+                    "label": e.relation or e.label or "edge",
+                    "type": "edge-node",
+                    "properties": e.properties or {},
+                }
+            # node sources
+            for s in _safe_iter(e.source_ids):
+                if s in nodes:
+                    links.append({"source": s, "target": eid, "relation": e.relation or e.label, "role": "src", "properties": e.properties or {}})
+                else:
+                    raise Exception ("unexpected path")
+            # edge sources (MISSING TODAY)
+            for se in _safe_iter(e.source_edge_ids):
+                if se in edge_map:  # link from another edge-node
+                    links.append({"source": se, "target": eid, "relation": e.relation or e.label, "role": "src", "properties": e.properties or {}})
+                else:
+                    raise Exception ("unexpected path")
+            # node targets
+            for t in _safe_iter(e.target_ids):
+                if t in nodes:
+                    links.append({"source": eid, "target": t, "relation": e.relation or e.label, "role": "tgt", "properties": e.properties or {}})
+                else:
+                    raise Exception ("unexpected path")
+            # edge targets (MISSING TODAY)
+            for te in _safe_iter(e.target_edge_ids):
+                if te in edge_map:
+                    links.append({"source": eid, "target": te, "relation": e.relation or e.label, "role": "tgt", "properties": e.properties or {}})
+                else:
+                    raise Exception ("unexpected path")
+
+    else:
+        # classic edges: direct src->tgt
+        for _, e in edge_map.items():
+            for s in _safe_iter(e.source_ids):
+                for t in _safe_iter(e.target_ids):
+                    if s in nodes and t in nodes:
+                        links.append({
+                            "source": s, "target": t,
+                            "relation": e.relation or e.label,
+                            "properties": e.properties or {},
+                        })
+
+    return {
+        "nodes": list(nodes.values()),
+        "links": links,
+        "mode": mode,
+        "doc_id": doc_id,
+    }
+
+
+def to_cytoscape(
+    engine,
+    doc_id: Optional[str] = None,
+    mode: str = "reify",  # "reify" | "classic"
+    insertion_method: Optional[str] = None,
+) -> Dict:
+    """
+    Cytoscape payload.
+
+    reify:
+      - elements: entity nodes, edge-nodes (class=edge-node)
+      - edges: entity_src -> edge-node (class=src), edge-node -> entity_tgt (class=tgt)
+
+    classic:
+      - elements: entity nodes, edges: entity_src -> entity_tgt
+    """
+    node_ids, edge_ids = _collect_ids(engine, doc_id, insertion_method)
+    node_map = _load_node_map(engine, node_ids)
+    edge_map = _load_edge_map(engine, edge_ids)
+
+    elements: List[Dict] = []
+
+    # entity nodes
+    for nid, n in node_map.items():
+        elements.append({
+            "data": {"id": nid, "label": n.label, "type": "entity"},
+            "classes": "",
+        })
+
+    if mode.lower() == "reify":
+        for eid, e in edge_map.items():
+            elements.append({
+                "data": {"id": eid, "label": e.relation or e.label or "edge", "type": "edge-node"},
+                "classes": "edge-node",
+            })
+            # node sources
+            for s in _safe_iter(e.source_ids):
+                if s in node_map:
+                    elements.append({"data": {"id": f"{eid}::src::{s}", "source": s, "target": eid, "label": e.relation or e.label}, "classes": "src"})
+            # edge sources
+            for se in _safe_iter(e.source_edge_ids):
+                if se in edge_map:
+                    elements.append({"data": {"id": f"{eid}::srcE::{se}", "source": se, "target": eid, "label": e.relation or e.label}, "classes": "src"})
+            # node targets
+            for t in _safe_iter(e.target_ids):
+                if t in node_map:
+                    elements.append({"data": {"id": f"{eid}::tgt::{t}", "source": eid, "target": t, "label": e.relation or e.label}, "classes": "tgt"})
+            # edge targets
+            for te in _safe_iter(e.target_edge_ids):
+                if te in edge_map:
+                    elements.append({"data": {"id": f"{eid}::tgtE::{te}", "source": eid, "target": te, "label": e.relation or e.label}, "classes": "tgt"})
+
+    else:
+        # classic: direct edge
+        for eid, e in edge_map.items():
+            for s in _safe_iter(e.source_ids):
+                for t in _safe_iter(e.target_ids):
+                    if s in node_map and t in node_map:
+                        elements.append({
+                            "data": {
+                                "id": f"{eid}::{s}->{t}",
+                                "source": s, "target": t,
+                                "label": e.relation or e.label,
+                            },
+                            "classes": "",
+                        })
 
     return {"elements": elements, "mode": mode, "doc_id": doc_id}
-
-def to_d3_force(engine, doc_id: Optional[str] = None, mode: str = "reify",
-                insertion_method: Optional[str] = None):
-    """
-    Build D3-friendly JSON with optional server-side insertion_method filter.
-    """
-    visualiser = Visualizer(engine=engine)
-    ids = visualiser.resolve_readable(by_doc_id=doc_id)
-    node_ids = [n["id"] for n in ids["nodes"]]
-    edge_ids = [e["id"] for e in ids["edges"]]
-
-    node_ids, edge_ids = _filter_ids_by_insertion_method(engine, node_ids, edge_ids, insertion_method, doc_id)
-
-    nodes = [{"id": nid, "label": visualiser._load_node_map([nid])[nid]["label"], "type": "node"} for nid in node_ids]
-    links = []
-    for eid in edge_ids:
-        e = visualiser._load_edge_map([eid])[eid]
-        for s in e["source_ids"] or []:
-            for t in e["target_ids"] or []:
-                if s in node_ids and t in node_ids:
-                    links.append({"source": s, "target": t, "id": eid, "label": e["relation"]})
-    return {"nodes": nodes, "links": links, "mode": mode, "doc_id": doc_id}

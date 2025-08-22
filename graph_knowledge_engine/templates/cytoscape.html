@@ -4,17 +4,14 @@
     <meta charset="utf-8"/>
     <title>Cytoscape viz</title>
     <style>
-      body { margin:0; }
-      #cy { width:100vw; height:100vh; }
+      #cy { width:100vw; height:100vh; margin:0; }
       #bar {
         position:fixed; top:8px; left:8px; z-index: 10;
         background:#fff9; padding:8px 10px; border-radius:8px;
         font: 12px/1.3 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
         box-shadow: 0 2px 8px rgba(0,0,0,.15);
       }
-      #bar label { margin-right:6px; }
-      #bar input[type=range] { width:110px; vertical-align: middle; }
-      #bar button, #bar select { margin-right:6px; }
+      #bar button { margin-right:6px; }
       code { background:#eef; padding:1px 4px; border-radius:4px; }
     </style>
     <script src="https://unpkg.com/cytoscape@3.26.0/dist/cytoscape.min.js"></script>
@@ -28,15 +25,8 @@
       </div>
       <button id="zoomIn">＋</button>
       <button id="zoomOut">－</button>
-      <button id="fit">Fit</button>
-      <select id="layout">
-        <option value="cose" selected>cose</option>
-        <option value="breadthfirst">breadthfirst</option>
-        <option value="concentric">concentric</option>
-        <option value="grid">grid</option>
-      </select>
-      <label>Node font <input id="nodeFont" type="range" min="6" max="18" value="10"></label>
-      <label>Edge font <input id="edgeFont" type="range" min="6" max="16" value="8"></label>
+      <button id="resetZoom">Reset</button>
+      <button id="layout">Re-layout</button>
     </div>
     <div id="cy"></div>
     <script>
@@ -55,35 +45,20 @@
           container: document.getElementById('cy'),
           elements: data.elements,
           layout: { name: 'cose' },
-          wheelSensitivity: 0.2,
           style: [
-            { selector: 'node',      style: { 'label': 'data(label)', 'font-size': 10 } },
-            { selector: '.edge-node',style: { 'shape': 'diamond', 'background-color': '#999' } },
-            { selector: 'edge',      style: { 'curve-style': 'bezier', 'target-arrow-shape': 'triangle', 'label': 'data(label)', 'font-size': 8 } },
-            { selector: '.src',      style: { 'line-color': '#4a8', 'target-arrow-color': '#4a8' } },
-            { selector: '.tgt',      style: { 'line-color': '#a48', 'target-arrow-color': '#a48' } },
+            { selector: 'node', style: { 'shape': 'ellipse', 'label': 'data(label)', 'font-size': 10, 'background-color': '#69b', 'text-wrap': 'wrap', 'text-max-width': 120 } },
+            { selector: 'node.edge-node', style: { 'shape': 'diamond', 'background-color': '#999' } },
+            { selector: 'edge', style: { 'curve-style': 'bezier', 'target-arrow-shape': 'triangle', 'label': 'data(label)', 'font-size': 8, 'line-color': '#888', 'target-arrow-color': '#888' } },
+            { selector: 'edge.src', style: { 'line-color': '#4a8', 'target-arrow-color': '#4a8' } },
+            { selector: 'edge.tgt', style: { 'line-color': '#a48', 'target-arrow-color': '#a48' } },
           ],
         });
 
-        // UI
+        // simple controls
         document.getElementById('zoomIn').onclick  = () => cy.zoom(cy.zoom() * 1.2);
         document.getElementById('zoomOut').onclick = () => cy.zoom(cy.zoom() / 1.2);
-        document.getElementById('fit').onclick     = () => cy.fit();
-
-        document.getElementById('layout').onchange = (e) => {
-          cy.layout({ name: e.target.value }).run();
-        };
-
-        const nodeFont = document.getElementById('nodeFont');
-        const edgeFont = document.getElementById('edgeFont');
-        function applyFonts(){
-          cy.style()
-            .selector('node').style('font-size', parseInt(nodeFont.value, 10))
-            .selector('edge').style('font-size', parseInt(edgeFont.value, 10))
-            .update();
-        }
-        nodeFont.oninput = applyFonts;
-        edgeFont.oninput = applyFonts;
+        document.getElementById('resetZoom').onclick = () => { cy.zoom(1); cy.center(); };
+        document.getElementById('layout').onclick = () => cy.layout({ name: 'cose' }).run();
       }
       main();
     </script>

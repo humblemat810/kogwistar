@@ -19,7 +19,8 @@ from fastapi import Request
 persist_directory = os.environ.get("MCP_CHROMA_DIR") or "./.chroma-mcp"
 engine = GraphKnowledgeEngine(persist_directory=persist_directory)
 gq = GraphQuery(engine)
-templates = Jinja2Templates(directory=os.path.join(".","templates"))
+import pathlib
+templates = Jinja2Templates(directory=os.path.join(str(pathlib.Path(__file__).parent),"templates"))
 # Fastapi
 
 mcp = FastMCP("KnowledgeEngine + MCP + Admin")
@@ -246,17 +247,92 @@ def admin_delete_doc(doc_id: str):
         "doc_id": doc_id,
         "deleted": {"nodes": len(node_ids), "edges": len(edge_ids)},
     }
-
+# http://localhost:28110/api/viz/d3.json?doc_id=pytest-doc-upsert-1&mode=reify
 # http://localhost:28110/api/viz/d3.json?doc_id=&mode=reify
 @app.get("/api/viz/cytoscape.json")
-def api_viz_cytoscape(doc_id: Optional[str] = None, mode: str = "reify"):
-    payload = to_cytoscape(engine, doc_id=doc_id, mode=mode)
+def api_viz_cytoscape(
+    doc_id: Optional[str] = None,
+    mode: str = "reify",
+    insertion_method: Optional[str] = None,   # NEW
+):
+    payload = to_cytoscape(engine, doc_id=doc_id, mode=mode, insertion_method=insertion_method)
     return JSONResponse(payload)
 
 @app.get("/api/viz/d3.json")
-def api_viz_d3(doc_id: Optional[str] = None, mode: str = "reify"):
-    payload = to_d3_force(engine, doc_id=doc_id, mode=mode)
+def api_viz_d3(
+    doc_id: Optional[str] = None,
+    mode: str = "reify",
+    insertion_method: Optional[str] = None,   # NEW
+):
+    payload = to_d3_force(engine, doc_id=doc_id, mode=mode, insertion_method=insertion_method)
     return JSONResponse(payload)
+# --- Add near your other imports ---
+from pydantic import BaseModel, Field
+from typing import Any, Dict, List, Optional
+from graph_knowledge_engine.models import LLMGraphExtraction, Document
+
+class GraphUpsertLLMIn(BaseModel):
+    """
+    Strict LLM-conformant upsert:
+    - nodes / edges must follow LLM* models (including REQUIRED references with spans).
+    - endpoints may use 'nn:*' / 'ne:*' temp ids that resolve in-batch.
+    - references may use document alias token ::DOC:: in URLs; we’ll de-alias to doc_id.
+    """
+    doc_id: str = Field(..., description="Document id to scope persistence")
+    content: Optional[str] = Field(None, description="If provided and doc is new, store this as document content")
+    doc_type: str = Field("plain", description="Document type")
+    insertion_method: str = Field("api_upsert", description="Provenance tag copied into each ReferenceSession")
+    nodes: List[Dict[str, Any]] = Field(default_factory=list, description="LLMNode['llm']-shaped dicts")
+    edges: List[Dict[str, Any]] = Field(default_factory=list, description="LLMEdge['llm']-shaped dicts")
+
+class GraphUpsertOut(BaseModel):
+    document_id: str
+    node_ids: List[str]
+    edge_ids: List[str]
+    nodes_added: int
+    edges_added: int
+
+@app.post("/api/graph/upsert", response_model=GraphUpsertOut)
+def api_graph_upsert_llm(inp: GraphUpsertLLMIn):
+    """
+    Upsert a (hyper)graph in one shot:
+    - Validates against the LLM Graph schema (which REQUIRES non-empty 'references').
+    - Injects `insertion_method` into every ReferenceSession.
+    - Supports hyperedges (edge->edge) in a single batch via engine’s topo-sorted ingest.
+    """
+    # 1) Ensure the document row exists (idempotent)
+    if inp.content is not None:
+        engine.add_document(Document(id=inp.doc_id, content=inp.content, type=inp.doc_type))
+    else:
+        # create a placeholder if completely missing so refs can anchor to doc_id
+        if not engine._fetch_document_text(inp.doc_id):
+            engine.add_document(Document(id=inp.doc_id, content="", type=inp.doc_type))
+
+    # 2) Validate to your LLM models (references REQUIRED by GraphEntityBase)
+    #    This matches your extractor path which later calls FromLLMSlice.
+    llm_like = LLMGraphExtraction.model_validate({
+        "nodes": inp.nodes,
+        "edges": inp.edges,
+    })
+
+    # 3) Copy insertion_method into every ReferenceSession (backend-only field),
+    #    exactly like kg_extract does, so refs carry provenance.
+    parsed = LLMGraphExtraction.FromLLMSlice(llm_like, insertion_method=inp.insertion_method)
+
+    # 4) Persist using your first-class persistence path (allocates nn:/ne:, topo-sorts, enforces endpoints)
+    persisted = engine.persist_graph_extraction(
+        document=Document(id=inp.doc_id, content=inp.content or engine._fetch_document_text(inp.doc_id) or "", type=inp.doc_type),
+        parsed=parsed,
+        mode="append",
+    )
+
+    return GraphUpsertOut(
+        document_id=persisted["document_id"],
+        node_ids=persisted["node_ids"],
+        edge_ids=persisted["edge_ids"],
+        nodes_added=persisted["nodes_added"],
+        edges_added=persisted["edges_added"],
+    )
 
 @app.get("/viz/cytoscape", response_class=HTMLResponse)
 def viz_cytoscape(
@@ -281,8 +357,7 @@ def viz_d3(
         "d3.html",
         {"request": request, "doc_id": doc_id, "mode": mode, "insertion_method": insertion_method},
     )
-
-# mcp = FastMCP.from_fastapi(app=app)
+    
 # Mount the MCP server
 app.mount("/", mcp_app)
 

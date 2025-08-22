@@ -175,7 +175,28 @@ class Node(ChromaMixin, GraphEntityBase):
     pass
 
 class Edge(ChromaMixin, EdgeMixin, GraphEntityBase):
-    pass
+    # @model_validator(mode="before")
+    # @classmethod
+    # def inject_context_on_children_before(cls, data: dict, info: ValidationInfo):
+    #     # You can inspect context and even transform incoming data
+    #     # (not required—context is already auto-propagated)
+    #     _ = info.context or {}
+        
+    #     return data
+    # @model_validator(mode="after")
+    # def inject_context_on_children_after(self, info: ValidationInfo):
+    #     # You can inspect context and even transform incoming data
+    #     # (not required—context is already auto-propagated)
+    #     _ = info.context or {}
+    #     edge = self
+    #     if not (
+    #         (edge.source_ids or edge.source_edge_ids)
+    #         and (edge.target_ids or edge.target_edge_ids)
+    #     ):
+    #         raise ValueError(
+    #             f"Edge {edge.relation} ({edge.label}) must have at least one source and one target"
+    #         )
+    #     return self
 
 class LLMNode( LLMMixin, GraphEntityBase):
     """
