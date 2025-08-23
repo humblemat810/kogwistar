@@ -6,7 +6,8 @@ def _ref(doc_id, start=0, end=20):
     return ReferenceSession(
         collection_page_url=f"document_collection/{doc_id}",
         document_page_url=f"document/{doc_id}",
-        start_page=1, end_page=1, start_char=start, end_char=end
+        doc_id = doc_id,
+        start_page=1, end_page=1, start_char=start, end_char=end, insertion_method= 'pytest-manual'
     )
 
 def test_default_sentence_transformer_embedder(tmp_path):
@@ -41,8 +42,8 @@ def test_default_embedder_autoruns(tmp_path):
     doc = Document(content="Chlorophyll absorbs light.", type="text")
     eng.add_document(doc)
 
-    ref = ReferenceSession(collection_page_url="c", document_page_url=f"document/{doc.id}",
-                           start_page=1, end_page=1, start_char=0, end_char=10)
+    ref = ReferenceSession(collection_page_url="c", document_page_url=f"document/{doc.id}", doc_id = doc.id,
+                           start_page=1, end_page=1, start_char=0, end_char=10, insertion_method = 'pytest-manual')
     n = Node(label="Chlorophyll", type="entity", summary="absorbs light", references=[ref])
     eng.add_node(n, doc_id=doc.id)  # embeddings=None -> auto-embed via DefaultEmbeddingFunction
 

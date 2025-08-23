@@ -6,7 +6,7 @@ def test_embeddings_optional_insert(engine):
         label="NoEmbed",
         type="entity",
         summary="Inserted without embedding",
-        embedding=None
+        embedding=None,
     )
     # Should not raise; Chroma accepts missing embeddings
     engine.add_node(n)

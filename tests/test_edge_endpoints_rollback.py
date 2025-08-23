@@ -35,9 +35,9 @@ def test_rollback_single_document():
 
     # Create two nodes belonging to the doc
     ref1 = ReferenceSession(collection_page_url="c", document_page_url=f"document/{doc.id}", start_page=13,end_page=14,start_char=24,end_char=17,
-                            doc_id = doc.id)
+                            doc_id = doc.id, insertion_method = "pytest-manual")
     ref2 = ReferenceSession(collection_page_url="c", document_page_url=f"document/{doc.id}", start_page=15,end_page=15,start_char=4,end_char=45,
-                            doc_id = doc.id)
+                            doc_id = doc.id, insertion_method = "pytest-manual")
     node1 = Node(label="A", type="entity", summary="n1", references=[ref1], doc_id = doc.id)
     node2 = Node(label="B", type="entity", summary="n2", references=[ref2], doc_id = doc.id)
     engine.add_node(node1)
@@ -70,9 +70,9 @@ def test_rollback_multiple_documents(tmp_path):
         engine.add_document(d)
 
     ref1 = ReferenceSession(collection_page_url="c", document_page_url=f"document/{docs[0].id}",
-                            start_page=1, end_page=1, start_char=0, end_char=1, doc_id=docs[0].id)
+                            start_page=1, end_page=1, start_char=0, end_char=1, doc_id=docs[0].id, insertion_method = "pytest-manual")
     ref2 = ReferenceSession(collection_page_url="c", document_page_url=f"document/{docs[1].id}",
-                            start_page=1, end_page=1, start_char=0, end_char=1, doc_id=docs[1].id)
+                            start_page=1, end_page=1, start_char=0, end_char=1, doc_id=docs[1].id, insertion_method = "pytest-manual")
 
     shared_node = Node(label="X", type="entity", summary="shared", references=[ref1, ref2])
     engine.add_node(shared_node)

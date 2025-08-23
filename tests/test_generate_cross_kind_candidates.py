@@ -37,7 +37,7 @@ def test_generate_cross_kind_candidates_happy_path(engine: GraphKnowledgeEngine)
     assert any(
         p.left.kind == "node"
         and p.right.kind == "edge"
-        and p.question == "node_edge_equivalence"
+        and p.question == "same_entity"
         for p in pairs
     )
 
@@ -66,7 +66,8 @@ def test_generate_cross_kind_candidates_disabled_scoped_and_limit(engine: GraphK
 
     # (a) Disabled → no candidates
     engine.allow_cross_kind_adjudication = False
-    assert engine.generate_cross_kind_candidates(scope_doc_id=doc1.id) == []
+    with pytest.raises(ValueError, match="Configuration disallow cross kind adjudication."):
+        engine.generate_cross_kind_candidates(scope_doc_id=doc1.id)
 
     # (b) Enable and scope to doc1 → should find candidates only from doc1
     engine.allow_cross_kind_adjudication = True

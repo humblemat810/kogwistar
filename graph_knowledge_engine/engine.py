@@ -1479,7 +1479,10 @@ class GraphKnowledgeEngine:
         Propose node↔edge pairs where labels/summaries suggest reification.
         Heuristic: node.label or summary overlaps edge.label/summary or edge.relation text.
         """
-        self.proposer.cross_kind_in_doc(engine = self, doc_id = scope_doc_id)
+        if self.allow_cross_kind_adjudication:
+            return self.proposer.cross_kind_in_doc(engine = self, doc_id = scope_doc_id)
+        else:
+            raise ValueError("Configuration disallow cross kind adjudication.")
         
     def generate_merge_candidates_doc_brute_force(
         self,
