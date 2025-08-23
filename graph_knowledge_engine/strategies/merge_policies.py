@@ -3,6 +3,7 @@ from __future__ import annotations
 from ..models import AdjudicationVerdict, AdjudicationTarget, Edge, Node, ReferenceSession, MentionVerification
 from .types import EngineLike, MergePolicy
 import uuid
+import json
 class PreferExistingCanonical(MergePolicy):
     def __init__(self, engine: EngineLike):
         self.e : EngineLike = engine

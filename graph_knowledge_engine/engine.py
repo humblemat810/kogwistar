@@ -2378,7 +2378,7 @@ class GraphKnowledgeEngine:
             (t_nodes if self._classify_endpoint_id(rid) == "node" else t_edges).append(rid)
         return s_nodes, s_edges, t_nodes, t_edges
     def commit_merge(self, left: Node, right: Node, verdict: AdjudicationVerdict) -> str:
-        canonical_id = self.merge_policy.commit_merge()
+        canonical_id = self.merge_policy.commit_merge(left, right, verdict)
         return canonical_id
     def commit_any_kind(self, node_or_edge_l: AdjudicationTarget, node_or_edge_r: AdjudicationTarget,
                         verdict: AdjudicationVerdict) -> str:

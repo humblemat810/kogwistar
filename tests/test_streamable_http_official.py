@@ -33,6 +33,7 @@ def _preseed_chroma_dir(persist_dir: str):
             collection_page_url=f"document_collection/{doc_id}",
             document_page_url=f"document/{doc_id}",
             doc_id=doc_id,
+            insertion_method="pytest-manual",
             start_page=1, end_page=1, start_char=0, end_char=max(0, len(snippet)),
             snippet=snippet or None,
         )

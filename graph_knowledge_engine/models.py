@@ -267,7 +267,10 @@ class LLMGraphExtraction(ModeSlicingMixin, BaseModel):
     @classmethod
     def FromLLMSlice(cls, sliced, insertion_method):
         sliced: LLMGraphExtraction['llm']
-        dumped = sliced.model_dump()
+        if isinstance(sliced, BaseModel):
+            dumped = sliced.model_dump()
+        else:
+            raise(ValueError("Unsupported type for 'sliced'"))
         for ne in dumped['nodes'] + dumped['edges']:
             for r in ne['references']:
                 r['insertion_method'] = insertion_method

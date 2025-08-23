@@ -33,14 +33,18 @@ def test_de_alias_ids_in_result_session_alias(monkeypatch):
     eng.add_document(doc)
     # pretend we already have context with two nodes and an edge
     n1 = Node(label="A", type="entity", summary="a", references=[ReferenceSession(collection_page_url="c", doc_id = doc.id,
+                                                                                  insertion_method = "pytest-manual",
                                                                                   document_page_url=f"document/{doc.id}", start_page=1,end_page=1,start_char=0,end_char=1)])
     n2 = Node(label="B", type="entity", summary="b", references=[ReferenceSession(collection_page_url="c", doc_id = doc.id,
+                                                                                  insertion_method = "pytest-manual",
                                                                                   document_page_url=f"document/{doc.id}", start_page=1,end_page=1,start_char=2,end_char=3)])
     eng.add_node(n1, doc_id=doc.id)
     eng.add_node(n2, doc_id=doc.id)
     e = Edge(label="A->B", type="relationship", summary="ab", relation="rel", source_ids=[n1.id], target_ids=[n2.id],
              source_edge_ids = [], target_edge_ids = [],
-             references=[ReferenceSession(collection_page_url="c", document_page_url=f"document/{doc.id}", doc_id = doc.id, start_page=1,end_page=1,start_char=0,end_char=3)])
+             references=[ReferenceSession(collection_page_url="c", document_page_url=f"document/{doc.id}", 
+                                          insertion_method = "pytest-manual",
+                                          doc_id = doc.id, start_page=1,end_page=1,start_char=0,end_char=3)])
     eng.add_edge(e, doc_id=doc.id)
 
     # allocate aliases for the context
@@ -49,15 +53,18 @@ def test_de_alias_ids_in_result_session_alias(monkeypatch):
 
     # fake an LLMGraphExtraction-shaped thing with aliases
     from graph_knowledge_engine.models import LLMGraphExtraction, LLMNode, LLMEdge, MentionVerification
-    parsed = LLMGraphExtraction(
-        nodes=[LLMNode(id=book.real_to_alias[n1.id], label="A", type="entity", summary="a",
-                       references=[ReferenceSession(collection_page_url="c", document_page_url=f"document/{doc.id}", doc_id = doc.id, start_page=1,end_page=1,start_char=0,end_char=1, verification=MentionVerification(method="heuristic", is_verified=False))])],
-        edges=[LLMEdge(id=book.real_to_alias[e.id], label="A->B", type="relationship", summary="ab",
+    # immitate llm slice return from llm
+    parsed = LLMGraphExtraction['llm'](
+        nodes=[LLMNode['llm'](id=book.real_to_alias[n1.id], label="A", type="entity", summary="a",
+                       references=[ReferenceSession['llm'](collection_page_url="c", document_page_url=f"document/{doc.id}", doc_id = doc.id, start_page=1,end_page=1,start_char=0,end_char=1, verification=MentionVerification(method="heuristic", is_verified=False))
+                                   ]).model_dump()],
+        edges=[LLMEdge['llm'](id=book.real_to_alias[e.id], label="A->B", type="relationship", summary="ab",
                        relation="rel", source_ids=[book.real_to_alias[n1.id]], target_ids=[book.real_to_alias[n2.id]],
                        source_edge_ids = [], target_edge_ids = [],
-                       references=[ReferenceSession(collection_page_url="c", document_page_url=f"document/{doc.id}", doc_id = doc.id, start_page=1,end_page=1,start_char=0,end_char=3, verification=MentionVerification(method="heuristic", is_verified=False))])]
-    )
-
+                       references=[ReferenceSession['llm'](collection_page_url="c", document_page_url=f"document/{doc.id}", doc_id = doc.id, start_page=1,end_page=1,start_char=0,end_char=3, verification=MentionVerification(method="heuristic", is_verified=False))]).model_dump()]
+    , context = dict(insertion_method = "pytest-graph_extractor"))
+    # invoke custom slice to base conversion
+    parsed = LLMGraphExtraction.FromLLMSlice(parsed, insertion_method = "pytest-graph_extractor")
     # de-alias
     out = eng._de_alias_ids_in_result(doc.id, parsed)
     assert out.nodes[0].id == n1.id
@@ -70,7 +77,9 @@ def test_commit_merge_creates_same_as_and_endpoints():
     doc = Document(content="y", type="test")
     eng.add_document(doc)
 
-    ref = ReferenceSession(collection_page_url="c", document_page_url=f"document/{doc.id}", doc_id = doc.id, start_page=1, end_page=1, start_char=0, end_char=5)
+    ref = ReferenceSession(collection_page_url="c", document_page_url=f"document/{doc.id}", 
+                           insertion_method = "pytest-manual",
+                           doc_id = doc.id, start_page=1, end_page=1, start_char=0, end_char=5)
     a = Node(label="Einstein", type="entity", summary="person", references=[ref])
     b = Node(label="Einstein", type="entity", summary="person (dup)", references=[ref])
     eng.add_node(a, doc_id=doc.id)
