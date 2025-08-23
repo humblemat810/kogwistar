@@ -131,6 +131,7 @@ def real_small_graph():
     def add_node(nid, label):
         n = Node(id=nid, label=label, type="entity", summary=label, references=[ReferenceSession(
             collection_page_url=f"document_collection/{doc_id}", document_page_url=f"document/{doc_id}", doc_id=doc_id,
+            insertion_method = 'pytest-conftext-fixture',
             start_page=1, end_page=1, start_char=0, end_char=1
         )], doc_id=doc_id)
         e.node_collection.add(ids=[nid], documents=[n.model_dump_json(field_mode = 'backend')], metadatas=[{"doc_id": doc_id, "label": n.label, "type": n.type}])

@@ -13,7 +13,7 @@ def _ref_for(doc_id: str) -> ReferenceSession:
         end_page=1, 
         start_char=0, 
         end_char=0,
-        insertion_method="pytest-manual",
+        insertion_method="pytest-manual"
     )
 
 def _load_node(engine, node_id: str) -> dict:
@@ -90,7 +90,7 @@ def _ref_for(doc_id: str) -> ReferenceSession:
         end_page=1,
         start_char=0,
         end_char=5,
-        insertion_method="pytest-manual"
+        insertion_method="pytest-manual",
         snippet="dummy snippet", doc_id = doc_id
     )
 

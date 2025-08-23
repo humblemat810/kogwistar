@@ -2382,7 +2382,7 @@ class GraphKnowledgeEngine:
         return canonical_id
     def commit_any_kind(self, node_or_edge_l: AdjudicationTarget, node_or_edge_r: AdjudicationTarget,
                         verdict: AdjudicationVerdict) -> str:
-        self.merge_policy.commit_any_kind(self, node_or_edge_l, node_or_edge_r,
+        self.merge_policy.commit_any_kind(node_or_edge_l, node_or_edge_r,
                         verdict)
     def generate_merge_candidates(self, new_node: Node, top_k: int = 5, similarity_threshold: float = 0.85) -> List[Tuple[Node, Node]]:
         """
