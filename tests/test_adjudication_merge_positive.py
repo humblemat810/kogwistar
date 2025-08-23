@@ -28,7 +28,7 @@ def _ref_for(doc_id: str) -> ReferenceSession:
         start_page=1,
         end_page=1,
         start_char=0,
-        insertion_method="pytest-manual"
+        insertion_method="pytest-manual",
         end_char=1,
         doc_id = doc_id
     )

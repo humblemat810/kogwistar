@@ -375,7 +375,8 @@ def _extract_doc_ids_from_refs(refs) -> list[str]:
     # unique + stable order
     return sorted(dict.fromkeys(out))
 def _node_doc_and_meta(n: "Node") -> tuple[str, dict]:
-    """Return (documents_string, metadata_dict) for Chroma."""
+    """Return (documents_string, metadata_dict) for Chroma. helper when inserting to backend db,"""
+    """Extract and flatten certain fields that can be searched via collection """
     doc = n.model_dump_json(field_mode = 'backend')
     meta = _strip_none({
         "doc_id": getattr(n, "doc_id", None),
@@ -385,7 +386,7 @@ def _node_doc_and_meta(n: "Node") -> tuple[str, dict]:
         "domain_id": n.domain_id,
         "canonical_entity_id": getattr(n, "canonical_entity_id", None),
         "properties": _json_or_none(getattr(n, "properties", None)),
-        "references": _json_or_none([r.model_dump() for r in (n.references or [])]),
+        "references": _json_or_none([r.model_dump(field_mode = 'backend') for r in (n.references or [])]),
         # add any other flat, filterable fields you rely on
     })
     return doc, meta
@@ -1383,9 +1384,10 @@ class GraphKnowledgeEngine:
                 "id": rid,
                 "edge_id": edge.id,
                 "doc_id": did,
-                "insertion_method": getattr(ver, "method", None),
+                "insertion_method" : getattr(ref, "insertion_method", None),
+                "verification_method": getattr(ver, "method", None),
                 "is_verified": getattr(ver, "is_verified", None),
-                "score": getattr(ver, "score", None),
+                "verificication_score": getattr(ver, "score", None),
                 "start_page": getattr(ref, "start_page", None),
                 "end_page": getattr(ref, "end_page", None),
                 "start_char": getattr(ref, "start_char", None),
@@ -1396,6 +1398,9 @@ class GraphKnowledgeEngine:
         if ids:
             self.edge_refs_collection.add(ids=ids, documents=docs, metadatas=metas)
     def _index_node_refs(self, node: Node) -> None:
+        """
+            create index for records, may flatten json into plain
+        """
         self._delete_node_ref_rows(node.id)
 
         ids, docs, metas = [], [], []
@@ -1407,9 +1412,10 @@ class GraphKnowledgeEngine:
                 "id": rid,
                 "node_id": node.id,
                 "doc_id": did,
-                "insertion_method": getattr(ver, "method", None),
+                "insertion_method" : getattr(ref, "insertion_method", None),
+                "verification_method": getattr(ver, "method", None),
                 "is_verified": getattr(ver, "is_verified", None),
-                "score": getattr(ver, "score", None),
+                "verificication_score": getattr(ver, "score", None),
                 "start_page": getattr(ref, "start_page", None),
                 "end_page": getattr(ref, "end_page", None),
                 "start_char": getattr(ref, "start_char", None),
@@ -1757,28 +1763,28 @@ class GraphKnowledgeEngine:
                 self._index_edge_refs(e)
                 total += 1
         return total
-    def edges_by_doc(self, doc_id: str, insertion_method: str | None = None) -> list[str]:
-        where = {"doc_id": doc_id} if not insertion_method else {
-            "$and": [{"doc_id": doc_id}, {"insertion_method": insertion_method}]
+    def edges_by_doc(self, doc_id: str, where: Optional[dict] = None) -> list[str]:
+        where = {"doc_id": doc_id} if not where else {
+            "$and": [{"doc_id": doc_id}] + [{k:v} for k,v in where.items()]
         }
         rows = self.edge_refs_collection.get(where=where, include=["documents"])
         return list({json.loads(d)["edge_id"] for d in (rows.get("documents") or [])})
 
-    def list_edges_with_ref_filter(self, doc_id: str, insertion_method: str | None = None) -> list[Edge]:
-        ids = self.edges_by_doc(doc_id, insertion_method)
+    def list_edges_with_ref_filter(self, doc_id: str, where: dict | None = None) -> list[Edge]:
+        ids = self.edges_by_doc(doc_id, where)
         if not ids:
             return []
         got = self.edge_collection.get(ids=ids, include=["documents"])
         return [Edge.model_validate_json(js) for js in (got.get("documents") or [])]
-    def nodes_by_doc(self, doc_id: str, insertion_method: str | None = None) -> list[str]:
-        where = {"doc_id": doc_id} if not insertion_method else {
-            "$and": [{"doc_id": doc_id}, {"insertion_method": insertion_method}]
+    def nodes_by_doc(self, doc_id: str, *, where : Optional[dict] = None) -> list[str]:
+        where = {"doc_id": doc_id} if not where else {
+            "$and": [{"doc_id": doc_id}] + [{k:v} for k,v in where.items()]
         }
         rows = self.node_refs_collection.get(where=where, include=["documents"])
         return list({json.loads(d)["node_id"] for d in (rows.get("documents") or [])})
 
-    def list_nodes_with_ref_filter(self, doc_id: str, insertion_method: str | None = None) -> list[Node]:
-        ids = self.nodes_by_doc(doc_id, insertion_method)
+    def list_nodes_with_ref_filter(self, doc_id: str, *, where : Optional[dict] = None) -> list[Node]:
+        ids = self.nodes_by_doc(doc_id, where = where)
         if not ids:
             return []
         got = self.node_collection.get(ids=ids, include=["documents"])

@@ -7,7 +7,7 @@ def _ref_for(did: str, s=0, e=1):
     return ReferenceSession(
         collection_page_url=f"document_collection/{did}",
         document_page_url=f"document/{did}",
-        insertion_method="pytest-manual"
+        insertion_method="pytest-manual",
         start_page=1, end_page=1, start_char=s, end_char=e, doc_id=did
     )
 

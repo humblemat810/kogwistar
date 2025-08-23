@@ -39,7 +39,7 @@ def _ref_for(doc_id: str) -> ReferenceSession:
         end_page=1,
         start_char=0,
         end_char=1,
-        insertion_method="pytest-manual"
+        insertion_method="pytest-manual",
         doc_id = doc_id
     )
 from typing import List

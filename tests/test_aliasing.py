@@ -78,7 +78,7 @@ def _ref_for(doc_id: str) -> ReferenceSession:
         document_page_url=f"document/{doc_id}",
         start_page=1, end_page=1, start_char=0, end_char=1,
         verification=MentionVerification(method="heuristic", is_verified=False), 
-        insertion_method="pytest-manual"
+        insertion_method="pytest-manual",
         doc_id = doc_id
         
     )
