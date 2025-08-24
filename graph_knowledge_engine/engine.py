@@ -682,7 +682,7 @@ class GraphKnowledgeEngine:
     # Utilities
     # ----------------------------
     @staticmethod
-    def _default_ref(doc_id, snippet):
+    def _default_ref(doc_id: str, snippet: Optional[str] = None) -> ReferenceSession:
         return _default_ref(doc_id, snippet)
         pass
     @staticmethod
@@ -1474,27 +1474,7 @@ class GraphKnowledgeEngine:
             source_edge_ids=e.source_edge_ids or [], target_edge_ids=e.target_edge_ids or [],
             domain_id=e.domain_id, canonical_entity_id=e.canonical_entity_id, properties=e.properties
         )
-    def generate_cross_kind_candidates(self, scope_doc_id: str | None = None, limit_per_bucket: int = 50):
-        """
-        Propose node↔edge pairs where labels/summaries suggest reification.
-        Heuristic: node.label or summary overlaps edge.label/summary or edge.relation text.
-        """
-        if self.allow_cross_kind_adjudication:
-            return self.proposer.cross_kind_in_doc(engine = self, doc_id = scope_doc_id)
-        else:
-            raise ValueError("Configuration disallow cross kind adjudication.")
-        
-    def generate_merge_candidates_doc_brute_force(
-        self,
-        kind: str = "node",            # "node" or "edge"
-        scope_doc_id: str | None = None,
-        top_k: int = 200,
-    ) -> list[AdjudicationCandidate]:
-        """
-        Offline candidate generator. For nodes: block by (type,label lower).
-        For edges: block by (relation, sorted endpoints).
-        """
-        return self.proposer.same_kind_in_doc(self, doc_id = scope_doc_id, kind = kind)
+    
     def check_document_exist(self, document_id : str | list[str]):
         doc_ids = [document_id] if type(document_id) is str else document_id
         got = self.document_collection.get(ids=doc_ids, include=[])
@@ -1779,6 +1759,10 @@ class GraphKnowledgeEngine:
             return []
         got = self.edge_collection.get(ids=ids, include=["documents"])
         return [Edge.model_validate_json(js) for js in (got.get("documents") or [])]
+    def nodes_by_ids(self, node_ids):
+        return self.node_collection.get(node_ids)
+    def edges_by_ids(self, edge_ids):
+        return self.edge_collection.get(edge_ids)
     def nodes_by_doc(self, doc_id: str, *, where : Optional[dict] = None) -> list[str]:
         where = {"doc_id": doc_id} if not where else {
             "$and": [{"doc_id": doc_id}] + [{k:v} for k,v in where.items()]
@@ -2384,13 +2368,87 @@ class GraphKnowledgeEngine:
                         verdict: AdjudicationVerdict) -> str:
         self.merge_policy.commit_any_kind(node_or_edge_l, node_or_edge_r,
                         verdict)
-    def generate_merge_candidates(self, new_node: Node, top_k: int = 5, similarity_threshold: float = 0.85) -> List[Tuple[Node, Node]]:
+    def generate_merge_candidates_doc_brute_force(
+        self,
+        kind: str = "node",
+        scope_doc_id: Optional[str] = None,
+        top_k: int = 200,
+        *,
+        # NEW optional knobs:
+        allowed_docs: Optional[List[str]] = None,
+        anchor_doc_id: Optional[str] = None,
+        cross_doc_only: bool = False,
+        anchor_only: bool = True,
+    ):
         """
-        Given a new node, find likely duplicates in Chroma for adjudication.
-        Returns a list of (existing_node, new_node) pairs.
+        Back-compat:
+        - If no new knobs are provided and scope_doc_id is set, behave exactly like before (same-doc only).
+        - Otherwise, use the unified proposer with richer scoping.
         """
-        return self.proposer.for_new_node(self, new_node, top_k, similarity_threshold)
-        
+        if (allowed_docs is None and anchor_doc_id is None and not cross_doc_only and scope_doc_id):
+            # legacy behavior (same doc only)
+            return self.proposer.same_kind_in_doc(engine=self, doc_id=scope_doc_id, kind="node" if kind == "node" else "edge")
+
+        pair_kind = "node_node" if kind == "node" else "edge_edge"
+        return self.proposer.propose_any_kind_any_doc(
+            engine=self,
+            pair_kind=pair_kind,
+            allowed_docs=allowed_docs,
+            anchor_doc_id=anchor_doc_id or None,
+            cross_doc_only=cross_doc_only,
+            anchor_only=anchor_only,
+            limit_per_bucket=top_k,
+        )
+
+
+    def generate_cross_kind_candidates(
+        self,
+        scope_doc_id: Optional[str] = None,
+        limit_per_bucket: int = 200,
+        *,
+        # NEW optional knobs:
+        allowed_docs: Optional[List[str]] = None,
+        anchor_doc_id: Optional[str] = None,
+        cross_doc_only: bool = False,
+        anchor_only: bool = True,
+    ):
+        """
+        Back-compat:
+        - Without new knobs and with scope_doc_id set, behave as before (same-doc only).
+        - Otherwise use unified proposer in node↔edge mode.
+        """
+        if (allowed_docs is None and anchor_doc_id is None and not cross_doc_only and scope_doc_id):
+            return self.proposer.cross_kind_in_doc(engine=self, doc_id=scope_doc_id, limit_per_bucket=limit_per_bucket)
+
+        return self.proposer.propose_any_kind_any_doc(
+            engine=self,
+            pair_kind="node_edge",
+            allowed_docs=allowed_docs,
+            anchor_doc_id=anchor_doc_id,
+            cross_doc_only=cross_doc_only,
+            anchor_only=anchor_only,
+            limit_per_bucket=limit_per_bucket,
+        )
+
+
+    def generate_merge_candidates(
+        self,
+        new_node: Union[Node, str, Sequence[Union[Node, str]]],
+        top_k: int = 10,
+        *,
+        # NEW optional knobs (post-filtering on vector hits):
+        allowed_docs: Optional[List[str]] = None,
+        anchor_doc_id: Optional[str] = None,
+        cross_doc_only: bool = False,
+        anchor_only: bool = True,
+    ):
+        out = self.proposer.generate_merge_candidates(engine=self,
+                                                     new_node = new_node, top_k = top_k, 
+                                                     allowed_docs=allowed_docs, 
+                                                     anchor_doc_id=anchor_doc_id,
+                                                     cross_doc_only=cross_doc_only,
+                                                     anchor_only=anchor_only)
+        return out
     
     def adjudicate_pair(self, left: AdjudicationTarget, right: AdjudicationTarget, question: str):
         return self.adjudicator.adjudicate_pair(left, right, question)

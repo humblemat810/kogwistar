@@ -150,10 +150,11 @@ def kg_extract(inp: KGExtractIn) -> KGExtractOut:
         parsed_LLM: LLMGraphExtraction['llm'] = extracted["parsed"]
         # ctx = {"insertion_method": "graph_extractor"}
         # dumped = parsed_LLM.model_dump()
-        parsed = LLMGraphExtraction.FromLLMSlice(parsed_LLM, insertion_method = "graph_extractor")
+        parsed = LLMGraphExtraction.FromLLMSlice(parsed_LLM, insertion_method = "llm_graph_extraction")
+        batch_node_ids, batch_edge_ids = engine._preflight_validate(parsed, inp.id)
         return parsed
     parsed = get_reparsed_extraction(content)
-    batch_node_ids, batch_edge_ids = engine._preflight_validate(parsed, inp.id)
+    
     persisted = engine.persist_graph_extraction(
         document=Document(id=inp.id, content=content, type="plain"),
         parsed=parsed, mode=inp.mode,
@@ -357,7 +358,460 @@ def viz_d3(
         "d3.html",
         {"request": request, "doc_id": doc_id, "mode": mode, "insertion_method": insertion_method},
     )
+
+#=====================
+# Adjundicate persisted nodes
+#=====================
+from graph_knowledge_engine.models import AdjudicationQuestionCode, Node, Edge, AdjudicationVerdict
+from typing import Literal, Tuple
+class LoadPersistedIn(BaseModel):
+    doc_ids: List[str]
+    insertion_method: Optional[str] = None  # e.g. "graph_extractor", "api_upsert"
+
+class LoadPersistedOut(BaseModel):
+    node_ids: List[str]
+    edge_ids: List[str]
+
+def _load_persisted_graph(doc_ids: List[str], insertion_method: Optional[str] = None) -> LoadPersistedOut:
+    """Return ID sets pulled from persistence (optionally filter by insertion_method)."""
+    node_ids: set[str] = set()
+    edge_ids: set[str] = set()
+    for did in doc_ids:
+        if insertion_method:
+            node_ids.update(engine.nodes_by_doc(did, where={"insertion_method": insertion_method}))
+            edge_ids.update(engine.edges_by_doc(did, where={"insertion_method": insertion_method}))
+        else:
+            node_ids.update(engine.node_ids_by_doc(did))
+            edge_ids.update(engine.edge_ids_by_doc(did))
+    return LoadPersistedOut(node_ids=sorted(node_ids), edge_ids=sorted(edge_ids))
+
+@mcp.tool()
+def kg_load_persisted(inp: LoadPersistedIn) -> LoadPersistedOut:
+    """MCP: read back persisted IDs for the given docs (fast; no LLM)."""
+    return _load_persisted_graph(inp.doc_ids, insertion_method=inp.insertion_method)
+
+# ---------- Cross-document adjudication (same-kind & cross-kind) ----------
+class CrossDocAdjIn(BaseModel):
+    doc_ids: List[str]
+    kind: Literal["node", "edge", "any"] = "any"   # "node" (node↔node only), "edge" (edge↔edge only), "any" (includes node↔edge)
+    insertion_method: Optional[str] = None         # optional provenance filter
+    max_pairs_per_bucket: int = 50                 # guardrail per logical bucket
+    commit: bool = False                           # if True, commit positives
+    scope: Literal["cross-doc", "within-doc"] = "cross-doc"  # NEW
+    strict_crossdoc: bool = True                              # NEW: drop pairs if a side lacks doc_id
+
+class CrossDocAdjItem(BaseModel):
+    left: str
+    right: str
+    left_kind: Literal["entity", "relationship"]
+    right_kind: Literal["entity", "relationship"]
+    same_entity: Optional[bool]
+    confidence: Optional[float] = None
+    reason: Optional[str] = None
+    canonical_id: Optional[str] = None            # set when commit succeeds
+
+class CrossDocAdjOut(BaseModel):
+    question_key: str
+    total_pairs: int
+    positives: int
+    negatives: int
+    abstain: int
+    committed_ids: List[str]
+    results: List[CrossDocAdjItem]
+
+
+def _fetch_nodes(ids: List[str]) -> List[Node]:
+    if hasattr(engine, "get_nodes"):
+        return engine.get_nodes(ids)
+    # fallback
+    got = engine.node_collection.get(ids=ids, include=["documents"])
+    return [Node.model_validate_json(j) for j in (got.get("documents") or [])]
+
+def _fetch_edges(ids: List[str]) -> List[Edge]:
+    if hasattr(engine, "get_edges"):
+        return engine.get_edges(ids)
+    # fallback
+    got = engine.edge_collection.get(ids=ids, include=["documents"])
+    return [Edge.model_validate_json(j) for j in (got.get("documents") or [])]
+
+def _primary_doc_of(n: Node) -> Optional[str]:
+    # prefer explicit .doc_id, else try references[].doc_id
+    if getattr(n, "doc_id", None):
+        return n.doc_id
+    for r in (n.references or []):
+        did = getattr(r, "doc_id", None)
+        if did:
+            return did
+    return None
+
+def _norm(s: Optional[str]) -> str:
+    return (s or "").strip().lower()
+
+def _sigtext(n_or_e: Any) -> Optional[str]:
+    """Signature text used to match reified node <-> edge or edge <-> edge."""
+    props = getattr(n_or_e, "properties", None) or {}
+    st = props.get("signature_text")
+    return st if isinstance(st, str) else None
+
+
+@mcp.tool()
+def kg_crossdoc_adjudicate_anykind(inp: CrossDocAdjIn) -> CrossDocAdjOut:
+    """
+    Cross-document adjudication:
+      - kind="node": node↔node
+      - kind="edge": edge↔edge
+      - kind="any" : node↔node, edge↔edge, and node↔edge (cross-type)
+
+    Pairing heuristic (minimal / fast):
+      • node↔node: bucket by (type, normalized label) across different doc_ids.
+      • edge↔edge: match by properties.signature_text when present; otherwise (relation, normalized label).
+      • node↔edge: match by properties.signature_text (reified event) when present; otherwise (normalized node.label == normalized edge.label).
+    """
+    def _pairable(di: Optional[str], dj: Optional[str]) -> bool:
+        if inp.scope == "cross-doc":
+            if inp.strict_crossdoc and (not di or not dj):
+                return False
+            return (di and dj and di != dj)
+        else:  # within-doc
+            if inp.strict_crossdoc and (not di or not dj):
+                return False
+            return (di and dj and di == dj)
+    loaded = _load_persisted_graph(inp.doc_ids, insertion_method=inp.insertion_method)
+    node_objs: List[Node] = _fetch_nodes(loaded.node_ids) if loaded.node_ids else []
+    edge_objs: List[Edge] = _fetch_edges(loaded.edge_ids) if loaded.edge_ids else []
+
+    # Build quick lookups
+    nodes_by_key: Dict[Tuple[str, str], List[Tuple[Node, Optional[str]]]] = {}
+    for n in node_objs:
+        key = (n.type, _norm(n.label))
+        nodes_by_key.setdefault(key, []).append((n, _primary_doc_of(n)))
+
+    # For edges use signature_text when available; else fallback to (relation, normalized label)
+    edges_by_sig: Dict[str, List[Tuple[Edge, Optional[str]]]] = {}
+    edges_by_rel_label: Dict[Tuple[str, str], List[Tuple[Edge, Optional[str]]]] = {}
+    for e in edge_objs:
+        did = _primary_doc_of(e)  # same helper works (Edge ⊂ Node in your model)
+        st = _sigtext(e)
+        if st:
+            edges_by_sig.setdefault(st, []).append((e, did))
+        else:
+            key = (e.relation or "", _norm(e.label))
+            edges_by_rel_label.setdefault(key, []).append((e, did))
+
+    # ---------- Build pairs ----------
+    pairs: List[Tuple[Any, Any]] = []
+
+    def _cap_pairing(items: List[Tuple[Any, Optional[str]]]):
+        made = 0
+        for i in range(len(items)):
+            for j in range(i + 1, len(items)):
+                di, dj = items[i][1], items[j][1]
+                if not di or not dj or di == dj:
+                    continue  # cross-doc only
+                if not _pairable(di, dj):
+                    continue
+                pairs.append((items[i][0], items[j][0]))
+                made += 1
+                if made >= inp.max_pairs_per_bucket:
+                    return
+    # simple adjudicate proposal by label
+    if inp.kind in ("node", "any"):
+        for _, items in nodes_by_key.items():
+            if len(items) >= 2:
+                _cap_pairing(items)
+
+    if inp.kind in ("edge", "any"):
+        for _, items in edges_by_sig.items():
+            if len(items) >= 2:
+                _cap_pairing(items)
+        for _, items in edges_by_rel_label.items():
+            if len(items) >= 2:
+                _cap_pairing(items)
+
+    if inp.kind == "any":
+        # node↔edge (cross-type): use signature_text; else label match
+        # map node signature_text to nodes
+        nodes_by_sig: Dict[str, List[Tuple[Node, Optional[str]]]] = {}
+        for n in node_objs:
+            st = _sigtext(n)
+            if st:
+                nodes_by_sig.setdefault(st, []).append((n, _primary_doc_of(n)))
+
+        # sig-based matches
+        for st, n_items in nodes_by_sig.items():
+            e_items = edges_by_sig.get(st) or []
+            if not e_items or not n_items:
+                continue
+            made = 0
+            for (n, dn) in n_items:
+                for (e, de) in e_items:
+                    if dn and de and dn != de:
+                        pairs.append((n, e))
+                        made += 1
+                        if made >= inp.max_pairs_per_bucket:
+                            break
+                if made >= inp.max_pairs_per_bucket:
+                    break
+
+        # fallback: label match (rare but useful)
+        edge_label_map: Dict[str, List[Tuple[Edge, Optional[str]]]] = {}
+        for e in edge_objs:
+            edge_label_map.setdefault(_norm(e.label), []).append((e, _primary_doc_of(e)))
+        for n in node_objs:
+            label_key = _norm(n.label)
+            e_items = edge_label_map.get(label_key)
+            if not e_items:
+                continue
+            made = 0
+            dn = _primary_doc_of(n)
+            for (e, de) in e_items:
+                if dn and de and dn != de:
+                    pairs.append((n, e))
+                    made += 1
+                    if made >= inp.max_pairs_per_bucket:
+                        break
+
+    if not pairs:
+        return CrossDocAdjOut(
+            question_key=str(AdjudicationQuestionCode.SAME_ENTITY.value),
+            total_pairs=0, positives=0, negatives=0, abstain=0,
+            committed_ids=[], results=[],
+        )
+
+    # ---------- Adjudicate with the engine's batch method ----------
+    adjudications, qkey = engine.batch_adjudicate_merges(
+        pairs, question_code=AdjudicationQuestionCode.SAME_ENTITY
+    )
+
+    # ---------- Optionally commit positives ----------
+    def _kind(o: Any) -> Literal["entity", "relationship"]:
+        # Edge ⊂ Node in your model; distinguish by presence of .relation
+        return "relationship" if isinstance(o, Edge) or getattr(o, "relation", None) else "entity"
+
+    results: List[CrossDocAdjItem] = []
+    pos = neg = abst = 0
+    committed: List[str] = []
+
+    for (left, right), out in zip(pairs, adjudications):
+        verdict: AdjudicationVerdict = getattr(out, "verdict", out)
+
+        lkind = _kind(left)
+        rkind = _kind(right)
+
+        if verdict.same_entity is True:
+            pos += 1
+            canonical_id = None
+            if inp.commit:
+                # same-kind → commit_merge; cross-type → commit_any_kind (node↔edge “reifies” style)
+                if lkind == rkind:
+                    canonical_id = engine.commit_merge(left, right, verdict)
+                else:
+                    # Requires your engine to expose commit_any_kind(Node|Edge, Node|Edge, verdict)
+                    canonical_id = engine.commit_any_kind(left, right, verdict)
+                if canonical_id:
+                    committed.append(str(canonical_id))
+            results.append(CrossDocAdjItem(
+                left=left.id, right=right.id,
+                left_kind=lkind, right_kind=rkind,
+                same_entity=True, confidence=verdict.confidence,
+                reason=verdict.reason, canonical_id=canonical_id
+            ))
+        elif verdict.same_entity is False:
+            neg += 1
+            results.append(CrossDocAdjItem(
+                left=left.id, right=right.id,
+                left_kind=lkind, right_kind=rkind,
+                same_entity=False, confidence=verdict.confidence,
+                reason=verdict.reason
+            ))
+        else:
+            abst += 1
+            results.append(CrossDocAdjItem(
+                left=left.id, right=right.id,
+                left_kind=lkind, right_kind=rkind,
+                same_entity=None, confidence=verdict.confidence,
+                reason=verdict.reason
+            ))
+
+    return CrossDocAdjOut(
+        question_key=qkey,
+        total_pairs=len(pairs),
+        positives=pos,
+        negatives=neg,
+        abstain=abst,
+        committed_ids=committed,
+        results=results,
+    )
     
+class PairDTO(BaseModel):
+    left_id: str
+    left_kind: Literal["node", "edge"]
+    left_label: str | None = None
+    right_id: str
+    right_kind: Literal["node", "edge"]
+    right_label: str | None = None
+
+class ProposePairsOut(BaseModel):
+    pairs: list[PairDTO]
+    
+def _load_node(engine: GraphKnowledgeEngine, nid: str) -> Node | None:
+    got = engine.node_collection.get(ids=[nid], include=["documents"])
+    docs = got.get("documents") or []
+    if not docs:
+        return None
+    try:
+        return Node.model_validate_json(docs[0])
+    except Exception:
+        return None
+
+def _label_of(obj: Node | Edge | None) -> str | None:
+    if not obj:
+        return None
+    return getattr(obj, "label", None) or getattr(obj, "summary", None)
+
+@mcp.tool()
+def kg_propose_vector(
+    new_node_ids: list[str],
+    top_k: int = 12,
+    # doc scoping
+    allowed_docs: list[str] | None = None,
+    anchor_doc_id: str | None = None,
+    cross_doc_only: bool = False,
+    anchor_only: bool = True,
+    # vector thresholds
+    score_mode: Literal["distance", "similarity"] = "distance",
+    max_distance: float = 0.25,   # used when score_mode="distance"
+    min_similarity: float = 0.85, # used when score_mode="similarity"
+    include_edges: bool = True,
+) -> ProposePairsOut:
+    """
+    Batch vector search over the graph for the given node IDs.
+    Returns (query_node, matched_entity) pairs (entity can be a Node or an Edge).
+    """
+    if not new_node_ids:
+        return ProposePairsOut(pairs=[])
+
+    # Fetch concrete Node objects for the query set
+    q_nodes: list[Node] = []
+    for nid in new_node_ids:
+        n = _load_node(engine, nid)
+        if n and getattr(n, "embedding", None) is not None:
+            q_nodes.append(n)
+
+    if not q_nodes:
+        return ProposePairsOut(pairs=[])
+
+    proposer = engine.proposer
+    pairs = proposer.generate_merge_candidates(
+        engine=engine,
+        new_node=q_nodes,                # batch
+        top_k=top_k,
+        allowed_docs=allowed_docs,
+        anchor_doc_id=anchor_doc_id,
+        cross_doc_only=cross_doc_only,
+        anchor_only=anchor_only,
+        score_mode=score_mode,
+        max_distance=max_distance,
+        min_similarity=min_similarity,
+        include_edges=include_edges,
+    )
+
+    out: list[PairDTO] = []
+    for q, m in pairs:
+        right_kind = "edge" if isinstance(m, Edge) else "node"
+        out.append(
+            PairDTO(
+                left_id=q.id, left_kind="node", left_label=_label_of(q),
+                right_id=m.id, right_kind=right_kind, right_label=_label_of(m),
+            )
+        )
+    return ProposePairsOut(pairs=out)
+@mcp.tool()
+def kg_propose_bruteforce(
+    pair_kind: Literal["node_node", "edge_edge", "node_edge"] = "node_node",
+    allowed_docs: list[str] | None = None,
+    anchor_doc_id: str | None = None,
+    cross_doc_only: bool = False,
+    anchor_only: bool = True,
+    limit_per_bucket: int = 200,
+) -> ProposePairsOut:
+    """
+    Heuristic/brute-force candidate generation across the graph with doc scoping.
+    - pair_kind chooses Node↔Node, Edge↔Edge, or Node↔Edge.
+    - If anchor_doc_id is provided and anchor_only=True, at least one side must be from the anchor doc.
+    - If cross_doc_only=True, pairs from the same doc are filtered out.
+    """
+    proposer = engine.proposer
+    pairs = proposer.propose_any_kind_any_doc(
+        engine=engine,
+        pair_kind=pair_kind,
+        allowed_docs=allowed_docs,
+        anchor_doc_id=anchor_doc_id,
+        cross_doc_only=cross_doc_only,
+        anchor_only=anchor_only,
+        limit_per_bucket=limit_per_bucket,
+    )
+
+    out: list[PairDTO] = []
+    for l, r in pairs:
+        lk = "edge" if isinstance(l, Edge) else "node"
+        rk = "edge" if isinstance(r, Edge) else "node"
+        out.append(
+            PairDTO(
+                left_id=l.id, left_kind=lk, left_label=_label_of(l),
+                right_id=r.id, right_kind=rk, right_label=_label_of(r),
+            )
+        )
+    return ProposePairsOut(pairs=out)
+
+"""
+Quick usage notes
+
+Vector (best for “given these N fresh nodes, what’s similar anywhere in the graph?”):
+
+// MCP tool: kg_propose_vector
+{
+  "new_node_ids": ["N123", "N456"],
+  "top_k": 12,
+  "allowed_docs": ["D1", "D2"],
+  "anchor_doc_id": "D1",
+  "cross_doc_only": true,
+  "anchor_only": true,
+  "score_mode": "distance",
+  "max_distance": 0.22,
+  "include_edges": true
+}
+
+
+Brute-force / heuristic (good for cross-doc sweeps):
+
+// MCP tool: kg_propose_bruteforce
+{
+  "pair_kind": "node_edge",
+  "allowed_docs": ["D1", "D2", "D3"],
+  "anchor_doc_id": "D1",
+  "cross_doc_only": true,
+  "anchor_only": true,
+  "limit_per_bucket": 300
+}
+
+
+Both tools return:
+
+{
+  "pairs": [
+    {
+      "left_id": "…",
+      "left_kind": "node",
+      "left_label": "…",
+      "right_id": "…",
+      "right_kind": "edge",
+      "right_label": "…"
+    }
+  ]
+}    
+"""
+
 # Mount the MCP server
 app.mount("/", mcp_app)
 

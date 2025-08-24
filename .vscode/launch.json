@@ -14,8 +14,12 @@
                 // "--reload",
                 "--port",
                 "28110",
-                "--log-level", "debug"
+                "--log-level", "debug",
+                
             ],
+            "env":{
+                    "MCP_CHROMA_DIR": "adjundicate"
+                },
             "jinja": true
         },
         {
