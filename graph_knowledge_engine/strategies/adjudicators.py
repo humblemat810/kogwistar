@@ -317,14 +317,24 @@ class Adjudicator(IAdjudicator):
             {"code": int(code), "key": QUESTION_KEY[code], "description": QUESTION_DESC[code]}
             for code in AdjudicationQuestionCode
         ]
+        def _fmt(ctx):
+            meta = f"[doc={ctx['doc_id']} p{ctx.get('start_page')}–{ctx.get('end_page')}]" if ctx.get('doc_id') else ""
+            return f"{meta} …{(ctx['context'] or ctx['mention'] or '')}…"
 
+        
         adjudication_inputs = []
         for left, right, _ in unknown_pairs:
             l_key = (node_kind(left), str(node_id(left)))
             r_key = (node_kind(right), str(node_id(right)))
+            left_ctxs  = self.e.extract_reference_contexts(left,  window_chars=260, max_contexts=2)
+            right_ctxs = self.e.extract_reference_contexts(right, window_chars=260, max_contexts=2)
+            left_blurbs  = "\n".join(_fmt(c) for c in left_ctxs)
+            right_blurbs = "\n".join(_fmt(c) for c in right_ctxs)
             adjudication_inputs.append({
                 "left":  {"id": alias_map[l_key],  **compact_payload(left)},
+                "left_context": left_blurbs,
                 "right": {"id": alias_map[r_key], **compact_payload(right)},
+                "right_context": right_blurbs,
                 "cross_type": node_kind(left) != node_kind(right),
                 "question_code": int(qcode),
             })

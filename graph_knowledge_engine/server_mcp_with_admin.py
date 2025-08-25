@@ -269,7 +269,7 @@ def api_viz_d3(
     return JSONResponse(payload)
 # --- Add near your other imports ---
 from pydantic import BaseModel, Field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 from graph_knowledge_engine.models import LLMGraphExtraction, Document
 
 class GraphUpsertLLMIn(BaseModel):
@@ -654,57 +654,69 @@ class PairDTO(BaseModel):
 class ProposePairsOut(BaseModel):
     pairs: list[PairDTO]
     
-def _load_node(engine: GraphKnowledgeEngine, nid: str) -> Node | None:
-    got = engine.node_collection.get(ids=[nid], include=["documents"])
-    docs = got.get("documents") or []
-    if not docs:
-        return None
-    try:
-        return Node.model_validate_json(docs[0])
-    except Exception:
-        return None
+# --- Propose vector candidates with optional 'where' filter ---
+from graph_knowledge_engine.strategies.proposer import VectorProposer
 
-def _label_of(obj: Node | Edge | None) -> str | None:
-    if not obj:
-        return None
-    return getattr(obj, "label", None) or getattr(obj, "summary", None)
+class ProposePair(BaseModel):
+    left_id: str
+    left_kind: Literal["node", "edge"]
+    right_id: str
+    right_kind: Literal["node", "edge"]
 
+class ProposeOut(BaseModel):
+    pairs: List[ProposePair]
+class ProposeVectorIn(BaseModel):
+    new_node_ids: Optional[List[str]] = None
+    new_edge_ids: Optional[List[str]] = None
+    top_k: int = 10
+    score_mode: Literal["distance", "similarity"] = "distance"
+    max_distance: float = 0.25
+    min_similarity: float = 0.85
+    include_edges: bool = True
+    allowed_docs: Optional[List[str]] = None
+    anchor_doc_id: Optional[str] = None
+    cross_doc_only: bool = False
+    anchor_only: bool = True
+    where: Optional[str| dict] = None
 @mcp.tool()
-def kg_propose_vector(
-    new_node_ids: list[str],
-    top_k: int = 12,
-    # doc scoping
-    allowed_docs: list[str] | None = None,
-    anchor_doc_id: str | None = None,
-    cross_doc_only: bool = False,
-    anchor_only: bool = True,
-    # vector thresholds
-    score_mode: Literal["distance", "similarity"] = "distance",
-    max_distance: float = 0.25,   # used when score_mode="distance"
-    min_similarity: float = 0.85, # used when score_mode="similarity"
-    include_edges: bool = True,
-) -> ProposePairsOut:
-    """
-    Batch vector search over the graph for the given node IDs.
-    Returns (query_node, matched_entity) pairs (entity can be a Node or an Edge).
-    """
-    if not new_node_ids:
-        return ProposePairsOut(pairs=[])
-
-    # Fetch concrete Node objects for the query set
-    q_nodes: list[Node] = []
-    for nid in new_node_ids:
-        n = _load_node(engine, nid)
-        if n and getattr(n, "embedding", None) is not None:
-            q_nodes.append(n)
-
-    if not q_nodes:
-        return ProposePairsOut(pairs=[])
-
-    proposer = engine.proposer
-    pairs = proposer.generate_merge_candidates(
+def propose_vector(inp : ProposeVectorIn
+    # new_node_ids: List[str],
+    # top_k: int = 10,
+    # score_mode: Literal["distance", "similarity"] = "distance",
+    # max_distance: float = 0.25,
+    # min_similarity: float = 0.85,
+    # include_edges: bool = True,
+    # allowed_docs: Optional[List[str]] = None,
+    # anchor_doc_id: Optional[str] = None,
+    # cross_doc_only: bool = False,
+    # anchor_only: bool = True,
+    # where: Optional[str| dict] = None,  # JSON string for Chroma where, e.g. {"insertion_method":"graph_extractor"}
+) -> ProposeOut:
+    # where_dict = dict | None
+    # if type(where) is dict:
+    #     where_dict = where
+    # else:
+    #     try:
+    #         where_dict = json.loads(where)
+    #     except Exception as e:
+    #         raise HTTPException(status_code=400, detail=f"Invalid where JSON: {e}")
+    new_node_ids: Optional[List[str]] = inp.new_node_ids
+    new_edge_ids: Optional[List[str]] = inp.new_edge_ids
+    top_k: int = inp.top_k
+    score_mode: Literal["distance", "similarity"] = inp.score_mode
+    max_distance: float = inp.max_distance
+    min_similarity: float = inp.min_similarity
+    include_edges: bool = inp.include_edges
+    allowed_docs: Optional[List[str]] = inp.allowed_docs
+    anchor_doc_id: Optional[str] = inp.anchor_doc_id
+    cross_doc_only: bool = inp.cross_doc_only
+    anchor_only: bool = inp.anchor_only
+    where = inp.where
+    prop = VectorProposer(engine)
+    pairs = prop.generate_merge_candidates(
         engine=engine,
-        new_node=q_nodes,                # batch
+        new_node=new_node_ids,              # can be ids or Node objects
+        new_edge = new_edge_ids,
         top_k=top_k,
         allowed_docs=allowed_docs,
         anchor_doc_id=anchor_doc_id,
@@ -714,35 +726,66 @@ def kg_propose_vector(
         max_distance=max_distance,
         min_similarity=min_similarity,
         include_edges=include_edges,
+        where=where                   # <--- threads through to Chroma
     )
+    out = []
+    for l, r in pairs:
+        out.append(ProposePair(
+            left_id=getattr(l, "id", ""),
+            left_kind="edge" if isinstance(l, Edge) else "node" ,            # query side is a node by contract
+            right_id=getattr(r, "id", ""),
+            right_kind="edge" if isinstance(r, Edge) else "node",
+        ))
+    return ProposeOut(pairs=out)
+def _ids_matching_where(kind: Literal["node", "edge"], where: Dict[str, Any]) -> Set[str]:
+    """
+    Minimal, server-side filter: fetch ids matching metadata `where`.
+    Avoids changing the proposer. If `where` is None/empty, return empty set to mean 'no restriction'.
+    """
+    if not where:
+        return set()
+    if kind == "node":
+        res = engine.node_collection.get(where=where)  # returns dict with 'ids'
+    else:
+        res = engine.edge_collection.get(where=where)
+    return set(res.get("ids") or [])
 
-    out: list[PairDTO] = []
-    for q, m in pairs:
-        right_kind = "edge" if isinstance(m, Edge) else "node"
-        out.append(
-            PairDTO(
-                left_id=q.id, left_kind="node", left_label=_label_of(q),
-                right_id=m.id, right_kind=right_kind, right_label=_label_of(m),
-            )
-        )
-    return ProposePairsOut(pairs=out)
+
+from itertools import product
+from typing import ClassVar
+class ProposeBruteForceIn(BaseModel):
+    PairableNodeTypes : ClassVar[List[Literal['node', 'edge', 'any']]] = ['node', 'edge', 'any']
+    pair_kind: Literal[*["_".join(i) for i in list(product(PairableNodeTypes, PairableNodeTypes))]] = "any_any"
+    allowed_docs: Optional[List[str]] = None
+    anchor_doc_id: Optional[str] = None
+    cross_doc_only: bool = False
+    anchor_only: bool = True
+    limit_per_bucket: Optional[int] = 200
+    where: Optional[dict] = None # JSON string, e.g. {"insertion_method":"graph_extractor"}
 @mcp.tool()
 def kg_propose_bruteforce(
-    pair_kind: Literal["node_node", "edge_edge", "node_edge"] = "node_node",
-    allowed_docs: list[str] | None = None,
-    anchor_doc_id: str | None = None,
-    cross_doc_only: bool = False,
-    anchor_only: bool = True,
-    limit_per_bucket: int = 200,
-) -> ProposePairsOut:
+    inp : ProposeBruteForceIn
+) -> ProposeOut:
     """
-    Heuristic/brute-force candidate generation across the graph with doc scoping.
-    - pair_kind chooses Node↔Node, Edge↔Edge, or Node↔Edge.
-    - If anchor_doc_id is provided and anchor_only=True, at least one side must be from the anchor doc.
-    - If cross_doc_only=True, pairs from the same doc are filtered out.
+    Brute-force candidate proposal across documents with optional Chroma metadata filtering.
+    - pair_kind: which pairs to propose
+    - allowed_docs / anchor_doc_id / cross_doc_only / anchor_only: document scoping knobs
+    - where: JSON applied as a metadata filter; enforced *server-side* post-proposal
+             (so you don't need to refactor the proposer again).
     """
-    proposer = engine.proposer
-    pairs = proposer.propose_any_kind_any_doc(
+    PairableNodeTypes : ClassVar[List[Literal['node', 'edge', 'any']]] = ['node', 'edge', 'any']
+    pair_kind: Literal[*["_".join(i) for i in list(product(PairableNodeTypes, PairableNodeTypes))]] = inp.pair_kind
+    allowed_docs: Optional[List[str]] = inp.allowed_docs
+    anchor_doc_id: Optional[str] = inp.anchor_doc_id
+    cross_doc_only: bool = inp.cross_doc_only
+    anchor_only: bool = inp.anchor_only
+    limit_per_bucket: Optional[int] = inp.limit_per_bucket
+    where: Optional[dict] = inp.where
+    
+
+    # Produce raw pairs (no where filter yet)
+    proposer = VectorProposer(engine)
+    raw_pairs = proposer.propose_any_kind_any_doc(
         engine=engine,
         pair_kind=pair_kind,
         allowed_docs=allowed_docs,
@@ -752,24 +795,51 @@ def kg_propose_bruteforce(
         limit_per_bucket=limit_per_bucket,
     )
 
-    out: list[PairDTO] = []
-    for l, r in pairs:
-        lk = "edge" if isinstance(l, Edge) else "node"
-        rk = "edge" if isinstance(r, Edge) else "node"
-        out.append(
-            PairDTO(
-                left_id=l.id, left_kind=lk, left_label=_label_of(l),
-                right_id=r.id, right_kind=rk, right_label=_label_of(r),
+    # If no 'where' provided, return as-is (minimal overhead)
+    if not where:
+        out = [
+            ProposePair(
+                left_id=getattr(l, "id", ""),
+                left_kind="edge" if isinstance(l, Edge) else "node",
+                right_id=getattr(r, "id", ""),
+                right_kind="edge" if isinstance(r, Edge) else "node",
+            )
+            for (l, r) in raw_pairs
+        ]
+        return ProposeOut(pairs=out)
+
+    # Server-side filtering by metadata:
+    node_ok = _ids_matching_where("node", where)
+    edge_ok = _ids_matching_where("edge", where)
+
+    def _passes_where(obj: Node | Edge) -> bool:
+        if isinstance(obj, Edge):
+            return (not edge_ok) or (obj.id in edge_ok)
+        else:
+            return (not node_ok) or (obj.id in node_ok)
+
+    filtered = []
+    for l, r in raw_pairs:
+        # Enforce kind-aware membership
+        if not (_passes_where(l) and _passes_where(r)):
+            continue
+        filtered.append(
+            ProposePair(
+                left_id=getattr(l, "id", ""),
+                left_kind="edge" if isinstance(l, Edge) else "node",
+                right_id=getattr(r, "id", ""),
+                right_kind="edge" if isinstance(r, Edge) else "node",
             )
         )
-    return ProposePairsOut(pairs=out)
+
+    return ProposeOut(pairs=filtered)
 
 """
 Quick usage notes
 
 Vector (best for “given these N fresh nodes, what’s similar anywhere in the graph?”):
 
-// MCP tool: kg_propose_vector
+// MCP tool: propose_vector
 {
   "new_node_ids": ["N123", "N456"],
   "top_k": 12,
@@ -785,7 +855,7 @@ Vector (best for “given these N fresh nodes, what’s similar anywhere in the 
 
 Brute-force / heuristic (good for cross-doc sweeps):
 
-// MCP tool: kg_propose_bruteforce
+// MCP tool: propose_bruteforce
 {
   "pair_kind": "node_edge",
   "allowed_docs": ["D1", "D2", "D3"],
@@ -812,6 +882,87 @@ Both tools return:
 }    
 """
 
+class AdjPairsIn(BaseModel):
+    pairs: List["ProposePair"]
+    commit : bool = False
+    
+@mcp.tool()
+def adjudicate_pairs(inp: AdjPairsIn) -> CrossDocAdjOut:
+    pairs: List[Tuple[Node| Edge, Node| Edge]] = [None] * len(inp.pairs) # type: ignore
+    for i, pair_info in enumerate(inp.pairs):
+        left_id, left_kind, right_id, right_kind = pair_info.left_id, pair_info.left_kind, pair_info.right_id, pair_info.right_kind
+        def fetch_any(id, kind):
+            if kind == 'node':
+                return _fetch_nodes([id])
+            
+        l: Node| Edge = fetch_any(left_id, left_kind)
+        r: Node| Edge = fetch_any(right_id, right_kind)
+        pairs[i] = (l[0],r[0])
+    
+    # ---------- Adjudicate with the engine's batch method ----------
+    adjudications, qkey = engine.batch_adjudicate_merges(
+        pairs, question_code=AdjudicationQuestionCode.SAME_ENTITY
+    )
+
+    # ---------- Optionally commit positives ----------
+    def _kind(o: Any) -> Literal["entity", "relationship"]:
+        # Edge ⊂ Node in your model; distinguish by presence of .relation
+        return "relationship" if isinstance(o, Edge) or getattr(o, "relation", None) else "entity"
+
+    results: List[CrossDocAdjItem] = []
+    pos = neg = abst = 0
+    committed: List[str] = []
+
+    for (left, right), out in zip(pairs, adjudications):
+        verdict: AdjudicationVerdict = getattr(out, "verdict", out)
+
+        lkind = _kind(left)
+        rkind = _kind(right)
+
+        if verdict.same_entity is True:
+            pos += 1
+            canonical_id = None
+            if inp.commit:
+                # same-kind → commit_merge; cross-type → commit_any_kind (node↔edge “reifies” style)
+                if lkind == rkind:
+                    canonical_id = engine.commit_merge(left, right, verdict)
+                else:
+                    # Requires your engine to expose commit_any_kind(Node|Edge, Node|Edge, verdict)
+                    canonical_id = engine.commit_any_kind(left, right, verdict)
+                if canonical_id:
+                    committed.append(str(canonical_id))
+            results.append(CrossDocAdjItem(
+                left=left.id, right=right.id,
+                left_kind=lkind, right_kind=rkind,
+                same_entity=True, confidence=verdict.confidence,
+                reason=verdict.reason, canonical_id=canonical_id
+            ))
+        elif verdict.same_entity is False:
+            neg += 1
+            results.append(CrossDocAdjItem(
+                left=left.id, right=right.id,
+                left_kind=lkind, right_kind=rkind,
+                same_entity=False, confidence=verdict.confidence,
+                reason=verdict.reason
+            ))
+        else:
+            abst += 1
+            results.append(CrossDocAdjItem(
+                left=left.id, right=right.id,
+                left_kind=lkind, right_kind=rkind,
+                same_entity=None, confidence=verdict.confidence,
+                reason=verdict.reason
+            ))
+
+    return CrossDocAdjOut(
+        question_key=qkey,
+        total_pairs=len(pairs),
+        positives=pos,
+        negatives=neg,
+        abstain=abst,
+        committed_ids=committed,
+        results=results,
+    )
 # Mount the MCP server
 app.mount("/", mcp_app)
 

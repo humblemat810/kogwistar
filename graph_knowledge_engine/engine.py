@@ -645,7 +645,111 @@ class GraphKnowledgeEngine:
     def embedding_function(self, val):
         self._ef = val
         
-        
+    def _infer_doc_id_from_ref(self, ref: ReferenceSession) -> Optional[str]:
+        """Best-effort: prefer explicit ref.doc_id; else try to parse document_page_url like 'document/<id>'."""
+        did = getattr(ref, "doc_id", None)
+        if did:
+            return did
+        url = getattr(ref, "document_page_url", None) or ""
+        # simple heuristic: last path token if present
+        try:
+            tail = url.strip("/").split("/")[-1]
+            return tail or None
+        except Exception:
+            return None
+
+    def extract_reference_contexts(
+        self,
+        node_or_id: Union[Node, str],  # also works if you pass an Edge or edge id
+        *,
+        window_chars: int = 120,
+        max_contexts: Optional[int] = None,
+        prefer_label_fallback: bool = True,
+    ) -> List[Dict[str, Any]]:
+        """
+        Build adjudication-ready reference snippets for a Node (or Edge).
+        Strategy:
+        - Prefer the stored ReferenceSession.snippet (cheap, already localized).
+        - If document text is available, try to locate the snippet (or node label) in full text
+            and expand with ±window_chars for richer context.
+        - Always return provenance + verification info (doc_id, page spans, urls, etc.).
+        """
+        # 1) Materialize the object
+        if isinstance(node_or_id, Node) or isinstance(node_or_id, Edge):
+            obj = node_or_id
+        else:
+            # try node first, then edge
+            got = self.node_collection.get(ids=[node_or_id], include=["documents"])
+            doc_list = got.get("documents") or []
+            if doc_list:
+                obj = Node.model_validate_json(doc_list[0])
+            else:
+                got = self.edge_collection.get(ids=[node_or_id], include=["documents"])
+                edoc_list = got.get("documents") or []
+                if not edoc_list:
+                    raise ValueError(f"Unknown node/edge id: {node_or_id}")
+                obj = Edge.model_validate_json(edoc_list[0])
+
+        label = getattr(obj, "label", None)
+        refs = getattr(obj, "references", None) or []
+        out: List[Dict[str, Any]] = []
+
+        for ref in refs:
+            # 2) locate the backing document
+            doc_id = self._infer_doc_id_from_ref(ref)
+            full = self._fetch_document_text(doc_id) if doc_id else None
+
+            snippet = getattr(ref, "snippet", None)
+            mention = snippet or (label or "")
+
+            ctx_text = None
+            span_start = None
+            span_end = None
+
+            if full:
+                # Try exact snippet first (best anchor)
+                idx = full.find(snippet) if snippet else -1
+                # Fallback to label if allowed
+                if idx < 0 and label and prefer_label_fallback:
+                    idx = full.find(label)
+
+                if idx >= 0:
+                    # If we matched on snippet, use its length; else label length
+                    length = len(snippet) if snippet else (len(label) if label else 0)
+                    span_start = idx
+                    span_end = idx + length
+                    left = max(0, span_start - window_chars)
+                    right = min(len(full), span_end + window_chars)
+                    ctx_text = full[left:right]
+                else:
+                    # Full text present but we couldn't find anchor—still return snippet if present
+                    ctx_text = snippet or None
+            else:
+                # No full text—just echo stored snippet if any
+                ctx_text = snippet or None
+
+            out.append({
+                "doc_id": doc_id,
+                "collection_page_url": getattr(ref, "collection_page_url", None),
+                "document_page_url": getattr(ref, "document_page_url", None),
+                "start_page": getattr(ref, "start_page", None),
+                "end_page": getattr(ref, "end_page", None),
+                "start_char": getattr(ref, "start_char", None),
+                "end_char": getattr(ref, "end_char", None),
+                "insertion_method": getattr(ref, "insertion_method", None),
+                "verification": (ref.verification.model_dump() if getattr(ref, "verification", None) else None),
+                "context": ctx_text,             # expanded context or stored snippet
+                "mention": mention,              # what to highlight / quote in a prompt
+                "loc_found": (span_start is not None),
+                "loc_span": [span_start, span_end] if span_start is not None else None,
+                # Always include the raw ref in case you need exact fields later
+                "ref": ref.model_dump(),
+            })
+
+            if max_contexts and len(out) >= max_contexts:
+                break
+
+        return out
     
     def get_nodes(self, ids: Sequence[str]) -> List[Node]:
         if not ids: return []
