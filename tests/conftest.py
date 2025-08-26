@@ -229,130 +229,209 @@ def small_test_docs_nodes_edge_adjudcate():
         ),
     }
 
-    # ---------- 1) Helper to build references ----------
-    def ref(doc_id, snippet, start_char, end_char, method="sample", score=1.0):
+    # ---- helpers: find spans & build ReferenceSession-like dicts ----
+    def _find_span(doc_id: str, snippet: str) -> tuple[int, int]:
+        text = docs[doc_id]
+        idx = text.find(snippet)
+        if idx < 0:
+            # try case-insensitive
+            idx = text.lower().find(snippet.lower())
+        if idx < 0:
+            raise AssertionError(f"Snippet not found in {doc_id}: {snippet!r}")
+        return idx, idx + len(snippet)
+
+    def _ref(doc_id: str, snippet: str, method: str = "llm"):
+        s, e = _find_span(doc_id, snippet)
         return {
             "doc_id": doc_id,
-            "snippet": snippet,
             "collection_page_url": "N/A",
             "document_page_url": "N/A",
-            "start_page": 1, "end_page": 1,
-            "start_char": start_char, "end_char": end_char,   # 0-based, end-exclusive
-            "verification": {"method": method, "is_verified": True, "score": score},
-            "insertion_method": method,
+            "start_page": 1,
+            "end_page": 1,
+            "start_char": s,
+            "end_char": e,
+            "snippet": docs[doc_id][s:e],
+            "verification": {"method": method, "is_verified": True, "score": 1.0, "notes": "fixture"},
+            "insertion_method": "fixture_sample",
         }
-
-    # ---------- 2) Nodes (entities) with correct spans ----------
+    # ---------- Nodes ----------
     nodes = [
-        {   # N1 — “Chlorophyll”
-            "id":"N1","label":"Chlorophyll","type":"entity","summary":"A green pigment found in plants.",
-            "references":[
-                ref("DOC_A",
-                    "Chlorophyll is the molecule that absorbs sunlight.", 121, 177),
-                ref("DOC_B",
-                    "The pigment chlorophyll gives leaves their green color.", 114, 168),
-            ]
+        {
+            "id": "N_CHLORO",
+            "label": "Chlorophyll",
+            "type": "entity",
+            "summary": "A green pigment found in plants.",
+            "references": [
+                _ref("DOC_A", "Chlorophyll is the molecule that absorbs sunlight."),
+                _ref("DOC_C", "chlorophyll is essential for photosynthesis"),
+            ],
         },
-        {   # N11 — alias phrasing “pigment chlorophyll” (positive with N1)
-            "id":"N11","label":"pigment chlorophyll","type":"entity","summary":"Alias/mention of chlorophyll in pigment context.",
-            "references":[ref("DOC_B", "pigment chlorophyll", 118, 135)]
+        {
+            "id": "N_CHLORO_ALIAS",
+            "label": "Chlorophyll (pigment)",
+            "type": "entity",
+            "summary": "Alias name for the same pigment.",
+            "references": [
+                _ref("DOC_C", "the pigment chlorophyll is essential"),
+            ],
         },
-        {   # N2 — “Chlorophyll a” (different from “b”)
-            "id":"N2","label":"Chlorophyll a","type":"entity","summary":"A form of chlorophyll pigment.",
-            "references":[ref("DOC_B", "chlorophyll a", 66, 79)]
+        {
+            "id": "N_CHLORO_A",
+            "label": "Chlorophyll a",
+            "type": "entity",
+            "summary": "One variant of chlorophyll.",
+            "references": [
+                _ref("DOC_B", "chlorophyll a and chlorophyll b are present."),
+            ],
         },
-        {   # N12 — “Chlorophyll b” (different from “a”)
-            "id":"N12","label":"Chlorophyll b","type":"entity","summary":"A form of chlorophyll pigment.",
-            "references":[ref("DOC_B", "chlorophyll b", 94, 107)]
+        {
+            "id": "N_PHOTOSYN",
+            "label": "Photosynthesis",
+            "type": "entity",
+            "summary": "Converts light energy to chemical energy.",
+            "references": [
+                _ref("DOC_A", "Photosynthesis is a process used by plants to convert light energy"),
+                _ref("DOC_C", "rate of photosynthesis with wavelengths that chlorophyll absorbs"),
+            ],
         },
-        {   # N4 — “Photosynthesis”
-            "id":"N4","label":"Photosynthesis","type":"entity","summary":"Process converting light to chemical energy.",
-            "references":[ref("DOC_A",
-                "Photosynthesis is a process used by plants to convert light energy into chemical energy.", 36, 119)]
+        {
+            "id": "N_LEAVES",
+            "label": "Leaves",
+            "type": "entity",
+            "summary": "Plant organs that host photosynthesis.",
+            "references": [
+                _ref("DOC_A", "Plants perform photosynthesis in their leaves."),
+                _ref("DOC_B", "The pigment chlorophyll gives leaves their green color."),
+            ],
         },
-        {   # N5 — “Leaves”
-            "id":"N5","label":"Leaves","type":"entity","summary":"Plant leaves (organs).",
-            "references":[ref("DOC_B", "leaves their green color", 146, 169)]
+        {
+            "id": "N_SUN",
+            "label": "Sunlight",
+            "type": "entity",
+            "summary": "Incoming solar radiation.",
+            "references": [
+                _ref("DOC_A", "light energy into chemical energy"),
+            ],
         },
-        {   # N6 — “Sunlight”
-            "id":"N6","label":"Sunlight","type":"entity","summary":"Light from the sun.",
-            "references":[ref("DOC_A", "sunlight", 169, 177)]
+        {
+            "id": "N_HEMO",
+            "label": "Hemoglobin",
+            "type": "entity",
+            "summary": "Oxygen transport protein in blood.",
+            "references": [
+                _ref("DOC_D", "Hemoglobin absorbs oxygen in red blood cells and transports it to tissues."),
+            ],
         },
-        {   # N8 — “Oxygen”
-            "id":"N8","label":"Oxygen","type":"entity","summary":"Oxygen molecule.",
-            "references":[ref("DOC_D", "oxygen", 49, 55)]
+        {
+            "id": "N_OXY",
+            "label": "Oxygen",
+            "type": "entity",
+            "summary": "O₂ molecule transported in blood.",
+            "references": [
+                _ref("DOC_D", "Hemoglobin absorbs oxygen in red blood cells and transports it to tissues."),
+            ],
         },
-        {   # N8b — alias “O2” (positive with N8)
-            "id":"N8b","label":"O2","type":"entity","summary":"Chemical formula for oxygen.",
-            "references":[ref("DOC_D", "O2", 424, 426)]
-        },
-        {   # N10 — “Hemoglobin”
-            "id":"N10","label":"Hemoglobin","type":"entity","summary":"Oxygen-binding protein in red blood cells.",
-            "references":[ref("DOC_D", "Hemoglobin absorbs oxygen in red blood cells", 32, 78)]
-        },
-        {   # N20 — reified: “Chlorophyll enables photosynthesis”
-            "id":"N20","label":"Chlorophyll enables photosynthesis","type":"entity",
-            "summary":"Reified relation viewpoint: chlorophyll enables photosynthesis.",
-            "references":[ref("DOC_C", "the pigment chlorophyll is essential for photosynthesis", 21, 74)]
-        },
-        {   # N21 — reified: “Hemoglobin absorbs oxygen”
-            "id":"N21","label":"Hemoglobin absorbs oxygen (event)","type":"entity",
-            "summary":"Reified relation: hemoglobin absorbs oxygen.",
-            "references":[ref("DOC_D", "Hemoglobin absorbs oxygen in red blood cells", 32, 78)]
+        # Reified relation as a node (for cross-type positive)
+        {
+            "id": "N_PHOTO_REIFIED",
+            "label": "Photosynthesis occurs in Leaves",
+            "type": "entity",
+            "summary": "Photosynthesis occurs in Leaves", # Reified relation concept.
+            "properties": {"signature_text": "occurs_in(Photosynthesis, Leaves)"},
+            "references": [
+                _ref("DOC_A", "Plants perform photosynthesis in their leaves."),
+            ],
         },
     ]
 
-    # ---------- 3) Edges (relations) with correct spans ----------
+    # ---------- Edges ----------
     edges = [
-        {   # E1 — absorbs(Chlorophyll, Sunlight)
-            "id":"E1","label":"Chlorophyll absorbs sunlight","type":"relationship","relation":"absorbs",
-            "source_ids":["N1"], "target_ids":["N6"],
-            "references":[ref("DOC_A", "Chlorophyll is the molecule that absorbs sunlight.", 121, 177)]
+        {
+            "id": "E_CHLORO_ABSORB",
+            "label": "Chlorophyll absorbs sunlight",
+            "type": "relationship",
+            "summary": "Chlorophyll absorbs sunlight.",
+            "relation": "absorbs",
+            "source_ids": ["N_CHLORO"],
+            "target_ids": ["N_SUN"],
+            "source_edge_ids": [],
+            "target_edge_ids": [],
+            "references": [
+                _ref("DOC_A", "Chlorophyll is the molecule that absorbs sunlight."),
+            ],
+            "properties": {"signature_text": "absorbs(Chlorophyll, Sunlight)"},
         },
-        {   # E2 — occurs_in(Photosynthesis, Leaves)
-            "id":"E2","label":"Photosynthesis occurs in leaves","type":"relationship","relation":"occurs_in",
-            "source_ids":["N4"], "target_ids":["N5"],
-            "references":[ref("DOC_A", "Plants perform photosynthesis in their leaves.", 271, 316)]
+        {
+            "id": "E_PHOTO_LEAVES",
+            "label": "Photosynthesis occurs in leaves",
+            "type": "relationship",
+            "summary": "Photosynthesis happens in leaves.",
+            "relation": "occurs_in",
+            "source_ids": ["N_PHOTOSYN"],
+            "target_ids": ["N_LEAVES"],
+            "source_edge_ids": [],
+            "target_edge_ids": [],
+            "references": [
+                _ref("DOC_A", "Plants perform photosynthesis in their leaves."),
+            ],
+            "properties": {"signature_text": "occurs_in(Photosynthesis, Leaves)"},
         },
-        {   # E3 — enables(Chlorophyll, Photosynthesis)
-            "id":"E3","label":"Chlorophyll enables photosynthesis","type":"relationship","relation":"enables",
-            "source_ids":["N1"], "target_ids":["N4"],
-            "references":[ref("DOC_C", "the pigment chlorophyll is essential for photosynthesis", 21, 74)]
+        {
+            "id": "E_PHOTO_LEAVES_DUP",
+            "label": "Photosynthesis in leaves (duplicate)",
+            "type": "relationship",
+            "summary": "Duplicate of Photosynthesis→Leaves relation.",
+            "relation": "occurs_in",
+            "source_ids": ["N_PHOTOSYN"],
+            "target_ids": ["N_LEAVES"],
+            "source_edge_ids": [],
+            "target_edge_ids": [],
+            "references": [
+                _ref("DOC_A", "Plants perform photosynthesis in their leaves."),
+            ],
+            "properties": {"signature_text": "occurs_in(Photosynthesis, Leaves)"},
         },
-        {   # E4 — duplicate of E3 (positive edge↔edge)
-            "id":"E4","label":"Chlorophyll essential for photosynthesis","type":"relationship","relation":"enables",
-            "source_ids":["N1"], "target_ids":["N4"],
-            "references":[ref("DOC_C", "the pigment chlorophyll is essential for photosynthesis", 21, 74)]
-        },
-        {   # E5 — absorbs(Hemoglobin, Oxygen)
-            "id":"E5","label":"Hemoglobin absorbs oxygen","type":"relationship","relation":"absorbs",
-            "source_ids":["N10"], "target_ids":["N8"],
-            "references":[ref("DOC_D", "Hemoglobin absorbs oxygen in red blood cells", 32, 78)]
+        {
+            "id": "E_HEMO_TRANSPORT",
+            "label": "Hemoglobin transports oxygen",
+            "type": "relationship",
+            "summary": "Hemoglobin transports oxygen in blood.",
+            "relation": "transports",
+            "source_ids": ["N_HEMO"],
+            "target_ids": ["N_OXY"],
+            "source_edge_ids": [],
+            "target_edge_ids": [],
+            "references": [
+                _ref("DOC_D", "Hemoglobin absorbs oxygen in red blood cells and transports it to tissues."),
+            ],
+            "properties": {"signature_text": "transports(Hemoglobin, Oxygen)"},
         },
     ]
 
-    # ---------- 4) Adjudication pairs you can feed to your adjudicator ----------
+    # ---------- Ground-truth pairs for tests ----------
     adjudication_pairs = {
-        # Node↔Node: 2 positive, 2 negative
-        "node_node": [
-            {"left":"N1",  "right":"N11", "expect_positive": True,  "why":"alias phrasing for chlorophyll"},
-            {"left":"N8",  "right":"N8b", "expect_positive": True,  "why":"oxygen vs O2"},
-            {"left":"N2",  "right":"N12", "expect_positive": False, "why":"distinct pigments (a vs b)"},
-            {"left":"N4",  "right":"N5",  "expect_positive": False, "why":"process vs organ"},
+        # Node ↔ Node (2 positive, 2 negative typical)
+        "positive": [
+            ["N_CHLORO", "N_CHLORO_ALIAS"],   # alias
+            ["N_PHOTO_REIFIED", "E_PHOTO_LEAVES"],  # cross-type positive (see below, also listed under cross)
         ],
-        # Edge↔Edge: 1 positive duplicate; others negative
-        "edge_edge": [
-            {"left":"E3",  "right":"E4",  "expect_positive": True,  "why":"duplicate enables semantics"},
-            {"left":"E1",  "right":"E2",  "expect_positive": False, "why":"absorbs vs occurs_in"},
-            {"left":"E3",  "right":"E5",  "expect_positive": False, "why":"different relation/entities"},
-            {"left":"E2",  "right":"E5",  "expect_positive": False, "why":"unrelated"},
+        "negative": [
+            ["N_CHLORO", "N_HEMO"],           # different domains
+            ["N_CHLORO_A", "N_CHLORO_ALIAS"], # related but not same
         ],
-        # Cross-type: 2 positive (reified node ↔ relation), 2 negative
-        "cross_type": [
-            {"left":"N20", "right":"E3",  "expect_positive": True,  "why":"reified node vs relation (same semantics)"},
-            {"left":"N21", "right":"E5",  "expect_positive": True,  "why":"reified hemoglobin-oxygen vs relation"},
-            {"left":"N1",  "right":"E5",  "expect_positive": False, "why":"pigment vs unrelated relation"},
-            {"left":"N2",  "right":"E1",  "expect_positive": False, "why":"chlorophyll a vs relation about generic chlorophyll"},
+        # Edge ↔ Edge
+        "edge_positive": [
+            ["E_PHOTO_LEAVES", "E_PHOTO_LEAVES_DUP"],  # duplicate semantics
+        ],
+        "edge_negative": [
+            ["E_CHLORO_ABSORB", "E_HEMO_TRANSPORT"],   # different relation/entities
+        ],
+        # Cross-type (node ↔ edge)
+        "cross_positive": [
+            ["N_PHOTO_REIFIED", "E_PHOTO_LEAVES"],     # reified node vs relation
+        ],
+        "cross_negative": [
+            ["N_HEMO", "E_CHLORO_ABSORB"],             # unrelated
         ],
     }
 

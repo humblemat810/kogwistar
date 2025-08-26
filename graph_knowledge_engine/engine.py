@@ -377,7 +377,8 @@ def _extract_doc_ids_from_refs(refs) -> list[str]:
 def _node_doc_and_meta(n: "Node") -> tuple[str, dict]:
     """Return (documents_string, metadata_dict) for Chroma. helper when inserting to backend db,"""
     """Extract and flatten certain fields that can be searched via collection """
-    doc = n.model_dump_json(field_mode = 'backend')
+    from pydantic import BaseModel, field_serializer
+    doc = n.model_dump_json(field_mode = 'backend', exclude = ['embedding'])
     meta = _strip_none({
         "doc_id": getattr(n, "doc_id", None),
         "label": n.label,
@@ -675,7 +676,8 @@ class GraphKnowledgeEngine:
         - Always return provenance + verification info (doc_id, page spans, urls, etc.).
         """
         # 1) Materialize the object
-        if isinstance(node_or_id, Node) or isinstance(node_or_id, Edge):
+        from .models import GraphEntityBase
+        if isinstance(node_or_id, GraphEntityBase):
             obj = node_or_id
         else:
             # try node first, then edge
@@ -753,15 +755,17 @@ class GraphKnowledgeEngine:
     
     def get_nodes(self, ids: Sequence[str]) -> List[Node]:
         if not ids: return []
-        got = self.node_collection.get(ids=list(ids), include=["documents"])
+        got = self.node_collection.get(ids=list(ids), include=["documents", "embeddings"])
         docs = got.get("documents") or []
-        return [Node.model_validate_json(d) for d in docs]
+        embs = got.get("embeddings") if got.get("embeddings") is not None else []
+        return [Node.model_validate_json(d).model_copy(update={{"embedding": emb}}) for d, emb in zip(docs, embs)]
 
     def get_edges(self, ids: Sequence[str]) -> List[Edge]:
         if not ids: return []
-        got = self.edge_collection.get(ids=list(ids), include=["documents"])
+        got = self.edge_collection.get(ids=list(ids), include=["documents", "embeddings"])
         docs = got.get("documents") or []
-        return [Edge.model_validate_json(d) for d in docs]
+        embs = got.get("embeddings") if got.get("embeddings") is not None else []
+        return [Edge.model_validate_json(d).model_copy(update={{"embedding": emb}}) for d, emb in zip(docs, embs)]
 
     def all_nodes_for_doc(self, doc_id: str) -> List[Node]:
         return self.get_nodes(self._nodes_by_doc(doc_id))
@@ -1610,12 +1614,12 @@ class GraphKnowledgeEngine:
     # Chroma adders
     # ----------------------------
     def add_node(self, node: Node, doc_id: Optional[str] = None):
-        node.doc_id = doc_id
+        node.doc_id = doc_id  # may use engine.extract_reference_contexts
         doc, meta = _node_doc_and_meta(node)
         self.node_collection.add(
             ids=[node.id],
             documents=[doc],
-            embeddings=[node.embedding] if node.embedding else None,
+            embeddings=[node.embedding] if node.embedding is not None else None,
             metadatas=[meta],
         )
         self._index_node_docs(node)
@@ -1683,6 +1687,9 @@ class GraphKnowledgeEngine:
         #     raise ValueError(
         #         f"Edge {edge.id} ({edge.label}) must have at least one source and one target"
         #     )
+        
+        # may use engine.extract_reference_contexts
+        
         edge.doc_id = doc_id
         s_nodes, s_edges, t_nodes, t_edges = self._split_endpoints(edge.source_ids, edge.target_ids)
         edge.source_ids = s_nodes
@@ -1701,8 +1708,8 @@ class GraphKnowledgeEngine:
         # main edge row
         self.edge_collection.add(
             ids=[edge.id],
-            documents=[edge.model_dump_json(field_mode='backend')],
-            embeddings=[edge.embedding] if edge.embedding else None,
+            documents=[edge.model_dump_json(field_mode='backend', exclude = ['embedding'])],
+            embeddings=[edge.embedding] if edge.embedding is not None else None,
             metadatas=[_strip_none({
                 "doc_id": doc_id,
                 "relation": edge.relation,
@@ -2012,6 +2019,7 @@ class GraphKnowledgeEngine:
         order, id2kind, id2obj = self._build_deps(parsed)
 
         nodes_added = edges_added = 0
+        nl = '\n'
         for rid in order:
             kind, obj = id2kind[rid], id2obj[rid]
             # for ln in parsed.nodes:
@@ -2024,15 +2032,17 @@ class GraphKnowledgeEngine:
                     if got.get("ids"):  # already there
                         node_ids.append(ln.id)
                         continue
-                refs = [ReferenceSession.model_validate(i.model_dump(), context={'insertion_method': 'llm_graph_extraction'}) for i in ln.references]
+                refs = [ReferenceSession.model_validate(i.model_dump(), context={'insertion_method': i.insertion_method or 'llm_graph_extraction'}) for i in ln.references]
+                
                 n = Node(
                     id=ln.id, label=ln.label, type=ln.type, summary=ln.summary,
                     domain_id=ln.domain_id, canonical_entity_id=ln.canonical_entity_id,
                     properties=ln.properties,
                     references= _normalize_refs(refs, doc_id, fallback_snip),
                     doc_id=doc_id,
-                    embedding=self._ef([f"{ln.label}: {ln.summary}"])[0]
+                    # embedding=self._ef([f"{ln.label}: {ln.summary} : {nl.join(i['context'] for i in self.extract_reference_contexts(ln.id))}"])[0]
                 )
+                n.embedding = self._ef([f"{n.label}: {n.summary} : {nl.join(i['context'] for i in self.extract_reference_contexts(ln)[:1])}"])[0]
                 self.add_node(n, doc_id=doc_id)
                 node_ids.append(n.id)
             elif kind == 'edge':
@@ -2044,7 +2054,7 @@ class GraphKnowledgeEngine:
                     if got.get("ids"):
                         edge_ids.append(le.id)
                         continue
-                refs = [ReferenceSession.model_validate(i.model_dump(), context={'insertion_method': 'llm_graph_extraction'}) for i in le.references]
+                refs = [ReferenceSession.model_validate(i.model_dump(), context={'insertion_method': i.insertion_method or 'llm_graph_extraction'}) for i in le.references]
                 e = Edge(
                     id=le.id, label=le.label, type=le.type, summary=le.summary,
                     domain_id=le.domain_id, canonical_entity_id=le.canonical_entity_id,
@@ -2055,8 +2065,9 @@ class GraphKnowledgeEngine:
                     source_edge_ids=getattr(le, "source_edge_ids", None),
                     target_edge_ids=getattr(le, "target_edge_ids", None),
                     doc_id=doc_id,
-                    embedding=self._ef([f"{ln.label}: {ln.summary}"])[0]
+                    # embedding=self._ef([f"{le.label}: {le.summary}"])[0]
                 )
+                e.embedding = self._ef([f"{le.label}: {le.summary} : {nl.join(i['context'] for i in self.extract_reference_contexts(le)[:1])}"])[0]
                 self.add_edge(e, doc_id=doc_id)
                 edge_ids.append(e.id)
 
@@ -2320,6 +2331,7 @@ class GraphKnowledgeEngine:
         if edge_ids:
             self.edge_collection.delete(ids=edge_ids)
             self.edge_endpoints_collection.delete(where={"doc_id": document_id})
+            self.edge_refs_collection.delete(where={"node_id": {"$in": edge_ids}})
             deleted_edges.update(edge_ids)
         updated_edges = updated_edges - deleted_edges
         # 4) delete nodes and the document

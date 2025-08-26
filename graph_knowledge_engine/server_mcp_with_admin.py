@@ -311,14 +311,20 @@ def api_graph_upsert_llm(inp: GraphUpsertLLMIn):
 
     # 2) Validate to your LLM models (references REQUIRED by GraphEntityBase)
     #    This matches your extractor path which later calls FromLLMSlice.
-    llm_like = LLMGraphExtraction.model_validate({
-        "nodes": inp.nodes,
-        "edges": inp.edges,
-    })
+    try:
+        parsed = LLMGraphExtraction.FromLLMSlice({
+            "nodes": inp.nodes,
+            "edges": inp.edges,
+        }, insertion_method=inp.insertion_method)
+    except:
+        llm_like = LLMGraphExtraction.model_validate({
+            "nodes": inp.nodes,
+            "edges": inp.edges,
+        })
 
-    # 3) Copy insertion_method into every ReferenceSession (backend-only field),
-    #    exactly like kg_extract does, so refs carry provenance.
-    parsed = LLMGraphExtraction.FromLLMSlice(llm_like, insertion_method=inp.insertion_method)
+        # 3) Copy insertion_method into every ReferenceSession (backend-only field),
+        #    exactly like kg_extract does, so refs carry provenance.
+        parsed = LLMGraphExtraction.FromLLMSlice(llm_like, insertion_method=inp.insertion_method)
 
     # 4) Persist using your first-class persistence path (allocates nn:/ne:, topo-sorts, enforces endpoints)
     persisted = engine.persist_graph_extraction(
@@ -729,7 +735,7 @@ def propose_vector(inp : ProposeVectorIn
         where=where                   # <--- threads through to Chroma
     )
     out = []
-    for l, r in pairs:
+    for (lid, rid), (l, r, score) in pairs.items():
         out.append(ProposePair(
             left_id=getattr(l, "id", ""),
             left_kind="edge" if isinstance(l, Edge) else "node" ,            # query side is a node by contract

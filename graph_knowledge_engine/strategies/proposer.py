@@ -185,16 +185,18 @@ class VectorProposer(MergeCandidateProposer):
                 if isinstance(item, Node):
                     out.append(item)
                 else:
-                    got = e.node_collection.get(ids=[item], include=["documents"])
+                    got = e.node_collection.get(ids=[item], include=["documents", "embeddings"])
                     dj = (got.get("documents") or [None])[0]
                     if dj:
                         try:
-                            out.append(Node.model_validate_json(dj))
+                            n = Node.model_validate_json(dj)
                         except Exception:
                             try:
-                                out.append(Node(**json.loads(dj)))
+                                n = Node(**json.loads(dj))
                             except Exception:
-                                pass
+                                raise
+                        n.embedding = got['embeddings'][0]
+                        out.append(n)
             return out
 
         def _coerce_query_edges(e: EngineLike, xs) -> List[Edge]:
@@ -207,29 +209,31 @@ class VectorProposer(MergeCandidateProposer):
                 if isinstance(item, Edge):
                     out.append(item)
                 else:
-                    got = e.edge_collection.get(ids=[item], include=["documents"])
+                    got = e.edge_collection.get(ids=[item], include=["documents", "embeddings"])
                     dj = (got.get("documents") or [None])[0]
                     if dj:
                         try:
-                            out.append(Edge.model_validate_json(dj))
+                            n = Edge.model_validate_json(dj)
                         except Exception:
                             try:
-                                out.append(Edge(**json.loads(dj)))
+                                n = Edge(**json.loads(dj))
                             except Exception:
-                                pass
+                                raise
+                        n.embedding = got['embeddings'][0]
+                        out.append(n)
             return out
 
         # ---- build query set: nodes + edges ------------------------------------------
         q_nodes: List[Node] = _coerce_query_nodes(engine, new_node)
         q_edges: List[Edge] = _coerce_query_edges(engine, new_edge)
         queries: List[Node] = q_nodes + q_edges  # Edge ⊂ Node, so type is fine
-
+        check_pairs = {('E_PHOTO_LEAVES', 'N_PHOTO_REIFIED'), ('E_PHOTO_LEAVES', 'E_PHOTO_LEAVES_DUP'), ('N_CHLORO', 'N_CHLORO_ALIAS')}
         if not queries:
             return []
 
         # embeddings for queries (assume already present on objects)
         q_embs = [q.embedding for q in queries]
-
+        qids = [q.id for q in queries]
         # ---- global metadata filter for the retrieval corpus --------------------------
         extra = None
         if allowed_docs:
@@ -258,12 +262,13 @@ class VectorProposer(MergeCandidateProposer):
                 query_embeddings=q_embs,
                 n_results=top_k,
                 ids = list(ok_node_ids),
+                include = ['documents', 'metadatas', 'embeddings', 'distances']
             )
             # set((i['node_id'], i['insertion_method'], i['doc_id']) for i in node_ref_result['metadatas']) 
             node_docs_per_q = node_results.get("documents") or []
             node_ids_per_q = node_results.get("ids") or []
             node_scores_per_q = node_results.get("distances") or node_results.get("similarities") or []
-
+            node_embs_per_q = node_results.get("embeddings") or []
         # ---- search edges given node and/or edge embedding in a list --------------------------------------------------
         if include_edges:
             edge_ref_result = engine.edge_refs_collection.get(where=cand_where)
@@ -272,6 +277,7 @@ class VectorProposer(MergeCandidateProposer):
                 query_embeddings=q_embs,
                 n_results=top_k,
                 ids = list(ok_edge_ids),
+                include = ['documents', 'metadatas', 'embeddings', 'distances']
             )
             # edge_results = engine.edge_collection.query(
             #     query_embeddings=q_embs,
@@ -281,18 +287,20 @@ class VectorProposer(MergeCandidateProposer):
             edge_docs_per_q = edge_results.get("documents") or []
             edge_ids_per_q = edge_results.get("ids") or []
             edge_scores_per_q = edge_results.get("distances") or edge_results.get("similarities") or []
+            edge_embs_per_q = edge_results.get("embeddings") or []
         else:
-            edge_docs_per_q = edge_ids_per_q = edge_scores_per_q = []
-        pairs: List[Tuple[Node, Any]] = []
+            edge_docs_per_q = edge_ids_per_q = edge_scores_per_q = edge_embs_per_q = []
+        pairs: dict[Tuple[str, str],Tuple[Node, Node, float]] = {}
         # ---- materialize matches per query -------------------------------------------
         for qi, qent in enumerate(queries):
             q_doc = getattr(qent, "doc_id", None)
-
+            qid = qids[qi]
             # node matches
             docs = node_docs_per_q[qi] if qi < len(node_docs_per_q) else []
             ids_ = node_ids_per_q[qi] if qi < len(node_ids_per_q) else []
             scs = node_scores_per_q[qi] if qi < len(node_scores_per_q) else []
-            for mid, mj, score in zip(ids_, docs, scs):
+            embs = node_embs_per_q[qi] if qi < len(node_embs_per_q) else []
+            for mid, mj, score, emb in zip(ids_, docs, scs, embs):
                 keep = (score <= max_distance) if score_mode == "distance" else (score >= min_similarity)
                 if mid == queries[qi].id:
                     continue
@@ -305,19 +313,25 @@ class VectorProposer(MergeCandidateProposer):
                         match = Node(**json.loads(mj))
                     except Exception:
                         continue
+                match.embedding = emb
                 # skip reflexive (same id) candidates
                 if getattr(match, "id", None) == getattr(qent, "id", None):
                     continue
                 if not _pass_doc_rules(q_doc, match.id, "node"):
                     continue
-                pairs.append((qent, match))
+                match_sorted = tuple(sorted([match, qent], key=lambda x: x.id))
+                key = tuple(ele.id for ele in match_sorted)
+                if key not in pairs:
+                    pairs[tuple(ele.id for ele in [match_sorted[0], match_sorted[1]])] = (match_sorted[0], match_sorted[1], score)
+                # pairs.append((qent, match, score))
 
             # edge matches
             if include_edges and edge_docs_per_q:
                 edocs = edge_docs_per_q[qi] if qi < len(edge_docs_per_q) else []
                 eids_ = edge_ids_per_q[qi] if qi < len(edge_ids_per_q) else []
                 escs = edge_scores_per_q[qi] if qi < len(edge_scores_per_q) else []
-                for mid, mj, score in zip(eids_, edocs, escs):
+                embs = edge_embs_per_q[qi] if qi < len(edge_embs_per_q) else []
+                for mid, mj, score, emb in zip(eids_, edocs, escs, embs):
                     keep = (score <= max_distance) if score_mode == "distance" else (score >= min_similarity)
                     if not keep:
                         continue
@@ -328,10 +342,13 @@ class VectorProposer(MergeCandidateProposer):
                             match = Edge(**json.loads(mj))
                         except Exception:
                             continue
+                    match.embedding = emb
                     if not _pass_doc_rules(q_doc, match.id, "edge"):
                         continue
-                    pairs.append((qent, match))
-
+                    match_sorted = tuple(sorted([match, qent], key=lambda x: x.id))
+                    key = tuple(ele.id for ele in match_sorted)
+                    if key not in pairs:
+                        pairs[tuple(ele.id for ele in [match_sorted[0], match_sorted[1]])] = (match_sorted[0], match_sorted[1], score)
         return pairs
 
     # ---------------- UNIFIED ENTRY POINT (kept) ----------------

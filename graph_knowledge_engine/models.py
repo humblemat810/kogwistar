@@ -153,9 +153,11 @@ class EdgeMixin(ModeSlicingMixin, BaseModel):
 # -------------------------
 # Storage-facing mixin (embedding OPTIONAL)
 # -------------------------
+
+from typing import Sequence
 class ChromaMixin(BaseModel):
     id: str = Field(default_factory=generate_id, description="Unique identifier")
-    embedding: Optional[List[float]] = Field(None, description="Vector embedding for the entity")
+    embedding: Optional[Sequence[float]] = Field(None, description="Vector embedding for the entity")
     # Optional but handy to keep JSON and Chroma metadata aligned
     doc_id: Optional[str] = Field(None, description="Document ID from which this entity was extracted")
 
@@ -266,9 +268,11 @@ class LLMGraphExtraction(ModeSlicingMixin, BaseModel):
         return self
     @classmethod
     def FromLLMSlice(cls, sliced, insertion_method):
-        sliced: LLMGraphExtraction['llm']
+        sliced: LLMGraphExtraction['llm'] | dict
         if isinstance(sliced, BaseModel):
             dumped = sliced.model_dump()
+        elif type(sliced) is dict:
+            dumped = sliced
         else:
             raise(ValueError("Unsupported type for 'sliced'"))
         for ne in dumped['nodes'] + dumped['edges']:
