@@ -676,8 +676,8 @@ class ProposeVectorIn(BaseModel):
     new_edge_ids: Optional[List[str]] = None
     top_k: int = 10
     score_mode: Literal["distance", "similarity"] = "distance"
-    max_distance: float = 0.25
-    min_similarity: float = 0.85
+    max_distance: float = 0.35
+    min_similarity: float = 0.65
     include_edges: bool = True
     allowed_docs: Optional[List[str]] = None
     anchor_doc_id: Optional[str] = None
@@ -900,6 +900,8 @@ def adjudicate_pairs(inp: AdjPairsIn) -> CrossDocAdjOut:
         def fetch_any(id, kind):
             if kind == 'node':
                 return _fetch_nodes([id])
+            elif kind == 'edge':
+                return _fetch_edges([id])
             
         l: Node| Edge = fetch_any(left_id, left_kind)
         r: Node| Edge = fetch_any(right_id, right_kind)

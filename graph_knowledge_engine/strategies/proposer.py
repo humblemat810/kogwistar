@@ -227,7 +227,7 @@ class VectorProposer(MergeCandidateProposer):
         q_nodes: List[Node] = _coerce_query_nodes(engine, new_node)
         q_edges: List[Edge] = _coerce_query_edges(engine, new_edge)
         queries: List[Node] = q_nodes + q_edges  # Edge ⊂ Node, so type is fine
-        check_pairs = {('E_PHOTO_LEAVES', 'N_PHOTO_REIFIED'), ('E_PHOTO_LEAVES', 'E_PHOTO_LEAVES_DUP'), ('N_CHLORO', 'N_CHLORO_ALIAS')}
+        # check_pairs = {('E_PHOTO_LEAVES', 'N_PHOTO_REIFIED'), ('E_PHOTO_LEAVES', 'E_PHOTO_LEAVES_DUP'), ('N_CHLORO', 'N_CHLORO_ALIAS')}
         if not queries:
             return []
 

@@ -758,14 +758,14 @@ class GraphKnowledgeEngine:
         got = self.node_collection.get(ids=list(ids), include=["documents", "embeddings"])
         docs = got.get("documents") or []
         embs = got.get("embeddings") if got.get("embeddings") is not None else []
-        return [Node.model_validate_json(d).model_copy(update={{"embedding": emb}}) for d, emb in zip(docs, embs)]
+        return [Node.model_validate_json(d).model_copy(update={"embedding": emb}) for d, emb in zip(docs, embs)]
 
     def get_edges(self, ids: Sequence[str]) -> List[Edge]:
         if not ids: return []
         got = self.edge_collection.get(ids=list(ids), include=["documents", "embeddings"])
         docs = got.get("documents") or []
         embs = got.get("embeddings") if got.get("embeddings") is not None else []
-        return [Edge.model_validate_json(d).model_copy(update={{"embedding": emb}}) for d, emb in zip(docs, embs)]
+        return [Edge.model_validate_json(d).model_copy(update={"embedding": emb}) for d, emb in zip(docs, embs)]
 
     def all_nodes_for_doc(self, doc_id: str) -> List[Node]:
         return self.get_nodes(self._nodes_by_doc(doc_id))

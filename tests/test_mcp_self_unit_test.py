@@ -152,6 +152,15 @@ async def test_doc_node_edge_adjudicate(small_test_docs_nodes_edge_adjudcate):
                     assert pair in vec_pairs, f"Vector proposer missing expected pair {pair}; got {sorted(vec_pairs)}"
                 never_pair = tuple(sorted(("N_HEMO", "E_CHLORO_ABSORB")))
                 assert never_pair not in vec_pairs, f"Vector proposer unexpectedly included negative {never_pair}"
+                # vec_pairs adjudicate_pairs
+                adj_result = await session.call_tool("adjudicate_pairs",arguments={
+                    "inp": {
+                        "pairs": vec_payload['pairs'],
+                        "commit": False,
+                    }
+                })
+                pass
+                                                     
             # ----- Brute-force proposals -----
             bf_res = await session.call_tool(
                 "kg_propose_bruteforce",
@@ -171,10 +180,9 @@ async def test_doc_node_edge_adjudicate(small_test_docs_nodes_edge_adjudcate):
             for pair in must_have:
                 assert tuple(sorted(pair)) in bf_pairs, f"Bruteforce proposer missing expected pair {pair}; got {sorted(bf_pairs)}"
 
-            # Optional: a negative sanity check — this one should *not* be proposed by either
-            
-            # assert never_pair not in bf_pairs, f"Bruteforce proposer unexpectedly included negative {never_pair}"
-            
+
+
+
             
             # Cross-document adjudication (node↔node, edge↔edge, node↔edge)
             res = await session.call_tool(
