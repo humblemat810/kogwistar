@@ -1,0 +1,313 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8"/>
+    <title>Layered Graph (GoJS) — safe render</title>
+    <style>
+      body { margin:0; background:#fafafa; }
+      #bar {
+        position:fixed; top:8px; left:8px; z-index:1000;
+        background:#fff; padding:8px 10px; border-radius:8px;
+        font:12px/1.3 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+        box-shadow:0 2px 8px rgba(0,0,0,.12);
+        display:flex; gap:10px; align-items:center; flex-wrap:wrap;
+      }
+      #bar code{background:#eef;padding:1px 4px;border-radius:4px}
+      #legend{
+        position:fixed; right:8px; top:8px; z-index:1000;
+        background:#fff; padding:8px 10px; border-radius:8px;
+        font:12px/1.2 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+        box-shadow:0 2px 8px rgba(0,0,0,.12);
+      }
+      #legend .swatch{display:inline-block;width:12px;height:12px;margin-right:6px;border-radius:50%;vertical-align:middle;background:#69b}
+      #legend .diamond{width:12px;height:12px;background:#999;transform:rotate(45deg);display:inline-block;margin-right:6px}
+      #diagram{ width:100vw; height:100vh; }
+      #msg{
+        position:fixed; bottom:8px; left:8px; z-index:1000;
+        background:#fff; padding:6px 8px; border-radius:6px; font:12px/1.2 sans-serif;
+        box-shadow:0 2px 8px rgba(0,0,0,.12); color:#444; display:none;
+        max-width:60vw;
+      }
+      #counts{ font:11px/1.2 sans-serif; color:#666; }
+      input[type=number]{ width:6em; }
+    </style>
+    <script>
+      // show JS errors even if DevTools won't open
+      const showErr = (txt)=>{ const el=document.getElementById('msg'); if(!el) return; el.textContent=txt; el.style.display='block'; };
+      window.addEventListener('error', e=>{ showErr('JS error: ' + (e.error?.message||e.message)); console.error(e); });
+      window.addEventListener('unhandledrejection', e=>{ showErr('Promise error: ' + (e.reason?.message||e.reason)); console.error(e); });
+    </script>
+    <script src="https://unpkg.com/gojs/release/go.js"></script>
+  </head>
+  <body>
+    <div id="bar">
+      <div>
+        <b>doc_id</b>=<code id="doc"></code> | <b>mode</b>=<code id="mode"></code> |
+        <b>insertion_method</b>=<code id="ins"></code>
+      </div>
+      <label>Relation:
+        <select id="relFilter"><option value="">All</option></select>
+      </label>
+      <label><input type="checkbox" id="outwardOnly" checked> Outward from root only</label>
+      <label>Hops <input id="hops" type="number" min="1" max="12" value="3"></label>
+      <label>Max nodes <input id="maxNodes" type="number" min="50" value="600"></label>
+      <label>Max links <input id="maxLinks" type="number" min="50" value="1200"></label>
+      <button id="render">Render</button>
+      <button id="zoomIn">＋</button>
+      <button id="zoomOut">－</button>
+      <button id="resetZoom">Reset</button>
+      <button id="centerRoot">Center root</button>
+      <span id="counts"></span>
+    </div>
+
+    <div id="legend">
+      <div><span class="swatch"></span> entity node</div>
+      <div><span class="diamond"></span> edge-node (reified relation)</div>
+      <div style="margin-top:6px;">
+        <svg width="90" height="18">
+          <defs>
+            <marker id="arrowLegend" viewBox="0 -4 8 8" refX="8" refY="0" markerWidth="8" markerHeight="8" orient="auto">
+              <path d="M0,-4L8,0L0,4Z" fill="#888"></path>
+            </marker>
+          </defs>
+          <line x1="5" y1="9" x2="80" y2="9" stroke="#888" stroke-width="2" marker-end="url(#arrowLegend)"/>
+        </svg>
+        source → target
+      </div>
+    </div>
+
+    <div id="diagram"></div>
+    <div id="msg"></div>
+
+    <script>
+      (function(){
+        if(!window.go || !go.Diagram){ showErr('Failed to load go.js'); return; }
+        const $ = go.GraphObject.make;
+
+        // URL params → echo
+        const url = new URL(window.location.href);
+        const doc_id = url.searchParams.get("doc_id") || "";
+        const mode = url.searchParams.get("mode") || "reify";
+        const insertion_method = url.searchParams.get("insertion_method") || "";
+        document.getElementById("doc").textContent = doc_id;
+        document.getElementById("mode").textContent = mode;
+        document.getElementById("ins").textContent = insertion_method;
+
+        let rawData=null, rootKey=null;
+        let diagram = $(go.Diagram, "diagram", {
+          "undoManager.isEnabled": false,
+          initialAutoScale: go.Diagram.None,  // avoid immediate heavy zoom
+          layout: $(go.LayeredDigraphLayout, {
+            direction: 90,
+            layerSpacing: 80,
+            columnSpacing: 40,
+            setsPortSpots: false,
+            layeringOption: go.LayeredDigraphLayout.LayerLongestPathSource
+          })
+        });
+
+        // tooltips
+        const nodeTip = $("ToolTip",
+          $(go.TextBlock,{margin:6, maxSize:new go.Size(500,NaN), wrap:go.TextBlock.WrapDesiredSize},
+            new go.Binding("text","",d=>{
+              const parts=[d.text||d.key];
+              if(d.kind) parts.push("["+d.kind+"]");
+              if(d.type) parts.push("("+d.type+")");
+              return parts.join(" ");
+            })
+          )
+        );
+        const linkTip = $("ToolTip",
+          $(go.TextBlock,{margin:6},
+            new go.Binding("text","",d=>{
+              const a=[];
+              if(d.relation) a.push(d.relation);
+              if(d.label && d.label!==d.relation) a.push(d.label);
+              if(d.value!=null) a.push(String(d.value));
+              if(d.properties) a.push(JSON.stringify(d.properties));
+              return a.join(" • ") || "link";
+            })
+          )
+        );
+
+        // nodes
+        diagram.nodeTemplateMap.add("",
+          $(go.Node,"Horizontal",{locationSpot:go.Spot.Center, toolTip:nodeTip},
+            $(go.Shape,"Circle",{fill:"#69b",stroke:"#fff",strokeWidth:1.2,desiredSize:new go.Size(14,14)}),
+            $(go.TextBlock,{margin:6,font:"11px sans-serif",stroke:"#222"}, new go.Binding("text","text"))
+          )
+        );
+        diagram.nodeTemplateMap.add("edgeNode",
+          $(go.Node,"Horizontal",{locationSpot:go.Spot.Center, toolTip:nodeTip},
+            $(go.Shape,"Diamond",{fill:"#999",stroke:"#fff",strokeWidth:1.2,desiredSize:new go.Size(16,16)}),
+            $(go.TextBlock,{margin:6,font:"11px sans-serif",stroke:"#222"}, new go.Binding("text","text"))
+          )
+        );
+        diagram.nodeTemplateMap.add("root",
+          $(go.Node,"Spot",{locationSpot:go.Spot.Center, toolTip:nodeTip},
+            $(go.Shape,"Circle",{fill:"#69b",stroke:"#fff",strokeWidth:1.2,desiredSize:new go.Size(14,14)}),
+            $(go.Shape,"Circle",{stroke:"#f60",strokeWidth:2.5,desiredSize:new go.Size(22,22)}),
+            $(go.TextBlock,{margin:6,font:"11px sans-serif",stroke:"#222",alignment:new go.Spot(1,0.5,10,0)}, new go.Binding("text","text"))
+          )
+        );
+        // links
+        diagram.linkTemplate =
+          $(go.Link,{routing:go.Link.Orthogonal, corner:6, toShortLength:2, toolTip:linkTip},
+            $(go.Shape,{stroke:"#888",strokeWidth:1.6}),
+            $(go.Shape,{toArrow:"Standard", fill:"#888", stroke:null}),
+            $(go.Panel,"Auto",
+              $(go.Shape,{fill:"rgba(255,255,255,0.9)",stroke:null}),
+              $(go.TextBlock,{margin:2,font:"10px sans-serif",stroke:"#333"},
+                new go.Binding("text","",d=>d.label||d.relation||(d.value??"")))
+            )
+          );
+
+        // controls
+        const countsEl = document.getElementById("counts");
+        document.getElementById('zoomIn').onclick  = ()=>diagram.commandHandler.increaseZoom();
+        document.getElementById('zoomOut').onclick = ()=>diagram.commandHandler.decreaseZoom();
+        document.getElementById('resetZoom').onclick = ()=>diagram.zoomToFit();
+        document.getElementById('centerRoot').onclick = ()=>{ if(rootKey){ const n=diagram.findNodeForKey(rootKey); if(n) diagram.centerRect(n.actualBounds); } };
+        document.getElementById('render').onclick = ()=>loadAndRender();
+        document.getElementById('relFilter').onchange = ()=>reapply();
+        document.getElementById('outwardOnly').onchange = ()=>reapply();
+
+        // utils
+        function isEdgeNode(n){ const t=(n.type||n.kind||"").toLowerCase(); return t==="edge-node"||t==="relationship"; }
+        const ROOT_REL_KEYS = ["summarizes_document","summarizes","summary_of","summarizes_page"];
+        const relKey = s => (s||"").toLowerCase();
+
+        function pickRoot(nodes, links){
+          const lc = links.map(e=>({...e, rk:relKey(e.relation)}));
+          let cand = lc.find(e=>ROOT_REL_KEYS.includes(e.rk));
+          if(cand) return cand.from;
+          cand = lc.find(e=>e.rk.includes("summar"));
+          if(cand) return cand.from;
+          const out=new Map(), inn=new Map();
+          lc.forEach(e=>{ if(!e.rk.includes("summar")) return; out.set(e.from,(out.get(e.from)||0)+1); inn.set(e.to,(inn.get(e.to)||0)+1); });
+          for(const [k,v] of out) if(!inn.get(k)) return k;
+          return nodes.length ? nodes[0].id : null;
+        }
+
+        function buildRelFilter(links){
+          const sel=document.getElementById("relFilter");
+          const rels=[...new Set(links.map(l=>l.relation).filter(Boolean))].sort((a,b)=>a.localeCompare(b));
+          sel.innerHTML='<option value="">All</option>'+rels.map(r=>`<option value="${r}">${r}</option>`).join("");
+        }
+
+        function outwardSlice(data, hops, currentRel, outwardOnly){
+          // flatten links to {from,to,relation,...}
+          let links=data.links.map(L=>{
+            const from=typeof L.source==="object"?L.source.id:L.source;
+            const to  =typeof L.target==="object"?L.target.id:L.target;
+            return { from, to, relation:L.relation||"", label:L.label||"", value:L.value, properties:L.properties||null };
+          });
+          if(currentRel) links = links.filter(e=>e.relation===currentRel);
+
+          const root = pickRoot(data.nodes, links);
+          rootKey=root;
+
+          let keepNodeIds = new Set(data.nodes.map(n=>n.id));
+          if(outwardOnly && root){
+            const adj=new Map();
+            links.forEach(e=>{ if(!adj.has(e.from)) adj.set(e.from,[]); adj.get(e.from).push(e.to); });
+            const seen=new Set([root]);
+            let frontier=[root]; let depth=0;
+            while(frontier.length && depth<hops){
+              const next=[];
+              for(const u of frontier){
+                (adj.get(u)||[]).forEach(v=>{ if(!seen.has(v)){ seen.add(v); next.push(v); }});
+              }
+              frontier=next; depth++;
+            }
+            keepNodeIds=seen;
+            links=links.filter(e=>keepNodeIds.has(e.from) && keepNodeIds.has(e.to));
+          }
+          const nodes = data.nodes.filter(n=>keepNodeIds.has(n.id));
+          return { nodes, links, root };
+        }
+
+        function cap(nodes, links, maxNodes, maxLinks){
+          let truncated=false;
+          let nn=nodes, ll=links;
+          if(links.length>maxLinks){ ll=links.slice(0,maxLinks); truncated=true; }
+          const ids=new Set(); ll.forEach(e=>{ ids.add(e.from); ids.add(e.to); });
+          // keep nodes that appear in links; if that’s less than maxNodes, add more
+          const linkedNodes = nodes.filter(n=>ids.has(n.id));
+          if(linkedNodes.length>maxNodes){
+            nn = linkedNodes.slice(0,maxNodes); truncated=true;
+            const keep = new Set(nn.map(n=>n.id));
+            ll = ll.filter(e=>keep.has(e.from)&&keep.has(e.to));
+          }else if(nodes.length>maxNodes){
+            const extra = nodes.filter(n=>!ids.has(n.id)).slice(0, maxNodes-linkedNodes.length);
+            nn = linkedNodes.concat(extra);
+            truncated = true;
+          }
+          return { nodes: nn, links: ll, truncated };
+        }
+
+        function toGoModel(nodes, links, root){
+          const nodeData = nodes.map(n=>{
+            const out={ key:n.id, text:n.label||n.id, kind:n.type||n.kind };
+            out.category = (root && n.id===root) ? "root" : (isEdgeNode(n)?"edgeNode":"");
+            return out;
+          });
+          const linkData = links.map(l=>({ from:l.from, to:l.to, relation:l.relation, label:l.label, value:l.value, properties:l.properties }));
+          return { nodeData, linkData };
+        }
+
+        function render(nodeData, linkData){
+          showErr(""); // hide any error
+          if(!nodeData.length){ showErr("No nodes to render after filters."); diagram.model=new go.GraphLinksModel([],[]); return; }
+          diagram.animationManager.isEnabled=false;
+          diagram.model = new go.GraphLinksModel(nodeData, linkData);
+          setTimeout(()=>diagram.zoomToFit(), 0);  // let layout finish
+        }
+
+        async function fetchData(){
+          const params = new URLSearchParams({ doc_id, mode });
+          if(insertion_method) params.set("insertion_method", insertion_method);
+          const r = await fetch("/api/viz/d3.json?"+params.toString());
+          if(!r.ok) throw new Error("Fetch failed: "+r.status+" "+r.statusText);
+          const data = await r.json();
+          if(!data || !Array.isArray(data.nodes) || !Array.isArray(data.links)) throw new Error("Bad payload: expected {nodes,links}");
+          return data;
+        }
+
+        async function loadAndRender(){
+          try{
+            showErr("Loading…");
+            if(!rawData){ rawData = await fetchData(); }
+            showErr("");
+
+            buildRelFilter(rawData.links);
+
+            const currentRel = document.getElementById("relFilter").value || "";
+            const outwardOnly = document.getElementById("outwardOnly").checked;
+            const hops = Math.max(1, parseInt(document.getElementById("hops").value || "3", 10));
+            const maxNodes = Math.max(50, parseInt(document.getElementById("maxNodes").value || "600", 10));
+            const maxLinks = Math.max(50, parseInt(document.getElementById("maxLinks").value || "1200", 10));
+
+            const sliced = outwardSlice(rawData, hops, currentRel, outwardOnly);
+            const capped = cap(sliced.nodes, sliced.links, maxNodes, maxLinks);
+            const { nodeData, linkData } = toGoModel(capped.nodes, capped.links, sliced.root);
+
+            const counts = `loaded nodes=${rawData.nodes.length}, links=${rawData.links.length} | showing nodes=${nodeData.length}, links=${linkData.length}` + (capped.truncated ? " (truncated)" : "");
+            document.getElementById("counts").textContent = counts;
+
+            render(nodeData, linkData);
+          }catch(err){ console.error(err); showErr(err.message||String(err)); }
+        }
+
+        function reapply(){
+          if(!rawData) return;
+          loadAndRender();
+        }
+
+        // don’t auto-render; wait for user click (prevents instant freeze)
+        // You can uncomment next line to auto-render small graphs:
+        // loadAndRender();
+      })();
+    </script>
+  </body>
+</html>

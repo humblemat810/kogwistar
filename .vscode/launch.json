@@ -18,7 +18,7 @@
                 
             ],
             "env":{
-                    "MCP_CHROMA_DIR": "adjundicate"
+                    "MCP_CHROMA_DIR": "doc_chunk"//"adjundicate"
                 },
             "jinja": true
         },

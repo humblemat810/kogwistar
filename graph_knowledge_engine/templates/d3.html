@@ -13,7 +13,7 @@
         box-shadow: 0 2px 8px rgba(0,0,0,.15);
       }
       #bar label { margin-right:8px; white-space: nowrap; }
-      #bar input[type=range] { width:110px; vertical-align: middle; }
+      #bar input[type=range] { width:120px; vertical-align: middle; }
       #bar button { margin-right:6px; }
       code { background:#eef; padding:1px 4px; border-radius:4px; }
       .dropdown { display:inline-block; position:relative; margin-left:8px; }
@@ -51,11 +51,12 @@
       <label>Label <input id="fontSize" type="range" min="8" max="18" value="10"></label>
       <label>Link <input id="linkDist" type="range" min="30" max="240" value="100"></label>
       <label>Charge <input id="charge" type="range" min="-800" max="-20" value="-300"></label>
+      <label>Gravity <input id="gravity" type="range" min="0" max="0.3" step="0.005" value="0.06"></label>
+      <label><input type="checkbox" id="freeze"> Freeze forces</label>
       <label>Layer gap <input id="layerGap" type="range" min="60" max="300" value="160"></label>
       <br/>
 
       <label><input type="checkbox" id="treeMode"> Tree from summarizes_document root</label>
-      <!-- Direction mode (mutually exclusive) -->
       <label><input type="checkbox" id="outwardOnly" disabled> Outward only</label>
       <label><input type="checkbox" id="inwardOnly" disabled> Inward only</label>
       <label><input type="checkbox" id="includeLateral" disabled> Include lateral</label>
@@ -107,6 +108,19 @@
         svg.call(zoom);
 
         const defs = svg.append("defs");
+        const gradDefs = defs.append("g").attr("id", "edge-gradients");
+        const gradSel = gradDefs
+          .selectAll("linearGradient")
+          .data(allLinks, keyEdge)
+          .join(enter => {
+            const g = enter.append("linearGradient")
+              .attr("id", d => "g-" + keyEdge(d))
+              .attr("gradientUnits", "userSpaceOnUse");
+            g.append("stop").attr("offset", "0%").attr("stop-color", "#b3b3b3"); // tail grey
+            g.append("stop").attr("offset", "100%").attr("stop-color", "#000");  // head black
+            return g;
+          });
+
         defs.append("marker")
           .attr("id","arrow").attr("viewBox","0 -5 10 10").attr("refX",12).attr("refY",0)
           .attr("markerWidth",6).attr("markerHeight",6).attr("orient","auto")
@@ -116,10 +130,13 @@
         const gNodes = gRoot.append("g");
         const gLabels= gRoot.append("g");
 
-        const fontSize   = document.getElementById('fontSize');
-        const linkDistIn = document.getElementById('linkDist');
-        const chargeIn   = document.getElementById('charge');
-        const layerGapIn = document.getElementById('layerGap');
+        // Controls
+        const fontSize    = document.getElementById('fontSize');
+        const linkDistIn  = document.getElementById('linkDist');
+        const chargeIn    = document.getElementById('charge');
+        const gravityIn   = document.getElementById('gravity');
+        const layerGapIn  = document.getElementById('layerGap');
+        const freezeIn    = document.getElementById('freeze');
 
         const treeMode     = document.getElementById('treeMode');
         const outwardOnly  = document.getElementById('outwardOnly');
@@ -167,7 +184,7 @@
           relList.querySelectorAll('input[type=checkbox]').forEach(cb => cb.checked = cb.value.includes("summ"));
         };
 
-        // Auto-hint for document_ingestion → tree mode on & Y pinned by layer
+        // Auto-hint for document_ingestion
         if ((insertionMethod || "").toLowerCase() === "document_ingestion") {
           treeMode.checked = true;
           outwardOnly.checked = true;
@@ -176,7 +193,6 @@
           includeLat.disabled  = false;
         }
 
-        // build graph (once)
         function keyEdge(e){
           const sid = (typeof e.source === "object" ? e.source.id : e.source);
           const tid = (typeof e.target === "object" ? e.target.id : e.target);
@@ -188,7 +204,8 @@
           .data(allLinks, keyEdge)
           .join("line")
           .attr("stroke-width",1.6)
-          .attr("marker-end","url(#arrow)");
+          .attr("marker-end","url(#arrow)")
+          .attr("stroke", d => `url(#g-${keyEdge(d)})`);
 
         linkSel.append("title").text(d => {
           const rel = d.relation || d.label || "";
@@ -215,13 +232,18 @@
           .text(d=>d.label||d.id)
           .style("font", fontSize.value + "px sans-serif");
 
+        // Forces
         const linkForce   = d3.forceLink(allLinks).id(d => d.id).distance(+linkDistIn.value);
         const chargeForce = d3.forceManyBody().strength(+chargeIn.value);
+        const gravX       = d3.forceX(width/2).strength(+gravityIn.value);
+        const gravY       = d3.forceY(height/2).strength(+gravityIn.value);
 
         const sim = d3.forceSimulation(allNodes)
           .force("charge", chargeForce)
           .force("link", linkForce)
           .force("center", d3.forceCenter(width/2, height/2))
+          .force("gravityX", gravX)
+          .force("gravityY", gravY)
           .alpha(1)
           .on("tick", () => {
             linkSel
@@ -229,12 +251,20 @@
               .attr("y1", d => d.source.y)
               .attr("x2", d => d.target.x)
               .attr("y2", d => d.target.y);
+
+            // Update gradient endpoints so tail→head shading follows the line
+            gradSel
+              .attr("x1", d => (d.source && d.source.x) || 0)
+              .attr("y1", d => (d.source && d.source.y) || 0)
+              .attr("x2", d => (d.target && d.target.x) || 0)
+              .attr("y2", d => (d.target && d.target.y) || 0);
+
             nodeCircle.attr("cx", d => d.x).attr("cy", d => d.y);
             nodeDiamond.attr("transform", d => `translate(${d.x},${d.y})`);
             labelSel.attr("x", d => d.x + 6).attr("y", d => d.y + 3);
           });
 
-        // Drag behavior: X-only when tree + document_ingestion; free otherwise
+        // Drag: X-only when doc_tree (pinned Y), free otherwise
         const isDocTreePinnedY = () => treeMode.checked && (insertionMethod || "").toLowerCase() === "document_ingestion";
 
         function layerY(n, depth, baseY, gap){
@@ -263,7 +293,6 @@
             })
             .on("end", (event,d) => {
               if (!event.active) sim.alphaTarget(0);
-              // keep y pinned in tree-doc mode, but release x to settle
               if (isDocTreePinnedY()) {
                 d.fx = null;
                 d.fy = layerY(d, depth, baseY, gap);
@@ -276,10 +305,23 @@
         nodeCircle.call(makeDrag(new Map(), 40, +layerGapIn.value));
         nodeDiamond.call(makeDrag(new Map(), 40, +layerGapIn.value));
 
-        // Controls
+        // Live controls
         fontSize.oninput = () => labelSel.style("font", fontSize.value + "px sans-serif");
         linkDistIn.oninput = () => { linkForce.distance(+linkDistIn.value); sim.alpha(0.3).restart(); };
-        chargeIn.oninput = () => { chargeForce.strength(+chargeIn.value);   sim.alpha(0.3).restart(); };
+        chargeIn.oninput   = () => { chargeForce.strength(+chargeIn.value); sim.alpha(0.3).restart(); };
+        gravityIn.oninput  = () => {
+          const s = +gravityIn.value;
+          gravX.strength(s);
+          gravY.strength(s);
+          sim.alpha(0.3).restart();
+        };
+        freezeIn.onchange  = () => {
+          if (freezeIn.checked) {
+            sim.stop();
+          } else {
+            sim.alpha(0.6).restart();
+          }
+        };
 
         treeMode.onchange = () => {
           const on = treeMode.checked;
@@ -288,8 +330,6 @@
           includeLat.disabled  = !on;
           if (!on) { outwardOnly.checked = false; inwardOnly.checked = false; }
         };
-
-        // Mutually exclusive outward/inward
         outwardOnly.onchange = () => { if (outwardOnly.checked) inwardOnly.checked = false; };
         inwardOnly.onchange  = () => { if (inwardOnly.checked)  outwardOnly.checked = false; };
 
@@ -331,7 +371,7 @@
           document.querySelectorAll('#relList input[type=checkbox]').forEach(cb => {
             if (cb.checked) set.add(cb.value);
           });
-          if (set.size === 0) uniqueRelations.forEach(r => set.add(r)); // show all if none checked
+          if (set.size === 0) uniqueRelations.forEach(r => set.add(r));
           return set;
         }
 
@@ -347,7 +387,6 @@
             depth = computeDepth(rootId);
           }
 
-          // link visibility
           const linkVisible = new Map();
 
           linkSel.each(function(e){
@@ -365,13 +404,10 @@
               const inOnly  = inwardOnly.checked;
 
               if (ok && outOnly) {
-                // outward: allow forward; lateral only if includeLat
                 ok = dt > ds || (includeLat.checked && dt === ds);
               } else if (ok && inOnly) {
-                // inward: allow back; lateral only if includeLat
                 ok = dt < ds || (includeLat.checked && dt === ds);
               } else if (ok && !outOnly && !inOnly) {
-                // any direction; if not includeLat, hide pure lateral
                 if (!includeLat.checked) ok = dt !== ds;
               }
             }
@@ -380,7 +416,6 @@
             d3.select(this).classed("hidden", !ok);
           });
 
-          // Node visibility: incident to visible link, plus root
           const nodeVisible = new Map(allNodes.map(n => [n.id, false]));
           if (treeMode.checked && depth.size) {
             const r = pickRootId();
@@ -412,22 +447,19 @@
               }
             });
           } else {
-            // release Y pins when not in doc-tree mode
             allNodes.forEach(n => { n.fy = null; });
           }
 
-          // Update drag with current depth/layer to keep X-only drag in doc-tree mode
           nodeCircle.call(makeDrag(depth, baseY, layerGap));
           nodeDiamond.call(makeDrag(depth, baseY, layerGap));
 
-          // Nudge the simulation so positions can settle after visibility/layout changes
-          sim.alpha(0.25).restart();
+          if (!freezeIn.checked) sim.alpha(0.25).restart();
         }
 
         // Initial visibility
         applyVisibility();
 
-        // Apply button: toggle visibility only (no rebind)
+        // Apply button
         applyBtn.onclick = () => applyVisibility();
       }
       main();

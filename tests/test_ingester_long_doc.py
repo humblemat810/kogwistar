@@ -80,7 +80,7 @@ def test_sidecar_ingester_on_long_document(tmp_path: pathlib.Path):
         split_max_chars=2500,          # ensures many chunks
         group_size=5,                  # default grouping heuristic
         max_levels=6,
-        force_concat_after_levels=3,   # speed up convergence for tests
+        force_summarise_after_levels=3,   # speed up convergence for tests
     )
 
     # 6) Basic persistence checks

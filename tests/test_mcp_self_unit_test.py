@@ -6,7 +6,8 @@ from typing import Dict, Any, List
 
 from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
-
+import sys, pathlib
+sys.path.insert(0, pathlib.Path(__file__).parent.parent)
 
 def test_rollback_doc_node_edge_adjudicate(small_test_docs_nodes_edge_adjudcate):
     graph_rag_port = 28110
@@ -194,3 +195,18 @@ async def test_doc_node_edge_adjudicate(small_test_docs_nodes_edge_adjudcate):
             first = res.content[0]
             ok = (first.type == "json") or (first.type == "text" and json.loads(first.text))
             assert ok, f"Unexpected MCP response type: {first.type}"
+            
+            # merge vector results:
+            from graph_knowledge_engine.server_mcp_with_admin import CrossDocAdjOut
+            adj_out = CrossDocAdjOut.model_validate(json.loads(adj_result.content[0].text))
+            for pairs in adj_out.results:
+                lkind, rkind, same_entity = pairs.left_kind, pairs.right_kind, pairs.same_entity
+                if same_entity:
+                    if lkind == rkind:
+                        canonical_id = engine.commit_merge(left, right, verdict)
+                    else:
+                        # Requires your engine to expose commit_any_kind(Node|Edge, Node|Edge, verdict)
+                        canonical_id = engine.commit_any_kind(left, right, verdict)
+                    if canonical_id:
+                        committed.append(str(canonical_id))
+            

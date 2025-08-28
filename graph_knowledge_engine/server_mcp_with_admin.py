@@ -12,7 +12,6 @@ from graph_knowledge_engine.engine import GraphKnowledgeEngine
 from graph_knowledge_engine.graph_query import GraphQuery
 from graph_knowledge_engine.models import Document
 from graph_knowledge_engine.visualization.graph_viz import to_cytoscape, to_d3_force
-import json
 from fastapi.templating import Jinja2Templates
 from fastapi import Request
 # ---- Engine + MCP ----
@@ -100,7 +99,9 @@ from graph_knowledge_engine.ingester import PagewiseSummaryIngestor
 @mcp.tool()
 def doc_parse(inp: DocParseIn) -> DocParseOut:
     doc = Document(id=inp.id, content=inp.content, type=inp.type)
-    ingester = PagewiseSummaryIngestor(engine=engine, llm=engine.llm, cache_dir=str(os.path.join(".",".llm_cache")))
+    ingester = PagewiseSummaryIngestor(engine=engine, llm=engine.llm, 
+                                       cache_dir=str(os.path.join(".",".llm_cache"))
+                                       )
     res: dict = ingester.ingest_document(document = doc)
     # plug your real chunker/summary tree here and populate outputs
     return DocParseOut(doc_id=doc.id, chunk_ids=res.get("chunk_ids"), summary_node_id=res.get("final_node_id"))
@@ -362,6 +363,17 @@ def viz_d3(
 ):
     return templates.TemplateResponse(
         "d3.html",
+        {"request": request, "doc_id": doc_id, "mode": mode, "insertion_method": insertion_method},
+    )
+@app.get("/viz/go", response_class=HTMLResponse)
+def viz_go(
+    request: Request,
+    doc_id: Optional[str] = None,
+    mode: str = "reify",
+    insertion_method: Optional[str] = None,
+):
+    return templates.TemplateResponse(
+        "go.html",
         {"request": request, "doc_id": doc_id, "mode": mode, "insertion_method": insertion_method},
     )
 
@@ -891,6 +903,25 @@ Both tools return:
 class AdjPairsIn(BaseModel):
     pairs: List["ProposePair"]
     commit : bool = False
+@mcp.tool()
+def commit_merge(inp: CrossDocAdjOut):
+    adj_out = inp
+    committed = []
+    for pairs in adj_out.results:
+        left, right = engine.get_nodes(pairs.left)[0], engine.get_nodes(pairs.right)[0]
+        lkind, rkind, same_entity = pairs.left_kind, pairs.right_kind, pairs.same_entity
+        if same_entity:
+            verdict = AdjudicationVerdict(same_entity=pairs.same_entity,
+                                          confidence =pairs.confidence,
+                                          reason = pairs.reason, canonical_entity_id= None)
+            if lkind == rkind == 'node': # legacy and later implemented others
+                canonical_id = engine.commit_merge(left, right, verdict)
+            else:
+                # Requires your engine to expose commit_any_kind(Node|Edge, Node|Edge, verdict)
+                canonical_id = engine.commit_any_kind(left, right, verdict)
+            verdict.canonical_entity_id = canonical_id
+            if canonical_id:
+                committed.append(str(canonical_id))
     
 @mcp.tool()
 def adjudicate_pairs(inp: AdjPairsIn) -> CrossDocAdjOut:

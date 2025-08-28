@@ -245,6 +245,24 @@ class LLMEdge( LLMMixin, EdgeMixin, GraphEntityBase):
     
     pass
 
+class ReferenceSessionMandarySnippet(ReferenceSession):
+    snippet: str = Field(..., description="Short text snippet for quick preview")
+
+    pass
+class LLMNodeExtraction(LLMNode):
+    "extracted node information"
+    
+    references: Annotated[List[ReferenceSessionMandarySnippet], FrontendField(),BackendField(),DtoField(),LLMField()] = Field(
+        ..., min_items=1, description="One or more locatable mentions supporting this entity"
+    )
+
+class LLMEdgeExtraction(LLMEdge):
+    "extracted edge information"
+    
+    references: Annotated[List[ReferenceSessionMandarySnippet], FrontendField(),BackendField(),DtoField(),LLMField()] = Field(
+        ..., min_items=1, description="One or more locatable mentions supporting this entity"
+    )
+
 class LLMGraphExtraction(ModeSlicingMixin, BaseModel):
     """
     Top-level structured output from LLM for knowledge graph extraction.

@@ -141,25 +141,27 @@ class PreferExistingCanonical(MergePolicy):
 
         relation_name = "reifies" if self.e.cross_kind_strategy == "reifies" else "equivalent_node_edge"
 
-        l = self.e._fetch_target(node_or_edge_l)   # Node
-        r = self.e._fetch_target(node_or_edge_r)   # Edge
+        l = self.e._fetch_target(node_or_edge_l)   # Node or edge
+        r = self.e._fetch_target(node_or_edge_r)   # node or Edge
 
         # evidence: copy best ref from both sides
         left_ref = self.e._best_ref(l)
         right_ref = self.e._best_ref(r) if r.references else left_ref
-
         link = Edge(
             id=str(uuid.uuid4()),
             label=relation_name,
             type="relationship",
             summary=verdict.reason,
             relation=relation_name,
-            source_ids=[l.id], target_ids=[],
-            source_edge_ids=[], target_edge_ids=[r.id],   # <-- node → (meta)edge
+            source_ids=[l.id] if node_or_edge_l.kind == 'node' else [], 
+            target_ids=[r.id] if node_or_edge_r.kind == 'node' else [],
+            source_edge_ids=[l.id] if node_or_edge_l.kind == 'edge' else [], 
+            target_edge_ids=[r.id] if node_or_edge_r.kind == 'edge' else [],   # <-- node → (meta)edge
             properties={"confidence": verdict.confidence},
             references=[left_ref, right_ref],
             doc_id="__adjudication__",
         )
+        assert bool(link.source_ids ) + bool(link.target_ids ) + bool(link.source_edge_ids ) + bool(link.target_edge_ids ) == 2
         self.e.add_edge(link, doc_id=link.doc_id)
         return link.id
     def commit_merge_target(self, left: AdjudicationTarget, right: AdjudicationTarget, verdict: AdjudicationVerdict) -> str:

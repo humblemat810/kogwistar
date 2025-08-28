@@ -208,7 +208,7 @@ class GraphQuery:
         if doc_id:
             where["doc_id"] = doc_id
         # Pull candidate set by doc scope, then filter by JSON to avoid over‑constraining Chroma metadata
-        got = self.e.node_collection.get(where=where, include=["ids", "documents"])
+        got = self.e.node_collection.get(where=where, include=["documents"])
         out: List[str] = []
         for nid, ndoc in zip(got.get("ids") or [], got.get("documents") or []):
             if not nid or not ndoc:

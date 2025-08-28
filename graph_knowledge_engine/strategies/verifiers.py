@@ -317,9 +317,9 @@ class DefaultVerifier(Verifier):
 
     # def _verify_collection_for_doc(self, *, which: str, document_id: str) -> int:
     #     if which == "node":
-    #         got = self.e.node_collection.get(where={"doc_id": document_id}, include=["ids", "documents", "metadatas"])
+    #         got = self.e.node_collection.get(where={"doc_id": document_id}, include=["documents", "metadatas"])
     #     else:
-    #         got = self.e.edge_collection.get(where={"doc_id": document_id}, include=["ids", "documents", "metadatas"])
+    #         got = self.e.edge_collection.get(where={"doc_id": document_id}, include=["documents", "metadatas"])
 
     #     total_updates = 0
     #     ids = got.get("ids") or []

@@ -695,40 +695,74 @@ class GraphKnowledgeEngine:
         label = getattr(obj, "label", None)
         refs = getattr(obj, "references", None) or []
         out: List[Dict[str, Any]] = []
-
+        doc_cache = {}
+        
         for ref in refs:
             # 2) locate the backing document
             doc_id = self._infer_doc_id_from_ref(ref)
-            full = self._fetch_document_text(doc_id) if doc_id else None
-
+            pages = doc_cache.get(doc_id)
+            if not pages:
+                full = self._fetch_document_text(doc_id) if doc_id else None
+                pages = self._coerce_pages(full)
+                doc_cache[doc_id] = pages
             snippet = getattr(ref, "snippet", None)
             mention = snippet or (label or "")
 
-            ctx_text = None
+            ctx_text = snippet or None
             span_start = None
             span_end = None
-
-            if full:
-                # Try exact snippet first (best anchor)
-                idx = full.find(snippet) if snippet else -1
-                # Fallback to label if allowed
-                if idx < 0 and label and prefer_label_fallback:
-                    idx = full.find(label)
-
-                if idx >= 0:
-                    # If we matched on snippet, use its length; else label length
-                    length = len(snippet) if snippet else (len(label) if label else 0)
-                    span_start = idx
-                    span_end = idx + length
-                    left = max(0, span_start - window_chars)
-                    right = min(len(full), span_end + window_chars)
-                    ctx_text = full[left:right]
+            # if ref.start_page == ref.end_page:
+            #     pages[ref.start_page]
+            # for p in range(ref.start_page, ref.end_page):
+            import ast
+            def _coerce_to_referencable_text(text_or_ast_str):
+                import ast
+                try:
+                    return ('\n'.join((i['text'] for i in ast.literal_eval(text_or_ast_str)['OCR_text_clusters'])))
+                except Exception as e :
+                    return text_or_ast_str
+                    
+                if type(text_or_ast_str) is str:
+                    return text_or_ast_str
                 else:
-                    # Full text present but we couldn't find anchor—still return snippet if present
-                    ctx_text = snippet or None
-            else:
-                # No full text—just echo stored snippet if any
-                ctx_text = snippet or None
+                    return ast.literal_eval(text_or_ast_str)
+                pass
+            if full:
+                page_relevant = {p[0]: p[1] for p in pages if (p[0] >= ref.start_page and  p[0] <= ref.end_page )}
+                if ref.start_page and ref.end_page:
+                    if ref.start_page == ref.end_page:
+                        ctx_text = ""
+                        if ref.start_char and ref.end_char:
+                            try:
+                                page_split_page = _coerce_to_referencable_text(page_relevant[ref.start_page])
+                            except:
+                                raise
+                            ctx_text = _coerce_to_referencable_text(page_relevant[ref.start_page])[max(ref.start_char-window_chars, 0): ref.end_char+window_chars]
+                    else:
+                        ctx_text = ""
+                        ctx_text += _coerce_to_referencable_text(page_relevant[ref.start_page])[max(ref.start_char-window_chars, 0):]
+                        for p_num in range(ref.start_page+1,ref.end_page):
+                            ctx_text += _coerce_to_referencable_text(page_relevant[ref.start_page])[:]
+                            ctx_text += '\n\f'
+                        ctx_text += _coerce_to_referencable_text(page_relevant[ref.start_page])[: ref.end_char+window_chars]
+                    if len(ctx_text) == 0:
+                        raise Exception("Context empty")
+                if ctx_text is None:
+                    # Try exact snippet first (best anchor)
+                    idx = full.find(snippet) if snippet else -1
+                    # Fallback to label if allowed
+                    if idx < 0 and label and prefer_label_fallback:
+                        idx = full.find(label)
+
+                    if idx >= 0:
+                        # If we matched on snippet, use its length; else label length
+                        length = len(snippet) if snippet else (len(label) if label else 0)
+                        span_start = idx
+                        span_end = idx + length
+                        left = max(0, span_start - window_chars)
+                        right = min(len(full), span_end + window_chars)
+                        ctx_text = full[left:right]
+            
 
             out.append({
                 "doc_id": doc_id,
@@ -1274,9 +1308,11 @@ class GraphKnowledgeEngine:
                 out = []
                 for i, item in enumerate(content_or_pages, start=1):
                     p = int(item.get("page", i))
-                    out.append((p, str(item.get("text", "") or "")))
+                    out.append((p, str(item.get("text", '\n'.join(i['text'] for i in item.get("OCR_text_clusters", ""))) or "")))
                 return out
             # list of plain page texts
+            if 'pdf_page_num' in first.keys():
+                return [(t['pdf_page_num'], str(t or "")) for t in content_or_pages]
             return [(i, str(t or "")) for i, t in enumerate(content_or_pages, start=1)]
 
         # (B) Strings: try JSON first
@@ -1895,7 +1931,7 @@ class GraphKnowledgeEngine:
             rows = self.node_docs_collection.get(where={"doc_id": doc_id}, include=["documents"])
             node_ids = list({json.loads(d)["node_id"] for d in (rows.get("documents") or [])})
         else:
-            got = self.node_collection.get(where={"doc_id": doc_id}, include=["ids", "documents"])
+            got = self.node_collection.get(where={"doc_id": doc_id}, include=["documents"])
             node_ids = list(got.get("ids") or [])
 
         if not node_ids:
@@ -2042,7 +2078,10 @@ class GraphKnowledgeEngine:
                     doc_id=doc_id,
                     # embedding=self._ef([f"{ln.label}: {ln.summary} : {nl.join(i['context'] for i in self.extract_reference_contexts(ln.id))}"])[0]
                 )
-                n.embedding = self._ef([f"{n.label}: {n.summary} : {nl.join(i['context'] for i in self.extract_reference_contexts(ln)[:1])}"])[0]
+                emb_text = f"{n.label}: {n.summary} : {nl.join(i['context'] for i in self.extract_reference_contexts(ln)[:1])}"
+                if emb_text is None:
+                    emb_text = f"{n.label}: {n.summary} : {nl.join(i['context'] for i in self.extract_reference_contexts(ln)[:1])}"
+                n.embedding = self._ef([emb_text])[0]
                 self.add_node(n, doc_id=doc_id)
                 node_ids.append(n.id)
             elif kind == 'edge':
@@ -2677,7 +2716,7 @@ class GraphKnowledgeEngine:
             documents = got.get("documents") or []
             entity_ids = got.get("ids") or []
         else:
-            got = primary.get(include=["ids", "documents"])
+            got = primary.get(include=["documents"])
             documents = got.get("documents") or []
             entity_ids = got.get("ids") or []
 

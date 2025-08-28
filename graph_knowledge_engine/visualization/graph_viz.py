@@ -88,11 +88,16 @@ def _filter_by_insertion_method(
 
     # Fast path: use refs index if present
     coll_attr = "node_refs_collection" if kind == "node" else "edge_refs_collection"
+    fallback = False
     try:
         coll = getattr(engine, coll_attr)
+    except Exception:
+        fallback = True
+    if not fallback:
         where = {"insertion_method": insertion_method}
         if by_doc_id:
-            where["doc_id"] = by_doc_id
+            where = {"$and": [where, {"doc_id": by_doc_id}]}
+            # where["doc_id"] = by_doc_id
         rows = coll.get(where=where, include=["metadatas"])
         idx_ids = set(
             (m.get("node_id") if kind == "node" else m.get("edge_id"))
@@ -100,15 +105,12 @@ def _filter_by_insertion_method(
             if m
         )
         return [rid for rid in ids if rid in idx_ids]
-    except Exception:
-        pass
-
-    # Fallback: scan JSON documents
-    store = engine.node_collection if kind == "node" else engine.edge_collection
-    got = store.get(ids=ids, include=["ids", "documents"])
-    keep = []
-    for rid, doc in zip(got.get("ids") or [], got.get("documents") or []):
-        try:
+    else:
+        # Fallback: scan JSON documents
+        store = engine.node_collection if kind == "node" else engine.edge_collection
+        got = store.get(ids=ids, include=["documents", "metadatas"])
+        keep = []
+        for rid, doc in zip(got.get("ids") or [], got.get("documents") or []):
             obj = json.loads(doc)
             refs = obj.get("references") or []
             ok = False
@@ -129,9 +131,7 @@ def _filter_by_insertion_method(
                     break
             if ok:
                 keep.append(rid)
-        except Exception:
-            pass
-    return keep
+        return keep
 
 
 def _collect_ids(
@@ -140,7 +140,7 @@ def _collect_ids(
     insertion_method: Optional[str],
 ) -> Tuple[List[str], List[str]]:
     """Base selection (doc filter) then optional insertion_method filter."""
-    node_ids, edge_ids = _ids_by_doc(engine, doc_id)
+    # node_ids, edge_ids = _ids_by_doc(engine, doc_id)
     node_ids = _filter_by_insertion_method(engine, node_ids, "node", insertion_method, by_doc_id=doc_id)
     edge_ids = _filter_by_insertion_method(engine, edge_ids, "edge", insertion_method, by_doc_id=doc_id)
     return node_ids, edge_ids
