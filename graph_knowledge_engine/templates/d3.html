@@ -2,24 +2,38 @@
 <html>
   <head>
     <meta charset="utf-8"/>
-    <title>D3 force viz</title>
+    <title>D3 graph – tree/outward/inward filters</title>
     <style>
       body { margin:0; }
-      svg { width:100vw; height:100vh; }
+      svg { width:100vw; height:100vh; display:block; }
       #bar {
         position:fixed; top:8px; left:8px; z-index: 10;
         background:#fff9; padding:8px 10px; border-radius:8px;
         font: 12px/1.3 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
         box-shadow: 0 2px 8px rgba(0,0,0,.15);
       }
-      #bar label { margin-right:8px; }
+      #bar label { margin-right:8px; white-space: nowrap; }
       #bar input[type=range] { width:110px; vertical-align: middle; }
       #bar button { margin-right:6px; }
       code { background:#eef; padding:1px 4px; border-radius:4px; }
-      #tt {
-        position:fixed; display:none; pointer-events:none;
-        background:#222; color:#fff; padding:6px 8px; border-radius:6px; font:12px/1.3 sans-serif; white-space:pre; z-index:20;
+      .dropdown { display:inline-block; position:relative; margin-left:8px; }
+      .dropdown button { padding:2px 8px; }
+      .menu {
+        position:absolute; top:100%; left:0; margin-top:4px; min-width:260px;
+        background:#fff; border:1px solid #ccc; border-radius:6px; padding:8px;
+        box-shadow: 0 2px 12px rgba(0,0,0,.15); display:none; z-index:20;
+        max-height: 40vh; overflow:auto;
       }
+      .menu label { display:flex; gap:8px; align-items:center; font:12px/1.4 sans-serif; padding:2px 0; }
+      .menu .cmds { display:flex; gap:6px; margin-bottom:6px; }
+      #legend {
+        position:fixed; right:8px; top:8px; z-index:10;
+        background:#fff9; padding:8px 10px; border-radius:8px; font:12px/1.2 sans-serif;
+        box-shadow: 0 2px 8px rgba(0,0,0,.15);
+      }
+      #legend .dot { display:inline-block; width:10px; height:10px; border-radius:50%; background:#69b; margin-right:6px; }
+      #legend .diamond { display:inline-block; width:10px; height:10px; background:#d77; transform:rotate(45deg); margin-right:6px; }
+      .hidden { display: none; }
     </style>
     <script src="https://unpkg.com/d3@7"></script>
   </head>
@@ -30,52 +44,151 @@
         <b>mode</b>=<code>{{ mode }}</code> &nbsp;|&nbsp;
         <b>insertion_method</b>=<code>{{ insertion_method or '' }}</code>
       </div>
+
       <button id="zoomIn">＋</button>
       <button id="zoomOut">－</button>
       <button id="resetZoom">Reset</button>
-      <label>Label font <input id="fontSize" type="range" min="8" max="18" value="10"></label>
-      <label>Link dist <input id="linkDist" type="range" min="30" max="200" value="80"></label>
-      <label>Charge <input id="charge" type="range" min="-400" max="-20" value="-120"></label>
+      <label>Label <input id="fontSize" type="range" min="8" max="18" value="10"></label>
+      <label>Link <input id="linkDist" type="range" min="30" max="240" value="100"></label>
+      <label>Charge <input id="charge" type="range" min="-800" max="-20" value="-300"></label>
+      <label>Layer gap <input id="layerGap" type="range" min="60" max="300" value="160"></label>
+      <br/>
+
+      <label><input type="checkbox" id="treeMode"> Tree from summarizes_document root</label>
+      <!-- Direction mode (mutually exclusive) -->
+      <label><input type="checkbox" id="outwardOnly" disabled> Outward only</label>
+      <label><input type="checkbox" id="inwardOnly" disabled> Inward only</label>
+      <label><input type="checkbox" id="includeLateral" disabled> Include lateral</label>
+
+      <span class="dropdown">
+        <button id="relMenuBtn">Relations ▾</button>
+        <div class="menu" id="relMenu">
+          <div class="cmds">
+            <button type="button" id="relAll">All</button>
+            <button type="button" id="relNone">None</button>
+            <button type="button" id="relSumm">Only “summ”</button>
+          </div>
+          <div id="relList"></div>
+        </div>
+      </span>
+
+      <button id="applyFilters">Apply</button>
     </div>
-    <div id="tt"></div>
+
+    <div id="legend">
+      <div><span class="dot"></span> entity node</div>
+      <div><span class="diamond"></span> edge-node (reified relation)</div>
+      <div style="margin-top:6px;"><span style="border-bottom:2px solid #999;">&nbsp;&nbsp;&nbsp;</span> directed link</div>
+    </div>
+
     <svg></svg>
+
     <script>
       async function main(){
         const params = new URLSearchParams({
           "doc_id":"{{ doc_id or '' }}",
           "mode":"{{ mode }}"
         });
-        const insertionMethod = {{ (insertion_method or none) | tojson }};
+        const insertionMethod = {{ insertion_method | tojson if insertion_method is not none else 'null' }};
         if (insertionMethod) params.set("insertion_method", insertionMethod);
 
         const res = await fetch("/api/viz/d3.json?" + params.toString());
-        const data = await res.json();
-        const isReify = (data.mode || "").toLowerCase() === "reify";
+        const data = await res.json(); // { nodes, links, mode, doc_id }
+
+        const allNodes = data.nodes.map(n => ({...n}));
+        const allLinks = data.links.map(l => ({...l}));
 
         const svg = d3.select("svg"),
               width = window.innerWidth,
               height = window.innerHeight;
 
-        // zoom/pan container
-        const g = svg.append("g");
-        const zoom = d3.zoom().scaleExtent([0.2, 80]).on("zoom", (event) => {
-          g.attr("transform", event.transform);
-        });
+        const gRoot = svg.append("g");
+        const zoom = d3.zoom().scaleExtent([0.2, 24]).on("zoom", (e) => gRoot.attr("transform", e.transform));
         svg.call(zoom);
 
-        // force setup
-        const linkForce = d3.forceLink(data.links).id(d => d.id).distance(80);
-        const chargeForce = d3.forceManyBody().strength(-120);
-        const sim = d3.forceSimulation(data.nodes)
-          .force("charge", chargeForce)
-          .force("link", linkForce)
-          .force("center", d3.forceCenter(width/2, height/2));
+        const defs = svg.append("defs");
+        defs.append("marker")
+          .attr("id","arrow").attr("viewBox","0 -5 10 10").attr("refX",12).attr("refY",0)
+          .attr("markerWidth",6).attr("markerHeight",6).attr("orient","auto")
+          .append("path").attr("d","M0,-5L10,0L0,5").attr("fill","#999");
 
-        // links + tooltips
-        const linkSel = g.append("g")
-          .attr("stroke","#999").attr("stroke-opacity",0.6)
-          .selectAll("line").data(data.links).join("line")
-          .attr("stroke-width",1.5);
+        const gLinks = gRoot.append("g").attr("stroke","#999").attr("stroke-opacity",0.75);
+        const gNodes = gRoot.append("g");
+        const gLabels= gRoot.append("g");
+
+        const fontSize   = document.getElementById('fontSize');
+        const linkDistIn = document.getElementById('linkDist');
+        const chargeIn   = document.getElementById('charge');
+        const layerGapIn = document.getElementById('layerGap');
+
+        const treeMode     = document.getElementById('treeMode');
+        const outwardOnly  = document.getElementById('outwardOnly');
+        const inwardOnly   = document.getElementById('inwardOnly');
+        const includeLat   = document.getElementById('includeLateral');
+        const applyBtn     = document.getElementById('applyFilters');
+
+        document.getElementById('zoomIn').onclick  = () => svg.transition().call(zoom.scaleBy, 1.4);
+        document.getElementById('zoomOut').onclick = () => svg.transition().call(zoom.scaleBy, 1/1.4);
+        document.getElementById('resetZoom').onclick = () => svg.transition().call(zoom.transform, d3.zoomIdentity);
+
+        // relation checklist
+        const uniqueRelations = Array.from(
+          new Set(allLinks.map(e => (e.relation || e.label || "").toLowerCase()).filter(Boolean))
+        ).sort();
+        const relList = document.getElementById('relList');
+        const relMenu = document.getElementById('relMenu');
+        const relBtn  = document.getElementById('relMenuBtn');
+
+        function buildRelMenu() {
+          relList.innerHTML = "";
+          uniqueRelations.forEach(r => {
+            const id = "rel_" + r.replace(/\W+/g, "_");
+            const wrap = document.createElement('label');
+            const cb = document.createElement('input');
+            cb.type = "checkbox"; cb.id = id; cb.value = r; cb.checked = true; // default ALL on
+            wrap.appendChild(cb);
+            const span = document.createElement('span'); span.textContent = r;
+            wrap.appendChild(span);
+            relList.appendChild(wrap);
+          });
+        }
+        buildRelMenu();
+        relBtn.onclick = () => relMenu.style.display = (relMenu.style.display === "block") ? "none" : "block";
+        document.addEventListener('click', (e) => {
+          if (!relMenu.contains(e.target) && e.target !== relBtn) relMenu.style.display = "none";
+        });
+        document.getElementById('relAll').onclick = () => {
+          relList.querySelectorAll('input[type=checkbox]').forEach(cb => cb.checked = true);
+        };
+        document.getElementById('relNone').onclick = () => {
+          relList.querySelectorAll('input[type=checkbox]').forEach(cb => cb.checked = false);
+        };
+        document.getElementById('relSumm').onclick = () => {
+          relList.querySelectorAll('input[type=checkbox]').forEach(cb => cb.checked = cb.value.includes("summ"));
+        };
+
+        // Auto-hint for document_ingestion → tree mode on & Y pinned by layer
+        if ((insertionMethod || "").toLowerCase() === "document_ingestion") {
+          treeMode.checked = true;
+          outwardOnly.checked = true;
+          outwardOnly.disabled = false;
+          inwardOnly.disabled  = false;
+          includeLat.disabled  = false;
+        }
+
+        // build graph (once)
+        function keyEdge(e){
+          const sid = (typeof e.source === "object" ? e.source.id : e.source);
+          const tid = (typeof e.target === "object" ? e.target.id : e.target);
+          const rel = (e.relation || e.label || "");
+          return e.id || `${sid}->${tid}:${rel}`;
+        }
+
+        const linkSel = gLinks.selectAll("line")
+          .data(allLinks, keyEdge)
+          .join("line")
+          .attr("stroke-width",1.6)
+          .attr("marker-end","url(#arrow)");
 
         linkSel.append("title").text(d => {
           const rel = d.relation || d.label || "";
@@ -83,87 +196,239 @@
           return [rel, props].filter(Boolean).join(" • ") || "link";
         });
 
-        // nodes (split by kind)
-        const entities = data.nodes.filter(d => d.type !== "edge-node");
-        const edgeNodes = data.nodes.filter(d => d.type === "edge-node");
+        const entities = allNodes.filter(n => n.type !== "edge-node");
+        const eNodes   = allNodes.filter(n => n.type === "edge-node");
 
-        const nodeCircle = g.append("g").attr("stroke","#fff").attr("stroke-width",1.5)
+        const nodeCircle = gNodes.append("g").attr("stroke","#fff").attr("stroke-width",1.3)
           .selectAll("circle").data(entities, d => d.id).join("circle")
-          .attr("r", 4)
-          .attr("fill", "#69b")
-          .call(d3.drag()
-            .on("start", (event,d)=>{ if(!event.active) sim.alphaTarget(0.3).restart(); d.fx=d.x; d.fy=d.y; })
-            .on("drag",  (event,d)=>{ d.fx=event.x; d.fy=event.y; })
-            .on("end",   (event,d)=>{ if(!event.active) sim.alphaTarget(0); d.fx=null; d.fy=null; }));
+          .attr("r", 5).attr("fill", "#69b");
 
-        // minimal addition: native tooltip with label/summary/id
-        nodeCircle.append("title").text(d => {
-          return [d.label || d.id, d.summary, d.id].filter(Boolean).join('\n');
-        });
+        const diamondPath = d3.symbol().type(d3.symbolDiamond).size(120);
+        const nodeDiamond = gNodes.append("g").attr("stroke","#fff").attr("stroke-width",1.0)
+          .selectAll("path").data(eNodes, d => d.id).join("path")
+          .attr("d", diamondPath).attr("fill", "#d77");
 
-        const diamond = d3.symbol().type(d3.symbolDiamond).size(90);
-        const nodeDiamond = g.append("g").attr("stroke","#fff").attr("stroke-width",1.0)
-          .selectAll("path").data(edgeNodes, d => d.id).join("path")
-          .attr("d", diamond)
-          .attr("fill", "#d77") /* different from link grey so nodes vs edges are distinct */
-          .call(d3.drag()
-            .on("start", (event,d)=>{ if(!event.active) sim.alphaTarget(0.3).restart(); d.fx=d.x; d.fy=d.y; })
-            .on("drag",  (event,d)=>{ d.fx=event.x; d.fy=event.y; })
-            .on("end",   (event,d)=>{ if(!event.active) sim.alphaTarget(0); d.fx=null; d.fy=null; }));
+        nodeCircle.append("title").text(d => [d.label||d.id, d.summary, d.id].filter(Boolean).join("\n"));
+        nodeDiamond.append("title").text(d => [d.label||"edge-node", d.summary, d.id].filter(Boolean).join("\n"));
 
-        // minimal addition: native tooltip for edge-nodes with label/summary/id
-        nodeDiamond.append("title").text(d => {
-          return [d.label || "edge-node", d.summary, d.id].filter(Boolean).join('\n');
-        });
-        // node labels
-        const labels = g.append("g").selectAll("text").data(data.nodes, d => d.id).join("text")
+        const labelSel = gLabels.selectAll("text").data(allNodes, d => d.id).join("text")
           .text(d=>d.label||d.id)
-          .style("font", "10px sans-serif");
+          .style("font", fontSize.value + "px sans-serif");
 
-        // diamond tooltips (keep existing behavior)
-        if (isReify) {
-          const tt = document.getElementById('tt');
-          const show = (txt, evt) => { tt.textContent = txt; tt.style.display = 'block'; tt.style.left=(evt.clientX+12)+'px'; tt.style.top=(evt.clientY+12)+'px'; };
-          const hide = () => { tt.style.display = 'none'; };
-          nodeDiamond
-            .on("mouseover", (evt, d) => {
-              const title = d.label || "edge-node";
-              const summary = d.summary;
-              const props = d.properties ? Object.entries(d.properties).map(([k,v]) => `${k}: ${v}`).join('\n') : '';
-              show([title, props, summary].filter(Boolean).join('\n'), evt);
-              console.log(title)
-              console.log(d)
-            })
-            .on("mousemove", (evt) => { tt.style.left=(evt.clientX+12)+'px'; tt.style.top=(evt.clientY+12)+'px'; })
-            .on("mouseout", hide);
+        const linkForce   = d3.forceLink(allLinks).id(d => d.id).distance(+linkDistIn.value);
+        const chargeForce = d3.forceManyBody().strength(+chargeIn.value);
+
+        const sim = d3.forceSimulation(allNodes)
+          .force("charge", chargeForce)
+          .force("link", linkForce)
+          .force("center", d3.forceCenter(width/2, height/2))
+          .alpha(1)
+          .on("tick", () => {
+            linkSel
+              .attr("x1", d => d.source.x)
+              .attr("y1", d => d.source.y)
+              .attr("x2", d => d.target.x)
+              .attr("y2", d => d.target.y);
+            nodeCircle.attr("cx", d => d.x).attr("cy", d => d.y);
+            nodeDiamond.attr("transform", d => `translate(${d.x},${d.y})`);
+            labelSel.attr("x", d => d.x + 6).attr("y", d => d.y + 3);
+          });
+
+        // Drag behavior: X-only when tree + document_ingestion; free otherwise
+        const isDocTreePinnedY = () => treeMode.checked && (insertionMethod || "").toLowerCase() === "document_ingestion";
+
+        function layerY(n, depth, baseY, gap){
+          const d = depth.get(n.id);
+          return (d !== undefined) ? (baseY + d * gap) : n.y;
         }
 
-        // tick
-        sim.on("tick", () => {
-          linkSel
-            .attr("x1", d => d.source.x)
-            .attr("y1", d => d.source.y)
-            .attr("x2", d => d.target.x)
-            .attr("y2", d => d.target.y);
+        function makeDrag(depth, baseY, gap) {
+          return d3.drag()
+            .on("start", (event,d) => {
+              if (!event.active) sim.alphaTarget(0.3).restart();
+              if (isDocTreePinnedY()) {
+                d.fx = d.x;
+                d.fy = layerY(d, depth, baseY, gap);
+              } else {
+                d.fx = d.x; d.fy = d.y;
+              }
+            })
+            .on("drag", (event,d) => {
+              if (isDocTreePinnedY()) {
+                d.fx = event.x;
+                d.fy = layerY(d, depth, baseY, gap);
+              } else {
+                d.fx = event.x; d.fy = event.y;
+              }
+            })
+            .on("end", (event,d) => {
+              if (!event.active) sim.alphaTarget(0);
+              // keep y pinned in tree-doc mode, but release x to settle
+              if (isDocTreePinnedY()) {
+                d.fx = null;
+                d.fy = layerY(d, depth, baseY, gap);
+              } else {
+                d.fx = null; d.fy = null;
+              }
+            });
+        }
 
-          nodeCircle.attr("cx", d => d.x).attr("cy", d => d.y);
-          nodeDiamond.attr("transform", d => `translate(${d.x},${d.y})`);
-          labels.attr("x", d => d.x + 6).attr("y", d => d.y + 3);
-        });
+        nodeCircle.call(makeDrag(new Map(), 40, +layerGapIn.value));
+        nodeDiamond.call(makeDrag(new Map(), 40, +layerGapIn.value));
 
-        // controls
-        document.getElementById('zoomIn').onclick  = () => svg.transition().call(zoom.scaleBy, 1.4);
-        document.getElementById('zoomOut').onclick = () => svg.transition().call(zoom.scaleBy, 1/1.4);
-        document.getElementById('resetZoom').onclick = () => svg.transition().call(zoom.transform, d3.zoomIdentity);
+        // Controls
+        fontSize.oninput = () => labelSel.style("font", fontSize.value + "px sans-serif");
+        linkDistIn.oninput = () => { linkForce.distance(+linkDistIn.value); sim.alpha(0.3).restart(); };
+        chargeIn.oninput = () => { chargeForce.strength(+chargeIn.value);   sim.alpha(0.3).restart(); };
 
-        const fontSize = document.getElementById('fontSize');
-        fontSize.oninput = () => { labels.style("font", fontSize.value + "px sans-serif"); };
+        treeMode.onchange = () => {
+          const on = treeMode.checked;
+          outwardOnly.disabled = !on;
+          inwardOnly.disabled  = !on;
+          includeLat.disabled  = !on;
+          if (!on) { outwardOnly.checked = false; inwardOnly.checked = false; }
+        };
 
-        const linkDist = document.getElementById('linkDist');
-        linkDist.oninput = () => { linkForce.distance(parseInt(linkDist.value, 10)); sim.alpha(0.6).restart(); };
+        // Mutually exclusive outward/inward
+        outwardOnly.onchange = () => { if (outwardOnly.checked) inwardOnly.checked = false; };
+        inwardOnly.onchange  = () => { if (inwardOnly.checked)  outwardOnly.checked = false; };
 
-        const charge = document.getElementById('charge');
-        charge.oninput = () => { chargeForce.strength(parseInt(charge.value, 10)); sim.alpha(0.6).restart(); };
+        function pickRootId() {
+          const relName = "summarizes_document";
+          const out = new Set(), inn = new Set();
+          for (const e of allLinks) {
+            const r = (e.relation || e.label || "").toLowerCase();
+            if (r === relName) {
+              const sid = (typeof e.source === "object" ? e.source.id : e.source);
+              const tid = (typeof e.target === "object" ? e.target.id : e.target);
+              out.add(sid); inn.add(tid);
+            }
+          }
+          const candidates = [...out].filter(x => !inn.has(x));
+          return candidates[0] || (allNodes[0] && allNodes[0].id);
+        }
+
+        function computeDepth(rootId) {
+          const depth = new Map();
+          if (!rootId) return depth;
+          depth.set(rootId, 0);
+          const q = [rootId];
+          while (q.length) {
+            const u = q.shift();
+            const du = depth.get(u);
+            for (const e of allLinks) {
+              const sid = (typeof e.source === "object" ? e.source.id : e.source);
+              const tid = (typeof e.target === "object" ? e.target.id : e.target);
+              if (sid !== u) continue;
+              if (!depth.has(tid)) { depth.set(tid, du + 1); q.push(tid); }
+            }
+          }
+          return depth;
+        }
+
+        function readChosenRelations(){
+          const set = new Set();
+          document.querySelectorAll('#relList input[type=checkbox]').forEach(cb => {
+            if (cb.checked) set.add(cb.value);
+          });
+          if (set.size === 0) uniqueRelations.forEach(r => set.add(r)); // show all if none checked
+          return set;
+        }
+
+        function applyVisibility(){
+          const chosen = readChosenRelations();
+
+          let depth = new Map(), rootId = null;
+          const baseY = 40;
+          const layerGap = +layerGapIn.value;
+
+          if (treeMode.checked) {
+            rootId = pickRootId();
+            depth = computeDepth(rootId);
+          }
+
+          // link visibility
+          const linkVisible = new Map();
+
+          linkSel.each(function(e){
+            const rname = (e.relation || e.label || "").toLowerCase();
+            const sid = (typeof e.source === "object" ? e.source.id : e.source);
+            const tid = (typeof e.target === "object" ? e.target.id : e.target);
+
+            let ok = chosen.has(rname);
+
+            if (ok && treeMode.checked) {
+              const ds = depth.get(sid), dt = depth.get(tid);
+              if (ds === undefined || dt === undefined) ok = false;
+
+              const outOnly = outwardOnly.checked;
+              const inOnly  = inwardOnly.checked;
+
+              if (ok && outOnly) {
+                // outward: allow forward; lateral only if includeLat
+                ok = dt > ds || (includeLat.checked && dt === ds);
+              } else if (ok && inOnly) {
+                // inward: allow back; lateral only if includeLat
+                ok = dt < ds || (includeLat.checked && dt === ds);
+              } else if (ok && !outOnly && !inOnly) {
+                // any direction; if not includeLat, hide pure lateral
+                if (!includeLat.checked) ok = dt !== ds;
+              }
+            }
+
+            linkVisible.set(keyEdge(e), ok);
+            d3.select(this).classed("hidden", !ok);
+          });
+
+          // Node visibility: incident to visible link, plus root
+          const nodeVisible = new Map(allNodes.map(n => [n.id, false]));
+          if (treeMode.checked && depth.size) {
+            const r = pickRootId();
+            if (r) nodeVisible.set(r, true);
+          }
+
+          linkSel.each(function(e){
+            const k = keyEdge(e);
+            if (!linkVisible.get(k)) return;
+            const sid = (typeof e.source === "object" ? e.source.id : e.source);
+            const tid = (typeof e.target === "object" ? e.target.id : e.target);
+            nodeVisible.set(sid, true);
+            nodeVisible.set(tid, true);
+          });
+
+          nodeCircle.classed("hidden", d => !nodeVisible.get(d.id));
+          nodeDiamond.classed("hidden", d => !nodeVisible.get(d.id));
+          labelSel.classed("hidden", d => !nodeVisible.get(d.id));
+
+          // Pin Y by layer in doc_ingestion tree mode
+          const pinY = treeMode.checked && (insertionMethod || "").toLowerCase() === "document_ingestion";
+          if (pinY) {
+            allNodes.forEach(n => {
+              if (!nodeVisible.get(n.id)) return;
+              const d = depth.get(n.id);
+              if (d !== undefined) {
+                const y = baseY + d * layerGap;
+                n.y = y; n.fy = y; // pin Y
+              }
+            });
+          } else {
+            // release Y pins when not in doc-tree mode
+            allNodes.forEach(n => { n.fy = null; });
+          }
+
+          // Update drag with current depth/layer to keep X-only drag in doc-tree mode
+          nodeCircle.call(makeDrag(depth, baseY, layerGap));
+          nodeDiamond.call(makeDrag(depth, baseY, layerGap));
+
+          // Nudge the simulation so positions can settle after visibility/layout changes
+          sim.alpha(0.25).restart();
+        }
+
+        // Initial visibility
+        applyVisibility();
+
+        // Apply button: toggle visibility only (no rebind)
+        applyBtn.onclick = () => applyVisibility();
       }
       main();
     </script>
