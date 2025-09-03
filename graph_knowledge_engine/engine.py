@@ -2023,6 +2023,205 @@ class GraphKnowledgeEngine:
             return {"raw": raw, "parsed": parsed}
         else:
             return {"raw": raw}
+    def rollback_document_extraction(
+        self,
+        doc_id: str,
+        extraction_method: Literal['llm_graph_extraction', 'document_ingestion'],
+    ) -> dict:
+        """
+        Remove all references contributed by (doc_id, extraction_method).
+        - Keeps entities that still have refs from other docs/methods; re-saves them.
+        - Deletes entities that lose all refs.
+        - Cleans (node_id, doc_id) rows and edge_endpoints rows for this doc.
+        - Does NOT try to infer cascading deletes beyond the entity itself.
+
+        Returns summary counts.
+        """
+        from .models import Node, Edge, ReferenceSession  # adjust import if needed
+        import json
+
+        summary = {
+            "doc_id": doc_id,
+            "method": extraction_method,
+            "updated_nodes": 0,
+            "updated_edges": 0,
+            "deleted_nodes": 0,
+            "deleted_edges": 0,
+            "deleted_node_refs": 0,
+            "deleted_edge_refs": 0,
+            "deleted_node_doc_rows": 0,
+            "deleted_edge_endpoints": 0,
+        }
+
+        # ---- helpers -------------------------------------------------------------
+        def _load_many(col, ids):
+            if not ids:
+                return {}
+            got = col.get(ids=list(ids), include=["documents"])
+            docs = got.get("documents") or []
+            ids_out = got.get("ids") or []
+            out = {}
+            for i, mj in enumerate(docs):
+                try:
+                    d = json.loads(mj)
+                except Exception:
+                    try:
+                        d = (Node if col is self.node_collection else Edge).model_validate_json(mj).model_dump()
+                    except Exception:
+                        d = None
+                if d is not None and i < len(ids_out):
+                    out[ids_out[i]] = d
+            return out
+
+        def _save_node(d: dict):
+            # keep existing metadata (doc_id, etc.) and update document JSON
+            nid = d["id"]
+            prior = self.node_collection.get(ids=[nid], include=["metadatas"])
+            meta = (prior.get("metadatas") or [None])[0] or {}
+            meta = dict(meta)  # shallow copy
+            # write
+            self.node_collection.update(
+                ids=[nid],
+                documents=[json.dumps(d, ensure_ascii=False)],
+                metadatas=[meta],
+            )
+            # re-index node_docs for this node
+            try:
+                self._index_node_docs(Node(**d))
+            except Exception:
+                pass
+
+        def _save_edge(d: dict):
+            eid = d["id"]
+            prior = self.edge_collection.get(ids=[eid], include=["metadatas"])
+            meta = (prior.get("metadatas") or [None])[0] or {}
+            meta = dict(meta)
+            self.edge_collection.update(
+                ids=[eid],
+                documents=[json.dumps(d, ensure_ascii=False)],
+                metadatas=[meta],
+            )
+
+        # ---- 1) candidate ids for this doc --------------------------------------
+        # nodes (prefer node_docs index; fallback to scanning metadatas)
+        node_ids = set()
+        try:
+            # node_docs rows have {"node_id": ..., "doc_id": ...}
+            nd = self.node_docs_collection.get(where={"doc_id": doc_id}, include=["metadatas"])
+            for m in (nd.get("metadatas") or []):
+                if m and m.get("node_id"):
+                    node_ids.add(m["node_id"])
+            summary["deleted_node_doc_rows"] = len(nd.get("ids") or [])
+        except Exception:
+            # fallback: query node collection by doc_id metadata if present
+            try:
+                q = self.node_collection.get(where={"doc_id": doc_id}, include=["ids"])
+                for nid in (q.get("ids") or []):
+                    node_ids.add(nid)
+            except Exception:
+                pass
+
+        # edges: derive by edge_endpoints rows filtered by doc_id
+        edge_ids = set()
+        try:
+            ee = self.edge_endpoints_collection.get(where={"doc_id": doc_id}, include=["metadatas"])
+            for m in (ee.get("metadatas") or []):
+                if m and m.get("edge_id"):
+                    edge_ids.add(m["edge_id"])
+            summary["deleted_edge_endpoints"] = len(ee.get("ids") or [])
+        except Exception:
+            # fallback: direct edge_collection metadata
+            try:
+                q = self.edge_collection.get(where={"doc_id": doc_id}, include=["ids"])
+                for eid in (q.get("ids") or []):
+                    edge_ids.add(eid)
+            except Exception:
+                pass
+
+        # ---- 2) load, filter references, and persist or delete -------------------
+        # Nodes
+        nodes_map = _load_many(self.node_collection, node_ids)
+        for nid, d in nodes_map.items():
+            refs = d.get("references") or []
+            keep = []
+            removed = 0
+            for r in refs:
+                if r and (r.get("doc_id") == doc_id) and (r.get("insertion_method") == extraction_method):
+                    removed += 1
+                else:
+                    keep.append(r)
+            if removed:
+                summary["deleted_node_refs"] += removed
+                if keep:
+                    d["references"] = keep
+                    _save_node(d)
+                    summary["updated_nodes"] += 1
+                else:
+                    # no refs left → delete node, node_docs rows, and (optionally) any edges’ endpoints for this doc if tied
+                    try:
+                        self.node_collection.delete(ids=[nid])
+                    except Exception:
+                        pass
+                    try:
+                        self.node_docs_collection.delete(where={"node_id": nid, "doc_id": doc_id})
+                    except Exception:
+                        pass
+                    summary["deleted_nodes"] += 1
+            else:
+                # Still remove node_docs rows for this doc (this document’s contribution) if present
+                try:
+                    self.node_docs_collection.delete(where={"node_id": nid, "doc_id": doc_id})
+                except Exception:
+                    pass
+
+        # Edges
+        edges_map = _load_many(self.edge_collection, edge_ids)
+        for eid, d in edges_map.items():
+            refs = d.get("references") or []
+            keep = []
+            removed = 0
+            for r in refs:
+                if r and (r.get("doc_id") == doc_id) and (r.get("insertion_method") == extraction_method):
+                    removed += 1
+                else:
+                    keep.append(r)
+
+            # Always drop this doc’s endpoints rows; they are doc-scoped fanout rows
+            try:
+                self.edge_endpoints_collection.delete(where={"edge_id": eid, "doc_id": doc_id})
+            except Exception:
+                pass
+
+            if removed:
+                summary["deleted_edge_refs"] += removed
+                if keep:
+                    d["references"] = keep
+                    _save_edge(d)
+                    summary["updated_edges"] += 1
+                else:
+                    # No refs remain → delete edge entirely (and any leftover endpoints just in case)
+                    try:
+                        self.edge_collection.delete(ids=[eid])
+                    except Exception:
+                        pass
+                    try:
+                        self.edge_endpoints_collection.delete(where={"edge_id": eid})
+                    except Exception:
+                        pass
+                    summary["deleted_edges"] += 1
+
+        # ---- 3) final: delete node_docs and endpoints rows for this doc ----------
+        # (Safe to repeat; collections ignore missing)
+        try:
+            self.node_docs_collection.delete(where={"doc_id": doc_id})
+        except Exception:
+            pass
+        try:
+            self.edge_endpoints_collection.delete(where={"doc_id": doc_id})
+        except Exception:
+            pass
+
+        return summary
     def persist_graph_extraction(
         self,
         *,
