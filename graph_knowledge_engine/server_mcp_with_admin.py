@@ -1,9 +1,9 @@
 from __future__ import annotations
 # server_mcp_with_admin.py
-
-from typing import List, Optional
-import os
-from pydantic import BaseModel
+import contextvars
+import functools
+from contextvars import ContextVar
+from starlette.types import Scope, Receive, Send
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse, HTMLResponse
 # from mcp.server.fastmcp import FastMCP
@@ -14,13 +14,214 @@ from graph_knowledge_engine.models import Document
 from graph_knowledge_engine.visualization.graph_viz import to_cytoscape, to_d3_force
 from fastapi.templating import Jinja2Templates
 from fastapi import Request
+from enum import Enum
+from jose import jwt, JWTError
+import json
+import os
+import pathlib
+from pydantic import BaseModel, Field
+from starlette.middleware.base import BaseHTTPMiddleware
+import time
+from typing import List, Optional
+# --- JWT config (env-driven) ---
+JWT_ALG = os.getenv("JWT_ALG", "HS256")          # HS256 (shared secret) or RS256 (public key)
+JWT_SECRET = os.getenv("JWT_SECRET", "dev-secret-change-me")  # HS256 secret OR RS256 public key
+JWT_ISS = os.getenv("JWT_ISS")                   # optional issuer to check
+JWT_AUD = os.getenv("JWT_AUD")                   # optional audience to check
+PROTECTED_PREFIXES = tuple(
+    (os.getenv("JWT_PROTECTED_PATHS") or "/mcp,/admin")
+    .split(",")
+)
+JWT_SECRET = os.getenv("JWT_SECRET", "dev-secret")
+JWT_ALG    = os.getenv("JWT_ALG", "HS256")
+
+class Role(str, Enum):
+    RO = "ro"
+    RW = "rw"
+# tool name -> allowed roles
+TOOL_ROLES: dict[str, set[str]] = {}
+
+def tool_roles(roles: set[Role] | Role):
+    """Annotate a tool with allowed roles (e.g. {Role.RO, Role.RW} or Role.RW)."""
+    allowed = {roles} if isinstance(roles, Role) else set(roles)
+    def deco(fn):
+        name = getattr(fn, "name", None) or fn.name
+        # we record by function name here; FastMCP uses that as tool name by default
+        TOOL_ROLES[name] = {r.value for r in allowed}
+        return fn
+    return deco
+
+def require_rw(fn):
+    """Hard gate inside tool body for extra safety."""
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        if current_role.get() != Role.RW.value:
+            # MCP tools are not HTTP handlers; just raise and FastMCP will package it as an error
+            raise PermissionError("This tool requires read-write role.")
+        return fn(*args, **kwargs)
+    return wrapper
+
+def _decode_role_from_headers(scope: Scope) -> str:
+    try:
+        headers = {k.decode().lower(): v.decode() for k, v in scope.get("headers", [])}
+        auth = headers.get("authorization", "")
+        if not auth.startswith("Bearer "):
+            return Role.RO.value
+        token = auth.split(" ", 1)[1]
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
+        role = payload.get("role", Role.RO.value)
+        return role if role in (Role.RO.value, Role.RW.value) else Role.RO.value
+    except Exception:
+        return Role.RO.value
 # ---- Engine + MCP ----
 persist_directory = os.environ.get("MCP_CHROMA_DIR") or "./.chroma-mcp"
 engine = GraphKnowledgeEngine(persist_directory=persist_directory)
 gq = GraphQuery(engine)
-import pathlib
+
 templates = Jinja2Templates(directory=os.path.join(str(pathlib.Path(__file__).parent),"templates"))
 # Fastapi
+def _extract_bearer(request: Request) -> str | None:
+    auth = request.headers.get("authorization") or request.headers.get("Authorization")
+    if not auth or not auth.lower().startswith("bearer "):
+        return None
+    return auth.split(" ", 1)[1].strip()
+
+def verify_jwt(token: str) -> dict:
+    """
+    Validates a JWT and returns claims. Works for HS256 or RS256 depending on env.
+    - HS256: set JWT_ALG=HS256 and JWT_SECRET=<shared secret>
+    - RS256: set JWT_ALG=RS256 and JWT_SECRET=<PEM public key string>
+    Optionally set JWT_ISS and/or JWT_AUD for issuer/audience checks.
+    """
+    try:
+        options = {"verify_aud": bool(JWT_AUD)}
+        claims = jwt.decode(
+            token,
+            JWT_SECRET,
+            algorithms=[JWT_ALG],
+            audience=JWT_AUD,
+            issuer=JWT_ISS,
+            options=options,
+        )
+        return claims
+    except JWTError as e:
+        raise HTTPException(status_code=401, detail=f"Invalid token: {e}")
+class MCPRoleMiddleware:
+    """
+    - Sets ContextVar current_role per request (so tools can read it).
+    - If JSON-RPC result contains a 'tools' list, filter by TOOL_ROLES & current_role.
+    """
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send):
+        if scope.get("type") != "http":  # pass-through
+            return await self.app(scope, receive, send)
+
+        # set role for this request
+        token = current_role.set(_decode_role_from_headers(scope))
+
+        # We need to possibly rewrite the JSON response body -> buffer
+        started = {}
+        body_chunks: list[bytes] = []
+
+        async def _send(message):
+            if message["type"] == "http.response.start":
+                # stash headers/status; we may need to re-send after filtering
+                started["message"] = message
+            elif message["type"] == "http.response.body":
+                chunk = message.get("body", b"") or b""
+                more = message.get("more_body", False)
+                body_chunks.append(chunk)
+                if not more:
+                    # combine + maybe filter
+                    raw = b"".join(body_chunks)
+                    if raw.startswith(b'event: message\r\n'):
+                        raw_lines = raw.split(b'\r\n')
+                        try:
+                            _, json_str = raw_lines[1].decode("utf-8").split('data: ')
+                            prefix = "data: "
+                            data = json.loads(json_str)
+                            # If it looks like an MCP tools/list response, filter it
+                            def _filter_tool_list(lst: list[dict]) -> list[dict]:
+                                role = current_role.get()
+                                out = []
+                                for item in lst:
+                                    name = item.get("name") or item.get("tool") or ""
+                                    # accept either exact name or any recorded alias
+                                    roles = TOOL_ROLES.get(name, {Role.RO.value, Role.RW.value})
+                                    if role in roles:
+                                        out.append(item)
+                                return out
+
+                            changed = False
+
+                            # JSON-RPC result style: {"jsonrpc":"2.0","id":...,"result":{"tools":[...]}}
+                            res = data.get("result")
+                            if isinstance(res, dict) and isinstance(res.get("tools"), list):
+                                res["tools"] = _filter_tool_list(res["tools"])
+                                changed = True
+
+                            # Plain payload style: {"tools":[...]}
+                            elif isinstance(data.get("tools"), list):
+                                data["tools"] = _filter_tool_list(data["tools"])
+                                changed = True
+
+                            if changed:
+                                raw_lines[1] = (prefix + json.dumps(data)).encode("utf-8")
+                                # raw = json.dumps(data).encode("utf-8")
+                                raw = b"\r\n".join(raw_lines)
+                        except Exception:
+                            pass  # non-JSON or unexpected shape; return as-is
+
+                    # now actually send start + full body
+                    await send(started.get("message", {"type": "http.response.start", "status": 200, "headers": []}))
+                    await send({"type": "http.response.body", "body": raw, "more_body": False})
+                # else: keep buffering until more_body=False
+            else:
+                await send(message)
+
+        try:
+            await self.app(scope, receive, _send)
+        finally:
+            current_role.reset(token)
+class JWTProtectMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        path = request.url.path
+        if any(path.startswith(p) for p in PROTECTED_PREFIXES):
+            token = _extract_bearer(request)
+            if not token:
+                return JSONResponse({"detail": "Missing bearer token"}, status_code=401)
+            try:
+                claims = verify_jwt(token)
+                request.state.claims = claims
+                token_ = claims_ctx.set(claims)
+                try:
+                    return await call_next(request)
+                finally:
+                    claims_ctx.reset(token_)
+            except HTTPException as e:
+                return JSONResponse({"detail": e.detail}, status_code=e.status_code)
+        return await call_next(request)
+
+
+def get_current_role() -> str:
+    claims = claims_ctx.get() or {}
+    return (claims.get("role") or DEFAULT_ROLE).lower()
+
+def require_role(min_role: str = "ro"):
+    user_role = get_current_role()
+    if ROLE_ORDER.get(user_role, 0) < ROLE_ORDER.get(min_role, 0):
+        raise HTTPException(status_code=403, detail=f"Forbidden: requires role '{min_role}', you have '{user_role}'")
+
+# Context var to expose claims in any handler/tool
+claims_ctx: contextvars.ContextVar[dict | None] = contextvars.ContextVar("claims", default=None)
+current_role: ContextVar[str] = ContextVar("current_role", default=Role.RO.value)
+
+# Simple two-role lattice
+ROLE_ORDER = {"ro": 0, "rw": 1}  # read-only < read-write
+DEFAULT_ROLE = "ro"
+
 
 mcp = FastMCP("KnowledgeEngine + MCP + Admin")
 
@@ -45,7 +246,7 @@ class ShortestPathOut(BaseModel):
 class SeedExpandOut(BaseModel):
     seeds: List[str]
     layers: List[KHopLayer]
-
+@tool_roles({Role.RO, Role.RW})
 @mcp.tool()
 def kg_find_edges(
     relation: Optional[str] = None,
@@ -60,12 +261,12 @@ def kg_find_edges(
         doc_id=doc_id,
     )
     return FindEdgesOut(edges=eids)
-
+@tool_roles({Role.RO, Role.RW})
 @mcp.tool()
 def kg_neighbors(rid: str, doc_id: Optional[str] = None) -> NeighborsOut:
     nb = gq.neighbors(rid, doc_id=doc_id)
     return NeighborsOut(nodes=sorted(nb["nodes"]), edges=sorted(nb["edges"]))
-
+@tool_roles({Role.RO, Role.RW})
 @mcp.tool()
 def kg_k_hop(start_ids: List[str], k: int = 1, doc_id: Optional[str] = None) -> KHopOut:
     layers = [
@@ -73,11 +274,11 @@ def kg_k_hop(start_ids: List[str], k: int = 1, doc_id: Optional[str] = None) -> 
         for L in gq.k_hop(start_ids, k=k, doc_id=doc_id)
     ]
     return KHopOut(layers=layers)
-
+@tool_roles({Role.RO, Role.RW})
 @mcp.tool()
 def kg_shortest_path(src_id: str, dst_id: str, doc_id: Optional[str] = None, max_depth: int = 8) -> ShortestPathOut:
     return ShortestPathOut(path=gq.shortest_path(src_id, dst_id, doc_id=doc_id, max_depth=max_depth))
-
+@tool_roles({Role.RO, Role.RW})
 @mcp.tool()
 def kg_semantic_seed_then_expand_text(text: str, top_k: int = 5, hops: int = 1, doc_id: Optional[str] = None) -> SeedExpandOut:
     out = gq.semantic_seed_then_expand_text(text, top_k=top_k, hops=hops)
@@ -96,8 +297,11 @@ class DocParseOut(BaseModel):
     chunk_ids: List[str]
     summary_node_id: Optional[str]
 from graph_knowledge_engine.ingester import PagewiseSummaryIngestor
+
+@tool_roles({Role.RW})
 @mcp.tool()
 def doc_parse(inp: DocParseIn) -> DocParseOut:
+    require_role("rw")
     doc = Document(id=inp.id, content=inp.content, type=inp.type)
     ingester = PagewiseSummaryIngestor(engine=engine, llm=engine.llm, 
                                        cache_dir=str(os.path.join(".",".llm_cache"))
@@ -119,13 +323,17 @@ class KGExtractOut(BaseModel):
 class DocStoreOut(BaseModel):
     success: bool
     
+@tool_roles({Role.RW})    
 @mcp.tool()
 def store_document(inp: DocParseIn):
+    require_role("rw")
     doc = Document(id=inp.id, content=inp.content, type=inp.type)
     engine.add_document(doc)
     return DocStoreOut(**{"success": True})
+@tool_roles({Role.RW})
 @mcp.tool()
 def kg_extract(inp: KGExtractIn) -> KGExtractOut:
+    require_role("rw")
     content = engine._fetch_document_text(inp.id)
     if not content:
         raise ValueError(f"Document '{inp.id}' not found; run doc_parse first.")
@@ -178,12 +386,12 @@ class D3Out(BaseModel):
     links: List[dict]
     mode: str
     doc_id: Optional[str]
-
+@tool_roles({Role.RO, Role.RW})
 @mcp.tool()
 def kg_viz_cytoscape_json(doc_id: Optional[str] = None, mode: str = "reify") -> CytoscapeOut:
     payload = to_cytoscape(engine, doc_id=doc_id, mode=mode)
     return CytoscapeOut(**payload)
-
+@tool_roles({Role.RO, Role.RW})
 @mcp.tool()
 def kg_viz_d3_json(doc_id: Optional[str] = None, mode: str = "reify") -> D3Out:
     payload = to_d3_force(engine, doc_id=doc_id, mode=mode)
@@ -194,8 +402,25 @@ def kg_viz_d3_json(doc_id: Optional[str] = None, mode: str = "reify") -> D3Out:
 # ---- Build a unified FastAPI app: /mcp + /admin ----
 mcp_app = mcp.http_app(path='/mcp')
 app = FastAPI(title="KnowledgeEngine + MCP + Admin", lifespan=mcp_app.lifespan)
+app.add_middleware(MCPRoleMiddleware)
+app.add_middleware(JWTProtectMiddleware)
+from datetime import datetime, timedelta, timezone
 
-
+@app.post("/auth/dev-token")
+def dev_token(username: str = "dev", role: str = "ro"):
+    if role not in ROLE_ORDER:
+        raise HTTPException(400, f"role must be one of {list(ROLE_ORDER)}")
+    payload = {
+        "sub": username,
+        "role": role,
+        "iat": int(time.time()),
+        "exp": int((datetime.now(timezone.utc) + timedelta(hours=4)).timestamp()),
+        "iss": JWT_ISS or "local",
+        "aud": JWT_AUD or None,
+    }
+    payload = {k: v for k, v in payload.items() if v is not None}
+    token = jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALG)
+    return {"token": token}
 
 # health
 @app.get("/health")
@@ -205,6 +430,7 @@ def health():
 # DELETE /admin/doc/{doc_id}  (non-MCP utility)
 @app.delete("/admin/doc/{doc_id}")
 def admin_delete_doc(doc_id: str):
+    require_role("rw")
     # Collect counts before deletion
     try:
         node_ids = engine._nodes_by_doc(doc_id)
@@ -269,7 +495,6 @@ def api_viz_d3(
     payload = to_d3_force(engine, doc_id=doc_id, mode=mode, insertion_method=insertion_method)
     return JSONResponse(payload)
 # --- Add near your other imports ---
-from pydantic import BaseModel, Field
 from typing import Any, Dict, List, Optional, Set
 from graph_knowledge_engine.models import LLMGraphExtraction, Document
 
@@ -302,6 +527,7 @@ def api_graph_upsert_llm(inp: GraphUpsertLLMIn):
     - Injects `insertion_method` into every ReferenceSession.
     - Supports hyperedges (edge->edge) in a single batch via engine’s topo-sorted ingest.
     """
+    require_role("rw")
     # 1) Ensure the document row exists (idempotent)
     if inp.content is not None:
         engine.add_document(Document(id=inp.doc_id, content=inp.content, type=inp.doc_type))
@@ -402,7 +628,7 @@ def _load_persisted_graph(doc_ids: List[str], insertion_method: Optional[str] = 
             node_ids.update(engine.node_ids_by_doc(did))
             edge_ids.update(engine.edge_ids_by_doc(did))
     return LoadPersistedOut(node_ids=sorted(node_ids), edge_ids=sorted(edge_ids))
-
+@tool_roles({Role.RO, Role.RW})
 @mcp.tool()
 def kg_load_persisted(inp: LoadPersistedIn) -> LoadPersistedOut:
     """MCP: read back persisted IDs for the given docs (fast; no LLM)."""
@@ -471,7 +697,7 @@ def _sigtext(n_or_e: Any) -> Optional[str]:
     st = props.get("signature_text")
     return st if isinstance(st, str) else None
 
-
+@tool_roles({Role.RW})
 @mcp.tool()
 def kg_crossdoc_adjudicate_anykind(inp: CrossDocAdjIn) -> CrossDocAdjOut:
     """
@@ -485,6 +711,7 @@ def kg_crossdoc_adjudicate_anykind(inp: CrossDocAdjIn) -> CrossDocAdjOut:
       • edge↔edge: match by properties.signature_text when present; otherwise (relation, normalized label).
       • node↔edge: match by properties.signature_text (reified event) when present; otherwise (normalized node.label == normalized edge.label).
     """
+    require_role("rw")
     def _pairable(di: Optional[str], dj: Optional[str]) -> bool:
         if inp.scope == "cross-doc":
             if inp.strict_crossdoc and (not di or not dj):
@@ -696,6 +923,8 @@ class ProposeVectorIn(BaseModel):
     cross_doc_only: bool = False
     anchor_only: bool = True
     where: Optional[str| dict] = None
+    
+@tool_roles({Role.RO, Role.RW})
 @mcp.tool()
 def propose_vector(inp : ProposeVectorIn
     # new_node_ids: List[str],
@@ -780,6 +1009,7 @@ class ProposeBruteForceIn(BaseModel):
     anchor_only: bool = True
     limit_per_bucket: Optional[int] = 200
     where: Optional[dict] = None # JSON string, e.g. {"insertion_method":"graph_extractor"}
+@tool_roles({Role.RO, Role.RW})
 @mcp.tool()
 def kg_propose_bruteforce(
     inp : ProposeBruteForceIn
@@ -903,8 +1133,10 @@ Both tools return:
 class AdjPairsIn(BaseModel):
     pairs: List["ProposePair"]
     commit : bool = False
+@tool_roles({Role.RW})
 @mcp.tool()
 def commit_merge(inp: CrossDocAdjOut):
+    require_role("rw")
     adj_out = inp
     committed = []
     for pairs in adj_out.results:
@@ -922,9 +1154,11 @@ def commit_merge(inp: CrossDocAdjOut):
             verdict.canonical_entity_id = canonical_id
             if canonical_id:
                 committed.append(str(canonical_id))
-    
+@tool_roles({Role.RW})
 @mcp.tool()
 def adjudicate_pairs(inp: AdjPairsIn) -> CrossDocAdjOut:
+    if inp.commit:
+        require_role("rw")
     pairs: List[Tuple[Node| Edge, Node| Edge]] = [None] * len(inp.pairs) # type: ignore
     for i, pair_info in enumerate(inp.pairs):
         left_id, left_kind, right_id, right_kind = pair_info.left_id, pair_info.left_kind, pair_info.right_id, pair_info.right_kind

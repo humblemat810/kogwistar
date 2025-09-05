@@ -250,7 +250,9 @@ class GraphQuery:
             where["relation"] = relation
         if doc_id:
             where["doc_id"] = doc_id
-        if len(where) > 1:
+        if not (where):
+            where = None
+        elif len(where) > 1:
             where = {"$and": [{k:v} for k,v in where.items()]}
         edges = self.e.edge_collection.get(where=where, include=["documents"])
         out: List[str] = []
