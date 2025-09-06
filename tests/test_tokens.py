@@ -136,7 +136,7 @@ async def test_ro_blocked_on_write_tool_and_rw_allowed():
 
             # Even if tool is hidden from list, we try to call it directly to ensure server-side guard works.
             try:
-                res = await session.call_tool(write_tool, arguments={"mode": "skip-if-exists", "id": "DUMMY"})
+                res = await session.call_tool(write_tool, arguments={"inp": {"mode": "skip-if-exists", "id": "DUMMY"}})
                 # Some servers return an error envelope; some return text/json with an error message
                 payload = None
                 if res.content:
@@ -151,7 +151,7 @@ async def test_ro_blocked_on_write_tool_and_rw_allowed():
                 # Must indicate permission denied somewhere
                 body = payload or {}
                 blob = json.dumps(body)
-                assert ("requires read-write role" in blob) or ("Permission" in blob) or ("not allowed" in blob.lower()), \
+                assert ("requires read-write role" in blob) or ("403" in blob) or ("Forbidden" in blob.lower()), \
                     f"RO must be blocked; got response: {blob}"
             except Exception as e:
                 # Also acceptable: transport-level error from tool invocation
@@ -161,10 +161,12 @@ async def test_ro_blocked_on_write_tool_and_rw_allowed():
     async with streamablehttp_client(MCP_URL, headers=rw_headers, sse_read_timeout=None, timeout=None) as (read, write, _):
         async with ClientSession(read, write) as session:
             await session.initialize()
-            res = await session.call_tool(write_tool, arguments={"mode": "skip-if-exists", "id": "DUMMY"})
+            res = await session.call_tool(write_tool, arguments={"inp":{"mode": "skip-if-exists", "id": "DUMMY"}})
             # Not a permission error
             blob = ""
             if res.content:
                 c = res.content[0]
                 blob = c.text if c.type == "text" else json.dumps(c.json)
             assert "requires read-write role" not in blob, f"RW must be allowed; got: {blob}"
+    
+    resp = requests.delete(f"{BASE}/admin/doc/DUMMY", headers=rw_headers)

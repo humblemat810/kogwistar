@@ -176,12 +176,12 @@ class MCPRoleMiddleware:
             await self.app(scope, receive, _send)
         finally:
             current_role.reset(token)
-import fastmcp
+from fastmcp.tools.tool import FunctionTool
 def _filter_tool_list(lst: list[dict]) -> list[dict]:
     role = current_role.get()
     out = []
     for item in lst:
-        name = getattr(item, 'name', None) if type(item) is fastmcp.tools.tool.FunctionTool or item.get("name") or item.get("tool") or ""
+        name = getattr(item, 'name', None) if type(item) is FunctionTool else None or item.get("name") or item.get("tool") or ""
         # accept either exact name or any recorded alias
         roles = TOOL_ROLES.get(name, {Role.RO.value, Role.RW.value})
         if role in roles:
@@ -367,7 +367,7 @@ def kg_extract(inp: KGExtractIn) -> KGExtractOut:
     require_role("rw")
     content = engine._fetch_document_text(inp.id)
     if not content:
-        raise ValueError(f"Document '{inp.id}' not found; run doc_parse first.")
+        raise ValueError(f"Document '{inp.id}' not found; run store_document first.")
     from .models import LLMGraphExtraction
     # import pickle, os
     # cdir = os.path.join('.', '.kg_extract_cache')
@@ -480,8 +480,10 @@ def admin_delete_doc(doc_id: str):
         pass
 
     # Delete primary rows
+    
     try:
         if edge_ids:
+            engine.edge_refs_collection.delete(ids=edge_ids)
             engine.edge_collection.delete(ids=edge_ids)
         else:
             engine.edge_collection.delete(where={"doc_id": doc_id})
@@ -489,6 +491,7 @@ def admin_delete_doc(doc_id: str):
         pass
     try:
         if node_ids:
+            engine.node_refs_collection.delete(ids=edge_ids)
             engine.node_collection.delete(ids=node_ids)
         else:
             engine.node_collection.delete(where={"doc_id": doc_id})
