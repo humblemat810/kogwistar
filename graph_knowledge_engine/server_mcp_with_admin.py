@@ -143,16 +143,7 @@ class MCPRoleMiddleware:
                             prefix = "data: "
                             data = json.loads(json_str)
                             # If it looks like an MCP tools/list response, filter it
-                            def _filter_tool_list(lst: list[dict]) -> list[dict]:
-                                role = current_role.get()
-                                out = []
-                                for item in lst:
-                                    name = item.get("name") or item.get("tool") or ""
-                                    # accept either exact name or any recorded alias
-                                    roles = TOOL_ROLES.get(name, {Role.RO.value, Role.RW.value})
-                                    if role in roles:
-                                        out.append(item)
-                                return out
+                            
 
                             changed = False
 
@@ -185,6 +176,46 @@ class MCPRoleMiddleware:
             await self.app(scope, receive, _send)
         finally:
             current_role.reset(token)
+import fastmcp
+def _filter_tool_list(lst: list[dict]) -> list[dict]:
+    role = current_role.get()
+    out = []
+    for item in lst:
+        name = getattr(item, 'name', None) if type(item) is fastmcp.tools.tool.FunctionTool or item.get("name") or item.get("tool") or ""
+        # accept either exact name or any recorded alias
+        roles = TOOL_ROLES.get(name, {Role.RO.value, Role.RW.value})
+        if role in roles:
+            out.append(item)
+    return out
+
+from fastmcp.tools.tool_manager import ToolManager
+import inspect
+from functools import wraps
+from typing import Type
+def patch_toolmanager_list_tools(ToolManager: Type):
+    """
+    Monkey-patch ToolManager.list_tools to post-filter its result based on policy_ctx.
+    Works whether the original is sync or async.
+    """
+    orig = getattr(ToolManager, "list_tools")
+
+    # Detect if the original is defined as coroutine
+    is_async = inspect.iscoroutinefunction(orig)
+
+    if is_async:
+        @wraps(orig)
+        async def wrapped(self, *args, **kwargs):
+            res = await orig(self, *args, **kwargs)
+            return _filter_tool_list(res)
+    else:
+        @wraps(orig)
+        def wrapped(self, *args, **kwargs):
+            res = orig(self, *args, **kwargs)
+            return _filter_tool_list(res)
+
+    # Bind as an instance method on the class
+    setattr(ToolManager, "list_tools", wrapped)
+patch_toolmanager_list_tools(ToolManager)
 class JWTProtectMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
