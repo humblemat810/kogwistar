@@ -290,11 +290,12 @@ class GraphQuery:
         seed_ids = [nid for nid in (hits.get("ids") or [[]])[0]]
         layers = self.k_hop(seed_ids, k=hops)
         return {"seeds": seed_ids, "layers": layers}
-    def semantic_seed_then_expand_text(self, query_text: str, *, top_k: int = 5, hops: int = 1):
+    def semantic_seed_then_expand_text(self, query_text: str, *, top_k: int = 5, hops: int = 1, doc_ids = None):
         """Seed by a TEXT query using the collection's default embedding function, then expand K hops.
         This avoids any custom embedding pipeline and uses the underlying vector store's default embeddings.
         """
-        hits = self.e.node_collection.query(query_texts=[query_text], n_results=top_k)
+        where = {"doc_ids" : doc_ids} if doc_ids else doc_ids
+        hits = self.e.node_collection.query(query_texts=[query_text], n_results=top_k, where = where)
         seed_ids = [nid for nid in (hits.get("ids") or [[]])[0] if nid]
         layers = self.k_hop(seed_ids, k=hops)
         return {"seeds": seed_ids, "layers": layers}

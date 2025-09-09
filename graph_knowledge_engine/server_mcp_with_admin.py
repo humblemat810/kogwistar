@@ -285,6 +285,7 @@ def kg_find_edges(
     tgt_label_contains: Optional[str] = None,
     doc_id: Optional[str] = None,
 ) -> FindEdgesOut:
+    """Find an edge given filter of relation/ source label or target label or document id"""
     eids = gq.find_edges(
         relation=relation,
         src_label_contains=src_label_contains,
@@ -295,11 +296,13 @@ def kg_find_edges(
 @tool_roles({Role.RO, Role.RW})
 @mcp.tool()
 def kg_neighbors(rid: str, doc_id: Optional[str] = None) -> NeighborsOut:
+    """find all direct neighbour given id of a node or an edge, optionally filtered by document id"""
     nb = gq.neighbors(rid, doc_id=doc_id)
     return NeighborsOut(nodes=sorted(nb["nodes"]), edges=sorted(nb["edges"]))
 @tool_roles({Role.RO, Role.RW})
 @mcp.tool()
 def kg_k_hop(start_ids: List[str], k: int = 1, doc_id: Optional[str] = None) -> KHopOut:
+    """Run k-hop algorithm to obtain node edge relationship and its neighbour. """
     layers = [
         KHopLayer(nodes=sorted(L["nodes"]), edges=sorted(L["edges"]))
         for L in gq.k_hop(start_ids, k=k, doc_id=doc_id)
@@ -308,11 +311,17 @@ def kg_k_hop(start_ids: List[str], k: int = 1, doc_id: Optional[str] = None) -> 
 @tool_roles({Role.RO, Role.RW})
 @mcp.tool()
 def kg_shortest_path(src_id: str, dst_id: str, doc_id: Optional[str] = None, max_depth: int = 8) -> ShortestPathOut:
+    """Shortest path from source id to target id (both can be node or edges as it is hypergraph.)"""
     return ShortestPathOut(path=gq.shortest_path(src_id, dst_id, doc_id=doc_id, max_depth=max_depth))
 @tool_roles({Role.RO, Role.RW})
 @mcp.tool()
-def kg_semantic_seed_then_expand_text(text: str, top_k: int = 5, hops: int = 1, doc_id: Optional[str] = None) -> SeedExpandOut:
-    out = gq.semantic_seed_then_expand_text(text, top_k=top_k, hops=hops)
+def kg_semantic_seed_then_expand_text(text: str, top_k: int = 5, hops: int = 1, doc_ids: Optional[str] = None) -> SeedExpandOut:
+    """
+    set hops to 0 to reduce to simple vector semantic index search.
+    hops > 0 will return graph neighbours
+    set top k to limit the number of neighbour
+    """
+    out = gq.semantic_seed_then_expand_text(text, top_k=top_k, hops=hops, doc_ids = doc_ids)
     layers = [KHopLayer(nodes=sorted(L["nodes"]), edges=sorted(L["edges"])) for L in out["layers"]]
     return SeedExpandOut(seeds=out["seeds"], layers=layers)
 
@@ -332,6 +341,7 @@ from graph_knowledge_engine.ingester import PagewiseSummaryIngestor
 @tool_roles({Role.RW})
 @mcp.tool()
 def doc_parse(inp: DocParseIn) -> DocParseOut:
+    """Parse a document into leaf and relationships between chunks with summaries from low to high abstraction levels."""
     require_role("rw")
     doc = Document(id=inp.id, content=inp.content, type=inp.type)
     ingester = PagewiseSummaryIngestor(engine=engine, llm=engine.llm, 
@@ -357,6 +367,7 @@ class DocStoreOut(BaseModel):
 @tool_roles({Role.RW})    
 @mcp.tool()
 def store_document(inp: DocParseIn):
+    """Store document in graph database"""
     require_role("rw")
     doc = Document(id=inp.id, content=inp.content, type=inp.type)
     engine.add_document(doc)
@@ -364,6 +375,7 @@ def store_document(inp: DocParseIn):
 @tool_roles({Role.RW})
 @mcp.tool()
 def kg_extract(inp: KGExtractIn) -> KGExtractOut:
+    """From documents extract knowledge and relationships as a hypergraph between entities, ideas, concepts with each other."""
     require_role("rw")
     content = engine._fetch_document_text(inp.id)
     if not content:
@@ -420,11 +432,13 @@ class D3Out(BaseModel):
 @tool_roles({Role.RO, Role.RW})
 @mcp.tool()
 def kg_viz_cytoscape_json(doc_id: Optional[str] = None, mode: str = "reify") -> CytoscapeOut:
+    """get cytoscape format json data for visual rendering"""
     payload = to_cytoscape(engine, doc_id=doc_id, mode=mode)
     return CytoscapeOut(**payload)
 @tool_roles({Role.RO, Role.RW})
 @mcp.tool()
 def kg_viz_d3_json(doc_id: Optional[str] = None, mode: str = "reify") -> D3Out:
+    """get d3 format json data for visual rendering"""
     payload = to_d3_force(engine, doc_id=doc_id, mode=mode)
     return D3Out(**payload)
 
@@ -973,6 +987,7 @@ def propose_vector(inp : ProposeVectorIn
     # anchor_only: bool = True,
     # where: Optional[str| dict] = None,  # JSON string for Chroma where, e.g. {"insertion_method":"graph_extractor"}
 ) -> ProposeOut:
+    "Propose adjudication of nodes using vector search with similarity."
     # where_dict = dict | None
     # if type(where) is dict:
     #     where_dict = where
