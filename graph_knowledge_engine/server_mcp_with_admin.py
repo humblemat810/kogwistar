@@ -23,6 +23,8 @@ from pydantic import BaseModel, Field
 from starlette.middleware.base import BaseHTTPMiddleware
 import time
 from typing import List, Optional
+from graph_knowledge_engine.shortids import run_id_ctx, run_id_scope
+from graph_knowledge_engine import shortids
 # --- JWT config (env-driven) ---
 JWT_ALG = os.getenv("JWT_ALG", "HS256")          # HS256 (shared secret) or RS256 (public key)
 JWT_SECRET = os.getenv("JWT_SECRET", "dev-secret-change-me")  # HS256 secret OR RS256 public key
@@ -228,7 +230,8 @@ class JWTProtectMiddleware(BaseHTTPMiddleware):
                 request.state.claims = claims
                 token_ = claims_ctx.set(claims)
                 try:
-                    return await call_next(request)
+                    with run_id_scope(token):
+                        return await call_next(request)
                 finally:
                     claims_ctx.reset(token_)
             except HTTPException as e:
@@ -317,13 +320,21 @@ def kg_shortest_path(src_id: str, dst_id: str, doc_id: Optional[str] = None, max
 @mcp.tool()
 def kg_semantic_seed_then_expand_text(text: str, top_k: int = 5, hops: int = 1, doc_ids: Optional[str] = None) -> SeedExpandOut:
     """
+    Simple semantic search with optional graph search.
     set hops to 0 to reduce to simple vector semantic index search.
     hops > 0 will return graph neighbours
     set top k to limit the number of neighbour
     """
+    if doc_ids:
+        doc_ids: str | list[str] = shortids.s2l_id(doc_ids) if type(doc_ids is str) else [shortids.s2l_id(i) for i in doc_ids]
     out = gq.semantic_seed_then_expand_text(text, top_k=top_k, hops=hops, doc_ids = doc_ids)
-    layers = [KHopLayer(nodes=sorted(L["nodes"]), edges=sorted(L["edges"])) for L in out["layers"]]
-    return SeedExpandOut(seeds=out["seeds"], layers=layers)
+    layers= [{"nodes": [shortids.l2s_doc(n) for n in L['nodes']], "edges": [shortids.l2s_doc(n) for n in L['edges']]} for L in out["layers"]]
+    layers2 = [KHopLayer(nodes=sorted(L["nodes"]), edges=sorted(L["edges"])) for L in layers]
+    
+    outsid = SeedExpandOut(seeds = [shortids.l2s_doc(i) for i in out["seeds"]], 
+                                            layers= layers2
+                                            )
+    return outsid
 
 # ---- Ingestion tools ----
 from .models import Document
@@ -1068,7 +1079,7 @@ def kg_propose_bruteforce(
     - pair_kind: which pairs to propose
     - allowed_docs / anchor_doc_id / cross_doc_only / anchor_only: document scoping knobs
     - where: JSON applied as a metadata filter; enforced *server-side* post-proposal
-             (so you don't need to refactor the proposer again).
+             
     """
     PairableNodeTypes : ClassVar[List[Literal['node', 'edge', 'any']]] = ['node', 'edge', 'any']
     pair_kind: Literal[*["_".join(i) for i in list(product(PairableNodeTypes, PairableNodeTypes))]] = inp.pair_kind

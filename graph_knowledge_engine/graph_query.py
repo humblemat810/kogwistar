@@ -298,4 +298,7 @@ class GraphQuery:
         hits = self.e.node_collection.query(query_texts=[query_text], n_results=top_k, where = where)
         seed_ids = [nid for nid in (hits.get("ids") or [[]])[0] if nid]
         layers = self.k_hop(seed_ids, k=hops)
-        return {"seeds": seed_ids, "layers": layers}
+        out_layers = [{'nodes': self.e.node_collection.get(list(l['nodes']))['documents'] if l['nodes'] else [], 
+          'edges':  self.e.edge_collection.get(list(l['edges']))['documents'] if l['edges'] else []} for l in layers]
+        res =  {"seeds": hits['documents'][0], "layers": out_layers}
+        return res

@@ -7,3 +7,5 @@ doc_chroma*
 .chroma-test
 small_graph
 .env
+*.bin
+*.pickle
