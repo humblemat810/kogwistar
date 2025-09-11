@@ -288,7 +288,7 @@ def kg_find_edges(
     tgt_label_contains: Optional[str] = None,
     doc_id: Optional[str] = None,
 ) -> FindEdgesOut:
-    """Find an edge given filter of relation/ source label or target label or document id"""
+    """Find an edge given filter of exact value of relation/ source label/ target label/ document id"""
     eids = gq.find_edges(
         relation=relation,
         src_label_contains=src_label_contains,
@@ -299,13 +299,15 @@ def kg_find_edges(
 @tool_roles({Role.RO, Role.RW})
 @mcp.tool()
 def kg_neighbors(rid: str, doc_id: Optional[str] = None) -> NeighborsOut:
-    """find all direct neighbour given id of a node or an edge, optionally filtered by document id"""
+    """find all direct neighbour given id of a node or an edge, optionally filtered by document id
+    - rid: string of node or edge id to find its neigbour
+    """
     nb = gq.neighbors(rid, doc_id=doc_id)
     return NeighborsOut(nodes=sorted(nb["nodes"]), edges=sorted(nb["edges"]))
 @tool_roles({Role.RO, Role.RW})
 @mcp.tool()
 def kg_k_hop(start_ids: List[str], k: int = 1, doc_id: Optional[str] = None) -> KHopOut:
-    """Run k-hop algorithm to obtain node edge relationship and its neighbour. """
+    """Run k-hop algorithm to obtain node edge relationship and its neighbour. Use when you have a node or edge"""
     layers = [
         KHopLayer(nodes=sorted(L["nodes"]), edges=sorted(L["edges"]))
         for L in gq.k_hop(start_ids, k=k, doc_id=doc_id)
@@ -374,8 +376,44 @@ class KGExtractOut(BaseModel):
     edges_added: int
 class DocStoreOut(BaseModel):
     success: bool
+
+class DocIdsOut(BaseModel):
+    id_mapping: list[dict[str, str]]
     
-@tool_roles({Role.RW})    
+@tool_roles({Role.RO, Role.RW})
+@mcp.tool()
+def document_id_from_file_name(file_name: str):
+    """get document id given filename"""
+    
+    # """return document_id from document name, temporarily, filename is actually doc id but this layer may subject to changes"""
+    if type(file_name) is str:
+        filenames = [file_name]
+    elif type(file_name) is list:
+        filenames = file_name
+        
+    docs = engine.document_collection.get(ids = filenames) # this is only where we do not use shortid
+    sids = [shortids.l2s_id(i) for i in docs['ids']]
+    to_return = [{file_name: i, "id": shortids.l2s_id(i)} for i in docs['ids']]
+    return DocIdsOut(id_mapping = to_return)
+
+@tool_roles({Role.RO, Role.RW})
+@mcp.tool()
+def document_id_from_file_name(file_name: str):
+    """get document id given filename"""
+    
+    # """return document_id from document name, temporarily, filename is actually doc id but this layer may subject to changes"""
+    if type(file_name) is str:
+        filenames = [file_name]
+    elif type(file_name) is list:
+        filenames = file_name
+        
+    docs = engine.document_collection.get(ids = filenames) # this is only where we do not use shortid
+    sids = [shortids.l2s_id(i) for i in docs['ids']]
+    to_return = [{file_name: i, "id": shortids.l2s_id(i)} for i in docs['ids']]
+    return DocIdsOut(id_mapping = to_return)
+
+
+@tool_roles({Role.RW})
 @mcp.tool()
 def store_document(inp: DocParseIn):
     """Store document in graph database"""
@@ -691,7 +729,9 @@ def _load_persisted_graph(doc_ids: List[str], insertion_method: Optional[str] = 
 @mcp.tool()
 def kg_load_persisted(inp: LoadPersistedIn) -> LoadPersistedOut:
     """MCP: read back persisted IDs for the given docs (fast; no LLM)."""
-    return _load_persisted_graph(inp.doc_ids, insertion_method=inp.insertion_method)
+    all_persisted = _load_persisted_graph(inp.doc_ids, insertion_method=inp.insertion_method)
+    shortids
+    return 
 
 # ---------- Cross-document adjudication (same-kind & cross-kind) ----------
 class CrossDocAdjIn(BaseModel):
@@ -1196,6 +1236,8 @@ class AdjPairsIn(BaseModel):
 @tool_roles({Role.RW})
 @mcp.tool()
 def commit_merge(inp: CrossDocAdjOut):
+    """ merge pair of nodes of edges after running adjudication proposal
+    """
     require_role("rw")
     adj_out = inp
     committed = []
@@ -1217,6 +1259,8 @@ def commit_merge(inp: CrossDocAdjOut):
 @tool_roles({Role.RW})
 @mcp.tool()
 def adjudicate_pairs(inp: AdjPairsIn) -> CrossDocAdjOut:
+    """ Propose pairs of similar meaning nodes/ edges for subsequent merging
+    """
     if inp.commit:
         require_role("rw")
     pairs: List[Tuple[Node| Edge, Node| Edge]] = [None] * len(inp.pairs) # type: ignore
