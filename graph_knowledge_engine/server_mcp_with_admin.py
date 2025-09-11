@@ -322,7 +322,8 @@ def kg_shortest_path(src_id: str, dst_id: str, doc_id: Optional[str] = None, max
 @mcp.tool()
 def kg_semantic_seed_then_expand_text(text: str, top_k: int = 5, hops: int = 1, doc_ids: Optional[str] = None) -> SeedExpandOut:
     """
-    Simple semantic search with optional graph search.
+    set doc_ids to None/null if you have file name but not the exact id.
+    Simple semantic search with optional graph search. [possible entrypoint]
     set hops to 0 to reduce to simple vector semantic index search.
     hops > 0 will return graph neighbours
     set top k to limit the number of neighbour
@@ -383,7 +384,7 @@ class DocIdsOut(BaseModel):
 @tool_roles({Role.RO, Role.RW})
 @mcp.tool()
 def document_id_from_file_name(file_name: str):
-    """get document id given filename"""
+    """get document id given filename, [possible entrypoint]"""
     
     # """return document_id from document name, temporarily, filename is actually doc id but this layer may subject to changes"""
     if type(file_name) is str:
@@ -396,21 +397,6 @@ def document_id_from_file_name(file_name: str):
     to_return = [{file_name: i, "id": shortids.l2s_id(i)} for i in docs['ids']]
     return DocIdsOut(id_mapping = to_return)
 
-@tool_roles({Role.RO, Role.RW})
-@mcp.tool()
-def document_id_from_file_name(file_name: str):
-    """get document id given filename"""
-    
-    # """return document_id from document name, temporarily, filename is actually doc id but this layer may subject to changes"""
-    if type(file_name) is str:
-        filenames = [file_name]
-    elif type(file_name) is list:
-        filenames = file_name
-        
-    docs = engine.document_collection.get(ids = filenames) # this is only where we do not use shortid
-    sids = [shortids.l2s_id(i) for i in docs['ids']]
-    to_return = [{file_name: i, "id": shortids.l2s_id(i)} for i in docs['ids']]
-    return DocIdsOut(id_mapping = to_return)
 
 
 @tool_roles({Role.RW})
@@ -1038,7 +1024,7 @@ def propose_vector(inp : ProposeVectorIn
     # anchor_only: bool = True,
     # where: Optional[str| dict] = None,  # JSON string for Chroma where, e.g. {"insertion_method":"graph_extractor"}
 ) -> ProposeOut:
-    "Propose adjudication of nodes using vector search with similarity."
+    "Propose merging of nodes and edges, use when editing knowledge graph. Do not use this tool when making queries."
     # where_dict = dict | None
     # if type(where) is dict:
     #     where_dict = where
