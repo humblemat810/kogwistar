@@ -328,9 +328,10 @@ def kg_semantic_seed_then_expand_text(text: str, top_k: int = 5, hops: int = 1, 
     hops > 0 will return graph neighbours
     set top k to limit the number of neighbour
     """
+    doc_ids_coerced = None
     if doc_ids:
-        doc_ids: str | list[str] = shortids.s2l_id(doc_ids) if type(doc_ids is str) else [shortids.s2l_id(i) for i in doc_ids]
-    out = gq.semantic_seed_then_expand_text(text, top_k=top_k, hops=hops, doc_ids = doc_ids)
+        doc_ids_coerced: str | list[str] = shortids.s2l_id(doc_ids) if type(doc_ids is str) else [shortids.s2l_id(i) for i in doc_ids]
+    out = gq.semantic_seed_then_expand_text(text, top_k=top_k, hops=hops, doc_ids = doc_ids_coerced)
     layers= [{"nodes": [shortids.l2s_doc(n) for n in L['nodes']], "edges": [shortids.l2s_doc(n) for n in L['edges']]} for L in out["layers"]]
     layers2 = [KHopLayer(nodes=sorted(L["nodes"]), edges=sorted(L["edges"])) for L in layers]
     
@@ -394,7 +395,7 @@ def document_id_from_file_name(file_name: str):
         
     docs = engine.document_collection.get(ids = filenames) # this is only where we do not use shortid
     sids = [shortids.l2s_id(i) for i in docs['ids']]
-    to_return = [{file_name: i, "id": shortids.l2s_id(i)} for i in docs['ids']]
+    to_return = [{"file_name": i, "id": shortids.l2s_id(i)} for i in docs['ids']]
     return DocIdsOut(id_mapping = to_return)
 
 

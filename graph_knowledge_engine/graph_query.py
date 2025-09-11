@@ -294,7 +294,9 @@ class GraphQuery:
         """Seed by a TEXT query using the collection's default embedding function, then expand K hops.
         This avoids any custom embedding pipeline and uses the underlying vector store's default embeddings.
         """
-        where = {"doc_ids" : doc_ids} if doc_ids else doc_ids
+        where = {"doc_id" : doc_ids} if type(doc_ids) is str else None
+        if type(doc_ids) is list:
+            where['doc_id'] = {"$in": doc_ids}
         hits = self.e.node_collection.query(query_texts=[query_text], n_results=top_k, where = where)
         seed_ids = [nid for nid in (hits.get("ids") or [[]])[0] if nid]
         layers = self.k_hop(seed_ids, k=hops)
