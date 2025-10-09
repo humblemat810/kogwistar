@@ -79,8 +79,12 @@ def _decode_role_from_headers(scope: Scope) -> str:
 persist_directory = os.environ.get("MCP_CHROMA_DIR") or "./.chroma-mcp"
 engine = GraphKnowledgeEngine(persist_directory=persist_directory)
 gq = GraphQuery(engine)
-
+# ---- Wisdom + MCP ----
+wisdom_persist_directory = os.environ.get("MCP_CHROMA_DIR_WISDOM") or (persist_directory + "-wisdom")
+wisdom_engine = GraphKnowledgeEngine(persist_directory=wisdom_persist_directory)
+wisdom_gq = GraphQuery(wisdom_engine)
 templates = Jinja2Templates(directory=os.path.join(str(pathlib.Path(__file__).parent),"templates"))
+
 # Fastapi
 def _extract_bearer(request: Request) -> str | None:
     auth = request.headers.get("authorization") or request.headers.get("Authorization")
@@ -257,6 +261,23 @@ ROLE_ORDER = {"ro": 0, "rw": 1}  # read-only < read-write
 DEFAULT_ROLE = "ro"
 
 
+def get_current_namespace() -> str:
+    claims = claims_ctx.get() or {}
+    ns = (claims.get("ns") or "docs").lower()
+    return "wisdom" if ns == "wisdom" else "docs"
+
+def require_ns(expected: str):
+    def deco(fn):
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            actual = get_current_namespace()
+            if actual != expected:
+                # MCP tools throw regular exceptions; FastMCP wraps as tool error
+                raise PermissionError(f"Forbidden: namespace '{actual}' cannot call this tool (expected '{expected}').")
+            return fn(*args, **kwargs)
+        return wrapper
+    return deco
+
 mcp = FastMCP("KnowledgeEngine + MCP + Admin")
 
 # ---- Query I/O (same as before) ----
@@ -341,7 +362,7 @@ def kg_semantic_seed_then_expand_text(text: str, top_k: int = 5, hops: int = 1, 
     return outsid
 
 # ---- Ingestion tools ----
-from .models import Document
+from .models import Document, PureGraph
 class DocParseIn(Document['dto']):
     id: Optional[str]
     content: str
@@ -488,11 +509,12 @@ app.add_middleware(JWTProtectMiddleware)
 from datetime import datetime, timedelta, timezone
 
 @app.post("/auth/dev-token")
-def dev_token(username: str = "dev", role: str = "ro"):
+def dev_token(username: str = "dev", role: str = "ro", ns :Literal["doc", "wisdom"]= "doc" ):
     if role not in ROLE_ORDER:
         raise HTTPException(400, f"role must be one of {list(ROLE_ORDER)}")
     payload = {
         "sub": username,
+        "ns" : ns,
         "role": role,
         "iat": int(time.time()),
         "exp": int((datetime.now(timezone.utc) + timedelta(hours=4)).timestamp()),
@@ -652,6 +674,42 @@ def api_graph_upsert_llm(inp: GraphUpsertLLMIn):
         edges_added=persisted["edges_added"],
     )
 
+class KGUpsertIn(BaseModel):
+    """
+    Strict LLM-conformant upsert:
+    - nodes / edges must follow LLM* models (including REQUIRED references with spans).
+    - endpoints may use 'nn:*' / 'ne:*' temp ids that resolve in-batch.
+    - references may use document alias token ::DOC:: in URLs; we’ll de-alias to doc_id.
+    """
+    content: Optional[str] = Field(None, description="If provided and doc is new, store this as document content")
+    doc_type: str = Field("plain", description="Document type")
+    insertion_method: str = Field("api_upsert", description="Provenance tag copied into each ReferenceSession")
+    nodes: List[Dict[str, Any]] = Field(default_factory=list, description="PureNode-shaped dicts")
+    edges: List[Dict[str, Any]] = Field(default_factory=list, description="PureEdge-shaped dicts")
+
+class GraphUpsertOut(BaseModel):
+    node_ids: List[str]
+    edge_ids: List[str]
+    nodes_added: int
+    edges_added: int
+@tool_roles({Role.RW})
+@mcp.tool(name="wisdom.kg_upsert_graph")
+@require_ns("wisdom")
+def kg_upsert_graph_wisdom(inp: KGUpsertIn) -> GraphUpsertOut:
+    # You can keep doc_id prefixes or types here for clarity
+    
+    # Optional: tag the insertion method so you can rollback by provenance
+    inp.insertion_method = inp.insertion_method or "wisdom_runtime"
+    pure_graph = PureGraph.model_validate(dict(nodes = inp.nodes, edges = inp.edges))
+    import uuid
+    return GraphUpsertOut(**wisdom_engine.persist_graph(parsed = pure_graph, session_id = str(uuid.uuid1())))
+    # return _kg_upsert_graph_impl(wisdom_engine, wisdom_gq, inp)
+@tool_roles({Role.RO, Role.RW})
+@mcp.tool(name="wisdom.semantic_seed_then_expand")
+@require_ns("wisdom")
+def wisdom_semantic_seed_then_expand(text: str, top_k: int = 10, hops: int = 2):
+    out = wisdom_gq.semantic_seed_then_expand_text(text, top_k=top_k, hops=hops)
+    return out
 @app.get("/viz/cytoscape", response_class=HTMLResponse)
 def viz_cytoscape(
     request: Request,
@@ -717,8 +775,9 @@ def _load_persisted_graph(doc_ids: List[str], insertion_method: Optional[str] = 
 def kg_load_persisted(inp: LoadPersistedIn) -> LoadPersistedOut:
     """MCP: read back persisted IDs for the given docs (fast; no LLM)."""
     all_persisted = _load_persisted_graph(inp.doc_ids, insertion_method=inp.insertion_method)
-    shortids
-    return 
+    all_persisted.node_ids = sorted( shortids.l2s_id(nid) for nid in all_persisted.node_ids)
+    all_persisted.edge_ids = sorted( shortids.l2s_id(eid) for eid in all_persisted.edge_ids)
+    return all_persisted
 
 # ---------- Cross-document adjudication (same-kind & cross-kind) ----------
 class CrossDocAdjIn(BaseModel):

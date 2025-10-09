@@ -39,6 +39,9 @@ from .models import (
     Edge,
     Document,
     Domain,
+    PureChromaNode,
+    PureChromaEdge,
+    PureGraph,
     ReferenceSession,
     LLMGraphExtraction,
     LLMNode,
@@ -676,8 +679,8 @@ class GraphKnowledgeEngine:
         - Always return provenance + verification info (doc_id, page spans, urls, etc.).
         """
         # 1) Materialize the object
-        from .models import GraphEntityBase
-        if isinstance(node_or_id, GraphEntityBase):
+        from .models import GraphEntityRefBase
+        if isinstance(node_or_id, GraphEntityRefBase):
             obj = node_or_id
         else:
             # try node first, then edge
@@ -867,9 +870,9 @@ class GraphKnowledgeEngine:
 
         return node_items, edge_items
 
-    def _preflight_validate(self, parsed: LLMGraphExtraction, doc_id: str):
+    def _preflight_validate(self, parsed: LLMGraphExtraction|PureGraph, alias_key: str):
         """Ensure every endpoint refers to a real id (in-batch or already in DB)."""
-        self._resolve_llm_ids(doc_id, parsed)  # allocate/resolve first
+        self._resolve_llm_ids(alias_key, parsed)  # allocate/resolve first
 
         batch_node_ids = {n.id for n in parsed.nodes}
         batch_edge_ids = {e.id for e in parsed.edges}
@@ -899,7 +902,7 @@ class GraphKnowledgeEngine:
             raise ValueError(f"Dangling references: nodes={sorted(missing_nodes)}, edges={sorted(missing_edges)}")
 
         return batch_node_ids, batch_edge_ids
-    def _assert_endpoints_exist(self, edge: Edge):
+    def _assert_endpoints_exist(self, edge: Edge | PureChromaEdge):
         need_nodes = set((edge.source_ids or []) + (edge.target_ids or []))
         if need_nodes:
             got = set(self.node_collection.get(ids=list(need_nodes)).get("ids") or [])
@@ -962,7 +965,8 @@ class GraphKnowledgeEngine:
         """
         _ = _alloc_real_ids(parsed)  # rewrite in place
         order, id2kind, id2obj = self._build_deps(parsed)
-
+        node_ids_added = set()
+        edge_ids_added = set()
         nodes_added = edges_added = 0
         for rid in order:
             kind, obj = id2kind[rid], id2obj[rid]
@@ -996,11 +1000,11 @@ class GraphKnowledgeEngine:
                 node = Node(
                     id=rid, label=ln.label, type=ln.type, summary=ln.summary,
                     domain_id=ln.domain_id, canonical_entity_id=ln.canonical_entity_id,
-                    properties=ln.properties, references=refs, doc_id=doc_id,
+                    properties=ln.properties, references=refs, doc_id=doc_id, embedding = None
                 )
                 self.add_node(node, doc_id=doc_id)
                 nodes_added += 1
-
+                node_ids_added.add(node.id)
             else:  # edge
                 le = obj
                 if self._exists_edge(rid):
@@ -1032,18 +1036,20 @@ class GraphKnowledgeEngine:
                     source_edge_ids=getattr(le, "source_edge_ids", []) or [],
                     target_edge_ids=getattr(le, "target_edge_ids", []) or [],
                     doc_id=doc_id,
+                    embedding = None
                 )
                 self.add_edge(edge, doc_id=doc_id)
+                edge_ids_added.add(edge.id)
                 edges_added += 1
         return {
             "document_id": doc_id,
             "node_ids": nodes_added,
             "edge_ids": edges_added,
-            "nodes_added": len(nodes_added),
-            "edges_added": len(edges_added),
+            "nodes_added": len(node_ids_added),
+            "edges_added": len(edge_ids_added),
         }
         return {"nodes_added": nodes_added, "edges_added": edges_added}
-    def _resolve_llm_ids(self, doc_id: str, parsed: LLMGraphExtraction) -> None:
+    def _resolve_llm_ids(self, doc_id: str, parsed: LLMGraphExtraction | PureGraph) -> None:
         """
         In-place:
         - allocate UUIDs for all new nodes (nn:*) and new edges (ne:*),
@@ -1221,13 +1227,14 @@ class GraphKnowledgeEngine:
             result = steps[2].invoke(llm_raw)
             # result = chain.invoke({"alias_nodes": alias_nodes_str, "alias_edges": alias_edges_str, "document": content, "_DOC_ALIAS" : _DOC_ALIAS})
         except Exception as e:
-            raise
+            raise e
         return result.get("raw"), result.get("parsed"), result.get("parsing_error")
     def _de_alias_ids_in_result(self, doc_id: str, parsed: LLMGraphExtraction) -> LLMGraphExtraction:
         """Map aliases back to real UUIDs according to strategy."""
         if ID_STRATEGY == "base62":
-            def r(s: str | None):
+            def r(s: str): # type: ignore
                 if not s:
+                    raise ValueError("s cannot be None or Falsy")
                     return s
                 if s.startswith("N~"):
                     return base62_to_uuid(s[2:])
@@ -1236,16 +1243,19 @@ class GraphKnowledgeEngine:
                 return s
         else:
             book = self._alias_book(doc_id)
-            def r(s: str | None):
+            def r(s: str):
                 if not s:
+                    raise ValueError("s cannot be None or Falsy")
                     return s
                 return book.alias_to_real.get(s, s)
 
         # mutate copy
         for n in parsed.nodes:
-            if n.id: n.id = r(n.id)
+            if n.id: 
+                n.id = r(n.id)
         for e in parsed.edges:
-            if e.id: e.id = r(e.id)
+            if e.id: 
+                e.id = r(e.id)
             e.source_ids = [r(x) for x in e.source_ids]
             e.target_ids = [r(x) for x in e.target_ids]
         return parsed
@@ -1310,7 +1320,7 @@ class GraphKnowledgeEngine:
                     p = int(item.get("page", i))
                     out.append((p, str(item.get("text", '\n'.join(i['text'] for i in item.get("OCR_text_clusters", ""))) or "")))
                 return out
-            # list of plain page texts
+            # list of dict of plain page texts
             if 'pdf_page_num' in first.keys():
                 return [(t['pdf_page_num'], str(t or "")) for t in content_or_pages]
             return [(i, str(t or "")) for i, t in enumerate(content_or_pages, start=1)]
@@ -1595,6 +1605,7 @@ class GraphKnowledgeEngine:
     def _dealias_refs(self, refs: list[ReferenceSession] | None, real_doc_id: str, fallback_snip: str | None):
         if not refs or len(refs) == 0:
             # produce a default reference using the real doc id
+            raise ValueError("No reference to dealias")
             return [ReferenceSession(
                 collection_page_url=f"document_collection/{real_doc_id}",
                 document_page_url=f"document/{real_doc_id}",
@@ -1649,6 +1660,52 @@ class GraphKnowledgeEngine:
     # ----------------------------
     # Chroma adders
     # ----------------------------
+    def add_pure_node(self, node: PureChromaNode):
+        # node.doc_id = doc_id
+        doc, meta = _node_doc_and_meta(node)
+        meta.pop('doc_id')
+        self.node_collection.add(
+            ids=[node.id],
+            documents=[doc],
+            embeddings=[node.embedding] if node.embedding is not None else None,
+            metadatas=[meta],
+        )
+    def add_pure_edge(self, edge: PureChromaEdge):
+        s_nodes, s_edges, t_nodes, t_edges = self._split_endpoints(edge.source_ids, edge.target_ids)
+        edge.source_ids = s_nodes
+        edge.source_edge_ids = getattr(edge, "source_edge_ids", []) or [] + s_edges
+        edge.target_ids = t_nodes
+        edge.target_edge_ids = getattr(edge, "target_edge_ids", []) or [] + t_edges
+        # edge.doc_id = doc_id
+        # single-call safety for ad-hoc usage
+        self._assert_endpoints_exist(edge)
+
+        # receptive range counts
+        node_endpoint_count = len(edge.source_ids or []) + len(edge.target_ids or [])
+        edge_endpoint_count = len(getattr(edge, "source_edge_ids", []) or []) + len(getattr(edge, "target_edge_ids", []) or [])
+        total_endpoint_count = node_endpoint_count + edge_endpoint_count
+        
+        # main edge row
+        self.edge_collection.add(
+            ids=[edge.id],
+            documents=[edge.model_dump_json(field_mode='backend', exclude = ['embedding'])],
+            embeddings=[edge.embedding] if edge.embedding is not None else None,
+            metadatas=[_strip_none({
+                "relation": edge.relation,
+                "source_ids": _json_or_none(edge.source_ids),
+                "target_ids": _json_or_none(edge.target_ids),
+                "source_edge_ids": _json_or_none(getattr(edge, "source_edge_ids", None)),
+                "target_edge_ids": _json_or_none(getattr(edge, "target_edge_ids", None)),
+                "type": edge.type,
+                "summary": edge.summary,
+                "domain_id": edge.domain_id,
+                "canonical_entity_id": edge.canonical_entity_id,
+                "properties": _json_or_none(edge.properties),
+                "node_endpoint_count": node_endpoint_count,   # receptive range
+                "edge_endpoint_count": edge_endpoint_count,
+                "total_endpoint_count": total_endpoint_count,
+            })],
+        )
     def add_node(self, node: Node, doc_id: Optional[str] = None):
         node.doc_id = doc_id  # may use engine.extract_reference_contexts
         doc, meta = _node_doc_and_meta(node)
@@ -2222,6 +2279,73 @@ class GraphKnowledgeEngine:
             pass
 
         return summary
+    def persist_graph(self,
+        *,
+        parsed: PureGraph, 
+        session_id: str,
+        mode = None):
+        self._preflight_validate(parsed, alias_key=session_id)
+        node_ids, edge_ids = [], []
+        _ = _alloc_real_ids(parsed)
+        order, id2kind, id2obj = self._build_deps(parsed)
+        nl = '\n'
+        for rid in order:
+            kind, obj = id2kind[rid], id2obj[rid]
+            # for ln in parsed.nodes:
+            if kind == 'node':
+                ln: Node = obj
+                
+                # skip-if-exists mode
+                if mode == "skip-if-exists":
+                    got = self.node_collection.get(ids=[ln.id])
+                    if got.get("ids"):  # already there
+                        node_ids.append(ln.id)
+                        continue
+                
+                n = PureChromaNode(
+                    id=ln.id, label=ln.label, type=ln.type, summary=ln.summary,
+                    domain_id=ln.domain_id, canonical_entity_id=ln.canonical_entity_id,
+                    properties=ln.properties,
+                    doc_id = None,
+                    embedding = None
+                )
+                emb_text = f"{n.label}: {n.summary} : {nl.join(i['context'] for i in self.extract_reference_contexts(ln)[:1])}"
+                if emb_text is None:
+                    emb_text = f"{n.label}: {n.summary} : {nl.join(i['context'] for i in self.extract_reference_contexts(ln)[:1])}"
+                n.embedding = self._ef([emb_text])[0]
+                self.add_pure_node(n)
+                node_ids.append(n.id)
+            elif kind == 'edge':
+            # for le in parsed.edges:
+                le: Edge = obj
+                
+                if mode == "skip-if-exists":
+                    got = self.edge_collection.get(ids=[le.id])
+                    if got.get("ids"):
+                        edge_ids.append(le.id)
+                        continue
+                e = PureChromaEdge(
+                    id=le.id, label=le.label, type=le.type, summary=le.summary,
+                    domain_id=le.domain_id, canonical_entity_id=le.canonical_entity_id,
+                    properties=le.properties,
+                    relation=le.relation,
+                    source_ids=le.source_ids, target_ids=le.target_ids,
+                    source_edge_ids=getattr(le, "source_edge_ids", None),
+                    target_edge_ids=getattr(le, "target_edge_ids", None),
+                    doc_id=None,
+                    embedding = None
+                    # embedding=self._ef([f"{le.label}: {le.summary}"])[0]
+                )
+                e.embedding = self._ef([f"{le.label}: {le.summary} : {nl.join(i['context'] for i in self.extract_reference_contexts(le)[:1])}"])[0]
+                self.add_pure_edge(e)
+                edge_ids.append(e.id)
+
+        return {
+            "node_ids": node_ids,
+            "edge_ids": edge_ids,
+            "nodes_added": len(node_ids),
+            "edges_added": len(edge_ids),
+        }
     def persist_graph_extraction(
         self,
         *,
@@ -2303,6 +2427,7 @@ class GraphKnowledgeEngine:
                     source_edge_ids=getattr(le, "source_edge_ids", None),
                     target_edge_ids=getattr(le, "target_edge_ids", None),
                     doc_id=doc_id,
+                    embedding = None
                     # embedding=self._ef([f"{le.label}: {le.summary}"])[0]
                 )
                 e.embedding = self._ef([f"{le.label}: {le.summary} : {nl.join(i['context'] for i in self.extract_reference_contexts(le)[:1])}"])[0]
@@ -2420,9 +2545,10 @@ class GraphKnowledgeEngine:
                         for j in range(i+1, len(bucket)):
                             pairs.append((bucket[i], bucket[j]))
             if pairs:
-                verdicts, _ = self.batch_adjudicate_merges(pairs)
+                verdicts, _ = self.batch_adjudicate_merges(pairs) # type: ignore verdict never falsy if pairs is truey
+                verdicts: list[AdjudicationVerdict]
                 for (left, right), out in zip(pairs, verdicts):
-                    verdict = getattr(out, "verdict", out)
+                    verdict: AdjudicationVerdict = getattr(out, "verdict", out)
                     if verdict.same_entity:
                         self.commit_merge(left, right, verdict)
 

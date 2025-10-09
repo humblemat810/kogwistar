@@ -128,7 +128,10 @@ class GraphEntityBase(ModeSlicingMixin, BaseModel):
     properties: Optional[Dict[str, JsonPrimitive]] = Field(
         None, description="Optional flat properties (JSON primitives only)"
     )
-    # 🔴 NOW REQUIRED: LLM must always provide locatable evidence
+
+
+class GraphEntityRefBase(GraphEntityBase):
+
     
     references: Annotated[List[ReferenceSession], FrontendField(),BackendField(),DtoField(),LLMField()] = Field(
         ..., min_items=1, description="One or more locatable mentions supporting this entity"
@@ -186,36 +189,28 @@ class DocNodeMixin():
     type: Literal['page', 'chunk', "summary"] = Field(..., description = "type of data")
     doc_id: str = Field(..., description = "document ID")
     pass
-class DocNode(DocNodeMixin, GraphEntityBase):
-    pass
-class Node(ChromaMixin, GraphEntityBase):
+class DocNode(DocNodeMixin, GraphEntityRefBase):
     pass
 
-class Edge(ChromaMixin, EdgeMixin, GraphEntityBase):
-    # @model_validator(mode="before")
-    # @classmethod
-    # def inject_context_on_children_before(cls, data: dict, info: ValidationInfo):
-    #     # You can inspect context and even transform incoming data
-    #     # (not required—context is already auto-propagated)
-    #     _ = info.context or {}
-        
-    #     return data
-    # @model_validator(mode="after")
-    # def inject_context_on_children_after(self, info: ValidationInfo):
-    #     # You can inspect context and even transform incoming data
-    #     # (not required—context is already auto-propagated)
-    #     _ = info.context or {}
-    #     edge = self
-    #     if not (
-    #         (edge.source_ids or edge.source_edge_ids)
-    #         and (edge.target_ids or edge.target_edge_ids)
-    #     ):
-    #         raise ValueError(
-    #             f"Edge {edge.relation} ({edge.label}) must have at least one source and one target"
-    #         )
-    #     return self
+class PureChromaNode(ChromaMixin,GraphEntityBase):
+    # base node without reference enforced
     pass
-class LLMNode( LLMMixin, GraphEntityBase):
+class PureChromaEdge(ChromaMixin,EdgeMixin,GraphEntityBase):
+    # base edge without reference enforced
+    pass
+class PureGraph(ModeSlicingMixin, BaseModel):
+    nodes: List[PureChromaNode] = Field(..., description="List of refless nodes")
+    edges: List[PureChromaEdge] = Field(..., description="List of refless edges")
+
+class Node(ChromaMixin, GraphEntityRefBase):
+    # Node with ref session enforced
+    pass
+
+class Edge(ChromaMixin, EdgeMixin, GraphEntityRefBase):
+    # Edge with ref session enforced
+    
+    pass
+class LLMNode( LLMMixin, GraphEntityRefBase):
     """
     Represents a node extracted by an LLM from a document.
     Contains label, type, summary, optional domain, and properties.
@@ -229,7 +224,7 @@ class LLMNode( LLMMixin, GraphEntityBase):
     
     pass
 
-class LLMEdge( LLMMixin, EdgeMixin, GraphEntityBase):
+class LLMEdge( LLMMixin, EdgeMixin, GraphEntityRefBase):
     """
     Represents an edge extracted by an LLM from a document.
     Inherits node fields and adds source/target relationships and relation type.
