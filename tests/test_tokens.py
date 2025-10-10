@@ -63,7 +63,7 @@ JWT_SECRET = os.getenv("JWT_SECRET", "dev-secret")
 JWT_ALG = os.getenv("JWT_ALG", "HS256")
 
 WRITE_TOOLS = {
-    # Marked @tool_roles(Role.RW) + @require_rw on your server
+    # Marked @tool_roles(Role.RW)
     "kg_extract",
     "store_document",
     "kg_crossdoc_adjudicate_anykind",

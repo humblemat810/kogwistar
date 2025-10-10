@@ -40,9 +40,12 @@ JWT_ALG    = os.getenv("JWT_ALG", "HS256")
 class Role(str, Enum):
     RO = "ro"
     RW = "rw"
+class NameSpace(str, Enum):
+    DOCS = "docs"
+    WISDOM = "wisdom"
 # tool name -> allowed roles
 TOOL_ROLES: dict[str, set[str]] = {}
-
+TOOL_NAMESPACE: dict[str, set[str]] = {}
 def tool_roles(roles: set[Role] | Role):
     """Annotate a tool with allowed roles (e.g. {Role.RO, Role.RW} or Role.RW)."""
     allowed = {roles} if isinstance(roles, Role) else set(roles)
@@ -53,15 +56,6 @@ def tool_roles(roles: set[Role] | Role):
         return fn
     return deco
 
-def require_rw(fn):
-    """Hard gate inside tool body for extra safety."""
-    @functools.wraps(fn)
-    def wrapper(*args, **kwargs):
-        if current_role.get() != Role.RW.value:
-            # MCP tools are not HTTP handlers; just raise and FastMCP will package it as an error
-            raise PermissionError("This tool requires read-write role.")
-        return fn(*args, **kwargs)
-    return wrapper
 
 def _decode_role_from_headers(scope: Scope) -> str:
     try:
@@ -185,12 +179,14 @@ class MCPRoleMiddleware:
 from fastmcp.tools.tool import FunctionTool
 def _filter_tool_list(lst: list[dict]) -> list[dict]:
     role = current_role.get()
+    namespace = get_current_namespace()
     out = []
     for item in lst:
         name = getattr(item, 'name', None) if type(item) is FunctionTool else None or item.get("name") or item.get("tool") or ""
         # accept either exact name or any recorded alias
-        roles = TOOL_ROLES.get(name, {Role.RO.value, Role.RW.value})
-        if role in roles:
+        roles = TOOL_ROLES.get(name, {Role.RO.value})
+        namespace = TOOL_NAMESPACE.get(name, {NameSpace.DOCS.value})
+        if role in roles and namespace in namespace:
             out.append(item)
     return out
 
@@ -210,7 +206,7 @@ def patch_toolmanager_list_tools(ToolManager: Type):
 
     if is_async:
         @wraps(orig)
-        async def wrapped(self, *args, **kwargs):
+        async def wrapped(self, *args, **kwargs): # type: ignore
             res = await orig(self, *args, **kwargs)
             return _filter_tool_list(res)
     else:
@@ -266,8 +262,9 @@ def get_current_namespace() -> str:
     ns = (claims.get("ns") or "docs").lower()
     return "wisdom" if ns == "wisdom" else "docs"
 
-def require_ns(expected: str):
+def require_ns(expected: set[NameSpace] | NameSpace):
     def deco(fn):
+        allowed = {expected} if isinstance(expected, NameSpace) else set(expected)
         @functools.wraps(fn)
         def wrapper(*args, **kwargs):
             actual = get_current_namespace()
@@ -275,7 +272,11 @@ def require_ns(expected: str):
                 # MCP tools throw regular exceptions; FastMCP wraps as tool error
                 raise PermissionError(f"Forbidden: namespace '{actual}' cannot call this tool (expected '{expected}').")
             return fn(*args, **kwargs)
+        name = getattr(fn, "name", None) or fn.name
+        # we record by function name here; FastMCP uses that as tool name by default
+        TOOL_NAMESPACE[name] = {r.value for r in allowed}
         return wrapper
+        
     return deco
 
 mcp = FastMCP("KnowledgeEngine + MCP + Admin")
@@ -509,7 +510,7 @@ app.add_middleware(JWTProtectMiddleware)
 from datetime import datetime, timedelta, timezone
 
 @app.post("/auth/dev-token")
-def dev_token(username: str = "dev", role: str = "ro", ns :Literal["doc", "wisdom"]= "doc" ):
+def dev_token(username: str = "dev", role: str = "ro", ns :Literal["docs", "wisdom"]= "docs" ):
     if role not in ROLE_ORDER:
         raise HTTPException(400, f"role must be one of {list(ROLE_ORDER)}")
     payload = {
@@ -702,7 +703,7 @@ def kg_upsert_graph_wisdom(inp: KGUpsertIn) -> GraphUpsertOut:
     inp.insertion_method = inp.insertion_method or "wisdom_runtime"
     pure_graph = PureGraph.model_validate(dict(nodes = inp.nodes, edges = inp.edges))
     import uuid
-    return GraphUpsertOut(**wisdom_engine.persist_graph(parsed = pure_graph, session_id = str(uuid.uuid1())))
+    return GraphUpsertOut(**wisdom_engine.persist_graph(parsed = pure_graph, session_id = "wisdom:"+str(uuid.uuid1())))
     # return _kg_upsert_graph_impl(wisdom_engine, wisdom_gq, inp)
 @tool_roles({Role.RO, Role.RW})
 @mcp.tool(name="wisdom.semantic_seed_then_expand")

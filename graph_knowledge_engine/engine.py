@@ -380,9 +380,8 @@ def _extract_doc_ids_from_refs(refs) -> list[str]:
 def _node_doc_and_meta(n: "Node") -> tuple[str, dict]:
     """Return (documents_string, metadata_dict) for Chroma. helper when inserting to backend db,"""
     """Extract and flatten certain fields that can be searched via collection """
-    from pydantic import BaseModel, field_serializer
     doc = n.model_dump_json(field_mode = 'backend', exclude = ['embedding'])
-    meta = _strip_none({
+    meta = {
         "doc_id": getattr(n, "doc_id", None),
         "label": n.label,
         "type": n.type,
@@ -390,9 +389,10 @@ def _node_doc_and_meta(n: "Node") -> tuple[str, dict]:
         "domain_id": n.domain_id,
         "canonical_entity_id": getattr(n, "canonical_entity_id", None),
         "properties": _json_or_none(getattr(n, "properties", None)),
-        "references": _json_or_none([r.model_dump(field_mode = 'backend') for r in (n.references or [])]),
-        # add any other flat, filterable fields you rely on
-    })
+    }
+    if hasattr(n,"references"):
+        meta['references'] = _json_or_none([r.model_dump(field_mode = 'backend') for r in (n.references or [])])
+    meta = _strip_none(meta)
     return doc, meta
 
 def _edge_doc_and_meta(e: "Edge") -> tuple[str, dict]:
@@ -408,8 +408,10 @@ def _edge_doc_and_meta(e: "Edge") -> tuple[str, dict]:
         "domain_id": e.domain_id,
         "canonical_entity_id": getattr(e, "canonical_entity_id", None),
         "properties": _json_or_none(getattr(e, "properties", None)),
-        "references": _json_or_none([r.model_dump() for r in (e.references or [])]),
     })
+    if hasattr(e,"references"):
+        meta['references'] = _json_or_none([r.model_dump(field_mode = 'backend') for r in (e.references or [])])
+    meta = _strip_none(meta)
     return doc, meta
 
 def _default_verification(note: str = "fallback span") -> MentionVerification:
@@ -1663,7 +1665,8 @@ class GraphKnowledgeEngine:
     def add_pure_node(self, node: PureChromaNode):
         # node.doc_id = doc_id
         doc, meta = _node_doc_and_meta(node)
-        meta.pop('doc_id')
+        if meta.get("doc_id"):
+            meta.pop('doc_id') 
         self.node_collection.add(
             ids=[node.id],
             documents=[doc],
@@ -2309,9 +2312,9 @@ class GraphKnowledgeEngine:
                     doc_id = None,
                     embedding = None
                 )
-                emb_text = f"{n.label}: {n.summary} : {nl.join(i['context'] for i in self.extract_reference_contexts(ln)[:1])}"
+                emb_text = f"{n.label}: {n.summary}"
                 if emb_text is None:
-                    emb_text = f"{n.label}: {n.summary} : {nl.join(i['context'] for i in self.extract_reference_contexts(ln)[:1])}"
+                    emb_text = f"{n.label}: {n.summary}"
                 n.embedding = self._ef([emb_text])[0]
                 self.add_pure_node(n)
                 node_ids.append(n.id)
@@ -2336,7 +2339,7 @@ class GraphKnowledgeEngine:
                     embedding = None
                     # embedding=self._ef([f"{le.label}: {le.summary}"])[0]
                 )
-                e.embedding = self._ef([f"{le.label}: {le.summary} : {nl.join(i['context'] for i in self.extract_reference_contexts(le)[:1])}"])[0]
+                e.embedding = self._ef([f"{le.label}: {le.summary}"])[0]
                 self.add_pure_edge(e)
                 edge_ids.append(e.id)
 
