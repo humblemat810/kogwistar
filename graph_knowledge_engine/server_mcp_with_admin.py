@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextvars
 import functools
 from contextvars import ContextVar
+from regex import P
 from starlette.types import Scope, Receive, Send
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse, HTMLResponse
@@ -23,6 +24,7 @@ from pydantic import BaseModel, Field
 from starlette.middleware.base import BaseHTTPMiddleware
 import time
 from typing import List, Optional
+from typing import Any, Dict, Set
 from graph_knowledge_engine.shortids import run_id_ctx, run_id_scope
 from graph_knowledge_engine import shortids
 # --- JWT config (env-driven) ---
@@ -49,11 +51,24 @@ TOOL_NAMESPACE: dict[str, set[str]] = {}
 def tool_roles(roles: set[Role] | Role):
     """Annotate a tool with allowed roles (e.g. {Role.RO, Role.RW} or Role.RW)."""
     allowed = {roles} if isinstance(roles, Role) else set(roles)
-    def deco(fn):
+    def deco(fn: FunctionTool):
         name = getattr(fn, "name", None) or fn.name
         # we record by function name here; FastMCP uses that as tool name by default
         TOOL_ROLES[name] = {r.value for r in allowed}
+        original_fn = fn.fn
+        @functools.wraps(fn.fn)
+        def wrapper(*args, **kwargs):
+            user_role = get_current_role()
+            if user_role not in allowed:
+                raise HTTPException(status_code=403, detail=f"Forbidden: role {user_role} not permitted call this tool")
+            # if ROLE_ORDER.get(user_role, 0) < ROLE_ORDER.get(min_role, 0):
+            #     raise HTTPException(status_code=403, detail=f"Forbidden: requires role '{min_role}', you have '{user_role}'")
+            return original_fn(*args, **kwargs)
+        fn.fn = wrapper
         return fn
+    
+
+    
     return deco
 
 
@@ -265,24 +280,41 @@ def get_current_namespace() -> str:
 from fastmcp.tools import FunctionTool
 def require_ns(expected: set[NameSpace] | NameSpace):
     # only wrap fast mcp function tool
-    def deco(fn: FunctionTool):
-        if not expected in NameSpace:
+    if type(expected) is Set:
+        if len(expected) == 0:
+            raise ValueError("At least 1 name space has to be specified")
+        if not all( i in NameSpace for i in expected):
             raise ValueError("expected not in NameSpace")
-        allowed : Set[NameSpace | str] = {expected} 
-        @functools.wraps(fn)
+        expected2 = expected
+    if expected in NameSpace or type(expected) is str:
+        expected2 = {expected}
+    
+    def deco(fn: FunctionTool):
+        # allowed : set[NameSpace | str] = expected2
+        allowed = expected2
+        name = getattr(fn, "name", None) or fn.name
+        # we record by function name here; FastMCP uses that as tool name by default
+        TOOL_NAMESPACE[name] = allowed
+        original_fn = fn.fn
+        @functools.wraps(fn.fn)
         def wrapper(*args, **kwargs):
             actual = get_current_namespace()
             if actual != expected:
                 # MCP tools throw regular exceptions; FastMCP wraps as tool error
-                raise PermissionError(f"Forbidden: namespace '{actual}' cannot call this tool (expected '{expected}').")
-            return fn(*args, **kwargs)
-        name = getattr(fn, "name", None) or fn.name
-        # we record by function name here; FastMCP uses that as tool name by default
-        TOOL_NAMESPACE[name] = allowed
-        return wrapper
+                raise HTTPException(status_code=403, detail=f"Forbidden: namespace '{actual}' cannot call this tool")
+                
+            return original_fn(*args, **kwargs)
+        fn.fn = wrapper
+        return fn
         
     return deco
-
+    #     @functools.wraps(fn)
+    #     def wrapper(*args, **kwargs):
+    #         actual = get_current_namespace()
+    #         if actual != expected:
+    #             # MCP tools throw regular exceptions; FastMCP wraps as tool error
+    #             raise PermissionError(f"Forbidden: namespace '{actual}' cannot call this tool (expected '{expected}').")
+    #         return fn(*args, **kwargs)
 mcp = FastMCP("KnowledgeEngine + MCP + Admin")
 
 # ---- Query I/O (same as before) ----
@@ -614,7 +646,7 @@ def api_viz_d3(
     payload = to_d3_force(engine, doc_id=doc_id, mode=mode, insertion_method=insertion_method)
     return JSONResponse(payload)
 # --- Add near your other imports ---
-from typing import Any, Dict, List, Optional, Set
+
 from graph_knowledge_engine.models import LLMGraphExtraction, Document
 
 class GraphUpsertLLMIn(BaseModel):
@@ -695,7 +727,6 @@ class KGUpsertIn(BaseModel):
     - references may use document alias token ::DOC:: in URLs; we’ll de-alias to doc_id.
     """
     content: Optional[str] = Field(None, description="If provided and doc is new, store this as document content")
-    doc_type: str = Field("plain", description="Document type")
     insertion_method: str = Field("api_upsert", description="Provenance tag copied into each ReferenceSession")
     nodes: List[Dict[str, Any]] = Field(default_factory=list, description="PureNode-shaped dicts")
     edges: List[Dict[str, Any]] = Field(default_factory=list, description="PureEdge-shaped dicts")
