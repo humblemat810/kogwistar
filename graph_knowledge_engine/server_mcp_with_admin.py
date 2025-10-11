@@ -184,9 +184,9 @@ def _filter_tool_list(lst: list[dict]) -> list[dict]:
     for item in lst:
         name = getattr(item, 'name', None) if type(item) is FunctionTool else None or item.get("name") or item.get("tool") or ""
         # accept either exact name or any recorded alias
-        roles = TOOL_ROLES.get(name, {Role.RO.value})
-        namespace = TOOL_NAMESPACE.get(name, {NameSpace.DOCS.value})
-        if role in roles and namespace in namespace:
+        tool_roles = TOOL_ROLES.get(name, {Role.RO.value})
+        tool_namespace = TOOL_NAMESPACE.get(name, {NameSpace.DOCS.value})
+        if role in tool_roles and namespace in tool_namespace:
             out.append(item)
     return out
 
@@ -220,22 +220,23 @@ def patch_toolmanager_list_tools(ToolManager: Type):
 patch_toolmanager_list_tools(ToolManager)
 class JWTProtectMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
-        path = request.url.path
-        if any(path.startswith(p) for p in PROTECTED_PREFIXES):
-            token = _extract_bearer(request)
-            if not token:
-                return JSONResponse({"detail": "Missing bearer token"}, status_code=401)
-            try:
-                claims = verify_jwt(token)
-                request.state.claims = claims
-                token_ = claims_ctx.set(claims)
+        if claims_ctx.get() is None:
+            path = request.url.path
+            if any(path.startswith(p) for p in PROTECTED_PREFIXES):
+                token = _extract_bearer(request)
+                if not token:
+                    return JSONResponse({"detail": "Missing bearer token"}, status_code=401)
                 try:
-                    with run_id_scope(token):
-                        return await call_next(request)
-                finally:
-                    claims_ctx.reset(token_)
-            except HTTPException as e:
-                return JSONResponse({"detail": e.detail}, status_code=e.status_code)
+                    claims = verify_jwt(token)
+                    request.state.claims = claims
+                    token_ = claims_ctx.set(claims)
+                    try:
+                        with run_id_scope(token):
+                            return await call_next(request)
+                    finally:
+                        claims_ctx.reset(token_)
+                except HTTPException as e:
+                    return JSONResponse({"detail": e.detail}, status_code=e.status_code)
         return await call_next(request)
 
 
@@ -261,10 +262,13 @@ def get_current_namespace() -> str:
     claims = claims_ctx.get() or {}
     ns = (claims.get("ns") or "docs").lower()
     return "wisdom" if ns == "wisdom" else "docs"
-
+from fastmcp.tools import FunctionTool
 def require_ns(expected: set[NameSpace] | NameSpace):
-    def deco(fn):
-        allowed = {expected} if isinstance(expected, NameSpace) else set(expected)
+    # only wrap fast mcp function tool
+    def deco(fn: FunctionTool):
+        if not expected in NameSpace:
+            raise ValueError("expected not in NameSpace")
+        allowed : Set[NameSpace | str] = {expected} 
         @functools.wraps(fn)
         def wrapper(*args, **kwargs):
             actual = get_current_namespace()
@@ -274,7 +278,7 @@ def require_ns(expected: set[NameSpace] | NameSpace):
             return fn(*args, **kwargs)
         name = getattr(fn, "name", None) or fn.name
         # we record by function name here; FastMCP uses that as tool name by default
-        TOOL_NAMESPACE[name] = {r.value for r in allowed}
+        TOOL_NAMESPACE[name] = allowed
         return wrapper
         
     return deco
@@ -376,6 +380,7 @@ class DocParseOut(BaseModel):
 from graph_knowledge_engine.ingester import PagewiseSummaryIngestor
 
 @tool_roles({Role.RW})
+@require_ns("docs")
 @mcp.tool()
 def doc_parse(inp: DocParseIn) -> DocParseOut:
     """Parse a document into leaf and relationships between chunks with summaries from low to high abstraction levels."""
@@ -423,6 +428,7 @@ def document_id_from_file_name(file_name: str):
 
 
 @tool_roles({Role.RW})
+@require_ns("docs")
 @mcp.tool()
 def store_document(inp: DocParseIn):
     """Store document in graph database"""
@@ -431,6 +437,7 @@ def store_document(inp: DocParseIn):
     engine.add_document(doc)
     return DocStoreOut(**{"success": True})
 @tool_roles({Role.RW})
+@require_ns("docs")
 @mcp.tool()
 def kg_extract(inp: KGExtractIn) -> KGExtractOut:
     """From documents extract knowledge and relationships as a hypergraph between entities, ideas, concepts with each other."""
@@ -509,14 +516,19 @@ app.add_middleware(MCPRoleMiddleware)
 app.add_middleware(JWTProtectMiddleware)
 from datetime import datetime, timedelta, timezone
 
+class DevTokenInp(BaseModel):
+    username: str = "dev"
+    role: str = "ro"
+    ns : Literal["docs", "wisdom"]= "docs"
 @app.post("/auth/dev-token")
-def dev_token(username: str = "dev", role: str = "ro", ns :Literal["docs", "wisdom"]= "docs" ):
-    if role not in ROLE_ORDER:
+async def dev_token(request: Request):
+    inp = DevTokenInp(**(await request.json()))
+    if inp.role not in ROLE_ORDER:
         raise HTTPException(400, f"role must be one of {list(ROLE_ORDER)}")
     payload = {
-        "sub": username,
-        "ns" : ns,
-        "role": role,
+        "sub": inp.username,
+        "ns" : inp.ns,
+        "role": inp.role,
         "iat": int(time.time()),
         "exp": int((datetime.now(timezone.utc) + timedelta(hours=4)).timestamp()),
         "iss": JWT_ISS or "local",
@@ -694,8 +706,8 @@ class GraphUpsertOut(BaseModel):
     nodes_added: int
     edges_added: int
 @tool_roles({Role.RW})
-@mcp.tool(name="wisdom.kg_upsert_graph")
 @require_ns("wisdom")
+@mcp.tool(name="wisdom.kg_upsert_graph")
 def kg_upsert_graph_wisdom(inp: KGUpsertIn) -> GraphUpsertOut:
     # You can keep doc_id prefixes or types here for clarity
     
@@ -706,8 +718,8 @@ def kg_upsert_graph_wisdom(inp: KGUpsertIn) -> GraphUpsertOut:
     return GraphUpsertOut(**wisdom_engine.persist_graph(parsed = pure_graph, session_id = "wisdom:"+str(uuid.uuid1())))
     # return _kg_upsert_graph_impl(wisdom_engine, wisdom_gq, inp)
 @tool_roles({Role.RO, Role.RW})
-@mcp.tool(name="wisdom.semantic_seed_then_expand")
 @require_ns("wisdom")
+@mcp.tool(name="wisdom.semantic_seed_then_expand")
 def wisdom_semantic_seed_then_expand(text: str, top_k: int = 10, hops: int = 2):
     out = wisdom_gq.semantic_seed_then_expand_text(text, top_k=top_k, hops=hops)
     return out
@@ -772,6 +784,7 @@ def _load_persisted_graph(doc_ids: List[str], insertion_method: Optional[str] = 
             edge_ids.update(engine.edge_ids_by_doc(did))
     return LoadPersistedOut(node_ids=sorted(node_ids), edge_ids=sorted(edge_ids))
 @tool_roles({Role.RO, Role.RW})
+@require_ns("docs")
 @mcp.tool()
 def kg_load_persisted(inp: LoadPersistedIn) -> LoadPersistedOut:
     """MCP: read back persisted IDs for the given docs (fast; no LLM)."""
@@ -844,6 +857,7 @@ def _sigtext(n_or_e: Any) -> Optional[str]:
     return st if isinstance(st, str) else None
 
 @tool_roles({Role.RW})
+@require_ns("docs")
 @mcp.tool()
 def kg_crossdoc_adjudicate_anykind(inp: CrossDocAdjIn) -> CrossDocAdjOut:
     """
@@ -1071,6 +1085,7 @@ class ProposeVectorIn(BaseModel):
     where: Optional[str| dict] = None
     
 @tool_roles({Role.RO, Role.RW})
+@require_ns("docs")
 @mcp.tool()
 def propose_vector(inp : ProposeVectorIn
     # new_node_ids: List[str],
@@ -1157,6 +1172,7 @@ class ProposeBruteForceIn(BaseModel):
     limit_per_bucket: Optional[int] = 200
     where: Optional[dict] = None # JSON string, e.g. {"insertion_method":"graph_extractor"}
 @tool_roles({Role.RO, Role.RW})
+@require_ns("docs")
 @mcp.tool()
 def kg_propose_bruteforce(
     inp : ProposeBruteForceIn
@@ -1281,6 +1297,7 @@ class AdjPairsIn(BaseModel):
     pairs: List["ProposePair"]
     commit : bool = False
 @tool_roles({Role.RW})
+@require_ns("docs")
 @mcp.tool()
 def commit_merge(inp: CrossDocAdjOut):
     """ merge pair of nodes of edges after running adjudication proposal
@@ -1304,6 +1321,7 @@ def commit_merge(inp: CrossDocAdjOut):
             if canonical_id:
                 committed.append(str(canonical_id))
 @tool_roles({Role.RW})
+@require_ns("docs")
 @mcp.tool()
 def adjudicate_pairs(inp: AdjPairsIn) -> CrossDocAdjOut:
     """ Propose pairs of similar meaning nodes/ edges for subsequent merging
