@@ -632,16 +632,11 @@ class GraphKnowledgeEngine:
     #--------------------
     
     def node_ids_by_doc(self, doc_id: str) -> List[str]:
-        # got = self.node_docs_collection.get(where={"doc_id": doc_id}, include=["metadatas"])
-        # metas = got.get("metadatas") or []
-        # return [m["node_id"] for m in metas if m and "node_id" in m]
+        
         return self._nodes_by_doc(doc_id)
 
     def edge_ids_by_doc(self, doc_id: str) -> List[str]:
-        # eps = self.edge_endpoints_collection.get(where={"doc_id": doc_id}, include=["metadatas"])
-        # metas = eps.get("metadatas") or []
-        # # dedupe across endpoints
-        # return list({m["edge_id"] for m in metas if m and "edge_id" in m})
+       
         return self._edge_ids_by_doc(doc_id)
 
     @property

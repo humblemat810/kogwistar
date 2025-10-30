@@ -645,7 +645,7 @@ def api_viz_d3(
 ):
     payload = to_d3_force(engine, doc_id=doc_id, mode=mode, insertion_method=insertion_method)
     return JSONResponse(payload)
-# --- Add near your other imports ---
+
 
 from graph_knowledge_engine.models import LLMGraphExtraction, Document
 
