@@ -76,8 +76,9 @@ class ReferenceSession(ModeSlicingMixin, BaseModel):
     start_page: int = Field(..., ge=1, description="1-based page index where the mention starts")
     end_page: int = Field(..., ge=1, description="1-based page index where the mention ends (>= start_page)")
     start_char: int = Field(..., ge=0, description="Character offset within start_page")
-    end_char: int = Field(..., ge=0, description="Character offset within end_page")
+    end_char: int = Field(..., ge=-1, description="Character offset within end_page")
     # Optional extras
+    source_cluster_id: Optional[str] = Field(None, description = 'source text cluster id')
     snippet: Optional[str] = Field(None, description="Short text snippet for quick preview")
     verification: Annotated[Optional[MentionVerification], BackendField(), ExcludeMode("llm")] = Field(
                                         None, description="Result of validating the mention correctness"
@@ -95,7 +96,7 @@ class ReferenceSession(ModeSlicingMixin, BaseModel):
     def _check_span_consistency(self):
         if self.end_page < self.start_page:
             raise ValueError("end_page must be >= start_page")
-        if self.start_page == self.end_page and self.end_char < self.start_char:
+        if self.start_page == self.end_page and (self.end_char < self.start_char) and not self.end_char == -1:
             raise ValueError("end_char must be >= start_char when start_page == end_page")
         from .engine import _default_verification
         if (not hasattr(self, 'verification') and self.__class__.__name__.endswith("LlmSlice")):
@@ -163,7 +164,9 @@ class ChromaMixin(BaseModel):
     embedding: Optional[Sequence[float]] = Field(None, description="Vector embedding for the entity")
     # Optional but handy to keep JSON and Chroma metadata aligned
     doc_id: Optional[str] = Field(None, description="Document ID from which this entity was extracted")
-
+    metadata: dict = Field(
+        {}, description="metadata"
+    )
 
 # -------------------------
 # LLM-facing mixin (NO embedding field to keep schema tight)
@@ -258,6 +261,15 @@ class LLMEdgeExtraction(LLMEdge):
         ..., min_items=1, description="One or more locatable mentions supporting this entity"
     )
 
+class GraphExtractionWithIDs(ModeSlicingMixin, BaseModel):
+    """represent a graph extracted by external tool and all ids are imported
+
+    Args:
+        ModeSlicingMixin (_type_): _description_
+        BaseModel (_type_): _description_
+    """
+    nodes: List[Node] = Field(..., description="List of nodes")
+    edges: List[Edge] = Field(..., description="List of edges")
 class LLMGraphExtraction(ModeSlicingMixin, BaseModel):
     """
     Top-level structured output from LLM for knowledge graph extraction.

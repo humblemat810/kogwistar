@@ -9,3 +9,4 @@ small_graph
 .env
 *.bin
 *.pickle
+.shortids

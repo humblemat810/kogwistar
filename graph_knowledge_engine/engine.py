@@ -63,7 +63,7 @@ import uuid
 from joblib import Memory
 import json, re, uuid
 
-from .models import ReferenceSession, MentionVerification, LLMGraphExtraction, LLMNode, LLMEdge, Node, Edge, Document
+from .models import ReferenceSession, MentionVerification, LLMGraphExtraction, LLMNode, LLMEdge, Node, Edge, Document, GraphExtractionWithIDs
 from typing import (Callable, Optional, Tuple, Any, Dict, Iterable, Sequence, Literal,
                     List, Type, TypeVar, Union)
 import math
@@ -380,8 +380,9 @@ def _extract_doc_ids_from_refs(refs) -> list[str]:
 def _node_doc_and_meta(n: "Node") -> tuple[str, dict]:
     """Return (documents_string, metadata_dict) for Chroma. helper when inserting to backend db,"""
     """Extract and flatten certain fields that can be searched via collection """
-    doc = n.model_dump_json(field_mode = 'backend', exclude = ['embedding'])
-    meta = {
+    doc = n.model_dump_json(field_mode = 'backend', exclude = ['embedding', 'metadata'])
+    meta = n.metadata # user custom metadata will be overwritten by system metadata
+    meta.update({
         "doc_id": getattr(n, "doc_id", None),
         "label": n.label,
         "type": n.type,
@@ -389,7 +390,7 @@ def _node_doc_and_meta(n: "Node") -> tuple[str, dict]:
         "domain_id": n.domain_id,
         "canonical_entity_id": getattr(n, "canonical_entity_id", None),
         "properties": _json_or_none(getattr(n, "properties", None)),
-    }
+    })
     if hasattr(n,"references"):
         meta['references'] = _json_or_none([r.model_dump(field_mode = 'backend') for r in (n.references or [])])
     meta = _strip_none(meta)
@@ -789,17 +790,19 @@ class GraphKnowledgeEngine:
     
     def get_nodes(self, ids: Sequence[str]) -> List[Node]:
         if not ids: return []
-        got = self.node_collection.get(ids=list(ids), include=["documents", "embeddings"])
+        got = self.node_collection.get(ids=list(ids), include=["documents", "embeddings", "metadatas"])
         docs = got.get("documents") or []
         embs = got.get("embeddings") if got.get("embeddings") is not None else []
-        return [Node.model_validate_json(d).model_copy(update={"embedding": emb}) for d, emb in zip(docs, embs)]
+        metadatas = got.get("metadatas") if got.get("metadatas") is not None else []
+        return [Node.model_validate_json(d).model_copy(update={"embedding": emb, "metadata": metadata}) for d, emb, metadata in zip(docs, embs, metadatas)]
 
     def get_edges(self, ids: Sequence[str]) -> List[Edge]:
         if not ids: return []
-        got = self.edge_collection.get(ids=list(ids), include=["documents", "embeddings"])
+        got = self.edge_collection.get(ids=list(ids), include=["documents", "embeddings", "metadatas"])
         docs = got.get("documents") or []
         embs = got.get("embeddings") if got.get("embeddings") is not None else []
-        return [Edge.model_validate_json(d).model_copy(update={"embedding": emb}) for d, emb in zip(docs, embs)]
+        metadatas = got.get("metadatas") if got.get("metadatas") is not None else []
+        return [Edge.model_validate_json(d).model_copy(update={"embedding": emb, "metadata": metadata}) for d, emb, metadata in zip(docs, embs, metadatas)]
 
     def all_nodes_for_doc(self, doc_id: str) -> List[Node]:
         return self.get_nodes(self._nodes_by_doc(doc_id))
@@ -867,7 +870,7 @@ class GraphKnowledgeEngine:
 
         return node_items, edge_items
 
-    def _preflight_validate(self, parsed: LLMGraphExtraction|PureGraph, alias_key: str):
+    def _preflight_validate(self, parsed: LLMGraphExtraction|PureGraph|GraphExtractionWithIDs, alias_key: str):
         """Ensure every endpoint refers to a real id (in-batch or already in DB)."""
         self._resolve_llm_ids(alias_key, parsed)  # allocate/resolve first
 
@@ -1409,6 +1412,9 @@ class GraphKnowledgeEngine:
             )
         )
         # IMPORTANT: pass embedding_function to vector collections
+        self.node_index_collection = self.chroma_client.get_or_create_collection(
+            "nodes_index", embedding_function=self._ef, metadata={"hnsw:space": "cosine"}
+        )
         self.node_collection = self.chroma_client.get_or_create_collection(
             "nodes", embedding_function=self._ef, metadata={"hnsw:space": "cosine"}
         )
@@ -1713,6 +1719,7 @@ class GraphKnowledgeEngine:
             embeddings=[node.embedding] if node.embedding is not None else None,
             metadatas=[meta],
         )
+        self.get_nodes([node.id])
         self._index_node_docs(node)
         self._maybe_reindex_node_refs(node)
     def _fanout_endpoints_rows(self, edge: Edge, doc_id: str | None):
@@ -2344,6 +2351,94 @@ class GraphKnowledgeEngine:
             "nodes_added": len(node_ids),
             "edges_added": len(edge_ids),
         }
+    def persist_document_graph_extraction(
+        self,
+        *,
+        doc_id,
+        parsed: GraphExtractionWithIDs|LLMGraphExtraction,
+        mode: str = "append",   # "replace" | "append" | "skip-if-exists"
+    ) -> dict:
+        """
+        Write nodes/edges/endpoints for `document.id`.
+        Returns concrete ids written for idempotent tests.
+        """
+
+        # now validate (ensures no dangling refs to *other* docs)
+        self._preflight_validate(parsed, doc_id)
+        # self.ingest_with_toposort(parsed, doc_id = doc_id)
+
+        
+
+        # persist and collect ids
+        node_ids, edge_ids = [], []
+        fallback_snip = "" # (document.content[:160] + "…") if document.content else None
+        _ = _alloc_real_ids(parsed)  # rewrite in place
+        order, id2kind, id2obj = self._build_deps(parsed)
+
+        nodes_added = edges_added = 0
+        nl = '\n'
+        for rid in order:
+            kind, obj = id2kind[rid], id2obj[rid]
+            # for ln in parsed.nodes:
+            if kind == 'node':
+                ln: Node = obj
+                ln.references = self._dealias_refs(ln.references, doc_id, fallback_snip)
+                # skip-if-exists mode
+                if mode == "skip-if-exists":
+                    got = self.node_collection.get(ids=[ln.id])
+                    if got.get("ids"):  # already there
+                        node_ids.append(ln.id)
+                        continue
+                refs = [ReferenceSession.model_validate(i.model_dump(field_mode = 'backend'), context={'insertion_method': i.insertion_method or 'llm_graph_extraction'}) for i in ln.references]
+                
+                n = Node(
+                    id=ln.id, label=ln.label, type=ln.type, summary=ln.summary,
+                    domain_id=ln.domain_id, canonical_entity_id=ln.canonical_entity_id,
+                    properties=ln.properties,
+                    references= _normalize_refs(refs, doc_id, fallback_snip),
+                    doc_id=doc_id,
+                    # embedding=self._ef([f"{ln.label}: {ln.summary} : {nl.join(i['context'] for i in self.extract_reference_contexts(ln.id))}"])[0]
+                )
+                emb_text = f"{n.label}: {n.summary} : {nl.join(i['context'] for i in self.extract_reference_contexts(ln)[:1])}"
+                if emb_text is None:
+                    emb_text = f"{n.label}: {n.summary} : {nl.join(i['context'] for i in self.extract_reference_contexts(ln)[:1])}"
+                n.embedding = self._ef([emb_text])[0]
+                self.add_node(n, doc_id=doc_id)
+                node_ids.append(n.id)
+            elif kind == 'edge':
+            # for le in parsed.edges:
+                le: Edge = obj
+                le.references = self._dealias_refs(le.references, doc_id, fallback_snip)
+                if mode == "skip-if-exists":
+                    got = self.edge_collection.get(ids=[le.id])
+                    if got.get("ids"):
+                        edge_ids.append(le.id)
+                        continue
+                refs = [ReferenceSession.model_validate(i.model_dump(field_mode = 'backend'), context={'insertion_method': i.insertion_method or 'llm_graph_extraction'}) for i in le.references]
+                e = Edge(
+                    id=le.id, label=le.label, type=le.type, summary=le.summary,
+                    domain_id=le.domain_id, canonical_entity_id=le.canonical_entity_id,
+                    properties=le.properties,
+                    references=_normalize_refs(refs, doc_id, fallback_snip),
+                    relation=le.relation,
+                    source_ids=le.source_ids, target_ids=le.target_ids,
+                    source_edge_ids=getattr(le, "source_edge_ids", None),
+                    target_edge_ids=getattr(le, "target_edge_ids", None),
+                    doc_id=doc_id,
+                    embedding = None
+                    # embedding=self._ef([f"{le.label}: {le.summary}"])[0]
+                )
+                e.embedding = self._ef([f"{le.label}: {le.summary} : {nl.join(i['context'] for i in self.extract_reference_contexts(le)[:1])}"])[0]
+                self.add_edge(e, doc_id=doc_id)
+                edge_ids.append(e.id)
+
+        return {
+            "document_id": doc_id,
+            "node_ids": node_ids,
+            "edge_ids": edge_ids,
+            "nodes_added": len(node_ids),
+            "edges_added": len(edge_ids),
+        }        
     def persist_graph_extraction(
         self,
         *,
@@ -2389,7 +2484,7 @@ class GraphKnowledgeEngine:
                     if got.get("ids"):  # already there
                         node_ids.append(ln.id)
                         continue
-                refs = [ReferenceSession.model_validate(i.model_dump(), context={'insertion_method': i.insertion_method or 'llm_graph_extraction'}) for i in ln.references]
+                refs = [ReferenceSession.model_validate(i.model_dump(field_mode = 'backend'), context={'insertion_method': i.insertion_method or 'llm_graph_extraction'}) for i in ln.references]
                 
                 n = Node(
                     id=ln.id, label=ln.label, type=ln.type, summary=ln.summary,
@@ -2414,7 +2509,7 @@ class GraphKnowledgeEngine:
                     if got.get("ids"):
                         edge_ids.append(le.id)
                         continue
-                refs = [ReferenceSession.model_validate(i.model_dump(), context={'insertion_method': i.insertion_method or 'llm_graph_extraction'}) for i in le.references]
+                refs = [ReferenceSession.model_validate(i.model_dump(field_mode = 'backend'), context={'insertion_method': i.insertion_method or 'llm_graph_extraction'}) for i in le.references]
                 e = Edge(
                     id=le.id, label=le.label, type=le.type, summary=le.summary,
                     domain_id=le.domain_id, canonical_entity_id=le.canonical_entity_id,

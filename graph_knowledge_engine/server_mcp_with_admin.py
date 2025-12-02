@@ -25,6 +25,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 import time
 from typing import List, Optional
 from typing import Any, Dict, Set
+import uuid
 from graph_knowledge_engine.shortids import run_id_ctx, run_id_scope
 from graph_knowledge_engine import shortids
 # --- JWT config (env-driven) ---
@@ -86,6 +87,12 @@ def _decode_role_from_headers(scope: Scope) -> str:
         return Role.RO.value
 # ---- Engine + MCP ----
 persist_directory = os.environ.get("MCP_CHROMA_DIR") or "./.chroma-mcp"
+pathparts = list(pathlib.Path(os.environ.get("MCP_CHROMA_DIR")).parts)
+pathparts.insert(-1, 'index')
+index_dir = os.path.join(*pathparts) or "./index/chroma-mcp"
+os.makedirs(index_dir, exist_ok = True)
+index_db_path = os.path.join(*(pathparts + ['index.db']))
+
 engine = GraphKnowledgeEngine(persist_directory=persist_directory)
 gq = GraphQuery(engine)
 # ---- Wisdom + MCP ----
@@ -645,7 +652,64 @@ def api_viz_d3(
 ):
     payload = to_d3_force(engine, doc_id=doc_id, mode=mode, insertion_method=insertion_method)
     return JSONResponse(payload)
+class DocumentGraphProposal(BaseModel):
+    doc_id: str
+    insertion_method: str = "document_parser_v1"
+    nodes: List[Dict[str, Any]]
+    edges: List[Dict[str, Any]] = []
 
+class DocumentGraphValidationResult(BaseModel):
+    ok: bool
+    node_errors: Dict[str, str] = {}
+    edge_errors: Dict[str, str] = {}
+from pydantic import ValidationError
+@app.post("/api/contract.validate_graph", response_model=DocumentGraphValidationResult)
+async def contract_validate_graph(payload: DocumentGraphProposal):
+    # inp =await request.json()
+    # payload = ContractGraphProposal.model_validate(inp['payload'])
+    node_errors: Dict[str, str] = {}
+    edge_errors: Dict[str, str] = {}
+
+    # try to coerce nodes
+    for n in payload.nodes:
+        nid = n.get("id") or n.get("label") or "unknown"
+        try:
+            # IMPORTANT: your Node requires references;
+            # user may send "metadata.pointers" instead.
+            # so we do a small shim here:
+            if "references" not in n:
+                # try to lift from metadata.pointers -> references
+                md = n.get("metadata") or {}
+                ptrs = md.get("pointers") or []
+                if ptrs:
+                    n["references"] = [
+                        {
+                            "doc_id": payload.doc_id,
+                            "collection_page_url": f"doc://{payload.doc_id}",
+                            "document_page_url": f"doc://{payload.doc_id}#{p['source_cluster_id']}",
+                            "insertion_method": payload.insertion_method,
+                            "start_page": 1,
+                            "end_page": 1,
+                            "start_char": p["start_char"],
+                            "end_char": (10**9 if p["end_char"] == -1 else p["end_char"]),
+                            "snippet": p.get("verbatim_text", "")[:400],
+                        }
+                        for p in ptrs
+                    ]
+            Node.model_validate(n)
+        except ValidationError as e:
+            node_errors[str(nid)] = e.json()
+
+    # try to coerce edges
+    for e in payload.edges:
+        eid = e.get("id") or "unknown-edge"
+        try:
+            Edge.model_validate(e)
+        except ValidationError as e2:
+            edge_errors[str(eid)] = e2.json()
+
+    ok = not node_errors and not edge_errors
+    return DocumentGraphValidationResult(ok=ok, node_errors=node_errors, edge_errors=edge_errors)
 
 from graph_knowledge_engine.models import LLMGraphExtraction, Document
 
@@ -718,7 +782,37 @@ def api_graph_upsert_llm(inp: GraphUpsertLLMIn):
         nodes_added=persisted["nodes_added"],
         edges_added=persisted["edges_added"],
     )
+class ContractGraphUpsert(BaseModel):
+    doc_id: str
+    insertion_method: str = "document_parser_v1"
+    nodes: List[Node]
+    edges: List[Edge] = []
 
+class ContractGraphUpsertResult(BaseModel):
+    status: str
+    inserted_nodes: int
+    inserted_edges: int
+    engine_result: Dict[str, Any] | None = None
+
+@app.post("/api/contract.upsert_tree", response_model=ContractGraphUpsertResult)
+async def contract_upsert_tree(payload: ContractGraphUpsert):
+    from .models import GraphExtractionWithIDs
+    try:
+        res = engine.persist_document_graph_extraction(
+            parsed = GraphExtractionWithIDs(
+                nodes=[n.model_dump(field_mode = 'backend') for n in payload.nodes],
+                edges=[e.model_dump(field_mode = 'backend') for e in payload.edges]),
+            # insertion_method=payload.insertion_method,
+            doc_id=payload.doc_id,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    return ContractGraphUpsertResult(
+        status="ok",
+        inserted_nodes=len(payload.nodes),
+        inserted_edges=len(payload.edges),
+        engine_result=res,
+    )
 class KGUpsertIn(BaseModel):
     """
     Strict LLM-conformant upsert:
@@ -737,7 +831,7 @@ class GraphUpsertOut(BaseModel):
     nodes_added: int
     edges_added: int
 @tool_roles({Role.RW})
-@require_ns("wisdom")
+@require_ns(NameSpace.WISDOM)
 @mcp.tool(name="wisdom.kg_upsert_graph")
 def kg_upsert_graph_wisdom(inp: KGUpsertIn) -> GraphUpsertOut:
     # You can keep doc_id prefixes or types here for clarity
@@ -745,11 +839,11 @@ def kg_upsert_graph_wisdom(inp: KGUpsertIn) -> GraphUpsertOut:
     # Optional: tag the insertion method so you can rollback by provenance
     inp.insertion_method = inp.insertion_method or "wisdom_runtime"
     pure_graph = PureGraph.model_validate(dict(nodes = inp.nodes, edges = inp.edges))
-    import uuid
+    
     return GraphUpsertOut(**wisdom_engine.persist_graph(parsed = pure_graph, session_id = "wisdom:"+str(uuid.uuid1())))
     # return _kg_upsert_graph_impl(wisdom_engine, wisdom_gq, inp)
 @tool_roles({Role.RO, Role.RW})
-@require_ns("wisdom")
+@require_ns(NameSpace.WISDOM)
 @mcp.tool(name="wisdom.semantic_seed_then_expand")
 def wisdom_semantic_seed_then_expand(text: str, top_k: int = 10, hops: int = 2):
     out = wisdom_gq.semantic_seed_then_expand_text(text, top_k=top_k, hops=hops)
@@ -788,7 +882,281 @@ def viz_go(
         "go.html",
         {"request": request, "doc_id": doc_id, "mode": mode, "insertion_method": insertion_method},
     )
+import sqlite3
+from typing import List, Optional
+from pydantic import BaseModel
+import json, uuid
 
+class IndexingItem(BaseModel):
+    node_id: str
+    canonical_title: str
+    keywords: List[str]
+    aliases: List[str]
+    provision: str
+    doc_id: Optional[str]
+
+class AddIndexEntriesInput(BaseModel):
+    index: List[IndexingItem]
+
+import sqlite3
+def maybe_index_vector(item: IndexingItem):
+    engine.node_index_collection.upsert(
+        # collection_name="semantic_index",
+        ids=[f"idx:{uuid.uuid1()}:{item.node_id}"],
+        metadatas=[{
+            "target_node_id": item.node_id,
+            "canonical_title": item.canonical_title,
+            "provision": item.provision,
+            "keywords": json.dumps(item.keywords),
+            "aliases": json.dumps(item.aliases),
+        }],
+        documents=[str(item.model_dump())],
+    )
+def ensure_index_tables(conn: sqlite3.Connection):
+    cur = conn.cursor()
+
+    # 1) base table
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS semantic_index (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        node_id         TEXT    NOT NULL,
+        canonical_title TEXT    NOT NULL,
+        keywords        TEXT    NOT NULL DEFAULT '',
+        aliases         TEXT    NOT NULL DEFAULT '',
+        provision       TEXT    NOT NULL,
+        document_id     TEXT,
+        created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE (node_id, canonical_title, provision)
+    );
+    """)
+
+    # 2) FTS5 table (no DROP here!)
+    cur.execute("""
+    CREATE VIRTUAL TABLE IF NOT EXISTS semantic_index_fts
+    USING fts5(
+        canonical_title,
+        provision,
+        keywords,
+        aliases,
+        content='semantic_index',
+        content_rowid='id'
+    );
+    """)
+
+    # 3) triggers to keep FTS in sync
+    # we write *all* 4 fields, not just title+provision
+    cur.executescript("""
+    CREATE TRIGGER IF NOT EXISTS semantic_index_ai
+    AFTER INSERT ON semantic_index
+    BEGIN
+        INSERT INTO semantic_index_fts(
+            rowid,
+            canonical_title,
+            provision,
+            keywords,
+            aliases
+        )
+        VALUES (
+            new.id,
+            new.canonical_title,
+            new.provision,
+            new.keywords,
+            new.aliases
+        );
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS semantic_index_ad
+    AFTER DELETE ON semantic_index
+    BEGIN
+        DELETE FROM semantic_index_fts WHERE rowid = old.id;
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS semantic_index_au
+    AFTER UPDATE ON semantic_index
+    BEGIN
+        UPDATE semantic_index_fts
+        SET
+            canonical_title = new.canonical_title,
+            provision       = new.provision,
+            keywords        = new.keywords,
+            aliases         = new.aliases
+        WHERE rowid = new.id;
+    END;
+    """)
+
+    # 4) extra helper tables (optional)
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS semantic_index_keyword (
+        id       INTEGER PRIMARY KEY AUTOINCREMENT,
+        index_id INTEGER NOT NULL REFERENCES semantic_index(id) ON DELETE CASCADE,
+        keyword  TEXT NOT NULL
+    );
+    """)
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_semantic_index_keyword_kw ON semantic_index_keyword(keyword);")
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS semantic_index_alias (
+        id       INTEGER PRIMARY KEY AUTOINCREMENT,
+        index_id INTEGER NOT NULL REFERENCES semantic_index(id) ON DELETE CASCADE,
+        alias    TEXT NOT NULL
+    );
+    """)
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_semantic_index_alias_alias ON semantic_index_alias(alias);")
+
+    conn.commit()
+def _safe_upsert_fts(cur, idx_id, item):
+    kw = " ".join(item.keywords) if item.keywords else ""
+    al = " ".join(item.aliases) if item.aliases else ""
+    try:
+        cur.execute("DELETE FROM semantic_index_fts WHERE rowid = ?", (idx_id,))
+        cur.execute(
+            """
+            INSERT INTO semantic_index_fts (rowid, canonical_title, keywords, aliases, provision)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (idx_id, item.canonical_title, kw, al, item.provision)
+        )
+    except sqlite3.DatabaseError as e:
+        # mark to rebuild later, but don't kill the whole request
+        print("WARNING: FTS table bad / missing, need rebuild:", e)
+        # you could set a flag in another table, or just skip    
+@app.post("/api/add_index_entries")
+def add_index_entries(payload: AddIndexEntriesInput):
+    import sqlite3
+    conn = sqlite3.connect(index_db_path)
+    conn.execute("PRAGMA foreign_keys = ON;")
+    cur = conn.cursor()
+
+    try:
+        for item in payload.index:
+            kw = " ".join(item.keywords) if item.keywords else ""
+            al = " ".join(item.aliases) if item.aliases else ""
+
+            # upsert base table ONLY
+            cur.execute(
+                """
+                INSERT INTO semantic_index
+                    (node_id, canonical_title, keywords, aliases, provision, document_id)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(node_id, canonical_title, provision) DO UPDATE SET
+                    canonical_title = excluded.canonical_title,
+                    keywords        = excluded.keywords,
+                    aliases         = excluded.aliases,
+                    provision       = excluded.provision,
+                    document_id     = excluded.document_id,
+                    updated_at      = CURRENT_TIMESTAMP
+                """,
+                (
+                    item.node_id,
+                    item.canonical_title,
+                    kw,
+                    al,
+                    item.provision,
+                    item.doc_id,
+                ),
+            )
+            maybe_index_vector(item)
+        conn.commit()
+    finally:
+        conn.close()
+
+    return {"ok": True}
+conn = sqlite3.connect(index_db_path)
+cur = conn.cursor()
+cur.execute("PRAGMA integrity_check;")
+print(cur.fetchall())
+
+
+ensure_index_tables(conn)
+conn.close()
+from numpy import interp
+@app.get("/api/search_index_hybrid")
+def search_index_hybrid(q: str, limit: int = 10, resolve_node = False) -> Dict[str, Any]:
+    conn = sqlite3.connect(index_db_path)
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+
+    # 1. Lexical (FTS5)
+    cur.execute(
+        """
+        SELECT
+            s.id,
+            s.node_id,
+            s.canonical_title,
+            s.provision,
+            bm25(semantic_index_fts) AS fts_score
+        FROM semantic_index AS s
+        JOIN semantic_index_fts
+        ON semantic_index_fts.rowid = s.id
+        WHERE semantic_index_fts MATCH ?
+        ORDER BY fts_score
+        LIMIT ?;
+        """,
+        (q, limit),
+    )
+    fts_rows = cur.fetchall()
+
+    # 2. Semantic (vector)
+    vector_results = engine.node_index_collection.query(
+        # collection_name="semantic_index",
+        query_texts=[q],
+        n_results=limit
+    )
+
+    # 3. Merge and normalize
+    combined = {}
+    # normalize scores to 0–1
+    fts_scores = [r["fts_score"] for r in fts_rows]
+    if fts_scores:
+        min_f, max_f = min(fts_scores), max(fts_scores)
+    else:
+        min_f, max_f = 0, 1
+    for r in fts_rows:
+        sid = r["id"]
+        combined[sid] = {
+            "node_id": r["node_id"],
+            "canonical_title": r["canonical_title"],
+            "provision": r["provision"],
+            "fts_score": interp(r["fts_score"], [max_f, min_f], [1.0, 0.0]),  # lower bm25 = better
+            "vec_score": 0.0,
+        }
+
+    for idx, id_ in enumerate(vector_results["ids"][0]):
+        vec_score = vector_results["distances"][0][idx]
+        if id_ not in combined:
+            combined[id_] = {
+                "node_id": vector_results["metadatas"][0][idx]["target_node_id"],
+                "canonical_title": vector_results["metadatas"][0][idx]["canonical_title"],
+                "provision": vector_results["metadatas"][0][idx]["provision"],
+                "fts_score": 0.0,
+                "vec_score": vec_score,
+            }
+        else:
+            combined[id_]["vec_score"] = vec_score
+
+    # 4. Combine ranks
+    ranked = sorted(combined.values(), key=lambda x: 0.6*x["fts_score"] + 0.4*x["vec_score"], reverse=True)
+    if resolve_node:
+        ids = {}
+        for i in ranked:
+            if i["node_id"] in ids:
+                pass
+            else:
+                ids[i["node_id"]] = i
+        res = engine.node_collection.get(ids = list(ids.keys()))
+        cols = ['ids'] + res['included']
+        rows = {}
+        for i, id in enumerate(res["ids"]):
+            rows[id] = {}
+            row = rows[id]
+            for col in cols:
+                row[col] = res[col][i]
+        to_return = ranked[:limit]
+        for i in to_return:
+            i.update(rows[i['node_id']])
+        return {"query": q, "results": to_return}
+    return {"query": q, "results": ranked[:limit]}
 #=====================
 # Adjundicate persisted nodes
 #=====================

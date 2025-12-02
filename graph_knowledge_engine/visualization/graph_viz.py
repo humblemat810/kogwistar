@@ -140,7 +140,7 @@ def _collect_ids(
     insertion_method: Optional[str],
 ) -> Tuple[List[str], List[str]]:
     """Base selection (doc filter) then optional insertion_method filter."""
-    # node_ids, edge_ids = _ids_by_doc(engine, doc_id)
+    node_ids, edge_ids = _ids_by_doc(engine, doc_id)
     node_ids = _filter_by_insertion_method(engine, node_ids, "node", insertion_method, by_doc_id=doc_id)
     edge_ids = _filter_by_insertion_method(engine, edge_ids, "edge", insertion_method, by_doc_id=doc_id)
     return node_ids, edge_ids
@@ -195,7 +195,8 @@ def to_d3_force(
             "id": nid,
             "label": n.label,
             "type": "entity",
-            "summary" : n.summary
+            "summary" : n.summary,
+            "properties": n.properties or {},
         }
 
     if mode.lower() == "reify":

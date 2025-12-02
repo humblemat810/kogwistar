@@ -185,7 +185,7 @@
         };
 
         // Auto-hint for document_ingestion
-        if ((insertionMethod || "").toLowerCase() === "document_ingestion") {
+        if (["document_ingestion", "document_parser_v1"].includes((insertionMethod || "").toLowerCase())) {
           treeMode.checked = true;
           outwardOnly.checked = true;
           outwardOnly.disabled = false;
@@ -265,7 +265,7 @@
           });
 
         // Drag: X-only when doc_tree (pinned Y), free otherwise
-        const isDocTreePinnedY = () => treeMode.checked && (insertionMethod || "").toLowerCase() === "document_ingestion";
+        const isDocTreePinnedY = () => treeMode.checked && (["document_ingestion", "document_parser_v1"].includes((insertionMethod || "").toLowerCase()));
 
         function layerY(n, depth, baseY, gap){
           const d = depth.get(n.id);
@@ -341,11 +341,20 @@
             if (r === relName) {
               const sid = (typeof e.source === "object" ? e.source.id : e.source);
               const tid = (typeof e.target === "object" ? e.target.id : e.target);
-              out.add(sid); inn.add(tid);
+              out.add(sid);inn.add(tid);
             }
           }
           const candidates = [...out].filter(x => !inn.has(x));
-          return candidates[0] || (allNodes[0] && allNodes[0].id);
+          if (candidates.length > 0) {
+            return candidates[0];
+          }
+          for (const n of allNodes) {
+            const props = n.properties || n.metadata || {};
+            if (props.kind && props.kind.toLowerCase() === "document_root") {
+              return n.id;
+            }
+          }
+          return (allNodes[0] && allNodes[0].id) || null;
         }
 
         function computeDepth(rootId) {
@@ -436,7 +445,7 @@
           labelSel.classed("hidden", d => !nodeVisible.get(d.id));
 
           // Pin Y by layer in doc_ingestion tree mode
-          const pinY = treeMode.checked && (insertionMethod || "").toLowerCase() === "document_ingestion";
+          const pinY = treeMode.checked && (["document_ingestion", "document_parser_v1"].includes((insertionMethod || "").toLowerCase()));
           if (pinY) {
             allNodes.forEach(n => {
               if (!nodeVisible.get(n.id)) return;
