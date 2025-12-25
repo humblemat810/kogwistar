@@ -12,14 +12,14 @@ def test_custom_embedder(tmp_path):
     eng = GraphKnowledgeEngine(persist_directory=str(tmp_path / "chroma"), embedding_function=DummyEF())
 
     # Adding a node with embeddings=None uses DummyEF
-    from graph_knowledge_engine.models import Document, Node, ReferenceSession
+    from graph_knowledge_engine.models import Document, Node, Span
     doc = Document(content="abc def", type="text")
     eng.add_document(doc)
-    ref = ReferenceSession(collection_page_url="c", document_page_url=f"document/{doc.id}", 
+    ref = Span(collection_page_url="c", document_page_url=f"document/{doc.id}", 
                            insertion_method="pytest-manual",
                            start_page=1, end_page=1, start_char=0, end_char=3,
                            doc_id = doc.id)
-    node = Node(label="X", type="entity", summary="abc", references=[ref])
+    node = Node(label="X", type="entity", summary="abc", mentions=[ref])
     eng.add_node(node, doc_id=doc.id)
     eng._embed_one
     got = eng.node_collection.get(ids=[node.id], include=["embeddings"])

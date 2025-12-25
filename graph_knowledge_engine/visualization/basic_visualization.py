@@ -1,8 +1,8 @@
 from ..engine import GraphKnowledgeEngine
-from ..models import Node, Edge, ReferenceSession
+from ..models import Node, Edge, Span
 from typing import Iterable, Optional
 import json
-def _fmt_ref_short(r: dict) -> str:
+def _fmt_span_short(r: dict) -> str:
     # expects a dict (already model_dump()'d) ReferenceSession
     pg = ""
     if r.get("start_page") is not None and r.get("end_page") is not None:
@@ -151,7 +151,7 @@ class Visualizer():
                 if include_refs:
                     try:
                         n = Node.model_validate_json(ndoc)
-                        entry["refs"] = [_fmt_ref_short(r.model_dump()) for r in (n.references or [])]
+                        entry["refs"] = [_fmt_span_short(r.model_dump()) for r in (n.mentions or [])]
                     except Exception:
                         # try metadata path
                         refs = []
@@ -159,7 +159,7 @@ class Visualizer():
                         if isinstance(raw, str):
                             try:
                                 for r in json.loads(raw) or []:
-                                    refs.append(_fmt_ref_short(r))
+                                    refs.append(_fmt_span_short(r))
                             except Exception:
                                 pass
                         entry["refs"] = refs
@@ -200,14 +200,14 @@ class Visualizer():
                 if include_refs:
                     try:
                         e = Edge.model_validate_json(edoc)
-                        entry["refs"] = [_fmt_ref_short(r.model_dump()) for r in (e.references or [])]
+                        entry["refs"] = [_fmt_span_short(r.model_dump()) for r in (e.mentions or [])]
                     except Exception:
                         refs = []
                         raw = (meta or {}).get("references")
                         if isinstance(raw, str):
                             try:
                                 for r in json.loads(raw) or []:
-                                    refs.append(_fmt_ref_short(r))
+                                    refs.append(_fmt_span_short(r))
                             except Exception:
                                 pass
                         entry["refs"] = refs

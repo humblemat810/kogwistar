@@ -24,7 +24,7 @@ def _count_ids(get_result):
     return 0 if not get_result or "ids" not in get_result else len(get_result["ids"] or [])
 import json
 from graph_knowledge_engine.engine import GraphKnowledgeEngine
-from graph_knowledge_engine.models import Document, Node, Edge, ReferenceSession
+from graph_knowledge_engine.models import Document, Node, Edge, Span
 
 def test_rollback_single_document():
     engine = GraphKnowledgeEngine()
@@ -34,12 +34,12 @@ def test_rollback_single_document():
     engine.add_document(doc)
 
     # Create two nodes belonging to the doc
-    ref1 = ReferenceSession(collection_page_url="c", document_page_url=f"document/{doc.id}", start_page=13,end_page=14,start_char=24,end_char=17,
+    ref1 = Span(collection_page_url="c", document_page_url=f"document/{doc.id}", start_page=13,end_page=14,start_char=24,end_char=17,
                             doc_id = doc.id, insertion_method = "pytest-manual")
-    ref2 = ReferenceSession(collection_page_url="c", document_page_url=f"document/{doc.id}", start_page=15,end_page=15,start_char=4,end_char=45,
+    ref2 = Span(collection_page_url="c", document_page_url=f"document/{doc.id}", start_page=15,end_page=15,start_char=4,end_char=45,
                             doc_id = doc.id, insertion_method = "pytest-manual")
-    node1 = Node(label="A", type="entity", summary="n1", references=[ref1], doc_id = doc.id)
-    node2 = Node(label="B", type="entity", summary="n2", references=[ref2], doc_id = doc.id)
+    node1 = Node(label="A", type="entity", summary="n1", mentions=[ref1], doc_id = doc.id)
+    node2 = Node(label="B", type="entity", summary="n2", mentions=[ref2], doc_id = doc.id)
     engine.add_node(node1)
     engine.add_node(node2)
 
@@ -47,7 +47,7 @@ def test_rollback_single_document():
     
     edge = Edge(label="A->B", type="relationship", summary="edge",
                 source_ids=[node1.id], target_ids=[node2.id], source_edge_ids= [], target_edge_ids=[], relation="related", 
-                references=[ref1, ref2])
+                mentions=[ref1, ref2])
     engine.add_edge(edge)
 
     # Rollback document
@@ -69,27 +69,27 @@ def test_rollback_multiple_documents(tmp_path):
     for d in docs:
         engine.add_document(d)
 
-    ref1 = ReferenceSession(collection_page_url="c", document_page_url=f"document/{docs[0].id}",
+    ref1 = Span(collection_page_url="c", document_page_url=f"document/{docs[0].id}",
                             start_page=1, end_page=1, start_char=0, end_char=1, doc_id=docs[0].id, insertion_method = "pytest-manual")
-    ref2 = ReferenceSession(collection_page_url="c", document_page_url=f"document/{docs[1].id}",
+    ref2 = Span(collection_page_url="c", document_page_url=f"document/{docs[1].id}",
                             start_page=1, end_page=1, start_char=0, end_char=1, doc_id=docs[1].id, insertion_method = "pytest-manual")
 
-    shared_node = Node(label="X", type="entity", summary="shared", references=[ref1, ref2])
+    shared_node = Node(label="X", type="entity", summary="shared", mentions=[ref1, ref2])
     engine.add_node(shared_node)
 
-    n1 = Node(label="Y", type="entity", summary="n1", references=[ref1])
+    n1 = Node(label="Y", type="entity", summary="n1", mentions=[ref1])
     engine.add_node(n1)
 
-    n2 = Node(label="Z", type="entity", summary="n2", references=[ref2])
+    n2 = Node(label="Z", type="entity", summary="n2", mentions=[ref2])
     engine.add_node(n2)
 
     # Proper endpoints + pass doc_id so endpoints rows get doc_id
     e1 = Edge(label="shared->n1", type="relationship", summary="e1",
               source_ids=[shared_node.id], target_ids=[n1.id], source_edge_ids=[], target_edge_ids = [], 
-              relation="related", references=[ref1])
+              relation="related", mentions=[ref1])
     e2 = Edge(label="n2->shared", type="relationship", summary="e2",
               source_ids=[n2.id], target_ids=[shared_node.id], source_edge_ids=[], target_edge_ids = [], 
-              relation="related", references=[ref2])
+              relation="related", mentions=[ref2])
     engine.add_edge(e1, doc_id=docs[0].id)
     engine.add_edge(e2, doc_id=docs[1].id)
 

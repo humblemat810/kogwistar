@@ -1,6 +1,6 @@
 # strategies/merge_policies.py
 from __future__ import annotations
-from ..models import AdjudicationVerdict, AdjudicationTarget, Edge, Node, ReferenceSession, MentionVerification
+from ..models import AdjudicationVerdict, AdjudicationTarget, Edge, Node, Span, MentionVerification
 from .types import EngineLike, MergePolicy
 import uuid
 import json
@@ -43,7 +43,7 @@ class PreferExistingCanonical(MergePolicy):
                     "domain_id": n.domain_id,
                     "canonical_entity_id": n.canonical_entity_id,
                     "properties": self.e._json_or_none(n.properties),
-                    "references": self.e._json_or_none([ref.model_dump() for ref in (n.references or [])]),
+                    "references": self.e._json_or_none([ref.model_dump() for ref in (n.mentions or [])]),
                 })],
             )
             self.e._index_node_docs(n)
@@ -55,9 +55,10 @@ class PreferExistingCanonical(MergePolicy):
         _persist_node(right)
 
         # 3) Build edge references from each side (pick a “best” mention per node)
-        def _best_ref(n: Node) -> ReferenceSession:
-            if n.references:
-                refs = sorted(n.references, key=lambda r: (getattr(r, "start_page", 10**9), getattr(r, "start_char", 10**9)))
+        def _best_ref(n: Node) -> Span:
+            # NEED-FIX
+            if n.mentions:
+                refs = sorted(n.mentions, key=lambda r: (getattr(r, "start_page", 10**9), getattr(r, "start_char", 10**9)))
                 ref = refs[0].model_copy(deep=True)
                 if ref.verification is None:
                     ref.verification = MentionVerification(method="heuristic", is_verified=True, score=0.5, notes="adjudication evidence")
@@ -82,7 +83,7 @@ class PreferExistingCanonical(MergePolicy):
             source_ids=s_nodes,
             target_ids=t_nodes,
             properties={"confidence": verdict.confidence},
-            references=[left_ref, right_ref],
+            mentions=[left_ref, right_ref],
             doc_id="__adjudication__",   # neutral; endpoints will carry per-node doc_id
             source_edge_ids=s_edges,
             target_edge_ids=t_edges,
@@ -146,7 +147,7 @@ class PreferExistingCanonical(MergePolicy):
 
         # evidence: copy best ref from both sides
         left_ref = self.e._best_ref(l)
-        right_ref = self.e._best_ref(r) if r.references else left_ref
+        right_ref = self.e._best_ref(r) if r.mentions else left_ref
         link = Edge(
             id=str(uuid.uuid4()),
             label=relation_name,
@@ -158,7 +159,7 @@ class PreferExistingCanonical(MergePolicy):
             source_edge_ids=[l.id] if node_or_edge_l.kind == 'edge' else [], 
             target_edge_ids=[r.id] if node_or_edge_r.kind == 'edge' else [],   # <-- node → (meta)edge
             properties={"confidence": verdict.confidence},
-            references=[left_ref, right_ref],
+            mentions=[left_ref, right_ref],
             doc_id="__adjudication__",
         )
         assert bool(link.source_ids ) + bool(link.target_ids ) + bool(link.source_edge_ids ) + bool(link.target_edge_ids ) == 2
@@ -193,7 +194,7 @@ class PreferExistingCanonical(MergePolicy):
                     "label": l.label, "type": l.type, "summary": l.summary,
                     "domain_id": l.domain_id, "canonical_entity_id": l.canonical_entity_id,
                     "properties": self.e._json_or_none(l.properties),
-                    "references": self.e._json_or_none([ref.model_dump() for ref in (l.references or [])]),
+                    "references": self.e._json_or_none([ref.model_dump() for ref in (l.mentions or [])]),
                 })],
             )
             self.e._index_node_docs(l)
@@ -205,7 +206,7 @@ class PreferExistingCanonical(MergePolicy):
                     "label": r.label, "type": r.type, "summary": r.summary,
                     "domain_id": r.domain_id, "canonical_entity_id": r.canonical_entity_id,
                     "properties": self.e._json_or_none(r.properties),
-                    "references": self.e._json_or_none([ref.model_dump() for ref in (r.references or [])]),
+                    "references": self.e._json_or_none([ref.model_dump() for ref in (r.mentions or [])]),
                 })],
             )
             self.e._index_node_docs(r)
@@ -219,7 +220,7 @@ class PreferExistingCanonical(MergePolicy):
                 source_ids=[l.id], target_ids=[r.id],
                 source_edge_ids=[], target_edge_ids=[],
                 properties={"confidence": verdict.confidence},
-                references=[left_ref, right_ref],
+                mentions=[left_ref, right_ref],
                 doc_id="__adjudication__",
             )
             self.e.add_edge(same_as, doc_id=same_as.doc_id)
@@ -241,7 +242,7 @@ class PreferExistingCanonical(MergePolicy):
                 "type": le.type, "summary": le.summary,
                 "domain_id": le.domain_id, "canonical_entity_id": le.canonical_entity_id,
                 "properties": self.e._json_or_none(le.properties),
-                "references": self.e._json_or_none([ref.model_dump() for ref in (le.references or [])]),
+                "references": self.e._json_or_none([ref.model_dump() for ref in (le.mentions or [])]),
             })],
         )
         self.e.edge_collection.update(
@@ -255,7 +256,7 @@ class PreferExistingCanonical(MergePolicy):
                 "type": re.type, "summary": re.summary,
                 "domain_id": re.domain_id, "canonical_entity_id": re.canonical_entity_id,
                 "properties": self.e._json_or_none(re.properties),
-                "references": self.e._json_or_none([ref.model_dump() for ref in (re.references or [])]),
+                "references": self.e._json_or_none([ref.model_dump() for ref in (re.mentions or [])]),
             })],
         )
         self.e._index_edge_refs(le)
@@ -270,7 +271,7 @@ class PreferExistingCanonical(MergePolicy):
             source_ids=[], target_ids=[],
             source_edge_ids=[le.id], target_edge_ids=[re.id],
             properties={"confidence": verdict.confidence},
-            references=[],  # you can copy best refs from both edges if you desire
+            mentions=[],  # you can copy best refs from both edges if you desire
             doc_id="__adjudication__",
         )
         self.e.add_edge(same_as_meta, doc_id=same_as_meta.doc_id)

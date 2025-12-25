@@ -1,5 +1,5 @@
 # tests/test_embeddings_optional.py
-from graph_knowledge_engine.models import Node,ReferenceSession
+from graph_knowledge_engine.models import Node,Span
 
 def test_embeddings_optional_insert(engine):
     doc_id = 'test-did'
@@ -8,7 +8,7 @@ def test_embeddings_optional_insert(engine):
         type="entity",
         summary="Inserted without embedding",
         embedding=None,
-        references=[ReferenceSession(
+        mentions=[Span(
                         collection_page_url=f"document_collection/{doc_id}",
                         document_page_url=f"document/{doc_id}",
                         start_page=1,

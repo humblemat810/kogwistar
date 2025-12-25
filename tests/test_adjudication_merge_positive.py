@@ -14,15 +14,15 @@ from graph_knowledge_engine.engine import GraphKnowledgeEngine
 from graph_knowledge_engine.models import (
     Document,
     Node,
-    ReferenceSession,
+    Span,
     AdjudicationVerdict,
     LLMMergeAdjudication,
     AdjudicationQuestionCode,
     QUESTION_KEY,
 )
 
-def _ref_for(doc_id: str) -> ReferenceSession:
-    return ReferenceSession(
+def _ref_for(doc_id: str) -> Span:
+    return Span(
         collection_page_url=f"document_collection/{doc_id}",
         document_page_url=f"document/{doc_id}",
         start_page=1,
@@ -101,9 +101,9 @@ def test_deterministic_batch_merge(engine, monkeypatch):
     engine.add_document(doc)
 
     ref = _ref_for(doc.id)
-    a = Node(label="Chlorophyll a", type="entity", summary="Pigment in plants", references=[ref])
-    b = Node(label="Chlorophyll b", type="entity", summary="Another chlorophyll pigment", references=[ref])
-    c = Node(label="Hemoglobin",   type="entity", summary="Protein in red blood cells", references=[ref])
+    a = Node(label="Chlorophyll a", type="entity", summary="Pigment in plants", mentions=[ref])
+    b = Node(label="Chlorophyll b", type="entity", summary="Another chlorophyll pigment", mentions=[ref])
+    c = Node(label="Hemoglobin",   type="entity", summary="Protein in red blood cells", mentions=[ref])
 
     engine.add_node(a, doc_id=doc.id)
     engine.add_node(b, doc_id=doc.id)

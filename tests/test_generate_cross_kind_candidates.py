@@ -1,10 +1,10 @@
 # tests/test_generate_cross_kind_candidates.py
 import pytest
 from graph_knowledge_engine.engine import GraphKnowledgeEngine
-from graph_knowledge_engine.models import Document, Node, Edge, ReferenceSession
+from graph_knowledge_engine.models import Document, Node, Edge, Span
 
-def _ref_for(doc_id: str) -> ReferenceSession:
-    return ReferenceSession(
+def _ref_for(doc_id: str) -> Span:
+    return Span(
         collection_page_url=f"document_collection/{doc_id}",
         document_page_url=f"document/{doc_id}", doc_id = doc_id,
         insertion_method="pytest-manual",
@@ -21,13 +21,13 @@ def test_generate_cross_kind_candidates_happy_path(engine: GraphKnowledgeEngine)
     engine.add_document(doc)
     ref = _ref_for(doc.id)
 
-    n = Node(label="Photosynthesis", type="entity", summary="Process in plants", references=[ref])
+    n = Node(label="Photosynthesis", type="entity", summary="Process in plants", mentions=[ref])
     engine.add_node(n, doc_id=doc.id)
 
     # Edge summary/label includes the same token "Photosynthesis"
     e = Edge(label="Photosynthesis relation", type="relationship", summary="Photosynthesis converts light",
              relation="converts", source_ids=[n.id], target_ids=[], source_edge_ids=[] , target_edge_ids= [], 
-             references=[ref])
+             mentions=[ref])
     engine.add_edge(e, doc_id=doc.id)
 
     engine.allow_cross_kind_adjudication = True
@@ -51,17 +51,17 @@ def test_generate_cross_kind_candidates_disabled_scoped_and_limit(engine: GraphK
     ref2 = _ref_for(doc2.id)
 
     # In doc1: matching tokens ("causation")
-    n1 = Node(label="Causation", type="entity", summary="Cause and effect", references=[ref1])
+    n1 = Node(label="Causation", type="entity", summary="Cause and effect", mentions=[ref1])
     engine.add_node(n1, doc_id=doc1.id)
     e1 = Edge(label="Causation relation", type="relationship", summary="Causation between X and Y",
-              relation="causation", source_ids=[n1.id], target_ids=[], source_edge_ids=[] , target_edge_ids= [], references=[ref1])
+              relation="causation", source_ids=[n1.id], target_ids=[], source_edge_ids=[] , target_edge_ids= [], mentions=[ref1])
     engine.add_edge(e1, doc_id=doc1.id)
 
     # In doc2: no overlap
-    n2 = Node(label="Gravity", type="entity", summary="Force", references=[ref2])
+    n2 = Node(label="Gravity", type="entity", summary="Force", mentions=[ref2])
     engine.add_node(n2, doc_id=doc2.id)
     e2 = Edge(label="Electromagnetism", type="relationship", summary="Different force",
-              relation="interacts", source_ids=[n2.id], target_ids=[], source_edge_ids=[] , target_edge_ids= [], references=[ref2])
+              relation="interacts", source_ids=[n2.id], target_ids=[], source_edge_ids=[] , target_edge_ids= [], mentions=[ref2])
     engine.add_edge(e2, doc_id=doc2.id)
 
     # (a) Disabled → no candidates

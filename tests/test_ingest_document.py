@@ -2,7 +2,7 @@ import os
 import pytest
 import json
 from graph_knowledge_engine.engine import GraphKnowledgeEngine
-from graph_knowledge_engine.models import Document, ReferenceSession
+from graph_knowledge_engine.models import Document, Span
 
 @pytest.fixture(scope="module")
 def engine():

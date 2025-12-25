@@ -26,10 +26,10 @@ async def _wait(url: str, timeout=15):
 # --- Preseed helper (same models/engine your server uses) ---
 def _preseed_chroma_dir(persist_dir: str):
     from graph_knowledge_engine.engine import GraphKnowledgeEngine
-    from graph_knowledge_engine.models import Document, Node, Edge, ReferenceSession
+    from graph_knowledge_engine.models import Document, Node, Edge, Span
 
     def ref(doc_id: str, snippet: str = ""):
-        return ReferenceSession(
+        return Span(
             collection_page_url=f"document_collection/{doc_id}",
             document_page_url=f"document/{doc_id}",
             doc_id=doc_id,
@@ -42,8 +42,8 @@ def _preseed_chroma_dir(persist_dir: str):
     doc = Document(id="D1", content="Smoking causes lung cancer.", type="plain")
     eng.add_document(doc)
 
-    n_smoke = Node(label="Smoking", type="entity", summary="habit", references=[ref(doc.id,"Smoking")], doc_id=doc.id)
-    n_cancer = Node(label="Lung cancer", type="entity", summary="disease", references=[ref(doc.id,"lung cancer")], doc_id=doc.id)
+    n_smoke = Node(label="Smoking", type="entity", summary="habit", mentions=[ref(doc.id,"Smoking")], doc_id=doc.id)
+    n_cancer = Node(label="Lung cancer", type="entity", summary="disease", mentions=[ref(doc.id,"lung cancer")], doc_id=doc.id)
     eng.add_node(n_smoke, doc_id=doc.id)
     eng.add_node(n_cancer, doc_id=doc.id)
 
@@ -51,7 +51,7 @@ def _preseed_chroma_dir(persist_dir: str):
         label="Smoking→Cancer", type="relationship", relation="causes",
         source_ids=[n_smoke.id], target_ids=[n_cancer.id], summary="causal claim",
         source_edge_ids = [], target_edge_ids = [],
-        references=[ref(doc.id,"causes")], doc_id=doc.id,
+        mentions=[ref(doc.id,"causes")], doc_id=doc.id,
     )
     eng.add_edge(e_causes, doc_id=doc.id)
 

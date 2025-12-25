@@ -6,7 +6,7 @@ import typing as T
 import graph_knowledge_engine.engine as engmod
 from graph_knowledge_engine.engine import GraphKnowledgeEngine
 from graph_knowledge_engine.graph_query import GraphQuery
-from graph_knowledge_engine.models import Document, Node, Edge, ReferenceSession
+from graph_knowledge_engine.models import Document, Node, Edge, Span
 # ---- Test helpers ----
 class _DummyLLM:
     """Prevents AzureChatOpenAI from initializing/networking during tests."""
@@ -19,8 +19,8 @@ class _DummyLLM:
         return _Chain()
 
 
-def _ref(doc_id: str, snippet: str = "") -> ReferenceSession:
-    return ReferenceSession(
+def _ref(doc_id: str, snippet: str = "") -> Span:
+    return Span(
         collection_page_url=f"document_collection/{doc_id}",
         document_page_url=f"document/{doc_id}",
         doc_id=doc_id,
@@ -50,11 +50,11 @@ def test_graph_query_structural_end_to_end(tmp_path):
     # 2) Real nodes (persisted into Chroma)
     n_smoke = Node(
         label="Smoking", type="entity", summary="habit",
-        references=[_ref(doc.id, "Smoking")], doc_id=doc.id,
+        mentions=[_ref(doc.id, "Smoking")], doc_id=doc.id,
     )
     n_cancer = Node(
         label="Lung cancer", type="entity", summary="disease",
-        references=[_ref(doc.id, "lung cancer")], doc_id=doc.id,
+        mentions=[_ref(doc.id, "lung cancer")], doc_id=doc.id,
     )
     e.add_node(n_smoke, doc_id=doc.id)
     e.add_node(n_cancer, doc_id=doc.id)
@@ -63,7 +63,7 @@ def test_graph_query_structural_end_to_end(tmp_path):
     e_causes = Edge(
         label="Smoking→Cancer", type="relationship", relation="causes",
         source_ids=[n_smoke.id], target_ids=[n_cancer.id], source_edge_ids=[], target_edge_ids = [], summary="causal claim",
-        references=[_ref(doc.id, "causes")], doc_id=doc.id,
+        mentions=[_ref(doc.id, "causes")], doc_id=doc.id,
     )
     e.add_edge(e_causes, doc_id=doc.id)
 

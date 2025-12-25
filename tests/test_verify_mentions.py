@@ -1,14 +1,14 @@
 import json
 import pytest
 from graph_knowledge_engine.engine import GraphKnowledgeEngine
-from graph_knowledge_engine.models import Document, Node, ReferenceSession, MentionVerification
+from graph_knowledge_engine.models import Document, Node, Span, MentionVerification
 
 @pytest.fixture
 def engine_tmp(tmp_path):
     return GraphKnowledgeEngine(persist_directory=str(tmp_path / "chroma"))
 
 def _ref(doc_id, start=0, end=40, snippet=None):
-    return ReferenceSession(
+    return Span(
         collection_page_url=f"document_collection/{doc_id}",
         document_page_url=f"document/{doc_id}", doc_id = doc_id,
         insertion_method="pytest-manual",
@@ -27,7 +27,7 @@ def test_verify_mentions_for_doc(engine_tmp):
         label="Chlorophyll",
         type="entity",
         summary="Chlorophyll is the pigment that absorbs light",
-        references=[_ref(doc.id, start=text.index("Chlorophyll"), end=text.index("light.")+6)]
+        mentions=[_ref(doc.id, start=text.index("Chlorophyll"), end=text.index("light.")+6)]
     )
     engine_tmp.add_node(n, doc_id=doc.id)
 
@@ -37,8 +37,8 @@ def test_verify_mentions_for_doc(engine_tmp):
 
     got = engine_tmp.node_collection.get(ids=[n.id], include=["documents"])
     nn = Node.model_validate_json(got["documents"][0])
-    assert nn.references and nn.references[0].verification is not None
-    mv: MentionVerification = nn.references[0].verification
+    assert nn.mentions and nn.mentions[0].verification is not None
+    mv: MentionVerification = nn.mentions[0].verification
     assert mv.method == "ensemble"
     assert mv.score is not None
     # notes should be compact JSON with individual scores inside

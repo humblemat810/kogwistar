@@ -12,7 +12,7 @@ from .engine import GraphKnowledgeEngine
 from .models import (
     Document,
     Edge,
-    ReferenceSession,
+    Span,
 )
 from .models import Node
 # --- relation name constants (optional but handy) ---
@@ -242,7 +242,7 @@ class BaseDocumentGraphIngestor:
     def _ensure_document_node(self, doc_id: str, *, title: str | None = None, leaves) -> str:
         node_id = f"docnode:{doc_id}"
         if not self.engine._exists_node(node_id):
-            from graph_knowledge_engine.models import Node, ReferenceSession
+            from graph_knowledge_engine.models import Node, Span
             embeddings = self.engine.document_collection.get(doc_id, include = ['embeddings'])['embeddings'][0]
             ref = self._ref(doc_id = doc_id,snippet = None, span = Span(start_page=1, end_page=len(leaves), start_char=0, end_char=len(leaves[-1].text)))
             n = Node(
@@ -251,7 +251,7 @@ class BaseDocumentGraphIngestor:
                 type="entity",
                 summary="Represents the whole source document.",
                 
-                references=[ ref
+                mentions=[ ref
                     # ReferenceSession(
                     # collection_page_url=f"document_collection/{doc_id}",
                     # document_page_url=f"document/{doc_id}",
@@ -532,7 +532,7 @@ class BaseDocumentGraphIngestor:
                 label=f"raw_text_chunk {i}",
                 type="entity",
                 summary=leaf.text,
-                references=[
+                mentions=[
                     self._ref(doc_id, leaf.span, snippet=leaf.text[:160])
                 ],
                 doc_id=doc_id,
@@ -555,7 +555,7 @@ class BaseDocumentGraphIngestor:
             label=label,
             type="entity",
             summary=ch.summary,
-            references=[self._ref(doc_id, ch.span, snippet=ch.summary[:160])],
+            mentions=[self._ref(doc_id, ch.span, snippet=ch.summary[:160])],
             doc_id=doc_id,
             properties={"level": ch.level},
             # embedding=self.engine._ef(f"{label}: {ch.summary}")[0]
@@ -616,7 +616,7 @@ class BaseDocumentGraphIngestor:
                 label=ch.title,
                 type="entity",
                 summary=ch.summary,
-                references=[ref],
+                mentions=[ref],
                 doc_id=doc_id,                     # will also be set by engine.add_node(doc_id=...) but harmless here
                 # embedding = self.engine._ef(ch.summary)[0]
             )
@@ -649,7 +649,7 @@ class BaseDocumentGraphIngestor:
             target_ids=[tgt],
             type="relationship",
             summary=f"{relation}: {src} → {tgt}", source_edge_ids = [], target_edge_ids = [],
-            references=[self._ref(doc_id, Span(start_page=1, end_page=1, start_char=0, end_char=0), snippet=None)],
+            mentions=[self._ref(doc_id, Span(start_page=1, end_page=1, start_char=0, end_char=0), snippet=None)],
             doc_id=doc_id,
         )
         # reverse (distinct relation name)
@@ -661,7 +661,7 @@ class BaseDocumentGraphIngestor:
             target_ids=[src],
             type="relationship",
             summary=f"{reverse_relation}: {tgt} → {src}", source_edge_ids = [], target_edge_ids = [],
-            references=[self._ref(doc_id, Span(start_page=1, end_page=1, start_char=0, end_char=0), snippet=None)],
+            mentions=[self._ref(doc_id, Span(start_page=1, end_page=1, start_char=0, end_char=0), snippet=None)],
             doc_id=doc_id,
         )
         if not self.engine._exists_edge(e1.id):
@@ -669,8 +669,8 @@ class BaseDocumentGraphIngestor:
         if not self.engine._exists_edge(e2.id):
             self.engine.add_edge(e2, doc_id=doc_id)
 
-    def _ref(self, doc_id: str, span: Span, *, snippet: Optional[str]) -> ReferenceSession:
-        return ReferenceSession(
+    def _ref(self, doc_id: str, span: Span, *, snippet: Optional[str]) -> Span:
+        return Span(
             doc_id = doc_id,
             collection_page_url=f"document_collection/{doc_id}",
             document_page_url=f"document/{doc_id}",

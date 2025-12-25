@@ -11,7 +11,7 @@ from graph_knowledge_engine.models import (
     Document,
     Node,
     Edge,
-    ReferenceSession,
+    Span,
     LLMMergeAdjudication,
     AdjudicationVerdict,
     AdjudicationQuestionCode,
@@ -31,9 +31,9 @@ _skip = not all(os.getenv(k) for k in _required_env)
 def _ref_for(doc_id: str,
              start_page: int = 1, end_page: int = 1,
              start_char: int = 0, end_char: int = 1,
-             snippet: str | None = None) -> ReferenceSession:
+             snippet: str | None = None) -> Span:
     # IMPORTANT: include doc_id for indexing/rollback paths
-    return ReferenceSession(
+    return Span(
         collection_page_url=f"document_collection/{doc_id}",
         document_page_url=f"document/{doc_id}",
         doc_id=doc_id,
@@ -68,16 +68,16 @@ def test_batch_adjudication_par_llm_cache_full(engine: GraphKnowledgeEngine, tmp
     ref = _ref_for(doc.id)
 
     # ---------- 2) Entities for node↔node and edges ----------
-    usa = Node(label="United States of America", type="entity", summary="Country", references=[ref])
-    usa_alias = Node(label="USA", type="entity", summary="Country (alias)", references=[ref])  # positive with usa
-    nyc = Node(label="New York City", type="entity", summary="City in USA", references=[ref])
-    nyc_alias = Node(label="NYC", type="entity", summary="City in USA (alias)", references=[ref])  # positive with nyc
-    paris = Node(label="Paris", type="entity", summary="Capital of France", references=[ref])
-    france = Node(label="France", type="entity", summary="Country in Europe", references=[ref])
-    alice = Node(label="Alice", type="entity", summary="A person", references=[ref])
-    acme = Node(label="ACME Corp", type="entity", summary="A company", references=[ref])
-    london = Node(label="London", type="entity", summary="Capital of UK", references=[ref])
-    uk = Node(label="United Kingdom", type="entity", summary="Country", references=[ref])
+    usa = Node(label="United States of America", type="entity", summary="Country", mentions=[ref])
+    usa_alias = Node(label="USA", type="entity", summary="Country (alias)", mentions=[ref])  # positive with usa
+    nyc = Node(label="New York City", type="entity", summary="City in USA", mentions=[ref])
+    nyc_alias = Node(label="NYC", type="entity", summary="City in USA (alias)", mentions=[ref])  # positive with nyc
+    paris = Node(label="Paris", type="entity", summary="Capital of France", mentions=[ref])
+    france = Node(label="France", type="entity", summary="Country in Europe", mentions=[ref])
+    alice = Node(label="Alice", type="entity", summary="A person", mentions=[ref])
+    acme = Node(label="ACME Corp", type="entity", summary="A company", mentions=[ref])
+    london = Node(label="London", type="entity", summary="Capital of UK", mentions=[ref])
+    uk = Node(label="United Kingdom", type="entity", summary="Country", mentions=[ref])
 
     for n in (usa, usa_alias, nyc, nyc_alias, paris, france, alice, acme, london, uk):
         engine.add_node(n, doc_id=doc.id)
@@ -103,7 +103,7 @@ def test_batch_adjudication_par_llm_cache_full(engine: GraphKnowledgeEngine, tmp
         source_edge_ids=[],
         target_edge_ids=[],
         properties={"signature_text": "located_in(Paris, France)"},
-        references=[ref],
+        mentions=[ref],
     )
     engine.add_edge(e_geo1, doc_id=doc.id)
 
@@ -117,7 +117,7 @@ def test_batch_adjudication_par_llm_cache_full(engine: GraphKnowledgeEngine, tmp
         source_edge_ids=[],
         target_edge_ids=[],
         properties={"signature_text": "located_in(Paris, France)"},
-        references=[ref],
+        mentions=[ref],
     )
     engine.add_edge(e_geo2, doc_id=doc.id)
 
@@ -131,7 +131,7 @@ def test_batch_adjudication_par_llm_cache_full(engine: GraphKnowledgeEngine, tmp
         source_edge_ids=[],
         target_edge_ids=[],
         properties={"start_year": 2019, "end_year": 2021, "signature_text": "Employment(Alice, ACME, 2019–2021)"},
-        references=[ref],
+        mentions=[ref],
     )
     engine.add_edge(e_emp1, doc_id=doc.id)
 
@@ -145,7 +145,7 @@ def test_batch_adjudication_par_llm_cache_full(engine: GraphKnowledgeEngine, tmp
         source_edge_ids=[],
         target_edge_ids=[],
         properties={"start_year": 2019, "end_year": 2021, "signature_text": "Employment(Alice, ACME, 2019–2021)"},
-        references=[ref],
+        mentions=[ref],
     )
     engine.add_edge(e_emp2, doc_id=doc.id)
 
@@ -160,7 +160,7 @@ def test_batch_adjudication_par_llm_cache_full(engine: GraphKnowledgeEngine, tmp
         source_edge_ids=[],
         target_edge_ids=[],
         properties={"year": 2022, "signature_text": "visited(Alice, ACME, 2022)"},
-        references=[ref],
+        mentions=[ref],
     )
     engine.add_edge(e_misc, doc_id=doc.id)
 
@@ -174,7 +174,7 @@ def test_batch_adjudication_par_llm_cache_full(engine: GraphKnowledgeEngine, tmp
         source_edge_ids=[],
         target_edge_ids=[],
         properties={"signature_text": "located_in(London, United Kingdom)"},
-        references=[ref],
+        mentions=[ref],
     )
     engine.add_edge(e_geo_diff, doc_id=doc.id)
 
@@ -191,7 +191,7 @@ def test_batch_adjudication_par_llm_cache_full(engine: GraphKnowledgeEngine, tmp
         type="entity",
         summary="Alice employed by ACME during 2019–2021",
         properties={"signature_text": "Employment(Alice, ACME, 2019–2021)"},
-        references=[ref],
+        mentions=[ref],
     )
     engine.add_node(n_emp, doc_id=doc.id)
 
@@ -200,7 +200,7 @@ def test_batch_adjudication_par_llm_cache_full(engine: GraphKnowledgeEngine, tmp
         type="entity",
         summary="Geographic containment reified",
         properties={"signature_text": "located_in(Paris, France)"},
-        references=[ref],
+        mentions=[ref],
     )
     engine.add_node(n_geo, doc_id=doc.id)
 
@@ -209,7 +209,7 @@ def test_batch_adjudication_par_llm_cache_full(engine: GraphKnowledgeEngine, tmp
         type="entity",
         summary="Visit event; non-employment",
         properties={"signature_text": "visited(Alice, ACME, 2022)"},
-        references=[ref],
+        mentions=[ref],
     )
     engine.add_node(n_misc, doc_id=doc.id)
 

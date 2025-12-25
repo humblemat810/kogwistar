@@ -1,12 +1,12 @@
 import json
 from graph_knowledge_engine.models import (
-    Document, Node, ReferenceSession,
+    Document, Node, Span,
     AdjudicationVerdict,
 )
 from conftest import FakeLLMForAdjudication  # ensure this is the Runnable version
 
-def _ref_for(doc_id: str) -> ReferenceSession:
-    return ReferenceSession(
+def _ref_for(doc_id: str) -> Span:
+    return Span(
         collection_page_url="c",
         document_page_url=f"document/{doc_id}", doc_id = doc_id,
         start_page=1, 
@@ -30,13 +30,13 @@ def test_adjudication_and_commit(engine):
         label="Chlorophyll",
         type="entity",
         summary="Pigment in plants",
-        references=[_ref_for(doc.id)],
+        mentions=[_ref_for(doc.id)],
     )
     b = Node(
         label="Chlorophyll (pigment)",
         type="entity",
         summary="Plant pigment; absorbs light",
-        references=[_ref_for(doc.id)],
+        mentions=[_ref_for(doc.id)],
     )
 
     engine.add_node(a, doc_id=doc.id)
@@ -78,12 +78,12 @@ from graph_knowledge_engine.models import (
     Node,
     Edge,
     Document,
-    ReferenceSession,
+    Span,
     AdjudicationVerdict
 )
 
-def _ref_for(doc_id: str) -> ReferenceSession:
-    return ReferenceSession(
+def _ref_for(doc_id: str) -> Span:
+    return Span(
         collection_page_url=f"document_collection/{doc_id}",
         document_page_url=f"document/{doc_id}",
         start_page=1,
@@ -100,12 +100,12 @@ def test_commit_cross_kind_creates_reifies(engine):
     ref = _ref_for(doc.id)
 
     # real source/target nodes
-    src = Node(label="S", type="entity", summary="src", references=[ref])
-    tgt = Node(label="T", type="entity", summary="tgt", references=[ref])
+    src = Node(label="S", type="entity", summary="src", mentions=[ref])
+    tgt = Node(label="T", type="entity", summary="tgt", mentions=[ref])
     engine.add_node(src, doc_id=doc.id)
     engine.add_node(tgt, doc_id=doc.id)
 
-    node_a = Node(label="Special Concept", type="entity", summary="as node", references=[ref])
+    node_a = Node(label="Special Concept", type="entity", summary="as node", mentions=[ref])
     engine.add_node(node_a, doc_id=doc.id)
 
     edge_b = Edge(
@@ -117,7 +117,7 @@ def test_commit_cross_kind_creates_reifies(engine):
         source_edge_ids= [],
         target_edge_ids= [],
         relation="has_concept",
-        references=[ref],
+        mentions=[ref],
     )
     engine.add_edge(edge_b, doc_id=doc.id)
 

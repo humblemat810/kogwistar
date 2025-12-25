@@ -17,7 +17,7 @@ except ImportError:
         # very small fallback
         return 100.0 if a == b else 0.0
 
-from ..models import Node, Edge, MentionVerification, ReferenceSession
+from ..models import Node, Edge, MentionVerification, Span
 # from ..engine import GraphKnowledgeEngine
 @dataclass
 class VerifierConfig:
@@ -119,12 +119,12 @@ class DefaultVerifier(Verifier):
         self,
         extracted_text: str,
         full_text: str,
-        ref: ReferenceSession,
+        ref: Span,
         *,
         min_ngram: int = 5,
         weights: Dict[str, float] = {"rapidfuzz": 0.5, "coverage": 0.3, "embedding": 0.2},
         threshold: float = 0.70,
-    ) -> ReferenceSession:
+    ) -> Span:
         """
         Compute per-reference metrics & write a single ensemble MentionVerification
         back into the ReferenceSession (copy), preserving other fields.
@@ -186,11 +186,12 @@ class DefaultVerifier(Verifier):
             n = Node.model_validate_json(ndoc)
             # what text do we try to validate? prioritize summary, then label
             extracted = n.summary or n.label or ""
-            if not (n.references and extracted):
+            #need-fix
+            if not (n.mentions and extracted):
                 continue
             new_refs = [self._verify_one_reference(extracted, full_text, r, min_ngram=min_ngram, weights=weights, threshold=threshold)
-                        for r in n.references]
-            n.references = new_refs
+                        for r in n.mentions]
+            n.mentions = new_refs
             doc, meta = self.e._node_doc_and_meta(n)
             self.e.node_collection.update(ids=[nid], documents=[doc], metadatas=[meta])
             self.e._index_node_docs(n)
@@ -201,13 +202,13 @@ class DefaultVerifier(Verifier):
             for eid, edoc in zip(got.get("ids") or [], got.get("documents") or []):
                 e = Edge.model_validate_json(edoc)
                 extracted = e.summary or e.label or e.relation or ""
-                if not (e.references and extracted):
+                if not (e.mentions and extracted):
                     continue
                 new_refs = [self._verify_one_reference(extracted, full_text, r, min_ngram=min_ngram, weights=weights, threshold=threshold)
-                            for r in e.references]
+                            for r in e.mentions]
                 new_refs = [self._verify_one_reference(extracted, full_text, r, min_ngram=min_ngram, weights=weights, threshold=threshold)
-                            for r in e.references]
-                e.references = new_refs
+                            for r in e.mentions]
+                e.mentions = new_refs
                 doc, meta = self.e._edge_doc_and_meta(e)
                 self.e.edge_collection.update(ids=[eid], documents=[doc], metadatas=[meta])
                 upd_edges += 1
@@ -238,10 +239,10 @@ class DefaultVerifier(Verifier):
                 doc_id = (got["metadatas"][0] or {}).get("doc_id")
                 full_text = (source_text_by_doc or {}).get(doc_id) or self.e._fetch_document_text(doc_id) if doc_id else ""
                 extracted = n.summary or n.label or ""
-                if not (n.references and extracted):
+                if not (n.mentions and extracted):
                     continue
-                n.references = [self._verify_one_reference(extracted, full_text, r, min_ngram=min_ngram, weights=weights, threshold=threshold)
-                                for r in n.references]
+                n.mentions = [self._verify_one_reference(extracted, full_text, r, min_ngram=min_ngram, weights=weights, threshold=threshold)
+                                for r in n.mentions]
                 doc, meta = self.e._node_doc_and_meta(n)
                 self.e.node_collection.update(ids=[rid], documents=[doc], metadatas=[meta])
                 self.e._index_node_docs(n)
@@ -254,10 +255,10 @@ class DefaultVerifier(Verifier):
                 doc_id = (got["metadatas"][0] or {}).get("doc_id")
                 full_text = (source_text_by_doc or {}).get(doc_id) or self.e._fetch_document_text(doc_id) if doc_id else ""
                 extracted = e.summary or e.label or e.relation or ""
-                if not (e.references and extracted):
+                if not (e.mentions and extracted):
                     continue
-                e.references = [self._verify_one_reference(extracted, full_text, r, min_ngram=min_ngram, weights=weights, threshold=threshold)
-                                for r in e.references]
+                e.mentions = [self._verify_one_reference(extracted, full_text, r, min_ngram=min_ngram, weights=weights, threshold=threshold)
+                                for r in e.mentions]
                 doc, meta = self.e._edge_doc_and_meta(e)
                 self.e.edge_collection.update(ids=[rid], documents=[doc], metadatas=[meta])
                 upd_edges += 1

@@ -64,7 +64,8 @@ class MentionVerification(BaseModel):
     )
     notes: Optional[str] = Field(None, description="Free-text rationale or hints")
 
-class ReferenceSession(ModeSlicingMixin, BaseModel):
+class Span(ModeSlicingMixin, BaseModel):
+    """A single span"""
     default_include_modes: ClassVar[set[str]] = {"frontend", "backend", "dto", "llm"}
     include_unmarked_for_modes: ClassVar[set[str]] = {"frontend", "backend", "dto", "llm"}
     """Locatable evidence for a node/edge mention within a specific document."""
@@ -131,20 +132,29 @@ class GraphEntityBase(ModeSlicingMixin, BaseModel):
     )
 
 
+
+class Grounding(ModeSlicingMixin, BaseModel):
+    spans: Annotated[List[Span], FrontendField(),BackendField(),DtoField(),LLMField()] = Field(
+        ..., min_items=1, description="One or more locatable mentions supporting this entity"
+    )
+    def validate_from_source(self):
+        pass
+
+
 class GraphEntityRefBase(GraphEntityBase):
 
     
-    references: Annotated[List[ReferenceSession], FrontendField(),BackendField(),DtoField(),LLMField()] = Field(
-        ..., min_items=1, description="One or more locatable mentions supporting this entity"
+    mentions: Annotated[List[Grounding], FrontendField(),BackendField(),DtoField(),LLMField()] = Field(
+        ..., min_items=1, description="Mentioning of the idea across possibly multiple separate doc/ databases"
     )
-
-    @field_validator("references")
+    #NEED-FIX
+    @field_validator("mentions")
     @classmethod
-    def _require_non_empty_refs(cls, refs: List[ReferenceSession],info: ValidationInfo):
+    def _require_non_empty_refs(cls, refs: List[Span],info: ValidationInfo):
         for r in refs:
             pass
         if not refs:
-            raise ValueError("At least one ReferenceSession is required")
+            raise ValueError("At least one mentions is required")
         return refs
 
 
@@ -243,7 +253,7 @@ class LLMEdge( LLMMixin, EdgeMixin, GraphEntityRefBase):
     
     pass
 
-class ReferenceSessionMandarySnippet(ReferenceSession):
+class ReferenceSessionMandarySnippet(Span):
     snippet: str = Field(..., description="Short text snippet for quick preview")
 
     pass

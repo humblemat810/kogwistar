@@ -74,7 +74,7 @@ from graph_knowledge_engine.models import (
     Node,
     Edge,
     Document,
-    ReferenceSession,
+    Span,
     AdjudicationQuestionCode,
     QUESTION_KEY,
     AdjudicationVerdict,
@@ -86,9 +86,9 @@ def engine():
     # Fresh engine per test (optionally point persist_directory to a tmp path)
     return GraphKnowledgeEngine()
 
-def _ref_for(doc_id: str) -> ReferenceSession:
+def _ref_for(doc_id: str) -> Span:
     # Minimal required span fields
-    return ReferenceSession(
+    return Span(
         collection_page_url="c",
         document_page_url=f"document/{doc_id}",
         insertion_method="pytest-manual",
@@ -113,9 +113,9 @@ def test_batch_adjudication_and_commit(engine, monkeypatch):
 
     # Create three nodes; A & B should be considered the same by our fake rule, A & C not.
     ref = _ref_for(doc.id)
-    a = Node(label="Chlorophyll a", type="entity", summary="Pigment in plants", references=[ref])
-    b = Node(label="Chlorophyll b", type="entity", summary="Another chlorophyll pigment", references=[ref])
-    c = Node(label="Hemoglobin",   type="entity", summary="Protein in red blood cells", references=[ref])
+    a = Node(label="Chlorophyll a", type="entity", summary="Pigment in plants", mentions=[ref])
+    b = Node(label="Chlorophyll b", type="entity", summary="Another chlorophyll pigment", mentions=[ref])
+    c = Node(label="Hemoglobin",   type="entity", summary="Protein in red blood cells", mentions=[ref])
 
     # Insert them so commit_merge can update Chroma later
     engine.add_node(a, doc_id=doc.id)

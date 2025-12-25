@@ -1240,7 +1240,8 @@ def _primary_doc_of(n: Node) -> Optional[str]:
     # prefer explicit .doc_id, else try references[].doc_id
     if getattr(n, "doc_id", None):
         return n.doc_id
-    for r in (n.references or []):
+    # NEED-FIX
+    for r in (n.mentions or []):
         did = getattr(r, "doc_id", None)
         if did:
             return did

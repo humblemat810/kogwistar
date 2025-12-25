@@ -1,10 +1,10 @@
 # tests/test_node_docs_rollback.py
 import json
 from graph_knowledge_engine.engine import GraphKnowledgeEngine
-from graph_knowledge_engine.models import Document, Node, ReferenceSession
+from graph_knowledge_engine.models import Document, Node, Span
 
 def _ref_for(did: str, s=0, e=1):
-    return ReferenceSession(
+    return Span(
         collection_page_url=f"document_collection/{did}",
         document_page_url=f"document/{did}",
         insertion_method="pytest-manual",
@@ -18,7 +18,7 @@ def test_node_docs_partial_then_full_rollback(tmp_path):
 
     # One node with evidence in *both* documents (no single doc_id in node meta)
     n = Node(label="Shared", type="entity", summary="x",
-             references=[_ref_for(d1.id), _ref_for(d2.id)])
+             mentions=[_ref_for(d1.id), _ref_for(d2.id)])
     eng.add_node(n)  # no doc_id passed; relies on references + node_docs
 
     # Sanity: node_docs has two rows
@@ -34,7 +34,7 @@ def test_node_docs_partial_then_full_rollback(tmp_path):
     n_got = eng.node_collection.get(ids=[n.id], include=["documents"])
     node_json = n_got["documents"][0]
     node = Node.model_validate_json(node_json)
-    assert all(getattr(r, "doc_id", None) != d1.id for r in node.references or [])
+    assert all(getattr(r, "doc_id", None) != d1.id for r in node.mentions or [])
 
     # Rollback d2: now the node has no references and is deleted
     res2 = eng.rollback_document(d2.id)

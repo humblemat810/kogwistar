@@ -7,7 +7,7 @@ import pytest
 from graph_knowledge_engine.engine import GraphKnowledgeEngine
 from graph_knowledge_engine.models import (
     Edge, LLMGraphExtraction, LLMNode, LLMEdge,
-    LLMMergeAdjudication, AdjudicationVerdict, Node, ReferenceSession
+    LLMMergeAdjudication, AdjudicationVerdict, Node, Span
 )
 from typing import Any, Dict, List, Optional
 from langchain_core.runnables import Runnable
@@ -129,7 +129,7 @@ def real_small_graph():
     doc_id = "D1"
     # nodes
     def add_node(nid, label):
-        n = Node(id=nid, label=label, type="entity", summary=label, references=[ReferenceSession(
+        n = Node(id=nid, label=label, type="entity", summary=label, mentions=[Span(
             collection_page_url=f"document_collection/{doc_id}", document_page_url=f"document/{doc_id}", doc_id=doc_id,
             insertion_method = 'pytest-conftext-fixture',
             start_page=1, end_page=1, start_char=0, end_char=1
@@ -149,7 +149,7 @@ def real_small_graph():
     e_id = "E1"
     edge = Edge(id=e_id, label="Smoking causes Lung Cancer", type="relationship", summary="causal", relation="causes",
                 source_ids=["A"], target_ids=["B"], source_edge_ids=[], target_edge_ids=[],
-                references=A.references, doc_id=doc_id)
+                mentions=A.mentions, doc_id=doc_id)
     e.edge_collection.add(ids=[e_id], documents=[edge.model_dump_json(field_mode = 'backend')], metadatas=[{"doc_id": doc_id, "relation": "causes"}])
     # endpoints fan-out
     rows = [
@@ -163,7 +163,7 @@ def real_small_graph():
     e_id2 = "E2"
     e.edge_collection.add(ids=[e_id2], documents=[Edge(
         id=e_id2, label="summarizes_document", type="relationship", summary="S summarizes document", relation="summarizes_document",
-        source_ids=["S"], target_ids=[f"docnode:{doc_id}"], source_edge_ids=[], target_edge_ids=[], references=S.references, doc_id=doc_id
+        source_ids=["S"], target_ids=[f"docnode:{doc_id}"], source_edge_ids=[], target_edge_ids=[], mentions=S.mentions, doc_id=doc_id
     ).model_dump_json(field_mode = 'backend')], metadatas=[{"doc_id": doc_id, "relation": "summarizes_document"}])
     rows2 = [
         {"id": f"{e_id2}::src::node::S", "edge_id": e_id2, "endpoint_id": "S", "endpoint_type": "node", "role": "src", "relation": "summarizes_document", "doc_id": doc_id},

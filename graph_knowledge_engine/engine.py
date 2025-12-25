@@ -42,7 +42,7 @@ from .models import (
     PureChromaNode,
     PureChromaEdge,
     PureGraph,
-    ReferenceSession,
+    Span,
     LLMGraphExtraction,
     LLMNode,
     LLMEdge,
@@ -63,7 +63,7 @@ import uuid
 from joblib import Memory
 import json, re, uuid
 
-from .models import ReferenceSession, MentionVerification, LLMGraphExtraction, LLMNode, LLMEdge, Node, Edge, Document, GraphExtractionWithIDs
+from .models import Span, MentionVerification, LLMGraphExtraction, LLMNode, LLMEdge, Node, Edge, Document, GraphExtractionWithIDs
 from typing import (Callable, Optional, Tuple, Any, Dict, Iterable, Sequence, Literal,
                     List, Type, TypeVar, Union)
 import math
@@ -392,7 +392,7 @@ def _node_doc_and_meta(n: "Node") -> tuple[str, dict]:
         "properties": _json_or_none(getattr(n, "properties", None)),
     })
     if hasattr(n,"references"):
-        meta['references'] = _json_or_none([r.model_dump(field_mode = 'backend') for r in (n.references or [])])
+        meta['references'] = _json_or_none([r.model_dump(field_mode = 'backend') for r in (n.mentions or [])])
     meta = _strip_none(meta)
     return doc, meta
 
@@ -411,15 +411,15 @@ def _edge_doc_and_meta(e: "Edge") -> tuple[str, dict]:
         "properties": _json_or_none(getattr(e, "properties", None)),
     })
     if hasattr(e,"references"):
-        meta['references'] = _json_or_none([r.model_dump(field_mode = 'backend') for r in (e.references or [])])
+        meta['references'] = _json_or_none([r.model_dump(field_mode = 'backend') for r in (e.mentions or [])])
     meta = _strip_none(meta)
     return doc, meta
 
 def _default_verification(note: str = "fallback span") -> MentionVerification:
     return MentionVerification(method="heuristic", is_verified=False, score=None, notes=note)
 
-def _default_ref(doc_id: str, snippet: Optional[str] = None) -> ReferenceSession:
-    return ReferenceSession(
+def _default_ref(doc_id: str, snippet: Optional[str] = None) -> Span:
+    return Span(
         collection_page_url=f"document_collection/{doc_id}",
         document_page_url=_DOC_URL.format(doc_id=doc_id),
         start_page=1, end_page=1, start_char=0, end_char=0,
@@ -427,7 +427,7 @@ def _default_ref(doc_id: str, snippet: Optional[str] = None) -> ReferenceSession
         verification=_default_verification()
     )
 
-def _ensure_ref_span(ref: ReferenceSession, doc_id: str) -> ReferenceSession:
+def _ensure_ref_span(ref: Span, doc_id: str) -> Span:
     # Make sure URLs point at this doc and spans are complete
     r = ref.model_copy(deep=True)
     if not r.collection_page_url:
@@ -452,10 +452,10 @@ def _ensure_ref_span(ref: ReferenceSession, doc_id: str) -> ReferenceSession:
         pass
     return r
 
-def _normalize_refs(refs: Optional[List[ReferenceSession]], doc_id: str, fallback_snippet: Optional[str]) -> List[ReferenceSession]:
-    if not refs or len(refs) == 0:
+def _normalize_mentions(mentions: Optional[List[Span]], doc_id: str, fallback_snippet: Optional[str]) -> List[Span]:
+    if not mentions or len(mentions) == 0:
         return [_default_ref(doc_id, snippet=fallback_snippet)]
-    return [_ensure_ref_span(ref, doc_id) for ref in refs]
+    return [_ensure_ref_span(ref, doc_id) for ref in mentions]
 import re, uuid
 
 _UUID_RE = re.compile(r"^[0-9a-fA-F\-]{36}$")
@@ -647,7 +647,7 @@ class GraphKnowledgeEngine:
     def embedding_function(self, val):
         self._ef = val
         
-    def _infer_doc_id_from_ref(self, ref: ReferenceSession) -> Optional[str]:
+    def _infer_doc_id_from_ref(self, ref: Span) -> Optional[str]:
         """Best-effort: prefer explicit ref.doc_id; else try to parse document_page_url like 'document/<id>'."""
         did = getattr(ref, "doc_id", None)
         if did:
@@ -827,7 +827,7 @@ class GraphKnowledgeEngine:
     # Utilities
     # ----------------------------
     @staticmethod
-    def _default_ref(doc_id: str, snippet: Optional[str] = None) -> ReferenceSession:
+    def _default_ref(doc_id: str, snippet: Optional[str] = None) -> Span:
         return _default_ref(doc_id, snippet)
         pass
     @staticmethod
@@ -982,7 +982,7 @@ class GraphKnowledgeEngine:
                         merged_list, merged_json = _merge_refs(prior_meta.get("references"), ln.references)
                         # update JSON & metadata refs
                         n = Node.model_validate_json(prior["documents"][0])
-                        n.references = [ReferenceSession(**r) for r in merged_list]
+                        n.mentions = [Span(**r) for r in merged_list]
                         self.node_collection.update(
                             ids=[rid],
                             documents=[n.model_dump_json(field_mode='backend')],
@@ -996,11 +996,11 @@ class GraphKnowledgeEngine:
                     continue
 
                 # new node
-                refs = _normalize_refs(ln.references, doc_id, ln.summary)
+                refs = _normalize_mentions(ln.references, doc_id, ln.summary)
                 node = Node(
                     id=rid, label=ln.label, type=ln.type, summary=ln.summary,
                     domain_id=ln.domain_id, canonical_entity_id=ln.canonical_entity_id,
-                    properties=ln.properties, references=refs, doc_id=doc_id, embedding = None
+                    properties=ln.properties, mentions=refs, doc_id=doc_id, embedding = None
                 )
                 self.add_node(node, doc_id=doc_id)
                 nodes_added += 1
@@ -1014,7 +1014,7 @@ class GraphKnowledgeEngine:
                         prior_meta = (prior.get("metadatas") or [None])[0] or {}
                         merged_list, merged_json = _merge_refs(prior_meta.get("references"), le.references)
                         e = Edge.model_validate_json(prior["documents"][0])
-                        e.references = [ReferenceSession(**r) for r in merged_list]
+                        e.mentions = [Span(**r) for r in merged_list]
                         self.edge_collection.update(
                             ids=[rid],
                             documents=[e.model_dump_json(field_mode='backend')],
@@ -1027,11 +1027,11 @@ class GraphKnowledgeEngine:
                     continue
 
                 # new edge
-                refs = _normalize_refs(le.references, doc_id, le.summary)
+                refs = _normalize_mentions(le.references, doc_id, le.summary)
                 edge = Edge(
                     id=rid, label=le.label, type=le.type, summary=le.summary,
                     domain_id=le.domain_id, canonical_entity_id=le.canonical_entity_id,
-                    properties=le.properties, references=refs, relation=le.relation,
+                    properties=le.properties, mentions=refs, relation=le.relation,
                     source_ids=le.source_ids, target_ids=le.target_ids,
                     source_edge_ids=getattr(le, "source_edge_ids", []) or [],
                     target_edge_ids=getattr(le, "target_edge_ids", []) or [],
@@ -1494,7 +1494,7 @@ class GraphKnowledgeEngine:
     def _edge_doc_and_meta(e: "Edge") -> tuple[str, dict]:
         return _edge_doc_and_meta(e)
     def _maybe_reindex_edge_refs(self, edge: Edge, *, force: bool = False) -> None:
-        new_fp = _refs_fingerprint(edge.references or [])
+        new_fp = _refs_fingerprint(edge.mentions or [])
         meta = self.edge_collection.get(ids=[edge.id], include=["metadatas"])
         old_fp = None
         if meta.get("metadatas") and meta["metadatas"][0]:
@@ -1504,8 +1504,8 @@ class GraphKnowledgeEngine:
         got = self.edge_refs_collection.get(where={"edge_id": edge.id}, include=["documents"])
         current_rows = got.get("documents") or []
         current_doc_ids = {json.loads(d).get("doc_id") for d in current_rows}
-        expect_doc_ids = {getattr(r, "doc_id", None) for r in (edge.references or [])}
-        count_ok = (len(current_rows) == len(edge.references or []))
+        expect_doc_ids = {getattr(r, "doc_id", None) for r in (edge.mentions or [])}
+        count_ok = (len(current_rows) == len(edge.mentions or []))
         docset_ok = (current_doc_ids == expect_doc_ids)
 
         if force or (new_fp != old_fp) or (not count_ok) or (not docset_ok):
@@ -1513,7 +1513,7 @@ class GraphKnowledgeEngine:
             self._index_edge_refs(edge)
 
     def _maybe_reindex_node_refs(self, node: Node, *, force: bool = False) -> None:
-        new_fp = _refs_fingerprint(node.references or [])
+        new_fp = _refs_fingerprint(node.mentions or [])
         meta = self.node_collection.get(ids=[node.id], include=["metadatas"])
         old_fp = None
         if meta.get("metadatas") and meta["metadatas"][0]:
@@ -1522,8 +1522,8 @@ class GraphKnowledgeEngine:
         got = self.node_refs_collection.get(where={"node_id": node.id}, include=["documents"])
         current_rows = got.get("documents") or []
         current_doc_ids = {json.loads(d).get("doc_id") for d in current_rows}
-        expect_doc_ids = {getattr(r, "doc_id", None) for r in (node.references or [])}
-        count_ok = (len(current_rows) == len(node.references or []))
+        expect_doc_ids = {getattr(r, "doc_id", None) for r in (node.mentions or [])}
+        count_ok = (len(current_rows) == len(node.mentions or []))
         docset_ok = (current_doc_ids == expect_doc_ids)
 
         if force or (new_fp != old_fp) or (not count_ok) or (not docset_ok):
@@ -1533,7 +1533,7 @@ class GraphKnowledgeEngine:
         self._delete_edge_ref_rows(edge.id)
 
         ids, docs, metas = [], [], []
-        for i, ref in enumerate(edge.references or []):
+        for i, ref in enumerate(edge.mentions or []):
             rid = f"{edge.id}::ref::{i}"
             did = getattr(ref, "doc_id", None)
             ver = getattr(ref, "verification", None)
@@ -1561,7 +1561,7 @@ class GraphKnowledgeEngine:
         self._delete_node_ref_rows(node.id)
 
         ids, docs, metas = [], [], []
-        for i, ref in enumerate(node.references or []):
+        for i, ref in enumerate(node.mentions or []):
             rid = f"{node.id}::ref::{i}"
             did = getattr(ref, "doc_id", None)
             ver = getattr(ref, "verification", None)
@@ -1587,7 +1587,7 @@ class GraphKnowledgeEngine:
         # A tiny legend we show to the LLM so it knows the alias to use
         return f"Use '{_DOC_ALIAS}' whenever you need to reference the current document in ReferenceSession fields."
 
-    def _dealias_one_ref(self, ref: ReferenceSession, real_doc_id: str) -> ReferenceSession:
+    def _dealias_one_ref(self, ref: Span, real_doc_id: str) -> Span:
         r = ref.model_copy(deep=True)
         # swap token in URLs
         if r.document_page_url and _DOC_ALIAS in r.document_page_url:
@@ -1605,11 +1605,11 @@ class GraphKnowledgeEngine:
             r.end_char = r.start_char
         return r
 
-    def _dealias_refs(self, refs: list[ReferenceSession] | None, real_doc_id: str, fallback_snip: str | None):
+    def _dealias_refs(self, refs: list[Span] | None, real_doc_id: str, fallback_snip: str | None):
         if not refs or len(refs) == 0:
             # produce a default reference using the real doc id
             raise ValueError("No reference to dealias")
-            return [ReferenceSession(
+            return [Span(
                 collection_page_url=f"document_collection/{real_doc_id}",
                 document_page_url=f"document/{real_doc_id}",
                 snippet=fallback_snip or None,
@@ -1820,7 +1820,7 @@ class GraphKnowledgeEngine:
                 "domain_id": edge.domain_id,
                 "canonical_entity_id": edge.canonical_entity_id,
                 "properties": _json_or_none(edge.properties),
-                "references": _json_or_none([r.model_dump() for r in (edge.references or [])]),
+                "references": _json_or_none([r.model_dump() for r in (edge.mentions or [])]),
                 "node_endpoint_count": node_endpoint_count,   # receptive range
                 "edge_endpoint_count": edge_endpoint_count,
                 "total_endpoint_count": total_endpoint_count,
@@ -1867,7 +1867,7 @@ class GraphKnowledgeEngine:
         )
     def _index_node_docs(self, node: Node) -> list[str]:
         """Rebuild (node_id, doc_id) rows for this node and denormalize doc_ids on node metadata."""
-        doc_ids = _extract_doc_ids_from_refs(node.references)
+        doc_ids = _extract_doc_ids_from_refs(node.mentions)
 
         # 1) Rebuild the (node_id, doc_id) index rows
         self.node_docs_collection.delete(where={"node_id": node.id})
@@ -1918,11 +1918,11 @@ class GraphKnowledgeEngine:
         if not (got.get("documents") and got["documents"][0]):
             return False
         node = Node.model_validate_json(got["documents"][0])
-        before = len(node.references or [])
-        node.references = [r for r in (node.references or []) if r.doc_id != doc_id 
+        before = len(node.mentions or [])
+        node.mentions = [r for r in (node.mentions or []) if r.doc_id != doc_id 
                            or   (bool(getattr(r, "document_page_url", None) 
                                  and (getattr(r, "document_page_url").rsplit('/',1)[-1] != doc_id)))]
-        changed = len(node.references or []) != before
+        changed = len(node.mentions or []) != before
         if changed:
             # Update node JSON
             self.node_collection.update(ids=[node_id], documents=[node.model_dump_json(field_mode='backend')])
@@ -2099,7 +2099,7 @@ class GraphKnowledgeEngine:
 
         Returns summary counts.
         """
-        from .models import Node, Edge, ReferenceSession  # adjust import if needed
+        from .models import Node, Edge, Span  # adjust import if needed
         import json
 
         summary = {
@@ -2382,20 +2382,20 @@ class GraphKnowledgeEngine:
             # for ln in parsed.nodes:
             if kind == 'node':
                 ln: Node = obj
-                ln.references = self._dealias_refs(ln.references, doc_id, fallback_snip)
+                ln.mentions = self._dealias_refs(ln.mentions, doc_id, fallback_snip)
                 # skip-if-exists mode
                 if mode == "skip-if-exists":
                     got = self.node_collection.get(ids=[ln.id])
                     if got.get("ids"):  # already there
                         node_ids.append(ln.id)
                         continue
-                refs = [ReferenceSession.model_validate(i.model_dump(field_mode = 'backend'), context={'insertion_method': i.insertion_method or 'llm_graph_extraction'}) for i in ln.references]
+                refs = [Span.model_validate(i.model_dump(field_mode = 'backend'), context={'insertion_method': i.insertion_method or 'llm_graph_extraction'}) for i in ln.mentions]
                 
                 n = Node(
                     id=ln.id, label=ln.label, type=ln.type, summary=ln.summary,
                     domain_id=ln.domain_id, canonical_entity_id=ln.canonical_entity_id,
                     properties=ln.properties,
-                    references= _normalize_refs(refs, doc_id, fallback_snip),
+                    mentions= _normalize_mentions(refs, doc_id, fallback_snip),
                     doc_id=doc_id,
                     # embedding=self._ef([f"{ln.label}: {ln.summary} : {nl.join(i['context'] for i in self.extract_reference_contexts(ln.id))}"])[0]
                 )
@@ -2408,18 +2408,18 @@ class GraphKnowledgeEngine:
             elif kind == 'edge':
             # for le in parsed.edges:
                 le: Edge = obj
-                le.references = self._dealias_refs(le.references, doc_id, fallback_snip)
+                le.mentions = self._dealias_refs(le.mentions, doc_id, fallback_snip)
                 if mode == "skip-if-exists":
                     got = self.edge_collection.get(ids=[le.id])
                     if got.get("ids"):
                         edge_ids.append(le.id)
                         continue
-                refs = [ReferenceSession.model_validate(i.model_dump(field_mode = 'backend'), context={'insertion_method': i.insertion_method or 'llm_graph_extraction'}) for i in le.references]
+                refs = [Span.model_validate(i.model_dump(field_mode = 'backend'), context={'insertion_method': i.insertion_method or 'llm_graph_extraction'}) for i in le.mentions]
                 e = Edge(
                     id=le.id, label=le.label, type=le.type, summary=le.summary,
                     domain_id=le.domain_id, canonical_entity_id=le.canonical_entity_id,
                     properties=le.properties,
-                    references=_normalize_refs(refs, doc_id, fallback_snip),
+                    mentions=_normalize_mentions(refs, doc_id, fallback_snip),
                     relation=le.relation,
                     source_ids=le.source_ids, target_ids=le.target_ids,
                     source_edge_ids=getattr(le, "source_edge_ids", None),
@@ -2477,20 +2477,20 @@ class GraphKnowledgeEngine:
             # for ln in parsed.nodes:
             if kind == 'node':
                 ln: Node = obj
-                ln.references = self._dealias_refs(ln.references, document.id, fallback_snip)
+                ln.mentions = self._dealias_refs(ln.mentions, document.id, fallback_snip)
                 # skip-if-exists mode
                 if mode == "skip-if-exists":
                     got = self.node_collection.get(ids=[ln.id])
                     if got.get("ids"):  # already there
                         node_ids.append(ln.id)
                         continue
-                refs = [ReferenceSession.model_validate(i.model_dump(field_mode = 'backend'), context={'insertion_method': i.insertion_method or 'llm_graph_extraction'}) for i in ln.references]
+                refs = [Span.model_validate(i.model_dump(field_mode = 'backend'), context={'insertion_method': i.insertion_method or 'llm_graph_extraction'}) for i in ln.mentions]
                 
                 n = Node(
                     id=ln.id, label=ln.label, type=ln.type, summary=ln.summary,
                     domain_id=ln.domain_id, canonical_entity_id=ln.canonical_entity_id,
                     properties=ln.properties,
-                    references= _normalize_refs(refs, doc_id, fallback_snip),
+                    mentions= _normalize_mentions(refs, doc_id, fallback_snip),
                     doc_id=doc_id,
                     # embedding=self._ef([f"{ln.label}: {ln.summary} : {nl.join(i['context'] for i in self.extract_reference_contexts(ln.id))}"])[0]
                 )
@@ -2503,18 +2503,18 @@ class GraphKnowledgeEngine:
             elif kind == 'edge':
             # for le in parsed.edges:
                 le: Edge = obj
-                le.references = self._dealias_refs(le.references, document.id, fallback_snip)
+                le.mentions = self._dealias_refs(le.mentions, document.id, fallback_snip)
                 if mode == "skip-if-exists":
                     got = self.edge_collection.get(ids=[le.id])
                     if got.get("ids"):
                         edge_ids.append(le.id)
                         continue
-                refs = [ReferenceSession.model_validate(i.model_dump(field_mode = 'backend'), context={'insertion_method': i.insertion_method or 'llm_graph_extraction'}) for i in le.references]
+                refs = [Span.model_validate(i.model_dump(field_mode = 'backend'), context={'insertion_method': i.insertion_method or 'llm_graph_extraction'}) for i in le.mentions]
                 e = Edge(
                     id=le.id, label=le.label, type=le.type, summary=le.summary,
                     domain_id=le.domain_id, canonical_entity_id=le.canonical_entity_id,
                     properties=le.properties,
-                    references=_normalize_refs(refs, doc_id, fallback_snip),
+                    mentions=_normalize_mentions(refs, doc_id, fallback_snip),
                     relation=le.relation,
                     source_ids=le.source_ids, target_ids=le.target_ids,
                     source_edge_ids=getattr(le, "source_edge_ids", None),
@@ -2694,7 +2694,7 @@ class GraphKnowledgeEngine:
                             "domain_id": new_edge.domain_id,
                             "canonical_entity_id": new_edge.canonical_entity_id,
                             "properties": _json_or_none(new_edge.properties),
-                            "references": _json_or_none([ref.model_dump() for ref in (new_edge.references or [])]),
+                            "references": _json_or_none([ref.model_dump() for ref in (new_edge.mentions or [])]),
                         })],
                     )
                     self._index_edge_refs(new_edge)
@@ -2753,7 +2753,7 @@ class GraphKnowledgeEngine:
                         "domain_id": e.domain_id,
                         "canonical_entity_id": e.canonical_entity_id,
                         "properties": _json_or_none(e.properties),
-                        "references": _json_or_none([ref.model_dump() for ref in (e.references or [])]),
+                        "references": _json_or_none([ref.model_dump() for ref in (e.mentions or [])]),
                     })],
                 )
                 # remove only the touched endpoint rows
@@ -2848,19 +2848,19 @@ class GraphKnowledgeEngine:
         # Prefer explicit doc_id on the node JSON; else infer from references
         if getattr(n, "doc_id", None):
             return n.doc_id
-        for r in (n.references or []):
+        for r in (n.mentions or []):
             if r.document_page_url:
                 m = re.search(r"document/([A-Za-z0-9\-]+)", r.document_page_url)
                 if m:
                     return m.group(1)
         return None
 
-    def _best_ref(self, n: Node | Edge) -> ReferenceSession:
+    def _best_ref(self, n: Node | Edge) -> Span:
         # support subclass of Node, that is including Edge indeed
         # Choose one ref to copy to the edge (earliest page, earliest char)
-        if n.references:
+        if n.mentions:
             refs = sorted(
-                n.references,
+                n.mentions,
                 key=lambda r: (getattr(r, "start_page", 10**9), getattr(r, "start_char", 10**9))
             )
             # Shallow copy + annotate verification that this ref is used for adjudication evidence
@@ -2890,7 +2890,7 @@ class GraphKnowledgeEngine:
                 "domain_id": edge.domain_id,
                 "canonical_entity_id": edge.canonical_entity_id,
                 "properties": json.dumps(edge.properties) if edge.properties is not None else None,
-                "references": json.dumps([ref.model_dump() for ref in (edge.references or [])]),
+                "references": json.dumps([ref.model_dump() for ref in (edge.mentions or [])]),
             })],
         )
 
@@ -3141,7 +3141,7 @@ class GraphKnowledgeEngine:
         keep: set[str] = set()
         for eid, blob in zip(entity_ids, documents):
             ent = model_cls.model_validate_json(blob)
-            for ref in (ent.references or []):
+            for ref in (ent.mentions or []):
                 im = getattr(ref, "insertion_method", None)
                 if im == insertion_method and (not doc_id or _ref_doc_id(ref) == doc_id):
                     keep.add(eid)
@@ -3151,12 +3151,12 @@ class GraphKnowledgeEngine:
         self,
         extracted_text: str,
         full_text: str,
-        ref: ReferenceSession,
+        ref: Span,
         *,
         min_ngram: int = 5,
         weights: Dict[str, float] = {"rapidfuzz": 0.5, "coverage": 0.3, "embedding": 0.2},
         threshold: float = 0.70,
-    ) -> ReferenceSession:
+    ) -> Span:
         return self.verifier._verify_one_reference(
                                 extracted_text=extracted_text,
                                 full_text=full_text,

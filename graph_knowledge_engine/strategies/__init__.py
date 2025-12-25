@@ -9,7 +9,7 @@ from ..models import (
     Edge,
     AdjudicationVerdict,
     LLMMergeAdjudication,
-    AdjudicationQuestionCode,ReferenceSession,AdjudicationTarget
+    AdjudicationQuestionCode,Span,AdjudicationTarget
 )
 
 

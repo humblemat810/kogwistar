@@ -1,9 +1,9 @@
 import json
 from graph_knowledge_engine.engine import GraphKnowledgeEngine
-from graph_knowledge_engine.models import Document, Node, ReferenceSession
+from graph_knowledge_engine.models import Document, Node, Span
 
 def _ref(doc_id, start=0, end=20):
-    return ReferenceSession(
+    return Span(
         collection_page_url=f"document_collection/{doc_id}",
         document_page_url=f"document/{doc_id}",
         doc_id = doc_id,
@@ -19,7 +19,7 @@ def test_default_sentence_transformer_embedder(tmp_path):
     eng.add_document(doc)
 
     # Add a node with no explicit embeddings -> collection embedder should run
-    n = Node(label="Chlorophyll", type="entity", summary="pigment that absorbs light", references=[_ref(doc.id, 0, 40)])
+    n = Node(label="Chlorophyll", type="entity", summary="pigment that absorbs light", mentions=[_ref(doc.id, 0, 40)])
     eng.add_node(n, doc_id=doc.id)
 
     got = eng.node_collection.get(ids=[n.id], include=["embeddings", "documents"])
@@ -29,22 +29,22 @@ def test_default_sentence_transformer_embedder(tmp_path):
     assert out["updated_nodes"] >= 1
     n2 = eng.node_collection.get(ids=[n.id], include=["documents"])
     node = Node.model_validate_json(n2["documents"][0])
-    assert node.references[0].verification is not None
-    detail = json.loads(node.references[0].verification.notes)
+    assert node.mentions[0].verification is not None
+    detail = json.loads(node.mentions[0].verification.notes)
     # embedding score may be present if model ran
     assert "coverage" in detail
     
 def test_default_embedder_autoruns(tmp_path):
     from graph_knowledge_engine.engine import GraphKnowledgeEngine
-    from graph_knowledge_engine.models import Document, Node, ReferenceSession
+    from graph_knowledge_engine.models import Document, Node, Span
 
     eng = GraphKnowledgeEngine(persist_directory=str(tmp_path / "chroma"))
     doc = Document(content="Chlorophyll absorbs light.", type="text")
     eng.add_document(doc)
 
-    ref = ReferenceSession(collection_page_url="c", document_page_url=f"document/{doc.id}", doc_id = doc.id,
+    ref = Span(collection_page_url="c", document_page_url=f"document/{doc.id}", doc_id = doc.id,
                            start_page=1, end_page=1, start_char=0, end_char=10, insertion_method = 'pytest-manual')
-    n = Node(label="Chlorophyll", type="entity", summary="absorbs light", references=[ref])
+    n = Node(label="Chlorophyll", type="entity", summary="absorbs light", mentions=[ref])
     eng.add_node(n, doc_id=doc.id)  # embeddings=None -> auto-embed via DefaultEmbeddingFunction
 
     got = eng.node_collection.get(ids=[n.id], include=["embeddings"])
