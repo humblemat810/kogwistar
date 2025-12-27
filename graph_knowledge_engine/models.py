@@ -304,21 +304,21 @@ class LLMEdge( LLMMixin, EdgeMixin, GraphEntityRefBase):
     pass
 
 class GroundginMandatorySnippet(Span):
-    snippet: str = Field(..., description="Short text snippet for quick preview")
+    snippet: str = Field(..., description="Short text snippet for quick preview") # type: ignore
 
     pass
 class LLMNodeExtraction(LLMNode):
     "extracted node information"
     
     groundings: Annotated[List[GroundginMandatorySnippet], FrontendField(),BackendField(),DtoField(),LLMField()] = Field(
-        ..., min_items=1, description="One or more locatable mentions supporting this entity"
+        min_items=1, description="One or more locatable mentions supporting this entity"
     )
 
 class LLMEdgeExtraction(LLMEdge):
     "extracted edge information"
     
     groundings: Annotated[List[GroundginMandatorySnippet], FrontendField(),BackendField(),DtoField(),LLMField()] = Field(
-        ..., min_items=1, description="One or more locatable mentions supporting this entity"
+        min_items=1, description="One or more locatable mentions supporting this entity"
     )
 
 class GraphExtractionWithIDs(ModeSlicingMixin, BaseModel):
@@ -352,8 +352,7 @@ class LLMGraphExtraction(ModeSlicingMixin, BaseModel):
         _ = info.context or {}
         return self
     @classmethod
-    def FromLLMSlice(cls, sliced, insertion_method):
-        sliced: LLMGraphExtraction['llm'] | dict
+    def FromLLMSlice(cls, sliced: Union["LLMGraphExtraction['llm']" , dict], insertion_method)->"LLMGraphExtraction":
         if isinstance(sliced, BaseModel):
             dumped = sliced.model_dump()
         elif type(sliced) is dict:
@@ -363,7 +362,7 @@ class LLMGraphExtraction(ModeSlicingMixin, BaseModel):
         for ne in dumped['nodes'] + dumped['edges']:
             for r in ne['references']:
                 r['insertion_method'] = insertion_method
-        return cls.model_validate(dumped, context = {})
+        return cls.model_validate(dumped, context = {"insertion_method" : insertion_method})
                 
 # -------------------------
 # Adjudication structures

@@ -33,13 +33,15 @@ def test_adjudication_and_commit(engine):
         label="Chlorophyll",
         type="entity",
         summary="Pigment in plants",
-        mentions=[_ref_for(doc.id)],
+        mentions = [Grounding([_ref_for(doc.id)])], metadata = {"source": "test_commit_cross_kind_creates_reifies"}, 
+               domain_id=None, canonical_entity_id=None, properties=None, embedding=None, doc_id=None
     )
     b = Node(
         label="Chlorophyll (pigment)",
         type="entity",
         summary="Plant pigment; absorbs light",
-        mentions=[_ref_for(doc.id)],
+        mentions = [Grounding([_ref_for(doc.id)])], metadata = {"source": "test_commit_cross_kind_creates_reifies"}, 
+               domain_id=None, canonical_entity_id=None, properties=None, embedding=None, doc_id=None
     )
 
     engine.add_node(a, doc_id=doc.id)
@@ -82,6 +84,7 @@ from graph_knowledge_engine.models import (
     Edge,
     Document,
     Span,
+    Grounding,
     AdjudicationVerdict
 )
 
@@ -92,12 +95,18 @@ def test_commit_cross_kind_creates_reifies(engine):
     ref = _ref_for(doc.id)
 
     # real source/target nodes
-    src = Node(label="S", type="entity", summary="src", mentions=[ref])
-    tgt = Node(label="T", type="entity", summary="tgt", mentions=[ref])
+    src = Node(label="S", type="entity", summary="src", 
+               mentions = [Grounding([ref])], metadata = {"source": "test_commit_cross_kind_creates_reifies"}, 
+               domain_id=None, canonical_entity_id=None, properties=None, embedding=None, doc_id=None)
+    tgt = Node(label="T", type="entity", summary="tgt", 
+               mentions = [Grounding([ref])], metadata = {"source": "test_commit_cross_kind_creates_reifies"},
+               domain_id=None, canonical_entity_id=None, properties=None, embedding=None, doc_id=None)
     engine.add_node(src, doc_id=doc.id)
     engine.add_node(tgt, doc_id=doc.id)
 
-    node_a = Node(label="Special Concept", type="entity", summary="as node", mentions=[ref])
+    node_a = Node(label="Special Concept", type="entity", summary="as node", 
+                  mentions = [Grounding([ref])], metadata = {"source": "test_commit_cross_kind_creates_reifies"}, 
+               domain_id=None, canonical_entity_id=None, properties=None, embedding=None, doc_id=None)
     engine.add_node(node_a, doc_id=doc.id)
 
     edge_b = Edge(
@@ -109,7 +118,8 @@ def test_commit_cross_kind_creates_reifies(engine):
         source_edge_ids= [],
         target_edge_ids= [],
         relation="has_concept",
-        mentions=[ref],
+        mentions = [Grounding([ref])], metadata = {"source": "test_commit_cross_kind_creates_reifies"}, 
+               domain_id=None, canonical_entity_id=None, properties=None, embedding=None, doc_id=None,
     )
     engine.add_edge(edge_b, doc_id=doc.id)
 

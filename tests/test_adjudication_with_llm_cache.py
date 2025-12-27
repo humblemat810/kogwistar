@@ -1,13 +1,14 @@
 import os, json, pathlib, uuid
 import pytest
 from joblib import Memory
-from typing import List
+from typing import List, cast
 
 from graph_knowledge_engine.engine import GraphKnowledgeEngine
 from graph_knowledge_engine.models import (
     Node,
     Edge,
     Document,
+    Grounding,
     Span,
     LLMMergeAdjudication,
     AdjudicationVerdict,
@@ -63,9 +64,15 @@ def test_batch_adjudication_with_llm_cache(engine):
     engine.add_document(doc)
 
     ref = _ref_for(doc.id)
-    a = Node(label="Chlorophyll a", type="entity", summary="Pigment in plants", mentions=[ref])
-    b = Node(label="Chlorophyll b", type="entity", summary="Another chlorophyll pigment", mentions=[ref])
-    c = Node(label="Hemoglobin",   type="entity", summary="Protein in red blood cells", mentions=[ref])
+    a = Node(label="Chlorophyll a", type="entity", summary="Pigment in plants",
+             mentions = [Grounding([_ref_for(doc.id)])], metadata = {"source": "test_commit_cross_kind_creates_reifies"}, 
+               domain_id=None, canonical_entity_id=None, properties=None, embedding=None, doc_id=None)
+    b = Node(label="Chlorophyll b", type="entity", summary="Another chlorophyll pigment", 
+             mentions = [Grounding([_ref_for(doc.id)])], metadata = {"source": "test_commit_cross_kind_creates_reifies"}, 
+               domain_id=None, canonical_entity_id=None, properties=None, embedding=None, doc_id=None)
+    c = Node(label="Hemoglobin",   type="entity", summary="Protein in red blood cells", 
+             mentions = [Grounding([_ref_for(doc.id)])], metadata = {"source": "test_commit_cross_kind_creates_reifies"}, 
+               domain_id=None, canonical_entity_id=None, properties=None, embedding=None, doc_id=None)
 
     engine.add_node(a, doc_id=doc.id)
     engine.add_node(b, doc_id=doc.id)
@@ -94,10 +101,10 @@ def test_batch_adjudication_with_llm_cache(engine):
         from graph_knowledge_engine.models import LLMMergeAdjudication
 
         llm = AzureChatOpenAI(
-            deployment_name=os.getenv("OPENAI_DEPLOYMENT_NAME_GPT4_1"),
-            model_name=os.getenv("OPENAI_MODEL_NAME_GPT4_1"),
+            deployment_name=os.getenv("OPENAI_DEPLOYMENT_NAME_GPT4_1"), # type: ignore
+            model_name=os.getenv("OPENAI_MODEL_NAME_GPT4_1"), # type: ignore
             azure_endpoint=os.getenv("OPENAI_DEPLOYMENT_ENDPOINT_GPT4_1"),
-            openai_api_key=os.getenv("OPENAI_API_KEY_GPT4_1"),
+            openai_api_key=os.getenv("OPENAI_API_KEY_GPT4_1"), # type: ignore
             api_version="2024-08-01-preview",
             model_version=os.getenv("OPENAI_DEPLOYMENT_VERSION_GPT4_1"),
             temperature=0.1,
@@ -111,7 +118,7 @@ def test_batch_adjudication_with_llm_cache(engine):
             ("human", "Mapping table:\n{mapping}\n\nPairs:\n{pairs}")
         ])
         chain = prompt | llm.with_structured_output(BatchAdjudications)
-        results:BatchAdjudications  = chain.invoke({"mapping": mapping, "pairs": payload})
+        results:BatchAdjudications  = cast(BatchAdjudications, chain.invoke({"mapping": mapping, "pairs": payload}))
         # Return a JSON-serializable form for caching
         return results
 

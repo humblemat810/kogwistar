@@ -1,8 +1,22 @@
 import uuid
 from graph_knowledge_engine.engine import GraphKnowledgeEngine, uuid_to_base62, base62_to_uuid, AliasBook
-from graph_knowledge_engine.models import Node, Edge, Document, Span
+from graph_knowledge_engine.models import Node, Edge, Document, Span, MentionVerification, Grounding
 import json
-
+def _span_for(doc_id: str, start_page = 1, end_page = 1, start_char = 0, end_char = 1, collection_page_url = None, document_page_url = None) -> Span:
+    if collection_page_url is None:
+        collection_page_url = f"url/{doc_id}"
+    if not document_page_url:
+        document_page_url = f"document/{doc_id}"
+    return Span(
+        collection_page_url="c",
+        document_page_url=f"document/{doc_id}",
+        start_page=start_page, end_page=end_page, start_char=start_char, end_char=end_char,
+        verification=MentionVerification(method="heuristic", is_verified=False, notes = None, score = 0.9), 
+        insertion_method="pytest-manual",
+        doc_id = doc_id,
+        source_cluster_id = None,
+        snippet = None
+    )
 def test_base62_roundtrip():
     u = str(uuid.uuid4())
     s = uuid_to_base62(u)
@@ -32,19 +46,15 @@ def test_de_alias_ids_in_result_session_alias(monkeypatch):
     doc = Document(content="x", type="test", metadata = {"source": "test_de_alias_ids_in_result_session_alias"}, domain_id = None, processed = False)
     eng.add_document(doc)
     # pretend we already have context with two nodes and an edge
-    n1 = Node(label="A", type="entity", summary="a", mentions=[Span(collection_page_url="c", doc_id = doc.id,
-                                                                                  insertion_method = "pytest-manual",
-                                                                                  document_page_url=f"document/{doc.id}", start_page=1,end_page=1,start_char=0,end_char=1)])
-    n2 = Node(label="B", type="entity", summary="b", mentions=[Span(collection_page_url="c", doc_id = doc.id,
-                                                                                  insertion_method = "pytest-manual",
-                                                                                  document_page_url=f"document/{doc.id}", start_page=1,end_page=1,start_char=2,end_char=3)])
+    n1 = Node(label="A", type="entity", summary="a", metadata = {"source": "test_commit_cross_kind_creates_reifies"},
+               domain_id=None, canonical_entity_id=None, properties=None, embedding=None, doc_id=None, mentions=[Grounding([_span_for(doc.id)])])
+    n2 = Node(label="B", type="entity", summary="b", domain_id=None, canonical_entity_id=None, properties=None, embedding=None, doc_id=None, metadata = {},
+                mentions=[Grounding([_span_for(doc.id, 1,1,2,3)])])
     eng.add_node(n1, doc_id=doc.id)
     eng.add_node(n2, doc_id=doc.id)
     e = Edge(label="A->B", type="relationship", summary="ab", relation="rel", source_ids=[n1.id], target_ids=[n2.id],
-             source_edge_ids = [], target_edge_ids = [],
-             mentions=[Span(collection_page_url="c", document_page_url=f"document/{doc.id}", 
-                                          insertion_method = "pytest-manual",
-                                          doc_id = doc.id, start_page=1,end_page=1,start_char=0,end_char=3)])
+             source_edge_ids = [], target_edge_ids = [], domain_id=None, canonical_entity_id=None, properties=None, embedding=None, doc_id=None, metadata = {},
+             mentions=[Grounding([_span_for(doc.id, 1,1,0,3)])])
     eng.add_edge(e, doc_id=doc.id)
 
     # allocate aliases for the context
@@ -54,15 +64,16 @@ def test_de_alias_ids_in_result_session_alias(monkeypatch):
     # fake an LLMGraphExtraction-shaped thing with aliases
     from graph_knowledge_engine.models import LLMGraphExtraction, LLMNode, LLMEdge, MentionVerification
     # immitate llm slice return from llm
-    parsed = LLMGraphExtraction['llm'](
-        nodes=[LLMNode['llm'](id=book.real_to_alias[n1.id], label="A", type="entity", summary="a",
-                       mentions=[Span['llm'](collection_page_url="c", document_page_url=f"document/{doc.id}", doc_id = doc.id, start_page=1,end_page=1,start_char=0,end_char=1, verification=MentionVerification(method="heuristic", is_verified=False))
-                                   ]).model_dump()],
-        edges=[LLMEdge['llm'](id=book.real_to_alias[e.id], label="A->B", type="relationship", summary="ab",
+    dumped = LLMGraphExtraction['llm'](
+        nodes=[LLMNode['llm'](id=book.real_to_alias[n1.id], label="A", type="entity", summary="a",  domain_id=None, canonical_entity_id=None, properties=None, local_id = "nn:1",
+                    mentions=[Grounding([_span_for(doc.id)])])
+                                   ],
+        edges=[LLMEdge['llm'](id=book.real_to_alias[e.id], label="A->B", type="relationship", summary="ab",  domain_id=None, canonical_entity_id=None, properties=None, local_id = "ne:1",
                        relation="rel", source_ids=[book.real_to_alias[n1.id]], target_ids=[book.real_to_alias[n2.id]],
                        source_edge_ids = [], target_edge_ids = [],
-                       mentions=[Span['llm'](collection_page_url="c", document_page_url=f"document/{doc.id}", doc_id = doc.id, start_page=1,end_page=1,start_char=0,end_char=3, verification=MentionVerification(method="heuristic", is_verified=False))]).model_dump()]
-    , context = dict(insertion_method = "pytest-graph_extractor"))
+                       mentions=[Grounding([_span_for(doc.id,1,1,2,3, collection_page_url="c")])]
+                       )]).model_dump()
+    parsed = LLMGraphExtraction['llm'].model_validate( dumped, context = dict(insertion_method = "pytest-graph_extractor")) # re try with injection
     # invoke custom slice to base conversion
     parsed = LLMGraphExtraction.FromLLMSlice(parsed, insertion_method = "pytest-graph_extractor")
     # de-alias
@@ -76,28 +87,31 @@ def test_commit_merge_creates_same_as_and_endpoints():
     eng = GraphKnowledgeEngine()
     doc = Document(content="y", type="test", metadata={"source": "test_commit_merge_creates_same_as_and_endpoints"}, domain_id = None, processed = False)
     eng.add_document(doc)
-
-    ref = Span(collection_page_url="c", document_page_url=f"document/{doc.id}", 
-                           insertion_method = "pytest-manual",
-                           doc_id = doc.id, start_page=1, end_page=1, start_char=0, end_char=5)
-    a = Node(label="Einstein", type="entity", summary="person", mentions=[ref])
-    b = Node(label="Einstein", type="entity", summary="person (dup)", mentions=[ref])
+    mentions=[Grounding([_span_for(doc.id,1,1,0,5, collection_page_url="c")])]
+    # grounding = Span(collection_page_url="c", document_page_url=f"document/{doc.id}", 
+                        #    insertion_method = "pytest-manual",
+                        #    doc_id = doc.id, start_page=1, end_page=1, start_char=0, end_char=5)
+    a = Node(label="Einstein", type="entity", summary="person", mentions=mentions,  
+             domain_id=None, canonical_entity_id=None, properties=None, embedding=None, doc_id=None, metadata = {})
+    b = Node(label="Einstein", type="entity", summary="person (dup)", mentions=mentions,  
+             domain_id=None, canonical_entity_id=None, properties=None, embedding=None, doc_id=None, metadata = {})
     eng.add_node(a, doc_id=doc.id)
     eng.add_node(b, doc_id=doc.id)
-
+    from graph_knowledge_engine.models import AdjudicationVerdict
     # minimal verdict-like object
-    class V: 
-        same_entity=True
-        confidence=0.9
-        reason="dup"
-        canonical_entity_id=None
-
-    eng.commit_merge(a, b, V)  # should create same_as edge with left_id/right_id or endpoints
+    adj_verd = AdjudicationVerdict.model_validate(dict(same_entity=True,
+        confidence=0.9,
+        reason="dup",
+        canonical_entity_id=None))
+        
+    
+    eng.commit_merge(a, b, adj_verd)  # should create same_as edge with left_id/right_id or endpoints
 
     # verify an edge exists that ties a<->b
     edges = eng.edge_collection.get(include=["metadatas","documents"])
     found = False
-    for eid, meta, docj in zip(edges["ids"], edges["metadatas"], edges["documents"]):
+    from typing import cast
+    for eid, meta, docj in zip(edges["ids"], cast(list[dict],edges["metadatas"]), cast(list[dict],edges["documents"])):
         if (meta or {}).get("relation") == "same_as":
             found = True
             break
