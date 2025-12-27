@@ -1,5 +1,5 @@
 # tests/test_embeddings_optional.py
-from graph_knowledge_engine.models import Node,Span
+from graph_knowledge_engine.models import Node,Span, Grounding
 
 def test_embeddings_optional_insert(engine):
     doc_id = 'test-did'
@@ -8,7 +8,7 @@ def test_embeddings_optional_insert(engine):
         type="entity",
         summary="Inserted without embedding",
         embedding=None,
-        mentions=[Span(
+        mentions=[Grounding(Span(
                         collection_page_url=f"document_collection/{doc_id}",
                         document_page_url=f"document/{doc_id}",
                         start_page=1,
@@ -17,7 +17,7 @@ def test_embeddings_optional_insert(engine):
                         insertion_method="pytest-manual",
                         end_char=1,
                         doc_id = doc_id
-                    )]
+                    ))]
     )
     # Should not raise; Chroma accepts missing embeddings
     engine.add_node(n)

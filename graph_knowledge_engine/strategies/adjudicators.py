@@ -3,7 +3,7 @@
 from __future__ import annotations
 from typing import Any, Dict, List, Tuple
 from pydantic import BaseModel
-from langchain.prompts import ChatPromptTemplate
+from langchain_core.prompts import ChatPromptTemplate
 
 from .types import EngineLike, IAdjudicator
 

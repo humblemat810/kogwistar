@@ -72,7 +72,7 @@ def test_alias_book_is_stable_and_delta_minimal():
 # De-aliasing back to real IDs (session_alias strategy)
 # --------------------------
 
-def _ref_for(doc_id: str) -> Span:
+def _span_for(doc_id: str) -> Span:
     return Span(
         collection_page_url="c",
         document_page_url=f"document/{doc_id}",
@@ -89,13 +89,13 @@ def test_de_alias_ids_in_result_session_alias(monkeypatch):
     eng.add_document(doc)
 
     # create tiny context: two nodes + an edge
-    n1 = Node(label="A", type="entity", summary="a", grounding_set=[_ref_for(doc.id)])
-    n2 = Node(label="B", type="entity", summary="b", grounding_set=[_ref_for(doc.id)])
+    n1 = Node(label="A", type="entity", summary="a", mentions=[_span_for(doc.id)])
+    n2 = Node(label="B", type="entity", summary="b", mentions=[_span_for(doc.id)])
     eng.add_node(n1, doc_id=doc.id)
     eng.add_node(n2, doc_id=doc.id)
     e = Edge(label="A->B", type="relationship", summary="ab", relation="rel",
              source_ids=[n1.id], target_ids=[n2.id], source_edge_ids = [], target_edge_ids = [],
-             grounding_set=[_ref_for(doc.id)])
+             mentions=[_span_for(doc.id)])
     eng.add_edge(e, doc_id=doc.id)
 
     # allocate session aliases for the context
@@ -108,7 +108,7 @@ def test_de_alias_ids_in_result_session_alias(monkeypatch):
             LLMNode(
                 id=book.real_to_alias[n1.id],
                 label="A", type="entity", summary="a",
-                grounding_set=[_ref_for(doc.id)]
+                mentions=[_span_for(doc.id)]
             )
         ],
         edges=[
@@ -119,7 +119,7 @@ def test_de_alias_ids_in_result_session_alias(monkeypatch):
                 source_ids=[book.real_to_alias[n1.id]],
                 target_ids=[book.real_to_alias[n2.id]],
                 source_edge_ids = [], target_edge_ids = [],
-                grounding_set=[_ref_for(doc.id)]
+                mentions=[_span_for(doc.id)]
             )
         ]
     )

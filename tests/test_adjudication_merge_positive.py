@@ -126,7 +126,7 @@ def test_deterministic_batch_merge(engine, monkeypatch):
     engine.llm = _DeterministicBatchLLM()
 
     # Build the prompt chain like your real test does
-    from langchain.prompts import ChatPromptTemplate
+    from langchain_core.prompts import ChatPromptTemplate
     prompt = ChatPromptTemplate.from_messages([
         ("system", "You adjudicate candidate pairs. Use the mapping table to interpret question_code. "
                    "Return only the structured JSON per schema."),

@@ -88,7 +88,7 @@ def test_batch_adjudication_with_llm_cache(engine):
     @memory.cache
     def _adjudicate_with_llm_cached(mapping, payload):
         from langchain_openai import AzureChatOpenAI
-        from langchain.prompts import ChatPromptTemplate
+        from langchain_core.prompts import ChatPromptTemplate
         from graph_knowledge_engine.models import LLMMergeAdjudication
 
         llm = AzureChatOpenAI(

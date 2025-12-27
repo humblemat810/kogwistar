@@ -8,6 +8,7 @@ from graph_knowledge_engine.models import Document, Span
 def engine():
     return GraphKnowledgeEngine()
 def test_ingest_documentS_with_llm(engine):
+    engine.llm.model = "models/gemini-2.5-flash"
     doc_content_list = [
         "1. Science & Facts"
         "The Pacific Ocean is the largest and deepest body of water on Earth, covering more than 60 million square miles. It contains countless ecosystems, from vibrant coral reefs to mysterious deep-sea trenches. Scientists continue to discover new species in its depths each year."
@@ -27,11 +28,14 @@ def test_ingest_documentS_with_llm(engine):
         "6. Happiness"
         "Happiness often comes in small, quiet moments—a shared laugh with a friend, the warmth of sunlight on your skin, or the first sip of tea on a cold morning. It’s less about grand achievements and more about noticing the simple joys that fill each day."
     ]
+    node_edge_should_include_instruction = ("Extract knowledge as nodes and edges. Extract node as entity, edge as relationship. "
+                                            "Both nodes and edges can be endpoint of an edge to represent nested ideas. "
+                                            "use source_ids or target_ids for nodes; use source_edge_ids or target_edge_ids for nodes. ")
     import pathlib
     from joblib import Memory
     for doc_content in doc_content_list:
         doc = Document(content=doc_content,
-                   type="ocr", metadata={"source":"test"})
+                   type="ocr", metadata={"source":"test"}, domain_id = None, processed = False)
            # cache ONLY the pure extraction on the doc content
         cache_dir = os.path.join(".cache","test",pathlib.Path(__file__).name,"extract")
         memory = Memory(location=cache_dir, verbose=0)
@@ -40,10 +44,11 @@ def test_ingest_documentS_with_llm(engine):
         os.makedirs(location, exist_ok = True)
         memory = Memory(location=location, verbose=0)
         @memory.cache
-        def _extract_only(content: str):
-            return engine.extract_graph_with_llm(content=content)
+        def _extract_only(content: str, node_edge_should_include_instruction: None | str = None):
+            return engine.extract_graph_with_llm(content=content, 
+                                                 node_edge_should_include_instruction = node_edge_should_include_instruction)
 
-        extracted = _extract_only(doc.content)
+        extracted = _extract_only(doc.content, node_edge_should_include_instruction)
         parsed = extracted["parsed"]
 
         # persist deterministically (choose replace/append/skip-if-exists)
@@ -77,7 +82,7 @@ def test_ingest_document_with_llm(engine):
     node_found = False
     for node_json in nodes["documents"]:
         node = json.loads(node_json)
-        if node.get("references"):
+        if node.get("groundings"):
             node_found = True
             # Check ReferenceSession structure
             ref = node["references"][0]

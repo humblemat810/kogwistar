@@ -86,7 +86,7 @@ def engine():
     # Fresh engine per test (optionally point persist_directory to a tmp path)
     return GraphKnowledgeEngine()
 
-def _ref_for(doc_id: str) -> Span:
+def _span_for(doc_id: str) -> Span:
     # Minimal required span fields
     return Span(
         collection_page_url="c",
@@ -112,7 +112,7 @@ def test_batch_adjudication_and_commit(engine, monkeypatch):
     engine.add_document(doc)
 
     # Create three nodes; A & B should be considered the same by our fake rule, A & C not.
-    ref = _ref_for(doc.id)
+    ref = _span_for(doc.id)
     a = Node(label="Chlorophyll a", type="entity", summary="Pigment in plants", mentions=[ref])
     b = Node(label="Chlorophyll b", type="entity", summary="Another chlorophyll pigment", mentions=[ref])
     c = Node(label="Hemoglobin",   type="entity", summary="Protein in red blood cells", mentions=[ref])

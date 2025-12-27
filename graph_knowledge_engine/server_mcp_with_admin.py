@@ -474,7 +474,7 @@ def store_document(inp: DocParseIn):
     require_role("rw")
     doc = Document(id=inp.id, content=inp.content, type=inp.type)
     engine.add_document(doc)
-    return DocStoreOut(**{"success": True})
+    return DocStoreOut.model_validate({"success": True})
 @tool_roles({Role.RW})
 @require_ns("docs")
 @mcp.tool()
@@ -538,13 +538,13 @@ class D3Out(BaseModel):
 def kg_viz_cytoscape_json(doc_id: Optional[str] = None, mode: str = "reify") -> CytoscapeOut:
     """get cytoscape format json data for visual rendering"""
     payload = to_cytoscape(engine, doc_id=doc_id, mode=mode)
-    return CytoscapeOut(**payload)
+    return CytoscapeOut.model_validate(payload)
 @tool_roles({Role.RO, Role.RW})
 @mcp.tool()
 def kg_viz_d3_json(doc_id: Optional[str] = None, mode: str = "reify") -> D3Out:
     """get d3 format json data for visual rendering"""
     payload = to_d3_force(engine, doc_id=doc_id, mode=mode)
-    return D3Out(**payload)
+    return D3Out.model_validate(payload)
 
 
 
@@ -561,7 +561,7 @@ class DevTokenInp(BaseModel):
     ns : Literal["docs", "wisdom"]= "docs"
 @app.post("/auth/dev-token")
 async def dev_token(request: Request):
-    inp = DevTokenInp(**(await request.json()))
+    inp = DevTokenInp.model_validate((await request.json()))
     if inp.role not in ROLE_ORDER:
         raise HTTPException(400, f"role must be one of {list(ROLE_ORDER)}")
     payload = {
@@ -840,7 +840,7 @@ def kg_upsert_graph_wisdom(inp: KGUpsertIn) -> GraphUpsertOut:
     inp.insertion_method = inp.insertion_method or "wisdom_runtime"
     pure_graph = PureGraph.model_validate(dict(nodes = inp.nodes, edges = inp.edges))
     
-    return GraphUpsertOut(**wisdom_engine.persist_graph(parsed = pure_graph, session_id = "wisdom:"+str(uuid.uuid1())))
+    return GraphUpsertOut.model_validate(wisdom_engine.persist_graph(parsed = pure_graph, session_id = "wisdom:"+str(uuid.uuid1())))
     # return _kg_upsert_graph_impl(wisdom_engine, wisdom_gq, inp)
 @tool_roles({Role.RO, Role.RW})
 @require_ns(NameSpace.WISDOM)

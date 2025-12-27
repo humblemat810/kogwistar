@@ -8,7 +8,7 @@ if USE_GEMINI:
     from langchain_google_genai import ChatGoogleGenerativeAI as ChatModel
     LLM_KW = dict(model="models/gemini-2.5-flash", temperature=0,
                   model_kwargs={"convert_tool_to_function_call": True})
-    llm = ChatModel(**LLM_KW)
+    llm = ChatModel.model_validate(LLM_KW)
 else:
     from langchain_openai import AzureChatOpenAI
     llm = AzureChatOpenAI(

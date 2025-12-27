@@ -192,7 +192,7 @@ class VectorProposer(MergeCandidateProposer):
                             n = Node.model_validate_json(dj)
                         except Exception:
                             try:
-                                n = Node(**json.loads(dj))
+                                n = Node.model_validate(json.loads(dj))
                             except Exception:
                                 raise
                         n.embedding = got['embeddings'][0]
@@ -216,7 +216,7 @@ class VectorProposer(MergeCandidateProposer):
                             n = Edge.model_validate_json(dj)
                         except Exception:
                             try:
-                                n = Edge(**json.loads(dj))
+                                n = Edge.model_validate(json.loads(dj))
                             except Exception:
                                 raise
                         n.embedding = got['embeddings'][0]
@@ -310,7 +310,7 @@ class VectorProposer(MergeCandidateProposer):
                     match = Node.model_validate_json(mj)
                 except Exception:
                     try:
-                        match = Node(**json.loads(mj))
+                        match = Node.model_validate(json.loads(mj))
                     except Exception:
                         continue
                 match.embedding = emb
@@ -339,7 +339,7 @@ class VectorProposer(MergeCandidateProposer):
                         match = Edge.model_validate_json(mj)
                     except Exception:
                         try:
-                            match = Edge(**json.loads(mj))
+                            match = Edge.model_validate(json.loads(mj))
                         except Exception:
                             continue
                     match.embedding = emb
