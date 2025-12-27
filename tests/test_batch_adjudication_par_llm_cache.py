@@ -9,6 +9,7 @@ from joblib import Memory
 from graph_knowledge_engine.engine import GraphKnowledgeEngine
 from graph_knowledge_engine.models import (
     Document,
+    MentionVerification,
     Node,
     Edge,
     Span,
@@ -28,21 +29,18 @@ _required_env = (
 _skip = not all(os.getenv(k) for k in _required_env)
 
 
-def _ref_for(doc_id: str,
-             start_page: int = 1, end_page: int = 1,
-             start_char: int = 0, end_char: int = 1,
-             snippet: str | None = None) -> Span:
-    # IMPORTANT: include doc_id for indexing/rollback paths
+def _ref_for(doc_id: str) -> Span:
+    return _span_for(doc_id)
+def _span_for(doc_id: str) -> Span:
     return Span(
-        collection_page_url=f"document_collection/{doc_id}",
+        collection_page_url="c",
         document_page_url=f"document/{doc_id}",
-        doc_id=doc_id,
-        start_page=start_page,
-        end_page=end_page,
-        start_char=start_char,
-        end_char=end_char,
+        start_page=1, end_page=1, start_char=0, end_char=1,
+        verification=MentionVerification(method="heuristic", is_verified=False, notes = None, score = 0.9), 
         insertion_method="pytest-manual",
-        snippet=snippet,
+        doc_id = doc_id,
+        source_cluster_id = None,
+        snippet = None
     )
 
 

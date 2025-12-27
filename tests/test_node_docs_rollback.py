@@ -1,14 +1,20 @@
 # tests/test_node_docs_rollback.py
 import json
 from graph_knowledge_engine.engine import GraphKnowledgeEngine
-from graph_knowledge_engine.models import Document, Node, Span
+from graph_knowledge_engine.models import Document, Node, Span, MentionVerification
 
-def _ref_for(did: str, s=0, e=1):
+def _ref_for(doc_id: str) -> Span:
+    return _span_for(doc_id)
+def _span_for(doc_id: str) -> Span:
     return Span(
-        collection_page_url=f"document_collection/{did}",
-        document_page_url=f"document/{did}",
+        collection_page_url="c",
+        document_page_url=f"document/{doc_id}",
+        start_page=1, end_page=1, start_char=0, end_char=1,
+        verification=MentionVerification(method="heuristic", is_verified=False, notes = None, score = 0.9), 
         insertion_method="pytest-manual",
-        start_page=1, end_page=1, start_char=s, end_char=e, doc_id=did
+        doc_id = doc_id,
+        source_cluster_id = None,
+        snippet = None
     )
 
 def test_node_docs_partial_then_full_rollback(tmp_path):

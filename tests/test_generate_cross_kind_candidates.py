@@ -1,14 +1,20 @@
 # tests/test_generate_cross_kind_candidates.py
 import pytest
 from graph_knowledge_engine.engine import GraphKnowledgeEngine
-from graph_knowledge_engine.models import Document, Node, Edge, Span
+from graph_knowledge_engine.models import Document, Node, Edge, Span,MentionVerification
 
 def _ref_for(doc_id: str) -> Span:
+    return _span_for(doc_id)
+def _span_for(doc_id: str) -> Span:
     return Span(
-        collection_page_url=f"document_collection/{doc_id}",
-        document_page_url=f"document/{doc_id}", doc_id = doc_id,
+        collection_page_url="c",
+        document_page_url=f"document/{doc_id}",
+        start_page=1, end_page=1, start_char=0, end_char=1,
+        verification=MentionVerification(method="heuristic", is_verified=False, notes = None, score = 0.9), 
         insertion_method="pytest-manual",
-        start_page=1, end_page=1, start_char=0, end_char=5, snippet="dummy"
+        doc_id = doc_id,
+        source_cluster_id = None,
+        snippet = None
     )
 
 @pytest.fixture(scope="function")

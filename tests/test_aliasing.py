@@ -77,10 +77,11 @@ def _span_for(doc_id: str) -> Span:
         collection_page_url="c",
         document_page_url=f"document/{doc_id}",
         start_page=1, end_page=1, start_char=0, end_char=1,
-        verification=MentionVerification(method="heuristic", is_verified=False), 
+        verification=MentionVerification(method="heuristic", is_verified=False, notes = None, score = 0.9), 
         insertion_method="pytest-manual",
-        doc_id = doc_id
-        
+        doc_id = doc_id,
+        source_cluster_id = None,
+        snippet = None
     )
 
 def test_de_alias_ids_in_result_session_alias(monkeypatch):
