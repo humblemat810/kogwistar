@@ -163,7 +163,7 @@ class VectorProposer(MergeCandidateProposer):
             elif allowed_docs:
                 new_node = [nid for d in allowed_docs for nid in engine.node_ids_by_doc(d)]
             else:
-                new_node = (engine.node_collection.get(include=["ids"]) or {}).get("ids", [])  # all nodes
+                new_node = (engine.node_collection.get() or {}).get("ids", [])  # all nodes
 
         if new_edge is None:
             if anchor_doc_id:
@@ -171,7 +171,7 @@ class VectorProposer(MergeCandidateProposer):
             elif allowed_docs:
                 new_edge = [eid for d in allowed_docs for eid in engine.edge_ids_by_doc(d)]
             else:
-                new_edge = (engine.edge_collection.get(include=["ids"]) or {}).get("ids", [])  # all edges
+                new_edge = (engine.edge_collection.get() or {}).get("ids", [])  # all edges
         if not (new_node or new_edge):
             return []
         # ---- tiny local coercers (ids -> objects) -------------------------------------

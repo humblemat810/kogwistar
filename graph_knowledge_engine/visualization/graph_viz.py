@@ -50,8 +50,8 @@ def _ids_by_doc(engine, doc_id: Optional[str]) -> Tuple[List[str], List[str]]:
     """Find ids scoped to a doc (fallback-safe)."""
     if not doc_id:
         # whole-graph fallback (cheap)
-        n = engine.node_collection.get(include=["ids"])
-        e = engine.edge_collection.get(include=["ids"])
+        n = engine.node_collection.get()
+        e = engine.edge_collection.get()
         return (n.get("ids") or []), (e.get("ids") or [])
     # Prefer engine helpers if present
     try:
@@ -60,7 +60,7 @@ def _ids_by_doc(engine, doc_id: Optional[str]) -> Tuple[List[str], List[str]]:
         # fallback: query node_docs table if present
         try:
             rows = engine.node_docs_collection.get(where={"doc_id": doc_id}, include=["metadatas"])
-            node_ids = list({(m or {}).get("node_id") for m in (rows.get("metadatas") or []) if m and m.get("node_id")})
+            node_ids : list= list({(m or {}).get("node_id") for m in (rows.get("metadatas") or []) if m and m.get("node_id")})
         except Exception:
             node_ids = []
     try:
@@ -69,7 +69,7 @@ def _ids_by_doc(engine, doc_id: Optional[str]) -> Tuple[List[str], List[str]]:
         # fallback: query endpoints table if present
         try:
             eps = engine.edge_endpoints_collection.get(where={"doc_id": doc_id}, include=["metadatas"])
-            edge_ids = list({(m or {}).get("edge_id") for m in (eps.get("metadatas") or []) if m and m.get("edge_id")})
+            edge_ids :list= list({(m or {}).get("edge_id") for m in (eps.get("metadatas") or []) if m and m.get("edge_id")})
         except Exception:
             edge_ids = []
     return node_ids, edge_ids
@@ -88,12 +88,10 @@ def _filter_by_insertion_method(
 
     # Fast path: use refs index if present
     coll_attr = "node_refs_collection" if kind == "node" else "edge_refs_collection"
-    fallback = False
-    try:
-        coll = getattr(engine, coll_attr)
-    except Exception:
-        fallback = True
-    if not fallback:
+    
+    coll = getattr(engine, coll_attr, None)
+    
+    if coll:
         where = {"insertion_method": insertion_method}
         if by_doc_id:
             where = {"$and": [where, {"doc_id": by_doc_id}]}
