@@ -1,76 +1,89 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, List, Optional, Protocol, TypedDict, Union, runtime_checkable
-from .models import AdjudicationVerdict, Document
+from typing import Any, Callable, Dict, List, Mapping, Optional, Protocol, TypedDict, TypeAlias, TypeVar, Sequence, Union, runtime_checkable
+from .models import AdjudicationVerdict, Document as EngineDoc
 # -------------------------
 # Collection / Vector store
 # -------------------------
 
-class GetResult(TypedDict, total=False):
-    ids: List[str]
-    documents: List[str]
-    metadatas: List[Dict[str, Any]]
-    embeddings: List[List[float]]
-    distances: List[List[float]]
-    uris: List[str]
-    data: Any  # some backends return extra buckets
+# class GetResult(TypedDict, total=False):
+#     ids: List[str]
+#     documents: List[str]
+#     metadatas: List[Dict[str, Any]]
+#     embeddings: List[List[float]]
+#     distances: List[List[float]]
+#     uris: List[str]
+#     data: Any  # some backends return extra buckets
+# class QueryResult(TypedDict, total=False):
+#     ids: List[List[str]]
+#     documents: List[List[str]]
+#     metadatas: List[List[Dict[str, Any]]]
+#     distances: List[List[float]]
 
-class QueryResult(TypedDict, total=False):
-    ids: List[List[str]]
-    documents: List[List[str]]
-    metadatas: List[List[Dict[str, Any]]]
-    distances: List[List[float]]
+from chromadb.api.types import Embedding, PyEmbedding, Document as ChromaDocument, Image, URI, ID, Include, QueryResult
+from chromadb.base_types import Where, WhereDocument
+from typing import Protocol
+from chromadb.api.types import (
+    IDs,
+ 
+    OneOrMany,
+    GetResult,
+    Metadata,
+ 
+ 
+)
 
 class CollectionLike(Protocol):
-    """Minimal shape of a Chroma-like collection used in engine/strategies."""
-
     def add(
         self,
-        *,
-        ids: List[str],
-        documents: Optional[List[str]] = ...,
-        embeddings: Optional[List[List[float]]] = ...,
-        metadatas: Optional[List[Dict[str, Any]]] = ...,
-        uris: Optional[List[str]] = ...,
-    ) -> Any: ...
+        ids: OneOrMany[ID],
+        embeddings: Any = None,
+        metadatas: OneOrMany[Metadata] | None = None,
+        documents: OneOrMany[ChromaDocument] | None = None,
+        images: Any = None,
+        uris: OneOrMany[URI] | None = None,
+    ) -> None: ...
 
     def update(
         self,
-        *,
-        ids: List[str],
-        documents: Optional[List[str]] = ...,
-        embeddings: Optional[List[List[float]]] = ...,
-        metadatas: Optional[List[Dict[str, Any]]] = ...,
-        uris: Optional[List[str]] = ...,
-    ) -> Any: ...
+        ids: OneOrMany[ID],
+        embeddings: Any = None,
+        metadatas: OneOrMany[Metadata] | None = None,
+        documents: OneOrMany[ChromaDocument] | None = None,
+        images: Any = None,
+        uris: OneOrMany[URI] | None = None,
+    ) -> None: ...
 
     def get(
         self,
-        *,
-        ids: Optional[List[str]] = ...,
-        where: Optional[Dict[str, Any]] = ...,
-        include: Optional[List[str]] = ...,
-        limit: Optional[int] = ...,
-        offset: Optional[int] = ...,
+        ids: OneOrMany[ID] | None = None,
+        where: Where | None = None,
+        limit: int | None = None,
+        offset: int | None = None,
+        where_document: WhereDocument | None = None,
+        include: Include = ["metadatas", "documents"],
     ) -> GetResult: ...
 
     def delete(
         self,
-        *,
-        ids: Optional[List[str]] = ...,
-        where: Optional[Dict[str, Any]] = ...,
-    ) -> Any: ...
+        ids: IDs | None = None,
+        where: Where | None = None,
+        where_document: WhereDocument | None = None,
+    ) -> None: ...
 
     def query(
         self,
-        *,
-        query_embeddings: Optional[List[List[float]]] = ...,
-        n_results: int = ...,
-        where: Optional[Dict[str, Any]] = ...,
-        include: Optional[List[str]] = ...,
+        query_embeddings: OneOrMany[Embedding] | OneOrMany[PyEmbedding] | None = None,
+        query_texts: OneOrMany[ChromaDocument] | None = None,
+        query_images: OneOrMany[Image] | None = None,
+        query_uris: OneOrMany[URI] | None = None,
+        ids: OneOrMany[ID] | None = None,
+        n_results: int = 10,
+        where: Where | None = None,
+        where_document: WhereDocument | None = None,
+        include: Include = ["metadatas", "documents", "distances"],
     ) -> QueryResult: ...
-
 # -------------------------
 # LangChain LLM surface
 # -------------------------
@@ -125,7 +138,8 @@ AdjudicationTarget = Union[NodeLike, EdgeLike]
 # -------------------------
 # Engine surface used by strategies
 # -------------------------
-
+class EmbeddingFunctionLike(Protocol):
+    def __call__(self, documents_or_texts: list[str]) -> Any: ...
 class EngineLike(Protocol):
     """
     The minimal 'engine' surface strategies depend on.
@@ -137,11 +151,13 @@ class EngineLike(Protocol):
     edge_collection: CollectionLike
     edge_endpoints_collection: CollectionLike
     document_collection: CollectionLike
-    _ef : Callable
+    # _ef : EmbeddingFunctionLike
+    
+    _ef: EmbeddingFunctionLike
     # optional indexes
     node_docs_collection: CollectionLike
 
-    def get_document(self, doc_id: str) -> Document: ...
+    def get_document(self, doc_id: str) -> EngineDoc: ...
     # helpers the strategies call
     def chroma_sanitize_metadata(self, metadata: Dict[str, Any]) -> Dict[str, Any]: ...
     def _json_or_none(self, obj: Any) -> Optional[str]: ...
