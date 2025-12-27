@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from typing import Any, Callable, Dict, List, Optional, Protocol, TypedDict, Union, runtime_checkable
-from .models import AdjudicationVerdict
+from .models import AdjudicationVerdict, Document
 # -------------------------
 # Collection / Vector store
 # -------------------------
@@ -102,7 +102,7 @@ class NodeLike(Protocol):
     domain_id: Optional[str]
     canonical_entity_id: Optional[str]
     properties: Optional[Dict[str, Any]]
-    references: Optional[List[Any]]  # ReferenceSession, but keep it loose here
+    groundings: Optional[List[Any]]  # ReferenceSession, but keep it loose here
     embedding: Optional[List[float]]
     doc_id: Optional[str]
 
@@ -141,7 +141,7 @@ class EngineLike(Protocol):
     # optional indexes
     node_docs_collection: CollectionLike
 
-
+    def get_document(self, doc_id: str) -> Document: ...
     # helpers the strategies call
     def chroma_sanitize_metadata(self, metadata: Dict[str, Any]) -> Dict[str, Any]: ...
     def _json_or_none(self, obj: Any) -> Optional[str]: ...
@@ -152,12 +152,7 @@ class EngineLike(Protocol):
     # -------------------------
     # adjudication / commit hooks
     # -------------------------
-    def commit_merge_target(
-        self,
-        left: AdjudicationTarget,
-        right: AdjudicationTarget,
-        verdict: AdjudicationVerdict,  # AdjudicationVerdict
-    ) -> str: ...
+    
     """
     Merge-or-link two objects of the same *kind* (node↔node or edge↔edge).
     Returns a canonical id (or link edge id) used/created.
