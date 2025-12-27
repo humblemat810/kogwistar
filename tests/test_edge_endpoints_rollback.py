@@ -30,7 +30,7 @@ def test_rollback_single_document():
     engine = GraphKnowledgeEngine()
 
     # Create a document
-    doc = Document(content="Test doc", type="text")
+    doc = Document(content="Test doc", type="text", metadata = {"source": "test_rollback_single_document"}, domain_id = None, processed = False)
     engine.add_document(doc)
 
     # Create two nodes belonging to the doc
@@ -65,7 +65,7 @@ def test_rollback_single_document():
 def test_rollback_multiple_documents(tmp_path):
     engine = GraphKnowledgeEngine(persist_directory=str(tmp_path / "chroma"))
 
-    docs = [Document(content=f"Doc {i}", type="text") for i in range(2)]
+    docs = [Document(content=f"Doc {i}", type="text", metadata = {"source": "test_rollback_multiple_documents"}, domain_id = None, processed = False) for i in range(2)]
     for d in docs:
         engine.add_document(d)
 

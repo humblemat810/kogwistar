@@ -29,7 +29,7 @@ def test_alias_book_stability_and_delta():
 
 def test_de_alias_ids_in_result_session_alias(monkeypatch):
     eng = GraphKnowledgeEngine()
-    doc = Document(content="x", type="test")
+    doc = Document(content="x", type="test", metadata = {"source": "test_de_alias_ids_in_result_session_alias"}, domain_id = None, processed = False)
     eng.add_document(doc)
     # pretend we already have context with two nodes and an edge
     n1 = Node(label="A", type="entity", summary="a", mentions=[Span(collection_page_url="c", doc_id = doc.id,
@@ -74,7 +74,7 @@ def test_de_alias_ids_in_result_session_alias(monkeypatch):
 
 def test_commit_merge_creates_same_as_and_endpoints():
     eng = GraphKnowledgeEngine()
-    doc = Document(content="y", type="test")
+    doc = Document(content="y", type="test", metadata={"source": "test_commit_merge_creates_same_as_and_endpoints"}, domain_id = None, processed = False)
     eng.add_document(doc)
 
     ref = Span(collection_page_url="c", document_page_url=f"document/{doc.id}", 

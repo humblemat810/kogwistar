@@ -23,7 +23,7 @@ def engine(tmp_path):
 
 def test_generate_cross_kind_candidates_happy_path(engine: GraphKnowledgeEngine):
     # One doc with both a node and an edge that share a salient token
-    doc = Document(content="Photosynthesis basics", type="text")
+    doc = Document(content="Photosynthesis basics", type="text",metadata = {"source": "test_generate_cross_kind_candidates_happy_path"}, domain_id = None, processed = False)
     engine.add_document(doc)
     ref = _ref_for(doc.id)
 
@@ -49,8 +49,8 @@ def test_generate_cross_kind_candidates_happy_path(engine: GraphKnowledgeEngine)
 
 def test_generate_cross_kind_candidates_disabled_scoped_and_limit(engine: GraphKnowledgeEngine):
     # Two docs; only one should be considered with scope
-    doc1 = Document(content="Causation doc", type="text")
-    doc2 = Document(content="Unrelated doc", type="text")
+    doc1 = Document(content="Causation doc", type="text",metadata = {"source": "test_generate_cross_kind_candidates_disabled_scoped_and_limit"}, domain_id = None, processed = False)
+    doc2 = Document(content="Unrelated doc", type="text",metadata = {"source": "test_generate_cross_kind_candidates_disabled_scoped_and_limit"}, domain_id = None, processed = False)
     engine.add_document(doc1)
     engine.add_document(doc2)
     ref1 = _ref_for(doc1.id)

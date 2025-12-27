@@ -13,7 +13,7 @@ def test_custom_embedder(tmp_path):
 
     # Adding a node with embeddings=None uses DummyEF
     from graph_knowledge_engine.models import Document, Node, Span
-    doc = Document(content="abc def", type="text")
+    doc = Document(content="abc def", type="text", metadata = {"source": "test_custom_embedder"}, domain_id = None, processed = False)
     eng.add_document(doc)
     ref = Span(collection_page_url="c", document_page_url=f"document/{doc.id}", 
                            insertion_method="pytest-manual",

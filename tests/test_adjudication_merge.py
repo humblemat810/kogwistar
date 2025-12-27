@@ -26,7 +26,7 @@ def _load_node(engine, node_id: str) -> dict:
 
 def test_adjudication_and_commit(engine):
     # create a doc so nodes can carry a doc_id/ref
-    doc = Document(content="dummy", type="text")
+    doc = Document(content="dummy", type="text", metadata = {}, domain_id = None, processed = False)
     engine.add_document(doc)
 
     a = Node(
@@ -87,7 +87,7 @@ from graph_knowledge_engine.models import (
 
 
 def test_commit_cross_kind_creates_reifies(engine):
-    doc = Document(content="dummy", type="text")
+    doc = Document(content="dummy", type="text", metadata = {"source":"test_commit_cross_kind_creates_reifies"}, domain_id = None, processed = False)
     engine.add_document(doc)
     ref = _ref_for(doc.id)
 

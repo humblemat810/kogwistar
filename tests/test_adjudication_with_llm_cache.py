@@ -59,7 +59,7 @@ def test_batch_adjudication_with_llm_cache(engine):
     not on the engine instance.
     """
     # 1) Seed a doc + nodes
-    doc = Document(content="dummy", type="text")
+    doc = Document(content="dummy", type="text", metadata = {}, domain_id = None, processed = False)
     engine.add_document(doc)
 
     ref = _ref_for(doc.id)

@@ -15,7 +15,7 @@ def test_default_sentence_transformer_embedder(tmp_path):
 
     # Add a doc
     text = "Chlorophyll is a pigment that absorbs light in plants."
-    doc = Document(content=text, type="text")
+    doc = Document(content=text, type="text", metadata = {"source": "test_default_sentence_transformer_embedder"}, domain_id = None, processed = False)
     eng.add_document(doc)
 
     # Add a node with no explicit embeddings -> collection embedder should run
@@ -39,7 +39,7 @@ def test_default_embedder_autoruns(tmp_path):
     from graph_knowledge_engine.models import Document, Node, Span
 
     eng = GraphKnowledgeEngine(persist_directory=str(tmp_path / "chroma"))
-    doc = Document(content="Chlorophyll absorbs light.", type="text")
+    doc = Document(content="Chlorophyll absorbs light.", type="text", metadata = {"source": "test_default_embedder_autoruns"}, domain_id = None, processed = False)
     eng.add_document(doc)
 
     ref = Span(collection_page_url="c", document_page_url=f"document/{doc.id}", doc_id = doc.id,

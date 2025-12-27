@@ -6,7 +6,7 @@ import os, pathlib
 
 def test_ingest_document_with_llm_cache(engine):
     doc = Document(content="Plants convert light energy. Chlorophyll absorbs sunlight.",
-                   type="ocr", metadata={"source":"test"})
+                   type="ocr", metadata={"source":"test"}, domain_id = None, processed = False)
 
     # cache ONLY the pure extraction on the doc content
     cache_dir = os.path.join(".cache","test",pathlib.Path(__file__).name,"extract")

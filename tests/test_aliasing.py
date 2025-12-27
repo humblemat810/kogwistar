@@ -86,7 +86,7 @@ def _span_for(doc_id: str) -> Span:
 
 def test_de_alias_ids_in_result_session_alias(monkeypatch):
     eng = GraphKnowledgeEngine()
-    doc = Document(content="x", type="test")
+    doc = Document(content="x", type="test", metadata = {"source": "test_de_alias_ids_in_result_session_alias"}, domain_id = None, processed = False)
     eng.add_document(doc)
 
     # create tiny context: two nodes + an edge
@@ -139,7 +139,7 @@ def test_de_alias_ids_in_result_session_alias(monkeypatch):
 
 def test_add_page_calls_common_ingest_with_auto_adjudicate(monkeypatch):
     eng = GraphKnowledgeEngine()
-    doc = Document(content="ignored here", type="test")
+    doc = Document(content="ignored here", type="test", metadata = {"source":"test_add_page_calls_common_ingest_with_auto_adjudicate"}, domain_id = None, processed = False)
     eng.add_document(doc)
 
     called = {"args": None, "kwargs": None}

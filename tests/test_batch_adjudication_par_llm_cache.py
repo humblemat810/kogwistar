@@ -61,7 +61,7 @@ def test_batch_adjudication_par_llm_cache_full(engine: GraphKnowledgeEngine, tmp
     We commit only node↔node positives to exercise write paths safely.
     """
     # ---------- 1) Seed a document ----------
-    doc = Document(content="Employment, geography, alias examples", type="text")
+    doc = Document(content="Employment, geography, alias examples", type="text", metadata = {"source":"test_batch_adjudication_par_llm_cache_full"}, domain_id = None, processed = False)
     engine.add_document(doc)
     ref = _ref_for(doc.id)
 

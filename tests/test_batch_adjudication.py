@@ -108,7 +108,7 @@ def test_batch_adjudication_and_commit(engine, monkeypatch):
     """
     
     # Create a document so nodes/edges can carry doc_id
-    doc = Document(content="dummy", type="text")
+    doc = Document(content="dummy", type="text", metadata={"source": "test_batch_adjuntication_and_comment"}, domain_id = None, processed = False)
     engine.add_document(doc)
 
     # Create three nodes; A & B should be considered the same by our fake rule, A & C not.

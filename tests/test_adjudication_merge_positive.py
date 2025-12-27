@@ -99,7 +99,7 @@ def engine(tmp_path):
 
 def test_deterministic_batch_merge(engine, monkeypatch):
     # Create a document so nodes carry doc_id & refs
-    doc = Document(content="dummy", type="text")
+    doc = Document(content="dummy", type="text",  metadata = {"source":"test_deterministic_batch_merge"}, domain_id = None, processed = False)
     engine.add_document(doc)
 
     ref = _ref_for(doc.id)

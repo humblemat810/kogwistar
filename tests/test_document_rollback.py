@@ -12,7 +12,8 @@ def test_document_rollback(engine):
     doc = Document(
         content="The moon orbits the Earth.",
         type="test",
-        metadata={"source": "rollback_test"}
+        metadata={"source": "rollback_test"},
+        domain_id = None, processed = False
     )
     doc.id = 'a882ec6b-75e1-11f0-87ad-0456e5e49702'
     engine.node_collection.delete(where={"doc_id": doc.id})
@@ -43,7 +44,8 @@ def test_document_rollback(engine):
     
 def test_batch_document_rollback(engine):
     docs = [
-        Document(content=f"title test Document {i}, Content : test content {i}, this is first sentence of test doc{i}", type="test")
+        Document(content=f"title test Document {i}, Content : test content {i}, this is first sentence of test doc{i}", type="test",
+                 metadata = {"source": "test_batch_document_rollback"}, domain_id = None, processed = False)
         for i in range(3)
     ]
     inserted = []
