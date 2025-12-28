@@ -12,7 +12,7 @@ from .engine import GraphKnowledgeEngine
 from .models import (
     Document,
     Edge,
-    Span,
+    Span as GroundingSpan
 )
 from .models import Node
 # --- relation name constants (optional but handy) ---
@@ -510,6 +510,7 @@ class BaseDocumentGraphIngestor:
             summary=text[:2000],  # keep it bounded
             span=Span(start_page=start_page, end_page=end_page, start_char=start_char, end_char=end_char),
             level=level,
+            parent_ids =[]
         )
 
     # ---------- persistence helpers ----------
@@ -649,7 +650,7 @@ class BaseDocumentGraphIngestor:
             target_ids=[tgt],
             type="relationship",
             summary=f"{relation}: {src} → {tgt}", source_edge_ids = [], target_edge_ids = [],
-            mentions=[self._ref(doc_id, Span(start_page=1, end_page=1, start_char=0, end_char=0), excerpt=None)],
+            mentions=[self._ref(doc_id, GroundingSpan(start_page=1, end_page=1, start_char=0, end_char=0), excerpt=None)],
             doc_id=doc_id,
         )
         # reverse (distinct relation name)
@@ -661,7 +662,7 @@ class BaseDocumentGraphIngestor:
             target_ids=[src],
             type="relationship",
             summary=f"{reverse_relation}: {tgt} → {src}", source_edge_ids = [], target_edge_ids = [],
-            mentions=[self._ref(doc_id, Span(start_page=1, end_page=1, start_char=0, end_char=0), excerpt=None)],
+            mentions=[self._ref(doc_id, GroundingSpan(start_page=1, end_page=1, start_char=0, end_char=0), excerpt=None)],
             doc_id=doc_id,
         )
         if not self.engine._exists_edge(e1.id):
@@ -669,8 +670,8 @@ class BaseDocumentGraphIngestor:
         if not self.engine._exists_edge(e2.id):
             self.engine.add_edge(e2, doc_id=doc_id)
 
-    def _ref(self, doc_id: str, span: Span, *, excerpt: Optional[str]) -> Span:
-        return Span(
+    def _ref(self, doc_id: str, span: GroundingSpan, *, excerpt: Optional[str]) -> GroundingSpan:
+        return GroundingSpan(
             doc_id = doc_id,
             collection_page_url=f"document_collection/{doc_id}",
             document_page_url=f"document/{doc_id}",

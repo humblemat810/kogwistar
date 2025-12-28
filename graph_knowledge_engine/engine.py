@@ -1224,11 +1224,12 @@ class GraphKnowledgeEngine:
             edges_str = "New edge aliases: (none)"
 
         return aliased_nodes, aliased_edges, nodes_str, edges_str
-    def _extract_graph_with_llm_aliases(self, content: str, alias_nodes_str: str, alias_edges_str: str, instruction_for_node_edge_contents_parsing_inclusion:  None | str = None):
+    def _extract_graph_with_llm_aliases(self, content: str, alias_nodes_str: str, alias_edges_str: str, instruction_for_node_edge_contents_parsing_inclusion:  None | str = None,
+                                        last_iteration_result : dict | None = None):
         if instruction_for_node_edge_contents_parsing_inclusion is None:
             instruction_for_node_edge_contents_parsing_inclusion = ("Nodes should include at least: Parties, Obligations, Rights, Deliverables, Payment Terms, Termination Conditions, Confidentiality Clauses, Governing Law, Dates, and Penalties.  "
             "Edges should capture: (Party → Obligation), (Obligation → Condition), (Party → Right), (Obligation → Deliverable), (Clause → Governing Law).  ")
-        prompt = ChatPromptTemplate.from_messages([
+        template_messages = [
             ("system",
             "You are an expert knowledge graph extractor. "
             "You are an information extraction system that converts legal contracts into a knowledge graph.  "
@@ -1246,6 +1247,8 @@ class GraphKnowledgeEngine:
             "- Each clause and sub-clause should yield at least one node.  "
             "- Do not merge or summarize multiple obligations.  "
             "- Aim for at least 20 nodes per section, if possible."
+            "- Important!: Span.excerpt MUST agree with corresponding zero-indexed start to end index. Direct identical text and no paraphrased is allowed. "
+            "e.g. if snippet world from 'hello world!', word is 6 to 11 index. content[6:11] => 'world' in python indexing sense"
             "Extract entities and terms as nodes, relationships edges in a hypergraph.\n\n"
             "Rules:\n"
             "1) When referring to existing items, use ONLY the given aliases.\n"
@@ -1259,13 +1262,28 @@ class GraphKnowledgeEngine:
             "collection_page_url='document_collection/{_DOC_ALIAS}'.\n"),
             ("human",
             "Aliases (delta for this turn):\n{alias_nodes}\n\n{alias_edges}\n\n"
-            "Document chunk:\n{document}\n\n"
+            "Document:\n```{document}```\n\n"
             "Return only the structured JSON for the schema.")
-        ])
+        ]
+        to_append = []
+        from pydantic import BaseModel
+        if last_iteration_result and last_iteration_result.get("error"):
+            last_parsed: BaseModel = last_iteration_result.get('parsed') # type: ignore
+            last_error :str = str(last_iteration_result.get("error"))
+            to_append.append(
+                ("system", 
+                    f"last answer has error \n\n Last attempt: ```{last_parsed.model_dump()}```\n\n"
+                    f"error from last attempt: ```{last_error}```"
+                 )
+            )
+            template_messages.extend(to_append)
+            # ([("system", f"last answer has error \n\n Last attemp: ```{last_iteration_result.get('parsed').model_dump()} ``` ")]  else []
+        prompt = ChatPromptTemplate.from_messages(template_messages)
         try:
             chain = prompt | self.llm.with_structured_output(LLMGraphExtraction['llm'], 
                                                              include_raw=True)
-            steps = chain.steps # type: ignore   langchain internal step is not exposed
+            from langchain_core.runnables import Runnable
+            steps : list[Runnable] = chain.steps # type: ignore   langchain internal step is not exposed
             realised_prmopt = steps[0].invoke({"alias_nodes": alias_nodes_str, "alias_edges": alias_edges_str, "document": content, "_DOC_ALIAS" : _DOC_ALIAS})
             llm_raw = steps[1].invoke(realised_prmopt)
             result = steps[2].invoke(llm_raw)
@@ -2155,16 +2173,21 @@ class GraphKnowledgeEngine:
         return False, e
     
     def extract_graph_with_llm(self, *, content: str, doc_type: str, alias_nodes_str = "[Empty]" , alias_edges_str = "[Empty]", with_parsed = True, 
-                               instruction_for_node_edge_contents_parsing_inclusion: None| str = None, validate = True):
-        """Pure: run LLM + parse + alias resolution. No writes."""
+                               instruction_for_node_edge_contents_parsing_inclusion: None| str = None, validate = True, 
+                               last_iteration_result):
+        
+        """Pure: run LLM + parse + alias resolution. No writes.
+        last_iteration_result dict with 3 fields of 'raw' 'parsed' and 'error'. Falsy on initialization
+        """
         # (reuse your existing prompt + alias path)
         raw, parsed, error = self._extract_graph_with_llm_aliases(
             content, alias_nodes_str=alias_nodes_str, alias_edges_str=alias_edges_str,
-            instruction_for_node_edge_contents_parsing_inclusion = instruction_for_node_edge_contents_parsing_inclusion
+            instruction_for_node_edge_contents_parsing_inclusion = instruction_for_node_edge_contents_parsing_inclusion,
+            last_iteration_result = last_iteration_result
         )
         if error:
             raise ValueError(error)
-
+        validation_error_group = []
         if validate:
             # prevent the case LLM hallucinated real UUID in the response that is not any existing node, internal structure intact invariant
             temp_alias_book = AliasBook()
@@ -2178,17 +2201,25 @@ class GraphKnowledgeEngine:
             span_validator: BaseDocValidator = self.get_span_validator_of_doc_type(doc_type = doc_type)
             dummy_doc = Document(content=content,
                    type=doc_type, metadata={}, domain_id = None, processed = False, embeddings = None)
-            for node_or_edge in parsed_copy.nodes + parsed_copy.edges:
+            # validation_error_group = []
+            pre_parse_nodes_or_edges: list [Node | Edge] = parsed.nodes + parsed.edges
+            for i, node_or_edge in enumerate(parsed_copy.nodes + parsed_copy.edges):
                 node_or_edge : Node | Edge
                 for g in node_or_edge.mentions:
                     for sp in g.spans:
-                        span_validator.validate_span(doc = dummy_doc, span = sp )
+                        result = span_validator.validate_span(doc = dummy_doc, span = sp )
+                        if result['correctness'] == True:
+                            pass
+                        else:
+                            pre_parsed_node_or_edge: Node | Edge = pre_parse_nodes_or_edges[i]
+                            validation_error_group.append(f"Error found for {pre_parsed_node_or_edge.model_dump()}: {str(result)}")
+                            
         # resolve nn:/ne:/aliases -> UUIDs here
         # and run self._preflight_validate(parsed, doc_id) LATER (we don’t know doc_id yet)
         if with_parsed:
-            return {"raw": raw, "parsed": parsed}
+            return {"raw": raw, "parsed": parsed, "error": validation_error_group or None}
         else:
-            return {"raw": raw}
+            return {"raw": raw, "error": validation_error_group or None}
     def rollback_document_extraction(
         self,
         doc_id: str,

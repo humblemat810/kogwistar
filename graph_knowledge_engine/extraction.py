@@ -23,7 +23,7 @@ class BaseDocValidator:
         if not doc:
             raise RuntimeError("fail to resolve document")
         excerpt_from_span = doc.get_content_by_span(span)
-        return excerpt_from_span == span.excerpt
+        return {"correctness": excerpt_from_span == span.excerpt, "excerpt_from_start_end_index": excerpt_from_span, "except_llm_copied": span.excerpt}
             
 class PlainTextDocSpanValidator(BaseDocValidator):
     def validate_span(self, span: Span, doc_id: str | None = None, doc: Document | None = None, engine: EngineLike | None = None):

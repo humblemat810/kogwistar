@@ -8,7 +8,10 @@ from typing import cast
 def engine() -> GraphKnowledgeEngine:
     return GraphKnowledgeEngine()
 def test_ingest_documentS_with_llm(engine:GraphKnowledgeEngine)-> None: 
-    engine.llm.model = "models/gemini-2.5-pro"
+    """Result can almost only pass validation with pro models, but the test workflow here is to provide basic workflow to make sure
+    the generated data schema can be insertable to graphdb. The validity invariant need separte pro ingestor.
+    """
+    engine.llm.model = "models/gemini-2.5-flash"
     doc_content_list = [
         "1. Science & Facts"
         "The Pacific Ocean is the largest and deepest body of water on Earth, covering more than 60 million square miles. It contains countless ecosystems, from vibrant coral reefs to mysterious deep-sea trenches. Scientists continue to discover new species in its depths each year."
@@ -30,7 +33,8 @@ def test_ingest_documentS_with_llm(engine:GraphKnowledgeEngine)-> None:
     ]
     instruction_for_node_edge_contents_parsing_inclusion = ("Extract knowledge as nodes and edges. Extract node as entity, edge as relationship. "
                                             "Both nodes and edges can be endpoint of an edge to represent nested ideas. All edge endpoints must be resolvable. "
-                                            "use source_ids or target_ids for nodes; use source_edge_ids or target_edge_ids for nodes. ")
+                                            "use source_ids or target_ids for nodes; use source_edge_ids or target_edge_ids for nodes. "
+                                            )
     import pathlib
     from joblib import Memory
     cache_dir = os.path.join(".cache","test",pathlib.Path(__file__).name,"extract")
@@ -49,14 +53,17 @@ def test_ingest_documentS_with_llm(engine:GraphKnowledgeEngine)-> None:
                    type="text", metadata={"source":"test"}, domain_id = None, processed = False, embeddings = cast(list[list[float]], get_ef(doc_content))[0])
            # cache ONLY the pure extraction on the doc content
         
-        
-
-        
-        
         @memory_extract_only.cache
         def _extract_only(content: str, instruction_for_node_edge_contents_parsing_inclusion: None | str = None):
-            raw_with_parsed = engine.extract_graph_with_llm(content=content, doc_type = doc.type,
-                                                 instruction_for_node_edge_contents_parsing_inclusion = instruction_for_node_edge_contents_parsing_inclusion)
+            raw_with_parsed = {}
+            retry = 3
+            while (raw_with_parsed.get('parsed') is None) or (raw_with_parsed.get('error') is not None):
+                raw_with_parsed = engine.extract_graph_with_llm(content=content, doc_type = doc.type,
+                                                    instruction_for_node_edge_contents_parsing_inclusion = instruction_for_node_edge_contents_parsing_inclusion,
+                                                    last_iteration_result = raw_with_parsed)
+                retry -= 1
+                if retry == 0:
+                    raise Exception("fail too many retries")
             parsed: LLMGraphExtraction['llm']= raw_with_parsed["parsed"]
             return {"raw": raw_with_parsed["raw"], "parsed": parsed.model_dump()}
         
