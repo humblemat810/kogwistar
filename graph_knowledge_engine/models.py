@@ -142,7 +142,7 @@ class GraphEntityBase(ModeSlicingMixin, BaseModel):
 
 class Grounding(ModeSlicingMixin, BaseModel):
     spans: Annotated[List[Span], FrontendField(),BackendField(),DtoField(),LLMField()] = Field(
-        ..., min_items=1, description="One or more locatable mentions supporting this entity"
+        ..., min_items=1, description="One or more locatable span across chunks/text-clusters supporting this entity"
     )
     def validate_span(self, span:Span):
         
@@ -306,22 +306,22 @@ class LLMEdge( LLMMixin, EdgeMixin, GraphEntityRefBase):
     pass
 
 class GroundginMandatoryExcerpt(Span):
-        excerpt: str = Field(..., description="the direct excerpt from source doc from start char to end char. Must be identical from extracted using start_char and end_char")  # type: ignore
+    excerpt: str = Field(..., description="the direct excerpt from source doc from start char to end char. "
+                                            "Must be identical from extracted using start_char and end_char")  # type: ignore
 
-    pass
 class LLMNodeExtraction(LLMNode):
     "extracted node information"
     
     groundings: Annotated[List[GroundginMandatoryExcerpt], FrontendField(),BackendField(),DtoField(),LLMField()] = Field(
         min_items=1, description="One or more locatable mentions supporting this entity"
-    )
+    )# type: ignore
 
 class LLMEdgeExtraction(LLMEdge):
     "extracted edge information"
     
     groundings: Annotated[List[GroundginMandatoryExcerpt], FrontendField(),BackendField(),DtoField(),LLMField()] = Field(
         min_items=1, description="One or more locatable mentions supporting this entity"
-    )
+    )# type: ignore
 
 class GraphExtractionWithIDs(ModeSlicingMixin, BaseModel):
     """represent a graph extracted by external tool and all ids are imported
@@ -457,10 +457,18 @@ class Document(ModeSlicingMixin, BaseModel):
     
 #========================= OCR DOC
 
+# pre-validation model
 class box_2d(BaseModel):
     box_2d: list[int] = Field(description = 'box y min, x min, y max and x max')
     label : str = Field(description = 'text in the box')
-    id: int  = Field(description = 'id of the text box in the page, autoincrement from 0')    
+    id: int  = Field(description = 'id of the text box in the page, autoincrement from 0')
+class NonText_box_2d(ModeSlicingMixin, BaseModel):
+    """Recognised meaningful objects other than OCR characters, include image, figures. """
+    description: DtoType[str] = Field(description='the description or summary of the non-OCR object')
+    box_2d: DtoType[list[int]] = Field(description = 'box y min, x min, y max and x max')
+    id: int = Field(description="per page unique number of the cluster, starting from 0")
+
+# post validation model
 class TextCluster(ModeSlicingMixin, BaseModel):
     """a text cluster along with spatial information"""
     text: DtoType[str] = Field(description='the text content of the text cluster')
@@ -479,17 +487,15 @@ class NonTextCluster(ModeSlicingMixin, BaseModel):
     cluster_number: int = Field(description="per page unique number of the cluster, starting from 0")
 
 class OCRClusterResponse(ModeSlicingMixin, BaseModel):
-    """cluster and signatore share the same unique set of cluster number, i.e. if cluster 1 is signature, no other text cluster can take 1"""
+    """id/ cluster number must be all unique, for example, one of the ocr boxes_2d used id='1', the first image box id (cluster numebr) will be '2', the next signature will be '3' """
     OCR_text_clusters: DtoType[list[TextCluster]] = Field(description="the OCR text results. Share cluster number uniqueness with non-OCR objects. ")
     non_text_objects:  DtoType[list[NonTextCluster]] = Field(description="the non-OCR object results. Share cluster number uniqueness with OCR texts. ")
     is_empty_page: DtoType[Optional[bool]] = Field(default = False, description="true if the whole page is empty without recognisable text.")
     printed_page_number: DtoType[Optional[str]] = Field(description='the page number identified from OCR texts, can be in form of roman numerals such as "i", "ii", "iii", "iv"...; ' 
-                                       'Arabic numeral such as 1, 2, 3... or letter such as "a", "b", "c"...\n'
-                                       'Sometimes the are surrounded by symbols such as "- 1 -", "- 2 -"'
-                                       r"Can be null/none if there is no page order assigned and printed and found in the scanned texts. Do not assign page number. Only use page number found.")
+                    'Arabic numeral such as 1, 2, 3... or letter such as "a", "b", "c"...\n'
+                    'Sometimes the are surrounded by symbols such as "- 1 -", "- 2 -"'
+                    r"Can be null/none if there is no page order assigned and printed and found in the scanned texts. Do not assign page number. Only use page number found.")
     meaningful_ordering : DtoType[list[int]] = Field(description="The correct meaningful ordering of the identified text clusters. Must cover all OCR_text_clusters once and only once. ")
-    
-    # block_signed: DtoType[list[bool]]= Field(default = [], description="Same array length as signature_blocks, corresponding to signed or not")
     page_x_min : DtoType[float]=Field(description='the page x min in pixel coordinate. ')
     page_x_max : DtoType[float]=Field(description='the page x max in pixel coordinate. ')
     page_y_min : DtoType[float]=Field(description='the page y min in pixel coordinate. ')
@@ -655,42 +661,7 @@ class SplitPage(OCRClusterResponseBc):
             return c_return
 
     
-PastCompatibleSplitPage: TypeAlias = SplitPage
-def get_page_json(folder_path, page_num):
-    with open(os.path.join(folder_path, 'page_'+str(page_num)+'.json'), 'r') as f:
-        file_json_raw = json.load(f)
-    return file_json_raw
-def regen_page(file_json_raw, use_raw):
-        # add compatible to union if want to compatible with past models
-    """regen from json returned by SplitPage.to_doc(), can be view as SplitPage.FromJson(filepath)"""
-    p = PastCompatibleSplitPage(**file_json_raw)
-    if use_raw:
-        return p.dump_supercede_parse()
-    try:
-        res = p.to_doc()
-    except:
-        raise
-    return res
-def regen_doc(folder_path, use_raw = False):
-    pages_nums = sorted((int(i.rsplit(".json",1)[0].split("page_",1)[1]) for i in os.listdir(folder_path) if i.endswith('.json') and i.startswith("page_")))
-    pages = []
-    split_pages = []
-    for pn in pages_nums:
-        try:
-            pages.append(get_page_json(folder_path, pn))
-            split_pages.append(regen_page(pages[-1], use_raw = use_raw))
-        except Exception as e:
-            folder_path,pn
-            print(f'error at page {pn}')
-            print(f'in file {folder_path}')
-            logger.error(f'error at page {pn}')
-            logger.error(f'in file {folder_path}')
-            raise
-    
-    # pages = map( partial(get_page_json, folder_path= folder_path), pages_nums)
-    # split_pages = map(regen_page, pages)
-    full_doc = list(split_pages)
-    return full_doc
+
 # class Doc(BaseModel):
 #     file_full_path: str = Field(description = "file full path")
 #     pages: list[dict[str, Any]]  = Field(description = "pages")
