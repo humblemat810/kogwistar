@@ -2,13 +2,13 @@ import os
 import pytest
 import json
 from graph_knowledge_engine.engine import GraphKnowledgeEngine
-from graph_knowledge_engine.models import Document, Span
-
+from graph_knowledge_engine.models import Document, Span, LLMGraphExtraction
+from typing import cast
 @pytest.fixture(scope="module")
-def engine():
+def engine() -> GraphKnowledgeEngine:
     return GraphKnowledgeEngine()
-def test_ingest_documentS_with_llm(engine):
-    engine.llm.model = "models/gemini-2.5-flash"
+def test_ingest_documentS_with_llm(engine:GraphKnowledgeEngine)-> None: 
+    engine.llm.model = "models/gemini-2.5-pro"
     doc_content_list = [
         "1. Science & Facts"
         "The Pacific Ocean is the largest and deepest body of water on Earth, covering more than 60 million square miles. It contains countless ecosystems, from vibrant coral reefs to mysterious deep-sea trenches. Scientists continue to discover new species in its depths each year."
@@ -28,28 +28,41 @@ def test_ingest_documentS_with_llm(engine):
         "6. Happiness"
         "Happiness often comes in small, quiet moments—a shared laugh with a friend, the warmth of sunlight on your skin, or the first sip of tea on a cold morning. It’s less about grand achievements and more about noticing the simple joys that fill each day."
     ]
-    node_edge_should_include_instruction = ("Extract knowledge as nodes and edges. Extract node as entity, edge as relationship. "
-                                            "Both nodes and edges can be endpoint of an edge to represent nested ideas. "
+    instruction_for_node_edge_contents_parsing_inclusion = ("Extract knowledge as nodes and edges. Extract node as entity, edge as relationship. "
+                                            "Both nodes and edges can be endpoint of an edge to represent nested ideas. All edge endpoints must be resolvable. "
                                             "use source_ids or target_ids for nodes; use source_edge_ids or target_edge_ids for nodes. ")
     import pathlib
     from joblib import Memory
+    cache_dir = os.path.join(".cache","test",pathlib.Path(__file__).name,"extract")
+    os.makedirs(cache_dir, exist_ok = True)
+    memory_embeddings = Memory(location=cache_dir, verbose=0)
+    
+    location=os.path.join(".cache", "test", pathlib.Path(__file__).parts[-1], "_extract_only")
+    os.makedirs(location, exist_ok = True)
+    memory_extract_only = Memory(location=location, verbose=0)
     for doc_content in doc_content_list:
+        @memory_embeddings.cache
+        def get_ef(doc_content) -> list[list[float]]:# -> Any | list[list[float]]:
+            res : list[list[float]]= engine._ef(doc_content) # type: ignore
+            return res
         doc = Document(content=doc_content,
-                   type="ocr", metadata={"source":"test"}, domain_id = None, processed = False)
+                   type="text", metadata={"source":"test"}, domain_id = None, processed = False, embeddings = cast(list[list[float]], get_ef(doc_content))[0])
            # cache ONLY the pure extraction on the doc content
-        cache_dir = os.path.join(".cache","test",pathlib.Path(__file__).name,"extract")
-        memory = Memory(location=cache_dir, verbose=0)
+        
+        
 
-        location=os.path.join(".cache", "test", pathlib.Path(__file__).parts[-1], "_extract_only")
-        os.makedirs(location, exist_ok = True)
-        memory = Memory(location=location, verbose=0)
-        @memory.cache
-        def _extract_only(content: str, node_edge_should_include_instruction: None | str = None):
-            return engine.extract_graph_with_llm(content=content, 
-                                                 node_edge_should_include_instruction = node_edge_should_include_instruction)
+        
+        
+        @memory_extract_only.cache
+        def _extract_only(content: str, instruction_for_node_edge_contents_parsing_inclusion: None | str = None):
+            raw_with_parsed = engine.extract_graph_with_llm(content=content, doc_type = doc.type,
+                                                 instruction_for_node_edge_contents_parsing_inclusion = instruction_for_node_edge_contents_parsing_inclusion)
+            parsed: LLMGraphExtraction['llm']= raw_with_parsed["parsed"]
+            return {"raw": raw_with_parsed["raw"], "parsed": parsed.model_dump()}
+        
 
-        extracted = _extract_only(doc.content, node_edge_should_include_instruction)
-        parsed = extracted["parsed"]
+        extracted = _extract_only(doc.content, instruction_for_node_edge_contents_parsing_inclusion)
+        parsed = LLMGraphExtraction['llm'].model_validate(extracted["parsed"], context = {"insertion_method" : "test_case/test_ingest_documentS_with_llm"})
 
         # persist deterministically (choose replace/append/skip-if-exists)
         out = engine.persist_graph_extraction(document=doc, parsed=parsed, mode="replace")
@@ -65,7 +78,8 @@ def test_ingest_document_with_llm(engine):
         content=doc_content,
         type="ocr",
         metadata={"source": "test"},
-        processed=False
+        processed=False,
+        domain_id = None,
     )
 
     # The .env file must be configured with Azure OpenAI credentials

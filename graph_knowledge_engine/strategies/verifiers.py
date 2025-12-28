@@ -21,7 +21,7 @@ from ..models import Node, Edge, MentionVerification, Span
 # from ..engine import GraphKnowledgeEngine
 @dataclass
 class VerifierConfig:
-    min_snippet_len: int = 12
+    min_excerpt_len: int = 12
     min_overlap_chars: int = 6
     min_levenshtein_score: float = 0.65  # RapidFuzz normalized
     use_embeddings: bool = False  # only if engine has embedding_fn
@@ -31,8 +31,8 @@ class DefaultVerifier(Verifier):
     """
     Offline verification (no web calls). Combines:
       - span sanity (page and char ordering)
-      - snippet containment / overlap %
-      - RapidFuzz ratio between label (or summary) and cited snippet
+      - excerpt containment / overlap %
+      - RapidFuzz ratio between label (or summary) and cited excerpt
       - optional embedding cosine if engine has an embedding_fn
     Stores results back into references[].verification and updates Chroma.
     """
@@ -277,7 +277,7 @@ class DefaultVerifier(Verifier):
     #         return False
     #     return True
 
-    # def _snippet_from_span(self, text: str, ref: ReferenceSession) -> str:
+    # def _excerpt_from_span(self, text: str, ref: ReferenceSession) -> str:
     #     if not text:
     #         return ""
     #     # naive multi-page handling: treat as linear for now
@@ -294,12 +294,12 @@ class DefaultVerifier(Verifier):
     #     nb = math.sqrt(sum(y * y for y in b)) or 1e-8
     #     return dot / (na * nb)
 
-    # def _score_ref(self, label_or_summary: str, snippet: str, obj_embed: Optional[List[float]]) -> Tuple[bool, float, str]:
-    #     if not snippet or len(snippet) < self.cfg.min_snippet_len:
-    #         return False, 0.0, "snippet-too-short"
+    # def _score_ref(self, label_or_summary: str, excerpt: str, obj_embed: Optional[List[float]]) -> Tuple[bool, float, str]:
+    #     if not excerpt or len(excerpt) < self.cfg.min_excerpt_len:
+    #         return False, 0.0, "excerpt-too-short"
 
     #     # RapidFuzz score
-    #     rf = (fuzz_ratio(label_or_summary, snippet) or 0.0) / 100.0
+    #     rf = (fuzz_ratio(label_or_summary, excerpt) or 0.0) / 100.0
     #     notes = [f"rf={rf:.2f}"]
 
     #     ok = rf >= self.cfg.min_levenshtein_score
@@ -307,7 +307,7 @@ class DefaultVerifier(Verifier):
     #     # Optional embedding
     #     if ok and self.cfg.use_embeddings and obj_embed and callable(getattr(self.e, "embedding_fn", None)):
     #         try:
-    #             s_vec = self.e.embedding_function([snippet])[0]
+    #             s_vec = self.e.embedding_function([excerpt])[0]
     #             cos = self._embed_cosine(obj_embed, s_vec)
     #             notes.append(f"cos={cos:.2f}")
     #             ok = cos >= self.cfg.min_embed_cosine
@@ -331,7 +331,7 @@ class DefaultVerifier(Verifier):
     #         obj = Node.model_validate_json(doc_json) if which == "node" else Edge.model_validate_json(doc_json)
     #         changed = False
 
-    #         # pick best text to compare against snippet
+    #         # pick best text to compare against excerpt
     #         label = getattr(obj, "label", "") or ""
     #         summary = getattr(obj, "summary", "") or ""
     #         text_for_match = summary or label
@@ -354,9 +354,9 @@ class DefaultVerifier(Verifier):
     #                 continue
 
     #             doc_text = self._fetch_doc_text(document_id) or ""
-    #             snippet = ref.snippet or self._snippet_from_span(doc_text, ref)
+    #             excerpt = ref.excerpt or self._excerpt_from_span(doc_text, ref)
 
-    #             ok, score, notes = self._score_ref(text_for_match, snippet, getattr(obj, "embedding", None))
+    #             ok, score, notes = self._score_ref(text_for_match, excerpt, getattr(obj, "embedding", None))
     #             ref.verification = MentionVerification(method="heuristic", is_verified=ok, score=score, notes=notes)
     #             changed = True
 

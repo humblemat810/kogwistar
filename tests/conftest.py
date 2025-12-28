@@ -230,18 +230,18 @@ def small_test_docs_nodes_edge_adjudcate():
     }
 
     # ---- helpers: find spans & build ReferenceSession-like dicts ----
-    def _find_span(doc_id: str, snippet: str) -> tuple[int, int]:
+    def _find_span(doc_id: str, excerpt: str) -> tuple[int, int]:
         text = docs[doc_id]
-        idx = text.find(snippet)
+        idx = text.find(excerpt)
         if idx < 0:
             # try case-insensitive
-            idx = text.lower().find(snippet.lower())
+            idx = text.lower().find(excerpt.lower())
         if idx < 0:
-            raise AssertionError(f"Snippet not found in {doc_id}: {snippet!r}")
-        return idx, idx + len(snippet)
+            raise AssertionError(f"Excerpt not found in {doc_id}: {excerpt!r}")
+        return idx, idx + len(excerpt)
 
-    def _ref(doc_id: str, snippet: str, method: str = "llm"):
-        s, e = _find_span(doc_id, snippet)
+    def _ref(doc_id: str, excerpt: str, method: str = "llm"):
+        s, e = _find_span(doc_id, excerpt)
         return {
             "doc_id": doc_id,
             "collection_page_url": "N/A",
@@ -250,7 +250,7 @@ def small_test_docs_nodes_edge_adjudcate():
             "end_page": 1,
             "start_char": s,
             "end_char": e,
-            "snippet": docs[doc_id][s:e],
+            "excerpt": docs[doc_id][s:e],
             "verification": {"method": method, "is_verified": True, "score": 1.0, "notes": "fixture"},
             "insertion_method": "fixture_sample",
         }

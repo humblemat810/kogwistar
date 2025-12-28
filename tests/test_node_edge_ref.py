@@ -8,7 +8,7 @@ def test_node_refs_indexing(engine:GraphKnowledgeEngine):
         start_page=1, end_page=1, start_char=0, end_char=5, doc_id=doc.id,
         verification=MentionVerification(method="llm", is_verified=True, score=0.9, notes = None),
         source_cluster_id = None,
-        snippet = None
+        excerpt = None
     )
     ref_manual = Span(
         collection_page_url="c", document_page_url=f"document/{doc.id}",
@@ -16,7 +16,7 @@ def test_node_refs_indexing(engine:GraphKnowledgeEngine):
         start_page=2, end_page=2, start_char=0, end_char=5, doc_id=doc.id,
         verification=MentionVerification(method="human", is_verified=True, score=1.0, notes = None),
         source_cluster_id = None,
-        snippet = None
+        excerpt = None
     )
     n = Node(label="A", type="entity", summary="s", mentions=[Grounding(span = [ref_llm, ref_manual])],
              domain_id=None, canonical_entity_id=None, properties=None, embedding=None, doc_id=None, metadata = {})
@@ -34,7 +34,7 @@ def test_edge_refs_indexing(engine):
         insertion_method="pytest-llm",
         verification=MentionVerification(method="llm", is_verified=True, score=0.9, notes = None),
         source_cluster_id= None,
-        snippet = None
+        excerpt = None
     )
     ref_manual = Span(
         collection_page_url="c", document_page_url=f"document/{doc.id}",
@@ -42,7 +42,7 @@ def test_edge_refs_indexing(engine):
         insertion_method="pytest-manual",
         verification=MentionVerification(method="human", is_verified=True, score=1.0, notes = None),
         source_cluster_id= None,
-        snippet = None
+        excerpt = None
     )
     # two nodes to connect
     a = Node(label="A", type="entity", summary="s", mentions=[Grounding(ref_llm)],

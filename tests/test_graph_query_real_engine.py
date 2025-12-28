@@ -19,7 +19,7 @@ class _DummyLLM:
         return _Chain()
 
 
-def _ref(doc_id: str, snippet: str = "") -> Span:
+def _ref(doc_id: str, excerpt: str = "") -> Span:
     return Span(
         collection_page_url=f"document_collection/{doc_id}",
         document_page_url=f"document/{doc_id}",
@@ -28,8 +28,8 @@ def _ref(doc_id: str, snippet: str = "") -> Span:
         end_page=1,
         start_char=0,
         insertion_method='test-manual',
-        end_char=max(0, len(snippet)),
-        snippet=snippet or None,
+        end_char=max(0, len(excerpt)),
+        excerpt=excerpt or None,
     )
 
 

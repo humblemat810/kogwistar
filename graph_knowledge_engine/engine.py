@@ -28,7 +28,7 @@ engine = GraphKnowledgeEngine(
 
 
 from typing import List, Optional, Dict, Any, Tuple, TypeAlias, cast
-from typing_interfaces import CollectionLike, EmbeddingFunctionLike
+from .typing_interfaces import CollectionLike, EmbeddingFunctionLike
 import chromadb
 from dataclasses import dataclass, field
 from .graph_query import GraphQuery
@@ -96,7 +96,11 @@ def _refs_hash(refs) -> str:
         sort_keys=True
     ).encode()).hexdigest()
 import hashlib, json
-
+def _str_or_none(to_str):
+    if to_str is None:
+        return to_str
+    else:
+        return str(to_str)
 def _refs_fingerprint(refs) -> str:
     # Normalize minimal fields that affect the index rows, order-sensitive
     payload = [
@@ -109,7 +113,7 @@ def _refs_fingerprint(refs) -> str:
             "ep": getattr(r, "end_page", None),
             "sc": getattr(r, "start_char", None),
             "ec": getattr(r, "end_char", None),
-            "snip": (getattr(r, "snippet", None) or "")[:64],  # cap; avoid huge digests
+            "snip": (getattr(r, "excerpt", None) or "")[:64],  # cap; avoid huge digests
         }
         for r in (refs or [])
     ]
@@ -118,7 +122,7 @@ def _refs_fingerprint(refs) -> str:
     return hashlib.blake2b(blob, digest_size=16).hexdigest()
 
 
-def _safe_snippet(s: str | None, max_len: int = 200) -> str | None:
+def _safe_excerpt(s: str | None, max_len: int = 200) -> str | None:
     if not s:
         return None
     s = s.strip()
@@ -428,12 +432,12 @@ def _edge_doc_and_meta(e: Union["Edge", "PureChromaEdge"]) -> tuple[str, dict]:
 def _default_verification(note: str = "fallback span") -> MentionVerification:
     return MentionVerification(method="heuristic", is_verified=False, score=None, notes=note)
 
-# def _default_ref(doc_id: str, snippet: Optional[str] = None) -> Span:
+# def _default_ref(doc_id: str, excerpt: Optional[str] = None) -> Span:
 #     return Span(
 #         collection_page_url=f"document_collection/{doc_id}",
 #         document_page_url=_DOC_URL.format(doc_id=doc_id),
 #         start_page=1, end_page=1, start_char=0, end_char=0,
-#         snippet=snippet or None,
+#         excerpt=excerpt or None,
 #         verification=_default_verification()
 #     )
 
@@ -462,9 +466,9 @@ def _default_verification(note: str = "fallback span") -> MentionVerification:
 #         pass
 #     return r
 
-# def _normalize_mentions(mentions: Optional[List[Span]], doc_id: str, fallback_snippet: Optional[str]) -> List[Span]:
+# def _normalize_mentions(mentions: Optional[List[Span]], doc_id: str, fallback_excerpt: Optional[str]) -> List[Span]:
     # if not mentions or len(mentions) == 0:
-    #     return [_default_ref(doc_id, snippet=fallback_snippet)]
+    #     return [_default_ref(doc_id, excerpt=fallback_excerpt)]
     # return [_ensure_ref_span(ref, doc_id) for ref in mentions]
 import re, uuid
 
@@ -691,10 +695,10 @@ class GraphKnowledgeEngine:
         prefer_label_fallback: bool = True,
     ) -> List[Dict[str, Any]]:
         """
-        Build adjudication-ready reference snippets for a Node (or Edge).
+        Build adjudication-ready reference excerpts for a Node (or Edge).
         Strategy:
-        - Prefer the stored ReferenceSession.snippet (cheap, already localized).
-        - If document text is available, try to locate the snippet (or node label) in full text
+        - Prefer the stored ReferenceSession.excerpt (cheap, already localized).
+        - If document text is available, try to locate the excerpt (or node label) in full text
             and expand with ±window_chars for richer context.
         - Always return provenance + verification info (doc_id, page spans, urls, etc.).
         """
@@ -729,10 +733,10 @@ class GraphKnowledgeEngine:
                 full_doc = self._fetch_document_text(doc_id) if doc_id else None
                 pages = self._coerce_pages(full_doc)
                 doc_cache[doc_id] = pages
-            snippet = getattr(ref, "snippet", None)
-            mention = snippet or (label or "")
+            excerpt = getattr(ref, "excerpt", None)
+            mention = excerpt or (label or "")
 
-            ctx_text = snippet or None
+            ctx_text = excerpt or None
             span_start = None
             span_end = None
             # if ref.start_page == ref.end_page:
@@ -772,15 +776,15 @@ class GraphKnowledgeEngine:
                     if len(ctx_text) == 0:
                         raise Exception("Context empty")
                 if ctx_text is None:
-                    # Try exact snippet first (best anchor)
-                    idx = full_doc.find(snippet) if snippet else -1
+                    # Try exact excerpt first (best anchor)
+                    idx = full_doc.find(excerpt) if excerpt else -1
                     # Fallback to label if allowed
                     if idx < 0 and label and prefer_label_fallback:
                         idx = full_doc.find(label)
 
                     if idx >= 0:
-                        # If we matched on snippet, use its length; else label length
-                        length = len(snippet) if snippet else (len(label) if label else 0)
+                        # If we matched on excerpt, use its length; else label length
+                        length = len(excerpt) if excerpt else (len(label) if label else 0)
                         span_start = idx
                         span_end = idx + length
                         left = max(0, span_start - window_chars)
@@ -798,7 +802,7 @@ class GraphKnowledgeEngine:
                 "end_char": getattr(ref, "end_char", None),
                 "insertion_method": getattr(ref, "insertion_method", None),
                 "verification": (ref.verification.model_dump() if getattr(ref, "verification", None) else None),
-                "context": ctx_text,             # expanded context or stored snippet
+                "context": ctx_text,             # expanded context or stored excerpt
                 "mention": mention,              # what to highlight / quote in a prompt
                 "loc_found": (span_start is not None),
                 "loc_span": [span_start, span_end] if span_start is not None else None,
@@ -850,8 +854,8 @@ class GraphKnowledgeEngine:
     # Utilities
     # ----------------------------
     # @staticmethod
-    # def _default_ref(doc_id: str, snippet: Optional[str] = None) -> Span:
-    #     return _default_ref(doc_id, snippet)
+    # def _default_ref(doc_id: str, excerpt: Optional[str] = None) -> Span:
+    #     return _default_ref(doc_id, excerpt)
     #     pass
     @staticmethod
     def chroma_sanitize_metadata(metadata: Dict[str, Any]) -> Dict[str, Any]:
@@ -893,9 +897,9 @@ class GraphKnowledgeEngine:
 
         return node_items, edge_items
 
-    def _preflight_validate(self, parsed: LLMGraphExtraction|PureGraph|GraphExtractionWithIDs, alias_key: str):
+    def _preflight_validate(self, parsed: LLMGraphExtraction|PureGraph|GraphExtractionWithIDs, alias_key: str, alias_book: AliasBook | None = None):
         """Ensure every endpoint refers to a real id (in-batch or already in DB)."""
-        self._resolve_llm_ids(alias_key, parsed)  # allocate/resolve first
+        self._resolve_llm_ids(alias_key, parsed, alias_book = alias_book)  # allocate/resolve first
 
         batch_node_ids = {n.id for n in parsed.nodes}
         batch_edge_ids = {e.id for e in parsed.edges}
@@ -1073,7 +1077,7 @@ class GraphKnowledgeEngine:
             "edges_added": len(edge_ids_added),
         }
         # return {"nodes_added": nodes_added, "edges_added": edges_added}
-    def _resolve_llm_ids(self, doc_id: str, parsed: LLMGraphExtraction | PureGraph | GraphExtractionWithIDs) -> None:
+    def _resolve_llm_ids(self, doc_id: str, parsed: LLMGraphExtraction | PureGraph | GraphExtractionWithIDs, alias_book: AliasBook | None = None) -> None:
         """
         In-place:
         - allocate UUIDs for all new nodes (nn:*) and new edges (ne:*),
@@ -1082,7 +1086,11 @@ class GraphKnowledgeEngine:
         the id can either be, a real id, token indicating a new node that require new id, or a short id that need dealiasing
         """
         # alias book → real ids
-        book = self._alias_book(doc_id)
+        if alias_book is None:
+            # create a book if no book provided
+            book = self._alias_book(doc_id)
+        else:
+            book = alias_book
         alias_to_real = book.alias_to_real
 
         def de_alias(x: str) -> str:
@@ -1117,8 +1125,8 @@ class GraphKnowledgeEngine:
         # Second pass: edges → IDs
         ne2uuid: dict[str, str] = {}
         for e in parsed.edges:
-            tok = e.id
-            if (not tok) or _is_new_edge(tok):
+            tok = getattr(e, 'local_id', None) or e.id
+            if (not tok) or _is_new_edge(tok) or _is_new_edge(getattr(e, 'local_id', None)):
                 rid = ne2uuid.get(tok or "") or str(uuid.uuid4())
                 if tok:
                     ne2uuid[tok] = rid
@@ -1216,16 +1224,16 @@ class GraphKnowledgeEngine:
             edges_str = "New edge aliases: (none)"
 
         return aliased_nodes, aliased_edges, nodes_str, edges_str
-    def _extract_graph_with_llm_aliases(self, content: str, alias_nodes_str: str, alias_edges_str: str, node_edge_should_include_instruction:  None | str = None):
-        if node_edge_should_include_instruction is None:
-            node_edge_should_include_instruction = ("Nodes should include at least: Parties, Obligations, Rights, Deliverables, Payment Terms, Termination Conditions, Confidentiality Clauses, Governing Law, Dates, and Penalties.  "
+    def _extract_graph_with_llm_aliases(self, content: str, alias_nodes_str: str, alias_edges_str: str, instruction_for_node_edge_contents_parsing_inclusion:  None | str = None):
+        if instruction_for_node_edge_contents_parsing_inclusion is None:
+            instruction_for_node_edge_contents_parsing_inclusion = ("Nodes should include at least: Parties, Obligations, Rights, Deliverables, Payment Terms, Termination Conditions, Confidentiality Clauses, Governing Law, Dates, and Penalties.  "
             "Edges should capture: (Party → Obligation), (Obligation → Condition), (Party → Right), (Obligation → Deliverable), (Clause → Governing Law).  ")
         prompt = ChatPromptTemplate.from_messages([
             ("system",
             "You are an expert knowledge graph extractor. "
             "You are an information extraction system that converts legal contracts into a knowledge graph.  "
             "Your task: extract ALL entities (nodes) and relationships (edges) from the text. "
-            f"{node_edge_should_include_instruction}"
+            f"{instruction_for_node_edge_contents_parsing_inclusion}"
             "Allow multiple edge between the same nodes. Allow hypergraph. Allow edge pointing to other edge. "
             "Allow same label but different content. "
             "Breakdown A is obligated to do work for B as A -> B : relation = do work for 100 dollar. You can create another edge. "
@@ -1650,7 +1658,8 @@ class GraphKnowledgeEngine:
         out : list[Span]= []
         for span in grounding.spans:
             out.append(self._delias_one_span(span, real_doc_id ))
-        return Grounding.model_validate({"spans": out})
+        GroundingOrGroundingSlice: Type = type(grounding) # more readable local variable for readability
+        return GroundingOrGroundingSlice.model_validate({"spans": out})
 
     def _dealias_span(self, groundings: List[Grounding] | None, real_doc_id: str
                       ):
@@ -1660,7 +1669,7 @@ class GraphKnowledgeEngine:
             # return [Span(
             #     collection_page_url=f"document_collection/{real_doc_id}",
             #     document_page_url=f"document/{real_doc_id}",
-            #     snippet=fallback_snip or None,
+            #     excerpt=fallback_snip or None,
             #     doc_id=real_doc_id,
             # )]
         return [self._dealias_one_grounding(r, real_doc_id) for r in groundings]
@@ -1907,6 +1916,7 @@ class GraphKnowledgeEngine:
         self.document_collection.add(
             ids=[document.id],
             documents=[document.content],
+            embeddings = [cast(Sequence[float], document.embeddings)] if document.embeddings is not None else None,
             metadatas=[_strip_none({
                 "doc_id": document.id,  # <— critical
                 "type": document.type,
@@ -2144,21 +2154,35 @@ class GraphKnowledgeEngine:
             e.summary = "Normalized same_as"
         return False, e
     
-    def extract_graph_with_llm(self, *, content: str, alias_nodes_str = "[Empty]" , alias_edges_str = "[Empty]", with_parsed = True, node_edge_should_include_instruction: None| str = None):
+    def extract_graph_with_llm(self, *, content: str, doc_type: str, alias_nodes_str = "[Empty]" , alias_edges_str = "[Empty]", with_parsed = True, 
+                               instruction_for_node_edge_contents_parsing_inclusion: None| str = None, validate = True):
         """Pure: run LLM + parse + alias resolution. No writes."""
         # (reuse your existing prompt + alias path)
         raw, parsed, error = self._extract_graph_with_llm_aliases(
             content, alias_nodes_str=alias_nodes_str, alias_edges_str=alias_edges_str,
-            node_edge_should_include_instruction = node_edge_should_include_instruction
+            instruction_for_node_edge_contents_parsing_inclusion = instruction_for_node_edge_contents_parsing_inclusion
         )
         if error:
             raise ValueError(error)
-        # if not isinstance(parsed, LLMGraphExtraction):
-        #     dumped = parsed.model_dump(field_mode = 'backend')
-            
-            
-        #     parsed = LLMGraphExtraction.model_validate(parsed, context={'insertion_method', 'llm_graph_extraction'})
 
+        if validate:
+            # prevent the case LLM hallucinated real UUID in the response that is not any existing node, internal structure intact invariant
+            temp_alias_book = AliasBook()
+            parsed_copy = parsed.model_copy(deep= True)
+            self._preflight_validate(parsed_copy, "", alias_book = temp_alias_book)
+            
+            if not (set([j for i in parsed_copy.edges for j in i.target_ids]).union(
+                set([j for i in parsed_copy.edges for j in i.source_ids])) <= set([i.id for i in parsed_copy.edges]).union(
+                    set([i.id for i in parsed_copy.nodes]))):
+                raise Exception("LLM error, new uuid hallucinated")
+            span_validator: BaseDocValidator = self.get_span_validator_of_doc_type(doc_type = doc_type)
+            dummy_doc = Document(content=content,
+                   type=doc_type, metadata={}, domain_id = None, processed = False, embeddings = None)
+            for node_or_edge in parsed_copy.nodes + parsed_copy.edges:
+                node_or_edge : Node | Edge
+                for g in node_or_edge.mentions:
+                    for sp in g.spans:
+                        span_validator.validate_span(doc = dummy_doc, span = sp )
         # resolve nn:/ne:/aliases -> UUIDs here
         # and run self._preflight_validate(parsed, doc_id) LATER (we don’t know doc_id yet)
         if with_parsed:
@@ -2461,8 +2485,8 @@ class GraphKnowledgeEngine:
         doc = Document(id = doc_get_result['ids'][0],
                        content = docs[0],
                        metadata = metadata,
-                       domain_id = str(metadata['domain_id']),
-                       type = str(metadata['type']),
+                       domain_id = _str_or_none(metadata.get('domain_id')),
+                       type = metadata['type'],
                        processed = metadata['processed']
                        )
         return doc
@@ -2473,7 +2497,7 @@ class GraphKnowledgeEngine:
                                        doc_type: str | None = None, 
                                        document: Document| None=None) -> BaseDocValidator:
         """infer doc type from either doc_id, type_type or document and return corresponding span validator"""
-        if (doc_id is None) + (doc_type is None) + (document is None) == 1:
+        if (doc_id is not None) + (doc_type is not  None) + (document is not None) == 1:
             pass
         else:
             raise ValueError("Must only specify one of doc_id, doc_type or document")
@@ -2597,13 +2621,19 @@ class GraphKnowledgeEngine:
         document: Document,
         parsed: LLMGraphExtraction,
         mode: str = "append",   # "replace" | "append" | "skip-if-exists"
+        assign_real_id_in_place = True
     ) -> dict:
         """
+        the external user use case is to send the whole extraction via mcp as a copy and therefore
+        by default no deep copy is made.
         Write nodes/edges/endpoints for `document.id`.
         Returns concrete ids written for idempotent tests.
+        node that side effect parsed is modified in place for efficiency 
+        if assign_real_id_in_place is False, a parsed deep copy is made
         """
         doc_id = document.id
-
+        if not assign_real_id_in_place:
+            parsed = parsed.model_copy(deep=True)
         # if replace, rollback prior doc content first
         if mode == "replace":
             self.rollback_document(doc_id)
@@ -2614,7 +2644,7 @@ class GraphKnowledgeEngine:
         self._preflight_validate(parsed, doc_id)
         # self.ingest_with_toposort(parsed, doc_id = doc_id)
 
-        
+        # diagnose code: set([j for i in parsed.edges for j in i.target_ids]).union(set([j for i in parsed.edges for j in i.source_ids])) <= set([i.id for i in parsed.edges]).union(set([i.id for i in parsed.nodes]))
 
         # persist and collect ids
         node_ids, edge_ids = [], []
@@ -2640,7 +2670,7 @@ class GraphKnowledgeEngine:
                 # refs = [Span.model_validate(i.model_dump(field_mode = 'backend'), context={'insertion_method': i.insertion_method or 'llm_graph_extraction'}) for i in ln.mentions]
                 for g in ln.mentions:
                     for sp in g.spans:
-                        span_validator.validate_span(doc_id = doc_id, span = sp)
+                        span_validator.validate_span(doc_id = doc_id, span = sp, engine = self, doc=document)
                 n = Node(
                     id=ln.id, label=ln.label, type=ln.type, summary=ln.summary,
                     domain_id=ln.domain_id, canonical_entity_id=ln.canonical_entity_id,
@@ -3051,7 +3081,7 @@ class GraphKnowledgeEngine:
     #         return ref
     #     # Fallback if somehow node has no refs (shouldn’t happen with your model)
     #     doc_id = self._primary_doc_id_from_node(n) or "unknown"
-    #     return _default_ref(doc_id, snippet=n.summary if hasattr(n, "summary") else None)
+    #     return _default_ref(doc_id, excerpt=n.summary if hasattr(n, "summary") else None)
     def add_edge_with_endpoint_docs(self, edge: Edge, endpoint_doc_ids: dict[str, str | None]):
         # Add the main edge row (neutral doc_id)
         self.edge_collection.add(

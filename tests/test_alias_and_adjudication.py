@@ -15,7 +15,7 @@ def _span_for(doc_id: str, start_page = 1, end_page = 1, start_char = 0, end_cha
         insertion_method="pytest-manual",
         doc_id = doc_id,
         source_cluster_id = None,
-        snippet = None
+        excerpt = None
     )
 def test_base62_roundtrip():
     u = str(uuid.uuid4())

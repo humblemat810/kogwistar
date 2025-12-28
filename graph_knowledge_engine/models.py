@@ -82,11 +82,12 @@ class Span(ModeSlicingMixin, BaseModel):
     # Required locators (may span pages)
     start_page: int = Field(..., ge=1, description="1-based page index where the mention starts")
     end_page: int = Field(..., ge=1, description="1-based page index where the mention ends (>= start_page)")
-    start_char: int = Field(..., ge=0, description="Character offset within start_page")
-    end_char: int = Field(..., ge=-1, description="Character offset within end_page")
+    start_char: int = Field(..., ge=0, description="Character offset within start_page, zero indexed, first char in source document is index 0 with 0 offset")
+    end_char: int = Field(..., ge=-1, description="Character offset within end_page, zero indexed")
+    excerpt: str = Field(..., description="the direct excerpt from source doc from start char to end char. Must be identical from extracted using start_char and end_char")
     # Optional extras
     source_cluster_id: Optional[str] = Field(None, description = 'source text cluster id')
-    snippet: Optional[str] = Field(None, description="Short text snippet for quick preview")
+    
     verification: Annotated[Optional[MentionVerification], BackendField(), ExcludeMode("llm")] = Field(
                                         None, description="Result of validating the mention correctness"
                                     )
@@ -146,12 +147,13 @@ class Grounding(ModeSlicingMixin, BaseModel):
     def validate_span(self, span:Span):
         
         pass
-    def __init__(self, span : Span | list[Span]):
-        if type(span) is Span:
-            self.spans = [span]
-        elif type(span) is list:
-            self.spans = span
-        pass
+    @field_validator("spans")
+    def spans_validate(cls, spans : Span | list[Span]):
+        if type(spans) is Span:
+            spans = [spans]
+        elif type(spans) is list:
+            spans = spans
+        return spans
     def validate_from_source(self):
         for sp in self.spans:
             self.validate_span(sp)
@@ -303,21 +305,21 @@ class LLMEdge( LLMMixin, EdgeMixin, GraphEntityRefBase):
     
     pass
 
-class GroundginMandatorySnippet(Span):
-    snippet: str = Field(..., description="Short text snippet for quick preview") # type: ignore
+class GroundginMandatoryExcerpt(Span):
+        excerpt: str = Field(..., description="the direct excerpt from source doc from start char to end char. Must be identical from extracted using start_char and end_char")  # type: ignore
 
     pass
 class LLMNodeExtraction(LLMNode):
     "extracted node information"
     
-    groundings: Annotated[List[GroundginMandatorySnippet], FrontendField(),BackendField(),DtoField(),LLMField()] = Field(
+    groundings: Annotated[List[GroundginMandatoryExcerpt], FrontendField(),BackendField(),DtoField(),LLMField()] = Field(
         min_items=1, description="One or more locatable mentions supporting this entity"
     )
 
 class LLMEdgeExtraction(LLMEdge):
     "extracted edge information"
     
-    groundings: Annotated[List[GroundginMandatorySnippet], FrontendField(),BackendField(),DtoField(),LLMField()] = Field(
+    groundings: Annotated[List[GroundginMandatoryExcerpt], FrontendField(),BackendField(),DtoField(),LLMField()] = Field(
         min_items=1, description="One or more locatable mentions supporting this entity"
     )
 
@@ -424,10 +426,11 @@ class AdjudicationCandidate(BaseModel):
 class Document(ModeSlicingMixin, BaseModel):
     id: BackendType[str] = Field(default_factory=generate_id, description="Unique document identifier")
     content: BackendType[DtoType[str]] = Field(..., description="Text content of the document")
-    type: BackendType[DtoType[str]] = Field(..., description="Type of document, e.g., 'ocr', 'pdf'")
+    type: BackendType[DtoType[Literal["text", "ocr_document"] | str]] = Field(..., description="Type of document, e.g., 'ocr', 'pdf'")
     metadata: BackendType[DtoType[Optional[Dict[str, Any]]]] = Field(None, description="Additional metadata for the document")
     domain_id: BackendType[Optional[str]] = Field(None, description="Optional domain this document belongs to")
     processed: BackendType[bool] = Field(False, description="Whether the document has been processed")
+    embeddings: BackendType[Optional[Any]] = Field(..., description="embedding for collection")
     @staticmethod
     def from_text(text: str, **kwarg):
         return Document(content = text, type = "text", metadata = {}, **kwarg)

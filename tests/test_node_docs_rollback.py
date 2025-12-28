@@ -14,7 +14,7 @@ def _span_for(doc_id: str) -> Span:
         insertion_method="pytest-manual",
         doc_id = doc_id,
         source_cluster_id = None,
-        snippet = None
+        excerpt = None
     )
 
 def test_node_docs_partial_then_full_rollback(tmp_path):

@@ -692,7 +692,7 @@ async def contract_validate_graph(payload: DocumentGraphProposal):
                             "end_page": 1,
                             "start_char": p["start_char"],
                             "end_char": (10**9 if p["end_char"] == -1 else p["end_char"]),
-                            "snippet": p.get("verbatim_text", "")[:400],
+                            "excerpt": p.get("verbatim_text", "")[:400],
                         }
                         for p in ptrs
                     ]

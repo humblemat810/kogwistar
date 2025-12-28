@@ -28,14 +28,14 @@ def _preseed_chroma_dir(persist_dir: str):
     from graph_knowledge_engine.engine import GraphKnowledgeEngine
     from graph_knowledge_engine.models import Document, Node, Edge, Span
 
-    def ref(doc_id: str, snippet: str = ""):
+    def ref(doc_id: str, excerpt: str = ""):
         return Span(
             collection_page_url=f"document_collection/{doc_id}",
             document_page_url=f"document/{doc_id}",
             doc_id=doc_id,
             insertion_method="pytest-manual",
-            start_page=1, end_page=1, start_char=0, end_char=max(0, len(snippet)),
-            snippet=snippet or None,
+            start_page=1, end_page=1, start_char=0, end_char=max(0, len(excerpt)),
+            excerpt=excerpt or None,
         )
 
     eng = GraphKnowledgeEngine(persist_directory=persist_dir)

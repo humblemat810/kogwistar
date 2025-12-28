@@ -7,13 +7,13 @@ from graph_knowledge_engine.models import Document, Node, Span, MentionVerificat
 def engine_tmp(tmp_path):
     return GraphKnowledgeEngine(persist_directory=str(tmp_path / "chroma"))
 
-def _ref(doc_id, start=0, end=40, snippet=None):
+def _ref(doc_id, start=0, end=40, excerpt=None):
     return Span(
         collection_page_url=f"document_collection/{doc_id}",
         document_page_url=f"document/{doc_id}", doc_id = doc_id,
         insertion_method="pytest-manual",
         start_page=1, end_page=1, start_char=start, end_char=end,
-        snippet=snippet or None
+        excerpt=excerpt or None
     )
 
 def test_verify_mentions_for_doc(engine_tmp):

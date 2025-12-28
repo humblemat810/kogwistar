@@ -244,7 +244,7 @@ class BaseDocumentGraphIngestor:
         if not self.engine._exists_node(node_id):
             from graph_knowledge_engine.models import Node, Span
             embeddings = self.engine.document_collection.get(doc_id, include = ['embeddings'])['embeddings'][0]
-            ref = self._ref(doc_id = doc_id,snippet = None, span = Span(start_page=1, end_page=len(leaves), start_char=0, end_char=len(leaves[-1].text)))
+            ref = self._ref(doc_id = doc_id,excerpt = None, span = Span(start_page=1, end_page=len(leaves), start_char=0, end_char=len(leaves[-1].text)))
             n = Node(
                 id=node_id,
                 label=title or f"Document {doc_id}",
@@ -256,7 +256,7 @@ class BaseDocumentGraphIngestor:
                     # collection_page_url=f"document_collection/{doc_id}",
                     # document_page_url=f"document/{doc_id}",
                     # insertion_method = "chunk-summary",
-                    # start_page=1, end_page=len(leaves), start_char=0, end_char=len(leaves[-1].text), snippet=None,
+                    # start_page=1, end_page=len(leaves), start_char=0, end_char=len(leaves[-1].text), excerpt=None,
                     # doc_id = doc_id)
                 ],
                 doc_id=doc_id,
@@ -533,7 +533,7 @@ class BaseDocumentGraphIngestor:
                 type="entity",
                 summary=leaf.text,
                 mentions=[
-                    self._ref(doc_id, leaf.span, snippet=leaf.text[:160])
+                    self._ref(doc_id, leaf.span, excerpt=leaf.text[:160])
                 ],
                 doc_id=doc_id,
                 properties={
@@ -555,7 +555,7 @@ class BaseDocumentGraphIngestor:
             label=label,
             type="entity",
             summary=ch.summary,
-            mentions=[self._ref(doc_id, ch.span, snippet=ch.summary[:160])],
+            mentions=[self._ref(doc_id, ch.span, excerpt=ch.summary[:160])],
             doc_id=doc_id,
             properties={"level": ch.level},
             # embedding=self.engine._ef(f"{label}: {ch.summary}")[0]
@@ -599,7 +599,7 @@ class BaseDocumentGraphIngestor:
         node_ids: list[str] = []
         for ch in micro_chunks:
             # Build a reference carrying the span for node_docs indexing
-            ref = self._ref(doc_id, span = ch.span, snippet = (ch.summary[:160] if ch.summary else None))
+            ref = self._ref(doc_id, span = ch.span, excerpt = (ch.summary[:160] if ch.summary else None))
             # ref = ReferenceSession(
             #     doc_id = doc_id,
             #     collection_page_url=f"document_collection/{doc_id}",
@@ -608,7 +608,7 @@ class BaseDocumentGraphIngestor:
             #     end_page=ch.span.end_page,
             #     start_char=ch.span.start_char,
             #     end_char=ch.span.end_char,
-            #     snippet=(ch.summary[:160] if ch.summary else None),
+            #     excerpt=(ch.summary[:160] if ch.summary else None),
             # )
 
             n = Node(
@@ -649,7 +649,7 @@ class BaseDocumentGraphIngestor:
             target_ids=[tgt],
             type="relationship",
             summary=f"{relation}: {src} → {tgt}", source_edge_ids = [], target_edge_ids = [],
-            mentions=[self._ref(doc_id, Span(start_page=1, end_page=1, start_char=0, end_char=0), snippet=None)],
+            mentions=[self._ref(doc_id, Span(start_page=1, end_page=1, start_char=0, end_char=0), excerpt=None)],
             doc_id=doc_id,
         )
         # reverse (distinct relation name)
@@ -661,7 +661,7 @@ class BaseDocumentGraphIngestor:
             target_ids=[src],
             type="relationship",
             summary=f"{reverse_relation}: {tgt} → {src}", source_edge_ids = [], target_edge_ids = [],
-            mentions=[self._ref(doc_id, Span(start_page=1, end_page=1, start_char=0, end_char=0), snippet=None)],
+            mentions=[self._ref(doc_id, Span(start_page=1, end_page=1, start_char=0, end_char=0), excerpt=None)],
             doc_id=doc_id,
         )
         if not self.engine._exists_edge(e1.id):
@@ -669,7 +669,7 @@ class BaseDocumentGraphIngestor:
         if not self.engine._exists_edge(e2.id):
             self.engine.add_edge(e2, doc_id=doc_id)
 
-    def _ref(self, doc_id: str, span: Span, *, snippet: Optional[str]) -> Span:
+    def _ref(self, doc_id: str, span: Span, *, excerpt: Optional[str]) -> Span:
         return Span(
             doc_id = doc_id,
             collection_page_url=f"document_collection/{doc_id}",
@@ -679,7 +679,7 @@ class BaseDocumentGraphIngestor:
             start_char=span.start_char,
             end_char=span.end_char,
             insertion_method = "document_ingestion",
-            snippet=snippet,
+            excerpt=excerpt,
         )
 
 # -----------------------------

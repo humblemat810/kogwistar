@@ -28,7 +28,7 @@ def test_graph_upsert_llm_batch_with_references():
                     "doc_id": f"{DOC_ID}",
                     "insertion_method": "test_manual_insert",
                     "start_page": 1, "end_page": 1, "start_char": 0, "end_char": 24,
-                    "snippet": "Alice contracts with Bob"
+                    "excerpt": "Alice contracts with Bob"
                 }]
             },
             {
@@ -42,7 +42,7 @@ def test_graph_upsert_llm_batch_with_references():
                     "doc_id": f"{DOC_ID}",
                     "insertion_method": "test_manual_insert",
                     "start_page": 1, "end_page": 1, "start_char": 21, "end_char": 24,
-                    "snippet": "Bob"
+                    "excerpt": "Bob"
                 }]
             }
         ],
@@ -63,7 +63,7 @@ def test_graph_upsert_llm_batch_with_references():
                     "doc_id": f"{DOC_ID}",
                     "insertion_method": "test_manual_insert",
                     "start_page": 1, "end_page": 1, "start_char": 0, "end_char": 30,
-                    "snippet": "Alice contracts with Bob"
+                    "excerpt": "Alice contracts with Bob"
                 }]
             },
             {
@@ -82,7 +82,7 @@ def test_graph_upsert_llm_batch_with_references():
                     "doc_id": f"{DOC_ID}",
                     "insertion_method": "test_manual_insert",
                     "start_page": 1, "end_page": 1, "start_char": 31, "end_char": 60,
-                    "snippet": "penalty clause"
+                    "excerpt": "penalty clause"
                 }]
             }
         ]

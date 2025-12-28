@@ -14,7 +14,7 @@ def _fmt_span_short(r: dict) -> str:
     if r.get("start_char") is not None and r.get("end_char") is not None:
         span = f":{r['start_char']}-{r['end_char']}"
     url = r.get("document_page_url") or r.get("collection_page_url") or ""
-    snip = r.get("snippet") or ""
+    snip = r.get("excerpt") or ""
     snip = (snip[:60] + "…") if len(snip) > 60 else snip
     return f"{pg}{span} @{url}  “{snip}”".strip()
 class Visualizer():

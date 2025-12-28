@@ -67,7 +67,7 @@ class PreferExistingCanonical(MergePolicy):
                 return ref
             # Fallback if ever empty (shouldn’t with your schema)
             did = getattr(n, "doc_id", None) or "unknown"
-            return self.e._default_ref(did, snippet=n.summary if hasattr(n, "summary") else None)
+            return self.e._default_ref(did, excerpt=n.summary if hasattr(n, "summary") else None)
 
         left_ref = _best_ref(left)
         right_ref = _best_ref(right)
