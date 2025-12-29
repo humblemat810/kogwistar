@@ -432,44 +432,44 @@ def _edge_doc_and_meta(e: Union["Edge", "PureChromaEdge"]) -> tuple[str, dict]:
 def _default_verification(note: str = "fallback span") -> MentionVerification:
     return MentionVerification(method="heuristic", is_verified=False, score=None, notes=note)
 
-# def _default_ref(doc_id: str, excerpt: Optional[str] = None) -> Span:
-#     return Span(
-#         collection_page_url=f"document_collection/{doc_id}",
-#         document_page_url=_DOC_URL.format(doc_id=doc_id),
-#         start_page=1, end_page=1, start_char=0, end_char=0,
-#         excerpt=excerpt or None,
-#         verification=_default_verification()
-#     )
+def _default_ref(doc_id: str, excerpt: Optional[str] = None) -> Span:
+    return Span(
+        collection_page_url=f"document_collection/{doc_id}",
+        document_page_url=_DOC_URL.format(doc_id=doc_id),
+        start_page=1, end_page=1, start_char=0, end_char=0,
+        excerpt=excerpt or None,
+        verification=_default_verification()
+    )
 
-# def _ensure_ref_span(ref: Span, doc_id: str) -> Span:
-#     # Make sure URLs point at this doc and spans are complete
-#     r = ref.model_copy(deep=True)
-#     if not r.collection_page_url:
-#         r.collection_page_url = f"document_collection/{doc_id}"
-#     if not r.document_page_url or str(doc_id) not in r.document_page_url:
-#         r.document_page_url = _DOC_URL.format(doc_id=doc_id)
-#     # Fill span if missing/bad
-#     if r.end_page < r.start_page:
-#         r.end_page = r.start_page
-#     if r.start_page == r.end_page and r.end_char < r.start_char:
-#         r.end_char = r.start_char
-#     if r.start_page is None or r.end_page is None:
-#         r.start_page, r.end_page = 1, 1
-#     if r.start_char is None or r.end_char is None:
-#         r.start_char, r.end_char = 0, 0
-#     # Default verification if absent
-#     if (not hasattr(r, 'verification') and r.__class__.__name__.endswith("LlmSlice")):  # llm slice no such field
-#         pass
-#     elif (hasattr(r, 'verification') and r.verification is None): # ok
-#         r.verification = _default_verification("no explicit verification from LLM")
-#     else: # ok defined
-#         pass
-#     return r
+def _ensure_ref_span(ref: Span, doc_id: str) -> Span:
+    # Make sure URLs point at this doc and spans are complete
+    r = ref.model_copy(deep=True)
+    if not r.collection_page_url:
+        r.collection_page_url = f"document_collection/{doc_id}"
+    if not r.document_page_url or str(doc_id) not in r.document_page_url:
+        r.document_page_url = _DOC_URL.format(doc_id=doc_id)
+    # Fill span if missing/bad
+    if r.end_page < r.start_page:
+        r.end_page = r.start_page
+    if r.start_page == r.end_page and r.end_char < r.start_char:
+        r.end_char = r.start_char
+    if r.start_page is None or r.end_page is None:
+        r.start_page, r.end_page = 1, 1
+    if r.start_char is None or r.end_char is None:
+        r.start_char, r.end_char = 0, 0
+    # Default verification if absent
+    if (not hasattr(r, 'verification') and r.__class__.__name__.endswith("LlmSlice")):  # llm slice no such field
+        pass
+    elif (hasattr(r, 'verification') and r.verification is None): # ok
+        r.verification = _default_verification("no explicit verification from LLM")
+    else: # ok defined
+        pass
+    return r
 
-# def _normalize_mentions(mentions: Optional[List[Span]], doc_id: str, fallback_excerpt: Optional[str]) -> List[Span]:
-    # if not mentions or len(mentions) == 0:
-    #     return [_default_ref(doc_id, excerpt=fallback_excerpt)]
-    # return [_ensure_ref_span(ref, doc_id) for ref in mentions]
+def _normalize_mentions(mentions: Optional[List[Span]], doc_id: str) -> List[Span]:
+    if not mentions or len(mentions) == 0:
+        raise Exception("missing mentions")
+    return [_ensure_ref_span(ref, doc_id) for ref in mentions]
 import re, uuid
 
 _UUID_RE = re.compile(r"^[0-9a-fA-F\-]{36}$")
@@ -2171,9 +2171,8 @@ class GraphKnowledgeEngine:
         if not e.summary:
             e.summary = "Normalized same_as"
         return False, e
-    
     def extract_graph_with_llm(self, *, content: str, doc_type: str, alias_nodes_str = "[Empty]" , alias_edges_str = "[Empty]", with_parsed = True, 
-                               instruction_for_node_edge_contents_parsing_inclusion: None| str = None, validate = True, 
+                               instruction_for_node_edge_contents_parsing_inclusion: None| str = None, validate = True, autofix : bool | str= True,
                                last_iteration_result):
         
         """Pure: run LLM + parse + alias resolution. No writes.
@@ -2190,8 +2189,15 @@ class GraphKnowledgeEngine:
         validation_error_group = []
         if validate:
             # prevent the case LLM hallucinated real UUID in the response that is not any existing node, internal structure intact invariant
+            
             temp_alias_book = AliasBook()
             parsed_copy = parsed.model_copy(deep= True)
+            # with open (os.path.join("manual_cache", "temp.json"), 'w') as f:
+            #     f.write(parsed_copy.model_dump_json())
+            # with open (os.path.join("manual_cache", "temp.json"), 'r') as f:
+            #     import json
+            #     data = json.load(f)
+            #     parsed_copy.model_validate(data)
             self._preflight_validate(parsed_copy, "", alias_book = temp_alias_book)
             
             if not (set([j for i in parsed_copy.edges for j in i.target_ids]).union(
@@ -2211,8 +2217,15 @@ class GraphKnowledgeEngine:
                         if result['correctness'] == True:
                             pass
                         else:
-                            pre_parsed_node_or_edge: Node | Edge = pre_parse_nodes_or_edges[i]
-                            validation_error_group.append(f"Error found for {pre_parsed_node_or_edge.model_dump()}: {str(result)}")
+                            if autofix:
+                                if autofix == True:
+                                    fix_result = span_validator.fix_span(doc = dummy_doc, span = sp, nodes_edges = parsed_copy.nodes + parsed_copy.edges)
+                                    result = fix_result
+                                else:
+                                    raise NotImplementedError("string method options not iplemented")
+                            if result['correctness'] == False:
+                                pre_parsed_node_or_edge: Node | Edge = pre_parse_nodes_or_edges[i]
+                                validation_error_group.append(f"Error found for {pre_parsed_node_or_edge.model_dump()}: {str(result)}")
                             
         # resolve nn:/ne:/aliases -> UUIDs here
         # and run self._preflight_validate(parsed, doc_id) LATER (we don’t know doc_id yet)
@@ -2690,7 +2703,7 @@ class GraphKnowledgeEngine:
             kind, obj = id2kind[rid], id2obj[rid]
             # for ln in parsed.nodes:
             if kind == 'node':
-                ln: Node = obj
+                ln: Node = Node.model_validate(obj.model_dump(), context={'insertion_method': 'llm_graph_extraction'})
                 ln.mentions = self._dealias_span(ln.mentions, document.id)
                 # skip-if-exists mode
                 if mode == "skip-if-exists":
@@ -2698,20 +2711,13 @@ class GraphKnowledgeEngine:
                     if got.get("ids"):  # already there
                         node_ids.append(ln.id)
                         continue
-                # refs = [Span.model_validate(i.model_dump(field_mode = 'backend'), context={'insertion_method': i.insertion_method or 'llm_graph_extraction'}) for i in ln.mentions]
+
                 for g in ln.mentions:
                     for sp in g.spans:
-                        span_validator.validate_span(doc_id = doc_id, span = sp, engine = self, doc=document)
-                n = Node(
-                    id=ln.id, label=ln.label, type=ln.type, summary=ln.summary,
-                    domain_id=ln.domain_id, canonical_entity_id=ln.canonical_entity_id,
-                    properties=ln.properties,
-                    mentions= ln.mentions, #_normalize_mentions(refs, doc_id),
-                    doc_id=doc_id,
-                    embedding = None,
-                    metadata = {}
-                    # embedding=self._ef([f"{ln.label}: {ln.summary} : {nl.join(i['context'] for i in self.extract_reference_contexts(ln.id))}"])[0]
-                )
+                        result = span_validator.validate_span(doc_id = doc_id, span = sp, engine = self, doc=document)
+                        if result['correctness'] != True:
+                            raise Exception(f"Incorrect span occur in grounding {str(g)} span {str(sp)}")
+                n = ln.model_copy(deep=True)
                 emb_text = f"{n.label}: {n.summary} : {nl.join(i['context'] for i in self.extract_reference_contexts(ln)[:1])}"
                 if emb_text is None:
                     emb_text = f"{n.label}: {n.summary} : {nl.join(i['context'] for i in self.extract_reference_contexts(ln)[:1])}"
@@ -2720,7 +2726,7 @@ class GraphKnowledgeEngine:
                 node_ids.append(n.id)
             elif kind == 'edge':
             # for le in parsed.edges:
-                le: Edge = obj
+                le: Edge = Edge.model_validate(obj.model_dump(), context={'insertion_method': 'llm_graph_extraction'})
                 le.mentions = self._dealias_span(le.mentions, document.id)
                 if mode == "skip-if-exists":
                     got = self.edge_collection.get(ids=[le.id])
@@ -2731,21 +2737,10 @@ class GraphKnowledgeEngine:
                 
                 for g in le.mentions:
                     for sp in g.spans:
-                        span_validator.validate_span(doc_id = doc_id, span = sp)
-                e = Edge(
-                    id=le.id, label=le.label, type=le.type, summary=le.summary,
-                    domain_id=le.domain_id, canonical_entity_id=le.canonical_entity_id,
-                    properties=le.properties,
-                    mentions=le.mentions, # _normalize_mentions(refs, doc_id),
-                    relation=le.relation,
-                    source_ids=le.source_ids, target_ids=le.target_ids,
-                    source_edge_ids=getattr(le, "source_edge_ids", None),
-                    target_edge_ids=getattr(le, "target_edge_ids", None),
-                    doc_id=doc_id,
-                    embedding = None,
-                    metadata = {}
-                    # embedding=self._ef([f"{le.label}: {le.summary}"])[0]
-                )
+                        result = span_validator.validate_span(doc_id = doc_id, span = sp, engine = self, doc=document)
+                        if result['correctness'] != True:
+                            raise Exception(f"Incorrect span occur in grounding {str(g)} span {str(sp)}")
+                e = le.model_copy(deep=True)
                 e.embedding = self._ef([f"{le.label}: {le.summary} : {nl.join(i['context'] for i in self.extract_reference_contexts(le)[:1])}"])[0]
                 self.add_edge(e, doc_id=doc_id)
                 edge_ids.append(e.id)
@@ -2757,13 +2752,19 @@ class GraphKnowledgeEngine:
             "nodes_added": len(node_ids),
             "edges_added": len(edge_ids),
         }
-    def ingest_document_with_llm(self, document: Document, *, mode: str = "append"):
+    def ingest_document_with_llm(self, document: Document, *, mode: str = "append",
+                                 instruction_for_node_edge_contents_parsing_inclusion = None,
+                                 raw_with_parsed = None):
         """Convenience: extract + persist. Still returns concrete ids written."""
+        if raw_with_parsed is None:
+            raw_with_parsed = {}
         # add doc row now so fallback refs have URLs
         self.add_document(document)
 
         # build context & aliases as you already do, then:
-        extracted = self.extract_graph_with_llm(content=document.content)
+        extracted = self.extract_graph_with_llm(content=document.content,doc_type = document.type,
+                                                    instruction_for_node_edge_contents_parsing_inclusion = instruction_for_node_edge_contents_parsing_inclusion,
+                                                    last_iteration_result = raw_with_parsed)
         parsed = extracted["parsed"]
 
         # de-alias against this doc scope & validate

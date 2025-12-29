@@ -87,7 +87,10 @@ def _decode_role_from_headers(scope: Scope) -> str:
         return Role.RO.value
 # ---- Engine + MCP ----
 persist_directory = os.environ.get("MCP_CHROMA_DIR") or "./.chroma-mcp"
-pathparts = list(pathlib.Path(os.environ.get("MCP_CHROMA_DIR")).parts)
+if MCP_CHROMA_DIR := (os.environ.get("MCP_CHROMA_DIR") or "./.chroma-mcp"):
+    pathparts = list(pathlib.Path(MCP_CHROMA_DIR).parts)
+else:
+    raise Exception("MCP_CHROMA_DIR undefined")
 pathparts.insert(-1, 'index')
 index_dir = os.path.join(*pathparts) or "./index/chroma-mcp"
 os.makedirs(index_dir, exist_ok = True)

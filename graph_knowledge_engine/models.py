@@ -85,6 +85,8 @@ class Span(ModeSlicingMixin, BaseModel):
     start_char: int = Field(..., ge=0, description="Character offset within start_page, zero indexed, first char in source document is index 0 with 0 offset")
     end_char: int = Field(..., ge=-1, description="Character offset within end_page, zero indexed")
     excerpt: str = Field(..., description="the direct excerpt from source doc from start char to end char. Must be identical from extracted using start_char and end_char")
+    context_before: str = Field(..., description='words before the exceprt for uniqueness excerpt identification, empty string "" if excerpt is start of text')
+    context_after: str  = Field(..., description="words after the exceprt for uniqueness excerpt identification, empty string "" if excerpt is end of text")
     # Optional extras
     source_cluster_id: Optional[str] = Field(None, description = 'source text cluster id')
     
@@ -96,9 +98,10 @@ class Span(ModeSlicingMixin, BaseModel):
     def missing_fields(cls, data, info: ValidationInfo):
         
         # data_dump = data.model_dump()
-        if data.get('insertion_method') is None:
-            insertion_method = info.context["insertion_method"]
-            data['insertion_method'] = insertion_method
+        if type(data) is dict:
+            if data.get('insertion_method') is None:
+                insertion_method = info.context["insertion_method"]
+                data['insertion_method'] = insertion_method
         return data
     @model_validator(mode="after")
     def _check_span_consistency(self):

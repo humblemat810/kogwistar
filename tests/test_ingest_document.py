@@ -4,9 +4,12 @@ import json
 from graph_knowledge_engine.engine import GraphKnowledgeEngine
 from graph_knowledge_engine.models import Document, Span, LLMGraphExtraction
 from typing import cast
+import sys, pathlib
+sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 @pytest.fixture(scope="module")
 def engine() -> GraphKnowledgeEngine:
     return GraphKnowledgeEngine()
+
 def test_ingest_documentS_with_llm(engine:GraphKnowledgeEngine)-> None: 
     """Result can almost only pass validation with pro models, but the test workflow here is to provide basic workflow to make sure
     the generated data schema can be insertable to graphdb. The validity invariant need separte pro ingestor.
@@ -44,6 +47,7 @@ def test_ingest_documentS_with_llm(engine:GraphKnowledgeEngine)-> None:
     location=os.path.join(".cache", "test", pathlib.Path(__file__).parts[-1], "_extract_only")
     os.makedirs(location, exist_ok = True)
     memory_extract_only = Memory(location=location, verbose=0)
+    outcome = []
     for doc_content in doc_content_list:
         @memory_embeddings.cache
         def get_ef(doc_content) -> list[list[float]]:# -> Any | list[list[float]]:
@@ -67,12 +71,14 @@ def test_ingest_documentS_with_llm(engine:GraphKnowledgeEngine)-> None:
             parsed: LLMGraphExtraction['llm']= raw_with_parsed["parsed"]
             return {"raw": raw_with_parsed["raw"], "parsed": parsed.model_dump()}
         
-
+        
         extracted = _extract_only(doc.content, instruction_for_node_edge_contents_parsing_inclusion)
         parsed = LLMGraphExtraction['llm'].model_validate(extracted["parsed"], context = {"insertion_method" : "test_case/test_ingest_documentS_with_llm"})
 
         # persist deterministically (choose replace/append/skip-if-exists)
         out = engine.persist_graph_extraction(document=doc, parsed=parsed, mode="replace")
+        outcome.append(out)
+    outcome
     pass
 def test_ingest_document_with_llm(engine):
     # Example document content
