@@ -99,7 +99,9 @@ def test_ingest_long_text_file_with_chunking(engine: GraphKnowledgeEngine) -> No
         metadata={"source": "fixture"},
         domain_id=None,
         processed=False,
-        embeddings=engine._ef(content)[0],  # cache if you want
+        embeddings = None,
+        # embeddings=engine._ef([content])[0],  # cache if you want
+        source_map = None
     )
     
     parsed = engine.extract_graph_with_llm(
@@ -131,6 +133,8 @@ def test_ingest_document_with_llm(engine):
         metadata={"source": "test"},
         processed=False,
         domain_id = None,
+        embeddings = None,
+        source_map = None,
     )
 
     # The .env file must be configured with Azure OpenAI credentials
