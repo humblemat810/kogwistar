@@ -54,7 +54,9 @@ def test_ingest_documentS_with_llm(engine:GraphKnowledgeEngine)-> None:
             res : list[list[float]]= engine._ef(doc_content) # type: ignore
             return res
         doc = Document(content=doc_content,
-                   type="text", metadata={"source":"test"}, domain_id = None, processed = False, embeddings = cast(list[list[float]], get_ef(doc_content))[0])
+                   type="text", metadata={"source":"test"}, domain_id = None, processed = False, 
+                   embeddings = cast(list[list[float]], get_ef(doc_content))[0], 
+                   source_map = None)
            # cache ONLY the pure extraction on the doc content
         
         @memory_extract_only.cache
@@ -80,6 +82,42 @@ def test_ingest_documentS_with_llm(engine:GraphKnowledgeEngine)-> None:
         outcome.append(out)
     outcome
     pass
+def test_ingest_long_text_file_with_chunking(engine: GraphKnowledgeEngine) -> None:
+    engine.llm.model = "models/gemini-2.5-flash"
+
+    path = pathlib.Path(__file__).parent / "fixtures" / "long_mixed_text.txt"
+    if not path.exists():
+        pytest.skip("long text fixture not present")
+    assert path.exists(), "Missing test fixture long_mixed_text.txt"
+
+    content = path.read_text(encoding="utf-8")
+    assert len(content) > 20_000  # sanity: must actually be long
+
+    doc = Document(
+        content=content,
+        type="text",
+        metadata={"source": "fixture"},
+        domain_id=None,
+        processed=False,
+        embeddings=engine._ef(content)[0],  # cache if you want
+    )
+    
+    parsed = engine.extract_graph_with_llm(
+        content=doc.content,
+        doc_type=doc.type,
+        instruction_for_node_edge_contents_parsing_inclusion="Extract nodes and edges.",
+        last_iteration_result = {}
+    )["parsed"]
+
+    parsed = LLMGraphExtraction["llm"].model_validate(
+        parsed,
+        context={"insertion_method": "test_case/fixture_long_text"},
+    )
+
+    out = engine.persist_graph_extraction(document=doc, parsed=parsed, mode="replace")
+    assert out is not None
+
+
 def test_ingest_document_with_llm(engine):
     # Example document content
     doc_content = (

@@ -51,32 +51,6 @@ def refresh_context(
     )
 
 
-# ---------- fuzzy matching ----------
-
-def _threshold_by_len(n: int) -> int:
-    if n <= 8:
-        return 95
-    if n <= 20:
-        return 92
-    if n <= 60:
-        return 88
-    if n <= 120:
-        return 85
-    return 82
-
-
-def _scorer(target: str):
-    if rfuzz:
-        if target.count(" ") >= 3:
-            return rfuzz.token_sort_ratio
-        return rfuzz.partial_ratio if len(target) >= 20 else rfuzz.ratio
-
-    def difflib_ratio(a: str, b: str) -> float:
-        return difflib.SequenceMatcher(None, a, b).ratio() * 100.0
-
-    return difflib_ratio
-
-
 def _get_doc(doc_id: str | None = None, doc: Document | None = None, engine: EngineLike | None = None):
         if (doc is not None) and doc_id is not None:
             if doc.id == doc_id:
@@ -224,7 +198,9 @@ def fuzzy_find_best_spans(
     return dedup
     
 import json
-    
+
+
+
 class BaseDocValidator:
     def fix_span(self, span: Span, doc_id: str | None = None, doc: Document | None = None, engine: EngineLike | None = None, nodes_edges = None, source_map = None):
         # must coerce plain text into Document for processing
@@ -302,7 +278,7 @@ class BaseDocValidator:
                         {
                             "reason": "fuzzy_repair",
                             "orig_start": orig_start,
-                            "fixed_start": start,
+                            "fixed_start": best.start,
                             "fuzzy_score": round(best.score / 100.0, 4),
                             "orig_excerpt": orig_excerpt,
                             "orig_context_before": orig_cb,
@@ -358,9 +334,11 @@ class PlainTextDocSpanValidator(BaseDocValidator):
         
     
     pass
+class ChunkedDocValidator:
+    def validate_span(self, span: Span, doc_id: str | None = None, doc: Document | None = None, engine: EngineLike | None = None):
+        raise NotImplementedError
 
 class OcrDocSpanValidator(BaseDocValidator):
     def validate_span(self, span: Span, doc_id: str | None = None, doc: Document | None = None, engine: EngineLike | None = None):
-        return super().validate_span(span=span)
+        raise NotImplementedError
         
-    pass

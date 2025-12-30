@@ -69,7 +69,6 @@ class MentionVerification(BaseModel):
         None, ge=0.0, le=1.0, description="Confidence score (if applicable)"
     )
     notes: Optional[str] = Field(None, description="Free-text rationale or hints")
-
 class Span(ModeSlicingMixin, BaseModel):
     """A single span"""
     default_include_modes: ClassVar[set[str]] = {"frontend", "backend", "dto", "llm"}
@@ -79,20 +78,75 @@ class Span(ModeSlicingMixin, BaseModel):
     document_page_url: str = Field(..., description="Link to the document page")
     doc_id : str  = Field(..., description="document id")
     insertion_method : Annotated[str, BackendField(), ExcludeMode("llm")]  = Field(..., description="insertion_method")
-    # Required locators (may span pages)
-    start_page: int = Field(..., ge=1, description="1-based page index where the mention starts")
-    end_page: int = Field(..., ge=1, description="1-based page index where the mention ends (>= start_page)")
+    # Required locators 
+    page_number: int = Field(..., ge=1, description="1-indexed page number where the mentioned")
+    # end_page: int = Field(..., ge=1, description="1-based page index where the mention ends (>= start_page)")
     start_char: int = Field(..., ge=0, description="Character offset within start_page, zero indexed, first char in source document is index 0 with 0 offset")
-    end_char: int = Field(..., ge=-1, description="Character offset within end_page, zero indexed")
+    end_char: int = Field(..., ge=1, description="Character offset within end_page, zero indexed")
     excerpt: str = Field(..., description="the direct excerpt from source doc from start char to end char. Must be identical from extracted using start_char and end_char")
     context_before: str = Field(..., description='words before the exceprt for uniqueness excerpt identification, empty string "" if excerpt is start of text')
     context_after: str  = Field(..., description="words after the exceprt for uniqueness excerpt identification, empty string "" if excerpt is end of text")
     # Optional extras
+    # only for chunked text document
+    chunk_id: Optional[Annotated[str, LLMField(), ExcludeMode("frontend", "backend", "dto")] ] = Field(None, description = 'source text chunk id for chunked text')
     source_cluster_id: Optional[str] = Field(None, description = 'source text cluster id')
     
     verification: Annotated[Optional[MentionVerification], BackendField(), ExcludeMode("llm")] = Field(
                                         None, description="Result of validating the mention correctness"
                                     )
+    def fix_chunk_start_end_char(self, source_map: dict[str, "Chunk"]):
+        if self.chunk_id is None:
+            raise Exception("only for chunnked span")
+        chunk = source_map.get(self.chunk_id)
+        if chunk is None:
+            raise Exception(f"Missing chunk id {self.chunk_id} in source_map")
+        chunk_start_char = chunk.end_char
+        chunk_end_char = chunk.end_char
+        chunk_length =  chunk_end_char-chunk_start_char
+        own_len = self.end_char - self.start_char
+        if self.start_char > chunk_length :
+            # assume it used global id accidentally instead of local id
+            if self.start_char >= chunk_start_char and self.start_char < chunk_end_char:
+                self.start_char -= chunk_start_char
+            if self.end_char > chunk_start_char and self.end_char <= chunk_end_char:
+                self.end_char -= chunk_start_char
+            else:
+                self.end_char = min(self.start_char + own_len, chunk_length)
+        else:
+            self.start_char = chunk_start_char
+            self.end_char = min(self.start_char + own_len, chunk_length)
+            
+    def pop_chunk(self, source_map):
+        # pop chunk information and switch to global indexing
+        self.fix_chunk_start_end_char(source_map)
+        if self.chunk_id is not None:
+            from copy import deepcopy
+            chunk: Chunk = deepcopy(source_map[self.chunk_id])
+            self.chunk_id = None
+            self.start_char = chunk.start_char + self.start_char
+            self.end_char = chunk.start_char + self.end_char
+            return chunk
+        else:
+            raise AttributeError("chunk_id is None")
+        
+    
+    def from_llm_span(self, span : "Span['llm']", source_map) -> "Span":
+        if type(span) is not type(Span["llm"]):
+            raise TypeError(f'span is not of type {type(Span["llm"])}')
+        sp2 = span.model_copy(deep=True)
+        sp2.pop_chunk(source_map)
+        return Span.model_validate(sp2.model_dump())
+        
+    
+    def llm_to_unsliced(self: "Span['llm']", source_map):
+        # makesure chunk id is converted to global id for text case, need source map to resolve
+        if type(self) is Span['llm']:
+            _ = self.pop_chunk(source_map)
+            return Span.model_validate(self.model_dump)
+        else:
+            raise TypeError(f'span is not of type {type(Span["llm"])}')
+        
+    
     @model_validator(mode="before")
     @classmethod
     def missing_fields(cls, data, info: ValidationInfo):
@@ -105,10 +159,10 @@ class Span(ModeSlicingMixin, BaseModel):
         return data
     @model_validator(mode="after")
     def _check_span_consistency(self):
-        if self.end_page < self.start_page:
-            raise ValueError("end_page must be >= start_page")
-        if self.start_page == self.end_page and (self.end_char < self.start_char) and not self.end_char == -1:
-            raise ValueError("end_char must be >= start_char when start_page == end_page")
+        # if self.end_page < self.start_page:
+        #     raise ValueError("end_page must be >= start_page")
+        if (self.end_char <= self.start_char) and not self.end_char == -1:
+            raise ValueError("end_char must be > start_char")
         from .engine import _default_verification
         if (not hasattr(self, 'verification') and self.__class__.__name__.endswith("LlmSlice")):
             pass # ok LLM ok to have no such field
@@ -423,34 +477,102 @@ class AdjudicationCandidate(BaseModel):
         "same_entity",
         description="Question key, e.g., 'same_entity' for nodes or 'same_relation' for edges"
     )
+from dataclasses import dataclass
+@dataclass(frozen=True)
+class Chunk:
+    doc_id: str
+    start_char: int
+    end_char: int  # exclusive
+    text: str    
 # -------------------------
 # Document
 # -------------------------
+from typing import Tuple
 class Document(ModeSlicingMixin, BaseModel):
     id: BackendType[str] = Field(default_factory=generate_id, description="Unique document identifier")
     content: BackendType[DtoType[str]] = Field(..., description="Text content of the document")
-    type: BackendType[DtoType[Literal["text", "ocr_document"] | str]] = Field(..., description="Type of document, e.g., 'ocr', 'pdf'")
+    # "text_chunked" is temp type for view as chunks and validate chunked results
+    type: BackendType[DtoType[Literal["text", "ocr_document", "text_chunked"] | str]] = Field(..., description="Type of document, e.g., 'ocr', 'pdf'")
     metadata: BackendType[DtoType[Optional[Dict[str, Any]]]] = Field(None, description="Additional metadata for the document")
     domain_id: BackendType[Optional[str]] = Field(None, description="Optional domain this document belongs to")
     processed: BackendType[bool] = Field(False, description="Whether the document has been processed")
     embeddings: BackendType[Optional[Any]] = Field(..., description="embedding for collection")
+    source_map: BackendType[Optional[Dict[str, Any]]] = Field(..., description="source_map for chunk boundary, not for LLM ingestion, chunk id to character index range")
     @staticmethod
     def from_text(text: str, **kwarg):
         return Document(content = text, type = "text", metadata = {}, **kwarg)
+    def validate_text_span(self, span: Span):
+        if span.chunk_id is not None:
+            raise Exception(f"text span should not have chunk ID, found chunk_id={span.chunk_id}")
+        pass
+    def validate_text_chunked_span(self, span: Span):
+        if self.source_map is None:
+            raise Exception("Source map should be available when span is checked")
+        span.fix_chunk_start_end_char(self.source_map) # check if chunk id really in span
+        pass
+    def validate_span(self, span: Span):
+        if self.type == "text":
+            self.validate_text_span(span)
+        elif self.type == "text_chunked":
+            self.validate_text_chunked_span(span)
         
+        pass
+    
+    # helper for workflow  long doc -> chunked doc -> llm -> result span unchunked (chunk doc need not but can persist)
+    def to_text_chunked(self):
+        # convert simple text doc with long text content to text_chunked
+        self.type = "text_chunked"
+        self.update_source_map()
+    
+
+    def update_source_map(self):
+        source_map: Dict[str, Any] = {}
+        from splitter import split_doc_deterministic
+        chunks = split_doc_deterministic(content = self.content, doc_id = self.id)
+        for i, chunk in enumerate(chunks):
+            chunk_id = f"chunk_{i}"
+            source_map[chunk_id] = chunk
+        self.source_map = source_map
+    @property
+    def chunked_text(self):
+        if self.source_map is None:
+            self.update_source_map()
+        if self.source_map is None:
+            raise Exception("source map update failed")
+        items = list(self.source_map.items())
+        sorted_items = sorted(items, key=lambda x: x[0])
+        sorted_items_str = [{"chunk_id": f"chunk_{i}", "chunk": str(self.get_chunk(chunk))} for i, chunk in sorted_items]
+        return str(sorted_items_str)
+    def get_chunk(self, chunk: Chunk )-> str:        
+        return self.content[chunk.start_char: chunk.end_char]
+    def __str__(self):
+        if self.type == "text":
+            return self.content
+        elif self.type == "text_chunked":
+            return self.chunked_text
+        else:
+            raise Exception("unsupported type")
     def get_content_by_span(self, span: Span)-> str:
         if self.type == 'ocr':
             return self.get_content_as_ocr_doc_by_span(span)
-        elif self.type == 'text':
+        elif self.type == ['text',  "text_chunked"]:
             return self.get_content_as_text_doc_by_span(span)
         else:
             raise Exception ("Unknown document type")
 
     def get_content_as_text_doc_by_span(self, span: Span)-> str:
-        if self.type != 'text':
+        if self.type == 'text':
+            return self.content[span.start_char:span.end_char]
+        elif self.type == 'text_chunked':
+            if span.chunk_id is None:
+                raise ValueError("span must have chunk id")
+            if self.source_map is None:
+                raise Exception("source map must not be none when span already obtained")
+            source_map = self.source_map
+            return self.get_chunk(source_map[span.chunk_id])[span.start_char:span.end_char]
+        else:
             raise Exception("only can call method when doc is plain text type")
-        return self.content[span.start_char:span.end_char]
-        return ""
+        
     
     def get_content_as_ocr_doc_by_span(self, span: Span)-> str:
         if self.type != 'ocr':

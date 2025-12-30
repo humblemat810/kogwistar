@@ -432,14 +432,14 @@ def _edge_doc_and_meta(e: Union["Edge", "PureChromaEdge"]) -> tuple[str, dict]:
 def _default_verification(note: str = "fallback span") -> MentionVerification:
     return MentionVerification(method="heuristic", is_verified=False, score=None, notes=note)
 
-def _default_ref(doc_id: str, excerpt: Optional[str] = None) -> Span:
-    return Span(
-        collection_page_url=f"document_collection/{doc_id}",
-        document_page_url=_DOC_URL.format(doc_id=doc_id),
-        start_page=1, end_page=1, start_char=0, end_char=0,
-        excerpt=excerpt or None,
-        verification=_default_verification()
-    )
+# def _default_ref(doc_id: str, excerpt: Optional[str] = None) -> Span:
+#     return Span(
+#         collection_page_url=f"document_collection/{doc_id}",
+#         document_page_url=_DOC_URL.format(doc_id=doc_id),
+#         start_page=1, end_page=1, start_char=0, end_char=0,
+#         excerpt=excerpt or None,
+#         verification=_default_verification()
+#     )
 
 def _ensure_ref_span(ref: Span, doc_id: str) -> Span:
     # Make sure URLs point at this doc and spans are complete
@@ -449,12 +449,12 @@ def _ensure_ref_span(ref: Span, doc_id: str) -> Span:
     if not r.document_page_url or str(doc_id) not in r.document_page_url:
         r.document_page_url = _DOC_URL.format(doc_id=doc_id)
     # Fill span if missing/bad
-    if r.end_page < r.start_page:
-        r.end_page = r.start_page
-    if r.start_page == r.end_page and r.end_char < r.start_char:
-        r.end_char = r.start_char
-    if r.start_page is None or r.end_page is None:
-        r.start_page, r.end_page = 1, 1
+    # if r.end_page < r.start_page:
+    #     r.end_page = r.start_page
+    # if r.start_page == r.end_page and r.end_char < r.start_char:
+    #     r.end_char = r.start_char
+    # if r.start_page is None or r.end_page is None:
+    #     r.start_page, r.end_page = 1, 1
     if r.start_char is None or r.end_char is None:
         r.start_char, r.end_char = 0, 0
     # Default verification if absent
@@ -2173,8 +2173,7 @@ class GraphKnowledgeEngine:
         return False, e
     def extract_graph_with_llm(self, *, content: str, doc_type: str, alias_nodes_str = "[Empty]" , alias_edges_str = "[Empty]", with_parsed = True, 
                                instruction_for_node_edge_contents_parsing_inclusion: None| str = None, validate = True, autofix : bool | str= True,
-                               last_iteration_result):
-        
+                               last_iteration_result = None):
         """Pure: run LLM + parse + alias resolution. No writes.
         last_iteration_result dict with 3 fields of 'raw' 'parsed' and 'error'. Falsy on initialization
         """
@@ -2206,7 +2205,7 @@ class GraphKnowledgeEngine:
                 raise Exception("LLM error, new uuid hallucinated")
             span_validator: BaseDocValidator = self.get_span_validator_of_doc_type(doc_type = doc_type)
             dummy_doc = Document(content=content,
-                   type=doc_type, metadata={}, domain_id = None, processed = False, embeddings = None)
+                   type=doc_type, metadata={}, domain_id = None, processed = False, embeddings = None, source_map = None)
             # validation_error_group = []
             pre_parse_nodes_or_edges: list [Node | Edge] = parsed.nodes + parsed.edges
             for i, node_or_edge in enumerate(parsed_copy.nodes + parsed_copy.edges):
@@ -2531,7 +2530,9 @@ class GraphKnowledgeEngine:
                        metadata = metadata,
                        domain_id = _str_or_none(metadata.get('domain_id')),
                        type = metadata['type'],
-                       processed = metadata['processed']
+                       processed = metadata['processed'],
+                       embeddings = None,
+                       source_map = None
                        )
         return doc
     from typing import overload, Literal, Any
