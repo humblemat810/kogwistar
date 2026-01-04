@@ -1,9 +1,10 @@
-# ✅ Models for Chroma + LLM with optional embeddings and adjudication
+
 import logging
 import os
-logger = logging.getLogger(__name__)
-logger.addHandler(logging.NullHandler())
-logger.debug("loading models")
+if True:
+    logger = logging.getLogger(__name__)
+    logger.addHandler(logging.NullHandler())
+    logger.debug("loading models")
 from typing import List, Literal, Optional, Dict, Any, Type, TypeAlias, Union, Annotated, ClassVar
 from pydantic import BaseModel, Field, model_validator, field_validator, ValidationInfo
 import uuid
@@ -115,7 +116,7 @@ class Span(ModeSlicingMixin, BaseModel):
         else:
             self.start_char = chunk_start_char
             self.end_char = min(self.start_char + own_len, chunk_length)
-            
+
     def pop_chunk(self, source_map):
         # pop chunk information and switch to global indexing
         self.fix_chunk_start_end_char(source_map)
@@ -260,7 +261,14 @@ class GraphEntityRefBase(GraphEntityBase):
         for g in mentions:
             g.validate_from_source()
         return mentions
-
+    @model_validator(mode="before")
+    @classmethod
+    def end_char_minus_1_to_ending_index(cls, data):
+        for mention in data['mentions']:
+            for span in mention['spans']:
+                if span["end_char"] == -1:
+                    span["end_char"] += len(span["excerpt"])
+        return data
 
 class EdgeMixin(ModeSlicingMixin, BaseModel):
     source_ids: List[str] = Field(..., description="List of source node IDs")

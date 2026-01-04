@@ -209,10 +209,15 @@ def _filter_tool_list(lst: list[dict]) -> list[dict]:
     for item in lst:
         name = getattr(item, 'name', None) if type(item) is FunctionTool else None or item.get("name") or item.get("tool") or ""
         # accept either exact name or any recorded alias
-        tool_roles = TOOL_ROLES.get(name, {Role.RO.value})
-        tool_namespace = TOOL_NAMESPACE.get(name, {NameSpace.DOCS.value})
-        if role in tool_roles and namespace in tool_namespace:
-            out.append(item)
+        if name:
+            tool_roles = TOOL_ROLES.get(name, {Role.RO.value})
+            tool_namespace = TOOL_NAMESPACE.get(name, {NameSpace.DOCS.value})
+            if role in tool_roles and namespace in tool_namespace:
+                out.append(item)
+        else:
+            tool_roles = None
+            tool_namespace = None
+        
     return out
 
 from fastmcp.tools.tool_manager import ToolManager
@@ -411,7 +416,7 @@ def kg_semantic_seed_then_expand_text(text: str, top_k: int = 5, hops: int = 1, 
 # ---- Ingestion tools ----
 from .models import Document, PureGraph
 class DocParseIn(Document['dto']):
-    id: Optional[str]
+    id: Optional[str] # pyright: ignore[reportGeneralTypeIssues, reportIncompatibleVariableOverride]
     content: str
     type: str = "plain"
 
@@ -422,7 +427,7 @@ class DocParseOut(BaseModel):
 from graph_knowledge_engine.ingester import PagewiseSummaryIngestor
 
 @tool_roles({Role.RW})
-@require_ns("docs")
+@require_ns(NameSpace.DOCS)
 @mcp.tool()
 def doc_parse(inp: DocParseIn) -> DocParseOut:
     """Parse a document into leaf and relationships between chunks with summaries from low to high abstraction levels."""
@@ -470,7 +475,7 @@ def document_id_from_file_name(file_name: str):
 
 
 @tool_roles({Role.RW})
-@require_ns("docs")
+@require_ns(NameSpace.DOCS)
 @mcp.tool()
 def store_document(inp: DocParseIn):
     """Store document in graph database"""
@@ -479,7 +484,7 @@ def store_document(inp: DocParseIn):
     engine.add_document(doc)
     return DocStoreOut.model_validate({"success": True})
 @tool_roles({Role.RW})
-@require_ns("docs")
+@require_ns(NameSpace.DOCS)
 @mcp.tool()
 def kg_extract(inp: KGExtractIn) -> KGExtractOut:
     """From documents extract knowledge and relationships as a hypergraph between entities, ideas, concepts with each other."""
@@ -515,7 +520,7 @@ def kg_extract(inp: KGExtractIn) -> KGExtractOut:
     parsed = get_reparsed_extraction(content)
     
     persisted = engine.persist_graph_extraction(
-        document=Document(id=inp.id, content=content, type="plain"),
+        document=Document(id=inp.id, content=content, type="text"),
         parsed=parsed, mode=inp.mode,
     )
     return KGExtractOut(
@@ -666,10 +671,10 @@ class DocumentGraphValidationResult(BaseModel):
     node_errors: Dict[str, str] = {}
     edge_errors: Dict[str, str] = {}
 from pydantic import ValidationError
-@app.post("/api/contract.validate_graph", response_model=DocumentGraphValidationResult)
-async def contract_validate_graph(payload: DocumentGraphProposal):
+@app.post("/api/document.validate_graph", response_model=DocumentGraphValidationResult)
+async def document_validate_graph(payload: DocumentGraphProposal):
     # inp =await request.json()
-    # payload = ContractGraphProposal.model_validate(inp['payload'])
+    # payload = documentGraphProposal.model_validate(inp['payload'])
     node_errors: Dict[str, str] = {}
     edge_errors: Dict[str, str] = {}
 
@@ -680,12 +685,12 @@ async def contract_validate_graph(payload: DocumentGraphProposal):
             # IMPORTANT: your Node requires references;
             # user may send "metadata.pointers" instead.
             # so we do a small shim here:
-            if "references" not in n:
+            if "mentions" not in n:
                 # try to lift from metadata.pointers -> references
                 md = n.get("metadata") or {}
                 ptrs = md.get("pointers") or []
                 if ptrs:
-                    n["references"] = [
+                    n["mentions"] = [
                         {
                             "doc_id": payload.doc_id,
                             "collection_page_url": f"doc://{payload.doc_id}",
@@ -730,14 +735,14 @@ class GraphUpsertLLMIn(BaseModel):
     nodes: List[Dict[str, Any]] = Field(default_factory=list, description="LLMNode['llm']-shaped dicts")
     edges: List[Dict[str, Any]] = Field(default_factory=list, description="LLMEdge['llm']-shaped dicts")
 
-class GraphUpsertOut(BaseModel):
+class DocumentGraphUpsertOut(BaseModel):
     document_id: str
     node_ids: List[str]
     edge_ids: List[str]
     nodes_added: int
     edges_added: int
 
-@app.post("/api/graph/upsert", response_model=GraphUpsertOut)
+@app.post("/api/graph/upsert", response_model=DocumentGraphUpsertOut)
 def api_graph_upsert_llm(inp: GraphUpsertLLMIn):
     """
     Upsert a (hyper)graph in one shot:
@@ -761,7 +766,7 @@ def api_graph_upsert_llm(inp: GraphUpsertLLMIn):
             "nodes": inp.nodes,
             "edges": inp.edges,
         }, insertion_method=inp.insertion_method)
-    except:
+    except Exception as _e:
         llm_like = LLMGraphExtraction.model_validate({
             "nodes": inp.nodes,
             "edges": inp.edges,
@@ -778,39 +783,40 @@ def api_graph_upsert_llm(inp: GraphUpsertLLMIn):
         mode="append",
     )
 
-    return GraphUpsertOut(
+    return DocumentGraphUpsertOut(
         document_id=persisted["document_id"],
         node_ids=persisted["node_ids"],
         edge_ids=persisted["edge_ids"],
         nodes_added=persisted["nodes_added"],
         edges_added=persisted["edges_added"],
     )
-class ContractGraphUpsert(BaseModel):
+class DocumentGraphUpsert(BaseModel):
     doc_id: str
     insertion_method: str = "document_parser_v1"
     nodes: List[Node]
     edges: List[Edge] = []
 
-class ContractGraphUpsertResult(BaseModel):
+class DocumentGraphUpsertResult(BaseModel):
     status: str
     inserted_nodes: int
     inserted_edges: int
     engine_result: Dict[str, Any] | None = None
 
-@app.post("/api/contract.upsert_tree", response_model=ContractGraphUpsertResult)
-async def contract_upsert_tree(payload: ContractGraphUpsert):
+@app.post("/api/document.upsert_tree", response_model=DocumentGraphUpsertResult)
+async def document_upsert_tree(payload: DocumentGraphUpsert):
+    """Upsert a generic tree with document root"""
     from .models import GraphExtractionWithIDs
     try:
         res = engine.persist_document_graph_extraction(
             parsed = GraphExtractionWithIDs(
-                nodes=[n.model_dump(field_mode = 'backend') for n in payload.nodes],
-                edges=[e.model_dump(field_mode = 'backend') for e in payload.edges]),
+                nodes=[Node.model_validate(n.model_dump(field_mode = 'backend')) for n in payload.nodes],
+                edges=[Edge.model_validate(e.model_dump(field_mode = 'backend')) for e in payload.edges]),
             # insertion_method=payload.insertion_method,
             doc_id=payload.doc_id,
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-    return ContractGraphUpsertResult(
+    return DocumentGraphUpsertResult(
         status="ok",
         inserted_nodes=len(payload.nodes),
         inserted_edges=len(payload.edges),
@@ -1186,7 +1192,7 @@ def _load_persisted_graph(doc_ids: List[str], insertion_method: Optional[str] = 
             edge_ids.update(engine.edge_ids_by_doc(did))
     return LoadPersistedOut(node_ids=sorted(node_ids), edge_ids=sorted(edge_ids))
 @tool_roles({Role.RO, Role.RW})
-@require_ns("docs")
+@require_ns(NameSpace.DOCS)
 @mcp.tool()
 def kg_load_persisted(inp: LoadPersistedIn) -> LoadPersistedOut:
     """MCP: read back persisted IDs for the given docs (fast; no LLM)."""
@@ -1260,7 +1266,7 @@ def _sigtext(n_or_e: Any) -> Optional[str]:
     return st if isinstance(st, str) else None
 
 @tool_roles({Role.RW})
-@require_ns("docs")
+@require_ns(NameSpace.DOCS)
 @mcp.tool()
 def kg_crossdoc_adjudicate_anykind(inp: CrossDocAdjIn) -> CrossDocAdjOut:
     """
@@ -1279,11 +1285,11 @@ def kg_crossdoc_adjudicate_anykind(inp: CrossDocAdjIn) -> CrossDocAdjOut:
         if inp.scope == "cross-doc":
             if inp.strict_crossdoc and (not di or not dj):
                 return False
-            return (di and dj and di != dj)
+            return (bool(di) and bool(dj) and (di != dj))
         else:  # within-doc
             if inp.strict_crossdoc and (not di or not dj):
                 return False
-            return (di and dj and di == dj)
+            return (bool(di) and bool(dj) and (di != dj))
     loaded = _load_persisted_graph(inp.doc_ids, insertion_method=inp.insertion_method)
     node_objs: List[Node] = _fetch_nodes(loaded.node_ids) if loaded.node_ids else []
     edge_objs: List[Edge] = _fetch_edges(loaded.edge_ids) if loaded.edge_ids else []
@@ -1488,7 +1494,7 @@ class ProposeVectorIn(BaseModel):
     where: Optional[str| dict] = None
     
 @tool_roles({Role.RO, Role.RW})
-@require_ns("docs")
+@require_ns(NameSpace.DOCS)
 @mcp.tool()
 def propose_vector(inp : ProposeVectorIn
     # new_node_ids: List[str],
@@ -1544,7 +1550,7 @@ def propose_vector(inp : ProposeVectorIn
     for (lid, rid), (l, r, score) in pairs.items():
         out.append(ProposePair(
             left_id=getattr(l, "id", ""),
-            left_kind="edge" if isinstance(l, Edge) else "node" ,            # query side is a node by contract
+            left_kind="edge" if isinstance(l, Edge) else "node" ,            # query side is a node by document
             right_id=getattr(r, "id", ""),
             right_kind="edge" if isinstance(r, Edge) else "node",
         ))
@@ -1575,7 +1581,7 @@ class ProposeBruteForceIn(BaseModel):
     limit_per_bucket: Optional[int] = 200
     where: Optional[dict] = None # JSON string, e.g. {"insertion_method":"graph_extractor"}
 @tool_roles({Role.RO, Role.RW})
-@require_ns("docs")
+@require_ns(NameSpace.DOCS)
 @mcp.tool()
 def kg_propose_bruteforce(
     inp : ProposeBruteForceIn
@@ -1700,7 +1706,7 @@ class AdjPairsIn(BaseModel):
     pairs: List["ProposePair"]
     commit : bool = False
 @tool_roles({Role.RW})
-@require_ns("docs")
+@require_ns(NameSpace.DOCS)
 @mcp.tool()
 def commit_merge(inp: CrossDocAdjOut):
     """ merge pair of nodes of edges after running adjudication proposal
@@ -1724,7 +1730,7 @@ def commit_merge(inp: CrossDocAdjOut):
             if canonical_id:
                 committed.append(str(canonical_id))
 @tool_roles({Role.RW})
-@require_ns("docs")
+@require_ns(NameSpace.DOCS)
 @mcp.tool()
 def adjudicate_pairs(inp: AdjPairsIn) -> CrossDocAdjOut:
     """ Propose pairs of similar meaning nodes/ edges for subsequent merging
