@@ -2513,7 +2513,7 @@ class GraphKnowledgeEngine:
         #     })],
         # )
         doc_get_result = self.document_collection.get(doc_id)
-        if doc_get_result is None:
+        if len(doc_get_result['ids']) == 0:
             raise ValueError(f"no document found for doc id = {doc_id}")
         metadatas = doc_get_result["metadatas"]
         

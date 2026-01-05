@@ -802,6 +802,24 @@ class DocumentGraphUpsertResult(BaseModel):
     inserted_edges: int
     engine_result: Dict[str, Any] | None = None
 
+class DocumentUpsert(BaseModel):
+    doc_id: str
+    doc_type: str
+    insertion_method: str = "document_parser_v1"
+    content: str # json string
+class DocumentUpsertResult(BaseModel):
+    status: str
+
+@app.post("/api/document")
+async def document_upsert(inp: DocumentUpsert, response_model=DocumentUpsertResult):
+    ocr_doc_dict = json.loads(inp.content)
+    doc = Document.from_ocr(id=inp.doc_id, ocr_content=ocr_doc_dict, type=inp.doc_type)
+    if doc.metadata is None:
+        
+        doc.metadata = {"insertion_method": inp.insertion_method}
+    else:
+        doc.metadata["insertion_method"] = inp.insertion_method
+    engine.add_document(doc)
 @app.post("/api/document.upsert_tree", response_model=DocumentGraphUpsertResult)
 async def document_upsert_tree(payload: DocumentGraphUpsert):
     """Upsert a generic tree with document root"""
@@ -1036,7 +1054,8 @@ def add_index_entries(payload: AddIndexEntriesInput):
     conn = sqlite3.connect(index_db_path)
     conn.execute("PRAGMA foreign_keys = ON;")
     cur = conn.cursor()
-
+    # upsert sqlite db with payload metadata,
+    # then upsert vectordb (chroma) with nodes and edges
     try:
         for item in payload.index:
             kw = " ".join(item.keywords) if item.keywords else ""

@@ -255,19 +255,24 @@ class GraphEntityRefBase(GraphEntityBase):
     @field_validator("mentions")
     @classmethod
     def _require_non_empty_refs(cls, mentions: List[Grounding], info: ValidationInfo):
-        
-        if not mentions:
-            raise ValueError("At least one mentions is required")
-        for g in mentions:
-            g.validate_from_source()
+        try:
+            if not mentions:
+                raise ValueError("At least one mentions is required")
+            for g in mentions:
+                g.validate_from_source()
+        except Exception as _e:
+            raise
         return mentions
     @model_validator(mode="before")
     @classmethod
     def end_char_minus_1_to_ending_index(cls, data):
-        for mention in data['mentions']:
-            for span in mention['spans']:
-                if span["end_char"] == -1:
-                    span["end_char"] += len(span["excerpt"])
+        try:
+            for mention in data['mentions']:
+                for span in mention['spans']:
+                    if span["end_char"] == -1:
+                        span["end_char"] += len(span["excerpt"])
+        except Exception as _e:
+            raise
         return data
 
 class EdgeMixin(ModeSlicingMixin, BaseModel):
@@ -498,7 +503,7 @@ class Chunk:
 from typing import Tuple
 class Document(ModeSlicingMixin, BaseModel):
     id: BackendType[str] = Field(default_factory=generate_id, description="Unique document identifier")
-    content: BackendType[DtoType[str]] = Field(..., description="Text content of the document")
+    content: BackendType[DtoType[str | dict]] = Field(..., description="Text content or OCR dict content of the document")
     # "text_chunked" is temp type for view as chunks and validate chunked results
     type: BackendType[DtoType[Literal["text", "ocr_document", "text_chunked"] | str]] = Field(..., description="Type of document, e.g., 'ocr', 'pdf'")
     metadata: BackendType[DtoType[Optional[Dict[str, Any]]]] = Field(None, description="Additional metadata for the document")
@@ -525,7 +530,29 @@ class Document(ModeSlicingMixin, BaseModel):
             self.validate_text_chunked_span(span)
         
         pass
-    
+    @classmethod
+    def from_ocr(cls, id: str, ocr_content: dict, type:str):
+        def prepare_document_for_llm(doc_dict: Dict) -> Tuple[Dict, Dict[str, Dict]]:
+            # Simple restructure of input format
+            filename = list(doc_dict.keys())[0]
+            pages_data = doc_dict[filename]
+            source_cluster_map = {}
+            for page in pages_data:
+                if 'pdf_page_num' not in page or 'OCR_text_clusters' not in page:
+                    continue
+                page_num = page['pdf_page_num']
+                for i, cluster in enumerate(page['OCR_text_clusters']):
+                    cluster_id = f"p{page_num}_c{i}"
+                    cluster['id'] = cluster_id
+                    source_cluster_map[cluster_id] = cluster
+                for i, cluster in enumerate(page['non_text_objects']):
+                    cluster_id = f"p{page_num}_c{i}"
+                    cluster['id'] = cluster_id
+                    source_cluster_map[cluster_id] = cluster
+            return {"document_filename": filename, "pages": pages_data}, source_cluster_map
+        _, source_map = prepare_document_for_llm(ocr_content)
+        return Document(id = id, content = ocr_content, type = "ocr_document", metadata = {},
+                        embeddings = None, domain_id = None, processed = False, source_map = source_map)
     # helper for workflow  long doc -> chunked doc -> llm -> result span unchunked (chunk doc need not but can persist)
     def to_text_chunked(self):
         # convert simple text doc with long text content to text_chunked
