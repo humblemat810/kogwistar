@@ -290,14 +290,27 @@ class GraphQuery:
         seed_ids = [nid for nid in (hits.get("ids") or [[]])[0]]
         layers = self.k_hop(seed_ids, k=hops)
         return {"seeds": seed_ids, "layers": layers}
-    def semantic_seed_then_expand_text(self, query_text: str, *, top_k: int = 5, hops: int = 1, doc_ids = None):
+    def semantic_seed_then_expand_text(self, query_text: str, *, top_k: int = 5, hops: int = 1, doc_ids = None, where = None):
         """Seed by a TEXT query using the collection's default embedding function, then expand K hops.
         This avoids any custom embedding pipeline and uses the underlying vector store's default embeddings.
         """
-        where = {"doc_id" : doc_ids} if type(doc_ids) is str else None
+        _where = {"doc_id" : doc_ids} if type(doc_ids) is str else None
         if type(doc_ids) is list:
-            where['doc_id'] = {"$in": doc_ids}
-        hits = self.e.node_collection.query(query_texts=[query_text], n_results=top_k, where = where)
+            if _where is None:
+                _where = {}
+            _where['doc_id'] = {"$in": doc_ids}
+        if where:
+            if _where:
+                if _where.get("and"):
+                    if type(_where['and']) is list:
+                        _where_and : list = _where['and']
+                        _where_and.append(where)
+                    else:
+                        raise SyntaxError("vector backend syntax error: where invalid syntax")
+                    # _where['and'].append()
+                else:
+                    _where = {"$and": [where, _where]}
+        hits = self.e.node_collection.query(query_texts=[query_text], n_results=top_k, where = _where)
         seed_ids = [nid for nid in (hits.get("ids") or [[]])[0] if nid]
         layers = self.k_hop(seed_ids, k=hops)
         out_layers = [{'nodes': self.e.node_collection.get(list(l['nodes']))['documents'] if l['nodes'] else [], 
