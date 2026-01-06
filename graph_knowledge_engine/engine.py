@@ -3730,7 +3730,7 @@ class GraphKnowledgeEngine:
     @conversation_only    
     def get_conversation(self, conversation_id):
         pass
-    @conversation_only    
+    @conversation_only
     def get_system_prompt(self, conversation_id):
         pass
     @conversation_only    
@@ -3741,19 +3741,41 @@ class GraphKnowledgeEngine:
         return ConversationResponseModel
     @conversation_only
     def get_ai_conversation_response(self, conversation_id, model_names):
-        conversation = self.get_conversation(conversation_id)
-        prompt = self.get_system_prompt(conversation_id)
-        response_model : Type[BaseModel] = self.get_response_model(conversation_id)
-        
-        model_names=model_names or ["gemini-3-flash-preview", "gemini-2.5-flash", "gemini-2.5-pro", 
-                   "gemini-2.5-flash-lite"]
-        max_retry = 3
-        
-        for i, model_name in enumerate(model_names):
-            for trial in range(max_retry):
+        """Return an agentic response for the given conversation.
+
+        This delegates to :class:`graph_knowledge_engine.agentic_answering.AgenticAnsweringAgent`.
+        The orchestration logic is intentionally kept out of engine.py so it can evolve
+        independently.
+
+        Notes:
+        - For now, model selection is best-effort: we try the provided model_names in order.
+        - The returned payload is a small dict describing the run + the created assistant node.
+        """
+
+        from .agentic_answering import AgenticAnsweringAgent, AgentConfig
+
+        model_names = model_names or [
+            "gemini-3-flash-preview",
+            "gemini-2.5-flash",
+            "gemini-2.5-pro",
+            "gemini-2.5-flash-lite",
+        ]
+
+        last_err: Exception | None = None
+        for model_name in model_names:
+            try:
                 llm = self.get_llm(model_name) or self.llm
-                pass
-        raise Exception("tried all models")
+                agent = AgenticAnsweringAgent(
+                    conversation_engine=self,
+                    knowledge_engine=self.ref_knowledge_engine or self,  # type: ignore
+                    llm=llm,
+                    config=AgentConfig(),
+                )
+                return agent.answer(conversation_id=conversation_id)
+            except Exception as e:
+                last_err = e
+                continue
+        raise Exception(f"tried all models; last error: {last_err}")
     def get_llm(self, model_name = None) -> BaseChatModel:
         # will implement other model names later
         return self.llm
