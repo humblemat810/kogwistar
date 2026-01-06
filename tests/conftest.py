@@ -122,6 +122,17 @@ def engine(tmp_chroma_dir, monkeypatch):
     #eng.llm = _CompositeFakeLLM()
     return eng
 
+@pytest.fixture(scope="module")
+def tmp_conv_chroma_dir(tmp_path_factory):
+    d = tmp_path_factory.mktemp("chroma_db")
+    yield str(d)
+    shutil.rmtree(d, ignore_errors=True)
+@pytest.fixture(scope="function")
+def conversation_engine(tmp_conv_chroma_dir, monkeypatch):
+    eng = GraphKnowledgeEngine(persist_directory=tmp_conv_chroma_dir, kg_graph_type = "conversation")
+    # Patch the real LLM with a deterministic fake
+    #eng.llm = _CompositeFakeLLM()
+    return eng
 
 @pytest.fixture()
 def real_small_graph():

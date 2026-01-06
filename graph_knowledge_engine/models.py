@@ -62,7 +62,7 @@ def generate_id() -> str:
 # -------------------------
 class MentionVerification(BaseModel):
     """Result of verifying a mention span against the source text."""
-    method: Literal["llm", "levenshtein", "regex", "heuristic", "human", "ensemble"] = Field(
+    method: Literal["llm", "levenshtein", "regex", "heuristic", "human", "ensemble", "system"] = Field(
         ..., description="How the mention was verified"
     )
     is_verified: bool = Field(..., description="Whether the mention appears correct")
@@ -95,6 +95,35 @@ class Span(ModeSlicingMixin, BaseModel):
     verification: Annotated[Optional[MentionVerification], BackendField(), ExcludeMode("llm")] = Field(
                                         None, description="Result of validating the mention correctness"
                                     )
+    @staticmethod
+    def from_dummy_for_conversation():
+        doc_id = "_conv:_dummy"
+        dummy_span = Span(
+            collection_page_url=f"conversation/{doc_id}",
+            document_page_url=f"conversation/{doc_id}",
+            doc_id=f"{doc_id}",
+            insertion_method="system",
+            page_number=1, start_char=0, end_char=1,
+            excerpt="", context_before="", context_after="",
+            chunk_id = None,
+            source_cluster_id = None,
+            verification=MentionVerification(method="system", is_verified=True, score=1.0, notes="start node")
+        )
+        return dummy_span
+    @staticmethod
+    def from_dummy_for_document():
+        dummy_span = Span(
+            collection_page_url=f"document_collection/{Document.from_dummy().id}",
+            document_page_url=f"document_collection/{Document.from_dummy().id}",
+            doc_id=Document.from_dummy().id,
+            insertion_method="system",
+            page_number=1, start_char=0, end_char=0,
+            excerpt="", context_before="", context_after="",
+            chunk_id = None,
+            source_cluster_id = None,
+            verification=MentionVerification(method="system", is_verified=True, score=1.0, notes="dummy document span")
+        )
+        return dummy_span    
     def fix_chunk_start_end_char(self, source_map: dict[str, "Chunk"]):
         if self.chunk_id is None:
             raise Exception("only for chunnked span")
@@ -266,11 +295,23 @@ class GraphEntityRefBase(GraphEntityBase):
     @model_validator(mode="before")
     @classmethod
     def end_char_minus_1_to_ending_index(cls, data):
+        def check_and_update_span_inplace(span):
+                        if type(span) is Span:
+                            if span.end_char == -1:
+                                span.end_char += len(span.excerpt)
+                        else:
+                            if type(span) is not dict:
+                                raise ValueError("span has wrong data type of ")
+                            if span.get("end_char") == -1:
+                                span["end_char"] += len(span["excerpt"])
         try:
             for mention in data['mentions']:
-                for span in mention['spans']:
-                    if span["end_char"] == -1:
-                        span["end_char"] += len(span["excerpt"])
+                if type(mention) is Grounding:
+                    for span in mention.spans:
+                        check_and_update_span_inplace(span)
+                else:
+                    for span in mention['spans']:
+                        check_and_update_span_inplace(span)
         except Exception as _e:
             raise
         return data
@@ -337,13 +378,78 @@ class ChromaValidateSourceMixin(BaseModel):
     def validate_from_source(self, source):
         pass
 
-class Node(ChromaValidateSourceMixin, ChromaMixin, GraphEntityRefBase):
-    # Node with ref session enforced
+class LevelAwareMixin(BaseModel):
+    """Mixin to handle level_from_root synchronization with metadata"""
+    level_from_root: Optional[int] = Field(None, description="Hierarchy level from root")
+
+    @model_validator(mode="before")
+    @classmethod
+    def sync_level_from_root(cls, data: Any, info: ValidationInfo) -> Any:
+        if isinstance(data, dict):
+            metadata = data.get("metadata", {}) or {}
+            # Pull from metadata if not explicitly set in data
+            if "level_from_root" not in data and "level_from_root" in metadata:
+                data["level_from_root"] = metadata["level_from_root"]
+        return data
+
+    @model_validator(mode="after")
+    def push_level_to_metadata(self) -> "LevelAwareMixin":
+        if self.level_from_root is not None:
+            if not hasattr(self, "metadata"):
+                # Should be mixed in with ChromaMixin or similar
+                return self
+            if self.metadata is None:
+                self.metadata = {}
+            self.metadata["level_from_root"] = self.level_from_root
+        return self
+
+class ConversationRoleMixin(BaseModel):
+    """Mixin to handle conversation roles and context"""
+    role: Optional[Literal["user", "assistant", "system", "tool"]] = Field(None, description="Role in conversation")
+    turn_index: Optional[int] = Field(None, description="Sequential turn index")
+    conversation_id: Optional[str] = Field(None, description="Conversation thread ID")
+
+    @model_validator(mode="before")
+    @classmethod
+    def sync_conversation_metadata(cls, data: Any, info: ValidationInfo) -> Any:
+        if isinstance(data, dict):
+            metadata = data.get("metadata", {}) or {}
+            for field in ["role", "turn_index", "conversation_id"]:
+                if field not in data and field in metadata:
+                    data[field] = metadata[field]
+        return data
+
+    @model_validator(mode="after")
+    def push_conversation_metadata(self) -> "ConversationRoleMixin":
+        if not hasattr(self, "metadata"):
+            return self
+        
+        if self.metadata is None:
+            self.metadata = {}
+            
+        for field in ["role", "turn_index", "conversation_id"]:
+            val = getattr(self, field, None)
+            if val is not None:
+                self.metadata[field] = val
+        return self
+
+class Node(LevelAwareMixin, ChromaValidateSourceMixin, ChromaMixin, GraphEntityRefBase):
+    # Node with ref session enforced and level awareness
+    pass
+
+class ConversationNode(ConversationRoleMixin, Node):
+    """Specialized node for conversation elements.
+    Inherits data schema from Node (via metadata storage) but adds conversation behaviors.
+    """
     pass
 
 class Edge(ChromaValidateSourceMixin, ChromaMixin, EdgeMixin, GraphEntityRefBase):
     # Edge with ref session enforced
     
+    pass
+
+class ConversationEdge(Edge):
+    """Specialized edge for conversation links (next_turn, references, summarizes)."""
     pass
 class LLMNode( LLMMixin, GraphEntityRefBase):
     """
@@ -435,7 +541,9 @@ class LLMGraphExtraction(ModeSlicingMixin, BaseModel):
             for r in ne['references']:
                 r['insertion_method'] = insertion_method
         return cls.model_validate(dumped, context = {"insertion_method" : insertion_method})
-                
+class FilteringResponse(BaseModel):
+    reasoning: str = Field(description = "workspace for reasoning relevance filtering")
+    relevant_ids: list[str] = Field([], description = "a list of relevant node ids")
 # -------------------------
 # Adjudication structures
 # -------------------------
@@ -514,6 +622,9 @@ class Document(ModeSlicingMixin, BaseModel):
     @staticmethod
     def from_text(text: str, **kwarg):
         return Document(content = text, type = "text", metadata = {}, **kwarg)
+    @staticmethod
+    def from_dummy(text: str="", **kwarg):
+        return Document(id="_dummy", content = text, type = "text", metadata = {}, **kwarg)
     def validate_text_span(self, span: Span):
         if span.chunk_id is not None:
             raise Exception(f"text span should not have chunk ID, found chunk_id={span.chunk_id}")
@@ -821,32 +932,3 @@ class SplitPage(OCRClusterResponseBc):
             return c_return
 
     
-
-# class Doc(BaseModel):
-#     file_full_path: str = Field(description = "file full path")
-#     pages: list[dict[str, Any]]  = Field(description = "pages")
-    
-# def index_doc_group(doc_group_dumped):
-#     """convert at a look up of tuple[filename, pagenum] -> doc content"""
-#     doc_group_indexed = {(f,i['pdf_page_num']): i for f in doc_group_dumped['documents'] for i in  doc_group_dumped['documents'][f]}
-#     return doc_group_indexed
-# class DocumentGroup(BaseModel):
-#     documents : dict[str, list|Doc] = Field(description = 'list of documents')
-#     def to_doc_group_indexed(self):
-#         doc_group = self.model_dump()
-#         doc_group_indexed = index_doc_group(doc_group)
-#         return doc_group_indexed
-#     @staticmethod
-#     def from_doc_folder(folder_path):
-#         """ Assume the dir contains a list of folder with each folder with the filename
-#         each subfolder contains a list of pages
-
-#         Args:
-#             folder_path (_type_): _description_
-#         """
-#         dirs = os.listdir(folder_path)
-#         doc_group = {}
-#         for d in dirs:
-#             doc = regen_doc(os.path.join(folder_path, d)) 
-#             doc_group[d] = doc
-#         return DocumentGroup(documents= doc_group)

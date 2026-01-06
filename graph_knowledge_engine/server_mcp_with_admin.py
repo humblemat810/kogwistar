@@ -220,6 +220,12 @@ def _filter_tool_list(lst: list[dict]) -> list[dict]:
         
     return out
 
+
+def create_conversation():
+    """create ref node in other conversation collection"""
+    raise NotImplementedError()
+    pass
+
 from fastmcp.tools.tool_manager import ToolManager
 import inspect
 from functools import wraps

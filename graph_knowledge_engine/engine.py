@@ -1,4 +1,6 @@
 from __future__ import annotations
+
+from langchain_core.language_models import BaseChatModel
 """_summary_
 
 Raises:
@@ -27,7 +29,7 @@ engine = GraphKnowledgeEngine(
 """
 
 
-from typing import List, Optional, Dict, Any, Tuple, TypeAlias, cast
+from typing import List, Optional, Dict, Any, Self, Tuple, TypeAlias, cast
 from .typing_interfaces import CollectionLike, EmbeddingFunctionLike
 import chromadb
 from dataclasses import dataclass, field
@@ -38,6 +40,8 @@ from graph_knowledge_engine.extraction import BaseDocValidator
 from .models import (
     Node,
     Edge,
+    ConversationNode,
+    ConversationEdge,
     Document,
     Domain,
     Grounding,
@@ -120,8 +124,21 @@ def _refs_fingerprint(refs) -> str:
     blob = json.dumps(payload, sort_keys=False, separators=(",", ":")).encode("utf-8")
     # 128-bit BLAKE2b: fast + collision resistant enough for cache guards
     return hashlib.blake2b(blob, digest_size=16).hexdigest()
+from functools import wraps
+from typing import Callable, TypeVar, Any
 
+F = TypeVar("F", bound=Callable[..., Any])
 
+def conversation_only(fn: F) -> F:
+    @wraps(fn)
+    def wrapper(self, *args, **kwargs):
+        if getattr(self, "kg_graph_type", None) != "conversation":
+            raise RuntimeError(
+                f"{fn.__qualname__} requires a conversation engine "
+                f"(got {getattr(self, 'kg_graph_type', None)!r})"
+            )
+        return fn(self, *args, **kwargs)
+    return wrapper  # type: ignore
 def _safe_excerpt(s: str | None, max_len: int = 200) -> str | None:
     if not s:
         return None
@@ -551,6 +568,47 @@ def base62_to_uuid(s: str) -> str:
     hex128 = f"{n:032x}"
     return f"{hex128[0:8]}-{hex128[8:12]}-{hex128[12:16]}-{hex128[16:20]}-{hex128[20:]}"
 
+from .models import FilteringResponse
+# from typing import Type, TypeVar
+from pydantic import BaseModel
+def candiate_filtering_callback(llm: BaseChatModel, conversation_content, cand_list_str, candidate_ids):
+    max_retry = 3
+    err_messages = []
+    for _retry in range(max_retry):
+        
+        filter_prompt = ChatPromptTemplate.from_messages([
+            ("system", "You are a helpful assistant filtering knowledge graph nodes."),
+            ("human", f"User Input: {conversation_content}\n\nCandidate Nodes:\n{cand_list_str}\n\n"
+                        # "Return a JSON list of IDs for nodes that are RELEVANT to the user input. "
+                        # "Example: ['id1', 'id2']. Return empty list if none."
+                        )
+        ]+ err_messages)
+    # Simple invocation (can optimize with structured output)
+        chain = filter_prompt | llm.with_structured_output(FilteringResponse, include_raw = True)
+        resp: dict | BaseModel = chain.invoke({})
+        if isinstance(resp, BaseModel):
+            raise Exception("Unreachable")
+        
+        if err := resp.get("parsing_error"):
+            err_messages.append( ("system", f"error: {str(err)}"))
+            continue
+        else:
+            resp2: dict = resp
+        from typing import cast
+        parsed: BaseModel | None
+        if parsed := resp2.get("parsed"):
+            parsed2: FilteringResponse = cast(FilteringResponse, parsed)
+            not_candidate = set(parsed2.relevant_ids).difference(set(candidate_ids))
+            if len(not_candidate) > 0:
+                err_messages.append(("system", str(Exception(f"Non candidates ids returned {not_candidate}"))))
+                continue
+                # raise Exception(f"Non candidates ids returned {not_candidate}")
+            else:
+                
+                return parsed2.relevant_ids, parsed2.reasoning
+        else:
+            raise Exception("Unreachable")
+    raise Exception("Exhaused all models")
 @dataclass
 class AliasBook:
     """Stable per-session alias book. Append-only for cache friendliness."""
@@ -819,16 +877,30 @@ class GraphKnowledgeEngine:
         if not ids: return []
         got = self.node_collection.get(ids=list(ids), include=["documents", "embeddings", "metadatas"])
         docs: list[str] = cast(list[str], got.get("documents") or [])
-        embs = cast(list[list[float]], got.get("embeddings") or [])
+        embs = got.get("embeddings")
+        if embs is None:
+            embs = []
+        embs = cast(list[list[float]], embs)
         metadatas = cast(list[dict[str, Any]], got.get("metadatas") or [])
+        metadatas = got.get("metadatas")
+        if metadatas is None:
+            metadatas = []
+        metadatas = cast(list[list[float]], metadatas)
         return [Node.model_validate_json(d).model_copy(update={"embedding": emb, "metadata": metadata}) for d, emb, metadata in zip(docs, embs, metadatas)]
 
     def get_edges(self, ids: Sequence[str]) -> List[Edge]:
         if not ids: return []
-        got = self.edge_collection.get(ids=list(ids), include=["documents", "embeddings", "metadatas"])
+        got = self.node_collection.get(ids=list(ids), include=["documents", "embeddings", "metadatas"])
         docs: list[str] = cast(list[str], got.get("documents") or [])
-        embs = cast(list[list[float]], got.get("embeddings") or [])
+        embs = got.get("embeddings")
+        if embs is None:
+            embs = []
+        embs = cast(list[list[float]], embs)
         metadatas = cast(list[dict[str, Any]], got.get("metadatas") or [])
+        metadatas = got.get("metadatas")
+        if metadatas is None:
+            metadatas = []
+        metadatas = cast(list[list[float]], metadatas)
         return [Edge.model_validate_json(d).model_copy(update={"embedding": emb, "metadata": metadata}) for d, emb, metadata in zip(docs, embs, metadatas)]
 
     def all_nodes_for_doc(self, doc_id: str) -> List[Node]:
@@ -1014,7 +1086,7 @@ class GraphKnowledgeEngine:
                         if not doc:
                             raise Exception("missing documents")
                         n = Node.model_validate_json(doc[0])
-                        groundings = Grounding([Span.model_validate(r) for r in merged_list])
+                        groundings = Grounding(spans = [Span.model_validate(r) for r in merged_list])
                         for sp in groundings.spans:
                             span_validator.validate_span(span = sp)
                         n.mentions = [groundings]
@@ -1049,7 +1121,7 @@ class GraphKnowledgeEngine:
                         if not doc:
                             raise Exception("missing documents")
                         e = Edge.model_validate_json(doc[0])
-                        groundings = Grounding([Span.model_validate(r) for r in merged_list])
+                        groundings = Grounding(spans = [Span.model_validate(r) for r in merged_list])
                         for sp in groundings.spans:
                             span_validator.validate_span(span = sp)
                         e.mentions = [groundings]
@@ -1078,100 +1150,100 @@ class GraphKnowledgeEngine:
         }
         # return {"nodes_added": nodes_added, "edges_added": edges_added}
     def _resolve_llm_ids(self, doc_id: str, parsed: LLMGraphExtraction | PureGraph | GraphExtractionWithIDs, alias_book: AliasBook | None = None) -> None:
-        """
-        In-place:
-        - allocate UUIDs for all new nodes (nn:*) and new edges (ne:*),
-        - de-alias existing N*/E* to UUIDs,
-        - resolve edge endpoints (node + edge).
-        the id can either be, a real id, token indicating a new node that require new id, or a short id that need dealiasing
-        """
-        # alias book → real ids
-        if alias_book is None:
-            # create a book if no book provided
-            book = self._alias_book(doc_id)
-        else:
-            book = alias_book
-        alias_to_real = book.alias_to_real
-
-        def de_alias(x: str) -> str:
-            if not x:
-                return x
-            if _is_uuid(x):
-                return x
-            return alias_to_real.get(x, x)
-
-        # First pass: nodes → IDs
-        nn2uuid: dict[str, str] = {}
-        for n in parsed.nodes:
-            # Pull a token in a way that keeps the type `str | None`
-            token = n.id or cast(str | None, getattr(n, "local_id", None))
-
-            if token is None:
-                n.id = str(uuid.uuid4())
-                continue
-
-            if token == "":
-                n.id = str(uuid.uuid4())
-                continue
-
-            if _is_new_node(token):
-                rid = nn2uuid.get(token)
-                if rid is None:
-                    rid = str(uuid.uuid4())
-                    nn2uuid[token] = rid
-                n.id = rid
+            """
+            In-place:
+            - allocate UUIDs for all new nodes (nn:*) and new edges (ne:*),
+            - de-alias existing N*/E* to UUIDs,
+            - resolve edge endpoints (node + edge).
+            the id can either be, a real id, token indicating a new node that require new id, or a short id that need dealiasing
+            """
+            # alias book → real ids
+            if alias_book is None:
+                # create a book if no book provided
+                book = self._alias_book(doc_id)
             else:
-                n.id = de_alias(token)
-        # Second pass: edges → IDs
-        ne2uuid: dict[str, str] = {}
-        for e in parsed.edges:
-            tok = getattr(e, 'local_id', None) or e.id
-            if (not tok) or _is_new_edge(tok) or _is_new_edge(getattr(e, 'local_id', None)):
-                rid = ne2uuid.get(tok or "") or str(uuid.uuid4())
-                if tok:
-                    ne2uuid[tok] = rid
-                e.id = rid
-            else:
-                e.id = de_alias(tok)
+                book = alias_book
+            alias_to_real = book.alias_to_real
 
-        # Third pass: endpoints
-        def _res(xs: list[str] | None, kind: str) -> list[str] | None:
-            if not xs:
-                return None
-            out: list[str] = []
-            for x in xs:
-                if kind == "node":
-                    if _is_new_node(x):
-                        rid = nn2uuid.get(x)
-                        if not rid:
-                            raise ValueError(f"Unknown temp node id: {x}")
-                        out.append(rid)
-                    elif _is_alias(x) or _is_uuid(x):
-                        out.append(de_alias(x))
-                    else:
-                        # last-resort: label match within this parsed batch
-                        key = (x or "").strip().lower()
-                        rid = next((n.id for n in parsed.nodes if (n.label or "").strip().lower() == key), None)
-                        if not rid:
-                            raise ValueError(f"Unresolvable node endpoint token: {x}")
-                        out.append(rid)
-                else:  # kind == "edge"
-                    if _is_new_edge(x):
-                        rid = ne2uuid.get(x)
-                        if not rid:
-                            raise ValueError(f"Unknown temp edge id: {x}")
-                        out.append(rid)
-                    elif _is_alias(x) or _is_uuid(x):
-                        out.append(de_alias(x))
-                    else:
-                        raise ValueError(f"Unresolvable edge endpoint token: {x}")
-            return out
+            def de_alias(x: str) -> str:
+                if not x:
+                    return x
+                if _is_uuid(x):
+                    return x
+                return alias_to_real.get(x, x)
 
-        for e in parsed.edges:
-            e.source_ids       = _res(e.source_ids, kind="node") or []
-            e.target_ids       = _res(e.target_ids, kind="node") or []
-            e.source_edge_ids  = _res(getattr(e, "source_edge_ids", None), kind="edge")
-            e.target_edge_ids  = _res(getattr(e, "target_edge_ids", None), kind="edge")
+            # First pass: nodes → IDs
+            nn2uuid: dict[str, str] = {}
+            for n in parsed.nodes:
+                # Pull a token in a way that keeps the type `str | None`
+                token = n.id or cast(str | None, getattr(n, "local_id", None))
+
+                if token is None:
+                    n.id = str(uuid.uuid4())
+                    continue
+
+                if token == "":
+                    n.id = str(uuid.uuid4())
+                    continue
+
+                if _is_new_node(token):
+                    rid = nn2uuid.get(token)
+                    if rid is None:
+                        rid = str(uuid.uuid4())
+                        nn2uuid[token] = rid
+                    n.id = rid
+                else:
+                    n.id = de_alias(token)
+            # Second pass: edges → IDs
+            ne2uuid: dict[str, str] = {}
+            for e in parsed.edges:
+                tok = getattr(e, 'local_id', None) or e.id
+                if (not tok) or _is_new_edge(tok) or _is_new_edge(getattr(e, 'local_id', None)):
+                    rid = ne2uuid.get(tok or "") or str(uuid.uuid4())
+                    if tok:
+                        ne2uuid[tok] = rid
+                    e.id = rid
+                else:
+                    e.id = de_alias(tok)
+
+            # Third pass: endpoints
+            def _res(xs: list[str] | None, kind: str) -> list[str] | None:
+                if not xs:
+                    return None
+                out: list[str] = []
+                for x in xs:
+                    if kind == "node":
+                        if _is_new_node(x):
+                            rid = nn2uuid.get(x)
+                            if not rid:
+                                raise ValueError(f"Unknown temp node id: {x}")
+                            out.append(rid)
+                        elif _is_alias(x) or _is_uuid(x):
+                            out.append(de_alias(x))
+                        else:
+                            # last-resort: label match within this parsed batch
+                            key = (x or "").strip().lower()
+                            rid = next((n.id for n in parsed.nodes if (n.label or "").strip().lower() == key), None)
+                            if not rid:
+                                raise ValueError(f"Unresolvable node endpoint token: {x}")
+                            out.append(rid)
+                    else:  # kind == "edge"
+                        if _is_new_edge(x):
+                            rid = ne2uuid.get(x)
+                            if not rid:
+                                raise ValueError(f"Unknown temp edge id: {x}")
+                            out.append(rid)
+                        elif _is_alias(x) or _is_uuid(x):
+                            out.append(de_alias(x))
+                        else:
+                            raise ValueError(f"Unresolvable edge endpoint token: {x}")
+                return out
+
+            for e in parsed.edges:
+                e.source_ids       = _res(e.source_ids, kind="node") or []
+                e.target_ids       = _res(e.target_ids, kind="node") or []
+                e.source_edge_ids  = _res(getattr(e, "source_edge_ids", None), kind="edge")
+                e.target_edge_ids  = _res(getattr(e, "target_edge_ids", None), kind="edge")
     def _aliasify_for_prompt(self, doc_id: str, ctx_nodes: list[dict], ctx_edges: list[dict]):
         """Return aliased nodes/edges + prompt strings, using configured ID_STRATEGY."""
         if ID_STRATEGY == "base62":
@@ -1420,6 +1492,7 @@ class GraphKnowledgeEngine:
         adjudicator=None,            # callable(left: Node, right: Node) -> AdjudicationVerdict
         merge_policy=None,           # callable(left, right, verdict) -> str (canonical_id)
         verifier=None,               # callable(extracted, full_text, ref, **kw) -> ReferenceSession
+        kg_graph_type : Literal ['knowledge', 'conversation'] = 'knowledge'
     ):
         """
         embedding_function: callable(texts: List[str]) -> List[List[float]].
@@ -1428,6 +1501,7 @@ class GraphKnowledgeEngine:
           - ENV SENTENCE_TRANSFORMERS_MODEL, or
           - "all-MiniLM-L6-v2".
         """
+        self.kg_graph_type = kg_graph_type
         self.persist_directory = persist_directory
         self.query = GraphQuery(self)
         self.allow_cross_kind_adjudication = True  # can be set by user
@@ -1460,7 +1534,7 @@ class GraphKnowledgeEngine:
         #         ef("test")
         self._alias_books: dict[str, AliasBook] = {}
         ef = CustomEmbeddingFunction()
-            
+        self.embedding_length_limit = 512
         self._ef : EmbeddingFunctionLike = ef#embedding_function or ef #embedding_functions.DefaultEmbeddingFunction()
         # Keep a 1-string convenience to reuse in cosine checks
         # convenience: single-string embed for verifiers
@@ -1499,6 +1573,7 @@ class GraphKnowledgeEngine:
                                 metadata={"hnsw:space": "cosine"})
         self.node_refs_collection = self.chroma_client.get_or_create_collection("node_refs")
         self.edge_refs_collection = self.chroma_client.get_or_create_collection("edge_refs")
+
         # self.llm = AzureChatOpenAI(
         #     deployment_name=os.getenv("OPENAI_DEPLOYMENT_NAME_GPT4_1"),
         #     model_name=os.getenv("OPENAI_MODEL_NAME_GPT4_1"),
@@ -1514,7 +1589,8 @@ class GraphKnowledgeEngine:
         self.llm = ChatGoogleGenerativeAI(
                         #model = "gemini-2.5-pro-preview-05-06",
                         # model = "gemini-2.5-pro",
-                        model = "gemini-2.5-pro",
+                        model = "gemini-3-flash-preview",
+                        # model = "gemini-3-flash-preview",
                         # model = model_name,
                         #model="gemini-1.5-pro",
                         #model="gemini-2.0-pro",
@@ -1550,9 +1626,8 @@ class GraphKnowledgeEngine:
         
         self.memory = Memory(location = os.path.join('.', '.kg_cache'))
         self._cached_extract_graph_with_llm = self.memory.cache(self.extract_graph_with_llm, ignore = ["self"])
-    # ----------------------------
-    # Mention / citation verification
-    # ----------------------------
+
+    # ... existing methods ...
     @staticmethod
     def _node_doc_and_meta(n: "Node") -> tuple[str, dict]:
         return _node_doc_and_meta(n)
@@ -1560,6 +1635,7 @@ class GraphKnowledgeEngine:
     def _edge_doc_and_meta(e: "Edge") -> tuple[str, dict]:
         return _edge_doc_and_meta(e)
     def _maybe_reindex_edge_refs(self, edge: Edge, *, force: bool = False) -> None:
+        
         new_fp = _refs_fingerprint(edge.mentions or [])
         meta = self.edge_collection.get(ids=[edge.id], include=["metadatas"])
         old_fp = None
@@ -1793,8 +1869,12 @@ class GraphKnowledgeEngine:
                 "total_endpoint_count": total_endpoint_count,
             })],
         )
-    def add_node(self, node: Node, doc_id: Optional[str] = None):
-        node.doc_id = doc_id  # may use engine.extract_reference_contexts
+    def add_node(self, node: Node, doc_id: Optional[str] = None, 
+                 node_collection: CollectionLike | None = None,
+                 node_refs_collection: CollectionLike | None = None,
+                 node_docs_collection : CollectionLike | None = None):
+        if doc_id is not None:
+            node.doc_id = doc_id  # may use engine.extract_reference_contexts
         doc, meta = _node_doc_and_meta(node)
         self.node_collection.add(
             ids=[node.id],
@@ -1868,7 +1948,10 @@ class GraphKnowledgeEngine:
 
         # strip Nones just in case
         return [{k: v for k, v in r.items() if v is not None} for r in rows]
-    def add_edge(self, edge: Edge, doc_id: Optional[str] = None):
+    def add_edge(self, edge: Edge, doc_id: Optional[str] = None, 
+                 edge_collection: CollectionLike | None = None, 
+                 node_collection: CollectionLike | None = None,
+                 edge_refs_collection: CollectionLike|None = None):
         # if not (
         #     (edge.source_ids or edge.source_edge_ids)
         #     and (edge.target_ids or edge.target_edge_ids)
@@ -1878,8 +1961,8 @@ class GraphKnowledgeEngine:
         #     )
         
         # may use engine.extract_reference_contexts
-        
-        edge.doc_id = doc_id
+        if doc_id is not None:
+            edge.doc_id = doc_id
         s_nodes, s_edges, t_nodes, t_edges = self._split_endpoints(edge.source_ids, edge.target_ids)
         edge.source_ids = s_nodes
         edge.source_edge_ids = getattr(edge, "source_edge_ids", []) or [] + s_edges
@@ -1933,7 +2016,7 @@ class GraphKnowledgeEngine:
     def add_document(self, document: Document):
         self.document_collection.add(
             ids=[document.id],
-            documents=[document.content],
+            documents=[str(document.content)],
             embeddings = [cast(Sequence[float], document.embeddings)] if document.embeddings is not None else None,
             metadatas=[_strip_none({
                 "doc_id": document.id,  # <— critical
@@ -2694,7 +2777,7 @@ class GraphKnowledgeEngine:
         # persist and collect ids
         node_ids, edge_ids = [], []
         # fallback_snip = (document.content[:160] + "…") if document.content else None
-        # _alloc_real_ids duplicated logic in Self::_resolve_llm_ids
+        # _alloc_real_ids duplicated logic in Self::_resolve_llm_ids        
         _ = _alloc_real_ids(parsed)  # rewrite in place
         order, id2kind, id2obj = self._build_deps(parsed)
         span_validator: BaseDocValidator = self.get_span_validator_of_doc_type(document = document)
@@ -2763,7 +2846,8 @@ class GraphKnowledgeEngine:
         self.add_document(document)
 
         # build context & aliases as you already do, then:
-        extracted = self.extract_graph_with_llm(content=document.content,doc_type = document.type,
+        extracted = self.extract_graph_with_llm(content=str(document.content),
+                                                doc_type = document.type,
                                                     instruction_for_node_edge_contents_parsing_inclusion = instruction_for_node_edge_contents_parsing_inclusion,
                                                     last_iteration_result = raw_with_parsed)
         parsed = extracted["parsed"]
@@ -2819,34 +2903,6 @@ class GraphKnowledgeEngine:
         
         res = self.ingest_with_toposort( parsed, doc_id=doc_id)
         res['raw'] = raw
-        # # persist
-        # fallback_snip = (content[:160] + ("…" if len(content) > 160 else "")) if content else None
-        # nodes_added = edges_added = 0
-        # for ln in parsed.nodes:
-        #     nid = ln.id or str(uuid.uuid4())
-        #     refs = _normalize_refs(ln.references, doc_id)
-        #     node = Node(
-        #         id=nid, label=ln.label, type=ln.type, summary=ln.summary,
-        #         domain_id=ln.domain_id, canonical_entity_id=ln.canonical_entity_id,
-        #         properties=ln.properties, references=refs, doc_id=doc_id
-        #     )
-        #     self.add_node(node, doc_id=doc_id)
-        #     nodes_added += 1
-
-        # for le in parsed.edges:
-        #     edge = Edge(
-        #         id=le.id, label=le.label, type=le.type, summary=le.summary,
-        #         domain_id=le.domain_id, canonical_entity_id=le.canonical_entity_id,
-        #         properties=le.properties,
-        #         references=_normalize_refs(le.references, doc_id),
-        #         relation=le.relation,
-        #         source_ids=le.source_ids, target_ids=le.target_ids,
-        #         source_edge_ids=getattr(le, "source_edge_ids", None),
-        #         target_edge_ids=getattr(le, "target_edge_ids", None),
-        #         doc_id=doc_id
-        #     )
-        #     self.add_edge(edge, doc_id=doc_id)
-        #     edges_added += 1
 
         # optional within-doc adjudication
         if auto_adjudicate:
@@ -3425,4 +3481,439 @@ class GraphKnowledgeEngine:
         to_return = self.verifier.verify_mentions_for_items(items,source_text_by_doc=source_text_by_doc,
                                                             min_ngram=min_ngram, threshold = threshold, weights = weights)
         return to_return
-    
+
+    # ----------------------------
+    # Conversation Abstraction
+    # ----------------------------
+    @conversation_only
+    def create_conversation(self) -> str:
+        if self.kg_graph_type != "conversation":
+            raise Exception("conversation only allowed to be on canva engine")
+        """Create a new conversation thread ID and reserve it with a start node."""
+        conv_id = str(uuid.uuid4())
+        
+        # Create a start node to reserve the ID and anchor the conversation
+        start_node = ConversationNode(
+            id=str(uuid.uuid4()),
+            label="conversation start",
+            type="entity",
+            summary="Start of conversation",
+            role="system",
+            turn_index=-1,
+            conversation_id=conv_id,
+            mentions=[Grounding(spans=[Span.from_dummy_for_conversation()])], # No mentions for start node
+            properties={"status": "active"},
+            metadata={"level_from_root": 0, "entity_type": "conversation_start"},
+            domain_id=None,
+            canonical_entity_id=None,
+            level_from_root = 0,
+            doc_id = None,
+            embedding = None
+            
+        )
+        
+        # We need to bypass the validator that might complain about empty mentions for GraphEntityRefBase
+        # Ideally ConversationNode should relax this, but if not, we provide a dummy or handle it.
+        # Since GraphEntityRefBase has a validator _require_non_empty_refs, we might need a dummy mention.
+        # Let's create a dummy system span.
+        dummy_span = Span.from_dummy_for_conversation()
+        start_node.mentions = [Grounding(spans=[dummy_span])]
+        
+        doc, meta = _node_doc_and_meta(start_node)
+        self.node_collection.add(
+            ids=[start_node.id],
+            documents=[doc],
+            embeddings=self._ef([doc[:800]]), # No embedding needed
+            metadatas=[meta]
+        )
+        
+        return conv_id
+    @conversation_only
+    def _get_conversation_tail(self, conversation_id: str) -> Optional[ConversationNode]:
+        """Find the last node in the conversation (leaf of 'next_turn')."""
+        # Simplistic: query all nodes for this conv, sort by turn_index desc
+        # Optimization: Store tail ID in a separate 'conversations' metadata collection if needed.
+        # For now, we scan.
+        if self.kg_graph_type != "conversation":
+            raise Exception("conversation only allowed to be on canva engine")
+        got = self.node_collection.get(
+            where={"conversation_id": conversation_id},
+            include=["documents", "metadatas"]
+        )
+        if not got["ids"]:
+            return None
+        
+        # reconstruct
+        nodes = []
+        for doc in got["documents"] or []:
+            try:
+                nodes.append(ConversationNode.model_validate_json(doc))
+            except Exception:
+                pass
+        
+        if not nodes:
+            return None
+        
+        # Sort by turn_index
+        nodes.sort(key=lambda n: n.turn_index or -1)
+        return nodes[-1]
+    def iterative_defensive_emb(self, emb_text0):
+
+        success = False
+        
+        idx = self.embedding_length_limit
+        embedding = None
+        cnt = 0
+        while not success:
+            cnt += 1
+            if cnt >= 10:
+                break
+            emb_text = emb_text0[:idx] + ("..." if idx < len(emb_text0)-1 else "")
+            try:
+                embedding = self._ef([emb_text])[0]
+                success = True
+                break
+            except:
+                idx //= 2
+        while success:
+            cnt += 1
+            if cnt >= 13:
+                break
+            emb_text = emb_text0[:idx] + ("..." if idx < len(emb_text0)-1 else "")
+            try:
+                embedding = self._ef([emb_text])[0]
+                if idx >= len(emb_text0):
+                    break
+                idx = int(idx * 1.6)
+            except:
+                success = False  
+        return embedding
+    @conversation_only
+    def add_conversation_turn(self, conversation_id: str, role: str, content: str, ref_knowledge_engine: GraphKnowledgeEngine, filtering_callback: Callable[..., tuple[list[str], str]] = candiate_filtering_callback,
+                              max_retrieval_level: int = 2, ) -> Dict[str, Any]:
+        """
+        1. Ingest turn as ConversationNode.
+        2. Retrieve KG nodes (level <= 2).
+        3. LLM Filter.
+        4. Create Reference nodes + edges.
+        5. Link to previous turn.
+        6. Summarize if needed.
+        """
+        if self.kg_graph_type != "conversation":
+            raise Exception("conversation only allowed to be on canva engine")
+        if ref_knowledge_engine is None:
+            raise Exception("GraphKnowledgeEngine must be specified")
+        
+        # Self is conversation knowledge engine
+        # 1. Previous State
+        prev_node = self._get_conversation_tail(conversation_id)
+        new_index = (prev_node.turn_index + 1) if prev_node and prev_node.turn_index is not None else 0
+
+        # 2. Create Node for this turn
+        turn_node_id = str(uuid.uuid4())
+        
+        # Self-referential span for provenance
+        # We treat the content string as the "document"
+        self_span = Span(
+            collection_page_url=f"conversation/{conversation_id}",
+            document_page_url=f"conversation/{conversation_id}#{turn_node_id}",
+            doc_id=f"conv:{conversation_id}", # Virtual doc ID
+            insertion_method="conversation_turn",
+            page_number=1,
+            start_char=0,
+            end_char=len(content),
+            excerpt=content,
+            context_before="",
+            context_after="",
+            chunk_id = None,
+            source_cluster_id = None,
+            verification=MentionVerification(method="human", is_verified=True, score=1.0, notes="verbatim user/system input")
+        )
+        
+        turn_node = ConversationNode(
+            id=turn_node_id,
+            label=f"Turn {new_index} ({role})",
+            type="entity",
+            doc_id = turn_node_id,
+            summary=content,
+            role=role, # type: ignore
+            turn_index=new_index,
+            conversation_id=conversation_id,
+            mentions=[Grounding(spans=[self_span])],
+            properties={},
+            metadata={"entity_type" : "conversation_turn"},
+            domain_id=None,
+            canonical_entity_id=None,
+        )
+        
+        
+        emb_text0 = f"{role}: {content}"
+        embedding =  self.iterative_defensive_emb(emb_text0)
+        
+        if embedding is None:
+            raise Exception("uncalculatable embeddings")
+        turn_node.embedding = embedding
+
+        # 3. Broad Retrieval from KG
+        # "Initial retrieval limit to level_from_root from 0 to 2 inclusive"
+        # We assume KG nodes have 'level_from_root' in metadata.
+        # We use the turn content as query.
+        
+        candidates = ref_knowledge_engine.node_collection.query(
+            query_embeddings=[turn_node.embedding],
+            n_results=20, # Fetch enough candidates
+            where={"level_from_root": {"$lte": max_retrieval_level}}
+        )
+        
+        
+        candidate_ids = candidates["ids"][0]
+        candidate_nodes = self.get_nodes(candidate_ids)
+        candidate_docs = candidates["documents"][0]
+        candidate_metas = candidates["metadatas"][0]
+        
+        # 4. LLM Filter
+        relevant_kg_ids = []
+        if candidate_ids:
+            
+            # Construct prompt
+            cand_list_str = "\n".join([f"- ID: {rid} | Label: {meta.get('label')} | Summary: {meta.get('summary')}" 
+                                       for rid, meta in zip(candidate_ids, candidate_metas)])
+            
+
+            relevant_kg_ids, reasoning = filtering_callback(self.llm, content, cand_list_str, candidate_ids)
+
+            
+
+        # 5. Persist Turn Node
+        doc, meta = _node_doc_and_meta(turn_node)
+        self.add_node(turn_node, None)
+
+        # 6. Create Reference Nodes & Edges
+        created_refs = []
+        for rid in relevant_kg_ids:
+            # We create a "Reference Pointer" in the conversation graph
+            # It points to the real KG node.
+            # We can copy some metadata for context.
+            kg_node = self.node_collection.get(ids=[rid], include=["metadatas", "documents"])
+            if not kg_node["ids"]: continue
+            kg_node_meta = kg_node.get("metadatas")
+            if kg_node_meta is not None:
+                kg_meta = kg_node_meta[0]
+            else:
+                raise Exception("Meta needed")
+            ref_node_id = str(uuid.uuid4())
+            ref_node = ConversationNode(
+                id=ref_node_id,
+                label=f"Ref to {kg_meta.get('label')}",
+                type="reference_pointer",
+                summary=kg_meta.get('summary', ''),
+                conversation_id=conversation_id,
+                role="system", # type: ignore
+                turn_index=new_index, # Associated with this turn
+                properties={"refers_to_collection": "nodes", "refers_to_id": rid},
+                mentions=[Grounding(spans=[self_span])], # Provenance is the user turn that triggered this
+                metadata={},
+                domain_id=None,
+                canonical_entity_id=None
+            )
+            # Add to conv collection
+            r_doc, r_meta = _node_doc_and_meta(ref_node)
+            self.node_collection.add(
+                ids=[ref_node.id],
+                documents=[r_doc],
+                metadatas=[r_meta]
+            )
+            
+            # Edge: Turn -> Ref
+            edge = ConversationEdge(
+                id=str(uuid.uuid4()),
+                source_ids=[turn_node.id],
+                target_ids=[ref_node.id],
+                relation="references",
+                label="references",
+                type="relationship",
+                summary="User input references KG node",
+                doc_id=f"conv:{conversation_id}",
+                mentions=[Grounding(spans=[self_span])],
+                domain_id=None,
+                canonical_entity_id=None,
+                properties=None,
+                embedding=None,
+                metadata={},
+                source_edge_ids=[],
+                target_edge_ids=[]
+            )
+            e_doc, e_meta = _edge_doc_and_meta(edge)
+            self.edge_collection.add(
+                ids=[edge.id],
+                documents=[e_doc],
+                metadatas=[e_meta]
+            )
+            created_refs.append(rid)
+
+        # 7. Link to Previous Turn
+        if prev_node:
+            seq_edge = ConversationEdge(
+                id=str(uuid.uuid4()),
+                source_ids=[prev_node.id],
+                target_ids=[turn_node.id],
+                relation="next_turn",
+                label="next_turn",
+                type="relationship",
+                summary="Sequential flow",
+                doc_id=f"conv:{conversation_id}",
+                mentions=[Grounding(spans=[self_span])], # Weak provenance
+                domain_id=None,
+                canonical_entity_id=None,
+                properties=None,
+                embedding=None,
+                metadata={},
+                source_edge_ids=[],
+                target_edge_ids=[]
+            )
+            se_doc, se_meta = _edge_doc_and_meta(seq_edge)
+            self.edge_collection.add(
+                ids=[seq_edge.id],
+                documents=[se_doc],
+                metadatas=[se_meta]
+            )
+
+        # 8. Check for Summarization (Deterministic Trigger)
+        # Check unsummarized nodes count
+        # Simplistic: Count nodes since last "summarizes" target? 
+        # For now, let's just count total nodes and summarize every 5.
+        if new_index > 0 and new_index % 5 == 0:
+            self._summarize_conversation_batch(conversation_id, new_index)
+
+        return {
+            "turn_node_id": turn_node.id,
+            "relevant_nodes": created_refs,
+            "turn_index": new_index
+        }
+    @conversation_only
+    def _summarize_conversation_batch(self, conversation_id: str, current_index: int, batch_size: int = 5):
+        """Summarize the last N turns into a Memory Node."""
+        if self.kg_graph_type != "conversation":
+            raise Exception("conversation only allowed to be on canva engine")
+        start_index = max(0, current_index - batch_size + 1)
+        
+        # Fetch the nodes
+        # In a real impl, better querying needed.
+        # We assume we can get them by index logic or linear scan
+        # For prototype, scan and filter
+        all_nodes = self.node_collection.get(where={"conversation_id": conversation_id})
+        batch_ids = []
+        batch_text = []
+        provenance_spans = []
+        if all_nodes is None:
+            raise Exception("Unreacheable")
+        all_nodes_doc : list[str] | None= all_nodes['documents']
+        all_nodes_meta = all_nodes['metadatas']
+        all_nodes_id : list[str] | None= all_nodes['ids']
+        if all_nodes_doc is None or all_nodes_meta is None or all_nodes_id is None:
+            raise Exception("documents metadatas and ids all needed")
+        for doc, meta, nid in zip(all_nodes_doc, all_nodes_meta, all_nodes_id):
+            turn_index = meta.get('turn_index')
+            if turn_index is not None and start_index <= int(turn_index) <= current_index:
+                # Check type
+                n = ConversationNode.model_validate_json(doc)
+                if n.type == "conversation_turn":
+                    batch_ids.append(nid)
+                    batch_text.append(f"{n.role}: {n.properties.get('content')}")
+                    # Collect provenance: The turn itself is the source
+                    if n.mentions:
+                        provenance_spans.extend(n.mentions[0].spans)
+                elif n.type == "reference_pointer":
+                    # Include referenced knowledge node in provenance too (as requested by user)
+                    if n.mentions:
+                         provenance_spans.extend(n.mentions[0].spans)
+
+        if not batch_ids:
+            return
+
+        # LLM Summarize
+        full_text = "\n".join(batch_text)
+        summary_prompt = ChatPromptTemplate.from_messages([
+            ("system", "Summarize this conversation segment into a concise memory."),
+            ("human", full_text)
+        ])
+        summary_res = (summary_prompt | self.llm).invoke({})
+        summary_content = summary_res.content
+
+        # Dedupe spans for provenance
+        unique_spans = []
+        seen = set()
+        for s in provenance_spans:
+            # key based on loc
+            k = (s.doc_id, s.start_char, s.end_char)
+            if k not in seen:
+                seen.add(k)
+                unique_spans.append(s)
+
+        # Create Summary Node
+        summary_node = ConversationNode(
+            id=str(uuid.uuid4()),
+            label=f"Summary {start_index}-{current_index}",
+            type="memory_summary",
+            summary=summary_content, # type: ignore
+            role="system", # type: ignore
+            conversation_id=conversation_id,
+            turn_index=current_index, # Anchored at end of batch
+            # Provenance: We link back to the source turns and knowledge refs
+            mentions=[Grounding(spans=unique_spans)] if unique_spans else [],
+            properties={"content": summary_content},
+            metadata={"level_from_root": 1}, # Summary is higher level?
+            domain_id=None,
+            canonical_entity_id=None
+        )
+        if self.kg_graph_type != "conversation":
+            raise Exception("conversation only allowed to be on canva engine")
+        # Persist
+        
+        self.add_node(summary_node)
+        
+        # s_doc, s_meta = _node_doc_and_meta(summary_node)
+        # self.node_collection.add(
+        #     ids=[summary_node.id],
+        #     documents=[s_doc],
+        #     metadatas=[s_meta]
+        # )
+
+        # Edges: Summary -> Turns
+        sum_edge = ConversationEdge(
+            id=str(uuid.uuid4()),
+            source_ids=[summary_node.id],
+            target_ids=batch_ids,
+            relation="summarizes",
+            label="summarizes",
+            type="relationship",
+            summary="Memory summarization",
+            doc_id=f"conv:{conversation_id}",
+            domain_id=None,
+            canonical_entity_id=None,
+            properties=None,
+            embedding=None,
+            mentions=[Grounding(spans=[
+                Span(
+                    collection_page_url=f"conversation/{conversation_id}",
+                    document_page_url=f"conversation/{conversation_id}",
+                    doc_id=f"conv:{conversation_id}",
+                    chunk_id = None,
+                    source_cluster_id = None,
+                    insertion_method="summarization_link",
+                    page_number=1, start_char=0, end_char=0,
+                    excerpt="summary link", context_before="", context_after="",
+                    verification=MentionVerification(method="system", is_verified=True, score=1.0, notes="link")
+                )
+            ])],
+            metadata={},
+            source_edge_ids=[],
+            target_edge_ids=[]
+        )
+        self.add_edge(sum_edge)
+        # se_doc, se_meta = _edge_doc_and_meta(sum_edge)
+        # self.edge_collection.add(
+        #     ids=[sum_edge.id],
+        #     documents=[se_doc],
+        #     metadatas=[se_meta]
+        # )
