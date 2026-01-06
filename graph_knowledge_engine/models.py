@@ -327,6 +327,25 @@ class EdgeMixin(ModeSlicingMixin, BaseModel):
 # -------------------------
 
 from typing import Sequence
+from pydantic import ConfigDict
+class BaseNodeMetadata(BaseModel):
+    """
+    Excample fields
+    # level_from_root: int = Field(..., ge=0)
+    # entity_type: str
+    # char_distance_from_last_summary: int
+    # turn_distance_from_last_summary: int
+    """
+    model_config = ConfigDict(extra="allow")
+
+class ConversationNodeMetadata(BaseNodeMetadata):
+    level_from_root: int = Field(..., ge=0)
+    entity_type: str
+    char_distance_from_last_summary: int
+    turn_distance_from_last_summary: int
+
+    model_config = ConfigDict(extra="allow")
+
 class ChromaMixin(BaseModel):
     id: str = Field(default_factory=generate_id, description="Unique identifier")
     embedding: Optional[Sequence[float]] = Field(None, description="Vector embedding for the entity")
@@ -335,6 +354,10 @@ class ChromaMixin(BaseModel):
     metadata: dict = Field(
         {}, description="metadata"
     )
+    @field_validator('metadata')
+    def check_metadata(cls, v):
+        BaseNodeMetadata.model_validate(v)
+        return v
 
 # -------------------------
 # LLM-facing mixin (NO embedding field to keep schema tight)
@@ -432,6 +455,9 @@ class ConversationRoleMixin(BaseModel):
             if val is not None:
                 self.metadata[field] = val
         return self
+    
+
+
 
 class Node(LevelAwareMixin, ChromaValidateSourceMixin, ChromaMixin, GraphEntityRefBase):
     # Node with ref session enforced and level awareness
@@ -441,8 +467,12 @@ class ConversationNode(ConversationRoleMixin, Node):
     """Specialized node for conversation elements.
     Inherits data schema from Node (via metadata storage) but adds conversation behaviors.
     """
-    pass
-
+    metadata: dict#ConversationNodeMetadata
+    @field_validator('metadata')
+    def check_fields(cls, v):
+        # convertible to ConversationNodeMetadata
+        ConversationNodeMetadata.model_validate(v)
+        return v
 class Edge(ChromaValidateSourceMixin, ChromaMixin, EdgeMixin, GraphEntityRefBase):
     # Edge with ref session enforced
     
@@ -450,7 +480,6 @@ class Edge(ChromaValidateSourceMixin, ChromaMixin, EdgeMixin, GraphEntityRefBase
 
 class ConversationEdge(Edge):
     """Specialized edge for conversation links (next_turn, references, summarizes)."""
-    pass
 class LLMNode( LLMMixin, GraphEntityRefBase):
     """
     Represents a node extracted by an LLM from a document.

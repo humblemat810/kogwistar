@@ -59,6 +59,7 @@ from .models import (
     QUESTION_DESC,
     AdjudicationVerdict,
     LLMMergeAdjudication,
+    ConversationNodeMetadata,
 )
 from langchain_openai import AzureChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
@@ -92,6 +93,7 @@ except Exception:
 
 NodeOrEdge: TypeAlias =  Node | Edge
 T = TypeVar("T", Node, Edge)
+M = TypeVar("M", BaseModel)
 from graphlib import TopologicalSorter
 def _refs_hash(refs) -> str:
     import hashlib, json
@@ -449,14 +451,6 @@ def _edge_doc_and_meta(e: Union["Edge", "PureChromaEdge"]) -> tuple[str, dict]:
 def _default_verification(note: str = "fallback span") -> MentionVerification:
     return MentionVerification(method="heuristic", is_verified=False, score=None, notes=note)
 
-# def _default_ref(doc_id: str, excerpt: Optional[str] = None) -> Span:
-#     return Span(
-#         collection_page_url=f"document_collection/{doc_id}",
-#         document_page_url=_DOC_URL.format(doc_id=doc_id),
-#         start_page=1, end_page=1, start_char=0, end_char=0,
-#         excerpt=excerpt or None,
-#         verification=_default_verification()
-#     )
 
 def _ensure_ref_span(ref: Span, doc_id: str) -> Span:
     # Make sure URLs point at this doc and spans are complete
@@ -465,13 +459,6 @@ def _ensure_ref_span(ref: Span, doc_id: str) -> Span:
         r.collection_page_url = f"document_collection/{doc_id}"
     if not r.document_page_url or str(doc_id) not in r.document_page_url:
         r.document_page_url = _DOC_URL.format(doc_id=doc_id)
-    # Fill span if missing/bad
-    # if r.end_page < r.start_page:
-    #     r.end_page = r.start_page
-    # if r.start_page == r.end_page and r.end_char < r.start_char:
-    #     r.end_char = r.start_char
-    # if r.start_page is None or r.end_page is None:
-    #     r.start_page, r.end_page = 1, 1
     if r.start_char is None or r.end_char is None:
         r.start_char, r.end_char = 0, 0
     # Default verification if absent
@@ -1697,7 +1684,7 @@ class GraphKnowledgeEngine:
             ids.append(rid); docs.append(json.dumps(row)); metas.append(row)
 
         if ids:
-            self.edge_refs_collection.add(ids=ids, documents=docs, metadatas=metas)
+            self.edge_refs_collection.add(ids=ids, documents=docs, metadatas=metas, embeddings=[self.iterative_defensive_emb(str(d)) for d in docs])
         return ids
     def _index_node_refs(self, node: Node)-> list[str]:
         """
@@ -1726,7 +1713,7 @@ class GraphKnowledgeEngine:
             ids.append(rid); docs.append(json.dumps(row)); metas.append(row)
 
         if ids:
-            self.node_refs_collection.add(ids=ids, documents=docs, metadatas=metas)
+            self.node_refs_collection.add(ids=ids, documents=docs, metadatas=metas, embeddings=[self.iterative_defensive_emb(str(d)) for d in docs])
         return ids
     def _alias_doc_in_prompt(self) -> str:
         # A tiny legend we show to the LLM so it knows the alias to use
@@ -1830,7 +1817,7 @@ class GraphKnowledgeEngine:
         self.node_collection.add(
             ids=[node.id],
             documents=[doc],
-            embeddings=[node.embedding] if node.embedding is not None else None,
+            embeddings=[node.embedding] if node.embedding is not None else [self.iterative_defensive_emb(str(doc))],
             metadatas=[meta],
         )
     def add_pure_edge(self, edge: PureChromaEdge):
@@ -1847,12 +1834,12 @@ class GraphKnowledgeEngine:
         node_endpoint_count = len(edge.source_ids or []) + len(edge.target_ids or [])
         edge_endpoint_count = len(getattr(edge, "source_edge_ids", []) or []) + len(getattr(edge, "target_edge_ids", []) or [])
         total_endpoint_count = node_endpoint_count + edge_endpoint_count
-        
+        doc = edge.model_dump_json(field_mode='backend', exclude = ['embedding'])
         # main edge row
         self.edge_collection.add(
             ids=[edge.id],
-            documents=[edge.model_dump_json(field_mode='backend', exclude = ['embedding'])],
-            embeddings=[edge.embedding] if edge.embedding is not None else None,
+            documents=[doc],
+            embeddings=[edge.embedding] if edge.embedding is not None else [self.iterative_defensive_emb(str(doc))],
             metadatas=[_strip_none({
                 "relation": edge.relation,
                 "source_ids": _json_or_none(edge.source_ids),
@@ -1869,24 +1856,33 @@ class GraphKnowledgeEngine:
                 "total_endpoint_count": total_endpoint_count,
             })],
         )
-    def add_node(self, node: Node, doc_id: Optional[str] = None, 
-                 node_collection: CollectionLike | None = None,
-                 node_refs_collection: CollectionLike | None = None,
-                 node_docs_collection : CollectionLike | None = None):
+    def add_node(self, node: Node, doc_id: Optional[str] = None):
         if doc_id is not None:
             node.doc_id = doc_id  # may use engine.extract_reference_contexts
         doc, meta = _node_doc_and_meta(node)
+        if node.embedding is None:
+            node.embedding = self.iterative_defensive_emb(doc)
         self.node_collection.add(
             ids=[node.id],
             documents=[doc],
-            embeddings=[node.embedding] if node.embedding is not None else None,
+            embeddings=[node.embedding] if node.embedding is not None else [self.iterative_defensive_emb(str(doc))],
             metadatas=[meta],
         )
         self.get_nodes([node.id])
         self._index_node_docs(node)
         self._maybe_reindex_node_refs(node)
+    def _entity_is_conversation(self, node: Node | Edge):
+        return type(node) in [ConversationEdge, ConversationNode]
     def _fanout_endpoints_rows(self, edge: Edge, doc_id: str | None):
-
+        """Convert a multi endpoint to multiple rows
+        
+        Self-edge to endpoint node one
+        
+        Self-edge to endpoint node two
+        
+        Self-edge to endpoint node other edge one etc.
+        
+        """
         def _maybe_doc_for_edge(eid: str) -> str | None:
             if doc_id is not None:
                 return doc_id
@@ -1896,7 +1892,12 @@ class GraphKnowledgeEngine:
                 if type(metadata[0].get("doc_id")) is str:
                     return str(metadata[0].get("doc_id"))
                 else:
-                    raise Exception("doc_id is not string")
+                    if self._entity_is_conversation(edge):
+                        pass
+                    else:
+                        raise Exception("doc_id is not string")
+                    # now have to allow conversation to have no prove
+                    
             return None
 
         rows = []
@@ -1910,7 +1911,11 @@ class GraphKnowledgeEngine:
                 if type(metadata[0].get("doc_id")) is str:
                     return str(metadata[0].get("doc_id"))
                 else:
-                    raise Exception("doc_id is not string")
+                    if self._entity_is_conversation(edge):
+                        pass
+                    else:
+                        raise Exception("doc_id is not string")
+                    # now have to allow conversation to have no prove
             return None
 
         rows = []
@@ -1948,18 +1953,8 @@ class GraphKnowledgeEngine:
 
         # strip Nones just in case
         return [{k: v for k, v in r.items() if v is not None} for r in rows]
-    def add_edge(self, edge: Edge, doc_id: Optional[str] = None, 
-                 edge_collection: CollectionLike | None = None, 
-                 node_collection: CollectionLike | None = None,
-                 edge_refs_collection: CollectionLike|None = None):
-        # if not (
-        #     (edge.source_ids or edge.source_edge_ids)
-        #     and (edge.target_ids or edge.target_edge_ids)
-        # ):
-        #     raise ValueError(
-        #         f"Edge {edge.id} ({edge.label}) must have at least one source and one target"
-        #     )
-        
+    def add_edge(self, edge: Edge, doc_id: Optional[str] = None):
+
         # may use engine.extract_reference_contexts
         if doc_id is not None:
             edge.doc_id = doc_id
@@ -1976,12 +1971,15 @@ class GraphKnowledgeEngine:
         node_endpoint_count = len(edge.source_ids or []) + len(edge.target_ids or [])
         edge_endpoint_count = len(getattr(edge, "source_edge_ids", []) or []) + len(getattr(edge, "target_edge_ids", []) or [])
         total_endpoint_count = node_endpoint_count + edge_endpoint_count
-        
+        doc = edge.model_dump_json(field_mode='backend', exclude = ['embedding'])
+        if edge.embedding is None:
+            edge.embedding = self.iterative_defensive_emb(str(doc))
         # main edge row
+        doc = edge.model_dump_json(field_mode='backend', exclude = ['embedding'])
         self.edge_collection.add(
             ids=[edge.id],
-            documents=[edge.model_dump_json(field_mode='backend', exclude = ['embedding'])],
-            embeddings=[edge.embedding] if edge.embedding is not None else None,
+            documents=[str(doc)],
+            embeddings=[edge.embedding] if edge.embedding is not None else [self.iterative_defensive_emb(str(doc))],
             metadatas=[_strip_none({
                 "doc_id": doc_id,
                 "relation": edge.relation,
@@ -2012,12 +2010,15 @@ class GraphKnowledgeEngine:
                 ids=ep_ids,
                 documents=ep_docs,
                 metadatas=ep_metas,
+                embeddings=[self.iterative_defensive_emb(str(d)) for d in ep_docs]
             )
     def add_document(self, document: Document):
+        if document.embeddings is None:
+            document.embeddings = self.iterative_defensive_emb(str(document.content))
         self.document_collection.add(
             ids=[document.id],
             documents=[str(document.content)],
-            embeddings = [cast(Sequence[float], document.embeddings)] if document.embeddings is not None else None,
+            embeddings = [cast(Sequence[float], document.embeddings)] if document.embeddings is not None else [self.iterative_defensive_emb(str(document.content))],
             metadatas=[_strip_none({
                 "doc_id": document.id,  # <— critical
                 "type": document.type,
@@ -2039,6 +2040,7 @@ class GraphKnowledgeEngine:
                     }
                 )
             ],
+            embeddings=[self.iterative_defensive_emb(str(domain.model_dump_json()))]
         )
     def _index_node_docs(self, node: Node) -> list[str]:
         """Rebuild (node_id, doc_id) rows for this node and denormalize doc_ids on node metadata."""
@@ -2054,7 +2056,7 @@ class GraphKnowledgeEngine:
                 ids.append(rid)
                 docs.append(json.dumps(row))
                 metas.append(row)
-            self.node_docs_collection.add(ids=ids, documents=docs, metadatas=metas)
+            self.node_docs_collection.add(ids=ids, documents=docs, metadatas=metas, embeddings = [self.iterative_defensive_emb(d) for d in docs])
 
         # 2) Denormalize onto node metadata (convenience only)
         #    Fetch current to avoid writing the same value repeatedly.
@@ -2584,17 +2586,7 @@ class GraphKnowledgeEngine:
             "edges_added": len(edge_ids),
         }
     def get_document(self, doc_id: str):
-        # self.document_collection.add(
-        #     ids=[document.id],
-        #     documents=[document.content],
-        #     metadatas=[_strip_none({
-        #         "doc_id": document.id,  # <— critical
-        #         "type": document.type,
-        #         "metadata": _json_or_none(document.metadata),
-        #         "domain_id": document.domain_id,
-        #         "processed": document.processed,
-        #     })],
-        # )
+
         doc_get_result = self.document_collection.get(doc_id)
         if len(doc_get_result['ids']) == 0:
             raise ValueError(f"no document found for doc id = {doc_id}")
@@ -2685,19 +2677,9 @@ class GraphKnowledgeEngine:
                         continue
                 
                         
-                # spans = [Span.model_validate(sp.model_dump(field_mode = 'backend'), context={'insertion_method': sp.insertion_method or 'llm_graph_extraction'}) for g in ln.mentions for sp in g.spans]
                 n = ln
-                # n = Node(
-                #     id=ln.id, label=ln.label, type=ln.type, summary=ln.summary,
-                #     domain_id=ln.domain_id, canonical_entity_id=ln.canonical_entity_id,
-                #     properties=ln.properties,
-                #     mentions= _normalize_mentions(refs, doc_id, fallback_snip),
-                #     doc_id=doc_id,
-                #     # embedding=self._ef([f"{ln.label}: {ln.summary} : {nl.join(i['context'] for i in self.extract_reference_contexts(ln.id))}"])[0]
-                # )
+
                 emb_text = f"{n.label}: {n.summary} : {nl.join(i['context'] for i in self.extract_reference_contexts(ln)[:1])}"
-                # if emb_text is None:
-                #     emb_text = f"{n.label}: {n.summary} : {nl.join(i['context'] for i in self.extract_reference_contexts(ln)[:1])}"
                 n.embedding = self._ef([emb_text])[0]
                 self.add_node(n, doc_id=doc_id)
                 node_ids.append(n.id)
@@ -2714,23 +2696,8 @@ class GraphKnowledgeEngine:
                         edge_ids.append(le.id)
                         continue
                 
-                # refs = [Span.model_validate(i.model_dump(field_mode = 'backend'), context={'insertion_method': i.insertion_method or 'llm_graph_extraction'}) for i in le.mentions]
                 e = le
-                # e = Edge(
-                #     id=le.id, label=le.label, type=le.type, summary=le.summary,
-                #     domain_id=le.domain_id, canonical_entity_id=le.canonical_entity_id,
-                #     properties=le.properties,
-                #     mentions=_normalize_mentions(refs, doc_id, fallback_snip),
-                #     relation=le.relation,
-                #     source_ids=le.source_ids, target_ids=le.target_ids,
-                #     source_edge_ids=getattr(le, "source_edge_ids", None),
-                #     target_edge_ids=getattr(le, "target_edge_ids", None),
-                #     doc_id=doc_id,
-                #     embedding = None,
-                #     metadata = {}
-                #     # embedding=self._ef([f"{le.label}: {le.summary}"])[0]
-                # )
-                # emb_text = f"{n.label}: {n.summary} : {nl.join(i['context'] for i in self.extract_reference_contexts(ln)[:1])}"
+
                 emb_text = f"{le.label}: {le.summary} : {nl.join(i['context'] for i in self.extract_reference_contexts(le)[:1])}"
                 e.embedding = self._ef([emb_text])[0]
                 self.add_edge(e, doc_id=doc_id)
@@ -2836,8 +2803,8 @@ class GraphKnowledgeEngine:
             "nodes_added": len(node_ids),
             "edges_added": len(edge_ids),
         }
-    def ingest_document_with_llm(self, document: Document, *, mode: str = "append",
-                                 instruction_for_node_edge_contents_parsing_inclusion = None,
+    def ingest_document_with_llm(self, document: Document, *, mode: str="append",
+                                 instruction_for_node_edge_contents_parsing_inclusion=None,
                                  raw_with_parsed = None):
         """Convenience: extract + persist. Still returns concrete ids written."""
         if raw_with_parsed is None:
@@ -2847,9 +2814,9 @@ class GraphKnowledgeEngine:
 
         # build context & aliases as you already do, then:
         extracted = self.extract_graph_with_llm(content=str(document.content),
-                                                doc_type = document.type,
-                                                    instruction_for_node_edge_contents_parsing_inclusion = instruction_for_node_edge_contents_parsing_inclusion,
-                                                    last_iteration_result = raw_with_parsed)
+                                doc_type=document.type,
+                                instruction_for_node_edge_contents_parsing_inclusion=instruction_for_node_edge_contents_parsing_inclusion,
+                                last_iteration_result=raw_with_parsed)
         parsed = extracted["parsed"]
 
         # de-alias against this doc scope & validate
@@ -3012,7 +2979,8 @@ class GraphKnowledgeEngine:
                             ep_docs.append(json.dumps(meta_ep))
                             ep_metas.append(meta_ep)
                     if ep_ids:
-                        self.edge_endpoints_collection.add(ids=ep_ids, documents=ep_docs, metadatas=ep_metas)
+                        self.edge_endpoints_collection.add(ids=ep_ids, documents=ep_docs, metadatas=ep_metas, 
+                                                           embeddings=[self.iterative_defensive_emb(d) for d in ep_docs])
                     updated_edge_ids.add(eid)
                 continue
 
@@ -3141,42 +3109,14 @@ class GraphKnowledgeEngine:
         canonical_id = self.merge_policy.commit_merge_target(left,right,verdict)
         return canonical_id
 
-    # def _primary_doc_id_from_node(self, n: Node) -> str | None:
-    #     # Prefer explicit doc_id on the node JSON; else infer from references
-    #     if getattr(n, "doc_id", None):
-    #         return n.doc_id
-    #     for r in (n.mentions or []):
-    #         if r.document_page_url:
-    #             m = re.search(r"document/([A-Za-z0-9\-]+)", r.document_page_url)
-    #             if m:
-    #                 return m.group(1)
-    #     return None
-
-    # def _best_ref(self, n: Node | Edge) -> Span:
-    #     # support subclass of Node, that is including Edge indeed
-    #     # Choose one ref to copy to the edge (earliest page, earliest char)
-    #     if n.mentions:
-    #         refs = sorted(
-    #             n.mentions,
-    #             key=lambda r: (getattr(r, "start_page", 10**9), getattr(r, "start_char", 10**9))
-    #         )
-    #         # Shallow copy + annotate verification that this ref is used for adjudication evidence
-    #         ref = refs[0].model_copy(deep=True)
-    #         if ref.verification is None:
-    #             ref.verification = MentionVerification(method="heuristic", is_verified=True, score=0.5, notes="used as adjudication evidence")
-    #         else:
-    #             # don’t flip existing flags, just add note
-    #             ref.verification.notes = (ref.verification.notes or "") + " | used as adjudication evidence"
-    #         return ref
-    #     # Fallback if somehow node has no refs (shouldn’t happen with your model)
-    #     doc_id = self._primary_doc_id_from_node(n) or "unknown"
-    #     return _default_ref(doc_id, excerpt=n.summary if hasattr(n, "summary") else None)
+    
     def add_edge_with_endpoint_docs(self, edge: Edge, endpoint_doc_ids: dict[str, str | None]):
         # Add the main edge row (neutral doc_id)
+        doc = edge.model_dump_json(field_mode='backend')
         self.edge_collection.add(
             ids=[edge.id],
-            documents=[edge.model_dump_json(field_mode='backend')],
-            embeddings=[edge.embedding] if edge.embedding else None,
+            documents=[],
+            embeddings=[edge.embedding] if edge.embedding else [self.iterative_defensive_emb(doc)],
             metadatas=[self.chroma_sanitize_metadata({
                 "doc_id": getattr(edge, "doc_id", None),
                 "relation": edge.relation,
@@ -3214,6 +3154,7 @@ class GraphKnowledgeEngine:
                 ids=ep_ids,
                 documents=ep_docs,
                 metadatas=ep_metas,
+                embeddings=[self.iterative_defensive_emb(d) for d in ep_docs]
             )
     def _classify_endpoint_id(self, rid: str) -> str:
         """Return 'node' or 'edge' by checking collections; raise if not found."""
@@ -3503,7 +3444,7 @@ class GraphKnowledgeEngine:
             conversation_id=conv_id,
             mentions=[Grounding(spans=[Span.from_dummy_for_conversation()])], # No mentions for start node
             properties={"status": "active"},
-            metadata={"level_from_root": 0, "entity_type": "conversation_start"},
+            metadata={"level_from_root": 0, "entity_type": "conversation_start", "char_distance_from_last_summary": 0, "turn_distance_from_last_summary" : -1 },
             domain_id=None,
             canonical_entity_id=None,
             level_from_root = 0,
@@ -3518,14 +3459,7 @@ class GraphKnowledgeEngine:
         # Let's create a dummy system span.
         dummy_span = Span.from_dummy_for_conversation()
         start_node.mentions = [Grounding(spans=[dummy_span])]
-        
-        doc, meta = _node_doc_and_meta(start_node)
-        self.node_collection.add(
-            ids=[start_node.id],
-            documents=[doc],
-            embeddings=self._ef([doc[:800]]), # No embedding needed
-            metadatas=[meta]
-        )
+        self.add_node(start_node)
         
         return conv_id
     @conversation_only
@@ -3586,11 +3520,13 @@ class GraphKnowledgeEngine:
                     break
                 idx = int(idx * 1.6)
             except:
-                success = False  
+                success = False
+        if embedding is None:
+            raise Exception("cannot get embedding after most defensive embedding strategy.")
         return embedding
     @conversation_only
     def add_conversation_turn(self, conversation_id: str, role: str, content: str, ref_knowledge_engine: GraphKnowledgeEngine, filtering_callback: Callable[..., tuple[list[str], str]] = candiate_filtering_callback,
-                              max_retrieval_level: int = 2, ) -> Dict[str, Any]:
+                              max_retrieval_level: int = 2, summary_char_threshold = 12000) -> Dict[str, Any]:
         """
         1. Ingest turn as ConversationNode.
         2. Retrieve KG nodes (level <= 2).
@@ -3607,8 +3543,14 @@ class GraphKnowledgeEngine:
         # Self is conversation knowledge engine
         # 1. Previous State
         prev_node = self._get_conversation_tail(conversation_id)
-        new_index = (prev_node.turn_index + 1) if prev_node and prev_node.turn_index is not None else 0
-
+        if prev_node is not None:
+            new_index = (prev_node.turn_index + 1) if prev_node and prev_node.turn_index is not None else 0
+            prev_char_distance_from_last_summary = prev_node.metadata['char_distance_from_last_summary'] or 0
+            prev_turn_distance_from_last_summary = prev_node.metadata['turn_distance_from_last_summary'] or 0
+        else:
+            new_index = 0
+            prev_char_distance_from_last_summary = 0
+            prev_turn_distance_from_last_summary = -1
         # 2. Create Node for this turn
         turn_node_id = str(uuid.uuid4())
         
@@ -3641,11 +3583,14 @@ class GraphKnowledgeEngine:
             conversation_id=conversation_id,
             mentions=[Grounding(spans=[self_span])],
             properties={},
-            metadata={"entity_type" : "conversation_turn"},
+            metadata={"entity_type" : "conversation_turn",
+                      "level_from_root": 0, "char_distance_from_last_summary": prev_char_distance_from_last_summary + len(content), 
+                      "turn_distance_from_last_summary" : prev_turn_distance_from_last_summary + 1 },
             domain_id=None,
             canonical_entity_id=None,
         )
-        
+        prev_char_distance_from_last_summary += len(content)
+        prev_turn_distance_from_last_summary += 1
         
         emb_text0 = f"{role}: {content}"
         embedding =  self.iterative_defensive_emb(emb_text0)
@@ -3685,7 +3630,6 @@ class GraphKnowledgeEngine:
             
 
         # 5. Persist Turn Node
-        doc, meta = _node_doc_and_meta(turn_node)
         self.add_node(turn_node, None)
 
         # 6. Create Reference Nodes & Edges
@@ -3702,27 +3646,28 @@ class GraphKnowledgeEngine:
             else:
                 raise Exception("Meta needed")
             ref_node_id = str(uuid.uuid4())
+            summary = str(kg_meta.get('summary', ''))
             ref_node = ConversationNode(
                 id=ref_node_id,
                 label=f"Ref to {kg_meta.get('label')}",
                 type="reference_pointer",
-                summary=kg_meta.get('summary', ''),
+                summary=summary,
                 conversation_id=conversation_id,
                 role="system", # type: ignore
                 turn_index=new_index, # Associated with this turn
-                properties={"refers_to_collection": "nodes", "refers_to_id": rid},
+                properties={"refers_to_collection": "nodes", "refers_to_id": rid, 'entity-type': "knowledge_reference"},
                 mentions=[Grounding(spans=[self_span])], # Provenance is the user turn that triggered this
-                metadata={},
+                metadata={"turn_index":new_index, 
+                          "char_distance_from_last_summary": prev_char_distance_from_last_summary + len(summary), 
+                          "turn_distance_from_last_summary": prev_turn_distance_from_last_summary + 1},
                 domain_id=None,
                 canonical_entity_id=None
             )
+            prev_char_distance_from_last_summary += len(summary)
+            prev_turn_distance_from_last_summary += 1
             # Add to conv collection
             r_doc, r_meta = _node_doc_and_meta(ref_node)
-            self.node_collection.add(
-                ids=[ref_node.id],
-                documents=[r_doc],
-                metadatas=[r_meta]
-            )
+            self.add_node(ref_node)
             
             # Edge: Turn -> Ref
             edge = ConversationEdge(
@@ -3737,18 +3682,13 @@ class GraphKnowledgeEngine:
                 mentions=[Grounding(spans=[self_span])],
                 domain_id=None,
                 canonical_entity_id=None,
-                properties=None,
+                properties={'entity-type': "conversation_edge"},
                 embedding=None,
                 metadata={},
                 source_edge_ids=[],
                 target_edge_ids=[]
             )
-            e_doc, e_meta = _edge_doc_and_meta(edge)
-            self.edge_collection.add(
-                ids=[edge.id],
-                documents=[e_doc],
-                metadatas=[e_meta]
-            )
+            self.add_edge(edge)
             created_refs.append(rid)
 
         # 7. Link to Previous Turn
@@ -3765,24 +3705,21 @@ class GraphKnowledgeEngine:
                 mentions=[Grounding(spans=[self_span])], # Weak provenance
                 domain_id=None,
                 canonical_entity_id=None,
-                properties=None,
+                properties={'entity-type': "conversation_edge"},
                 embedding=None,
                 metadata={},
                 source_edge_ids=[],
                 target_edge_ids=[]
             )
-            se_doc, se_meta = _edge_doc_and_meta(seq_edge)
-            self.edge_collection.add(
-                ids=[seq_edge.id],
-                documents=[se_doc],
-                metadatas=[se_meta]
-            )
-
+            self.add_edge(seq_edge)
+        response = self.get_ai_conversation_response(conversation_id)
         # 8. Check for Summarization (Deterministic Trigger)
         # Check unsummarized nodes count
         # Simplistic: Count nodes since last "summarizes" target? 
         # For now, let's just count total nodes and summarize every 5.
-        if new_index > 0 and new_index % 5 == 0:
+        if new_index > 0 and (prev_turn_distance_from_last_summary % 5 == 0 or 
+                              prev_char_distance_from_last_summary > summary_char_threshold or
+                              response.llm_decision_need_summary) :
             self._summarize_conversation_batch(conversation_id, new_index)
 
         return {
@@ -3790,9 +3727,39 @@ class GraphKnowledgeEngine:
             "relevant_nodes": created_refs,
             "turn_index": new_index
         }
+    @conversation_only    
+    def get_conversation(self, conversation_id):
+        pass
+    @conversation_only    
+    def get_system_prompt(self, conversation_id):
+        pass
+    @conversation_only    
+    def get_response_model(self, conversation_id) -> Type[BaseModel]:
+        from pydantic import Field
+        class ConversationResponseModel(BaseModel):
+            text: str = Field(..., description = 'spoken text')
+        return ConversationResponseModel
+    @conversation_only
+    def get_ai_conversation_response(self, conversation_id, model_names):
+        conversation = self.get_conversation(conversation_id)
+        prompt = self.get_system_prompt(conversation_id)
+        response_model : Type[BaseModel] = self.get_response_model(conversation_id)
+        
+        model_names=model_names or ["gemini-3-flash-preview", "gemini-2.5-flash", "gemini-2.5-pro", 
+                   "gemini-2.5-flash-lite"]
+        max_retry = 3
+        
+        for i, model_name in enumerate(model_names):
+            for trial in range(max_retry):
+                llm = self.get_llm(model_name) or self.llm
+                pass
+        raise Exception("tried all models")
+    def get_llm(self, model_name = None) -> BaseChatModel:
+        # will implement other model names later
+        return self.llm
     @conversation_only
     def _summarize_conversation_batch(self, conversation_id: str, current_index: int, batch_size: int = 5):
-        """Summarize the last N turns into a Memory Node."""
+        """Summarize the last N turns into a Summary/ Memory Node."""
         if self.kg_graph_type != "conversation":
             raise Exception("conversation only allowed to be on canva engine")
         start_index = max(0, current_index - batch_size + 1)
@@ -3871,13 +3838,7 @@ class GraphKnowledgeEngine:
         # Persist
         
         self.add_node(summary_node)
-        
-        # s_doc, s_meta = _node_doc_and_meta(summary_node)
-        # self.node_collection.add(
-        #     ids=[summary_node.id],
-        #     documents=[s_doc],
-        #     metadatas=[s_meta]
-        # )
+
 
         # Edges: Summary -> Turns
         sum_edge = ConversationEdge(
@@ -3911,9 +3872,3 @@ class GraphKnowledgeEngine:
             target_edge_ids=[]
         )
         self.add_edge(sum_edge)
-        # se_doc, se_meta = _edge_doc_and_meta(sum_edge)
-        # self.edge_collection.add(
-        #     ids=[sum_edge.id],
-        #     documents=[se_doc],
-        #     metadatas=[se_meta]
-        # )
