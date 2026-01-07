@@ -3712,7 +3712,7 @@ class GraphKnowledgeEngine:
                 target_edge_ids=[]
             )
             self.add_edge(seq_edge)
-        response = self.get_ai_conversation_response(conversation_id)
+        response = self.get_ai_conversation_response(conversation_id, ref_knowledge_engine=ref_knowledge_engine)
         # 8. Check for Summarization (Deterministic Trigger)
         # Check unsummarized nodes count
         # Simplistic: Count nodes since last "summarizes" target? 
@@ -3740,7 +3740,7 @@ class GraphKnowledgeEngine:
             text: str = Field(..., description = 'spoken text')
         return ConversationResponseModel
     @conversation_only
-    def get_ai_conversation_response(self, conversation_id, model_names):
+    def get_ai_conversation_response(self, conversation_id, ref_knowledge_engine, model_names = None):
         """Return an agentic response for the given conversation.
 
         This delegates to :class:`graph_knowledge_engine.agentic_answering.AgenticAnsweringAgent`.
@@ -3767,7 +3767,7 @@ class GraphKnowledgeEngine:
                 llm = self.get_llm(model_name) or self.llm
                 agent = AgenticAnsweringAgent(
                     conversation_engine=self,
-                    knowledge_engine=self.ref_knowledge_engine or self,  # type: ignore
+                    knowledge_engine=ref_knowledge_engine,
                     llm=llm,
                     config=AgentConfig(),
                 )
