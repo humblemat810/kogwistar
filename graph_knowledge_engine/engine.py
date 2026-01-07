@@ -60,6 +60,7 @@ from .models import (
     AdjudicationVerdict,
     LLMMergeAdjudication,
     ConversationNodeMetadata,
+    ConversationAIResponse
 )
 from langchain_openai import AzureChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
@@ -3598,100 +3599,33 @@ class GraphKnowledgeEngine:
         if embedding is None:
             raise Exception("uncalculatable embeddings")
         turn_node.embedding = embedding
-
-        # 3. Broad Retrieval from KG
-        # "Initial retrieval limit to level_from_root from 0 to 2 inclusive"
-        # We assume KG nodes have 'level_from_root' in metadata.
-        # We use the turn content as query.
-        
-        candidates = ref_knowledge_engine.node_collection.query(
-            query_embeddings=[turn_node.embedding],
-            n_results=20, # Fetch enough candidates
-            where={"level_from_root": {"$lte": max_retrieval_level}}
-        )
-        
-        
-        candidate_ids = candidates["ids"][0]
-        candidate_nodes = self.get_nodes(candidate_ids)
-        candidate_docs = candidates["documents"][0]
-        candidate_metas = candidates["metadatas"][0]
-        
-        # 4. LLM Filter
-        relevant_kg_ids = []
-        if candidate_ids:
-            
-            # Construct prompt
-            cand_list_str = "\n".join([f"- ID: {rid} | Label: {meta.get('label')} | Summary: {meta.get('summary')}" 
-                                       for rid, meta in zip(candidate_ids, candidate_metas)])
-            
-
-            relevant_kg_ids, reasoning = filtering_callback(self.llm, content, cand_list_str, candidate_ids)
-
-            
-
-        # 5. Persist Turn Node
+        # 3. Persist Turn Node (must happen before pinning edges from this turn)
         self.add_node(turn_node, None)
 
-        # 6. Create Reference Nodes & Edges
-        created_refs = []
-        for rid in relevant_kg_ids:
-            # We create a "Reference Pointer" in the conversation graph
-            # It points to the real KG node.
-            # We can copy some metadata for context.
-            kg_node = self.node_collection.get(ids=[rid], include=["metadatas", "documents"])
-            if not kg_node["ids"]: continue
-            kg_node_meta = kg_node.get("metadatas")
-            if kg_node_meta is not None:
-                kg_meta = kg_node_meta[0]
-            else:
-                raise Exception("Meta needed")
-            ref_node_id = str(uuid.uuid4())
-            summary = str(kg_meta.get('summary', ''))
-            ref_node = ConversationNode(
-                id=ref_node_id,
-                label=f"Ref to {kg_meta.get('label')}",
-                type="reference_pointer",
-                summary=summary,
-                conversation_id=conversation_id,
-                role="system", # type: ignore
-                turn_index=new_index, # Associated with this turn
-                properties={"refers_to_collection": "nodes", "refers_to_id": rid, 'entity-type': "knowledge_reference"},
-                mentions=[Grounding(spans=[self_span])], # Provenance is the user turn that triggered this
-                metadata={"turn_index":new_index, 
-                          "char_distance_from_last_summary": prev_char_distance_from_last_summary + len(summary), 
-                          "turn_distance_from_last_summary": prev_turn_distance_from_last_summary + 1},
-                domain_id=None,
-                canonical_entity_id=None
-            )
-            prev_char_distance_from_last_summary += len(summary)
-            prev_turn_distance_from_last_summary += 1
-            # Add to conv collection
-            r_doc, r_meta = _node_doc_and_meta(ref_node)
-            self.add_node(ref_node)
-            
-            # Edge: Turn -> Ref
-            edge = ConversationEdge(
-                id=str(uuid.uuid4()),
-                source_ids=[turn_node.id],
-                target_ids=[ref_node.id],
-                relation="references",
-                label="references",
-                type="relationship",
-                summary="User input references KG node",
-                doc_id=f"conv:{conversation_id}",
-                mentions=[Grounding(spans=[self_span])],
-                domain_id=None,
-                canonical_entity_id=None,
-                properties={'entity-type': "conversation_edge"},
-                embedding=None,
-                metadata={},
-                source_edge_ids=[],
-                target_edge_ids=[]
-            )
-            self.add_edge(edge)
-            created_refs.append(rid)
+        # 4. Retrieval orchestration (memory + KG) + pin selected KG refs
+        from .retrieval_orchestrator import RetrievalOrchestrator, RetrievalOutcome
 
-        # 7. Link to Previous Turn
+        retrieval = RetrievalOrchestrator(
+            conversation_engine=self,
+            ref_knowledge_engine=ref_knowledge_engine,
+            llm=self.llm,
+            memory_filtering_callback=filtering_callback,   # can split later
+            knowledge_filtering_callback=filtering_callback,
+            max_retrieval_level=max_retrieval_level,
+        )
+
+        outcome: RetrievalOutcome = retrieval.run(
+            conversation_id=conversation_id,
+            user_text=content,
+            query_embedding=turn_node.embedding,
+            turn_node_id=turn_node.id,
+            turn_index=new_index,
+            self_span=self_span,
+            prev_char_distance_from_last_summary=prev_char_distance_from_last_summary,
+            prev_turn_distance_from_last_summary=prev_turn_distance_from_last_summary,
+        )
+
+        # 5. Link to Previous Turn
         if prev_node:
             seq_edge = ConversationEdge(
                 id=str(uuid.uuid4()),
@@ -3713,7 +3647,7 @@ class GraphKnowledgeEngine:
             )
             self.add_edge(seq_edge)
         response = self.get_ai_conversation_response(conversation_id, ref_knowledge_engine=ref_knowledge_engine)
-        # 8. Check for Summarization (Deterministic Trigger)
+        # 6. Check for Summarization (Deterministic Trigger)
         # Check unsummarized nodes count
         # Simplistic: Count nodes since last "summarizes" target? 
         # For now, let's just count total nodes and summarize every 5.
@@ -3735,12 +3669,10 @@ class GraphKnowledgeEngine:
         pass
     @conversation_only    
     def get_response_model(self, conversation_id) -> Type[BaseModel]:
-        from pydantic import Field
-        class ConversationResponseModel(BaseModel):
-            text: str = Field(..., description = 'spoken text')
-        return ConversationResponseModel
+
+        return ConversationAIResponse
     @conversation_only
-    def get_ai_conversation_response(self, conversation_id, ref_knowledge_engine, model_names = None):
+    def get_ai_conversation_response(self, conversation_id, ref_knowledge_engine, model_names = None)->ConversationAIResponse:
         """Return an agentic response for the given conversation.
 
         This delegates to :class:`graph_knowledge_engine.agentic_answering.AgenticAnsweringAgent`.
@@ -3771,7 +3703,19 @@ class GraphKnowledgeEngine:
                     llm=llm,
                     config=AgentConfig(),
                 )
-                return agent.answer(conversation_id=conversation_id)
+                out = agent.answer(conversation_id=conversation_id)
+                
+                if isinstance(out, ConversationAIResponse):
+                    return out
+                if isinstance(out, dict):
+                    return ConversationAIResponse(
+                        text=str(out.get('assistant_text') or out.get('text') or ''),
+                        llm_decision_need_summary=bool(out.get('llm_decision_need_summary', False)),
+                        used_kg_node_ids=list(out.get('used_kg_node_ids') or out.get('used_knowledge_node_ids') or []),
+                        projected_conversation_node_ids=list(out.get('projected_node_ids') or out.get('projected_conversation_node_ids') or []),
+                        meta={'raw': out},
+                    )
+                return ConversationAIResponse(text=str(out))
             except Exception as e:
                 last_err = e
                 continue
