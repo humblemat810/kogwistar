@@ -18,15 +18,14 @@ class KnowledgeRetrievalResult:
 
 class KnowledgeRetriever:
     """
-    Retrieves KG nodes and (optionally) deepens retrieval using seed KG nodes.
+    KG retrieval with:
+    - shallow vector retrieval
+    - deep seeded semantic expansion (seed summaries condition the query)
+    - pinning selected KG refs into the conversation canvas as pointer nodes
 
-    Deep mode implemented here is *seeded semantic expansion* (not structural adjacency),
-    because the current Chroma backend stores edge endpoints as JSON strings and does not
-    support efficient incident-edge filtering.
-
-    Naming:
-    - conversation_engine: the canvas to pin reference pointers into.
-    - ref_knowledge_engine: the KG engine used for retrieval (node_collection.query/get).
+    Names (do not mix):
+    - conversation_engine: conversation canvas engine (current engine instance)
+    - ref_knowledge_engine: KG engine instance
     """
 
     def __init__(
@@ -38,7 +37,7 @@ class KnowledgeRetriever:
         filtering_callback: Callable[..., Tuple[List[str], str]],
         max_retrieval_level: int = 2,
         shallow_n_results: int = 20,
-        deep_per_seed_results: int = 12,
+        deep_per_seed_results: int = 10,
         deep_seed_limit: int = 5,
     ) -> None:
         self.conversation_engine = conversation_engine
@@ -59,13 +58,7 @@ class KnowledgeRetriever:
         )
         return (rows.get("ids") or [[]])[0] or []
 
-    def _deep_semantic_from_seeds(
-        self,
-        *,
-        user_text: str,
-        seed_kg_node_ids: List[str],
-    ) -> List[str]:
-        # limit seeds to bound cost
+    def _deep_seeded_semantic(self, *, user_text: str, seed_kg_node_ids: List[str]) -> List[str]:
         seed_ids = seed_kg_node_ids[: self.deep_seed_limit]
         out: List[str] = []
         for sid in seed_ids:
@@ -74,8 +67,7 @@ class KnowledgeRetriever:
                 continue
             meta = (got.get("metadatas") or [{}])[0] or {}
             seed_summary = str(meta.get("summary") or meta.get("label") or "")
-            # build a seed-conditioned query text and embed it using KG engine's embedding function
-            q_text = f"{user_text}\n\nRelated seed context:\n{seed_summary}"
+            q_text = f"{user_text}\n\nRelated memory / prior context:\n{seed_summary}"
             q_emb = self.ref_knowledge_engine.iterative_defensive_emb(q_text)
             rows = self.ref_knowledge_engine.node_collection.query(
                 query_embeddings=[q_emb],
@@ -85,9 +77,9 @@ class KnowledgeRetriever:
             )
             ids = (rows.get("ids") or [[]])[0] or []
             out.extend(ids)
-        # de-dupe preserving order
+
         seen = set()
-        dedup = []
+        dedup: List[str] = []
         for x in out:
             if x not in seen:
                 seen.add(x)
@@ -98,26 +90,23 @@ class KnowledgeRetriever:
         self,
         *,
         user_text: str,
+        context_text: str,
         query_embedding: List[float],
         seed_kg_node_ids: Optional[List[str]] = None,
     ) -> KnowledgeRetrievalResult:
-        # 1) shallow
         shallow_ids = self._shallow_query(query_embedding=query_embedding)
-
-        # 2) deep (seeded)
         deep_ids: List[str] = []
         if seed_kg_node_ids:
-            deep_ids = self._deep_semantic_from_seeds(user_text=user_text, seed_kg_node_ids=seed_kg_node_ids)
+            deep_ids = self._deep_seeded_semantic(user_text=user_text, seed_kg_node_ids=seed_kg_node_ids)
 
-        # 3) merge candidates (shallow first)
-        candidate_ids: List[str] = []
+        # merge
         seen = set()
+        candidate_ids: List[str] = []
         for x in shallow_ids + deep_ids:
             if x not in seen:
                 seen.add(x)
                 candidate_ids.append(x)
 
-        # 4) LLM filter
         selected_ids: List[str] = []
         reasoning = ""
         if candidate_ids:
@@ -126,25 +115,20 @@ class KnowledgeRetriever:
             cand_list_str = "\n".join(
                 [f"- ID: {rid} | Label: {meta.get('label')} | Summary: {meta.get('summary')}" for rid, meta in zip(candidate_ids, metas)]
             )
-            selected_ids, reasoning = self.filtering_callback(self.llm, user_text, cand_list_str, candidate_ids)
+            selected_ids, reasoning = self.filtering_callback(self.llm, user_text, cand_list_str, candidate_ids, context_text)
 
         return KnowledgeRetrievalResult(candidate_kg_node_ids=candidate_ids, selected_kg_node_ids=selected_ids, reasoning=reasoning)
 
     def pin_selected(
         self,
         *,
+        user_id: str,
         conversation_id: str,
         turn_node_id: str,
         turn_index: int,
         self_span: Span,
         selected_kg_node_ids: List[str],
-        prev_char_distance_from_last_summary: int,
-        prev_turn_distance_from_last_summary: int,
-    ) -> tuple[List[str], List[str], int, int]:
-        """
-        Pin selected KG node ids as pointer nodes + reference edges in the conversation engine.
-        Returns (pinned_pointer_node_ids, pinned_edge_ids, new_char_dist, new_turn_dist)
-        """
+    ) -> tuple[List[str], List[str]]:
         pinned_pointer_node_ids: List[str] = []
         pinned_edge_ids: List[str] = []
 
@@ -158,31 +142,27 @@ class KnowledgeRetriever:
             ptr_id = str(uuid.uuid4())
             ptr_node = ConversationNode(
                 id=ptr_id,
-                label=f"Ref to {kg_meta.get('label')}",
+                label=f"Ref: {kg_meta.get('label')}",
                 type="reference_pointer",
+                doc_id=ptr_id,
                 summary=summary,
-                conversation_id=conversation_id,
                 role="system",  # type: ignore
                 turn_index=turn_index,
+                conversation_id=conversation_id,
+                user_id=user_id,
+                mentions=[Grounding(spans=[self_span])],
                 properties={
                     "refers_to_collection": "nodes",
                     "refers_to_id": kg_id,
-                    "entity-type": "knowledge_reference",
+                    "entity_type": "knowledge_reference",
                 },
-                mentions=[Grounding(spans=[self_span])],
                 metadata={
                     "entity_type": "knowledge_reference",
                     "level_from_root": 0,
-                    "char_distance_from_last_summary": prev_char_distance_from_last_summary + len(summary),
-                    "turn_distance_from_last_summary": prev_turn_distance_from_last_summary + 1,
                 },
                 domain_id=None,
                 canonical_entity_id=None,
             )
-
-            prev_char_distance_from_last_summary += len(summary)
-            prev_turn_distance_from_last_summary += 1
-
             self.conversation_engine.add_node(ptr_node)
             pinned_pointer_node_ids.append(ptr_id)
 
@@ -194,12 +174,12 @@ class KnowledgeRetriever:
                 relation="references",
                 label="references",
                 type="relationship",
-                summary="User input references KG node",
+                summary="Turn references KG node",
                 doc_id=f"conv:{conversation_id}",
                 mentions=[Grounding(spans=[self_span])],
                 domain_id=None,
                 canonical_entity_id=None,
-                properties={"entity-type": "conversation_edge"},
+                properties={"entity_type": "conversation_edge"},
                 embedding=None,
                 metadata={},
                 source_edge_ids=[],
@@ -208,4 +188,4 @@ class KnowledgeRetriever:
             self.conversation_engine.add_edge(edge)
             pinned_edge_ids.append(edge_id)
 
-        return pinned_pointer_node_ids, pinned_edge_ids, prev_char_distance_from_last_summary, prev_turn_distance_from_last_summary
+        return pinned_pointer_node_ids, pinned_edge_ids

@@ -7,7 +7,7 @@ from typing import Callable, List, Optional, Tuple
 from langchain_core.language_models import BaseChatModel
 
 from .models import ConversationNode, ConversationEdge, Grounding, Span
-
+from .engine import GraphKnowledgeEngine
 
 @dataclass
 class MemoryRetrievalResult:
@@ -51,7 +51,7 @@ class MemoryRetriever:
         n_results: int = 12,
         prefer_types: Optional[List[str]] = None,
     ) -> None:
-        self.conversation_engine = conversation_engine
+        self.conversation_engine: GraphKnowledgeEngine = conversation_engine
         self.llm = llm
         self.filtering_callback = filtering_callback
         self.summarize_callback = summarize_callback
@@ -65,15 +65,18 @@ class MemoryRetriever:
         current_conversation_id: str,
         query_embedding: List[float],
         user_text: str,
+        context_text: str,
     ) -> MemoryRetrievalResult:
         # Broad memory retrieval across same user
         where = {"user_id": user_id}
+        # _nodes = self.conversation_engine.query_nodes(query_embeddings = query_embedding)
         rows = self.conversation_engine.node_collection.query(
             query_embeddings=[query_embedding],
             n_results=self.n_results,
             where=where,
-            include=["metadatas", "documents"],
+            include=["metadatas", "documents", "embeddings"],
         )
+        # _nodes = self.conversation_engine.nodes_from_query_result(rows, node_type = ConversationNode)
         candidate_ids: List[str] = (rows.get("ids") or [[]])[0] or []
         candidate_docs: List[str] = (rows.get("documents") or [[]])[0] or []
         candidate_metas = (rows.get("metadatas") or [[]])[0] or []
@@ -88,7 +91,7 @@ class MemoryRetriever:
             candidate_ids = [z[0] for z in zipped]
             candidate_docs = [z[1] for z in zipped]
             candidate_metas = [z[2] for z in zipped]
-
+        import json
         selected_ids: List[str] = []
         reasoning = ""
         if candidate_ids:
@@ -99,16 +102,20 @@ class MemoryRetriever:
                     for rid, meta in zip(candidate_ids, candidate_metas)
                 ]
             )
-            selected_ids, reasoning = self.filtering_callback(self.llm, user_text, cand_list_str, candidate_ids)
-
+            selected_ids, reasoning = self.filtering_callback(self.llm, user_text, cand_list_str, candidate_ids, context_text)
+        
         # Extract KG seeds from selected nodes when they are reference pointers
         seed_kg_ids: List[str] = []
         if selected_ids:
-            selected_rows = self.conversation_engine.node_collection.get(ids=selected_ids, include=["documents"])
+            selected_rows = self.conversation_engine.node_collection.get(ids=selected_ids, include=["metadatas","documents"])
+            # nodes = self.conversation_engine.nodes_from_query_result(rows, node_type = ConversationNode)
             docs = selected_rows.get("documents") or []
-            for doc in docs:
+            metadatas =selected_rows.get("metadatas") or []
+            for doc, meta in zip(docs, metadatas) :
                 try:
-                    n = ConversationNode.model_validate_json(doc)
+                    djson = json.loads(doc)
+                    djson.update({'metadata':meta})
+                    n = ConversationNode.model_validate(djson)
                 except Exception:
                     continue
                 if n.type != "reference_pointer":
@@ -151,6 +158,7 @@ class MemoryRetriever:
         *,
         user_id: str,
         current_conversation_id: str,
+        mem_id: str | None = None, # for both node and edge
         turn_node_id: str,
         turn_index: int,
         self_span: Span,
@@ -168,16 +176,17 @@ class MemoryRetriever:
         if not selected_source_node_ids or not memory_context_text:
             return None
 
-        mem_node_id = str(uuid.uuid4())
+        mem_node_id = mem_id or str(uuid.uuid4())
         mem_node = ConversationNode(
             id=mem_node_id,
             label=f"Memory context (turn {turn_index})",
-            type="memory_context",
+            type="entity",
             doc_id=mem_node_id,
             summary=memory_context_text,
             role="system",  # type: ignore
             turn_index=turn_index,
             conversation_id=current_conversation_id,
+            user_id=user_id,
             mentions=[Grounding(spans=[self_span])],
             properties={
                 "user_id": user_id,
@@ -185,7 +194,10 @@ class MemoryRetriever:
             },
             metadata={
                 "entity_type": "memory_context",
-                "type": "memory_context",
+                "type": "entity",
+                "level_from_root": 0, 
+                "char_distance_from_last_summary": 0,  # memory itself is a summary of other nodes
+                "turn_distance_from_last_summary": 0,                
                 "user_id": user_id,
                 "conversation_id": current_conversation_id,
                 "turn_index": turn_index,
@@ -198,7 +210,7 @@ class MemoryRetriever:
         edge_ids: List[str] = []
 
         # Turn -> MemoryContext
-        e1_id = str(uuid.uuid4())
+        e1_id = mem_id or str(uuid.uuid4())
         e1 = ConversationEdge(
             id=e1_id,
             source_ids=[turn_node_id],
@@ -222,7 +234,7 @@ class MemoryRetriever:
 
         # MemoryContext -> Sources
         for sid in selected_source_node_ids:
-            e_id = str(uuid.uuid4())
+            e_id = f"{mem_id}::{sid}" if mem_id else str(uuid.uuid4())
             e = ConversationEdge(
                 id=e_id,
                 source_ids=[mem_node_id],

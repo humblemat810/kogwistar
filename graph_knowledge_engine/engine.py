@@ -77,6 +77,7 @@ from typing import (Callable, Optional, Tuple, Any, Dict, Iterable, Sequence, Li
 import math
 from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction
 from chromadb.utils import embedding_functions
+from pydantic import BaseModel
 # Optional: RapidFuzz
 try:
     from rapidfuzz import fuzz
@@ -94,7 +95,6 @@ except Exception:
 
 NodeOrEdge: TypeAlias =  Node | Edge
 T = TypeVar("T", Node, Edge)
-M = TypeVar("M", BaseModel)
 from graphlib import TopologicalSorter
 def _refs_hash(refs) -> str:
     import hashlib, json
@@ -492,8 +492,6 @@ def _is_new_node(x: str | None) -> bool:
 def _is_new_edge(x: str | None) -> bool:
     return bool(x) and x.startswith("ne:")
 # Simple on-disk cache dir (optional)
-
-
 def build_aliases(node_ids, edge_ids):
     node_aliases = {rid: f"N{i}" for i, rid in enumerate(node_ids, start=1)}
     edge_aliases = {rid: f"E{i}" for i, rid in enumerate(edge_ids, start=1)}
@@ -558,15 +556,17 @@ def base62_to_uuid(s: str) -> str:
 
 from .models import FilteringResponse
 # from typing import Type, TypeVar
-from pydantic import BaseModel
-def candiate_filtering_callback(llm: BaseChatModel, conversation_content, cand_list_str, candidate_ids):
+
+def candiate_filtering_callback(llm: BaseChatModel, conversation_content, cand_list_str, candidate_ids, context_text):
     max_retry = 3
     err_messages = []
     for _retry in range(max_retry):
         
         filter_prompt = ChatPromptTemplate.from_messages([
             ("system", "You are a helpful assistant filtering knowledge graph nodes."),
-            ("human", f"User Input: {conversation_content}\n\nCandidate Nodes:\n{cand_list_str}\n\n"
+            ("human", f"User Input: {conversation_content}\n\n" + 
+                        (f"Context: {context_text}\n\n" if context_text else "") +
+                        f"Candidate Nodes:\n{cand_list_str}\n\n"
                         # "Return a JSON list of IDs for nodes that are RELEVANT to the user input. "
                         # "Example: ['id1', 'id2']. Return empty list if none."
                         )
@@ -587,6 +587,7 @@ def candiate_filtering_callback(llm: BaseChatModel, conversation_content, cand_l
         if parsed := resp2.get("parsed"):
             parsed2: FilteringResponse = cast(FilteringResponse, parsed)
             not_candidate = set(parsed2.relevant_ids).difference(set(candidate_ids))
+            # set(parsed2.relevant_ids).issubset(set(candidate_ids ))
             if len(not_candidate) > 0:
                 err_messages.append(("system", str(Exception(f"Non candidates ids returned {not_candidate}"))))
                 continue
@@ -864,32 +865,116 @@ class GraphKnowledgeEngine:
     def get_nodes(self, ids: Sequence[str]) -> List[Node]:
         if not ids: return []
         got = self.node_collection.get(ids=list(ids), include=["documents", "embeddings", "metadatas"])
-        docs: list[str] = cast(list[str], got.get("documents") or [])
+        if self.kg_graph_type == 'conversation':
+            node_type = ConversationNode
+        else:
+            node_type = Node
+        return self.nodes_from_single_or_id_query_result(got, node_type = node_type)
+    def query_nodes(self, query = None, query_embeddings = None):
+        if query_embeddings is not None:
+            if query is not None:
+                raise Exception("either query or query embedding but not both specified.")
+        else:
+            if query is not None:
+                query_embeddings = self.iterative_defensive_emb(query)
+            else:
+                raise ValueError("either query or query embeddings must be specified")
+        
+        got = self.node_collection.query(query_embeddings=[query_embeddings], include=["documents", "embeddings", "metadatas"])
+        return self.nodes_from_query_result(got)
+    def query_edges(self, query, query_embeddings):
+        if query_embeddings is not None:
+            pass
+        else:
+            if query is not None:
+                query_embeddings = self.iterative_defensive_emb(query)
+            else:
+                raise ValueError("either query or query embeddings must be specified")
+        
+        got = self.edge_collection.query(query_embeddings=[query_embeddings], include=["documents", "embeddings", "metadatas"])
+        return self.edges_from_query_result(got)
+    def nodes_from_single_or_id_query_result(self,got, node_type: Type[Node] = Node):
+        docs: list[str] = cast(list[str], got.get("documents") or None)
+        if docs is None:
+            raise Exception("Missing docs")
+        
         embs = got.get("embeddings")
         if embs is None:
-            embs = []
-        embs = cast(list[list[float]], embs)
-        metadatas = cast(list[dict[str, Any]], got.get("metadatas") or [])
-        metadatas = got.get("metadatas")
-        if metadatas is None:
-            metadatas = []
-        metadatas = cast(list[list[float]], metadatas)
-        return [Node.model_validate_json(d).model_copy(update={"embedding": emb, "metadata": metadata}) for d, emb, metadata in zip(docs, embs, metadatas)]
+            raise Exception("Missing Embeddings")
 
+        embs = cast(list[list[float]], embs)
+        metadatas = cast(list[dict[str, Any]], got.get("metadatas") or None)
+        if metadatas is None:
+            raise Exception("Missing Metadatas")
+
+        res = []
+        import numpy as np
+        for d, emb, metadata in zip(docs, embs, metadatas):
+            if type(emb) is list:
+                pass
+            elif type(emb) is np.ndarray:
+                emb = emb.tolist()
+            json_d = json.loads(d)
+            json_d.update({"embedding": emb, "metadata": metadata})
+            res.append(node_type.model_validate(json_d))
+        return res
+    def edges_from_single_or_id_query_result(self, got, edge_type: Type[Edge] = Edge):
+        docs: list[str] = cast(list[str], got.get("documents") or None)
+        if docs is None:
+            raise Exception("Missing docs")
+        
+        embs = got.get("embeddings")
+        if embs is None:
+            raise Exception("Missing Embeddings")
+
+        embs = cast(list[list[float]], embs)
+        metadatas = cast(list[dict[str, Any]], got.get("metadatas") or None)
+        if metadatas is None:
+            raise Exception("Missing Metadatas")
+        
+        res = []
+        import numpy as np
+        for d, emb, metadata in zip(docs, embs, metadatas):
+            if type(emb) is list:
+                pass
+            elif type(emb) is np.ndarray:
+                emb = emb.tolist()
+            json_d = json.loads(d)
+            json_d.update({"embedding": emb, "metadata": metadata})
+            res.append(edge_type.model_validate(json_d))
+        return res
+    def nodes_from_query_result(self, gots, node_type: Type[Node] = Node):
+        res = []
+        for i_q in range(len(gots['ids'])):
+            n_doc = len(gots["ids"][i_q])
+            for docs, embs, metadatas in zip(gots.get("documents") if gots.get("documents") is not None else  [[]]*n_doc, 
+                                             gots.get("embeddings") if gots.get("embeddings") is not None else [[]]*n_doc, 
+                                             gots.get("metadatas") if gots.get("metadatas") is not None else [[]]*n_doc):
+                docs: list[str] = cast(list[str], docs)
+                got = {"documents": docs, "embeddings": embs, "metadatas": metadatas}
+                single_res = self.nodes_from_single_or_id_query_result(got)
+                res.append(single_res)
+        return res
+    def edges_from_query_result(self, gots, edge_type: Type[Edge] = Edge):
+        res = []
+        for i_q in range(len(gots['ids'])):
+            n_doc = len(gots["ids"][i_q])
+            for docs, embs, metadatas in zip(gots.get("documents") if gots.get("documents") is not None else  [[]]*n_doc, 
+                                             gots.get("embeddings") if gots.get("embeddings") is not None else [[]]*n_doc, 
+                                             gots.get("metadatas") if gots.get("metadatas") is not None else [[]]*n_doc):
+                docs: list[str] = cast(list[str], docs)
+                got = {"documents": docs, "embeddings": embs, "metadatas": metadatas}
+                single_res = self.edges_from_single_or_id_query_result(got)
+                res.append(single_res)
+        return res
     def get_edges(self, ids: Sequence[str]) -> List[Edge]:
         if not ids: return []
-        got = self.node_collection.get(ids=list(ids), include=["documents", "embeddings", "metadatas"])
-        docs: list[str] = cast(list[str], got.get("documents") or [])
-        embs = got.get("embeddings")
-        if embs is None:
-            embs = []
-        embs = cast(list[list[float]], embs)
-        metadatas = cast(list[dict[str, Any]], got.get("metadatas") or [])
-        metadatas = got.get("metadatas")
-        if metadatas is None:
-            metadatas = []
-        metadatas = cast(list[list[float]], metadatas)
-        return [Edge.model_validate_json(d).model_copy(update={"embedding": emb, "metadata": metadata}) for d, emb, metadata in zip(docs, embs, metadatas)]
+        got = self.edge_collection.get(ids=list(ids), include=["documents", "embeddings", "metadatas"])
+        if self.kg_graph_type == 'conversation':
+            edge_type = ConversationEdge
+        else:
+            edge_type = Edge
+        return self.edges_from_single_or_id_query_result(got, edge_type = edge_type)
 
     def all_nodes_for_doc(self, doc_id: str) -> List[Node]:
         return self.get_nodes(self._nodes_by_doc(doc_id))
@@ -3428,15 +3513,16 @@ class GraphKnowledgeEngine:
     # Conversation Abstraction
     # ----------------------------
     @conversation_only
-    def create_conversation(self) -> str:
+    def create_conversation(self, user_id, conv_id = None, node_id = None) -> tuple[str, str]:
         if self.kg_graph_type != "conversation":
             raise Exception("conversation only allowed to be on canva engine")
         """Create a new conversation thread ID and reserve it with a start node."""
-        conv_id = str(uuid.uuid4())
-        
+        conv_id = conv_id or str(uuid.uuid4())
+        node_id = node_id  or str(uuid.uuid4())
         # Create a start node to reserve the ID and anchor the conversation
         start_node = ConversationNode(
-            id=str(uuid.uuid4()),
+            id=node_id,
+            user_id = user_id,
             label="conversation start",
             type="entity",
             summary="Start of conversation",
@@ -3462,7 +3548,7 @@ class GraphKnowledgeEngine:
         start_node.mentions = [Grounding(spans=[dummy_span])]
         self.add_node(start_node)
         
-        return conv_id
+        return conv_id, node_id
     @conversation_only
     def _get_conversation_tail(self, conversation_id: str) -> Optional[ConversationNode]:
         """Find the last node in the conversation (leaf of 'next_turn')."""
@@ -3473,18 +3559,16 @@ class GraphKnowledgeEngine:
             raise Exception("conversation only allowed to be on canva engine")
         got = self.node_collection.get(
             where={"conversation_id": conversation_id},
-            include=["documents", "metadatas"]
+            include=["documents", "metadatas", "embeddings"]
         )
         if not got["ids"]:
             return None
-        
+        nodes = self.nodes_from_single_or_id_query_result(got)
         # reconstruct
         nodes = []
         for doc in got["documents"] or []:
-            try:
-                nodes.append(ConversationNode.model_validate_json(doc))
-            except Exception:
-                pass
+            nodes.append(ConversationNode.model_validate_json(doc))
+
         
         if not nodes:
             return None
@@ -3526,7 +3610,7 @@ class GraphKnowledgeEngine:
             raise Exception("cannot get embedding after most defensive embedding strategy.")
         return embedding
     @conversation_only
-    def add_conversation_turn(self, conversation_id: str, role: str, content: str, ref_knowledge_engine: GraphKnowledgeEngine, filtering_callback: Callable[..., tuple[list[str], str]] = candiate_filtering_callback,
+    def add_conversation_turn(self, user_id: str, conversation_id: str, turn_id: str, mem_id: str, role: str, content: str, ref_knowledge_engine: GraphKnowledgeEngine, filtering_callback: Callable[..., tuple[list[str], str]] = candiate_filtering_callback,
                               max_retrieval_level: int = 2, summary_char_threshold = 12000) -> Dict[str, Any]:
         """
         1. Ingest turn as ConversationNode.
@@ -3553,7 +3637,7 @@ class GraphKnowledgeEngine:
             prev_char_distance_from_last_summary = 0
             prev_turn_distance_from_last_summary = -1
         # 2. Create Node for this turn
-        turn_node_id = str(uuid.uuid4())
+        turn_node_id = turn_id or str(uuid.uuid4())
         
         # Self-referential span for provenance
         # We treat the content string as the "document"
@@ -3574,6 +3658,7 @@ class GraphKnowledgeEngine:
         )
         
         turn_node = ConversationNode(
+            user_id=user_id,
             id=turn_node_id,
             label=f"Turn {new_index} ({role})",
             type="entity",
@@ -3616,6 +3701,8 @@ class GraphKnowledgeEngine:
 
         outcome: RetrievalOutcome = retrieval.run(
             conversation_id=conversation_id,
+            user_id=user_id,
+            mem_id=mem_id,
             user_text=content,
             query_embedding=turn_node.embedding,
             turn_node_id=turn_node.id,
@@ -3658,8 +3745,18 @@ class GraphKnowledgeEngine:
 
         return {
             "turn_node_id": turn_node.id,
-            "relevant_nodes": created_refs,
-            "turn_index": new_index
+            "turn_index": new_index,
+
+            # KG selection result
+            "relevant_kg_node_ids": outcome.knowledge.selected_kg_node_ids,
+
+            # What was actually pinned into the canvas this turn
+            "pinned_kg_pointer_node_ids": outcome.pinned_kg_pointer_node_ids,
+            "pinned_kg_edge_ids": outcome.pinned_kg_edge_ids,
+
+            # Memory context artifact pinned this turn (if any)
+            "memory_context_node_id": outcome.memory_context_node_id,
+            "memory_context_edge_ids": outcome.memory_context_edge_ids,
         }
     @conversation_only    
     def get_conversation(self, conversation_id):

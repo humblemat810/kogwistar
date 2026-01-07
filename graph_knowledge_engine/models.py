@@ -19,8 +19,15 @@ from pydantic_extension.model_slicing import (ModeSlicingMixin, NotMode, Fronten
                 use_mode)
 from pydantic_extension.model_slicing.mixin import ExcludeMode, DtoField
 JsonPrimitive = Union[str, int, float, bool, None]
-
-
+# JSON: TypeAlias = (
+#     dict[str, "JSON"]
+#     | list["JSON"]
+#     | str
+#     | int
+#     | float
+#     | bool
+#     | None
+# )
 class AdjudicationQuestionCode(IntEnum):
     SAME_ENTITY = 1
     SAME_EVENT = 2
@@ -221,7 +228,7 @@ class GraphEntityBase(ModeSlicingMixin, BaseModel):
     canonical_entity_id: Optional[str] = Field(
         None, description="Canonical ID to link equivalents (e.g., Wikidata QID or internal UUID)"
     )
-    properties: Optional[Dict[str, JsonPrimitive]] = Field(
+    properties: Optional[Dict[str, JsonPrimitive| list[JsonPrimitive] | dict[str, JsonPrimitive]]] = Field(
         None, description="Optional flat properties (JSON primitives only)"
     )
 
@@ -431,13 +438,14 @@ class ConversationRoleMixin(BaseModel):
     role: Optional[Literal["user", "assistant", "system", "tool"]] = Field(None, description="Role in conversation")
     turn_index: Optional[int] = Field(None, description="Sequential turn index")
     conversation_id: Optional[str] = Field(None, description="Conversation thread ID")
+    user_id: Optional[str] = Field(None, description="User ID (cross-conversation memory scope)")
 
     @model_validator(mode="before")
     @classmethod
     def sync_conversation_metadata(cls, data: Any, info: ValidationInfo) -> Any:
         if isinstance(data, dict):
             metadata = data.get("metadata", {}) or {}
-            for field in ["role", "turn_index", "conversation_id"]:
+            for field in ["role", "turn_index", "conversation_id", "user_id"]:
                 if field not in data and field in metadata:
                     data[field] = metadata[field]
         return data
@@ -450,12 +458,27 @@ class ConversationRoleMixin(BaseModel):
         if self.metadata is None:
             self.metadata = {}
             
-        for field in ["role", "turn_index", "conversation_id"]:
+        for field in ["role", "turn_index", "conversation_id", "user_id"]:
             val = getattr(self, field, None)
             if val is not None:
                 self.metadata[field] = val
         return self
     
+
+
+
+class ConversationAIResponse(BaseModel):
+    """Standard response model for AI conversation responses."""
+
+    text: str = Field(default="", description="Assistant text response to the user.")
+    llm_decision_need_summary: bool = Field(default=False, description="If True, request summarization this turn.")
+
+    used_kg_node_ids: List[str] = Field(default_factory=list)
+    used_memory_node_ids: List[str] = Field(default_factory=list)
+    projected_conversation_node_ids: List[str] = Field(default_factory=list)
+    projected_conversation_edge_ids: List[str] = Field(default_factory=list)
+    run_trace_node_id: Optional[str] = None
+    meta: Dict[str, Any] = Field(default_factory=dict)
 
 
 
@@ -961,21 +984,3 @@ class SplitPage(OCRClusterResponseBc):
             return c_return
 
     
-
-
-from pydantic import BaseModel, Field
-from typing import Any, Dict, List, Optional
-
-
-class ConversationAIResponse(BaseModel):
-    """Standard response model for AI conversation responses."""
-
-    text: str = Field(default="", description="Assistant text response to the user.")
-    llm_decision_need_summary: bool = Field(default=False, description="If True, request summarization this turn.")
-
-    used_kg_node_ids: List[str] = Field(default_factory=list)
-    used_memory_node_ids: List[str] = Field(default_factory=list)
-    projected_conversation_node_ids: List[str] = Field(default_factory=list)
-    projected_conversation_edge_ids: List[str] = Field(default_factory=list)
-    run_trace_node_id: Optional[str] = None
-    meta: Dict[str, Any] = Field(default_factory=dict)
