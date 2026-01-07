@@ -961,3 +961,21 @@ class SplitPage(OCRClusterResponseBc):
             return c_return
 
     
+
+
+from pydantic import BaseModel, Field
+from typing import Any, Dict, List, Optional
+
+
+class ConversationAIResponse(BaseModel):
+    """Standard response model for AI conversation responses."""
+
+    text: str = Field(default="", description="Assistant text response to the user.")
+    llm_decision_need_summary: bool = Field(default=False, description="If True, request summarization this turn.")
+
+    used_kg_node_ids: List[str] = Field(default_factory=list)
+    used_memory_node_ids: List[str] = Field(default_factory=list)
+    projected_conversation_node_ids: List[str] = Field(default_factory=list)
+    projected_conversation_edge_ids: List[str] = Field(default_factory=list)
+    run_trace_node_id: Optional[str] = None
+    meta: Dict[str, Any] = Field(default_factory=dict)
