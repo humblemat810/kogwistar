@@ -96,15 +96,22 @@ class AgenticAnsweringAgent:
     # ----------------------------
     # Public entrypoint
     # ----------------------------
-    def answer(self, *, conversation_id: str) -> dict[str, Any]:
+    def answer(self, *, conversation_id: str, user_id = None) -> dict[str, Any]:
         """Run one agentic answering pass.
 
         Returns a dict with keys: run_node_id, assistant_turn_node_id, used_node_ids.
         """
         # 1) Fetch conversation state (engine-specific hooks)
-        conversation = self.conversation_engine.get_conversation(conversation_id)
+        view = self.conversation_engine.get_conversation_view(
+            conversation_id=conversation_id,
+            user_id=user_id,
+            purpose="answer",
+            budget_tokens=6000,
+        )
+        messages = view.messages
+        last_user_turn = self._get_last_user_text(messages)
         system_prompt = self.conversation_engine.get_system_prompt(conversation_id)
-        last_user_turn = self._get_last_user_text(conversation)
+        # last_user_turn = self._get_last_user_text(conversation)
         if not last_user_turn:
             raise ValueError("No user message found in conversation")
 
@@ -165,20 +172,25 @@ class AgenticAnsweringAgent:
     # Internal helpers
     # ----------------------------
     def _get_last_user_text(self, conversation: Any) -> str:
-        """Best-effort: conversation may be a list[dict] or a custom object."""
         if conversation is None:
             return ""
-        # Common shapes: list of {role, content}
-        if isinstance(conversation, list):
+
+        # NEW: handle ContextMessage objects
+        if isinstance(conversation, (list, tuple)):
             for msg in reversed(conversation):
+                role = getattr(msg, "role", None)
+                content = getattr(msg, "content", None)
+                if role == "user" and content:
+                    return str(content)
+
+                # keep old dict support too
                 if isinstance(msg, dict) and msg.get("role") == "user":
                     return str(msg.get("content") or "")
-        # Fallback: if engine returns string
+
         if isinstance(conversation, str):
             return conversation
-        # Fallback: try attribute
-        text = getattr(conversation, "last_user_text", None)
-        return str(text or "")
+
+        return str(getattr(conversation, "last_user_text", "") or "")
 
     def _retrieve_candidates(self, question: str) -> list[dict[str, Any]]:
         emb = self.knowledge_engine.iterative_defensive_emb(question)

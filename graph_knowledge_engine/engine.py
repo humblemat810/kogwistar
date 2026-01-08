@@ -27,7 +27,7 @@ engine = GraphKnowledgeEngine(
     verifier=VF.ensemble_default,          # or VF.coverage_only / VF.strict_with_min_span
 )
 """
-
+from .conversation_context import ContextItem, ConversationContextView, DroppedItem, ContextRenderer
 
 from typing import List, Optional, Dict, Any, Self, Tuple, TypeAlias, cast
 from .typing_interfaces import CollectionLike, EmbeddingFunctionLike
@@ -77,7 +77,11 @@ from typing import (Callable, Optional, Tuple, Any, Dict, Iterable, Sequence, Li
 import math
 from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction
 from chromadb.utils import embedding_functions
+
+from conversation_store import EngineConversationStore
+from conversation_context import ConversationContextBuilder, ConversationContextView
 from pydantic import BaseModel
+
 # Optional: RapidFuzz
 try:
     from rapidfuzz import fuzz
@@ -95,6 +99,8 @@ except Exception:
 
 NodeOrEdge: TypeAlias =  Node | Edge
 T = TypeVar("T", Node, Edge)
+# TT= TypeVar("TT", Type[Node], Type[Edge])
+TNode = TypeVar("TNode", bound=Node)
 from graphlib import TopologicalSorter
 def _refs_hash(refs) -> str:
     import hashlib, json
@@ -697,6 +703,204 @@ class CustomEmbeddingFunction(EmbeddingFunction):
 
     def __call__(self, documents_or_texts: Sequence[str]) -> Embeddings:
         return self._emb(documents_or_texts)
+
+class ContextSources:
+    def __init__(
+        self,
+        *,
+        conversation_engine: "GraphKnowledgeEngine",
+        tail_turns: int = 8,
+        include_summaries: bool = True,
+        include_memory_context: bool = True,
+        include_pinned_kg_refs: bool = True,
+    ) -> None:
+        self.engine = conversation_engine
+        self.tail_turns = tail_turns
+        self.include_summaries = include_summaries
+        self.include_memory_context = include_memory_context
+        self.include_pinned_kg_refs = include_pinned_kg_refs
+
+    def gather(self, *, conversation_id: str, purpose: str):
+        import json
+        from .conversation_context import ContextItem
+        from .models import ConversationNode
+
+        got = self.engine.node_collection.get(
+            where={"conversation_id": conversation_id},
+            include=["documents", "metadatas"],
+        )
+        ids = got.get("ids") or []
+        docs = got.get("documents") or []
+        metas = got.get("metadatas") or []
+
+        by_id: dict[str, ConversationNode] = {}
+        meta_by_id: dict[str, dict] = {}
+
+        for nid, doc, meta in zip(ids, docs, metas):
+            try:
+                base = json.loads(doc) if isinstance(doc, str) else {}
+            except Exception:
+                base = {}
+            if isinstance(meta, dict):
+                base["metadata"] = {**(base.get("metadata") or {}), **meta}
+            try:
+                n = ConversationNode.model_validate(base)
+            except Exception:
+                continue
+            by_id[str(nid)] = n
+            meta_by_id[str(nid)] = (base.get("metadata") or {})
+
+        def _entity_type(nid: str) -> str:
+            m = meta_by_id.get(nid) or {}
+            return str(m.get("entity_type") or m.get("type") or "")
+
+        def _turn_index(n: ConversationNode) -> int:
+            return int(getattr(n, "turn_index", -1) or -1)
+
+        # ---- tail turns ----
+        turn_ids: list[str] = []
+        for nid, n in by_id.items():
+            if _entity_type(nid) == "conversation_turn":
+                turn_ids.append(nid)
+        turn_ids.sort(key=lambda nid: _turn_index(by_id[nid]))
+        tail_turn_ids = turn_ids[-self.tail_turns :] if self.tail_turns > 0 else []
+
+        # ---- latest memory summary ----
+        head_summary_id: str | None = None
+        if self.include_summaries:
+            best_ix = -10**9
+            for nid, n in by_id.items():
+                if str(getattr(n, "type", "")) == "memory_summary":
+                    ix = _turn_index(n)
+                    if ix >= best_ix:
+                        best_ix = ix
+                        head_summary_id = nid
+
+        # ---- edges: memory_context + pinned KG refs ----
+        memctx_ids: set[str] = set()
+        ptr_ids: set[str] = set()
+        edge_ids_for_memctx: set[str] = set()
+        edge_ids_for_ptr: set[str] = set()
+
+        if (self.include_memory_context or self.include_pinned_kg_refs) and tail_turn_ids:
+            egot = self.engine.edge_collection.get(
+                where={"doc_id": f"conv:{conversation_id}"},
+                include=["metadatas"],
+            )
+            eids = egot.get("ids") or []
+            emetas = egot.get("metadatas") or []
+
+            for eid, em in zip(eids, emetas):
+                if not isinstance(em, dict):
+                    continue
+                rel = str(em.get("relation") or "")
+                try:
+                    sids = json.loads(em.get("source_ids") or "[]")
+                except Exception:
+                    sids = []
+                try:
+                    tids = json.loads(em.get("target_ids") or "[]")
+                except Exception:
+                    tids = []
+
+                if not sids or not tids:
+                    continue
+                src = str(sids[0])
+                if src not in tail_turn_ids:
+                    continue
+
+                if rel == "has_memory_context" and self.include_memory_context:
+                    for tid in tids:
+                        memctx_ids.add(str(tid))
+                    edge_ids_for_memctx.add(str(eid))
+                elif rel == "references" and self.include_pinned_kg_refs:
+                    for tid in tids:
+                        ptr_ids.add(str(tid))
+                    edge_ids_for_ptr.add(str(eid))
+
+        items: list[ContextItem] = []
+
+        # head summary
+        if head_summary_id and head_summary_id in by_id:
+            n = by_id[head_summary_id]
+            items.append(
+                ContextItem(
+                    kind="head_summary",
+                    text=str(getattr(n, "summary", "") or ""),
+                    node_id=head_summary_id,
+                    priority=20,
+                    pinned=True,
+                    max_tokens=800,
+                    source="summary",
+                )
+            )
+
+        # memory context
+        for mid in sorted(memctx_ids):
+            n = by_id.get(mid)
+            if n is None:
+                continue
+            items.append(
+                ContextItem(
+                    kind="memory_context",
+                    text=str(getattr(n, "summary", "") or ""),
+                    node_id=mid,
+                    edge_ids=tuple(sorted(edge_ids_for_memctx)),
+                    priority=30,
+                    pinned=True,
+                    max_tokens=600,
+                    source="memory",
+                    extra={"source_node_ids": (getattr(n, "properties", {}) or {}).get("source_node_ids")},
+                )
+            )
+
+        # pinned KG refs (pointer nodes)
+        for pid in sorted(ptr_ids):
+            n = by_id.get(pid)
+            if n is None:
+                continue
+            props = getattr(n, "properties", {}) or {}
+            refers_to = props.get("refers_to_id")
+            label = getattr(n, "label", "") or ""
+            summary = getattr(n, "summary", "") or ""
+            txt = f"{label}\n{summary}".strip()
+            items.append(
+                ContextItem(
+                    kind="pinned_kg_ref",
+                    text=txt,
+                    node_id=pid,
+                    edge_ids=tuple(sorted(edge_ids_for_ptr)),
+                    pointer_ids=(str(refers_to),) if isinstance(refers_to, str) and refers_to else (),
+                    priority=40,
+                    pinned=True,
+                    max_tokens=500,
+                    source="retrieved_knowledge",
+                    extra={"refers_to_id": refers_to},
+                )
+            )
+
+        # tail turns (chronological order); newest gets lowest priority value
+        for idx, tid in enumerate(tail_turn_ids):
+            n = by_id.get(tid)
+            if n is None:
+                continue
+            role = getattr(n, "role", None) or "user"
+            text = str(getattr(n, "summary", "") or "")
+            age_from_newest = max(0, (len(tail_turn_ids) - 1 - idx))
+            items.append(
+                ContextItem(
+                    kind="tail_turn",
+                    text=text,
+                    node_id=tid,
+                    priority=50 + age_from_newest,
+                    pinned=False,
+                    role=role,  # type: ignore
+                    source="history",
+                    extra={"turn_index": int(getattr(n, "turn_index", -1) or -1)},
+                )
+            )
+
+        return items
 @dataclass
 class GraphKnowledgeEngine:
     """High-level orchestration for extracting, storing, and adjudicating knowledge graph data."""
@@ -893,7 +1097,11 @@ class GraphKnowledgeEngine:
         
         got = self.edge_collection.query(query_embeddings=[query_embeddings], include=["documents", "embeddings", "metadatas"])
         return self.edges_from_query_result(got)
-    def nodes_from_single_or_id_query_result(self,got, node_type: Type[Node] = Node):
+    def nodes_from_single_or_id_query_result(
+            self,
+            got,
+            node_type: Type[TNode] = Node,
+        ) -> list[TNode]:
         docs: list[str] = cast(list[str], got.get("documents") or None)
         if docs is None:
             raise Exception("Missing docs")
@@ -3563,12 +3771,9 @@ class GraphKnowledgeEngine:
         )
         if not got["ids"]:
             return None
-        nodes = self.nodes_from_single_or_id_query_result(got)
+        
         # reconstruct
-        nodes = []
-        for doc in got["documents"] or []:
-            nodes.append(ConversationNode.model_validate_json(doc))
-
+        nodes: list[ConversationNode] = self.nodes_from_single_or_id_query_result(got, node_type=ConversationNode)
         
         if not nodes:
             return None
@@ -3762,12 +3967,134 @@ class GraphKnowledgeEngine:
     def get_conversation(self, conversation_id):
         pass
     @conversation_only
-    def get_system_prompt(self, conversation_id):
-        pass
+    def get_system_prompt(self, conversation_id: str) -> str:
+        return "You are a helpful assistant. Answer the user using the conversation and any provided evidence."
     @conversation_only    
     def get_response_model(self, conversation_id) -> Type[BaseModel]:
 
         return ConversationAIResponse
+    
+
+    @conversation_only
+    def get_conversation_view(
+        self,
+        *,
+        conversation_id: str,
+        user_id: str | None = None,
+        purpose: str = "answer",
+        budget_tokens: int = 6000,
+        tail_turns: int = 8,
+        include_summaries: bool = True,
+        include_memory_context: bool = True,
+        include_pinned_kg_refs: bool = True,
+    ):
+        
+
+        tokenizer = ApproxTokenizer()
+
+        sources = ContextSources(
+            conversation_engine=self,
+            tail_turns=tail_turns,
+            include_summaries=include_summaries,
+            include_memory_context=include_memory_context,
+            include_pinned_kg_refs=include_pinned_kg_refs,
+        )
+        items: list[ContextItem] = sources.gather(conversation_id=conversation_id, purpose=purpose)
+
+        # Add system prompt as pinned item
+        sys = self.get_system_prompt(conversation_id)
+        items.insert(
+            0,
+            ContextItem(
+                kind="system_prompt",
+                text=str(sys or ""),
+                node_id=None,
+                priority=0,
+                pinned=True,
+                max_tokens=900,
+                source="system",
+            ),
+        )
+
+        # Price items
+        priced: list[ContextItem] = []
+        for it in items:
+            cost = tokenizer.count_tokens(it.text or "")
+            priced.append(ContextItem(**{**it.__dict__, "token_cost": cost}))
+
+        # Packing policy
+        pinned_non_turn = [i for i in priced if i.pinned and i.kind != "tail_turn"]
+        tail_turn_items = [i for i in priced if i.kind == "tail_turn"]
+
+        pinned_non_turn.sort(key=lambda x: x.priority)
+        tail_turn_items.sort(key=lambda x: x.priority)  # newest first (lowest priority)
+
+        kept: list[ContextItem] = []
+        dropped: list[DroppedItem] = []
+        used = 0
+
+        def _try_add(it: ContextItem) -> bool:
+            nonlocal used
+            if used + it.token_cost <= budget_tokens:
+                kept.append(it)
+                used += it.token_cost
+                return True
+
+            # compress if allowed
+            if it.max_tokens is not None and it.max_tokens < it.token_cost:
+                new_text = it.text[: max(1, it.max_tokens * 4)]  # cheap truncation placeholder
+                new_cost = tokenizer.count_tokens(new_text)
+                if used + new_cost <= budget_tokens:
+                    kept.append(ContextItem(**{**it.__dict__, "text": new_text, "token_cost": new_cost}))
+                    used += new_cost
+                    dropped.append(DroppedItem(kind=it.kind, node_id=it.node_id, reason="compressed", token_cost=it.token_cost))
+                    return True
+
+            dropped.append(DroppedItem(kind=it.kind, node_id=it.node_id, reason="over_budget", token_cost=it.token_cost))
+            return False
+
+        for it in pinned_non_turn:
+            _try_add(it)
+
+        for it in tail_turn_items:
+            _try_add(it)
+
+        # Restore chronological order for turns
+        non_turn_kept = [i for i in kept if i.kind != "tail_turn"]
+        turn_kept: list[ContextItem] = [i for i in kept if i.kind == "tail_turn"]
+        turn_kept.sort(key=lambda x: int((x.extra or {}).get("turn_index", 10**9)))
+        kept = non_turn_kept + turn_kept
+
+        renderer = ContextRenderer()
+        messages = renderer.render(kept, purpose=purpose)
+
+        included_node_ids = tuple(sorted({i.node_id for i in kept if i.node_id}))
+        included_edge_ids = tuple(sorted({e for i in kept for e in (i.edge_ids or ())}))
+        included_pointer_ids = tuple(sorted({p for i in kept for p in (i.pointer_ids or ()) if p}))
+
+        head_summary_ids = tuple(i.node_id for i in kept if i.kind == "head_summary" and i.node_id)
+        tail_turn_ids_out = tuple(i.node_id for i in kept if i.kind == "tail_turn" and i.node_id)
+        active_memory_context_ids = tuple(i.node_id for i in kept if i.kind == "memory_context" and i.node_id)
+        pinned_kg_ref_ids = tuple(i.node_id for i in kept if i.kind == "pinned_kg_ref" and i.node_id)
+
+        view = ConversationContextView(
+            conversation_id=conversation_id,
+            purpose=purpose,
+            messages=tuple(messages),
+            token_budget=budget_tokens,
+            tokens_used=used,
+            items=tuple(kept),
+            dropped=tuple(dropped),
+            included_node_ids=included_node_ids,
+            included_edge_ids=included_edge_ids,
+            included_pointer_ids=included_pointer_ids,
+            head_summary_ids=head_summary_ids,
+            tail_turn_ids=tail_turn_ids_out,
+            active_memory_context_ids=active_memory_context_ids,
+            pinned_kg_ref_ids=pinned_kg_ref_ids,
+        )
+        # view.assert_valid()
+        return view
     @conversation_only
     def get_ai_conversation_response(self, conversation_id, ref_knowledge_engine, model_names = None)->ConversationAIResponse:
         """Return an agentic response for the given conversation.
@@ -3935,3 +4262,8 @@ class GraphKnowledgeEngine:
             target_edge_ids=[]
         )
         self.add_edge(sum_edge)
+class ApproxTokenizer:
+    def count_tokens(self, text: str) -> int:
+        # very cheap approximation; stable for budget enforcement
+        return max(1, len(text) // 4)
+    
