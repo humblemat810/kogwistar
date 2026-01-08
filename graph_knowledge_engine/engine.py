@@ -901,6 +901,52 @@ class ContextSources:
             )
 
         return items
+from conversation_context import ContextMessage  # your dataclass
+
+@dataclass
+class EngineConversationStore:
+    engine: "GraphKnowledgeEngine"
+
+    def get_turns(self, conversation_id: str) -> List[ContextMessage]:
+        # 1) fetch all conversation nodes for this conversation_id
+        # NOTE: adapt include/where to your Chroma wrapper API
+        res = self.engine.node_collection.get(
+            where={"conversation_id": conversation_id},
+            include=["metadatas", "documents", "ids"],  # or whatever your wrapper uses
+        )
+
+        # 2) materialize + sort
+        turns: list[ConversationNode] = []
+        for nid, meta, doc in zip(res["ids"], res["metadatas"], res.get("documents", [None]*len(res["ids"]))):
+            # You might store content in doc, or in summary/properties.
+            # If your storage puts text in `documents`, use doc.
+            # Otherwise, parse from meta/properties as you do elsewhere.
+            node = ConversationNode(
+                id=nid,
+                metadata=meta,
+                # other required fields for Node/GraphEntityRefBase if needed…
+                # If ConversationNode requires label/type/summary/mentions, you may need to pull those too.
+            )
+            turns.append(node)
+
+        turns.sort(key=lambda n: (n.turn_index or 0))
+
+        # 3) convert to ContextMessage
+        out: list[ContextMessage] = []
+        for n in turns:
+            # Choose ONE canonical “text for LLM” location:
+            # - if you stored it in summary: use n.summary
+            # - if you stored it in metadata/properties/documents: use that
+            text = getattr(n, "summary", None) or ""
+            out.append(
+                ContextMessage(
+                    role=(n.role or "user"),     # role is on node via ConversationRoleMixin
+                    content=text,
+                    node_id=n.id,
+                    source="history",
+                )
+            )
+        return out
 @dataclass
 class GraphKnowledgeEngine:
     """High-level orchestration for extracting, storing, and adjudicating knowledge graph data."""
@@ -3817,152 +3863,50 @@ class GraphKnowledgeEngine:
     @conversation_only
     def add_conversation_turn(self, user_id: str, conversation_id: str, turn_id: str, mem_id: str, role: str, content: str, ref_knowledge_engine: GraphKnowledgeEngine, filtering_callback: Callable[..., tuple[list[str], str]] = candiate_filtering_callback,
                               max_retrieval_level: int = 2, summary_char_threshold = 12000) -> Dict[str, Any]:
+        """Stable facade: delegate to the KGE-native conversation orchestrator.
+
+        The orchestration policy (retrieve/filter/pin/answer/summarize) lives outside engine.py.
+        The engine keeps storage/mutation primitives and a stable public API.
         """
-        1. Ingest turn as ConversationNode.
-        2. Retrieve KG nodes (level <= 2).
-        3. LLM Filter.
-        4. Create Reference nodes + edges.
-        5. Link to previous turn.
-        6. Summarize if needed.
-        """
-        if self.kg_graph_type != "conversation":
-            raise Exception("conversation only allowed to be on canva engine")
-        if ref_knowledge_engine is None:
-            raise Exception("GraphKnowledgeEngine must be specified")
-        
-        # Self is conversation knowledge engine
-        # 1. Previous State
-        prev_node = self._get_conversation_tail(conversation_id)
-        if prev_node is not None:
-            new_index = (prev_node.turn_index + 1) if prev_node and prev_node.turn_index is not None else 0
-            prev_char_distance_from_last_summary = prev_node.metadata['char_distance_from_last_summary'] or 0
-            prev_turn_distance_from_last_summary = prev_node.metadata['turn_distance_from_last_summary'] or 0
-        else:
-            new_index = 0
-            prev_char_distance_from_last_summary = 0
-            prev_turn_distance_from_last_summary = -1
-        # 2. Create Node for this turn
-        turn_node_id = turn_id or str(uuid.uuid4())
-        
-        # Self-referential span for provenance
-        # We treat the content string as the "document"
-        self_span = Span(
-            collection_page_url=f"conversation/{conversation_id}",
-            document_page_url=f"conversation/{conversation_id}#{turn_node_id}",
-            doc_id=f"conv:{conversation_id}", # Virtual doc ID
-            insertion_method="conversation_turn",
-            page_number=1,
-            start_char=0,
-            end_char=len(content),
-            excerpt=content,
-            context_before="",
-            context_after="",
-            chunk_id = None,
-            source_cluster_id = None,
-            verification=MentionVerification(method="human", is_verified=True, score=1.0, notes="verbatim user/system input")
-        )
-        
-        turn_node = ConversationNode(
+        orch = self._get_orchestrator(ref_knowledge_engine=ref_knowledge_engine)
+        return orch.add_conversation_turn(
             user_id=user_id,
-            id=turn_node_id,
-            label=f"Turn {new_index} ({role})",
-            type="entity",
-            doc_id = turn_node_id,
-            summary=content,
-            role=role, # type: ignore
-            turn_index=new_index,
             conversation_id=conversation_id,
-            mentions=[Grounding(spans=[self_span])],
-            properties={},
-            metadata={"entity_type" : "conversation_turn",
-                      "level_from_root": 0, "char_distance_from_last_summary": prev_char_distance_from_last_summary + len(content), 
-                      "turn_distance_from_last_summary" : prev_turn_distance_from_last_summary + 1 },
-            domain_id=None,
-            canonical_entity_id=None,
+            turn_id=turn_id,
+            mem_id=mem_id,
+            role=role,
+            content=content,
+            filtering_callback=filtering_callback,
+            max_retrieval_level=max_retrieval_level,
+            summary_char_threshold=summary_char_threshold,
         )
-        prev_char_distance_from_last_summary += len(content)
-        prev_turn_distance_from_last_summary += 1
-        
-        emb_text0 = f"{role}: {content}"
-        embedding =  self.iterative_defensive_emb(emb_text0)
-        
-        if embedding is None:
-            raise Exception("uncalculatable embeddings")
-        turn_node.embedding = embedding
-        # 3. Persist Turn Node (must happen before pinning edges from this turn)
-        self.add_node(turn_node, None)
 
-        # 4. Retrieval orchestration (memory + KG) + pin selected KG refs
-        from .retrieval_orchestrator import RetrievalOrchestrator, RetrievalOutcome
+    # -----------------
+    # Orchestrator hook
+    # -----------------
+    def _get_orchestrator(self, *, ref_knowledge_engine: "GraphKnowledgeEngine"):
+        """Lazily construct an orchestrator.
 
-        retrieval = RetrievalOrchestrator(
+        NOTE: we key the cache by (id(ref_knowledge_engine), id(self.llm)) so callers can swap
+        knowledge engines or LLMs in tests without global side effects.
+        """
+        key = (id(ref_knowledge_engine), id(self.llm))
+        cache = getattr(self, "_orch_cache", None)
+        if cache is None:
+            cache = {}
+            setattr(self, "_orch_cache", cache)
+        if key in cache:
+            return cache[key]
+
+        from .conversation_orchestrator import ConversationOrchestrator
+
+        orch = ConversationOrchestrator(
             conversation_engine=self,
             ref_knowledge_engine=ref_knowledge_engine,
             llm=self.llm,
-            memory_filtering_callback=filtering_callback,   # can split later
-            knowledge_filtering_callback=filtering_callback,
-            max_retrieval_level=max_retrieval_level,
         )
-
-        outcome: RetrievalOutcome = retrieval.run(
-            conversation_id=conversation_id,
-            user_id=user_id,
-            mem_id=mem_id,
-            user_text=content,
-            query_embedding=turn_node.embedding,
-            turn_node_id=turn_node.id,
-            turn_index=new_index,
-            self_span=self_span,
-            prev_char_distance_from_last_summary=prev_char_distance_from_last_summary,
-            prev_turn_distance_from_last_summary=prev_turn_distance_from_last_summary,
-        )
-
-        # 5. Link to Previous Turn
-        if prev_node:
-            seq_edge = ConversationEdge(
-                id=str(uuid.uuid4()),
-                source_ids=[prev_node.id],
-                target_ids=[turn_node.id],
-                relation="next_turn",
-                label="next_turn",
-                type="relationship",
-                summary="Sequential flow",
-                doc_id=f"conv:{conversation_id}",
-                mentions=[Grounding(spans=[self_span])], # Weak provenance
-                domain_id=None,
-                canonical_entity_id=None,
-                properties={'entity-type': "conversation_edge"},
-                embedding=None,
-                metadata={},
-                source_edge_ids=[],
-                target_edge_ids=[]
-            )
-            self.add_edge(seq_edge)
-        response = self.get_ai_conversation_response(conversation_id, ref_knowledge_engine=ref_knowledge_engine)
-        # 6. Check for Summarization (Deterministic Trigger)
-        # Check unsummarized nodes count
-        # Simplistic: Count nodes since last "summarizes" target? 
-        # For now, let's just count total nodes and summarize every 5.
-        if new_index > 0 and (prev_turn_distance_from_last_summary % 5 == 0 or 
-                              prev_char_distance_from_last_summary > summary_char_threshold or
-                              response.llm_decision_need_summary) :
-            self._summarize_conversation_batch(conversation_id, new_index)
-
-        return {
-            "turn_node_id": turn_node.id,
-            "turn_index": new_index,
-
-            # KG selection result
-            "relevant_kg_node_ids": outcome.knowledge.selected_kg_node_ids,
-
-            # What was actually pinned into the canvas this turn
-            "pinned_kg_pointer_node_ids": outcome.pinned_kg_pointer_node_ids,
-            "pinned_kg_edge_ids": outcome.pinned_kg_edge_ids,
-
-            # Memory context artifact pinned this turn (if any)
-            "memory_context_node_id": outcome.memory_context_node_id,
-            "memory_context_edge_ids": outcome.memory_context_edge_ids,
-        }
+        cache[key] = orch
+        return orch
     @conversation_only    
     def get_conversation(self, conversation_id):
         pass
@@ -4097,53 +4041,13 @@ class GraphKnowledgeEngine:
         return view
     @conversation_only
     def get_ai_conversation_response(self, conversation_id, ref_knowledge_engine, model_names = None)->ConversationAIResponse:
-        """Return an agentic response for the given conversation.
+        """Answer-only entry point.
 
-        This delegates to :class:`graph_knowledge_engine.agentic_answering.AgenticAnsweringAgent`.
-        The orchestration logic is intentionally kept out of engine.py so it can evolve
-        independently.
-
-        Notes:
-        - For now, model selection is best-effort: we try the provided model_names in order.
-        - The returned payload is a small dict describing the run + the created assistant node.
+        This stays as a stable public method, but delegates orchestration to the
+        ConversationOrchestrator so policy/control-flow can evolve outside engine.py.
         """
-
-        from .agentic_answering import AgenticAnsweringAgent, AgentConfig
-
-        model_names = model_names or [
-            "gemini-3-flash-preview",
-            "gemini-2.5-flash",
-            "gemini-2.5-pro",
-            "gemini-2.5-flash-lite",
-        ]
-
-        last_err: Exception | None = None
-        for model_name in model_names:
-            try:
-                llm = self.get_llm(model_name) or self.llm
-                agent = AgenticAnsweringAgent(
-                    conversation_engine=self,
-                    knowledge_engine=ref_knowledge_engine,
-                    llm=llm,
-                    config=AgentConfig(),
-                )
-                out = agent.answer(conversation_id=conversation_id)
-                
-                if isinstance(out, ConversationAIResponse):
-                    return out
-                if isinstance(out, dict):
-                    return ConversationAIResponse(
-                        text=str(out.get('assistant_text') or out.get('text') or ''),
-                        llm_decision_need_summary=bool(out.get('llm_decision_need_summary', False)),
-                        used_kg_node_ids=list(out.get('used_kg_node_ids') or out.get('used_knowledge_node_ids') or []),
-                        projected_conversation_node_ids=list(out.get('projected_node_ids') or out.get('projected_conversation_node_ids') or []),
-                        meta={'raw': out},
-                    )
-                return ConversationAIResponse(text=str(out))
-            except Exception as e:
-                last_err = e
-                continue
-        raise Exception(f"tried all models; last error: {last_err}")
+        orch = self._get_orchestrator(ref_knowledge_engine=ref_knowledge_engine)
+        return orch.answer_only(conversation_id=conversation_id, model_names=model_names)
     def get_llm(self, model_name = None) -> BaseChatModel:
         # will implement other model names later
         return self.llm
