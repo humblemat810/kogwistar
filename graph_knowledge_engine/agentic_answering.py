@@ -23,6 +23,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 import json
+import re
 import time
 from typing import Any, Iterable, Optional, Sequence, Type
 
@@ -70,12 +71,54 @@ class AnswerModel(BaseModel):
     text: str = Field(..., description="Final assistant response")
 
 
+class SpanRef(BaseModel):
+    """Reference to a specific span within a node's materialized mentions/spans.
+
+    Indices are ephemeral and only guaranteed valid for the evidence pack used in the same run.
+    """
+    source_node_id: str = Field(..., description="Knowledge node id that owns the mention/span")
+    mention_index: int = Field(..., ge=0, description="Index into mentions list")
+    span_index: int = Field(..., ge=0, description="Index into spans list within the mention")
+
+
+class ClaimWithCitations(BaseModel):
+    """A single atomic claim with supporting citations."""
+    claim: str = Field(..., description="A single factual claim or assertion")
+    citations: list[SpanRef] = Field(default_factory=list, description="Supporting span references")
+
+
+class AnswerWithCitations(BaseModel):
+    """Answer text plus claim-level span citations."""
+    text: str = Field(..., description="Final assistant response")
+    claims: list[ClaimWithCitations] = Field(default_factory=list, description="Key claims with citations")
+
+
+class AnswerEvaluation(BaseModel):
+    """Post-answer evaluation for sufficiency and whether more info is needed."""
+    is_sufficient: bool = Field(..., description="Whether current evidence is sufficient to answer")
+    needs_more_info: bool = Field(..., description="Whether we should retrieve/expand and answer again")
+    missing_aspects: list[str] = Field(default_factory=list, description="What is missing if more info is needed")
+    notes: str = Field("", description="Optional short rationale")
+
 @dataclass
 class AgentConfig:
+    # Retrieval
     max_candidates: int = 20
     max_used: int = 8
     max_retrieval_level: int = 4
 
+    # Control flow
+    max_iter: int = 2  # bounded answering loop
+
+    # Evidence selection strategy
+    evidence_selector: str = "llm"  # "llm" or "bm25"
+
+    # Materialization depth for OCR / structured docs (policy may escalate shallow->deep)
+    materialize_depth: str = "shallow"  # "shallow" or "deep"
+
+    # Budget knobs for materialization (kept simple; your resolvers can interpret these)
+    max_chars_per_item: int = 900
+    max_total_chars: int = 12000
 from .engine import GraphKnowledgeEngine
 class AgenticAnsweringAgent:
     """Agent that answers within a conversation canvas using a separate knowledge engine."""
@@ -96,10 +139,17 @@ class AgenticAnsweringAgent:
     # ----------------------------
     # Public entrypoint
     # ----------------------------
-    def answer(self, *, conversation_id: str, user_id = None) -> dict[str, Any]:
-        """Run one agentic answering pass.
+    def answer(self, *, conversation_id: str, user_id=None) -> dict[str, Any]:
+        """Run bounded agentic answering with evidence selection + optional citation picking.
 
-        Returns a dict with keys: run_node_id, assistant_turn_node_id, used_node_ids.
+        Returns a dict with keys (best-effort):
+          - run_node_id
+          - assistant_turn_node_id
+          - assistant_text
+          - used_node_ids
+          - claim_citations (optional, claim-level SpanRef lists)
+          - evaluation (optional)
+          - projected_pointer_ids
         """
         # 1) Fetch conversation state (engine-specific hooks)
         view = self.conversation_engine.get_conversation_view(
@@ -109,30 +159,85 @@ class AgenticAnsweringAgent:
             budget_tokens=6000,
         )
         messages = view.messages
-        last_user_turn = self._get_last_user_text(messages)
+        question = self._get_last_user_text(messages)
         system_prompt = self.conversation_engine.get_system_prompt(conversation_id)
-        # last_user_turn = self._get_last_user_text(conversation)
-        if not last_user_turn:
+        if not question:
             raise ValueError("No user message found in conversation")
 
         # 2) Create run anchor in canvas
         run_id = f"run_{int(time.time()*1000)}"
         run_node_id = self._ensure_run_anchor(conversation_id=conversation_id, run_id=run_id)
 
-        # 3) Retrieve candidate KG nodes (bounded)
-        candidates = self._retrieve_candidates(last_user_turn)
+        # Policy knobs that can escalate across iterations
+        max_candidates = self.config.max_candidates
+        materialize_depth = self.config.materialize_depth
 
-        # 4) LLM selects used evidence
-        selection = self._select_used_evidence(
-            system_prompt=system_prompt,
-            question=last_user_turn,
-            candidates=candidates,
-        )
+        last_eval: AnswerEvaluation | None = None
+        last_answer: AnswerWithCitations | None = None
+        last_used: list[str] = []
+        last_projected: list[str] = []
 
-        # 5) Project used evidence to canvas (idempotent)
-        used_node_ids = selection.used_node_ids[: self.config.max_used]
-        projected_pointer_ids = []
-        for kid in used_node_ids:
+        for it in range(max(1, self.config.max_iter)):
+            # 3) Retrieve candidate KG nodes (bounded)
+            candidates = self._retrieve_candidates(question)[:max_candidates]
+
+            # 4) Select used evidence (LLM or cheap fallback)
+            if (self.config.evidence_selector or "llm").lower() == "bm25":
+                selection = self._select_used_evidence_bm25(question=question, candidates=candidates)
+            else:
+                selection = self._select_used_evidence(
+                    system_prompt=system_prompt,
+                    question=question,
+                    candidates=candidates,
+                )
+
+            used_node_ids = selection.used_node_ids[: self.config.max_used]
+            last_used = used_node_ids
+
+            # 5) Materialize evidence pack for answering + citation picking
+            evidence_pack = self._materialize_evidence_pack(
+                node_ids=used_node_ids,
+                depth=materialize_depth,
+                max_chars_per_item=self.config.max_chars_per_item,
+                max_total_chars=self.config.max_total_chars,
+            )
+
+            # 6) Generate answer with claim-level citations (SpanRef indices into evidence_pack)
+            ans = self._generate_answer_with_citations(
+                system_prompt=system_prompt,
+                question=question,
+                evidence_pack=evidence_pack,
+                used_node_ids=used_node_ids,
+            )
+            # 6b) Validate / repair citations (bounded)
+            ans = self._validate_or_repair_citations(
+                system_prompt=system_prompt,
+                question=question,
+                evidence_pack=evidence_pack,
+                used_node_ids=used_node_ids,
+                answer=ans,
+            )
+            last_answer = ans
+
+            # 7) Evaluate sufficiency / need-more-info
+            last_eval = self._evaluate_answer(
+                system_prompt=system_prompt,
+                question=question,
+                answer_text=ans.text,
+                used_node_ids=used_node_ids,
+                evidence_pack=evidence_pack,
+            )
+
+            if not last_eval.needs_more_info or last_eval.is_sufficient:
+                break
+
+            # Escalation: deepen materialization + widen candidates for next iter
+            materialize_depth = "deep"
+            max_candidates = min(max_candidates * 2, 200)
+
+        # 8) Project used evidence to canvas (idempotent) using final selection
+        projected_pointer_ids: list[str] = []
+        for kid in last_used:
             pid = self._project_kg_node(
                 conversation_id=conversation_id,
                 run_node_id=run_node_id,
@@ -140,37 +245,33 @@ class AgenticAnsweringAgent:
                 provenance_span=Span.from_dummy_for_conversation(),
             )
             projected_pointer_ids.append(pid)
+        last_projected = projected_pointer_ids
 
-        # 6) Generate final answer (LLM)
-        answer_text = self._generate_answer(
-            system_prompt=system_prompt,
-            question=last_user_turn,
-            used_nodes=used_node_ids,
-        )
-
-        # 7) Persist assistant response as conversation node and link to run
-        assistant_turn_node_id = self._add_assistant_turn(
+        # 9) Persist assistant response as conversation node and link to run
+        assistant_text = (last_answer.text if last_answer else "")
+        assistant_turn_node_id, assistant_turn_node = self._add_assistant_turn(
             conversation_id=conversation_id,
-            content=answer_text,
+            content=assistant_text,
             provenance_span=Span.from_dummy_for_conversation(),
         )
         self._link_run_to_response(
             conversation_id=conversation_id,
             run_node_id=run_node_id,
             response_node_id=assistant_turn_node_id,
-            provenance_span=Span.from_dummy_for_conversation(),
+            used_node_ids=last_used,
+            provenance_span = Span.from_dummy_for_conversation()
         )
 
         return {
             "run_node_id": run_node_id,
             "assistant_turn_node_id": assistant_turn_node_id,
-            "used_node_ids": used_node_ids,
-            "projected_pointer_ids": projected_pointer_ids,
+            "assistant_text": assistant_text,
+            "used_node_ids": last_used,
+            "projected_pointer_ids": last_projected,
+            "claim_citations": (last_answer.model_dump() if last_answer else {}),
+            "evaluation": (last_eval.model_dump() if last_eval else {}),
         }
 
-    # ----------------------------
-    # Internal helpers
-    # ----------------------------
     def _get_last_user_text(self, conversation: Any) -> str:
         if conversation is None:
             return ""
@@ -246,6 +347,282 @@ Select at most {max_used} node ids.
         cand_ids = {c["id"] for c in candidates}
         sel.used_node_ids = [i for i in sel.used_node_ids if i in cand_ids][: self.config.max_used]
         return sel
+
+
+    def _select_used_evidence_bm25(self, *, question: str, candidates: Sequence[dict[str, Any]]) -> EvidenceSelection:
+        """Cheap lexical fallback evidence selector (token overlap scoring).
+
+        Note: This is intentionally simple; it is meant as a cost-saving fallback.
+        """
+        q_tokens = {t for t in re.findall(r"[A-Za-z0-9_]+", question.lower()) if len(t) >= 3}
+        scored: list[tuple[float, dict[str, Any]]] = []
+        for c in candidates:
+            text = f"{c.get('label','')} {c.get('summary','')}".lower()
+            c_tokens = {t for t in re.findall(r"[A-Za-z0-9_]+", text) if len(t) >= 3}
+            if not c_tokens:
+                score = 0.0
+            else:
+                overlap = len(q_tokens & c_tokens)
+                score = overlap / (len(q_tokens) + 1e-6)
+            scored.append((score, c))
+        scored.sort(key=lambda x: x[0], reverse=True)
+        used = [str(c["id"]) for s, c in scored if s > 0][: self.config.max_used]
+        return EvidenceSelection(used_node_ids=used, used_edge_ids=[], reasoning="bm25_fallback_token_overlap")
+
+    def _materialize_evidence_pack(
+        self,
+        *,
+        node_ids: list[str],
+        depth: str,
+        max_chars_per_item: int,
+        max_total_chars: int,
+    ) -> dict[str, Any]:
+        """Build an evidence pack that includes mentions/spans candidates for citation picking.
+
+        This does NOT change any schema in storage; it only prepares a compact per-run view.
+        """
+        pack: dict[str, Any] = {"nodes": []}
+        total = 0
+
+        for nid in node_ids:
+            got = self.knowledge_engine.node_collection.get(ids=[nid], include=["documents", "metadatas"])
+            docs = (got.get("documents") or [None])[0]
+            metas = (got.get("metadatas") or [{}])
+            meta = metas[0] if metas else {}
+
+            label = meta.get("label") or meta.get("title") or ""
+            summary = meta.get("summary") or ""
+
+            # Heuristic materialization:
+            # - shallow: prefer summary
+            # - deep: include doc text if available, else summary
+            if (depth or "shallow") == "deep" and isinstance(docs, str) and docs.strip():
+                text = docs.strip()
+            else:
+                text = summary.strip() or (docs.strip() if isinstance(docs, str) else "")
+
+            if not text:
+                text = ""
+
+            text = text[:max_chars_per_item]
+            if total + len(text) > max_total_chars:
+                break
+            total += len(text)
+
+            # Mentions/spans candidates:
+            # If meta already includes mentions/spans, prefer them. Otherwise create a single mention/span candidate
+            mentions = meta.get("mentions")
+            if isinstance(mentions, list) and mentions:
+                # trust existing structure; keep only excerpt-like fields for LLM
+                norm_mentions = []
+                for mi, mobj in enumerate(mentions):
+                    spans = []
+                    for si, sp in enumerate((mobj or {}).get("spans") or []):
+                        if isinstance(sp, dict):
+                            spans.append(
+                                {
+                                    "excerpt": (sp.get("excerpt") or sp.get("verbatim_text") or sp.get("text") or "")[:max_chars_per_item],
+                                    "doc_id": sp.get("doc_id") or meta.get("doc_id"),
+                                    "page_number": sp.get("page_number") or sp.get("page"),
+                                    "document_page_url": sp.get("document_page_url") or meta.get("document_page_url"),
+                                }
+                            )
+                    if spans:
+                        norm_mentions.append({"spans": spans})
+                if norm_mentions:
+                    mentions = norm_mentions
+                else:
+                    mentions = None
+            else:
+                mentions = None
+
+            if not mentions:
+                # single synthetic mention/span candidate using the materialized text
+                mentions = [{"spans": [{"excerpt": text, "doc_id": meta.get("doc_id"), "page_number": meta.get("page_number"), "document_page_url": meta.get("document_page_url")}]}]
+
+            pack["nodes"].append(
+                {
+                    "node_id": nid,
+                    "label": label,
+                    "summary": summary[:300],
+                    "text": text,
+                    "mentions": mentions,
+                }
+            )
+        return pack
+
+    def _generate_answer_with_citations(
+        self,
+        *,
+        system_prompt: str,
+        question: str,
+        evidence_pack: dict[str, Any],
+        used_node_ids: list[str],
+    ) -> AnswerWithCitations:
+        """Ask the LLM to answer AND cite exact mention/span indices from the provided evidence pack."""
+        # Build a compact, indexable representation for the LLM
+        lines: list[str] = []
+        for n in evidence_pack.get("nodes", []):
+            nid = n["node_id"]
+            lines.append(f"NODE {nid} | {n.get('label','')}")
+            for mi, m in enumerate(n.get("mentions") or []):
+                for si, sp in enumerate((m or {}).get("spans") or []):
+                    ex = (sp.get("excerpt") or "").replace("\n", " ").strip()
+                    if ex:
+                        ex = ex[:240]
+                    lines.append(f"  M{mi} S{si}: {ex}")
+        evidence_text = "\n".join(lines)
+
+        prompt = ChatPromptTemplate.from_messages(
+            [
+                ("system", system_prompt or "You are a helpful assistant."),
+                (
+                    "human",
+                    """Answer the user using ONLY the provided evidence when making factual claims.
+
+User question:
+{question}
+
+Evidence pack (cite using SpanRef: source_node_id + mention_index + span_index):
+{evidence}
+
+Requirements:
+- Provide a helpful answer in `text`.
+- Provide `claims` as a list of key factual claims (bullet-sized).
+- For each claim, include 1-3 citations pointing to specific spans (M index + S index) from the evidence pack.
+- If the evidence is insufficient, write the best possible answer and make claims conservative.
+
+Return JSON that matches the provided schema.
+""",
+                ),
+            ]
+        )
+        chain = prompt | self.llm.with_structured_output(AnswerWithCitations)
+        return chain.invoke({"question": question, "evidence": evidence_text})
+
+    def _validate_or_repair_citations(
+        self,
+        *,
+        system_prompt: str,
+        question: str,
+        evidence_pack: dict[str, Any],
+        used_node_ids: list[str],
+        answer: AnswerWithCitations,
+    ) -> AnswerWithCitations:
+        """Validate citations; if invalid, ask LLM to repair once."""
+        def is_valid_ref(r: SpanRef) -> bool:
+            if r.source_node_id not in used_node_ids:
+                return False
+            node = next((n for n in evidence_pack.get("nodes", []) if n.get("node_id") == r.source_node_id), None)
+            if not node:
+                return False
+            mentions = node.get("mentions") or []
+            if r.mention_index < 0 or r.mention_index >= len(mentions):
+                return False
+            spans = (mentions[r.mention_index] or {}).get("spans") or []
+            if r.span_index < 0 or r.span_index >= len(spans):
+                return False
+            ex = (spans[r.span_index] or {}).get("excerpt") or ""
+            return bool(str(ex).strip())
+
+        bad = False
+        for c in answer.claims:
+            for r in c.citations:
+                if not is_valid_ref(r):
+                    bad = True
+                    break
+            if bad:
+                break
+
+        if not bad:
+            return answer
+
+        # Repair prompt: give the evidence again and ask to re-emit citations only
+        lines: list[str] = []
+        for n in evidence_pack.get("nodes", []):
+            nid = n["node_id"]
+            lines.append(f"NODE {nid} | {n.get('label','')}")
+            for mi, m in enumerate(n.get("mentions") or []):
+                for si, sp in enumerate((m or {}).get("spans") or []):
+                    ex = (sp.get("excerpt") or "").replace("\n", " ").strip()
+                    if ex:
+                        ex = ex[:240]
+                    lines.append(f"  M{mi} S{si}: {ex}")
+        evidence_text = "\n".join(lines)
+
+        repair_prompt = ChatPromptTemplate.from_messages(
+            [
+                ("system", system_prompt or "You are a helpful assistant."),
+                (
+                    "human",
+                    """Your previous citations contained invalid references.
+
+User question:
+{question}
+
+Evidence pack:
+{evidence}
+
+Previous answer text:
+{answer_text}
+
+Please return a corrected AnswerWithCitations JSON.
+Rules:
+- Keep `text` as close as possible.
+- Fix `claims[].citations` so every SpanRef points to an existing NODE + M index + S index shown above.
+- Each claim should have at least 1 valid citation if possible; otherwise leave citations empty for that claim.
+""",
+                ),
+            ]
+        )
+        chain = repair_prompt | self.llm.with_structured_output(AnswerWithCitations)
+        repaired: AnswerWithCitations = chain.invoke({"question": question, "evidence": evidence_text, "answer_text": answer.text})
+        return repaired
+
+    def _evaluate_answer(
+        self,
+        *,
+        system_prompt: str,
+        question: str,
+        answer_text: str,
+        used_node_ids: list[str],
+        evidence_pack: dict[str, Any],
+    ) -> AnswerEvaluation:
+        """Coarse sufficiency check. This is intentionally light in v0."""
+        # Provide compact evidence summaries only
+        ev_lines = []
+        for n in evidence_pack.get("nodes", []):
+            ev_lines.append(f"- {n.get('node_id')}: {n.get('label','')} | {n.get('summary','')}")
+        ev_text = "\n".join(ev_lines)
+
+        prompt = ChatPromptTemplate.from_messages(
+            [
+                ("system", system_prompt or "You are a careful evaluator."),
+                (
+                    "human",
+                    """Decide whether the provided evidence is sufficient to answer the user question.
+
+User question:
+{question}
+
+Answer:
+{answer}
+
+Used node ids:
+{used_ids}
+
+Evidence summaries:
+{evidence}
+
+Return JSON per schema. Be conservative: if key details are missing, set needs_more_info=true.
+""",
+                ),
+            ]
+        )
+        chain = prompt | self.llm.with_structured_output(AnswerEvaluation)
+        return chain.invoke(
+            {"question": question, "answer": answer_text, "used_ids": ", ".join(used_node_ids), "evidence": ev_text}
+        )
 
     def _generate_answer(self, *, system_prompt: str, question: str, used_nodes: list[str]) -> str:
         # Pull minimal summaries (lazy, bounded)
@@ -373,7 +750,7 @@ Evidence (id | label | summary):
             self.conversation_engine.add_edge(edge)
         return pid
 
-    def _add_assistant_turn(self, *, conversation_id: str, content: str, provenance_span: Span) -> str:
+    def _add_assistant_turn(self, *, conversation_id: str, content: str, provenance_span: Span) -> tuple[str, Node]:
         # Minimal assistant turn node
         nid = pointer_id(scope=f"conv:{conversation_id}", pointer_kind="turn", target_kind="assistant", target_id=str(int(time.time()*1000)))
         node = ConversationNode(
@@ -391,14 +768,22 @@ Evidence (id | label | summary):
             canonical_entity_id=None,
         )
         self.conversation_engine.add_node(node)
-        return nid
+        return nid, node
 
-    def _link_run_to_response(self, *, conversation_id: str, run_node_id: str, response_node_id: str, provenance_span: Span) -> None:
+    def _link_run_to_response(self, *, conversation_id: str, run_node_id: str, response_node_id: str, used_node_ids : list[str], provenance_span: Span | list[Span]) -> None:
         scope = f"conv:{conversation_id}"
         eid = edge_id(scope=scope, rel="generated", src=run_node_id, dst=response_node_id)
         ex = self.conversation_engine.edge_collection.get(ids=[eid])
         if ex.get("ids"):
             return
+        
+        if type (provenance_span) is Span:
+            provenance_span_coerced = [provenance_span]
+        elif type (provenance_span) is list:
+            provenance_span_coerced = provenance_span
+        else:
+            raise Exception("Unreacheable")
+        # provenance_span_coerced: list[Span] = list[provenance_span] if type(provenance_span) is not list else provenance_span
         edge = ConversationEdge(
             id=eid,
             source_ids=[run_node_id],
@@ -408,10 +793,10 @@ Evidence (id | label | summary):
             type="relationship",
             summary="Agent run generated assistant response",
             doc_id=f"conv:{conversation_id}",
-            mentions=[Grounding(spans=[provenance_span])],
+            mentions=[Grounding(spans=provenance_span_coerced)],
             domain_id=None,
             canonical_entity_id=None,
-            properties={"entity-type": "conversation_edge"},
+            properties={"entity-type": "conversation_edge", "used_node_ids" : used_node_ids},
             embedding=None,
             metadata={},
             source_edge_ids=[],

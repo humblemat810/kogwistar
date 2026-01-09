@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from langchain_core.language_models import BaseChatModel
+
+from .models import RetrievalResult
 """_summary_
 
 Raises:
@@ -48,7 +50,6 @@ from .models import (
     PureChromaNode,
     PureChromaEdge,
     PureGraph,
-    RetrievalResult,
     Span,
     LLMGraphExtraction,
     LLMNode,

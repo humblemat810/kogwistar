@@ -22,12 +22,13 @@ from .models import (
     ConversationEdge,
     ConversationNode,
     Grounding,
+    KnowledgeRetrievalResult,
     MentionVerification,
     Span,
 )
 from .tool_runner import ToolRunner
 from .memory_retriever import MemoryRetriever, MemoryPinResult, MemoryRetrievalResult
-from .knowledge_retriever import KnowledgeRetriever, KnowledgeRetrievalResult
+from .knowledge_retriever import KnowledgeRetriever
 
 
 @dataclass
@@ -55,7 +56,7 @@ class OrchestratorState:
     # answer
     answer: ConversationAIResponse | None = None
 
-from knowledge_retriever import RetrievalResult
+from graph_knowledge_engine.models import RetrievalResult
 class ConversationOrchestrator:
     """KGE-native orchestrator.
 

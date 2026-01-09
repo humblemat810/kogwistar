@@ -1,8 +1,7 @@
 
 import logging
 import os
-
-from graph_knowledge_engine.knowledge_retriever import RetrievalResult
+from dataclasses import dataclass
 if True:
     logger = logging.getLogger(__name__)
     logger.addHandler(logging.NullHandler())
@@ -222,6 +221,7 @@ class Domain(BaseModel):
 # -------------------------
 # Core graph entities
 # -------------------------
+from typing import Mapping
 class GraphEntityBase(ModeSlicingMixin, BaseModel):
     label: str = Field(..., description="Human-readable label for the node or edge")
     type: Literal['entity', 'relationship', 'reference_pointer'] = Field(..., description="Type of entity")
@@ -230,7 +230,7 @@ class GraphEntityBase(ModeSlicingMixin, BaseModel):
     canonical_entity_id: Optional[str] = Field(
         None, description="Canonical ID to link equivalents (e.g., Wikidata QID or internal UUID)"
     )
-    properties: Optional[Dict[str, JsonPrimitive| list[JsonPrimitive] | dict[str, JsonPrimitive]]] = Field(
+    properties: Optional[Mapping[str, JsonPrimitive| list[JsonPrimitive] | Mapping[str, JsonPrimitive] ]] = Field(
         None, description="Optional flat properties (JSON primitives only)"
     )
 
@@ -595,6 +595,12 @@ class LLMGraphExtraction(ModeSlicingMixin, BaseModel):
             for r in ne['references']:
                 r['insertion_method'] = insertion_method
         return cls.model_validate(dumped, context = {"insertion_method" : insertion_method})
+
+
+@dataclass
+class RetrievalResult:
+    nodes: List[Node]
+    edges: List[Edge]
 class FilteringResponse(BaseModel):
     reasoning: str = Field(description = "workspace for reasoning relevance filtering")
     relevant_ids: RetrievalResult = Field(..., description = "a list of relevant node and edgeids")
@@ -652,7 +658,7 @@ class AdjudicationCandidate(BaseModel):
         "same_entity",
         description="Question key, e.g., 'same_entity' for nodes or 'same_relation' for edges"
     )
-from dataclasses import dataclass
+
 @dataclass(frozen=True)
 class Chunk:
     doc_id: str
@@ -984,5 +990,12 @@ class SplitPage(OCRClusterResponseBc):
             c_return['printed_page_number'] = self.printed_page_number
             c_return['text'] = texts
             return c_return
+
+
+@dataclass
+class KnowledgeRetrievalResult:
+    candidate: RetrievalResult
+    selected: RetrievalResult | None
+    reasoning: str
 
     

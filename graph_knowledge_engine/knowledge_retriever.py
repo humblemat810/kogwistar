@@ -1,26 +1,15 @@
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass
 from typing import Callable, List, Optional, Tuple
 
 from langchain_core.language_models import BaseChatModel
 
 from graph_knowledge_engine.engine import GraphKnowledgeEngine
+from graph_knowledge_engine.models import KnowledgeRetrievalResult, RetrievalResult
 
-from .models import ConversationNode, ConversationEdge, Edge, Grounding, Node, Span
+from .models import ConversationNode, ConversationEdge, Grounding, Span
 
-
-@dataclass
-class KnowledgeRetrievalResult:
-    candidate: RetrievalResult
-    selected: RetrievalResult | None
-    reasoning: str
-
-@dataclass
-class RetrievalResult:
-    nodes: List[Node]
-    edges: List[Edge]
 
 class KnowledgeRetriever:
     """

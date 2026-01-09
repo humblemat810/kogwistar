@@ -6,8 +6,8 @@ from typing import Callable, List, Optional, Tuple
 from langchain_core.language_models import BaseChatModel
 
 from .memory_retriever import MemoryRetriever, MemoryRetrievalResult, MemoryPinResult
-from .knowledge_retriever import KnowledgeRetriever, KnowledgeRetrievalResult
-from .models import Span
+from .knowledge_retriever import KnowledgeRetriever
+from .models import KnowledgeRetrievalResult, Span
 
 
 @dataclass

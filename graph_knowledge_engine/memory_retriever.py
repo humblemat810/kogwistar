@@ -6,7 +6,7 @@ from typing import Callable, List, Optional, Tuple
 
 from langchain_core.language_models import BaseChatModel
 
-from graph_knowledge_engine.knowledge_retriever import RetrievalResult
+from graph_knowledge_engine.models import RetrievalResult
 
 from .models import ConversationNode, ConversationEdge, Grounding, Span
 from .engine import GraphKnowledgeEngine
