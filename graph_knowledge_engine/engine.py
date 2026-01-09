@@ -48,6 +48,7 @@ from .models import (
     PureChromaNode,
     PureChromaEdge,
     PureGraph,
+    RetrievalResult,
     Span,
     LLMGraphExtraction,
     LLMNode,
@@ -78,8 +79,6 @@ import math
 from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction
 from chromadb.utils import embedding_functions
 
-from conversation_store import EngineConversationStore
-from conversation_context import ConversationContextBuilder, ConversationContextView
 from pydantic import BaseModel
 
 # Optional: RapidFuzz
@@ -563,7 +562,9 @@ def base62_to_uuid(s: str) -> str:
 from .models import FilteringResponse
 # from typing import Type, TypeVar
 
-def candiate_filtering_callback(llm: BaseChatModel, conversation_content, cand_list_str, candidate_ids, context_text):
+def candiate_filtering_callback(llm: BaseChatModel, conversation_content, 
+                                cand_node_list_str, cand_edge_list_str, 
+                                candidate_node_ids, candidate_edge_ids, context_text) -> Tuple[RetrievalResult | str]:
     max_retry = 3
     err_messages = []
     for _retry in range(max_retry):
@@ -572,7 +573,8 @@ def candiate_filtering_callback(llm: BaseChatModel, conversation_content, cand_l
             ("system", "You are a helpful assistant filtering knowledge graph nodes."),
             ("human", f"User Input: {conversation_content}\n\n" + 
                         (f"Context: {context_text}\n\n" if context_text else "") +
-                        f"Candidate Nodes:\n{cand_list_str}\n\n"
+                        f"Candidate Nodes:\n{cand_node_list_str}\n\n"
+                        f"Candidate Edges:\n{cand_edge_list_str}\n\n"
                         # "Return a JSON list of IDs for nodes that are RELEVANT to the user input. "
                         # "Example: ['id1', 'id2']. Return empty list if none."
                         )
@@ -592,10 +594,14 @@ def candiate_filtering_callback(llm: BaseChatModel, conversation_content, cand_l
         parsed: BaseModel | None
         if parsed := resp2.get("parsed"):
             parsed2: FilteringResponse = cast(FilteringResponse, parsed)
-            not_candidate = set(parsed2.relevant_ids).difference(set(candidate_ids))
+            not_node_candidate = set(parsed2.relevant_ids.nodes).difference(set(candidate_node_ids))
+            not_edge_candidate = set(parsed2.relevant_ids.edges).difference(set(candidate_edge_ids))
             # set(parsed2.relevant_ids).issubset(set(candidate_ids ))
-            if len(not_candidate) > 0:
-                err_messages.append(("system", str(Exception(f"Non candidates ids returned {not_candidate}"))))
+            if not_node_candidate or not_edge_candidate:
+                if not_node_candidate:
+                    err_messages.append(("system", str(Exception(f"Non candidates ids returned {not_node_candidate}"))))
+                if not_edge_candidate:
+                    err_messages.append(("system", str(Exception(f"Non candidates ids returned {not_node_candidate}"))))
                 continue
                 # raise Exception(f"Non candidates ids returned {not_candidate}")
             else:
@@ -874,7 +880,7 @@ class ContextSources:
                     priority=40,
                     pinned=True,
                     max_tokens=500,
-                    source="retrieved_knowledge",
+                    source="kg_ref",
                     extra={"refers_to_id": refers_to},
                 )
             )
@@ -895,13 +901,13 @@ class ContextSources:
                     priority=50 + age_from_newest,
                     pinned=False,
                     role=role,  # type: ignore
-                    source="history",
+                    source="history_turn",
                     extra={"turn_index": int(getattr(n, "turn_index", -1) or -1)},
                 )
             )
 
         return items
-from conversation_context import ContextMessage  # your dataclass
+from .conversation_context import ContextMessage  # your dataclass
 
 @dataclass
 class EngineConversationStore:
@@ -943,7 +949,7 @@ class EngineConversationStore:
                     role=(n.role or "user"),     # role is on node via ConversationRoleMixin
                     content=text,
                     node_id=n.id,
-                    source="history",
+                    source="history_turn",
                 )
             )
         return out
@@ -1120,7 +1126,7 @@ class GraphKnowledgeEngine:
         else:
             node_type = Node
         return self.nodes_from_single_or_id_query_result(got, node_type = node_type)
-    def query_nodes(self, query = None, query_embeddings = None):
+    def query_nodes(self,*args, query = None, query_embeddings = None,  **kwargs):
         if query_embeddings is not None:
             if query is not None:
                 raise Exception("either query or query embedding but not both specified.")
@@ -1130,9 +1136,11 @@ class GraphKnowledgeEngine:
             else:
                 raise ValueError("either query or query embeddings must be specified")
         
-        got = self.node_collection.query(query_embeddings=[query_embeddings], include=["documents", "embeddings", "metadatas"])
+        got = self.node_collection.query(query_embeddings=[query_embeddings], *args, 
+                                        #  include=["documents", "embeddings", "metadatas"], 
+                                         **kwargs)
         return self.nodes_from_query_result(got)
-    def query_edges(self, query, query_embeddings):
+    def query_edges(self,*args, query = None, query_embeddings = None,  **kwargs):
         if query_embeddings is not None:
             pass
         else:
@@ -1141,7 +1149,9 @@ class GraphKnowledgeEngine:
             else:
                 raise ValueError("either query or query embeddings must be specified")
         
-        got = self.edge_collection.query(query_embeddings=[query_embeddings], include=["documents", "embeddings", "metadatas"])
+        got = self.edge_collection.query(query_embeddings=[query_embeddings], *args, 
+                                        #  include=["documents", "embeddings", "metadatas"], 
+                                         **kwargs)
         return self.edges_from_query_result(got)
     def nodes_from_single_or_id_query_result(
             self,
@@ -3861,8 +3871,11 @@ class GraphKnowledgeEngine:
             raise Exception("cannot get embedding after most defensive embedding strategy.")
         return embedding
     @conversation_only
-    def add_conversation_turn(self, user_id: str, conversation_id: str, turn_id: str, mem_id: str, role: str, content: str, ref_knowledge_engine: GraphKnowledgeEngine, filtering_callback: Callable[..., tuple[list[str], str]] = candiate_filtering_callback,
-                              max_retrieval_level: int = 2, summary_char_threshold = 12000) -> Dict[str, Any]:
+    def add_conversation_turn(self, user_id: str, conversation_id: str, turn_id: str, mem_id: 
+                            str, role: str, content: str, 
+                            ref_knowledge_engine: GraphKnowledgeEngine, 
+                            filtering_callback: Callable[..., tuple[RetrievalResult, str]] = candiate_filtering_callback,
+                            max_retrieval_level: int = 2, summary_char_threshold = 12000) -> Dict[str, Any]:
         """Stable facade: delegate to the KGE-native conversation orchestrator.
 
         The orchestration policy (retrieve/filter/pin/answer/summarize) lives outside engine.py.

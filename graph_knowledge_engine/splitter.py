@@ -52,7 +52,7 @@ def split_doc_deterministic(
 
     n = len(content)
     if n == 0:
-        return [Chunk(doc_id=doc_id, start_char=0, end_char=0, text="")]
+        return [Chunk(doc_id=doc_id, start_char=0, end_char=1, text="")]
 
     # Some common “good” boundary characters across languages
     punct = set(".!?;:。！？；：")  # extend if you want

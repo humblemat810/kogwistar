@@ -15,6 +15,8 @@ from typing import Any, Callable, Dict, List, Optional
 
 from langchain_core.language_models import BaseChatModel
 
+from server_mcp import GraphKnowledgeEngine
+
 from .models import (
     ConversationAIResponse,
     ConversationEdge,
@@ -53,7 +55,7 @@ class OrchestratorState:
     # answer
     answer: ConversationAIResponse | None = None
 
-
+from knowledge_retriever import RetrievalResult
 class ConversationOrchestrator:
     """KGE-native orchestrator.
 
@@ -70,8 +72,8 @@ class ConversationOrchestrator:
         ref_knowledge_engine: Any,
         llm: BaseChatModel,
     ) -> None:
-        self.conversation_engine = conversation_engine
-        self.ref_knowledge_engine = ref_knowledge_engine
+        self.conversation_engine: GraphKnowledgeEngine = conversation_engine
+        self.ref_knowledge_engine: GraphKnowledgeEngine = ref_knowledge_engine
         self.llm = llm
         self.tool_runner = ToolRunner(conversation_engine=conversation_engine)
 
@@ -87,7 +89,7 @@ class ConversationOrchestrator:
         mem_id: str,
         role: str,
         content: str,
-        filtering_callback: Callable[..., tuple[list[str], str]],
+        filtering_callback: Callable[..., tuple[RetrievalResult, str]],
         max_retrieval_level: int = 2,
         summary_char_threshold: int = 12000,
     ) -> Dict[str, Any]:
@@ -211,7 +213,7 @@ class ConversationOrchestrator:
         )
 
         # memory retrieve tool
-        mem = self.tool_runner.run_tool(
+        mem: MemoryRetrievalResult = self.tool_runner.run_tool(
             conversation_id=conversation_id,
             user_id=user_id,
             turn_node_id=turn_node_id,
@@ -232,7 +234,7 @@ class ConversationOrchestrator:
         st.memory = mem
 
         # KG retrieve tool
-        kg = self.tool_runner.run_tool(
+        kg: KnowledgeRetrievalResult = self.tool_runner.run_tool(
             conversation_id=conversation_id,
             user_id=user_id,
             turn_node_id=turn_node_id,
@@ -254,7 +256,7 @@ class ConversationOrchestrator:
 
         # pin memory (not a tool call; it's a graph mutation derived from the tool outputs)
         memory_pin: Optional[MemoryPinResult] = None
-        if mem.selected_node_ids and mem.memory_context_text:
+        if mem.selected and mem.memory_context_text:
             memory_pin = mem_retriever.pin_selected(
                 user_id=user_id,
                 current_conversation_id=conversation_id,
@@ -262,21 +264,23 @@ class ConversationOrchestrator:
                 mem_id=mem_id,
                 turn_index=new_index,
                 self_span=self_span,
-                selected_source_node_ids=mem.selected_node_ids,
+                selected_memory=mem.selected,
                 memory_context_text=mem.memory_context_text,
             )
+        pinned_ptrs = []
+        pinned_edges = []
         st.memory_pin = memory_pin
-
-        pinned_ptrs, pinned_edges = kg_retriever.pin_selected(
-            user_id=user_id,
-            conversation_id=conversation_id,
-            turn_node_id=turn_node_id,
-            turn_index=new_index,
-            self_span=self_span,
-            selected_kg_node_ids=kg.selected_kg_node_ids,
-        )
-        st.pinned_kg_pointer_node_ids = pinned_ptrs
-        st.pinned_kg_edge_ids = pinned_edges
+        if kg.selected:
+            pinned_ptrs, pinned_edges = kg_retriever.pin_selected(
+                user_id=user_id,
+                conversation_id=conversation_id,
+                turn_node_id=turn_node_id,
+                turn_index=new_index,
+                self_span=self_span,
+                selected_knowledge=kg.selected,
+            )
+            st.pinned_kg_pointer_node_ids = pinned_ptrs
+            st.pinned_kg_edge_ids = pinned_edges
 
         # 4) Answer (answer-only facade); response persistence happens inside the agent today.
         response = self.answer_only(conversation_id=conversation_id)
@@ -295,11 +299,12 @@ class ConversationOrchestrator:
         return {
             "turn_node_id": turn_node_id,
             "turn_index": new_index,
-            "relevant_kg_node_ids": kg.selected_kg_node_ids,
+            "relevant_kg_node_ids": [i.id for i in (kg.selected.nodes if kg.selected else [])],
+            "relevant_kg_edge_ids": [i.id for i in (kg.selected.nodes if kg.selected else [])],
             "pinned_kg_pointer_node_ids": pinned_ptrs,
             "pinned_kg_edge_ids": pinned_edges,
-            "memory_context_node_id": memory_pin.memory_context_node_id if memory_pin else None,
-            "memory_context_edge_ids": memory_pin.pinned_edge_ids if memory_pin else [],
+            "memory_context_node_id": memory_pin.memory_context_node if memory_pin else None,
+            "memory_context_edge_ids": memory_pin.pinned_edges if memory_pin else [],
         }
 
     def answer_only(self, *, conversation_id: str, model_names: Optional[list[str]] = None) -> ConversationAIResponse:

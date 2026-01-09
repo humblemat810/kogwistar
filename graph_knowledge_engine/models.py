@@ -1,6 +1,8 @@
 
 import logging
 import os
+
+from graph_knowledge_engine.knowledge_retriever import RetrievalResult
 if True:
     logger = logging.getLogger(__name__)
     logger.addHandler(logging.NullHandler())
@@ -124,7 +126,7 @@ class Span(ModeSlicingMixin, BaseModel):
             document_page_url=f"document_collection/{Document.from_dummy().id}",
             doc_id=Document.from_dummy().id,
             insertion_method="system",
-            page_number=1, start_char=0, end_char=0,
+            page_number=1, start_char=0, end_char=1,
             excerpt="", context_before="", context_after="",
             chunk_id = None,
             source_cluster_id = None,
@@ -222,7 +224,7 @@ class Domain(BaseModel):
 # -------------------------
 class GraphEntityBase(ModeSlicingMixin, BaseModel):
     label: str = Field(..., description="Human-readable label for the node or edge")
-    type: Literal['entity', 'relationship'] = Field(..., description="Type of entity")
+    type: Literal['entity', 'relationship', 'reference_pointer'] = Field(..., description="Type of entity")
     summary: str = Field(..., description="Summary of the node/relationship")
     domain_id: Optional[str] = Field(None, description="Domain ID this entity belongs to")
     canonical_entity_id: Optional[str] = Field(
@@ -595,7 +597,7 @@ class LLMGraphExtraction(ModeSlicingMixin, BaseModel):
         return cls.model_validate(dumped, context = {"insertion_method" : insertion_method})
 class FilteringResponse(BaseModel):
     reasoning: str = Field(description = "workspace for reasoning relevance filtering")
-    relevant_ids: list[str] = Field([], description = "a list of relevant node ids")
+    relevant_ids: RetrievalResult = Field(..., description = "a list of relevant node and edgeids")
 # -------------------------
 # Adjudication structures
 # -------------------------

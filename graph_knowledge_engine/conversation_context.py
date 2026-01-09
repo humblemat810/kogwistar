@@ -160,7 +160,6 @@ class ConversationContextView(BaseModel):
 
 class ContextRenderer:
     def render(self, items, *, purpose: str):
-        from .conversation_context import ContextMessage
 
         system_prompt_parts: list[str] = []
         head_summaries: list[str] = []

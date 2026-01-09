@@ -99,7 +99,7 @@ class RetrievalOrchestrator:
         
         # 3) pin memory_context into current canvas (if any selection)
         memory_pin: Optional[MemoryPinResult] = None
-        if mem.selected_node_ids and mem.memory_context_text:
+        if mem.selected and mem.memory_context_text:
             memory_pin = self.memory_retriever.pin_selected(                
                 user_id=user_id,
                 current_conversation_id=conversation_id,
@@ -107,7 +107,7 @@ class RetrievalOrchestrator:
                 mem_id=mem_id,
                 turn_index=turn_index,
                 self_span=self_span,
-                selected_source_node_ids=mem.selected_node_ids,
+                selected_memory=mem.selected,
                 memory_context_text=mem.memory_context_text,
             )
 
@@ -121,7 +121,7 @@ class RetrievalOrchestrator:
             turn_node_id=turn_node_id,
             turn_index=turn_index,
             self_span=self_span,
-            selected_kg_node_ids=kg.selected_kg_node_ids,
+            selected_knowledge=kg.selected_kg_node_ids,
         )
 
         return RetrievalOutcome(

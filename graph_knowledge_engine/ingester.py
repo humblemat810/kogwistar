@@ -650,7 +650,7 @@ class BaseDocumentGraphIngestor:
             target_ids=[tgt],
             type="relationship",
             summary=f"{relation}: {src} → {tgt}", source_edge_ids = [], target_edge_ids = [],
-            mentions=[self._ref(doc_id, GroundingSpan(start_page=1, end_page=1, start_char=0, end_char=0), excerpt=None)],
+            mentions=[self._ref(doc_id, GroundingSpan(start_page=1, end_page=1, start_char=0, end_char=1), excerpt=None)],
             doc_id=doc_id,
         )
         # reverse (distinct relation name)
@@ -662,7 +662,7 @@ class BaseDocumentGraphIngestor:
             target_ids=[src],
             type="relationship",
             summary=f"{reverse_relation}: {tgt} → {src}", source_edge_ids = [], target_edge_ids = [],
-            mentions=[self._ref(doc_id, GroundingSpan(start_page=1, end_page=1, start_char=0, end_char=0), excerpt=None)],
+            mentions=[self._ref(doc_id, GroundingSpan(start_page=1, end_page=1, start_char=0, end_char=1), excerpt=None)],
             doc_id=doc_id,
         )
         if not self.engine._exists_edge(e1.id):
