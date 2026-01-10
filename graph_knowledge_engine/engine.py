@@ -836,6 +836,7 @@ class ContextSources:
             items.append(
                 ContextItem(
                     kind="head_summary",
+                    role="system",
                     text=str(getattr(n, "summary", "") or ""),
                     node_id=head_summary_id,
                     priority=20,
@@ -853,13 +854,14 @@ class ContextSources:
             items.append(
                 ContextItem(
                     kind="memory_context",
+                    role="system",
                     text=str(getattr(n, "summary", "") or ""),
                     node_id=mid,
                     edge_ids=tuple(sorted(edge_ids_for_memctx)),
                     priority=30,
                     pinned=True,
                     max_tokens=600,
-                    source="memory",
+                    source="memory_pinned",
                     extra={"source_node_ids": (getattr(n, "properties", {}) or {}).get("source_node_ids")},
                 )
             )
@@ -876,6 +878,7 @@ class ContextSources:
             txt = f"{label}\n{summary}".strip()
             items.append(
                 ContextItem(
+                    role="system",
                     kind="pinned_kg_ref",
                     text=txt,
                     node_id=pid,
@@ -890,11 +893,12 @@ class ContextSources:
             )
 
         # tail turns (chronological order); newest gets lowest priority value
+        from conversation_context import Role
         for idx, tid in enumerate(tail_turn_ids):
             n = by_id.get(tid)
             if n is None:
                 continue
-            role = getattr(n, "role", None) or "user"
+            role : Role= getattr(n, "role", None) or "user"
             text = str(getattr(n, "summary", "") or "")
             age_from_newest = max(0, (len(tail_turn_ids) - 1 - idx))
             items.append(

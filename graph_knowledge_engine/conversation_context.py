@@ -1,8 +1,11 @@
 from __future__ import annotations
 from dataclasses import dataclass, field
-from typing import Any, Literal, Self, Sequence
+from typing import Any, Literal, Self, Sequence, TypeAlias 
 
-Role = Literal["system", "user", "assistant", "tool"]
+Role: TypeAlias =  Literal["system", "user", "assistant", "tool"]
+# system include kg graph, internal summary, filtering thinking, reasoning from llm call
+# user include user input
+
 Source = Literal[
     "live_turn",
     "history_turn",
@@ -12,6 +15,7 @@ Source = Literal[
     "kg_ref",
     "kg_ref_pinned",
     "system",
+    "summary",
 ]
 
 ItemKind = Literal[
@@ -51,7 +55,11 @@ class ContextItem:
     """
     kind: ItemKind
     text: str
+    # Conversation
+    role : Role
+    
     extra: dict|None = None
+    
     # provenance / tracing
     node_id: str | None = None
     edge_ids: tuple[str, ...] = ()
