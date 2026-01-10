@@ -30,7 +30,7 @@ engine = GraphKnowledgeEngine(
 )
 """
 from .conversation_context import ContextItem, ConversationContextView, DroppedItem, ContextRenderer
-
+import numpy as np
 from typing import List, Optional, Dict, Any, Self, Tuple, TypeAlias, cast
 from .typing_interfaces import CollectionLike, EmbeddingFunctionLike
 import chromadb
@@ -560,12 +560,14 @@ def base62_to_uuid(s: str) -> str:
     hex128 = f"{n:032x}"
     return f"{hex128[0:8]}-{hex128[8:12]}-{hex128[12:16]}-{hex128[16:20]}-{hex128[20:]}"
 
-from .models import FilteringResponse
+from .models import FilteringResponse, FilteringResult
 # from typing import Type, TypeVar
 
 def candiate_filtering_callback(llm: BaseChatModel, conversation_content, 
                                 cand_node_list_str, cand_edge_list_str, 
-                                candidate_node_ids, candidate_edge_ids, context_text) -> Tuple[RetrievalResult | str]:
+                                candidate_node_ids: list[str], candidate_edge_ids: list[str], context_text):
+    # candidate_node_ids = [i.id for i in candidates.nodes]
+    # candidate_edge_ids = [i.id for i in candidates.edges]
     max_retry = 3
     err_messages = []
     for _retry in range(max_retry):
@@ -576,7 +578,7 @@ def candiate_filtering_callback(llm: BaseChatModel, conversation_content,
                         (f"Context: {context_text}\n\n" if context_text else "") +
                         f"Candidate Nodes:\n{cand_node_list_str}\n\n"
                         f"Candidate Edges:\n{cand_edge_list_str}\n\n"
-                        # "Return a JSON list of IDs for nodes that are RELEVANT to the user input. "
+                        "Return a JSON list of IDs for nodes and edges that are RELEVANT to the user input. "
                         # "Example: ['id1', 'id2']. Return empty list if none."
                         )
         ]+ err_messages)
@@ -595,8 +597,8 @@ def candiate_filtering_callback(llm: BaseChatModel, conversation_content,
         parsed: BaseModel | None
         if parsed := resp2.get("parsed"):
             parsed2: FilteringResponse = cast(FilteringResponse, parsed)
-            not_node_candidate = set(parsed2.relevant_ids.nodes).difference(set(candidate_node_ids))
-            not_edge_candidate = set(parsed2.relevant_ids.edges).difference(set(candidate_edge_ids))
+            not_node_candidate = set(parsed2.relevant_ids.node_ids).difference(set(candidate_node_ids))
+            not_edge_candidate = set(parsed2.relevant_ids.edge_ids).difference(set(candidate_edge_ids))
             # set(parsed2.relevant_ids).issubset(set(candidate_ids ))
             if not_node_candidate or not_edge_candidate:
                 if not_node_candidate:
@@ -607,7 +609,7 @@ def candiate_filtering_callback(llm: BaseChatModel, conversation_content,
                 # raise Exception(f"Non candidates ids returned {not_candidate}")
             else:
                 
-                return parsed2.relevant_ids, parsed2.reasoning
+                return FilteringResult(node_ids = parsed2.relevant_ids.node_ids, edge_ids = parsed2.relevant_ids.edge_ids), parsed2.reasoning
         else:
             raise Exception("Unreachable")
     raise Exception("Exhaused all models")
@@ -1127,7 +1129,10 @@ class GraphKnowledgeEngine:
         else:
             node_type = Node
         return self.nodes_from_single_or_id_query_result(got, node_type = node_type)
-    def query_nodes(self,*args, query = None, query_embeddings = None,  **kwargs):
+    def query_nodes(self,*args, query = None, 
+            query_embeddings = None,  
+            include=["documents", "embeddings", "metadatas"],
+            node_type: Type[Node] = Node, **kwargs):
         if query_embeddings is not None:
             if query is not None:
                 raise Exception("either query or query embedding but not both specified.")
@@ -1137,11 +1142,13 @@ class GraphKnowledgeEngine:
             else:
                 raise ValueError("either query or query embeddings must be specified")
         
-        got = self.node_collection.query(query_embeddings=[query_embeddings], *args, 
-                                        #  include=["documents", "embeddings", "metadatas"], 
-                                         **kwargs)
-        return self.nodes_from_query_result(got)
-    def query_edges(self,*args, query = None, query_embeddings = None,  **kwargs):
+        got = self.node_collection.query(query_embeddings=query_embeddings, *args, 
+                                        include=include, **kwargs)
+        
+        return self.nodes_from_query_result(got, node_type = node_type)
+    def query_edges(self,*args, query = None, query_embeddings = None, 
+                    include=["documents", "embeddings", "metadatas"],
+                    edge_type: Type[Edge] = Edge, **kwargs):
         if query_embeddings is not None:
             pass
         else:
@@ -1150,16 +1157,17 @@ class GraphKnowledgeEngine:
             else:
                 raise ValueError("either query or query embeddings must be specified")
         
-        got = self.edge_collection.query(query_embeddings=[query_embeddings], *args, 
-                                        #  include=["documents", "embeddings", "metadatas"], 
-                                         **kwargs)
-        return self.edges_from_query_result(got)
+        got = self.edge_collection.query(query_embeddings=query_embeddings, *args, 
+                                        include=include, **kwargs)
+        
+        return self.edges_from_query_result(got, edge_type=edge_type)
     def nodes_from_single_or_id_query_result(
             self,
             got,
             node_type: Type[TNode] = Node,
         ) -> list[TNode]:
-        docs: list[str] = cast(list[str], got.get("documents") or None)
+        docs: list[str] = cast(list[str], got.get("documents"))
+        
         if docs is None:
             raise Exception("Missing docs")
         
@@ -1168,12 +1176,12 @@ class GraphKnowledgeEngine:
             raise Exception("Missing Embeddings")
 
         embs = cast(list[list[float]], embs)
-        metadatas = cast(list[dict[str, Any]], got.get("metadatas") or None)
+        metadatas = cast(list[dict[str, Any]], got.get("metadatas"))
         if metadatas is None:
             raise Exception("Missing Metadatas")
-
+        
         res = []
-        import numpy as np
+        
         for d, emb, metadata in zip(docs, embs, metadatas):
             if type(emb) is list:
                 pass
@@ -1184,7 +1192,8 @@ class GraphKnowledgeEngine:
             res.append(node_type.model_validate(json_d))
         return res
     def edges_from_single_or_id_query_result(self, got, edge_type: Type[Edge] = Edge):
-        docs: list[str] = cast(list[str], got.get("documents") or None)
+        docs: list[str] = cast(list[str], got.get("documents"))
+        
         if docs is None:
             raise Exception("Missing docs")
         
@@ -1193,7 +1202,7 @@ class GraphKnowledgeEngine:
             raise Exception("Missing Embeddings")
 
         embs = cast(list[list[float]], embs)
-        metadatas = cast(list[dict[str, Any]], got.get("metadatas") or None)
+        metadatas = cast(list[dict[str, Any]], got.get("metadatas"))
         if metadatas is None:
             raise Exception("Missing Metadatas")
         
@@ -1217,7 +1226,7 @@ class GraphKnowledgeEngine:
                                              gots.get("metadatas") if gots.get("metadatas") is not None else [[]]*n_doc):
                 docs: list[str] = cast(list[str], docs)
                 got = {"documents": docs, "embeddings": embs, "metadatas": metadatas}
-                single_res = self.nodes_from_single_or_id_query_result(got)
+                single_res = self.nodes_from_single_or_id_query_result(got, node_type = node_type)
                 res.append(single_res)
         return res
     def edges_from_query_result(self, gots, edge_type: Type[Edge] = Edge):
@@ -1229,7 +1238,7 @@ class GraphKnowledgeEngine:
                                              gots.get("metadatas") if gots.get("metadatas") is not None else [[]]*n_doc):
                 docs: list[str] = cast(list[str], docs)
                 got = {"documents": docs, "embeddings": embs, "metadatas": metadatas}
-                single_res = self.edges_from_single_or_id_query_result(got)
+                single_res = self.edges_from_single_or_id_query_result(got, edge_type = edge_type)
                 res.append(single_res)
         return res
     def get_edges(self, ids: Sequence[str]) -> List[Edge]:

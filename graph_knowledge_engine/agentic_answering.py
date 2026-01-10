@@ -391,7 +391,7 @@ Select at most {max_used} node ids.
             meta = metas[0] if metas else {}
 
             label = meta.get("label") or meta.get("title") or ""
-            summary = meta.get("summary") or ""
+            summary: str = str(meta.get("summary") or "")
 
             # Heuristic materialization:
             # - shallow: prefer summary

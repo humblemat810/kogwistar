@@ -601,9 +601,15 @@ class LLMGraphExtraction(ModeSlicingMixin, BaseModel):
 class RetrievalResult:
     nodes: List[Node]
     edges: List[Edge]
+
+
+class FilteringResult(BaseModel):
+    node_ids: list[str] = Field(description = 'list of relevant node ids')
+    edge_ids: list[str] = Field(description = 'list of relevant edge ids')
+
 class FilteringResponse(BaseModel):
     reasoning: str = Field(description = "workspace for reasoning relevance filtering")
-    relevant_ids: RetrievalResult = Field(..., description = "a list of relevant node and edgeids")
+    relevant_ids: FilteringResult = Field(..., description = "a list of relevant node and edge ids")
 # -------------------------
 # Adjudication structures
 # -------------------------

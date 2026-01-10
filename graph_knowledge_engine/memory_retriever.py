@@ -2,13 +2,12 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from typing import Callable, List, Optional, Tuple
+from typing import Callable, List, Optional, Tuple, cast
 
 from langchain_core.language_models import BaseChatModel
 
 from graph_knowledge_engine.models import RetrievalResult
-
-from .models import ConversationNode, ConversationEdge, Grounding, Span
+from .models import ConversationNode, ConversationEdge, Grounding, Span, Node, Edge, FilteringResult
 from .engine import GraphKnowledgeEngine
 
 @dataclass
@@ -19,7 +18,7 @@ class MemoryRetrievalResult:
     reasoning: str
 
     # Derived artifacts
-    memory_context_text: str
+    memory_context_text: None | str
     seed_kg_node_ids: List[str]
 
 
@@ -48,7 +47,7 @@ class MemoryRetriever:
         *,
         conversation_engine,
         llm: BaseChatModel,
-        filtering_callback: Callable[..., tuple[RetrievalResult, str]] ,
+        filtering_callback: Callable[..., tuple[FilteringResult, str]] ,
         summarize_callback: Optional[Callable[..., str]] = None, # can be a callback with context closured
         n_results: int = 12,
         prefer_types: Optional[List[str]] = None,
@@ -75,13 +74,13 @@ class MemoryRetriever:
             n_results=self.n_results,
             where=where,
             include=["metadatas", "documents", "embeddings"], node_type=ConversationNode
-        )
+        )[0]
         where = {"user_id": user_id}
         memory_edges = self.conversation_engine.query_edges(query_embeddings = [query_embedding],
             n_results=self.n_results,
             where=where,
-            include=["metadatas", "documents", "embeddings"], node_type=ConversationEdge
-        )
+            include=["metadatas", "documents", "embeddings"], edge_type=ConversationEdge
+        )[0]
         
         
         # rows = self.conversation_engine.node_collection.query(
@@ -94,7 +93,7 @@ class MemoryRetriever:
         # candidate_ids: List[str] = (rows.get("ids") or [[]])[0] or []
         # candidate_docs: List[str] = (rows.get("documents") or [[]])[0] or []
         # candidate_metas = (rows.get("metadatas") or [[]])[0] or []
-        from models import Node, Edge
+        
         def _rank(m : Node | Edge):
                 t = m.type or m.metadata.get("entity_type") or ""
                 return 0 if t in self.prefer_types else 1
@@ -111,7 +110,6 @@ class MemoryRetriever:
         #     candidate_ids = [z[0] for z in zipped]
         #     candidate_docs = [z[1] for z in zipped]
         #     candidate_metas = [z[2] for z in zipped]
-        import json
         selected_ids: List[str] = []
         reasoning = ""
         if candidates.nodes or candidates.edges:
@@ -122,14 +120,25 @@ class MemoryRetriever:
             cand_edge_list_str = "\n".join(
                 [f"-Edge ID: {edge.id} | Label: {edge.metadata.get('label')} | Summary: {edge.metadata.get('summary')}" for edge in candidates.edges]
             )
-            selected, reasoning = self.filtering_callback(self.llm, user_text, cand_node_list_str, cand_edge_list_str, candidates, context_text)
+            filtered, reasoning = self.filtering_callback(self.llm, user_text, cand_node_list_str, cand_edge_list_str, 
+                                                          [i.id for i in candidates.nodes], 
+                                                          [i.id for i in candidates.edges],
+                                                          context_text)
+            selected = RetrievalResult(nodes = [n for n in candidates.nodes if n.id in filtered.node_ids],
+                                   edges = [n for n in candidates.edges if n.id in filtered.edge_ids])
         else:
+            filtered = None
             selected = None
         #     return MemoryRetrievalResult(candidate_node_ids=ShallowQueryResult(candidate_kg_node_ids = [], candidate_kg_edge_ids = []), 
         #                                     selected_kg_ids=ShallowQueryResult(candidate_kg_node_ids = [], candidate_kg_edge_ids = []),  
         #                                     reasoning=reasoning,memory_context_text="", seed_kg_node_ids=[])
         # Extract KG seeds from selected nodes when they are reference pointers
+        
         seed_kg_ids: List[str] = []
+        non_kg_node_ids : List[str] = []
+        non_kg_edge_ids : List[str] = []
+        conv_nodes : List[ConversationNode] = []
+        conv_edges : List[ConversationNode] = []
         if selected:
             # if selected.candidate_kg_node_ids:
                 # selected_rows = self.conversation_engine.node_collection.get(ids=selected_ids, include=["metadatas","documents"])
@@ -144,8 +153,19 @@ class MemoryRetriever:
                 #     except Exception:
                 #         continue
                 
-                for n in selected.nodes + selected.edges:
+                for n in selected.nodes:
                     if n.type != "reference_pointer":
+                        non_kg_node_ids.append(n.id)
+                        conv_nodes.append(n)
+                        continue
+                    rid = (n.properties or {}).get("refers_to_id")
+                    selected_ids.append(n.id)
+                    if isinstance(rid, str) and rid:
+                        seed_kg_ids.append(rid)
+                for n in selected.edges:
+                    if n.type != "reference_pointer":
+                        non_kg_edge_ids.append(n.id)
+                        conv_edges.append(n)
                         continue
                     rid = (n.properties or {}).get("refers_to_id")
                     selected_ids.append(n.id)
@@ -161,19 +181,22 @@ class MemoryRetriever:
                 dedup_seeds.append(x)
 
         # Build memory context text (LLM summarize or fallback join)
-        memory_context_text = ""
-    
-        if selected_ids and selected:
+        memory_context_text : None| str = None
+        # for ref nodes and ref edges only
+        if selected:
             if self.summarize_callback is not None:
-                memory_context_text = self.summarize_callback(self.llm, user_text, selected_ids)
+                memory_context_text = self.summarize_callback(self.llm, user_text, selected)
             else:
                 # Fallback: concatenate short snippets from metadata/documents
                 # Keep it bounded: use first 5 items
                 parts = []
-                for candidate in selected.nodes:
+                selected_conv_nodes = cast(list[ConversationNode], selected.nodes)
+                for candidate in sorted(selected_conv_nodes, key = lambda x : x.turn_index or -2)[-5:]:
                 # for rid, meta in list(zip(selected_ids, candidate_metas))[:5]:
                     parts.append(f"[{candidate.id}] {candidate.metadata.get('summary') or ''}")
-                for candidate in selected.edges:
+                    
+                selected_conv_edges = cast(list[ConversationNode], selected.edges)
+                for candidate in sorted(selected_conv_edges, key = lambda x : x.turn_index or -2)[-5:]:
                     parts.append(f"[{candidate.id}] {candidate.metadata.get('summary') or ''}")
                 memory_context_text = "\n".join(parts).strip()
 

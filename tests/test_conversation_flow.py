@@ -3,7 +3,7 @@ import json
 from langchain_core.language_models import BaseChatModel
 from langchain_core.prompts import ChatPromptTemplate
 from graph_knowledge_engine.engine import GraphKnowledgeEngine
-from graph_knowledge_engine.models import Node, Span, Grounding, MentionVerification, ConversationNode
+from graph_knowledge_engine.models import FilteringResult, Node, Span, Grounding, MentionVerification, ConversationNode
 from langchain_core.messages import AIMessage
 from pydantic import BaseModel, Field
 
@@ -13,8 +13,8 @@ from joblib import Memory
 P = ParamSpec("P")
 R = TypeVar("R")
 
-def cached(memory: Memory, fn: Callable[P, R]) -> Callable[P, R]:
-    return cast(Callable[P, R], memory.cache(fn))
+def cached(memory: Memory, fn: Callable[P, R], *args, **kwargs) -> Callable[P, R]:
+    return cast(Callable[P, R], memory.cache(fn, *args, **kwargs))
 def test_conversation_flow(engine:GraphKnowledgeEngine, conversation_engine:GraphKnowledgeEngine):
     user_id = "test_conversation_flow::test_user"
     # 1. Pre-populate Knowledge Graph
@@ -66,14 +66,40 @@ def test_conversation_flow(engine:GraphKnowledgeEngine, conversation_engine:Grap
     
     # Monkey patch with typed cacheing
     from graph_knowledge_engine.engine import candiate_filtering_callback
-    candiate_filtering_callback_cached = cached(memory, candiate_filtering_callback) 
+    candiate_filtering_callback_cached = cached(memory, candiate_filtering_callback)
+    from functools import partial
+    cached_deco = partial(cached, memory)
+    # haha = 0
+    # @cached_deco(ignore = ["llm"])
+    # def my_cached_callback0():
+    #     nonlocal haha
+    #     haha += 1
+    #     pass
+    # my_cached_callback0()
+    # my_cached_callback0()
+    def cached_inner(llm: BaseChatModel, conversation_content, 
+                                cand_node_list_str, cand_edge_list_str, 
+                                candidates_node_ids: list[str], candidate_edge_ids: list[str], context_text):
+            filtering_result, filtering_reasining = candiate_filtering_callback(llm, conversation_content, 
+                                cand_node_list_str, cand_edge_list_str, 
+                                candidates_node_ids, candidate_edge_ids, context_text)
+            return filtering_result.model_dump(), filtering_reasining
+    cached_fn = cached_deco(ignore = ["llm"], fn=cached_inner)
+    def wrapped_cached_callback(llm: BaseChatModel, conversation_content, 
+                                cand_node_list_str, cand_edge_list_str, 
+                                candidates_node_ids: list[str], candidate_edge_ids: list[str], context_text):
         
+        
+        dumped, reasoning = cached_fn(llm, conversation_content, 
+                                cand_node_list_str, cand_edge_list_str, 
+                                candidates_node_ids, candidate_edge_ids, context_text)
+        return FilteringResult.model_validate(dumped), reasoning
     # 3. Add Turn 1
     turn_id = "turn_cached_id_1"
     res = conversation_engine.add_conversation_turn(user_id, conv_id, turn_id, "mem0", 
                                                     role="user", content="Hello computer", 
                                                     ref_knowledge_engine=engine,
-                                                    filtering_callback = candiate_filtering_callback_cached)
+                                                    filtering_callback = wrapped_cached_callback)
     
     assert res['turn_index'] == 0
     turn_id = res['turn_node_id']
