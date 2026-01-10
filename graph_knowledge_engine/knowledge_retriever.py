@@ -8,7 +8,7 @@ from langchain_core.language_models import BaseChatModel
 from graph_knowledge_engine.engine import GraphKnowledgeEngine
 from graph_knowledge_engine.models import KnowledgeRetrievalResult, RetrievalResult
 
-from .models import ConversationNode, ConversationEdge, Grounding, Span
+from .models import ConversationNode, ConversationEdge, FilteringResult, Grounding, Span
 
 
 class KnowledgeRetriever:
@@ -29,7 +29,7 @@ class KnowledgeRetriever:
         conversation_engine,
         ref_knowledge_engine,
         llm: BaseChatModel,
-        filtering_callback: Callable[..., tuple[RetrievalResult, str]] ,
+        filtering_callback: Callable[..., tuple[FilteringResult, str]] ,
         max_retrieval_level: int = 2,
         shallow_n_results: int = 20,
         deep_per_seed_results: int = 10,
@@ -50,13 +50,13 @@ class KnowledgeRetriever:
             n_results=self.shallow_n_results,
             where={"level_from_root": {"$lte": self.max_retrieval_level}},
             include=["metadatas", "documents", "embeddings"],
-        )
+        )[0]
         edges = self.ref_knowledge_engine.query_edges(
             query_embeddings=[query_embedding],
             n_results=self.shallow_n_results,
             where={"level_from_root": {"$lte": self.max_retrieval_level}},
             include=["metadatas", "documents", "embeddings"],
-        )
+        )[0]
         return RetrievalResult(nodes, edges)
         # nodes = self.ref_knowledge_engine.query_nodes(query_embeddings=[query_embedding],
         #     n_results=self.shallow_n_results,
@@ -118,8 +118,9 @@ class KnowledgeRetriever:
         else:
             deep_results = RetrievalResult(nodes = [], edges = [])
         # merge
-        candidates = RetrievalResult(nodes = list(set(shallow_results.nodes + deep_results.nodes)), 
-                                        edges = list(set(shallow_results.edges + deep_results.edges)))
+        
+        candidates = RetrievalResult(   nodes = list({n.id: n for n in shallow_results.nodes + deep_results.nodes}.values()), 
+                                        edges = list({n.id: n for n in shallow_results.edges + deep_results.edges}.values()))
         
 
         reasoning = ""
@@ -133,11 +134,13 @@ class KnowledgeRetriever:
             cand_edge_list_str = "\n".join(
                 [f"-Edge ID: {edge.id} | Label: {edge.metadata.get('label')} | Summary: {edge.metadata.get('summary')}" for edge in candidates.edges]
             )
-            selected, reasoning = self.filtering_callback(self.llm, user_text, cand_node_list_str, cand_edge_list_str, candidates, context_text)
+            selected, reasoning = self.filtering_callback(self.llm, user_text, cand_node_list_str, cand_edge_list_str, 
+                                                          [i.id for i in candidates.nodes],
+                                                          [i.id for i in candidates.edges], context_text)
             return KnowledgeRetrievalResult(candidate=candidates, selected=selected, reasoning=reasoning)
         else:
             return KnowledgeRetrievalResult(candidate=RetrievalResult(nodes = [], edges = []), 
-                                            selected=RetrievalResult(nodes = [], edges = []),  
+                                            selected=FilteringResult(node_ids = [], edge_ids = []),  
                                             reasoning=reasoning)
         
 
@@ -149,15 +152,29 @@ class KnowledgeRetriever:
         turn_node_id: str,
         turn_index: int,
         self_span: Span,
-        selected_knowledge: RetrievalResult,
+        selected_knowledge: Optional[FilteringResult],
+        selected_knowledge_nodes: Optional[RetrievalResult] = None
     ) -> tuple[List[str], List[str]]:
         pinned_pointer_node_ids: List[str] = []
         pinned_edge_ids: List[str] = []
-        ref_kg_engine: GraphKnowledgeEngine
-        ref_kg_engine = self.ref_knowledge_engine
-        kgs= selected_knowledge
-        for kg in kgs.nodes:
-            # kg_got = self.ref_knowledge_engine.node_collection.get(ids=[kg_id], include=["documents", "embeddings", "metadatas"])
+        # ref_kg_engine: GraphKnowledgeEngine
+        # ref_kg_engine = self.ref_knowledge_engine
+        # kgs= selected_knowledge
+        if self.ref_knowledge_engine.kg_graph_type == "knowledge":
+            pass
+        else:
+            raise(Exception("ref_knowledge_engine used conversation instead of knowledge kg_graph_type"))
+        if selected_knowledge_nodes:
+            nodes = selected_knowledge_nodes.nodes
+            edges = selected_knowledge_nodes.edges
+        else:
+            if selected_knowledge:
+                nodes = self.ref_knowledge_engine.get_nodes(selected_knowledge.node_ids)
+                edges = self.ref_knowledge_engine.get_edges(selected_knowledge.node_ids)
+            else:
+                raise Exception("selected_knowledge and selected_knowledge_nodes cannot be both None")
+        for kg  in nodes:
+            # kg_got = self.ref_knowledge_engine.node_collection.get(ids=[kg_node_id], include=["documents", "embeddings", "metadatas"])
             
             # if not kg_got.get("ids"):
             #     continue
@@ -217,7 +234,7 @@ class KnowledgeRetriever:
             self.conversation_engine.add_edge(edge)
             pinned_edge_ids.append(edge_id)
 
-        for kg in kgs.nodes:
+        for kg in edges:
             # kg_got = self.ref_knowledge_engine.node_collection.get(ids=[kg_id], include=["documents", "embeddings", "metadatas"])
             
             # if not kg_got.get("ids"):

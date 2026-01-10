@@ -121,7 +121,8 @@ class RetrievalOrchestrator:
             turn_node_id=turn_node_id,
             turn_index=turn_index,
             self_span=self_span,
-            selected_knowledge=kg.selected_kg_node_ids,
+            selected_knowledge=kg.selected,
+            selected_knowledge_nodes=kg.get_filtered_candidate()
         )
 
         return RetrievalOutcome(

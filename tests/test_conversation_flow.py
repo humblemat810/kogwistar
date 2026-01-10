@@ -12,11 +12,19 @@ from joblib import Memory
 
 P = ParamSpec("P")
 R = TypeVar("R")
+from itertools import count
 
+def tool_id_factory(prefix: str = "tool-id"):
+    counter = count(1)
+    return lambda: f"{prefix}-{next(counter)}"
 def cached(memory: Memory, fn: Callable[P, R], *args, **kwargs) -> Callable[P, R]:
     return cast(Callable[P, R], memory.cache(fn, *args, **kwargs))
 def test_conversation_flow(engine:GraphKnowledgeEngine, conversation_engine:GraphKnowledgeEngine):
     user_id = "test_conversation_flow::test_user"
+    my_factory = tool_id_factory()
+    conversation_engine.tool_call_id_factory = my_factory
+    orc=conversation_engine._get_orchestrator(ref_knowledge_engine=engine)
+    orc.tool_runner.tool_call_id_factory = my_factory
     # 1. Pre-populate Knowledge Graph
     # We need a node "N1" for the filter to find/return.
     n1 = Node(
@@ -48,7 +56,7 @@ def test_conversation_flow(engine:GraphKnowledgeEngine, conversation_engine:Grap
     )
     # Mock embedding function to return same dimension
     # conversation_engine._ef = lambda x: [[0.1]*384 for _ in x]
-
+    
     # 2. Create Conversation
     conv_id = "conv_test_001"
     start_node_id = "start_con_node_001"

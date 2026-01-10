@@ -31,7 +31,7 @@ engine = GraphKnowledgeEngine(
 """
 from .conversation_context import ContextItem, ConversationContextView, DroppedItem, ContextRenderer
 import numpy as np
-from typing import List, Optional, Dict, Any, Self, Tuple, TypeAlias, cast
+from typing import Iterator, List, Optional, Dict, Any, Self, Tuple, TypeAlias, cast
 from .typing_interfaces import CollectionLike, EmbeddingFunctionLike
 import chromadb
 from dataclasses import dataclass, field
@@ -101,6 +101,7 @@ NodeOrEdge: TypeAlias =  Node | Edge
 T = TypeVar("T", Node, Edge)
 # TT= TypeVar("TT", Type[Node], Type[Edge])
 TNode = TypeVar("TNode", bound=Node)
+TEdge = TypeVar("TEdge", bound=Edge)
 from graphlib import TopologicalSorter
 def _refs_hash(refs) -> str:
     import hashlib, json
@@ -1121,13 +1122,15 @@ class GraphKnowledgeEngine:
 
         return out
     
-    def get_nodes(self, ids: Sequence[str]) -> List[Node]:
+    def get_nodes(self, ids: Sequence[str], node_type: Type[Node]|None = None) -> List[Node]:
         if not ids: return []
         got = self.node_collection.get(ids=list(ids), include=["documents", "embeddings", "metadatas"])
-        if self.kg_graph_type == 'conversation':
-            node_type = ConversationNode
-        else:
-            node_type = Node
+        if not node_type:
+            if self.kg_graph_type == 'conversation':
+                node_type = ConversationNode
+            else:
+                node_type = Node
+        
         return self.nodes_from_single_or_id_query_result(got, node_type = node_type)
     def query_nodes(self,*args, query = None, 
             query_embeddings = None,  
@@ -1241,13 +1244,14 @@ class GraphKnowledgeEngine:
                 single_res = self.edges_from_single_or_id_query_result(got, edge_type = edge_type)
                 res.append(single_res)
         return res
-    def get_edges(self, ids: Sequence[str]) -> List[Edge]:
+    def get_edges(self, ids: Sequence[str], edge_type: Type[Edge]|None = None) -> List[Edge]:
         if not ids: return []
         got = self.edge_collection.get(ids=list(ids), include=["documents", "embeddings", "metadatas"])
-        if self.kg_graph_type == 'conversation':
-            edge_type = ConversationEdge
-        else:
-            edge_type = Edge
+        if not edge_type:
+            if self.kg_graph_type == 'conversation':
+                edge_type = ConversationEdge
+            else:
+                edge_type = Edge
         return self.edges_from_single_or_id_query_result(got, edge_type = edge_type)
 
     def all_nodes_for_doc(self, doc_id: str) -> List[Node]:
@@ -1848,6 +1852,7 @@ class GraphKnowledgeEngine:
           - ENV SENTENCE_TRANSFORMERS_MODEL, or
           - "all-MiniLM-L6-v2".
         """
+        self.tool_call_id_factory: Callable[[],str] | None = None
         self.kg_graph_type = kg_graph_type
         self.persist_directory = persist_directory
         self.query = GraphQuery(self)
@@ -3892,6 +3897,7 @@ class GraphKnowledgeEngine:
         The engine keeps storage/mutation primitives and a stable public API.
         """
         orch = self._get_orchestrator(ref_knowledge_engine=ref_knowledge_engine)
+        orch.tool_runner.tool_call_id_factory
         return orch.add_conversation_turn(
             user_id=user_id,
             conversation_id=conversation_id,

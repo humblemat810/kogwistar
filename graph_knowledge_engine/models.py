@@ -1001,7 +1001,17 @@ class SplitPage(OCRClusterResponseBc):
 @dataclass
 class KnowledgeRetrievalResult:
     candidate: RetrievalResult
-    selected: RetrievalResult | None
+    selected: FilteringResult | None
     reasoning: str
-
+    def get_filtered_candidate(self):
+        if self.selected:
+            set_node_ids = set(self.selected.node_ids)
+            set_edge_ids = set(self.selected.node_ids)
+            return RetrievalResult(
+                nodes=[i for i in self.candidate.nodes if i in set_node_ids],
+                edges=[i for i in self.candidate.edges if i in set_edge_ids]
+            )
+        
+        else:
+            raise Exception('selected field cannot be None when calling get_filtered_candidate')
     

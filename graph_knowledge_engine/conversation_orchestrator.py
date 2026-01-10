@@ -71,12 +71,14 @@ class ConversationOrchestrator:
         *,
         conversation_engine: Any,
         ref_knowledge_engine: Any,
+        tool_call_id_factory = uuid.uuid4,
         llm: BaseChatModel,
     ) -> None:
         self.conversation_engine: GraphKnowledgeEngine = conversation_engine
         self.ref_knowledge_engine: GraphKnowledgeEngine = ref_knowledge_engine
         self.llm = llm
-        self.tool_runner = ToolRunner(conversation_engine=conversation_engine)
+        self.tool_runner = ToolRunner(conversation_engine=conversation_engine,
+                                      tool_call_id_factory=tool_call_id_factory)
 
     # ----------------------------
     # Public entry points
