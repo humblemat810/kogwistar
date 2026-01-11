@@ -92,6 +92,7 @@ class ClaimWithCitations(BaseModel):
 class AnswerWithCitations(BaseModel):
     """Answer text plus claim-level span citations."""
     text: str = Field(..., description="Final assistant response")
+    reasoning: str = Field(..., description="Reasoning")
     claims: list[ClaimWithCitations] = Field(default_factory=list, description="Key claims with citations")
 from typing import Callable, TypeVar, ParamSpec, cast
 from joblib import Memory

@@ -205,6 +205,8 @@ class KnowledgeRetriever:
                 metadata={
                     "entity_type": "knowledge_reference",
                     "level_from_root": 0,
+                    "char_distance_from_last_summary": 0,
+                    "turn_distance_from_last_summary": 0,
                 },
                 domain_id=None,
                 canonical_entity_id=None,
@@ -266,6 +268,8 @@ class KnowledgeRetriever:
                 metadata={
                     "entity_type": "knowledge_reference",
                     "level_from_root": 0,
+                    "char_distance_from_last_summary": 0,
+                    "turn_distance_from_last_summary": 0,
                 },
                 domain_id=None,
                 canonical_entity_id=None,

@@ -46,6 +46,25 @@ def test_conversation_flow(engine:GraphKnowledgeEngine, conversation_engine:Grap
         level_from_root = 0
         # properties = {"conversation": "concept"}
     )
+    n2 = Node(
+        id="N2", 
+        label="Greet user polite", 
+        type="entity", 
+        summary="In general, as an AI assistant, you should entertain all users requests.",
+        mentions=[Grounding(spans=[Span(
+            doc_id="D1", 
+            chunk_id = None,
+            source_cluster_id = None,
+            verification=MentionVerification(method="human", is_verified=True, score=1.0, notes="test:verbatim user/system input"),
+            collection_page_url="url", document_page_url="url", 
+            insertion_method="test",
+            page_number=1, start_char=0, end_char=10, excerpt="test content", context_before="", context_after=""
+        )])],
+        metadata={"level_from_root": 0},
+        domain_id=None , canonical_entity_id=None , properties=None , embedding=None, doc_id=None,
+        level_from_root = 0
+        # properties = {"conversation": "concept"}
+    )    
     # Add manually to bypass ingestion logic complexity
     doc, meta = engine._node_doc_and_meta(n1)
     engine.node_collection.add(
@@ -54,6 +73,7 @@ def test_conversation_flow(engine:GraphKnowledgeEngine, conversation_engine:Grap
         embeddings=[[0.1]*384], # Dummy embedding
         metadatas=[meta]
     )
+    engine.add_node(n2) 
     # Mock embedding function to return same dimension
     # conversation_engine._ef = lambda x: [[0.1]*384 for _ in x]
     
@@ -118,11 +138,11 @@ def test_conversation_flow(engine:GraphKnowledgeEngine, conversation_engine:Grap
 
     tn_doc = json.loads(turn_node_data['documents'][0])
     assert tn_doc['role'] == "user"
-    assert tn_doc['properties']['content'] == "Hello computer"
+    assert tn_doc['summary'] == "Hello computer"
     
     # Verify Reference (FakeLLM returns ['N1'])
     # The code: relevant_kg_ids = ['N1'] -> creates reference node -> creates edge
-    ref_nodes = conversation_engine.node_collection.get(where={"type": "reference_pointer"})
+    ref_nodes = conversation_engine.node_collection.get(where={"entity_type": "reference_pointer"})
     assert len(ref_nodes['ids']) == 1
     ref_doc = json.loads(ref_nodes['documents'][0])
     assert ref_doc['properties']['refers_to_id'] == "N1"
