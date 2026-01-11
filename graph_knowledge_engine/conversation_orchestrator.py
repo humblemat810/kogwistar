@@ -302,8 +302,8 @@ class ConversationOrchestrator:
         return {
             "turn_node_id": turn_node_id,
             "turn_index": new_index,
-            "relevant_kg_node_ids": [i.id for i in (kg.selected.nodes if kg.selected else [])],
-            "relevant_kg_edge_ids": [i.id for i in (kg.selected.nodes if kg.selected else [])],
+            "relevant_kg_node_ids": [i.id for i in (kg.selected.node_ids if kg.selected else [])],
+            "relevant_kg_edge_ids": [i.id for i in (kg.selected.edge_ids if kg.selected else [])],
             "pinned_kg_pointer_node_ids": pinned_ptrs,
             "pinned_kg_edge_ids": pinned_edges,
             "memory_context_node_id": memory_pin.memory_context_node if memory_pin else None,

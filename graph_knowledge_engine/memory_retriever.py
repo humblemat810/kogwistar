@@ -27,7 +27,64 @@ class MemoryPinResult:
     memory_context_node: ConversationNode
     pinned_edges: List[ConversationEdge]
 
+def is_node_memory_context(node: ConversationNode):
+    # example node:
+    # ConversationNode(
+    #         id=mem_node_id,
+    #         label=f"Memory context (turn {turn_index})",
+    #         type="entity",
+    #         doc_id=mem_node_id,
+    #         summary=memory_context_text,
+    #         role="system",  # type: ignore
+    #         turn_index=turn_index,
+    #         conversation_id=current_conversation_id,
+    #         user_id=user_id,
+    #         mentions=[Grounding(spans=[self_span])],
+    #         properties={
+    #             "user_id": user_id,
+    #             "source_memory_nodes_ids": [i.id for i in selected_memory.nodes], 
+    #             "source_memory_edges_ids": [i.id for i in selected_memory.edges],
+    #         },
+    #         metadata={
+    #             "entity_type": "memory_context",
+    #             "type": "entity",
+    #             "level_from_root": 0, 
+    #             "char_distance_from_last_summary": 0,  # memory itself is a summary of other nodes
+    #             "turn_distance_from_last_summary": 0,                
+    #             "user_id": user_id,
+    #             "conversation_id": current_conversation_id,
+    #             "turn_index": turn_index,
+    #         },
+    #         domain_id=None,
+    #         canonical_entity_id=None,
+    #     )
+    """
+    Return True if the node represents a memory-context ConversationNode.
+    This is a structural + semantic check, not an identity check.
+    """
 
+    if node is None:
+        return False
+
+    # 1. Fast semantic markers (cheap, decisive)
+    metadata = getattr(node, "metadata", None) or {}
+    if metadata.get("entity_type") == "memory_context":
+        return True
+
+    # 2. Fallback: properties-based signal
+    props = getattr(node, "properties", None) or {}
+    if (
+        "source_memory_nodes_ids" in props
+        and "source_memory_edges_ids" in props
+    ):
+        return True
+
+    # 3. Last-resort heuristic (avoid relying on label unless necessary)
+    label = getattr(node, "label", "") or ""
+    if label.lower().startswith("memory context"):
+        return True
+
+    return False
 class MemoryRetriever:
     """Long-memory retriever over the conversation store, keyed by user_id.
 

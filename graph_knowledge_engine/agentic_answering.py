@@ -23,16 +23,18 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 import json
+import pathlib
 import re
 import time
-from typing import Any, Iterable, Optional, Sequence, Type
+
+from typing import Any, Callable, Iterable, Optional, Self, Sequence, Type, TypeVar
 
 from pydantic import BaseModel, Field
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.language_models.chat_models import BaseChatModel
 
-from .models import ConversationNode, ConversationEdge, Grounding, Span
-
+from .models import ConversationNode, ConversationEdge, Grounding, Span, Node
+BaseM = TypeVar("BaseM", bound=BaseModel)
 
 def _stable_json(obj: Any) -> str:
     return json.dumps(obj, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -91,8 +93,13 @@ class AnswerWithCitations(BaseModel):
     """Answer text plus claim-level span citations."""
     text: str = Field(..., description="Final assistant response")
     claims: list[ClaimWithCitations] = Field(default_factory=list, description="Key claims with citations")
+from typing import Callable, TypeVar, ParamSpec, cast
+from joblib import Memory
 
-
+P = ParamSpec("P")
+R = TypeVar("R")
+def cached(memory: Memory, fn: Callable[P, R], *args, **kwargs) -> Callable[P, R]:
+    return cast(Callable[P, R], memory.cache(fn, *args, **kwargs))
 class AnswerEvaluation(BaseModel):
     """Post-answer evaluation for sufficiency and whether more info is needed."""
     is_sufficient: bool = Field(..., description="Whether current evidence is sufficient to answer")
@@ -120,9 +127,48 @@ class AgentConfig:
     max_chars_per_item: int = 900
     max_total_chars: int = 12000
 from .engine import GraphKnowledgeEngine
+
 class AgenticAnsweringAgent:
     """Agent that answers within a conversation canvas using a separate knowledge engine."""
+    @staticmethod
+    def _select_used_evidence_entry(
+        agent: "AgenticAnsweringAgent",
+        *,
+        system_prompt: str,
+        question: str,
+        candidates: list[Any],
+    ):
+        # delegate to the real method (LLM call)
+        return agent._select_used_evidence(
+            system_prompt=system_prompt,
+            question=question,
+            candidates=candidates,
+        )
 
+    def select_used_evidence_cached(
+        self,
+        *,
+        system_prompt: str,
+        question: str,
+        candidates: list[Any],
+        cache_dir: str | None,
+    ):
+        if not cache_dir:
+            return EvidenceSelection.model_validate(self._select_used_evidence(system_prompt=system_prompt, question=question, candidates=candidates))
+
+        mem = Memory(location=cache_dir, verbose=0)
+        cached_fn = cached(mem, self._select_used_evidence_entry, ignore=["agent"])
+        payload = cached_fn(self, system_prompt=system_prompt, question=question, candidates=candidates)
+        return EvidenceSelection.model_validate(payload)
+        # from utils.pydanic_model_consumer_wrapper import cache_pydantic_structured
+        # cached_entry = cache_pydantic_structured(
+        #     memory=mem,
+        #     model=EvidenceSelection,
+        #     fn=self._select_used_evidence_entry,
+        #     ignore=["agent"],
+        #     # dump_exclude={"raw"},  # if you add raw above
+        # )
+        # return cache_pydantic_structured()
     def __init__(
         self,
         *,
@@ -130,12 +176,14 @@ class AgenticAnsweringAgent:
         knowledge_engine: GraphKnowledgeEngine,
         llm: BaseChatModel,
         config: Optional[AgentConfig] = None,
+        cache_dir: str | None = str((pathlib.Path()/ ".joblib" / "agentic_answering").absolute())
     ):
         self.conversation_engine = conversation_engine
         self.knowledge_engine = knowledge_engine
         self.llm = llm
         self.config = config or AgentConfig()
-
+        self.cache_dir = cache_dir
+        self.max_retry = 3
     # ----------------------------
     # Public entrypoint
     # ----------------------------
@@ -185,49 +233,102 @@ class AgenticAnsweringAgent:
             if (self.config.evidence_selector or "llm").lower() == "bm25":
                 selection = self._select_used_evidence_bm25(question=question, candidates=candidates)
             else:
-                selection = self._select_used_evidence(
+                selection = self.select_used_evidence_cached(
                     system_prompt=system_prompt,
                     question=question,
                     candidates=candidates,
+                    cache_dir = self.cache_dir
                 )
 
             used_node_ids = selection.used_node_ids[: self.config.max_used]
             last_used = used_node_ids
-
+            from .utils.pydanic_model_consumer_wrapper import cache_pydantic_structured
+            from joblib import Memory
+            
             # 5) Materialize evidence pack for answering + citation picking
-            evidence_pack = self._materialize_evidence_pack(
+            mem=Memory(location = str((pathlib.Path(".joblib")/"_materialize_evidence_pack").absolute()))
+            cached_call = cache_pydantic_structured(fn = self._materialize_evidence_pack,
+                                                    memory = mem,
+                                                    model = None,
+                                                    ignore = ['agent']
+                                                    )
+            evidence_pack = cached_call(
+                agent = self,
                 node_ids=used_node_ids,
                 depth=materialize_depth,
                 max_chars_per_item=self.config.max_chars_per_item,
                 max_total_chars=self.config.max_total_chars,
             )
+            # cached_entry = cache_pydantic_structured(
+            #     memory=mem,
+            #     model=FakeSelection,
+            #     fn=FakeAgent.entry,
+            #     ignore=["agent", "out_model"],
+            #     # dump_exclude={"raw"},  # if you add raw above
+            # )
+            # evidence_pack = self._materialize_evidence_pack(
+            #     self,
+            #     node_ids=used_node_ids,
+            #     depth=materialize_depth,
+            #     max_chars_per_item=self.config.max_chars_per_item,
+            #     max_total_chars=self.config.max_total_chars,
+            # )
 
             # 6) Generate answer with claim-level citations (SpanRef indices into evidence_pack)
-            ans = self._generate_answer_with_citations(
+            mem=Memory(location = str((pathlib.Path(".joblib")/"_generate_answer_with_citations").absolute()))
+            cached_call = cache_pydantic_structured(fn = self._generate_answer_with_citations,
+                                                    memory = mem,
+                                                    model = None,
+                                                    ignore = ["agent"]
+                                                    )            
+            ans_json = cached_call(
+                agent = self,
                 system_prompt=system_prompt,
                 question=question,
                 evidence_pack=evidence_pack,
                 used_node_ids=used_node_ids,
+                out_model_schema = AnswerWithCitations.model_json_schema(),
+                out_model = AnswerWithCitations
             )
+            ans = AnswerWithCitations.model_validate(ans_json)
             # 6b) Validate / repair citations (bounded)
-            ans = self._validate_or_repair_citations(
+            
+            cached_call3 = cache_pydantic_structured(fn = self._validate_or_repair_citations,
+                                                    memory = mem,
+                                                    model = None,
+                                                    ignore = ["agent", "answer_in_model"]
+                                                    )
+            ans = cached_call3(
+                agent = self,
                 system_prompt=system_prompt,
                 question=question,
                 evidence_pack=evidence_pack,
                 used_node_ids=used_node_ids,
-                answer=ans,
+                answer=ans.model_dump(),
+                answer_in_model = AnswerWithCitations
+                # out_model_schema = AnswerWithCitations.model_json_schema(),
+                # out_model = AnswerWithCitations
             )
+            ans = AnswerWithCitations.model_validate(ans)
             last_answer = ans
 
             # 7) Evaluate sufficiency / need-more-info
+            cached_call3 = cache_pydantic_structured(fn = self._evaluate_answer,
+                                                    memory = mem,
+                                                    model = None,
+                                                    ignore = ["agent", "out_model"]
+                                                    )
             last_eval = self._evaluate_answer(
+                agent = self,
                 system_prompt=system_prompt,
                 question=question,
                 answer_text=ans.text,
                 used_node_ids=used_node_ids,
                 evidence_pack=evidence_pack,
+                out_model_schema=AnswerEvaluation.model_json_schema(),
+                out_model=AnswerEvaluation
             )
-
+            last_eval = AnswerEvaluation.model_validate(last_eval)
             if not last_eval.needs_more_info or last_eval.is_sufficient:
                 break
 
@@ -315,7 +416,7 @@ class AgenticAnsweringAgent:
             )
         return out
 
-    def _select_used_evidence(self, *, system_prompt: str, question: str, candidates: Sequence[dict[str, Any]]) -> EvidenceSelection:
+    def _select_used_evidence(self, *, system_prompt: str, question: str, candidates: Sequence[dict[str, Any]]) -> dict:
         # Compact candidate representation
         cand_lines = []
         for c in candidates:
@@ -346,7 +447,7 @@ Select at most {max_used} node ids.
         # Defensive: ensure subset
         cand_ids = {c["id"] for c in candidates}
         sel.used_node_ids = [i for i in sel.used_node_ids if i in cand_ids][: self.config.max_used]
-        return sel
+        return sel.model_dump()
 
 
     def _select_used_evidence_bm25(self, *, question: str, candidates: Sequence[dict[str, Any]]) -> EvidenceSelection:
@@ -368,9 +469,9 @@ Select at most {max_used} node ids.
         scored.sort(key=lambda x: x[0], reverse=True)
         used = [str(c["id"]) for s, c in scored if s > 0][: self.config.max_used]
         return EvidenceSelection(used_node_ids=used, used_edge_ids=[], reasoning="bm25_fallback_token_overlap")
-
+    @staticmethod
     def _materialize_evidence_pack(
-        self,
+        agent: "AgenticAnsweringAgent",
         *,
         node_ids: list[str],
         depth: str,
@@ -385,7 +486,7 @@ Select at most {max_used} node ids.
         total = 0
 
         for nid in node_ids:
-            got = self.knowledge_engine.node_collection.get(ids=[nid], include=["documents", "metadatas"])
+            got = agent.knowledge_engine.node_collection.get(ids=[nid], include=["documents", "metadatas"])
             docs = (got.get("documents") or [None])[0]
             metas = (got.get("metadatas") or [{}])
             meta = metas[0] if metas else {}
@@ -450,15 +551,17 @@ Select at most {max_used} node ids.
                 }
             )
         return pack
-
+    @staticmethod
     def _generate_answer_with_citations(
-        self,
+        agent: "AgenticAnsweringAgent",
         *,
         system_prompt: str,
         question: str,
         evidence_pack: dict[str, Any],
         used_node_ids: list[str],
-    ) -> AnswerWithCitations:
+        out_model_schema: dict[str, Any],
+        out_model: Type[BaseM]
+    ) -> list | dict:
         """Ask the LLM to answer AND cite exact mention/span indices from the provided evidence pack."""
         # Build a compact, indexable representation for the LLM
         lines: list[str] = []
@@ -472,8 +575,8 @@ Select at most {max_used} node ids.
                         ex = ex[:240]
                     lines.append(f"  M{mi} S{si}: {ex}")
         evidence_text = "\n".join(lines)
-
-        prompt = ChatPromptTemplate.from_messages(
+        def get_prompt():
+            prompt = ChatPromptTemplate.from_messages(
             [
                 ("system", system_prompt or "You are a helpful assistant."),
                 (
@@ -494,21 +597,39 @@ Requirements:
 
 Return JSON that matches the provided schema.
 """,
-                ),
-            ]
-        )
-        chain = prompt | self.llm.with_structured_output(AnswerWithCitations)
-        return chain.invoke({"question": question, "evidence": evidence_text})
-
+                    ),
+                ]
+            )
+            return prompt
+        # model_list: list[str] = agent.model_list
+        # for i_model in model_list:
+        prompt = get_prompt()
+        for i_retry in range(agent.max_retry):
+            chain = prompt | agent.llm.with_structured_output(out_model, include_raw = True)
+            res=chain.invoke({"question": question, "evidence": evidence_text})
+            if res['parsing_error']:
+                i_retry+=1
+                if i_retry >= agent.max_retry:
+                    i_retry = 0
+                e = res['parsing_error']
+                str_e = str(e)
+                prompt.append(("system", str_e[:1000] + '...' + str_e[-1000] if len(str_e) > 2000 else str_e))
+            parsed : BaseM = res['parsed']
+            return parsed.model_dump()
+                
+                
+    @staticmethod
     def _validate_or_repair_citations(
-        self,
+        agent: "AgenticAnsweringAgent",
         *,
         system_prompt: str,
         question: str,
         evidence_pack: dict[str, Any],
         used_node_ids: list[str],
-        answer: AnswerWithCitations,
-    ) -> AnswerWithCitations:
+        answer: dict| list,
+        answer_in_model : Type[AnswerWithCitations]
+    ) -> dict | list: # AnswerWithCitations:
+        answer_validated: AnswerWithCitations = answer_in_model.model_validate(answer)
         """Validate citations; if invalid, ask LLM to repair once."""
         def is_valid_ref(r: SpanRef) -> bool:
             if r.source_node_id not in used_node_ids:
@@ -526,7 +647,7 @@ Return JSON that matches the provided schema.
             return bool(str(ex).strip())
 
         bad = False
-        for c in answer.claims:
+        for c in answer_validated.claims:
             for r in c.citations:
                 if not is_valid_ref(r):
                     bad = True
@@ -535,7 +656,7 @@ Return JSON that matches the provided schema.
                 break
 
         if not bad:
-            return answer
+            return answer_validated.model_dump()
 
         # Repair prompt: give the evidence again and ask to re-emit citations only
         lines: list[str] = []
@@ -549,8 +670,8 @@ Return JSON that matches the provided schema.
                         ex = ex[:240]
                     lines.append(f"  M{mi} S{si}: {ex}")
         evidence_text = "\n".join(lines)
-
-        repair_prompt = ChatPromptTemplate.from_messages(
+        def get_prompt():
+            repair_prompt = ChatPromptTemplate.from_messages(
             [
                 ("system", system_prompt or "You are a helpful assistant."),
                 (
@@ -572,22 +693,39 @@ Rules:
 - Fix `claims[].citations` so every SpanRef points to an existing NODE + M index + S index shown above.
 - Each claim should have at least 1 valid citation if possible; otherwise leave citations empty for that claim.
 """,
-                ),
-            ]
-        )
-        chain = repair_prompt | self.llm.with_structured_output(AnswerWithCitations)
-        repaired: AnswerWithCitations = chain.invoke({"question": question, "evidence": evidence_text, "answer_text": answer.text})
-        return repaired
-
+                    ),
+                ]
+            )
+            return repair_prompt
+        # repair_prompt = get_prompt()
+        # chain = repair_prompt | agent.llm.with_structured_output(AnswerWithCitations)
+        # repaired: AnswerWithCitations = chain.invoke({"question": question, "evidence": evidence_text, "answer_text": answer.text})
+        # return repaired.model_dump()
+        repair_prompt = get_prompt()
+        for i_retry in range(agent.max_retry):
+            chain = repair_prompt | agent.llm.with_structured_output(AnswerWithCitations, include_raw = True)
+            res=chain.invoke({"question": question, "evidence": evidence_text})
+            if res['parsing_error']:
+                i_retry+=1
+                if i_retry >= agent.max_retry:
+                    i_retry = 0
+                e = res['parsing_error']
+                str_e = str(e)
+                repair_prompt.append(("system", str_e[:1000] + '...' + str_e[-1000] if len(str_e) > 2000 else str_e))
+            repaired: AnswerWithCitations = chain.invoke({"question": question, "evidence": evidence_text, "answer_text": answer.text})
+            return repaired.model_dump()    
+    @staticmethod
     def _evaluate_answer(
-        self,
+        agent: "AgenticAnsweringAgent",
         *,
         system_prompt: str,
         question: str,
         answer_text: str,
         used_node_ids: list[str],
         evidence_pack: dict[str, Any],
-    ) -> AnswerEvaluation:
+        out_model_schema: dict[str, Any],
+        out_model: Type[BaseM]
+    ) -> BaseM:
         """Coarse sufficiency check. This is intentionally light in v0."""
         # Provide compact evidence summaries only
         ev_lines = []
@@ -619,11 +757,25 @@ Return JSON per schema. Be conservative: if key details are missing, set needs_m
                 ),
             ]
         )
-        chain = prompt | self.llm.with_structured_output(AnswerEvaluation)
-        return chain.invoke(
-            {"question": question, "answer": answer_text, "used_ids": ", ".join(used_node_ids), "evidence": ev_text}
-        )
-
+        chain = prompt | agent.llm.with_structured_output(out_model, include_raw = True)
+        
+        # if res['parsing_error']:
+        #     raise NotImplementedError
+        # return res["parsed"].model_dump() 
+        for i_retry in range(agent.max_retry):
+            chain = prompt | agent.llm.with_structured_output(out_model, include_raw = True)
+            res: dict = chain.invoke(
+                {"question": question, "answer": answer_text, "used_ids": ", ".join(used_node_ids), "evidence": ev_text}
+            )
+            if res['parsing_error']:
+                i_retry+=1
+                if i_retry >= agent.max_retry:
+                    i_retry = 0
+                e = res['parsing_error']
+                str_e = str(e)
+                prompt.append(("system", str_e[:1000] + '...' + str_e[-1000] if len(str_e) > 2000 else str_e))
+            parsed : BaseM = res['parsed']
+            return parsed.model_dump()
     def _generate_answer(self, *, system_prompt: str, question: str, used_nodes: list[str]) -> str:
         # Pull minimal summaries (lazy, bounded)
         ctx_lines = []
@@ -665,7 +817,7 @@ Evidence (id | label | summary):
         node = ConversationNode(
             id=rid,
             label=f"Agent Run {run_id}",
-            type="agent_run",
+            type="entity",
             summary=f"Agent run anchor {run_id}",
             conversation_id=conversation_id,
             role="system",  # type: ignore
@@ -750,18 +902,18 @@ Evidence (id | label | summary):
             self.conversation_engine.add_edge(edge)
         return pid
 
-    def _add_assistant_turn(self, *, conversation_id: str, content: str, provenance_span: Span) -> tuple[str, Node]:
+    def _add_assistant_turn(self, *, conversation_id: str, content: str, provenance_span: Span) -> tuple[str, ConversationNode]:
         # Minimal assistant turn node
         nid = pointer_id(scope=f"conv:{conversation_id}", pointer_kind="turn", target_kind="assistant", target_id=str(int(time.time()*1000)))
         node = ConversationNode(
             id=nid,
             label="Assistant",
-            type="conversation_turn",
+            type="entity",
             summary=content[:2000],
             conversation_id=conversation_id,
             role="assistant",  # type: ignore
             turn_index=None,
-            properties={"content": content},
+            properties={"content": content, "entity_type": "assistant_turn"},
             mentions=[Grounding(spans=[provenance_span])],
             metadata={"level_from_root": 0, "entity_type": "assistant_turn", "char_distance_from_last_summary": 0, "turn_distance_from_last_summary": 0},
             domain_id=None,

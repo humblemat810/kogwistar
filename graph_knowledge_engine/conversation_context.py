@@ -52,6 +52,7 @@ class ContextItem:
     """
     A single packable unit (turn / summary / memory / KG ref).
     This is the unit of budgeting + traceability.
+    subclass in use: memory context with memctx_ids
     """
     kind: ItemKind
     text: str
