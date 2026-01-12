@@ -1,7 +1,8 @@
 <!doctype html>
 <html>
   <head>
-    <meta charset="utf-8"    <title>D3 graph viewer</title>
+    <meta charset="utf-8">
+    <title>D3 graph viewer</title>
     <style>
       body { margin:0; }
       svg { width:100vw; height:100vh; display:block; }
@@ -35,7 +36,6 @@
       #legend .diamond { display:inline-block; width:10px; height:10px; background:#d77; transform:rotate(45deg); margin-right:6px; }
       .hidden { display: none; }
 
-      /* focus highlight */
       .focus-node { stroke: #ffb000; stroke-width: 3px; }
       .focus-label { font-weight: 700; text-decoration: underline; }
       .dim { opacity: 0.15; }
@@ -61,7 +61,7 @@
     </style>
     <script src="https://unpkg.com/d3@7"></script>
   </head>
-  
+
   <body>
     <div id="bar">
       <div style="margin-bottom:6px;">
@@ -125,32 +125,27 @@
     <svg></svg>
 
     <script>
+      // Optional (bundle mode): server or CLI may inject these.
       window.__EMBEDDED_DATA__ = {{ embedded_data | safe if embedded_data is defined else "null" }};
+      window.__BUNDLE_META__ = {{ bundle_meta | safe if bundle_meta is defined else "null" }};
+    </script>
 
-      // ---- Data loading: online (fetch) or offline (embedded) ----
-      const EMBEDDED_DATA = {% if embedded_data is defined %}{{ embedded_data | safe }}{% else %}null{% endif %};
-
+    <script>
       function parseQuery() {
         const u = new URL(window.location.href);
         const qs = u.searchParams;
-
-        // Focus: comma-separated list of node ids to highlight
         const focus = (qs.get("focus") || "").split(",").map(s => s.trim()).filter(Boolean);
-
-        // Optional: override data url (useful for sharing one template)
         const dataUrl = qs.get("data_url");
-
         return { focus, dataUrl };
       }
 
       function safeSvgId(s) {
-        // SVG fragment ids get cranky with characters like ":", ">", spaces, etc.
-        // Keep stable but safe: replace anything not [A-Za-z0-9_-] with "_".
         return String(s).replace(/[^A-Za-z0-9_-]/g, "_");
       }
 
       async function main(){
         const { focus, dataUrl } = parseQuery();
+        const focusSet = new Set(focus);
 
         const params = new URLSearchParams({
           "doc_id":"{{ doc_id or '' }}",
@@ -162,15 +157,13 @@
         const resolvedDataUrl = dataUrl || ("/api/viz/d3.json?" + params.toString());
 
         let data = window.__EMBEDDED_DATA__;
-
         if (!data) {
-          const res = await fetch("/api/viz/d3.json?" + params.toString());
+          const res = await fetch(resolvedDataUrl);
           data = await res.json();
         }
+
         const allNodes = (data.nodes || []).map(n => ({...n}));
         const allLinks = (data.links || []).map(l => ({...l}));
-
-        const focusSet = new Set(focus);
 
         const svg = d3.select("svg"),
               width = window.innerWidth,
@@ -214,7 +207,6 @@
         const gNodes = gRoot.append("g");
         const gLabels= gRoot.append("g");
 
-        // Controls
         const fontSize    = document.getElementById('fontSize');
         const linkDistIn  = document.getElementById('linkDist');
         const chargeIn    = document.getElementById('charge');
@@ -232,7 +224,6 @@
         document.getElementById('zoomOut').onclick = () => svg.transition().call(zoom.scaleBy, 1/1.4);
         document.getElementById('resetZoom').onclick = () => svg.transition().call(zoom.transform, d3.zoomIdentity);
 
-        // relation checklist
         const uniqueRelations = Array.from(
           new Set(allLinks.map(e => (e.relation || e.label || "").toLowerCase()).filter(Boolean))
         ).sort();
@@ -246,7 +237,7 @@
             const id = "rel_" + r.replace(/\W+/g, "_");
             const wrap = document.createElement('label');
             const cb = document.createElement('input');
-            cb.type = "checkbox"; cb.id = id; cb.value = r; cb.checked = true; // default ALL on
+            cb.type = "checkbox"; cb.id = id; cb.value = r; cb.checked = true;
             wrap.appendChild(cb);
             const span = document.createElement('span'); span.textContent = r;
             wrap.appendChild(span);
@@ -310,7 +301,6 @@
           .text(d=>d.label||d.id)
           .style("font", fontSize.value + "px sans-serif");
 
-        // Focus highlight
         function applyFocusStyles(){
           const hasFocus = focusSet.size > 0;
           nodeCircle.classed("focus-node", d => focusSet.has(d.id));
@@ -318,7 +308,6 @@
           labelSel.classed("focus-label", d => focusSet.has(d.id));
 
           if (hasFocus) {
-            // dim non-focus nodes for clarity
             nodeCircle.classed("dim", d => !focusSet.has(d.id));
             nodeDiamond.classed("dim", d => !focusSet.has(d.id));
             labelSel.classed("dim", d => !focusSet.has(d.id));
@@ -326,7 +315,6 @@
         }
         applyFocusStyles();
 
-        // Forces
         const linkForce   = d3.forceLink(allLinks).id(d => d.id).distance(+linkDistIn.value);
         const chargeForce = d3.forceManyBody().strength(+chargeIn.value);
         const gravX       = d3.forceX(width/2).strength(+gravityIn.value);
@@ -398,7 +386,6 @@
         nodeCircle.call(makeDrag(new Map(), 40, +layerGapIn.value));
         nodeDiamond.call(makeDrag(new Map(), 40, +layerGapIn.value));
 
-        // Live controls
         fontSize.oninput = () => labelSel.style("font", fontSize.value + "px sans-serif");
         linkDistIn.oninput = () => { linkForce.distance(+linkDistIn.value); sim.alpha(0.3).restart(); };
         chargeIn.oninput   = () => { chargeForce.strength(+chargeIn.value); sim.alpha(0.3).restart(); };
@@ -473,12 +460,12 @@
         function applyVisibility(){
           const chosen = readChosenRelations();
 
-          let depth = new Map(), rootId = null;
+          let depth = new Map();
           const baseY = 40;
           const layerGap = +layerGapIn.value;
 
           if (treeMode.checked) {
-            rootId = pickRootId();
+            const rootId = pickRootId();
             depth = computeDepth(rootId);
           }
 
@@ -512,11 +499,6 @@
           });
 
           const nodeVisible = new Map(allNodes.map(n => [n.id, false]));
-          if (treeMode.checked && depth.size) {
-            const r = pickRootId();
-            if (r) nodeVisible.set(r, true);
-          }
-
           linkSel.each(function(e){
             const k = keyEdge(e);
             if (!linkVisible.get(k)) return;
@@ -549,41 +531,46 @@
           nodeDiamond.call(makeDrag(depth, baseY, layerGap));
 
           if (!freezeIn.checked) sim.alpha(0.25).restart();
-
-          // Re-apply focus styling after visibility changes
           applyFocusStyles();
         }
 
-        // Inspector
+        applyBtn.onclick = () => applyVisibility();
+
         const inspector = document.getElementById("inspector");
         const inspectorBody = document.getElementById("inspectorBody");
         const closeInspector = document.getElementById("closeInspector");
         const openRefBtn = document.getElementById("openRef");
-
         let selectedDatum = null;
+
+        function getRefId(d){
+          const props = (d && (d.properties || d.metadata)) || {};
+          return props.refers_to_id || (props.kg && props.kg.refers_to_id) || null;
+        }
 
         function showInspector(d){
           selectedDatum = d;
           inspectorBody.textContent = JSON.stringify(d, null, 2);
           inspector.classList.remove("hidden");
-          // enable ref opener only if node has refers_to_id
-          const props = d && (d.properties || d.metadata || {});
-          const refId = props && (props.refers_to_id || (props.kg && props.kg.refers_to_id));
-          openRefBtn.disabled = !refId;
+          openRefBtn.disabled = !getRefId(d);
         }
-
         function hideInspector(){
           inspector.classList.add("hidden");
           selectedDatum = null;
         }
         closeInspector.onclick = hideInspector;
+        svg.on("click", () => hideInspector());
 
         openRefBtn.onclick = () => {
           if (!selectedDatum) return;
-          const props = selectedDatum.properties || selectedDatum.metadata || {};
-          const refId = props.refers_to_id || (props.kg && props.kg.refers_to_id);
+          const refId = getRefId(selectedDatum);
           if (!refId) return;
-          // Open KG view focused on the referenced id. If your backend needs doc_id, include it in properties and append here.
+
+          const meta = window.__BUNDLE_META__ || {};
+          if (meta.kg_bundle_href) {
+            window.open(`${meta.kg_bundle_href}?focus=${encodeURIComponent(refId)}`, "_blank");
+            return;
+          }
+
           const u = new URL(window.location.origin + "/viz/d3");
           u.searchParams.set("mode", "{{ mode }}");
           u.searchParams.set("focus", refId);
@@ -599,29 +586,7 @@
         attachClick(nodeCircle);
         attachClick(nodeDiamond);
 
-        svg.on("click", () => hideInspector());
-
-        // Initial visibility
         applyVisibility();
- d * layerGap;
-                n.y = y; n.fy = y; // pin Y
-              }
-            });
-          } else {
-            allNodes.forEach(n => { n.fy = null; });
-          }
-
-          nodeCircle.call(makeDrag(depth, baseY, layerGap));
-          nodeDiamond.call(makeDrag(depth, baseY, layerGap));
-
-          if (!freezeIn.checked) sim.alpha(0.25).restart();
-        }
-
-        // Initial visibility
-        applyVisibility();
-
-        // Apply button
-        applyBtn.onclick = () => applyVisibility();
       }
       main();
     </script>

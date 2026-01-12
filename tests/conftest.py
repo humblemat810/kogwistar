@@ -1,5 +1,5 @@
 # tests/conftest.py
-import os, shutil, uuid, json
+import shutil, uuid, json
 import sys
 import pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parents))
@@ -9,9 +9,13 @@ from graph_knowledge_engine.models import (
     Edge, LLMGraphExtraction, LLMNode, LLMEdge,
     LLMMergeAdjudication, AdjudicationVerdict, Node, Span
 )
-from typing import Any, Dict, List, Optional
+from typing import Any, List, Optional
 from langchain_core.runnables import Runnable
 from graph_knowledge_engine.models import LLMMergeAdjudication, AdjudicationVerdict
+
+
+from pathlib import Path
+
 
 class FakeStructuredRunnable(Runnable):
     """A minimal Runnable that returns a fixed structured result."""
@@ -449,3 +453,192 @@ def small_test_docs_nodes_edge_adjudcate():
     sample_dataset = {"docs": docs, "nodes": nodes, "edges": edges, "adjudication_pairs": adjudication_pairs}
 
     return sample_dataset
+
+
+
+
+def _seed_node(engine: GraphKnowledgeEngine, *, doc_id: str, node_id: str, label: str, insertion_method: str, properties: dict | None = None):
+    n = Node(
+        id=node_id,
+        label=label,
+        type="entity",
+        summary=label,
+        doc_id=doc_id,
+        properties=properties or {},
+        mentions=[
+            Span(
+                collection_page_url=f"document_collection/{doc_id}",
+                document_page_url=f"document/{doc_id}",
+                doc_id=doc_id,
+                insertion_method=insertion_method,
+                start_page=1,
+                end_page=1,
+                start_char=0,
+                end_char=1,
+            )
+        ],
+    )
+
+    engine.node_collection.add(
+        ids=[node_id],
+        documents=[n.model_dump_json(field_mode="backend")],
+        metadatas=[{"doc_id": doc_id, "label": n.label, "type": n.type}],
+    )
+
+    # Node-doc mapping row (your engine expects it for joins)
+    ndid = f"{node_id}::{doc_id}"
+    row = {"id": ndid, "node_id": node_id, "doc_id": doc_id}
+    engine.node_docs_collection.add(ids=[ndid], documents=[json.dumps(row)], metadatas=[row])
+    return n
+
+
+def _seed_edge(engine: GraphKnowledgeEngine, *, doc_id: str, edge_id: str, relation: str, src_id: str, tgt_id: str, insertion_method: str, label: str | None = None):
+    e = Edge(
+        id=edge_id,
+        label=label or f"{src_id} {relation} {tgt_id}",
+        type="relationship",
+        summary=label or f"{src_id} {relation} {tgt_id}",
+        relation=relation,
+        source_ids=[src_id],
+        target_ids=[tgt_id],
+        source_edge_ids=[],
+        target_edge_ids=[],
+        doc_id=doc_id,
+        mentions=[
+            Span(
+                collection_page_url=f"document_collection/{doc_id}",
+                document_page_url=f"document/{doc_id}",
+                doc_id=doc_id,
+                insertion_method=insertion_method,
+                start_page=1,
+                end_page=1,
+                start_char=0,
+                end_char=1,
+            )
+        ],
+    )
+
+    engine.edge_collection.add(
+        ids=[edge_id],
+        documents=[e.model_dump_json(field_mode="backend")],
+        metadatas=[{"doc_id": doc_id, "relation": relation}],
+    )
+
+    # Endpoints rows (your engine expects these)
+    rows = [
+        {
+            "id": f"{edge_id}::src::node::{src_id}",
+            "edge_id": edge_id,
+            "endpoint_id": src_id,
+            "endpoint_type": "node",
+            "role": "src",
+            "relation": relation,
+            "doc_id": doc_id,
+        },
+        {
+            "id": f"{edge_id}::tgt::node::{tgt_id}",
+            "edge_id": edge_id,
+            "endpoint_id": tgt_id,
+            "endpoint_type": "node",
+            "role": "tgt",
+            "relation": relation,
+            "doc_id": doc_id,
+        },
+    ]
+    engine.edge_endpoints_collection.add(
+        ids=[r["id"] for r in rows],
+        documents=[json.dumps(r) for r in rows],
+        metadatas=rows,
+    )
+    return e
+
+
+def seed_small_kg(engine: GraphKnowledgeEngine, *, doc_id: str = "KG_DOC", insertion_method: str = "pytest-seed"):
+    _seed_node(engine, doc_id=doc_id, node_id="A", label="Smoking", insertion_method=insertion_method)
+    _seed_node(engine, doc_id=doc_id, node_id="B", label="Lung Cancer", insertion_method=insertion_method)
+    _seed_node(engine, doc_id=doc_id, node_id="C", label="Cough", insertion_method=insertion_method)
+    _seed_edge(engine, doc_id=doc_id, edge_id="E1", relation="causes", src_id="A", tgt_id="B", insertion_method=insertion_method)
+    return engine
+
+
+def seed_small_conversation(engine: GraphKnowledgeEngine, *, doc_id: str = "CONV_DOC", insertion_method: str = "pytest-seed"):
+    # Conversation nodes that refer to KG node ids:
+    # This is the key: properties.refers_to_id points at the KG node id.
+    _seed_node(
+        engine,
+        doc_id=doc_id,
+        node_id="T1",
+        label="User turn 1",
+        insertion_method=insertion_method,
+        properties={"role": "user"},
+    )
+    _seed_node(
+        engine,
+        doc_id=doc_id,
+        node_id="R1",
+        label="Retrieved ref A",
+        insertion_method=insertion_method,
+        properties={"refers_to_id": "A", "refers_to_collection": "nodes"},
+    )
+    _seed_node(
+        engine,
+        doc_id=doc_id,
+        node_id="A1",
+        label="Assistant turn 1",
+        insertion_method=insertion_method,
+        properties={"role": "assistant"},
+    )
+
+    # Conversation edges: turn -> retrieved_ref -> assistant
+    _seed_edge(engine, doc_id=doc_id, edge_id="CE1", relation="retrieved", src_id="T1", tgt_id="R1", insertion_method=insertion_method)
+    _seed_edge(engine, doc_id=doc_id, edge_id="CE2", relation="used_in", src_id="R1", tgt_id="A1", insertion_method=insertion_method)
+# Memory context node (derived, system-generated)
+    _seed_node(
+        engine,
+        doc_id=doc_id,
+        node_id="MCTX1",
+        label="Memory context (turn 1)",
+        insertion_method=insertion_method,
+        properties={
+            "entity_type": "memory_context",
+            "role": "system",
+            "source_turn_ids": ["T1"],
+        },
+    )
+
+    # Summary node that ALSO refers to KG
+    _seed_node(
+        engine,
+        doc_id=doc_id,
+        node_id="SUM1",
+        label="Conversation summary",
+        insertion_method=insertion_method,
+        properties={
+            "entity_type": "summary",
+            "refers_to_id": "A",           # KG node
+            "refers_to_collection": "nodes",
+            "source_node_ids": ["T1", "A1", "MCTX1"],
+        },
+    )
+
+    # Wire them in
+    _seed_edge(engine, doc_id=doc_id, edge_id="CE3", relation="summarizes", src_id="A1", tgt_id="SUM1", insertion_method=insertion_method)
+    _seed_edge(engine, doc_id=doc_id, edge_id="CE4", relation="memory_of", src_id="SUM1", tgt_id="MCTX1", insertion_method=insertion_method)    
+    return engine
+
+
+@pytest.fixture
+def seeded_kg_and_conversation(tmp_path: Path):
+    """
+    Real persisted engines + correctly formatted nodes/edges + conversation ref -> KG node id.
+    """
+    kg_dir = tmp_path / "chroma_kg"
+    conv_dir = tmp_path / "chroma_conv"
+
+    kg_engine = GraphKnowledgeEngine(persist_directory=str(kg_dir), kg_graph_type="knowledge")
+    conv_engine = GraphKnowledgeEngine(persist_directory=str(conv_dir), kg_graph_type="conversation")
+
+    seed_small_kg(kg_engine, doc_id="KG_DOC", insertion_method="pytest-seed")
+    seed_small_conversation(conv_engine, doc_id="CONV_DOC", insertion_method="pytest-seed")
+
+    return kg_engine, conv_engine, kg_dir, conv_dir

@@ -97,6 +97,12 @@ os.makedirs(index_dir, exist_ok = True)
 index_db_path = os.path.join(*(pathparts + ['index.db']))
 
 engine = GraphKnowledgeEngine(persist_directory=persist_directory)
+conversation_persist_directory = os.environ.get("MCP_CHROMA_DIR_CONVERSATION") or (persist_directory + "-conversation")
+conversation_engine = GraphKnowledgeEngine(
+    persist_directory=conversation_persist_directory,
+    kg_graph_type="conversation",
+)
+conversation_gq = GraphQuery(conversation_engine)
 gq = GraphQuery(engine)
 # ---- Wisdom + MCP ----
 wisdom_persist_directory = os.environ.get("MCP_CHROMA_DIR_WISDOM") or (persist_directory + "-wisdom")
@@ -658,13 +664,60 @@ def api_viz_cytoscape(
     payload = to_cytoscape(engine, doc_id=doc_id, mode=mode, insertion_method=insertion_method)
     return JSONResponse(payload)
 
+@app.get("/viz/d3.bundle", response_class=HTMLResponse)
+def viz_d3_bundle(
+    request: Request,
+    doc_id: Optional[str] = None,
+    mode: str = "reify",
+    insertion_method: Optional[str] = None,
+    graph_type: str = "knowledge",  # knowledge|conversation|wisdom
+):
+    gt = (graph_type or "knowledge").lower()
+    if gt == "conversation":
+        use_engine = conversation_engine
+    elif gt == "wisdom":
+        use_engine = wisdom_engine
+    else:
+        use_engine = engine
+
+    payload = to_d3_force(use_engine, doc_id=doc_id, mode=mode, insertion_method=insertion_method)
+
+    # Optional bundle meta (single bundle won't know peer paths; pair bundling is handled by CLI/debugger)
+    bundle_meta = {
+        "graph_type": gt,
+        "mode": mode,
+        "insertion_method": insertion_method,
+        "doc_id": doc_id,
+    }
+
+    return templates.TemplateResponse(
+        "d3.html",
+        {
+            "request": request,
+            "doc_id": doc_id,
+            "mode": mode,
+            "insertion_method": insertion_method,
+            "embedded_data": json.dumps(payload),
+            "bundle_meta": json.dumps(bundle_meta),
+            "is_bundle": True,
+        },
+    )
 @app.get("/api/viz/d3.json")
 def api_viz_d3(
     doc_id: Optional[str] = None,
     mode: str = "reify",
-    insertion_method: Optional[str] = None,   # NEW
+    insertion_method: Optional[str] = None,
+    graph_type: Optional[str] = None,   # NEW: knowledge|conversation|wisdom
 ):
-    payload = to_d3_force(engine, doc_id=doc_id, mode=mode, insertion_method=insertion_method)
+    graph_type = (graph_type or "knowledge").lower()
+    if graph_type == "conversation":
+        use_engine = conversation_engine
+    elif graph_type == "wisdom":
+        use_engine = wisdom_engine
+    else:
+        use_engine = engine
+
+    payload = to_d3_force(use_engine, doc_id=doc_id, mode=mode, insertion_method=insertion_method)
     return JSONResponse(payload)
 class DocumentGraphProposal(BaseModel):
     doc_id: str
@@ -905,27 +958,27 @@ def viz_d3(
         {"request": request, "doc_id": doc_id, "mode": mode, "insertion_method": insertion_method},
     )
 
-@app.get("/viz/d3.bundle", response_class=HTMLResponse)
-def viz_d3_bundle(
-    request: Request,
-    doc_id: Optional[str] = None,
-    mode: str = "reify",
-    insertion_method: Optional[str] = None,
-):
-    # Embed the JSON payload directly into the HTML so it can be opened offline.
-    import json as _json
-    payload = to_d3_force(engine, doc_id=doc_id, mode=mode, insertion_method=insertion_method)
-    return templates.TemplateResponse(
-        "d3.html",
-        {
-            "request": request,
-            "doc_id": doc_id,
-            "mode": mode,
-            "insertion_method": insertion_method,
-            "embedded_data": _json.dumps(payload),
-            "is_bundle": True,
-        },
-    )
+# @app.get("/viz/d3.bundle", response_class=HTMLResponse)
+# def viz_d3_bundle(
+#     request: Request,
+#     doc_id: Optional[str] = None,
+#     mode: str = "reify",
+#     insertion_method: Optional[str] = None,
+# ):
+#     # Embed the JSON payload directly into the HTML so it can be opened offline.
+#     import json as _json
+#     payload = to_d3_force(engine, doc_id=doc_id, mode=mode, insertion_method=insertion_method)
+#     return templates.TemplateResponse(
+#         "d3.html",
+#         {
+#             "request": request,
+#             "doc_id": doc_id,
+#             "mode": mode,
+#             "insertion_method": insertion_method,
+#             "embedded_data": _json.dumps(payload),
+#             "is_bundle": True,
+#         },
+#     )
 
 @app.get("/viz/go", response_class=HTMLResponse)
 def viz_go(
