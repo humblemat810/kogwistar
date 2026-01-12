@@ -1,6 +1,10 @@
 from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Literal, Self, Sequence, TypeAlias 
+from .typing_interfaces import EngineLike
+from typing import Iterable
+from .models import ConversationNode, ConversationEdge
+import json
 
 Role: TypeAlias =  Literal["system", "user", "assistant", "tool"]
 # system include kg graph, internal summary, filtering thinking, reasoning from llm call
@@ -309,3 +313,326 @@ class ConversationContextBuilder:
     def _truncate_to_tokens(self, text: str, max_tokens: int) -> str:
         # placeholder: you’ll replace with a proper token-aware truncation or LLM compression
         return text[: max(1, max_tokens * 4)]
+    
+
+
+@dataclass(frozen=True)
+class _EdgeSelection:
+    memctx_ids: set[str]
+    ptr_ids: set[str]
+    edge_ids_for_memctx: set[str]
+    edge_ids_for_ptr: set[str]
+class ContextSources:
+    def __init__(
+        self,
+        *,
+        conversation_engine: "EngineLike",
+        tail_turns: int = 8,
+        include_summaries: bool = True,
+        include_memory_context: bool = True,
+        include_pinned_kg_refs: bool = True,
+    ) -> None:
+        self.engine = conversation_engine
+        self.tail_turns = tail_turns
+        self.include_summaries = include_summaries
+        self.include_memory_context = include_memory_context
+        self.include_pinned_kg_refs = include_pinned_kg_refs
+
+    def gather(self, *, conversation_id: str, purpose: str):
+        # Phase 1: load nodes
+        ids, docs, metas = self._load_node_rows(conversation_id)
+
+        # Phase 2: decode nodes
+        by_id, meta_by_id = self._decode_nodes(ids, docs, metas)
+
+        # Phase 3: compute turn ids & summary id
+        tail_turn_ids = self._select_tail_turn_ids(by_id, meta_by_id)
+        head_summary_id = self._select_head_summary_id(by_id) if self.include_summaries else None
+
+        # Phase 4: edge-based expansions
+        edge_sel = self._select_edges_for_tail_turns(conversation_id, tail_turn_ids)
+
+        # Phase 5: build ContextItems
+        items: list[ContextItem] = []
+        self._append_head_summary(items, by_id, head_summary_id)
+        self._append_memory_context(items, by_id, edge_sel)
+        self._append_pinned_refs(items, by_id, edge_sel)
+        self._append_tail_turns(items, by_id, tail_turn_ids)
+
+        return items
+
+    # -------------------------
+    # Phase 1
+    # -------------------------
+    def _load_node_rows(self, conversation_id: str) -> tuple[list[Any], list[Any], list[Any]]:
+        got = self.engine.node_collection.get(
+            where={"conversation_id": conversation_id},
+            include=["documents", "metadatas"],
+        )
+        ids = got.get("ids") or []
+        docs = got.get("documents") or []
+        metas = got.get("metadatas") or []
+        return ids, docs, metas
+
+    # -------------------------
+    # Phase 2
+    # -------------------------
+    def _decode_nodes(
+        self,
+        ids: Iterable[Any],
+        docs: Iterable[Any],
+        metas: Iterable[Any],
+    ) -> tuple[dict[str, ConversationNode], dict[str, dict]]:
+        by_id: dict[str, ConversationNode] = {}
+        meta_by_id: dict[str, dict] = {}
+
+        for nid, doc, meta in zip(ids, docs, metas):
+            base = self._safe_json_dict(doc)
+            if isinstance(meta, dict):
+                base["metadata"] = {**(base.get("metadata") or {}), **meta}
+
+            n = self._safe_validate_conversation_node(base)
+            if n is None:
+                continue
+
+            sid = str(nid)
+            by_id[sid] = n
+            meta_by_id[sid] = (base.get("metadata") or {})
+        return by_id, meta_by_id
+
+    def _safe_json_dict(self, doc: Any) -> dict:
+        if not isinstance(doc, str):
+            return {}
+        try:
+            out = json.loads(doc)
+            return out if isinstance(out, dict) else {}
+        except Exception:
+            return {}
+
+    def _safe_validate_conversation_node(self, payload: dict) -> ConversationNode | None:
+        try:
+            return ConversationNode.model_validate(payload)
+        except Exception:
+            return None
+
+    # -------------------------
+    # Phase 3
+    # -------------------------
+    def _entity_type(self, nid: str, meta_by_id: dict[str, dict]) -> str:
+        m = meta_by_id.get(nid) or {}
+        return str(m.get("entity_type") or m.get("type") or "")
+
+    def _turn_index(self, n: ConversationNode) -> int:
+        return int(getattr(n, "turn_index", -1) or -1)
+
+    def _select_tail_turn_ids(self, by_id: dict[str, ConversationNode], meta_by_id: dict[str, dict]) -> list[str]:
+        turn_ids = [nid for nid in by_id.keys() if self._entity_type(nid, meta_by_id) == "conversation_turn"]
+        turn_ids.sort(key=lambda nid: self._turn_index(by_id[nid]))
+        return turn_ids[-self.tail_turns :] if self.tail_turns > 0 else []
+
+    def _select_head_summary_id(self, by_id: dict[str, ConversationNode]) -> str | None:
+        best_ix = -10**9
+        head_summary_id: str | None = None
+        for nid, n in by_id.items():
+            if str(getattr(n, "type", "")) == "memory_summary":
+                ix = self._turn_index(n)
+                if ix >= best_ix:
+                    best_ix = ix
+                    head_summary_id = nid
+        return head_summary_id
+
+    # -------------------------
+    # Phase 4
+    # -------------------------
+    def _select_edges_for_tail_turns(self, conversation_id: str, tail_turn_ids: list[str]) -> _EdgeSelection:
+        memctx_ids: set[str] = set()
+        ptr_ids: set[str] = set()
+        edge_ids_for_memctx: set[str] = set()
+        edge_ids_for_ptr: set[str] = set()
+
+        if not tail_turn_ids:
+            return _EdgeSelection(memctx_ids, ptr_ids, edge_ids_for_memctx, edge_ids_for_ptr)
+        if not (self.include_memory_context or self.include_pinned_kg_refs):
+            return _EdgeSelection(memctx_ids, ptr_ids, edge_ids_for_memctx, edge_ids_for_ptr)
+
+        egot = self.engine.edge_collection.get(
+            where={"doc_id": f"conv:{conversation_id}"},
+            include=["metadatas"],
+        )
+        eids = egot.get("ids") or []
+        emetas = egot.get("metadatas") or []
+
+        tail_turn_set = set(tail_turn_ids)
+
+        for eid, em in zip(eids, emetas):
+            if not isinstance(em, dict):
+                continue
+
+            rel = str(em.get("relation") or "")
+            src = self._first_id_from_json_list(em.get("source_ids"))
+            if src is None or src not in tail_turn_set:
+                continue
+
+            tids = self._ids_from_json_list(em.get("target_ids"))
+            if not tids:
+                continue
+
+            if rel == "has_memory_context" and self.include_memory_context:
+                memctx_ids.update(tids)
+                edge_ids_for_memctx.add(str(eid))
+
+            elif rel == "references" and self.include_pinned_kg_refs:
+                ptr_ids.update(tids)
+                edge_ids_for_ptr.add(str(eid))
+
+        return _EdgeSelection(memctx_ids, ptr_ids, edge_ids_for_memctx, edge_ids_for_ptr)
+
+    def _ids_from_json_list(self, raw: Any) -> list[str]:
+        try:
+            xs = json.loads(raw or "[]")
+        except Exception:
+            xs = []
+        if not isinstance(xs, list):
+            return []
+        return [str(x) for x in xs if x is not None]
+
+    def _first_id_from_json_list(self, raw: Any) -> str | None:
+        ids = self._ids_from_json_list(raw)
+        return ids[0] if ids else None
+
+    # -------------------------
+    # Phase 5 (builders)
+    # -------------------------
+    def _append_head_summary(self, items: list[ContextItem], by_id: dict[str, ConversationNode], head_summary_id: str | None) -> None:
+        if not head_summary_id:
+            return
+        n = by_id.get(head_summary_id)
+        if n is None:
+            return
+        items.append(
+            ContextItem(
+                kind="head_summary",
+                role="system",
+                text=str(getattr(n, "summary", "") or ""),
+                node_id=head_summary_id,
+                priority=20,
+                pinned=True,
+                max_tokens=800,
+                source="summary",
+            )
+        )
+
+    def _append_memory_context(self, items: list[ContextItem], by_id: dict[str, ConversationNode], edge_sel: _EdgeSelection) -> None:
+        for mid in sorted(edge_sel.memctx_ids):
+            n = by_id.get(mid)
+            if n is None:
+                continue
+            items.append(
+                ContextItem(
+                    kind="memory_context",
+                    role="system",
+                    text=str(getattr(n, "summary", "") or ""),
+                    node_id=mid,
+                    edge_ids=tuple(sorted(edge_sel.edge_ids_for_memctx)),
+                    priority=30,
+                    pinned=True,
+                    max_tokens=600,
+                    source="memory_pinned",
+                    extra={"source_node_ids": (getattr(n, "properties", {}) or {}).get("source_node_ids")},
+                )
+            )
+
+    def _append_pinned_refs(self, items: list[ContextItem], by_id: dict[str, ConversationNode], edge_sel: _EdgeSelection) -> None:
+        for pid in sorted(edge_sel.ptr_ids):
+            n = by_id.get(pid)
+            if n is None:
+                continue
+            props = getattr(n, "properties", {}) or {}
+            refers_to = props.get("refers_to_id")
+            label = getattr(n, "label", "") or ""
+            summary = getattr(n, "summary", "") or ""
+            txt = f"{label}\n{summary}".strip()
+            items.append(
+                ContextItem(
+                    role="system",
+                    kind="pinned_kg_ref",
+                    text=txt,
+                    node_id=pid,
+                    edge_ids=tuple(sorted(edge_sel.edge_ids_for_ptr)),
+                    pointer_ids=(str(refers_to),) if isinstance(refers_to, str) and refers_to else (),
+                    priority=40,
+                    pinned=True,
+                    max_tokens=500,
+                    source="kg_ref",
+                    extra={"refers_to_id": refers_to},
+                )
+            )
+
+    def _append_tail_turns(self, items: list[ContextItem], by_id: dict[str, ConversationNode], tail_turn_ids: list[str]) -> None:
+        # chronological order; newest gets lowest priority value
+        for idx, tid in enumerate(tail_turn_ids):
+            n = by_id.get(tid)
+            if n is None:
+                continue
+            role: Role = getattr(n, "role", None) or "user"
+            text = str(getattr(n, "summary", "") or "")
+            age_from_newest = max(0, (len(tail_turn_ids) - 1 - idx))
+            items.append(
+                ContextItem(
+                    kind="tail_turn",
+                    text=text,
+                    node_id=tid,
+                    priority=50 + age_from_newest,
+                    pinned=False,
+                    role=role,  # type: ignore
+                    source="history_turn",
+                    extra={"turn_index": int(getattr(n, "turn_index", -1) or -1)},
+                )
+            )
+
+
+
+@dataclass
+class EngineConversationStore:
+    engine: "EngineLike"
+
+    def get_turns(self, conversation_id: str) -> list[ContextMessage]:
+        # 1) fetch all conversation nodes for this conversation_id
+        # NOTE: adapt include/where to your Chroma wrapper API
+        res = self.engine.node_collection.get(
+            where={"conversation_id": conversation_id},
+            include=["metadatas", "documents", "ids"],  # or whatever your wrapper uses
+        )
+
+        # 2) materialize + sort
+        turns: list[ConversationNode] = []
+        for nid, meta, doc in zip(res["ids"], res["metadatas"], res.get("documents", [None]*len(res["ids"]))):
+            # You might store content in doc, or in summary/properties.
+            # If your storage puts text in `documents`, use doc.
+            # Otherwise, parse from meta/properties as you do elsewhere.
+            node = ConversationNode(
+                id=nid,
+                metadata=meta,
+                # other required fields for Node/GraphEntityRefBase if needed…
+                # If ConversationNode requires label/type/summary/mentions, you may need to pull those too.
+            )
+            turns.append(node)
+
+        turns.sort(key=lambda n: (n.turn_index or 0))
+
+        # 3) convert to ContextMessage
+        out: list[ContextMessage] = []
+        for n in turns:
+            # Choose ONE canonical “text for LLM” location:
+            # - if you stored it in summary: use n.summary
+            # - if you stored it in metadata/properties/documents: use that
+            text = getattr(n, "summary", None) or ""
+            out.append(
+                ContextMessage(
+                    role=(n.role or "user"),     # role is on node via ConversationRoleMixin
+                    content=text,
+                    node_id=n.id,
+                    source="history_turn",
+                )
+            )
+        return out

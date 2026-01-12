@@ -3,37 +3,38 @@ from __future__ import annotations
 from langchain_core.language_models import BaseChatModel
 
 from .models import RetrievalResult
-"""_summary_
+if True:
+    """_summary_
 
-Raises:
-    ValueError: _description_
-    ValueError: _description_
-    ValueError: _description_
-    ValueError: _description_
+    Raises:
+        ValueError: _description_
+        ValueError: _description_
+        ValueError: _description_
+        ValueError: _description_
 
-Returns:
-    _type_: _description_
-    
-sample usage:
-from graph_knowledge_engine.strategies import candidate_proposals as CP
-from graph_knowledge_engine.strategies import adjudicators as AJ
-from graph_knowledge_engine.strategies import merge_policies as MP
-from graph_knowledge_engine.strategies import verifiers as VF
-from graph_knowledge_engine.engine import GraphKnowledgeEngine
+    Returns:
+        _type_: _description_
+        
+    sample usage:
+    from graph_knowledge_engine.strategies import candidate_proposals as CP
+    from graph_knowledge_engine.strategies import adjudicators as AJ
+    from graph_knowledge_engine.strategies import merge_policies as MP
+    from graph_knowledge_engine.strategies import verifiers as VF
+    from graph_knowledge_engine.engine import GraphKnowledgeEngine
 
-engine = GraphKnowledgeEngine(
-    persist_directory="./chroma_db",
-    candidate_generator=CP.hybrid,         # or CP.by_vector_similarity
-    adjudicator=AJ.llm_pair,               # or AJ.rule_first_token / AJ.llm_batch in your batch path
-    merge_policy=MP.prefer_existing_canonical,
-    verifier=VF.ensemble_default,          # or VF.coverage_only / VF.strict_with_min_span
-)
-"""
-from .conversation_context import ContextItem, ConversationContextView, DroppedItem, ContextRenderer, Role
+    engine = GraphKnowledgeEngine(
+        persist_directory="./chroma_db",
+        candidate_generator=CP.hybrid,         # or CP.by_vector_similarity
+        adjudicator=AJ.llm_pair,               # or AJ.rule_first_token / AJ.llm_batch in your batch path
+        merge_policy=MP.prefer_existing_canonical,
+        verifier=VF.ensemble_default,          # or VF.coverage_only / VF.strict_with_min_span
+    )
+    """
+from .conversation_context import ContextItem, ContextSources, ConversationContextView, DroppedItem, ContextRenderer, Role
 import numpy as np
+import ast
 from typing import Iterator, List, Optional, Dict, Any, Self, Tuple, TypeAlias, cast
 from .typing_interfaces import CollectionLike, EmbeddingFunctionLike
-import chromadb
 from dataclasses import dataclass, field
 from .graph_query import GraphQuery
 from chromadb import Client
@@ -62,7 +63,9 @@ from .models import (
     AdjudicationVerdict,
     LLMMergeAdjudication,
     ConversationNodeMetadata,
-    ConversationAIResponse
+    ConversationAIResponse,
+    FilteringResponse, 
+    FilteringResult
 )
 from langchain_openai import AzureChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
@@ -71,14 +74,18 @@ import os
 from dotenv import load_dotenv
 import uuid
 from joblib import Memory
-import json, re, uuid
-
+import re
+from functools import wraps
 from .models import Span, MentionVerification, LLMGraphExtraction, LLMNode, LLMEdge, Node, Edge, Document, GraphExtractionWithIDs
 from typing import (Callable, Optional, Tuple, Any, Dict, Iterable, Sequence, Literal,
                     List, Type, TypeVar, Union)
 import math
-from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction
-from chromadb.utils import embedding_functions
+# from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction
+# from chromadb.utils import embedding_functions
+from graphlib import TopologicalSorter
+import hashlib
+from datetime import datetime, timezone
+
 
 from pydantic import BaseModel
 
@@ -96,20 +103,42 @@ try:
     _HAS_AZURE_EMB = True
 except Exception:
     _HAS_AZURE_EMB = False
-
+PageLike = Union[str, Dict[str, Any]]
 NodeOrEdge: TypeAlias =  Node | Edge
 T = TypeVar("T", Node, Edge)
 # TT= TypeVar("TT", Type[Node], Type[Edge])
 TNode = TypeVar("TNode", bound=Node)
 TEdge = TypeVar("TEdge", bound=Edge)
-from graphlib import TopologicalSorter
+
 def _refs_hash(refs) -> str:
-    import hashlib, json
+    
     return hashlib.sha1(json.dumps(
         [r.model_dump() for r in (refs or [])],
         sort_keys=True
     ).encode()).hexdigest()
-import hashlib, json
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+def _safe_json_dict(doc: Any) -> dict:
+    if isinstance(doc, dict):
+        return doc
+    if not isinstance(doc, str):
+        return {}
+    try:
+        x = json.loads(doc)
+        return x if isinstance(x, dict) else {}
+    except Exception:
+        return {}
+
+def _merge_meta(base_meta: dict | None, patch: dict) -> dict:
+    base_meta = base_meta or {}
+    # flat merge
+    return {**base_meta, **patch}
+
+def _is_tombstoned(meta: dict | None) -> bool:
+    meta = meta or {}
+    return str(meta.get("lifecycle_status") or "active") == "tombstoned"
 def _str_or_none(to_str):
     if to_str is None:
         return to_str
@@ -134,8 +163,7 @@ def _refs_fingerprint(refs) -> str:
     blob = json.dumps(payload, sort_keys=False, separators=(",", ":")).encode("utf-8")
     # 128-bit BLAKE2b: fast + collision resistant enough for cache guards
     return hashlib.blake2b(blob, digest_size=16).hexdigest()
-from functools import wraps
-from typing import Callable, TypeVar, Any
+
 
 F = TypeVar("F", bound=Callable[..., Any])
 
@@ -228,10 +256,7 @@ def chroma_docs_to_pydantic(objs: dict, model_cls: Type[T]) -> List[T]:
         docs = docs[0]
     return [model_cls.model_validate_json(doc) for doc in docs]
 
-import json, re
-from typing import Any, Iterable, List, Dict, Union, Optional
 
-PageLike = Union[str, Dict[str, Any]]
 
 def _split_pages_from_text(raw: str) -> List[Dict[str, Any]]:
     """
@@ -482,7 +507,6 @@ def _normalize_mentions(mentions: Optional[List[Span]], doc_id: str) -> List[Spa
     if not mentions or len(mentions) == 0:
         raise Exception("missing mentions")
     return [_ensure_ref_span(ref, doc_id) for ref in mentions]
-import re, uuid
 
 _UUID_RE = re.compile(r"^[0-9a-fA-F\-]{36}$")
 
@@ -540,8 +564,185 @@ def de_alias_ids(llm_result, real_for_alias):
         e.source_ids = [r(x) for x in e.source_ids]
         e.target_ids = [r(x) for x in e.target_ids]
     return llm_result
+def _update_record_lifecycle(
+    *,
+    collection: Any,
+    record_id: str,
+    lifecycle_patch: dict,
+) -> bool:
+    """
+    Update one record's metadata (and optionally document metadata) with lifecycle fields.
+    Returns True if updated, False if record not found.
+    """
+    got = collection.get(ids=[record_id], include=["documents", "metadatas"])
+    ids = got.get("ids") or []
+    if not ids:
+        return False
 
+    doc = (got.get("documents") or [None])[0]
+    meta = (got.get("metadatas") or [None])[0]
+    base = _safe_json_dict(doc)
 
+    # merge lifecycle fields into both stored metadata and embedded doc.metadata (if you use it)
+    base_meta = base.get("metadata") if isinstance(base.get("metadata"), dict) else {}
+    new_doc_meta = _merge_meta(base_meta, lifecycle_patch)
+    base["metadata"] = new_doc_meta
+
+    new_meta = _merge_meta(meta if isinstance(meta, dict) else {}, lifecycle_patch)
+
+    collection.update(
+        ids=[record_id],
+        documents=[json.dumps(base, ensure_ascii=False)],
+        metadatas=[new_meta],
+    )
+    return True
+def tombstone_record(
+    *,
+    collection: Any,
+    record_id: str,
+    reason: str | None = None,
+    deleted_by: str | None = None,
+    deleted_at: str | None = None,
+) -> bool:
+    """
+    Soft-delete a record in-place (tombstone). Keeps the record addressable by ID.
+    """
+    patch = {
+        "lifecycle_status": "tombstoned",
+        "redirect_to_id": None,
+        "deleted_at": deleted_at or _utc_now_iso(),
+    }
+    if reason:
+        patch["delete_reason"] = reason
+    if deleted_by:
+        patch["deleted_by"] = deleted_by
+
+    return _update_record_lifecycle(collection=collection, record_id=record_id, lifecycle_patch=patch)
+def tombstone_records(
+    *,
+    collection: Any,
+    record_ids: Sequence[str],
+    reason: str | None = None,
+    deleted_by: str | None = None,
+    deleted_at: str | None = None,
+) -> int:
+    """
+    Tombstone many records. Returns count updated.
+    """
+    if not record_ids:
+        return 0
+
+    got = collection.get(ids=list(record_ids), include=["documents", "metadatas"])
+    ids = got.get("ids") or []
+    docs = got.get("documents") or []
+    metas = got.get("metadatas") or []
+
+    patch = {
+        "lifecycle_status": "tombstoned",
+        "redirect_to_id": None,
+        "deleted_at": deleted_at or _utc_now_iso(),
+    }
+    if reason:
+        patch["delete_reason"] = reason
+    if deleted_by:
+        patch["deleted_by"] = deleted_by
+
+    out_ids, out_docs, out_metas = [], [], []
+    for rid, doc, meta in zip(ids, docs, metas):
+        base = _safe_json_dict(doc)
+        base_meta = base.get("metadata") if isinstance(base.get("metadata"), dict) else {}
+        base["metadata"] = _merge_meta(base_meta, patch)
+
+        new_meta = _merge_meta(meta if isinstance(meta, dict) else {}, patch)
+
+        out_ids.append(str(rid))
+        out_docs.append(json.dumps(base, ensure_ascii=False))
+        out_metas.append(new_meta)
+
+    if out_ids:
+        collection.update(ids=out_ids, documents=out_docs, metadatas=out_metas)
+    return len(out_ids)    
+def redirect_record(
+    *,
+    collection: Any,
+    from_id: str,
+    to_id: str,
+    reason: str | None = None,
+    deleted_by: str | None = None,
+    deleted_at: str | None = None,
+) -> bool:
+    """
+    Mark `from_id` as tombstoned and redirect it to `to_id`.
+    The `to_id` record is not modified here (that’s a separate 'merge' concern).
+    """
+    if from_id == to_id:
+        # no-op: cannot redirect to itself
+        return False
+
+    patch = {
+        "lifecycle_status": "tombstoned",
+        "redirect_to_id": str(to_id),
+        "deleted_at": deleted_at or _utc_now_iso(),
+    }
+    if reason:
+        patch["delete_reason"] = reason
+    if deleted_by:
+        patch["deleted_by"] = deleted_by
+
+    return _update_record_lifecycle(collection=collection, record_id=from_id, lifecycle_patch=patch)
+def redirect_records(
+    *,
+    collection: Any,
+    redirects: Sequence[tuple[str, str]],  # (from_id, to_id)
+    reason: str | None = None,
+    deleted_by: str | None = None,
+    deleted_at: str | None = None,
+) -> int:
+    """
+    Redirect many records. Returns count updated.
+    """
+    if not redirects:
+        return 0
+
+    from_ids = [a for a, _ in redirects]
+    to_map = {a: b for a, b in redirects if a != b}
+
+    got = collection.get(ids=from_ids, include=["documents", "metadatas"])
+    ids = got.get("ids") or []
+    docs = got.get("documents") or []
+    metas = got.get("metadatas") or []
+
+    base_patch = {
+        "lifecycle_status": "tombstoned",
+        "deleted_at": deleted_at or _utc_now_iso(),
+    }
+    if reason:
+        base_patch["delete_reason"] = reason
+    if deleted_by:
+        base_patch["deleted_by"] = deleted_by
+
+    out_ids, out_docs, out_metas = [], [], []
+    for rid, doc, meta in zip(ids, docs, metas):
+        sid = str(rid)
+        to_id = to_map.get(sid)
+        if not to_id:
+            continue
+
+        patch = {**base_patch, "redirect_to_id": str(to_id)}
+
+        base = _safe_json_dict(doc)
+        base_meta = base.get("metadata") if isinstance(base.get("metadata"), dict) else {}
+        base["metadata"] = _merge_meta(base_meta, patch)
+
+        new_meta = _merge_meta(meta if isinstance(meta, dict) else {}, patch)
+
+        out_ids.append(sid)
+        out_docs.append(json.dumps(base, ensure_ascii=False))
+        out_metas.append(new_meta)
+
+    if out_ids:
+        collection.update(ids=out_ids, documents=out_docs, metadatas=out_metas)
+    return len(out_ids)
 ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
 
 def uuid_to_base62(u: str) -> str:
@@ -561,8 +762,7 @@ def base62_to_uuid(s: str) -> str:
     hex128 = f"{n:032x}"
     return f"{hex128[0:8]}-{hex128[8:12]}-{hex128[12:16]}-{hex128[16:20]}-{hex128[20:]}"
 
-from .models import FilteringResponse, FilteringResult
-# from typing import Type, TypeVar
+
 
 def candiate_filtering_callback(llm: BaseChatModel, conversation_content, 
                                 cand_node_list_str, cand_edge_list_str, 
@@ -713,334 +913,65 @@ class CustomEmbeddingFunction(EmbeddingFunction):
 
     def __call__(self, documents_or_texts: Sequence[str]) -> Embeddings:
         return self._emb(documents_or_texts)
-@dataclass(frozen=True)
-class _EdgeSelection:
-    memctx_ids: set[str]
-    ptr_ids: set[str]
-    edge_ids_for_memctx: set[str]
-    edge_ids_for_ptr: set[str]
 
-class ContextSources:
-    def __init__(
-        self,
-        *,
-        conversation_engine: "GraphKnowledgeEngine",
-        tail_turns: int = 8,
-        include_summaries: bool = True,
-        include_memory_context: bool = True,
-        include_pinned_kg_refs: bool = True,
-    ) -> None:
-        self.engine = conversation_engine
-        self.tail_turns = tail_turns
-        self.include_summaries = include_summaries
-        self.include_memory_context = include_memory_context
-        self.include_pinned_kg_refs = include_pinned_kg_refs
 
-    def gather(self, *, conversation_id: str, purpose: str):
-        # Phase 1: load nodes
-        ids, docs, metas = self._load_node_rows(conversation_id)
 
-        # Phase 2: decode nodes
-        by_id, meta_by_id = self._decode_nodes(ids, docs, metas)
-
-        # Phase 3: compute turn ids & summary id
-        tail_turn_ids = self._select_tail_turn_ids(by_id, meta_by_id)
-        head_summary_id = self._select_head_summary_id(by_id) if self.include_summaries else None
-
-        # Phase 4: edge-based expansions
-        edge_sel = self._select_edges_for_tail_turns(conversation_id, tail_turn_ids)
-
-        # Phase 5: build ContextItems
-        items: list[ContextItem] = []
-        self._append_head_summary(items, by_id, head_summary_id)
-        self._append_memory_context(items, by_id, edge_sel)
-        self._append_pinned_refs(items, by_id, edge_sel)
-        self._append_tail_turns(items, by_id, tail_turn_ids)
-
-        return items
-
-    # -------------------------
-    # Phase 1
-    # -------------------------
-    def _load_node_rows(self, conversation_id: str) -> tuple[list[Any], list[Any], list[Any]]:
-        got = self.engine.node_collection.get(
-            where={"conversation_id": conversation_id},
-            include=["documents", "metadatas"],
-        )
-        ids = got.get("ids") or []
-        docs = got.get("documents") or []
-        metas = got.get("metadatas") or []
-        return ids, docs, metas
-
-    # -------------------------
-    # Phase 2
-    # -------------------------
-    def _decode_nodes(
-        self,
-        ids: Iterable[Any],
-        docs: Iterable[Any],
-        metas: Iterable[Any],
-    ) -> tuple[dict[str, ConversationNode], dict[str, dict]]:
-        by_id: dict[str, ConversationNode] = {}
-        meta_by_id: dict[str, dict] = {}
-
-        for nid, doc, meta in zip(ids, docs, metas):
-            base = self._safe_json_dict(doc)
-            if isinstance(meta, dict):
-                base["metadata"] = {**(base.get("metadata") or {}), **meta}
-
-            n = self._safe_validate_conversation_node(base)
-            if n is None:
-                continue
-
-            sid = str(nid)
-            by_id[sid] = n
-            meta_by_id[sid] = (base.get("metadata") or {})
-        return by_id, meta_by_id
-
-    def _safe_json_dict(self, doc: Any) -> dict:
-        if not isinstance(doc, str):
-            return {}
-        try:
-            out = json.loads(doc)
-            return out if isinstance(out, dict) else {}
-        except Exception:
-            return {}
-
-    def _safe_validate_conversation_node(self, payload: dict) -> ConversationNode | None:
-        try:
-            return ConversationNode.model_validate(payload)
-        except Exception:
-            return None
-
-    # -------------------------
-    # Phase 3
-    # -------------------------
-    def _entity_type(self, nid: str, meta_by_id: dict[str, dict]) -> str:
-        m = meta_by_id.get(nid) or {}
-        return str(m.get("entity_type") or m.get("type") or "")
-
-    def _turn_index(self, n: ConversationNode) -> int:
-        return int(getattr(n, "turn_index", -1) or -1)
-
-    def _select_tail_turn_ids(self, by_id: dict[str, ConversationNode], meta_by_id: dict[str, dict]) -> list[str]:
-        turn_ids = [nid for nid in by_id.keys() if self._entity_type(nid, meta_by_id) == "conversation_turn"]
-        turn_ids.sort(key=lambda nid: self._turn_index(by_id[nid]))
-        return turn_ids[-self.tail_turns :] if self.tail_turns > 0 else []
-
-    def _select_head_summary_id(self, by_id: dict[str, ConversationNode]) -> str | None:
-        best_ix = -10**9
-        head_summary_id: str | None = None
-        for nid, n in by_id.items():
-            if str(getattr(n, "type", "")) == "memory_summary":
-                ix = self._turn_index(n)
-                if ix >= best_ix:
-                    best_ix = ix
-                    head_summary_id = nid
-        return head_summary_id
-
-    # -------------------------
-    # Phase 4
-    # -------------------------
-    def _select_edges_for_tail_turns(self, conversation_id: str, tail_turn_ids: list[str]) -> _EdgeSelection:
-        memctx_ids: set[str] = set()
-        ptr_ids: set[str] = set()
-        edge_ids_for_memctx: set[str] = set()
-        edge_ids_for_ptr: set[str] = set()
-
-        if not tail_turn_ids:
-            return _EdgeSelection(memctx_ids, ptr_ids, edge_ids_for_memctx, edge_ids_for_ptr)
-        if not (self.include_memory_context or self.include_pinned_kg_refs):
-            return _EdgeSelection(memctx_ids, ptr_ids, edge_ids_for_memctx, edge_ids_for_ptr)
-
-        egot = self.engine.edge_collection.get(
-            where={"doc_id": f"conv:{conversation_id}"},
-            include=["metadatas"],
-        )
-        eids = egot.get("ids") or []
-        emetas = egot.get("metadatas") or []
-
-        tail_turn_set = set(tail_turn_ids)
-
-        for eid, em in zip(eids, emetas):
-            if not isinstance(em, dict):
-                continue
-
-            rel = str(em.get("relation") or "")
-            src = self._first_id_from_json_list(em.get("source_ids"))
-            if src is None or src not in tail_turn_set:
-                continue
-
-            tids = self._ids_from_json_list(em.get("target_ids"))
-            if not tids:
-                continue
-
-            if rel == "has_memory_context" and self.include_memory_context:
-                memctx_ids.update(tids)
-                edge_ids_for_memctx.add(str(eid))
-
-            elif rel == "references" and self.include_pinned_kg_refs:
-                ptr_ids.update(tids)
-                edge_ids_for_ptr.add(str(eid))
-
-        return _EdgeSelection(memctx_ids, ptr_ids, edge_ids_for_memctx, edge_ids_for_ptr)
-
-    def _ids_from_json_list(self, raw: Any) -> list[str]:
-        try:
-            xs = json.loads(raw or "[]")
-        except Exception:
-            xs = []
-        if not isinstance(xs, list):
-            return []
-        return [str(x) for x in xs if x is not None]
-
-    def _first_id_from_json_list(self, raw: Any) -> str | None:
-        ids = self._ids_from_json_list(raw)
-        return ids[0] if ids else None
-
-    # -------------------------
-    # Phase 5 (builders)
-    # -------------------------
-    def _append_head_summary(self, items: list[ContextItem], by_id: dict[str, ConversationNode], head_summary_id: str | None) -> None:
-        if not head_summary_id:
-            return
-        n = by_id.get(head_summary_id)
-        if n is None:
-            return
-        items.append(
-            ContextItem(
-                kind="head_summary",
-                role="system",
-                text=str(getattr(n, "summary", "") or ""),
-                node_id=head_summary_id,
-                priority=20,
-                pinned=True,
-                max_tokens=800,
-                source="summary",
-            )
-        )
-
-    def _append_memory_context(self, items: list[ContextItem], by_id: dict[str, ConversationNode], edge_sel: _EdgeSelection) -> None:
-        for mid in sorted(edge_sel.memctx_ids):
-            n = by_id.get(mid)
-            if n is None:
-                continue
-            items.append(
-                ContextItem(
-                    kind="memory_context",
-                    role="system",
-                    text=str(getattr(n, "summary", "") or ""),
-                    node_id=mid,
-                    edge_ids=tuple(sorted(edge_sel.edge_ids_for_memctx)),
-                    priority=30,
-                    pinned=True,
-                    max_tokens=600,
-                    source="memory_pinned",
-                    extra={"source_node_ids": (getattr(n, "properties", {}) or {}).get("source_node_ids")},
-                )
-            )
-
-    def _append_pinned_refs(self, items: list[ContextItem], by_id: dict[str, ConversationNode], edge_sel: _EdgeSelection) -> None:
-        for pid in sorted(edge_sel.ptr_ids):
-            n = by_id.get(pid)
-            if n is None:
-                continue
-            props = getattr(n, "properties", {}) or {}
-            refers_to = props.get("refers_to_id")
-            label = getattr(n, "label", "") or ""
-            summary = getattr(n, "summary", "") or ""
-            txt = f"{label}\n{summary}".strip()
-            items.append(
-                ContextItem(
-                    role="system",
-                    kind="pinned_kg_ref",
-                    text=txt,
-                    node_id=pid,
-                    edge_ids=tuple(sorted(edge_sel.edge_ids_for_ptr)),
-                    pointer_ids=(str(refers_to),) if isinstance(refers_to, str) and refers_to else (),
-                    priority=40,
-                    pinned=True,
-                    max_tokens=500,
-                    source="kg_ref",
-                    extra={"refers_to_id": refers_to},
-                )
-            )
-
-    def _append_tail_turns(self, items: list[ContextItem], by_id: dict[str, ConversationNode], tail_turn_ids: list[str]) -> None:
-        # chronological order; newest gets lowest priority value
-        for idx, tid in enumerate(tail_turn_ids):
-            n = by_id.get(tid)
-            if n is None:
-                continue
-            role: Role = getattr(n, "role", None) or "user"
-            text = str(getattr(n, "summary", "") or "")
-            age_from_newest = max(0, (len(tail_turn_ids) - 1 - idx))
-            items.append(
-                ContextItem(
-                    kind="tail_turn",
-                    text=text,
-                    node_id=tid,
-                    priority=50 + age_from_newest,
-                    pinned=False,
-                    role=role,  # type: ignore
-                    source="history_turn",
-                    extra={"turn_index": int(getattr(n, "turn_index", -1) or -1)},
-                )
-            )
-from .conversation_context import ContextMessage  # your dataclass
-
-@dataclass
-class EngineConversationStore:
-    engine: "GraphKnowledgeEngine"
-
-    def get_turns(self, conversation_id: str) -> List[ContextMessage]:
-        # 1) fetch all conversation nodes for this conversation_id
-        # NOTE: adapt include/where to your Chroma wrapper API
-        res = self.engine.node_collection.get(
-            where={"conversation_id": conversation_id},
-            include=["metadatas", "documents", "ids"],  # or whatever your wrapper uses
-        )
-
-        # 2) materialize + sort
-        turns: list[ConversationNode] = []
-        for nid, meta, doc in zip(res["ids"], res["metadatas"], res.get("documents", [None]*len(res["ids"]))):
-            # You might store content in doc, or in summary/properties.
-            # If your storage puts text in `documents`, use doc.
-            # Otherwise, parse from meta/properties as you do elsewhere.
-            node = ConversationNode(
-                id=nid,
-                metadata=meta,
-                # other required fields for Node/GraphEntityRefBase if needed…
-                # If ConversationNode requires label/type/summary/mentions, you may need to pull those too.
-            )
-            turns.append(node)
-
-        turns.sort(key=lambda n: (n.turn_index or 0))
-
-        # 3) convert to ContextMessage
-        out: list[ContextMessage] = []
-        for n in turns:
-            # Choose ONE canonical “text for LLM” location:
-            # - if you stored it in summary: use n.summary
-            # - if you stored it in metadata/properties/documents: use that
-            text = getattr(n, "summary", None) or ""
-            out.append(
-                ContextMessage(
-                    role=(n.role or "user"),     # role is on node via ConversationRoleMixin
-                    content=text,
-                    node_id=n.id,
-                    source="history_turn",
-                )
-            )
-        return out
 @dataclass
 class GraphKnowledgeEngine:
-    """High-level orchestration for extracting, storing, and adjudicating knowledge graph data."""
+    """
+    Method are generally arranged by low level to high level, from static generic helper to task specific calls
+    High-level orchestration for extracting, storing, and adjudicating knowledge graph data.
+    """
 
     #--------------------
     # Puhlic Interface
     #--------------------
-    
+    def _filter_items_by_resolve_mode(self, items: list[T], resolve_mode: str) -> list[T]:
+        if resolve_mode == "include_tombstones":
+            return items
+        if resolve_mode in ("active_only", "redirect"):
+            return [x for x in items if ((getattr(x, "metadata", {}) or {}).get("lifecycle_status") or "active")=="active"]
+        return items    
+    def _resolve_redirect_chain(
+        self,
+        *,
+        initial_items: list[T],
+        fetch_by_ids: Callable[[Sequence[str]], list[T]],
+        resolve_mode: Literal["active_only", "redirect", "include_tombstones"],
+    ) -> list[T]:
+        if resolve_mode != "redirect":
+            return initial_items
+
+        resolved: dict[str, T] = {}
+        visited: set[str] = set()
+        frontier: list[T] = list(initial_items)
+
+        while frontier:
+            next_frontier_ids: set[str] = set()
+
+            for item in frontier:
+                item_id = str(item.id)
+                if item_id in visited:
+                    continue
+                visited.add(item_id)
+
+                meta = getattr(item, "metadata", {}) or {}
+                status = meta.get("lifecycle_status")
+                redirect_to = meta.get("redirect_to_id")
+
+                if status == "tombstoned" or redirect_to:
+                    next_frontier_ids.add(str(redirect_to))
+                else:
+                    resolved[item_id] = item
+
+            if not next_frontier_ids:
+                break
+
+            frontier = fetch_by_ids(list(next_frontier_ids))
+
+        # In redirect mode: never return tombstoned items
+        return [x for x in resolved.values() if ((getattr(x, "metadata", {}) or {}).get("lifecycle_status") or "active")=="active"]
+
     def node_ids_by_doc(self, doc_id: str) -> List[str]:
         
         return self._nodes_by_doc(doc_id)
@@ -1125,9 +1056,9 @@ class GraphKnowledgeEngine:
             # if ref.start_page == ref.end_page:
             #     pages[ref.start_page]
             # for p in range(ref.start_page, ref.end_page):
-            import ast
+            
             def _coerce_to_referencable_text(text_or_ast_str):
-                import ast
+                
                 try:
                     return ('\n'.join((i['text'] for i in ast.literal_eval(text_or_ast_str)['OCR_text_clusters'])))
                 except Exception as e :
@@ -1197,17 +1128,54 @@ class GraphKnowledgeEngine:
                 break
 
         return out
-    
-    def get_nodes(self, ids: Sequence[str], node_type: Type[Node]|None = None) -> List[Node]:
-        if not ids: return []
-        got = self.node_collection.get(ids=list(ids), include=["documents", "embeddings", "metadatas"])
+    ## update only allow redirect and soft delete  and delete node 
+    def tombstone_node(self, node_id: str, **kw) -> bool:
+        return tombstone_record(collection=self.node_collection, record_id=node_id, **kw)
+
+    def redirect_node(self, from_id: str, to_id: str, **kw) -> bool:
+        return redirect_record(collection=self.node_collection, from_id=from_id, to_id=to_id, **kw)
+
+    def tombstone_edge(self, edge_id: str, **kw) -> bool:
+        return tombstone_record(collection=self.edge_collection, record_id=edge_id, **kw)
+
+    def redirect_edge(self, from_id: str, to_id: str, **kw) -> bool:
+        return redirect_record(collection=self.edge_collection, from_id=from_id, to_id=to_id, **kw)
+    ## get
+    def get_nodes(
+        self,
+        ids: Sequence[str],
+        node_type: Type[Node] | None = None,
+        resolve_mode: Literal["active_only", "redirect", "include_tombstones"] = "active_only",
+    ) -> List[Node]:
+        if not ids:
+            return []
+
         if not node_type:
-            if self.kg_graph_type == 'conversation':
-                node_type = ConversationNode
-            else:
-                node_type = Node
-        
-        return self.nodes_from_single_or_id_query_result(got, node_type = node_type)
+            node_type = ConversationNode if self.kg_graph_type == "conversation" else Node
+
+        # IMPORTANT: ID fetch must NOT filter out tombstones, or redirect cannot start.
+        got = self.node_collection.get(
+            ids=list(ids),
+            include=["documents", "embeddings", "metadatas"],
+        )
+        nodes = self.nodes_from_single_or_id_query_result(got, node_type=node_type)
+
+        # Follow redirects (may require fetching tombstoned targets too)
+        nodes = self._resolve_redirect_chain(
+            initial_items=nodes,
+            resolve_mode=resolve_mode,
+            fetch_by_ids=lambda redirect_ids: self.get_nodes(
+                redirect_ids,
+                node_type=node_type,
+                resolve_mode=resolve_mode,  # allow chain traversal
+            ),
+        )
+
+        # Apply final mode filter (active_only/redirect hide tombstones)
+        nodes = self._filter_items_by_resolve_mode(nodes, resolve_mode)
+
+        return nodes
+    
     def query_nodes(self,*args, query = None, 
             query_embeddings = None,  
             include=["documents", "embeddings", "metadatas"],
@@ -1320,15 +1288,50 @@ class GraphKnowledgeEngine:
                 single_res = self.edges_from_single_or_id_query_result(got, edge_type = edge_type)
                 res.append(single_res)
         return res
-    def get_edges(self, ids: Sequence[str], edge_type: Type[Edge]|None = None) -> List[Edge]:
-        if not ids: return []
-        got = self.edge_collection.get(ids=list(ids), include=["documents", "embeddings", "metadatas"])
+    def _where_update_from_resolve_mode(self, resolve_mode : Literal["active_only" , "redirect", "include_tombstones"]):
+        match resolve_mode:
+            case "active_only":
+                return {"lifecycle_status":"active"}
+            case "redirect":
+                return {}
+            case "include_tombstones":
+                return {}
+        
+
+    def get_edges(
+        self,
+        ids: Sequence[str],
+        edge_type: Type[Edge] | None = None,
+        resolve_mode: Literal["active_only", "redirect", "include_tombstones"] = "active_only",
+    ) -> List[Edge]:
+        if not ids:
+            return []
+
         if not edge_type:
-            if self.kg_graph_type == 'conversation':
-                edge_type = ConversationEdge
-            else:
-                edge_type = Edge
-        return self.edges_from_single_or_id_query_result(got, edge_type = edge_type)
+            edge_type = ConversationEdge if self.kg_graph_type == "conversation" else Edge
+
+        # IMPORTANT: ID fetch must NOT filter out tombstones, or redirect cannot start.
+        got = self.edge_collection.get(
+            ids=list(ids),
+            include=["documents", "embeddings", "metadatas"],
+        )
+        edges = self.edges_from_single_or_id_query_result(got, edge_type=edge_type)
+
+        # Follow redirects (may require fetching tombstoned targets too)
+        edges = self._resolve_redirect_chain(
+            initial_items=edges,
+            resolve_mode=resolve_mode,
+            fetch_by_ids=lambda redirect_ids: self.get_edges(
+                redirect_ids,
+                edge_type=edge_type,
+                resolve_mode=resolve_mode,  # allow chain traversal
+            ),
+        )
+
+        # Apply final mode filter (active_only/redirect hide tombstones)
+        edges = self._filter_items_by_resolve_mode(edges, resolve_mode)
+
+        return edges
 
     def all_nodes_for_doc(self, doc_id: str) -> List[Node]:
         return self.get_nodes(self._nodes_by_doc(doc_id))
@@ -1348,7 +1351,7 @@ class GraphKnowledgeEngine:
         ids = got.get("ids") or []
         if ids:
             self.node_refs_collection.delete(ids=ids)
-    
+
     # ----------------------------
     # Utilities
     # ----------------------------
@@ -1360,9 +1363,9 @@ class GraphKnowledgeEngine:
     def chroma_sanitize_metadata(metadata: Dict[str, Any]) -> Dict[str, Any]:
         """Drop keys whose values are None. ChromaDB metadata rejects None values."""
         return _strip_none(metadata) #{k: v for k, v in metadata.items() if v is not None}
-    @staticmethod
-    def _strip_none(d: dict):
-        return _strip_none(d)
+    # @staticmethod
+    # def _strip_none(d: dict):
+    #     return _strip_none(d)
     @staticmethod
     def _json_or_none(obj: Any) -> Optional[str]:
         return json.dumps(obj) if obj is not None else None
@@ -2050,7 +2053,6 @@ class GraphKnowledgeEngine:
                     except Exception:
                         return None
                 self.embeddings = _embed_fn
-        from joblib import Memory
         
         self.memory = Memory(location = os.path.join('.', '.kg_cache'))
         self._cached_extract_graph_with_llm = self.memory.cache(self.extract_graph_with_llm, ignore = ["self"])
@@ -2446,7 +2448,7 @@ class GraphKnowledgeEngine:
         if rows:
             ep_ids   = [r["id"] for r in rows]
             ep_docs  = [json.dumps(r) for r in rows]
-            ep_metas: dict = cast(dict, rows)  # already sanitized (no None)
+            ep_metas: list[dict] = rows  # already sanitized (no None)
             self.edge_endpoints_collection.add(
                 ids=ep_ids,
                 documents=ep_docs,
@@ -2697,6 +2699,170 @@ class GraphKnowledgeEngine:
         if not e.summary:
             e.summary = "Normalized same_as"
         return False, e
+
+    def persist_graph(self,
+        *,
+        parsed: PureGraph, 
+        session_id: str,
+        mode = None):
+        self._preflight_validate(parsed, alias_key=session_id)
+        node_ids, edge_ids = [], []
+        _ = _alloc_real_ids(parsed)
+        order, id2kind, id2obj = self._build_deps(parsed)
+        nl = '\n'
+        for rid in order:
+            kind, obj = id2kind[rid], id2obj[rid]
+            # for ln in parsed.nodes:
+            if kind == 'node':
+                ln: Node = obj
+                
+                # skip-if-exists mode
+                if mode == "skip-if-exists":
+                    got = self.node_collection.get(ids=[ln.id])
+                    if got.get("ids"):  # already there
+                        node_ids.append(ln.id)
+                        continue
+                
+                n = PureChromaNode(
+                    id=ln.id, label=ln.label, type=ln.type, summary=ln.summary,
+                    domain_id=ln.domain_id, canonical_entity_id=ln.canonical_entity_id,
+                    properties=ln.properties,
+                    doc_id = None,
+                    embedding = None,
+                    metadata = {}
+                )
+                emb_text = f"{n.label}: {n.summary}"
+                if emb_text is None:
+                    emb_text = f"{n.label}: {n.summary}"
+                n.embedding = self._ef([emb_text])[0]
+                self.add_pure_node(n)
+                node_ids.append(n.id)
+            elif kind == 'edge':
+            # for le in parsed.edges:
+                le: Edge = obj
+                
+                if mode == "skip-if-exists":
+                    got = self.edge_collection.get(ids=[le.id])
+                    if got.get("ids"):
+                        edge_ids.append(le.id)
+                        continue
+                e = PureChromaEdge(
+                    id=le.id, label=le.label, type=le.type, summary=le.summary,
+                    domain_id=le.domain_id, canonical_entity_id=le.canonical_entity_id,
+                    properties=le.properties,
+                    relation=le.relation,
+                    source_ids=le.source_ids, target_ids=le.target_ids,
+                    source_edge_ids=getattr(le, "source_edge_ids", None),
+                    target_edge_ids=getattr(le, "target_edge_ids", None),
+                    doc_id=None,
+                    embedding = None,
+                    metadata = {},
+                    # embedding=self._ef([f"{le.label}: {le.summary}"])[0]
+                )
+                e.embedding = self._ef([f"{le.label}: {le.summary}"])[0]
+                self.add_pure_edge(e)
+                edge_ids.append(e.id)
+
+        return {
+            "node_ids": node_ids,
+            "edge_ids": edge_ids,
+            "nodes_added": len(node_ids),
+            "edges_added": len(edge_ids),
+        }
+
+    def persist_graph_extraction(
+        self,
+        *,
+        document: Document,
+        parsed: LLMGraphExtraction,
+        mode: str = "append",   # "replace" | "append" | "skip-if-exists"
+        assign_real_id_in_place = True
+    ) -> dict:
+        """
+        the external user use case is to send the whole extraction via mcp as a copy and therefore
+        by default no deep copy is made.
+        Write nodes/edges/endpoints for `document.id`.
+        Returns concrete ids written for idempotent tests.
+        node that side effect parsed is modified in place for efficiency 
+        if assign_real_id_in_place is False, a parsed deep copy is made
+        """
+        doc_id = document.id
+        if not assign_real_id_in_place:
+            parsed = parsed.model_copy(deep=True)
+        # if replace, rollback prior doc content first
+        if mode == "replace":
+            self.rollback_document(doc_id)
+
+        # ensure doc row exists (idempotent)
+        self.add_document(document)
+        # now validate (ensures no dangling refs to *other* docs)
+        self._preflight_validate(parsed, doc_id)
+        # self.ingest_with_toposort(parsed, doc_id = doc_id)
+
+        # diagnose code: set([j for i in parsed.edges for j in i.target_ids]).union(set([j for i in parsed.edges for j in i.source_ids])) <= set([i.id for i in parsed.edges]).union(set([i.id for i in parsed.nodes]))
+
+        # persist and collect ids
+        node_ids, edge_ids = [], []
+        # fallback_snip = (document.content[:160] + "…") if document.content else None
+        # _alloc_real_ids duplicated logic in Self::_resolve_llm_ids        
+        _ = _alloc_real_ids(parsed)  # rewrite in place
+        order, id2kind, id2obj = self._build_deps(parsed)
+        span_validator: BaseDocValidator = self.get_span_validator_of_doc_type(document = document)
+        nodes_added = edges_added = 0
+        nl = '\n'
+        for rid in order:
+            kind, obj = id2kind[rid], id2obj[rid]
+            # for ln in parsed.nodes:
+            if kind == 'node':
+                ln: Node = Node.model_validate(obj.model_dump(), context={'insertion_method': 'llm_graph_extraction'})
+                ln.mentions = self._dealias_span(ln.mentions, document.id)
+                # skip-if-exists mode
+                if mode == "skip-if-exists":
+                    got = self.node_collection.get(ids=[ln.id])
+                    if got.get("ids"):  # already there
+                        node_ids.append(ln.id)
+                        continue
+
+                for g in ln.mentions:
+                    for sp in g.spans:
+                        result = span_validator.validate_span(doc_id = doc_id, span = sp, engine = self, doc=document)
+                        if result['correctness'] != True:
+                            raise Exception(f"Incorrect span occur in grounding {str(g)} span {str(sp)}")
+                n = ln.model_copy(deep=True)
+                emb_text = f"{n.label}: {n.summary} : {nl.join(i['context'] for i in self.extract_reference_contexts(ln)[:1])}"
+                if emb_text is None:
+                    emb_text = f"{n.label}: {n.summary} : {nl.join(i['context'] for i in self.extract_reference_contexts(ln)[:1])}"
+                n.embedding = self._ef([emb_text])[0]
+                self.add_node(n, doc_id=doc_id)
+                node_ids.append(n.id)
+            elif kind == 'edge':
+            # for le in parsed.edges:
+                le: Edge = Edge.model_validate(obj.model_dump(), context={'insertion_method': 'llm_graph_extraction'})
+                le.mentions = self._dealias_span(le.mentions, document.id)
+                if mode == "skip-if-exists":
+                    got = self.edge_collection.get(ids=[le.id])
+                    if got.get("ids"):
+                        edge_ids.append(le.id)
+                        continue
+                # refs = [Span.model_validate(i.model_dump(field_mode = 'backend'), context={'insertion_method': i.insertion_method or 'llm_graph_extraction'}) for i in le.mentions]
+                
+                for g in le.mentions:
+                    for sp in g.spans:
+                        result = span_validator.validate_span(doc_id = doc_id, span = sp, engine = self, doc=document)
+                        if result['correctness'] != True:
+                            raise Exception(f"Incorrect span occur in grounding {str(g)} span {str(sp)}")
+                e = le.model_copy(deep=True)
+                e.embedding = self._ef([f"{le.label}: {le.summary} : {nl.join(i['context'] for i in self.extract_reference_contexts(le)[:1])}"])[0]
+                self.add_edge(e, doc_id=doc_id)
+                edge_ids.append(e.id)
+
+        return {
+            "document_id": doc_id,
+            "node_ids": node_ids,
+            "edge_ids": edge_ids,
+            "nodes_added": len(node_ids),
+            "edges_added": len(edge_ids),
+        }        
     def extract_graph_with_llm(self, *, content: str, doc_type: str, alias_nodes_str = "[Empty]" , alias_edges_str = "[Empty]", with_parsed = True, 
                                instruction_for_node_edge_contents_parsing_inclusion: None| str = None, validate = True, autofix : bool | str= True,
                                last_iteration_result = None):
@@ -2758,6 +2924,133 @@ class GraphKnowledgeEngine:
             return {"raw": raw, "parsed": parsed, "error": validation_error_group or None}
         else:
             return {"raw": raw, "error": validation_error_group or None}
+        
+    def get_document(self, doc_id: str):
+
+        doc_get_result = self.document_collection.get(doc_id)
+        if len(doc_get_result['ids']) == 0:
+            raise ValueError(f"no document found for doc id = {doc_id}")
+        metadatas = doc_get_result["metadatas"]
+        
+        
+        docs = doc_get_result["documents"]
+        
+        if docs is None or metadatas is None:
+            raise ValueError('Invalid documnet metadata')
+        metadata : dict= cast(dict, metadatas[0])
+        
+        
+        doc = Document(id = doc_get_result['ids'][0],
+                       content = docs[0],
+                       metadata = metadata,
+                       domain_id = _str_or_none(metadata.get('domain_id')),
+                       type = metadata['type'],
+                       processed = metadata['processed'],
+                       embeddings = None,
+                       source_map = None
+                       )
+        return doc
+    from typing import overload, Literal, Any
+
+
+    def get_span_validator_of_doc_type(self, *, doc_id: str| None= None, 
+                                       doc_type: str | None = None, 
+                                       document: Document| None=None) -> BaseDocValidator:
+        """infer doc type from either doc_id, type_type or document and return corresponding span validator"""
+        if (doc_id is not None) + (doc_type is not  None) + (document is not None) == 1:
+            pass
+        else:
+            raise ValueError("Must only specify one of doc_id, doc_type or document")
+        from graph_knowledge_engine.extraction import PlainTextDocSpanValidator, OcrDocSpanValidator
+        if doc_type is None:
+            if doc_id is not None:
+                document = self.get_document(doc_id)
+            if document:
+                doc_type = document.type
+            else:
+                raise ValueError("Unreachable")
+                
+        
+        if doc_type == 'text':
+            return PlainTextDocSpanValidator()
+        if doc_type == "ocr_document":
+            return OcrDocSpanValidator()
+        raise ValueError(f"No validator associated with document type {doc_type}")
+    def persist_document_graph_extraction(
+        self,
+        *,
+        doc_id,
+        parsed: GraphExtractionWithIDs|LLMGraphExtraction,
+        mode: str = "append",   # "replace" | "append" | "skip-if-exists"
+    ) -> dict:
+        """
+        Write nodes/edges/endpoints for `document.id`.
+        Returns concrete ids written for idempotent tests.
+        """
+
+        # now validate (ensures no dangling refs to *other* docs)
+        self._preflight_validate(parsed, doc_id)
+        # self.ingest_with_toposort(parsed, doc_id = doc_id)
+
+        # persist and collect ids
+        node_ids, edge_ids = [], []
+        _ = _alloc_real_ids(parsed)  # rewrite in place
+        order, id2kind, id2obj = self._build_deps(parsed)
+        
+        span_validator: BaseDocValidator = self.get_span_validator_of_doc_type(doc_id=doc_id)
+        nodes_added = edges_added = 0
+        nl = '\n'
+        for rid in order:
+            kind, obj = id2kind[rid], id2obj[rid]
+            # for ln in parsed.nodes:
+            if kind == 'node':
+                ln: Node = obj
+                ln.mentions = self._dealias_span(ln.mentions, doc_id)
+                # skip-if-exists mode
+                for g in ln.mentions:
+                    for sp in g.spans:
+                        span_validator.validate_span(doc_id = doc_id, span = sp)
+                if mode == "skip-if-exists":
+                    got = self.node_collection.get(ids=[ln.id])
+                    if got.get("ids"):  # already there
+                        node_ids.append(ln.id)
+                        continue
+                
+                        
+                n = ln
+
+                emb_text = f"{n.label}: {n.summary} : {nl.join(i['context'] for i in self.extract_reference_contexts(ln)[:1])}"
+                n.embedding = self._ef([emb_text])[0]
+                self.add_node(n, doc_id=doc_id)
+                node_ids.append(n.id)
+            elif kind == 'edge':
+            # for le in parsed.edges:
+                le: Edge = obj
+                le.mentions = self._dealias_span(le.mentions, doc_id)
+                for g in le.mentions:
+                    for sp in g.spans:
+                        span_validator.validate_span(doc_id = doc_id, span = sp)
+                if mode == "skip-if-exists":
+                    got = self.edge_collection.get(ids=[le.id])
+                    if got.get("ids"):
+                        edge_ids.append(le.id)
+                        continue
+                
+                e = le
+
+                emb_text = f"{le.label}: {le.summary} : {nl.join(i['context'] for i in self.extract_reference_contexts(le)[:1])}"
+                e.embedding = self._ef([emb_text])[0]
+                self.add_edge(e, doc_id=doc_id)
+                edge_ids.append(e.id)
+
+        return {
+            "document_id": doc_id,
+            "node_ids": node_ids,
+            "edge_ids": edge_ids,
+            "nodes_added": len(node_ids),
+            "edges_added": len(edge_ids),
+        }
+
     def rollback_document_extraction(
         self,
         doc_id: str,
@@ -2956,294 +3249,7 @@ class GraphKnowledgeEngine:
         except Exception:
             pass
 
-        return summary
-    def persist_graph(self,
-        *,
-        parsed: PureGraph, 
-        session_id: str,
-        mode = None):
-        self._preflight_validate(parsed, alias_key=session_id)
-        node_ids, edge_ids = [], []
-        _ = _alloc_real_ids(parsed)
-        order, id2kind, id2obj = self._build_deps(parsed)
-        nl = '\n'
-        for rid in order:
-            kind, obj = id2kind[rid], id2obj[rid]
-            # for ln in parsed.nodes:
-            if kind == 'node':
-                ln: Node = obj
-                
-                # skip-if-exists mode
-                if mode == "skip-if-exists":
-                    got = self.node_collection.get(ids=[ln.id])
-                    if got.get("ids"):  # already there
-                        node_ids.append(ln.id)
-                        continue
-                
-                n = PureChromaNode(
-                    id=ln.id, label=ln.label, type=ln.type, summary=ln.summary,
-                    domain_id=ln.domain_id, canonical_entity_id=ln.canonical_entity_id,
-                    properties=ln.properties,
-                    doc_id = None,
-                    embedding = None,
-                    metadata = {}
-                )
-                emb_text = f"{n.label}: {n.summary}"
-                if emb_text is None:
-                    emb_text = f"{n.label}: {n.summary}"
-                n.embedding = self._ef([emb_text])[0]
-                self.add_pure_node(n)
-                node_ids.append(n.id)
-            elif kind == 'edge':
-            # for le in parsed.edges:
-                le: Edge = obj
-                
-                if mode == "skip-if-exists":
-                    got = self.edge_collection.get(ids=[le.id])
-                    if got.get("ids"):
-                        edge_ids.append(le.id)
-                        continue
-                e = PureChromaEdge(
-                    id=le.id, label=le.label, type=le.type, summary=le.summary,
-                    domain_id=le.domain_id, canonical_entity_id=le.canonical_entity_id,
-                    properties=le.properties,
-                    relation=le.relation,
-                    source_ids=le.source_ids, target_ids=le.target_ids,
-                    source_edge_ids=getattr(le, "source_edge_ids", None),
-                    target_edge_ids=getattr(le, "target_edge_ids", None),
-                    doc_id=None,
-                    embedding = None,
-                    metadata = {},
-                    # embedding=self._ef([f"{le.label}: {le.summary}"])[0]
-                )
-                e.embedding = self._ef([f"{le.label}: {le.summary}"])[0]
-                self.add_pure_edge(e)
-                edge_ids.append(e.id)
-
-        return {
-            "node_ids": node_ids,
-            "edge_ids": edge_ids,
-            "nodes_added": len(node_ids),
-            "edges_added": len(edge_ids),
-        }
-    def get_document(self, doc_id: str):
-
-        doc_get_result = self.document_collection.get(doc_id)
-        if len(doc_get_result['ids']) == 0:
-            raise ValueError(f"no document found for doc id = {doc_id}")
-        metadatas = doc_get_result["metadatas"]
-        
-        
-        docs = doc_get_result["documents"]
-        
-        if docs is None or metadatas is None:
-            raise ValueError('Invalid documnet metadata')
-        metadata : dict= cast(dict, metadatas[0])
-        
-        
-        doc = Document(id = doc_get_result['ids'][0],
-                       content = docs[0],
-                       metadata = metadata,
-                       domain_id = _str_or_none(metadata.get('domain_id')),
-                       type = metadata['type'],
-                       processed = metadata['processed'],
-                       embeddings = None,
-                       source_map = None
-                       )
-        return doc
-    from typing import overload, Literal, Any
-
-
-    def get_span_validator_of_doc_type(self, *, doc_id: str| None= None, 
-                                       doc_type: str | None = None, 
-                                       document: Document| None=None) -> BaseDocValidator:
-        """infer doc type from either doc_id, type_type or document and return corresponding span validator"""
-        if (doc_id is not None) + (doc_type is not  None) + (document is not None) == 1:
-            pass
-        else:
-            raise ValueError("Must only specify one of doc_id, doc_type or document")
-        from graph_knowledge_engine.extraction import PlainTextDocSpanValidator, OcrDocSpanValidator
-        if doc_type is None:
-            if doc_id is not None:
-                document = self.get_document(doc_id)
-            if document:
-                doc_type = document.type
-            else:
-                raise ValueError("Unreachable")
-                
-        
-        if doc_type == 'text':
-            return PlainTextDocSpanValidator()
-        if doc_type == "ocr_document":
-            return OcrDocSpanValidator()
-        raise ValueError(f"No validator associated with document type {doc_type}")        
-    def persist_document_graph_extraction(
-        self,
-        *,
-        doc_id,
-        parsed: GraphExtractionWithIDs|LLMGraphExtraction,
-        mode: str = "append",   # "replace" | "append" | "skip-if-exists"
-    ) -> dict:
-        """
-        Write nodes/edges/endpoints for `document.id`.
-        Returns concrete ids written for idempotent tests.
-        """
-
-        # now validate (ensures no dangling refs to *other* docs)
-        self._preflight_validate(parsed, doc_id)
-        # self.ingest_with_toposort(parsed, doc_id = doc_id)
-
-        # persist and collect ids
-        node_ids, edge_ids = [], []
-        _ = _alloc_real_ids(parsed)  # rewrite in place
-        order, id2kind, id2obj = self._build_deps(parsed)
-        
-        span_validator: BaseDocValidator = self.get_span_validator_of_doc_type(doc_id=doc_id)
-        nodes_added = edges_added = 0
-        nl = '\n'
-        for rid in order:
-            kind, obj = id2kind[rid], id2obj[rid]
-            # for ln in parsed.nodes:
-            if kind == 'node':
-                ln: Node = obj
-                ln.mentions = self._dealias_span(ln.mentions, doc_id)
-                # skip-if-exists mode
-                for g in ln.mentions:
-                    for sp in g.spans:
-                        span_validator.validate_span(doc_id = doc_id, span = sp)
-                if mode == "skip-if-exists":
-                    got = self.node_collection.get(ids=[ln.id])
-                    if got.get("ids"):  # already there
-                        node_ids.append(ln.id)
-                        continue
-                
-                        
-                n = ln
-
-                emb_text = f"{n.label}: {n.summary} : {nl.join(i['context'] for i in self.extract_reference_contexts(ln)[:1])}"
-                n.embedding = self._ef([emb_text])[0]
-                self.add_node(n, doc_id=doc_id)
-                node_ids.append(n.id)
-            elif kind == 'edge':
-            # for le in parsed.edges:
-                le: Edge = obj
-                le.mentions = self._dealias_span(le.mentions, doc_id)
-                for g in le.mentions:
-                    for sp in g.spans:
-                        span_validator.validate_span(doc_id = doc_id, span = sp)
-                if mode == "skip-if-exists":
-                    got = self.edge_collection.get(ids=[le.id])
-                    if got.get("ids"):
-                        edge_ids.append(le.id)
-                        continue
-                
-                e = le
-
-                emb_text = f"{le.label}: {le.summary} : {nl.join(i['context'] for i in self.extract_reference_contexts(le)[:1])}"
-                e.embedding = self._ef([emb_text])[0]
-                self.add_edge(e, doc_id=doc_id)
-                edge_ids.append(e.id)
-
-        return {
-            "document_id": doc_id,
-            "node_ids": node_ids,
-            "edge_ids": edge_ids,
-            "nodes_added": len(node_ids),
-            "edges_added": len(edge_ids),
-        }        
-    def persist_graph_extraction(
-        self,
-        *,
-        document: Document,
-        parsed: LLMGraphExtraction,
-        mode: str = "append",   # "replace" | "append" | "skip-if-exists"
-        assign_real_id_in_place = True
-    ) -> dict:
-        """
-        the external user use case is to send the whole extraction via mcp as a copy and therefore
-        by default no deep copy is made.
-        Write nodes/edges/endpoints for `document.id`.
-        Returns concrete ids written for idempotent tests.
-        node that side effect parsed is modified in place for efficiency 
-        if assign_real_id_in_place is False, a parsed deep copy is made
-        """
-        doc_id = document.id
-        if not assign_real_id_in_place:
-            parsed = parsed.model_copy(deep=True)
-        # if replace, rollback prior doc content first
-        if mode == "replace":
-            self.rollback_document(doc_id)
-
-        # ensure doc row exists (idempotent)
-        self.add_document(document)
-        # now validate (ensures no dangling refs to *other* docs)
-        self._preflight_validate(parsed, doc_id)
-        # self.ingest_with_toposort(parsed, doc_id = doc_id)
-
-        # diagnose code: set([j for i in parsed.edges for j in i.target_ids]).union(set([j for i in parsed.edges for j in i.source_ids])) <= set([i.id for i in parsed.edges]).union(set([i.id for i in parsed.nodes]))
-
-        # persist and collect ids
-        node_ids, edge_ids = [], []
-        # fallback_snip = (document.content[:160] + "…") if document.content else None
-        # _alloc_real_ids duplicated logic in Self::_resolve_llm_ids        
-        _ = _alloc_real_ids(parsed)  # rewrite in place
-        order, id2kind, id2obj = self._build_deps(parsed)
-        span_validator: BaseDocValidator = self.get_span_validator_of_doc_type(document = document)
-        nodes_added = edges_added = 0
-        nl = '\n'
-        for rid in order:
-            kind, obj = id2kind[rid], id2obj[rid]
-            # for ln in parsed.nodes:
-            if kind == 'node':
-                ln: Node = Node.model_validate(obj.model_dump(), context={'insertion_method': 'llm_graph_extraction'})
-                ln.mentions = self._dealias_span(ln.mentions, document.id)
-                # skip-if-exists mode
-                if mode == "skip-if-exists":
-                    got = self.node_collection.get(ids=[ln.id])
-                    if got.get("ids"):  # already there
-                        node_ids.append(ln.id)
-                        continue
-
-                for g in ln.mentions:
-                    for sp in g.spans:
-                        result = span_validator.validate_span(doc_id = doc_id, span = sp, engine = self, doc=document)
-                        if result['correctness'] != True:
-                            raise Exception(f"Incorrect span occur in grounding {str(g)} span {str(sp)}")
-                n = ln.model_copy(deep=True)
-                emb_text = f"{n.label}: {n.summary} : {nl.join(i['context'] for i in self.extract_reference_contexts(ln)[:1])}"
-                if emb_text is None:
-                    emb_text = f"{n.label}: {n.summary} : {nl.join(i['context'] for i in self.extract_reference_contexts(ln)[:1])}"
-                n.embedding = self._ef([emb_text])[0]
-                self.add_node(n, doc_id=doc_id)
-                node_ids.append(n.id)
-            elif kind == 'edge':
-            # for le in parsed.edges:
-                le: Edge = Edge.model_validate(obj.model_dump(), context={'insertion_method': 'llm_graph_extraction'})
-                le.mentions = self._dealias_span(le.mentions, document.id)
-                if mode == "skip-if-exists":
-                    got = self.edge_collection.get(ids=[le.id])
-                    if got.get("ids"):
-                        edge_ids.append(le.id)
-                        continue
-                # refs = [Span.model_validate(i.model_dump(field_mode = 'backend'), context={'insertion_method': i.insertion_method or 'llm_graph_extraction'}) for i in le.mentions]
-                
-                for g in le.mentions:
-                    for sp in g.spans:
-                        result = span_validator.validate_span(doc_id = doc_id, span = sp, engine = self, doc=document)
-                        if result['correctness'] != True:
-                            raise Exception(f"Incorrect span occur in grounding {str(g)} span {str(sp)}")
-                e = le.model_copy(deep=True)
-                e.embedding = self._ef([f"{le.label}: {le.summary} : {nl.join(i['context'] for i in self.extract_reference_contexts(le)[:1])}"])[0]
-                self.add_edge(e, doc_id=doc_id)
-                edge_ids.append(e.id)
-
-        return {
-            "document_id": doc_id,
-            "node_ids": node_ids,
-            "edge_ids": edge_ids,
-            "nodes_added": len(node_ids),
-            "edges_added": len(edge_ids),
-        }
+        return summary         
     def ingest_document_with_llm(self, document: Document, *, mode: str="append",
                                  instruction_for_node_edge_contents_parsing_inclusion=None,
                                  raw_with_parsed = None):

@@ -482,9 +482,19 @@ class ConversationAIResponse(BaseModel):
     run_trace_node_id: Optional[str] = None
     meta: Dict[str, Any] = Field(default_factory=dict)
 
+class TombstoneMixin(BaseModel):
+    
+    @field_validator('metadata', check_fields=False)
+    def check_tombstone_fields(cls, v):
+        if "lifecycle_status" not in v:
+            v["lifecycle_status"] = "active"
+        else:
+            assert v["lifecycle_status"] in ['active', 'deleted']
+        if "redirect_to_id" not in v:
+            v["redirect_to_id"] = None        
+        return v
 
-
-class Node(LevelAwareMixin, ChromaValidateSourceMixin, ChromaMixin, GraphEntityRefBase):
+class Node(TombstoneMixin, LevelAwareMixin, ChromaValidateSourceMixin, ChromaMixin, GraphEntityRefBase):
     # Node with ref session enforced and level awareness
     pass
 

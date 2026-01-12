@@ -26,6 +26,7 @@ import json
 import pathlib
 import re
 import time
+import base64
 
 from typing import Any, Callable, Iterable, Optional, Self, Sequence, Type, TypeVar
 
@@ -46,19 +47,32 @@ def snapshot_hash(payload: Any) -> str:
     h.update(_stable_json(payload).encode("utf-8"))
     return h.hexdigest()
 
+def deterministic_id(prefix: str, fingerprint: dict, bits: int = 96) -> str:
+    s = json.dumps(fingerprint, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    h = hashlib.sha256(s).digest()
+    nbytes = bits // 8
+    short = h[:nbytes]
+    token = base64.b32encode(short).decode("ascii").rstrip("=")
+    return f"{prefix}:{token.lower()}"
 
 def pointer_id(*, scope: str, pointer_kind: str, target_kind: str, target_id: str) -> str:
-    """Deterministic pointer id.
-
-    Storage-agnostic: does not mention backend collection/table.
-    """
-    # Keep it readable; escape is handled by stable json if needed later.
-    return f"ptr|scope:{scope}|pk:{pointer_kind}|tk:{target_kind}|id:{target_id}"
+    fp = {
+        "scope": scope,
+        "pointer_kind": pointer_kind,
+        "target_kind": target_kind,
+        "target_id": target_id,  # INCLUDED IN FINGERPRINT
+    }
+    return deterministic_id("ptr", fp)
 
 
 def edge_id(*, scope: str, rel: str, src: str, dst: str) -> str:
-    """Deterministic edge id for idempotent linking in the canvas."""
-    return f"e|scope:{scope}|rel:{rel}|src:{src}|dst:{dst}"
+    fp = {
+        "scope": scope,
+        "rel": rel,
+        "src": src,
+        "dst": dst,
+    }
+    return deterministic_id("e", fp)
 
 
 class EvidenceSelection(BaseModel):

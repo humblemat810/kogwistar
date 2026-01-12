@@ -142,7 +142,7 @@ def test_conversation_flow(engine:GraphKnowledgeEngine, conversation_engine:Grap
     
     # Verify Reference (FakeLLM returns ['N1'])
     # The code: relevant_kg_ids = ['N1'] -> creates reference node -> creates edge
-    ref_nodes = conversation_engine.node_collection.get(where={"entity_type": "reference_pointer"})
+    ref_nodes = conversation_engine.node_collection.get(where={"entity_type": "knowledge_reference"})
     assert len(ref_nodes['ids']) == 1
     ref_doc = json.loads(ref_nodes['documents'][0])
     assert ref_doc['properties']['refers_to_id'] == "N1"
