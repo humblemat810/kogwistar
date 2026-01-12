@@ -1,8 +1,7 @@
 <!doctype html>
 <html>
   <head>
-    <meta charset="utf-8"/>
-    <title>D3 graph – tree/outward/inward filters</title>
+    <meta charset="utf-8"    <title>D3 graph viewer</title>
     <style>
       body { margin:0; }
       svg { width:100vw; height:100vh; display:block; }
@@ -11,6 +10,7 @@
         background:#fff9; padding:8px 10px; border-radius:8px;
         font: 12px/1.3 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
         box-shadow: 0 2px 8px rgba(0,0,0,.15);
+        max-width: calc(100vw - 16px);
       }
       #bar label { margin-right:8px; white-space: nowrap; }
       #bar input[type=range] { width:120px; vertical-align: middle; }
@@ -25,7 +25,7 @@
         max-height: 40vh; overflow:auto;
       }
       .menu label { display:flex; gap:8px; align-items:center; font:12px/1.4 sans-serif; padding:2px 0; }
-      .menu .cmds { display:flex; gap:6px; margin-bottom:6px; }
+      .menu .cmds { display:flex; gap:6px; margin-bottom:6px; flex-wrap: wrap; }
       #legend {
         position:fixed; right:8px; top:8px; z-index:10;
         background:#fff9; padding:8px 10px; border-radius:8px; font:12px/1.2 sans-serif;
@@ -34,20 +34,47 @@
       #legend .dot { display:inline-block; width:10px; height:10px; border-radius:50%; background:#69b; margin-right:6px; }
       #legend .diamond { display:inline-block; width:10px; height:10px; background:#d77; transform:rotate(45deg); margin-right:6px; }
       .hidden { display: none; }
+
+      /* focus highlight */
+      .focus-node { stroke: #ffb000; stroke-width: 3px; }
+      .focus-label { font-weight: 700; text-decoration: underline; }
+      .dim { opacity: 0.15; }
+
+      #inspector {
+        position: fixed;
+        right: 8px;
+        bottom: 8px;
+        width: min(520px, calc(100vw - 16px));
+        max-height: 55vh;
+        overflow: auto;
+        background:#fff9;
+        border-radius: 8px;
+        box-shadow: 0 2px 10px rgba(0,0,0,.18);
+        padding: 10px;
+        font: 12px/1.35 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        z-index: 10;
+      }
+      #inspector pre { margin:0; white-space: pre-wrap; word-break: break-word; }
+      #inspector .hdr { display:flex; align-items:center; justify-content:space-between; margin-bottom:6px; }
+      #inspector .hdr b { font: 12px/1.2 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+      #inspector button { font: 12px/1.2 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
     </style>
     <script src="https://unpkg.com/d3@7"></script>
   </head>
+  
   <body>
     <div id="bar">
       <div style="margin-bottom:6px;">
         <b>doc_id</b>=<code>{{ doc_id or '' }}</code> &nbsp;|&nbsp;
         <b>mode</b>=<code>{{ mode }}</code> &nbsp;|&nbsp;
         <b>insertion_method</b>=<code>{{ insertion_method or '' }}</code>
+        {% if is_bundle %}&nbsp;|&nbsp;<b>bundle</b>=<code>true</code>{% endif %}
       </div>
 
       <button id="zoomIn">＋</button>
       <button id="zoomOut">－</button>
       <button id="resetZoom">Reset</button>
+
       <label>Label <input id="fontSize" type="range" min="8" max="18" value="10"></label>
       <label>Link <input id="linkDist" type="range" min="30" max="240" value="100"></label>
       <label>Charge <input id="charge" type="range" min="-800" max="-20" value="-300"></label>
@@ -80,12 +107,51 @@
       <div><span class="dot"></span> entity node</div>
       <div><span class="diamond"></span> edge-node (reified relation)</div>
       <div style="margin-top:6px;"><span style="border-bottom:2px solid #999;">&nbsp;&nbsp;&nbsp;</span> directed link</div>
+      <div style="margin-top:6px;">Tip: click a node to inspect JSON.</div>
+      <div>Tip: <code>?focus=id1,id2</code> highlights.</div>
+    </div>
+
+    <div id="inspector" class="hidden">
+      <div class="hdr">
+        <b>Inspector</b>
+        <div>
+          <button id="openRef">Open ref</button>
+          <button id="closeInspector">Close</button>
+        </div>
+      </div>
+      <pre id="inspectorBody"></pre>
     </div>
 
     <svg></svg>
 
     <script>
+      window.__EMBEDDED_DATA__ = {{ embedded_data | safe if embedded_data is defined else "null" }};
+
+      // ---- Data loading: online (fetch) or offline (embedded) ----
+      const EMBEDDED_DATA = {% if embedded_data is defined %}{{ embedded_data | safe }}{% else %}null{% endif %};
+
+      function parseQuery() {
+        const u = new URL(window.location.href);
+        const qs = u.searchParams;
+
+        // Focus: comma-separated list of node ids to highlight
+        const focus = (qs.get("focus") || "").split(",").map(s => s.trim()).filter(Boolean);
+
+        // Optional: override data url (useful for sharing one template)
+        const dataUrl = qs.get("data_url");
+
+        return { focus, dataUrl };
+      }
+
+      function safeSvgId(s) {
+        // SVG fragment ids get cranky with characters like ":", ">", spaces, etc.
+        // Keep stable but safe: replace anything not [A-Za-z0-9_-] with "_".
+        return String(s).replace(/[^A-Za-z0-9_-]/g, "_");
+      }
+
       async function main(){
+        const { focus, dataUrl } = parseQuery();
+
         const params = new URLSearchParams({
           "doc_id":"{{ doc_id or '' }}",
           "mode":"{{ mode }}"
@@ -93,11 +159,18 @@
         const insertionMethod = {{ insertion_method | tojson if insertion_method is not none else 'null' }};
         if (insertionMethod) params.set("insertion_method", insertionMethod);
 
-        const res = await fetch("/api/viz/d3.json?" + params.toString());
-        const data = await res.json(); // { nodes, links, mode, doc_id }
+        const resolvedDataUrl = dataUrl || ("/api/viz/d3.json?" + params.toString());
 
-        const allNodes = data.nodes.map(n => ({...n}));
-        const allLinks = data.links.map(l => ({...l}));
+        let data = window.__EMBEDDED_DATA__;
+
+        if (!data) {
+          const res = await fetch("/api/viz/d3.json?" + params.toString());
+          data = await res.json();
+        }
+        const allNodes = (data.nodes || []).map(n => ({...n}));
+        const allLinks = (data.links || []).map(l => ({...l}));
+
+        const focusSet = new Set(focus);
 
         const svg = d3.select("svg"),
               width = window.innerWidth,
@@ -109,15 +182,26 @@
 
         const defs = svg.append("defs");
         const gradDefs = defs.append("g").attr("id", "edge-gradients");
+
+        function keyEdge(e){
+          const sid = (typeof e.source === "object" ? e.source.id : e.source);
+          const tid = (typeof e.target === "object" ? e.target.id : e.target);
+          const rel = (e.relation || e.label || "");
+          return e.id || `${sid}->${tid}:${rel}`;
+        }
+        function gradIdForEdge(e){
+          return "g-" + safeSvgId(keyEdge(e));
+        }
+
         const gradSel = gradDefs
           .selectAll("linearGradient")
           .data(allLinks, keyEdge)
           .join(enter => {
             const g = enter.append("linearGradient")
-              .attr("id", d => "g-" + keyEdge(d))
+              .attr("id", d => gradIdForEdge(d))
               .attr("gradientUnits", "userSpaceOnUse");
-            g.append("stop").attr("offset", "0%").attr("stop-color", "#b3b3b3"); // tail grey
-            g.append("stop").attr("offset", "100%").attr("stop-color", "#000");  // head black
+            g.append("stop").attr("offset", "0%").attr("stop-color", "#b3b3b3");
+            g.append("stop").attr("offset", "100%").attr("stop-color", "#000");
             return g;
           });
 
@@ -170,6 +254,7 @@
           });
         }
         buildRelMenu();
+
         relBtn.onclick = () => relMenu.style.display = (relMenu.style.display === "block") ? "none" : "block";
         document.addEventListener('click', (e) => {
           if (!relMenu.contains(e.target) && e.target !== relBtn) relMenu.style.display = "none";
@@ -193,19 +278,12 @@
           includeLat.disabled  = false;
         }
 
-        function keyEdge(e){
-          const sid = (typeof e.source === "object" ? e.source.id : e.source);
-          const tid = (typeof e.target === "object" ? e.target.id : e.target);
-          const rel = (e.relation || e.label || "");
-          return e.id || `${sid}->${tid}:${rel}`;
-        }
-
         const linkSel = gLinks.selectAll("line")
           .data(allLinks, keyEdge)
           .join("line")
           .attr("stroke-width",1.6)
           .attr("marker-end","url(#arrow)")
-          .attr("stroke", d => `url(#g-${keyEdge(d)})`);
+          .attr("stroke", d => `url(#${gradIdForEdge(d)})`);
 
         linkSel.append("title").text(d => {
           const rel = d.relation || d.label || "";
@@ -232,6 +310,22 @@
           .text(d=>d.label||d.id)
           .style("font", fontSize.value + "px sans-serif");
 
+        // Focus highlight
+        function applyFocusStyles(){
+          const hasFocus = focusSet.size > 0;
+          nodeCircle.classed("focus-node", d => focusSet.has(d.id));
+          nodeDiamond.classed("focus-node", d => focusSet.has(d.id));
+          labelSel.classed("focus-label", d => focusSet.has(d.id));
+
+          if (hasFocus) {
+            // dim non-focus nodes for clarity
+            nodeCircle.classed("dim", d => !focusSet.has(d.id));
+            nodeDiamond.classed("dim", d => !focusSet.has(d.id));
+            labelSel.classed("dim", d => !focusSet.has(d.id));
+          }
+        }
+        applyFocusStyles();
+
         // Forces
         const linkForce   = d3.forceLink(allLinks).id(d => d.id).distance(+linkDistIn.value);
         const chargeForce = d3.forceManyBody().strength(+chargeIn.value);
@@ -252,7 +346,6 @@
               .attr("x2", d => d.target.x)
               .attr("y2", d => d.target.y);
 
-            // Update gradient endpoints so tail→head shading follows the line
             gradSel
               .attr("x1", d => (d.source && d.source.x) || 0)
               .attr("y1", d => (d.source && d.source.y) || 0)
@@ -316,11 +409,8 @@
           sim.alpha(0.3).restart();
         };
         freezeIn.onchange  = () => {
-          if (freezeIn.checked) {
-            sim.stop();
-          } else {
-            sim.alpha(0.6).restart();
-          }
+          if (freezeIn.checked) sim.stop();
+          else sim.alpha(0.6).restart();
         };
 
         treeMode.onchange = () => {
@@ -341,18 +431,14 @@
             if (r === relName) {
               const sid = (typeof e.source === "object" ? e.source.id : e.source);
               const tid = (typeof e.target === "object" ? e.target.id : e.target);
-              out.add(sid);inn.add(tid);
+              out.add(sid); inn.add(tid);
             }
           }
           const candidates = [...out].filter(x => !inn.has(x));
-          if (candidates.length > 0) {
-            return candidates[0];
-          }
+          if (candidates.length > 0) return candidates[0];
           for (const n of allNodes) {
             const props = n.properties || n.metadata || {};
-            if (props.kind && props.kind.toLowerCase() === "document_root") {
-              return n.id;
-            }
+            if (props.kind && String(props.kind).toLowerCase() === "document_root") return n.id;
           }
           return (allNodes[0] && allNodes[0].id) || null;
         }
@@ -452,6 +538,72 @@
               const d = depth.get(n.id);
               if (d !== undefined) {
                 const y = baseY + d * layerGap;
+                n.y = y; n.fy = y;
+              }
+            });
+          } else {
+            allNodes.forEach(n => { n.fy = null; });
+          }
+
+          nodeCircle.call(makeDrag(depth, baseY, layerGap));
+          nodeDiamond.call(makeDrag(depth, baseY, layerGap));
+
+          if (!freezeIn.checked) sim.alpha(0.25).restart();
+
+          // Re-apply focus styling after visibility changes
+          applyFocusStyles();
+        }
+
+        // Inspector
+        const inspector = document.getElementById("inspector");
+        const inspectorBody = document.getElementById("inspectorBody");
+        const closeInspector = document.getElementById("closeInspector");
+        const openRefBtn = document.getElementById("openRef");
+
+        let selectedDatum = null;
+
+        function showInspector(d){
+          selectedDatum = d;
+          inspectorBody.textContent = JSON.stringify(d, null, 2);
+          inspector.classList.remove("hidden");
+          // enable ref opener only if node has refers_to_id
+          const props = d && (d.properties || d.metadata || {});
+          const refId = props && (props.refers_to_id || (props.kg && props.kg.refers_to_id));
+          openRefBtn.disabled = !refId;
+        }
+
+        function hideInspector(){
+          inspector.classList.add("hidden");
+          selectedDatum = null;
+        }
+        closeInspector.onclick = hideInspector;
+
+        openRefBtn.onclick = () => {
+          if (!selectedDatum) return;
+          const props = selectedDatum.properties || selectedDatum.metadata || {};
+          const refId = props.refers_to_id || (props.kg && props.kg.refers_to_id);
+          if (!refId) return;
+          // Open KG view focused on the referenced id. If your backend needs doc_id, include it in properties and append here.
+          const u = new URL(window.location.origin + "/viz/d3");
+          u.searchParams.set("mode", "{{ mode }}");
+          u.searchParams.set("focus", refId);
+          window.open(u.toString(), "_blank");
+        };
+
+        function attachClick(sel){
+          sel.on("click", (event, d) => {
+            event.stopPropagation();
+            showInspector(d);
+          });
+        }
+        attachClick(nodeCircle);
+        attachClick(nodeDiamond);
+
+        svg.on("click", () => hideInspector());
+
+        // Initial visibility
+        applyVisibility();
+ d * layerGap;
                 n.y = y; n.fy = y; // pin Y
               }
             });

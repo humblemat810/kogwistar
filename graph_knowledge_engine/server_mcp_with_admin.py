@@ -904,6 +904,29 @@ def viz_d3(
         "d3.html",
         {"request": request, "doc_id": doc_id, "mode": mode, "insertion_method": insertion_method},
     )
+
+@app.get("/viz/d3.bundle", response_class=HTMLResponse)
+def viz_d3_bundle(
+    request: Request,
+    doc_id: Optional[str] = None,
+    mode: str = "reify",
+    insertion_method: Optional[str] = None,
+):
+    # Embed the JSON payload directly into the HTML so it can be opened offline.
+    import json as _json
+    payload = to_d3_force(engine, doc_id=doc_id, mode=mode, insertion_method=insertion_method)
+    return templates.TemplateResponse(
+        "d3.html",
+        {
+            "request": request,
+            "doc_id": doc_id,
+            "mode": mode,
+            "insertion_method": insertion_method,
+            "embedded_data": _json.dumps(payload),
+            "is_bundle": True,
+        },
+    )
+
 @app.get("/viz/go", response_class=HTMLResponse)
 def viz_go(
     request: Request,
