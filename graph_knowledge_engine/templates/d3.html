@@ -93,7 +93,7 @@
         <div class="menu" id="relMenu">
           <div class="cmds">
             <button type="button" id="relAll">All</button>
-            <button type="button" id="relNone">None</button>
+            <button type="button" id="NotAny">NotAny</button>
             <button type="button" id="relSumm">Only “summ”</button>
           </div>
           <div id="relList"></div>
@@ -253,7 +253,7 @@
         document.getElementById('relAll').onclick = () => {
           relList.querySelectorAll('input[type=checkbox]').forEach(cb => cb.checked = true);
         };
-        document.getElementById('relNone').onclick = () => {
+        document.getElementById('NotAny').onclick = () => {
           relList.querySelectorAll('input[type=checkbox]').forEach(cb => cb.checked = false);
         };
         document.getElementById('relSumm').onclick = () => {
@@ -542,16 +542,32 @@
         const openRefBtn = document.getElementById("openRef");
         let selectedDatum = null;
 
-        function getRefId(d){
+        function getRefIds(d){
           const props = (d && (d.properties || d.metadata)) || {};
-          return props.refers_to_id || (props.kg && props.kg.refers_to_id) || null;
+          // Preferred explicit pointer(s)
+          if (props.refers_to_id) return [String(props.refers_to_id)];
+          if (props.kg && props.kg.refers_to_id) return [String(props.kg.refers_to_id)];
+
+          // Bundle/export schema: ref_doc_id + ref_node_ids/ref_edge_ids
+          const ids = [];
+          if (Array.isArray(props.ref_node_ids)) ids.push(...props.ref_node_ids.map(String));
+          if (Array.isArray(props.ref_edge_ids)) ids.push(...props.ref_edge_ids.map(String));
+          // As a last resort, allow doc-level jump (open KG bundle without focus)
+          if (props.ref_doc_id) ids.push(String(props.ref_doc_id));
+
+          // De-dupe while preserving order
+          return [...new Set(ids)].filter(Boolean);
         }
 
         function showInspector(d){
           selectedDatum = d;
           inspectorBody.textContent = JSON.stringify(d, null, 2);
           inspector.classList.remove("hidden");
-          openRefBtn.disabled = !getRefId(d);
+          const refIds = getRefIds(d);
+          const props = (d && (d.properties || d.metadata)) || {};
+          const hasKgBundle = !!(window.__BUNDLE_META__ && window.__BUNDLE_META__.kg_bundle_href);
+          // Enable if we have any ref ids OR it's a KG ref and we can open the KG bundle anyway.
+          openRefBtn.disabled = !(refIds.length > 0 || (props.ref_kind === "kg" && hasKgBundle));
         }
         function hideInspector(){
           inspector.classList.add("hidden");
@@ -562,16 +578,28 @@
 
         openRefBtn.onclick = () => {
           if (!selectedDatum) return;
-          const refId = getRefId(selectedDatum);
-          if (!refId) return;
+
+          const props = (selectedDatum && (selectedDatum.properties || selectedDatum.metadata)) || {};
+          const refIds = getRefIds(selectedDatum);
 
           const meta = window.__BUNDLE_META__ || {};
-          if (meta.kg_bundle_href) {
-            window.open(`${meta.kg_bundle_href}?focus=${encodeURIComponent(refId)}`, "_blank");
+          const hasKgBundle = !!meta.kg_bundle_href;
+
+          // Bundle navigation: if this is a KG ref, open the KG bundle even if we can't focus.
+          if (props.ref_kind === "kg" && hasKgBundle) {
+            // Prefer focusing referenced KG node/edge ids; skip doc_id-only focus.
+            const focusIds = refIds.filter(x => x && x !== (meta.kg_doc_id || "") && x !== (props.ref_doc_id || ""));
+            const url = focusIds.length > 0
+              ? `${meta.kg_bundle_href}?focus=${encodeURIComponent(focusIds.join(","))}`
+              : meta.kg_bundle_href;
+            window.open(url, "_blank");
             return;
           }
 
-          const u = new URL(window.location.origin + "/viz/d3");
+          // If we have explicit ids but no bundle href, fall back to server viewer.
+          if (refIds.length === 0) return;
+          const refId = refIds[0];
+const u = new URL(window.location.origin + "/viz/d3");
           u.searchParams.set("mode", "{{ mode }}");
           u.searchParams.set("focus", refId);
           window.open(u.toString(), "_blank");

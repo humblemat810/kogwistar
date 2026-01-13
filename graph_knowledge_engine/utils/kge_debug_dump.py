@@ -3,12 +3,14 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 from pathlib import Path
 from typing import Optional, Literal
 
+from jinja2 import Environment
+from markupsafe import Markup
+
 from graph_knowledge_engine.engine import GraphKnowledgeEngine
-from graph_knowledge_engine.viz import to_d3_force
+from graph_knowledge_engine.visualization.graph_viz import to_d3_force
 
 _GRAPH_TYPE = Literal["knowledge", "conversation"]
 
@@ -17,22 +19,21 @@ def build_engine(*, persist_dir: Path, graph_type: _GRAPH_TYPE) -> GraphKnowledg
     return GraphKnowledgeEngine(persist_directory=str(persist_dir), kg_graph_type=graph_type)
 
 
-def _inject_globals(template_html: str, *, embedded_data: dict, bundle_meta: Optional[dict] = None) -> str:
-    # Replace first occurrence of each assignment; keeps template drop-in replace friendly.
-    html = re.sub(
-        r"window\.__EMBEDDED_DATA__\s*=\s*.*?;",
-        "window.__EMBEDDED_DATA__ = " + json.dumps(embedded_data) + ";",
-        template_html,
-        count=1,
-        flags=re.DOTALL,
-    )
-    html = re.sub(
-        r"window\.__BUNDLE_META__\s*=\s*.*?;",
-        "window.__BUNDLE_META__ = " + json.dumps(bundle_meta if bundle_meta is not None else None) + ";",
-        html,
-        count=1,
-        flags=re.DOTALL,
-    )
+def _tojson(value) -> Markup:
+    # Deterministic JSON for embedding into <script>.
+    return Markup(json.dumps(value, ensure_ascii=False))
+
+
+def _render_template_html(template_html: str, *, context: dict) -> str:
+    # Offline rendering: no server required.
+    env = Environment(autoescape=False)
+    env.filters["tojson"] = _tojson
+    tmpl = env.from_string(template_html)
+    html = tmpl.render(**context)
+
+    # Guard against the exact regression: leaking Jinja into bundle artifacts.
+    if "{{" in html or "{%" in html:
+        raise RuntimeError("Rendered bundle still contains Jinja tokens ('{{' or '{%').")
     return html
 
 
@@ -46,9 +47,22 @@ def dump_d3_bundle(
     insertion_method: Optional[str] = None,
     bundle_meta: Optional[dict] = None,
 ) -> Path:
-    payload = to_d3_force(engine, doc_id=doc_id, mode=mode, insertion_method=insertion_method)
-    injected = _inject_globals(template_html, embedded_data=payload, bundle_meta=bundle_meta)
-    out_html.write_text(injected, encoding="utf-8")
+    payload = to_d3_force(engine, doc_id=doc_id, insertion_method=insertion_method, mode=mode)
+    rendered = _render_template_html(
+        template_html,
+        context={
+            "doc_id": json.dumps(doc_id),
+            "mode": mode,
+            "insertion_method": json.dumps(insertion_method),
+            "is_bundle": json.dumps(bundle_meta is not None),
+            "embedded_data": json.dumps(payload),
+            "bundle_meta": json.dumps(bundle_meta) if bundle_meta is not None else None,
+        },
+    )
+    
+    out_html.write_text(rendered, encoding="utf-8")
+    if " None" in rendered or "\nNone" in rendered or "None" in rendered:
+        raise RuntimeError("Invalid JS literal: Python None leaked into bundle")
     return out_html
 
 
@@ -97,6 +111,7 @@ def dump_paired_bundles(
     )
 
     (out_dir / "bundle.meta.json").write_text(json.dumps(bundle_meta, indent=2), encoding="utf-8")
+    # os.startfile(str(out_dir))
     return bundle_meta
 
 

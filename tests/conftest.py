@@ -7,9 +7,10 @@ import pytest
 from graph_knowledge_engine.engine import GraphKnowledgeEngine
 from graph_knowledge_engine.models import (
     Edge, LLMGraphExtraction, LLMNode, LLMEdge,
-    LLMMergeAdjudication, AdjudicationVerdict, Node, Span
+    LLMMergeAdjudication, AdjudicationVerdict, Node, Span, Grounding,
+    ConversationEdge, ConversationNode, MentionVerification
 )
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Sequence
 from langchain_core.runnables import Runnable
 from graph_knowledge_engine.models import LLMMergeAdjudication, AdjudicationVerdict
 
@@ -454,191 +455,601 @@ def small_test_docs_nodes_edge_adjudcate():
 
     return sample_dataset
 
-
-
-
-def _seed_node(engine: GraphKnowledgeEngine, *, doc_id: str, node_id: str, label: str, insertion_method: str, properties: dict | None = None):
-    n = Node(
-        id=node_id,
-        label=label,
-        type="entity",
-        summary=label,
-        doc_id=doc_id,
-        properties=properties or {},
-        mentions=[
-            Span(
-                collection_page_url=f"document_collection/{doc_id}",
-                document_page_url=f"document/{doc_id}",
-                doc_id=doc_id,
-                insertion_method=insertion_method,
-                start_page=1,
-                end_page=1,
-                start_char=0,
-                end_char=1,
-            )
-        ],
+def mk_verification(
+    *,
+    method: str = "human",
+    is_verified: bool = True,
+    score: float = 1.0,
+    notes: str = "seed",
+) -> MentionVerification:
+    return MentionVerification(
+        method=method,
+        is_verified=is_verified,
+        score=score,
+        notes=notes,
     )
+
+
+def mk_span(
+    *,
+    doc_id: str,
+    full_text: str,
+    start_char: int = 0,
+    end_char: Optional[int] = None,
+    page_number: int = 1,
+    insertion_method: str = "seed",
+    collection_page_url: str = "url",
+    document_page_url: str = "url",
+    context_before: str = "",
+    context_after: str = "",
+    chunk_id: Optional[str] = None,
+    source_cluster_id: Optional[str] = None,
+    verification: Optional[MentionVerification] = None,
+) -> Span:
+    if end_char is None:
+        end_char = len(full_text)
+    excerpt = full_text[start_char:end_char]
+    return Span(
+        collection_page_url=collection_page_url,
+        document_page_url=document_page_url,
+        doc_id=doc_id,
+        insertion_method=insertion_method,
+        page_number=page_number,
+        start_char=start_char,
+        end_char=end_char,
+        excerpt=excerpt,
+        context_before=context_before,
+        context_after=context_after,
+        chunk_id=chunk_id,
+        source_cluster_id=source_cluster_id,
+        verification=verification or mk_verification(notes=f"seed:{insertion_method}"),
+    )
+
+
+def mk_grounding(*spans: Span) -> Grounding:
+    return Grounding(spans=list(spans))
+
+
+def add_node_raw(
+    engine: GraphKnowledgeEngine,
+    node: Node | ConversationNode,
+    *,
+    embedding_dim: int = 384,
+    embedding: Optional[Sequence[float]] = None,
+) -> None:
+    """
+    Adds a node by directly writing to the underlying Chroma collection,
+    using the engine's own serialization helper.
+
+    This mirrors what your existing test already does:
+      doc, meta = engine._node_doc_and_meta(n)
+      engine.node_collection.add(...)
+    """
+    doc, meta = engine._node_doc_and_meta(node)
+    if embedding is None and getattr(node, "embedding", None) is None:
+        embedding = [0.1] * embedding_dim
+    if getattr(node, "embedding", None) is None:
+        node.embedding = embedding  # type: ignore
 
     engine.node_collection.add(
-        ids=[node_id],
-        documents=[n.model_dump_json(field_mode="backend")],
-        metadatas=[{"doc_id": doc_id, "label": n.label, "type": n.type}],
+        ids=[node.id],
+        documents=[doc],
+        embeddings=[list(node.embedding)],  # type: ignore[arg-type]
+        metadatas=[meta],
     )
 
-    # Node-doc mapping row (your engine expects it for joins)
-    ndid = f"{node_id}::{doc_id}"
-    row = {"id": ndid, "node_id": node_id, "doc_id": doc_id}
-    engine.node_docs_collection.add(ids=[ndid], documents=[json.dumps(row)], metadatas=[row])
-    return n
 
-
-def _seed_edge(engine: GraphKnowledgeEngine, *, doc_id: str, edge_id: str, relation: str, src_id: str, tgt_id: str, insertion_method: str, label: str | None = None):
-    e = Edge(
-        id=edge_id,
-        label=label or f"{src_id} {relation} {tgt_id}",
-        type="relationship",
-        summary=label or f"{src_id} {relation} {tgt_id}",
-        relation=relation,
-        source_ids=[src_id],
-        target_ids=[tgt_id],
-        source_edge_ids=[],
-        target_edge_ids=[],
-        doc_id=doc_id,
-        mentions=[
-            Span(
-                collection_page_url=f"document_collection/{doc_id}",
-                document_page_url=f"document/{doc_id}",
-                doc_id=doc_id,
-                insertion_method=insertion_method,
-                start_page=1,
-                end_page=1,
-                start_char=0,
-                end_char=1,
-            )
-        ],
-    )
+def add_edge_raw(
+    engine: Any,
+    edge: Edge | ConversationEdge,
+    *,
+    embedding_dim: int = 384,
+    embedding: Optional[Sequence[float]] = None,
+) -> None:
+    """
+    Same idea for edges.
+    """
+    doc, meta = engine._edge_doc_and_meta(edge)
+    if embedding is None and getattr(edge, "embedding", None) is None:
+        embedding = [0.1] * embedding_dim
+    if getattr(edge, "embedding", None) is None:
+        edge.embedding = embedding  # type: ignore
 
     engine.edge_collection.add(
-        ids=[edge_id],
-        documents=[e.model_dump_json(field_mode="backend")],
-        metadatas=[{"doc_id": doc_id, "relation": relation}],
+        ids=[edge.id],
+        documents=[doc],
+        embeddings=[list(edge.embedding)],  # type: ignore[arg-type]
+        metadatas=[meta],
     )
 
-    # Endpoints rows (your engine expects these)
-    rows = [
-        {
-            "id": f"{edge_id}::src::node::{src_id}",
-            "edge_id": edge_id,
-            "endpoint_id": src_id,
-            "endpoint_type": "node",
-            "role": "src",
-            "relation": relation,
-            "doc_id": doc_id,
+
+# ---------------------------------------------------------------------
+# Seed KG graph (real Node/Edge objects with proper mentions/spans)
+# ---------------------------------------------------------------------
+
+def seed_kg_graph(*, kg_engine: GraphKnowledgeEngine, kg_doc_id: str = "D_KG_001") -> dict[str, Any]:
+    """
+    Seeds a minimal KG doc with:
+      - N1, N2 nodes
+      - E1 edge N1 -> N2
+    Returns ids for later linking from conversation graph.
+    """
+    text1 = "Project KGE stores entities and relations with provenance spans."
+    text2 = "Conversation graph nodes can reference KG nodes/edges for grounding."
+
+    n1 = Node(
+        id="KG_N1",
+        label="KGE provenance",
+        type="entity",
+        summary="KGE stores entities/relations with spans for provenance.",
+        mentions=[
+            mk_grounding(
+                mk_span(
+                    doc_id=kg_doc_id,
+                    full_text=text1,
+                    insertion_method="seed_kg_node",
+                    document_page_url=f"doc/{kg_doc_id}#KG_N1",
+                    collection_page_url=f"collection/{kg_doc_id}",
+                )
+            )
+        ],
+        metadata={"level_from_root": 0, "entity_type": "kg_entity"},
+        domain_id=None,
+        canonical_entity_id=None,
+        properties={"kind": "kg_node"},
+        embedding=None,
+        doc_id=kg_doc_id,
+        level_from_root=0,
+    )
+
+    n2 = Node(
+        id="KG_N2",
+        label="Conversation grounding",
+        type="entity",
+        summary="Conversation graph nodes can reference KG items for grounding.",
+        mentions=[
+            mk_grounding(
+                mk_span(
+                    doc_id=kg_doc_id,
+                    full_text=text2,
+                    insertion_method="seed_kg_node",
+                    document_page_url=f"doc/{kg_doc_id}#KG_N2",
+                    collection_page_url=f"collection/{kg_doc_id}",
+                )
+            )
+        ],
+        metadata={"level_from_root": 0, "entity_type": "kg_entity"},
+        domain_id=None,
+        canonical_entity_id=None,
+        properties={"kind": "kg_node"},
+        embedding=None,
+        doc_id=kg_doc_id,
+        level_from_root=0,
+    )
+
+    e1 = Edge(
+        id="KG_E1",
+        label="supports",
+        type="relationship",
+        summary="Provenance spans support conversation grounding.",
+        source_ids=[n1.id],
+        target_ids=[n2.id],
+        relation="supports",
+        source_edge_ids=[],
+        target_edge_ids=[],
+        mentions=[
+            mk_grounding(
+                mk_span(
+                    doc_id=kg_doc_id,
+                    full_text="supports",
+                    insertion_method="seed_kg_edge",
+                    document_page_url=f"doc/{kg_doc_id}#KG_E1",
+                    collection_page_url=f"collection/{kg_doc_id}",
+                    start_char=0,
+                    end_char=8,
+                )
+            )
+        ],
+        metadata={"level_from_root": 0, "entity_type": "kg_edge"},
+        domain_id=None,
+        canonical_entity_id=None,
+        properties={"kind": "kg_edge"},
+        embedding=None,
+        doc_id=kg_doc_id,
+    )
+
+    # Insert (bypass ingestion)
+    add_node_raw(kg_engine, n1)
+    add_node_raw(kg_engine, n2)
+    add_edge_raw(kg_engine, e1)
+
+    return {
+        "doc_id": kg_doc_id,
+        "node_ids": (n1.id, n2.id),
+        "edge_ids": (e1.id,),
+        "n1": n1,
+        "n2": n2,
+        "e1": e1,
+    }
+
+
+# ---------------------------------------------------------------------
+# Seed Conversation graph with refs to KG
+# ---------------------------------------------------------------------
+
+def seed_conversation_graph(
+    *,
+    conversation_engine: GraphKnowledgeEngine,
+    user_id: str = "U_TEST",
+    conversation_id: str = "CONV_TEST_001",
+    start_node_id: str = "CONV_START_001",
+    kg_seed: dict[str, Any],
+) -> dict[str, Any]:
+    """
+    Seeds:
+      - conversation start (via engine.create_conversation)
+      - two turns (user + assistant)
+      - next_turn edge between turns
+      - memory_context node
+      - summary node
+      - kg_ref node referencing kg_seed[n1/e1]
+    """
+    # Create conversation (your engine already builds the start node)
+    conv_id, start_id = conversation_engine.create_conversation(
+        user_id,
+        conversation_id,
+        start_node_id,
+    )
+    assert conv_id == conversation_id
+    assert start_id == start_node_id
+
+    # Turn 0 (user)
+    t0_text = "Show me what happened in the graph engine."
+    t0_id = "TURN_000"
+    t0_span = mk_span(
+        doc_id=f"conv:{conv_id}",
+        full_text=t0_text,
+        insertion_method="conversation_turn",
+        collection_page_url=f"conversation/{conv_id}",
+        document_page_url=f"conversation/{conv_id}#{t0_id}",
+        page_number=1,
+    )
+    turn0 = ConversationNode(
+        user_id=user_id,
+        id=t0_id,
+        label="Turn 0 (user)",
+        type="entity",
+        doc_id=t0_id,
+        summary=t0_text,
+        role="user",  # type: ignore
+        turn_index=0,
+        conversation_id=conv_id,
+        mentions=[mk_grounding(t0_span)],
+        properties={},
+        metadata={
+            "entity_type": "conversation_turn",
+            "level_from_root": 0,
+            "char_distance_from_last_summary": len(t0_text),
+            "turn_distance_from_last_summary": 1,
         },
-        {
-            "id": f"{edge_id}::tgt::node::{tgt_id}",
-            "edge_id": edge_id,
-            "endpoint_id": tgt_id,
-            "endpoint_type": "node",
-            "role": "tgt",
-            "relation": relation,
-            "doc_id": doc_id,
+        domain_id=None,
+        canonical_entity_id=None,
+        embedding=None,
+        level_from_root=0,
+    )
+    conversation_engine.add_node(turn0, None)
+
+    # Turn 1 (assistant)
+    t1_text = "Here are the relevant KG nodes and the conversation timeline."
+    t1_id = "TURN_001"
+    t1_span = mk_span(
+        doc_id=f"conv:{conv_id}",
+        full_text=t1_text,
+        insertion_method="conversation_turn",
+        collection_page_url=f"conversation/{conv_id}",
+        document_page_url=f"conversation/{conv_id}#{t1_id}",
+        page_number=1,
+    )
+    turn1 = ConversationNode(
+        user_id=user_id,
+        id=t1_id,
+        label="Turn 1 (assistant)",
+        type="entity",
+        doc_id=t1_id,
+        summary=t1_text,
+        role="assistant",  # type: ignore
+        turn_index=1,
+        conversation_id=conv_id,
+        mentions=[mk_grounding(t1_span)],
+        properties={},
+        metadata={
+            "entity_type": "conversation_turn",
+            "level_from_root": 0,
+            "char_distance_from_last_summary": len(t0_text) + len(t1_text),
+            "turn_distance_from_last_summary": 2,
         },
-    ]
-    engine.edge_endpoints_collection.add(
-        ids=[r["id"] for r in rows],
-        documents=[json.dumps(r) for r in rows],
-        metadatas=rows,
+        domain_id=None,
+        canonical_entity_id=None,
+        embedding=None,
+        level_from_root=0,
     )
-    return e
+    conversation_engine.add_node(turn1, None)
 
-
-def seed_small_kg(engine: GraphKnowledgeEngine, *, doc_id: str = "KG_DOC", insertion_method: str = "pytest-seed"):
-    _seed_node(engine, doc_id=doc_id, node_id="A", label="Smoking", insertion_method=insertion_method)
-    _seed_node(engine, doc_id=doc_id, node_id="B", label="Lung Cancer", insertion_method=insertion_method)
-    _seed_node(engine, doc_id=doc_id, node_id="C", label="Cough", insertion_method=insertion_method)
-    _seed_edge(engine, doc_id=doc_id, edge_id="E1", relation="causes", src_id="A", tgt_id="B", insertion_method=insertion_method)
-    return engine
-
-
-def seed_small_conversation(engine: GraphKnowledgeEngine, *, doc_id: str = "CONV_DOC", insertion_method: str = "pytest-seed"):
-    # Conversation nodes that refer to KG node ids:
-    # This is the key: properties.refers_to_id points at the KG node id.
-    _seed_node(
-        engine,
-        doc_id=doc_id,
-        node_id="T1",
-        label="User turn 1",
-        insertion_method=insertion_method,
-        properties={"role": "user"},
+    # next_turn edge (TURN_000 -> TURN_001)
+    next_edge = ConversationEdge(
+        id="EDGE_NEXT_000_001",
+        source_ids=[turn0.id],
+        target_ids=[turn1.id],
+        relation="next_turn",
+        label="next_turn",
+        type="relationship",
+        summary="Sequential flow",
+        doc_id=f"conv:{conv_id}",
+        mentions=[mk_grounding(t1_span)],
+        domain_id=None,
+        canonical_entity_id=None,
+        properties={"entity-type": "conversation_edge"},
+        embedding=None,
+        metadata={},
+        source_edge_ids=[],
+        target_edge_ids=[],
     )
-    _seed_node(
-        engine,
-        doc_id=doc_id,
-        node_id="R1",
-        label="Retrieved ref A",
-        insertion_method=insertion_method,
-        properties={"refers_to_id": "A", "refers_to_collection": "nodes"},
-    )
-    _seed_node(
-        engine,
-        doc_id=doc_id,
-        node_id="A1",
-        label="Assistant turn 1",
-        insertion_method=insertion_method,
-        properties={"role": "assistant"},
-    )
+    conversation_engine.add_edge(next_edge)
 
-    # Conversation edges: turn -> retrieved_ref -> assistant
-    _seed_edge(engine, doc_id=doc_id, edge_id="CE1", relation="retrieved", src_id="T1", tgt_id="R1", insertion_method=insertion_method)
-    _seed_edge(engine, doc_id=doc_id, edge_id="CE2", relation="used_in", src_id="R1", tgt_id="A1", insertion_method=insertion_method)
-# Memory context node (derived, system-generated)
-    _seed_node(
-        engine,
-        doc_id=doc_id,
-        node_id="MCTX1",
+    # memory_context node (references memory nodes/edges if you want; keep empty here but schema-valid)
+    memctx_id = "MEMCTX_001"
+    memctx_text = "Active memory context: user wants graph debugging view."
+    memctx_span = mk_span(
+        doc_id=f"conv:{conv_id}",
+        full_text=memctx_text,
+        insertion_method="memory_context",
+        collection_page_url=f"conversation/{conv_id}",
+        document_page_url=f"conversation/{conv_id}#{memctx_id}",
+    )
+    memctx = ConversationNode(
+        user_id=user_id,
+        id=memctx_id,
         label="Memory context (turn 1)",
-        insertion_method=insertion_method,
+        type="entity",
+        doc_id=memctx_id,
+        summary=memctx_text,
+        role="system",  # type: ignore
+        turn_index=1,
+        conversation_id=conv_id,
+        mentions=[mk_grounding(memctx_span)],
         properties={
+            "user_id": user_id,
+            "source_memory_nodes_ids": [],
+            "source_memory_edges_ids": [],
+        },
+        metadata={
             "entity_type": "memory_context",
-            "role": "system",
-            "source_turn_ids": ["T1"],
+            "level_from_root": 0,
+            "char_distance_from_last_summary": 0,
+            "turn_distance_from_last_summary": 0,
         },
+        domain_id=None,
+        canonical_entity_id=None,
+        embedding=None,
+        level_from_root=0,
     )
+    conversation_engine.add_node(memctx, None)
 
-    # Summary node that ALSO refers to KG
-    _seed_node(
-        engine,
-        doc_id=doc_id,
-        node_id="SUM1",
-        label="Conversation summary",
-        insertion_method=insertion_method,
+    # summary node (system)
+    summ_id = "SUMM_001"
+    summ_text = "Summary: user asks to inspect graph flow; assistant will show KG + conversation links."
+    summ_span = mk_span(
+        doc_id=f"conv:{conv_id}",
+        full_text=summ_text,
+        insertion_method="conversation_summary",
+        collection_page_url=f"conversation/{conv_id}",
+        document_page_url=f"conversation/{conv_id}#{summ_id}",
+    )
+    summ = ConversationNode(
+        user_id=user_id,
+        id=summ_id,
+        label="Summary 0-1",
+        type="entity",
+        doc_id=summ_id,
+        summary=summ_text,  # type: ignore
+        role="system",  # type: ignore
+        turn_index=1,
+        conversation_id=conv_id,
+        mentions=[mk_grounding(summ_span)],
+        properties={"content": summ_text},
+        metadata={
+            "entity_type": "conversation_summary",
+            "level_from_root": 1,
+            "char_distance_from_last_summary": 0,
+            "turn_distance_from_last_summary": 0,
+        },
+        domain_id=None,
+        canonical_entity_id=None,
+        embedding=None,
+        level_from_root=1,
+    )
+    conversation_engine.add_node(summ, None)
+
+    # summarizes edge (summary -> turns)
+    summ_edge = ConversationEdge(
+        id="EDGE_SUMM_001",
+        source_ids=[summ.id],
+        target_ids=[turn0.id, turn1.id],
+        relation="summarizes",
+        label="summarizes",
+        type="relationship",
+        summary="Memory summarization",
+        doc_id=f"conv:{conv_id}",
+        domain_id=None,
+        canonical_entity_id=None,
+        properties=None,
+        embedding=None,
+        mentions=[mk_grounding(summ_span)],
+        metadata={},
+        source_edge_ids=[],
+        target_edge_ids=[],
+    )
+    conversation_engine.add_edge(summ_edge)
+
+    # kg_ref node: points to KG node/edge (this is what your dump tool should bridge)
+    kg_ref_id = "KGREF_001"
+    kg_ref_text = f"KG ref: node={kg_seed['node_ids'][0]} edge={kg_seed['edge_ids'][0]}"
+    kg_ref_span = mk_span(
+        doc_id=f"conv:{conv_id}",
+        full_text=kg_ref_text,
+        insertion_method="kg_ref",
+        collection_page_url=f"conversation/{conv_id}",
+        document_page_url=f"conversation/{conv_id}#{kg_ref_id}",
+    )
+    kg_ref_node = ConversationNode(
+        user_id=user_id,
+        id=kg_ref_id,
+        label="KG reference",
+        type="entity",
+        doc_id=kg_ref_id,
+        summary=kg_ref_text,
+        role="system",  # type: ignore
+        turn_index=1,
+        conversation_id=conv_id,
+        mentions=[mk_grounding(kg_ref_span)],
         properties={
-            "entity_type": "summary",
-            "refers_to_id": "A",           # KG node
-            "refers_to_collection": "nodes",
-            "source_node_ids": ["T1", "A1", "MCTX1"],
+            # critical: dump uses these to build hyperlinks / cross-bundle paths
+            "ref_kind": "kg",
+            "ref_doc_id": kg_seed["doc_id"],
+            "ref_node_ids": list(kg_seed["node_ids"]),
+            "ref_edge_ids": list(kg_seed["edge_ids"]),
         },
+        metadata={
+            "entity_type": "kg_ref",
+            "level_from_root": 0,
+            "char_distance_from_last_summary": 0,
+            "turn_distance_from_last_summary": 0,
+        },
+        domain_id=None,
+        canonical_entity_id=None,
+        embedding=None,
+        level_from_root=0,
+    )
+    conversation_engine.add_node(kg_ref_node, None)
+
+    # edge: turn1 -> kg_ref (optional but useful for viz)
+    ref_edge = ConversationEdge(
+        id="EDGE_TURN1_KGREF",
+        source_ids=[turn1.id],
+        target_ids=[kg_ref_node.id],
+        relation="mentions_kg",
+        label="mentions_kg",
+        type="relationship",
+        summary="Assistant mentions KG refs",
+        doc_id=f"conv:{conv_id}",
+        domain_id=None,
+        canonical_entity_id=None,
+        properties={"ref_kind": "kg"},
+        embedding=None,
+        mentions=[mk_grounding(kg_ref_span)],
+        metadata={},
+        source_edge_ids=[],
+        target_edge_ids=[],
+    )
+    conversation_engine.add_edge(ref_edge)
+    conv_id = "conv_test_1"
+    user_id = "user_test_1"
+
+    kg_target_id = "KG_N1"  # must exist in the KG bundle if you want openRef to succeed later
+
+    kg_ref_node = ConversationNode(
+        id="CONV_REF_KG_N1",
+        label="KG ref → KG_N1",
+        type="reference_pointer",  # allowed: 'entity' | 'relationship' | 'reference_pointer'
+        summary="Conversation-side pointer to a KG node (for testing focus/openRef).",
+        doc_id="CONV_REF_KG_N1",
+        mentions=[
+            Grounding(
+                spans=[Span.from_dummy_for_conversation()]  # ensures spans>=1, mentions>=1
+            )
+        ],
+        properties={
+            # keep these JSON-primitive only (validator expects primitives / lists / nested mappings)
+            "ref_target_kind": "kg_node",
+            "ref_target_id": kg_target_id,
+        },
+        metadata={
+            # REQUIRED by ConversationNodeMetadata
+            "level_from_root": 0,
+            "entity_type": "kg_ref",
+            "char_distance_from_last_summary": 0,
+            "turn_distance_from_last_summary": 0,
+
+            # OPTIONAL but useful (ConversationRoleMixin syncs these too)
+            "role": "system",
+            "turn_index": 0,
+            "conversation_id": conv_id,
+            "user_id": user_id,
+        },
+        role="system",
+        turn_index=2,
+        conversation_id=conv_id,
+        user_id=user_id,        
+        embedding=None,        
+        domain_id=None,
+        canonical_entity_id=None,        
+        level_from_root=0,
     )
 
-    # Wire them in
-    _seed_edge(engine, doc_id=doc_id, edge_id="CE3", relation="summarizes", src_id="A1", tgt_id="SUM1", insertion_method=insertion_method)
-    _seed_edge(engine, doc_id=doc_id, edge_id="CE4", relation="memory_of", src_id="SUM1", tgt_id="MCTX1", insertion_method=insertion_method)    
-    return engine
+    # then upsert it into the conversation engine alongside your other seeded nodes
+    conversation_engine.add_node(kg_ref_node)
+    return {
+        "conversation_id": conv_id,
+        "start_node_id": start_id,
+        "turn_ids": (turn0.id, turn1.id),
+        "edge_ids": (next_edge.id, summ_edge.id, ref_edge.id),
+        "memctx_id": memctx.id,
+        "summary_id": summ.id,
+        "kg_ref_id": kg_ref_node.id,
+    }
+
+
+def seed_both_graphs(
+    *,
+    kg_engine: Any,
+    conversation_engine: Any,
+    user_id: str = "U_TEST",
+) -> dict[str, Any]:
+    kg_seed = seed_kg_graph(kg_engine=kg_engine, kg_doc_id="D_KG_001")
+    conv_seed = seed_conversation_graph(
+        conversation_engine=conversation_engine,
+        user_id=user_id,
+        conversation_id="CONV_TEST_001",
+        start_node_id="CONV_START_001",
+        kg_seed=kg_seed,
+    )
+    return {"kg": kg_seed, "conversation": conv_seed}
+
 
 
 @pytest.fixture
 def seeded_kg_and_conversation(tmp_path: Path):
     """
-    Real persisted engines + correctly formatted nodes/edges + conversation ref -> KG node id.
+    Returns (kg_engine, conversation_engine, kg_seed, conv_seed, kg_dir, conv_dir)
+
+    - Real persisted engines in tmp_path
+    - KG is seeded with real Node/Edge objects (schema-correct Span/Grounding)
+    - Conversation is seeded with conversation nodes/edges + memory ctx + summary + kg_ref
+    - Conversation kg_ref points to KG ids via properties.ref_node_ids/ref_edge_ids
     """
     kg_dir = tmp_path / "chroma_kg"
-    conv_dir = tmp_path / "chroma_conv"
+    conv_dir = tmp_path / "chroma_conversation"
 
     kg_engine = GraphKnowledgeEngine(persist_directory=str(kg_dir), kg_graph_type="knowledge")
-    conv_engine = GraphKnowledgeEngine(persist_directory=str(conv_dir), kg_graph_type="conversation")
+    conversation_engine = GraphKnowledgeEngine(persist_directory=str(conv_dir), kg_graph_type="conversation")
 
-    seed_small_kg(kg_engine, doc_id="KG_DOC", insertion_method="pytest-seed")
-    seed_small_conversation(conv_engine, doc_id="CONV_DOC", insertion_method="pytest-seed")
+    kg_seed = seed_kg_graph(kg_engine=kg_engine, kg_doc_id="D_KG_001")
+    conv_seed = seed_conversation_graph(
+        conversation_engine=conversation_engine,
+        user_id="U_TEST",
+        conversation_id="CONV_TEST_001",
+        start_node_id="CONV_START_001",
+        kg_seed=kg_seed,
+    )
 
-    return kg_engine, conv_engine, kg_dir, conv_dir
+    return kg_engine, conversation_engine, kg_seed, conv_seed, kg_dir, conv_dir

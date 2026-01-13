@@ -5,7 +5,15 @@ from pathlib import Path
 import importlib
 
 
-def _template_html() -> str:
+def _minimal_bundle_template() -> str:
+    """
+    Minimal HTML template used for dump tests.
+
+    This template intentionally excludes D3 and rendering logic.
+    It exists solely to provide stable injection points for:
+      - window.__EMBEDDED_DATA__
+      - window.__BUNDLE_META__
+    """
     # Minimal template to make injection + parsing reliable for tests.
     # Your real template works too, but this makes tests robust.
     return """<!doctype html><html><body><script>
@@ -15,22 +23,37 @@ window.__BUNDLE_META__ = null;
 """
 
 
+import re
+# Regex-based extraction is used instead of string slicing because:
+# - HTML formatting may change
+# - JSON may contain semicolons in string values
+# - We want a robust, template-agnostic extractor
+_EMBEDDED_RE = re.compile(
+    r"window\.__EMBEDDED_DATA__\s*=\s*(\{.*?\})\s*;",
+    re.DOTALL,
+)
+
 def _extract_embedded_payload(html: str) -> dict:
-    marker = "window.__EMBEDDED_DATA__ ="
-    start = html.index(marker) + len(marker)
-    end = html.index(";", start)
-    return json.loads(html[start:end].strip())
+    """
+    Extracts the embedded graph payload from a bundle HTML file.
+
+    This parses the JSON assigned to window.__EMBEDDED_DATA__.
+    Rendering logic is intentionally ignored.
+    """
+    m = _EMBEDDED_RE.search(html)
+    assert m, "Cannot find window.__EMBEDDED_DATA__ assignment"
+    return json.loads(m.group(1))
 
 
-def test_dump_paired_bundles_end_to_end(tmp_path: Path, seeded_kg_and_conversation):
-    kg_engine, conv_engine = seeded_kg_and_conversation
+def test_dump_paired_bundles_embeds_graph_data_and_links(tmp_path: Path, seeded_kg_and_conversation):
+    kg_engine, conv_engine, kg_seed, conv_seed, kg_dir, conv_dir = seeded_kg_and_conversation
     mod = importlib.import_module("graph_knowledge_engine.utils.kge_debug_dump")
 
     out_dir = tmp_path / "dump_run"
     meta = mod.dump_paired_bundles(
         kg_engine=kg_engine,
         conversation_engine=conv_engine,
-        template_html=_template_html(),
+        template_html=_minimal_bundle_template(),
         out_dir=out_dir,
         kg_out="kg.bundle.html",
         conversation_out="conversation.bundle.html",
@@ -73,7 +96,7 @@ import subprocess
 import sys
 
 def test_cli_pair_real_persisted(tmp_path: Path, seeded_kg_and_conversation):
-    kg_engine, conv_engine = seeded_kg_and_conversation
+    kg_engine, conv_engine, kg_seed, conv_seed, kg_dir, conv_dir = seeded_kg_and_conversation
 
     # The CLI creates engines from persist dirs, so we pass the same dirs.
     kg_dir = Path(kg_engine.persist_directory) if hasattr(kg_engine, "persist_directory") else (tmp_path / "chroma_kg")
@@ -104,3 +127,5 @@ window.__BUNDLE_META__ = null;
     assert (out_dir / "kg.bundle.html").exists()
     assert (out_dir / "conversation.bundle.html").exists()
     assert (out_dir / "bundle.meta.json").exists()
+    
+    
