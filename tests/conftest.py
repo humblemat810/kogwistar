@@ -982,12 +982,12 @@ def seed_conversation_graph(
 
             # OPTIONAL but useful (ConversationRoleMixin syncs these too)
             "role": "system",
-            "turn_index": 0,
+            "turn_index": 1,
             "conversation_id": conv_id,
             "user_id": user_id,
         },
         role="system",
-        turn_index=2,
+        turn_index=1,
         conversation_id=conv_id,
         user_id=user_id,        
         embedding=None,        

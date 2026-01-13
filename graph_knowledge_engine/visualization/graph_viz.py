@@ -2,47 +2,53 @@
 from __future__ import annotations
 
 import json
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Type, TypeVar, Union
 
-from ..models import Node, Edge
+from server_mcp import GraphKnowledgeEngine
 
+
+from ..models import Node, Edge, ConversationNode, ConversationEdge
+T = TypeVar('T', bound = Union[Node, Edge])
 
 def _safe_iter(x):
     return x if isinstance(x, list) and x else []
 
-
-def _load_node_map(engine, ids: List[str]) -> Dict[str, Node]:
+def _load_node_map(engine: GraphKnowledgeEngine, ids: List[str], node_type: Type[Node] = Node) -> Dict[str, Node]:
     """Robustly load Node models by ids."""
+        
+    if engine.kg_graph_type == "conversation":
+        node_type = ConversationNode
+    else:
+        node_type = Node
     if not ids:
         return {}
     try:
         # Prefer engine helper if available
         return engine._load_node_map(ids)
     except Exception:
-        got = engine.node_collection.get(ids=ids, include=["documents"])
-        out = {}
-        for rid, doc in zip(got.get("ids") or [], got.get("documents") or []):
-            try:
-                out[rid] = Node.model_validate_json(doc)
-            except Exception:
-                pass
+        nodes = engine.get_nodes(ids=ids)
+        out = {n.id: n for n in nodes}
+        # for rid, doc in zip(got.get("ids") or [], got.get("documents") or []):
+        #     try:
+        #         out[rid] = node_type.model_validate_json(doc)
+        #     except Exception:
+        #         pass
         return out
 
 
-def _load_edge_map(engine, ids: List[str]) -> Dict[str, Edge]:
+def _load_edge_map(engine: GraphKnowledgeEngine, ids: List[str], edge_type: Type[Edge] = Edge) -> Dict[str, Edge]:
     """Robustly load Edge models by ids."""
+    if engine.kg_graph_type == "conversation":
+        edge_type = ConversationEdge
+    else:
+        edge_type = Edge    
     if not ids:
         return {}
     try:
         return engine._load_edge_map(ids)
     except Exception:
-        got = engine.edge_collection.get(ids=ids, include=["documents"])
-        out = {}
-        for rid, doc in zip(got.get("ids") or [], got.get("documents") or []):
-            try:
-                out[rid] = Edge.model_validate_json(doc)
-            except Exception:
-                pass
+        edges = engine.get_edges(ids=ids)
+        out = {n.id: n for n in edges}
         return out
 
 
@@ -189,48 +195,51 @@ def to_d3_force(
 
     # materialize entity nodes
     for nid, n in node_map.items():
-        nodes[nid] = {
+        
+        nodes[nid] = n.model_dump() 
+        nodes[nid].update({
             "id": nid,
             "label": n.label,
             "type": "entity",
             "summary" : n.summary,
             "properties": n.properties or {},
-        }
+        })
 
     if mode.lower() == "reify":
         for eid, e in edge_map.items():
             if eid not in nodes:
-                nodes[eid] = {
+                nodes[eid] = e.model_dump() 
+                nodes[eid].update({
                     "id": eid,
                     "label": e.relation or e.label or "edge",
                     "type": "edge-node",
                     "summary" : e.summary,
                     "properties": e.properties or {},
-                }
+                })
             # node sources
             for s in _safe_iter(e.source_ids):
                 if s in nodes:
                     links.append({"source": s, "target": eid, "relation": e.relation or e.label, "role": "src", "properties": e.properties or {}})
                 else:
-                    raise Exception ("unexpected path")
+                    raise Exception (f"unexpected path: missing source node {s}")
             # edge sources (MISSING TODAY)
             for se in _safe_iter(e.source_edge_ids):
                 if se in edge_map:  # link from another edge-node
                     links.append({"source": se, "target": eid, "relation": e.relation or e.label, "role": "src", "properties": e.properties or {}})
                 else:
-                    raise Exception ("unexpected path")
+                    raise Exception (f"unexpected path: missing source edge {se}")
             # node targets
             for t in _safe_iter(e.target_ids):
                 if t in nodes:
                     links.append({"source": eid, "target": t, "relation": e.relation or e.label, "role": "tgt", "properties": e.properties or {}})
                 else:
-                    raise Exception ("unexpected path")
+                    raise Exception (f"unexpected path: missing target node {t}")
             # edge targets (MISSING TODAY)
             for te in _safe_iter(e.target_edge_ids):
                 if te in edge_map:
                     links.append({"source": eid, "target": te, "relation": e.relation or e.label, "role": "tgt", "properties": e.properties or {}})
                 else:
-                    raise Exception ("unexpected path")
+                    raise Exception (f"unexpected path: missing target edge {te}")
 
     else:
         # classic edges: direct src->tgt

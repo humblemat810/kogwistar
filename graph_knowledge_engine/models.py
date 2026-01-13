@@ -505,7 +505,7 @@ class ConversationNode(ConversationRoleMixin, Node):
     metadata: dict#ConversationNodeMetadata
     @field_validator('metadata')
     def check_fields(cls, v):
-        # convertible to ConversationNodeMetadata
+        # convertible to ConversationNodeMetadata but never materialize the conversion. just a checker model
         ConversationNodeMetadata.model_validate(v)
         return v
 class Edge(ChromaValidateSourceMixin, ChromaMixin, EdgeMixin, GraphEntityRefBase):

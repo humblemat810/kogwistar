@@ -80,6 +80,16 @@
       <label>Charge <input id="charge" type="range" min="-800" max="-20" value="-300"></label>
       <label>Gravity <input id="gravity" type="range" min="0" max="0.3" step="0.005" value="0.06"></label>
       <label><input type="checkbox" id="freeze"> Freeze forces</label>
+      <label style="margin-left:12px;">
+        Layout:
+        <select id="layoutMode">
+          <option value="force">Force</option>
+          <option value="spine">Conversation spine</option>
+        </select>
+      </label>
+      <label style="margin-left:12px;">
+        <input type="checkbox" id="spineMode"> Conversation spine
+      </label>
       <label>Layer gap <input id="layerGap" type="range" min="60" max="300" value="160"></label>
       <br/>
 
@@ -129,8 +139,76 @@
       window.__EMBEDDED_DATA__ = {{ embedded_data | safe if embedded_data is defined else "null" }};
       window.__BUNDLE_META__ = {{ bundle_meta | safe if bundle_meta is defined else "null" }};
     </script>
-
+    
     <script>
+      function isTurnNode(n) {
+        return (typeof n.id === "string" && n.id.startsWith("TURN_")) ||
+              (typeof n.label === "string" && /^Turn\s+\d+/.test(n.label));
+      }
+
+      function isConversationStart(n) {
+        return (typeof n.id === "string" && n.id.startsWith("CONV_START")) ||
+              (typeof n.label === "string" && n.label.toLowerCase().includes("conversation start"));
+      }
+
+      function isNextTurnEdgeNode(n) {
+        return n && n.type === "edge-node" && (n.label === "next_turn" || n.label === "next turn");
+      }
+
+      function getTurnIndex(n) {
+        // Prefer explicit if you later add it, else parse from label/id.
+        const t = n?.properties?.turn_index ?? n?.metadata?.turn_index;
+        if (typeof t === "number") return t;
+        if (typeof n.label === "string") {
+          const m = n.label.match(/^Turn\s+(\d+)/);
+          if (m) return parseInt(m[1], 10);
+        }
+        if (typeof n.id === "string") {
+          const m = n.id.match(/TURN_(\d+)/);
+          if (m) return parseInt(m[1], 10);
+        }
+        return 0;
+      }
+
+      // Build spine order: start -> turn0 -> next_turn_edge -> turn1 -> ...
+      function buildConversationSpine(nodes, links) {
+        const byId = new Map(nodes.map(n => [n.id, n]));
+        const turns = nodes.filter(isTurnNode).sort((a,b) => getTurnIndex(a) - getTurnIndex(b));
+        if (!turns.length) return [];
+
+        const start = nodes.find(isConversationStart);
+        const order = [];
+        if (start) order.push(start.id);
+
+        // helper to find edge-node between two turns (turn -> edge -> turn)
+        const out = new Map();
+        for (const l of links) {
+          const s = (typeof l.source === "object") ? l.source.id : l.source;
+          const t = (typeof l.target === "object") ? l.target.id : l.target;
+          if (!out.has(s)) out.set(s, []);
+          out.get(s).push(t);
+        }
+        function findEdgeNodeBetween(aId, bId) {
+          const mids = out.get(aId) || [];
+          for (const mid of mids) {
+            const midNode = byId.get(mid);
+            if (!midNode || !isNextTurnEdgeNode(midNode)) continue;
+            const midsOut = out.get(mid) || [];
+            if (midsOut.includes(bId)) return mid;
+          }
+          return null;
+        }
+
+        for (let i = 0; i < turns.length; i++) {
+          order.push(turns[i].id);
+          if (i < turns.length - 1) {
+            const edgeId = findEdgeNodeBetween(turns[i].id, turns[i+1].id);
+            if (edgeId) order.push(edgeId);
+          }
+        }
+        return order;
+      }
+
       function parseQuery() {
         const u = new URL(window.location.href);
         const qs = u.searchParams;
@@ -215,6 +293,7 @@
         const freezeIn    = document.getElementById('freeze');
 
         const treeMode     = document.getElementById('treeMode');
+        const spineMode = document.getElementById('spineMode');
         const outwardOnly  = document.getElementById('outwardOnly');
         const inwardOnly   = document.getElementById('inwardOnly');
         const includeLat   = document.getElementById('includeLateral');
@@ -406,10 +485,12 @@
           inwardOnly.disabled  = !on;
           includeLat.disabled  = !on;
           if (!on) { outwardOnly.checked = false; inwardOnly.checked = false; }
+          applyVisibility();
         };
-        outwardOnly.onchange = () => { if (outwardOnly.checked) inwardOnly.checked = false; };
-        inwardOnly.onchange  = () => { if (inwardOnly.checked)  outwardOnly.checked = false; };
-
+        layoutMode.onchange = () => { applyVisibility(); };
+        outwardOnly.onchange = () => { if (outwardOnly.checked) inwardOnly.checked = false; applyVisibility();};
+        inwardOnly.onchange  = () => { if (inwardOnly.checked)  outwardOnly.checked = false; applyVisibility();};
+        includeLat.onchange = () => { applyVisibility(); };
         function pickRootId() {
           const relName = "summarizes_document";
           const out = new Set(), inn = new Set();
@@ -456,7 +537,6 @@
           if (set.size === 0) uniqueRelations.forEach(r => set.add(r));
           return set;
         }
-
         function applyVisibility(){
           const chosen = readChosenRelations();
 
@@ -512,19 +592,49 @@
           nodeDiamond.classed("hidden", d => !nodeVisible.get(d.id));
           labelSel.classed("hidden", d => !nodeVisible.get(d.id));
 
-          // Pin Y by layer in doc_ingestion tree mode
-          const pinY = treeMode.checked && (["document_ingestion", "document_parser_v1"].includes((insertionMethod || "").toLowerCase()));
-          if (pinY) {
+          // ---- PINNING (mutually exclusive) ----
+          if (layoutMode.value === "spine") {
+            const spineY = 180;
+            const turnGap = 240;
+
+            const turns = allNodes
+              .filter(n => nodeVisible.get(n.id) && isTurnNode(n))
+              .map(n => ({ n, idx: getTurnIndex(n) }))
+              .filter(x => x.idx !== null)
+              .sort((a,b) => a.idx - b.idx);
+
+            const idxPos = new Map();
+            turns.forEach((t, i) => idxPos.set(t.n.id, i));
+
+            allNodes.forEach(n => {
+              if (!nodeVisible.get(n.id)) return;
+
+              if (idxPos.has(n.id)) {
+                const i = idxPos.get(n.id);
+                n.fx = 140 + i * turnGap;
+                n.fy = spineY;
+                n.y  = spineY;
+              } else {
+                // leave others unpinned (do NOT clear their x unless you really want)
+                n.fy = null;
+              }
+            });
+
+          } else if (treeMode.checked) {
+            // doc-tree pin: do NOT gate on insertionMethod
             allNodes.forEach(n => {
               if (!nodeVisible.get(n.id)) return;
               const d = depth.get(n.id);
               if (d !== undefined) {
                 const y = baseY + d * layerGap;
                 n.y = y; n.fy = y;
+              } else {
+                n.fy = null;
               }
             });
+
           } else {
-            allNodes.forEach(n => { n.fy = null; });
+            allNodes.forEach(n => { n.fy = null; n.fx = null; });
           }
 
           nodeCircle.call(makeDrag(depth, baseY, layerGap));
