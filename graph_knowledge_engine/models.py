@@ -314,13 +314,21 @@ class GraphEntityRefBase(GraphEntityBase):
                             if span.get("end_char") == -1:
                                 span["end_char"] += len(span["excerpt"])
         try:
-            for mention in data['mentions']:
+            mentions:list[Grounding]
+            if type(data['mentions']) is str:
+                mentions = [Grounding.model_validate(i) for i in json.loads(data['mentions'])]
+            else:
+                mentions = data['mentions']
+            for mention in mentions:
                 if type(mention) is Grounding:
                     for span in mention.spans:
                         check_and_update_span_inplace(span)
                 else:
-                    for span in mention['spans']:
-                        check_and_update_span_inplace(span)
+                    try:
+                        for span in mention['spans']:
+                            check_and_update_span_inplace(span)
+                    except Exception as _e:
+                        raise
         except Exception as _e:
             raise
         return data
@@ -354,7 +362,7 @@ class ConversationNodeMetadata(BaseNodeMetadata):
     turn_distance_from_last_summary: int
 
     model_config = ConfigDict(extra="allow")
-
+from chromadb import Embeddings
 class ChromaMixin(BaseModel):
     id: str = Field(default_factory=generate_id, description="Unique identifier")
     embedding: Optional[Sequence[float]] = Field(None, description="Vector embedding for the entity")
@@ -480,6 +488,7 @@ class ConversationAIResponse(BaseModel):
     projected_conversation_node_ids: List[str] = Field(default_factory=list)
     projected_conversation_edge_ids: List[str] = Field(default_factory=list)
     run_trace_node_id: Optional[str] = None
+    response_node_id: str|None =  None
     meta: Dict[str, Any] = Field(default_factory=dict)
 
 class TombstoneMixin(BaseModel):
@@ -1024,4 +1033,10 @@ class KnowledgeRetrievalResult:
         
         else:
             raise Exception('selected field cannot be None when calling get_filtered_candidate')
+
+
+@dataclass
+class MetaFromLastSummary:
+    prev_node_char_distance_from_last_summary: int
+    prev_node_turn_distance_from_last_summary: int
     
