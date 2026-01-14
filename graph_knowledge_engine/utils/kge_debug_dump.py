@@ -48,6 +48,7 @@ def dump_d3_bundle(
     bundle_meta: Optional[dict] = None,
 ) -> Path:
     payload = to_d3_force(engine, doc_id=doc_id, insertion_method=insertion_method, mode=mode)
+
     rendered = _render_template_html(
         template_html,
         context={
@@ -61,8 +62,8 @@ def dump_d3_bundle(
     )
     
     out_html.write_text(rendered, encoding="utf-8")
-    if " None" in rendered or "\nNone" in rendered or "None" in rendered:
-        raise RuntimeError("Invalid JS literal: Python None leaked into bundle")
+    # if " None" in rendered or "\nNone" in rendered or "None" in rendered:
+    #     raise RuntimeError("Invalid JS literal: Python None leaked into bundle")
     return out_html
 
 

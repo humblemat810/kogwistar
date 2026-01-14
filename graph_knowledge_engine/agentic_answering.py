@@ -34,7 +34,7 @@ from pydantic import BaseModel, Field
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.language_models.chat_models import BaseChatModel
 
-from .models import ConversationNode, ConversationEdge, Grounding, Span, Node
+from .models import ConversationNode, ConversationEdge, Grounding, MetaFromLastSummary, Span, Node
 BaseM = TypeVar("BaseM", bound=BaseModel)
 
 def _stable_json(obj: Any) -> str:
@@ -202,7 +202,7 @@ class AgenticAnsweringAgent:
     # ----------------------------
     # Public entrypoint
     # ----------------------------
-    def answer(self, *, conversation_id: str, user_id=None) -> dict[str, Any]:
+    def answer(self, *, conversation_id: str, user_id=None, prev_turn_meta_summary:MetaFromLastSummary) -> dict[str, Any]:
         """Run bounded agentic answering with evidence selection + optional citation picking.
 
         Returns a dict with keys (best-effort):
@@ -369,6 +369,8 @@ class AgenticAnsweringAgent:
             conversation_id=conversation_id,
             content=assistant_text,
             provenance_span=Span.from_dummy_for_conversation(),
+            turn_index = self.conversation_engine._get_conversation_tail(conversation_id).turn_index + 1,
+            prev_turn_meta_summary=prev_turn_meta_summary
         )
         self._link_run_to_response(
             conversation_id=conversation_id,
@@ -386,6 +388,7 @@ class AgenticAnsweringAgent:
             "projected_pointer_ids": last_projected,
             "claim_citations": (last_answer.model_dump() if last_answer else {}),
             "evaluation": (last_eval.model_dump() if last_eval else {}),
+            "turn_node_dump" : assistant_turn_node.model_dump()
         }
 
     def _get_last_user_text(self, conversation: Any) -> str:
@@ -410,7 +413,7 @@ class AgenticAnsweringAgent:
         return str(getattr(conversation, "last_user_text", "") or "")
 
     def _retrieve_candidates(self, question: str) -> list[dict[str, Any]]:
-        emb = self.knowledge_engine.iterative_defensive_emb(question)
+        emb = self.knowledge_engine._iterative_defensive_emb(question)
         res = self.knowledge_engine.node_collection.query(
             query_embeddings=[emb],
             n_results=self.config.max_candidates,
@@ -917,24 +920,29 @@ Evidence (id | label | summary):
             self.conversation_engine.add_edge(edge)
         return pid
 
-    def _add_assistant_turn(self, *, conversation_id: str, content: str, provenance_span: Span) -> tuple[str, ConversationNode]:
+    def _add_assistant_turn(self, *, conversation_id: str, content: str, provenance_span: Span, turn_index : int, prev_turn_meta_summary: MetaFromLastSummary) -> tuple[str, ConversationNode]:
         # Minimal assistant turn node
         nid = pointer_id(scope=f"conv:{conversation_id}", pointer_kind="turn", target_kind="assistant", target_id=str(int(time.time()*1000)))
+        import numpy as np
+        emb = cast(np.ndarray, self.conversation_engine.iterative_defensive_emb(content))
         node = ConversationNode(
             id=nid,
             label="Assistant",
             type="entity",
-            summary=content[:2000],
+            summary=content,
             conversation_id=conversation_id,
             role="assistant",  # type: ignore
-            turn_index=None,
+            turn_index=turn_index,
             properties={"content": content, "entity_type": "assistant_turn"},
             mentions=[Grounding(spans=[provenance_span])],
             metadata={"level_from_root": 0, "entity_type": "assistant_turn", "char_distance_from_last_summary": 0, "turn_distance_from_last_summary": 0},
             domain_id=None,
             canonical_entity_id=None,
+            embedding=emb.tolist()
         )
         self.conversation_engine.add_node(node)
+        prev_turn_meta_summary.prev_node_char_distance_from_last_summary += len(content)
+        prev_turn_meta_summary.prev_node_turn_distance_from_last_summary += 1
         return nid, node
 
     def _link_run_to_response(self, *, conversation_id: str, run_node_id: str, response_node_id: str, used_node_ids : list[str], provenance_span: Span | list[Span]) -> None:

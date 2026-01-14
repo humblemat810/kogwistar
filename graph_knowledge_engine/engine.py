@@ -1,4 +1,5 @@
 from __future__ import annotations
+from types import MethodType
 
 from langchain_core.language_models import BaseChatModel
 
@@ -116,7 +117,13 @@ def _refs_hash(refs) -> str:
         [r.model_dump() for r in (refs or [])],
         sort_keys=True
     ).encode()).hexdigest()
+from typing import Callable, TypeVar, ParamSpec, cast
+from joblib import Memory
 
+P = ParamSpec("P")
+R = TypeVar("R")    
+def cached(memory: Memory, fn: Callable[P, R], *args, **kwargs) -> Callable[P, R]:
+    return cast(Callable[P, R], memory.cache(fn, *args, **kwargs))
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -1145,8 +1152,11 @@ class GraphKnowledgeEngine:
         self,
         ids: Sequence[str],
         node_type: Type[Node] | None = None,
+        include: None | list[str] = None,
         resolve_mode: Literal["active_only", "redirect", "include_tombstones"] = "active_only",
     ) -> List[Node]:
+        if include is None:
+            include = ["documents", "embeddings", "metadatas"] 
         if not ids:
             return []
 
@@ -1156,7 +1166,7 @@ class GraphKnowledgeEngine:
         # IMPORTANT: ID fetch must NOT filter out tombstones, or redirect cannot start.
         got = self.node_collection.get(
             ids=list(ids),
-            include=["documents", "embeddings", "metadatas"],
+            include=include,
         )
         nodes = self.nodes_from_single_or_id_query_result(got, node_type=node_type)
 
@@ -1185,7 +1195,7 @@ class GraphKnowledgeEngine:
                 raise Exception("either query or query embedding but not both specified.")
         else:
             if query is not None:
-                query_embeddings = self.iterative_defensive_emb(query)
+                query_embeddings = self._iterative_defensive_emb(query)
             else:
                 raise ValueError("either query or query embeddings must be specified")
         
@@ -1200,7 +1210,7 @@ class GraphKnowledgeEngine:
             pass
         else:
             if query is not None:
-                query_embeddings = self.iterative_defensive_emb(query)
+                query_embeddings = self._iterative_defensive_emb(query)
             else:
                 raise ValueError("either query or query embeddings must be specified")
         
@@ -1918,6 +1928,7 @@ class GraphKnowledgeEngine:
         self,
         persist_directory: str | None = None,
         embedding_function : EmbeddingFunctionLike| None=None,
+        embedding_cache_path: str | None = None,
         proposer=None,               # callable(pairs) -> List[LLMMergeAdjudication]
         adjudicator=None,            # callable(left: Node, right: Node) -> AdjudicationVerdict
         merge_policy=None,           # callable(left, right, verdict) -> str (canonical_id)
@@ -2056,7 +2067,25 @@ class GraphKnowledgeEngine:
         
         self.memory = Memory(location = os.path.join('.', '.kg_cache'))
         self._cached_extract_graph_with_llm = self.memory.cache(self.extract_graph_with_llm, ignore = ["self"])
-
+        self.cached_embed: Optional[Callable[[str], Iterable[float]]] = None
+        if embedding_cache_path:
+            self.embedding_cache = Memory(location = embedding_cache_path)
+            def cached_embed(query, model_name):
+                
+                return self._iterative_defensive_emb(query)
+            from functools import partial
+            
+            cached_embed = partial(cached(self.embedding_cache, cached_embed), model_name = self._ef.name())
+            # MethodType
+            # a.foo = MethodType(foo, a)
+            self.cached_embed = cast(Callable[[str], Iterable[float]], cached_embed)
+    def iterative_defensive_emb(self, emb_text0):
+        if self.cached_embed:
+            return self.cached_embed(emb_text0)
+        else:
+            return self._iterative_defensive_emb(emb_text0)
+        
+        
     # ... existing methods ...
     @staticmethod
     def _node_doc_and_meta(n: "Node") -> tuple[str, dict]:
@@ -2127,7 +2156,7 @@ class GraphKnowledgeEngine:
             ids.append(rid); docs.append(json.dumps(row)); metas.append(row)
 
         if ids:
-            self.edge_refs_collection.add(ids=ids, documents=docs, metadatas=metas, embeddings=[self.iterative_defensive_emb(str(d)) for d in docs])
+            self.edge_refs_collection.add(ids=ids, documents=docs, metadatas=metas, embeddings=[self._iterative_defensive_emb(str(d)) for d in docs])
         return ids
     def _index_node_refs(self, node: Node)-> list[str]:
         """
@@ -2156,7 +2185,7 @@ class GraphKnowledgeEngine:
             ids.append(rid); docs.append(json.dumps(row)); metas.append(row)
 
         if ids:
-            self.node_refs_collection.add(ids=ids, documents=docs, metadatas=metas, embeddings=[self.iterative_defensive_emb(str(d)) for d in docs])
+            self.node_refs_collection.add(ids=ids, documents=docs, metadatas=metas, embeddings=[self._iterative_defensive_emb(str(d)) for d in docs])
         return ids
     def _alias_doc_in_prompt(self) -> str:
         # A tiny legend we show to the LLM so it knows the alias to use
@@ -2260,7 +2289,7 @@ class GraphKnowledgeEngine:
         self.node_collection.add(
             ids=[node.id],
             documents=[doc],
-            embeddings=[node.embedding] if node.embedding is not None else [self.iterative_defensive_emb(str(doc))],
+            embeddings=[node.embedding] if node.embedding is not None else [self._iterative_defensive_emb(str(doc))],
             metadatas=[meta],
         )
     def add_pure_edge(self, edge: PureChromaEdge):
@@ -2282,7 +2311,7 @@ class GraphKnowledgeEngine:
         self.edge_collection.add(
             ids=[edge.id],
             documents=[doc],
-            embeddings=[edge.embedding] if edge.embedding is not None else [self.iterative_defensive_emb(str(doc))],
+            embeddings=[edge.embedding] if edge.embedding is not None else [self._iterative_defensive_emb(str(doc))],
             metadatas=[_strip_none({
                 "relation": edge.relation,
                 "source_ids": _json_or_none(edge.source_ids),
@@ -2304,11 +2333,11 @@ class GraphKnowledgeEngine:
             node.doc_id = doc_id  # may use engine.extract_reference_contexts
         doc, meta = _node_doc_and_meta(node)
         if node.embedding is None:
-            node.embedding = self.iterative_defensive_emb(doc)
+            node.embedding = self._iterative_defensive_emb(doc)
         self.node_collection.add(
             ids=[node.id],
             documents=[doc],
-            embeddings=[node.embedding] if node.embedding is not None else [self.iterative_defensive_emb(str(doc))],
+            embeddings=[node.embedding] if node.embedding is not None else [self._iterative_defensive_emb(str(doc))],
             metadatas=[meta],
         )
         self.get_nodes([node.id])
@@ -2416,13 +2445,13 @@ class GraphKnowledgeEngine:
         total_endpoint_count = node_endpoint_count + edge_endpoint_count
         doc = edge.model_dump_json(field_mode='backend', exclude = ['embedding'])
         if edge.embedding is None:
-            edge.embedding = self.iterative_defensive_emb(str(doc))
+            edge.embedding = self._iterative_defensive_emb(str(doc))
         # main edge row
         doc = edge.model_dump_json(field_mode='backend', exclude = ['embedding'])
         self.edge_collection.add(
             ids=[edge.id],
             documents=[str(doc)],
-            embeddings=[edge.embedding] if edge.embedding is not None else [self.iterative_defensive_emb(str(doc))],
+            embeddings=[edge.embedding] if edge.embedding is not None else [self._iterative_defensive_emb(str(doc))],
             metadatas=[_strip_none({
                 "doc_id": doc_id,
                 "relation": edge.relation,
@@ -2453,15 +2482,15 @@ class GraphKnowledgeEngine:
                 ids=ep_ids,
                 documents=ep_docs,
                 metadatas=ep_metas,
-                embeddings=[self.iterative_defensive_emb(str(d)) for d in ep_docs]
+                embeddings=[self._iterative_defensive_emb(str(d)) for d in ep_docs]
             )
     def add_document(self, document: Document):
         if document.embeddings is None:
-            document.embeddings = self.iterative_defensive_emb(str(document.content))
+            document.embeddings = self._iterative_defensive_emb(str(document.content))
         self.document_collection.add(
             ids=[document.id],
             documents=[str(document.content)],
-            embeddings = [cast(Sequence[float], document.embeddings)] if document.embeddings is not None else [self.iterative_defensive_emb(str(document.content))],
+            embeddings = [cast(Sequence[float], document.embeddings)] if document.embeddings is not None else [self._iterative_defensive_emb(str(document.content))],
             metadatas=[_strip_none({
                 "doc_id": document.id,  # <— critical
                 "type": document.type,
@@ -2483,7 +2512,7 @@ class GraphKnowledgeEngine:
                     }
                 )
             ],
-            embeddings=[self.iterative_defensive_emb(str(domain.model_dump_json()))]
+            embeddings=[self._iterative_defensive_emb(str(domain.model_dump_json()))]
         )
     def _index_node_docs(self, node: Node) -> list[str]:
         """Rebuild (node_id, doc_id) rows for this node and denormalize doc_ids on node metadata."""
@@ -2499,7 +2528,7 @@ class GraphKnowledgeEngine:
                 ids.append(rid)
                 docs.append(json.dumps(row))
                 metas.append(row)
-            self.node_docs_collection.add(ids=ids, documents=docs, metadatas=metas, embeddings = [self.iterative_defensive_emb(d) for d in docs])
+            self.node_docs_collection.add(ids=ids, documents=docs, metadatas=metas, embeddings = [self._iterative_defensive_emb(d) for d in docs])
 
         # 2) Denormalize onto node metadata (convenience only)
         #    Fetch current to avoid writing the same value repeatedly.
@@ -3427,7 +3456,7 @@ class GraphKnowledgeEngine:
                             ep_metas.append(meta_ep)
                     if ep_ids:
                         self.edge_endpoints_collection.add(ids=ep_ids, documents=ep_docs, metadatas=ep_metas, 
-                                                           embeddings=[self.iterative_defensive_emb(d) for d in ep_docs])
+                                                           embeddings=[self._iterative_defensive_emb(d) for d in ep_docs])
                     updated_edge_ids.add(eid)
                 continue
 
@@ -3563,7 +3592,7 @@ class GraphKnowledgeEngine:
         self.edge_collection.add(
             ids=[edge.id],
             documents=[],
-            embeddings=[edge.embedding] if edge.embedding else [self.iterative_defensive_emb(doc)],
+            embeddings=[edge.embedding] if edge.embedding else [self._iterative_defensive_emb(doc)],
             metadatas=[self.chroma_sanitize_metadata({
                 "doc_id": getattr(edge, "doc_id", None),
                 "relation": edge.relation,
@@ -3601,7 +3630,7 @@ class GraphKnowledgeEngine:
                 ids=ep_ids,
                 documents=ep_docs,
                 metadatas=ep_metas,
-                embeddings=[self.iterative_defensive_emb(d) for d in ep_docs]
+                embeddings=[self._iterative_defensive_emb(d) for d in ep_docs]
             )
     def _classify_endpoint_id(self, rid: str) -> str:
         """Return 'node' or 'edge' by checking collections; raise if not found."""
@@ -3934,8 +3963,7 @@ class GraphKnowledgeEngine:
         # Sort by turn_index
         nodes.sort(key=lambda n: n.turn_index or -1)
         return nodes[-1]
-    def iterative_defensive_emb(self, emb_text0):
-
+    def _iterative_defensive_emb(self, emb_text0):
         success = False
         
         idx = self.embedding_length_limit
@@ -4187,9 +4215,13 @@ class GraphKnowledgeEngine:
             raise Exception("documents metadatas and ids all needed")
         for doc, meta, nid in zip(all_nodes_doc, all_nodes_meta, all_nodes_id):
             turn_index = meta.get('turn_index')
+            # self.nodes_from_single_or_id_query_result(all_nodes)
+            # self.nodes_from_query_result
             if turn_index is not None and start_index <= int(turn_index) <= current_index:
                 # Check type
-                n = ConversationNode.model_validate_json(doc)
+                d = json.loads(doc)
+                d.update(meta)
+                n = ConversationNode.model_validate(d)
                 if n.type == "conversation_turn":
                     batch_ids.append(nid)
                     batch_text.append(f"{n.role}: {n.properties.get('content')}")

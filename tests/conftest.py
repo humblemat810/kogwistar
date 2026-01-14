@@ -1,5 +1,6 @@
 # tests/conftest.py
 import shutil, uuid, json
+import os
 import sys
 import pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parents))
@@ -122,7 +123,7 @@ def tmp_chroma_dir(tmp_path_factory):
 
 @pytest.fixture(scope="function")
 def engine(tmp_chroma_dir, monkeypatch):
-    eng = GraphKnowledgeEngine(persist_directory=tmp_chroma_dir)
+    eng = GraphKnowledgeEngine(persist_directory=tmp_chroma_dir, embedding_cache_path=os.path.join(os.getcwd(), '.embedding_cache'))
     # Patch the real LLM with a deterministic fake
     #eng.llm = _CompositeFakeLLM()
     return eng

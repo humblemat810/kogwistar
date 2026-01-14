@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Optional, TypeVar
 
 from .models import ConversationNode, Grounding, MentionVerification, Span
+from graph_knowledge_engine.models import MetaFromLastSummary
 
 T = TypeVar("T")
 
@@ -48,7 +49,9 @@ class ToolRunner:
         tool_name: str,
         args: dict[str, Any],
         handler: Callable[[], T],
+        prev_turn_meta_summary: MetaFromLastSummary,
         render_result: Optional[Callable[[T], str]] = None,
+        
     ) -> T:
         """Execute a tool handler and record tool_call/tool_result nodes."""
 
@@ -69,14 +72,14 @@ class ToolRunner:
             source_cluster_id=None,
             verification=MentionVerification(method="system", is_verified=True, score=1.0, notes="tool_call event"),
         )
-
+        call_node_content = f"Calling tool {tool_name}"
         call_node = ConversationNode(
             user_id=user_id,
             id=call_id,
             label=f"tool_call:{tool_name}",
             type="entity",
             doc_id=call_id,
-            summary=f"Calling tool {tool_name}",
+            summary=call_node_content,
             role="assistant",  # type: ignore
             turn_index=turn_index,
             conversation_id=conversation_id,
@@ -93,7 +96,8 @@ class ToolRunner:
             canonical_entity_id=None,
         )
         self.engine.add_node(call_node, None)
-
+        prev_turn_meta_summary.prev_node_char_distance_from_last_summary+= len(call_node_content)
+        prev_turn_meta_summary.prev_node_turn_distance_from_last_summary+= 1
         # Execute
         result = handler()
 
@@ -123,7 +127,7 @@ class ToolRunner:
                 compact = ""
         if not compact:
             compact = _safe_json(getattr(result, "__dict__", result))[:800]
-
+        res_node_content = compact
         res_node = ConversationNode(
             user_id=user_id,
             id=res_id,
@@ -149,5 +153,6 @@ class ToolRunner:
             canonical_entity_id=None,
         )
         self.engine.add_node(res_node, None)
-
+        prev_turn_meta_summary.prev_node_char_distance_from_last_summary+= len(res_node_content)
+        prev_turn_meta_summary.prev_node_turn_distance_from_last_summary+= 1
         return result

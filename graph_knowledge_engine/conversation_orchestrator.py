@@ -55,8 +55,7 @@ class OrchestratorState:
 
     # answer
     answer: ConversationAIResponse | None = None
-
-from graph_knowledge_engine.models import RetrievalResult
+from graph_knowledge_engine.models import MetaFromLastSummary, RetrievalResult
 class ConversationOrchestrator:
     """KGE-native orchestrator.
 
@@ -111,17 +110,17 @@ class ConversationOrchestrator:
             role=role,
             ref_knowledge_engine=self.ref_knowledge_engine,
         )
-
+        prev_turn_meta_summary = MetaFromLastSummary(0,0)
         prev_node = self.conversation_engine._get_conversation_tail(conversation_id)
         if prev_node is not None:
             new_index = (prev_node.turn_index + 1) if prev_node.turn_index is not None else 0
-            prev_char_distance_from_last_summary = prev_node.metadata.get("char_distance_from_last_summary") or 0
-            prev_turn_distance_from_last_summary = prev_node.metadata.get("turn_distance_from_last_summary") or 0
+            prev_turn_meta_summary.prev_node_char_distance_from_last_summary = prev_node.metadata.get("char_distance_from_last_summary") or 0
+            prev_turn_meta_summary.prev_node_turn_distance_from_last_summary = prev_node.metadata.get("turn_distance_from_last_summary") or 0
         else:
             new_index = 0
-            prev_char_distance_from_last_summary = 0
-            prev_turn_distance_from_last_summary = -1
-
+            prev_turn_meta_summary.prev_node_char_distance_from_last_summary = 0
+            prev_turn_meta_summary.prev_node_turn_distance_from_last_summary = -1
+        
         # 1) Append the conversation turn node
         turn_node_id = turn_id or str(uuid.uuid4())
         self_span = Span(
@@ -144,7 +143,7 @@ class ConversationOrchestrator:
                 notes="verbatim user/system input",
             ),
         )
-
+        
         turn_node = ConversationNode(
             user_id=user_id,
             id=turn_node_id,
@@ -160,15 +159,17 @@ class ConversationOrchestrator:
             metadata={
                 "entity_type": "conversation_turn",
                 "level_from_root": 0,
-                "char_distance_from_last_summary": prev_char_distance_from_last_summary + len(content),
-                "turn_distance_from_last_summary": prev_turn_distance_from_last_summary + 1,
+                "char_distance_from_last_summary": prev_turn_meta_summary.prev_node_char_distance_from_last_summary,
+                "turn_distance_from_last_summary": prev_turn_meta_summary.prev_node_turn_distance_from_last_summary,
             },
             domain_id=None,
             canonical_entity_id=None,
         )
-
+        prev_turn_meta_summary.prev_node_char_distance_from_last_summary += len(content)
+        prev_turn_meta_summary.prev_node_turn_distance_from_last_summary += 1
+        new_index += 1
         emb_text0 = f"{role}: {content}"
-        embedding = self.conversation_engine.iterative_defensive_emb(emb_text0)
+        embedding = self.conversation_engine._iterative_defensive_emb(emb_text0)
         if embedding is None:
             raise Exception("uncalculatable embeddings")
         turn_node.embedding = embedding
@@ -200,7 +201,7 @@ class ConversationOrchestrator:
                 target_edge_ids=[],
             )
             self.conversation_engine.add_edge(seq_edge)
-
+            prev_node = turn_node
         # 3) Retrieval + pinning (recorded as tool events)
         mem_retriever = MemoryRetriever(
             conversation_engine=self.conversation_engine,
@@ -233,6 +234,7 @@ class ConversationOrchestrator:
                 context_text="",
             ),
             render_result=lambda r: getattr(r, "reasoning", "")[:800],
+            prev_turn_meta_summary=prev_turn_meta_summary
         )
         st.memory = mem
 
@@ -254,6 +256,7 @@ class ConversationOrchestrator:
                 seed_kg_node_ids=list(getattr(mem, "seed_kg_node_ids", []) or []),
             ),
             render_result=lambda r: getattr(r, "reasoning", "")[:800],
+            prev_turn_meta_summary=prev_turn_meta_summary
         )
         st.knowledge = kg
 
@@ -286,15 +289,39 @@ class ConversationOrchestrator:
             st.pinned_kg_edge_ids = pinned_edges
 
         # 4) Answer (answer-only facade); response persistence happens inside the agent today.
-        response = self.answer_only(conversation_id=conversation_id)
+        response = self.answer_only(conversation_id=conversation_id, prev_turn_meta_summary=prev_turn_meta_summary)
         st.answer = response
-
+        if response.response_node_id is not None:
+            turn_node = self.conversation_engine.get_nodes([response.response_node_id])[0]
+            if prev_node:
+                seq_edge = ConversationEdge(
+                    id=str(uuid.uuid4()),
+                    source_ids=[prev_node.id],
+                    target_ids=[turn_node.id],
+                    relation="next_turn",
+                    label="next_turn",
+                    type="relationship",
+                    summary="Sequential flow",
+                    doc_id=f"conv:{conversation_id}",
+                    mentions=[Grounding(spans=[self_span])],
+                    domain_id=None,
+                    canonical_entity_id=None,
+                    properties={"entity-type": "conversation_edge"},
+                    embedding=None,
+                    metadata={},
+                    source_edge_ids=[],
+                    target_edge_ids=[],
+                )
+                self.conversation_engine.add_edge(seq_edge)
+                prev_node = turn_node
+            else:
+                raise Exception("An AI turn must at least have a predecessor turn.")
+        
         # 5) Summarization trigger policy remains here; implementation stays in engine.
-        prev_char_distance_from_last_summary += len(content)
-        prev_turn_distance_from_last_summary += 1
+        
         if new_index > 0 and (
-            prev_turn_distance_from_last_summary % 5 == 0
-            or prev_char_distance_from_last_summary > summary_char_threshold
+            prev_turn_meta_summary.prev_node_turn_distance_from_last_summary % 5 == 0
+            or prev_turn_meta_summary.prev_node_char_distance_from_last_summary > summary_char_threshold
             or bool(getattr(response, "llm_decision_need_summary", False))
         ):
             self.conversation_engine._summarize_conversation_batch(conversation_id, new_index)
@@ -310,7 +337,7 @@ class ConversationOrchestrator:
             "memory_context_edge_ids": memory_pin.pinned_edges if memory_pin else [],
         }
 
-    def answer_only(self, *, conversation_id: str, model_names: Optional[list[str]] = None) -> ConversationAIResponse:
+    def answer_only(self, *, conversation_id: str, model_names: Optional[list[str]] = None, prev_turn_meta_summary: MetaFromLastSummary) -> ConversationAIResponse:
         """Generate an answer for an existing conversation (no new user turn ingestion)."""
 
         from .agentic_answering import AgenticAnsweringAgent, AgentConfig
@@ -332,7 +359,7 @@ class ConversationOrchestrator:
                     llm=llm,
                     config=AgentConfig(),
                 )
-                out = agent.answer(conversation_id=conversation_id)
+                out = agent.answer(conversation_id=conversation_id, prev_turn_meta_summary=prev_turn_meta_summary)
 
                 if isinstance(out, ConversationAIResponse):
                     return out
@@ -343,6 +370,7 @@ class ConversationOrchestrator:
                         used_kg_node_ids=list(out.get("used_kg_node_ids") or out.get("used_node_ids") or []),
                         projected_conversation_node_ids=list(out.get("projected_node_ids") or out.get("projected_pointer_ids") or []),
                         meta={"raw": out, "model_name": model_name},
+                        response_node_id = out.get("assistant_turn_node_id")
                     )
                 return ConversationAIResponse(text=str(out))
             except Exception as e:

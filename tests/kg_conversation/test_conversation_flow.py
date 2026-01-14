@@ -143,6 +143,18 @@ def test_conversation_flow(engine:GraphKnowledgeEngine, conversation_engine:Grap
     # Verify Reference (FakeLLM returns ['N1'])
     # The code: relevant_kg_ids = ['N1'] -> creates reference node -> creates edge
     ref_nodes = conversation_engine.node_collection.get(where={"entity_type": "knowledge_reference"})
+    from pathlib import Path
+    
+    # template_html = Path("graph_knowledge_engine/templates/d3.html").read_text(encoding="utf-8")
+    # out_dir = Path(".") / "bundle"
+    # from graph_knowledge_engine.utils.kge_debug_dump import dump_paired_bundles
+    # dump_paired_bundles(
+    #     kg_engine=engine,
+    #     conversation_engine=conversation_engine,
+    #     template_html=template_html,
+    #     out_dir=out_dir,
+    # )    
+    
     assert len(ref_nodes['ids']) == 1
     ref_doc = json.loads(ref_nodes['documents'][0])
     assert ref_doc['properties']['refers_to_id'] == "N1"
