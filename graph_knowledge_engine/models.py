@@ -7,7 +7,7 @@ if True:
     logger.addHandler(logging.NullHandler())
     logger.debug("loading models")
 from typing import List, Literal, Optional, Dict, Any, Type, TypeAlias, Union, Annotated, ClassVar
-from pydantic import BaseModel, Field, model_validator, field_validator, ValidationInfo
+from pydantic import BaseModel, Field, model_validator, field_validator, ValidationInfo, ConfigDict
 import uuid
 from enum import IntEnum
 import os
@@ -54,6 +54,7 @@ QUESTION_DESC = {
     AdjudicationQuestionCode.CAUSAL: "Does one cause or lead to the other?",
     AdjudicationQuestionCode.ATTR_EQ: "Are these property values equivalent (unit/format differences allowed)?",
 }
+
 
 Role :TypeAlias = Literal["user", "assistant", "system", "tool"]
 @dataclass
@@ -1079,3 +1080,109 @@ class KnowledgeRetrievalResult:
 
 
 
+
+
+# ----------------------------
+# Workflow graph metadata contract (static shape; dynamic routing)
+# ----------------------------
+from typing import TypedDict
+
+class WorkflowNodeMetadata(BaseModel):
+    entity_type: str  # must be "workflow_node"
+    workflow_id: str
+    wf_op: str                 # operation name resolved via orchestrator step resolver
+    wf_version: str            # semantic version for cache invalidation
+    wf_cacheable: bool
+    wf_terminal: bool
+    wf_start: bool
+    wf_fanout: bool
+
+# class WorkflowEdgeMetadata(BaseModel):
+#     entity_type: str  # must be "workflow_edge"
+#     workflow_id: str
+#     wf_predicate: str | None   # symbolic predicate name
+#     wf_priority: int
+#     wf_is_default: bool
+#     wf_multiplicity: str       # "one" | "many"
+
+class WorkflowEdgeMetadata(BaseModel):
+    """
+    Workflow edge metadata contract.
+
+    Stored in Edge.metadata dict.
+    """
+    entity_type: str = Field(..., description='Must be "workflow_edge"')
+    workflow_id: str = Field(..., description="Workflow graph id")
+    wf_predicate: Optional[str] = Field(None, description="Symbolic predicate name for dynamic routing")
+    wf_priority: int = Field(100, description="Lower runs earlier")
+    wf_is_default: bool = Field(False, description="Used when no predicates match")
+    wf_multiplicity: Literal["one", "many"] = Field("one", description="If 'many', allow fanout")
+
+    model_config = ConfigDict(extra="allow")
+
+    @model_validator(mode="after")
+    def _validate_logic(self) -> "WorkflowEdgeMetadata":
+        if self.entity_type != "workflow_edge":
+            raise ValueError("WorkflowEdgeMetadata.entity_type must be 'workflow_edge'")
+        if self.wf_priority < 0:
+            raise ValueError("wf_priority must be >= 0")
+        return self
+
+
+class WorkflowMixin(BaseModel):
+    """
+    Minimal workflow mixin (same push/pull pattern as ConversationRoleMixin).
+    """
+    workflow_id: Optional[str] = Field(None, description="Workflow graph id")
+    wf_op: Optional[str] = Field(None, description="Operation name")
+    wf_version: Optional[str] = Field(None, description="Version")
+    wf_cacheable: Optional[bool] = Field(None, description="Cacheable step")
+    wf_terminal: Optional[bool] = Field(None, description="Terminal node")
+    wf_start: Optional[bool] = Field(None, description="Start node")
+    wf_fanout: Optional[bool] = Field(None, description="Fanout enabled")
+
+    @model_validator(mode="before")
+    @classmethod
+    def sync_workflow_metadata(cls, data: Any, info: ValidationInfo) -> Any:
+        if isinstance(data, dict):
+            md = data.get("metadata", {}) or {}
+            for field in ["workflow_id", "wf_op", "wf_version", "wf_cacheable", "wf_terminal", "wf_start", "wf_fanout"]:
+                if field not in data and field in md:
+                    data[field] = md[field]
+        return data
+
+    @model_validator(mode="after")
+    def push_workflow_metadata(self) -> "WorkflowMixin":
+        if not hasattr(self, "metadata"):
+            return self
+        if self.metadata is None:
+            self.metadata = {}
+        for field in ["workflow_id", "wf_op", "wf_version", "wf_cacheable", "wf_terminal", "wf_start", "wf_fanout"]:
+            val = getattr(self, field, None)
+            if val is not None:
+                self.metadata[field] = val
+        return self
+
+
+class WorkflowNode(WorkflowMixin, Node):
+    """
+    Stored as a normal Node, but with workflow metadata validation.
+    """
+    metadata: dict
+
+    @field_validator("metadata")
+    def check_workflow_metadata(cls, v):
+        WorkflowNodeMetadata.model_validate(v)
+        return v
+
+
+class WorkflowEdge(Edge):
+    """
+    Stored as a normal Edge, but with workflow edge metadata validation.
+    """
+    metadata: dict
+
+    @field_validator("metadata")
+    def check_workflow_edge_metadata(cls, v):
+        WorkflowEdgeMetadata.model_validate(v)
+        return v

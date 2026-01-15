@@ -1940,7 +1940,7 @@ class GraphKnowledgeEngine:
         adjudicator=None,            # callable(left: Node, right: Node) -> AdjudicationVerdict
         merge_policy=None,           # callable(left, right, verdict) -> str (canonical_id)
         verifier=None,               # callable(extracted, full_text, ref, **kw) -> ReferenceSession
-        kg_graph_type : Literal ['knowledge', 'conversation'] = 'knowledge'
+        kg_graph_type : Literal ['knowledge', 'conversation', 'workflow'] = 'knowledge'
     ):
         """
         embedding_function: callable(texts: List[str]) -> List[List[float]].
