@@ -380,6 +380,7 @@
           .text(d=>d.label||d.id)
           .style("font", fontSize.value + "px sans-serif");
 
+
         function applyFocusStyles(){
           const hasFocus = focusSet.size > 0;
           nodeCircle.classed("focus-node", d => focusSet.has(d.id));
@@ -578,15 +579,29 @@
             d3.select(this).classed("hidden", !ok);
           });
 
-          const nodeVisible = new Map(allNodes.map(n => [n.id, false]));
+
+          // If no links are visible (e.g., edge-less graphs), show orphan nodes too.
+          const anyNodeVisible = Array.from(nodeVisible.values()).some(Boolean);
+          if (!anyNodeVisible) {
+            allNodes.forEach(n => nodeVisible.set(n.id, true));
+          }
+          const always_show_orphan_node = true;
+          const nodeVisible = new Map(allNodes.map(n => [n.id, false || always_show_orphan_node]));
+          let anyVisible = false;
           linkSel.each(function(e){
             const k = keyEdge(e);
             if (!linkVisible.get(k)) return;
             const sid = (typeof e.source === "object" ? e.source.id : e.source);
             const tid = (typeof e.target === "object" ? e.target.id : e.target);
             nodeVisible.set(sid, true);
+            anyVisible = true;
             nodeVisible.set(tid, true);
           });
+          
+          if (!anyVisible) {
+            // No visible links => show isolated nodes too
+            allNodes.forEach(n => nodeVisible.set(n.id, true));
+          }
 
           nodeCircle.classed("hidden", d => !nodeVisible.get(d.id));
           nodeDiamond.classed("hidden", d => !nodeVisible.get(d.id));
@@ -650,6 +665,70 @@
         const inspectorBody = document.getElementById("inspectorBody");
         const closeInspector = document.getElementById("closeInspector");
         const openRefBtn = document.getElementById("openRef");
+
+        let _selectedNode = null;
+
+        function extractRefId(n) {
+          if (!n) return null;
+          const p = n.properties || {};
+          // common patterns
+          if (typeof p.refers_to_id === "string" && p.refers_to_id) return p.refers_to_id;
+          if (Array.isArray(p.ref_node_ids) && p.ref_node_ids.length) return String(p.ref_node_ids[0]);
+          if (Array.isArray(p.ref_edge_ids) && p.ref_edge_ids.length) return String(p.ref_edge_ids[0]);
+          return null;
+        }
+
+        function showInspector(n) {
+          _selectedNode = n;
+          const refId = extractRefId(n);
+
+          inspectorBody.textContent = JSON.stringify(n, null, 2);
+          inspector.classList.remove("hidden");
+
+          openRefBtn.disabled = !refId;
+          openRefBtn.dataset.refId = refId || "";
+        }
+
+
+        openRefBtn.onclick = () => {
+          const refId = openRefBtn.dataset.refId;
+          if (!refId) return;
+
+          const meta = window.__BUNDLE_META__ || {};
+          // Prefer offline paired bundles when available
+          let targetHref = null;
+
+          // If this page is conversation, open KG bundle; if this page is KG, open conversation bundle.
+          // We infer current graph type from meta if present; otherwise fall back to "file:" heuristic.
+          const currentType = (meta.graph_type || meta.current_graph_type || "").toLowerCase();
+
+          if (currentType === "conversation" && meta.kg_bundle_href) targetHref = meta.kg_bundle_href;
+          if (currentType === "knowledge" && meta.conversation_bundle_href) targetHref = meta.conversation_bundle_href;
+
+          if (targetHref) {
+            const u = new URL(targetHref, window.location.href);
+            u.searchParams.set("focus", refId);
+            // preserve mode if known
+            const mm = meta.mode || (typeof mode === "string" ? mode : null);
+            if (mm) u.searchParams.set("mode", mm);
+            window.open(u.toString(), "_blank");
+            return;
+          }
+
+          // If opened from file:// without paired bundle meta, avoid producing file:///viz/...
+          if (window.location.protocol === "file:") {
+            alert("No bundled reference target available. Create a paired bundle (kg + conversation) to enable Open ref offline.");
+            return;
+          }
+
+          // Online fallback (relative to current origin)
+          const u = new URL(window.location.origin + "/viz/d3");
+          u.searchParams.set("mode", (meta.mode || mode || "reify"));
+          u.searchParams.set("focus", refId);
+          window.open(u.toString(), "_blank");
+        };
+
+
         let selectedDatum = null;
 
         function getRefIds(d){
@@ -669,51 +748,12 @@
           return [...new Set(ids)].filter(Boolean);
         }
 
-        function showInspector(d){
-          selectedDatum = d;
-          inspectorBody.textContent = JSON.stringify(d, null, 2);
-          inspector.classList.remove("hidden");
-          const refIds = getRefIds(d);
-          const props = (d && (d.properties || d.metadata)) || {};
-          const hasKgBundle = !!(window.__BUNDLE_META__ && window.__BUNDLE_META__.kg_bundle_href);
-          // Enable if we have any ref ids OR it's a KG ref and we can open the KG bundle anyway.
-          openRefBtn.disabled = !(refIds.length > 0 || (props.ref_kind === "kg" && hasKgBundle));
-        }
         function hideInspector(){
           inspector.classList.add("hidden");
           selectedDatum = null;
         }
         closeInspector.onclick = hideInspector;
         svg.on("click", () => hideInspector());
-
-        openRefBtn.onclick = () => {
-          if (!selectedDatum) return;
-
-          const props = (selectedDatum && (selectedDatum.properties || selectedDatum.metadata)) || {};
-          const refIds = getRefIds(selectedDatum);
-
-          const meta = window.__BUNDLE_META__ || {};
-          const hasKgBundle = !!meta.kg_bundle_href;
-
-          // Bundle navigation: if this is a KG ref, open the KG bundle even if we can't focus.
-          if (props.ref_kind === "kg" && hasKgBundle) {
-            // Prefer focusing referenced KG node/edge ids; skip doc_id-only focus.
-            const focusIds = refIds.filter(x => x && x !== (meta.kg_doc_id || "") && x !== (props.ref_doc_id || ""));
-            const url = focusIds.length > 0
-              ? `${meta.kg_bundle_href}?focus=${encodeURIComponent(focusIds.join(","))}`
-              : meta.kg_bundle_href;
-            window.open(url, "_blank");
-            return;
-          }
-
-          // If we have explicit ids but no bundle href, fall back to server viewer.
-          if (refIds.length === 0) return;
-          const refId = refIds[0];
-const u = new URL(window.location.origin + "/viz/d3");
-          u.searchParams.set("mode", "{{ mode }}");
-          u.searchParams.set("focus", refId);
-          window.open(u.toString(), "_blank");
-        };
 
         function attachClick(sel){
           sel.on("click", (event, d) => {

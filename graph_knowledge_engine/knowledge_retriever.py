@@ -5,6 +5,7 @@ from typing import Callable, List, Optional, Tuple
 
 from langchain_core.language_models import BaseChatModel
 
+from graph_knowledge_engine.agentic_answering import snapshot_hash
 from graph_knowledge_engine.engine import GraphKnowledgeEngine
 from graph_knowledge_engine.models import KnowledgeRetrievalResult, RetrievalResult
 
@@ -187,6 +188,15 @@ class KnowledgeRetriever:
             summary = str(kg_meta.get("summary", ""))
 
             ptr_id = str(uuid.uuid4())
+            meta = kg_meta
+            snap = {
+                "entity_id": kg.id,
+                "label": meta.get("label"),
+                "summary": meta.get("summary"),
+                "type": meta.get("type"),
+                "canonical_entity_id": meta.get("canonical_entity_id"),
+            }
+            sh = snapshot_hash(snap)
             ptr_node = ConversationNode(
                 id=ptr_id,
                 label=f"Ref: {kg_meta.get('label')}",
@@ -199,15 +209,19 @@ class KnowledgeRetriever:
                 user_id=user_id,
                 mentions=[Grounding(spans=[self_span])],
                 properties={
+                    "target_namespace": "kg",
                     "refers_to_collection": "nodes",
                     "refers_to_id": kg.id,
                     "entity_type": "knowledge_reference",
+                    "snapshot_hash": sh
                 },
                 metadata={
+                    "target_namespace": "kg",
                     "entity_type": "knowledge_reference",
                     "level_from_root": 0,
                     "char_distance_from_last_summary": 0,
                     "turn_distance_from_last_summary": 0,
+                    "snapshot_hash": sh
                 },
                 domain_id=None,
                 canonical_entity_id=None,

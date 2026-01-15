@@ -1,7 +1,7 @@
 
 import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 if True:
     logger = logging.getLogger(__name__)
     logger.addHandler(logging.NullHandler())
@@ -55,8 +55,30 @@ QUESTION_DESC = {
     AdjudicationQuestionCode.ATTR_EQ: "Are these property values equivalent (unit/format differences allowed)?",
 }
 
+Role :TypeAlias = Literal["user", "assistant", "system", "tool"]
 
-
+@dataclass(frozen=True)
+class AddTurnResult():
+    user_turn_node_id: str
+    response_turn_node_id: str | None # if add system node with this method, no response required but optional
+    turn_index: int
+    relevant_kg_node_ids: list[str] = field(default_factory=list)
+    relevant_kg_edge_ids: list[str] = field(default_factory=list)
+    pinned_kg_pointer_node_ids: list[str] = field(default_factory=list)
+    pinned_kg_edge_ids: list[str] = field(default_factory=list)
+    memory_context_node_id: str |None = None
+    memory_context_edge_ids: list[str] = field(default_factory=list)
+        # {
+        #     "user_turn_node_id": turn_node_id,
+        #     "response_turn_node_id": response_turn_node_id,
+        #     "turn_index": new_index,
+        #     "relevant_kg_node_ids": [i for i in (kg.selected.node_ids if kg.selected else [])],
+        #     "relevant_kg_edge_ids": [i for i in (kg.selected.edge_ids if kg.selected else [])],
+        #     "pinned_kg_pointer_node_ids": pinned_ptrs,
+        #     "pinned_kg_edge_ids": pinned_edges,
+        #     "memory_context_node_id": memory_pin.memory_context_node if memory_pin else None,
+        #     "memory_context_edge_ids": memory_pin.pinned_edges if memory_pin else [],
+        # }
 
 # -------------------------
 # Utilities
@@ -515,7 +537,10 @@ class ConversationNode(ConversationRoleMixin, Node):
     @field_validator('metadata')
     def check_fields(cls, v):
         # convertible to ConversationNodeMetadata but never materialize the conversion. just a checker model
-        ConversationNodeMetadata.model_validate(v)
+        try:
+            ConversationNodeMetadata.model_validate(v)
+        except Exception as _e:
+            raise
         return v
 class Edge(ChromaValidateSourceMixin, ChromaMixin, EdgeMixin, GraphEntityRefBase):
     # Edge with ref session enforced

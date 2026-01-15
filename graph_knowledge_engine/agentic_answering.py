@@ -351,17 +351,19 @@ class AgenticAnsweringAgent:
             materialize_depth = "deep"
             max_candidates = min(max_candidates * 2, 200)
 
-        # 8) Project used evidence to canvas (idempotent) using final selection
-        projected_pointer_ids: list[str] = []
-        for kid in last_used:
-            pid = self._project_kg_node(
-                conversation_id=conversation_id,
-                run_node_id=run_node_id,
-                kg_node_id=kid,
-                provenance_span=Span.from_dummy_for_conversation(),
-            )
-            projected_pointer_ids.append(pid)
-        last_projected = projected_pointer_ids
+        # # 8) DEMO, uncommment to demo
+        # 
+        # Project used evidence to canvas (idempotent) using final selection
+        # projected_pointer_ids: list[str] = []
+        # for kid in last_used:
+        #     pid = self._project_kg_node(
+        #         conversation_id=conversation_id,
+        #         run_node_id=run_node_id,
+        #         kg_node_id=kid,
+        #         provenance_span=Span.from_dummy_for_conversation(),
+        #     )
+        #     projected_pointer_ids.append(pid)
+        # last_projected = projected_pointer_ids
 
         # 9) Persist assistant response as conversation node and link to run
         assistant_text = (last_answer.text if last_answer else "")
@@ -840,7 +842,7 @@ Evidence (id | label | summary):
             conversation_id=conversation_id,
             role="system",  # type: ignore
             turn_index=None,
-            properties={"run_id": run_id, "entity-type": "agent_run"},
+            properties={"run_id": run_id, "entity_type": "agent_run"},
             mentions=[Grounding(spans=[sp])],
             metadata={"level_from_root": 0, "entity_type": "agent_run", "char_distance_from_last_summary": 0, "turn_distance_from_last_summary": 0},
             domain_id=None,
@@ -852,6 +854,7 @@ Evidence (id | label | summary):
     def _project_kg_node(
         self,
         *,
+        # target_namespace: str, # kg, conv, wisdom
         conversation_id: str,
         run_node_id: str,
         kg_node_id: str,
@@ -883,10 +886,11 @@ Evidence (id | label | summary):
                 turn_index=None,
                 properties={
                     "target_namespace": "kg",
-                    "target_kind": "node",
+                    "refers_to_collection": "nodes",
+                    # "target_kind": "node",
                     "target_id": kg_node_id,
                     "snapshot_hash": sh,
-                    "entity-type": "knowledge_reference",
+                    "entity_type": "knowledge_reference",
                 },
                 mentions=[Grounding(spans=[provenance_span])],
                 metadata={"level_from_root": 0, "entity_type": "knowledge_reference", "char_distance_from_last_summary": 0, "turn_distance_from_last_summary": 0},
@@ -911,7 +915,7 @@ Evidence (id | label | summary):
                 mentions=[Grounding(spans=[provenance_span])],
                 domain_id=None,
                 canonical_entity_id=None,
-                properties={"entity-type": "conversation_edge"},
+                properties={"entity_type": "conversation_edge"},
                 embedding=None,
                 metadata={},
                 source_edge_ids=[],
@@ -971,7 +975,7 @@ Evidence (id | label | summary):
             mentions=[Grounding(spans=provenance_span_coerced)],
             domain_id=None,
             canonical_entity_id=None,
-            properties={"entity-type": "conversation_edge", "used_node_ids" : used_node_ids},
+            properties={"entity_type": "conversation_edge", "used_node_ids" : used_node_ids},
             embedding=None,
             metadata={},
             source_edge_ids=[],

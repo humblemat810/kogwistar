@@ -789,7 +789,7 @@ def seed_conversation_graph(
         mentions=[mk_grounding(t1_span)],
         domain_id=None,
         canonical_entity_id=None,
-        properties={"entity-type": "conversation_edge"},
+        properties={"entity_type": "conversation_edge"},
         embedding=None,
         metadata={},
         source_edge_ids=[],

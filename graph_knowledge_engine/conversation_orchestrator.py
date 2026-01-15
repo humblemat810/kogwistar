@@ -25,6 +25,8 @@ from .models import (
     KnowledgeRetrievalResult,
     MentionVerification,
     Span,
+    Role,
+    AddTurnResult
 )
 from .tool_runner import ToolRunner
 from .memory_retriever import MemoryRetriever, MemoryPinResult, MemoryRetrievalResult
@@ -78,7 +80,27 @@ class ConversationOrchestrator:
         self.llm = llm
         self.tool_runner = ToolRunner(conversation_engine=conversation_engine,
                                       tool_call_id_factory=tool_call_id_factory)
-
+    def add_link_to_new_turn(self, turn_node, prev_node, conversation_id, span):
+        
+            seq_edge = ConversationEdge(
+                id=str(uuid.uuid4()),
+                source_ids=[prev_node.id],
+                target_ids=[turn_node.id],
+                relation="next_turn",
+                label="next_turn",
+                type="relationship",
+                summary="Sequential flow",
+                doc_id=f"conv:{conversation_id}",
+                mentions=[Grounding(spans=[span])],
+                domain_id=None,
+                canonical_entity_id=None,
+                properties={"entity_type": "conversation_edge"},
+                embedding=None,
+                metadata={},
+                source_edge_ids=[],
+                target_edge_ids=[],
+            )
+            self.conversation_engine.add_edge(seq_edge)     
     # ----------------------------
     # Public entry points
     # ----------------------------
@@ -89,12 +111,12 @@ class ConversationOrchestrator:
         conversation_id: str,
         turn_id: str,
         mem_id: str,
-        role: str,
+        role: Role,
         content: str,
         filtering_callback: Callable[..., tuple[RetrievalResult, str]],
         max_retrieval_level: int = 2,
         summary_char_threshold: int = 12000,
-    ) -> Dict[str, Any]:
+    ) -> AddTurnResult:
         """Ingest a user/assistant turn and run retrieval+answering policy."""
 
         if self.conversation_engine.kg_graph_type != "conversation":
@@ -120,184 +142,140 @@ class ConversationOrchestrator:
             new_index = 0
             prev_turn_meta_summary.prev_node_char_distance_from_last_summary = 0
             prev_turn_meta_summary.prev_node_turn_distance_from_last_summary = -1
-        
-        # 1) Append the conversation turn node
-        turn_node_id = turn_id or str(uuid.uuid4())
-        self_span = Span(
-            collection_page_url=f"conversation/{conversation_id}",
-            document_page_url=f"conversation/{conversation_id}#{turn_node_id}",
-            doc_id=f"conv:{conversation_id}",
-            insertion_method="conversation_turn",
-            page_number=1,
-            start_char=0,
-            end_char=len(content),
-            excerpt=content,
-            context_before="",
-            context_after="",
-            chunk_id=None,
-            source_cluster_id=None,
-            verification=MentionVerification(
-                method="human",
-                is_verified=True,
-                score=1.0,
-                notes="verbatim user/system input",
-            ),
-        )
-        
-        turn_node = ConversationNode(
-            user_id=user_id,
-            id=turn_node_id,
-            label=f"Turn {new_index} ({role})",
-            type="entity",
-            doc_id=turn_node_id,
-            summary=content,
-            role=role,  # type: ignore
-            turn_index=new_index,
-            conversation_id=conversation_id,
-            mentions=[Grounding(spans=[self_span])],
-            properties={},
-            metadata={
-                "entity_type": "conversation_turn",
-                "level_from_root": 0,
-                "char_distance_from_last_summary": prev_turn_meta_summary.prev_node_char_distance_from_last_summary,
-                "turn_distance_from_last_summary": prev_turn_meta_summary.prev_node_turn_distance_from_last_summary,
-            },
-            domain_id=None,
-            canonical_entity_id=None,
-        )
-        prev_turn_meta_summary.prev_node_char_distance_from_last_summary += len(content)
-        prev_turn_meta_summary.prev_node_turn_distance_from_last_summary += 1
-        new_index += 1
-        emb_text0 = f"{role}: {content}"
-        embedding = self.conversation_engine._iterative_defensive_emb(emb_text0)
-        if embedding is None:
-            raise Exception("uncalculatable embeddings")
-        turn_node.embedding = embedding
-        self.conversation_engine.add_node(turn_node, None)
-
-        st.current_turn_node_id = turn_node_id
-        st.turn_index = new_index
-        st.self_span = self_span
-        st.embedding = embedding
-
-        # 2) Link sequentially
-        if prev_node:
-            seq_edge = ConversationEdge(
-                id=str(uuid.uuid4()),
-                source_ids=[prev_node.id],
-                target_ids=[turn_node_id],
-                relation="next_turn",
-                label="next_turn",
-                type="relationship",
-                summary="Sequential flow",
+        # workflow_to_run = get_workflow(states)
+        # for step_indication in workflow_to_run:
+        #     step_result = self.execute_step(step_indication)
+        #     workflow_to_run.send(step_result)
+        # result = workflow_to_run.get_result()
+        response = None
+        if role in ["assistent", "system"]:
+            
+            turn_node_id = turn_id or str(uuid.uuid4())
+            self_span = Span(
+                collection_page_url=f"conversation/{conversation_id}",
+                document_page_url=f"conversation/{conversation_id}#{turn_node_id}",
                 doc_id=f"conv:{conversation_id}",
+                insertion_method="conversation_turn",
+                page_number=1,
+                start_char=0,
+                end_char=len(content),
+                excerpt=content,
+                context_before="",
+                context_after="",
+                chunk_id=None,
+                source_cluster_id=None,
+                verification=MentionVerification(
+                    method="human",
+                    is_verified=True,
+                    score=1.0,
+                    notes=f"verbatim {role} input",
+                ),
+            )            
+            turn_node = ConversationNode(
+                user_id=user_id,
+                id=turn_node_id,
+                label=f"Turn {new_index} ({role})",
+                type="entity",
+                doc_id=turn_node_id,
+                summary=content,
+                role=role,  # type: ignore
+                turn_index=new_index,
+                conversation_id=conversation_id,
                 mentions=[Grounding(spans=[self_span])],
+                properties={},
+                metadata={
+                    "entity_type": "conversation_turn",
+                    "level_from_root": 0,
+                    "char_distance_from_last_summary": prev_turn_meta_summary.prev_node_char_distance_from_last_summary,
+                    "turn_distance_from_last_summary": prev_turn_meta_summary.prev_node_turn_distance_from_last_summary,
+                },
                 domain_id=None,
                 canonical_entity_id=None,
-                properties={"entity-type": "conversation_edge"},
-                embedding=None,
-                metadata={},
-                source_edge_ids=[],
-                target_edge_ids=[],
             )
-            self.conversation_engine.add_edge(seq_edge)
+            self.conversation_engine.add_node(turn_node)
+            self.add_link_to_new_turn(turn_node, prev_node, conversation_id, span=self_span)
             prev_node = turn_node
-        # 3) Retrieval + pinning (recorded as tool events)
-        mem_retriever = MemoryRetriever(
-            conversation_engine=self.conversation_engine,
-            llm=self.llm,
-            filtering_callback=filtering_callback,
-        )
-        kg_retriever = KnowledgeRetriever(
-            conversation_engine=self.conversation_engine,
-            ref_knowledge_engine=self.ref_knowledge_engine,
-            llm=self.llm,
-            filtering_callback=filtering_callback,
-            max_retrieval_level=max_retrieval_level,
-        )
-
-        # memory retrieve tool
-        mem: MemoryRetrievalResult = self.tool_runner.run_tool(
-            conversation_id=conversation_id,
-            user_id=user_id,
-            turn_node_id=turn_node_id,
-            turn_index=new_index,
-            tool_name="memory_retrieve",
-            args={
-                "n_results": mem_retriever.n_results,
-            },
-            handler=lambda: mem_retriever.retrieve(
-                user_id=user_id,
-                current_conversation_id=conversation_id,
-                query_embedding=embedding,
-                user_text=content,
-                context_text="",
-            ),
-            render_result=lambda r: getattr(r, "reasoning", "")[:800],
-            prev_turn_meta_summary=prev_turn_meta_summary
-        )
-        st.memory = mem
-
-        # KG retrieve tool
-        kg: KnowledgeRetrievalResult = self.tool_runner.run_tool(
-            conversation_id=conversation_id,
-            user_id=user_id,
-            turn_node_id=turn_node_id,
-            turn_index=new_index,
-            tool_name="kg_retrieve",
-            args={
-                "max_retrieval_level": max_retrieval_level,
-                "seed_kg_node_ids": list(getattr(mem, "seed_kg_node_ids", []) or []),
-            },
-            handler=lambda: kg_retriever.retrieve(
-                user_text=content,
-                context_text="",
-                query_embedding=embedding,
-                seed_kg_node_ids=list(getattr(mem, "seed_kg_node_ids", []) or []),
-            ),
-            render_result=lambda r: getattr(r, "reasoning", "")[:800],
-            prev_turn_meta_summary=prev_turn_meta_summary
-        )
-        st.knowledge = kg
-
-        # pin memory (not a tool call; it's a graph mutation derived from the tool outputs)
-        memory_pin: Optional[MemoryPinResult] = None
-        if mem.selected and mem.memory_context_text:
-            memory_pin = mem_retriever.pin_selected(
-                user_id=user_id,
-                current_conversation_id=conversation_id,
-                turn_node_id=turn_node_id,
-                mem_id=mem_id,
+            
+                      
+            add_turn_result = AddTurnResult(
+                user_turn_node_id= turn_node_id,
+                response_turn_node_id=None,# response_turn_node_id,
                 turn_index=new_index,
-                self_span=self_span,
-                selected_memory=mem.selected,
-                memory_context_text=mem.memory_context_text,
+                relevant_kg_node_ids=[],
+                relevant_kg_edge_ids=[],
+                pinned_kg_pointer_node_ids=[],
+                pinned_kg_edge_ids=[],
+                memory_context_node_id=None,
+                memory_context_edge_ids=[],
             )
-        pinned_ptrs = []
-        pinned_edges = []
-        st.memory_pin = memory_pin
-        if kg.selected:
-            pinned_ptrs, pinned_edges = kg_retriever.pin_selected(
+            new_index+=1
+            # return add_turn_result
+        else:
+            # 1) Append the conversation turn node
+            turn_node_id = turn_id or str(uuid.uuid4())
+            self_span = Span(
+                collection_page_url=f"conversation/{conversation_id}",
+                document_page_url=f"conversation/{conversation_id}#{turn_node_id}",
+                doc_id=f"conv:{conversation_id}",
+                insertion_method="conversation_turn",
+                page_number=1,
+                start_char=0,
+                end_char=len(content),
+                excerpt=content,
+                context_before="",
+                context_after="",
+                chunk_id=None,
+                source_cluster_id=None,
+                verification=MentionVerification(
+                    method="human",
+                    is_verified=True,
+                    score=1.0,
+                    notes="verbatim user/system input",
+                ),
+            )
+            
+            turn_node = ConversationNode(
                 user_id=user_id,
+                id=turn_node_id,
+                label=f"Turn {new_index} ({role})",
+                type="entity",
+                doc_id=turn_node_id,
+                summary=content,
+                role=role,  # type: ignore
+                turn_index=new_index,
                 conversation_id=conversation_id,
-                turn_node_id=turn_node_id,
-                turn_index=new_index,
-                self_span=self_span,
-                selected_knowledge=kg.selected,
+                mentions=[Grounding(spans=[self_span])],
+                properties={},
+                metadata={
+                    "entity_type": "conversation_turn",
+                    "level_from_root": 0,
+                    "char_distance_from_last_summary": prev_turn_meta_summary.prev_node_char_distance_from_last_summary,
+                    "turn_distance_from_last_summary": prev_turn_meta_summary.prev_node_turn_distance_from_last_summary,
+                },
+                domain_id=None,
+                canonical_entity_id=None,
             )
-            st.pinned_kg_pointer_node_ids = pinned_ptrs
-            st.pinned_kg_edge_ids = pinned_edges
+            prev_turn_meta_summary.prev_node_char_distance_from_last_summary += len(content)
+            prev_turn_meta_summary.prev_node_turn_distance_from_last_summary += 1
+            new_index += 1
+            emb_text0 = f"{role}: {content}"
+            embedding = self.conversation_engine._iterative_defensive_emb(emb_text0)
+            if embedding is None:
+                raise Exception("uncalculatable embeddings")
+            turn_node.embedding = embedding
+            self.conversation_engine.add_node(turn_node, None)
 
-        # 4) Answer (answer-only facade); response persistence happens inside the agent today.
-        response = self.answer_only(conversation_id=conversation_id, prev_turn_meta_summary=prev_turn_meta_summary)
-        st.answer = response
-        if response.response_node_id is not None:
-            turn_node = self.conversation_engine.get_nodes([response.response_node_id])[0]
+            st.current_turn_node_id = turn_node_id
+            st.turn_index = new_index
+            st.self_span = self_span
+            st.embedding = embedding
+
+            # 2) Link sequentially
             if prev_node:
                 seq_edge = ConversationEdge(
                     id=str(uuid.uuid4()),
                     source_ids=[prev_node.id],
-                    target_ids=[turn_node.id],
+                    target_ids=[turn_node_id],
                     relation="next_turn",
                     label="next_turn",
                     type="relationship",
@@ -306,7 +284,7 @@ class ConversationOrchestrator:
                     mentions=[Grounding(spans=[self_span])],
                     domain_id=None,
                     canonical_entity_id=None,
-                    properties={"entity-type": "conversation_edge"},
+                    properties={"entity_type": "conversation_edge"},
                     embedding=None,
                     metadata={},
                     source_edge_ids=[],
@@ -314,28 +292,128 @@ class ConversationOrchestrator:
                 )
                 self.conversation_engine.add_edge(seq_edge)
                 prev_node = turn_node
-            else:
-                raise Exception("An AI turn must at least have a predecessor turn.")
+            # 3) Retrieval + pinning (recorded as tool events)
+            mem_retriever = MemoryRetriever(
+                conversation_engine=self.conversation_engine,
+                llm=self.llm,
+                filtering_callback=filtering_callback,
+            )
+            kg_retriever = KnowledgeRetriever(
+                conversation_engine=self.conversation_engine,
+                ref_knowledge_engine=self.ref_knowledge_engine,
+                llm=self.llm,
+                filtering_callback=filtering_callback,
+                max_retrieval_level=max_retrieval_level,
+            )
+
+            # memory retrieve tool
+            mem: MemoryRetrievalResult = self.tool_runner.run_tool(
+                conversation_id=conversation_id,
+                user_id=user_id,
+                turn_node_id=turn_node_id,
+                turn_index=new_index,
+                tool_name="memory_retrieve",
+                args={
+                    "n_results": mem_retriever.n_results,
+                },
+                handler=lambda: mem_retriever.retrieve(
+                    user_id=user_id,
+                    current_conversation_id=conversation_id,
+                    query_embedding=embedding,
+                    user_text=content,
+                    context_text="",
+                ),
+                render_result=lambda r: getattr(r, "reasoning", "")[:800],
+                prev_turn_meta_summary=prev_turn_meta_summary
+            )
+            st.memory = mem
+
+            # KG retrieve tool
+            kg: KnowledgeRetrievalResult = self.tool_runner.run_tool(
+                conversation_id=conversation_id,
+                user_id=user_id,
+                turn_node_id=turn_node_id,
+                turn_index=new_index,
+                tool_name="kg_retrieve",
+                args={
+                    "max_retrieval_level": max_retrieval_level,
+                    "seed_kg_node_ids": list(getattr(mem, "seed_kg_node_ids", []) or []),
+                },
+                handler=lambda: kg_retriever.retrieve(
+                    user_text=content,
+                    context_text="",
+                    query_embedding=embedding,
+                    seed_kg_node_ids=list(getattr(mem, "seed_kg_node_ids", []) or []),
+                ),
+                render_result=lambda r: getattr(r, "reasoning", "")[:800],
+                prev_turn_meta_summary=prev_turn_meta_summary
+            )
+            st.knowledge = kg
+
+            # pin memory (not a tool call; it's a graph mutation derived from the tool outputs)
+            memory_pin: Optional[MemoryPinResult] = None
+            if mem.selected and mem.memory_context_text:
+                memory_pin = mem_retriever.pin_selected(
+                    user_id=user_id,
+                    current_conversation_id=conversation_id,
+                    turn_node_id=turn_node_id,
+                    mem_id=mem_id,
+                    turn_index=new_index,
+                    self_span=self_span,
+                    selected_memory=mem.selected,
+                    memory_context_text=mem.memory_context_text,
+                )
+            pinned_ptrs = []
+            pinned_edges = []
+            st.memory_pin = memory_pin
+            if kg.selected:
+                pinned_ptrs, pinned_edges = kg_retriever.pin_selected(
+                    user_id=user_id,
+                    conversation_id=conversation_id,
+                    turn_node_id=turn_node_id,
+                    turn_index=new_index,
+                    self_span=self_span,
+                    selected_knowledge=kg.selected,
+                )
+                st.pinned_kg_pointer_node_ids = pinned_ptrs
+                st.pinned_kg_edge_ids = pinned_edges
+
+            # 4) Answer (answer-only facade); response persistence happens inside the agent today.
+            response = self.answer_only(conversation_id=conversation_id, prev_turn_meta_summary=prev_turn_meta_summary)
+            st.answer = response
+            response_turn_node_id = None
+            if response.response_node_id is not None:
+                response_turn_node_id = response.response_node_id
+                turn_node = self.conversation_engine.get_nodes([response.response_node_id])[0]
+                if prev_node:
+
+                    self.add_link_to_new_turn(turn_node, prev_node, conversation_id, span=self_span)
+                    prev_node = turn_node
+                    
+                else:
+                    raise Exception("An AI turn must at least have a predecessor turn.")
+            add_turn_result = AddTurnResult(
+                        user_turn_node_id=turn_node_id,
+                        response_turn_node_id=response_turn_node_id,
+                        turn_index=new_index,
+                        relevant_kg_node_ids=[i for i in (kg.selected.node_ids if kg.selected else [])],
+                        relevant_kg_edge_ids=[i for i in (kg.selected.edge_ids if kg.selected else [])],
+                        pinned_kg_pointer_node_ids=pinned_ptrs,
+                        pinned_kg_edge_ids=pinned_edges,
+                        memory_context_node_id=memory_pin.memory_context_node.id if memory_pin else None,
+                        memory_context_edge_ids=[i.id for i in memory_pin.pinned_edges] if memory_pin else [],
+                    )
         
         # 5) Summarization trigger policy remains here; implementation stays in engine.
         
         if new_index > 0 and (
             prev_turn_meta_summary.prev_node_turn_distance_from_last_summary % 5 == 0
             or prev_turn_meta_summary.prev_node_char_distance_from_last_summary > summary_char_threshold
-            or bool(getattr(response, "llm_decision_need_summary", False))
+            or (response and bool(getattr(response, "llm_decision_need_summary", False)))
         ):
             self.conversation_engine._summarize_conversation_batch(conversation_id, new_index)
 
-        return {
-            "turn_node_id": turn_node_id,
-            "turn_index": new_index,
-            "relevant_kg_node_ids": [i for i in (kg.selected.node_ids if kg.selected else [])],
-            "relevant_kg_edge_ids": [i for i in (kg.selected.edge_ids if kg.selected else [])],
-            "pinned_kg_pointer_node_ids": pinned_ptrs,
-            "pinned_kg_edge_ids": pinned_edges,
-            "memory_context_node_id": memory_pin.memory_context_node if memory_pin else None,
-            "memory_context_edge_ids": memory_pin.pinned_edges if memory_pin else [],
-        }
+        return add_turn_result
 
     def answer_only(self, *, conversation_id: str, model_names: Optional[list[str]] = None, prev_turn_meta_summary: MetaFromLastSummary) -> ConversationAIResponse:
         """Generate an answer for an existing conversation (no new user turn ingestion)."""
