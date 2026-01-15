@@ -3,7 +3,7 @@ import json
 from langchain_core.language_models import BaseChatModel
 from langchain_core.prompts import ChatPromptTemplate
 from graph_knowledge_engine.engine import GraphKnowledgeEngine
-from graph_knowledge_engine.models import FilteringResult, Node, Span, Grounding, MentionVerification, ConversationNode
+from graph_knowledge_engine.models import FilteringResult, MetaFromLastSummary, Node, Span, Grounding, MentionVerification, ConversationNode
 from langchain_core.messages import AIMessage
 from pydantic import BaseModel, Field
 
@@ -128,7 +128,7 @@ def test_conversation_flow(engine:GraphKnowledgeEngine, conversation_engine:Grap
                                                     role="user", content="Hello computer", 
                                                     ref_knowledge_engine=engine,
                                                     filtering_callback = wrapped_cached_callback)
-    
+    prev_turn_meta_summary : MetaFromLastSummary = res.prev_turn_meta_summary
     assert res.turn_index == 1
     turn_id = res.user_turn_node_id
     
@@ -167,15 +167,43 @@ def test_conversation_flow(engine:GraphKnowledgeEngine, conversation_engine:Grap
     assert e_doc['source_ids'] == [turn_id]
     assert e_doc['target_ids'] == [ref_doc['id']]
 
+
+    template_html = Path("graph_knowledge_engine/templates/d3.html").read_text(encoding="utf-8")
+    # out_dir = Path(".") / "bundle" / "turn1"
+    # from graph_knowledge_engine.utils.kge_debug_dump import dump_paired_bundles
+    # dump_paired_bundles(
+    #     kg_engine=engine,
+    #     conversation_engine=conversation_engine,
+    #     template_html=template_html,
+    #     out_dir=out_dir,
+    # )        
     # 4. Trigger Summarization (Batch size is 5, so we need turn index 0, 1, 2, 3, 4, 5... actually check is `if new_index > 0 and new_index % 5 == 0`)
     # We added index 0.
     # Add 5 more turns to guarantee reach index 5.
-    for i in range(0, 5):
-        res = conversation_engine.add_conversation_turn(user_id, conv_id, "assistant" if i%2 else "user", f"msg {i}",
-                                                  role="system", content="turn dummy filler", 
-                                                  ref_knowledge_engine=engine,
-                                                 filtering_callback = candiate_filtering_callback_cached)
     
+    #hard code index below
+    last_turn_node = conversation_engine._get_conversation_tail(conv_id)
+    i_start = (last_turn_node.turn_index or 0) if last_turn_node is not None else 0
+    i_end = i_start + 5
+    last_node_ids = []
+    last_node_ids.append(conversation_engine._get_conversation_tail(conv_id))
+    for i in range(i_start, i_end):
+        res = conversation_engine.add_conversation_turn(user_id, conv_id, turn_id = f"assistant_turn_{i}" if i%2 else f"user_turn_{i}",mem_id =  f"msg turn_{i}",
+                                                  role="system", content=f"turn dummy filler turn {i}", 
+                                                  ref_knowledge_engine=engine,
+                                                 filtering_callback = candiate_filtering_callback_cached,
+                                                 prev_turn_meta_summary=prev_turn_meta_summary)
+        last_node_ids.append(conversation_engine._get_conversation_tail(conv_id))
+        prev_turn_meta_summary : MetaFromLastSummary = res.prev_turn_meta_summary
+        template_html = Path("graph_knowledge_engine/templates/d3.html").read_text(encoding="utf-8")
+        out_dir = Path(".") / "bundle" / f"turn{2+i}"
+        from graph_knowledge_engine.utils.kge_debug_dump import dump_paired_bundles
+        dump_paired_bundles(
+            kg_engine=engine,
+            conversation_engine=conversation_engine,
+            template_html=template_html,
+            out_dir=out_dir,
+        )        
     # # Now add index 5 -> Ensure Trigger
     # res_5 = conversation_engine.add_conversation_turn(user_id, conv_id, "assistant", "trigger summary",
     #                                                   role="system", content="turn dummy filler", 

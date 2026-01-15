@@ -844,9 +844,10 @@ Evidence (id | label | summary):
             turn_index=None,
             properties={"run_id": run_id, "entity_type": "agent_run"},
             mentions=[Grounding(spans=[sp])],
-            metadata={"level_from_root": 0, "entity_type": "agent_run", "char_distance_from_last_summary": 0, "turn_distance_from_last_summary": 0},
+            metadata={"level_from_root": 0, "entity_type": "agent_run", "char_distance_from_last_summary": 0, "turn_distance_from_last_summary": 0, "in_conversation_chain": False},
             domain_id=None,
             canonical_entity_id=None,
+
         )
         self.conversation_engine.add_node(node)
         return rid
@@ -859,6 +860,7 @@ Evidence (id | label | summary):
         run_node_id: str,
         kg_node_id: str,
         provenance_span: Span,
+        prev_turn_meta_summary: MetaFromLastSummary,
     ) -> str:
         scope = f"conv:{conversation_id}"
         pid = pointer_id(scope=scope, pointer_kind="kg_node", target_kind="node", target_id=kg_node_id)
@@ -893,10 +895,15 @@ Evidence (id | label | summary):
                     "entity_type": "knowledge_reference",
                 },
                 mentions=[Grounding(spans=[provenance_span])],
-                metadata={"level_from_root": 0, "entity_type": "knowledge_reference", "char_distance_from_last_summary": 0, "turn_distance_from_last_summary": 0},
+                metadata={"level_from_root": 0, "entity_type": "knowledge_reference", 
+                          "char_distance_from_last_summary": prev_turn_meta_summary.prev_node_char_distance_from_last_summary, 
+                          "turn_distance_from_last_summary": prev_turn_meta_summary.prev_node_distance_from_last_summary, 
+                          "in_conversatino_chain": False},
                 domain_id=None,
                 canonical_entity_id=None,
             )
+            prev_turn_meta_summary.prev_node_distance_from_last_summary += 1
+            prev_turn_meta_summary.prev_node_char_distance_from_last_summary += len(str(meta.get("summary")))
             self.conversation_engine.add_node(node)
 
         # Link run -> evidence
@@ -924,7 +931,8 @@ Evidence (id | label | summary):
             self.conversation_engine.add_edge(edge)
         return pid
 
-    def _add_assistant_turn(self, *, conversation_id: str, content: str, provenance_span: Span, turn_index : int, prev_turn_meta_summary: MetaFromLastSummary) -> tuple[str, ConversationNode]:
+    def _add_assistant_turn(self, *, conversation_id: str, content: str, provenance_span: Span, turn_index : int, 
+                            prev_turn_meta_summary: MetaFromLastSummary) -> tuple[str, ConversationNode]:
         # Minimal assistant turn node
         nid = pointer_id(scope=f"conv:{conversation_id}", pointer_kind="turn", target_kind="assistant", target_id=str(int(time.time()*1000)))
         import numpy as np
@@ -939,14 +947,18 @@ Evidence (id | label | summary):
             turn_index=turn_index,
             properties={"content": content, "entity_type": "assistant_turn"},
             mentions=[Grounding(spans=[provenance_span])],
-            metadata={"level_from_root": 0, "entity_type": "assistant_turn", "char_distance_from_last_summary": 0, "turn_distance_from_last_summary": 0},
+            metadata={"level_from_root": 0, 
+                      "entity_type": "assistant_turn", 
+                      "char_distance_from_last_summary": prev_turn_meta_summary.prev_node_char_distance_from_last_summary, 
+                      "turn_distance_from_last_summary": prev_turn_meta_summary.prev_node_distance_from_last_summary, 
+                      "in_conversation_chain":True},
             domain_id=None,
             canonical_entity_id=None,
             embedding=emb.tolist()
         )
         self.conversation_engine.add_node(node)
         prev_turn_meta_summary.prev_node_char_distance_from_last_summary += len(content)
-        prev_turn_meta_summary.prev_node_turn_distance_from_last_summary += 1
+        prev_turn_meta_summary.prev_node_distance_from_last_summary += 1
         return nid, node
 
     def _link_run_to_response(self, *, conversation_id: str, run_node_id: str, response_node_id: str, used_node_ids : list[str], provenance_span: Span | list[Span]) -> None:

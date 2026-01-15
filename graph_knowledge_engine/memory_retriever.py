@@ -7,7 +7,7 @@ from typing import Callable, List, Optional, Tuple, cast
 from langchain_core.language_models import BaseChatModel
 
 from graph_knowledge_engine.models import RetrievalResult
-from .models import ConversationNode, ConversationEdge, Grounding, Span, Node, Edge, FilteringResult
+from .models import ConversationNode, ConversationEdge, Grounding, MetaFromLastSummary, Span, Node, Edge, FilteringResult
 from .engine import GraphKnowledgeEngine
 
 @dataclass
@@ -276,6 +276,7 @@ class MemoryRetriever:
         self_span: Span,
         selected_memory: RetrievalResult,
         memory_context_text: str,
+        prev_turn_meta_summary: MetaFromLastSummary,
     ) -> Optional[MemoryPinResult]:
         """Materialize a `memory_context` node into the current conversation canvas.
 
@@ -309,15 +310,18 @@ class MemoryRetriever:
                 "entity_type": "memory_context",
                 "type": "entity",
                 "level_from_root": 0, 
-                "char_distance_from_last_summary": 0,  # memory itself is a summary of other nodes
-                "turn_distance_from_last_summary": 0,                
+                "char_distance_from_last_summary": prev_turn_meta_summary.prev_node_char_distance_from_last_summary,  # memory itself is a summary of other nodes
+                "turn_distance_from_last_summary": prev_turn_meta_summary.prev_node_distance_from_last_summary,                
                 "user_id": user_id,
                 "conversation_id": current_conversation_id,
                 "turn_index": turn_index,
+                "in_conversation_chain": False,
             },
             domain_id=None,
             canonical_entity_id=None,
         )
+        prev_turn_meta_summary.prev_node_distance_from_last_summary += 1
+        prev_turn_meta_summary.prev_node_char_distance_from_last_summary += len(memory_context_text)
         self.conversation_engine.add_node(mem_node)
         edge_ids: List[str] = []
         edges : List[ConversationEdge] = []

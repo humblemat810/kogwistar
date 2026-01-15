@@ -9,7 +9,7 @@ from graph_knowledge_engine.agentic_answering import snapshot_hash
 from graph_knowledge_engine.engine import GraphKnowledgeEngine
 from graph_knowledge_engine.models import KnowledgeRetrievalResult, RetrievalResult
 
-from .models import ConversationNode, ConversationEdge, FilteringResult, Grounding, Span
+from .models import ConversationNode, ConversationEdge, FilteringResult, Grounding, MetaFromLastSummary, Span
 
 
 class KnowledgeRetriever:
@@ -154,13 +154,17 @@ class KnowledgeRetriever:
         turn_index: int,
         self_span: Span,
         selected_knowledge: Optional[FilteringResult],
-        selected_knowledge_nodes: Optional[RetrievalResult] = None
+        selected_knowledge_nodes: Optional[RetrievalResult] = None,
+        prev_turn_meta_summary: MetaFromLastSummary| None = None
     ) -> tuple[List[str], List[str]]:
         pinned_pointer_node_ids: List[str] = []
         pinned_edge_ids: List[str] = []
+        
         # ref_kg_engine: GraphKnowledgeEngine
         # ref_kg_engine = self.ref_knowledge_engine
         # kgs= selected_knowledge
+        if prev_turn_meta_summary is None:
+            raise Exception("prev_turn_meta_summary cannot be None") 
         if self.ref_knowledge_engine.kg_graph_type == "knowledge":
             pass
         else:
@@ -219,13 +223,17 @@ class KnowledgeRetriever:
                     "target_namespace": "kg",
                     "entity_type": "knowledge_reference",
                     "level_from_root": 0,
-                    "char_distance_from_last_summary": 0,
-                    "turn_distance_from_last_summary": 0,
-                    "snapshot_hash": sh
+                    "char_distance_from_last_summary": prev_turn_meta_summary.prev_node_char_distance_from_last_summary,
+                    "turn_distance_from_last_summary": prev_turn_meta_summary.prev_node_distance_from_last_summary,
+                    "snapshot_hash": sh,
+                    "in_conversation_chain": False,
                 },
                 domain_id=None,
                 canonical_entity_id=None,
+                
             )
+            prev_turn_meta_summary.prev_node_char_distance_from_last_summary += len(summary)
+            prev_turn_meta_summary.prev_node_distance_from_last_summary += 1
             self.conversation_engine.add_node(ptr_node)
             pinned_pointer_node_ids.append(ptr_id)
 
@@ -285,6 +293,7 @@ class KnowledgeRetriever:
                     "level_from_root": 0,
                     "char_distance_from_last_summary": 0,
                     "turn_distance_from_last_summary": 0,
+                    "in_conversation_chain": False,
                 },
                 domain_id=None,
                 canonical_entity_id=None,

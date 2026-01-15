@@ -3,7 +3,7 @@ from types import MethodType
 
 from langchain_core.language_models import BaseChatModel
 
-from .models import AddTurnResult, RetrievalResult
+from .models import AddTurnResult, MetaFromLastSummary, RetrievalResult
 if True:
     """_summary_
 
@@ -455,7 +455,10 @@ def _node_doc_and_meta(n: Union["Node", "PureChromaNode"]) -> tuple[str, dict]:
         "domain_id": n.domain_id,
         "canonical_entity_id": getattr(n, "canonical_entity_id", None),
         "properties": _json_or_none(getattr(n, "properties", None)),
+        
     })
+    meta.update(n.get_extra_update())
+    
     mentions = getattr(n, "mentions", None)
     if mentions is not None:
         meta["mentions"] = _json_or_none(
@@ -3925,7 +3928,11 @@ class GraphKnowledgeEngine:
             conversation_id=conv_id,
             mentions=[Grounding(spans=[Span.from_dummy_for_conversation()])], # No mentions for start node
             properties={"status": "active"},
-            metadata={"level_from_root": 0, "entity_type": "conversation_start", "char_distance_from_last_summary": 0, "turn_distance_from_last_summary" : -1 },
+            metadata={"level_from_root": 0, "entity_type": 
+                "conversation_start", 
+                      "char_distance_from_last_summary": 0, 
+                      "turn_distance_from_last_summary" : -1,
+                      "in_conversation_chain": True},
             domain_id=None,
             canonical_entity_id=None,
             level_from_root = 0,
@@ -3952,7 +3959,7 @@ class GraphKnowledgeEngine:
         if self.kg_graph_type != "conversation":
             raise Exception("conversation only allowed to be on canva engine")
         got = self.node_collection.get(
-            where={"conversation_id": conversation_id},
+            where={"$and":[{"conversation_id": conversation_id}, {"in_conversation_chain": True}]},
             include=["documents", "metadatas", "embeddings"]
         )
         if not got["ids"]:
@@ -4004,7 +4011,8 @@ class GraphKnowledgeEngine:
                             str, role: str, content: str, 
                             ref_knowledge_engine: GraphKnowledgeEngine, 
                             filtering_callback: Callable[..., tuple[RetrievalResult, str]] = candiate_filtering_callback,
-                            max_retrieval_level: int = 2, summary_char_threshold = 12000) -> AddTurnResult:
+                            max_retrieval_level: int = 2, summary_char_threshold = 12000,
+                            prev_turn_meta_summary : MetaFromLastSummary = MetaFromLastSummary(0,0)) -> AddTurnResult:
         """Stable facade: delegate to the KGE-native conversation orchestrator.
 
         The orchestration policy (retrieve/filter/pin/answer/summarize) lives outside engine.py.
@@ -4022,6 +4030,7 @@ class GraphKnowledgeEngine:
             filtering_callback=filtering_callback,
             max_retrieval_level=max_retrieval_level,
             summary_char_threshold=summary_char_threshold,
+            prev_turn_meta_summary=prev_turn_meta_summary
         )
 
     # -----------------
@@ -4195,135 +4204,7 @@ class GraphKnowledgeEngine:
     def get_llm(self, model_name = None) -> BaseChatModel:
         # will implement other model names later
         return self.llm
-    @conversation_only
-    def _summarize_conversation_batch(self, conversation_id: str, current_index: int, batch_size: int = 5):
-        """Summarize the last N turns into a Summary/ Memory Node."""
-        if self.kg_graph_type != "conversation":
-            raise Exception("conversation only allowed to be on canva engine")
-        start_index = max(0, current_index - batch_size + 1)
         
-        # Fetch the nodes
-        # In a real impl, better querying needed.
-        # We assume we can get them by index logic or linear scan
-        # For prototype, scan and filter
-        all_nodes = self.node_collection.get(where={"conversation_id": conversation_id})
-        batch_ids = []
-        batch_text = []
-        provenance_spans = []
-        if all_nodes is None:
-            raise Exception("Unreacheable")
-        all_nodes_doc : list[str] | None= all_nodes['documents']
-        all_nodes_meta = all_nodes['metadatas']
-        all_nodes_id : list[str] | None= all_nodes['ids']
-        if all_nodes_doc is None or all_nodes_meta is None or all_nodes_id is None:
-            raise Exception("documents metadatas and ids all needed")
-        nodes: list[ConversationNode] = self.get_nodes(all_nodes["ids"], ConversationNode)
-        # for doc, meta, nid in zip(all_nodes_doc, all_nodes_meta, all_nodes_id):
-            # turn_index = meta.get('turn_index')
-            # self.nodes_from_single_or_id_query_result(all_nodes)
-            # self.nodes_from_query_result
-        for n in nodes:
-            turn_index = n.turn_index
-            if turn_index is not None and start_index <= int(turn_index) <= current_index:
-                # Check type
-                # d = json.loads(doc)
-                # d.update(meta)
-                # n = ConversationNode.model_validate(d)
-                if n.metadata.get("entity_type") == "conversation_turn":
-                    batch_ids.append(n.id)
-                    batch_text.append(f"{n.role}: {n.summary}")
-                    # Collect provenance: The turn itself is the source
-                    if n.mentions:
-                        provenance_spans.extend(n.mentions[0].spans)
-                elif n.type == "reference_pointer":
-                    # Include referenced knowledge node in provenance too (as requested by user)
-                    if n.mentions:
-                         provenance_spans.extend(n.mentions[0].spans)
-
-        if not batch_ids:
-            return
-        
-        full_text = "\n".join(batch_text)
-
-        # LLM Summarize
-        @self.memory.cache
-        def get_summary(full_text):
-            
-            summary_prompt = ChatPromptTemplate.from_messages([
-                ("system", "Summarize this conversation segment into a concise memory."),
-                ("human", full_text)
-            ])
-            
-            summary_res = (summary_prompt | self.llm).invoke({})
-            summary_content = summary_res.content
-            return summary_content
-        summary_content = get_summary(full_text)
-        # Dedupe spans for provenance
-        unique_spans = []
-        seen = set()
-        for s in provenance_spans:
-            # key based on loc
-            k = (s.doc_id, s.start_char, s.end_char)
-            if k not in seen:
-                seen.add(k)
-                unique_spans.append(s)
-
-        # Create Summary Node
-        summary_node = ConversationNode(
-            id=str(uuid.uuid4()),
-            label=f"Summary {start_index}-{current_index}",
-            type="entity",
-            summary='\n'.join(i['text'] for i in get_summary(full_text)), # type: ignore
-            role="system", # type: ignore
-            conversation_id=conversation_id,
-            turn_index=current_index, # Anchored at end of batch
-            # Provenance: We link back to the source turns and knowledge refs
-            mentions=[Grounding(spans=unique_spans)] if unique_spans else [],
-            
-            properties={"content": json.dumps(summary_content)},
-            metadata={"level_from_root": 1, "entity_type": "conversation_summary", "char_distance_from_last_summary": 0, "turn_distance_from_last_summary" : -1 }, # Summary is higher level?
-            domain_id=None,
-            canonical_entity_id=None
-        )
-        if self.kg_graph_type != "conversation":
-            raise Exception("conversation only allowed to be on canva engine")
-        # Persist
-        
-        self.add_node(summary_node)
-
-
-        # Edges: Summary -> Turns
-        sum_edge = ConversationEdge(
-            id=str(uuid.uuid4()),
-            source_ids=[summary_node.id],
-            target_ids=batch_ids,
-            relation="summarizes",
-            label="summarizes",
-            type="relationship",
-            summary="Memory summarization",
-            doc_id=f"conv:{conversation_id}",
-            domain_id=None,
-            canonical_entity_id=None,
-            properties=None,
-            embedding=None,
-            mentions=[Grounding(spans=[
-                Span(
-                    collection_page_url=f"conversation/{conversation_id}",
-                    document_page_url=f"conversation/{conversation_id}",
-                    doc_id=f"conv:{conversation_id}",
-                    chunk_id = None,
-                    source_cluster_id = None,
-                    insertion_method="summarization_link",
-                    page_number=1, start_char=0, end_char=1,
-                    excerpt="summary link", context_before="", context_after="",
-                    verification=MentionVerification(method="system", is_verified=True, score=1.0, notes="link")
-                )
-            ])],
-            metadata={},
-            source_edge_ids=[],
-            target_edge_ids=[]
-        )
-        self.add_edge(sum_edge)
 class ApproxTokenizer:
     def count_tokens(self, text: str) -> int:
         # very cheap approximation; stable for budget enforcement

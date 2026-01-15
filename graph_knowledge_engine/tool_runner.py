@@ -91,13 +91,16 @@ class ToolRunner:
                 "ts_ms": int(time.time() * 1000),
             },
             metadata={"entity_type": "tool_call", "tool_name": tool_name,
-                      "level_from_root": 0, "char_distance_from_last_summary": 0, "turn_distance_from_last_summary": 0},
+                      "level_from_root": 0, 
+                      "char_distance_from_last_summary": prev_turn_meta_summary.prev_node_char_distance_from_last_summary, 
+                      "turn_distance_from_last_summary": prev_turn_meta_summary.prev_node_distance_from_last_summary,
+                      "in_conversation_chain": True},
             domain_id=None,
             canonical_entity_id=None,
         )
         self.engine.add_node(call_node, None)
         prev_turn_meta_summary.prev_node_char_distance_from_last_summary+= len(call_node_content)
-        prev_turn_meta_summary.prev_node_turn_distance_from_last_summary+= 1
+        prev_turn_meta_summary.prev_node_distance_from_last_summary+= 1
         # Execute
         result = handler()
 
@@ -148,11 +151,14 @@ class ToolRunner:
                 "ts_ms": int(time.time() * 1000),
             },
             metadata={"entity_type": "tool_result", "tool_name": tool_name,
-                      "level_from_root": 0, "char_distance_from_last_summary": 0, "turn_distance_from_last_summary": 0},
+                      "level_from_root": 0, 
+                      "char_distance_from_last_summary": prev_turn_meta_summary.prev_node_char_distance_from_last_summary, 
+                      "turn_distance_from_last_summary": prev_turn_meta_summary.prev_node_distance_from_last_summary,
+                      "in_conversation_chain": True},
             domain_id=None,
             canonical_entity_id=None,
         )
         self.engine.add_node(res_node, None)
         prev_turn_meta_summary.prev_node_char_distance_from_last_summary+= len(res_node_content)
-        prev_turn_meta_summary.prev_node_turn_distance_from_last_summary+= 1
+        prev_turn_meta_summary.prev_node_distance_from_last_summary+= 1
         return result

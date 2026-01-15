@@ -56,7 +56,10 @@ QUESTION_DESC = {
 }
 
 Role :TypeAlias = Literal["user", "assistant", "system", "tool"]
-
+@dataclass
+class MetaFromLastSummary:
+    prev_node_char_distance_from_last_summary: int
+    prev_node_distance_from_last_summary: int
 @dataclass(frozen=True)
 class AddTurnResult():
     user_turn_node_id: str
@@ -68,6 +71,7 @@ class AddTurnResult():
     pinned_kg_edge_ids: list[str] = field(default_factory=list)
     memory_context_node_id: str |None = None
     memory_context_edge_ids: list[str] = field(default_factory=list)
+    prev_turn_meta_summary : MetaFromLastSummary = field(default_factory=MetaFromLastSummary)
         # {
         #     "user_turn_node_id": turn_node_id,
         #     "response_turn_node_id": response_turn_node_id,
@@ -427,7 +431,8 @@ class DocNode(DocNodeMixin, GraphEntityRefBase): # type: ignore
 
 class PureChromaNode(ChromaMixin,GraphEntityBase):
     # base node without reference enforced
-    pass
+    def get_extra_update(self):
+        return {}
 class PureChromaEdge(ChromaMixin,EdgeMixin,GraphEntityBase):
     # base edge without reference enforced
     pass
@@ -527,12 +532,15 @@ class TombstoneMixin(BaseModel):
 
 class Node(TombstoneMixin, LevelAwareMixin, ChromaValidateSourceMixin, ChromaMixin, GraphEntityRefBase):
     # Node with ref session enforced and level awareness
-    pass
+    def get_extra_update(self):
+        return {}
 
 class ConversationNode(ConversationRoleMixin, Node):
     """Specialized node for conversation elements.
     Inherits data schema from Node (via metadata storage) but adds conversation behaviors.
     """
+
+        
     metadata: dict#ConversationNodeMetadata
     @field_validator('metadata')
     def check_fields(cls, v):
@@ -542,6 +550,16 @@ class ConversationNode(ConversationRoleMixin, Node):
         except Exception as _e:
             raise
         return v
+    def get_extra_update(self) -> dict:
+        try:
+            updates = {
+                "char_distance_from_last_summary": self.metadata["char_distance_from_last_summary"],
+                "turn_distance_from_last_summary": self.metadata["turn_distance_from_last_summary"],
+                "in_conversation_chain": self.metadata["in_conversation_chain"]
+            }
+        except Exception as _e:
+            raise
+        return updates
 class Edge(ChromaValidateSourceMixin, ChromaMixin, EdgeMixin, GraphEntityRefBase):
     # Edge with ref session enforced
     
@@ -1060,8 +1078,4 @@ class KnowledgeRetrievalResult:
             raise Exception('selected field cannot be None when calling get_filtered_candidate')
 
 
-@dataclass
-class MetaFromLastSummary:
-    prev_node_char_distance_from_last_summary: int
-    prev_node_turn_distance_from_last_summary: int
-    
+
