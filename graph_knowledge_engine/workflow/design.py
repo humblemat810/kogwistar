@@ -13,7 +13,7 @@ The codebase supports two workflow "spec" shapes:
 """
 
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Callable
+from typing import Any, Dict, List, Optional, Callable, Tuple
 
 
 PredicateName = Optional[str]

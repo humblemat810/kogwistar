@@ -68,218 +68,7 @@ class ConversationOrchestrator:
     - orchestration steps live here
     - tool-call/tool-result events are recorded in the conversation graph
     """
-    # def add_conversation_turn_workflow(
-    #     self,
-    #     *,
-    #     user_id: str,
-    #     conversation_id: str,
-    #     turn_id: str,
-    #     mem_id: str,
-    #     role: Role,
-    #     content: str,
-    #     filtering_callback: Callable[..., tuple[RetrievalResult, str]],
-    #     workflow_id: str,
-    #     max_retrieval_level: int = 2,
-    #     summary_char_threshold: int = 12000,
-    #     in_conv: bool = True,
-    #     prev_turn_meta_summary: MetaFromLastSummary | None = None,
-    # ) -> AddTurnResult:
-    #     """
-    #     Workflow-driven orchestration path.
-
-    #     - STATIC graph shape: workflow nodes/edges are already registered in engine store.
-    #     - DYNAMIC routing: by predicate registry and step results.
-    #     - Parallelism + shared message queue: handled by WorkflowExecutor.
-    #     - Step implementations: resolved by op name -> callable (no monolithic workflow fn).
-
-    #     Legacy add_conversation_turn remains unchanged and continues to be the default path.
-    #     """
-    #     if prev_turn_meta_summary is None:
-    #         prev_turn_meta_summary = MetaFromLastSummary()
-
-    #     # Compute embedding exactly like legacy path
-    #     emb_text0 = f"{role}: {content}"
-    #     embedding = self.conversation_engine._iterative_defensive_emb(emb_text0)
-    #     if embedding is None:
-    #         raise RuntimeError("uncalculatable embeddings")
-
-    #     # Create/persist the turn node (mirror of legacy behavior, minimal)
-    #     prev_node = self.conversation_engine._get_conversation_tail(conversation_id) if in_conv else None
-    #     new_index = (prev_node.turn_index or 0) + 1 if prev_node is not None else 0
-
-    #     turn_node_id = turn_id or str(uuid.uuid4())
-    #     self_span = Span(
-    #         collection_page_url=f"conversation/{conversation_id}",
-    #         document_page_url=f"conversation/{conversation_id}#{turn_node_id}",
-    #         doc_id=f"conv:{conversation_id}",
-    #         insertion_method="conversation_turn",
-    #         page_number=1,
-    #         start_char=0,
-    #         end_char=len(content),
-    #         excerpt=content,
-    #         context_before="",
-    #         context_after="",
-    #         chunk_id=None,
-    #         source_cluster_id=None,
-    #         verification=MentionVerification(
-    #             method="human",
-    #             is_verified=True,
-    #             score=1.0,
-    #             notes=f"verbatim {role} input",
-    #         ),
-    #     )
-
-    #     turn_node = ConversationNode(
-    #         user_id=user_id,
-    #         id=turn_node_id,
-    #         label=f"Turn {new_index} ({role})",
-    #         type="entity",
-    #         doc_id=turn_node_id,
-    #         summary=content,
-    #         role=role,  # type: ignore
-    #         turn_index=new_index,
-    #         conversation_id=conversation_id,
-    #         mentions=[Grounding(spans=[self_span])],
-    #         properties={},
-    #         metadata={
-    #             "entity_type": "conversation_turn",
-    #             "level_from_root": 0,
-    #             "turn_distance_from_last_summary": prev_turn_meta_summary.prev_node_distance_from_last_summary,
-    #             "char_distance_from_last_summary": prev_turn_meta_summary.prev_node_char_distance_from_last_summary,
-    #         },
-    #         domain_id=None,
-    #         canonical_entity_id=None,
-    #     )
-    #     turn_node.embedding = embedding
-    #     self.conversation_engine.add_node(turn_node)
-    #     self.add_link_to_new_turn(turn_node, prev_node, conversation_id, span=self_span)
-
-    #     # Load workflow spec from engine via convention (wf_start=True)
-    #     wf_spec: WorkflowSpec = build_workflow_from_engine(engine=self.conversation_engine, workflow_id=workflow_id)
-
-    #     # Predicate registry for routing
-    #     # (you can expand this set, but keep them symbolic)
-    #     predicate_registry = {
-    #         "has_memory": lambda st, r: st.get("memory") is not None,
-    #         "has_kg": lambda st, r: st.get("kg") is not None,
-    #     }
-
-    #     # Step resolver: op-name -> callable(ctx)->result
-    #     def resolve_step(op_name: str):
-    #         if op_name == "memory_retrieve":
-    #             def _run(ctx):
-    #                 mem_retriever = MemoryRetriever(
-    #                     conversation_engine=self.conversation_engine,
-    #                     llm=self.llm,
-    #                     filtering_callback=filtering_callback,
-    #                 )
-    #                 mem = self.tool_runner.run_tool(
-    #                     conversation_id=conversation_id,
-    #                     user_id=user_id,
-    #                     turn_node_id=turn_node_id,
-    #                     turn_index=new_index,
-    #                     tool_name="memory_retrieve",
-    #                     args={"n_results": mem_retriever.n_results},
-    #                     handler=lambda: mem_retriever.retrieve(
-    #                         user_id=user_id,
-    #                         current_conversation_id=conversation_id,
-    #                         query_embedding=embedding,
-    #                         user_text=content,
-    #                         context_text="",
-    #                     ),
-    #                     render_result=lambda r: getattr(r, "reasoning", "")[:800],
-    #                     prev_turn_meta_summary=prev_turn_meta_summary,
-    #                 )
-    #                 # also publish to message queue for parallel observers if needed
-    #                 ctx.publish({"type": "memory_done"})
-    #                 return mem
-    #             return _run
-
-    #         if op_name == "kg_retrieve":
-    #             def _run(ctx):
-    #                 kg_retriever = KnowledgeRetriever(
-    #                     conversation_engine=self.conversation_engine,
-    #                     ref_knowledge_engine=self.ref_knowledge_engine,
-    #                     llm=self.llm,
-    #                     filtering_callback=filtering_callback,
-    #                     max_retrieval_level=max_retrieval_level,
-    #                 )
-    #                 mem = ctx.state.get("memory")
-    #                 kg = self.tool_runner.run_tool(
-    #                     conversation_id=conversation_id,
-    #                     user_id=user_id,
-    #                     turn_node_id=turn_node_id,
-    #                     turn_index=new_index,
-    #                     tool_name="kg_retrieve",
-    #                     args={
-    #                         "max_retrieval_level": max_retrieval_level,
-    #                         "seed_kg_node_ids": list(getattr(mem, "seed_kg_node_ids", []) or []),
-    #                     },
-    #                     handler=lambda: kg_retriever.retrieve(
-    #                         user_id=user_id,
-    #                         current_conversation_id=conversation_id,
-    #                         query_embedding=embedding,
-    #                         user_text=content,
-    #                         context_text="",
-    #                         seed_kg_node_ids=list(getattr(mem, "seed_kg_node_ids", []) or []),
-    #                         self_span=self_span,
-    #                         selected_memory=getattr(mem, "selected", None),
-    #                         memory_context_text=getattr(mem, "memory_context_text", ""),
-    #                         prev_turn_meta_summary=prev_turn_meta_summary,
-    #                     ),
-    #                     render_result=lambda r: getattr(r, "reasoning", "")[:800],
-    #                     prev_turn_meta_summary=prev_turn_meta_summary,
-    #                 )
-    #                 ctx.publish({"type": "kg_done"})
-    #                 return kg
-    #             return _run
-
-    #         if op_name == "answer_only":
-    #             def _run(ctx):
-    #                 # allow think/retry to observe crawl/tool updates via message queue
-    #                 _msgs = ctx.drain_messages()
-    #                 ans = self.answer_only(conversation_id=conversation_id, prev_turn_meta_summary=prev_turn_meta_summary)
-    #                 return ans
-    #             return _run
-
-    #         raise KeyError(f"Unknown workflow op: {op_name}")
-
-    #     executor = WorkflowExecutor(
-    #         engine=self.conversation_engine,
-    #         workflow=wf_spec,
-    #         step_resolver=resolve_step,
-    #         predicate_registry=predicate_registry,
-    #         cache_root=".workflow_cache",
-    #         max_workers=4,
-    #     )
-
-    #     init_state = {
-    #         "conversation_id": conversation_id,
-    #         "user_id": user_id,
-    #         "turn_node_id": turn_node_id,
-    #         "turn_index": new_index,
-    #         "role": role,
-    #         "user_text": content,
-    #         "embedding": embedding,
-    #         "memory": None,
-    #         "kg": None,
-    #         "answer": None,
-    #     }
-
-    #     for _ev in executor.run(run_id=turn_node_id, initial_state=init_state):
-    #         # If you want streaming, yield these from a streaming API variant.
-    #         pass
-
-    #     response = executor.state.get("answer")
-    #     response_turn_node_id = getattr(response, "response_node_id", None) if response is not None else None
-
-    #     return AddTurnResult(
-    #         user_turn_node_id=turn_node_id,
-    #         response_turn_node_id=response_turn_node_id,
-    #         turn_index=new_index,
-    #         prev_turn_meta_summary=prev_turn_meta_summary,
-    #     )
-    def add_conversation_turn_workflow_v2(
+    def add_conversation_turn_workflow(
         self,
         *,
         user_id: str,
@@ -296,21 +85,25 @@ class ConversationOrchestrator:
         prev_turn_meta_summary: MetaFromLastSummary | None = None,
     ) -> AddTurnResult:
         """
-        V2 workflow-driven orchestration.
+        Workflow-driven orchestration path.
 
-        Design engine: workflow_engine (kg_graph_type="workflow")
-        Trace/checkpoints: conversation_engine (kg_graph_type="conversation")
+        - STATIC graph shape: workflow nodes/edges are already registered in engine store.
+        - DYNAMIC routing: by predicate registry and step results.
+        - Parallelism + shared message queue: handled by WorkflowExecutor.
+        - Step implementations: resolved by op name -> callable (no monolithic workflow fn).
+
+        Legacy add_conversation_turn remains unchanged and continues to be the default path.
         """
         if prev_turn_meta_summary is None:
-            prev_turn_meta_summary = MetaFromLastSummary(0, 0)
+            prev_turn_meta_summary = MetaFromLastSummary()
 
-        # ---- 1) Compute embedding exactly like legacy ----
+        # Compute embedding exactly like legacy path
         emb_text0 = f"{role}: {content}"
         embedding = self.conversation_engine._iterative_defensive_emb(emb_text0)
         if embedding is None:
             raise RuntimeError("uncalculatable embeddings")
 
-        # ---- 2) Create/persist the turn node (mirror legacy) ----
+        # Create/persist the turn node (mirror of legacy behavior, minimal)
         prev_node = self.conversation_engine._get_conversation_tail(conversation_id) if in_conv else None
         new_index = (prev_node.turn_index or 0) + 1 if prev_node is not None else 0
 
@@ -353,31 +146,25 @@ class ConversationOrchestrator:
                 "level_from_root": 0,
                 "turn_distance_from_last_summary": prev_turn_meta_summary.prev_node_distance_from_last_summary,
                 "char_distance_from_last_summary": prev_turn_meta_summary.prev_node_char_distance_from_last_summary,
-                "in_conversation_chain": in_conv,
             },
             domain_id=None,
             canonical_entity_id=None,
         )
         turn_node.embedding = embedding
         self.conversation_engine.add_node(turn_node)
-        if prev_node is not None:
-            self.add_link_to_new_turn(turn_node, prev_node, conversation_id, span=self_span)
+        self.add_link_to_new_turn(turn_node, prev_node, conversation_id, span=self_span)
 
-        # ---- 3) Load static workflow design from workflow_engine ----
-        from .workflow.design import build_workflow_from_engine
-        from .workflow.executor import WorkflowExecutor
+        # Load workflow spec from engine via convention (wf_start=True)
+        wf_spec: WorkflowSpec = build_workflow_from_engine(engine=self.conversation_engine, workflow_id=workflow_id)
 
-        wf_spec = build_workflow_from_engine(engine=self.workflow_engine, workflow_id=workflow_id)
-
-        # ---- 4) Predicate registry for dynamic routing ----
-        # Keep symbolic, stable names. Expand as needed.
+        # Predicate registry for routing
+        # (you can expand this set, but keep them symbolic)
         predicate_registry = {
             "has_memory": lambda st, r: st.get("memory") is not None,
             "has_kg": lambda st, r: st.get("kg") is not None,
-            "always": lambda st, r: True,
         }
 
-        # ---- 5) Step resolver: op-name -> callable(ctx)->serializable result ----
+        # Step resolver: op-name -> callable(ctx)->result
         def resolve_step(op_name: str):
             if op_name == "memory_retrieve":
                 def _run(ctx):
@@ -403,8 +190,8 @@ class ConversationOrchestrator:
                         render_result=lambda r: getattr(r, "reasoning", "")[:800],
                         prev_turn_meta_summary=prev_turn_meta_summary,
                     )
+                    # also publish to message queue for parallel observers if needed
                     ctx.publish({"type": "memory_done"})
-                    # IMPORTANT: return raw object; executor will convert to JSONable
                     return mem
                 return _run
 
@@ -417,25 +204,27 @@ class ConversationOrchestrator:
                         filtering_callback=filtering_callback,
                         max_retrieval_level=max_retrieval_level,
                     )
-                    mem_obj = ctx.state.get("memory")
-                    seed_ids = list(getattr(mem_obj, "seed_kg_node_ids", []) or [])
+                    mem = ctx.state.get("memory")
                     kg = self.tool_runner.run_tool(
                         conversation_id=conversation_id,
                         user_id=user_id,
                         turn_node_id=turn_node_id,
                         turn_index=new_index,
                         tool_name="kg_retrieve",
-                        args={"max_retrieval_level": max_retrieval_level, "seed_kg_node_ids": seed_ids},
+                        args={
+                            "max_retrieval_level": max_retrieval_level,
+                            "seed_kg_node_ids": list(getattr(mem, "seed_kg_node_ids", []) or []),
+                        },
                         handler=lambda: kg_retriever.retrieve(
                             user_id=user_id,
                             current_conversation_id=conversation_id,
                             query_embedding=embedding,
                             user_text=content,
                             context_text="",
-                            seed_kg_node_ids=seed_ids,
+                            seed_kg_node_ids=list(getattr(mem, "seed_kg_node_ids", []) or []),
                             self_span=self_span,
-                            selected_memory=getattr(mem_obj, "selected", None),
-                            memory_context_text=getattr(mem_obj, "memory_context_text", ""),
+                            selected_memory=getattr(mem, "selected", None),
+                            memory_context_text=getattr(mem, "memory_context_text", ""),
                             prev_turn_meta_summary=prev_turn_meta_summary,
                         ),
                         render_result=lambda r: getattr(r, "reasoning", "")[:800],
@@ -447,63 +236,557 @@ class ConversationOrchestrator:
 
             if op_name == "answer_only":
                 def _run(ctx):
+                    # allow think/retry to observe crawl/tool updates via message queue
                     _msgs = ctx.drain_messages()
                     ans = self.answer_only(conversation_id=conversation_id, prev_turn_meta_summary=prev_turn_meta_summary)
-                    # include msg count for debugging deterministically
-                    return {"answer": ans, "observed_msgs": len(_msgs)}
+                    return ans
                 return _run
 
             raise KeyError(f"Unknown workflow op: {op_name}")
 
-        # ---- 6) Trace sink: persist workflow step events/checkpoints into conversation_engine ----
-        # Keep minimal: one node per event if you want it in D3.
-        def trace_sink(ev):
-            # You can upgrade this to real WorkflowRun/StepExec/Checkpoint node types.
-            # For now, persist as lightweight conversation nodes to ensure visibility.
-            try:
-                et = ev.type
-                payload = ev.payload
-                txt = f"[wf:{workflow_id}] {et} {payload.get('op','')}"
-                nid = f"wftrace|{turn_node_id}|{payload.get('step_seq', et)}|{uuid.uuid4()}"
-                span = self_span
-                n = ConversationNode(
-                    user_id=user_id,
-                    id=nid,
-                    label=f"WF {et}",
-                    type="entity",
-                    doc_id=nid,
-                    summary=txt,
-                    role="system",  # type: ignore
-                    turn_index=new_index,
-                    conversation_id=conversation_id,
-                    mentions=[Grounding(spans=[span])],
-                    properties={},
-                    metadata={
-                        "entity_type": "workflow_trace",
-                        "workflow_id": workflow_id,
-                        "wf_event_type": et,
-                        "payload": payload,  # already JSONable
-                        "level_from_root": 0,
-                    },
-                    domain_id=None,
-                    canonical_entity_id=None,
-                )
-                self.conversation_engine.add_node(n)
-            except Exception:
-                # tracing must never break the workflow
-                return
-
         executor = WorkflowExecutor(
-            engine=self.workflow_engine,
+            engine=self.conversation_engine,
             workflow=wf_spec,
             step_resolver=resolve_step,
             predicate_registry=predicate_registry,
+            cache_root=".workflow_cache",
             max_workers=4,
-            checkpoint_every_n_steps=1,
-            trace_sink=trace_sink,
         )
 
-        # ---- 7) Initial state: keep both raw objects + JSONable mirrors ----
+        init_state = {
+            "conversation_id": conversation_id,
+            "user_id": user_id,
+            "turn_node_id": turn_node_id,
+            "turn_index": new_index,
+            "role": role,
+            "user_text": content,
+            "embedding": embedding,
+            "memory": None,
+            "kg": None,
+            "answer": None,
+        }
+
+        for _ev in executor.run(run_id=turn_node_id, initial_state=init_state):
+            # If you want streaming, yield these from a streaming API variant.
+            pass
+
+        response = executor.state.get("answer")
+        response_turn_node_id = getattr(response, "response_node_id", None) if response is not None else None
+
+        return AddTurnResult(
+            user_turn_node_id=turn_node_id,
+            response_turn_node_id=response_turn_node_id,
+            turn_index=new_index,
+            prev_turn_meta_summary=prev_turn_meta_summary,
+        )
+
+    # ----------------------------
+    # Workflow-v2: design + step resolver
+    # ----------------------------
+
+    def _ensure_add_turn_workflow_design(self, workflow_id: str) -> None:
+        """Ensure a workflow design exists in workflow_engine for legacy add_turn behavior.
+
+        This writes *design nodes/edges* into workflow_engine (kg_graph_type="workflow").
+        The design mirrors ConversationOrchestrator.add_conversation_turn:
+          - memory_retrieve
+          - kg_retrieve
+          - pin memory (conditional)
+          - pin kg (conditional)
+          - answer
+          - decide summarize
+          - summarize (conditional)
+          - end
+
+        If the design is already present, this is a no-op.
+        """
+        if self.workflow_engine is None:
+            raise RuntimeError("workflow_engine must be provided")
+
+        from .workflow.design import validate_workflow_design
+        from .models import WorkflowNode, WorkflowEdge
+
+        # If it validates, we assume it exists + is usable.
+        try:
+            validate_workflow_design(
+                workflow_engine=self.workflow_engine,
+                workflow_id=workflow_id,
+                predicate_registry={
+                    "always": lambda st, r: True,
+                    "should_pin_memory": lambda st, r: True,
+                    "should_pin_kg": lambda st, r: True,
+                    "should_summarize": lambda st, r: True,
+                },
+            )
+            return
+        except Exception:
+            pass
+
+        # ----------------------------
+        # Create design nodes
+        # ----------------------------
+        def n(node_id: str, *, label: str, op: str | None, start: bool = False, terminal: bool = False, fanout: bool = False) -> WorkflowNode:
+            return WorkflowNode(
+                id=node_id,
+                label=label,
+                type="entity",
+                doc_id=node_id,
+                summary=label,
+                properties={},
+                metadata={
+                    "entity_type": "workflow_node",
+                    "workflow_id": workflow_id,
+                    "wf_op": op,
+                    "wf_start": start,
+                    "wf_terminal": terminal,
+                    "wf_fanout": fanout,
+                    "wf_version": "v1",
+                },
+            )
+
+        # Use workflow_id namespacing to avoid node id collisions across workflows.
+        wid = lambda suffix: f"wf:{workflow_id}:{suffix}"
+
+        nodes = [
+            n(wid("start"), label="Start (memory_retrieve)", op="memory_retrieve", start=True),
+            n(wid("kg"), label="KG retrieve", op="kg_retrieve", fanout=True),
+            n(wid("pin_mem"), label="Pin memory", op="memory_pin"),
+            n(wid("pin_kg"), label="Pin knowledge", op="kg_pin"),
+            n(wid("answer"), label="Answer", op="answer"),
+            n(wid("decide_sum"), label="Decide summarize", op="decide_summarize"),
+            n(wid("summarize"), label="Summarize", op="summarize"),
+            n(wid("end"), label="End", op=None, terminal=True),
+        ]
+
+        for node in nodes:
+            self.workflow_engine.add_node(node)
+
+        # ----------------------------
+        # Create design edges
+        # ----------------------------
+        def e(edge_id: str, *, src: str, dst: str, pred: str | None, priority: int = 100, is_default: bool = False, multiplicity: str = "one") -> WorkflowEdge:
+            return WorkflowEdge(
+                id=edge_id,
+                source_ids=[src],
+                target_ids=[dst],
+                relation="wf_next",
+                label="wf_next",
+                type="relationship",
+                summary="wf_next",
+                doc_id=edge_id,
+                properties={},
+                metadata={
+                    "entity_type": "workflow_edge",
+                    "workflow_id": workflow_id,
+                    "wf_predicate": pred,
+                    "wf_priority": priority,
+                    "wf_is_default": is_default,
+                    "wf_multiplicity": multiplicity,
+                },
+            )
+
+        edges = [
+            e(wid("e1"), src=wid("start"), dst=wid("kg"), pred=None, is_default=True),
+
+            # From KG retrieve, optionally pin both memory and KG (fanout node).
+            e(wid("e2"), src=wid("kg"), dst=wid("pin_mem"), pred="should_pin_memory", priority=0),
+            e(wid("e3"), src=wid("kg"), dst=wid("pin_kg"), pred="should_pin_kg", priority=1),
+
+            # If no pins happen, go straight to answer.
+            e(wid("e4"), src=wid("kg"), dst=wid("answer"), pred=None, is_default=True),
+            # After pins, continue to answer.
+            e(wid("e5"), src=wid("pin_mem"), dst=wid("answer"), pred=None, is_default=True),
+            e(wid("e6"), src=wid("pin_kg"), dst=wid("answer"), pred=None, is_default=True),
+
+            # Summarization decision after answer (needs llm_decision_need_summary).
+            e(wid("e7"), src=wid("answer"), dst=wid("decide_sum"), pred=None, is_default=True),
+            e(wid("e8"), src=wid("decide_sum"), dst=wid("summarize"), pred="should_summarize", priority=0),
+            e(wid("e9"), src=wid("decide_sum"), dst=wid("end"), pred=None, is_default=True),
+            e(wid("e10"), src=wid("summarize"), dst=wid("end"), pred=None, is_default=True),
+        ]
+
+        for edge in edges:
+            self.workflow_engine.add_edge(edge)
+
+    def _make_add_turn_step_resolver(
+        self,
+        *,
+        user_id: str,
+        conversation_id: str,
+        turn_node_id: str,
+        turn_index: int,
+        role: Role,
+        content: str,
+        mem_id: str,
+        embedding: Any,
+        self_span: Span,
+        filtering_callback: Callable[..., tuple[RetrievalResult, str]],
+        max_retrieval_level: int,
+        summary_char_threshold: int,
+        prev_turn_meta_summary: MetaFromLastSummary,
+    ):
+        """Factory returning a resolver(op_name)->StepFn.
+
+        Keeping this as a method (rather than a giant nested function) makes it:
+        - easier to unit test in isolation
+        - easier to share helper logic across workflows
+        - less likely to capture the wrong variables accidentally
+        """
+
+        from .workflow.runtime import StepContext
+        from .workflow.serialize import to_jsonable
+
+        def resolve_step(op_name: str):
+            if op_name == "memory_retrieve":
+                def _run(ctx: StepContext):
+                    mem_retriever = MemoryRetriever(
+                        conversation_engine=self.conversation_engine,
+                        llm=self.llm,
+                        filtering_callback=filtering_callback,
+                    )
+                    mem = self.tool_runner.run_tool(
+                        conversation_id=conversation_id,
+                        user_id=user_id,
+                        turn_node_id=turn_node_id,
+                        turn_index=turn_index,
+                        tool_name="memory_retrieve",
+                        args={"n_results": mem_retriever.n_results},
+                        handler=lambda: mem_retriever.retrieve(
+                            user_id=user_id,
+                            current_conversation_id=conversation_id,
+                            query_embedding=embedding,
+                            user_text=content,
+                            context_text="",
+                        ),
+                        render_result=lambda r: getattr(r, "reasoning", "")[:800],
+                        prev_turn_meta_summary=prev_turn_meta_summary,
+                    )
+                    # store both raw (for later pinning) and json mirror
+                    ctx.state["memory_raw"] = mem
+                    memj = to_jsonable(mem)
+                    ctx.state["memory"] = memj
+                    return memj
+                return _run
+
+            if op_name == "kg_retrieve":
+                def _run(ctx: StepContext):
+                    kg_retriever = KnowledgeRetriever(
+                        conversation_engine=self.conversation_engine,
+                        ref_knowledge_engine=self.ref_knowledge_engine,
+                        llm=self.llm,
+                        filtering_callback=filtering_callback,
+                        max_retrieval_level=max_retrieval_level,
+                    )
+                    mem_raw = ctx.state.get("memory_raw")
+                    seed_ids = list(getattr(mem_raw, "seed_kg_node_ids", []) or []) if mem_raw is not None else []
+                    kg = self.tool_runner.run_tool(
+                        conversation_id=conversation_id,
+                        user_id=user_id,
+                        turn_node_id=turn_node_id,
+                        turn_index=turn_index,
+                        tool_name="kg_retrieve",
+                        args={"max_retrieval_level": max_retrieval_level, "seed_kg_node_ids": seed_ids},
+                        handler=lambda: kg_retriever.retrieve(
+                            user_text=content,
+                            context_text="",
+                            query_embedding=embedding,
+                            seed_kg_node_ids=seed_ids,
+                        ),
+                        render_result=lambda r: getattr(r, "reasoning", "")[:800],
+                        prev_turn_meta_summary=prev_turn_meta_summary,
+                    )
+                    ctx.state["kg_raw"] = kg
+                    kgj = to_jsonable(kg)
+                    ctx.state["kg"] = kgj
+                    return kgj
+                return _run
+
+            if op_name == "memory_pin":
+                def _run(ctx: StepContext):
+                    mem_raw = ctx.state.get("memory_raw")
+                    mem_retriever = MemoryRetriever(
+                        conversation_engine=self.conversation_engine,
+                        llm=self.llm,
+                        filtering_callback=filtering_callback,
+                    )
+                    out = None
+                    if mem_raw is not None and getattr(mem_raw, "selected", None) and getattr(mem_raw, "memory_context_text", None):
+                        out = mem_retriever.pin_selected(
+                            user_id=user_id,
+                            current_conversation_id=conversation_id,
+                            turn_node_id=turn_node_id,
+                            mem_id=mem_id,
+                            turn_index=turn_index,
+                            self_span=self_span,
+                            selected_memory=getattr(mem_raw, "selected"),
+                            memory_context_text=getattr(mem_raw, "memory_context_text"),
+                            prev_turn_meta_summary=prev_turn_meta_summary,
+                        )
+
+                    ctx.state["memory_pin_raw"] = out
+                    outj = {
+                        "memory_context_node_id": getattr(getattr(out, "memory_context_node", None), "id", None) if out else None,
+                        "pinned_edge_ids": [e.id for e in getattr(out, "pinned_edges", [])] if out else [],
+                    }
+                    ctx.state["memory_pin"] = outj
+                    return outj
+                return _run
+
+            if op_name == "kg_pin":
+                def _run(ctx: StepContext):
+                    kg_raw = ctx.state.get("kg_raw")
+                    kg_retriever = KnowledgeRetriever(
+                        conversation_engine=self.conversation_engine,
+                        ref_knowledge_engine=self.ref_knowledge_engine,
+                        llm=self.llm,
+                        filtering_callback=filtering_callback,
+                        max_retrieval_level=max_retrieval_level,
+                    )
+                    pinned_ptrs: list[str] = []
+                    pinned_edges: list[str] = []
+                    if kg_raw is not None and getattr(kg_raw, "selected", None):
+                        pinned_ptrs, pinned_edges = kg_retriever.pin_selected(
+                            user_id=user_id,
+                            conversation_id=conversation_id,
+                            turn_node_id=turn_node_id,
+                            turn_index=turn_index,
+                            self_span=self_span,
+                            selected_knowledge=getattr(kg_raw, "selected"),
+                            prev_turn_meta_summary=prev_turn_meta_summary,
+                        )
+                    outj = {"pinned_pointer_node_ids": list(pinned_ptrs), "pinned_edge_ids": list(pinned_edges)}
+                    ctx.state["kg_pin"] = outj
+                    return outj
+                return _run
+
+            if op_name == "answer":
+                def _run(ctx: StepContext):
+                    resp = self.answer_only(conversation_id=conversation_id, prev_turn_meta_summary=prev_turn_meta_summary)
+                    ctx.state["answer_raw"] = resp
+
+                    # Link assistant node to the user turn for conversation chain continuity.
+                    response_node_id = getattr(resp, "response_node_id", None)
+                    if response_node_id:
+                        try:
+                            resp_node = self.conversation_engine.get_nodes([response_node_id])[0]
+                            self.add_link_to_new_turn(resp_node, self.conversation_engine.get_nodes([turn_node_id])[0], conversation_id, span=self_span)
+                        except Exception:
+                            pass
+
+                    # mirror legacy: advance distances after adding assistant turn, if available
+                    try:
+                        if response_node_id:
+                            txt = getattr(resp, "answer", None)
+                            if isinstance(txt, str):
+                                prev_turn_meta_summary.prev_node_char_distance_from_last_summary += len(txt)
+                            prev_turn_meta_summary.prev_node_distance_from_last_summary += 1
+                    except Exception:
+                        pass
+
+                    outj = {
+                        "response_node_id": response_node_id,
+                        "llm_decision_need_summary": bool(getattr(resp, "llm_decision_need_summary", False)),
+                    }
+                    ctx.state["answer"] = outj
+                    return outj
+                return _run
+
+            if op_name == "decide_summarize":
+                def _run(ctx: StepContext):
+                    ans = ctx.state.get("answer") or {}
+                    # Same policy as legacy: distance>=5 OR char_threshold exceeded OR model says so.
+                    should = False
+                    if prev_turn_meta_summary.prev_node_distance_from_last_summary - 5 >= 0:
+                        should = True
+                    if prev_turn_meta_summary.prev_node_char_distance_from_last_summary > summary_char_threshold:
+                        should = True
+                    if bool(ans.get("llm_decision_need_summary", False)):
+                        should = True
+
+                    ctx.state["summary"] = {"should_summarize": should, "did_summarize": False}
+                    ctx.state["prev_turn_meta_summary"] = {
+                        "prev_node_char_distance_from_last_summary": prev_turn_meta_summary.prev_node_char_distance_from_last_summary,
+                        "prev_node_distance_from_last_summary": prev_turn_meta_summary.prev_node_distance_from_last_summary,
+                    }
+                    return ctx.state["summary"]
+                return _run
+
+            if op_name == "summarize":
+                def _run(ctx: StepContext):
+                    added_id = self._summarize_conversation_batch(conversation_id, turn_index + 1)
+                    # legacy resets after summarization
+                    prev_turn_meta_summary.prev_node_char_distance_from_last_summary = 0
+                    prev_turn_meta_summary.prev_node_distance_from_last_summary = 0
+                    ctx.state["summary"] = {"should_summarize": True, "did_summarize": True, "summary_node_id": added_id}
+                    ctx.state["prev_turn_meta_summary"] = {
+                        "prev_node_char_distance_from_last_summary": 0,
+                        "prev_node_distance_from_last_summary": 0,
+                    }
+                    return ctx.state["summary"]
+                return _run
+
+            raise KeyError(f"Unknown workflow op: {op_name}")
+
+        return resolve_step
+    def add_conversation_turn_workflow_v2(
+        self,
+        *,
+        user_id: str,
+        conversation_id: str,
+        turn_id: str,
+        mem_id: str,
+        role: Role,
+        content: str,
+        filtering_callback: Callable[..., tuple[RetrievalResult, str]],
+        workflow_id: str,
+        max_retrieval_level: int = 2,
+        summary_char_threshold: int = 12000,
+        in_conv: bool = True,
+        prev_turn_meta_summary: MetaFromLastSummary | None = None,
+    ) -> AddTurnResult:
+        """
+        V2 workflow-driven orchestration.
+
+        Design engine: workflow_engine (kg_graph_type="workflow")
+        Trace/checkpoints: conversation_engine (kg_graph_type="conversation")
+        """
+        if self.workflow_engine is None:
+            raise RuntimeError("workflow_engine must be provided for workflow_v2")
+
+        # ----------------------------
+        # 0) Compute prior-summary distances (mirror legacy)
+        # ----------------------------
+        if prev_turn_meta_summary is None:
+            prev_turn_meta_summary = MetaFromLastSummary(0, 0)
+
+        prev_node = self.conversation_engine._get_conversation_tail(conversation_id) if in_conv else None
+        if prev_node is not None:
+            new_index = (prev_node.turn_index + 1) if prev_node.turn_index is not None else 0
+
+            node_last_char_dist = prev_node.metadata.get("char_distance_from_last_summary")
+            if node_last_char_dist is not None:
+                node_last_char_dist += len(prev_node.summary)
+            else:
+                node_last_char_dist = 0
+            prev_turn_meta_summary.prev_node_char_distance_from_last_summary = node_last_char_dist
+
+            node_last_turn_dist = prev_node.metadata.get("turn_distance_from_last_summary")
+            if node_last_turn_dist is not None:
+                node_last_turn_dist += 1
+            else:
+                node_last_turn_dist = 0
+            prev_turn_meta_summary.prev_node_distance_from_last_summary = node_last_turn_dist
+        else:
+            new_index = 0
+            prev_turn_meta_summary.prev_node_char_distance_from_last_summary = 0
+            prev_turn_meta_summary.prev_node_distance_from_last_summary = -1
+
+        # ----------------------------
+        # 1) Create/persist the user turn node (mirror legacy)
+        # ----------------------------
+        emb_text0 = f"{role}: {content}"
+        embedding = self.conversation_engine._iterative_defensive_emb(emb_text0)
+        if embedding is None:
+            raise RuntimeError("uncalculatable embeddings")
+
+        turn_node_id = turn_id or str(uuid.uuid4())
+        self_span = Span(
+            collection_page_url=f"conversation/{conversation_id}",
+            document_page_url=f"conversation/{conversation_id}#{turn_node_id}",
+            doc_id=f"conv:{conversation_id}",
+            insertion_method="conversation_turn",
+            page_number=1,
+            start_char=0,
+            end_char=len(content),
+            excerpt=content,
+            context_before="",
+            context_after="",
+            chunk_id=None,
+            source_cluster_id=None,
+            verification=MentionVerification(method="human", is_verified=True, score=1.0, notes="verbatim input"),
+        )
+
+        turn_node = ConversationNode(
+            user_id=user_id,
+            id=turn_node_id,
+            label=f"Turn {new_index} ({role})",
+            type="entity",
+            doc_id=turn_node_id,
+            summary=content,
+            role=role,  # type: ignore
+            turn_index=new_index,
+            conversation_id=conversation_id,
+            mentions=[Grounding(spans=[self_span])],
+            properties={},
+            metadata={
+                "entity_type": "conversation_turn",
+                "level_from_root": 0,
+                "char_distance_from_last_summary": prev_turn_meta_summary.prev_node_char_distance_from_last_summary,
+                "turn_distance_from_last_summary": prev_turn_meta_summary.prev_node_distance_from_last_summary,
+                "in_conversation_chain": in_conv,
+            },
+            domain_id=None,
+            canonical_entity_id=None,
+        )
+        turn_node.embedding = embedding
+        self.conversation_engine.add_node(turn_node)
+        if prev_node is not None:
+            self.add_link_to_new_turn(turn_node, prev_node, conversation_id, span=self_span)
+
+        # mirror legacy: advance distances after adding this user turn
+        prev_turn_meta_summary.prev_node_char_distance_from_last_summary += len(content)
+        prev_turn_meta_summary.prev_node_distance_from_last_summary += 1
+
+        # ----------------------------
+        # 2) Ensure the workflow design exists
+        # ----------------------------
+        self._ensure_add_turn_workflow_design(workflow_id)
+
+        # ----------------------------
+        # 3) Predicates (dynamic routing)
+        # ----------------------------
+        predicate_registry = {
+            "always": lambda st, r: True,
+            "should_pin_memory": lambda st, r: bool((st.get("memory") or {}).get("selected")) and bool(
+                (st.get("memory") or {}).get("memory_context_text")
+            ),
+            "should_pin_kg": lambda st, r: bool((st.get("kg") or {}).get("selected")),
+            "should_summarize": lambda st, r: bool(st.get("summary", {}).get("should_summarize", False)),
+        }
+
+        # ----------------------------
+        # 4) Step resolver
+        # ----------------------------
+        resolve_step = self._make_add_turn_step_resolver(
+            user_id=user_id,
+            conversation_id=conversation_id,
+            turn_node_id=turn_node_id,
+            turn_index=new_index,
+            role=role,
+            content=content,
+            mem_id=mem_id,
+            embedding=embedding,
+            self_span=self_span,
+            filtering_callback=filtering_callback,
+            max_retrieval_level=max_retrieval_level,
+            summary_char_threshold=summary_char_threshold,
+            prev_turn_meta_summary=prev_turn_meta_summary,
+        )
+
+        # ----------------------------
+        # 5) Run with WorkflowRuntime (real persisted checkpoints)
+        # ----------------------------
+        from .workflow.runtime import WorkflowRuntime
+
+        runtime = WorkflowRuntime(
+            workflow_engine=self.workflow_engine,
+            conversation_engine=self.conversation_engine,
+            step_resolver=resolve_step,
+            predicate_registry=predicate_registry,
+            checkpoint_every_n_steps=1,
+            max_workers=4,
+        )
+
         init_state = {
             "conversation_id": conversation_id,
             "user_id": user_id,
@@ -513,33 +796,60 @@ class ConversationOrchestrator:
             "user_text": content,
             "embedding": embedding,
             "memory": None,
+            "memory_raw": None,
             "kg": None,
+            "kg_raw": None,
+            "memory_pin": None,
+            "memory_pin_raw": None,
+            "kg_pin": None,
             "answer": None,
+            "answer_raw": None,
+            "summary": {"should_summarize": False, "did_summarize": False, "summary_node_id": None},
+            "prev_turn_meta_summary": {
+                "prev_node_char_distance_from_last_summary": prev_turn_meta_summary.prev_node_char_distance_from_last_summary,
+                "prev_node_distance_from_last_summary": prev_turn_meta_summary.prev_node_distance_from_last_summary,
+            },
         }
 
-        # Run executor; it updates executor.state with JSONable results
-        for _ev in executor.run(run_id=turn_node_id, initial_state=init_state):
-            # optional: stream events via another API
-            pass
+        final_state, run_id = runtime.run(
+            workflow_id=workflow_id,
+            conversation_id=conversation_id,
+            turn_node_id=turn_node_id,
+            initial_state=init_state,
+            run_id=f"add_turn|{turn_node_id}",
+        )
 
-        # ---- 8) Map final result into legacy AddTurnResult ----
-        # If your answer op returns {"answer": ConversationAIResponse, ...}
-        ans_obj = executor.state.get("result.answer_only")
-        response_turn_node_id = None
+        # ----------------------------
+        # 6) Map final state to legacy AddTurnResult
+        # ----------------------------
+        mem = final_state.get("memory") or {}
+        kg = final_state.get("kg") or {}
+        mem_pin = final_state.get("memory_pin") or {}
+        kg_pin = final_state.get("kg_pin") or {}
+        answer = final_state.get("answer") or {}
 
-        # If you want to persist a real assistant turn node here, do it like legacy:
-        # (depends on how your agent already persists answer nodes)
-        if isinstance(ans_obj, dict):
-            maybe = ans_obj.get("answer")
-            if hasattr(maybe, "response_node_id"):
-                response_turn_node_id = getattr(maybe, "response_node_id")
+        # update prev_turn_meta_summary in-place so callers can chain it
+        mts = final_state.get("prev_turn_meta_summary") or {}
+        prev_turn_meta_summary.prev_node_char_distance_from_last_summary = int(
+            mts.get("prev_node_char_distance_from_last_summary", prev_turn_meta_summary.prev_node_char_distance_from_last_summary)
+        )
+        prev_turn_meta_summary.prev_node_distance_from_last_summary = int(
+            mts.get("prev_node_distance_from_last_summary", prev_turn_meta_summary.prev_node_distance_from_last_summary)
+        )
 
         return AddTurnResult(
             user_turn_node_id=turn_node_id,
-            response_turn_node_id=response_turn_node_id,
+            response_turn_node_id=answer.get("response_node_id"),
             turn_index=new_index,
+            relevant_kg_node_ids=list((kg.get("selected") or {}).get("node_ids") or []),
+            relevant_kg_edge_ids=list((kg.get("selected") or {}).get("edge_ids") or []),
+            pinned_kg_pointer_node_ids=list(kg_pin.get("pinned_pointer_node_ids") or []),
+            pinned_kg_edge_ids=list(kg_pin.get("pinned_edge_ids") or []),
+            memory_context_node_id=mem_pin.get("memory_context_node_id"),
+            memory_context_edge_ids=list(mem_pin.get("pinned_edge_ids") or []),
             prev_turn_meta_summary=prev_turn_meta_summary,
-        )        
+        )
+
     def __init__(
         self,
         *,
