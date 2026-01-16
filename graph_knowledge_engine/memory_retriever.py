@@ -320,8 +320,7 @@ class MemoryRetriever:
             domain_id=None,
             canonical_entity_id=None,
         )
-        prev_turn_meta_summary.prev_node_distance_from_last_summary += 1
-        prev_turn_meta_summary.prev_node_char_distance_from_last_summary += len(memory_context_text)
+        
         self.conversation_engine.add_node(mem_node)
         edge_ids: List[str] = []
         edges : List[ConversationEdge] = []
@@ -341,14 +340,16 @@ class MemoryRetriever:
             canonical_entity_id=None,
             properties={"entity_type": "conversation_edge"},
             embedding=None,
-            metadata={},
+            metadata={"char_distance_from_last_summary": prev_turn_meta_summary.prev_node_char_distance_from_last_summary,
+                    "turn_distance_from_last_summary": prev_turn_meta_summary.prev_node_distance_from_last_summary,},
             source_edge_ids=[],
             target_edge_ids=[],
         )
         self.conversation_engine.add_edge(e1)
         edge_ids.append(e1_id)
         edges.append(e1)
-
+        prev_turn_meta_summary.prev_node_distance_from_last_summary += 1
+        prev_turn_meta_summary.prev_node_char_distance_from_last_summary += len(memory_context_text)
         # MemoryContext -> Sources nodes
         for node in selected_memory.nodes:
             e_id = f"{mem_id}::n::{node.id}" if mem_id else str(uuid.uuid4())
@@ -367,7 +368,8 @@ class MemoryRetriever:
                 canonical_entity_id=None,
                 properties={"entity_type": "conversation_edge"},
                 embedding=None,
-                metadata={},
+                metadata={"char_distance_from_last_summary": prev_turn_meta_summary.prev_node_char_distance_from_last_summary,
+                "turn_distance_from_last_summary": prev_turn_meta_summary.prev_node_distance_from_last_summary, },
                 source_edge_ids=[],
                 target_edge_ids=[],
             )
@@ -391,7 +393,8 @@ class MemoryRetriever:
                 canonical_entity_id=None,
                 properties={"entity_type": "conversation_edge"},
                 embedding=None,
-                metadata={},
+                metadata={"char_distance_from_last_summary": prev_turn_meta_summary.prev_node_char_distance_from_last_summary, 
+                "turn_distance_from_last_summary": prev_turn_meta_summary.prev_node_distance_from_last_summary, },
                 source_edge_ids=[],
                 target_edge_ids=[edge.id],
             )

@@ -2475,6 +2475,8 @@ class GraphKnowledgeEngine:
                 "node_endpoint_count": node_endpoint_count,   # receptive range
                 "edge_endpoint_count": edge_endpoint_count,
                 "total_endpoint_count": total_endpoint_count,
+                'char_distance_from_last_summary': edge.metadata.get("char_distance_from_last_summary"), 
+                'turn_distance_from_last_summary': edge.metadata.get("char_distance_from_last_summary")
             })],
         )
         self._maybe_reindex_edge_refs(edge)
@@ -3928,8 +3930,9 @@ class GraphKnowledgeEngine:
             conversation_id=conv_id,
             mentions=[Grounding(spans=[Span.from_dummy_for_conversation()])], # No mentions for start node
             properties={"status": "active"},
-            metadata={"level_from_root": 0, "entity_type": 
-                "conversation_start", 
+            metadata={"level_from_root": 0, 
+                      "entity_type": "conversation_start", 
+                      "turn_index": -1,
                       "char_distance_from_last_summary": 0, 
                       "turn_distance_from_last_summary" : -1,
                       "in_conversation_chain": True},
@@ -3951,7 +3954,9 @@ class GraphKnowledgeEngine:
         
         return conv_id, node_id
     @conversation_only
-    def _get_conversation_tail(self, conversation_id: str) -> Optional[ConversationNode]:
+    def _get_conversation_tail(self, conversation_id: str, 
+                               min_turn_index : int | None = None,
+                               tail_search_includes: list[str] = ["conversation_start", "conversation_turn","conversation_summary"]) -> Optional[ConversationNode]:
         """Find the last node in the conversation (leaf of 'next_turn')."""
         # Simplistic: query all nodes for this conv, sort by turn_index desc
         # Optimization: Store tail ID in a separate 'conversations' metadata collection if needed.
@@ -3959,7 +3964,13 @@ class GraphKnowledgeEngine:
         if self.kg_graph_type != "conversation":
             raise Exception("conversation only allowed to be on canva engine")
         got = self.node_collection.get(
-            where={"$and":[{"conversation_id": conversation_id}, {"in_conversation_chain": True}]},
+            where={"$and":[
+                {"conversation_id": conversation_id}, 
+                {"in_conversation_chain": True}
+                ]
+                   + ([{"min_turn_index": {"$gte": min_turn_index}}]
+                      if min_turn_index else [])
+                      },
             include=["documents", "metadatas", "embeddings"]
         )
         if not got["ids"]:
@@ -3967,13 +3978,13 @@ class GraphKnowledgeEngine:
         
         # reconstruct
         nodes: list[ConversationNode] = self.nodes_from_single_or_id_query_result(got, node_type=ConversationNode)
-        
-        if not nodes:
+        nodes2 = list(filter(lambda x: x.metadata.get("entity_type") in tail_search_includes, nodes))
+        if not nodes2:
             return None
         
         # Sort by turn_index
-        nodes.sort(key=lambda n: n.turn_index or -1)
-        return nodes[-1]
+        nodes2.sort(key=lambda n: n.turn_index or -1)
+        return nodes2[-1]
     def _iterative_defensive_emb(self, emb_text0):
         success = False
         

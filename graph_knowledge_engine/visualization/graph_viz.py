@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 from typing import Dict, List, Optional, Tuple, Type, TypeVar, Union
 
-from server_mcp import GraphKnowledgeEngine
+from graph_knowledge_engine.engine import GraphKnowledgeEngine
 
 
 from ..models import Node, Edge, ConversationNode, ConversationEdge

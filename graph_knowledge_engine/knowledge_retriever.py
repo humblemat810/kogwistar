@@ -232,8 +232,6 @@ class KnowledgeRetriever:
                 canonical_entity_id=None,
                 
             )
-            prev_turn_meta_summary.prev_node_char_distance_from_last_summary += len(summary)
-            prev_turn_meta_summary.prev_node_distance_from_last_summary += 1
             self.conversation_engine.add_node(ptr_node)
             pinned_pointer_node_ids.append(ptr_id)
 
@@ -252,12 +250,15 @@ class KnowledgeRetriever:
                 canonical_entity_id=None,
                 properties={"entity_type": "conversation_edge"},
                 embedding=None,
-                metadata={},
+                metadata={"char_distance_from_last_summary": prev_turn_meta_summary.prev_node_char_distance_from_last_summary,
+                    "turn_distance_from_last_summary": prev_turn_meta_summary.prev_node_distance_from_last_summary,},
                 source_edge_ids=[],
                 target_edge_ids=[],
             )
             self.conversation_engine.add_edge(edge)
             pinned_edge_ids.append(edge_id)
+            prev_turn_meta_summary.prev_node_char_distance_from_last_summary += len(summary)
+            prev_turn_meta_summary.prev_node_distance_from_last_summary += 1
 
         for kg in edges:
             # kg_got = self.ref_knowledge_engine.node_collection.get(ids=[kg_id], include=["documents", "embeddings", "metadatas"])
@@ -291,8 +292,8 @@ class KnowledgeRetriever:
                 metadata={
                     "entity_type": "knowledge_reference",
                     "level_from_root": 0,
-                    "char_distance_from_last_summary": 0,
-                    "turn_distance_from_last_summary": 0,
+                    "char_distance_from_last_summary": prev_turn_meta_summary.prev_node_char_distance_from_last_summary,
+                    "turn_distance_from_last_summary": prev_turn_meta_summary.prev_node_distance_from_last_summary,
                     "in_conversation_chain": False,
                 },
                 domain_id=None,
@@ -316,10 +317,14 @@ class KnowledgeRetriever:
                 canonical_entity_id=None,
                 properties={"entity_type": "conversation_edge"},
                 embedding=None,
-                metadata={},
+                metadata={"char_distance_from_last_summary": prev_turn_meta_summary.prev_node_char_distance_from_last_summary,
+                    "turn_distance_from_last_summary": prev_turn_meta_summary.prev_node_distance_from_last_summary,},
                 source_edge_ids=[],
                 target_edge_ids=[],
             )
             self.conversation_engine.add_edge(edge)
             pinned_edge_ids.append(edge_id)
+            
+            prev_turn_meta_summary.prev_node_char_distance_from_last_summary += len(summary)
+            prev_turn_meta_summary.prev_node_distance_from_last_summary += 1
         return pinned_pointer_node_ids, pinned_edge_ids

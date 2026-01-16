@@ -367,19 +367,26 @@ class AgenticAnsweringAgent:
 
         # 9) Persist assistant response as conversation node and link to run
         assistant_text = (last_answer.text if last_answer else "")
+        tail_turn = self.conversation_engine._get_conversation_tail(conversation_id, prev_turn_meta_summary.tail_turn_index)
+        
+        if tail_turn is None or tail_turn.turn_index is None:
+            raise Exception("no tail turn with index found when answering")
+        tail_turn_index = tail_turn.turn_index + 1
         assistant_turn_node_id, assistant_turn_node = self._add_assistant_turn(
             conversation_id=conversation_id,
             content=assistant_text,
             provenance_span=Span.from_dummy_for_conversation(),
-            turn_index = self.conversation_engine._get_conversation_tail(conversation_id).turn_index + 1,
+            turn_index =  tail_turn_index,
             prev_turn_meta_summary=prev_turn_meta_summary
         )
+        prev_turn_meta_summary.tail_turn_index = tail_turn_index
         self._link_run_to_response(
             conversation_id=conversation_id,
             run_node_id=run_node_id,
             response_node_id=assistant_turn_node_id,
             used_node_ids=last_used,
-            provenance_span = Span.from_dummy_for_conversation()
+            provenance_span = Span.from_dummy_for_conversation(),
+            prev_turn_meta_summary=prev_turn_meta_summary,
         )
 
         return {
@@ -924,7 +931,8 @@ Evidence (id | label | summary):
                 canonical_entity_id=None,
                 properties={"entity_type": "conversation_edge"},
                 embedding=None,
-                metadata={},
+                metadata={"char_distance_from_last_summary": prev_turn_meta_summary.prev_node_char_distance_from_last_summary, 
+                          "turn_distance_from_last_summary": prev_turn_meta_summary.prev_node_distance_from_last_summary, },
                 source_edge_ids=[],
                 target_edge_ids=[],
             )
@@ -961,7 +969,9 @@ Evidence (id | label | summary):
         prev_turn_meta_summary.prev_node_distance_from_last_summary += 1
         return nid, node
 
-    def _link_run_to_response(self, *, conversation_id: str, run_node_id: str, response_node_id: str, used_node_ids : list[str], provenance_span: Span | list[Span]) -> None:
+    def _link_run_to_response(self, *, conversation_id: str, run_node_id: str, response_node_id: str, used_node_ids : list[str], 
+                              provenance_span: Span | list[Span],
+                              prev_turn_meta_summary) -> None:
         scope = f"conv:{conversation_id}"
         eid = edge_id(scope=scope, rel="generated", src=run_node_id, dst=response_node_id)
         ex = self.conversation_engine.edge_collection.get(ids=[eid])
@@ -989,7 +999,8 @@ Evidence (id | label | summary):
             canonical_entity_id=None,
             properties={"entity_type": "conversation_edge", "used_node_ids" : used_node_ids},
             embedding=None,
-            metadata={},
+            metadata={"char_distance_from_last_summary": prev_turn_meta_summary.prev_node_char_distance_from_last_summary, 
+                        "turn_distance_from_last_summary": prev_turn_meta_summary.prev_node_distance_from_last_summary, },
             source_edge_ids=[],
             target_edge_ids=[],
         )

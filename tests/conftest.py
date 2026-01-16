@@ -793,7 +793,8 @@ def seed_conversation_graph(
         canonical_entity_id=None,
         properties={"entity_type": "conversation_edge"},
         embedding=None,
-        metadata={},
+        metadata={"char_distance_from_last_summary": turn1.metadata["prev_node_char_distance_from_last_summary"],
+                "turn_distance_from_last_summary": turn1.metadata["prev_node_distance_from_last_summary"],},
         source_edge_ids=[],
         target_edge_ids=[],
     )
@@ -890,7 +891,8 @@ def seed_conversation_graph(
         properties=None,
         embedding=None,
         mentions=[mk_grounding(summ_span)],
-        metadata={},
+        metadata={"char_distance_from_last_summary": summ.metadata["prev_node_char_distance_from_last_summary"],
+                "turn_distance_from_last_summary": summ.metadata["prev_node_distance_from_last_summary"]},
         source_edge_ids=[],
         target_edge_ids=[],
     )
@@ -953,7 +955,8 @@ def seed_conversation_graph(
         properties={"ref_kind": "kg"},
         embedding=None,
         mentions=[mk_grounding(kg_ref_span)],
-        metadata={},
+        metadata={"char_distance_from_last_summary": kg_ref_node.metadata["prev_node_char_distance_from_last_summary"],
+                "turn_distance_from_last_summary": kg_ref_node.metadata["prev_node_distance_from_last_summary"]},
         source_edge_ids=[],
         target_edge_ids=[],
     )

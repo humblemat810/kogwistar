@@ -10,12 +10,12 @@ from __future__ import annotations
 
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Dict, List, Optional
 
 from langchain_core.language_models import BaseChatModel
 
-from server_mcp import GraphKnowledgeEngine
+from graph_knowledge_engine.engine import GraphKnowledgeEngine
 
 from .models import (
     ConversationAIResponse,
@@ -152,7 +152,9 @@ class ConversationOrchestrator:
         )
         turn_node.embedding = embedding
         self.conversation_engine.add_node(turn_node)
-        self.add_link_to_new_turn(turn_node, prev_node, conversation_id, span=self_span)
+        prev_turn_meta_summary.tail_turn_index = new_index
+        self.add_link_to_new_turn(turn_node, prev_node, conversation_id, span=self_span, 
+                                  prev_turn_meta_summary=prev_turn_meta_summary)
 
         # Load workflow spec from engine via convention (wf_start=True)
         wf_spec: WorkflowSpec = build_workflow_from_engine(engine=self.conversation_engine, workflow_id=workflow_id)
@@ -613,7 +615,7 @@ class ConversationOrchestrator:
 
             if op_name == "summarize":
                 def _run(ctx: StepContext):
-                    added_id = self._summarize_conversation_batch(conversation_id, turn_index + 1)
+                    added_id = self._summarize_conversation_batch(conversation_id, turn_index + 1, prev_turn_meta_summary=prev_turn_meta_summary)
                     # legacy resets after summarization
                     prev_turn_meta_summary.prev_node_char_distance_from_last_summary = 0
                     prev_turn_meta_summary.prev_node_distance_from_last_summary = 0
@@ -730,8 +732,10 @@ class ConversationOrchestrator:
         )
         turn_node.embedding = embedding
         self.conversation_engine.add_node(turn_node)
+        prev_turn_meta_summary.tail_turn_index = new_index
         if prev_node is not None:
-            self.add_link_to_new_turn(turn_node, prev_node, conversation_id, span=self_span)
+            self.add_link_to_new_turn(turn_node, prev_node, conversation_id, span=self_span, 
+                                      prev_turn_meta_summary=prev_turn_meta_summary)
 
         # mirror legacy: advance distances after adding this user turn
         prev_turn_meta_summary.prev_node_char_distance_from_last_summary += len(content)
@@ -865,7 +869,8 @@ class ConversationOrchestrator:
         self.llm = llm
         self.tool_runner = ToolRunner(conversation_engine=conversation_engine,
                                       tool_call_id_factory=tool_call_id_factory)
-    def add_link_to_new_turn(self, turn_node, prev_node, conversation_id, span):
+        self.tail_search_includes = ["conversation_turn","conversation_summary"]
+    def add_link_to_new_turn(self, turn_node, prev_node, conversation_id, span,prev_turn_meta_summary:MetaFromLastSummary):
         
             seq_edge = ConversationEdge(
                 id=str(uuid.uuid4()),
@@ -881,11 +886,14 @@ class ConversationOrchestrator:
                 canonical_entity_id=None,
                 properties={"entity_type": "conversation_edge"},
                 embedding=None,
-                metadata={},
+                metadata={"relation":"next_turn", "target_id":turn_node.id,
+                          "char_distance_from_last_summary": prev_turn_meta_summary.prev_node_char_distance_from_last_summary,
+                            "turn_distance_from_last_summary": prev_turn_meta_summary.prev_node_distance_from_last_summary},
                 source_edge_ids=[],
                 target_edge_ids=[],
             )
-            self.conversation_engine.add_edge(seq_edge)     
+            self.conversation_engine.add_edge(seq_edge)
+            return seq_edge
     # ----------------------------
     # Public entry points
     # ----------------------------
@@ -985,6 +993,7 @@ class ConversationOrchestrator:
                 properties={},
                 metadata={
                     "entity_type": "conversation_turn",
+                    "turn_index": new_index,
                     "level_from_root": 0,
                     "char_distance_from_last_summary": prev_turn_meta_summary.prev_node_char_distance_from_last_summary,
                     "turn_distance_from_last_summary": prev_turn_meta_summary.prev_node_distance_from_last_summary,
@@ -995,8 +1004,10 @@ class ConversationOrchestrator:
             )
             prev_turn_meta_summary.prev_node_char_distance_from_last_summary += len(content)
             prev_turn_meta_summary.prev_node_distance_from_last_summary += 1
+            prev_turn_meta_summary.tail_turn_index = new_index
             self.conversation_engine.add_node(turn_node)
-            self.add_link_to_new_turn(turn_node, prev_node, conversation_id, span=self_span)
+            self.add_link_to_new_turn(turn_node, prev_node, conversation_id, span=self_span, 
+                                      prev_turn_meta_summary=prev_turn_meta_summary)
             prev_node = turn_node
             
                       
@@ -1052,6 +1063,7 @@ class ConversationOrchestrator:
                 properties={},
                 metadata={
                     "entity_type": "conversation_turn",
+                    "turn_index": new_index,
                     "level_from_root": 0,
                     "char_distance_from_last_summary": prev_turn_meta_summary.prev_node_char_distance_from_last_summary,
                     "turn_distance_from_last_summary": prev_turn_meta_summary.prev_node_distance_from_last_summary,
@@ -1062,6 +1074,7 @@ class ConversationOrchestrator:
             )
             prev_turn_meta_summary.prev_node_char_distance_from_last_summary += len(content)
             prev_turn_meta_summary.prev_node_distance_from_last_summary += 1
+            prev_turn_meta_summary.tail_turn_index = new_index
             new_index += 1
             emb_text0 = f"{role}: {content}"
             embedding = self.conversation_engine._iterative_defensive_emb(emb_text0)
@@ -1077,25 +1090,27 @@ class ConversationOrchestrator:
 
             # 2) Link sequentially
             if prev_node:
-                seq_edge = ConversationEdge(
-                    id=str(uuid.uuid4()),
-                    source_ids=[prev_node.id],
-                    target_ids=[turn_node_id],
-                    relation="next_turn",
-                    label="next_turn",
-                    type="relationship",
-                    summary="Sequential flow",
-                    doc_id=f"conv:{conversation_id}",
-                    mentions=[Grounding(spans=[self_span])],
-                    domain_id=None,
-                    canonical_entity_id=None,
-                    properties={"entity_type": "conversation_edge"},
-                    embedding=None,
-                    metadata={},
-                    source_edge_ids=[],
-                    target_edge_ids=[],
-                )
-                self.conversation_engine.add_edge(seq_edge)
+                seq_edge = self.add_link_to_new_turn(turn_node, prev_node, conversation_id, span=self_span, prev_turn_meta_summary=prev_turn_meta_summary)
+                # seq_edge = ConversationEdge(
+                #     id=str(uuid.uuid4()),
+                #     source_ids=[prev_node.id],
+                #     target_ids=[turn_node_id],
+                #     relation="next_turn",
+                #     label="next_turn",
+                #     type="relationship",
+                #     summary="Sequential flow",
+                #     doc_id=f"conv:{conversation_id}",
+                #     mentions=[Grounding(spans=[self_span])],
+                #     domain_id=None,
+                #     canonical_entity_id=None,
+                #     properties={"entity_type": "conversation_edge"},
+                #     embedding=None,
+                #     metadata={"char_distance_from_last_summary": prev_turn_meta_summary.prev_node_char_distance_from_last_summary,
+                #     "turn_distance_from_last_summary": prev_turn_meta_summary.prev_node_distance_from_last_summary,},
+                #     source_edge_ids=[],
+                #     target_edge_ids=[],
+                # )
+                # self.conversation_engine.add_edge(seq_edge)
                 prev_node = turn_node
             # 3) Retrieval + pinning (recorded as tool events)
             mem_retriever = MemoryRetriever(
@@ -1103,6 +1118,7 @@ class ConversationOrchestrator:
                 llm=self.llm,
                 filtering_callback=filtering_callback,
             )
+            
             kg_retriever = KnowledgeRetriever(
                 conversation_engine=self.conversation_engine,
                 ref_knowledge_engine=self.ref_knowledge_engine,
@@ -1194,7 +1210,8 @@ class ConversationOrchestrator:
                 turn_node = self.conversation_engine.get_nodes([response.response_node_id])[0]
                 if prev_node:
 
-                    self.add_link_to_new_turn(turn_node, prev_node, conversation_id, span=self_span)
+                    self.add_link_to_new_turn(turn_node, prev_node, conversation_id, span=self_span, 
+                                              prev_turn_meta_summary=prev_turn_meta_summary)
                     prev_node = turn_node
                     
                 else:
@@ -1219,13 +1236,17 @@ class ConversationOrchestrator:
             or prev_turn_meta_summary.prev_node_char_distance_from_last_summary > summary_char_threshold
             or (response and bool(getattr(response, "llm_decision_need_summary", False)))
         ):
-            added_id = self._summarize_conversation_batch(conversation_id, new_index)
+            added_id = self._summarize_conversation_batch(conversation_id, new_index,prev_turn_meta_summary=prev_turn_meta_summary)
+            new_index += 1
             prev_turn_meta_summary.prev_node_char_distance_from_last_summary = 0
             prev_turn_meta_summary.prev_node_distance_from_last_summary=0
+            add_turn_result = replace(add_turn_result, turn_index = new_index)
         return add_turn_result
 
     # @conversation_only
-    def _summarize_conversation_batch(self, conversation_id: str, current_index: int, batch_size: int = 5, in_conv=True ):
+    def _summarize_conversation_batch(self, conversation_id: str, current_index: int, 
+                                      batch_size: int = 5, in_conv=True , 
+                                      prev_turn_meta_summary : MetaFromLastSummary= None):
         #in_conversation  = False if side car
         if not in_conv:
             current_index -=1
@@ -1307,6 +1328,7 @@ class ConversationOrchestrator:
                 unique_spans.append(s)
         import json
         # Create Summary Node
+        new_index = current_index + 1
         summary_node = ConversationNode(
             id=str(uuid.uuid4()),
             label=f"Summary {start_index}-{current_index}",
@@ -1314,19 +1336,23 @@ class ConversationOrchestrator:
             summary='\n'.join(i['text'] for i in get_summary(full_text)), # type: ignore
             role="system", # type: ignore
             conversation_id=conversation_id,
-            turn_index=current_index, # Anchored at end of batch
+            turn_index=new_index, # Anchored at end of batch
             # Provenance: We link back to the source turns and knowledge refs
             mentions=[Grounding(spans=unique_spans)] if unique_spans else [],
             
             properties={"content": json.dumps(summary_content)},
             metadata={"level_from_root": 1, 
-                      "entity_type": "conversation_summary", 
+                      "entity_type": "conversation_summary",
+                      "turn_index": new_index, 
                       "char_distance_from_last_summary": 0, 
                       "turn_distance_from_last_summary" : 0 ,
                       "in_conversation_chain": in_conv}, # Summary is higher level?
             domain_id=None,
             canonical_entity_id=None
         )
+        prev_turn_meta_summary.tail_turn_index = new_index
+        prev_turn_meta_summary.prev_node_char_distance_from_last_summary = 0
+        prev_turn_meta_summary.prev_node_distance_from_last_summary = 0
         if self.conversation_engine.kg_graph_type != "conversation":
             raise Exception("conversation only allowed to be on canva engine")
         # Persist
@@ -1361,7 +1387,8 @@ class ConversationOrchestrator:
                     verification=MentionVerification(method="system", is_verified=True, score=1.0, notes="link")
                 )
             ])],
-            metadata={},
+            metadata={"char_distance_from_last_summary": prev_turn_meta_summary.prev_node_char_distance_from_last_summary,
+                            "turn_distance_from_last_summary": prev_turn_meta_summary.prev_node_distance_from_last_summary},
             source_edge_ids=[],
             target_edge_ids=[]
         )
@@ -1401,7 +1428,10 @@ class ConversationOrchestrator:
                     notes=f"system_summary_turn",
                 ),
             )    
-            self.add_link_to_new_turn(summary_node, prev_node, conversation_id, self_span)
+            self.add_link_to_new_turn(summary_node, prev_node, conversation_id, self_span, prev_turn_meta_summary)
+            
+            # add next turn relationship
+            
         return summary_node.id
     def answer_only(self, *, conversation_id: str, model_names: Optional[list[str]] = None, prev_turn_meta_summary: MetaFromLastSummary) -> ConversationAIResponse:
         """Generate an answer for an existing conversation (no new user turn ingestion)."""

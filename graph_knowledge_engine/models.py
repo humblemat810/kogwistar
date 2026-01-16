@@ -1,7 +1,7 @@
 
 import logging
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 if True:
     logger = logging.getLogger(__name__)
     logger.addHandler(logging.NullHandler())
@@ -59,8 +59,10 @@ QUESTION_DESC = {
 Role :TypeAlias = Literal["user", "assistant", "system", "tool"]
 @dataclass
 class MetaFromLastSummary:
+    
     prev_node_char_distance_from_last_summary: int
     prev_node_distance_from_last_summary: int
+    tail_turn_index: int=0
 @dataclass(frozen=True)
 class AddTurnResult():
     user_turn_node_id: str
@@ -389,6 +391,13 @@ class ConversationNodeMetadata(BaseNodeMetadata):
     turn_distance_from_last_summary: int
 
     model_config = ConfigDict(extra="allow")
+    
+class ConversationEdgeMetadata(BaseNodeMetadata):
+    
+    char_distance_from_last_summary: int
+    turn_distance_from_last_summary: int
+
+    model_config = ConfigDict(extra="allow")
 from chromadb import Embeddings
 class ChromaMixin(BaseModel):
     id: str = Field(default_factory=generate_id, description="Unique identifier")
@@ -535,6 +544,7 @@ class Node(TombstoneMixin, LevelAwareMixin, ChromaValidateSourceMixin, ChromaMix
     # Node with ref session enforced and level awareness
     def get_extra_update(self):
         return {}
+    
 
 class ConversationNode(ConversationRoleMixin, Node):
     """Specialized node for conversation elements.
@@ -551,6 +561,12 @@ class ConversationNode(ConversationRoleMixin, Node):
         except Exception as _e:
             raise
         return v
+    def get_incoming_turn_edge(self, engine)-> "ConversationEdge | None":
+        from graph_knowledge_engine.engine import GraphKnowledgeEngine
+        engine2: GraphKnowledgeEngine = engine
+        edges = engine2.query_edges(where={"relation": "next_turn", "target_id": self.id})
+        assert len(edges) <= 1
+        return edges[0] if edges else None
     def get_extra_update(self) -> dict:
         try:
             updates = {
@@ -563,7 +579,26 @@ class ConversationNode(ConversationRoleMixin, Node):
         return updates
 class Edge(ChromaValidateSourceMixin, ChromaMixin, EdgeMixin, GraphEntityRefBase):
     # Edge with ref session enforced
-    
+
+    metadata: dict#ConversationNodeMetadata
+    @field_validator('metadata')    
+    def check_fields(cls, v):
+        # convertible to ConversationNodeMetadata but never materialize the conversion. just a checker model
+        try:
+            ConversationEdgeMetadata.model_validate(v)
+        except Exception as _e:
+            raise
+        return v    
+    def get_extra_update(self) -> dict:
+        try:
+            updates = {
+                "char_distance_from_last_summary": self.metadata["char_distance_from_last_summary"],
+                "turn_distance_from_last_summary": self.metadata["turn_distance_from_last_summary"],
+                "in_conversation_chain": self.metadata["in_conversation_chain"]
+            }
+        except Exception as _e:
+            raise
+        return updates
     pass
 
 class ConversationEdge(Edge):
