@@ -23,13 +23,13 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple, Union
 from graph_knowledge_engine.engine import GraphKnowledgeEngine
 
 from joblib import Memory
 
 from .contract import (
-    WorkflowSpec,
+    WorkflowSpec as MinimalWorkflowSpec,
     WorkflowNodeInfo,
     WorkflowEdgeInfo,
     load_workflow_graph,
@@ -38,6 +38,8 @@ from .contract import (
     State,
     Result,
 )
+from .design import WorkflowSpec as RichWorkflowSpec, WFNode, WFEdge
+from .serialize import to_jsonable
 
 Json = Any
 StepFn = Callable[["StepContext"], Result]
@@ -106,41 +108,97 @@ class WorkflowExecutor:
     def __init__(
         self,
         *,
-        engine: GraphKnowledgeEngine,
-        workflow: WorkflowSpec,
+        engine: Optional[Any] = None,
+        workflow: Union[MinimalWorkflowSpec, RichWorkflowSpec],
         step_resolver: Callable[[str], StepFn],
         predicate_registry: Optional[Dict[str, Predicate]] = None,
         cache_root: str | Path = ".workflow_cache",
         max_workers: int = 4,
+        checkpoint_every_n_steps: int = 0,
+        trace_sink: Optional[Callable[[Dict[str, Json]], None]] = None,
     ) -> None:
         self.engine = engine
         self.workflow = workflow
         self.step_resolver = step_resolver
         self.predicate_registry = predicate_registry or {}
         self.max_workers = max_workers
+        self.checkpoint_every_n_steps = int(checkpoint_every_n_steps)
+        self.trace_sink = trace_sink
 
-        self._nodes, self._adj = load_workflow_graph(engine=engine, spec=workflow)
-        validate_workflow(engine=engine, spec=workflow, predicate_registry=self.predicate_registry)
+        if self.checkpoint_every_n_steps < 0:
+            raise ValueError("checkpoint_every_n_steps must be >= 0")
+
+        # Topology resolution:
+        # - Rich spec: use it directly (engine optional)
+        # - Minimal spec: requires engine to load nodes/edges
+        if isinstance(workflow, RichWorkflowSpec):
+            self._nodes = {
+                nid: WorkflowNodeInfo(
+                    node_id=n.node_id,
+                    op=n.op,
+                    version=n.version,
+                    cacheable=n.cacheable,
+                    terminal=n.terminal,
+                    fanout=n.fanout,
+                )
+                for nid, n in workflow.nodes.items()
+            }
+            self._adj = {
+                src: [
+                    WorkflowEdgeInfo(
+                        edge_id=e.edge_id,
+                        src=e.src,
+                        dst=e.dst,
+                        predicate=e.predicate,
+                        priority=e.priority,
+                        is_default=e.is_default,
+                        multiplicity=e.multiplicity,
+                    )
+                    for e in edges
+                ]
+                for src, edges in workflow.out_edges.items()
+            }
+            # Ensure deterministic edge ordering
+            for s in self._adj:
+                self._adj[s].sort(key=lambda x: x.priority)
+            # Minimal validation needed for rich specs
+            if workflow.start_node_id not in self._nodes:
+                raise ValueError(
+                    f"start_node_id {workflow.start_node_id!r} is not present in workflow.nodes"
+                )
+        else:
+            if engine is None:
+                raise ValueError("engine is required when workflow is a minimal WorkflowSpec")
+            self._nodes, self._adj = load_workflow_graph(engine=engine, spec=workflow)
+            validate_workflow(engine=engine, spec=workflow, predicate_registry=self.predicate_registry)
 
         self.state: State = {}
         self._seq = 0
         self._seq_lock = threading.Lock()
         self._mq: queue.Queue[Dict[str, Json]] = queue.Queue()
         self._cache_root = Path(cache_root)
+        self._completed_steps = 0
 
     def _next_seq(self) -> int:
         with self._seq_lock:
             self._seq += 1
             return self._seq
 
-    def _emit(self, run_id: str, typ: str, payload: Dict[str, Json]) -> WorkflowEvent:
-        return WorkflowEvent(
+    def _emit(self, run_id: str, typ: str, payload: Dict[str, Json]) -> Dict[str, Json]:
+        ev = WorkflowEvent(
             run_id=run_id,
             seq=self._next_seq(),
             type=typ,
             ts_ms=int(time.time() * 1000),
             payload=payload,
-        )
+        ).to_dict()
+        if self.trace_sink is not None:
+            try:
+                self.trace_sink(ev)
+            except Exception:
+                # Trace sinks must never break execution
+                pass
+        return ev
 
     def _memory_for_run(self, run_id: str) -> Memory:
         d = self._cache_root / run_id
@@ -192,6 +250,26 @@ class WorkflowExecutor:
                 if not node.fanout and e.multiplicity != "many":
                     return matched
 
+        # Unconditional fanout edges: if a workflow is using fanout semantics,
+        # allow predicate-matched routing *and* unconditional "many" edges to fire.
+        # This is important for patterns like:
+        #   think (fanout=True) -> crawl (default, multiplicity=many)
+        #   think -> think/end (predicates)
+        # Heuristic: only add unconditional "many" edges when we are not already
+        # taking a terminal exit. This matches common patterns where a node both:
+        #   (a) retries/loops via a predicate, and
+        #   (b) fans out to background work (crawl) until some condition is met,
+        # but once the condition is met we want to proceed to terminal without
+        # continuing to spawn background work.
+        taking_terminal_exit = any(self._nodes.get(dst, WorkflowNodeInfo(dst, "", "v1", False, True, False)).terminal for dst in matched)
+        if not taking_terminal_exit:
+            unconditional_many = [
+                e.dst for e in edges if e.predicate is None and e.multiplicity == "many"
+            ]
+            for dst in unconditional_many:
+                if dst not in matched:
+                    matched.append(dst)
+
         # fanout => take all matches
         if matched and (node.fanout or any(ed.multiplicity == "many" for ed in edges)):
             return matched
@@ -210,6 +288,7 @@ class WorkflowExecutor:
         The yielded events are suitable to be mirrored into your conversation graph as tool events.
         """
         self.state = dict(initial_state)
+        self._completed_steps = 0
         mem = self._memory_for_run(run_id)
 
         token_q: queue.Queue[str] = queue.Queue()
@@ -217,7 +296,11 @@ class WorkflowExecutor:
 
         done_q: queue.Queue[Tuple[str, Result, bool]] = queue.Queue()
 
-        yield self._emit(run_id, "workflow_start", {"workflow_id": self.workflow.workflow_id, "start": self.workflow.start_node_id}).to_dict()
+        yield self._emit(
+            run_id,
+            "workflow_start",
+            {"workflow_id": self.workflow.workflow_id, "start": self.workflow.start_node_id},
+        )
 
         def worker(node_id: str) -> None:
             node = self._nodes[node_id]
@@ -260,20 +343,34 @@ class WorkflowExecutor:
                     except queue.Empty:
                         break
                     inflight[nid] = pool.submit(worker, nid)
-                    yield self._emit(run_id, "step_scheduled", {"node_id": nid, "op": self._nodes[nid].op}).to_dict()
+                    yield self._emit(run_id, "step_scheduled", {"node_id": nid, "op": self._nodes[nid].op})
 
                 if not inflight and token_q.empty():
-                    yield self._emit(run_id, "workflow_done", {"state": self.state}).to_dict()
+                    yield self._emit(run_id, "workflow_done", {"state": to_jsonable(self.state)})
                     return
 
                 node_id, result, cached_flag = done_q.get()
                 inflight.pop(node_id, None)
 
                 node = self._nodes[node_id]
-                yield self._emit(run_id, "step_completed", {"node_id": node_id, "op": node.op, "cached": cached_flag}).to_dict()
+                yield self._emit(
+                    run_id,
+                    "step_completed",
+                    {"node_id": node_id, "op": node.op, "cached": cached_flag},
+                )
 
                 # single-writer apply
                 self._apply_result(node=node, result=result)
+
+                self._completed_steps += 1
+                if self.checkpoint_every_n_steps and (
+                    self._completed_steps % self.checkpoint_every_n_steps == 0
+                ):
+                    yield self._emit(
+                        run_id,
+                        "checkpoint",
+                        {"step_seq": self._completed_steps, "state": to_jsonable(self.state)},
+                    )
 
                 # terminal check
                 if node.terminal or len(self._adj.get(node_id, [])) == 0:
@@ -282,4 +379,4 @@ class WorkflowExecutor:
                 next_nodes = self._choose_next(node=node, last_result=result)
                 for nxt in next_nodes:
                     token_q.put(nxt)
-                    yield self._emit(run_id, "token_spawned", {"from": node_id, "to": nxt}).to_dict()
+                    yield self._emit(run_id, "token_spawned", {"from": node_id, "to": nxt})

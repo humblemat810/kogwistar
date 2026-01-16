@@ -30,3 +30,23 @@ def try_serialize_with_ref(obj: Json) -> str:
         h = hashlib.sha256(rep).hexdigest()
         ref = {"_ref_type": "repr_sha256", "sha256": h, "repr": repr(obj)[:2000]}
         return stable_json_dumps(ref)
+
+
+def to_jsonable(obj: Json) -> Json:
+    """Convert *obj* to a JSON-serializable structure.
+
+    This is the "object form" companion to :func:`try_serialize_with_ref`.
+
+    - If *obj* can be JSON-encoded via :func:`stable_json_dumps`, it is returned unchanged.
+    - Otherwise, returns a compact ref dict with a sha256 of ``repr(obj)``.
+
+    This is intentionally conservative (and cheap): it's meant for checkpoints/traces
+    where we need *some* durable representation, not a perfect serializer.
+    """
+    try:
+        stable_json_dumps(obj)
+        return obj
+    except TypeError:
+        rep = repr(obj).encode("utf-8")
+        h = hashlib.sha256(rep).hexdigest()
+        return {"_ref_type": "repr_sha256", "sha256": h, "repr": repr(obj)[:2000]}
