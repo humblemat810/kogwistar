@@ -29,7 +29,6 @@ def _span() -> Span:
         context_after="",
         chunk_id=None,
         source_cluster_id=None,
-        source_cluster_id=None,
         verification=MentionVerification(method="human", is_verified=True, score=1.0, notes="test"),
     )
 
@@ -195,7 +194,7 @@ def test_add_turn_like_workflow_dump_bundles(tmp_path: Path):
         predicate=None, priority=100, is_default=True
     ))
 
-    workflow_engine.persist()
+    # workflow_engine.persist()
 
     # -----------------------------
     # 2) Consumer: run stored design (runnable proof)

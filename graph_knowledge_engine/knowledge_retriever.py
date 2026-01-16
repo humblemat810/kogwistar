@@ -174,9 +174,15 @@ class KnowledgeRetriever:
             edges = selected_knowledge_nodes.edges
         else:
             if selected_knowledge:
-                # do not read deprecated deleted nodes
-                nodes = self.ref_knowledge_engine.get_nodes(selected_knowledge.node_ids, resolve_mode="redirect")
-                edges = self.ref_knowledge_engine.get_edges(selected_knowledge.node_ids, resolve_mode="redirect")
+                # do not read deprecated deleted nodes, it is ok if llm decided both node edges are empty list []
+                if selected_knowledge.node_ids == []:
+                    nodes = []
+                else:
+                    nodes = self.ref_knowledge_engine.get_nodes(selected_knowledge.node_ids, resolve_mode="redirect")
+                if selected_knowledge.edge_ids == []:
+                    edges = []
+                else:
+                    edges = self.ref_knowledge_engine.get_edges(selected_knowledge.edge_ids, resolve_mode="redirect")
             else:
                 raise Exception("selected_knowledge and selected_knowledge_nodes cannot be both None")
         for kg  in nodes:
