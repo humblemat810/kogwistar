@@ -3956,7 +3956,7 @@ class GraphKnowledgeEngine:
     @conversation_only
     def _get_conversation_tail(self, conversation_id: str, 
                                min_turn_index : int | None = None,
-                               tail_search_includes: list[str] = ["conversation_start", "conversation_turn","conversation_summary"]) -> Optional[ConversationNode]:
+                               tail_search_includes: list[str] = ["conversation_start", "conversation_turn","conversation_summary", "assistant_turn"]) -> Optional[ConversationNode]:
         """Find the last node in the conversation (leaf of 'next_turn')."""
         # Simplistic: query all nodes for this conv, sort by turn_index desc
         # Optimization: Store tail ID in a separate 'conversations' metadata collection if needed.
