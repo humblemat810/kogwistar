@@ -24,6 +24,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
+from graph_knowledge_engine.engine import GraphKnowledgeEngine
 
 from joblib import Memory
 
@@ -105,7 +106,7 @@ class WorkflowExecutor:
     def __init__(
         self,
         *,
-        engine: Any,
+        engine: GraphKnowledgeEngine,
         workflow: WorkflowSpec,
         step_resolver: Callable[[str], StepFn],
         predicate_registry: Optional[Dict[str, Predicate]] = None,

@@ -1,0 +1,369 @@
+from __future__ import annotations
+
+import time
+import uuid
+import queue
+from dataclasses import dataclass
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
+from concurrent.futures import ThreadPoolExecutor
+
+from .design import load_workflow_design, validate_workflow_design, Predicate
+from .serialize import try_serialize_with_ref, stable_json_dumps
+
+
+Json = Any
+State = Dict[str, Json]
+Result = Json
+
+StepFn = Callable[["StepContext"], Result]
+
+
+@dataclass
+class StepContext:
+    run_id: str
+    workflow_id: str
+    workflow_node_id: str
+    op: str
+    state: State
+    message_queue: "queue.Queue[Dict[str, Json]]"
+
+    def publish(self, msg: Dict[str, Json]) -> None:
+        self.message_queue.put(msg)
+
+    def drain(self, max_items: int = 200) -> List[Dict[str, Json]]:
+        out: List[Dict[str, Json]] = []
+        for _ in range(max_items):
+            try:
+                out.append(self.message_queue.get_nowait())
+            except queue.Empty:
+                break
+        return out
+
+
+def _now_ms() -> int:
+    return int(time.time() * 1000)
+
+
+def _make_trace_span(*, conversation_id: str, excerpt: str, doc_id: str) -> Any:
+    # We avoid importing models here to keep the runtime module lightweight.
+    # The orchestrator will pass in a ready Span via a hook, OR we can create a minimal span-like dict.
+    # In your repo, you already have Span model and Grounding/MentionVerification.
+    return {
+        "collection_page_url": f"conversation/{conversation_id}",
+        "document_page_url": f"conversation/{conversation_id}",
+        "doc_id": doc_id,
+        "insertion_method": "workflow_trace",
+        "page_number": 1,
+        "start_char": 0,
+        "end_char": len(excerpt),
+        "excerpt": excerpt,
+        "context_before": "",
+        "context_after": "",
+        "chunk_id": None,
+        "source_cluster_id": None,
+        "verification": {
+            "method": "human",
+            "is_verified": True,
+            "score": 1.0,
+            "notes": "workflow trace",
+        },
+    }
+
+
+class WorkflowRuntime:
+    """
+    Executes a workflow design from workflow_engine and persists run traces to conversation_engine.
+    """
+
+    def __init__(
+        self,
+        *,
+        workflow_engine: Any,
+        conversation_engine: Any,
+        step_resolver: Callable[[str], StepFn],
+        predicate_registry: Dict[str, Predicate],
+        checkpoint_every_n_steps: int = 1,
+        max_workers: int = 4,
+    ) -> None:
+        self.workflow_engine = workflow_engine
+        self.conversation_engine = conversation_engine
+        self.step_resolver = step_resolver
+        self.predicate_registry = predicate_registry
+        self.checkpoint_every_n_steps = max(1, int(checkpoint_every_n_steps))
+        self.max_workers = max_workers
+
+    def run(
+        self,
+        *,
+        workflow_id: str,
+        conversation_id: str,
+        turn_node_id: str,
+        initial_state: State,
+        run_id: Optional[str] = None,
+    ) -> Tuple[State, str]:
+        """
+        Returns (final_state, run_id).
+
+        Design lives in workflow_engine.
+        Traces/checkpoints live in conversation_engine.
+        """
+        run_id = run_id or f"run|{uuid.uuid4()}"
+        mq: queue.Queue[Dict[str, Json]] = queue.Queue()
+
+        validate_workflow_design(
+            workflow_engine=self.workflow_engine,
+            workflow_id=workflow_id,
+            predicate_registry=self.predicate_registry,
+        )
+        start, nodes, adj = load_workflow_design(workflow_engine=self.workflow_engine, workflow_id=workflow_id)
+
+        state: State = dict(initial_state)
+        step_seq = 0
+
+        # Persist workflow_run node in conversation_engine
+        self._persist_workflow_run(
+            conversation_id=conversation_id,
+            workflow_id=workflow_id,
+            run_id=run_id,
+            turn_node_id=turn_node_id,
+            status="running",
+        )
+
+        token_q: queue.Queue[str] = queue.Queue()
+        token_q.put(start.node_id)
+        done_q: queue.Queue[Tuple[str, Result, int, str]] = queue.Queue()  # (node_id, result, duration_ms, status)
+
+        def worker(node_id: str) -> None:
+            wn = nodes[node_id]
+            op = wn.op
+            t0 = _now_ms()
+            status = "ok"
+            try:
+                fn = self.step_resolver(op)
+                ctx = StepContext(
+                    run_id=run_id,
+                    workflow_id=workflow_id,
+                    workflow_node_id=node_id,
+                    op=op,
+                    state=state,
+                    message_queue=mq,
+                )
+                res = fn(ctx)
+            except Exception as e:
+                status = "error"
+                res = {"_error": repr(e)}
+            t1 = _now_ms()
+            done_q.put((node_id, res, max(0, t1 - t0), status))
+
+        inflight: Dict[str, Any] = {}
+
+        with ThreadPoolExecutor(max_workers=self.max_workers) as pool:
+            while True:
+                # schedule while capacity
+                while len(inflight) < self.max_workers:
+                    try:
+                        nid = token_q.get_nowait()
+                    except queue.Empty:
+                        break
+                    inflight[nid] = pool.submit(worker, nid)
+
+                if not inflight and token_q.empty():
+                    # done
+                    self._update_workflow_run_status(conversation_id, run_id, "done")
+                    return state, run_id
+
+                node_id, result, dur_ms, status = done_q.get()
+                inflight.pop(node_id, None)
+
+                wn = nodes[node_id]
+
+                # persist step exec trace node
+                self._persist_step_exec(
+                    conversation_id=conversation_id,
+                    workflow_id=workflow_id,
+                    run_id=run_id,
+                    step_seq=step_seq,
+                    workflow_node_id=node_id,
+                    op=wn.op,
+                    status=status,
+                    duration_ms=dur_ms,
+                    result=result,
+                )
+
+                # single-writer state apply:
+                # default behavior: store under result.<op> and allow ops to also write into state
+                state[f"result.{wn.op}"] = result
+
+                # checkpoint
+                if (step_seq % self.checkpoint_every_n_steps) == 0:
+                    self._persist_checkpoint(
+                        conversation_id=conversation_id,
+                        workflow_id=workflow_id,
+                        run_id=run_id,
+                        step_seq=step_seq,
+                        state=state,
+                    )
+
+                step_seq += 1
+
+                # route
+                if wn.terminal or len(adj.get(node_id, [])) == 0:
+                    continue
+
+                edges = adj.get(node_id, [])
+                next_nodes = self._route_next(edges, state, result, wn.fanout)
+                for nxt in next_nodes:
+                    token_q.put(nxt)
+
+    def _route_next(
+        self,
+        edges: List[Any],
+        state: State,
+        last_result: Result,
+        fanout: bool,
+    ) -> List[str]:
+        matched: List[str] = []
+
+        for e in edges:
+            if e.predicate is None:
+                continue
+            pred = self.predicate_registry.get(e.predicate)
+            if pred is None:
+                continue
+            ok = False
+            try:
+                ok = bool(pred(state, last_result))
+            except Exception:
+                ok = False
+            if ok:
+                matched.append(e.dst)
+                if not fanout and e.multiplicity != "many":
+                    return matched
+
+        if matched and (fanout or any(getattr(ed, "multiplicity", "one") == "many" for ed in edges)):
+            return matched
+
+        if not matched:
+            for e in edges:
+                if e.is_default:
+                    return [e.dst]
+
+        return matched
+
+    # --------------------
+    # Persistence helpers (conversation_engine)
+    # --------------------
+
+    def _persist_workflow_run(
+        self,
+        conversation_id: str,
+        workflow_id: str,
+        run_id: str,
+        turn_node_id: str,
+        status: str,
+    ) -> None:
+        from . import serialize  # keep runtime import-light
+        from graph_knowledge_engine.models import WorkflowRunNode, Grounding, Span  # adjust import path to your package layout
+
+        excerpt = f"workflow_run {workflow_id} {run_id} status={status}"
+        span = Span(**_make_trace_span(conversation_id=conversation_id, excerpt=excerpt, doc_id=f"conv:{conversation_id}"))
+        n = WorkflowRunNode(
+            id=f"wf_run|{run_id}",
+            label=f"Workflow run {workflow_id}",
+            type="entity",
+            doc_id=f"wf_run|{run_id}",
+            summary=excerpt,
+            mentions=[Grounding(spans=[span])],
+            properties={},
+            metadata={
+                "entity_type": "workflow_run",
+                "workflow_id": workflow_id,
+                "workflow_version": "v1",
+                "run_id": run_id,
+                "conversation_id": conversation_id,
+                "turn_node_id": turn_node_id,
+                "status": status,
+                "level_from_root": 0,
+            },
+        )
+        self.conversation_engine.add_node(n)
+
+    def _update_workflow_run_status(self, conversation_id: str, run_id: str, status: str) -> None:
+        # minimal approach: add an update node/event rather than mutate-in-place
+        # (your engine likely doesn’t do partial updates easily)
+        # You can later add a redirect/tombstone model update.
+        return
+
+    def _persist_step_exec(
+        self,
+        conversation_id: str,
+        workflow_id: str,
+        run_id: str,
+        step_seq: int,
+        workflow_node_id: str,
+        op: str,
+        status: str,
+        duration_ms: int,
+        result: Result,
+    ) -> None:
+        from graph_knowledge_engine.models import WorkflowStepExecNode, Grounding, Span  # adjust import path
+
+        result_json = try_serialize_with_ref(result)
+        excerpt = f"step {step_seq} op={op} status={status} dur={duration_ms}ms"
+        span = Span(**_make_trace_span(conversation_id=conversation_id, excerpt=excerpt, doc_id=f"conv:{conversation_id}"))
+
+        n = WorkflowStepExecNode(
+            id=f"wf_step|{run_id}|{step_seq}",
+            label=f"WF step {step_seq}: {op}",
+            type="entity",
+            doc_id=f"wf_step|{run_id}|{step_seq}",
+            summary=excerpt,
+            mentions=[Grounding(spans=[span])],
+            properties={},
+            metadata={
+                "entity_type": "workflow_step_exec",
+                "run_id": run_id,
+                "workflow_id": workflow_id,
+                "workflow_node_id": workflow_node_id,
+                "step_seq": step_seq,
+                "op": op,
+                "status": status,
+                "duration_ms": duration_ms,
+                "result_json": result_json,
+                "level_from_root": 0,
+            },
+        )
+        self.conversation_engine.add_node(n)
+
+    def _persist_checkpoint(
+        self,
+        conversation_id: str,
+        workflow_id: str,
+        run_id: str,
+        step_seq: int,
+        state: State,
+    ) -> None:
+        from graph_knowledge_engine.models import WorkflowCheckpointNode, Grounding, Span  # adjust import path
+
+        state_json = try_serialize_with_ref(state)
+        excerpt = f"checkpoint step_seq={step_seq}"
+        span = Span(**_make_trace_span(conversation_id=conversation_id, excerpt=excerpt, doc_id=f"conv:{conversation_id}"))
+
+        n = WorkflowCheckpointNode(
+            id=f"wf_ckpt|{run_id}|{step_seq}",
+            label=f"WF checkpoint {step_seq}",
+            type="entity",
+            doc_id=f"wf_ckpt|{run_id}|{step_seq}",
+            summary=excerpt,
+            mentions=[Grounding(spans=[span])],
+            properties={},
+            metadata={
+                "entity_type": "workflow_checkpoint",
+                "run_id": run_id,
+                "workflow_id": workflow_id,
+                "step_seq": step_seq,
+                "state_json": state_json,
+                "level_from_root": 0,
+            },
+        )
+        self.conversation_engine.add_node(n)

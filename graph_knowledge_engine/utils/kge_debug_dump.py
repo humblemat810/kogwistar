@@ -71,10 +71,12 @@ def dump_paired_bundles(
     *,
     kg_engine: GraphKnowledgeEngine,
     conversation_engine: GraphKnowledgeEngine,
+    workflow_engine: GraphKnowledgeEngine | None = None,
     template_html: str,
     out_dir: Path,
     kg_out: str = "kg.bundle.html",
     conversation_out: str = "conversation.bundle.html",
+    work_flow_out: str = "workflow.bundle.html",
     kg_doc_id: Optional[str] = None,
     conversation_doc_id: Optional[str] = None,
     mode: str = "reify",
@@ -110,7 +112,18 @@ def dump_paired_bundles(
         insertion_method=insertion_method,
         bundle_meta=bundle_meta,
     )
-
+    if workflow_engine:
+        wf_nodes = workflow_engine.get_nodes(where={"entity_type": "workflow_node"}, limit=20000)
+        wf_edges = workflow_engine.get_edges(where={"entity_type": "workflow_edge"}, limit=50000)
+        dump_d3_bundle(
+            engine=workflow_engine,
+            template_html=template_html,
+            out_html=out_dir / work_flow_out,
+            doc_id=conversation_doc_id,
+            mode=mode,
+            insertion_method=insertion_method,
+            bundle_meta=bundle_meta,
+        )
     (out_dir / "bundle.meta.json").write_text(json.dumps(bundle_meta, indent=2), encoding="utf-8")
     # os.startfile(str(out_dir))
     return bundle_meta

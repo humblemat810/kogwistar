@@ -1088,14 +1088,37 @@ class KnowledgeRetrievalResult:
 from typing import TypedDict
 
 class WorkflowNodeMetadata(BaseModel):
-    entity_type: str  # must be "workflow_node"
+    """
+    Workflow *design* node metadata (stored in workflow_engine).
+
+    Required keys:
+      - entity_type="workflow_node"
+      - workflow_id
+      - wf_op (unless wf_terminal=True)
+
+    Optional:
+      - wf_version: used for replay compatibility + future cache invalidation
+      - wf_fanout: allow multiple outgoing edges to fire in parallel
+      - wf_start: marks the start node in this workflow_id
+      - wf_terminal: marks terminal node
+    """
+    entity_type: str = Field(..., description='Must be "workflow_node"')
     workflow_id: str
-    wf_op: str                 # operation name resolved via orchestrator step resolver
-    wf_version: str            # semantic version for cache invalidation
-    wf_cacheable: bool
-    wf_terminal: bool
-    wf_start: bool
-    wf_fanout: bool
+    wf_op: Optional[str] = None
+    wf_version: str = "v1"
+    wf_start: bool = False
+    wf_terminal: bool = False
+    wf_fanout: bool = False
+
+    model_config = ConfigDict(extra="allow")
+
+    @model_validator(mode="after")
+    def _validate(self) -> "WorkflowNodeMetadata":
+        if self.entity_type != "workflow_node":
+            raise ValueError("WorkflowNodeMetadata.entity_type must be 'workflow_node'")
+        if not self.wf_terminal and (self.wf_op is None or str(self.wf_op).strip() == ""):
+            raise ValueError("wf_op is required unless wf_terminal=True")
+        return self
 
 # class WorkflowEdgeMetadata(BaseModel):
 #     entity_type: str  # must be "workflow_edge"
@@ -1107,21 +1130,27 @@ class WorkflowNodeMetadata(BaseModel):
 
 class WorkflowEdgeMetadata(BaseModel):
     """
-    Workflow edge metadata contract.
+    Workflow *design* edge metadata (stored in workflow_engine).
 
-    Stored in Edge.metadata dict.
+    Keys:
+      - entity_type="workflow_edge"
+      - workflow_id
+      - wf_predicate: symbolic predicate name (None means unconditional)
+      - wf_priority: lower first
+      - wf_is_default: used if no predicate matches
+      - wf_multiplicity: "one"|"many"  (allows fanout)
     """
     entity_type: str = Field(..., description='Must be "workflow_edge"')
-    workflow_id: str = Field(..., description="Workflow graph id")
-    wf_predicate: Optional[str] = Field(None, description="Symbolic predicate name for dynamic routing")
-    wf_priority: int = Field(100, description="Lower runs earlier")
-    wf_is_default: bool = Field(False, description="Used when no predicates match")
-    wf_multiplicity: Literal["one", "many"] = Field("one", description="If 'many', allow fanout")
+    workflow_id: str
+    wf_predicate: Optional[str] = None
+    wf_priority: int = 100
+    wf_is_default: bool = False
+    wf_multiplicity: Literal["one", "many"] = "one"
 
     model_config = ConfigDict(extra="allow")
 
     @model_validator(mode="after")
-    def _validate_logic(self) -> "WorkflowEdgeMetadata":
+    def _validate(self) -> "WorkflowEdgeMetadata":
         if self.entity_type != "workflow_edge":
             raise ValueError("WorkflowEdgeMetadata.entity_type must be 'workflow_edge'")
         if self.wf_priority < 0:
@@ -1129,52 +1158,16 @@ class WorkflowEdgeMetadata(BaseModel):
         return self
 
 
-class WorkflowMixin(BaseModel):
+class WorkflowNode(Node):
     """
-    Minimal workflow mixin (same push/pull pattern as ConversationRoleMixin).
-    """
-    workflow_id: Optional[str] = Field(None, description="Workflow graph id")
-    wf_op: Optional[str] = Field(None, description="Operation name")
-    wf_version: Optional[str] = Field(None, description="Version")
-    wf_cacheable: Optional[bool] = Field(None, description="Cacheable step")
-    wf_terminal: Optional[bool] = Field(None, description="Terminal node")
-    wf_start: Optional[bool] = Field(None, description="Start node")
-    wf_fanout: Optional[bool] = Field(None, description="Fanout enabled")
-
-    @model_validator(mode="before")
-    @classmethod
-    def sync_workflow_metadata(cls, data: Any, info: ValidationInfo) -> Any:
-        if isinstance(data, dict):
-            md = data.get("metadata", {}) or {}
-            for field in ["workflow_id", "wf_op", "wf_version", "wf_cacheable", "wf_terminal", "wf_start", "wf_fanout"]:
-                if field not in data and field in md:
-                    data[field] = md[field]
-        return data
-
-    @model_validator(mode="after")
-    def push_workflow_metadata(self) -> "WorkflowMixin":
-        if not hasattr(self, "metadata"):
-            return self
-        if self.metadata is None:
-            self.metadata = {}
-        for field in ["workflow_id", "wf_op", "wf_version", "wf_cacheable", "wf_terminal", "wf_start", "wf_fanout"]:
-            val = getattr(self, field, None)
-            if val is not None:
-                self.metadata[field] = val
-        return self
-
-
-class WorkflowNode(WorkflowMixin, Node):
-    """
-    Stored as a normal Node, but with workflow metadata validation.
+    Typed wrapper for workflow design nodes (persist in workflow_engine).
     """
     metadata: dict
 
     @field_validator("metadata")
-    def check_workflow_metadata(cls, v):
+    def check_metadata(cls, v):
         WorkflowNodeMetadata.model_validate(v)
         return v
-
 
 class WorkflowEdge(Edge):
     """
@@ -1185,4 +1178,108 @@ class WorkflowEdge(Edge):
     @field_validator("metadata")
     def check_workflow_edge_metadata(cls, v):
         WorkflowEdgeMetadata.model_validate(v)
+        return v
+
+# -------------------------
+# Workflow traces: run/step/checkpoint (persist in conversation_engine)
+# -------------------------
+
+class WorkflowRunMetadata(BaseNodeMetadata):
+    """
+    Trace node persisted in conversation_engine.
+
+    entity_type="workflow_run"
+    """
+    entity_type: str = Field(..., description='Must be "workflow_run"')
+    workflow_id: str
+    workflow_version: str = "v1"
+    run_id: str
+    conversation_id: str
+    turn_node_id: str
+    status: str = "running"  # running|done|error
+
+    model_config = ConfigDict(extra="allow")
+
+    @model_validator(mode="after")
+    def _validate(self) -> "WorkflowRunMetadata":
+        if self.entity_type != "workflow_run":
+            raise ValueError("WorkflowRunMetadata.entity_type must be 'workflow_run'")
+        return self
+
+
+class WorkflowStepExecMetadata(BaseNodeMetadata):
+    """
+    Trace node persisted in conversation_engine.
+
+    entity_type="workflow_step_exec"
+    """
+    entity_type: str = Field(..., description='Must be "workflow_step_exec"')
+    run_id: str
+    workflow_id: str
+    workflow_node_id: str
+    step_seq: int
+    op: str
+    status: str = "ok"  # ok|error|skipped
+    duration_ms: int = 0
+    # serialized JSON result (string); for non-json store a ref object json
+    result_json: str
+
+    model_config = ConfigDict(extra="allow")
+
+    @model_validator(mode="after")
+    def _validate(self) -> "WorkflowStepExecMetadata":
+        if self.entity_type != "workflow_step_exec":
+            raise ValueError("WorkflowStepExecMetadata.entity_type must be 'workflow_step_exec'")
+        if self.step_seq < 0:
+            raise ValueError("step_seq must be >= 0")
+        return self
+
+
+class WorkflowCheckpointMetadata(BaseNodeMetadata):
+    """
+    Checkpoint persisted in conversation_engine.
+
+    entity_type="workflow_checkpoint"
+    """
+    entity_type: str = Field(..., description='Must be "workflow_checkpoint"')
+    run_id: str
+    workflow_id: str
+    step_seq: int
+    state_json: str  # serialized state snapshot
+
+    model_config = ConfigDict(extra="allow")
+
+    @model_validator(mode="after")
+    def _validate(self) -> "WorkflowCheckpointMetadata":
+        if self.entity_type != "workflow_checkpoint":
+            raise ValueError("WorkflowCheckpointMetadata.entity_type must be 'workflow_checkpoint'")
+        if self.step_seq < 0:
+            raise ValueError("step_seq must be >= 0")
+        return self
+
+
+class WorkflowRunNode(Node):
+    metadata: dict
+
+    @field_validator("metadata")
+    def check_metadata(cls, v):
+        WorkflowRunMetadata.model_validate(v)
+        return v
+
+
+class WorkflowStepExecNode(Node):
+    metadata: dict
+
+    @field_validator("metadata")
+    def check_metadata(cls, v):
+        WorkflowStepExecMetadata.model_validate(v)
+        return v
+
+
+class WorkflowCheckpointNode(Node):
+    metadata: dict
+
+    @field_validator("metadata")
+    def check_metadata(cls, v):
+        WorkflowCheckpointMetadata.model_validate(v)
         return v
