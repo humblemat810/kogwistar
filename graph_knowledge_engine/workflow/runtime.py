@@ -142,13 +142,13 @@ class WorkflowRuntime:
         )
 
         scheduled_q: queue.Queue[str] = queue.Queue()
-        scheduled_q.put(start.id)
+        scheduled_q.put(start.safe_get_id())
         done_q: queue.Queue[Tuple[str, RunResult, int, str]] = queue.Queue()  # (node_id, result, duration_ms, status)
 
         def worker(node_id: str) -> None:
             wn: WorkflowNode
             wn = nodes[node_id]
-            op = nodes[node_id].metadata.get("wf_op")
+            op = nodes[node_id].op
             t0 = _now_ms()
             status = "ok"
             try:
@@ -224,7 +224,7 @@ class WorkflowRuntime:
                     continue
 
                 edges = adj.get(node_id, [])
-                next_nodes = self._route_next(edges, state, result, wn.fanout)
+                next_nodes = self._route_next(edges, state, run_result, wn.fanout)
                 for nxt in next_nodes:
                     scheduled_q.put(nxt)
 
@@ -232,7 +232,7 @@ class WorkflowRuntime:
         self,
         edges: List[Any],
         state: State,
-        last_result: Result,
+        last_result: RunResult,
         fanout: bool,
     ) -> List[str]:
         matched: List[str] = []

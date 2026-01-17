@@ -70,7 +70,7 @@ class IdPolicyMixin(BaseModel):
             self.id = new_event_id()
         else:
             assert key is not None
-            self.id = stable_id(self.__class__.__name__, *key)
+            self.id = str(stable_id(self.__class__.__name__, *key))
         return self
     def identity_key(self) -> Tuple[str, ...]:
         """
@@ -89,7 +89,7 @@ class IdPolicyMixin(BaseModel):
 
         # canonical
         key = self.identity_key()  # must be stable & non-empty
-        self.id = stable_id(self.id_kind, *key)
+        self.id = str(stable_id(self.id_kind, *key))
         return self
 Role :TypeAlias = Literal["user", "assistant", "system", "tool"]
 @dataclass
@@ -340,7 +340,7 @@ class GraphEntityExtractionBase(GraphEntityBase):
     # the mentions warps Grounding
     
     groundings: Annotated[Grounding, FrontendField(),BackendField(),DtoField(),LLMField()] = Field(
-        ..., min_items=1, description="Mentioning of the idea across possibly multiple paragraphs"
+        min_items=1, description="Mentioning of the idea across possibly multiple paragraphs"
     )
     #NEED-FIX
     @field_validator("groundings")
@@ -406,7 +406,8 @@ class GraphEntityRefBase(GraphEntityBase):
                         check_and_update_span_inplace(span)
                 else:
                     try:
-                        for span in mention['spans']:
+                        mention_dict: dict = cast(dict, mention)
+                        for span in mention_dict['spans']:
                             check_and_update_span_inplace(span)
                     except Exception as _e:
                         raise
@@ -836,7 +837,7 @@ class LLMGraphExtraction(ModeSlicingMixin, BaseModel):
         _ = info.context or {}
         return self
     @classmethod
-    def FromLLMSlice(cls, sliced: Union["LLMGraphExtraction['llm']" , dict], insertion_method)->"LLMGraphExtraction":
+    def FromLLMSlice(cls, sliced: "Union[LLMGraphExtraction['llm'] , dict]", insertion_method)->"LLMGraphExtraction":
         if isinstance(sliced, BaseModel):
             dumped = sliced.model_dump()
         elif type(sliced) is dict:
@@ -992,7 +993,7 @@ class Document(ModeSlicingMixin, BaseModel):
     def update_source_map(self):
         source_map: Dict[str, Any] = {}
         from splitter import split_doc_deterministic
-        chunks = split_doc_deterministic(content = self.content, doc_id = self.id)
+        chunks = split_doc_deterministic(content = str(self.content), doc_id = self.id)
         for i, chunk in enumerate(chunks):
             chunk_id = f"chunk_{i}"
             source_map[chunk_id] = chunk
@@ -1293,7 +1294,7 @@ class WorkflowNodeMetadata(BaseModel):
     """
     entity_type: str = Field(..., description='Must be "workflow_node"')
     workflow_id: str
-    wf_op: Optional[str] = None
+    wf_op: str = "noop"
     wf_version: str = "v1"
     wf_start: bool = False
     wf_terminal: bool = False
@@ -1354,14 +1355,22 @@ class WorkflowNode(Node):
     metadata: dict
 
     @field_validator("metadata")
-    def check_metadata(cls, v):
+    def check_metadataWFN(cls, v):
         v= WorkflowNodeMetadata.model_validate(v).model_dump()
         return v
     
     @property
     def op(self):
-        return self.metadata.get('wf_op')
-
+        return self.metadata.get('wf_op') or "noop"
+    @property
+    def terminal(self):
+        return self.metadata.get('wf_terminal') or False
+    @property
+    def start(self):
+        return self.metadata.get('wf_start') or False
+    @property
+    def fanout(self):
+        return self.metadata.get('wf_fanout') or False
 class WorkflowEdge(Edge):
     """
     Stored as a normal Edge, but with workflow edge metadata validation.
