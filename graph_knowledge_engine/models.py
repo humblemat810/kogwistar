@@ -6,7 +6,8 @@ if True:
     logger = logging.getLogger(__name__)
     logger.addHandler(logging.NullHandler())
     logger.debug("loading models")
-from typing import List, Literal, Optional, Dict, Any, Type, TypeAlias, Union, Annotated, ClassVar
+from id_provider import new_id_str, new_event_id, stable_id
+from typing import List, Literal, Optional, Dict, Any, Type, TypeAlias, Union, Annotated, ClassVar, Tuple, Self, cast
 from pydantic import BaseModel, Field, model_validator, field_validator, ValidationInfo, ConfigDict
 import uuid
 from enum import IntEnum
@@ -54,8 +55,42 @@ QUESTION_DESC = {
     AdjudicationQuestionCode.CAUSAL: "Does one cause or lead to the other?",
     AdjudicationQuestionCode.ATTR_EQ: "Are these property values equivalent (unit/format differences allowed)?",
 }
+from .id_provider import new_event_id, stable_id
+from pydantic import BaseModel, Field
+from typing import Optional, ClassVar, Literal
 
+class IdPolicyMixin(BaseModel):
+    id: Optional[str] = Field(default=None)
+    id_policy: ClassVar[Literal["event","canonical"]] = "event"
+    id_kind: ClassVar[str] = "model"
+    def ensure_id(self, *, key: Optional[list[str]] = None) -> "IdPolicyMixin":
+        if self.id is not None:
+            return self
+        if self.id_policy == "event":
+            self.id = new_event_id()
+        else:
+            assert key is not None
+            self.id = stable_id(self.__class__.__name__, *key)
+        return self
+    def identity_key(self) -> Tuple[str, ...]:
+        """
+        Subclasses with id_policy="canonical" MUST override this.
+        Should return stable, minimal identity parts.
+        """
+        return self.__class__.__name__,
+    @model_validator(mode="after")
+    def _ensure_id(self) -> Self:
+        if self.id is not None:
+            return self        
 
+        if self.id_policy == "event":
+            self.id = str(new_id_str())
+            return self
+
+        # canonical
+        key = self.identity_key()  # must be stable & non-empty
+        self.id = stable_id(self.id_kind, *key)
+        return self
 Role :TypeAlias = Literal["user", "assistant", "system", "tool"]
 @dataclass
 class MetaFromLastSummary:
@@ -87,12 +122,7 @@ class AddTurnResult():
         #     "memory_context_edge_ids": memory_pin.pinned_edges if memory_pin else [],
         # }
 
-# -------------------------
-# Utilities
-# -------------------------
 
-def generate_id() -> str:
-    return str(uuid.uuid1())
 
 # -------------------------
 # Provenance / reference (with optional spans)
@@ -242,11 +272,33 @@ class Span(ModeSlicingMixin, BaseModel):
 # -------------------------
 # Domain
 # -------------------------
-class Domain(BaseModel):
-    id: str = Field(default_factory=generate_id, description="Unique identifier for the domain")
+class Domain(IdPolicyMixin, BaseModel):
+    id: str = Field(..., description="Unique identifier for the domain")
     name: str = Field(..., description="Name of the domain")
     description: Optional[str] = Field(None, description="Optional description of the domain")
+    # id_policy: ClassVar[Literal["event", "canonical"]] = "canonical"
+    # id_kind: ClassVar[str] = "model"  # override per subclass if you want stable separation
 
+    def identity_key(self) -> Tuple[str, ...]:
+        """
+        Subclasses with id_policy="canonical" MUST override this.
+        Should return stable, minimal identity parts.
+        """
+        return self.__class__.__name__, str(self.id_policy)
+
+    # @model_validator(mode="after")
+    # def _ensure_id(self) -> Self:
+    #     if self.node_id is not None:
+    #         return self        
+
+    #     if self.id_policy == "event":
+    #         self.id = str(new_id_str())
+    #         return self
+
+    #     # canonical
+    #     key = self.identity_key()  # must be stable & non-empty
+    #     self.node_id = stable_id(self.id_kind, *key)
+    #     return self
 # -------------------------
 # Core graph entities
 # -------------------------
@@ -400,7 +452,7 @@ class ConversationEdgeMetadata(BaseNodeMetadata):
     model_config = ConfigDict(extra="allow")
 from chromadb import Embeddings
 class ChromaMixin(BaseModel):
-    id: str = Field(default_factory=generate_id, description="Unique identifier")
+    id: Optional[str] = Field(default = None, description="Unique identifier")
     embedding: Optional[Sequence[float]] = Field(None, description="Vector embedding for the entity")
     # Optional but handy to keep JSON and Chroma metadata aligned
     doc_id: Optional[str] = Field(None, description="Document ID from which this entity was extracted")
@@ -410,15 +462,15 @@ class ChromaMixin(BaseModel):
     @field_validator('metadata')
     def check_metadata(cls, v):
         BaseNodeMetadata.model_validate(v)
-        return v
-
+        return 
+    
 # -------------------------
 # LLM-facing mixin (NO embedding field to keep schema tight)
 # -------------------------
 class LLMMixin(ModeSlicingMixin, BaseModel):
     default_include_modes: ClassVar[set[str]] = {"llm"}
     include_unmarked_for_modes: ClassVar[set[str]] = {"llm"}
-    id: Optional[str] = Field(None, description="None for new object; use existing IDs to upsert")
+    id: Optional[str] = Field(default = None, description="None for new object; use existing IDs to upsert")
     # No embedding in LLM schema to avoid bloating the output
     local_id: Optional[str] = Field(
         None,
@@ -540,17 +592,67 @@ class TombstoneMixin(BaseModel):
             v["redirect_to_id"] = None        
         return v
 
-class Node(TombstoneMixin, LevelAwareMixin, ChromaValidateSourceMixin, ChromaMixin, GraphEntityRefBase):
+class Node(IdPolicyMixin, TombstoneMixin, LevelAwareMixin, ChromaValidateSourceMixin, ChromaMixin, GraphEntityRefBase):
     # Node with ref session enforced and level awareness
+    def safe_get_id(self):
+        return cast(str, self.id)
     def get_extra_update(self):
         return {}
-    
+    # id_policy: ClassVar[Literal["event", "canonical"]] = "canonical"
+    # id_kind: ClassVar[str] = "model"  # override per subclass if you want stable separation
+
+    def identity_key(self) -> Tuple[str, ...]:
+        """
+        Subclasses with id_policy="canonical" MUST override this.
+        Should return stable, minimal identity parts.
+        """
+        return self.summary, str(self.doc_id)
+
+    # @model_validator(mode="after")
+    # def _ensure_id(self) -> Self:
+    #     if self.node_id is not None:
+    #         return self        
+
+    #     if self.id_policy == "event":
+    #         self.id = str(new_id_str())
+    #         return self
+
+    #     # canonical
+    #     key = self.identity_key()  # must be stable & non-empty
+    #     self.node_id = stable_id(self.id_kind, *key)
+    #     return self
 
 class ConversationNode(ConversationRoleMixin, Node):
     """Specialized node for conversation elements.
     Inherits data schema from Node (via metadata storage) but adds conversation behaviors.
     """
+    # id_policy: ClassVar[Literal["event", "canonical"]] = "canonical"
+    # id_kind: ClassVar[str] = "model"  # override per subclass if you want stable separation
 
+    def identity_key(self) -> Tuple[str, ...]:
+        # from conversation_orchestrator import get_id_for_conversation_turn
+        """
+        Subclasses with id_policy="canonical" MUST override this.
+        Should return stable, minimal identity parts.
+        """
+        return (self.id_kind, json.dumps(self.user_id), json.dumps(self.conversation_id), self.summary,
+                                            json.dumps(self.turn_index), json.dumps(self.role), json.dumps(self.metadata.get("entity_type")), 
+                                            json.dumps(self.metadata.get("in_conversation_chain")))
+        # return self.summary, str(self.doc_id), str(self.user_id), str(self.conversation_id), str(self.metadata.get("entity_type"))
+
+    # @model_validator(mode="after")
+    # def _ensure_id(self) -> Self:
+    #     if self.node_id is not None:
+    #         return self        
+
+    #     if self.id_policy == "event":
+    #         self.id = str(new_id_str())
+    #         return self
+
+    #     # canonical
+    #     key = self.identity_key()  # must be stable & non-empty
+    #     self.node_id = stable_id(self.id_kind, *key)
+    #     return self
         
     metadata: dict#ConversationNodeMetadata
     @field_validator('metadata')
@@ -577,14 +679,66 @@ class ConversationNode(ConversationRoleMixin, Node):
         except Exception as _e:
             raise
         return updates
-class Edge(ChromaValidateSourceMixin, ChromaMixin, EdgeMixin, GraphEntityRefBase):
+class Edge(IdPolicyMixin, ChromaValidateSourceMixin, ChromaMixin, EdgeMixin, GraphEntityRefBase):
     # Edge with ref session enforced
+    def safe_get_id(self):
+        return cast(str, self.id)
     def get_extra_update(self):
         return {}
+    # id_policy: ClassVar[Literal["event", "canonical"]] = "canonical"
+    # id_kind: ClassVar[str] = "model"  # override per subclass if you want stable separation
 
-class ConversationEdge(Edge):
+    def identity_key(self) -> Tuple[str, ...]:
+        """
+        Subclasses with id_policy="canonical" MUST override this.
+        Should return stable, minimal identity parts.
+        """
+        return self.summary, self.relation, str(self.source_ids), str(self.target_ids), str(self.source_edge_ids), str(self.target_edge_ids)
+
+    # @model_validator(mode="after")
+    # def _ensure_id(self) -> Self:
+    #     if self.node_id is not None:
+    #         return self        
+
+    #     if self.id_policy == "event":
+    #         self.id = str(new_id_str())
+    #         return self
+
+    #     # canonical
+    #     key = self.identity_key()  # must be stable & non-empty
+    #     self.node_id = stable_id(self.id_kind, *key)
+    #     return self
+class ConversationEdge( Edge):
     """Specialized edge for conversation links (next_turn, references, summarizes)."""
     metadata: dict#ConversationNodeMetadata
+    
+    # id_policy: ClassVar[Literal["event", "canonical"]] = "canonical"
+    # id_kind: ClassVar[str] = "model"  # override per subclass if you want stable separation
+
+    def identity_key(self) -> Tuple[str, ...]:
+        """
+        Subclasses with id_policy="canonical" MUST override this.
+        Should return stable, minimal identity parts.
+        """
+        return (self.summary, str(self.doc_id), 
+                str(self.source_ids), str(self.target_ids), 
+                str(self.source_edge_ids), str(self.target_edge_ids),
+                str(self.metadata.get("entity_type")))
+
+    @model_validator(mode="after")
+    def _ensure_id(self) -> Self:
+        if self.node_id is not None:
+            return self        
+
+        if self.id_policy == "event":
+            self.id = str(new_id_str())
+            return self
+
+        # canonical
+        key = self.identity_key()  # must be stable & non-empty
+        self.node_id = stable_id(self.id_kind, *key)
+        return self
+    
     @field_validator('metadata')    
     def check_fields(cls, v):
         # convertible to ConversationNodeMetadata but never materialize the conversion. just a checker model
@@ -774,7 +928,7 @@ class Chunk:
 # -------------------------
 from typing import Tuple
 class Document(ModeSlicingMixin, BaseModel):
-    id: BackendType[str] = Field(default_factory=generate_id, description="Unique document identifier")
+    id: BackendType[str] = Field(..., description="Unique document identifier")
     content: BackendType[DtoType[str | dict]] = Field(..., description="Text content or OCR dict content of the document")
     # "text_chunked" is temp type for view as chunks and validate chunked results
     type: BackendType[DtoType[Literal["text", "ocr_document", "text_chunked"] | str]] = Field(..., description="Type of document, e.g., 'ocr', 'pdf'")
@@ -1203,6 +1357,10 @@ class WorkflowNode(Node):
     def check_metadata(cls, v):
         v= WorkflowNodeMetadata.model_validate(v).model_dump()
         return v
+    
+    @property
+    def op(self):
+        return self.metadata.get('wf_op')
 
 class WorkflowEdge(Edge):
     """

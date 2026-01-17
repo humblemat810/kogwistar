@@ -9,7 +9,7 @@ from graph_knowledge_engine.models import (
     Span,
     MentionVerification,
 )
-from graph_knowledge_engine.workflow.runtime import WorkflowRuntime
+from graph_knowledge_engine.workflow.runtime import RunSuccess, RunFailure, StepContext, WorkflowRuntime
 
 # IMPORTANT: use your existing dumper (calls to_d3_force internally)
 from graph_knowledge_engine.utils.kge_debug_dump import dump_paired_bundles  # type: ignore
@@ -220,6 +220,8 @@ def test_add_turn_like_workflow_dump_bundles(tmp_path: Path):
         kg_doc_id=None,
         conversation_doc_id=None,
     )
+    import os
+    os.startfile(str(out_dir))    
     # workflow_engine.persist()
 
     # -----------------------------
@@ -232,11 +234,15 @@ def test_add_turn_like_workflow_dump_bundles(tmp_path: Path):
     }
 
     def resolve_step(op: str):
-        def _fn(ctx):
+        def _fn(ctx: StepContext):
             ctx.state.setdefault("op_log", [])
             ctx.state["op_log"].append(op)
 
             # JSONable placeholders (manual inspection only)
+            if op == "start":
+                ctx.state["started"] = True
+                
+                return RunSuccess({"started": True})
             if op == "memory_retrieve":
                 ctx.state["memory"] = {"selected_ids": ["m1"], "text": "memory context"}
                 return {"ok": True}

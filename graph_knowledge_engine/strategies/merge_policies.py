@@ -4,6 +4,7 @@ from ..models import AdjudicationVerdict, AdjudicationTarget, Edge, Node, Span, 
 from .types import EngineLike, MergePolicy
 import uuid
 import json
+from graph_knowledge_engine.id_provider import new_id_str
 class PreferExistingCanonical(MergePolicy):
     def __init__(self, engine: EngineLike):
         self.e : EngineLike = engine
@@ -18,7 +19,7 @@ class PreferExistingCanonical(MergePolicy):
 
         canonical_id = verdict.canonical_entity_id or (left.canonical_entity_id or right.canonical_entity_id)
         if not canonical_id:
-            canonical_id = str(uuid.uuid1())
+            canonical_id = str(new_id_str())
 
         # 1) Update in-memory nodes
         left.canonical_entity_id = canonical_id
@@ -74,7 +75,7 @@ class PreferExistingCanonical(MergePolicy):
         s_nodes, s_edges, t_nodes, t_edges = self.e._split_endpoints([left.id], [right.id])
 
         same_as = Edge(
-            id=str(uuid.uuid1()),
+            id=str(new_id_str()),
             label="same_as",
             type="relationship",
             summary=verdict.reason or "Adjudicated same entity",

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from typing import Callable, List, Optional, Tuple
+from typing import Callable, List, Optional, Tuple, cast
 
 from langchain_core.language_models import BaseChatModel
 
@@ -197,7 +197,7 @@ class KnowledgeRetriever:
             kg_meta = kg.metadata
             summary = str(kg_meta.get("summary", ""))
 
-            ptr_id = str(uuid.uuid4())
+            # ptr_id = str(uuid.uuid4())
             meta = kg_meta
             snap = {
                 "entity_id": kg.id,
@@ -207,11 +207,12 @@ class KnowledgeRetriever:
                 "canonical_entity_id": meta.get("canonical_entity_id"),
             }
             sh = snapshot_hash(snap)
+            
             ptr_node = ConversationNode(
-                id=ptr_id,
+                id=None,
                 label=f"Ref: {kg_meta.get('label')}",
                 type="reference_pointer",
-                doc_id=ptr_id,
+                doc_id=None,
                 summary=summary,
                 role="system",  # type: ignore
                 turn_index=turn_index,
@@ -238,12 +239,14 @@ class KnowledgeRetriever:
                 canonical_entity_id=None,
                 
             )
+            
+            ptr_id = cast(str, ptr_node.id)
             self.conversation_engine.add_node(ptr_node)
             pinned_pointer_node_ids.append(ptr_id)
-
-            edge_id = str(uuid.uuid4())
+            
+            # edge_id = str(uuid.uuid4())
             edge = ConversationEdge(
-                id=edge_id,
+                id=None,
                 source_ids=[turn_node_id],
                 target_ids=[ptr_id],
                 relation="references",
@@ -262,7 +265,7 @@ class KnowledgeRetriever:
                 target_edge_ids=[],
             )
             self.conversation_engine.add_edge(edge)
-            pinned_edge_ids.append(edge_id)
+            pinned_edge_ids.append(edge.id)
             prev_turn_meta_summary.prev_node_char_distance_from_last_summary += len(summary)
             prev_turn_meta_summary.prev_node_distance_from_last_summary += 1
 
@@ -278,12 +281,12 @@ class KnowledgeRetriever:
             kg_meta = kg.metadata
             summary = str(kg_meta.get("summary", ""))
 
-            ptr_id = str(uuid.uuid4())
+            # ptr_id = str(uuid.uuid4())
             ptr_node = ConversationNode(
-                id=ptr_id,
+                id=None,
                 label=f"Ref: {kg_meta.get('label')}",
                 type="reference_pointer",
-                doc_id=ptr_id,
+                doc_id=None,
                 summary=summary,
                 role="system",  # type: ignore
                 turn_index=turn_index,
@@ -306,6 +309,7 @@ class KnowledgeRetriever:
                 canonical_entity_id=None,
             )
             self.conversation_engine.add_node(ptr_node)
+            ptr_id = cast(str, ptr_node.id)
             pinned_pointer_node_ids.append(ptr_id)
 
             edge_id = str(uuid.uuid4())

@@ -3929,15 +3929,18 @@ class GraphKnowledgeEngine:
     # Conversation Abstraction
     # ----------------------------
     @conversation_only
-    def create_conversation(self, user_id, conv_id = None, node_id = None) -> tuple[str, str]:
+    def create_conversation(self, user_id, conv_id = None, node_id: str | None | uuid.UUID = None) -> tuple[str, str]:
+        from conversation_orchestrator import get_id_for_conversation_turn
         if self.kg_graph_type != "conversation":
             raise Exception("conversation only allowed to be on canva engine")
         """Create a new conversation thread ID and reserve it with a start node."""
+        new_index = -1
         conv_id = conv_id or str(uuid.uuid4())
-        node_id = node_id  or str(uuid.uuid4())
+        node_id = node_id  or get_id_for_conversation_turn(ConversationNode.id_kind, user_id, 
+                                            conv_id, "Start of conversation", str(new_index), "system", "conversation_summary", in_conv=True)
         # Create a start node to reserve the ID and anchor the conversation
         start_node = ConversationNode(
-            id=node_id,
+            id=str(node_id),
             user_id = user_id,
             label="conversation start",
             type="entity",

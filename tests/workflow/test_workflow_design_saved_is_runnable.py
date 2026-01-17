@@ -134,7 +134,7 @@ def test_persisted_workflow_design_is_runnable(tmp_path):
     ))
 
     # Ensure persisted
-    wf_engine.persist()
+    # wf_engine.persist()
 
     # --------------------
     # Consumer: reopen engines and run persisted design using WorkflowRuntime

@@ -14,7 +14,8 @@ The codebase supports two workflow "spec" shapes:
 
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Callable, Tuple
-
+from graph_knowledge_engine.models import WorkflowEdge, WorkflowNode
+from graph_knowledge_engine.engine import GraphKnowledgeEngine
 
 PredicateName = Optional[str]
 Predicate = Callable[[Dict[str, Any], Any], bool]
@@ -126,58 +127,40 @@ def build_workflow_from_engine(*, workflow_engine: Any, workflow_id: str) -> Wor
 
     return WorkflowSpec(workflow_id=workflow_id, start_node_id=start_node_id, nodes=nodes, out_edges=out_edges)
 
-def load_workflow_design(*, workflow_engine: Any, workflow_id: str) -> Tuple[WFNode, Dict[str, WFNode], Dict[str, List[WFEdge]]]:
+def load_workflow_design(*, workflow_engine: GraphKnowledgeEngine, workflow_id: str) -> Tuple[WorkflowNode, Dict[str, WorkflowNode], Dict[str, List[WorkflowEdge]]]:
     """
     Load workflow graph design from workflow_engine.
     Nodes/edges must be tagged with:
       node.metadata.entity_type="workflow_node"
       edge.metadata.entity_type="workflow_edge"
     """
-    nodes_raw = workflow_engine.get_nodes(where={"$and": [{"entity_type": "workflow_node"},{ "workflow_id": workflow_id}]}, limit=5000)
-    edges_raw = workflow_engine.get_edges(where={"$and": [{"entity_type": "workflow_node"},{ "workflow_id": workflow_id}]}, limit=20000)
+    nodes_raw: list[WorkflowNode] = workflow_engine.get_nodes(where={"$and": [{"entity_type": "workflow_node"},{ "workflow_id": workflow_id}]}, limit=5000, node_type = WorkflowNode)
+    edges_raw: list[WorkflowEdge] = workflow_engine.get_edges(where={"$and": [{"entity_type": "workflow_edge"},{ "workflow_id": workflow_id}]}, limit=20000, edge_type = WorkflowEdge)
 
-    nodes: Dict[str, WFNode] = {}
-    start_nodes: List[WFNode] = []
+    nodes: Dict[str, WorkflowNode] = {}
+    start_nodes: List[WorkflowNode] = []
     for n in nodes_raw:
-        md = n.metadata or {}
-        wn = WFNode(
-            node_id=n.id,
-            workflow_id=md["workflow_id"],
-            op=md.get("wf_op") or "",
-            version=md.get("wf_version") or "v1",
-            start=bool(md.get("wf_start", False)),
-            terminal=bool(md.get("wf_terminal", False)),
-            fanout=bool(md.get("wf_fanout", False)),
-        )
-        nodes[wn.node_id] = wn
-        if wn.start:
-            start_nodes.append(wn)
+
+        nodes[n.id] = n
+        if n.metadata.get("wf_start"):
+            start_nodes.append(n)
 
     if len(start_nodes) != 1:
         raise ValueError(f"workflow_id={workflow_id!r} must have exactly one start node (wf_start=True). Found {len(start_nodes)}")
 
-    adj: Dict[str, List[WFEdge]] = {nid: [] for nid in nodes}
+    adj: Dict[str, List[WorkflowEdge]] = {nid: [] for nid in nodes}
     for e in edges_raw:
         md = e.metadata or {}
         src = e.source_ids[0]
         dst = e.target_ids[0]
         if src not in nodes or dst not in nodes:
             raise ValueError(f"Workflow edge {e.id} connects non-workflow nodes: {src}->{dst}")
-
-        we = WFEdge(
-            edge_id=e.id,
-            workflow_id=md["workflow_id"],
-            src=src,
-            dst=dst,
-            predicate=md.get("wf_predicate"),
-            priority=int(md.get("wf_priority", 100)),
-            is_default=bool(md.get("wf_is_default", False)),
-            multiplicity=str(md.get("wf_multiplicity", "one")),
-        )
-        adj[src].append(we)
-
+     
+        adj[src].append(e)
+    def get_node_priority(n: WorkflowEdge):
+        return n.metadata['wf_priority']
     for src in adj:
-        adj[src].sort(key=lambda x: x.priority)
+        adj[src].sort(key=get_node_priority)
 
     return start_nodes[0], nodes, adj
 
@@ -187,30 +170,38 @@ def validate_workflow_design(
     workflow_engine: Any,
     workflow_id: str,
     predicate_registry: Dict[str, Predicate],
-) -> None:
+):
     start, nodes, adj = load_workflow_design(workflow_engine=workflow_engine, workflow_id=workflow_id)
-
+    adj: dict[str, list[WorkflowEdge]]
     # predicate resolution
     for edges in adj.values():
+        edges: list[WorkflowEdge]
         for e in edges:
-            if e.predicate is not None and e.predicate not in predicate_registry:
-                raise ValueError(f"Unknown predicate {e.predicate!r} on workflow edge {e.edge_id}")
+            predicate:str | None = e.metadata.get("predicate")
+            if predicate is not None and predicate not in predicate_registry:
+                raise ValueError(f"Unknown predicate {predicate!r} on workflow edge {e.id}")
 
     # must have at least one terminal reachable ignoring predicates
-    terminals = {nid for nid, n in nodes.items() if n.terminal or len(adj.get(nid, [])) == 0}
+    terminals = {nid for nid, n in nodes.items() if n.metadata.get("terminal") or len(adj.get(nid, [])) == 0}
     if not terminals:
         raise ValueError("Workflow has no terminal nodes and no sink nodes")
 
+    start: WorkflowNode
     seen = set()
-    stack = [start.node_id]
+    stack = [start.id]
     while stack:
         cur = stack.pop()
         if cur in seen:
             continue
         seen.add(cur)
         for e in adj.get(cur, []):
-            if e.dst not in seen:
-                stack.append(e.dst)
+            e: WorkflowEdge
+            for target_id in e.target_ids:
+                if target_id not in seen:
+                    stack.append(target_id)
+            # if e.dst not in seen:
+            #     stack.append(e.dst)
 
     if not any(t in seen for t in terminals):
         raise ValueError("No terminal reachable from start (ignoring predicates).")
+    return start, nodes, adj

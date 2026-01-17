@@ -781,8 +781,8 @@ def seed_conversation_graph(
     # next_turn edge (TURN_000 -> TURN_001)
     next_edge = ConversationEdge(
         id="EDGE_NEXT_000_001",
-        source_ids=[turn0.id],
-        target_ids=[turn1.id],
+        source_ids=[turn0.safe_get_id()],
+        target_ids=[turn1.safe_get_id()],
         relation="next_turn",
         label="next_turn",
         type="relationship",
@@ -879,8 +879,8 @@ def seed_conversation_graph(
     # summarizes edge (summary -> turns)
     summ_edge = ConversationEdge(
         id="EDGE_SUMM_001",
-        source_ids=[summ.id],
-        target_ids=[turn0.id, turn1.id],
+        source_ids=[summ.safe_get_id()],
+        target_ids=[turn0.safe_get_id(), turn1.safe_get_id()],
         relation="summarizes",
         label="summarizes",
         type="relationship",
@@ -943,8 +943,8 @@ def seed_conversation_graph(
     # edge: turn1 -> kg_ref (optional but useful for viz)
     ref_edge = ConversationEdge(
         id="EDGE_TURN1_KGREF",
-        source_ids=[turn1.id],
-        target_ids=[kg_ref_node.id],
+        source_ids=[turn1.safe_get_id()],
+        target_ids=[kg_ref_node.safe_get_id()],
         relation="mentions_kg",
         label="mentions_kg",
         type="relationship",

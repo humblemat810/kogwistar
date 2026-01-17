@@ -16,6 +16,7 @@ from typing import Any, Callable, Dict, List, Optional
 from langchain_core.language_models import BaseChatModel
 
 from graph_knowledge_engine.engine import GraphKnowledgeEngine
+from id_provider import stable_id
 
 from .models import (
     ConversationAIResponse,
@@ -60,6 +61,10 @@ class OrchestratorState:
 from graph_knowledge_engine.models import MetaFromLastSummary, RetrievalResult
 from graph_knowledge_engine.workflow.executor import WorkflowExecutor
 from graph_knowledge_engine.workflow.contract import build_workflow_from_engine, WorkflowSpec
+
+def get_id_for_conversation_turn(id_kind, user_id, conversation_id, content, new_index, role, entity_type, in_conv):
+    return stable_id(id_kind, user_id, conversation_id, content, str(new_index), role, entity_type, str(in_conv))
+
 class ConversationOrchestrator:
     """KGE-native orchestrator.
 
@@ -635,6 +640,7 @@ class ConversationOrchestrator:
     def add_conversation_turn_workflow_v2(
         self,
         *,
+        run_id: str,
         user_id: str,
         conversation_id: str,
         turn_id: str,
@@ -693,7 +699,7 @@ class ConversationOrchestrator:
         if embedding is None:
             raise RuntimeError("uncalculatable embeddings")
 
-        turn_node_id = turn_id or str(uuid.uuid4())
+        turn_node_id = turn_id # or str(uuid.uuid4())
         self_span = Span(
             collection_page_url=f"conversation/{conversation_id}",
             document_page_url=f"conversation/{conversation_id}#{turn_node_id}",
@@ -712,7 +718,8 @@ class ConversationOrchestrator:
 
         turn_node = ConversationNode(
             user_id=user_id,
-            id=turn_node_id,
+            id=get_id_for_conversation_turn(ConversationNode.id_kind, user_id, 
+                                            conversation_id, content, str(new_index), role, "conversation_turn", str(in_conv)),
             label=f"Turn {new_index} ({role})",
             type="entity",
             doc_id=turn_node_id,
@@ -875,7 +882,7 @@ class ConversationOrchestrator:
     def add_link_to_new_turn(self, turn_node, prev_node, conversation_id, span,prev_turn_meta_summary:MetaFromLastSummary):
         
             seq_edge = ConversationEdge(
-                id=str(uuid.uuid4()),
+                id=None,
                 source_ids=[prev_node.id],
                 target_ids=[turn_node.id],
                 relation="next_turn",
@@ -960,7 +967,8 @@ class ConversationOrchestrator:
         response = None
         if role in ["assistent", "system"]:
             
-            turn_node_id = turn_id or str(uuid.uuid4())
+            turn_node_id = get_id_for_conversation_turn(ConversationNode.id_kind, user_id, 
+                                            conversation_id, content, str(new_index), role, "conversation_turn", str(in_conv)),
             self_span = Span(
                 collection_page_url=f"conversation/{conversation_id}",
                 document_page_url=f"conversation/{conversation_id}#{turn_node_id}",
@@ -1029,7 +1037,8 @@ class ConversationOrchestrator:
             # return add_turn_result
         else:
             # 1) Append the conversation turn node
-            turn_node_id = turn_id or str(uuid.uuid4())
+            turn_node_id = get_id_for_conversation_turn(ConversationNode.id_kind, user_id, 
+                                            conversation_id, content, str(new_index), role, "conversation_turn", str(in_conv)),
             self_span = Span(
                 collection_page_url=f"conversation/{conversation_id}",
                 document_page_url=f"conversation/{conversation_id}#{turn_node_id}",
@@ -1247,7 +1256,7 @@ class ConversationOrchestrator:
 
     # @conversation_only
     def _summarize_conversation_batch(self, conversation_id: str, current_index: int, 
-                                      batch_size: int = 5, in_conv=True , 
+                                      batch_size: int = 5, in_conv=True , user_id: str = None, 
                                       prev_turn_meta_summary : MetaFromLastSummary= None):
         #in_conversation  = False if side car
         if not in_conv:
@@ -1331,11 +1340,14 @@ class ConversationOrchestrator:
         import json
         # Create Summary Node
         new_index = current_index + 1
+        content = '\n'.join(i['text'] for i in get_summary(full_text)) # type: ignore
+        summary_turn_id = get_id_for_conversation_turn(ConversationNode.id_kind, user_id, 
+                                            conversation_id, content, str(new_index), "system", "conversation_summary", str(in_conv)),
         summary_node = ConversationNode(
-            id=str(uuid.uuid4()),
+            id=summary_turn_id,
             label=f"Summary {start_index}-{current_index}",
             type="entity",
-            summary='\n'.join(i['text'] for i in get_summary(full_text)), # type: ignore
+            summary=content, 
             role="system", # type: ignore
             conversation_id=conversation_id,
             turn_index=new_index, # Anchored at end of batch
@@ -1364,7 +1376,7 @@ class ConversationOrchestrator:
 
         # Edges: Summary -> Turns
         sum_edge = ConversationEdge(
-            id=str(uuid.uuid4()),
+            id=None,
             source_ids=[summary_node.id],
             target_ids=batch_ids,
             relation="summarizes",

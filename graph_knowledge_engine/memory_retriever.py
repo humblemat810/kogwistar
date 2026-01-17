@@ -289,7 +289,7 @@ class MemoryRetriever:
         if not selected_memory or not memory_context_text:
             return None
 
-        mem_node_id = mem_id or str(uuid.uuid4())
+        mem_node_id = mem_id #or str(uuid.uuid4())
         mem_node = ConversationNode(
             id=mem_node_id,
             label=f"Memory context (turn {turn_index})",
@@ -329,7 +329,7 @@ class MemoryRetriever:
         e1 = ConversationEdge(
             id=e1_id,
             source_ids=[turn_node_id],
-            target_ids=[mem_node_id],
+            target_ids=[mem_node.safe_get_id()],
             relation="has_memory_context",
             label="has_memory_context",
             type="relationship",
@@ -357,7 +357,7 @@ class MemoryRetriever:
             e = ConversationEdge(
                 id=e_id,
                 source_ids=[mem_node_id],
-                target_ids=[node.id],
+                target_ids=[node.safe_get_id()],
                 relation="summarizes",
                 label="summarizes",
                 type="relationship",
@@ -396,7 +396,7 @@ class MemoryRetriever:
                 metadata={"char_distance_from_last_summary": prev_turn_meta_summary.prev_node_char_distance_from_last_summary, 
                 "turn_distance_from_last_summary": prev_turn_meta_summary.prev_node_distance_from_last_summary, },
                 source_edge_ids=[],
-                target_edge_ids=[edge.id],
+                target_edge_ids=[edge.safe_get_id()],
             )
             self.conversation_engine.add_edge(e)
             edge_ids.append(e_id)

@@ -28,6 +28,7 @@ from typing import Any, Dict, Set
 import uuid
 from graph_knowledge_engine.shortids import run_id_ctx, run_id_scope
 from graph_knowledge_engine import shortids
+from graph_knowledge_engine.id_provider import new_id_str, stable_id
 # --- JWT config (env-driven) ---
 JWT_ALG = os.getenv("JWT_ALG", "HS256")          # HS256 (shared secret) or RS256 (public key)
 JWT_SECRET = os.getenv("JWT_SECRET", "dev-secret-change-me")  # HS256 secret OR RS256 public key
@@ -926,7 +927,8 @@ def kg_upsert_graph_wisdom(inp: KGUpsertIn) -> GraphUpsertOut:
     inp.insertion_method = inp.insertion_method or "wisdom_runtime"
     pure_graph = PureGraph.model_validate(dict(nodes = inp.nodes, edges = inp.edges))
     
-    return GraphUpsertOut.model_validate(wisdom_engine.persist_graph(parsed = pure_graph, session_id = "wisdom:"+str(uuid.uuid1())))
+    return GraphUpsertOut.model_validate(wisdom_engine.persist_graph(parsed = pure_graph, 
+                    session_id = "wisdom:"+str(stable_id("wisdom_graph", str(pure_graph.model_dump_json())))))
     # return _kg_upsert_graph_impl(wisdom_engine, wisdom_gq, inp)
 @tool_roles({Role.RO, Role.RW})
 @require_ns(NameSpace.WISDOM)
@@ -1011,7 +1013,7 @@ import sqlite3
 def maybe_index_vector(item: IndexingItem):
     engine.node_index_collection.upsert(
         # collection_name="semantic_index",
-        ids=[f"idx:{uuid.uuid1()}:{item.node_id}"],
+        ids=[f"idx:{item.node_id}"],
         metadatas=[{
             "target_node_id": item.node_id,
             "canonical_title": item.canonical_title,
