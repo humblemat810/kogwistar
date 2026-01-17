@@ -85,6 +85,7 @@ class ConversationOrchestrator:
         prev_turn_meta_summary: MetaFromLastSummary | None = None,
     ) -> AddTurnResult:
         """
+        deprecated legacy path for logic reference, DO NOT USE IT
         Workflow-driven orchestration path.
 
         - STATIC graph shape: workflow nodes/edges are already registered in engine store.
@@ -94,6 +95,7 @@ class ConversationOrchestrator:
 
         Legacy add_conversation_turn remains unchanged and continues to be the default path.
         """
+        raise Exception("Deprecated code path only for logic reference")
         if prev_turn_meta_summary is None:
             prev_turn_meta_summary = MetaFromLastSummary()
 

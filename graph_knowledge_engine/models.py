@@ -579,7 +579,11 @@ class ConversationNode(ConversationRoleMixin, Node):
         return updates
 class Edge(ChromaValidateSourceMixin, ChromaMixin, EdgeMixin, GraphEntityRefBase):
     # Edge with ref session enforced
+    def get_extra_update(self):
+        return {}
 
+class ConversationEdge(Edge):
+    """Specialized edge for conversation links (next_turn, references, summarizes)."""
     metadata: dict#ConversationNodeMetadata
     @field_validator('metadata')    
     def check_fields(cls, v):
@@ -599,10 +603,6 @@ class Edge(ChromaValidateSourceMixin, ChromaMixin, EdgeMixin, GraphEntityRefBase
         except Exception as _e:
             raise
         return updates
-    pass
-
-class ConversationEdge(Edge):
-    """Specialized edge for conversation links (next_turn, references, summarizes)."""
 class LLMNode( LLMMixin, GraphEntityRefBase):
     """
     Represents a node extracted by an LLM from a document.
@@ -1177,9 +1177,9 @@ class WorkflowEdgeMetadata(BaseModel):
     """
     entity_type: str = Field(..., description='Must be "workflow_edge"')
     workflow_id: str
-    wf_predicate: Optional[str] = None
-    wf_priority: int = 100
-    wf_is_default: bool = False
+    wf_predicate: Optional[str] = None  # llm explanation: wf_predicate: “This path is meant for a specific condition.”
+    wf_priority: int = 100              
+    wf_is_default: bool = False         # llm explanation: wf_is_default = what to do if the decision returns nothing
     wf_multiplicity: Literal["one", "many"] = "one"
 
     model_config = ConfigDict(extra="allow")
@@ -1201,7 +1201,7 @@ class WorkflowNode(Node):
 
     @field_validator("metadata")
     def check_metadata(cls, v):
-        WorkflowNodeMetadata.model_validate(v)
+        v= WorkflowNodeMetadata.model_validate(v).model_dump()
         return v
 
 class WorkflowEdge(Edge):
@@ -1212,7 +1212,7 @@ class WorkflowEdge(Edge):
 
     @field_validator("metadata")
     def check_workflow_edge_metadata(cls, v):
-        WorkflowEdgeMetadata.model_validate(v)
+        v = WorkflowEdgeMetadata.model_validate(v).model_dump()
         return v
 
 # -------------------------

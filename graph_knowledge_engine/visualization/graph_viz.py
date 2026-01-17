@@ -7,7 +7,7 @@ from typing import Dict, List, Optional, Tuple, Type, TypeVar, Union
 from graph_knowledge_engine.engine import GraphKnowledgeEngine
 
 
-from ..models import Node, Edge, ConversationNode, ConversationEdge
+from ..models import Node, Edge, ConversationNode, ConversationEdge, WorkflowEdge, WorkflowNode
 T = TypeVar('T', bound = Union[Node, Edge])
 
 def _safe_iter(x):
@@ -18,15 +18,17 @@ def _load_node_map(engine: GraphKnowledgeEngine, ids: List[str], node_type: Type
         
     if engine.kg_graph_type == "conversation":
         node_type = ConversationNode
+    elif engine.kg_graph_type == "workflow":
+        node_type = WorkflowNode
     else:
         node_type = Node
     if not ids:
         return {}
     try:
         # Prefer engine helper if available
-        return engine._load_node_map(ids)
+        return engine._load_node_map(ids, node_type = node_type)
     except Exception:
-        nodes = engine.get_nodes(ids=ids)
+        nodes = engine.get_nodes(ids=ids, node_type = node_type)
         out = {n.id: n for n in nodes}
         # for rid, doc in zip(got.get("ids") or [], got.get("documents") or []):
         #     try:
@@ -40,14 +42,16 @@ def _load_edge_map(engine: GraphKnowledgeEngine, ids: List[str], edge_type: Type
     """Robustly load Edge models by ids."""
     if engine.kg_graph_type == "conversation":
         edge_type = ConversationEdge
+    elif engine.kg_graph_type == "workflow":
+        edge_type = WorkflowEdge
     else:
-        edge_type = Edge    
+        edge_type = Edge
     if not ids:
         return {}
     try:
         return engine._load_edge_map(ids)
     except Exception:
-        edges = engine.get_edges(ids=ids)
+        edges = engine.get_edges(ids=ids, edge_type = edge_type)
         out = {n.id: n for n in edges}
         return out
 

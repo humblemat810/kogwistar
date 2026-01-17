@@ -110,7 +110,8 @@ def test_add_turn_like_workflow_dump_bundles(tmp_path: Path):
     # -----------------------------
     # 1) Producer: build + persist workflow design
     # -----------------------------
-    n_mem = _wf_node(workflow_id=workflow_id, node_id=f"wf|{workflow_id}|mem", op="memory_retrieve", start=True)
+    n_start = _wf_node(workflow_id=workflow_id, node_id=f"wf|{workflow_id}|start", op="start", start=True)
+    n_mem = _wf_node(workflow_id=workflow_id, node_id=f"wf|{workflow_id}|mem", op="memory_retrieve", start=False)
     n_kg  = _wf_node(workflow_id=workflow_id, node_id=f"wf|{workflow_id}|kg", op="kg_retrieve")
     n_mpin= _wf_node(workflow_id=workflow_id, node_id=f"wf|{workflow_id}|mpin", op="memory_pin")
     n_kpin= _wf_node(workflow_id=workflow_id, node_id=f"wf|{workflow_id}|kpin", op="kg_pin")
@@ -119,9 +120,15 @@ def test_add_turn_like_workflow_dump_bundles(tmp_path: Path):
     n_sum = _wf_node(workflow_id=workflow_id, node_id=f"wf|{workflow_id}|sum", op="summarize")
     n_end = _wf_node(workflow_id=workflow_id, node_id=f"wf|{workflow_id}|end", op="end", terminal=True)
 
-    for n in [n_mem, n_kg, n_mpin, n_kpin, n_ans, n_dec, n_sum, n_end]:
+    for n in [n_start, n_mem, n_kg, n_mpin, n_kpin, n_ans, n_dec, n_sum, n_end]:
         workflow_engine.add_node(n)
-
+    # start -> n_mem
+    workflow_engine.add_edge(_wf_edge(
+        workflow_id=workflow_id,
+        edge_id=f"wf|{workflow_id}|e|start->mem",
+        src=n_start.id, dst=n_mem.id,
+        predicate=None, priority=100, is_default=True
+    ))
     # mem -> kg
     workflow_engine.add_edge(_wf_edge(
         workflow_id=workflow_id,
@@ -166,7 +173,7 @@ def test_add_turn_like_workflow_dump_bundles(tmp_path: Path):
         predicate=None, priority=100, is_default=True
     ))
 
-    # ans -> dec
+    # ans -> dec decision
     workflow_engine.add_edge(_wf_edge(
         workflow_id=workflow_id,
         edge_id=f"wf|{workflow_id}|e|ans->dec",
@@ -194,6 +201,25 @@ def test_add_turn_like_workflow_dump_bundles(tmp_path: Path):
         predicate=None, priority=100, is_default=True
     ))
 
+    # -----------------------------
+    # 1.) D3 bundle dumps (HTML) before save
+    # -----------------------------
+    # You need your real template file here:
+    # graph_knowledge_engine/templates/d3.html (or wherever it lives)
+    template_html = Path("graph_knowledge_engine/templates/d3.html").read_text(encoding="utf-8")
+
+    out_dir = Path("tests/_artifacts/add_turn_like_bundle_b4save")
+    meta = dump_paired_bundles(
+        kg_engine=kg_engine,
+        conversation_engine=conversation_engine,
+        workflow_engine=workflow_engine,
+        template_html=template_html,
+        out_dir=out_dir,
+        mode="reify",
+        insertion_method=None,
+        kg_doc_id=None,
+        conversation_doc_id=None,
+    )
     # workflow_engine.persist()
 
     # -----------------------------

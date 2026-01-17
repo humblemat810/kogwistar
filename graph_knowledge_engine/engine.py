@@ -2454,12 +2454,9 @@ class GraphKnowledgeEngine:
         if edge.embedding is None:
             edge.embedding = self._iterative_defensive_emb(str(doc))
         # main edge row
+        # from chromadb.base_types import Metadata
         doc = edge.model_dump_json(field_mode='backend', exclude = ['embedding'])
-        self.edge_collection.add(
-            ids=[edge.id],
-            documents=[str(doc)],
-            embeddings=[edge.embedding] if edge.embedding is not None else [self._iterative_defensive_emb(str(doc))],
-            metadatas=[_strip_none({
+        base_metadata : list[dict[str,Any]]= [_strip_none({
                 "doc_id": doc_id,
                 "relation": edge.relation,
                 "source_ids": _json_or_none(edge.source_ids),
@@ -2475,9 +2472,29 @@ class GraphKnowledgeEngine:
                 "node_endpoint_count": node_endpoint_count,   # receptive range
                 "edge_endpoint_count": edge_endpoint_count,
                 "total_endpoint_count": total_endpoint_count,
+            })]
+        if self.kg_graph_type == "conversation":
+            base_metadata[0].update(_strip_none({
                 'char_distance_from_last_summary': edge.metadata.get("char_distance_from_last_summary"), 
-                'turn_distance_from_last_summary': edge.metadata.get("char_distance_from_last_summary")
-            })],
+                'turn_distance_from_last_summary': edge.metadata.get("turn_distance_from_last_summary")
+                }))
+        if self.kg_graph_type == "workflow":
+            from .models import WorkflowEdge
+            edge = cast(WorkflowEdge, edge)
+            edge_metadata = edge.metadata
+            base_metadata[0].update(_strip_none({
+                            "entity_type": edge_metadata.get("entity_type"),
+                            "workflow_id": edge_metadata.get("workflow_id"),
+                            "wf_priority": edge_metadata.get("wf_priority"),
+                            "wf_is_default": edge_metadata.get("wf_is_default"),
+                            "wf_predicate": edge_metadata.get("predicate"),
+                            "wf_multiplicity": edge_metadata.get("wf_multiplicity"),
+                }))
+        self.edge_collection.add(
+            ids=[edge.id],
+            documents=[str(doc)],
+            embeddings=[edge.embedding] if edge.embedding is not None else [self._iterative_defensive_emb(str(doc))],
+            metadatas=base_metadata,
         )
         self._maybe_reindex_edge_refs(edge)
         # endpoints fan-out

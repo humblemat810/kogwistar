@@ -141,6 +141,36 @@
     </script>
     
     <script>
+      function linkPath(d){
+        const sx = d.source.x, sy = d.source.y;
+        const tx = d.target.x, ty = d.target.y;
+
+        const k = d._parallel_count || 1;
+        const i = d._parallel_index || 0;
+
+        // Self-loop
+        if (d.source.id === d.target.id) {
+          const r = 18 + i * 8; // different radius for multiple self-loops
+          // Arc loop around node
+          return `M ${sx} ${sy} m 0 -${r} a ${r} ${r} 0 1 1 1 0 a ${r} ${r} 0 1 1 -1 0`;
+        }
+
+        // Parallel edges: curve offset perpendicular to the line
+        const dx = tx - sx, dy = ty - sy;
+        const len = Math.hypot(dx, dy) || 1;
+        const nx = -dy / len, ny = dx / len; // unit perpendicular
+
+        const step = 14; // spacing between parallel edges
+        const offset = (i - (k - 1) / 2) * step;
+
+        const mx = (sx + tx) / 2;
+        const my = (sy + ty) / 2;
+
+        const cx = mx + nx * offset;
+        const cy = my + ny * offset;
+
+        return `M ${sx} ${sy} Q ${cx} ${cy} ${tx} ${ty}`;
+      }
       function isTurnNode(n) {
         return (typeof n.id === "string" && n.id.startsWith("TURN_")) ||
               (typeof n.label === "string" && /^Turn\s+\d+/.test(n.label));
@@ -242,7 +272,24 @@
 
         const allNodes = (data.nodes || []).map(n => ({...n}));
         const allLinks = (data.links || []).map(l => ({...l}));
+        function stKey(e){
+          const sid = (typeof e.source === "object" ? e.source.id : e.source);
+          const tid = (typeof e.target === "object" ? e.target.id : e.target);
+          return `${sid}→${tid}`; // directed key; use sorted if you want undirected grouping
+        }
 
+        const byPair = new Map();
+        allLinks.forEach(e => {
+          const k = stKey(e);
+          if (!byPair.has(k)) byPair.set(k, []);
+          byPair.get(k).push(e);
+        });
+        byPair.forEach(list => {
+          list.forEach((e, i) => {
+            e._parallel_index = i;
+            e._parallel_count = list.length;
+          });
+        });
         const svg = d3.select("svg"),
               width = window.innerWidth,
               height = window.innerHeight;
@@ -348,11 +395,12 @@
           includeLat.disabled  = false;
         }
 
-        const linkSel = gLinks.selectAll("line")
+        const linkSel = gLinks.selectAll("path")
           .data(allLinks, keyEdge)
-          .join("line")
-          .attr("stroke-width",1.6)
-          .attr("marker-end","url(#arrow)")
+          .join("path")
+          .attr("fill", "none")
+          .attr("stroke-width", 1.6)
+          .attr("marker-end", "url(#arrow)")
           .attr("stroke", d => `url(#${gradIdForEdge(d)})`);
 
         linkSel.append("title").text(d => {
@@ -409,10 +457,7 @@
           .alpha(1)
           .on("tick", () => {
             linkSel
-              .attr("x1", d => d.source.x)
-              .attr("y1", d => d.source.y)
-              .attr("x2", d => d.target.x)
-              .attr("y2", d => d.target.y);
+              linkSel.attr("d", linkPath);
 
             gradSel
               .attr("x1", d => (d.source && d.source.x) || 0)
