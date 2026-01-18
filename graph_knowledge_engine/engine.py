@@ -2347,7 +2347,7 @@ class GraphKnowledgeEngine:
             embeddings=[node.embedding] if node.embedding is not None else [self._iterative_defensive_emb(str(doc))],
             metadatas=[meta],
         )
-        self.get_nodes([node.id])
+        self.get_nodes([node.id], type(node))
         self._index_node_docs(node)
         self._maybe_reindex_node_refs(node)
     def _entity_is_conversation(self, node: Node | Edge):

@@ -1365,7 +1365,16 @@ class WorkflowEdge(Edge):
     def check_workflow_edge_metadata(cls, v):
         v = WorkflowEdgeMetadata.model_validate(v).model_dump()
         return v
-
+    @property
+    def predicate(self):
+        return self.metadata.get('wf_predicate')
+    @property
+    def multiplicity(self):
+        return self.metadata.get('wf_multiplicity')
+    @property
+    def is_default(self):
+        return self.metadata.get('wf_is_default')
+    
 # -------------------------
 # Workflow traces: run/step/checkpoint (persist in conversation_engine)
 # -------------------------

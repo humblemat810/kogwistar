@@ -11,6 +11,8 @@ from graph_knowledge_engine.models import (
 )
 from typing import TYPE_CHECKING
 
+from graph_knowledge_engine.workflow.contract import RunResult, State
+
 if TYPE_CHECKING:
     from graph_knowledge_engine.workflow.runtime import StepContext
 
@@ -225,17 +227,23 @@ def test_add_turn_like_workflow_dump_bundles(tmp_path: Path):
         kg_doc_id=None,
         conversation_doc_id=None,
     )
-    import os
-    os.startfile(str(out_dir))    
+    # import os
+    # os.startfile(str(out_dir))    
     # workflow_engine.persist()
 
     # -----------------------------
     # 2) Consumer: run stored design (runnable proof)
     # -----------------------------
+    def predicate_should_pin_memory(state: State, r: RunResult):
+        return bool(state.get("memory", {}).get("selected_ids"))
+    def predicate_should_pin_kg(state: State, r: RunResult):
+        return bool(state.get("kg", {}).get("selected_ids"))
+    def predicate_should_summarize(state: State, r: RunResult):
+        return bool(state.get("decide", {}).get("need_summary"))
     predicate_registry = {
-        "should_pin_memory": lambda st, r: bool(st.get("memory", {}).get("selected_ids")),
-        "should_pin_kg": lambda st, r: bool(st.get("kg", {}).get("selected_ids")),
-        "should_summarize": lambda st, r: bool(st.get("decide", {}).get("need_summary")),
+        "should_pin_memory": predicate_should_pin_memory,
+        "should_pin_kg": predicate_should_pin_kg,
+        "should_summarize": predicate_should_summarize,
     }
 
     # def resolve_step(op: str):
@@ -367,7 +375,7 @@ def test_add_turn_like_workflow_dump_bundles(tmp_path: Path):
         initial_state={},
     )
     assert run_id
-    assert final_state["op_log"][0] == "memory_retrieve"
+    assert final_state["op_log"][1] == "memory_retrieve"
 
     # -----------------------------
     # 3) D3 bundle dumps (HTML) for manual inspection

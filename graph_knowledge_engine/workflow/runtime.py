@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 from concurrent.futures import ThreadPoolExecutor
 
-from graph_knowledge_engine.models import WorkflowNode, MentionVerification, ConversationEdge
+from graph_knowledge_engine.models import WorkflowNode, MentionVerification, ConversationEdge, WorkflowEdge
 
 from .design import validate_workflow_design, Predicate
 from .serialize import try_serialize_with_ref
@@ -237,7 +237,7 @@ class WorkflowRuntime:
 
     def _route_next(
         self,
-        edges: List[Any],
+        edges: List[WorkflowEdge],
         state: State,
         last_result: RunResult,
         fanout: bool,
@@ -256,7 +256,7 @@ class WorkflowRuntime:
             except Exception:
                 ok = False
             if ok:
-                matched.append(e.dst)
+                matched.append(e.target_ids[0])
                 if not fanout and e.multiplicity != "many":
                     return matched
 
@@ -266,8 +266,10 @@ class WorkflowRuntime:
         if not matched:
             for e in edges:
                 if e.is_default:
-                    return [e.dst]
-
+                    if fanout:
+                        return e.target_ids
+                    else:
+                        return e.target_ids[0:1]
         return matched
 
     # --------------------
@@ -330,7 +332,8 @@ class WorkflowRuntime:
         from graph_knowledge_engine.models import WorkflowStepExecNode, Grounding, Span  # adjust import path
 
         result_json = try_serialize_with_ref(result)
-        excerpt = f"step {step_seq} op={op} status={status} dur={duration_ms}ms"
+        
+        excerpt = f"{dict(step=step_seq, op=op, status=status, duration_ms=duration_ms)}"
         span = Span(**_make_trace_span(conversation_id=conversation_id, excerpt=excerpt, doc_id=f"conv:{conversation_id}"))
 
         n = WorkflowStepExecNode(
@@ -351,11 +354,14 @@ class WorkflowRuntime:
                 "status": status,
                 "duration_ms": duration_ms,
                 "result_json": result_json,
-                "level_from_root": 0,
             },
+            level_from_root = 0,
+            domain_id = None,
+            canonical_entity_id= None,
+            embedding=None
         )
         self.conversation_engine.add_node(n)
-        if result["conversation_node_id"]:
+        if result.conversation_node_id:
             self_span = Span(
                 collection_page_url=f"conversation/{conversation_id}",
                 document_page_url=f"conversation/{conversation_id}#{n.id}",
@@ -376,16 +382,16 @@ class WorkflowRuntime:
                     notes=f"step run result",
                 ),
             )    
-            e = ConversationEdge(type = 'relationship', summary = f"results during {result['conversation_node_id']}",
+            e = ConversationEdge(type = 'relationship', summary = f"results during {result.conversation_node_id}",
                                  domain_id=None, label='run_result', 
                                  properties={}, 
                                  mentions=[Grounding(spans=[self_span])], canonical_entity_id=None, 
-                                 source_ids=[n.safe_get_id()], target_ids=[result['conversation_node_id']],
+                                 source_ids=[n.safe_get_id()], target_ids=[result.conversation_node_id],
                                  relation="run_result", source_edge_ids = [], target_edge_ids = [], embedding = None,
                                  doc_id = f"wf_step|{run_id}|{step_seq}",
                                  metadata={"relation":"run_result",
                                            "source_id":[n.id],
-                                           "target_id":result['conversation_node_id']},
+                                           "target_id":result.conversation_node_id},
                                  )
             self.conversation_engine.add_edge(e)
 
@@ -419,5 +425,6 @@ class WorkflowRuntime:
                 "state_json": state_json,
                 "level_from_root": 0,
             },
+            domain_id=None,canonical_entity_id=None,embedding=None,level_from_root=0
         )
         self.conversation_engine.add_node(n)
