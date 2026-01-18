@@ -138,6 +138,93 @@
       // Optional (bundle mode): server or CLI may inject these.
       window.__EMBEDDED_DATA__ = {{ embedded_data | safe if embedded_data is defined else "null" }};
       window.__BUNDLE_META__ = {{ bundle_meta | safe if bundle_meta is defined else "null" }};
+
+      async function loadSnapshot() {
+        // If your dump is embedded already, skip this and use the embedded JSON.
+        const r = await fetch("/snapshot");
+        if (!r.ok) throw new Error("snapshot fetch failed");
+        return await r.json();
+      }
+
+      function applyEventToModel(model, ev) {
+        // model: { nodesById: Map, edgesById: Map, ... }
+        switch (ev.op) {
+          case "node.upsert": {
+            const n = ev.payload;
+            model.nodesById.set(n.id, n);
+            break;
+          }
+          case "node.remove": {
+            model.nodesById.delete(ev.entity?.id);
+            break;
+          }
+          case "edge.upsert": {
+            const e = ev.payload;
+            model.edgesById.set(e.id, e);
+            break;
+          }
+          case "edge.remove": {
+            model.edgesById.delete(ev.entity?.id);
+            break;
+          }
+          case "checkpoint": {
+            // optional UI decoration
+            break;
+          }
+        }
+      }
+
+      function updateD3FromModel(model) {
+        // Use keyed joins: .data(nodes, d => d.id) and .data(links, d => d.id)
+        // Then update simulation nodes/links and restart alpha lightly.
+      }
+
+      async function connectLive(model, sinceSeq) {
+        const proto = location.protocol === "https:" ? "wss:" : "ws:";
+        const wsUrl = `${proto}//${location.host}/changes/ws?since_seq=${encodeURIComponent(sinceSeq)}`;
+        const ws = new WebSocket(wsUrl);
+
+        ws.onmessage = (m) => {
+          const msg = JSON.parse(m.data);
+
+          if (msg.type === "need_snapshot") {
+            console.warn("need_snapshot:", msg.reason);
+            // simplest: reload snapshot, then reconnect with new seq
+            // (or do a catch-up HTTP request first)
+            return;
+          }
+
+          const events = msg.type === "batch" ? msg.events : [msg.event];
+          for (const e of events) {
+            applyEventToModel(model, e);
+            model.lastSeq = Math.max(model.lastSeq, e.seq);
+          }
+          updateD3FromModel(model);
+        };
+
+        ws.onclose = () => {
+          // reconnect with backoff
+          setTimeout(() => connectLive(model, model.lastSeq), 1000);
+        };
+
+        return ws;
+      }
+
+      (async () => {
+        const snap = await loadSnapshot();
+
+        // Initialize in-memory model from snapshot
+        const model = {
+          nodesById: new Map((snap.nodes || []).map(n => [n.id, n])),
+          edgesById: new Map((snap.edges || []).map(e => [e.id, e])),
+          lastSeq: snap.seq || 0,
+        };
+
+        // initial render
+        updateD3FromModel(model);
+
+        // live upgrade
+        connectLive(model, model.lastSeq);
     </script>
     
     <script>

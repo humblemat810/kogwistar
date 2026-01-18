@@ -4,54 +4,62 @@ from dataclasses import dataclass
 from typing import Any, Literal, Mapping, Optional, TypedDict
 
 
+# ---- Operation types -------------------------------------------------
+
 Op = Literal[
-    node.upsert,
-    node.remove,
-    edge.upsert,
-    edge.remove,
-    checkpoint,
-    snapshot,  # optional if you ever want to send snapshots through the stream
+    "node.upsert",
+    "node.remove",
+    "edge.upsert",
+    "edge.remove",
+    "checkpoint",
+    "snapshot",
 ]
 
 
-class EntityRef(TypedDict, total=False)
-    kind Literal[node, edge, checkpoint, other]
-    id str
-    short_id str
+# ---- Entity reference -------------------------------------------------
 
+class EntityRef(TypedDict, total=False):
+    kind: Literal["node", "edge", "checkpoint", "other"]
+    id: str
+    short_id: str
+
+
+# ---- Change event -----------------------------------------------------
 
 @dataclass(frozen=True, slots=True)
-class ChangeEvent
-    seq int
-    op Op
-    ts_unix_ms int
+class ChangeEvent:
+    seq: int
+    op: Op
+    ts_unix_ms: int
 
-    entity Optional[EntityRef] = None
-    payload Any = None
+    entity: Optional[EntityRef] = None
+    payload: Any = None
 
-    # Optional provenancedebug fields
-    run_id Optional[str] = None
-    step_id Optional[str] = None
+    # Optional provenance / debug fields
+    run_id: Optional[str] = None
+    step_id: Optional[str] = None
 
-    def to_jsonable(self) - dict[str, Any]
+    # ---- Serialization ------------------------------------------------
+
+    def to_jsonable(self) -> dict[str, Any]:
         return {
-            seq self.seq,
-            op self.op,
-            ts_unix_ms self.ts_unix_ms,
-            entity self.entity,
-            payload self.payload,
-            run_id self.run_id,
-            step_id self.step_id,
+            "seq": self.seq,
+            "op": self.op,
+            "ts_unix_ms": self.ts_unix_ms,
+            "entity": self.entity,
+            "payload": self.payload,
+            "run_id": self.run_id,
+            "step_id": self.step_id,
         }
 
     @staticmethod
-    def from_jsonable(d Mapping[str, Any]) - ChangeEvent
+    def from_jsonable(d: Mapping[str, Any]) -> ChangeEvent:
         return ChangeEvent(
-            seq=int(d[seq]),
-            op=d[op],
-            ts_unix_ms=int(d[ts_unix_ms]),
-            entity=d.get(entity),
-            payload=d.get(payload),
-            run_id=d.get(run_id),
-            step_id=d.get(step_id),
+            seq=int(d["seq"]),
+            op=d["op"],  # type: ignore[arg-type]
+            ts_unix_ms=int(d["ts_unix_ms"]),
+            entity=d.get("entity"),
+            payload=d.get("payload"),
+            run_id=d.get("run_id"),
+            step_id=d.get("step_id"),
         )

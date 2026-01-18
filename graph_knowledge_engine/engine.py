@@ -2,7 +2,8 @@ from __future__ import annotations
 from types import MethodType
 
 from langchain_core.language_models import BaseChatModel
-
+import pathlib
+import time
 from .models import AddTurnResult, MetaFromLastSummary, RetrievalResult
 if True:
     """_summary_
@@ -86,7 +87,9 @@ import math
 from graphlib import TopologicalSorter
 import hashlib
 from datetime import datetime, timezone
-
+from graph_knowledge_engine.cdc.change_bus import ChangeBus
+from graph_knowledge_engine.cdc.change_event import ChangeEvent
+from graph_knowledge_engine.cdc.oplog import OplogWriter
 
 from pydantic import BaseModel
 
@@ -1940,7 +1943,8 @@ class GraphKnowledgeEngine:
         adjudicator=None,            # callable(left: Node, right: Node) -> AdjudicationVerdict
         merge_policy=None,           # callable(left, right, verdict) -> str (canonical_id)
         verifier=None,               # callable(extracted, full_text, ref, **kw) -> ReferenceSession
-        kg_graph_type : Literal ['knowledge', 'conversation', 'workflow'] = 'knowledge'
+        kg_graph_type : Literal ['knowledge', 'conversation', 'workflow'] = 'knowledge',
+        debug_dir: pathlib.Path | None = None
     ):
         """
         embedding_function: callable(texts: List[str]) -> List[List[float]].
@@ -1949,6 +1953,12 @@ class GraphKnowledgeEngine:
           - ENV SENTENCE_TRANSFORMERS_MODEL, or
           - "all-MiniLM-L6-v2".
         """
+        self.changes = ChangeBus(buffer_max_events=50_000)
+        from .debug_producer import DebugEventProducer
+        self._debug_producer = DebugEventProducer("http://127.0.0.1:8000")
+        self._oplog = None
+        if debug_dir is not None:
+            self._oplog = OplogWriter(debug_dir / "changes.jsonl", fsync=False)
         self.tool_call_id_factory: Callable[[],str] | None = None
         self.kg_graph_type = kg_graph_type
         self.persist_directory = persist_directory
@@ -2086,6 +2096,21 @@ class GraphKnowledgeEngine:
             # MethodType
             # a.foo = MethodType(foo, a)
             self.cached_embed = cast(Callable[[str], Iterable[float]], cached_embed)
+    def _emit_change(self, *, op: str, entity: dict | None, payload: object, run_id: str | None = None, step_id: str | None = None) -> None:
+        # seq = self.changes.next_seq()
+        ev = ChangeEvent(
+            seq=seq,
+            op=op,
+            ts_unix_ms=int(time.time() * 1000),
+            entity=entity,
+            payload=payload,
+            run_id=run_id,
+            step_id=step_id,
+        )
+        self.changes.emit(ev)
+        if self._oplog:
+            self._oplog.append(ev)
+
     def iterative_defensive_emb(self, emb_text0):
         if self.cached_embed:
             return self.cached_embed(emb_text0)
@@ -2350,6 +2375,13 @@ class GraphKnowledgeEngine:
         self.get_nodes([node.id], type(node))
         self._index_node_docs(node)
         self._maybe_reindex_node_refs(node)
+        self._emit_change(
+            op="node.upsert",
+            entity={"kind": "node", "id": node.id, 
+                    "kg_graph_type": self.kg_graph_type,
+                    "url" : self.persist_directory},
+            payload=node.to_jsonable() if hasattr(node, "to_jsonable") else node.model_dump(),
+        )
     def _entity_is_conversation(self, node: Node | Edge):
         return type(node) in [ConversationEdge, ConversationNode]
     def _fanout_endpoints_rows(self, edge: Edge, doc_id: str | None):
@@ -2510,6 +2542,14 @@ class GraphKnowledgeEngine:
                 metadatas=ep_metas,
                 embeddings=[self._iterative_defensive_emb(str(d)) for d in ep_docs]
             )
+        
+        self._emit_change(
+            op="node.upsert",
+            entity={"kind": "edge", "id": edge.id, 
+                    "kg_graph_type": self.kg_graph_type,
+                    "url" : self.persist_directory},
+            payload=edge.to_jsonable() if hasattr(edge, "to_jsonable") else edge.model_dump(),
+        )
     def add_document(self, document: Document):
         if document.embeddings is None:
             document.embeddings = self._iterative_defensive_emb(str(document.content))
@@ -2524,6 +2564,14 @@ class GraphKnowledgeEngine:
                 "domain_id": document.domain_id,
                 "processed": document.processed,
             })],
+        )
+        
+        self._emit_change(
+            op="node.upsert",
+            entity={"kind": "doc_node", "id": document.id, 
+                    "kg_graph_type": self.kg_graph_type,
+                    "url" : self.persist_directory},
+            payload=document.to_jsonable() if hasattr(document, "to_jsonable") else document.model_dump(),
         )
 
     def add_domain(self, domain: Domain):

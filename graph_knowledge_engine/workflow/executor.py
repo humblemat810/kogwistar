@@ -62,7 +62,7 @@ class WorkflowEvent:
             "ts_ms": self.ts_ms,
             "payload": self.payload,
         }
-
+from ..conversation_state_contracts import WorkflowState
 
 class StepContext:
     """Context passed to each step. Provides shared state + message queue helpers."""
@@ -73,7 +73,7 @@ class StepContext:
         run_id: str,
         node_id: str,
         op: str,
-        state: State,
+        state: WorkflowState,
         message_queue: "queue.Queue[Dict[str, Json]]",
     ) -> None:
         self.run_id = run_id

@@ -35,7 +35,7 @@ class RunFailure(BaseModel):
     status: Literal["failure"] = "failure"
 RunResult: TypeAlias = RunSuccess | RunFailure
 StepFn: TypeAlias = Callable[["StepContext"], RunResult]
-
+from ..conversation_state_contracts import WorkflowState
 
 @dataclass
 class StepContext:
@@ -43,7 +43,7 @@ class StepContext:
     workflow_id: str
     workflow_node_id: str
     op: str
-    state: State
+    state: WorkflowState
     message_queue: "queue.Queue[Dict[str, Json]]"
 
     def publish(self, msg: Dict[str, Json]) -> None:
@@ -117,9 +117,9 @@ class WorkflowRuntime:
         workflow_id: str,
         conversation_id: str,
         turn_node_id: str,
-        initial_state: State,
+        initial_state: WorkflowState,
         run_id: Optional[str] = None,
-    ) -> Tuple[State, str]:
+    ) -> Tuple[WorkflowState, str]:
         """
         Returns (final_state, run_id).
 
@@ -136,7 +136,7 @@ class WorkflowRuntime:
         )
         # start, nodes, adj = load_workflow_design(workflow_engine=self.workflow_engine, workflow_id=workflow_id)
 
-        state: State = dict(initial_state)
+        state: WorkflowState = initial_state
         step_seq = 0
 
         # Persist workflow_run node in conversation_engine
@@ -238,7 +238,7 @@ class WorkflowRuntime:
     def _route_next(
         self,
         edges: List[WorkflowEdge],
-        state: State,
+        state: WorkflowState,
         last_result: RunResult,
         fanout: bool,
     ) -> List[str]:
@@ -401,7 +401,7 @@ class WorkflowRuntime:
         workflow_id: str,
         run_id: str,
         step_seq: int,
-        state: State,
+        state: WorkflowState,
     ) -> None:
         from graph_knowledge_engine.models import WorkflowCheckpointNode, Grounding, Span  # adjust import path
 

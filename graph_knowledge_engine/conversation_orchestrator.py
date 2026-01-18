@@ -770,26 +770,16 @@ class ConversationOrchestrator:
         # ----------------------------
         # 4) Step resolver
         # ----------------------------
-        resolve_step = self._make_add_turn_step_resolver(
-            user_id=user_id,
-            conversation_id=conversation_id,
-            turn_node_id=turn_node_id,
-            turn_index=new_index,
-            role=role,
-            content=content,
-            mem_id=mem_id,
-            embedding=embedding,
-            self_span=self_span,
-            filtering_callback=filtering_callback,
-            max_retrieval_level=max_retrieval_level,
-            summary_char_threshold=summary_char_threshold,
-            prev_turn_meta_summary=prev_turn_meta_summary,
-        )
+        # Use the package-default resolver registry (resolvers.py).
+        # Step implementations pull dependencies from ctx.state["_deps"].
+        from .workflow.resolvers import default_resolver
+        resolve_step = default_resolver
 
         # ----------------------------
         # 5) Run with WorkflowRuntime (real persisted checkpoints)
         # ----------------------------
         from .workflow.runtime import WorkflowRuntime
+        from .conversation_state_contracts import WorkflowStateModel, PrevTurnMetaSummaryModel, WorkflowState
 
         runtime = WorkflowRuntime(
             workflow_engine=self.workflow_engine,
@@ -799,30 +789,46 @@ class ConversationOrchestrator:
             checkpoint_every_n_steps=1,
             max_workers=4,
         )
+        deps= {
+                "conversation_engine": self.conversation_engine,
+                "ref_knowledge_engine": self.ref_knowledge_engine,
+                "llm": self.llm,
+                "filtering_callback": filtering_callback,
+                "tool_runner": self.tool_runner,
+                "max_retrieval_level": max_retrieval_level,
+                "summary_char_threshold": summary_char_threshold,
+                "prev_turn_meta_summary": prev_turn_meta_summary,
+                "answer_only": lambda *, conversation_id, prev_turn_meta_summary: self.answer_only(
+                    conversation_id=conversation_id,
+                    prev_turn_meta_summary=prev_turn_meta_summary,
+                ),
+                "summarize_batch": lambda conversation_id, current_index, *, prev_turn_meta_summary: self._summarize_conversation_batch(
+                    conversation_id,
+                    current_index,
+                    prev_turn_meta_summary=prev_turn_meta_summary,
+                ),
+                "add_link_to_new_turn": self.add_link_to_new_turn,
+            }
+        init_state: WorkflowState = WorkflowStateModel(
+            conversation_id=conversation_id,
+            user_id=user_id,
+            turn_node_id=turn_node_id,
+            turn_index=new_index,
+            mem_id=mem_id,
+            self_span=self_span,
+            role=str(role),
+            user_text=content,
+            embedding=embedding,
+            prev_turn_meta_summary=PrevTurnMetaSummaryModel(
+                prev_node_char_distance_from_last_summary=prev_turn_meta_summary.prev_node_char_distance_from_last_summary,
+                prev_node_distance_from_last_summary=prev_turn_meta_summary.prev_node_distance_from_last_summary,
+            ),
+        ).model_dump()
+        init_state["_deps"] = deps
 
-        init_state = {
-            "conversation_id": conversation_id,
-            "user_id": user_id,
-            "turn_node_id": turn_node_id,
-            "turn_index": new_index,
-            "role": str(role),
-            "user_text": content,
-            "embedding": embedding,
-            "memory": None,
-            "memory_raw": None,
-            "kg": None,
-            "kg_raw": None,
-            "memory_pin": None,
-            "memory_pin_raw": None,
-            "kg_pin": None,
-            "answer": None,
-            "answer_raw": None,
-            "summary": {"should_summarize": False, "did_summarize": False, "summary_node_id": None},
-            "prev_turn_meta_summary": {
-                "prev_node_char_distance_from_last_summary": prev_turn_meta_summary.prev_node_char_distance_from_last_summary,
-                "prev_node_distance_from_last_summary": prev_turn_meta_summary.prev_node_distance_from_last_summary,
-            },
-        }
+            # Dependency injection for default_resolver (resolvers.py)
+            
+        
 
         final_state, run_id = runtime.run(
             workflow_id=workflow_id,
