@@ -6,7 +6,7 @@ if True:
     logger = logging.getLogger(__name__)
     logger.addHandler(logging.NullHandler())
     logger.debug("loading models")
-from id_provider import new_id_str, new_event_id, stable_id
+from .id_provider import new_id_str, new_event_id, stable_id
 from typing import List, Literal, Optional, Dict, Any, Type, TypeAlias, Union, Annotated, ClassVar, Tuple, Self, cast
 from pydantic import BaseModel, Field, model_validator, field_validator, ValidationInfo, ConfigDict
 import uuid
@@ -63,15 +63,7 @@ class IdPolicyMixin(BaseModel):
     id: Optional[str] = Field(default=None)
     id_policy: ClassVar[Literal["event","canonical"]] = "event"
     id_kind: ClassVar[str] = "model"
-    def ensure_id(self, *, key: Optional[list[str]] = None) -> "IdPolicyMixin":
-        if self.id is not None:
-            return self
-        if self.id_policy == "event":
-            self.id = new_event_id()
-        else:
-            assert key is not None
-            self.id = str(stable_id(self.__class__.__name__, *key))
-        return self
+
     def identity_key(self) -> Tuple[str, ...]:
         """
         Subclasses with id_policy="canonical" MUST override this.
@@ -80,6 +72,8 @@ class IdPolicyMixin(BaseModel):
         return self.__class__.__name__,
     @model_validator(mode="after")
     def _ensure_id(self) -> Self:
+        if self.id_policy == "canonical" and self.identity_key.__func__ is IdPolicyMixin.identity_key:
+            raise TypeError("Canonical models must override identity_key()")
         if self.id is not None:
             return self        
 
@@ -463,7 +457,7 @@ class ChromaMixin(BaseModel):
     @field_validator('metadata')
     def check_metadata(cls, v):
         BaseNodeMetadata.model_validate(v)
-        return 
+        return v
     
 # -------------------------
 # LLM-facing mixin (NO embedding field to keep schema tight)
@@ -595,6 +589,7 @@ class TombstoneMixin(BaseModel):
 
 class Node(IdPolicyMixin, TombstoneMixin, LevelAwareMixin, ChromaValidateSourceMixin, ChromaMixin, GraphEntityRefBase):
     # Node with ref session enforced and level awareness
+    id_kind: ClassVar[str] = "kg.node"
     def safe_get_id(self):
         return cast(str, self.id)
     def get_extra_update(self):
@@ -629,7 +624,7 @@ class ConversationNode(ConversationRoleMixin, Node):
     """
     # id_policy: ClassVar[Literal["event", "canonical"]] = "canonical"
     # id_kind: ClassVar[str] = "model"  # override per subclass if you want stable separation
-
+    id_kind: ClassVar[str] = "conversation.node"
     def identity_key(self) -> Tuple[str, ...]:
         # from conversation_orchestrator import get_id_for_conversation_turn
         """
@@ -682,6 +677,7 @@ class ConversationNode(ConversationRoleMixin, Node):
         return updates
 class Edge(IdPolicyMixin, ChromaValidateSourceMixin, ChromaMixin, EdgeMixin, GraphEntityRefBase):
     # Edge with ref session enforced
+    id_kind: ClassVar[str] = "kg.edge"
     def safe_get_id(self):
         return cast(str, self.id)
     def get_extra_update(self):
@@ -712,7 +708,7 @@ class Edge(IdPolicyMixin, ChromaValidateSourceMixin, ChromaMixin, EdgeMixin, Gra
 class ConversationEdge( Edge):
     """Specialized edge for conversation links (next_turn, references, summarizes)."""
     metadata: dict#ConversationNodeMetadata
-    
+    id_kind: ClassVar[str] = "conversation.edge"
     # id_policy: ClassVar[Literal["event", "canonical"]] = "canonical"
     # id_kind: ClassVar[str] = "model"  # override per subclass if you want stable separation
 
@@ -726,19 +722,6 @@ class ConversationEdge( Edge):
                 str(self.source_edge_ids), str(self.target_edge_ids),
                 str(self.metadata.get("entity_type")))
 
-    @model_validator(mode="after")
-    def _ensure_id(self) -> Self:
-        if self.node_id is not None:
-            return self        
-
-        if self.id_policy == "event":
-            self.id = str(new_id_str())
-            return self
-
-        # canonical
-        key = self.identity_key()  # must be stable & non-empty
-        self.node_id = stable_id(self.id_kind, *key)
-        return self
     
     @field_validator('metadata')    
     def check_fields(cls, v):
@@ -1353,10 +1336,11 @@ class WorkflowNode(Node):
     Typed wrapper for workflow design nodes (persist in workflow_engine).
     """
     metadata: dict
-
+    id_kind: ClassVar[str] = "workflow.node"
     @field_validator("metadata")
     def check_metadataWFN(cls, v):
-        v= WorkflowNodeMetadata.model_validate(v).model_dump()
+        v2= WorkflowNodeMetadata.model_validate(v).model_dump()
+        v.update(v2)
         return v
     
     @property
@@ -1376,7 +1360,7 @@ class WorkflowEdge(Edge):
     Stored as a normal Edge, but with workflow edge metadata validation.
     """
     metadata: dict
-
+    id_kind: ClassVar[str] = "workflow.edge"
     @field_validator("metadata")
     def check_workflow_edge_metadata(cls, v):
         v = WorkflowEdgeMetadata.model_validate(v).model_dump()

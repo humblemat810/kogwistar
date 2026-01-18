@@ -36,11 +36,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from .runtime import RunResult
+
 Json = Any
 State = Dict[str, Json]
 Result = Json
-
-Predicate = Callable[[State, Result], bool]
 
 
 @dataclass(frozen=True)
@@ -61,6 +61,7 @@ class WorkflowNodeInfo:
 
 @dataclass(frozen=True)
 class WorkflowEdgeInfo:
+    name: str
     edge_id: str
     src: str
     dst: str
@@ -70,6 +71,14 @@ class WorkflowEdgeInfo:
     multiplicity: str  # "one" | "many"
 
 
+Predicate = Callable[[WorkflowEdgeInfo, State, Result], bool]
+class BasePredicate():
+    @staticmethod
+    def __call__(e:WorkflowEdgeInfo,  state: State, result: RunResult):
+        if result.next_step_names:
+            return e.name in result.next_step_names
+        else:
+            return True # always true if step does not specify next step names
 def build_workflow_from_engine(*, engine: Any, workflow_id: str) -> WorkflowSpec:
     """
     Loads workflow spec from engine via convention:

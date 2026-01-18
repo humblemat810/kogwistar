@@ -23,12 +23,13 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple, Union, cast
 from graph_knowledge_engine.engine import GraphKnowledgeEngine
 
 from joblib import Memory
 
 from .contract import (
+    BasePredicate,
     WorkflowSpec as MinimalWorkflowSpec,
     WorkflowNodeInfo,
     WorkflowEdgeInfo,
@@ -230,18 +231,24 @@ class WorkflowExecutor:
             self.state["answer"] = result
 
     def _choose_next(self, *, node: WorkflowNodeInfo, last_result: Result) -> List[str]:
-        edges = self._adj.get(node.node_id, [])
+        edges: list[WorkflowEdgeInfo]  = self._adj.get(node.node_id, [])
         matched: List[str] = []
-
+        
+        edges = sorted(edges, key = lambda x: x.priority or 0)
         for e in edges:
             if e.predicate is None:
-                continue
-            pred = self.predicate_registry.get(e.predicate)
+                pred = cast(Predicate, BasePredicate)
+            else:
+                if e.predicate not in self.predicate_registry:
+                    raise Exception(f'predicated name {e.predicate} is found but not in {__class__.__name__}.predicate_registry')
+                pred: Predicate| None = self.predicate_registry.get(e.predicate)
             if pred is None:
-                continue
+                pred = cast(Callable[[WorkflowEdgeInfo, State, Result], bool], BasePredicate)
+                # continue
+            
             ok = False
             try:
-                ok = bool(pred(self.state, last_result))
+                ok = bool(pred(e, self.state, last_result))
             except Exception:
                 ok = False
             if ok:
@@ -249,8 +256,10 @@ class WorkflowExecutor:
                 # no fanout => take first unless edge explicitly says many
                 if not node.fanout and e.multiplicity != "many":
                     return matched
-
+        # either no matched or (matched and non_fanout)
         # Unconditional fanout edges: if a workflow is using fanout semantics,
+        
+        
         # allow predicate-matched routing *and* unconditional "many" edges to fire.
         # This is important for patterns like:
         #   think (fanout=True) -> crawl (default, multiplicity=many)
@@ -261,14 +270,18 @@ class WorkflowExecutor:
         #   (b) fans out to background work (crawl) until some condition is met,
         # but once the condition is met we want to proceed to terminal without
         # continuing to spawn background work.
+        
+        # in case you do not believe the designer is correct, it checks at run time to makesure that 
+        # if the next node require single not coexist with other possible paths from current node
         taking_terminal_exit = any(self._nodes.get(dst, WorkflowNodeInfo(dst, "", "v1", False, True, False)).terminal for dst in matched)
         if not taking_terminal_exit:
-            unconditional_many = [
-                e.dst for e in edges if e.predicate is None and e.multiplicity == "many"
-            ]
-            for dst in unconditional_many:
-                if dst not in matched:
-                    matched.append(dst)
+            if node.fanout:
+                unconditional_many = [
+                    e.dst for e in edges if e.predicate is None and e.multiplicity == "many"
+                ]
+                for dst in unconditional_many:
+                    if dst not in matched:
+                        matched.append(dst)
 
         # fanout => take all matches
         if matched and (node.fanout or any(ed.multiplicity == "many" for ed in edges)):

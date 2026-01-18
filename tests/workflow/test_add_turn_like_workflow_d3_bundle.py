@@ -9,7 +9,12 @@ from graph_knowledge_engine.models import (
     Span,
     MentionVerification,
 )
-from graph_knowledge_engine.workflow.runtime import RunSuccess, RunFailure, StepContext, WorkflowRuntime
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from graph_knowledge_engine.workflow.runtime import StepContext
+
+from graph_knowledge_engine.workflow.runtime import WorkflowRuntime, RunSuccess, RunFailure
 
 # IMPORTANT: use your existing dumper (calls to_d3_force internally)
 from graph_knowledge_engine.utils.kge_debug_dump import dump_paired_bundles  # type: ignore
@@ -233,49 +238,123 @@ def test_add_turn_like_workflow_dump_bundles(tmp_path: Path):
         "should_summarize": lambda st, r: bool(st.get("decide", {}).get("need_summary")),
     }
 
-    def resolve_step(op: str):
-        def _fn(ctx: StepContext):
-            ctx.state.setdefault("op_log", [])
-            ctx.state["op_log"].append(op)
+    # def resolve_step(op: str):
+    #     def _fn(ctx: StepContext):
+    #         ctx.state.setdefault("op_log", [])
+    #         ctx.state["op_log"].append(op)
 
-            # JSONable placeholders (manual inspection only)
-            if op == "start":
-                ctx.state["started"] = True
+    #         # JSONable placeholders (manual inspection only)
+    #         if op == "start":
+    #             ctx.state["started"] = True
                 
-                return RunSuccess({"started": True})
-            if op == "memory_retrieve":
-                ctx.state["memory"] = {"selected_ids": ["m1"], "text": "memory context"}
-                return {"ok": True}
-            if op == "kg_retrieve":
-                ctx.state["kg"] = {"selected_ids": ["k1"], "facts": ["f1"]}
-                return {"ok": True}
-            if op == "memory_pin":
-                ctx.state["memory_pin"] = {"pinned_ids": ["m1"]}
-                return {"ok": True}
-            if op == "kg_pin":
-                ctx.state["kg_pin"] = {"pinned_ids": ["k1"]}
-                return {"ok": True}
-            if op == "answer":
-                ctx.state["answer"] = {"text": "answer text", "llm_decision_need_summary": True}
-                return ctx.state["answer"]
-            if op == "decide_summarize":
-                need = bool(ctx.state.get("answer", {}).get("llm_decision_need_summary"))
-                ctx.state["decide"] = {"need_summary": need}
-                return ctx.state["decide"]
-            if op == "summarize":
-                ctx.state["summary"] = {"text": "summary text"}
-                return ctx.state["summary"]
-            if op == "end":
-                return {"done": True}
-            raise KeyError(op)
-        return _fn
+    #             return RunSuccess({"started": True})
+    #         if op == "memory_retrieve":
+    #             ctx.state["memory"] = {"selected_ids": ["m1"], "text": "memory context"}
+    #             return {"ok": True}
+    #         if op == "kg_retrieve":
+    #             ctx.state["kg"] = {"selected_ids": ["k1"], "facts": ["f1"]}
+    #             return {"ok": True}
+    #         if op == "memory_pin":
+    #             ctx.state["memory_pin"] = {"pinned_ids": ["m1"]}
+    #             return {"ok": True}
+    #         if op == "kg_pin":
+    #             ctx.state["kg_pin"] = {"pinned_ids": ["k1"]}
+    #             return {"ok": True}
+    #         if op == "answer":
+    #             ctx.state["answer"] = {"text": "answer text", "llm_decision_need_summary": True}
+    #             return ctx.state["answer"]
+    #         if op == "decide_summarize":
+    #             need = bool(ctx.state.get("answer", {}).get("llm_decision_need_summary"))
+    #             ctx.state["decide"] = {"need_summary": need}
+    #             return ctx.state["decide"]
+    #         if op == "summarize":
+    #             ctx.state["summary"] = {"text": "summary text"}
+    #             return ctx.state["summary"]
+    #         if op == "end":
+    #             return {"done": True}
+    #         raise KeyError(op)
+    #     return _fn
+    from graph_knowledge_engine.workflow.resolvers import MappingStepResolver
+    from graph_knowledge_engine.workflow.runtime import StepContext
+    resolver = MappingStepResolver()
 
+    @resolver.register("start")
+    def _start(ctx: StepContext):
+        ctx.state.setdefault("op_log", []).append("start")
+        ctx.state["started"] = True
+        conversation_node_id_created_during_process = None
+        return RunSuccess(conversation_node_id=conversation_node_id_created_during_process, 
+                          outputs=[{"started": True}])
+
+    @resolver.register("memory_retrieve")
+    def _memory_retrieve(ctx: StepContext):
+        ctx.state.setdefault("op_log", []).append("memory_retrieve")
+        ctx.state["memory"] = {"selected_ids": ["m1"], "text": "memory context"}
+        conversation_node_id_created_during_process = None
+        return RunSuccess(conversation_node_id=conversation_node_id_created_during_process, 
+                          outputs=[{"ok": True}])
+    @resolver.register("kg_retrieve")
+    def _kg_retrieve(ctx: StepContext):
+        ctx.state.setdefault("op_log", []).append("kg_retrieve")
+        ctx.state["kg"] = {"selected_ids": ["k1"], "facts": ["f1"]}
+        # return {"ok": True}
+        conversation_node_id_created_during_process = None
+        return RunSuccess(conversation_node_id=conversation_node_id_created_during_process, 
+                          outputs=[{"ok": True}])
+    @resolver.register("memory_pin")
+    def _memory_pin(ctx: StepContext):
+        ctx.state.setdefault("op_log", []).append("memory_pin")
+        ctx.state["memory_pin"] = {"pinned_ids": ["m1"]}
+        # return {"ok": True}
+        conversation_node_id_created_during_process = None
+        return RunSuccess(conversation_node_id=conversation_node_id_created_during_process, 
+                          outputs=[{"ok": True}])
+    @resolver.register("kg_pin")
+    def _kg_pin(ctx: StepContext):
+        ctx.state.setdefault("op_log", []).append("kg_pin")
+        ctx.state["kg_pin"] = {"pinned_ids": ["k1"]}
+        # return {"ok": True}
+        conversation_node_id_created_during_process = None
+        return RunSuccess(conversation_node_id=conversation_node_id_created_during_process, 
+                          outputs=[{"ok": True}])
+    @resolver.register("answer")
+    def _answer(ctx: StepContext):
+        ctx.state.setdefault("op_log", []).append("answer")
+        ctx.state["answer"] = {"text": "answer text", "llm_decision_need_summary": True}
+        # return ctx.state["answer"]
+        conversation_node_id_created_during_process = None
+        return RunSuccess(conversation_node_id=conversation_node_id_created_during_process, 
+                          outputs=[{"answer": ctx.state["answer"]}])
+    @resolver.register("decide_summarize")
+    def _decide(ctx: StepContext):
+        ctx.state.setdefault("op_log", []).append("decide_summarize")
+        need = bool(ctx.state.get("answer", {}).get("llm_decision_need_summary"))
+        ctx.state["decide"] = {"need_summary": need}
+        # return ctx.state["decide"]
+        conversation_node_id_created_during_process = None
+        return RunSuccess(conversation_node_id=conversation_node_id_created_during_process, 
+                          outputs=[ctx.state["decide"]])
+    @resolver.register("summarize")
+    def _summarize(ctx: StepContext):
+        ctx.state.setdefault("op_log", []).append("summarize")
+        ctx.state["summary"] = {"text": "summary text"}
+        # return ctx.state["summary"]
+        conversation_node_id_created_during_process = None
+        return RunSuccess(conversation_node_id=conversation_node_id_created_during_process, 
+                          outputs=[{"ok": True}])
+    @resolver.register("end")
+    def _end(ctx: StepContext):
+        ctx.state.setdefault("op_log", []).append("end")
+        # return {"done": True}
+        conversation_node_id_created_during_process = None
+        return RunSuccess(conversation_node_id=conversation_node_id_created_during_process, 
+                          outputs=[{"done": True}])    
     # IMPORTANT: re-open workflow_engine from disk to prove "saved graph is runnable"
     workflow_engine2 = GraphKnowledgeEngine(persist_directory=str(wf_dir), kg_graph_type="workflow")
     rt = WorkflowRuntime(
         workflow_engine=workflow_engine2,
         conversation_engine=conversation_engine,
-        step_resolver=resolve_step,
+        step_resolver=resolver.resolve,
         predicate_registry=predicate_registry,
         checkpoint_every_n_steps=1,
         max_workers=1,

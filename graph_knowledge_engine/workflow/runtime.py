@@ -17,15 +17,22 @@ Json = Any
 State = Dict[str, Json]
 # Result = Json
 from typing import TypedDict, Literal, TypeAlias, Any
-class RunSuccess(TypedDict):
-    conversation_node_id: Optional[str]
-    status: Literal["success"]
-    outputs: list[Any]
 
-class RunFailure(TypedDict):
+from dataclasses import dataclass
+from pydantic import BaseModel
+
+class RunSuccess(BaseModel):
     conversation_node_id: Optional[str]
-    status: Literal["failure"]
+    outputs: list[Any]
+    next_step_names: list[str] = []  # empty will by default fan out all
+    status: Literal["success"] = "success"
+
+class RunFailure(BaseModel):
+    conversation_node_id: Optional[str]
+    
     errors: list[str]
+    next_step_names: list[str] = []  # empty will by default fan out all
+    status: Literal["failure"] = "failure"
 RunResult: TypeAlias = RunSuccess | RunFailure
 StepFn: TypeAlias = Callable[["StepContext"], RunResult]
 

@@ -16,7 +16,7 @@ from typing import Any, Callable, Dict, List, Optional
 from langchain_core.language_models import BaseChatModel
 
 from graph_knowledge_engine.engine import GraphKnowledgeEngine
-from id_provider import stable_id
+from .id_provider import stable_id
 
 from .models import (
     ConversationAIResponse,
