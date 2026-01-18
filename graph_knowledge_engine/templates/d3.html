@@ -139,94 +139,15 @@
       window.__EMBEDDED_DATA__ = {{ embedded_data | safe if embedded_data is defined else "null" }};
       window.__BUNDLE_META__ = {{ bundle_meta | safe if bundle_meta is defined else "null" }};
 
-      async function loadSnapshot() {
-        // If your dump is embedded already, skip this and use the embedded JSON.
-        const r = await fetch("/snapshot");
-        if (!r.ok) throw new Error("snapshot fetch failed");
-        return await r.json();
-      }
-
-      function applyEventToModel(model, ev) {
-        // model: { nodesById: Map, edgesById: Map, ... }
-        switch (ev.op) {
-          case "node.upsert": {
-            const n = ev.payload;
-            model.nodesById.set(n.id, n);
-            break;
-          }
-          case "node.remove": {
-            model.nodesById.delete(ev.entity?.id);
-            break;
-          }
-          case "edge.upsert": {
-            const e = ev.payload;
-            model.edgesById.set(e.id, e);
-            break;
-          }
-          case "edge.remove": {
-            model.edgesById.delete(ev.entity?.id);
-            break;
-          }
-          case "checkpoint": {
-            // optional UI decoration
-            break;
-          }
-        }
-      }
-
-      function updateD3FromModel(model) {
-        // Use keyed joins: .data(nodes, d => d.id) and .data(links, d => d.id)
-        // Then update simulation nodes/links and restart alpha lightly.
-      }
-
-      async function connectLive(model, sinceSeq) {
-        const proto = location.protocol === "https:" ? "wss:" : "ws:";
-        const wsUrl = `${proto}//${location.host}/changes/ws?since_seq=${encodeURIComponent(sinceSeq)}`;
-        const ws = new WebSocket(wsUrl);
-
-        ws.onmessage = (m) => {
-          const msg = JSON.parse(m.data);
-
-          if (msg.type === "need_snapshot") {
-            console.warn("need_snapshot:", msg.reason);
-            // simplest: reload snapshot, then reconnect with new seq
-            // (or do a catch-up HTTP request first)
-            return;
-          }
-
-          const events = msg.type === "batch" ? msg.events : [msg.event];
-          for (const e of events) {
-            applyEventToModel(model, e);
-            model.lastSeq = Math.max(model.lastSeq, e.seq);
-          }
-          updateD3FromModel(model);
-        };
-
-        ws.onclose = () => {
-          // reconnect with backoff
-          setTimeout(() => connectLive(model, model.lastSeq), 1000);
-        };
-
-        return ws;
-      }
-
-      (async () => {
-        const snap = await loadSnapshot();
-
-        // Initialize in-memory model from snapshot
-        const model = {
-          nodesById: new Map((snap.nodes || []).map(n => [n.id, n])),
-          edgesById: new Map((snap.edges || []).map(e => [e.id, e])),
-          lastSeq: snap.seq || 0,
-        };
-
-        // initial render
-        updateD3FromModel(model);
-
-        // live upgrade
-        connectLive(model, model.lastSeq);
+      // Live CDC (optional): CLI/bundler can inject these.
+      // - bundle_graph_type: "knowledge" | "conversation" | "workflow" (or null)
+      // - cdc_enabled: boolean
+      // - cdc_ws_url: string|null (e.g. "ws://127.0.0.1:8787/changes/ws")
+      window.__BUNDLE_GRAPH_TYPE__ = {{ bundle_graph_type | safe if bundle_graph_type is defined else "null" }};
+      window.__CDC_ENABLED__ = {{ cdc_enabled | safe if cdc_enabled is defined else "false" }};
+      window.__CDC_WS_URL__ = {{ cdc_ws_url | safe if cdc_ws_url is defined else "null" }};
     </script>
-    
+
     <script>
       function linkPath(d){
         const sx = d.source.x, sy = d.source.y;
@@ -357,26 +278,51 @@
           data = await res.json();
         }
 
-        const allNodes = (data.nodes || []).map(n => ({...n}));
-        const allLinks = (data.links || []).map(l => ({...l}));
-        function stKey(e){
-          const sid = (typeof e.source === "object" ? e.source.id : e.source);
-          const tid = (typeof e.target === "object" ? e.target.id : e.target);
-          return `${sid}→${tid}`; // directed key; use sorted if you want undirected grouping
+        const MODE = "{{ mode }}";
+        const BUNDLE_GRAPH_TYPE = window.__BUNDLE_GRAPH_TYPE__;
+
+        // In-memory mutable model (keyed by id). CDC events mutate this model.
+        const model = {
+          nodesById: new Map(),
+          linksById: new Map(),
+          lastSeq: 0,
+        };
+
+        // Seed model from the embedded snapshot/dump.
+        for (const n of (data.nodes || [])) model.nodesById.set(n.id, { ...n });
+        for (const l of (data.links || [])) {
+          const id = l.id || null;
+          // If dump omitted id, synthesize a stable one.
+          const sid = (typeof l.source === "object" ? l.source.id : l.source);
+          const tid = (typeof l.target === "object" ? l.target.id : l.target);
+          const rel = (l.relation || l.label || "");
+          const key = id || `${sid}->${tid}:${rel}`;
+          model.linksById.set(key, { ...l, id: key });
         }
 
-        const byPair = new Map();
-        allLinks.forEach(e => {
-          const k = stKey(e);
-          if (!byPair.has(k)) byPair.set(k, []);
-          byPair.get(k).push(e);
-        });
-        byPair.forEach(list => {
-          list.forEach((e, i) => {
-            e._parallel_index = i;
-            e._parallel_count = list.length;
+        let allNodes = Array.from(model.nodesById.values());
+        let allLinks = Array.from(model.linksById.values());
+
+        function recomputeParallelEdgeHints(){
+          function stKey(e){
+            const sid = (typeof e.source === "object" ? e.source.id : e.source);
+            const tid = (typeof e.target === "object" ? e.target.id : e.target);
+            return `${sid}→${tid}`;
+          }
+          const byPair = new Map();
+          allLinks.forEach(e => {
+            const k = stKey(e);
+            if (!byPair.has(k)) byPair.set(k, []);
+            byPair.get(k).push(e);
           });
-        });
+          byPair.forEach(list => {
+            list.forEach((e, i) => {
+              e._parallel_index = i;
+              e._parallel_count = list.length;
+            });
+          });
+        }
+        recomputeParallelEdgeHints();
         const svg = d3.select("svg"),
               width = window.innerWidth,
               height = window.innerHeight;
@@ -398,17 +344,21 @@
           return "g-" + safeSvgId(keyEdge(e));
         }
 
-        const gradSel = gradDefs
-          .selectAll("linearGradient")
-          .data(allLinks, keyEdge)
-          .join(enter => {
-            const g = enter.append("linearGradient")
-              .attr("id", d => gradIdForEdge(d))
-              .attr("gradientUnits", "userSpaceOnUse");
-            g.append("stop").attr("offset", "0%").attr("stop-color", "#b3b3b3");
-            g.append("stop").attr("offset", "100%").attr("stop-color", "#000");
-            return g;
-          });
+        let gradSel;
+        function rebuildGradients(){
+          gradSel = gradDefs
+            .selectAll("linearGradient")
+            .data(allLinks, keyEdge)
+            .join(enter => {
+              const g = enter.append("linearGradient")
+                .attr("id", d => gradIdForEdge(d))
+                .attr("gradientUnits", "userSpaceOnUse");
+              g.append("stop").attr("offset", "0%").attr("stop-color", "#b3b3b3");
+              g.append("stop").attr("offset", "100%").attr("stop-color", "#000");
+              return g;
+            });
+        }
+        rebuildGradients();
 
         defs.append("marker")
           .attr("id","arrow").attr("viewBox","0 -5 10 10").attr("refX",12).attr("refY",0)
@@ -482,38 +432,87 @@
           includeLat.disabled  = false;
         }
 
-        const linkSel = gLinks.selectAll("path")
-          .data(allLinks, keyEdge)
-          .join("path")
-          .attr("fill", "none")
-          .attr("stroke-width", 1.6)
-          .attr("marker-end", "url(#arrow)")
-          .attr("stroke", d => `url(#${gradIdForEdge(d)})`);
-
-        linkSel.append("title").text(d => {
-          const rel = d.relation || d.label || "";
-          const props = d.properties ? JSON.stringify(d.properties) : "";
-          return [rel, props].filter(Boolean).join(" • ") || "link";
-        });
-
-        const entities = allNodes.filter(n => n.type !== "edge-node");
-        const eNodes   = allNodes.filter(n => n.type === "edge-node");
-
-        const nodeCircle = gNodes.append("g").attr("stroke","#fff").attr("stroke-width",1.3)
-          .selectAll("circle").data(entities, d => d.id).join("circle")
-          .attr("r", 5).attr("fill", "#69b");
+        let linkSel;
+        let nodeCircle;
+        let nodeDiamond;
+        let labelSel;
 
         const diamondPath = d3.symbol().type(d3.symbolDiamond).size(120);
-        const nodeDiamond = gNodes.append("g").attr("stroke","#fff").attr("stroke-width",1.0)
-          .selectAll("path").data(eNodes, d => d.id).join("path")
-          .attr("d", diamondPath).attr("fill", "#d77");
 
-        nodeCircle.append("title").text(d => [d.label||d.id, d.summary, d.id].filter(Boolean).join("\n"));
-        nodeDiamond.append("title").text(d => [d.label||"edge-node", d.summary, d.id].filter(Boolean).join("\n"));
+        function rebuildGraphElements(){
+          rebuildGradients();
 
-        const labelSel = gLabels.selectAll("text").data(allNodes, d => d.id).join("text")
-          .text(d=>d.label||d.id)
-          .style("font", fontSize.value + "px sans-serif");
+          // Links
+          linkSel = gLinks.selectAll("path")
+            .data(allLinks, keyEdge)
+            .join(
+              enter => {
+                const p = enter.append("path")
+                  .attr("fill", "none")
+                  .attr("stroke-width", 1.6)
+                  .attr("marker-end", "url(#arrow)");
+                p.append("title");
+                return p;
+              },
+              update => update,
+              exit => exit.remove()
+            )
+            .attr("stroke", d => `url(#${gradIdForEdge(d)})`);
+
+          linkSel.select("title").text(d => {
+            const rel = d.relation || d.label || "";
+            const props = d.properties ? JSON.stringify(d.properties) : "";
+            return [rel, props].filter(Boolean).join(" • ") || "link";
+          });
+
+          // Nodes
+          const entities = allNodes.filter(n => n.type !== "edge-node");
+          const eNodes   = allNodes.filter(n => n.type === "edge-node");
+
+          nodeCircle = gNodes.selectAll("circle")
+            .data(entities, d => d.id)
+            .join(
+              enter => {
+                const c = enter.append("circle")
+                  .attr("r", 5)
+                  .attr("fill", "#69b")
+                  .attr("stroke", "#fff")
+                  .attr("stroke-width", 1.3);
+                c.append("title");
+                return c;
+              },
+              update => update,
+              exit => exit.remove()
+            );
+
+          nodeDiamond = gNodes.selectAll("path")
+            .data(eNodes, d => d.id)
+            .join(
+              enter => {
+                const p = enter.append("path")
+                  .attr("d", diamondPath)
+                  .attr("fill", "#d77")
+                  .attr("stroke", "#fff")
+                  .attr("stroke-width", 1.0);
+                p.append("title");
+                return p;
+              },
+              update => update,
+              exit => exit.remove()
+            );
+
+          nodeCircle.select("title").text(d => [d.label||d.id, d.summary, d.id].filter(Boolean).join("\n"));
+          nodeDiamond.select("title").text(d => [d.label||"edge-node", d.summary, d.id].filter(Boolean).join("\n"));
+
+          // Labels
+          labelSel = gLabels.selectAll("text")
+            .data(allNodes, d => d.id)
+            .join("text")
+            .text(d=>d.label||d.id)
+            .style("font", fontSize.value + "px sans-serif");
+        }
+
+        rebuildGraphElements();
 
 
         function applyFocusStyles(){
@@ -543,8 +542,7 @@
           .force("gravityY", gravY)
           .alpha(1)
           .on("tick", () => {
-            linkSel
-              linkSel.attr("d", linkPath);
+            linkSel.attr("d", linkPath);
 
             gradSel
               .attr("x1", d => (d.source && d.source.x) || 0)
@@ -895,6 +893,196 @@
         }
         attachClick(nodeCircle);
         attachClick(nodeDiamond);
+
+        // -----------------------------
+        // Live CDC (optional)
+        // -----------------------------
+        function ensureEntityNode(id){
+          if (!id) return;
+          if (!model.nodesById.has(id)) {
+            model.nodesById.set(id, { id, label: id, type: "entity", summary: "", properties: {} });
+          }
+        }
+
+        function removeLinksByPrefix(prefix){
+          for (const k of Array.from(model.linksById.keys())) {
+            if (k.startsWith(prefix)) model.linksById.delete(k);
+          }
+        }
+
+        function applyCdcEvent(ev){
+          if (!ev || !ev.op) return;
+
+          // Topic filter (kg vs conversation vs workflow)
+          const eg = ev.entity || {};
+          if (BUNDLE_GRAPH_TYPE && eg.kg_graph_type && eg.kg_graph_type !== BUNDLE_GRAPH_TYPE) {
+            return;
+          }
+
+          if (typeof ev.seq === "number") model.lastSeq = Math.max(model.lastSeq, ev.seq);
+
+          if (ev.op === "node.upsert") {
+            const p = ev.payload || {};
+            if (!p.id) return;
+            model.nodesById.set(p.id, {
+              id: p.id,
+              label: p.label || p.summary || p.id,
+              type: p.type || "entity",
+              summary: p.summary || "",
+              properties: p.properties || p.metadata || {},
+              ...p,
+            });
+          }
+
+          if (ev.op === "node.remove") {
+            const id = (eg && eg.id) || null;
+            if (id) model.nodesById.delete(id);
+            // Also drop any links that still point to it.
+            for (const k of Array.from(model.linksById.keys())) {
+              const l = model.linksById.get(k);
+              const s = (typeof l.source === "object" ? l.source.id : l.source);
+              const t = (typeof l.target === "object" ? l.target.id : l.target);
+              if (s === id || t === id) model.linksById.delete(k);
+            }
+          }
+
+          if (ev.op === "edge.upsert") {
+            const e = ev.payload || {};
+            if (!e.id) return;
+
+            // Remove the previous representation of this edge (links + optional edge-node)
+            removeLinksByPrefix(e.id + ":");
+            // In reify mode, the edge-node id is the edge id.
+            if (MODE === "reify") model.nodesById.delete(e.id);
+
+            const rel = e.relation || e.label || "";
+            const srcs = Array.isArray(e.source_ids) ? e.source_ids : [];
+            const tgts = Array.isArray(e.target_ids) ? e.target_ids : [];
+
+            // Be defensive: fall back to source_id/target_id when present.
+            const s1 = (!srcs.length && e.source_id) ? [e.source_id] : srcs;
+            const t1 = (!tgts.length && e.target_id) ? [e.target_id] : tgts;
+
+            for (const sid of s1) ensureEntityNode(sid);
+            for (const tid of t1) ensureEntityNode(tid);
+
+            if (MODE === "reify") {
+              model.nodesById.set(e.id, {
+                id: e.id,
+                label: rel || (e.label || "edge"),
+                type: "edge-node",
+                summary: e.summary || "",
+                properties: e.properties || e.metadata || {},
+                ...e,
+              });
+
+              for (const sid of s1) {
+                const lid = `${e.id}:s:${sid}`;
+                model.linksById.set(lid, {
+                  id: lid,
+                  source: sid,
+                  target: e.id,
+                  relation: rel,
+                  label: rel,
+                  properties: e.properties || e.metadata || {},
+                });
+              }
+              for (const tid of t1) {
+                const lid = `${e.id}:t:${tid}`;
+                model.linksById.set(lid, {
+                  id: lid,
+                  source: e.id,
+                  target: tid,
+                  relation: rel,
+                  label: rel,
+                  properties: e.properties || e.metadata || {},
+                });
+              }
+            } else {
+              for (const sid of s1) {
+                for (const tid of t1) {
+                  const lid = `${e.id}:${sid}->${tid}`;
+                  model.linksById.set(lid, {
+                    id: lid,
+                    source: sid,
+                    target: tid,
+                    relation: rel,
+                    label: rel,
+                    properties: e.properties || e.metadata || {},
+                  });
+                }
+              }
+            }
+          }
+
+          if (ev.op === "edge.remove") {
+            const id = (eg && eg.id) || null;
+            if (id) {
+              model.nodesById.delete(id);
+              removeLinksByPrefix(id + ":");
+            }
+          }
+        }
+
+        function refreshFromModel(){
+          allNodes = Array.from(model.nodesById.values());
+          allLinks = Array.from(model.linksById.values());
+          recomputeParallelEdgeHints();
+
+          // Update D3 selections
+          rebuildGraphElements();
+
+          // Update forces
+          linkForce.links(allLinks);
+          sim.nodes(allNodes);
+
+          // Re-attach inspector handlers on the new selections
+          attachClick(nodeCircle);
+          attachClick(nodeDiamond);
+
+          // Re-apply current visibility / layout constraints if already computed
+          if (typeof applyVisibility === "function") {
+            applyVisibility();
+          }
+
+          if (!freezeIn.checked) sim.alpha(0.35).restart();
+          applyFocusStyles();
+        }
+
+        function resolveCdcWsUrl(){
+          const explicit = window.__CDC_WS_URL__;
+          if (explicit && typeof explicit === "string") return explicit;
+          // If the bundle is opened from file://, location.host is empty. In that case
+          // you must pass --cdc-ws-url (or equivalent) when dumping.
+          if (!location.host) return null;
+          const proto = location.protocol === "https:" ? "wss:" : "ws:";
+          return `${proto}//${location.host}/changes/ws`;
+        }
+
+        if (window.__CDC_ENABLED__) {
+          const wsUrl = resolveCdcWsUrl();
+          if (wsUrl) {
+            const ws = new WebSocket(wsUrl);
+            ws.onmessage = (m) => {
+              try {
+                const ev = JSON.parse(m.data);
+                applyCdcEvent(ev);
+                refreshFromModel();
+              } catch (e) {
+                console.warn("bad CDC message", e);
+              }
+            };
+            ws.onclose = () => {
+              // Best-effort reconnect with a small backoff.
+              setTimeout(() => {
+                if (!window.__CDC_ENABLED__) return;
+                window.location.reload();
+              }, 1500);
+            };
+          } else {
+            console.warn("CDC enabled but no ws URL resolved. Pass cdc_ws_url into the bundle.");
+          }
+        }
 
         applyVisibility();
       }

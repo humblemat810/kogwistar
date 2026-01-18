@@ -46,8 +46,14 @@ def dump_d3_bundle(
     mode: str = "reify",
     insertion_method: Optional[str] = None,
     bundle_meta: Optional[dict] = None,
+    # Live CDC (optional): when enabled, the bundle will connect to an external
+    # FastAPI change-bridge (NOT hosted by the engine/debugging process).
+    cdc_enabled: bool = False,
+    cdc_ws_url: Optional[str] = None,
+    # If true, embed an empty graph (useful for "listen-only" live CDC pages).
+    embed_empty: bool = False,
 ) -> Path:
-    payload = to_d3_force(engine, doc_id=doc_id, insertion_method=insertion_method, mode=mode)
+    payload = {"nodes": [], "links": []} if embed_empty else to_d3_force(engine, doc_id=doc_id, insertion_method=insertion_method, mode=mode)
 
     rendered = _render_template_html(
         template_html,
@@ -58,6 +64,10 @@ def dump_d3_bundle(
             "is_bundle": json.dumps(bundle_meta is not None),
             "embedded_data": json.dumps(payload),
             "bundle_meta": json.dumps(bundle_meta) if bundle_meta is not None else None,
+            # Live CDC config injected into the bundle.
+            "bundle_graph_type": json.dumps(getattr(engine, "kg_graph_type", None)),
+            "cdc_enabled": json.dumps(bool(cdc_enabled)),
+            "cdc_ws_url": json.dumps(cdc_ws_url) if cdc_ws_url is not None else "null",
         },
     )
     
@@ -81,6 +91,8 @@ def dump_paired_bundles(
     conversation_doc_id: Optional[str] = None,
     mode: str = "reify",
     insertion_method: Optional[str] = None,
+    # Live CDC (optional)
+    cdc_ws_url: Optional[str] = None,
 ) -> dict:
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -101,6 +113,8 @@ def dump_paired_bundles(
         mode=mode,
         insertion_method=insertion_method,
         bundle_meta=bundle_meta,
+        cdc_enabled=bool(cdc_ws_url),
+        cdc_ws_url=cdc_ws_url,
     )
 
     dump_d3_bundle(
@@ -111,6 +125,8 @@ def dump_paired_bundles(
         mode=mode,
         insertion_method=insertion_method,
         bundle_meta=bundle_meta,
+        cdc_enabled=bool(cdc_ws_url),
+        cdc_ws_url=cdc_ws_url,
     )
     if workflow_engine:
         wf_nodes = workflow_engine.get_nodes(where={"entity_type": "workflow_node"}, limit=20000)
@@ -123,6 +139,8 @@ def dump_paired_bundles(
             mode=mode,
             insertion_method=insertion_method,
             bundle_meta=bundle_meta,
+            cdc_enabled=bool(cdc_ws_url),
+            cdc_ws_url=cdc_ws_url,
         )
     (out_dir / "bundle.meta.json").write_text(json.dumps(bundle_meta, indent=2), encoding="utf-8")
     # os.startfile(str(out_dir))
@@ -141,6 +159,9 @@ def _cmd_one(args: argparse.Namespace) -> None:
         mode=args.mode,
         insertion_method=args.insertion_method,
         bundle_meta=None,
+        cdc_enabled=bool(args.cdc_ws_url),
+        cdc_ws_url=args.cdc_ws_url,
+        embed_empty=bool(args.empty),
     )
     print(f"[OK] D3 bundle written to {Path(args.out).absolute()}")
 
@@ -161,6 +182,7 @@ def _cmd_pair(args: argparse.Namespace) -> None:
         conversation_doc_id=args.conversation_doc_id,
         mode=args.mode,
         insertion_method=args.insertion_method,
+        cdc_ws_url=args.cdc_ws_url,
     )
     print(f"[OK] Paired bundle written to {Path(args.out_dir).absolute()}")
     print("[OK] bundle.meta.json:", json.dumps(meta, indent=2))
@@ -178,6 +200,8 @@ def main() -> None:
     p1.add_argument("--insertion-method", help="Optional insertion_method (e.g. document_ingestion)")
     p1.add_argument("--template", required=True, help="Path to templates/d3.html")
     p1.add_argument("--out", default="d3.bundle.html", help="Output HTML file")
+    p1.add_argument("--empty", action="store_true", help="Embed an empty graph (listen-only) instead of dumping current DB")
+    p1.add_argument("--cdc-ws-url", help="Enable live CDC and connect to this WebSocket URL (e.g. ws://127.0.0.1:8787/changes/ws)")
     p1.set_defaults(func=_cmd_one)
 
     p2 = sub.add_parser("pair", help="Dump paired bundles (KG + Conversation) into one folder")
@@ -191,6 +215,7 @@ def main() -> None:
     p2.add_argument("--out-dir", default="d3_bundle", help="Output folder")
     p2.add_argument("--kg-out", default="kg.bundle.html", help="KG bundle filename within out-dir")
     p2.add_argument("--conversation-out", default="conversation.bundle.html", help="Conversation bundle filename within out-dir")
+    p2.add_argument("--cdc-ws-url", help="Enable live CDC in all bundles and connect to this WebSocket URL")
     p2.set_defaults(func=_cmd_pair)
 
     args = parser.parse_args()
