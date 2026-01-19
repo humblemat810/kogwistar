@@ -69,6 +69,7 @@ from .models import (
     FilteringResponse, 
     FilteringResult
 )
+
 from langchain_openai import AzureChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 import json
@@ -108,6 +109,7 @@ try:
 except Exception:
     _HAS_AZURE_EMB = False
 PageLike = Union[str, Dict[str, Any]]
+EngineType = Literal ['knowledge', 'conversation', 'workflow']
 NodeOrEdge: TypeAlias =  Node | Edge
 T = TypeVar("T", Node, Edge)
 # TT= TypeVar("TT", Type[Node], Type[Edge])
@@ -1943,7 +1945,7 @@ class GraphKnowledgeEngine:
         adjudicator=None,            # callable(left: Node, right: Node) -> AdjudicationVerdict
         merge_policy=None,           # callable(left, right, verdict) -> str (canonical_id)
         verifier=None,               # callable(extracted, full_text, ref, **kw) -> ReferenceSession
-        kg_graph_type : Literal ['knowledge', 'conversation', 'workflow'] = 'knowledge',
+        kg_graph_type : EngineType = 'knowledge',
         debug_dir: pathlib.Path | None = None
     ):
         """

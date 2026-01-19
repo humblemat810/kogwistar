@@ -2,20 +2,22 @@
 from __future__ import annotations
 
 import json
-from typing import Dict, List, Optional, Tuple, Type, TypeVar, Union
+from typing import Dict, List, Optional, Tuple, Type, TypeVar, Union, TYPE_CHECKING
+if TYPE_CHECKING:
+    from graph_knowledge_engine.engine import GraphKnowledgeEngine
 
-from graph_knowledge_engine.engine import GraphKnowledgeEngine
 
-
-from ..models import Node, Edge, ConversationNode, ConversationEdge, WorkflowEdge, WorkflowNode
-T = TypeVar('T', bound = Union[Node, Edge])
+    from ..models import Node, Edge#, ConversationNode, ConversationEdge, WorkflowEdge, WorkflowNode
+    T = TypeVar('T', bound = Union[Node, Edge])
 
 def _safe_iter(x):
     return x if isinstance(x, list) and x else []
 
-def _load_node_map(engine: GraphKnowledgeEngine, ids: List[str], node_type: Type[Node] = Node) -> Dict[str, Node]:
+def _load_node_map(engine: GraphKnowledgeEngine, ids: List[str], node_type: Type[Node] | None = None) -> Dict[str, Node]:
     """Robustly load Node models by ids."""
-        
+    from ..models import Node, ConversationNode, WorkflowNode
+    if node_type is None:
+        node_type = Node
     if engine.kg_graph_type == "conversation":
         node_type = ConversationNode
     elif engine.kg_graph_type == "workflow":
@@ -38,8 +40,12 @@ def _load_node_map(engine: GraphKnowledgeEngine, ids: List[str], node_type: Type
         return out
 
 
-def _load_edge_map(engine: GraphKnowledgeEngine, ids: List[str], edge_type: Type[Edge] = Edge) -> Dict[str, Edge]:
+def _load_edge_map(engine: GraphKnowledgeEngine, ids: List[str], edge_type: Type[Edge] | None = None) -> Dict[str, Edge]:
     """Robustly load Edge models by ids."""
+    
+    from ..models import Edge, ConversationEdge, WorkflowEdge
+    if edge_type is None:
+        edge_type = Edge
     if engine.kg_graph_type == "conversation":
         edge_type = ConversationEdge
     elif engine.kg_graph_type == "workflow":

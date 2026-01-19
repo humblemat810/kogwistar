@@ -445,7 +445,7 @@ class ConversationEdgeMetadata(BaseNodeMetadata):
     turn_distance_from_last_summary: int
 
     model_config = ConfigDict(extra="allow")
-from chromadb import Embeddings
+
 class ChromaMixin(BaseModel):
     id: Optional[str] = Field(default = None, description="Unique identifier")
     embedding: Optional[Sequence[float]] = Field(None, description="Vector embedding for the entity")
@@ -1255,10 +1255,7 @@ class KnowledgeRetrievalResult:
 
 
 
-# ----------------------------
-# Workflow graph metadata contract (static shape; dynamic routing)
-# ----------------------------
-from typing import TypedDict
+
 
 class WorkflowNodeMetadata(BaseModel):
     """

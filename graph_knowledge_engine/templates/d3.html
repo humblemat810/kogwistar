@@ -97,7 +97,7 @@
       <label><input type="checkbox" id="outwardOnly" disabled> Outward only</label>
       <label><input type="checkbox" id="inwardOnly" disabled> Inward only</label>
       <label><input type="checkbox" id="includeLateral" disabled> Include lateral</label>
-
+      <label><input type="checkbox" id="showOrphans" checked> Show orphan nodes</label>
       <span class="dropdown">
         <button id="relMenuBtn">Relations ▾</button>
         <div class="menu" id="relMenu">
@@ -609,7 +609,7 @@
           if (freezeIn.checked) sim.stop();
           else sim.alpha(0.6).restart();
         };
-
+        if (showOrphans) showOrphans.onchange = () => applyVisibility();
         treeMode.onchange = () => {
           const on = treeMode.checked;
           outwardOnly.disabled = !on;
@@ -711,12 +711,14 @@
 
 
           // If no links are visible (e.g., edge-less graphs), show orphan nodes too.
+          const always_show_orphan_node = showOrphans ? showOrphans.checked : true;
+          const nodeVisible = new Map(allNodes.map(n => [n.id, false || always_show_orphan_node]));
           const anyNodeVisible = Array.from(nodeVisible.values()).some(Boolean);
           if (!anyNodeVisible) {
             allNodes.forEach(n => nodeVisible.set(n.id, true));
           }
-          const always_show_orphan_node = true;
-          const nodeVisible = new Map(allNodes.map(n => [n.id, false || always_show_orphan_node]));
+          
+          
           let anyVisible = false;
           linkSel.each(function(e){
             const k = keyEdge(e);

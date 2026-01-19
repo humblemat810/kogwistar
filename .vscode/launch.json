@@ -5,6 +5,15 @@
     "version": "0.2.0",
     "configurations": [
         {
+            "name": "Dump empty CDC",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "graph_knowledge_engine/utils/kge_debug_dump.py",
+            "console": "integratedTerminal",
+            "args": ["bundle", "--template", "./graph_knowledge_engine/templates/d3.html", "--out-dir", "./empty_cdc_streamer", "--empty", "--cdc-ws-url", "ws://127.0.0.1:8787/changes/ws"],
+            "justMyCode": false
+        },
+        {
             "name": "Document server mcp with admin",
             "type": "debugpy",
             "request": "launch",
@@ -14,13 +23,15 @@
                 // "--reload",
                 "--port",
                 "28110",
-                "--log-level", "debug",
-                
+                "--log-level",
+                "debug",
             ],
-            "env":{
-                    "MCP_CHROMA_DIR": ".Document_kg_mcp"//"adjundicate"
-                },
-            "jinja": true
+            "env": {
+                "MCP_CHROMA_DIR": ".document_kg_mcp" //"adjundicate"
+            },
+            "jinja": true,
+            "justMyCode": false
+
         },
         {
             "name": "disposable server mcp with admin",
@@ -32,13 +43,14 @@
                 // "--reload",
                 "--port",
                 "28110",
-                "--log-level", "debug",
-                
+                "--log-level",
+                "debug",
             ],
-            "env":{
-                    "MCP_CHROMA_DIR": "temp"//"adjundicate"
-                },
-            "jinja": true
+            "env": {
+                "MCP_CHROMA_DIR": "temp" //"adjundicate"
+            },
+            "jinja": true,
+            "justMyCode": false
         },
         {
             "name": "server mcp with admin",
@@ -50,13 +62,14 @@
                 // "--reload",
                 "--port",
                 "28110",
-                "--log-level", "debug",
-                
+                "--log-level",
+                "debug",
             ],
-            "env":{
-                    "MCP_CHROMA_DIR": "doc_chunk"//"adjundicate"
-                },
-            "jinja": true
+            "env": {
+                "MCP_CHROMA_DIR": "doc_chunk" //"adjundicate"
+            },
+            "jinja": true,
+            "justMyCode": false
         },
         {
             "name": "Diagnostic, insert and check relationship exist",
@@ -64,7 +77,16 @@
             "request": "launch",
             "program": ".\\diagnostic\\mcp_diag_seed.py",
             "console": "integratedTerminal",
-            "args": ["--url", "http://127.0.0.1:8765/mcp/", "--doc-id", "D1", "--text", "Smoking causes lung cancer.", "--relation", "causes"]
+            "args": [
+                "--url",
+                "http://127.0.0.1:8765/mcp/",
+                "--doc-id",
+                "D1",
+                "--text",
+                "Smoking causes lung cancer.",
+                "--relation",
+                "causes"
+            ]
         },
         {
             "name": "Diagnostic, delete inserted",
@@ -72,7 +94,13 @@
             "request": "launch",
             "program": ".\\diagnostic\\mcp_diag_seed.py",
             "console": "integratedTerminal",
-            "args": ["--url", "http://127.0.0.1:8765/mcp/", "--doc-id", "D1", "--delete"]
+            "args": [
+                "--url",
+                "http://127.0.0.1:8765/mcp/",
+                "--doc-id",
+                "D1",
+                "--delete"
+            ]
         },
         {
             "name": "FastMCP tool server",

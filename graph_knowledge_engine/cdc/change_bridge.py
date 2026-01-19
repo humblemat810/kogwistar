@@ -29,3 +29,5 @@ async def changes_ws(ws: WebSocket):
         pass
     finally:
         subscribers.discard(ws)
+        
+# uvicorn change_bridge:app --host 127.0.0.1 --port 8787
