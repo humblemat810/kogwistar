@@ -88,7 +88,7 @@ import math
 from graphlib import TopologicalSorter
 import hashlib
 from datetime import datetime, timezone
-from graph_knowledge_engine.cdc.change_bus import ChangeBus
+from graph_knowledge_engine.cdc.change_bus import ChangeBus, FastAPIChangeSink
 from graph_knowledge_engine.cdc.change_event import ChangeEvent
 from graph_knowledge_engine.cdc.oplog import OplogWriter
 
@@ -1955,9 +1955,13 @@ class GraphKnowledgeEngine:
           - ENV SENTENCE_TRANSFORMERS_MODEL, or
           - "all-MiniLM-L6-v2".
         """
-        self.changes = ChangeBus(buffer_max_events=50_000)
-        from .debug_producer import DebugEventProducer
-        self._debug_producer = DebugEventProducer("http://127.0.0.1:8000")
+        
+        self.changes = ChangeBus()
+        if cdc_publish_endpoint := os.environ.get('CDC_PUBLISH_ENDPOINT'):
+            self.changes.add_sink(FastAPIChangeSink(cdc_publish_endpoint))
+        
+        # from .debug_producer import DebugEventProducer
+        # self._debug_producer = DebugEventProducer("http://127.0.0.1:8000")
         self._oplog = None
         if debug_dir is not None:
             self._oplog = OplogWriter(debug_dir / "changes.jsonl", fsync=False)
@@ -1994,7 +1998,7 @@ class GraphKnowledgeEngine:
         #         ef = ONNXMiniLM_L6_V2(preferred_providers=[pro])
         #         ef("test")
         self._alias_books: dict[str, AliasBook] = {}
-        ef = CustomEmbeddingFunction()
+        ef = embedding_function or CustomEmbeddingFunction()
         self.embedding_length_limit = 512
         self._ef : EmbeddingFunctionLike = ef#embedding_function or ef #embedding_functions.DefaultEmbeddingFunction()
         # Keep a 1-string convenience to reuse in cosine checks

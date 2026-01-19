@@ -58,6 +58,17 @@
       #inspector .hdr { display:flex; align-items:center; justify-content:space-between; margin-bottom:6px; }
       #inspector .hdr b { font: 12px/1.2 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
       #inspector button { font: 12px/1.2 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+
+      #cdcBadge {
+        display:inline-block;
+        margin-left:10px;
+        padding:2px 8px;
+        border-radius:999px;
+        border:1px solid #bbb;
+        background:#fff;
+        font: 12px/1.2 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      }
+      #cdcBadge.hidden { display:none; }
     </style>
     <script src="https://unpkg.com/d3@7"></script>
   </head>
@@ -111,6 +122,7 @@
       </span>
 
       <button id="applyFilters">Apply</button>
+      <span id="cdcBadge" class="hidden">CDC: <span id="cdcStatus">disabled</span></span>
     </div>
 
     <div id="legend">
@@ -1061,29 +1073,92 @@
           return `${proto}//${location.host}/changes/ws`;
         }
 
-        if (window.__CDC_ENABLED__) {
-          const wsUrl = resolveCdcWsUrl();
-          if (wsUrl) {
-            const ws = new WebSocket(wsUrl);
-            ws.onmessage = (m) => {
-              try {
-                const ev = JSON.parse(m.data);
-                applyCdcEvent(ev);
-                refreshFromModel();
-              } catch (e) {
-                console.warn("bad CDC message", e);
-              }
-            };
-            ws.onclose = () => {
-              // Best-effort reconnect with a small backoff.
-              setTimeout(() => {
-                if (!window.__CDC_ENABLED__) return;
-                window.location.reload();
-              }, 1500);
-            };
-          } else {
-            console.warn("CDC enabled but no ws URL resolved. Pass cdc_ws_url into the bundle.");
+        // Live CDC (optional): when enabled, we try to keep a WebSocket connection open.
+        // IMPORTANT: do NOT hard-refresh the page when the socket is down (common when viewing a bundle offline).
+        // Instead, reconnect with backoff.
+        let cdcWs = null;
+        let cdcReconnectAttempt = 0;
+        let cdcReconnectTimer = null;
+
+        function setCdcStatus(label){
+          const badge = document.getElementById("cdcBadge");
+          const status = document.getElementById("cdcStatus");
+          if (!badge || !status) return;
+          if (window.__CDC_ENABLED__) badge.classList.remove("hidden");
+          status.textContent = label;
+        }
+
+        function scheduleCdcReconnect(){
+          if (!window.__CDC_ENABLED__) return;
+          if (cdcReconnectTimer) return;
+
+          const base = 500;
+          const max = 10000;
+          const delay = Math.min(max, base * Math.pow(1.6, cdcReconnectAttempt++));
+          setCdcStatus(`reconnecting in ${Math.round(delay)}ms`);
+
+          cdcReconnectTimer = setTimeout(() => {
+            cdcReconnectTimer = null;
+            connectCdcWs();
+          }, delay);
+        }
+
+        function connectCdcWs(){
+          if (!window.__CDC_ENABLED__) {
+            setCdcStatus("disabled");
+            return;
           }
+
+          const wsUrl = resolveCdcWsUrl();
+          if (!wsUrl) {
+            setCdcStatus("no ws url");
+            console.warn("CDC enabled but no ws URL resolved. Pass cdc_ws_url into the bundle.");
+            return;
+          }
+
+          try {
+            if (cdcWs && (cdcWs.readyState === WebSocket.OPEN || cdcWs.readyState === WebSocket.CONNECTING)) {
+              return;
+            }
+            cdcWs = new WebSocket(wsUrl);
+          } catch (e) {
+            console.warn("CDC websocket init failed", e);
+            scheduleCdcReconnect();
+            return;
+          }
+
+          setCdcStatus("connecting...");
+
+          cdcWs.onopen = () => {
+            cdcReconnectAttempt = 0;
+            setCdcStatus("connected");
+          };
+
+          cdcWs.onmessage = (m) => {
+            try {
+              const ev = JSON.parse(m.data);
+              applyCdcEvent(ev);
+              refreshFromModel();
+            } catch (e) {
+              console.warn("bad CDC message", e);
+            }
+          };
+
+          // Avoid spamming reconnect logic from onerror; let onclose handle it.
+          cdcWs.onerror = () => {
+            setCdcStatus("error");
+          };
+
+          cdcWs.onclose = () => {
+            setCdcStatus("disconnected");
+            scheduleCdcReconnect();
+          };
+        }
+
+        if (window.__CDC_ENABLED__) {
+          connectCdcWs();
+        } else {
+          setCdcStatus("disabled");
         }
 
         applyVisibility();

@@ -78,5 +78,8 @@ class FastAPIChangeSink:
             ev = self.q.get()
             try:
                 session.post(url, json=ev, timeout=0.5)
-            except Exception:
+            except requests.exceptions.ConnectTimeout:
+                # allow bridge not set up usage
                 pass
+            except Exception as _e:
+                raise
