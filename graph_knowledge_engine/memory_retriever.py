@@ -325,7 +325,7 @@ class MemoryRetriever:
         edge_ids: List[str] = []
         edges : List[ConversationEdge] = []
         # Turn -> MemoryContext
-        e1_id = mem_id or str(uuid.uuid4())
+        e1_id = f"{turn_node_id}::hm::{mem_node.safe_get_id()}"
         e1 = ConversationEdge(
             id=e1_id,
             source_ids=[turn_node_id],
@@ -356,8 +356,8 @@ class MemoryRetriever:
             
             e = ConversationEdge(
                 id=e_id,
-                source_ids=[mem_node_id],
-                target_ids=[node.safe_get_id()],
+                source_ids=[mem_node.safe_get_id()],
+                target_ids=[node.safe_get_id()]  if node.id is not None else [],
                 relation="summarizes",
                 label="summarizes",
                 type="relationship",
@@ -381,8 +381,8 @@ class MemoryRetriever:
             
             e = ConversationEdge(
                 id=e_id,
-                source_ids=[mem_node_id],
-                target_ids=[],
+                source_ids=[mem_node.safe_get_id()],
+                target_ids=[edge.id]  if edge.id is not None else [],
                 relation="summarizes",
                 label="summarizes",
                 type="relationship",

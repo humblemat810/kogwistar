@@ -719,7 +719,7 @@ class ConversationOrchestrator:
         turn_node = ConversationNode(
             user_id=user_id,
             id=get_id_for_conversation_turn(ConversationNode.id_kind, user_id, 
-                                            conversation_id, content, str(new_index), role, "conversation_turn", str(in_conv))
+                                            conversation_id, content, str(new_index), role, "conversation_turn", str(in_conv)),
             label=f"Turn {new_index} ({role})",
             type="entity",
             doc_id=turn_node_id,
@@ -1286,16 +1286,13 @@ class ConversationOrchestrator:
         provenance_spans = []
         if all_nodes is None:
             raise Exception("Unreacheable")
-        # all_nodes_doc : list[str] | None= all_nodes['documents']
-        # all_nodes_meta = all_nodes['metadatas']
-        # all_nodes_id : list[str] | None= all_nodes['ids']
-        # if all_nodes_doc is None or all_nodes_meta is None or all_nodes_id is None:
-        #     raise Exception("documents metadatas and ids all needed")
-        nodes: list[ConversationNode] = all_nodes #self.conversation_engine.get_nodes(all_nodes["ids"], ConversationNode)
-        # for doc, meta, nid in zip(all_nodes_doc, all_nodes_meta, all_nodes_id):
-            # turn_index = meta.get('turn_index')
-            # self.nodes_from_single_or_id_query_result(all_nodes)
-            # self.nodes_from_query_result
+        
+        nodes: list[ConversationNode] = all_nodes
+        
+        last_summary_node: list[ConversationNode] = self.conversation_engine.last_summary_of_node(prev_node)
+        if last_summary_node:
+            batch_ids.append(last_summary_node[-1].safe_get_id())
+            batch_text.append(last_summary_node[-1].summary)
         for n in nodes:
             turn_index = n.turn_index
             if turn_index is not None and start_index <= int(turn_index) <= current_index:

@@ -4092,6 +4092,11 @@ class GraphKnowledgeEngine:
             raise Exception("cannot get embedding after most defensive embedding strategy.")
         return embedding
     @conversation_only
+    def last_summary_of_node(engine, node: ConversationNode):
+            return engine.get_nodes(where = {"$and" : [
+                    {"conversation_id": node.conversation_id} , 
+                    {"turn_index": node.turn_index - node.metadata['turn_distance_from_last_summary']}]}, node_type = ConversationNode)
+    @conversation_only
     def add_conversation_turn(self, user_id: str, conversation_id: str, turn_id: str, mem_id: 
                             str, role: str, content: str, 
                             ref_knowledge_engine: GraphKnowledgeEngine, 

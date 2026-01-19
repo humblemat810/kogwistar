@@ -169,14 +169,14 @@ def test_conversation_flow(engine:GraphKnowledgeEngine, conversation_engine:Grap
 
 
     template_html = Path("graph_knowledge_engine/templates/d3.html").read_text(encoding="utf-8")
-    # out_dir = Path(".") / "bundle" / "turn1"
-    # from graph_knowledge_engine.utils.kge_debug_dump import dump_paired_bundles
-    # dump_paired_bundles(
-    #     kg_engine=engine,
-    #     conversation_engine=conversation_engine,
-    #     template_html=template_html,
-    #     out_dir=out_dir,
-    # )        
+    out_dir = Path(".") / "bundle" / "turn1"
+    from graph_knowledge_engine.utils.kge_debug_dump import dump_paired_bundles
+    dump_paired_bundles(
+        kg_engine=engine,
+        conversation_engine=conversation_engine,
+        template_html=template_html,
+        out_dir=out_dir,
+    )        
     # 4. Trigger Summarization (Batch size is 5, so we need turn index 0, 1, 2, 3, 4, 5... actually check is `if new_index > 0 and new_index % 5 == 0`)
     # We added index 0.
     # Add 5 more turns to guarantee reach index 5.
@@ -196,7 +196,7 @@ def test_conversation_flow(engine:GraphKnowledgeEngine, conversation_engine:Grap
         last_node_ids.append(conversation_engine._get_conversation_tail(conv_id))
         prev_turn_meta_summary : MetaFromLastSummary = res.prev_turn_meta_summary
         template_html = Path("graph_knowledge_engine/templates/d3.html").read_text(encoding="utf-8")
-        out_dir = Path(".") / "bundle" / f"turn{2+i}"
+        out_dir = Path(".") / "bundle" / f"turn{i}"
         from graph_knowledge_engine.utils.kge_debug_dump import dump_paired_bundles
         dump_paired_bundles(
             kg_engine=engine,

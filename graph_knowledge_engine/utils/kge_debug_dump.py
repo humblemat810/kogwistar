@@ -62,7 +62,7 @@ def dump_d3_bundle(
         raise Exception(f"argument engine_type {engine_type} disagree with engine kg_graph_type = {engine.kg_graph_type}")
     if not engine_type and not engine:
         raise ValueError("either engine type or engine required")
-    if engine and not embed_empty:
+    if not engine and not embed_empty:
         raise ValueError("engine can only be empty when embed empty is set true")
     payload = {"nodes": [], "links": []} if embed_empty else to_d3_force(engine, doc_id=doc_id, insertion_method=insertion_method, mode=mode)
 
