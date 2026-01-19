@@ -292,7 +292,7 @@ def test_add_turn_like_workflow_dump_bundles(tmp_path: Path):
         ctx.state["started"] = True
         conversation_node_id_created_during_process = None
         return RunSuccess(conversation_node_id=conversation_node_id_created_during_process, 
-                          outputs=[{"started": True}])
+                          state_update=[{"started": True}])
 
     @resolver.register("memory_retrieve")
     def _memory_retrieve(ctx: StepContext):
@@ -300,7 +300,7 @@ def test_add_turn_like_workflow_dump_bundles(tmp_path: Path):
         ctx.state["memory"] = {"selected_ids": ["m1"], "text": "memory context"}
         conversation_node_id_created_during_process = None
         return RunSuccess(conversation_node_id=conversation_node_id_created_during_process, 
-                          outputs=[{"ok": True}])
+                          state_update=[{"ok": True}])
     @resolver.register("kg_retrieve")
     def _kg_retrieve(ctx: StepContext):
         ctx.state.setdefault("op_log", []).append("kg_retrieve")
@@ -308,7 +308,7 @@ def test_add_turn_like_workflow_dump_bundles(tmp_path: Path):
         # return {"ok": True}
         conversation_node_id_created_during_process = None
         return RunSuccess(conversation_node_id=conversation_node_id_created_during_process, 
-                          outputs=[{"ok": True}])
+                          state_update=[{"ok": True}])
     @resolver.register("memory_pin")
     def _memory_pin(ctx: StepContext):
         ctx.state.setdefault("op_log", []).append("memory_pin")
@@ -316,7 +316,7 @@ def test_add_turn_like_workflow_dump_bundles(tmp_path: Path):
         # return {"ok": True}
         conversation_node_id_created_during_process = None
         return RunSuccess(conversation_node_id=conversation_node_id_created_during_process, 
-                          outputs=[{"ok": True}])
+                          state_update=[{"ok": True}])
     @resolver.register("kg_pin")
     def _kg_pin(ctx: StepContext):
         ctx.state.setdefault("op_log", []).append("kg_pin")
@@ -324,7 +324,7 @@ def test_add_turn_like_workflow_dump_bundles(tmp_path: Path):
         # return {"ok": True}
         conversation_node_id_created_during_process = None
         return RunSuccess(conversation_node_id=conversation_node_id_created_during_process, 
-                          outputs=[{"ok": True}])
+                          state_update=[{"ok": True}])
     @resolver.register("answer")
     def _answer(ctx: StepContext):
         ctx.state.setdefault("op_log", []).append("answer")
@@ -332,7 +332,7 @@ def test_add_turn_like_workflow_dump_bundles(tmp_path: Path):
         # return ctx.state["answer"]
         conversation_node_id_created_during_process = None
         return RunSuccess(conversation_node_id=conversation_node_id_created_during_process, 
-                          outputs=[{"answer": ctx.state["answer"]}])
+                          state_update=[{"answer": ctx.state["answer"]}])
     @resolver.register("decide_summarize")
     def _decide(ctx: StepContext):
         ctx.state.setdefault("op_log", []).append("decide_summarize")
@@ -341,7 +341,7 @@ def test_add_turn_like_workflow_dump_bundles(tmp_path: Path):
         # return ctx.state["decide"]
         conversation_node_id_created_during_process = None
         return RunSuccess(conversation_node_id=conversation_node_id_created_during_process, 
-                          outputs=[ctx.state["decide"]])
+                          state_update=[ctx.state["decide"]])
     @resolver.register("summarize")
     def _summarize(ctx: StepContext):
         ctx.state.setdefault("op_log", []).append("summarize")
@@ -349,14 +349,14 @@ def test_add_turn_like_workflow_dump_bundles(tmp_path: Path):
         # return ctx.state["summary"]
         conversation_node_id_created_during_process = None
         return RunSuccess(conversation_node_id=conversation_node_id_created_during_process, 
-                          outputs=[{"ok": True}])
+                          state_update=[{"ok": True}])
     @resolver.register("end")
     def _end(ctx: StepContext):
         ctx.state.setdefault("op_log", []).append("end")
         # return {"done": True}
         conversation_node_id_created_during_process = None
         return RunSuccess(conversation_node_id=conversation_node_id_created_during_process, 
-                          outputs=[{"done": True}])    
+                          state_update=[{"done": True}])    
     # IMPORTANT: re-open workflow_engine from disk to prove "saved graph is runnable"
     workflow_engine2 = GraphKnowledgeEngine(persist_directory=str(wf_dir), kg_graph_type="workflow")
     rt = WorkflowRuntime(

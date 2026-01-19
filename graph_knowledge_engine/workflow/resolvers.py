@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from ..models import MetaFromLastSummary
+from .runtime import StateUpdate
 """Workflow step resolvers.
 
 This module provides a registry-based step resolver that can be used by
@@ -63,7 +65,7 @@ class MappingStepResolver:
                     raise TypeError("Resolver must return RunResult")
                 # return out  # field name might be `data`/`payload` in your codebase
             except Exception as e:
-                return RunFailure(conversation_node_id=ctx.state.get('workflow_node_id') , errors=[str(e)])  # match your RunFailure fields
+                return RunFailure(conversation_node_id=ctx.state_view.get('workflow_node_id') , errors=[str(e)])  # match your RunFailure fields
         return _wrapped
 
     def __call__(self, op: str) -> Callable[[StepContext], RunResult]:
@@ -74,7 +76,7 @@ default_resolver = MappingStepResolver()
 
 
 def _deps(ctx: StepContext) -> Dict[str, Any]:
-    deps = ctx.state.get("_deps")
+    deps = ctx.state_view.get("_deps")
     if not isinstance(deps, dict):
         raise RuntimeError("StepContext.state['_deps'] must be a dict of injected dependencies")
     return deps
@@ -82,9 +84,11 @@ def _deps(ctx: StepContext) -> Dict[str, Any]:
 
 @default_resolver.register("start")
 def _start(ctx: StepContext) -> RunResult:
-    ctx.state.setdefault("op_log", []).append("start")
-    ctx.state["started"] = True
-    return RunSuccess(conversation_node_id=None, outputs=[{"started": True}])
+    with ctx.state_write as state:
+        state.setdefault("op_log", []).append("start")
+        state["started"] = True
+    result = RunSuccess(conversation_node_id=None, state_update=[('u',{"started": True})])
+    return result
 
 
 @default_resolver.register("memory_retrieve")
@@ -96,61 +100,67 @@ def _memory_retrieve(ctx: StepContext) -> RunResult:
       - state['memory']     : jsonable mirror
     """
     deps = _deps(ctx)
-    ctx.state.setdefault("op_log", []).append("memory_retrieve")
+    with ctx.state_write as state:
+        state.setdefault("op_log", []).append("memory_retrieve")
 
-    from .memory_retriever import MemoryRetriever
-    from .workflow.serialize import to_jsonable
+    from ..memory_retriever import MemoryRetriever
+    from ..workflow.serialize import to_jsonable
 
     mem_retriever = MemoryRetriever(
         conversation_engine=deps["conversation_engine"],
         llm=deps["llm"],
         filtering_callback=deps["filtering_callback"],
     )
-
-    tool_runner = deps.get("tool_runner")
+    from ..tool_runner import ToolRunner
+    tool_runner: ToolRunner | None = deps.get("tool_runner")
     prev_turn_meta_summary = deps.get("prev_turn_meta_summary")
+    state_view = ctx.state_view
     if tool_runner is None:
         # Fallback: run directly without tool recording.
         mem = mem_retriever.retrieve(
-            user_id=ctx.state["user_id"],
-            current_conversation_id=ctx.state["conversation_id"],
-            query_embedding=ctx.state["embedding"],
-            user_text=ctx.state["user_text"],
+            user_id=state_view["user_id"],
+            current_conversation_id=state_view["conversation_id"],
+            query_embedding=state_view["embedding"],
+            user_text=state_view["user_text"],
             context_text="",
         )
     else:
+        
         mem = tool_runner.run_tool(
-            conversation_id=ctx.state["conversation_id"],
-            user_id=ctx.state["user_id"],
-            turn_node_id=ctx.state["turn_node_id"],
-            turn_index=ctx.state["turn_index"],
+            conversation_id=state_view["conversation_id"],
+            user_id=state_view["user_id"],
+            turn_node_id=state_view["turn_node_id"],
+            turn_index=state_view["turn_index"],
             tool_name="memory_retrieve",
             args={"n_results": getattr(mem_retriever, "n_results", None)},
             handler=lambda: mem_retriever.retrieve(
-                user_id=ctx.state["user_id"],
-                current_conversation_id=ctx.state["conversation_id"],
-                query_embedding=ctx.state["embedding"],
-                user_text=ctx.state["user_text"],
+                user_id=state_view["user_id"],
+                current_conversation_id=state_view["conversation_id"],
+                query_embedding=state_view["embedding"],
+                user_text=state_view["user_text"],
                 context_text="",
             ),
             render_result=lambda r: getattr(r, "reasoning", "")[:800],
             prev_turn_meta_summary=prev_turn_meta_summary,
         )
 
-    ctx.state["memory_raw"] = mem
+    # ctx.state["memory_raw"] = mem
     memj = to_jsonable(mem)
-    ctx.state["memory"] = memj
-    return RunSuccess(conversation_node_id=None, outputs=[memj])
+    state_update = [('u', {'memory': memj})]
+    # ctx.state["memory"] = memj
+    result = RunSuccess(conversation_node_id=None, state_update=state_update)
+    return result
 
 
 @default_resolver.register("kg_retrieve")
 def _kg_retrieve(ctx: StepContext) -> RunResult:
     """Retrieve KG facts/links based on query and memory seed ids."""
     deps = _deps(ctx)
-    ctx.state.setdefault("op_log", []).append("kg_retrieve")
+    with ctx.state_write as state:
+        state.setdefault("op_log", []).append("kg_retrieve")
 
-    from .knowledge_retriever import KnowledgeRetriever
-    from .workflow.serialize import to_jsonable
+    from ..knowledge_retriever import KnowledgeRetriever
+    from ..workflow.serialize import to_jsonable
 
     max_retrieval_level = int(deps.get("max_retrieval_level", 2))
 
@@ -161,54 +171,58 @@ def _kg_retrieve(ctx: StepContext) -> RunResult:
         filtering_callback=deps["filtering_callback"],
         max_retrieval_level=max_retrieval_level,
     )
-
-    mem_raw = ctx.state.get("memory_raw")
+    state_view = ctx.state_view
+    mem_raw = state_view.get("memory_raw")
     seed_ids = list(getattr(mem_raw, "seed_kg_node_ids", []) or []) if mem_raw is not None else []
 
     tool_runner = deps.get("tool_runner")
     prev_turn_meta_summary = deps.get("prev_turn_meta_summary")
+    state = ctx.state_view
     if tool_runner is None:
         kg = kg_retriever.retrieve(
-            user_text=ctx.state["user_text"],
+            user_text=state_view["user_text"],
             context_text="",
-            query_embedding=ctx.state["embedding"],
+            query_embedding=state_view["embedding"],
             seed_kg_node_ids=seed_ids,
         )
     else:
+        
         kg = tool_runner.run_tool(
-            conversation_id=ctx.state["conversation_id"],
-            user_id=ctx.state["user_id"],
-            turn_node_id=ctx.state["turn_node_id"],
-            turn_index=ctx.state["turn_index"],
+            conversation_id=state["conversation_id"],
+            user_id=state["user_id"],
+            turn_node_id=state["turn_node_id"],
+            turn_index=state["turn_index"],
             tool_name="kg_retrieve",
             args={"max_retrieval_level": max_retrieval_level, "seed_kg_node_ids": seed_ids},
             handler=lambda: kg_retriever.retrieve(
-                user_text=ctx.state["user_text"],
+                user_text=state["user_text"],
                 context_text="",
-                query_embedding=ctx.state["embedding"],
+                query_embedding=state["embedding"],
                 seed_kg_node_ids=seed_ids,
             ),
             render_result=lambda r: getattr(r, "reasoning", "")[:800],
             prev_turn_meta_summary=prev_turn_meta_summary,
         )
-
-    ctx.state["kg_raw"] = kg
+    
+    # ctx.state["kg_raw"] = kg
     kgj = to_jsonable(kg)
-    ctx.state["kg"] = kgj
-    return RunSuccess(conversation_node_id=None, outputs=[kgj])
+    # ctx.state["kg"] = kgj
+    state_update = [('u', {'kg': kgj})]
+    return RunSuccess(conversation_node_id=None, state_update=state_update)
 
 
 @default_resolver.register("memory_pin")
 def _memory_pin(ctx: StepContext) -> RunResult:
     """Pin selected memory into the conversation graph."""
     deps = _deps(ctx)
-    ctx.state.setdefault("op_log", []).append("memory_pin")
+    with ctx.state_write as state:
+        state.setdefault("op_log", []).append("memory_pin")
 
-    from .memory_retriever import MemoryRetriever
+    from ..memory_retriever import MemoryRetriever
 
     prev_turn_meta_summary = deps.get("prev_turn_meta_summary")
-
-    mem_raw = ctx.state.get("memory_raw")
+    state = ctx.state_view
+    mem_raw = state.get("memory_raw")
     mem_retriever = MemoryRetriever(
         conversation_engine=deps["conversation_engine"],
         llm=deps["llm"],
@@ -222,35 +236,37 @@ def _memory_pin(ctx: StepContext) -> RunResult:
         and getattr(mem_raw, "memory_context_text", None)
     ):
         out = mem_retriever.pin_selected(
-            user_id=ctx.state["user_id"],
-            current_conversation_id=ctx.state["conversation_id"],
-            turn_node_id=ctx.state["turn_node_id"],
-            mem_id=ctx.state["mem_id"],
-            turn_index=ctx.state["turn_index"],
-            self_span=ctx.state["self_span"],
+            user_id=state["user_id"],
+            current_conversation_id=state["conversation_id"],
+            turn_node_id=state["turn_node_id"],
+            mem_id=state["mem_id"],
+            turn_index=state["turn_index"],
+            self_span=state["self_span"],
             selected_memory=getattr(mem_raw, "selected"),
             memory_context_text=getattr(mem_raw, "memory_context_text"),
             prev_turn_meta_summary=prev_turn_meta_summary,
         )
 
-    ctx.state["memory_pin_raw"] = out
+    # ctx.state["memory_pin_raw"] = out
     outj = {
         "memory_context_node_id": getattr(getattr(out, "memory_context_node", None), "id", None)
         if out
         else None,
         "pinned_edge_ids": [e.id for e in getattr(out, "pinned_edges", [])] if out else [],
     }
-    ctx.state["memory_pin"] = outj
-    return RunSuccess(conversation_node_id=None, outputs=[outj])
+    # ctx.state["memory_pin"] = outj
+    state_update = [('u', {'mem_pin': outj})]
+    return RunSuccess(conversation_node_id=None, state_update=state_update)
 
 
 @default_resolver.register("kg_pin")
 def _kg_pin(ctx: StepContext) -> RunResult:
     """Pin selected KG nodes/edges (as pointers) into the conversation graph."""
     deps = _deps(ctx)
-    ctx.state.setdefault("op_log", []).append("kg_pin")
-
-    from .knowledge_retriever import KnowledgeRetriever
+    with ctx.state_write as state:
+        state.setdefault("op_log", []).append("kg_pin")
+    state = ctx.state_view
+    from ..knowledge_retriever import KnowledgeRetriever
 
     prev_turn_meta_summary = deps.get("prev_turn_meta_summary")
     max_retrieval_level = int(deps.get("max_retrieval_level", 2))
@@ -263,38 +279,41 @@ def _kg_pin(ctx: StepContext) -> RunResult:
         max_retrieval_level=max_retrieval_level,
     )
 
-    kg_raw = ctx.state.get("kg_raw")
+    kg_raw = state.get("kg_raw")
     pinned_ptrs: list[str] = []
     pinned_edges: list[str] = []
     if kg_raw is not None and getattr(kg_raw, "selected", None):
         pinned_ptrs, pinned_edges = kg_retriever.pin_selected(
-            user_id=ctx.state["user_id"],
-            conversation_id=ctx.state["conversation_id"],
-            turn_node_id=ctx.state["turn_node_id"],
-            turn_index=ctx.state["turn_index"],
-            self_span=ctx.state["self_span"],
+            user_id=state["user_id"],
+            conversation_id=state["conversation_id"],
+            turn_node_id=state["turn_node_id"],
+            turn_index=state["turn_index"],
+            self_span=state["self_span"],
             selected_knowledge=getattr(kg_raw, "selected"),
             prev_turn_meta_summary=prev_turn_meta_summary,
         )
 
     outj = {"pinned_pointer_node_ids": list(pinned_ptrs), "pinned_edge_ids": list(pinned_edges)}
-    ctx.state["kg_pin"] = outj
-    return RunSuccess(conversation_node_id=None, outputs=[outj])
+    state_update = [('u', {'kg_pin': outj})]
+    # ctx.state["kg_pin"] = outj
+    return RunSuccess(conversation_node_id=None, state_update=state_update)
 
 
 @default_resolver.register("answer")
 def _answer(ctx: StepContext) -> RunResult:
     """Run answer-only agent, then link assistant turn into conversation chain."""
     deps = _deps(ctx)
-    ctx.state.setdefault("op_log", []).append("answer")
-
-    prev_turn_meta_summary = deps.get("prev_turn_meta_summary")
+    with ctx.state_write as state:
+        state.setdefault("op_log", []).append("answer")
+    state = ctx.state_view
+    prev_turn_meta_summary: MetaFromLastSummary = deps.get("prev_turn_meta_summary")
     answer_only = deps.get("answer_only")
     if not callable(answer_only):
         raise RuntimeError("deps['answer_only'] must be callable")
-
-    resp = answer_only(conversation_id=ctx.state["conversation_id"], prev_turn_meta_summary=prev_turn_meta_summary)
-    ctx.state["answer_raw"] = resp
+    from ..models import ConversationAIResponse
+    res_raw = answer_only(conversation_id=state["conversation_id"], prev_turn_meta_summary=prev_turn_meta_summary)
+    resp : ConversationAIResponse= ConversationAIResponse.model_validate(res_raw)
+    # ctx.state["answer_raw"] = resp
 
     response_node_id = getattr(resp, "response_node_id", None)
     if response_node_id:
@@ -322,19 +341,21 @@ def _answer(ctx: StepContext) -> RunResult:
         "response_node_id": response_node_id,
         "llm_decision_need_summary": bool(getattr(resp, "llm_decision_need_summary", False)),
     }
-    ctx.state["answer"] = outj
-    return RunSuccess(conversation_node_id=response_node_id, outputs=[outj])
+    # ctx.state["answer"] = outj
+    state_update=[('u', {'answer': outj})]
+    return RunSuccess(conversation_node_id=response_node_id, state_update=state_update)
 
 
 @default_resolver.register("decide_summarize")
 def _decide_summarize(ctx: StepContext) -> RunResult:
     """Decide whether to summarize, using the same policy as legacy."""
     deps = _deps(ctx)
-    ctx.state.setdefault("op_log", []).append("decide_summarize")
-
-    prev_turn_meta_summary = deps.get("prev_turn_meta_summary")
+    with ctx.state_write as state:
+        state.setdefault("op_log", []).append("decide_summarize")
+    state = ctx.state_view
+    prev_turn_meta_summary: MetaFromLastSummary = deps.get("prev_turn_meta_summary")
     summary_char_threshold = int(deps.get("summary_char_threshold", 12000))
-    ans = ctx.state.get("answer") or {}
+    ans = state.get("answer") or {}
 
     should = False
     try:
@@ -347,28 +368,35 @@ def _decide_summarize(ctx: StepContext) -> RunResult:
     except Exception:
         pass
 
-    ctx.state["summary"] = {"should_summarize": should, "did_summarize": False, "summary_node_id": None}
-    ctx.state["prev_turn_meta_summary"] = {
-        "prev_node_char_distance_from_last_summary": getattr(prev_turn_meta_summary, "prev_node_char_distance_from_last_summary", 0),
-        "prev_node_distance_from_last_summary": getattr(prev_turn_meta_summary, "prev_node_distance_from_last_summary", 0),
-    }
-    return RunSuccess(conversation_node_id=None, outputs=[ctx.state["summary"]])
+    # state["summary"] = {"should_summarize": should, "did_summarize": False, "summary_node_id": None}
+    # state["prev_turn_meta_summary"] = {
+    #     "prev_node_char_distance_from_last_summary": getattr(prev_turn_meta_summary, "prev_node_char_distance_from_last_summary", 0),
+    #     "prev_node_distance_from_last_summary": getattr(prev_turn_meta_summary, "prev_node_distance_from_last_summary", 0),
+    # }
+    state_update=[('u', {"should_summarize": should}),
+                #    'u', {"prev_turn_meta_summary": {
+                #             "prev_node_char_distance_from_last_summary": getattr(prev_turn_meta_summary, "prev_node_char_distance_from_last_summary", 0),
+                #             "prev_node_distance_from_last_summary": getattr(prev_turn_meta_summary, "prev_node_distance_from_last_summary", 0),
+                #         }}
+                  ]
+    return RunSuccess(conversation_node_id=None, state_update=state_update)
 
 
 @default_resolver.register("summarize")
 def _summarize(ctx: StepContext) -> RunResult:
     """Summarize last batch and reset distances (legacy behavior)."""
     deps = _deps(ctx)
-    ctx.state.setdefault("op_log", []).append("summarize")
-
-    prev_turn_meta_summary = deps.get("prev_turn_meta_summary")
+    with ctx.state_write as state:
+        state.setdefault("op_log", []).append("summarize")
+    state = ctx.state_view
+    prev_turn_meta_summary: MetaFromLastSummary = deps.get("prev_turn_meta_summary")
     summarize_batch = deps.get("summarize_batch")
     if not callable(summarize_batch):
         raise RuntimeError("deps['summarize_batch'] must be callable")
 
     added_id = summarize_batch(
-        ctx.state["conversation_id"],
-        int(ctx.state["turn_index"]) + 1,
+        state["conversation_id"],
+        int(state["turn_index"]) + 1,
         prev_turn_meta_summary=prev_turn_meta_summary,
     )
 
@@ -379,19 +407,23 @@ def _summarize(ctx: StepContext) -> RunResult:
     except Exception:
         pass
 
-    ctx.state["summary"] = {
-        "should_summarize": True,
-        "did_summarize": True,
-        "summary_node_id": added_id,
-    }
-    ctx.state["prev_turn_meta_summary"] = {
-        "prev_node_char_distance_from_last_summary": 0,
-        "prev_node_distance_from_last_summary": 0,
-    }
-    return RunSuccess(conversation_node_id=added_id, outputs=[ctx.state["summary"]])
+    # ctx.state["summary"] = {
+    #     "should_summarize": True,
+    #     "did_summarize": True,
+    #     "summary_node_id": added_id,
+    # }
+    # ctx.state["prev_turn_meta_summary"] = {
+    #     "prev_node_char_distance_from_last_summary": 0,
+    #     "prev_node_distance_from_last_summary": 0,
+    # }
+    state_update:list[StateUpdate] = [('u', {"summary_id": added_id}), ('u', {"prev_turn_meta_summary" : prev_turn_meta_summary})]
+    result = RunSuccess(conversation_node_id=added_id, state_update=state_update)
+    return result
 
 
 @default_resolver.register("end")
 def _end(ctx: StepContext) -> RunResult:
-    ctx.state.setdefault("op_log", []).append("end")
-    return RunSuccess(conversation_node_id=None, outputs=[{"done": True}])
+    with ctx.state_write as state:
+        state.setdefault("op_log", []).append("end")
+    result = RunSuccess(conversation_node_id=None, state_update=[('u',{"done": True})])
+    return result

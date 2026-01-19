@@ -12,24 +12,29 @@ from graph_knowledge_engine.models import WorkflowNode, MentionVerification, Con
 from .design import validate_workflow_design, Predicate
 from .serialize import try_serialize_with_ref
 
-
+RunID= uuid.UUID | str
 Json = Any
 State = Dict[str, Json]
 # Result = Json
-from typing import TypedDict, Literal, TypeAlias, Any
+from typing import TypedDict, Literal, TypeAlias, Any, Type, Literal, Union
 
 from dataclasses import dataclass
 from pydantic import BaseModel
 
+StateAppendUpdate = tuple[Literal['u'], Any]
+StateOverwriteUpdate = tuple[Literal['a', Any]]
+StateUpdate = Union[StateAppendUpdate , StateOverwriteUpdate]
+
+
 class RunSuccess(BaseModel):
     conversation_node_id: Optional[str]
-    outputs: list[Any]
+    state_update: list[StateUpdate]
     next_step_names: list[str] = []  # empty will by default fan out all
     status: Literal["success"] = "success"
 
 class RunFailure(BaseModel):
     conversation_node_id: Optional[str]
-    
+    state_update: list[StateUpdate] # can still update, append an error message
     errors: list[str]
     next_step_names: list[str] = []  # empty will by default fan out all
     status: Literal["failure"] = "failure"
@@ -37,14 +42,59 @@ RunResult: TypeAlias = RunSuccess | RunFailure
 StepFn: TypeAlias = Callable[["StepContext"], RunResult]
 from ..conversation_state_contracts import WorkflowState
 
+from dataclasses import dataclass, field
+from typing import Dict, List, Mapping, TypedDict, Iterator, TypeVar
+from types import MappingProxyType
+import threading
+import queue
+
+
+class _StateWriteTxn:
+    def __init__(self, ctx: "StepContext"):
+        self._ctx = ctx
+
+    def __enter__(self) -> WorkflowState:
+        self._ctx._state_lock.acquire()
+        # optional:
+        # self._ctx.publish({"type": "state_write_start", "op": self._ctx.op})
+        return self._ctx._state
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        # optional:
+        # self._ctx.publish({"type": "state_write_end", "op": self._ctx.op, "ok": exc is None})
+        self._ctx._state_lock.release()
+
+from dataclasses import dataclass, field, InitVar
+from typing import Dict, List, Mapping
+from types import MappingProxyType
+import threading, queue
+
 @dataclass
 class StepContext:
     run_id: str
     workflow_id: str
     workflow_node_id: str
     op: str
-    state: WorkflowState
+
+    # Accept `state=` in __init__ but don't store it as a field
+    state: InitVar["WorkflowState"]
+
     message_queue: "queue.Queue[Dict[str, Json]]"
+
+    # real storage
+    _state: "WorkflowState" = field(init=False, repr=False)
+    _state_lock: threading.RLock = field(default_factory=threading.RLock, init=False, repr=False)
+
+    def __post_init__(self, state: "WorkflowState") -> None:
+        self._state = state
+
+    @property
+    def state_view(self) -> Mapping[str, Json]:
+        return MappingProxyType(self._state)
+
+    @property
+    def state_write(self) -> "_StateWriteTxn":
+        return _StateWriteTxn(self)
 
     def publish(self, msg: Dict[str, Json]) -> None:
         self.message_queue.put(msg)
@@ -57,7 +107,6 @@ class StepContext:
             except queue.Empty:
                 break
         return out
-
 
 def _now_ms() -> int:
     return int(time.time() * 1000)
@@ -87,7 +136,7 @@ def _make_trace_span(*, conversation_id: str, excerpt: str, doc_id: str) -> Any:
             "notes": "workflow trace",
         },
     }
-
+from threading import Lock
 class WorkflowRuntime:
     """
     Executes a workflow design from workflow_engine and persists run traces to conversation_engine.
@@ -110,7 +159,24 @@ class WorkflowRuntime:
         self.predicate_registry = predicate_registry
         self.checkpoint_every_n_steps = max(1, int(checkpoint_every_n_steps))
         self.max_workers = max_workers
-
+        self.state_lock : dict[RunID, Lock] = {} # look up of run specific state lock
+    def apply_state_update(self, mute_state: dict, state_update: list[tuple[str, dict[str, Any]]]):
+        # inplace update state
+        for update_item in state_update:
+            update_item: tuple[str, dict[str, Any]]
+            if update_item[0] == 'a': # append
+                append_dict: dict = update_item[1]
+                for k, v in append_dict.items():
+                    mute_state.setdefault(k, []).append(v)
+            elif update_item[0] == 'u': # update by overwrite
+                update_dict: dict = update_item[1]
+                for k, v in update_dict.items():
+                    mute_state[k]=v
+            elif update_item[0] == 'e': # update by extending list
+                update_dict: dict = update_item[1]
+                for k, v in update_dict.items():
+                    mute_state.setdefault(k, []).extend(v)
+            
     def run(
         self,
         *,
@@ -127,6 +193,7 @@ class WorkflowRuntime:
         Traces/checkpoints live in conversation_engine.
         """
         run_id = run_id or f"run|{uuid.uuid4()}"
+        self.state_lock[str(run_id)] = Lock()
         mq: queue.Queue[Dict[str, Json]] = queue.Queue()
 
         start, nodes, adj = validate_workflow_design(
@@ -171,7 +238,12 @@ class WorkflowRuntime:
                 res: RunResult = fn(ctx)
             except Exception as e:
                 status = "error"
-                res = RunFailure(conversation_node_id = None, status = "failure", errors = [str(e)])
+                res = RunFailure(conversation_node_id = None, status = "failure", errors = [str(e)], state_update = [])
+            try:
+                mq.put_nowait(res.model_dump())
+            except queue.Full as _e:
+                raise
+                
             t1 = _now_ms()
             done_q.put((node_id, res, max(0, t1 - t0), status))
 
@@ -193,6 +265,10 @@ class WorkflowRuntime:
                     return state, run_id
 
                 node_id, run_result, dur_ms, status = done_q.get()
+                run_state_lock: Lock = self.state_lock[str(run_id)]
+                with run_state_lock:
+                    self.apply_state_update(mute_state=state, state_update = run_result.state_update)
+                    
                 inflight.pop(node_id, None)
 
                 wn = nodes[node_id]
@@ -234,6 +310,7 @@ class WorkflowRuntime:
                 next_nodes = self._route_next(edges, state, run_result, wn.fanout)
                 for nxt in next_nodes:
                     scheduled_q.put(nxt)
+        self.state_lock.pop(run_id)
 
     def _route_next(
         self,

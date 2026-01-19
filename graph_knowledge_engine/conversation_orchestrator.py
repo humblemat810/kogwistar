@@ -22,6 +22,7 @@ from .models import (
     ConversationAIResponse,
     ConversationEdge,
     ConversationNode,
+    FilteringResult,
     Grounding,
     KnowledgeRetrievalResult,
     MentionVerification,
@@ -872,16 +873,16 @@ class ConversationOrchestrator:
     def __init__(
         self,
         *,
-        conversation_engine: Any,
-        ref_knowledge_engine: Any,
-        workflow_engine: Any | None = None,
+        conversation_engine: GraphKnowledgeEngine,
+        ref_knowledge_engine: GraphKnowledgeEngine,
+        workflow_engine: GraphKnowledgeEngine | None = None,
         tool_call_id_factory = uuid.uuid4,
-        llm: BaseChatModel,
+        llm: BaseChatModel | None = None,
     ) -> None:
         self.conversation_engine: GraphKnowledgeEngine = conversation_engine
         self.ref_knowledge_engine: GraphKnowledgeEngine = ref_knowledge_engine
         self.workflow_engine: GraphKnowledgeEngine | None = workflow_engine
-        self.llm = llm
+        self.llm = llm or conversation_engine.llm
         self.tool_runner = ToolRunner(conversation_engine=conversation_engine,
                                       tool_call_id_factory=tool_call_id_factory)
         self.tail_search_includes = ["conversation_turn","conversation_summary"]
@@ -921,7 +922,7 @@ class ConversationOrchestrator:
         mem_id: str,
         role: Role,
         content: str,
-        filtering_callback: Callable[..., tuple[RetrievalResult, str]],
+        filtering_callback: Callable[..., tuple[FilteringResult, str]],
         max_retrieval_level: int = 2,
         summary_char_threshold: int = 12000,
         in_conv: bool = True,

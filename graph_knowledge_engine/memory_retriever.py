@@ -9,7 +9,7 @@ from langchain_core.language_models import BaseChatModel
 from graph_knowledge_engine.models import RetrievalResult
 from .models import ConversationNode, ConversationEdge, Grounding, MetaFromLastSummary, Span, Node, Edge, FilteringResult
 from .engine import GraphKnowledgeEngine
-
+from pydantic import BaseModel
 @dataclass
 class MemoryRetrievalResult:
     # Cross-conversation memory candidates (by user_id)
@@ -181,6 +181,8 @@ class MemoryRetriever:
                                                           [i.id for i in candidates.nodes], 
                                                           [i.id for i in candidates.edges],
                                                           context_text)
+            
+            filtered = FilteringResult.model_validate(filtered)
             selected = RetrievalResult(nodes = [n for n in candidates.nodes if n.id in filtered.node_ids],
                                    edges = [n for n in candidates.edges if n.id in filtered.edge_ids])
         else:
@@ -212,16 +214,16 @@ class MemoryRetriever:
                 
                 for n in selected.nodes:
                     if n.type != "reference_pointer":
-                        non_kg_node_ids.append(n.id)
+                        non_kg_node_ids.append(n.safe_get_id())
                         conv_nodes.append(n)
                         continue
                     rid = (n.properties or {}).get("refers_to_id")
-                    selected_ids.append(n.id)
+                    selected_ids.append(n.safe_get_id())
                     if isinstance(rid, str) and rid:
                         seed_kg_ids.append(rid)
                 for n in selected.edges:
                     if n.type != "reference_pointer":
-                        non_kg_edge_ids.append(n.id)
+                        non_kg_edge_ids.append(n.safe_get_id())
                         conv_edges.append(n)
                         continue
                     rid = (n.properties or {}).get("refers_to_id")

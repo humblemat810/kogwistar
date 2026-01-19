@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Optional, Callable, TypedDict
+from typing import Any, Optional, Callable, TypedDict, cast
 from pydantic import BaseModel, ConfigDict, Field
 
 from graph_knowledge_engine.models import MetaFromLastSummary, RetrievalResult
@@ -19,7 +19,6 @@ class SummaryStateModel(BaseModel):
 
 import threading
 class WorkflowStateModel(BaseModel):
-    _lock: threading.Lock = Field(default_factory=threading.Lock)
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     conversation_id: str
@@ -46,7 +45,8 @@ class WorkflowStateModel(BaseModel):
     summary: SummaryStateModel = Field(default_factory=SummaryStateModel)
     prev_turn_meta_summary: PrevTurnMetaSummaryModel
     # _deps : dict[str,Any]
-    
+    def dump_state(self) -> WorkflowState:
+        return cast(WorkflowState, self.model_dump())
 class PrevTurnMetaSummaryDict(TypedDict):
     prev_node_char_distance_from_last_summary: int
     prev_node_distance_from_last_summary: int

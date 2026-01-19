@@ -127,7 +127,7 @@ def test_conversation_flow(engine:GraphKnowledgeEngine, conversation_engine:Grap
     res = conversation_engine.add_conversation_turn(user_id, conv_id, turn_id, "mem0", 
                                                     role="user", content="Hello computer", 
                                                     ref_knowledge_engine=engine,
-                                                    filtering_callback = wrapped_cached_callback)
+                                                    filtering_callback = candiate_filtering_callback_cached)
     prev_turn_meta_summary : MetaFromLastSummary = res.prev_turn_meta_summary
     assert res.turn_index == 2
     turn_id = res.user_turn_node_id

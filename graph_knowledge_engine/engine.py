@@ -4100,7 +4100,7 @@ class GraphKnowledgeEngine:
     def add_conversation_turn(self, user_id: str, conversation_id: str, turn_id: str, mem_id: 
                             str, role: str, content: str, 
                             ref_knowledge_engine: GraphKnowledgeEngine, 
-                            filtering_callback: Callable[..., tuple[RetrievalResult, str]] = candiate_filtering_callback,
+                            filtering_callback: Callable[..., tuple[FilteringResult, str]] = candiate_filtering_callback,
                             max_retrieval_level: int = 2, summary_char_threshold = 12000,
                             prev_turn_meta_summary : MetaFromLastSummary = MetaFromLastSummary(0,0)) -> AddTurnResult:
         """Stable facade: delegate to the KGE-native conversation orchestrator.

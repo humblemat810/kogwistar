@@ -32,6 +32,10 @@ def _span():
     )
 
 def test_workflow_design_creation_and_persistence(tmp_path):
+    """
+    This test scope is to test runnable and persistance and loadable, not the actual completeness of the orchestration
+    """
+    
     wf_engine = GraphKnowledgeEngine(persist_directory=str(tmp_path / "wf"), kg_graph_type="workflow")
     workflow_id = "wf_demo"
 
