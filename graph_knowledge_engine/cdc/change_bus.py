@@ -41,11 +41,12 @@ class ChangeBus:
     """
     def __init__(self):
         self._sinks: list[ChangeSink] = []
-
-    # def next_seq(self) -> int:
-    #     with self._seq_lock:
-    #         self._seq += 1
-    #         return self._seq
+        self._seq_lock = threading.Lock()
+        self._seq = 0
+    def next_seq(self) -> int:
+        with self._seq_lock:
+            self._seq += 1
+            return self._seq
 
     def add_sink(self, sink: ChangeSink) -> None:
         self._sinks.append(sink)

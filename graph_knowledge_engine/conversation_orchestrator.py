@@ -63,7 +63,7 @@ from graph_knowledge_engine.workflow.executor import WorkflowExecutor
 from graph_knowledge_engine.workflow.contract import build_workflow_from_engine, WorkflowSpec
 
 def get_id_for_conversation_turn(id_kind, user_id, conversation_id, content, new_index, role, entity_type, in_conv):
-    return stable_id(id_kind, user_id, conversation_id, content, str(new_index), role, entity_type, str(in_conv))
+    return str(stable_id(id_kind, user_id, conversation_id, content, str(new_index), role, entity_type, str(in_conv)))
 
 class ConversationOrchestrator:
     """KGE-native orchestrator.
@@ -719,7 +719,7 @@ class ConversationOrchestrator:
         turn_node = ConversationNode(
             user_id=user_id,
             id=get_id_for_conversation_turn(ConversationNode.id_kind, user_id, 
-                                            conversation_id, content, str(new_index), role, "conversation_turn", str(in_conv)),
+                                            conversation_id, content, str(new_index), role, "conversation_turn", str(in_conv))
             label=f"Turn {new_index} ({role})",
             type="entity",
             doc_id=turn_node_id,
@@ -974,7 +974,7 @@ class ConversationOrchestrator:
         if role in ["assistent", "system"]:
             
             turn_node_id = get_id_for_conversation_turn(ConversationNode.id_kind, user_id, 
-                                            conversation_id, content, str(new_index), role, "conversation_turn", str(in_conv)),
+                                            conversation_id, content, str(new_index), role, "conversation_turn", str(in_conv))
             self_span = Span(
                 collection_page_url=f"conversation/{conversation_id}",
                 document_page_url=f"conversation/{conversation_id}#{turn_node_id}",
@@ -1044,7 +1044,7 @@ class ConversationOrchestrator:
         else:
             # 1) Append the conversation turn node
             turn_node_id = get_id_for_conversation_turn(ConversationNode.id_kind, user_id, 
-                                            conversation_id, content, str(new_index), role, "conversation_turn", str(in_conv)),
+                                            conversation_id, content, str(new_index), role, "conversation_turn", str(in_conv))
             self_span = Span(
                 collection_page_url=f"conversation/{conversation_id}",
                 document_page_url=f"conversation/{conversation_id}#{turn_node_id}",
@@ -1348,7 +1348,7 @@ class ConversationOrchestrator:
         new_index = current_index + 1
         content = '\n'.join(i['text'] for i in get_summary(full_text)) # type: ignore
         summary_turn_id = get_id_for_conversation_turn(ConversationNode.id_kind, user_id, 
-                                            conversation_id, content, str(new_index), "system", "conversation_summary", str(in_conv)),
+                                            conversation_id, content, str(new_index), "system", "conversation_summary", str(in_conv))
         summary_node = ConversationNode(
             id=summary_turn_id,
             label=f"Summary {start_index}-{current_index}",

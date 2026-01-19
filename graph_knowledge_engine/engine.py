@@ -69,7 +69,7 @@ from .models import (
     FilteringResponse, 
     FilteringResult
 )
-
+from .cdc.change_event import EntityRef, Op, EntityRefModel
 from langchain_openai import AzureChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 import json
@@ -2102,13 +2102,13 @@ class GraphKnowledgeEngine:
             # MethodType
             # a.foo = MethodType(foo, a)
             self.cached_embed = cast(Callable[[str], Iterable[float]], cached_embed)
-    def _emit_change(self, *, op: str, entity: dict | None, payload: object, run_id: str | None = None, step_id: str | None = None) -> None:
-        # seq = self.changes.next_seq()
+    def _emit_change(self, *, op: Op, entity: EntityRefModel, payload: object, run_id: str | None = None, step_id: str | None = None) -> None:
+        seq = self.changes.next_seq()
         ev = ChangeEvent(
             seq=seq,
             op=op,
             ts_unix_ms=int(time.time() * 1000),
-            entity=entity,
+            entity=entity.model_dump_entity_ref(),
             payload=payload,
             run_id=run_id,
             step_id=step_id,
@@ -2383,9 +2383,9 @@ class GraphKnowledgeEngine:
         self._maybe_reindex_node_refs(node)
         self._emit_change(
             op="node.upsert",
-            entity={"kind": "node", "id": node.id, 
-                    "kg_graph_type": self.kg_graph_type,
-                    "url" : self.persist_directory},
+            entity=EntityRefModel(kind="node", id=node.safe_get_id(), 
+                    kg_graph_type=self.kg_graph_type,
+                    url=self.persist_directory),
             payload=node.to_jsonable() if hasattr(node, "to_jsonable") else node.model_dump(),
         )
     def _entity_is_conversation(self, node: Node | Edge):
@@ -2550,10 +2550,10 @@ class GraphKnowledgeEngine:
             )
         
         self._emit_change(
-            op="node.upsert",
-            entity={"kind": "edge", "id": edge.id, 
-                    "kg_graph_type": self.kg_graph_type,
-                    "url" : self.persist_directory},
+            op="edge.upsert",
+            entity=EntityRefModel(kind="edge", id=edge.safe_get_id(), 
+                    kg_graph_type=self.kg_graph_type,
+                    url=self.persist_directory),
             payload=edge.to_jsonable() if hasattr(edge, "to_jsonable") else edge.model_dump(),
         )
     def add_document(self, document: Document):
@@ -2573,10 +2573,10 @@ class GraphKnowledgeEngine:
         )
         
         self._emit_change(
-            op="node.upsert",
-            entity={"kind": "doc_node", "id": document.id, 
-                    "kg_graph_type": self.kg_graph_type,
-                    "url" : self.persist_directory},
+            op="doc.upsert",
+            entity=EntityRefModel(kind="doc_node", id=document.id, 
+                    kg_graph_type=self.kg_graph_type,
+                    url=self.persist_directory),
             payload=document.to_jsonable() if hasattr(document, "to_jsonable") else document.model_dump(),
         )
 
@@ -3984,7 +3984,7 @@ class GraphKnowledgeEngine:
     # ----------------------------
     @conversation_only
     def create_conversation(self, user_id, conv_id = None, node_id: str | None | uuid.UUID = None) -> tuple[str, str]:
-        from conversation_orchestrator import get_id_for_conversation_turn
+        from .conversation_orchestrator import get_id_for_conversation_turn
         if self.kg_graph_type != "conversation":
             raise Exception("conversation only allowed to be on canva engine")
         """Create a new conversation thread ID and reserve it with a start node."""
