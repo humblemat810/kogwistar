@@ -2386,7 +2386,7 @@ class GraphKnowledgeEngine:
             entity=EntityRefModel(kind="node", id=node.safe_get_id(), 
                     kg_graph_type=self.kg_graph_type,
                     url=self.persist_directory),
-            payload=node.to_jsonable() if hasattr(node, "to_jsonable") else node.model_dump(),
+            payload=node.to_jsonable() if hasattr(node, "to_jsonable") else node.model_dump(exclude=["embedding"]),
         )
     def _entity_is_conversation(self, node: Node | Edge):
         return type(node) in [ConversationEdge, ConversationNode]
@@ -2554,7 +2554,7 @@ class GraphKnowledgeEngine:
             entity=EntityRefModel(kind="edge", id=edge.safe_get_id(), 
                     kg_graph_type=self.kg_graph_type,
                     url=self.persist_directory),
-            payload=edge.to_jsonable() if hasattr(edge, "to_jsonable") else edge.model_dump(),
+            payload=edge.to_jsonable() if hasattr(edge, "to_jsonable") else edge.model_dump(exclude=["embedding"]),
         )
     def add_document(self, document: Document):
         if document.embeddings is None:
@@ -2577,7 +2577,7 @@ class GraphKnowledgeEngine:
             entity=EntityRefModel(kind="doc_node", id=document.id, 
                     kg_graph_type=self.kg_graph_type,
                     url=self.persist_directory),
-            payload=document.to_jsonable() if hasattr(document, "to_jsonable") else document.model_dump(),
+            payload=document.to_jsonable() if hasattr(document, "to_jsonable") else document.model_dump(exclude=['embedding']),
         )
 
     def add_domain(self, domain: Domain):

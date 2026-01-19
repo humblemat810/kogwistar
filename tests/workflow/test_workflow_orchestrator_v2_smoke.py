@@ -9,7 +9,7 @@ def test_workflow_runtime_uses_default_resolver(tmp_path):
     assertions minimal and avoids HTML bundle dumping.
     """
 
-    from graph_knowledge_engine.models import WorkflowEdge, WorkflowNode
+    from graph_knowledge_engine.models import WorkflowEdge, WorkflowNode, Span, Grounding, MentionVerification
     from graph_knowledge_engine.workflow.runtime import WorkflowRuntime
     from graph_knowledge_engine.workflow.contract import RunResult, State
     from graph_knowledge_engine.workflow.resolvers import default_resolver
@@ -23,10 +23,32 @@ def test_workflow_runtime_uses_default_resolver(tmp_path):
     workflow_engine = GraphKnowledgeEngine(persist_directory=str(wf_dir), kg_graph_type="workflow")
     conversation_engine = GraphKnowledgeEngine(persist_directory=str(conv_dir), kg_graph_type="conversation")
     kg_engine = GraphKnowledgeEngine(persist_directory=str(kg_dir), kg_graph_type="knowledge")
-
+    conversation_id = "test_id::test_workflow_runtime_uses_default_resolver"
     # -----------------------------
     # 1) Persist a tiny add-turn-like workflow design
     # -----------------------------
+    def get_self_span(content):
+        self_span = Span(
+            collection_page_url=f"conversation/{conversation_id}",
+            document_page_url=f"conversation/{conversation_id}",
+            doc_id=f"conv:{conversation_id}",
+            insertion_method="conversation_turn",
+            page_number=1,
+            start_char=0,
+            end_char=len(content),
+            excerpt=content,
+            context_before="",
+            context_after="",
+            chunk_id=None,
+            source_cluster_id=None,
+            verification=MentionVerification(
+                method="human",
+                is_verified=True,
+                score=1.0,
+                notes=f"test_workflow_runtime_uses_default_resolver",
+            ),
+        )
+        return self_span
     def n(node_id: str, op: str, *, start: bool = False, terminal: bool = False) -> WorkflowNode:
         return WorkflowNode(
             id=node_id,
@@ -43,8 +65,11 @@ def test_workflow_runtime_uses_default_resolver(tmp_path):
                 "wf_terminal": terminal,
                 "wf_version": "v1",
             },
+            mentions=[Grounding(spans=[get_self_span(op)])],
+            level_from_root = 0,
             domain_id=None,
             canonical_entity_id=None,
+            embedding=None,
         )
 
     def e(edge_id: str, src: str, dst: str, *, pred: str | None, priority: int = 100, is_default: bool = True) -> WorkflowEdge:
@@ -68,8 +93,10 @@ def test_workflow_runtime_uses_default_resolver(tmp_path):
             },
             source_edge_ids=[],
             target_edge_ids=[],
+            mentions=[Grounding(spans=[get_self_span("next")])],
             domain_id=None,
             canonical_entity_id=None,
+            embedding=None,
         )
 
     # nodes
@@ -136,6 +163,7 @@ def test_orchestrator_has_v2(tmp_path):
         conversation_engine=conv,
         ref_knowledge_engine=kg,
         workflow_engine=wf,
+        llm = wf.llm,
         # llm=..., tool_runner=..., etc.
     )
 

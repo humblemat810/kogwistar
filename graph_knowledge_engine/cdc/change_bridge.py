@@ -31,3 +31,8 @@ async def changes_ws(ws: WebSocket):
         subscribers.discard(ws)
         
 # uvicorn change_bridge:app --host 127.0.0.1 --port 8787
+"""python - <<'PY'
+import asyncio,websockets
+async def m(): async with websockets.connect('ws://localhost:8787/changes/ws') as w: async for x in w: print(x)
+asyncio.run(m())
+PY"""

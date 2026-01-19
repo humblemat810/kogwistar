@@ -152,7 +152,7 @@ class WorkflowRuntime:
         scheduled_q.put(start.safe_get_id())
         done_q: queue.Queue[Tuple[str, RunResult, int, str]] = queue.Queue()  # (node_id, result, duration_ms, status)
 
-        def worker(node_id: str) -> None:
+        def worker(node_id: str, state) -> None:
             wn: WorkflowNode
             wn = nodes[node_id]
             op = nodes[node_id].op
@@ -185,7 +185,7 @@ class WorkflowRuntime:
                         nid = scheduled_q.get_nowait()
                     except queue.Empty:
                         break
-                    inflight[nid] = pool.submit(worker, nid)
+                    inflight[nid] = pool.submit(worker, nid, state)
 
                 if not inflight and scheduled_q.empty():
                     # done
