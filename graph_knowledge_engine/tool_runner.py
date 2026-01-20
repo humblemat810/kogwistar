@@ -14,7 +14,7 @@ import json
 import time
 import uuid
 from dataclasses import dataclass
-from typing import Any, Callable, Optional, TypeVar
+from typing import Any, Callable, Optional, TypeVar, Iterable
 
 from .models import ConversationNode, Grounding, MentionVerification, Span
 from graph_knowledge_engine.models import MetaFromLastSummary
@@ -38,7 +38,7 @@ class ToolEventIds:
 class ToolRunner:
     def __init__(self, *, tool_call_id_factory, conversation_engine: Any) -> None:
         self.engine = conversation_engine
-        self.tool_call_id_factory :Callable[[], str]= tool_call_id_factory
+        self.tool_call_id_factory :Callable[..., str]= tool_call_id_factory
     def run_tool(
         self,
         *,
@@ -48,7 +48,8 @@ class ToolRunner:
         turn_index: int,
         tool_name: str,
         args: dict[str, Any],
-        handler: Callable[[], T],
+        kwargs: dict[str, Any],
+        handler: Callable[..., T],
         prev_turn_meta_summary: MetaFromLastSummary,
         render_result: Optional[Callable[[T], str]] = None,
         
@@ -56,7 +57,7 @@ class ToolRunner:
         """Execute a tool handler and record tool_call/tool_result nodes."""
 
         # Tool call node (assistant role)
-        call_id = str(self.tool_call_id_factory())
+        call_id = str(self.tool_call_id_factory(user_id, conversation_id, str(args)))
         span = Span(
             collection_page_url=f"conversation/{conversation_id}",
             document_page_url=f"conversation/{conversation_id}#{call_id}",
@@ -102,7 +103,7 @@ class ToolRunner:
         prev_turn_meta_summary.prev_node_char_distance_from_last_summary+= len(call_node_content)
         prev_turn_meta_summary.prev_node_distance_from_last_summary+= 1
         # Execute
-        result = handler()
+        result = handler(**kwargs)
 
         # Tool result node (tool role)
         res_id = str(self.tool_call_id_factory())

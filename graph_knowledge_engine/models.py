@@ -433,7 +433,7 @@ class BaseNodeMetadata(BaseModel):
 
 class ConversationNodeMetadata(BaseNodeMetadata):
     level_from_root: int = Field(..., ge=0)
-    entity_type: str
+    entity_type: str = Field("conversation_node")
     char_distance_from_last_summary: int
     turn_distance_from_last_summary: int
 
@@ -1272,7 +1272,7 @@ class WorkflowNodeMetadata(BaseModel):
       - wf_start: marks the start node in this workflow_id
       - wf_terminal: marks terminal node
     """
-    entity_type: str = Field(..., description='Must be "workflow_node"')
+    entity_type: str = Field("workflow_node", description='Must be "workflow_node"')
     workflow_id: str
     wf_op: str = "noop"
     wf_version: str = "v1"
@@ -1310,7 +1310,7 @@ class WorkflowEdgeMetadata(BaseModel):
       - wf_is_default: used if no predicate matches
       - wf_multiplicity: "one"|"many"  (allows fanout)
     """
-    entity_type: str = Field(..., description='Must be "workflow_edge"')
+    entity_type: str = Field("workflow_edge", description='Must be "workflow_edge"')
     workflow_id: str
     wf_predicate: Optional[str] = None  # llm explanation: wf_predicate: “This path is meant for a specific condition.”
     wf_priority: int = 100              
@@ -1382,7 +1382,7 @@ class WorkflowRunMetadata(BaseNodeMetadata):
 
     entity_type="workflow_run"
     """
-    entity_type: str = Field(..., description='Must be "workflow_run"')
+    entity_type: str = Field("workflow_run", description='Must be "workflow_run"')
     workflow_id: str
     workflow_version: str = "v1"
     run_id: str
@@ -1405,7 +1405,7 @@ class WorkflowStepExecMetadata(BaseNodeMetadata):
 
     entity_type="workflow_step_exec"
     """
-    entity_type: str = Field(..., description='Must be "workflow_step_exec"')
+    entity_type: str = Field("workflow_step_exec", description='Must be "workflow_step_exec"')
     run_id: str
     workflow_id: str
     workflow_node_id: str
@@ -1433,7 +1433,7 @@ class WorkflowCheckpointMetadata(BaseNodeMetadata):
 
     entity_type="workflow_checkpoint"
     """
-    entity_type: str = Field(..., description='Must be "workflow_checkpoint"')
+    entity_type: str = Field("workflow_checkpoint", description='Must be "workflow_checkpoint"')
     run_id: str
     workflow_id: str
     step_seq: int
@@ -1475,3 +1475,26 @@ class WorkflowCheckpointNode(Node):
     def check_metadata(cls, v):
         WorkflowCheckpointMetadata.model_validate(v)
         return v
+    
+# deserialize form db
+EntitiyTypeToNodeTypeMapping = {
+    "workflow_checkpoint" : WorkflowCheckpointNode,
+    "workflow_step_exec": WorkflowStepExecNode,
+    "workflow_run" : WorkflowRunNode,
+    "workflow_node": WorkflowNode,
+    "node" : Node,
+    "conversation_node": ConversationNode,
+    "conversation_start": ConversationNode,
+    "conversation_turn": ConversationNode,
+    "conversation_summary": ConversationNode,
+    "tool_result" : ConversationNode,
+    "agent_run"   : ConversationNode,
+    "knowledge_reference": ConversationNode,
+}
+
+EntitiyTypeToEdgeTypeMapping = {
+    
+    "workflow_edge" : WorkflowEdge,
+    "edge" : Edge,
+    "conversation_edge": ConversationEdge,
+}

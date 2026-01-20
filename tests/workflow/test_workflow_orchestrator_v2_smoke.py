@@ -191,7 +191,7 @@ def test_workflow_runtime_uses_default_resolver(tmp_path):
     res = conversation_engine.add_conversation_turn(user_id, conv_id, turn_id, "mem0", 
                                                     role="user", content="Hello computer", 
                                                     ref_knowledge_engine=ref_knowledge_engine,
-                                                    filtering_callback = cached_fn)    
+                                                    filtering_callback = cached_fn, add_turn_only = True)    
     # 'c7b0883aefc651a69a69425fb018e5be'
     # -----------------------------
     # 2) Re-open workflow engine to prove “saved graph is runnable”
@@ -212,9 +212,11 @@ def test_workflow_runtime_uses_default_resolver(tmp_path):
         checkpoint_every_n_steps=1,
         max_workers=1,
     )
-    import uuid
+    # import uuid
+    from graph_knowledge_engine.id_provider import stable_id
     tool_runner=ToolRunner(conversation_engine=conversation_engine,
-                                      tool_call_id_factory=uuid.uuid4)
+                                    tool_call_id_factory=stable_id
+                                      )
     # max_retrieval_level: int = 2
     # summary_char_threshold: int = 12000
     from graph_knowledge_engine.conversation_orchestrator import ConversationOrchestrator

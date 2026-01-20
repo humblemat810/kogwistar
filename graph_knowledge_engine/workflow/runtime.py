@@ -361,32 +361,37 @@ class WorkflowRuntime:
         turn_node_id: str,
         status: str,
     ) -> bool: # return success failure result
-        return True  # current engine always persist on edit, no batch persist mode needed
-        # from . import serialize  # keep runtime import-light
-        # from graph_knowledge_engine.models import WorkflowRunNode, Grounding, Span  # adjust import path to your package layout
+        # current engine always persist on edit, no batch persist mode needed
+        from . import serialize  # keep runtime import-light
+        from graph_knowledge_engine.models import WorkflowRunNode, Grounding, Span  # adjust import path to your package layout
 
-        # excerpt = f"workflow_run {workflow_id} {run_id} status={status}"
-        # span = Span(**_make_trace_span(conversation_id=conversation_id, excerpt=excerpt, doc_id=f"conv:{conversation_id}"))
-        # n = WorkflowRunNode(
-        #     id=f"wf_run|{run_id}",
-        #     label=f"Workflow run {workflow_id}",
-        #     type="entity",
-        #     doc_id=f"wf_run|{run_id}",
-        #     summary=excerpt,
-        #     mentions=[Grounding(spans=[span])],
-        #     properties={},
-        #     metadata={
-        #         "entity_type": "workflow_run",
-        #         "workflow_id": workflow_id,
-        #         "workflow_version": "v1",
-        #         "run_id": run_id,
-        #         "conversation_id": conversation_id,
-        #         "turn_node_id": turn_node_id,
-        #         "status": status,
-        #         "level_from_root": 0,
-        #     },
-        # )
-        # self.conversation_engine.add_node(n)
+        excerpt = f"workflow_run {workflow_id} {run_id} status={status}"
+        span = Span(**_make_trace_span(conversation_id=conversation_id, excerpt=excerpt, doc_id=f"conv:{conversation_id}"))
+        n = WorkflowRunNode(
+            id=f"wf_run|{run_id}",
+            label=f"Workflow run {workflow_id}",
+            type="entity",
+            doc_id=f"wf_run|{run_id}",
+            summary=excerpt,
+            mentions=[Grounding(spans=[span])],
+            properties={},
+            metadata={
+                "entity_type": "workflow_run",
+                "workflow_id": workflow_id,
+                "workflow_version": "v1",
+                "run_id": run_id,
+                "conversation_id": conversation_id,
+                "turn_node_id": turn_node_id,
+                "status": status,
+                "level_from_root": 0,
+            },
+            level_from_root = 0,
+            domain_id = None,
+            canonical_entity_id = None,
+            embedding = None,
+        )
+        self.conversation_engine.add_node(n)
+        return True
 
     def _update_workflow_run_status(self, conversation_id: str, run_id: str, status: str) -> None:
         # minimal approach: add an update node/event rather than mutate-in-place

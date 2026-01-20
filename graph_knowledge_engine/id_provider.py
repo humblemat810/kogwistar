@@ -15,7 +15,8 @@ PROJECT_NS = uuid.uuid5(uuid.NAMESPACE_URL, "graph-knowledge-engine")
 def stable_id(kind: str, *parts: str) -> uuid.UUID:
     key = json.dumps([kind, *parts], separators=(",", ":"), ensure_ascii=False)
     return uuid.uuid5(PROJECT_NS, key)
-
+def any_arg_new_event_id(*arg, **kwag):
+    return new_event_id()
 def new_event_id() -> str:
     return uuid.uuid4()
 

@@ -845,7 +845,7 @@ Return JSON per schema. Be conservative: if key details are missing, set needs_m
         sp = Span.from_dummy_for_conversation()
         node = ConversationNode(
             id=rid,
-            label=f"Agent Run {run_id}",
+            label=f"Agent {self.__class__.__name__} Run {run_id}",
             type="entity",
             summary=f"Agent run anchor {run_id}",
             conversation_id=conversation_id,

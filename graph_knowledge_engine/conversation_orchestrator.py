@@ -1096,7 +1096,13 @@ class ConversationOrchestrator:
                     filtering_callback=filtering_callback,
                     max_retrieval_level=max_retrieval_level,
                 )
-
+                mem_args = dict(
+                        user_id=user_id,
+                        current_conversation_id=conversation_id,
+                        query_embedding=embedding,
+                        user_text=content,
+                        context_text="",
+                    )
                 # memory retrieve tool
                 mem: MemoryRetrievalResult = self.tool_runner.run_tool(
                     conversation_id=conversation_id,
@@ -1107,18 +1113,18 @@ class ConversationOrchestrator:
                     args={
                         "n_results": mem_retriever.n_results,
                     },
-                    handler=lambda: mem_retriever.retrieve(
-                        user_id=user_id,
-                        current_conversation_id=conversation_id,
-                        query_embedding=embedding,
-                        user_text=content,
-                        context_text="",
-                    ),
+                    kwargs = mem_args,
+                    handler=mem_retriever.retrieve,
                     render_result=lambda r: getattr(r, "reasoning", "")[:800],
                     prev_turn_meta_summary=prev_turn_meta_summary
                 )
                 st.memory = mem
-
+                kg_args = dict(
+                        user_text=content,
+                        context_text="",
+                        query_embedding=embedding,
+                        seed_kg_node_ids=list(getattr(mem, "seed_kg_node_ids", []) or []),
+                    )
                 # KG retrieve tool
                 kg: KnowledgeRetrievalResult = self.tool_runner.run_tool(
                     conversation_id=conversation_id,
@@ -1126,16 +1132,14 @@ class ConversationOrchestrator:
                     turn_node_id=turn_node_id,
                     turn_index=new_index,
                     tool_name="kg_retrieve",
-                    args={
-                        "max_retrieval_level": max_retrieval_level,
-                        "seed_kg_node_ids": list(getattr(mem, "seed_kg_node_ids", []) or []),
-                    },
-                    handler=lambda: kg_retriever.retrieve(
-                        user_text=content,
-                        context_text="",
-                        query_embedding=embedding,
-                        seed_kg_node_ids=list(getattr(mem, "seed_kg_node_ids", []) or []),
-                    ),
+                    args=[],
+                    kwargs = kg_args,
+                    # {
+                    #     # "max_retrieval_level": max_retrieval_level,
+                    #     "seed_kg_node_ids": list(getattr(mem, "seed_kg_node_ids", []) or []),
+                    # }
+                    
+                    handler=kg_retriever.retrieve,
                     render_result=lambda r: getattr(r, "reasoning", "")[:800],
                     prev_turn_meta_summary=prev_turn_meta_summary
                 )

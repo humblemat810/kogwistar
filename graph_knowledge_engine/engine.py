@@ -4,7 +4,8 @@ from types import MethodType
 from langchain_core.language_models import BaseChatModel
 import pathlib
 import time
-from .models import AddTurnResult, MetaFromLastSummary, RetrievalResult
+from . import models
+from .models import AddTurnResult, MetaFromLastSummary, RetrievalResult, WorkflowCheckpointNode
 if True:
     """_summary_
 
@@ -1170,7 +1171,7 @@ class GraphKnowledgeEngine:
 
         if not node_type:
             node_type = ConversationNode if self.kg_graph_type == "conversation" else Node
-
+        
         # IMPORTANT: ID fetch must NOT filter out tombstones, or redirect cannot start.
         got = self.node_collection.get(
             ids=ids,
@@ -1248,15 +1249,28 @@ class GraphKnowledgeEngine:
             raise Exception("Missing Metadatas")
         
         res = []
-        
+        from . import models
         for d, emb, metadata in zip(docs, embs, metadatas):
             if type(emb) is list:
                 pass
             elif type(emb) is np.ndarray:
                 emb = emb.tolist()
             json_d = json.loads(d)
+            entity_type = metadata.get('entity_type')
+            override_node_type = None
+            _class_name = metadata.get("_class_name")
+            if _class_name:
+                node_cls = getattr(models, _class_name)
+                if node_cls:
+                    override_node_type = node_cls
+            if not override_node_type:
+                if entity_type == "workflow_checkpoint":
+                    if self.kg_graph_type == "workflow":
+                        override_node_type = WorkflowCheckpointNode
+            
+                
             json_d.update({"embedding": emb, "metadata": metadata})
-            res.append(node_type.model_validate(json_d))
+            res.append((override_node_type or node_type).model_validate(json_d))
         return res
     def edges_from_single_or_id_query_result(self, got, edge_type: Type[Edge] = Edge):
         docs: list[str] = cast(list[str], got.get("documents"))
@@ -1282,7 +1296,15 @@ class GraphKnowledgeEngine:
                 emb = emb.tolist()
             json_d = json.loads(d)
             json_d.update({"embedding": emb, "metadata": metadata})
-            res.append(edge_type.model_validate(json_d))
+            entity_type = metadata.get('entity_type')
+            override_edge_type = None
+            _class_name = metadata.get("_class_name")
+            if _class_name:
+                edge_cls = getattr(models, _class_name)
+                if edge_cls:
+                    override_edge_type = edge_cls
+   
+            res.append((override_edge_type or edge_type).model_validate(json_d))
         return res
     def nodes_from_query_result(self, gots, node_type: Type[Node] = Node):
         res = []
@@ -2372,13 +2394,17 @@ class GraphKnowledgeEngine:
         doc, meta = _node_doc_and_meta(node)
         if node.embedding is None:
             node.embedding = self._iterative_defensive_emb(doc)
+        meta['_class_name'] = type(node).__name__
         self.node_collection.add(
             ids=[node.id],
             documents=[doc],
             embeddings=[node.embedding] if node.embedding is not None else [self._iterative_defensive_emb(str(doc))],
             metadatas=[meta],
         )
+        
         self.get_nodes([node.id], type(node))
+        node_cls = getattr(models, type(node).__name__)
+        self.get_nodes([node.id], node_cls)
         self._index_node_docs(node)
         self._maybe_reindex_node_refs(node)
         self._emit_change(
@@ -4102,7 +4128,8 @@ class GraphKnowledgeEngine:
                             ref_knowledge_engine: GraphKnowledgeEngine, 
                             filtering_callback: Callable[..., tuple[FilteringResult | RetrievalResult, str]] = candiate_filtering_callback,
                             max_retrieval_level: int = 2, summary_char_threshold = 12000,
-                            prev_turn_meta_summary : MetaFromLastSummary = MetaFromLastSummary(0,0)) -> AddTurnResult:
+                            prev_turn_meta_summary : MetaFromLastSummary = MetaFromLastSummary(0,0), 
+                            add_turn_only = None) -> AddTurnResult:
         """Stable facade: delegate to the KGE-native conversation orchestrator.
 
         The orchestration policy (retrieve/filter/pin/answer/summarize) lives outside engine.py.
@@ -4120,7 +4147,8 @@ class GraphKnowledgeEngine:
             filtering_callback=filtering_callback,
             max_retrieval_level=max_retrieval_level,
             summary_char_threshold=summary_char_threshold,
-            prev_turn_meta_summary=prev_turn_meta_summary
+            prev_turn_meta_summary=prev_turn_meta_summary,
+            add_turn_only = add_turn_only
         )
 
     # -----------------
