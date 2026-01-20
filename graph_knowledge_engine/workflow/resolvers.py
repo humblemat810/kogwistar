@@ -33,7 +33,8 @@ Json = Any
 
 # Import your real RunResult types from runtime/models
 from graph_knowledge_engine.workflow.runtime import RunFailure, RunResult, RunSuccess, StepContext
-
+from graph_knowledge_engine.models import ConversationEdge
+from graph_knowledge_engine.conversation_orchestrator import get_id_for_conversation_turn_edge
 RawStepFn = Callable[[StepContext], Union[Json, RunResult]]
 
 @dataclass
@@ -318,13 +319,18 @@ def _answer(ctx: StepContext) -> RunResult:
     response_node_id = getattr(resp, "response_node_id", None)
     if response_node_id:
         # Link assistant node to the user turn for conversation chain continuity.
-        add_link = deps.get("add_link_to_new_turn")
+        add_link_to_new_turn = deps.get("add_link_to_new_turn")
         ce = deps["conversation_engine"]
-        if callable(add_link):
+        if callable(add_link_to_new_turn):
             try:
                 resp_node = ce.get_nodes([response_node_id])[0]
                 user_turn_node = ce.get_nodes([ctx.state["turn_node_id"]])[0]
-                add_link(resp_node, user_turn_node, ctx.state["conversation_id"], span=ctx.state["self_span"], prev_turn_meta_summary=prev_turn_meta_summary)
+                seq_edge_id = get_id_for_conversation_turn_edge(ConversationEdge.id_kind, user_id, conversation_id, 
+                                                                "next_turn", new_index,
+                                                                [user_turn_node.id], [resp_node.id], 
+                                                                [], [], 
+                                                                "conversation_edge")
+                add_link_to_new_turn(seq_edge_id, resp_node, user_turn_node, ctx.state["conversation_id"], span=ctx.state["self_span"], prev_turn_meta_summary=prev_turn_meta_summary)
             except Exception:
                 pass
 

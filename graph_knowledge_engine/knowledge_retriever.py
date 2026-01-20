@@ -30,7 +30,7 @@ class KnowledgeRetriever:
         conversation_engine,
         ref_knowledge_engine,
         llm: BaseChatModel,
-        filtering_callback: Callable[..., tuple[FilteringResult, str]] ,
+        filtering_callback: Callable[..., tuple[FilteringResult| RetrievalResult, str]] ,
         max_retrieval_level: int = 2,
         shallow_n_results: int = 20,
         deep_per_seed_results: int = 10,

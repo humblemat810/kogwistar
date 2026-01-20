@@ -170,7 +170,8 @@ class AgenticAnsweringAgent:
     ):
         if not cache_dir:
             return EvidenceSelection.model_validate(self._select_used_evidence(system_prompt=system_prompt, question=question, candidates=candidates))
-
+        if not candidates:
+            return EvidenceSelection(reasoning="No candidates given for selection.")
         mem = Memory(location=cache_dir, verbose=0)
         cached_fn = cached(mem, self._select_used_evidence_entry, ignore=["agent"])
         payload = cached_fn(self, system_prompt=system_prompt, question=question, candidates=candidates)
@@ -204,7 +205,8 @@ class AgenticAnsweringAgent:
     # ----------------------------
     def answer(self, *, conversation_id: str, user_id=None, prev_turn_meta_summary:MetaFromLastSummary) -> dict[str, Any]:
         """Run bounded agentic answering with evidence selection + optional citation picking.
-
+        Must Enforce Builder pattern in this function
+        build from each LLM call cached
         Returns a dict with keys (best-effort):
           - run_node_id
           - assistant_turn_node_id

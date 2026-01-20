@@ -162,21 +162,37 @@ def test_workflow_runtime_uses_default_resolver(tmp_path):
     conv_id, start_node_id_returned = conversation_engine.create_conversation(user_id, conv_id, start_node_id)
     from graph_knowledge_engine.models import FilteringResult
     from langchain_core.language_models import BaseChatModel
-    def wrapped_cached_callback(llm: BaseChatModel, conversation_content, 
+    # def wrapped_cached_callback(llm: BaseChatModel, conversation_content, 
+    #                             cand_node_list_str, cand_edge_list_str, 
+    #                             candidates_node_ids: list[str], candidate_edge_ids: list[str], context_text):
+    #     cached_fn = cached_deco(ignore = ["llm"], fn=cached_inner) 
+        
+    #     dumped, reasoning = cached_fn(llm, conversation_content, 
+    #                             cand_node_list_str, cand_edge_list_str, 
+    #                             candidates_node_ids, candidate_edge_ids, context_text)
+    #     return FilteringResult.model_validate(dumped), reasoning
+
+    def cached(memory: Memory, fn: Callable[P, R], *args, **kwargs) -> Callable[P, R]:
+        return cast(Callable[P, R], memory.cache(fn, *args, **kwargs))
+    # candiate_filtering_callback_cached = cached(mem, candiate_filtering_callback)
+    from functools import partial
+    
+    cached_deco = partial(cached, mem)
+    def cached_inner(llm: BaseChatModel, conversation_content, 
                                 cand_node_list_str, cand_edge_list_str, 
                                 candidates_node_ids: list[str], candidate_edge_ids: list[str], context_text):
-        
-        
-        dumped, reasoning = cached_fn(llm, conversation_content, 
+            filtering_result, filtering_reasining = candiate_filtering_callback(llm, conversation_content, 
                                 cand_node_list_str, cand_edge_list_str, 
                                 candidates_node_ids, candidate_edge_ids, context_text)
-        return FilteringResult.model_validate(dumped), reasoning    
+            return filtering_result.model_dump(), filtering_reasining
+      
+    cached_fn = cached_deco(ignore = ["llm"], fn=cached_inner)     
     # 3. Add Turn 1
     res = conversation_engine.add_conversation_turn(user_id, conv_id, turn_id, "mem0", 
                                                     role="user", content="Hello computer", 
                                                     ref_knowledge_engine=ref_knowledge_engine,
-                                                    filtering_callback = wrapped_cached_callback)    
-
+                                                    filtering_callback = cached_fn)    
+    # 'c7b0883aefc651a69a69425fb018e5be'
     # -----------------------------
     # 2) Re-open workflow engine to prove “saved graph is runnable”
     # -----------------------------
@@ -207,25 +223,6 @@ def test_workflow_runtime_uses_default_resolver(tmp_path):
                                             conversation_engine=conversation_engine,
                                             )
     prev_turn_meta_summary = MetaFromLastSummary(0,0,0)
-    from langchain_core.language_models import BaseChatModel
-    from typing import Callable
-    def cached(memory: Memory, fn: Callable[P, R], *args, **kwargs) -> Callable[P, R]:
-        return cast(Callable[P, R], memory.cache(fn, *args, **kwargs))
-    candiate_filtering_callback_cached = cached(mem, candiate_filtering_callback)
-    from functools import partial
-    
-    cached_deco = partial(cached, mem)
-    def cached_inner(llm: BaseChatModel, conversation_content, 
-                                cand_node_list_str, cand_edge_list_str, 
-                                candidates_node_ids: list[str], candidate_edge_ids: list[str], context_text):
-            filtering_result, filtering_reasining = candiate_filtering_callback(llm, conversation_content, 
-                                cand_node_list_str, cand_edge_list_str, 
-                                candidates_node_ids, candidate_edge_ids, context_text)
-            return filtering_result.model_dump(), filtering_reasining
-    cached_fn = cached_deco(ignore = ["llm"], fn=cached_inner)   
-    cached_deco = partial(cached, mem)
-    def cached_answer():
-        pass
     deps= {
             "conversation_engine": conversation_engine,
             "ref_knowledge_engine": ref_knowledge_engine,

@@ -104,7 +104,7 @@ class MemoryRetriever:
         *,
         conversation_engine,
         llm: BaseChatModel,
-        filtering_callback: Callable[..., tuple[FilteringResult, str]] ,
+        filtering_callback: Callable[..., tuple[FilteringResult|RetrievalResult, str]] ,
         summarize_callback: Optional[Callable[..., str]] = None, # can be a callback with context closured
         n_results: int = 12,
         prefer_types: Optional[List[str]] = None,
