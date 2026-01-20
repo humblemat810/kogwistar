@@ -10,22 +10,10 @@ from graph_knowledge_engine.models import RetrievalResult
 from .models import ConversationNode, ConversationEdge, Grounding, MetaFromLastSummary, Span, Node, Edge, FilteringResult
 from .engine import GraphKnowledgeEngine
 from pydantic import BaseModel
-@dataclass
-class MemoryRetrievalResult:
-    # Cross-conversation memory candidates (by user_id)
-    candidate: RetrievalResult
-    selected: None | RetrievalResult
-    reasoning: str
-
-    # Derived artifacts
-    memory_context_text: None | str
-    seed_kg_node_ids: List[str]
 
 
-@dataclass
-class MemoryPinResult:
-    memory_context_node: ConversationNode
-    pinned_edges: List[ConversationEdge]
+from .models import  MemoryRetrievalResult, MemoryPinResult
+    
 
 def is_node_memory_context(node: ConversationNode):
     # example node:
@@ -264,6 +252,7 @@ class MemoryRetriever:
             reasoning=reasoning,
             memory_context_text=memory_context_text,
             seed_kg_node_ids=dedup_seeds,
+            node_id_entry = None
         )
 
     def pin_selected(
@@ -409,4 +398,4 @@ class MemoryRetriever:
             self.conversation_engine.add_edge(e)
             edge_ids.append(e_id)
             edges.append(e)
-        return MemoryPinResult(memory_context_node=mem_node, pinned_edges=edges)
+        return MemoryPinResult(memory_context_node=mem_node, pinned_edges=edges, node_id_entry = mem_node.safe_get_id())

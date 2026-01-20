@@ -288,7 +288,8 @@ def test_add_turn_like_workflow_dump_bundles(tmp_path: Path):
 
     @resolver.register("start")
     def _start(ctx: StepContext):
-        ctx.state.setdefault("op_log", []).append("start")
+        # ctx.state.setdefault("op_log", []).append("start")
+        ctx.message_queue.put_nowait(('a', {"op_log": "start"}))
         ctx.state["started"] = True
         conversation_node_id_created_during_process = None
         return RunSuccess(conversation_node_id=conversation_node_id_created_during_process, 
@@ -296,14 +297,16 @@ def test_add_turn_like_workflow_dump_bundles(tmp_path: Path):
 
     @resolver.register("memory_retrieve")
     def _memory_retrieve(ctx: StepContext):
-        ctx.state.setdefault("op_log", []).append("memory_retrieve")
+        # ctx.state.setdefault("op_log", []).append("memory_retrieve")
+        ctx.message_queue.put_nowait(('a', {"op_log": "memory_retrieve"}))
         ctx.state["memory"] = {"selected_ids": ["m1"], "text": "memory context"}
         conversation_node_id_created_during_process = None
         return RunSuccess(conversation_node_id=conversation_node_id_created_during_process, 
                           state_update=[{"ok": True}])
     @resolver.register("kg_retrieve")
     def _kg_retrieve(ctx: StepContext):
-        ctx.state.setdefault("op_log", []).append("kg_retrieve")
+        # ctx.state.setdefault("op_log", []).append("kg_retrieve")
+        ctx.message_queue.put_nowait(('a', {"op_log": "kg_retrieve"}))
         ctx.state["kg"] = {"selected_ids": ["k1"], "facts": ["f1"]}
         # return {"ok": True}
         conversation_node_id_created_during_process = None
@@ -311,7 +314,8 @@ def test_add_turn_like_workflow_dump_bundles(tmp_path: Path):
                           state_update=[{"ok": True}])
     @resolver.register("memory_pin")
     def _memory_pin(ctx: StepContext):
-        ctx.state.setdefault("op_log", []).append("memory_pin")
+        # ctx.state.setdefault("op_log", []).append("memory_pin")
+        ctx.message_queue.put_nowait(('a', {"op_log": "memory_pin"}))
         ctx.state["memory_pin"] = {"pinned_ids": ["m1"]}
         # return {"ok": True}
         conversation_node_id_created_during_process = None
@@ -319,7 +323,8 @@ def test_add_turn_like_workflow_dump_bundles(tmp_path: Path):
                           state_update=[{"ok": True}])
     @resolver.register("kg_pin")
     def _kg_pin(ctx: StepContext):
-        ctx.state.setdefault("op_log", []).append("kg_pin")
+        # ctx.state.setdefault("op_log", []).append("kg_pin")
+        ctx.message_queue.put_nowait(('a', {"op_log": "kg_pin"}))
         ctx.state["kg_pin"] = {"pinned_ids": ["k1"]}
         # return {"ok": True}
         conversation_node_id_created_during_process = None
@@ -327,7 +332,8 @@ def test_add_turn_like_workflow_dump_bundles(tmp_path: Path):
                           state_update=[{"ok": True}])
     @resolver.register("answer")
     def _answer(ctx: StepContext):
-        ctx.state.setdefault("op_log", []).append("answer")
+        # ctx.state.setdefault("op_log", []).append("answer")
+        ctx.message_queue.put_nowait(('a', {"op_log": "answer"}))
         ctx.state["answer"] = {"text": "answer text", "llm_decision_need_summary": True}
         # return ctx.state["answer"]
         conversation_node_id_created_during_process = None
@@ -335,7 +341,8 @@ def test_add_turn_like_workflow_dump_bundles(tmp_path: Path):
                           state_update=[{"answer": ctx.state["answer"]}])
     @resolver.register("decide_summarize")
     def _decide(ctx: StepContext):
-        ctx.state.setdefault("op_log", []).append("decide_summarize")
+        # ctx.state.setdefault("op_log", []).append("decide_summarize")
+        ctx.message_queue.put_nowait(('a', {"op_log": "decide_summarize"}))
         need = bool(ctx.state.get("answer", {}).get("llm_decision_need_summary"))
         ctx.state["decide"] = {"need_summary": need}
         # return ctx.state["decide"]
@@ -344,7 +351,8 @@ def test_add_turn_like_workflow_dump_bundles(tmp_path: Path):
                           state_update=[ctx.state["decide"]])
     @resolver.register("summarize")
     def _summarize(ctx: StepContext):
-        ctx.state.setdefault("op_log", []).append("summarize")
+        # ctx.state.setdefault("op_log", []).append("summarize")
+        ctx.message_queue.put_nowait(('a', {"op_log": "decide_summarize"}))
         ctx.state["summary"] = {"text": "summary text"}
         # return ctx.state["summary"]
         conversation_node_id_created_during_process = None
@@ -352,7 +360,8 @@ def test_add_turn_like_workflow_dump_bundles(tmp_path: Path):
                           state_update=[{"ok": True}])
     @resolver.register("end")
     def _end(ctx: StepContext):
-        ctx.state.setdefault("op_log", []).append("end")
+        # ctx.state.setdefault("op_log", []).append("end")
+        ctx.message_queue.put_nowait(('a', {"op_log": "end"}))
         # return {"done": True}
         conversation_node_id_created_during_process = None
         return RunSuccess(conversation_node_id=conversation_node_id_created_during_process, 

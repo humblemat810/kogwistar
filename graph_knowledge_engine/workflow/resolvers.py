@@ -103,6 +103,7 @@ def _memory_retrieve(ctx: StepContext) -> RunResult:
       - state['memory']     : jsonable mirror
     """
     deps = _deps(ctx)
+    nid_created = []
     with ctx.state_write as state:
         state.setdefault("op_log", []).append("memory_retrieve")
 
@@ -119,7 +120,7 @@ def _memory_retrieve(ctx: StepContext) -> RunResult:
     state_view = ctx.state_view
     if tool_runner is None:
         # Fallback: run directly without tool recording.
-        mem = mem_retriever.retrieve(
+        mem, call_node_id = mem_retriever.retrieve(
             user_id=state_view["user_id"],
             current_conversation_id=state_view["conversation_id"],
             query_embedding=state_view["embedding"],
@@ -129,7 +130,7 @@ def _memory_retrieve(ctx: StepContext) -> RunResult:
         )
     else:
         
-        mem = tool_runner.run_tool(
+        mem, call_node_id = tool_runner.run_tool(
             conversation_id=state_view["conversation_id"],
             user_id=state_view["user_id"],
             turn_node_id=state_view["turn_node_id"],
@@ -153,7 +154,7 @@ def _memory_retrieve(ctx: StepContext) -> RunResult:
     memj = to_jsonable(mem)
     state_update = [('u', {'memory': memj})]
     # ctx.state["memory"] = memj
-    result = RunSuccess(conversation_node_id=None, state_update=state_update)
+    result = RunSuccess(conversation_node_id=call_node_id, state_update=state_update)
     return result
 
 
@@ -183,7 +184,7 @@ def _kg_retrieve(ctx: StepContext) -> RunResult:
     prev_turn_meta_summary = deps.get("prev_turn_meta_summary")
     state = ctx.state_view
     if tool_runner is None:
-        kg = kg_retriever.retrieve(
+        kg, call_node_id = kg_retriever.retrieve(
             user_text=state_view["user_text"],
             context_text="",
             query_embedding=state_view["embedding"],
@@ -199,7 +200,7 @@ def _kg_retrieve(ctx: StepContext) -> RunResult:
                 query_embedding=state["embedding"],
                 seed_kg_node_ids=seed_ids,
             ))
-        kg = tool_runner.run_tool(
+        kg, call_node_id = tool_runner.run_tool(
             conversation_id=state["conversation_id"],
             user_id=state["user_id"],
             turn_node_id=state["turn_node_id"],
@@ -211,12 +212,11 @@ def _kg_retrieve(ctx: StepContext) -> RunResult:
             render_result=lambda r: getattr(r, "reasoning", "")[:800],
             prev_turn_meta_summary=prev_turn_meta_summary,
         )
-    
     # ctx.state["kg_raw"] = kg
     kgj = to_jsonable(kg)
     # ctx.state["kg"] = kgj
     state_update = [('u', {'kg': kgj})]
-    return RunSuccess(conversation_node_id=None, state_update=state_update)
+    return RunSuccess(conversation_node_id=call_node_id, state_update=state_update)
 
 
 @default_resolver.register("memory_pin")
@@ -339,8 +339,11 @@ def _answer(ctx: StepContext) -> RunResult:
                                                                 [user_turn_node.id], [resp_node.id], 
                                                                 [], [], 
                                                                 "conversation_edge")
-                add_link_to_new_turn(seq_edge_id, resp_node, user_turn_node, ctx.state["conversation_id"], span=ctx.state["self_span"], prev_turn_meta_summary=prev_turn_meta_summary)
-            except Exception:
+                state = ctx.state_view
+                add_link_to_new_turn(seq_edge_id, resp_node, user_turn_node, state["conversation_id"], 
+                                     span=state["self_span"], 
+                                     prev_turn_meta_summary=prev_turn_meta_summary)
+            except Exception as _e:
                 pass
 
         # # Mirror legacy: advance distances after adding assistant turn, if available.

@@ -1274,11 +1274,14 @@ class GraphKnowledgeEngine:
             json_d.update({"embedding": emb, "metadata": metadata})
             res.append((override_node_type or node_type).model_validate(json_d))
         return res
-    def edges_from_single_or_id_query_result(self, got, edge_type: Type[Edge] = Edge):
+    def edges_from_single_or_id_query_result(self, got, edge_type: Type[Edge] = Edge, include = None):
+        if include is None:
+            include = ['documents', 'metadatas', 'embeddings']
         docs: list[str] = cast(list[str], got.get("documents"))
-        
+        ids = got['ids']
         if docs is None:
-            raise Exception("Missing docs")
+            if "documents" in include:
+                raise Exception("Missing docs")
         
         embs = got.get("embeddings")
         if embs is None:
@@ -1312,7 +1315,9 @@ class GraphKnowledgeEngine:
         res = []
         for i_q in range(len(gots['ids'])):
             n_doc = len(gots["ids"][i_q])
-            for docs, embs, metadatas in zip(gots.get("documents") if gots.get("documents") is not None else  [[]]*n_doc, 
+            for ids, docs, embs, metadatas in zip(
+                                             gots.get("ids"),
+                                             gots.get("documents") if gots.get("documents") is not None else  [[]]*n_doc, 
                                              gots.get("embeddings") if gots.get("embeddings") is not None else [[]]*n_doc, 
                                              gots.get("metadatas") if gots.get("metadatas") is not None else [[]]*n_doc):
                 docs: list[str] = cast(list[str], docs)
@@ -1324,11 +1329,12 @@ class GraphKnowledgeEngine:
         res = []
         for i_q in range(len(gots['ids'])):
             n_doc = len(gots["ids"][i_q])
-            for docs, embs, metadatas in zip(gots.get("documents") if gots.get("documents") is not None else  [[]]*n_doc, 
+            for ids, docs, embs, metadatas in zip(gots.get("ids"), 
+                                             gots.get("documents") if gots.get("documents") is not None else  [[]]*n_doc, 
                                              gots.get("embeddings") if gots.get("embeddings") is not None else [[]]*n_doc, 
                                              gots.get("metadatas") if gots.get("metadatas") is not None else [[]]*n_doc):
                 docs: list[str] = cast(list[str], docs)
-                got = {"documents": docs, "embeddings": embs, "metadatas": metadatas}
+                got = {"ids": ids, "documents": docs, "embeddings": embs, "metadatas": metadatas}
                 single_res = self.edges_from_single_or_id_query_result(got, edge_type = edge_type)
                 res.append(single_res)
         return res
@@ -1348,20 +1354,22 @@ class GraphKnowledgeEngine:
         edge_type: Type[Edge] | None = None,
         where = None,
         limit : int | None = 400,
+        include: None | list[str] = None,
         resolve_mode: Literal["active_only", "redirect", "include_tombstones"] = "active_only",
     ) -> List[Edge]:
-
+        if include is None:
+            include = ["documents", "embeddings", "metadatas"]
         if not edge_type:
             edge_type = ConversationEdge if self.kg_graph_type == "conversation" else Edge
 
         # IMPORTANT: ID fetch must NOT filter out tombstones, or redirect cannot start.
         got = self.edge_collection.get(
             ids=ids,
-            include=["documents", "embeddings", "metadatas"],
+            include=include,
             where = where,
             limit = limit
         )
-        edges = self.edges_from_single_or_id_query_result(got, edge_type=edge_type)
+        edges = self.edges_from_single_or_id_query_result(got, edge_type=edge_type, include = include)
 
         # Follow redirects (may require fetching tombstoned targets too)
         edges = self._resolve_redirect_chain(
@@ -2441,9 +2449,9 @@ class GraphKnowledgeEngine:
             metadatas=[meta],
         )
     
-        self.get_nodes([node.id], type(node))
-        node_cls = getattr(models, type(node).__name__)
-        self.get_nodes([node.id], node_cls)
+        # self.get_nodes([node.id], type(node))
+        # node_cls = getattr(models, type(node).__name__)
+        # self.get_nodes([node.id], node_cls)
         self._index_node_docs(node)
         self._maybe_reindex_node_refs(node)
         self._emit_change(

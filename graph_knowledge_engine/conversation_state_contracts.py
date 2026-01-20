@@ -41,7 +41,7 @@ class WorkflowStateModel(BaseModel):
     kg_pin: Optional[Any] = None
     answer: Optional[Any] = None
     answer_raw: Optional[Any] = None
-
+    
     summary: SummaryStateModel = Field(default_factory=SummaryStateModel)
     prev_turn_meta_summary: PrevTurnMetaSummaryModel
     # _deps : dict[str,Any]

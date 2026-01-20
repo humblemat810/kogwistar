@@ -14,15 +14,15 @@ import json
 import time
 import uuid
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Callable, Optional, TypeVar, Iterable
+from typing import TYPE_CHECKING, Any, Callable, Optional, TypeVar, Iterable, Tuple
 
 from pydantic import Json
 
-from .models import ConversationNode, Grounding, MentionVerification, Span
+from .models import BaseToolResult, ConversationNode, ConversationEdge, Grounding, MentionVerification, Span
 from graph_knowledge_engine.models import MetaFromLastSummary
 if TYPE_CHECKING:
     from graph_knowledge_engine.engine import GraphKnowledgeEngine
-T = TypeVar("T")
+T = TypeVar("T", bound = BaseToolResult)
 
 
 def _safe_json(obj: Any) -> str:
@@ -55,8 +55,8 @@ class ToolRunner:
         handler: Callable[..., T],
         prev_turn_meta_summary: MetaFromLastSummary,
         render_result: Optional[Callable[[T], str]] = None,
-        
-    ) -> T:
+        prev_node: ConversationNode | None = None
+    ) -> Tuple[T, str]:
         """Execute a tool handler and record tool_call/tool_result nodes."""
         last_node = self.engine._get_conversation_tail(conversation_id)
         if last_node is None:
@@ -113,9 +113,52 @@ class ToolRunner:
         
         # Execute
         try:
-            result = handler(**kwargs)
-        except:
-            result = handler(**kwargs)
+            result: BaseToolResult = handler(**kwargs)
+        except Exception as _e:
+            result: BaseToolResult = handler(**kwargs)
+        if result:
+          if n := result.get('node_id_entry'):
+            n: ConversationNode
+            self_span = Span(
+                collection_page_url=f"conversation/{conversation_id}",
+                document_page_url=f"conversation/{conversation_id}#{n.safe_get_id()}",
+                doc_id=f"conv:{conversation_id}",
+                insertion_method="tool_call",
+                page_number=1,
+                start_char=0,
+                end_char=len(n.summary),
+                excerpt=n.summary,
+                context_before="",
+                context_after="",
+                chunk_id=None,
+                source_cluster_id=None,
+                verification=MentionVerification(
+                    method="system",
+                    is_verified=True,
+                    score=1.0,
+                    notes="tool call created entrypoint to node/nodeset",
+                ),
+            )
+            eid = f"tool_call_created|caller:{call_node.safe_get_id()}|created:{n.safe_get_id()}"
+            e = ConversationEdge(id = eid, type = 'relationship', summary = f"call node {call_node.safe_get_id()} created entry point {n.safe_get_id()}",
+                                 domain_id=None, label='craeted entry point', 
+                                 properties={}, 
+                                 mentions=[Grounding(spans=[self_span])], canonical_entity_id=None, 
+                                 source_ids=[call_node.safe_get_id()], 
+                                 target_ids=[n.safe_get_id()],
+                                 relation="run_result", source_edge_ids = [], target_edge_ids = [], embedding = None,
+                                 doc_id = f"conv:{conversation_id}",
+                                 metadata={"relation":"tool_call create node",
+                                           "source_id":[call_node.safe_get_id()],
+                                           "target_id":[n.safe_get_id()],
+                                           "char_distance_from_last_summary": 0,
+                                           "turn_distance_from_last_summary": 0,
+                                           "entity_type": "tool-call->details",
+                                           "in_conversation": False,
+                                        #    "tail_turn_index": state["prev_turn_meta_summary"]["tail_turn_index"]
+                                           },
+                                 )
+            self.engine.add_edge(e)
         # Tool result node (tool role)
         # res_id = str(self.tool_call_id_factory())
         # last_node = self.engine._get_conversation_tail(conversation_id)
@@ -180,4 +223,45 @@ class ToolRunner:
         self.engine.add_node(res_node, None)
         prev_turn_meta_summary.prev_node_char_distance_from_last_summary+= len(res_node_content)
         prev_turn_meta_summary.prev_node_distance_from_last_summary+= 1
-        return result
+        
+        self_span = Span(
+                collection_page_url=f"conversation/{conversation_id}",
+                document_page_url=f"conversation/{conversation_id}#{res_node.safe_get_id()}",
+                doc_id=f"conv:{conversation_id}",
+                insertion_method="tool_call",
+                page_number=1,
+                start_char=0,
+                end_char=len(res_node.summary),
+                excerpt=res_node.summary,
+                context_before="",
+                context_after="",
+                chunk_id=None,
+                source_cluster_id=None,
+                verification=MentionVerification(
+                    method="system",
+                    is_verified=True,
+                    score=1.0,
+                    notes="tool call created entrypoint to node/nodeset",
+                ),
+            )
+        eid = f"tool_call_result|caller:{call_node.safe_get_id()}|created:{res_node.safe_get_id()}"
+        e = ConversationEdge(id = eid, type = 'relationship', summary = f"call node {call_node.safe_get_id()} result node:{res_node.safe_get_id()}",
+                                 domain_id=None, label='tool result', 
+                                 properties={}, 
+                                 mentions=[Grounding(spans=[self_span])], canonical_entity_id=None, 
+                                 source_ids=[call_node.safe_get_id()], 
+                                 target_ids=[res_node.safe_get_id()],
+                                 relation="run_result", source_edge_ids = [], target_edge_ids = [], embedding = None,
+                                 doc_id = f"conv:{conversation_id}",
+                                 metadata={"relation":"tool_call create node",
+                                           "source_id":[call_node.safe_get_id()],
+                                           "target_id":[res_node.safe_get_id()],
+                                           "char_distance_from_last_summary": 0,
+                                           "turn_distance_from_last_summary": 0,
+                                           "entity_type": "tool-call->tool-result",
+                                           "in_conversation": False,
+                                        #    "tail_turn_index": state["prev_turn_meta_summary"]["tail_turn_index"]
+                                           },
+                                 )
+        self.engine.add_edge(e)
+        return result, call_node.safe_get_id()

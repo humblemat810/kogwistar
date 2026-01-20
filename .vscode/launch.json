@@ -14,6 +14,32 @@
             "justMyCode": false
         },
         {
+            "name": "Dump One CDC",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "graph_knowledge_engine/utils/kge_debug_dump.py",
+            "console": "integratedTerminal",
+            "args": ["one", "--template", "./graph_knowledge_engine/templates/d3.html", 
+            "--out", "C:/Users/chanh/AppData/Local/Temp/pytest-of-chanh/pytest-806/bundle/conv.html", 
+            "--graph-type", "conversation", 
+            "--persist-dir", "C:/Users/chanh/AppData/Local/Temp/pytest-of-chanh/pytest-806/test_workflow_runtime_uses_def0/conv",
+            "--cdc-ws-url", "ws://127.0.0.1:8787/changes/ws"],
+            "justMyCode": false
+        },
+        {
+            "name": "Dump One CDC",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "graph_knowledge_engine/utils/kge_debug_dump.py",
+            "console": "integratedTerminal",
+            "args": ["one", "--template", "./graph_knowledge_engine/templates/d3.html", 
+            "--out", "C:/Users/chanh/AppData/Local/Temp/pytest-of-chanh/pytest-806/bundle/conv.html", 
+            "--graph-type", "conversation", 
+            "--persist-dir", "C:/Users/chanh/AppData/Local/Temp/pytest-of-chanh/pytest-806/test_workflow_runtime_uses_def0/conv",
+            "--cdc-ws-url", "ws://127.0.0.1:8787/changes/ws"],
+            "justMyCode": false
+        },
+        {
             "name": "Document server mcp with admin",
             "type": "debugpy",
             "request": "launch",

@@ -65,7 +65,8 @@ def dump_d3_bundle(
     if not engine and not embed_empty:
         raise ValueError("engine can only be empty when embed empty is set true")
     payload = {"nodes": [], "links": []} if embed_empty else to_d3_force(engine, doc_id=doc_id, insertion_method=insertion_method, mode=mode)
-
+    # for i, n in enumerate(payload['nodes']):
+    #     n.pop('embedding')
     rendered = _render_template_html(
         template_html,
         context={
@@ -167,8 +168,9 @@ def dump_paired_bundles(
 def _cmd_one(args: argparse.Namespace) -> None:
     engine = build_engine(persist_dir=Path(args.persist_dir), graph_type=args.graph_type)
     template_html = Path(args.template).read_text(encoding="utf-8")
-
+    os.makedirs(str(Path(args.out).parent), exist_ok = True)
     dump_d3_bundle(
+        engine_type = engine.kg_graph_type,
         engine=engine,
         template_html=template_html,
         out_html=Path(args.out),
@@ -219,7 +221,7 @@ def main() -> None:
 
     p1 = sub.add_parser("one", help="Dump one graph (knowledge or conversation)")
     p1.add_argument("--persist-dir", required=True, help="Chroma persist directory")
-    p1.add_argument("--graph-type", choices=["knowledge", "conversation"], default="knowledge", help="Which graph")
+    p1.add_argument("--graph-type", choices=["knowledge", "conversation", "workflow"], default="knowledge", help="Which graph")
     p1.add_argument("--doc-id", help="Optional doc_id scope")
     p1.add_argument("--mode", default="reify", help="Visualization mode (default: reify)")
     p1.add_argument("--insertion-method", help="Optional insertion_method (e.g. document_ingestion)")
@@ -247,37 +249,46 @@ def main() -> None:
 
     args = parser.parse_args()
     if not args.empty:
-        missing = []
-        if args.kg_persist_dir is None:
-            missing.append("--kg-persist-dir")
-        if args.conversation_persist_dir is None:
-            missing.append("--conversation-persist-dir")
-        if args.workflow_persist_dir is None:
-            missing.append("--workflow-persist-dir")
+        if args.cmd=="bundle":
+            missing = []
+            if args.kg_persist_dir is None:
+                missing.append("--kg-persist-dir")
+            if args.conversation_persist_dir is None:
+                missing.append("--conversation-persist-dir")
+            if args.workflow_persist_dir is None:
+                missing.append("--workflow-persist-dir")
 
-        if missing:
-            parser.error(
-                "the following arguments are required unless --empty is set: "
-                + ", ".join(missing)
-            )    
+            if missing:
+                parser.error(
+                    "the following arguments are required unless --empty is set: "
+                    + ", ".join(missing)
+                )    
     args.func(args)
 
 
 if __name__ == "__main__":
     main()
 
+# python graph_knowledge_engine\utils\kge_debug_dump.py bundle \
+#    --kg-persist-dir C:\Users\chanh\AppData\Local\Temp\pytest-of-chanh\pytest-793\test_workflow_runtime_uses_def0\kg \
+#    --conversation-persist-dir C:\Users\chanh\AppData\Local\Temp\pytest-of-chanh\pytest-793\test_workflow_runtime_uses_def0\conv \
+#    --workflow-persist-dir C:\Users\chanh\AppData\Local\Temp\pytest-of-chanh\pytest-793\test_workflow_runtime_uses_def0\wf \
+#    --template graph_knowledge_engine\templates\d3.html \
+#    --out-dir C:\Users\chanh\AppData\Local\Temp\pytest-of-chanh\pytest-793\bundle \
+#    --cdc-ws-url ws://127.0.0.1:8787/changes/ws \
+
 
 # python graph_knowledge_engine/utils/kge_debug_dump.py \
 #   --persist-dir ./chroma_db \
 #   --graph-type knowledge \
 #   --template ./d3.html \
-#   ---out-dir ./empty_cdc_streamer \
+#   --out-dir ./empty_cdc_streamer \
 #   --empty \
 #   --cdc-ws-url ws://127.0.0.1:8787/changes/ws
 
 
 # python graph_knowledge_engine/utils/kge_debug_dump.py \
 #   --template ./d3.html \
-#   ---out-dir ./empty_cdc_streamer \
+#   --out-dir ./empty_cdc_streamer \
 #   --empty \
 #   --cdc-ws-url ws://127.0.0.1:8787/changes/ws

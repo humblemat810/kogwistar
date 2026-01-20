@@ -918,7 +918,8 @@ class ConversationOrchestrator:
                         n_results=12,
                     )
                 # memory retrieve tool
-                mem: MemoryRetrievalResult = self.tool_runner.run_tool(
+                mem: MemoryRetrievalResult 
+                mem, call_node= self.tool_runner.run_tool(
                     conversation_id=conversation_id,
                     user_id=user_id,
                     turn_node_id=turn_node_id,
@@ -928,7 +929,8 @@ class ConversationOrchestrator:
                     kwargs = mem_args,
                     handler=mem_retriever.retrieve,
                     render_result=lambda r: getattr(r, "reasoning", "")[:800],
-                    prev_turn_meta_summary=prev_turn_meta_summary
+                    prev_turn_meta_summary=prev_turn_meta_summary,
+                    prev_node = prev_node,
                 )
                 st.memory = mem
                 kg_args = dict(
@@ -1150,8 +1152,9 @@ class ConversationOrchestrator:
         new_index += 1
 
         # Edges: Summary -> Turns
+        eid = f"summary|{summary_node.id}|batchhash|{stable_id(batch_ids)}"
         sum_edge = ConversationEdge(
-            id=None,
+            id=eid,
             source_ids=[summary_node.id],
             target_ids=batch_ids,
             relation="summarizes",

@@ -4,7 +4,7 @@ import time
 import uuid
 import queue
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, List, Optional, Tuple
 from concurrent.futures import ThreadPoolExecutor
 
 from ..conversation_orchestrator import get_id_for_conversation_turn_edge
@@ -25,7 +25,8 @@ from pydantic import BaseModel
 StateAppendUpdate = tuple[Literal['u'], Any]
 StateOverwriteUpdate = tuple[Literal['a'], Any]
 StateUpdate = Union[StateAppendUpdate , StateOverwriteUpdate]
-
+from graph_knowledge_engine.models import WorkflowStepExecNode, Grounding, Span
+    
 
 class RunSuccess(BaseModel):
     conversation_node_id: Optional[str]
@@ -76,12 +77,11 @@ class StepContext:
     workflow_id: str
     workflow_node_id: str
     op: str
-
     # Accept `state=` in __init__ but don't store it as a field
     state: InitVar["WorkflowState"]
 
     message_queue: "queue.Queue[Dict[str, Json]]"
-
+    step_seq : int
     # real storage
     _state: "WorkflowState" = field(init=False, repr=False)
     _state_lock: threading.RLock = field(default_factory=threading.RLock, init=False, repr=False)
@@ -101,6 +101,7 @@ class StepContext:
         self.message_queue.put(msg)
 
     def drain(self, max_items: int = 200) -> List[Dict[str, Json]]:
+        raise Exception("current design does not allow mq drained in context, but only by orchestrator")
         out: List[Dict[str, Json]] = []
         for _ in range(max_items):
             try:
@@ -195,7 +196,9 @@ class WorkflowRuntime:
         """
         run_id = run_id or f"run|{uuid.uuid4()}"
         self.state_lock[str(run_id)] = Lock()
-        mq: queue.Queue[Dict[str, Json]] = queue.Queue()
+        
+        # an interworker, orchestrator message channel
+        mq: queue.Queue[Dict[str, Json]] = queue.Queue(maxsize = 10000)
 
         start, nodes, adj = validate_workflow_design(
             workflow_engine=self.workflow_engine,
@@ -215,12 +218,12 @@ class WorkflowRuntime:
             turn_node_id=turn_node_id,
             status="running",
         )
-
+        state_mutex_lock: threading.Lock = threading.Lock()
         scheduled_q: queue.Queue[str] = queue.Queue()
         scheduled_q.put(start.safe_get_id())
         done_q: queue.Queue[Tuple[str, RunResult, int, str]] = queue.Queue()  # (node_id, result, duration_ms, status)
 
-        def worker(node_id: str, state) -> None:
+        def worker(node_id: str, state, step_seq: int) -> None:
             wn: WorkflowNode
             wn = nodes[node_id]
             op = nodes[node_id].op
@@ -235,6 +238,7 @@ class WorkflowRuntime:
                     op=op,
                     state=state,
                     message_queue=mq,
+                    step_seq = step_seq
                 )
                 res: RunResult = fn(ctx)
             except Exception as e:
@@ -244,12 +248,11 @@ class WorkflowRuntime:
                 mq.put_nowait(res.model_dump())
             except queue.Full as _e:
                 raise
-                
             t1 = _now_ms()
             done_q.put((node_id, res, max(0, t1 - t0), status))
 
         inflight: Dict[str, Any] = {}
-
+        last_exec_node = None
         with ThreadPoolExecutor(max_workers=self.max_workers) as pool:
             while True:
                 # schedule while capacity
@@ -258,7 +261,7 @@ class WorkflowRuntime:
                         nid = scheduled_q.get_nowait()
                     except queue.Empty:
                         break
-                    inflight[nid] = pool.submit(worker, nid, state)
+                    inflight[nid] = pool.submit(worker, nid, state, step_seq)
 
                 if not inflight and scheduled_q.empty():
                     # done
@@ -275,7 +278,7 @@ class WorkflowRuntime:
                 wn = nodes[node_id]
 
                 # persist step exec trace node
-                self._persist_step_exec(
+                last_exec_node = self._persist_step_exec(
                     conversation_id=conversation_id,
                     workflow_id=workflow_id,
                     run_id=run_id,
@@ -285,7 +288,8 @@ class WorkflowRuntime:
                     status=status,
                     duration_ms=dur_ms,
                     result=run_result,
-                    state=state
+                    state=state,
+                    last_exec_node = last_exec_node
                 )
 
                 # single-writer state apply:
@@ -300,10 +304,11 @@ class WorkflowRuntime:
                         run_id=run_id,
                         step_seq=step_seq,
                         state=state,
+                        last_exec_node = last_exec_node
                     )
 
                 step_seq += 1
-
+                
                 # route
                 if wn.terminal or len(adj.get(node_id, [])) == 0:
                     continue
@@ -440,8 +445,9 @@ class WorkflowRuntime:
         duration_ms: int,
         result: RunResult,
         state: WorkflowState,
-    ) -> None:
-        from graph_knowledge_engine.models import WorkflowStepExecNode, Grounding, Span  # adjust import path
+        last_exec_node: Optional[WorkflowStepExecNode] = None
+    ) -> WorkflowStepExecNode:
+        # from graph_knowledge_engine.models import WorkflowStepExecNode, Grounding, Span  # adjust import path
 
         result_json = try_serialize_with_ref(result)
         
@@ -483,7 +489,7 @@ class WorkflowRuntime:
                 collection_page_url=f"conversation/{conversation_id}",
                 document_page_url=f"conversation/{conversation_id}#{n.id}",
                 doc_id=f"conv:{conversation_id}",
-                insertion_method="summary_turn",
+                insertion_method="step_exec",
                 page_number=1,
                 start_char=0,
                 end_char=len(n.summary),
@@ -499,24 +505,102 @@ class WorkflowRuntime:
                     notes="step run result",
                 ),
             )
-            eid = f"wf_interstep_edge|{run_id}|{step_seq}|{result.conversation_node_id}"
-            e = ConversationEdge(id = eid, type = 'relationship', summary = f"results during {result.conversation_node_id}",
-                                 domain_id=None, label='run_result', 
+            # eid = f"wf_interstep_edge|{run_id}|{step_seq}|{result.conversation_node_id}"
+            # e = ConversationEdge(id = eid, type = 'relationship', summary = f"results during {result.conversation_node_id}",
+            #                      domain_id=None, label='run_result', 
+            #                      properties={}, 
+            #                      mentions=[Grounding(spans=[self_span])], canonical_entity_id=None, 
+            #                      source_ids=[n.safe_get_id()], target_ids=[result.conversation_node_id],
+            #                      relation="run_result", source_edge_ids = [], target_edge_ids = [], embedding = None,
+            #                      doc_id = f"wf_step|{run_id}|{step_seq}",
+            #                      metadata={"relation":"run_result",
+            #                                "source_id":[n.id],
+            #                                "target_id":result.conversation_node_id,
+            #                                "char_distance_from_last_summary": 0,
+            #                                "turn_distance_from_last_summary": 0,
+            #                             #    "tail_turn_index": state["prev_turn_meta_summary"]["tail_turn_index"]
+            #                                },
+            #                      )
+            # self.conversation_engine.add_edge(e)
+        if last_exec_node:
+            content = f"{last_exec_node.safe_get_id()} next is {n.safe_get_id()}"
+            self_span = Span(
+                collection_page_url=f"conversation/{conversation_id}",
+                document_page_url=f"conversation/{conversation_id}#{n.id}",
+                doc_id=f"conv:{conversation_id}",
+                insertion_method="step_exec",
+                page_number=1,
+                start_char=0,
+                end_char=len(content),
+                excerpt=content,
+                context_before="",
+                context_after="",
+                chunk_id=None,
+                source_cluster_id=None,
+                verification=MentionVerification(
+                    method="system",
+                    is_verified=True,
+                    score=1.0,
+                    notes="step run execution",
+                ),
+            )
+            eid = f"wf_next_step_exec|{run_id}|{step_seq}|last::{last_exec_node.safe_get_id()}|to::{n.safe_get_id()}"
+            e = ConversationEdge(id = eid, type = 'relationship', summary = f"wf_next_step_exec {step_seq=}",
+                                 domain_id=None, label=f'wf_next_step_exec {step_seq=}', 
                                  properties={}, 
                                  mentions=[Grounding(spans=[self_span])], canonical_entity_id=None, 
-                                 source_ids=[n.safe_get_id()], target_ids=[result.conversation_node_id],
-                                 relation="run_result", source_edge_ids = [], target_edge_ids = [], embedding = None,
-                                 doc_id = f"wf_step|{run_id}|{step_seq}",
-                                 metadata={"relation":"run_result",
-                                           "source_id":[n.id],
-                                           "target_id":result.conversation_node_id,
+                                 source_ids=[last_exec_node.safe_get_id()], target_ids=[n.safe_get_id()],
+                                 relation="wf_next_step_exec", source_edge_ids = [], target_edge_ids = [], embedding = None,
+                                 doc_id = f"wf_next_step_exec|{run_id}|{step_seq}",
+                                 metadata={"relation":"wf_next_step_exec",
+                                           "source_id":[last_exec_node.safe_get_id()],
+                                           "target_id":[n.safe_get_id()],
                                            "char_distance_from_last_summary": 0,
                                            "turn_distance_from_last_summary": 0,
                                         #    "tail_turn_index": state["prev_turn_meta_summary"]["tail_turn_index"]
                                            },
                                  )
             self.conversation_engine.add_edge(e)
-
+        if result.conversation_node_id:
+            content = f"{n.safe_get_id()} created {result.conversation_node_id} durign execution"
+            self_span = Span(
+                collection_page_url=f"conversation/{conversation_id}",
+                document_page_url=f"conversation/{conversation_id}#{n.id}",
+                doc_id=f"conv:{conversation_id}",
+                insertion_method="step_exec",
+                page_number=1,
+                start_char=0,
+                end_char=len(content),
+                excerpt=content,
+                context_before="",
+                context_after="",
+                chunk_id=None,
+                source_cluster_id=None,
+                verification=MentionVerification(
+                    method="system",
+                    is_verified=True,
+                    score=1.0,
+                    notes="step execution created node",
+                ),
+            )
+            eid = f"conv:{conversation_id}|wfexe:{n.safe_get_id()}|created:{result.conversation_node_id}"
+            e = ConversationEdge(id = eid, type = 'relationship', summary = f"created node during {step_seq=}",
+                                 domain_id=None, label=f'created node during {step_seq=}', 
+                                 properties={}, 
+                                 mentions=[Grounding(spans=[self_span])], canonical_entity_id=None, 
+                                 source_ids=[n.safe_get_id()], target_ids=[result.conversation_node_id],
+                                 relation="created_child", source_edge_ids = [], target_edge_ids = [], embedding = None,
+                                 doc_id = f"wf_next_step_exec|{run_id}|{step_seq}",
+                                 metadata={"relation":"created_child",
+                                           "source_id":[n.safe_get_id()],
+                                           "target_id":[result.conversation_node_id],
+                                           "char_distance_from_last_summary": 0,
+                                           "turn_distance_from_last_summary": 0,
+                                        #    "tail_turn_index": state["prev_turn_meta_summary"]["tail_turn_index"]
+                                           },)
+            
+            self.conversation_engine.add_edge(e)
+        return n
     def _persist_checkpoint(
         self,
         conversation_id: str,
@@ -524,10 +608,12 @@ class WorkflowRuntime:
         run_id: str,
         step_seq: int,
         state: WorkflowState,
+        last_exec_node: WorkflowStepExecNode
     ) -> None:
         from graph_knowledge_engine.models import WorkflowCheckpointNode, Grounding, Span  # adjust import path
-
-        state_json = try_serialize_with_ref(state)
+        
+        state_copy = {k:v for k, v in state.items() if k != '_deps'}
+        state_json = try_serialize_with_ref(state_copy)
         excerpt = f"checkpoint step_seq={step_seq}"
         span = Span(**_make_trace_span(conversation_id=conversation_id, excerpt=excerpt, doc_id=f"conv:{conversation_id}"))
 
@@ -551,3 +637,42 @@ class WorkflowRuntime:
             domain_id=None,canonical_entity_id=None,embedding=None,level_from_root=0
         )
         self.conversation_engine.add_node(n)
+        
+        if last_exec_node:
+            self_span = Span(
+                collection_page_url=f"conversation/{conversation_id}",
+                document_page_url=f"conversation/{conversation_id}#{n.id}",
+                doc_id=f"conv:{conversation_id}",
+                insertion_method="persist_checkpoint",
+                page_number=1,
+                start_char=0,
+                end_char=len(n.summary),
+                excerpt=n.summary,
+                context_before="",
+                context_after="",
+                chunk_id=None,
+                source_cluster_id=None,
+                verification=MentionVerification(
+                    method="system",
+                    is_verified=True,
+                    score=1.0,
+                    notes="persist_checkpoint",
+                ),
+            )
+            eid = f"persist_checkpoint|{run_id}|{step_seq}|last::{last_exec_node.safe_get_id()}|to::{n.safe_get_id()}"
+            e = ConversationEdge(id = eid, type = 'relationship', summary = f"persist_checkpoint during {step_seq=}",
+                                 domain_id=None, label=f'persist_checkpoint during {step_seq=}', 
+                                 properties={}, 
+                                 mentions=[Grounding(spans=[self_span])], canonical_entity_id=None, 
+                                 source_ids=[n.safe_get_id()], target_ids=[last_exec_node.safe_get_id()],
+                                 relation="persist_checkpoint during", source_edge_ids = [], target_edge_ids = [], embedding = None,
+                                 doc_id = f"wf_next_step_exec|{run_id}|{step_seq}",
+                                 metadata={"relation":"wf_next_step_exec",
+                                           "source_id":[last_exec_node.safe_get_id()],
+                                           "target_id":[n.safe_get_id()],
+                                           "char_distance_from_last_summary": 0,
+                                           "turn_distance_from_last_summary": 0,
+                                        #    "tail_turn_index": state["prev_turn_meta_summary"]["tail_turn_index"]
+                                           },
+                                 )
+        self.conversation_engine.add_edge(e)

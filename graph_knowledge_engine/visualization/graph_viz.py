@@ -13,7 +13,8 @@ if TYPE_CHECKING:
 def _safe_iter(x):
     return x if isinstance(x, list) and x else []
 
-def _load_node_map(engine: GraphKnowledgeEngine, ids: List[str], node_type: Type[Node] | None = None) -> Dict[str, Node]:
+def _load_node_map(engine: GraphKnowledgeEngine, ids: List[str], node_type: Type[Node] | None = None, 
+                   include = ['documents', 'metadatas', "embeddings"]) -> Dict[str, Node]:
     """Robustly load Node models by ids."""
     from ..models import Node, ConversationNode, WorkflowNode
     if node_type is None:
@@ -30,7 +31,7 @@ def _load_node_map(engine: GraphKnowledgeEngine, ids: List[str], node_type: Type
         # Prefer engine helper if available
         return engine._load_node_map(ids, node_type = node_type)
     except Exception:
-        nodes = engine.get_nodes(ids=ids, node_type = node_type)
+        nodes = engine.get_nodes(ids=ids, node_type = node_type, include= include)
         out = {n.id: n for n in nodes}
         # for rid, doc in zip(got.get("ids") or [], got.get("documents") or []):
         #     try:
@@ -40,7 +41,8 @@ def _load_node_map(engine: GraphKnowledgeEngine, ids: List[str], node_type: Type
         return out
 
 
-def _load_edge_map(engine: GraphKnowledgeEngine, ids: List[str], edge_type: Type[Edge] | None = None) -> Dict[str, Edge]:
+def _load_edge_map(engine: GraphKnowledgeEngine, ids: List[str], edge_type: Type[Edge] | None = None, 
+                   include=['documents', 'metadatas', 'embeddings']) -> Dict[str, Edge]:
     """Robustly load Edge models by ids."""
     
     from ..models import Edge, ConversationEdge, WorkflowEdge
@@ -57,7 +59,7 @@ def _load_edge_map(engine: GraphKnowledgeEngine, ids: List[str], edge_type: Type
     try:
         return engine._load_edge_map(ids)
     except Exception:
-        edges = engine.get_edges(ids=ids, edge_type = edge_type)
+        edges = engine.get_edges(ids=ids, edge_type = edge_type, include = include)
         out = {n.id: n for n in edges}
         return out
 

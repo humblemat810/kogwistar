@@ -7,7 +7,7 @@ if True:
     logger.addHandler(logging.NullHandler())
     logger.debug("loading models")
 from .id_provider import new_id_str, new_event_id, stable_id
-from typing import List, Literal, Optional, Dict, Any, Type, TypeAlias, Union, Annotated, ClassVar, Tuple, Self, cast
+from typing import List, Literal, Optional, Dict, Any, Type, TypeAlias, TypedDict, Union, Annotated, ClassVar, Tuple, Self, cast
 from pydantic import BaseModel, Field, model_validator, field_validator, ValidationInfo, ConfigDict
 import uuid
 from enum import IntEnum
@@ -837,8 +837,26 @@ class LLMGraphExtraction(ModeSlicingMixin, BaseModel):
 class RetrievalResult:
     nodes: List[Node]
     edges: List[Edge]
+@dataclass
+class BaseToolResult(TypedDict):
+    node_id_entry: str | None
+
+@dataclass(kw_only=True)
+class MemoryRetrievalResult(BaseToolResult):
+    # Cross-conversation memory candidates (by user_id)
+    candidate: RetrievalResult
+    selected: None | RetrievalResult
+    reasoning: str
+
+    # Derived artifacts
+    memory_context_text: None | str
+    seed_kg_node_ids: List[str]
 
 
+@dataclass(kw_only=True)
+class MemoryPinResult(BaseToolResult):
+    memory_context_node: ConversationNode
+    pinned_edges: List[ConversationEdge]
 class FilteringResult(BaseModel):
     node_ids: list[str] = Field(description = 'list of relevant node ids')
     edge_ids: list[str] = Field(description = 'list of relevant edge ids')
@@ -1233,9 +1251,8 @@ class SplitPage(OCRClusterResponseBc):
             c_return['text'] = texts
             return c_return
 
-
-@dataclass
-class KnowledgeRetrievalResult:
+@dataclass(kw_only=True)
+class KnowledgeRetrievalResult(BaseToolResult):
     candidate: RetrievalResult
     selected: FilteringResult | None
     reasoning: str
