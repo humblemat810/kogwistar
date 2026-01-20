@@ -16,9 +16,10 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Callable, Tuple
 from graph_knowledge_engine.models import WorkflowEdge, WorkflowNode
 from graph_knowledge_engine.engine import GraphKnowledgeEngine
+from .contract import BasePredicate
 
 PredicateName = Optional[str]
-Predicate = Callable[[Dict[str, Any], Any], bool]
+Predicate = BasePredicate
 
 @dataclass(frozen=True)
 class WFNode:

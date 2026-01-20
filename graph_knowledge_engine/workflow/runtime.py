@@ -17,12 +17,12 @@ Json = Any
 State = Dict[str, Json]
 # Result = Json
 from typing import TypedDict, Literal, TypeAlias, Any, Type, Literal, Union
-
+from .contract import WorkflowEdgeInfo
 from dataclasses import dataclass
 from pydantic import BaseModel
 
 StateAppendUpdate = tuple[Literal['u'], Any]
-StateOverwriteUpdate = tuple[Literal['a', Any]]
+StateOverwriteUpdate = tuple[Literal['a'], Any]
 StateUpdate = Union[StateAppendUpdate , StateOverwriteUpdate]
 
 
@@ -160,10 +160,10 @@ class WorkflowRuntime:
         self.checkpoint_every_n_steps = max(1, int(checkpoint_every_n_steps))
         self.max_workers = max_workers
         self.state_lock : dict[RunID, Lock] = {} # look up of run specific state lock
-    def apply_state_update(self, mute_state: dict, state_update: list[tuple[str, dict[str, Any]]]):
+    def apply_state_update(self, mute_state: WorkflowState, state_update: list[tuple[str, dict[str, Any]]] | list[StateUpdate]):
         # inplace update state
         for update_item in state_update:
-            update_item: tuple[str, dict[str, Any]]
+            update_item: tuple[str, dict[str, Any]] | StateUpdate
             if update_item[0] == 'a': # append
                 append_dict: dict = update_item[1]
                 for k, v in append_dict.items():
@@ -319,9 +319,10 @@ class WorkflowRuntime:
         last_result: RunResult,
         fanout: bool,
     ) -> List[str]:
+        # waterfall, edge predicate, if no next step, inspect node decision -> finally check any default
         matched: List[str] = []
-
         for e in edges:
+            workflow_info = WorkflowEdgeInfo.from_workflow_edge(e)
             if e.predicate is None:
                 continue
             pred = self.predicate_registry.get(e.predicate)
@@ -329,7 +330,7 @@ class WorkflowRuntime:
                 continue
             ok = False
             try:
-                ok = bool(pred(state, last_result))
+                ok = bool(pred(workflow_info, state, last_result))
             except Exception:
                 ok = False
             if ok:
@@ -339,14 +340,41 @@ class WorkflowRuntime:
 
         if matched and (fanout or any(getattr(ed, "multiplicity", "one") == "many" for ed in edges)):
             return matched
-
+        
+        
+        from typing import cast
+        from .contract import BasePredicate
+        # fall back if no predicate ever gove, then let node decide
         if not matched:
+            # node decide logic
+            for e in edges:
+                # if e.predicate is None:
+                pred = cast(Predicate, BasePredicate)
+                
+                workflow_info = WorkflowEdgeInfo.from_workflow_edge(e)
+                # else:
+                    # should not run
+                    # pred = self.predicate_registry.get(e.predicate)
+                ok = bool(pred(workflow_info, state, last_result))
+                try:
+                    ok = bool(pred(workflow_info, state, last_result))
+                except Exception:
+                    ok = False
+                if ok:
+                    matched.append(e.target_ids[0])
+                    if not fanout and e.multiplicity != "many":
+                        return matched
+                
+            if matched:
+                return matched
             for e in edges:
                 if e.is_default:
                     if fanout:
                         return e.target_ids
                     else:
                         return e.target_ids[0:1]
+        # not matched and no default set
+        
         return matched
 
     # --------------------

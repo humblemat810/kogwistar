@@ -34,7 +34,7 @@ Conventions:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 
 from .runtime import RunResult
 
@@ -58,7 +58,7 @@ class WorkflowNodeInfo:
     terminal: bool
     fanout: bool
 
-
+from ..models import WorkflowEdge
 @dataclass(frozen=True)
 class WorkflowEdgeInfo:
     name: str
@@ -69,12 +69,28 @@ class WorkflowEdgeInfo:
     priority: int
     is_default: bool
     multiplicity: str  # "one" | "many"
-
-
-Predicate = Callable[[WorkflowEdgeInfo, State, Result], bool]
+    @staticmethod
+    def from_workflow_edge( e: WorkflowEdge):
+        src = e.source_ids[0]
+        dst = e.target_ids[0]
+        md = e.metadata
+        info = WorkflowEdgeInfo(
+            name = e.label,
+            edge_id=e.safe_get_id(),
+            src=str(src),
+            dst=str(dst),
+            predicate=md.get("wf_predicate"),
+            priority=int(md.get("wf_priority", 100)),
+            is_default=bool(md.get("wf_is_default", False)),
+            multiplicity=str(md.get("wf_multiplicity", "one")),
+        )
+        return info
+if TYPE_CHECKING:
+    from ..conversation_state_contracts import WorkflowState
+    Predicate = Callable[[WorkflowEdgeInfo, WorkflowState, Result], bool]
 class BasePredicate():
     @staticmethod
-    def __call__(e:WorkflowEdgeInfo,  state: State, result: RunResult):
+    def __call__(e:WorkflowEdgeInfo,  state: WorkflowState, result: RunResult):
         if result.next_step_names:
             return e.name in result.next_step_names
         else:
