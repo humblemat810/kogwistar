@@ -45,17 +45,17 @@ class KnowledgeRetriever:
         self.deep_per_seed_results = deep_per_seed_results
         self.deep_seed_limit = deep_seed_limit
 
-    def _shallow_query(self, *, query_embedding: List[float]) -> RetrievalResult:
+    def _shallow_query(self, *, query_embedding: List[float], max_retrieval_level) -> RetrievalResult:
         nodes = self.ref_knowledge_engine.query_nodes(
             query_embeddings=[query_embedding],
             n_results=self.shallow_n_results,
-            where={"level_from_root": {"$lte": self.max_retrieval_level}},
+            where={"level_from_root": {"$lte": max_retrieval_level or self.max_retrieval_level}},
             include=["metadatas", "documents", "embeddings"],
         )[0]
         edges = self.ref_knowledge_engine.query_edges(
             query_embeddings=[query_embedding],
             n_results=self.shallow_n_results,
-            where={"level_from_root": {"$lte": self.max_retrieval_level}},
+            where={"level_from_root": {"$lte": max_retrieval_level or self.max_retrieval_level}},
             include=["metadatas", "documents", "embeddings"],
         )[0]
         return RetrievalResult(nodes, edges)
@@ -66,11 +66,12 @@ class KnowledgeRetriever:
         
         # return (rows.get("ids") or [[]])[0] or []
 
-    def _deep_seeded_semantic(self, *, user_text: str, seed_kg_node_ids: List[str]) -> RetrievalResult:
+    def _deep_seeded_semantic(self, *, user_text: str, seed_kg_node_ids: List[str],
+                              max_retrieval_level = 2) -> RetrievalResult:
         seed_ids = seed_kg_node_ids[: self.deep_seed_limit]
         # out: List[str] = []
         # for sid in seed_ids:
-        layers = self.ref_knowledge_engine.query.k_hop(seed_ids)
+        layers = self.ref_knowledge_engine.query.k_hop(seed_ids, k = max_retrieval_level)
         nodes = []
         edges = []
         for l in layers:
@@ -111,11 +112,12 @@ class KnowledgeRetriever:
         context_text: str,
         query_embedding: List[float],
         seed_kg_node_ids: Optional[List[str]] = None,
+        max_retrieval_level: int = 2
     ) -> KnowledgeRetrievalResult:
-        shallow_results = self._shallow_query(query_embedding=query_embedding)
+        shallow_results = self._shallow_query(query_embedding=query_embedding, max_retrieval_level = max_retrieval_level)
         # deep_ids: List[str] = []
         if seed_kg_node_ids:
-            deep_results = self._deep_seeded_semantic(user_text=user_text, seed_kg_node_ids=seed_kg_node_ids)
+            deep_results = self._deep_seeded_semantic(user_text=user_text, seed_kg_node_ids=seed_kg_node_ids, max_retrieval_level = max_retrieval_level)
         else:
             deep_results = RetrievalResult(nodes = [], edges = [])
         # merge
@@ -207,7 +209,7 @@ class KnowledgeRetriever:
                 "canonical_entity_id": meta.get("canonical_entity_id"),
             }
             sh = snapshot_hash(snap)
-            
+            prev_turn_meta_summary.tail_turn_index += 1
             ptr_node = ConversationNode(
                 id=None,
                 label=f"Ref: {kg_meta.get('label')}",
@@ -232,6 +234,7 @@ class KnowledgeRetriever:
                     "level_from_root": 0,
                     "char_distance_from_last_summary": prev_turn_meta_summary.prev_node_char_distance_from_last_summary,
                     "turn_distance_from_last_summary": prev_turn_meta_summary.prev_node_distance_from_last_summary,
+                    "tail_turn_index" : prev_turn_meta_summary.tail_turn_index,
                     "snapshot_hash": sh,
                     "in_conversation_chain": False,
                 },
@@ -260,7 +263,9 @@ class KnowledgeRetriever:
                 properties={"entity_type": "conversation_edge"},
                 embedding=None,
                 metadata={"char_distance_from_last_summary": prev_turn_meta_summary.prev_node_char_distance_from_last_summary,
-                    "turn_distance_from_last_summary": prev_turn_meta_summary.prev_node_distance_from_last_summary,},
+                    "turn_distance_from_last_summary": prev_turn_meta_summary.prev_node_distance_from_last_summary,
+                    "tail_turn_index" : prev_turn_meta_summary.tail_turn_index,
+                    },
                 source_edge_ids=[],
                 target_edge_ids=[],
             )
@@ -268,6 +273,8 @@ class KnowledgeRetriever:
             pinned_edge_ids.append(edge.id)
             prev_turn_meta_summary.prev_node_char_distance_from_last_summary += len(summary)
             prev_turn_meta_summary.prev_node_distance_from_last_summary += 1
+            
+            
 
         for kg in edges:
             # kg_got = self.ref_knowledge_engine.node_collection.get(ids=[kg_id], include=["documents", "embeddings", "metadatas"])
@@ -282,6 +289,7 @@ class KnowledgeRetriever:
             summary = str(kg_meta.get("summary", ""))
 
             # ptr_id = str(uuid.uuid4())
+            prev_turn_meta_summary.tail_turn_index +=1
             ptr_node = ConversationNode(
                 id=None,
                 label=f"Ref: {kg_meta.get('label')}",
@@ -303,6 +311,7 @@ class KnowledgeRetriever:
                     "level_from_root": 0,
                     "char_distance_from_last_summary": prev_turn_meta_summary.prev_node_char_distance_from_last_summary,
                     "turn_distance_from_last_summary": prev_turn_meta_summary.prev_node_distance_from_last_summary,
+                    "tail_turn_index": prev_turn_meta_summary.tail_turn_index,
                     "in_conversation_chain": False,
                 },
                 domain_id=None,
@@ -328,7 +337,8 @@ class KnowledgeRetriever:
                 properties={"entity_type": "conversation_edge"},
                 embedding=None,
                 metadata={"char_distance_from_last_summary": prev_turn_meta_summary.prev_node_char_distance_from_last_summary,
-                    "turn_distance_from_last_summary": prev_turn_meta_summary.prev_node_distance_from_last_summary,},
+                    "turn_distance_from_last_summary": prev_turn_meta_summary.prev_node_distance_from_last_summary,
+                    "tail_turn_index": prev_turn_meta_summary.tail_turn_index,},
                 source_edge_ids=[],
                 target_edge_ids=[],
             )
@@ -337,4 +347,5 @@ class KnowledgeRetriever:
             
             prev_turn_meta_summary.prev_node_char_distance_from_last_summary += len(summary)
             prev_turn_meta_summary.prev_node_distance_from_last_summary += 1
+            
         return pinned_pointer_node_ids, pinned_edge_ids

@@ -11,7 +11,7 @@ from graph_knowledge_engine.models import (
 )
 from typing import TYPE_CHECKING
 
-from graph_knowledge_engine.workflow.contract import RunResult, State
+from graph_knowledge_engine.workflow.runtime import RunResult, State
 
 if TYPE_CHECKING:
     from graph_knowledge_engine.workflow.runtime import StepContext

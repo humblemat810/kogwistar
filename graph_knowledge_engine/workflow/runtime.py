@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 from concurrent.futures import ThreadPoolExecutor
 
+from ..conversation_orchestrator import get_id_for_conversation_turn_edge
 from graph_knowledge_engine.models import WorkflowNode, MentionVerification, ConversationEdge, WorkflowEdge
 
 from .design import validate_workflow_design, Predicate
@@ -284,6 +285,7 @@ class WorkflowRuntime:
                     status=status,
                     duration_ms=dur_ms,
                     result=run_result,
+                    state=state
                 )
 
                 # single-writer state apply:
@@ -349,13 +351,12 @@ class WorkflowRuntime:
             # node decide logic
             for e in edges:
                 # if e.predicate is None:
-                pred = cast(Predicate, BasePredicate)
+                pred = cast(Predicate, BasePredicate())
                 
                 workflow_info = WorkflowEdgeInfo.from_workflow_edge(e)
                 # else:
                     # should not run
                     # pred = self.predicate_registry.get(e.predicate)
-                ok = bool(pred(workflow_info, state, last_result))
                 try:
                     ok = bool(pred(workflow_info, state, last_result))
                 except Exception:
@@ -438,6 +439,7 @@ class WorkflowRuntime:
         status: str,
         duration_ms: int,
         result: RunResult,
+        state: WorkflowState,
     ) -> None:
         from graph_knowledge_engine.models import WorkflowStepExecNode, Grounding, Span  # adjust import path
 
@@ -454,6 +456,11 @@ class WorkflowRuntime:
             summary=excerpt,
             mentions=[Grounding(spans=[span])],
             properties={},
+            
+            level_from_root = 0,
+            domain_id = None,
+            canonical_entity_id= None,
+            embedding=None,
             metadata={
                 "entity_type": "workflow_step_exec",
                 "run_id": run_id,
@@ -464,11 +471,11 @@ class WorkflowRuntime:
                 "status": status,
                 "duration_ms": duration_ms,
                 "result_json": result_json,
+                "conversation_id": conversation_id,
+                "char_distance_from_last_summary": 0,
+                "turn_distance_from_last_summary": 0,
+                # "tail_turn_index": state["prev_turn_meta_summary"]["tail_turn_index"]
             },
-            level_from_root = 0,
-            domain_id = None,
-            canonical_entity_id= None,
-            embedding=None
         )
         self.conversation_engine.add_node(n)
         if result.conversation_node_id:
@@ -489,10 +496,11 @@ class WorkflowRuntime:
                     method="system",
                     is_verified=True,
                     score=1.0,
-                    notes=f"step run result",
+                    notes="step run result",
                 ),
-            )    
-            e = ConversationEdge(type = 'relationship', summary = f"results during {result.conversation_node_id}",
+            )
+            eid = f"wf_interstep_edge|{run_id}|{step_seq}|{result.conversation_node_id}"
+            e = ConversationEdge(id = eid, type = 'relationship', summary = f"results during {result.conversation_node_id}",
                                  domain_id=None, label='run_result', 
                                  properties={}, 
                                  mentions=[Grounding(spans=[self_span])], canonical_entity_id=None, 
@@ -501,7 +509,11 @@ class WorkflowRuntime:
                                  doc_id = f"wf_step|{run_id}|{step_seq}",
                                  metadata={"relation":"run_result",
                                            "source_id":[n.id],
-                                           "target_id":result.conversation_node_id},
+                                           "target_id":result.conversation_node_id,
+                                           "char_distance_from_last_summary": 0,
+                                           "turn_distance_from_last_summary": 0,
+                                        #    "tail_turn_index": state["prev_turn_meta_summary"]["tail_turn_index"]
+                                           },
                                  )
             self.conversation_engine.add_edge(e)
 
@@ -534,6 +546,7 @@ class WorkflowRuntime:
                 "step_seq": step_seq,
                 "state_json": state_json,
                 "level_from_root": 0,
+                "conversation_id":conversation_id
             },
             domain_id=None,canonical_entity_id=None,embedding=None,level_from_root=0
         )

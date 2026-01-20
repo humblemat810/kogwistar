@@ -10,7 +10,7 @@ Json = Any
 class PrevTurnMetaSummaryModel(BaseModel):
     prev_node_char_distance_from_last_summary: int
     prev_node_distance_from_last_summary: int
-
+    tail_turn_index: int
 
 class SummaryStateModel(BaseModel):
     should_summarize: bool = False
@@ -50,7 +50,7 @@ class WorkflowStateModel(BaseModel):
 class PrevTurnMetaSummaryDict(TypedDict):
     prev_node_char_distance_from_last_summary: int
     prev_node_distance_from_last_summary: int
-
+    tail_turn_index: int
 
 class SummaryStateDict(TypedDict):
     should_summarize: bool

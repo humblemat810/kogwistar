@@ -106,14 +106,12 @@ class MemoryRetriever:
         llm: BaseChatModel,
         filtering_callback: Callable[..., tuple[FilteringResult|RetrievalResult, str]] ,
         summarize_callback: Optional[Callable[..., str]] = None, # can be a callback with context closured
-        n_results: int = 12,
         prefer_types: Optional[List[str]] = None,
     ) -> None:
         self.conversation_engine: GraphKnowledgeEngine = conversation_engine
         self.llm = llm
         self.filtering_callback = filtering_callback
         self.summarize_callback = summarize_callback
-        self.n_results = n_results
         self.prefer_types = prefer_types or ["conversation_summary", "conversation_turn", "reference_pointer"]
 
     def retrieve(
@@ -124,17 +122,18 @@ class MemoryRetriever:
         query_embedding: List[float],
         user_text: str,
         context_text: str,
+        n_result
     ) -> MemoryRetrievalResult:
         # Broad memory retrieval across same user
         where = {"user_id": user_id}
         memory_nodes = self.conversation_engine.query_nodes(query_embeddings = [query_embedding],
-            n_results=self.n_results,
+            n_results=n_result,
             where=where,
             include=["metadatas", "documents", "embeddings"], node_type=ConversationNode
         )[0]
         where = {"user_id": user_id}
         memory_edges = self.conversation_engine.query_edges(query_embeddings = [query_embedding],
-            n_results=self.n_results,
+            n_results=n_result,
             where=where,
             include=["metadatas", "documents", "embeddings"], edge_type=ConversationEdge
         )[0]
@@ -313,7 +312,8 @@ class MemoryRetriever:
                 "type": "entity",
                 "level_from_root": 0, 
                 "char_distance_from_last_summary": prev_turn_meta_summary.prev_node_char_distance_from_last_summary,  # memory itself is a summary of other nodes
-                "turn_distance_from_last_summary": prev_turn_meta_summary.prev_node_distance_from_last_summary,                
+                "turn_distance_from_last_summary": prev_turn_meta_summary.prev_node_distance_from_last_summary,
+                "tail_turn_index": prev_turn_meta_summary.tail_turn_index,
                 "user_id": user_id,
                 "conversation_id": current_conversation_id,
                 "turn_index": turn_index,
@@ -343,7 +343,9 @@ class MemoryRetriever:
             properties={"entity_type": "conversation_edge"},
             embedding=None,
             metadata={"char_distance_from_last_summary": prev_turn_meta_summary.prev_node_char_distance_from_last_summary,
-                    "turn_distance_from_last_summary": prev_turn_meta_summary.prev_node_distance_from_last_summary,},
+                    "turn_distance_from_last_summary": prev_turn_meta_summary.prev_node_distance_from_last_summary,
+                    "tail_turn_index" : prev_turn_meta_summary.tail_turn_index,
+                    },
             source_edge_ids=[],
             target_edge_ids=[],
         )
@@ -371,7 +373,9 @@ class MemoryRetriever:
                 properties={"entity_type": "conversation_edge"},
                 embedding=None,
                 metadata={"char_distance_from_last_summary": prev_turn_meta_summary.prev_node_char_distance_from_last_summary,
-                "turn_distance_from_last_summary": prev_turn_meta_summary.prev_node_distance_from_last_summary, },
+                    "turn_distance_from_last_summary": prev_turn_meta_summary.prev_node_distance_from_last_summary, 
+                    "tail_turn_index" : prev_turn_meta_summary.tail_turn_index,
+                },
                 source_edge_ids=[],
                 target_edge_ids=[],
             )
@@ -396,7 +400,9 @@ class MemoryRetriever:
                 properties={"entity_type": "conversation_edge"},
                 embedding=None,
                 metadata={"char_distance_from_last_summary": prev_turn_meta_summary.prev_node_char_distance_from_last_summary, 
-                "turn_distance_from_last_summary": prev_turn_meta_summary.prev_node_distance_from_last_summary, },
+                        "turn_distance_from_last_summary": prev_turn_meta_summary.prev_node_distance_from_last_summary, 
+                        "tail_turn_index" : prev_turn_meta_summary.tail_turn_index,
+                    },
                 source_edge_ids=[],
                 target_edge_ids=[edge.safe_get_id()],
             )

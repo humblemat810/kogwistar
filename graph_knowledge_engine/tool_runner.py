@@ -14,11 +14,14 @@ import json
 import time
 import uuid
 from dataclasses import dataclass
-from typing import Any, Callable, Optional, TypeVar, Iterable
+from typing import TYPE_CHECKING, Any, Callable, Optional, TypeVar, Iterable
+
+from pydantic import Json
 
 from .models import ConversationNode, Grounding, MentionVerification, Span
 from graph_knowledge_engine.models import MetaFromLastSummary
-
+if TYPE_CHECKING:
+    from graph_knowledge_engine.engine import GraphKnowledgeEngine
 T = TypeVar("T")
 
 
@@ -36,7 +39,7 @@ class ToolEventIds:
 
 
 class ToolRunner:
-    def __init__(self, *, tool_call_id_factory, conversation_engine: Any) -> None:
+    def __init__(self, *, tool_call_id_factory, conversation_engine: GraphKnowledgeEngine) -> None:
         self.engine = conversation_engine
         self.tool_call_id_factory :Callable[..., str]= tool_call_id_factory
     def run_tool(
@@ -47,7 +50,7 @@ class ToolRunner:
         turn_node_id: str,
         turn_index: int,
         tool_name: str,
-        args: dict[str, Any],
+        args: list,
         kwargs: dict[str, Any],
         handler: Callable[..., T],
         prev_turn_meta_summary: MetaFromLastSummary,
@@ -55,9 +58,12 @@ class ToolRunner:
         
     ) -> T:
         """Execute a tool handler and record tool_call/tool_result nodes."""
-
+        last_node = self.engine._get_conversation_tail(conversation_id)
+        if last_node is None:
+            raise Exception('unreachable')
         # Tool call node (assistant role)
-        call_id = str(self.tool_call_id_factory(user_id, conversation_id, str(args)))
+        call_node_content = f"Calling tool {tool_name}"
+        call_id = str(self.tool_call_id_factory(user_id, conversation_id, last_node.safe_get_id(), call_node_content,  str(args), str(kwargs)))
         span = Span(
             collection_page_url=f"conversation/{conversation_id}",
             document_page_url=f"conversation/{conversation_id}#{call_id}",
@@ -73,7 +79,8 @@ class ToolRunner:
             source_cluster_id=None,
             verification=MentionVerification(method="system", is_verified=True, score=1.0, notes="tool_call event"),
         )
-        call_node_content = f"Calling tool {tool_name}"
+        
+        prev_turn_meta_summary.tail_turn_index += 1
         call_node = ConversationNode(
             user_id=user_id,
             id=call_id,
@@ -95,6 +102,7 @@ class ToolRunner:
                       "level_from_root": 0, 
                       "char_distance_from_last_summary": prev_turn_meta_summary.prev_node_char_distance_from_last_summary, 
                       "turn_distance_from_last_summary": prev_turn_meta_summary.prev_node_distance_from_last_summary,
+                      "tail_turn_index" : prev_turn_meta_summary.tail_turn_index,
                       "in_conversation_chain": True},
             domain_id=None,
             canonical_entity_id=None,
@@ -102,11 +110,18 @@ class ToolRunner:
         self.engine.add_node(call_node, None)
         prev_turn_meta_summary.prev_node_char_distance_from_last_summary+= len(call_node_content)
         prev_turn_meta_summary.prev_node_distance_from_last_summary+= 1
+        
         # Execute
-        result = handler(**kwargs)
-
+        try:
+            result = handler(**kwargs)
+        except:
+            result = handler(**kwargs)
         # Tool result node (tool role)
-        res_id = str(self.tool_call_id_factory())
+        # res_id = str(self.tool_call_id_factory())
+        # last_node = self.engine._get_conversation_tail(conversation_id)
+        if last_node is None:
+            raise Exception('unreachable')
+        res_id = str(self.tool_call_id_factory(user_id, conversation_id, call_node.safe_get_id(), "tool_result"))
         res_span = Span(
             collection_page_url=f"conversation/{conversation_id}",
             document_page_url=f"conversation/{conversation_id}#{res_id}",
@@ -132,6 +147,8 @@ class ToolRunner:
         if not compact:
             compact = _safe_json(getattr(result, "__dict__", result))[:800]
         res_node_content = compact
+        
+        prev_turn_meta_summary.tail_turn_index += 1
         res_node = ConversationNode(
             user_id=user_id,
             id=res_id,
@@ -155,6 +172,7 @@ class ToolRunner:
                       "level_from_root": 0, 
                       "char_distance_from_last_summary": prev_turn_meta_summary.prev_node_char_distance_from_last_summary, 
                       "turn_distance_from_last_summary": prev_turn_meta_summary.prev_node_distance_from_last_summary,
+                      "tail_turn_index": prev_turn_meta_summary.tail_turn_index,
                       "in_conversation_chain": True},
             domain_id=None,
             canonical_entity_id=None,

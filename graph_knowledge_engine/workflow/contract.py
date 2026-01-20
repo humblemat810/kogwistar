@@ -35,8 +35,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
-
-from .runtime import RunResult
+if TYPE_CHECKING:
+    from ..engine import GraphKnowledgeEngine
 
 Json = Any
 State = Dict[str, Json]
@@ -58,7 +58,7 @@ class WorkflowNodeInfo:
     terminal: bool
     fanout: bool
 
-from ..models import WorkflowEdge
+from ..models import Edge, WorkflowEdge
 @dataclass(frozen=True)
 class WorkflowEdgeInfo:
     name: str
@@ -88,25 +88,25 @@ class WorkflowEdgeInfo:
 if TYPE_CHECKING:
     from ..conversation_state_contracts import WorkflowState
     Predicate = Callable[[WorkflowEdgeInfo, WorkflowState, Result], bool]
+    from .runtime import RunResult
 class BasePredicate():
-    @staticmethod
-    def __call__(e:WorkflowEdgeInfo,  state: WorkflowState, result: RunResult):
+    def __call__(cls, e:WorkflowEdgeInfo,  state: WorkflowState, result: RunResult):
         if result.next_step_names:
             return e.name in result.next_step_names
         else:
             return True # always true if step does not specify next step names
-def build_workflow_from_engine(*, engine: Any, workflow_id: str) -> WorkflowSpec:
+def build_workflow_from_engine(*, engine: GraphKnowledgeEngine, workflow_id: str) -> WorkflowSpec:
     """
     Loads workflow spec from engine via convention:
       - Exactly one workflow_node has wf_start=True for the workflow_id.
 
     If you want multiple specs per workflow_id, extend this by adding a workflow_variant field.
     """
-    nodes = engine.get_nodes(where={"entity_type": "workflow_node", "workflow_id": workflow_id}, limit=500)
+    nodes = engine.get_nodes(where={"$and": [{"entity_type": "workflow_node"}, {"workflow_id": workflow_id}]}, limit=500)
     start = None
     for n in nodes:
         if (n.metadata or {}).get("wf_start") is True:
-            start = n.id
+            start = n.safe_get_id()
             break
     if start is None:
         raise ValueError(
@@ -116,17 +116,17 @@ def build_workflow_from_engine(*, engine: Any, workflow_id: str) -> WorkflowSpec
     return WorkflowSpec(workflow_id=workflow_id, start_node_id=start)
 
 
-def _iter_wf_nodes(*, engine: Any, workflow_id: str) -> List[Any]:
-    return engine.get_nodes(where={"entity_type": "workflow_node", "workflow_id": workflow_id}, limit=2000)
+def _iter_wf_nodes(*, engine: GraphKnowledgeEngine, workflow_id: str) -> List[Edge]:
+    return engine.get_nodes(where={"$and": [{"entity_type": "workflow_edge"}, {"workflow_id": workflow_id}]}, limit=2000)
 
 
-def _iter_wf_edges(*, engine: Any, workflow_id: str) -> List[Any]:
-    return engine.get_edges(where={"entity_type": "workflow_edge", "workflow_id": workflow_id}, limit=5000)
+def _iter_wf_edges(*, engine: GraphKnowledgeEngine, workflow_id: str) -> List[Edge]:
+    return engine.get_edges(where={"$and": [{"entity_type": "workflow_edge"}, {"workflow_id": workflow_id}]}, limit=5000)
 
 
 def load_workflow_graph(
     *,
-    engine: Any,
+    engine: GraphKnowledgeEngine,
     spec: WorkflowSpec,
 ) -> Tuple[Dict[str, WorkflowNodeInfo], Dict[str, List[WorkflowEdgeInfo]]]:
     """Loads node/edge info needed by the executor."""
@@ -137,7 +137,7 @@ def load_workflow_graph(
     for n in nodes_raw:
         md = n.metadata or {}
         info = WorkflowNodeInfo(
-            node_id=n.id,
+            node_id=n.safe_get_id(),
             op=str(md.get("wf_op") or md.get("wf.op") or ""),
             version=str(md.get("wf_version") or md.get("wf.version") or "v1"),
             cacheable=bool(md.get("wf_cacheable", True)),
@@ -145,8 +145,8 @@ def load_workflow_graph(
             fanout=bool(md.get("wf_fanout", False)),
         )
         if not info.op and not info.terminal:
-            raise ValueError(f"workflow node {n.id} missing metadata wf_op")
-        nodes[n.id] = info
+            raise ValueError(f"workflow node {n.safe_get_id()} missing metadata wf_op")
+        nodes[n.safe_get_id()] = info
 
     adj: Dict[str, List[WorkflowEdgeInfo]] = {nid: [] for nid in nodes.keys()}
     for e in edges_raw:
@@ -159,15 +159,7 @@ def load_workflow_graph(
         if src not in nodes or dst not in nodes:
             raise ValueError(f"workflow edge endpoints not workflow nodes: {src} -> {dst}")
 
-        info = WorkflowEdgeInfo(
-            edge_id=e.id,
-            src=str(src),
-            dst=str(dst),
-            predicate=md.get("wf_predicate"),
-            priority=int(md.get("wf_priority", 100)),
-            is_default=bool(md.get("wf_is_default", False)),
-            multiplicity=str(md.get("wf_multiplicity", "one")),
-        )
+        info = WorkflowEdgeInfo.from_workflow_edge(e)
         adj[str(src)].append(info)
 
     # deterministic ordering
@@ -183,7 +175,7 @@ def load_workflow_graph(
 
 def validate_workflow(
     *,
-    engine: Any,
+    engine: GraphKnowledgeEngine,
     spec: WorkflowSpec,
     predicate_registry: Dict[str, Predicate],
 ) -> None:

@@ -11,7 +11,7 @@ from __future__ import annotations
 import time
 import uuid
 from dataclasses import dataclass, field, replace
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, cast
 
 from langchain_core.language_models import BaseChatModel
 
@@ -474,10 +474,18 @@ class ConversationOrchestrator:
             else:
                 node_last_turn_dist = 0
             prev_turn_meta_summary.prev_node_distance_from_last_summary = node_last_turn_dist
+            
+            node_tail_turn_index = prev_node.metadata.get("tail_turn_index")
+            if node_tail_turn_index is not None:
+                node_tail_turn_index += 1
+            else:
+                node_tail_turn_index = -1 # start_node
+            prev_turn_meta_summary.tail_turn_index = node_tail_turn_index
         else:
             new_index = 0
             prev_turn_meta_summary.prev_node_char_distance_from_last_summary = 0
             prev_turn_meta_summary.prev_node_distance_from_last_summary = -1
+            prev_turn_meta_summary.tail_turn_index=-1 # start node
 
         # ----------------------------
         # 1) Create/persist the user turn node (mirror legacy)
@@ -522,6 +530,7 @@ class ConversationOrchestrator:
                 "level_from_root": 0,
                 "char_distance_from_last_summary": prev_turn_meta_summary.prev_node_char_distance_from_last_summary,
                 "turn_distance_from_last_summary": prev_turn_meta_summary.prev_node_distance_from_last_summary,
+                "tail_turn_index": prev_turn_meta_summary.tail_turn_index,
                 "in_conversation_chain": in_conv,
             },
             domain_id=None,
@@ -542,7 +551,7 @@ class ConversationOrchestrator:
         # mirror legacy: advance distances after adding this user turn
         prev_turn_meta_summary.prev_node_char_distance_from_last_summary += len(content)
         prev_turn_meta_summary.prev_node_distance_from_last_summary += 1
-
+        new_index += 1
         # ----------------------------
         # 2) Ensure the workflow design exists
         # ----------------------------
@@ -602,7 +611,7 @@ class ConversationOrchestrator:
                 ),
                 "add_link_to_new_turn": self.add_link_to_new_turn,
             }
-        init_state: WorkflowState = WorkflowStateModel(
+        init_state: WorkflowState = cast(WorkflowState, WorkflowStateModel(
             conversation_id=conversation_id,
             user_id=user_id,
             turn_node_id=turn_node_id,
@@ -615,8 +624,9 @@ class ConversationOrchestrator:
             prev_turn_meta_summary=PrevTurnMetaSummaryModel(
                 prev_node_char_distance_from_last_summary=prev_turn_meta_summary.prev_node_char_distance_from_last_summary,
                 prev_node_distance_from_last_summary=prev_turn_meta_summary.prev_node_distance_from_last_summary,
+                tail_turn_index=prev_turn_meta_summary.tail_turn_index,
             ),
-        ).model_dump()
+        ).model_dump())
         init_state["_deps"] = deps
 
             # Dependency injection for default_resolver (resolvers.py)
@@ -647,6 +657,9 @@ class ConversationOrchestrator:
         )
         prev_turn_meta_summary.prev_node_distance_from_last_summary = int(
             mts.get("prev_node_distance_from_last_summary", prev_turn_meta_summary.prev_node_distance_from_last_summary)
+        )
+        prev_turn_meta_summary.tail_turn_index = int(
+            mts.get("tail_turn_index", prev_turn_meta_summary.tail_turn_index)
         )
 
         return AddTurnResult(
@@ -698,7 +711,9 @@ class ConversationOrchestrator:
                 embedding=None,
                 metadata={"relation":"next_turn", "target_id":turn_node.id,
                           "char_distance_from_last_summary": prev_turn_meta_summary.prev_node_char_distance_from_last_summary,
-                            "turn_distance_from_last_summary": prev_turn_meta_summary.prev_node_distance_from_last_summary},
+                            "turn_distance_from_last_summary": prev_turn_meta_summary.prev_node_distance_from_last_summary,
+                            "tail_turn_index": prev_turn_meta_summary.tail_turn_index,
+                            },
                 source_edge_ids=[],
                 target_edge_ids=[],
             )
@@ -757,10 +772,18 @@ class ConversationOrchestrator:
             else:
                 node_last_turn_dist = 0
             prev_turn_meta_summary.prev_node_distance_from_last_summary = node_last_turn_dist #prev_node.metadata.get("turn_distance_from_last_summary") or 0
+            #======================
+            node_tail_turn_index = prev_node.metadata.get("tail_turn_index")
+            if node_tail_turn_index is not None:
+                node_tail_turn_index += 1
+            else:
+                node_tail_turn_index = -1 # start node
+            prev_turn_meta_summary.tail_turn_index = node_tail_turn_index
         else:
             new_index = 0
             prev_turn_meta_summary.prev_node_char_distance_from_last_summary = 0
             prev_turn_meta_summary.prev_node_distance_from_last_summary = -1
+            prev_turn_meta_summary.tail_turn_index = -1 # start node
 
         turn_node_id = turn_id or get_id_for_conversation_turn(ConversationNode.id_kind, user_id, 
                                             conversation_id, content, str(new_index), role, "conversation_turn", str(in_conv))
@@ -803,6 +826,7 @@ class ConversationOrchestrator:
                     "level_from_root": 0,
                     "char_distance_from_last_summary": prev_turn_meta_summary.prev_node_char_distance_from_last_summary,
                     "turn_distance_from_last_summary": prev_turn_meta_summary.prev_node_distance_from_last_summary,
+                    "tail_turn_index": prev_turn_meta_summary.tail_turn_index,
                     "in_conversation_chain": in_conv,
                 },
                 domain_id=None,
@@ -862,10 +886,15 @@ class ConversationOrchestrator:
                                    prev_turn_meta_summary)        
         return add_turn_result
     def gen_machine_response_turns(self, user_id, conversation_id, turn_node_id, new_index,
-                                   embedding, content, 
-                                   filtering_callback, max_retrieval_level, st, mem_id,
-                                   self_span, prev_node, summary_char_threshold,
-                                   prev_turn_meta_summary):
+                                   embedding, content: str, 
+                                   filtering_callback: Callable[..., tuple[RetrievalResult, str]], 
+                                   max_retrieval_level:int, 
+                                   st:OrchestratorState, 
+                                   mem_id:str,
+                                   self_span:Span, 
+                                   prev_node:ConversationNode|None, 
+                                   summary_char_threshold:int,
+                                   prev_turn_meta_summary:MetaFromLastSummary):
         # 3) Retrieval + pinning (recorded as tool events)
                 mem_retriever = MemoryRetriever(
                     conversation_engine=self.conversation_engine,
@@ -886,6 +915,7 @@ class ConversationOrchestrator:
                         query_embedding=embedding,
                         user_text=content,
                         context_text="",
+                        n_results=12,
                     )
                 # memory retrieve tool
                 mem: MemoryRetrievalResult = self.tool_runner.run_tool(
@@ -894,9 +924,7 @@ class ConversationOrchestrator:
                     turn_node_id=turn_node_id,
                     turn_index=new_index,
                     tool_name="memory_retrieve",
-                    args={
-                        "n_results": mem_retriever.n_results,
-                    },
+                    args=[],
                     kwargs = mem_args,
                     handler=mem_retriever.retrieve,
                     render_result=lambda r: getattr(r, "reasoning", "")[:800],
@@ -998,6 +1026,7 @@ class ConversationOrchestrator:
                     or (response and bool(getattr(response, "llm_decision_need_summary", False)))
                 ):
                     added_id = self._summarize_conversation_batch(conversation_id, new_index,prev_turn_meta_summary=prev_turn_meta_summary)
+                    prev_turn_meta_summary.tail_turn_index = new_index
                     new_index += 1
                     prev_turn_meta_summary.prev_node_char_distance_from_last_summary = 0
                     prev_turn_meta_summary.prev_node_distance_from_last_summary=0
@@ -1118,7 +1147,7 @@ class ConversationOrchestrator:
         # Persist
         
         self.conversation_engine.add_node(summary_node)
-
+        new_index += 1
 
         # Edges: Summary -> Turns
         sum_edge = ConversationEdge(
@@ -1148,7 +1177,8 @@ class ConversationOrchestrator:
                 )
             ])],
             metadata={"char_distance_from_last_summary": prev_turn_meta_summary.prev_node_char_distance_from_last_summary,
-                            "turn_distance_from_last_summary": prev_turn_meta_summary.prev_node_distance_from_last_summary},
+                            "turn_distance_from_last_summary": prev_turn_meta_summary.prev_node_distance_from_last_summary,
+                            "tail_turn_index":prev_turn_meta_summary.tail_turn_index},
             source_edge_ids=[],
             target_edge_ids=[]
         )

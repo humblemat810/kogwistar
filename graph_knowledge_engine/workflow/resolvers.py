@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+
 from ..models import MetaFromLastSummary
 from .runtime import StateUpdate
 """Workflow step resolvers.
@@ -26,8 +27,9 @@ The orchestrator should populate `_deps` in the workflow initial_state.
 """
 
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Mapping, Optional, Union
-
+from typing import TYPE_CHECKING, Any, Callable, Dict, Mapping, Optional, Union
+if TYPE_CHECKING:
+    from tool_runner import ToolRunner
 
 Json = Any
 
@@ -112,7 +114,6 @@ def _memory_retrieve(ctx: StepContext) -> RunResult:
         llm=deps["llm"],
         filtering_callback=deps["filtering_callback"],
     )
-    from ..tool_runner import ToolRunner
     tool_runner: ToolRunner | None = deps.get("tool_runner")
     prev_turn_meta_summary = deps.get("prev_turn_meta_summary")
     state_view = ctx.state_view
@@ -124,6 +125,7 @@ def _memory_retrieve(ctx: StepContext) -> RunResult:
             query_embedding=state_view["embedding"],
             user_text=state_view["user_text"],
             context_text="",
+            n_result = 12,
         )
     else:
         
@@ -133,14 +135,16 @@ def _memory_retrieve(ctx: StepContext) -> RunResult:
             turn_node_id=state_view["turn_node_id"],
             turn_index=state_view["turn_index"],
             tool_name="memory_retrieve",
-            args={"n_results": getattr(mem_retriever, "n_results", None)},
-            handler=lambda: mem_retriever.retrieve(
+            args=[], #{"n_results": getattr(mem_retriever, "n_results", 12)},
+            kwargs = dict(
                 user_id=state_view["user_id"],
                 current_conversation_id=state_view["conversation_id"],
                 query_embedding=state_view["embedding"],
                 user_text=state_view["user_text"],
                 context_text="",
+                n_result = 12,
             ),
+            handler=mem_retriever.retrieve,
             render_result=lambda r: getattr(r, "reasoning", "")[:800],
             prev_turn_meta_summary=prev_turn_meta_summary,
         )
@@ -175,8 +179,7 @@ def _kg_retrieve(ctx: StepContext) -> RunResult:
     state_view = ctx.state_view
     mem_raw = state_view.get("memory_raw")
     seed_ids = list(getattr(mem_raw, "seed_kg_node_ids", []) or []) if mem_raw is not None else []
-
-    tool_runner = deps.get("tool_runner")
+    tool_runner: ToolRunner = deps.get("tool_runner")
     prev_turn_meta_summary = deps.get("prev_turn_meta_summary")
     state = ctx.state_view
     if tool_runner is None:
@@ -187,7 +190,15 @@ def _kg_retrieve(ctx: StepContext) -> RunResult:
             seed_kg_node_ids=seed_ids,
         )
     else:
-        
+        kw_args = {
+            "max_retrieval_level": max_retrieval_level, "seed_kg_node_ids": seed_ids
+        }
+        kw_args.update(dict(
+                user_text=state["user_text"],
+                context_text="",
+                query_embedding=state["embedding"],
+                seed_kg_node_ids=seed_ids,
+            ))
         kg = tool_runner.run_tool(
             conversation_id=state["conversation_id"],
             user_id=state["user_id"],
@@ -195,12 +206,8 @@ def _kg_retrieve(ctx: StepContext) -> RunResult:
             turn_index=state["turn_index"],
             tool_name="kg_retrieve",
             args={"max_retrieval_level": max_retrieval_level, "seed_kg_node_ids": seed_ids},
-            handler=lambda: kg_retriever.retrieve(
-                user_text=state["user_text"],
-                context_text="",
-                query_embedding=state["embedding"],
-                seed_kg_node_ids=seed_ids,
-            ),
+            kwargs = kw_args,
+            handler= kg_retriever.retrieve,
             render_result=lambda r: getattr(r, "reasoning", "")[:800],
             prev_turn_meta_summary=prev_turn_meta_summary,
         )
@@ -324,9 +331,11 @@ def _answer(ctx: StepContext) -> RunResult:
         if callable(add_link_to_new_turn):
             try:
                 resp_node = ce.get_nodes([response_node_id])[0]
-                user_turn_node = ce.get_nodes([ctx.state["turn_node_id"]])[0]
-                seq_edge_id = get_id_for_conversation_turn_edge(ConversationEdge.id_kind, user_id, conversation_id, 
-                                                                "next_turn", new_index,
+                state = ctx.state_view
+                user_turn_node = ce.get_nodes([state["turn_node_id"]])[0]
+                seq_edge_id = get_id_for_conversation_turn_edge(ConversationEdge.id_kind, state['user_id'], 
+                                                                state['conversation_id'], 
+                                                                "next_turn", prev_turn_meta_summary.tail_turn_index,
                                                                 [user_turn_node.id], [resp_node.id], 
                                                                 [], [], 
                                                                 "conversation_edge")
@@ -334,14 +343,14 @@ def _answer(ctx: StepContext) -> RunResult:
             except Exception:
                 pass
 
-        # Mirror legacy: advance distances after adding assistant turn, if available.
-        try:
-            txt = getattr(resp, "answer", None)
-            if isinstance(txt, str):
-                prev_turn_meta_summary.prev_node_char_distance_from_last_summary += len(txt)
-            prev_turn_meta_summary.prev_node_distance_from_last_summary += 1
-        except Exception:
-            pass
+        # # Mirror legacy: advance distances after adding assistant turn, if available.
+        # try:
+        #     txt = getattr(resp, "answer", None)
+        #     if isinstance(txt, str):
+        #         prev_turn_meta_summary.prev_node_char_distance_from_last_summary += len(txt)
+        #     prev_turn_meta_summary.prev_node_distance_from_last_summary += 1
+        # except Exception:
+        #     pass
 
     outj = {
         "response_node_id": response_node_id,
@@ -408,6 +417,7 @@ def _summarize(ctx: StepContext) -> RunResult:
 
     # Legacy resets after summarization.
     try:
+        # idenpotent, so just reset for defensive, but must be exact for tail_turn_index and not increment here
         prev_turn_meta_summary.prev_node_char_distance_from_last_summary = 0
         prev_turn_meta_summary.prev_node_distance_from_last_summary = 0
     except Exception:

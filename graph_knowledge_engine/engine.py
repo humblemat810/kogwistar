@@ -6,6 +6,8 @@ import pathlib
 import time
 from . import models
 from .models import AddTurnResult, MetaFromLastSummary, RetrievalResult, WorkflowCheckpointNode
+from .engine_sqlite import EngineSQLite
+
 if True:
     """_summary_
 
@@ -1977,7 +1979,8 @@ class GraphKnowledgeEngine:
           - ENV SENTENCE_TRANSFORMERS_MODEL, or
           - "all-MiniLM-L6-v2".
         """
-        
+        self.meta_sqlite = EngineSQLite(pathlib.Path(persist_directory or "./chroma_db"), 'meta.sqlite')
+        self.meta_sqlite.ensure_initialized()
         self.changes = ChangeBus()
         if cdc_publish_endpoint := os.environ.get('CDC_PUBLISH_ENDPOINT'):
             self.changes.add_sink(FastAPIChangeSink(cdc_publish_endpoint))
@@ -2039,6 +2042,9 @@ class GraphKnowledgeEngine:
             )
         )
         # IMPORTANT: pass embedding_function to vector collections
+        from threading import Lock
+        self.collection_lock={"node": Lock(), "edge": Lock()}
+        
         self.node_index_collection = self.chroma_client.get_or_create_collection(
             "nodes_index", embedding_function=self._ef, metadata={"hnsw:space": "cosine"}
         )
@@ -2046,6 +2052,8 @@ class GraphKnowledgeEngine:
             "nodes", embedding_function=self._ef, metadata={"hnsw:space": "cosine"}
         )
         self.node_collection.get(limit = 1)
+        with self.get_collection_lock('node')[0]:
+            self.node_collection
         self.node_collection.query(query_texts = ['hello world'])
         self.edge_collection = self.chroma_client.get_or_create_collection(
             "edges", embedding_function=self._ef, metadata={"hnsw:space": "cosine"}
@@ -2388,20 +2396,51 @@ class GraphKnowledgeEngine:
                 "total_endpoint_count": total_endpoint_count,
             })],
         )
+    def get_collection_lock(self, collection_name):
+        if collection_name not in self.collection_lock:
+            raise ValueError(f"{collection_name} has not implemented lock")
+        if collection_name == "node":
+            col = self.node_collection
+        if collection_name == "edge":
+            col = self.edge_collection
+        return (self.collection_lock[collection_name], col)
+    @conversation_only
+    def max_node_seq_present(self, conversation_id):
+        return self.meta_sqlite.next_user_seq(conversation_id)
+    @conversation_only
+    def get_last_seq_node(self, conversation_id, buffer = 5):
+        
+        pass
     def add_node(self, node: Node, doc_id: Optional[str] = None):
         if doc_id is not None:
             node.doc_id = doc_id  # may use engine.extract_reference_contexts
+        if self.kg_graph_type == "conversation":
+            node_conv: ConversationNode = cast(ConversationNode, node)
+            try:
+                conv_id = node_conv.conversation_id
+            except:
+                conv_id = node_conv.metadata["conversation_id"]
+            
+            if conv_id is None:
+                raise Exception('conv id required')
+            self._get_last_seq_node(conv_id)
+            seq = self.meta_sqlite.next_user_seq(conv_id)
+            node.metadata['seq'] = seq
         doc, meta = _node_doc_and_meta(node)
         if node.embedding is None:
             node.embedding = self._iterative_defensive_emb(doc)
         meta['_class_name'] = type(node).__name__
+        
+        # lock, col = self.get_collection_lock('node')
+        # with lock:
+        
         self.node_collection.add(
-            ids=[node.id],
+            ids=[node.safe_get_id()],
             documents=[doc],
             embeddings=[node.embedding] if node.embedding is not None else [self._iterative_defensive_emb(str(doc))],
             metadatas=[meta],
         )
-        
+    
         self.get_nodes([node.id], type(node))
         node_cls = getattr(models, type(node).__name__)
         self.get_nodes([node.id], node_cls)
@@ -4053,6 +4092,33 @@ class GraphKnowledgeEngine:
         self.add_node(start_node)
         
         return conv_id, node_id
+    
+    @conversation_only
+    def _get_last_seq_node(self, conversation_id, min_seq = None):
+        if min_seq is None:
+            min_seq = self.max_node_seq_present(conversation_id)
+        if self.kg_graph_type != "conversation":
+            raise Exception("conversation only allowed to be on canva engine")
+        got = self.node_collection.get(
+            where={"$and":[
+                {"conversation_id": conversation_id},                 
+                ]
+                + [{"seq": {"$gte": min_seq or 0}}]
+            },
+            include=["documents", "metadatas", "embeddings"]
+        )
+        if not got["ids"]:
+            return None
+        
+        # reconstruct
+        nodes: list[ConversationNode] = self.nodes_from_single_or_id_query_result(got, node_type=ConversationNode)
+        # nodes2 = list(filter(lambda x: x.metadata.get("entity_type") in tail_search_includes, nodes))
+        # if not nodes2:
+        #     return None
+        
+        # # Sort by turn_index
+        nodes.sort(key=lambda n: n.metadata.get("seq") or -1)
+        return nodes[-1]
     @conversation_only
     def _get_conversation_tail(self, conversation_id: str, 
                                min_turn_index : int | None = None,
@@ -4068,7 +4134,7 @@ class GraphKnowledgeEngine:
                 {"conversation_id": conversation_id}, 
                 {"in_conversation_chain": True}
                 ]
-                   + ([{"min_turn_index": {"$gte": min_turn_index}}]
+                   + ([{"turn_index": {"$gte": min_turn_index}}]
                       if min_turn_index else [])
                       },
             include=["documents", "metadatas", "embeddings"]

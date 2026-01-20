@@ -14,7 +14,7 @@ def test_workflow_runtime_uses_default_resolver(tmp_path):
     from graph_knowledge_engine.models import WorkflowEdge, WorkflowNode, Span, Grounding, MentionVerification
     from graph_knowledge_engine.workflow.runtime import WorkflowRuntime
     from graph_knowledge_engine.conversation_state_contracts import WorkflowStateModel, WorkflowState
-    from graph_knowledge_engine.workflow.contract import RunResult, State
+    from graph_knowledge_engine.workflow.runtime import RunResult, State
     from graph_knowledge_engine.workflow.resolvers import default_resolver, MappingStepResolver
     from graph_knowledge_engine.tool_runner import ToolRunner
     
@@ -46,7 +46,6 @@ def test_workflow_runtime_uses_default_resolver(tmp_path):
     workflow_engine = GraphKnowledgeEngine(persist_directory=str(wf_dir), kg_graph_type="workflow")
     conversation_engine = GraphKnowledgeEngine(persist_directory=str(conv_dir), kg_graph_type="conversation")
     ref_knowledge_engine = GraphKnowledgeEngine(persist_directory=str(kg_dir), kg_graph_type="knowledge")
-    from joblib import Memory
     import os
     import numpy as np
     mem = Memory(location = os.path.join('.', 'test_workflow_runtime_uses_default_resolver'))
@@ -262,6 +261,7 @@ def test_workflow_runtime_uses_default_resolver(tmp_path):
         prev_turn_meta_summary=PrevTurnMetaSummaryModel(
             prev_node_char_distance_from_last_summary=prev_turn_meta_summary.prev_node_char_distance_from_last_summary,
             prev_node_distance_from_last_summary=prev_turn_meta_summary.prev_node_distance_from_last_summary,
+            tail_turn_index = prev_turn_meta_summary.tail_turn_index
         ),
     ).dump_state()
     init_state["_deps"] = deps
