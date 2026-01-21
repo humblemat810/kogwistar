@@ -44,7 +44,7 @@ def test_workflow_runtime_uses_default_resolver(tmp_path):
     workflow_id = "wf_smoke_default_resolver"
 
     workflow_engine = GraphKnowledgeEngine(persist_directory=str(wf_dir), kg_graph_type="workflow")
-    conversation_engine = GraphKnowledgeEngine(persist_directory=str(conv_dir), kg_graph_type="conversation")
+    conversation_engine = GraphKnowledgeEngine(persist_directory=str(conv_dir), debug_dir=conv_dir, kg_graph_type="conversation")
     ref_knowledge_engine = GraphKnowledgeEngine(persist_directory=str(kg_dir), kg_graph_type="knowledge")
     import os
     import numpy as np

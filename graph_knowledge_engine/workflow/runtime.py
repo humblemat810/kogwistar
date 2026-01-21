@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, List, Optional,
 from concurrent.futures import ThreadPoolExecutor
 
 from ..conversation_orchestrator import get_id_for_conversation_turn_edge
-from graph_knowledge_engine.models import WorkflowNode, MentionVerification, ConversationEdge, WorkflowEdge
+from graph_knowledge_engine.models import WorkflowNode, MentionVerification, ConversationEdge, WorkflowEdge, WorkflowRunNode
 
 from .design import validate_workflow_design, Predicate
 from .serialize import try_serialize_with_ref
@@ -211,7 +211,7 @@ class WorkflowRuntime:
         step_seq = 0
 
         # Persist workflow_run node in conversation_engine
-        self._persist_workflow_run(
+        wf_run_root_node = self._persist_workflow_run(
             conversation_id=conversation_id,
             workflow_id=workflow_id,
             run_id=run_id,
@@ -252,7 +252,7 @@ class WorkflowRuntime:
             done_q.put((node_id, res, max(0, t1 - t0), status))
 
         inflight: Dict[str, Any] = {}
-        last_exec_node = None
+        last_exec_node = wf_run_root_node
         with ThreadPoolExecutor(max_workers=self.max_workers) as pool:
             while True:
                 # schedule while capacity
@@ -425,7 +425,7 @@ class WorkflowRuntime:
             embedding = None,
         )
         self.conversation_engine.add_node(n)
-        return True
+        return n
 
     def _update_workflow_run_status(self, conversation_id: str, run_id: str, status: str) -> None:
         # minimal approach: add an update node/event rather than mutate-in-place
@@ -445,7 +445,7 @@ class WorkflowRuntime:
         duration_ms: int,
         result: RunResult,
         state: WorkflowState,
-        last_exec_node: Optional[WorkflowStepExecNode] = None
+        last_exec_node: Optional[WorkflowStepExecNode| WorkflowRunNode] = None
     ) -> WorkflowStepExecNode:
         # from graph_knowledge_engine.models import WorkflowStepExecNode, Grounding, Span  # adjust import path
 
