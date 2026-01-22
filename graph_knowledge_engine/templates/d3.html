@@ -144,6 +144,32 @@
       <pre id="inspectorBody"></pre>
     </div>
 
+    <div id="cdcPanel" class="hidden" style="
+      position: fixed;
+      left: 8px;
+      bottom: 8px;
+      width: min(520px, calc(100vw - 16px));
+      max-height: 28vh;
+      overflow: auto;
+      background: #111c;
+      color: #ddd;
+      border-radius: 8px;
+      border: 1px solid #444;
+      box-shadow: 0 2px 10px rgba(0,0,0,.25);
+      padding: 8px 10px;
+      font: 12px/1.35 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      z-index: 10;">
+      <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:6px;">
+        <b style="font:12px/1.2 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; color:#fff;">CDC debug</b>
+        <div style="display:flex; gap:8px; align-items:center;">
+          <span id="cdcPanelStatus">disabled</span>
+          <button id="cdcClear" style="font:12px/1.2 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;">Clear</button>
+          <button id="cdcHide" style="font:12px/1.2 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;">Hide</button>
+        </div>
+      </div>
+      <div id="cdcPanelLog"></div>
+    </div>
+
     <svg></svg>
 
     <script>
@@ -293,7 +319,7 @@
         const MODE = "{{ mode }}";
         const BUNDLE_GRAPH_TYPE = window.__BUNDLE_GRAPH_TYPE__;
 
-        // In-memory mutable model (keyed by id). CDC events mutate this model.
+                // In-memory mutable model (keyed by id). CDC events mutate this model.
         const model = {
           nodesById: new Map(),
           linksById: new Map(),
@@ -393,6 +419,7 @@
         const outwardOnly  = document.getElementById('outwardOnly');
         const inwardOnly   = document.getElementById('inwardOnly');
         const includeLat   = document.getElementById('includeLateral');
+        const showOrphans  = document.getElementById('showOrphans');
         const applyBtn     = document.getElementById('applyFilters');
 
         document.getElementById('zoomIn').onclick  = () => svg.transition().call(zoom.scaleBy, 1.4);
@@ -700,6 +727,12 @@
             const tid = (typeof e.target === "object" ? e.target.id : e.target);
 
             let ok = chosen.has(rname);
+            if (!ok) {
+              // Relation not present in the checkbox menu => default to visible,
+              // otherwise new CDC relations would be hidden forever.
+              const hasCb = document.querySelector(`#relList input[type=checkbox][value="${rname}"]`);
+              if (!hasCb) ok = true;
+            }
 
             if (ok && treeMode.checked) {
               const ds = depth.get(sid), dt = depth.get(tid);
@@ -911,11 +944,44 @@
         // -----------------------------
         // Live CDC (optional)
         // -----------------------------
+        // -----------------------------
+        // CDC debug logging (always-on when CDC enabled)
+        // -----------------------------
+        const cdcPanel = document.getElementById("cdcPanel");
+        const cdcPanelStatus = document.getElementById("cdcPanelStatus");
+        const cdcPanelLog = document.getElementById("cdcPanelLog");
+        const cdcClearBtn = document.getElementById("cdcClear");
+        const cdcHideBtn = document.getElementById("cdcHide");
+
+        function cdcLog(line){
+          try {
+            // console (always)
+        console.log(line);
+            // panel (when present)
+            if (cdcPanelLog) {
+              const div = document.createElement("div");
+              div.textContent = line;
+              cdcPanelLog.appendChild(div);
+              while (cdcPanelLog.childNodes.length > 200) cdcPanelLog.removeChild(cdcPanelLog.firstChild);
+              cdcPanelLog.scrollTop = cdcPanelLog.scrollHeight;
+            }
+          } catch (_) {}
+        }
+
+        function cdcPanelSetStatus(s){
+          if (cdcPanelStatus) cdcPanelStatus.textContent = s;
+        }
+
+        if (cdcClearBtn) cdcClearBtn.onclick = () => { if (cdcPanelLog) cdcPanelLog.innerHTML = ""; };
+        if (cdcHideBtn) cdcHideBtn.onclick = () => { if (cdcPanel) cdcPanel.classList.add("hidden"); };
+
+
         function ensureEntityNode(id){
           if (!id) return;
           if (!model.nodesById.has(id)) {
             model.nodesById.set(id, { id, label: id, type: "entity", summary: "", properties: {} });
           }
+        
         }
 
         function removeLinksByPrefix(prefix){
@@ -981,14 +1047,15 @@
             for (const tid of t1) ensureEntityNode(tid);
 
             if (MODE === "reify") {
-              model.nodesById.set(e.id, {
-                id: e.id,
-                label: rel || (e.label || "edge"),
-                type: "edge-node",
-                summary: e.summary || "",
-                properties: e.properties || e.metadata || {},
-                ...e,
-              });
+              // IMPORTANT: spread `e` first, then override fields so `e.type` (often "edge")
+              // does not clobber our special rendering type ("edge-node").
+              const edgeNode = { ...e };
+              edgeNode.id = e.id;
+              edgeNode.label = rel || (e.label || "edge");
+              edgeNode.type = "edge-node";
+              edgeNode.summary = e.summary || "";
+              edgeNode.properties = e.properties || e.metadata || {};
+              model.nodesById.set(e.id, edgeNode);
 
               for (const sid of s1) {
                 const lid = `${e.id}:s:${sid}`;
@@ -1038,7 +1105,29 @@
           }
         }
 
+        // Defensive normalization: D3 forceSimulation requires node entries to be objects.
+        // If any string/invalid node slips into model.nodesById (e.g. from CDC ordering),
+        // convert it into a placeholder node object in-place.
+        function normalizeNodeValue(key, val){
+          // If val is already a plain object with an id, keep it.
+          if (val && typeof val === "object") {
+            if (!val.id) val.id = String(key);
+            return val;
+          }
+          const id = String(val ?? key);
+          return { id, label: id, type: "entity", summary: "", properties: {}, _placeholder: true };
+        }
+
+        function normalizeAllNodes(){
+          for (const [k, v] of Array.from(model.nodesById.entries())) {
+            const nv = normalizeNodeValue(k, v);
+            if (nv !== v) model.nodesById.set(nv.id, nv);
+            // If the key differs from node id, also ensure correct key mapping
+            if (String(k) !== String(nv.id)) model.nodesById.delete(k);
+          }
+        }
         function refreshFromModel(){
+          normalizeAllNodes();
           allNodes = Array.from(model.nodesById.values());
           allLinks = Array.from(model.linksById.values());
           recomputeParallelEdgeHints();
@@ -1047,8 +1136,8 @@
           rebuildGraphElements();
 
           // Update forces
-          linkForce.links(allLinks);
           sim.nodes(allNodes);
+          linkForce.links(allLinks);
 
           // Re-attach inspector handlers on the new selections
           attachClick(nodeCircle);
@@ -1086,7 +1175,13 @@
           if (!badge || !status) return;
           if (window.__CDC_ENABLED__) badge.classList.remove("hidden");
           status.textContent = label;
+
+          // Panel status + log (debug)
+          if (cdcPanel) cdcPanel.classList.remove("hidden");
+          cdcPanelSetStatus(label);
+          cdcLog(`[CDC] status=${label}`);
         }
+
 
         function scheduleCdcReconnect(){
           if (!window.__CDC_ENABLED__) return;
@@ -1110,6 +1205,7 @@
           }
 
           const wsUrl = resolveCdcWsUrl();
+          cdcLog(`[CDC] resolve wsUrl=${wsUrl || "(null)"} bundle_graph_type=${BUNDLE_GRAPH_TYPE || "(null)"} mode=${MODE}`);
           if (!wsUrl) {
             setCdcStatus("no ws url");
             console.warn("CDC enabled but no ws URL resolved. Pass cdc_ws_url into the bundle.");
@@ -1132,29 +1228,49 @@
           cdcWs.onopen = () => {
             cdcReconnectAttempt = 0;
             setCdcStatus("connected");
+            cdcLog("[CDC] ws open");
           };
 
           cdcWs.onmessage = (m) => {
+            cdcLog(`[CDC] ws message bytes=${(m && m.data && m.data.length) || 0}`);
+            let ev = null;
             try {
-              const ev = JSON.parse(m.data);
+              ev = JSON.parse(m.data);
+            } catch (e) {
+              cdcLog("[CDC] JSON.parse failed: " + String(e));
+              return;
+            }
+
+            const seq = ev && ev.seq;
+            const op  = ev && ev.op;
+            const kind = ev && ev.entity && ev.entity.kind;
+            const id = ev && ev.entity && ev.entity.id;
+            const gtype = ev && ev.entity && ev.entity.kg_graph_type;
+            cdcLog(`[CDC] recv seq=${seq} op=${op} kind=${kind} id=${id} kg_graph_type=${gtype}`);
+
+            try {
               applyCdcEvent(ev);
               refreshFromModel();
             } catch (e) {
-              console.warn("bad CDC message", e);
+              cdcLog("[CDC] apply/refresh failed: " + String(e));
+              console.error(e);
             }
           };
 
           // Avoid spamming reconnect logic from onerror; let onclose handle it.
           cdcWs.onerror = () => {
             setCdcStatus("error");
+            cdcLog("[CDC] ws error");
           };
 
-          cdcWs.onclose = () => {
+          cdcWs.onclose = (e) => {
             setCdcStatus("disconnected");
+            cdcLog(`[CDC] ws close code=${e && e.code} reason=${(e && e.reason) || ""}`);
             scheduleCdcReconnect();
           };
         }
 
+        cdcLog(`[CDC] enabled=${window.__CDC_ENABLED__} ws_url=${window.__CDC_WS_URL__ || "(null)"} bundle_graph_type=${BUNDLE_GRAPH_TYPE || "(null)"}`);
         if (window.__CDC_ENABLED__) {
           connectCdcWs();
         } else {

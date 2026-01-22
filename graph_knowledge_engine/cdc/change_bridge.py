@@ -33,6 +33,8 @@ async def ingest(ev: dict):
     dead = []
     log_msg = _summarize_event(ev)
     logging.info(log_msg)
+    msg_json_dumped = json.dumps(ev)
+    print(msg_json_dumped[:200])
     print(log_msg)
     for ws in subscribers:
         try:

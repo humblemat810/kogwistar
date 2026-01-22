@@ -5,6 +5,14 @@
     "version": "0.2.0",
     "configurations": [
         {
+            "name": "event bridge fastapi",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "uvicorn",
+            "args": ["graph_knowledge_engine.cdc.change_bridge:app", "--host", "127.0.0.1", "--port", "8787"],
+            "justMyCode": false
+        },
+        {
             "name": "Dump empty CDC",
             "type": "debugpy",
             "request": "launch",
@@ -20,9 +28,9 @@
             "program": "graph_knowledge_engine/utils/kge_debug_dump.py",
             "console": "integratedTerminal",
             "args": ["one", "--template", "./graph_knowledge_engine/templates/d3.html", 
-            "--out", "C:/Users/chanh/AppData/Local/Temp/pytest-of-chanh/pytest-807/bundle/conv.html", 
+            "--out", "C:/Users/chanh/AppData/Local/Temp/pytest-of-chanh/pytest-810/bundle/conv.html", 
             "--graph-type", "conversation", 
-            "--persist-dir", "C:/Users/chanh/AppData/Local/Temp/pytest-of-chanh/pytest-807/test_workflow_runtime_uses_def0/conv",
+            "--persist-dir", "C:/Users/chanh/AppData/Local/Temp/pytest-of-chanh/pytest-810/test_workflow_runtime_uses_def0/conv",
             "--cdc-ws-url", "ws://127.0.0.1:8787/changes/ws"],
             "justMyCode": false
         },
