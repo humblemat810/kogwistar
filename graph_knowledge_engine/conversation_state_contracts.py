@@ -87,3 +87,4 @@ class WorkflowState(TypedDict):
     summary: SummaryStateDict
     prev_turn_meta_summary: PrevTurnMetaSummaryDict
     _deps:dict
+    _rt_join:dict

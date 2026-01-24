@@ -4,7 +4,7 @@ import time
 import uuid
 import queue
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, List, Optional, Tuple, cast
 from concurrent.futures import ThreadPoolExecutor
 
 from ..conversation_orchestrator import get_id_for_conversation_turn_edge
@@ -12,6 +12,140 @@ from graph_knowledge_engine.models import WorkflowNode, MentionVerification, Con
 
 from .design import validate_workflow_design, Predicate
 from .serialize import try_serialize_with_ref
+
+# ------------------------------------------------------------------
+# Join/barrier support (capability tracking via MAY-reach bitsets)
+# ------------------------------------------------------------------
+
+def _tarjan_scc(n: int, succ: list[list[int]]) -> tuple[list[int], list[list[int]]]:
+    """
+    Tarjan SCC.
+    Returns:
+      comp_of[v] -> component id
+      comps -> list of components (each is list of vertices)
+    """
+    index = 0
+    stack: list[int] = []
+    onstack = [False] * n
+    idxs = [-1] * n
+    low = [0] * n
+    comp_of = [-1] * n
+    comps: list[list[int]] = []
+
+    def strongconnect(v: int) -> None:
+        nonlocal index
+        idxs[v] = index
+        low[v] = index
+        index += 1
+        stack.append(v)
+        onstack[v] = True
+
+        for w in succ[v]:
+            if idxs[w] == -1:
+                strongconnect(w)
+                low[v] = low[v] if low[v] < low[w] else low[w]
+            elif onstack[w]:
+                low[v] = low[v] if low[v] < idxs[w] else idxs[w]
+
+        if low[v] == idxs[v]:
+            comp_id = len(comps)
+            comp: list[int] = []
+            while True:
+                w = stack.pop()
+                onstack[w] = False
+                comp_of[w] = comp_id
+                comp.append(w)
+                if w == v:
+                    break
+            comps.append(comp)
+
+    for v in range(n):
+        if idxs[v] == -1:
+            strongconnect(v)
+
+    return comp_of, comps
+
+
+def _compute_may_reach_join_bitsets(
+    *,
+    node_ids: list[str],
+    adj: dict[str, list["WorkflowEdge"]],
+    join_ids: list[str],
+) -> dict[str, int]:
+    """
+    Over-approximate: for every node, compute the set of join/barrier nodes it MAY reach,
+    ignoring predicates (static topology only).
+
+    Output is a dict node_id -> bitset (int) where bit i means MAY reach join_ids[i].
+    """
+    n = len(node_ids)
+    id_to_i = {nid: i for i, nid in enumerate(node_ids)}
+    succ: list[list[int]] = [[] for _ in range(n)]
+    for src, edges in adj.items():
+        si = id_to_i.get(src)
+        if si is None:
+            continue
+        for e in edges:
+            for dst in getattr(e, "target_ids", []) or []:
+                di = id_to_i.get(str(dst))
+                if di is not None:
+                    succ[si].append(di)
+
+    comp_of, comps = _tarjan_scc(n, succ)
+    c = len(comps)
+
+    # component join mask
+    join_pos = {jid: p for p, jid in enumerate(join_ids)}
+    comp_join_mask = [0] * c
+    for v_nid in node_ids:
+        p = join_pos.get(v_nid)
+        if p is None:
+            continue
+        v = id_to_i[v_nid]
+        comp_join_mask[comp_of[v]] |= (1 << p)
+
+    # condensation DAG
+    comp_succ: list[set[int]] = [set() for _ in range(c)]
+    indeg = [0] * c
+    for v in range(n):
+        cv = comp_of[v]
+        for w in succ[v]:
+            cw = comp_of[w]
+            if cv != cw and cw not in comp_succ[cv]:
+                comp_succ[cv].add(cw)
+                indeg[cw] += 1
+
+    # topo order (Kahn)
+    q = [i for i in range(c) if indeg[i] == 0]
+    topo: list[int] = []
+    while q:
+        x = q.pop()
+        topo.append(x)
+        for y in comp_succ[x]:
+            indeg[y] -= 1
+            if indeg[y] == 0:
+                q.append(y)
+
+    # dp in reverse topo: may_reach[comp] = comp_join | OR succ
+    may = comp_join_mask[:]
+    for x in reversed(topo):
+        m = may[x]
+        for y in comp_succ[x]:
+            m |= may[y]
+        may[x] = m
+    out: dict[str, int] = {}
+    for nid in node_ids:
+        out[nid] = may[comp_of[id_to_i[nid]]]
+    return out
+
+
+def _iter_bits(mask: int):
+    """Yield bit positions (0-based) for an int bitset."""
+    while mask:
+        lsb = mask & -mask
+        yield (lsb.bit_length() - 1)
+        mask ^= lsb
+
 
 RunID= uuid.UUID | str
 Json = Any
@@ -29,7 +163,7 @@ from graph_knowledge_engine.models import WorkflowStepExecNode, Grounding, Span
     
 
 class RunSuccess(BaseModel):
-    conversation_node_id: Optional[str]
+    conversation_node_id: str|None
     state_update: list[StateUpdate]
     next_step_names: list[str] = []  # empty will by default fan out all
     status: Literal["success"] = "success"
@@ -205,6 +339,90 @@ class WorkflowRuntime:
             workflow_id=workflow_id,
             predicate_registry=self.predicate_registry,
         )
+
+        # ----------------------------
+        # Precompute MAY-reach join/barrier sets (ignoring predicates)
+        # ----------------------------
+        node_ids_list = list(nodes.keys())
+        join_node_ids: list[str] = []
+        for _nid, _wn in nodes.items():
+            _md = getattr(_wn, "metadata", None) or {}
+            if bool(_md.get("wf_join", False)) or str(getattr(_wn, "op", "")) == "join":
+                join_node_ids.append(str(_nid))
+        _may_reach_join = (
+            _compute_may_reach_join_bitsets(node_ids=node_ids_list, adj=adj, join_ids=join_node_ids)
+            if join_node_ids
+            else {nid: 0 for nid in node_ids_list}
+        )
+        _join_pos = {jid: i for i, jid in enumerate(join_node_ids)}
+        _join_outstanding: list[int] = [0 for _ in join_node_ids]  # tokens BEFORE each join
+        _join_waiters: dict[str, list[int]] = {jid: [] for jid in join_node_ids}  # store per-token mask at join
+
+        def _inc(mask: int) -> None:
+            for bi in _iter_bits(mask):
+                _join_outstanding[bi] += 1
+
+        def _dec(mask: int) -> None:
+            for bi in _iter_bits(mask):
+                _join_outstanding[bi] -= 1
+                if _join_outstanding[bi] < 0:
+                    # defensive: never go negative
+                    _join_outstanding[bi] = 0
+
+        def _mask_without_join(mask: int, join_id: str) -> int:
+            bi = _join_pos.get(join_id)
+            if bi is None:
+                return mask
+            return mask & ~(1 << bi)
+
+        def _bit_for_join(join_id: str) -> int:
+            bi = _join_pos.get(join_id)
+            return (1 << bi) if bi is not None else 0
+        def _rt_join_get() -> dict:
+            return cast(dict, state.get("_rt_join", {}))
+
+        def _rt_join_set(payload: dict) -> None:
+            # Stored in workflow state so checkpoints can resume joins.
+            state["_rt_join"] = payload
+
+        def _rt_join_snapshot(pending: list[tuple[str, int, str]]) -> dict:
+            # Persist inflight as pending-on-resume by including them in pending list upstream.
+            return {
+                "join_node_ids": join_node_ids,
+                "join_outstanding": list(_join_outstanding),
+                "join_waiters": {jid: list(masks) for jid, masks in _join_waiters.items()},
+                "pending": [(nid, int(mask), str(token_id)) for nid, mask, token_id in pending],
+            }
+
+        def _rt_join_restore() -> list[tuple[str, int]] | None:
+            payload = _rt_join_get()
+            if not payload:
+                return None
+            if payload.get("join_node_ids") != join_node_ids:
+                # Design changed; discard stale join runtime.
+                return None
+            jo = payload.get("join_outstanding")
+            jw = payload.get("join_waiters")
+            pend = payload.get("pending")
+            if not isinstance(jo, list) or not isinstance(jw, dict) or not isinstance(pend, list):
+                return None
+            # restore counters/waiters
+            for i in range(min(len(_join_outstanding), len(jo))):
+                try:
+                    _join_outstanding[i] = int(jo[i])
+                except Exception:
+                    _join_outstanding[i] = 0
+            for jid in join_node_ids:
+                masks = jw.get(jid, [])
+                if isinstance(masks, list):
+                    _join_waiters[jid] = [int(x) for x in masks]
+            # pending tokens
+            out: list[tuple[str, int]] = []
+            for item in pend:
+                if isinstance(item, (list, tuple)) and len(item) == 2:
+                    out.append((str(item[0]), int(item[1])))
+            return out
+            
         # start, nodes, adj = load_workflow_design(workflow_engine=self.workflow_engine, workflow_id=workflow_id)
 
         state: WorkflowState = initial_state
@@ -219,11 +437,35 @@ class WorkflowRuntime:
             status="running",
         )
         state_mutex_lock: threading.Lock = threading.Lock()
-        scheduled_q: queue.Queue[str] = queue.Queue()
-        scheduled_q.put(start.safe_get_id())
-        done_q: queue.Queue[Tuple[str, RunResult, int, str]] = queue.Queue()  # (node_id, result, duration_ms, status)
+        scheduled_q: queue.Queue[Tuple[str, int, str]] = queue.Queue()
+        pending_tokens: set[tuple[str, int, str]] = set()
+        inflight_tokens: set[tuple[str, int, str]] = set()
 
-        def worker(node_id: str, state, step_seq: int) -> None:
+        def _persist_rt_join_runtime() -> None:
+            # Persist both pending + inflight as pending-on-resume (idempotent).
+            combined = sorted(pending_tokens.union(inflight_tokens))
+            _rt_join_set(_rt_join_snapshot(combined))
+        start_id = start.safe_get_id()
+
+        # Resume-safe join runtime: if a checkpoint restored pending tokens + join counters,
+        # seed the scheduler from that payload. Otherwise start from the workflow start node.
+        restored = _rt_join_restore()
+        if restored:
+            for nid, mask in restored:
+                t = (str(nid), int(mask), str(uuid.uuid4()))
+                pending_tokens.add(t)
+                scheduled_q.put(t)
+            _persist_rt_join_runtime()
+        else:
+            start_mask = int(_may_reach_join.get(start_id, 0))
+            _inc(start_mask)
+            t = (str(start_id), int(start_mask), str(uuid.uuid4()))
+            pending_tokens.add(t)
+            scheduled_q.put(t)
+            _persist_rt_join_runtime()
+        done_q: queue.Queue[Tuple[str, RunResult, int, str, str, int]] = queue.Queue()  # (node_id, result, duration_ms, token_id, status, mask)
+
+        def worker(node_id: str, state, token_id: str, step_seq: int, mask: int) -> None:
             wn: WorkflowNode
             wn = nodes[node_id]
             op = nodes[node_id].op
@@ -249,31 +491,75 @@ class WorkflowRuntime:
             except queue.Full as _e:
                 raise
             t1 = _now_ms()
-            done_q.put((node_id, res, max(0, t1 - t0), status))
+            done_q.put((node_id, res, max(0, t1 - t0), token_id, status, mask))
 
-        inflight: Dict[str, Any] = {}
+        inflight: Dict[tuple[str, int, str], Any] = {}
         last_exec_node = wf_run_root_node
         with ThreadPoolExecutor(max_workers=self.max_workers) as pool:
             while True:
-                # schedule while capacity
-                while len(inflight) < self.max_workers:
-                    try:
-                        nid = scheduled_q.get_nowait()
-                    except queue.Empty:
-                        break
-                    inflight[nid] = pool.submit(worker, nid, state, step_seq)
-
                 if not inflight and scheduled_q.empty():
                     # done
                     self._update_workflow_run_status(conversation_id, run_id, "done")
-                    return state, run_id
+                    return state, run_id     
+                # schedule while capacity
+                while len(inflight) < self.max_workers:
+                    try:
+                        nid, mask, token_id = scheduled_q.get_nowait()
+                        pending_tokens.discard((str(nid), int(mask), str(token_id)))
+                        _persist_rt_join_runtime()
+                    except queue.Empty:
+                        break
 
-                node_id, run_result, dur_ms, status = done_q.get()
+                    # If this is a join/barrier node, it doesn't execute immediately.
+                    if nid in _join_waiters:
+                        join_bit = _bit_for_join(nid)
+                        if mask & join_bit:
+                            # token reached the join -> no longer "before" this join
+                            _dec(join_bit)
+                            mask = _mask_without_join(mask, nid)
+
+                        _join_waiters[nid].append(mask)
+                        _persist_rt_join_runtime()
+
+                        # Release join when no more tokens are outstanding BEFORE it.
+                        # We merge all waiting tokens into ONE continuation token.
+                        join_idx = _join_pos.get(nid)
+                        if join_idx is not None and _join_outstanding[join_idx] == 0:
+                            wait_masks = _join_waiters[nid]
+                            _join_waiters[nid] = []
+
+                            # remove all waiter contributions (they will be merged)
+                            for wm in wait_masks:
+                                _dec(wm)
+
+                            merged_mask = 0
+                            if wait_masks:
+                                merged_mask = wait_masks[0]
+                                for wm in wait_masks[1:]:
+                                    merged_mask &= wm
+
+                            # add merged token contribution
+                            _inc(merged_mask)
+
+                            # Push a synthetic completion for the join node (noop op).
+                            _persist_rt_join_runtime()
+                            done_q.put((nid, RunSuccess(conversation_node_id=None, state_update=[]), 0, token_id, "ok", merged_mask))
+                        continue
+
+                    inflight_tokens.add((str(nid), int(mask), str(token_id)))
+                    _persist_rt_join_runtime()
+                    inflight[(nid, mask, str(token_id))] = pool.submit(worker, nid, state, token_id, step_seq, mask)
+
+
+
+                node_id, run_result, dur_ms, token_id, status, mask = done_q.get()
                 run_state_lock: Lock = self.state_lock[str(run_id)]
                 with run_state_lock:
                     self.apply_state_update(mute_state=state, state_update = run_result.state_update)
                     
-                inflight.pop(node_id, None)
+                inflight.pop((node_id, mask, str(token_id)), None)
+                inflight_tokens.discard((str(node_id), int(mask), str(token_id)))
+                _persist_rt_join_runtime()
 
                 wn = nodes[node_id]
 
@@ -311,12 +597,44 @@ class WorkflowRuntime:
                 
                 # route
                 if wn.terminal or len(adj.get(node_id, [])) == 0:
+                    # token ends here -> it will never reach any remaining joins
+                    _dec(mask)
+                    _persist_rt_join_runtime()
                     continue
 
                 edges = adj.get(node_id, [])
                 next_nodes = self._route_next(edges, state, run_result, wn.fanout)
+
+                if not next_nodes:
+                    _dec(mask)
+                    _persist_rt_join_runtime()
+                    continue
+
+                # continuation token
+                first = True
                 for nxt in next_nodes:
-                    scheduled_q.put(nxt)
+                    nxt = str(nxt)
+                    nxt_mask = int(_may_reach_join.get(nxt, 0))
+                    t = (str(nxt), int(nxt_mask), token_id)
+                    if first:
+                        leaving = mask & ~nxt_mask
+                        if leaving:
+                            _dec(leaving)
+                            _persist_rt_join_runtime()
+                        
+                        pending_tokens.add(t)
+                        scheduled_q.put(t)
+                        _persist_rt_join_runtime()
+                        first = False
+                    else:
+                        # fanout creates a new token
+                        _inc(nxt_mask)
+                        
+                        pending_tokens.add(t)
+                        scheduled_q.put(t)
+                        _persist_rt_join_runtime()
+                        
+                                   
         self.state_lock.pop(run_id)
 
     def _route_next(

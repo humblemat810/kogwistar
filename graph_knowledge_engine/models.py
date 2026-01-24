@@ -1296,6 +1296,7 @@ class WorkflowNodeMetadata(BaseModel):
     wf_start: bool = False
     wf_terminal: bool = False
     wf_fanout: bool = False
+    wf_join: bool = False  # barrier/join node
 
     model_config = ConfigDict(extra="allow")
 
