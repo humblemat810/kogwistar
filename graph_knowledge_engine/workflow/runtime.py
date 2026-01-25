@@ -396,7 +396,7 @@ class WorkflowRuntime:
                 "pending": [(nid, int(mask), str(token_id)) for nid, mask, token_id in pending],
             }
 
-        def _rt_join_restore() -> list[tuple[str, int]] | None:
+        def _rt_join_restore() -> list[tuple[str, int, str]] | None:
             payload = _rt_join_get()
             if not payload:
                 return None
@@ -419,10 +419,13 @@ class WorkflowRuntime:
                 if isinstance(masks, list):
                     _join_waiters[jid] = [int(x) for x in masks]
             # pending tokens
-            out: list[tuple[str, int]] = []
+            out: list[tuple[str, int, str]] = []
             for item in pend:
-                if isinstance(item, (list, tuple)) and len(item) == 2:
-                    out.append((str(item[0]), int(item[1])))
+                if isinstance(item, (list, tuple)) and len(item) == 3:
+                    out.append((str(item[0]), int(item[1]), str(item[2])))
+                elif isinstance(item, (list, tuple)) and len(item) == 2:
+                    # backward-compat: older snapshots without token_id
+                    out.append((str(item[0]), int(item[1]), uuid.uuid4().hex))
             return out
             
         # start, nodes, adj = load_workflow_design(workflow_engine=self.workflow_engine, workflow_id=workflow_id)
@@ -453,15 +456,15 @@ class WorkflowRuntime:
         # seed the scheduler from that payload. Otherwise start from the workflow start node.
         restored = _rt_join_restore()
         if restored:
-            for nid, mask in restored:
-                t = (str(nid), int(mask), str(uuid.uuid4()))
+            for nid, mask, token_id in restored:
+                t = (str(nid), int(mask), str(token_id))
                 pending_tokens.add(t)
                 scheduled_q.put(t)
             _persist_rt_join_runtime()
         else:
             start_mask = int(_may_reach_join.get(start_id, 0))
             _inc(start_mask)
-            t = (str(start_id), int(start_mask), str(uuid.uuid4()))
+            t = (str(start_id), int(start_mask), uuid.uuid4().hex)
             pending_tokens.add(t)
             scheduled_q.put(t)
             _persist_rt_join_runtime()
@@ -545,8 +548,8 @@ class WorkflowRuntime:
 
                             # Push a synthetic completion for the join node (noop op).
                             _persist_rt_join_runtime()
-                            done_q.put((nid, RunSuccess(conversation_node_id=None, state_update=[]), 0, token_id, "ok", merged_mask))
-                        continue
+                        #     done_q.put((nid, RunSuccess(conversation_node_id=None, state_update=[]), 0, token_id, "ok", merged_mask))
+                        # continue
 
                     inflight_tokens.add((str(nid), int(mask), str(token_id)))
                     _persist_rt_join_runtime()
@@ -617,26 +620,31 @@ class WorkflowRuntime:
                 for nxt in next_nodes:
                     nxt = str(nxt)
                     nxt_mask = int(_may_reach_join.get(nxt, 0))
-                    t = (str(nxt), int(nxt_mask), token_id)
+
                     if first:
+                        # continuation keeps token_id
+                        t = (str(nxt), int(nxt_mask), str(token_id))
+
                         leaving = mask & ~nxt_mask
                         if leaving:
                             _dec(leaving)
                             _persist_rt_join_runtime()
-                        
+
                         pending_tokens.add(t)
                         scheduled_q.put(t)
                         _persist_rt_join_runtime()
                         first = False
                     else:
-                        # fanout creates a new token
+                        # fanout child gets a NEW token_id
+                        child_token_id = uuid.uuid4().hex
+                        t = (str(nxt), int(nxt_mask), child_token_id)
+
+                        # fanout creates a new token (new outstanding obligations)
                         _inc(nxt_mask)
-                        
+
                         pending_tokens.add(t)
                         scheduled_q.put(t)
                         _persist_rt_join_runtime()
-                        
-                                   
         self.state_lock.pop(run_id)
 
     def _route_next(
