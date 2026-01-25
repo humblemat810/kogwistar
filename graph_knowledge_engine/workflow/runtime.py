@@ -141,6 +141,7 @@ def _compute_may_reach_join_bitsets(
 
 def _iter_bits(mask: int):
     """Yield bit positions (0-based) for an int bitset."""
+    # 2's complement tricks to get the first set least significant bit in binary representation
     while mask:
         lsb = mask & -mask
         yield (lsb.bit_length() - 1)
@@ -163,7 +164,8 @@ from graph_knowledge_engine.models import WorkflowStepExecNode, Grounding, Span
     
 
 class RunSuccess(BaseModel):
-    conversation_node_id: str|None
+    conversation_node_id: str|None  # node id of the 'entry point' of the node cluster created in a resolver step, 
+    #step can create multiple node edges but at least should expose a node to connect to the main node net
     state_update: list[StateUpdate]
     next_step_names: list[str] = []  # empty will by default fan out all
     status: Literal["success"] = "success"
@@ -497,7 +499,7 @@ class WorkflowRuntime:
         last_exec_node = wf_run_root_node
         with ThreadPoolExecutor(max_workers=self.max_workers) as pool:
             while True:
-                if not inflight and scheduled_q.empty():
+                if not inflight and scheduled_q.empty() and done_q.empty():
                     # done
                     self._update_workflow_run_status(conversation_id, run_id, "done")
                     return state, run_id     
