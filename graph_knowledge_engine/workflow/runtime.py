@@ -347,10 +347,12 @@ class WorkflowRuntime:
         # ----------------------------
         node_ids_list = list(nodes.keys())
         join_node_ids: list[str] = []
+        _join_is_merge = {}
         for _nid, _wn in nodes.items():
             _md = getattr(_wn, "metadata", None) or {}
             if bool(_md.get("wf_join", False)) or str(getattr(_wn, "op", "")) == "join":
                 join_node_ids.append(str(_nid))
+                _join_is_merge[str(_nid)] = bool(_md.get('wf_join_is_merge') if _md.get('wf_join_is_merge') is not None else True)
         _may_reach_join = (
             _compute_may_reach_join_bitsets(node_ids=node_ids_list, adj=adj, join_ids=join_node_ids)
             if join_node_ids
@@ -359,7 +361,7 @@ class WorkflowRuntime:
         _join_pos = {jid: i for i, jid in enumerate(join_node_ids)}
         _join_outstanding: list[int] = [0 for _ in join_node_ids]  # tokens BEFORE each join
         _join_waiters: dict[str, list[int]] = {jid: [] for jid in join_node_ids}  # store per-token mask at join
-
+        
         def _inc(mask: int) -> None:
             for bi in _iter_bits(mask):
                 _join_outstanding[bi] += 1
@@ -387,16 +389,16 @@ class WorkflowRuntime:
             # Stored in workflow state so checkpoints can resume joins.
             state["_rt_join"] = payload
 
-        def _rt_join_snapshot(pending: list[tuple[str, int, str]]) -> dict:
+        def _rt_join_snapshot(pending: list[tuple[str, int, str, str | None]]) -> dict:
             # Persist inflight as pending-on-resume by including them in pending list upstream.
             return {
                 "join_node_ids": join_node_ids,
                 "join_outstanding": list(_join_outstanding),
                 "join_waiters": {jid: list(masks) for jid, masks in _join_waiters.items()},
-                "pending": [(nid, int(mask), str(token_id)) for nid, mask, token_id in pending],
+                "pending": [(nid, int(mask), str(token_id), (str(parent_token_id) if parent_token_id is not None else None)) for nid, mask, token_id, parent_token_id in pending],
             }
 
-        def _rt_join_restore() -> list[tuple[str, int, str]] | None:
+        def _rt_join_restore() -> list[tuple[str, int, str, str | None]] | None:
             payload = _rt_join_get()
             if not payload:
                 return None
@@ -419,13 +421,16 @@ class WorkflowRuntime:
                 if isinstance(masks, list):
                     _join_waiters[jid] = [int(x) for x in masks]
             # pending tokens
-            out: list[tuple[str, int, str]] = []
+            out: list[tuple[str, int, str, str | None]] = []
             for item in pend:
-                if isinstance(item, (list, tuple)) and len(item) == 3:
-                    out.append((str(item[0]), int(item[1]), str(item[2])))
+                if isinstance(item, (list, tuple)) and len(item) == 4:
+                    out.append((str(item[0]), int(item[1]), str(item[2]), (str(item[3]) if item[3] is not None else None)))
+                elif isinstance(item, (list, tuple)) and len(item) == 3:
+                    # backward-compat: snapshots without parent_token_id
+                    out.append((str(item[0]), int(item[1]), str(item[2]), None))
                 elif isinstance(item, (list, tuple)) and len(item) == 2:
-                    # backward-compat: older snapshots without token_id
-                    out.append((str(item[0]), int(item[1]), uuid.uuid4().hex))
+                    # backward-compat: older snapshots without token_id/parent_token_id
+                    out.append((str(item[0]), int(item[1]), uuid.uuid4().hex, None))
             return out
             
         # start, nodes, adj = load_workflow_design(workflow_engine=self.workflow_engine, workflow_id=workflow_id)
@@ -442,10 +447,12 @@ class WorkflowRuntime:
             status="running",
         )
         state_mutex_lock: threading.Lock = threading.Lock()
-        scheduled_q: queue.Queue[Tuple[str, int, str]] = queue.Queue()
-        pending_tokens: set[tuple[str, int, str]] = set()
-        inflight_tokens: set[tuple[str, int, str]] = set()
-
+        scheduled_q: queue.Queue[Tuple[str, int, str, str | None]] = queue.Queue()  # (node_id, mask, token_id, parent_token_id)
+        pending_tokens: set[tuple[str, int, str, str | None]] = set()
+        inflight_tokens: set[tuple[str, int, str, str | None]] = set()
+        done_q: queue.Queue[Tuple[str, RunResult, int, str, str | None, str, int]] = queue.Queue()  # (node_id, result, duration_ms, token_id, parent_token_id, status, mask)
+        
+        graveyard: queue.Queue[Tuple[str, RunResult, int, str, str | None, str, int]] = queue.Queue()  
         def _persist_rt_join_runtime() -> None:
             # Persist both pending + inflight as pending-on-resume (idempotent).
             combined = sorted(pending_tokens.union(inflight_tokens))
@@ -456,21 +463,20 @@ class WorkflowRuntime:
         # seed the scheduler from that payload. Otherwise start from the workflow start node.
         restored = _rt_join_restore()
         if restored:
-            for nid, mask, token_id in restored:
-                t = (str(nid), int(mask), str(token_id))
+            for nid, mask, token_id, parent_token_id in restored:
+                t = (str(nid), int(mask), str(token_id), parent_token_id)
                 pending_tokens.add(t)
                 scheduled_q.put(t)
             _persist_rt_join_runtime()
         else:
             start_mask = int(_may_reach_join.get(start_id, 0))
             _inc(start_mask)
-            t = (str(start_id), int(start_mask), uuid.uuid4().hex)
+            t = (str(start_id), int(start_mask), uuid.uuid4().hex, None)
             pending_tokens.add(t)
             scheduled_q.put(t)
             _persist_rt_join_runtime()
-        done_q: queue.Queue[Tuple[str, RunResult, int, str, str, int]] = queue.Queue()  # (node_id, result, duration_ms, token_id, status, mask)
 
-        def worker(node_id: str, state, token_id: str, step_seq: int, mask: int) -> None:
+        def worker(node_id: str, state, token_id: str, parent_token_id: str | None, step_seq: int, mask: int) -> None:
             wn: WorkflowNode
             wn = nodes[node_id]
             op = nodes[node_id].op
@@ -496,7 +502,7 @@ class WorkflowRuntime:
             except queue.Full as _e:
                 raise
             t1 = _now_ms()
-            done_q.put((node_id, res, max(0, t1 - t0), token_id, status, mask))
+            done_q.put((node_id, res, max(0, t1 - t0), token_id, parent_token_id, status, mask))
 
         inflight: Dict[tuple[str, int, str], Any] = {}
         last_exec_node = wf_run_root_node
@@ -509,8 +515,8 @@ class WorkflowRuntime:
                 # schedule while capacity
                 while len(inflight) < self.max_workers:
                     try:
-                        nid, mask, token_id = scheduled_q.get_nowait()
-                        pending_tokens.discard((str(nid), int(mask), str(token_id)))
+                        nid, mask, token_id, parent_token_id = scheduled_q.get_nowait()
+                        pending_tokens.discard((str(nid), int(mask), str(token_id), parent_token_id))
                         _persist_rt_join_runtime()
                     except queue.Empty:
                         break
@@ -529,41 +535,49 @@ class WorkflowRuntime:
                         # Release join when no more tokens are outstanding BEFORE it.
                         # We merge all waiting tokens into ONE continuation token.
                         join_idx = _join_pos.get(nid)
-                        if join_idx is not None and _join_outstanding[join_idx] == 0:
-                            wait_masks = _join_waiters[nid]
-                            _join_waiters[nid] = []
+                        if _join_is_merge[nid]:
+                            if join_idx is not None and _join_outstanding[join_idx] == 0:
+                                
+                                wait_masks = _join_waiters[nid]
+                                _join_waiters[nid] = []
 
-                            # remove all waiter contributions (they will be merged)
-                            for wm in wait_masks:
-                                _dec(wm)
+                                # remove all waiter contributions (they will be merged)
+                                for wm in wait_masks:
+                                    _dec(wm)
 
-                            merged_mask = 0
-                            if wait_masks:
-                                merged_mask = wait_masks[0]
-                                for wm in wait_masks[1:]:
-                                    merged_mask &= wm
+                                merged_mask = 0
+                                if wait_masks:
+                                    merged_mask = wait_masks[0]
+                                    for wm in wait_masks[1:]:
+                                        merged_mask &= wm
 
-                            # add merged token contribution
-                            _inc(merged_mask)
+                                # add merged token contribution
+                                _inc(merged_mask)
 
-                            # Push a synthetic completion for the join node (noop op).
-                            _persist_rt_join_runtime()
-                        #     done_q.put((nid, RunSuccess(conversation_node_id=None, state_update=[]), 0, token_id, "ok", merged_mask))
-                        # continue
+                                # Push a synthetic completion for the join node (noop op).
+                                _persist_rt_join_runtime()
+                                # join_token_id = uuid.uuid4().hex
+                                # done_q.put((nid, RunSuccess(conversation_node_id=None, state_update=[]), 0, join_token_id, None, "ok", merged_mask))
+                                # continue
+                            else:
+                                # merge into 1, if not dec to 0, not the last to join, just continue
+                                continue
+                        
 
-                    inflight_tokens.add((str(nid), int(mask), str(token_id)))
+                    inflight_tokens.add((str(nid), int(mask), str(token_id), parent_token_id))
                     _persist_rt_join_runtime()
-                    inflight[(nid, mask, str(token_id))] = pool.submit(worker, nid, state, token_id, step_seq, mask)
+                    inflight[(nid, mask, str(token_id))] = pool.submit(worker, nid, state, token_id, parent_token_id, step_seq, mask)
 
 
-
-                node_id, run_result, dur_ms, token_id, status, mask = done_q.get()
+                done_task = done_q.get()
+                node_id, run_result, dur_ms, token_id, parent_token_id, status, mask = done_task
+                graveyard.put_nowait(done_task)
                 run_state_lock: Lock = self.state_lock[str(run_id)]
                 with run_state_lock:
                     self.apply_state_update(mute_state=state, state_update = run_result.state_update)
                     
                 inflight.pop((node_id, mask, str(token_id)), None)
-                inflight_tokens.discard((str(node_id), int(mask), str(token_id)))
+                inflight_tokens.discard((str(node_id), int(mask), str(token_id), parent_token_id))
                 _persist_rt_join_runtime()
 
                 wn = nodes[node_id]
@@ -623,7 +637,7 @@ class WorkflowRuntime:
 
                     if first:
                         # continuation keeps token_id
-                        t = (str(nxt), int(nxt_mask), str(token_id))
+                        t = (str(nxt), int(nxt_mask), str(token_id), parent_token_id)
 
                         leaving = mask & ~nxt_mask
                         if leaving:
@@ -637,7 +651,12 @@ class WorkflowRuntime:
                     else:
                         # fanout child gets a NEW token_id
                         child_token_id = uuid.uuid4().hex
-                        t = (str(nxt), int(nxt_mask), child_token_id)
+                        t = (str(nxt), int(nxt_mask), child_token_id, str(token_id))
+
+                        try:
+                            mq.put_nowait({"type": "token.spawn", "parent_token_id": str(token_id), "child_token_id": child_token_id, "from_node_id": node_id, "to_node_id": str(nxt)})
+                        except queue.Full:
+                            pass
 
                         # fanout creates a new token (new outstanding obligations)
                         _inc(nxt_mask)
