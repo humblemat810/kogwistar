@@ -90,7 +90,7 @@ if TYPE_CHECKING:
     Predicate = Callable[[WorkflowEdgeInfo, WorkflowState, Result], bool]
     from .runtime import RunResult
 class BasePredicate():
-    def __call__(cls, e:WorkflowEdgeInfo,  state: WorkflowState, result: RunResult):
+    def __call__(self, e:WorkflowEdgeInfo,  state: WorkflowState, result: RunResult):
         if result.next_step_names:
             return e.name in result.next_step_names
         else:
