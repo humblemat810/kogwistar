@@ -373,7 +373,11 @@ def to_langgraph(
                 possible.add(info.dst)
 
             path_map = {d: d for d in sorted(possible)}
-            path_map[END] = END  # allow termination
+
+            # Only include END as an explicit transition if this node can really terminate.
+            # Otherwise the diagram will imply "everything can end here".
+            if bool(getattr(node_obj, "terminal", False)) or len(edges) == 0:
+                path_map[END] = END
 
             class _LastResultProxy:
                 def __init__(self, next_step_names: list[str]):
@@ -392,8 +396,11 @@ def to_langgraph(
                 )
 
                 terminal = bool(getattr(node_obj, "terminal", False)) or len(edges) == 0
-                if terminal or not next_nodes:
+                if terminal:
                     return END
+                if not next_nodes:
+                    # No matching edge, and not terminal: this is a design/config error.
+                    raise RuntimeError(f"No eligible outgoing edge from {nid!r} (not terminal)")
                 # Exclusive choice: pick the first (route_next already respects priority/default)
                 return next_nodes[0]
 

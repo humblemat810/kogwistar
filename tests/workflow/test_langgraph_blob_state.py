@@ -160,7 +160,7 @@ def test_blob_state_routes_predicate_and_default_and_hides_apply_node():
 
     # sanity: no apply node in graph structure
     g = compiled.get_graph()
-    node_ids = {n.id for n in g.nodes}
+    node_ids = set(g.nodes)
     assert "__apply__" not in node_ids
 
     out = compiled.invoke({"__blob__": {}})

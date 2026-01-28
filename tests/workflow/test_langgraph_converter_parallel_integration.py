@@ -157,5 +157,5 @@ def test_langgraph_parallel_fanout_merges_updates_end_to_end():
     compiled = to_langgraph(workflow_engine=engine, workflow_id=wid, step_resolver=resolver, predicate_registry={})
     out = compiled.invoke({})
 
-    names = [n for (n, _t) in out.get("events", [])]
+    names = out.get("events", []) or [i[0] for i in (out.get("__blob__") and out["__blob__"].get('events')) or []] or []
     assert "x" in names and "y" in names
