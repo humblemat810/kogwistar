@@ -1,27 +1,11 @@
 from __future__ import annotations
 
-"""Convert a GraphKnowledgeEngine-style workflow graph into a LangGraph StateGraph.
-
-This module supports two conversion modes:
-
-1) blob_state (default)
-   - No singleton '__apply__' node.
-   - The whole workflow state lives in a single dict field (default: '__blob__').
-   - Step nodes emit *ops* encoded in your existing DSL: ('u'|'a'|'e', {k: v}).
-   - A reducer on '__blob__' applies those ops.
-   - Fanout introduces stable token ids so reducer order is deterministic.
-
-2) apply_node (legacy)
-   - Keeps '__apply__' node and '__updates__' accumulator.
-"""
-
 from dataclasses import dataclass
-from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple, Annotated, Literal, cast
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Annotated, Mapping, Literal, cast
 from typing_extensions import TypedDict
 
-from langgraph.graph import END, START, StateGraph
+from langgraph.graph import StateGraph, START, END
 from langgraph.types import Command, Send
-from langchain_core.runnables import RunnableConfig
 
 from graph_knowledge_engine.workflow import design as wf_design
 from graph_knowledge_engine.workflow.contract import BasePredicate, WorkflowEdgeInfo
@@ -32,17 +16,24 @@ StateUpdate = Tuple[str, Dict[str, Any]]  # ('u'|'a'|'e', {k: v})
 
 @dataclass(frozen=True)
 class LGConverterOptions:
-    """Options for workflow -> LangGraph conversion."""
+    """Options for workflow -> LangGraph conversion.
+
+    mode:
+      - 'blob_state': keep the whole workflow state inside a single dict field '__blob__'.
+        Step nodes emit *deltas* encoded as state_update DSL ('u'/'a'/'e'), and the
+        reducer for '__blob__' applies those deltas (so no '__apply__' node exists).
+
+      - 'apply_node': legacy mode that accumulates '__updates__' and uses a singleton
+        '__apply__' node to apply them.
+    """
 
     mode: Literal["blob_state", "apply_node"] = "blob_state"
 
-    # blob_state
+    # blob_state mode
     blob_key: str = "__blob__"
-    blob_ops_key: str = "__ops__"
-    token_id_key: str = "__token_id__"
-    token_step_key: str = "__token_step__"
+    blob_ops_key: str = "__ops__"  # reserved key inside blob update wrapper
 
-    # apply_node (legacy)
+    # apply_node mode (legacy)
     updates_key: str = "__updates__"
     apply_node_id: str = "__apply__"
 
@@ -88,7 +79,6 @@ def _resolve_start_nodes_and_adj(
     workflow_engine: Any,
     workflow_id: str,
 ) -> tuple[Any, Dict[str, Any], Dict[str, List[Any]]]:
-    """Use existing design loader (GraphKnowledgeEngine-like API)."""
     return wf_design.load_workflow_design(workflow_engine=workflow_engine, workflow_id=workflow_id)
 
 
@@ -123,7 +113,7 @@ def _route_next(
     if matched and (fanout or any(WorkflowEdgeInfo.from_workflow_edge(ed).multiplicity == "many" for ed in edges)):
         return matched
 
-    # 2) node-decide via BasePredicate (result.next_step_names)
+    # 2) node-decide via BasePredicate (uses result.next_step_names)
     if not matched:
         node_decider = BasePredicate()
         for e in edges:
@@ -154,51 +144,22 @@ def _route_next(
 # blob_state mode
 # ----------------------------
 
-
-BlobOp = Tuple[str, int, int, str, Dict[str, Any]]  # (token_id, token_step, local_idx, kind, payload)
-
-
 def _blob_reducer(left: Optional[dict], right: Optional[dict]) -> dict:
     """Reducer for '__blob__' field.
 
-    Nodes emit updates as: {'__ops__': [ ... ]}
+    Nodes emit updates as: {'__ops__': [('u'|'a'|'e', {...}), ...]}
+    The reducer applies ops to the accumulated blob dict.
 
-    Supported op formats inside '__ops__':
-      - (token_id, token_step, local_idx, kind, payload)  # deterministic ordering
-      - (kind, payload)                                   # legacy
-
-    Ordering:
-      - When tagged ops are present, we sort ops by (token_id, token_step, local_idx)
-        before applying. This makes reducer application deterministic even with parallel fanout.
-      - Legacy ops preserve arrival order (best effort).
+    If 'right' doesn't contain '__ops__', it is treated as a plain dict overwrite (last-write-wins).
     """
     base: dict = dict(left or {})
     if not right:
         return base
-
     if isinstance(right, dict) and "__ops__" in right:
-        ops_raw = right.get("__ops__") or []
-        tagged: List[BlobOp] = []
-        legacy: List[StateUpdate] = []
-
-        for item in ops_raw:
-            if isinstance(item, tuple) and len(item) == 5:
-                token_id, token_step, local_idx, kind, payload = item
-                if isinstance(token_id, str) and isinstance(token_step, int) and isinstance(local_idx, int) and kind in ("u", "a", "e") and isinstance(payload, dict):
-                    tagged.append((token_id, token_step, local_idx, kind, payload))
-                    continue
-            if isinstance(item, tuple) and len(item) == 2:
-                kind, payload = item
-                if kind in ("u", "a", "e") and isinstance(payload, dict):
-                    legacy.append((cast(str, kind), payload))
-
-        if tagged:
-            tagged.sort(key=lambda t: (t[0], t[1], t[2]))
-            _apply_state_update(base, [(k, p) for _, _, _, k, p in tagged])
-        if legacy:
-            _apply_state_update(base, legacy)
+        ops = right.get("__ops__") or []
+        if ops:
+            _apply_state_update(base, cast(Sequence[StateUpdate], ops))
         return base
-
     # fallback: overwrite/merge
     if isinstance(right, dict):
         base.update(right)
@@ -207,14 +168,11 @@ def _blob_reducer(left: Optional[dict], right: Optional[dict]) -> dict:
 
 class LGBlobState(TypedDict, total=False):
     __blob__: Annotated[dict, _blob_reducer]
-    __token_id__: str
-    __token_step__: int
 
 
 # ----------------------------
 # apply_node mode (legacy)
 # ----------------------------
-
 
 class LGApplyState(TypedDict, total=False):
     __updates__: Annotated[List[StateUpdate], _concat_updates]
@@ -232,7 +190,6 @@ def to_langgraph(
     opt = options or LGConverterOptions()
 
     start, nodes, adj = _resolve_start_nodes_and_adj(workflow_engine=workflow_engine, workflow_id=workflow_id)
-
     # Schema for native updates (known keys) -> bucketed DSL ops
     if hasattr(step_resolver, "infer_state_schema_best_effort"):
         # ensures schema contains both explicit + inferred patterns
@@ -243,6 +200,7 @@ def to_langgraph(
     schema = step_resolver.describe_state() if hasattr(step_resolver, "describe_state") else {}
 
     if opt.mode == "apply_node":
+        # --- legacy implementation (kept for compatibility) ---
         sg = StateGraph(LGApplyState)
 
         def apply_node(state: LGApplyState) -> Command:
@@ -256,17 +214,17 @@ def to_langgraph(
         sg.add_node(opt.apply_node_id, apply_node)
 
         for node_id, node in nodes.items():
-            op = node.metadata.get("wf_op") if hasattr(node, "metadata") else getattr(node, "op", None)
+            op = node.op
             fn = step_resolver.resolve(op) if hasattr(step_resolver, "resolve") else step_resolver(op)
 
             def make_step(nid: str, node_obj: Any, fn_):
-                def step_node(state: LGApplyState, config: RunnableConfig | None = None) -> Command:
+                def step_node(state: LGApplyState) -> Command:
                     out = fn_(state)
+                    updates: List[StateUpdate]
                     if isinstance(out, dict):
                         updates = _delta_to_updates(out, schema)
-                        class _R:
-                            def __init__(self):
-                                self.next_step_names = []
+                        class _R:  # minimal proxy for BasePredicate
+                            def __init__(self): self.next_step_names = []
                         result_obj = _R()
                     else:
                         upd_native = getattr(out, "update", None) or {}
@@ -278,12 +236,11 @@ def to_langgraph(
                         edges=edges,
                         state=state,
                         last_result=result_obj,
-                        fanout=bool((node_obj.metadata or {}).get("wf_fanout")) if hasattr(node_obj, "metadata") else bool(getattr(node_obj, "fanout", False)),
+                        fanout=bool(getattr(node_obj, "fanout", False)),
                         predicate_registry=predicate_registry,
                     )
 
-                    terminal = bool((node_obj.metadata or {}).get("wf_terminal")) if hasattr(node_obj, "metadata") else bool(getattr(node_obj, "terminal", False))
-                    terminal = terminal or len(edges) == 0
+                    terminal = bool(getattr(node_obj, "terminal", False)) or len(edges) == 0
                     if terminal or not next_nodes:
                         goto = END
                     elif len(next_nodes) == 1:
@@ -311,22 +268,18 @@ def to_langgraph(
     sg = StateGraph(LGBlobState)
 
     for node_id, node in nodes.items():
-        op = node.metadata.get("wf_op") if hasattr(node, "metadata") else getattr(node, "op", None)
+        op = node.op
         fn = step_resolver.resolve(op) if hasattr(step_resolver, "resolve") else step_resolver(op)
 
         def make_step(nid: str, node_obj: Any, fn_):
-            def step_node(state: LGBlobState, config: RunnableConfig | None = None) -> Command:
+            def step_node(state: LGBlobState) -> Command:
                 blob = cast(dict, state.get(opt.blob_key) or {})
-                token_id = cast(str, state.get(opt.token_id_key) or "root")
-                token_step = int(state.get(opt.token_step_key) or 0)
-
                 out = fn_(blob)
 
                 if isinstance(out, dict):
                     updates = _delta_to_updates(out, schema)
                     class _R:
-                        def __init__(self):
-                            self.next_step_names = []
+                        def __init__(self): self.next_step_names = []
                     result_obj = _R()
                 else:
                     upd_native = getattr(out, "update", None) or {}
@@ -338,51 +291,20 @@ def to_langgraph(
                     edges=edges,
                     state=blob,
                     last_result=result_obj,
-                    fanout=bool((node_obj.metadata or {}).get("wf_fanout")) if hasattr(node_obj, "metadata") else bool(getattr(node_obj, "fanout", False)),
+                    fanout=bool(getattr(node_obj, "fanout", False)),
                     predicate_registry=predicate_registry,
                 )
 
-                terminal = bool((node_obj.metadata or {}).get("wf_terminal")) if hasattr(node_obj, "metadata") else bool(getattr(node_obj, "terminal", False))
-                terminal = terminal or len(edges) == 0
-
-                # Tag ops for deterministic reducer ordering
-                tagged_ops: List[BlobOp] = [(token_id, token_step, i, kind, payload) for i, (kind, payload) in enumerate(updates)]
-
+                terminal = bool(getattr(node_obj, "terminal", False)) or len(edges) == 0
                 if terminal or not next_nodes:
                     goto = END
-                    return Command(
-                        goto=goto,
-                        update={
-                            opt.blob_key: {opt.blob_ops_key: tagged_ops},
-                            opt.token_id_key: token_id,
-                            opt.token_step_key: token_step + 1,
-                        },
-                    )
-
-                if len(next_nodes) == 1:
+                elif len(next_nodes) == 1:
                     goto = next_nodes[0]
-                    return Command(
-                        goto=goto,
-                        update={
-                            opt.blob_key: {opt.blob_ops_key: tagged_ops},
-                            opt.token_id_key: token_id,
-                            opt.token_step_key: token_step + 1,
-                        },
-                    )
+                else:
+                    goto = [Send(n, {}) for n in next_nodes]
 
-                # fanout: spawn children with stable token ids
-                sends: List[Send] = []
-                for i, n in enumerate(next_nodes):
-                    child_token = f"{token_id}.{i}"
-                    sends.append(Send(n, {opt.token_id_key: child_token, opt.token_step_key: token_step + 1}))
-                return Command(
-                    goto=sends,
-                    update={
-                        opt.blob_key: {opt.blob_ops_key: tagged_ops},
-                        opt.token_id_key: token_id,
-                        opt.token_step_key: token_step + 1,
-                    },
-                )
+                # emit blob delta as ops for reducer
+                return Command(goto=goto, update={opt.blob_key: {opt.blob_ops_key: updates}})
 
             return step_node
 
@@ -395,8 +317,6 @@ def to_langgraph(
         for e in edges:
             info = WorkflowEdgeInfo.from_workflow_edge(e)
             sg.add_edge(src, info.dst)
-
-    # allow END to appear even if routing ends early
-    sg.add_edge(start.id, END)
+    sg.add_edge(start.id, END)  # allow END to appear even if routing ends early
 
     return sg.compile()
