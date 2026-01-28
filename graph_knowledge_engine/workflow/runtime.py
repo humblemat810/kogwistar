@@ -298,6 +298,7 @@ class WorkflowRuntime:
         self.checkpoint_every_n_steps = max(1, int(checkpoint_every_n_steps))
         self.max_workers = max_workers
         self.state_lock : dict[RunID, Lock] = {} # look up of run specific state lock
+        self.state_schema = (step_resolver.describe_state() if hasattr(step_resolver, 'describe_state') else {})
     def apply_state_update(self, mute_state: WorkflowState, state_update: list[tuple[str, dict[str, Any]]] | list[StateUpdate]):
         # inplace update state
         for update_item in state_update:
@@ -315,6 +316,47 @@ class WorkflowRuntime:
                 for k, v in update_dict.items():
                     mute_state.setdefault(k, []).extend(v)
             
+
+    # ----------------------------
+    # Native update dict support (schema-driven) + fallback to DSL
+    # ----------------------------
+    ReducerMode = Literal["u", "a", "e"]
+    StateSchema = dict[str, ReducerMode]
+
+    def apply_state_delta(
+        self,
+        mute_state: WorkflowState,
+        delta: dict[str, Any] | None,
+        schema: StateSchema | None = None,
+    ) -> list[StateUpdate]:
+        """Apply *known* keys directly to state using schema, return leftovers as DSL updates.
+
+        - schema[k] == 'u': overwrite
+        - schema[k] == 'a': append a single item (value is appended as-is)
+        - schema[k] == 'e': extend a list (value should be an iterable/list)
+
+        Unknown keys are returned as a single ('u', {...}) overwrite update so legacy semantics apply.
+        """
+        if not delta:
+            return []
+        leftovers: dict[str, Any] = {}
+        sch = schema or {}
+        for k, v in delta.items():
+            kk = str(k)
+            mode = sch.get(kk)
+            if mode is None:
+                leftovers[kk] = v
+                continue
+            if mode == "u":
+                mute_state[kk] = v
+            elif mode == "a":
+                mute_state.setdefault(kk, []).append(v)
+            elif mode == "e":
+                mute_state.setdefault(kk, []).extend(v)
+            else:
+                leftovers[kk] = v
+        return [("u", leftovers)] if leftovers else []
+
     def run(
         self,
         *,
@@ -574,7 +616,14 @@ class WorkflowRuntime:
                 graveyard.put_nowait(done_task)
                 run_state_lock: Lock = self.state_lock[str(run_id)]
                 with run_state_lock:
-                    self.apply_state_update(mute_state=state, state_update = run_result.state_update)
+                    # 1) apply native dict updates (schema-driven) + leftovers as DSL
+                    if getattr(run_result, "update", None):
+                        leftovers = self.apply_state_delta(state, run_result.update, getattr(self, "state_schema", {}))
+                        if leftovers:
+                            self.apply_state_update(mute_state=state, state_update=leftovers)
+                    # 2) apply legacy DSL updates
+                    self.apply_state_update(mute_state=state, state_update=run_result.state_update)
+
                     
                 inflight.pop((node_id, mask, str(token_id)), None)
                 inflight_tokens.discard((str(node_id), int(mask), str(token_id), parent_token_id))

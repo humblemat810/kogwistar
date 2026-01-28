@@ -47,6 +47,7 @@ class MappingStepResolver:
     def __init__(self, handlers: Optional[Mapping[str, RawStepFn]] = None, *, default: Optional[RawStepFn] = None) -> None:
         self.handlers = dict(handlers or {})
         self.default = default
+        self._state_schema: dict[str, str] = {}
 
     def register(self, op: str) -> Callable[[RawStepFn], RawStepFn]:
         def _decorator(fn: RawStepFn) -> RawStepFn:
@@ -70,6 +71,18 @@ class MappingStepResolver:
             except Exception as e:
                 return RunFailure(conversation_node_id=ctx.state_view.get('workflow_node_id') , errors=[str(e)])  # match your RunFailure fields
         return _wrapped
+
+    def set_state_schema(self, schema: Mapping[str, str]) -> None:
+        """Set preferred merge mode per state key.
+
+        Values should be one of: 'u' (overwrite), 'a' (append), 'e' (extend).
+        """
+        self._state_schema = dict(schema)
+
+    def describe_state(self) -> dict[str, str]:
+        """Return the state schema for native updates / LangGraph conversion."""
+        return dict(self._state_schema)
+
 
     def __call__(self, op: str) -> Callable[[StepContext], RunResult]:
         return self.resolve(op)
