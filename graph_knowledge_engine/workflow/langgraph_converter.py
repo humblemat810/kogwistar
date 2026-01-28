@@ -190,13 +190,6 @@ def to_langgraph(
     opt = options or LGConverterOptions()
 
     start, nodes, adj = _resolve_start_nodes_and_adj(workflow_engine=workflow_engine, workflow_id=workflow_id)
-    # Schema for native updates (known keys) -> bucketed DSL ops
-    if hasattr(step_resolver, "infer_state_schema_best_effort"):
-        # ensures schema contains both explicit + inferred patterns
-        try:
-            step_resolver.infer_state_schema_best_effort()
-        except Exception:
-            pass
     schema = step_resolver.describe_state() if hasattr(step_resolver, "describe_state") else {}
 
     if opt.mode == "apply_node":
@@ -264,15 +257,86 @@ def to_langgraph(
         sg.add_edge(opt.apply_node_id, END)
         return sg.compile()
 
+    
+    
     # --- blob_state mode (default) ---
     sg = StateGraph(LGBlobState)
+
+    def _make_token_id(parent: str, idx: int) -> str:
+        return f"{parent}.{idx}"
+
+    def _needs_send_payload(nid: str, node_obj: Any) -> bool:
+        # Fanout nodes (or any outgoing edge with multiplicity='many') require Send payloads
+        if bool(getattr(node_obj, "fanout", False)):
+            return True
+        for e in adj.get(nid, []) or []:
+            info = WorkflowEdgeInfo.from_workflow_edge(e)
+            if info.multiplicity == "many":
+                return True
+        return False
 
     for node_id, node in nodes.items():
         op = node.op
         fn = step_resolver.resolve(op) if hasattr(step_resolver, "resolve") else step_resolver(op)
+        use_send = _needs_send_payload(node_id, node)
 
-        def make_step(nid: str, node_obj: Any, fn_):
-            def step_node(state: LGBlobState) -> Command:
+        if use_send:
+            # --- Fanout-capable node: routing via Command(goto=Send/...) to preserve token semantics ---
+            def make_step_send(nid: str, node_obj: Any, fn_):
+                def step_node(state: LGBlobState) -> Command:
+                    blob = cast(dict, state.get(opt.blob_key) or {})
+                    token_id = cast(str, blob.get("__token_id__", "root"))
+
+                    out = fn_(blob)
+
+                    if isinstance(out, dict):
+                        updates = _delta_to_updates(out, schema)
+                        class _R:
+                            def __init__(self): self.next_step_names = []
+                        result_obj = _R()
+                    else:
+                        upd_native = getattr(out, "update", None) or {}
+                        updates = _delta_to_updates(upd_native, schema) + list(getattr(out, "state_update", []) or [])
+                        result_obj = out
+
+                    # persist next_step_names for routing fallbacks (BasePredicate)
+                    ns = list(getattr(result_obj, "next_step_names", []) or [])
+                    if ns:
+                        updates = list(updates) + [("u", {"__next_step_names__": ns})]
+
+                    edges = list(adj.get(nid, []))
+                    next_nodes = _route_next(
+                        edges=edges,
+                        state=blob,
+                        last_result=result_obj,
+                        fanout=bool(getattr(node_obj, "fanout", False)),
+                        predicate_registry=predicate_registry,
+                    )
+
+                    terminal = bool(getattr(node_obj, "terminal", False)) or len(edges) == 0
+                    if terminal or not next_nodes:
+                        goto = END
+                    elif len(next_nodes) == 1:
+                        goto = next_nodes[0]
+                    else:
+                        sends: list[Send] = []
+                        for i, n in enumerate(next_nodes):
+                            child_tid = _make_token_id(token_id, i)
+                            # put token id into blob via ops, not as a top-level key
+                            child_state = {opt.blob_key: {opt.blob_ops_key: [("u", {"__token_id__": child_tid})]}}
+                            sends.append(Send(n, child_state))
+                        goto = sends
+
+                    return Command(goto=goto, update={opt.blob_key: {opt.blob_ops_key: updates}})
+
+                return step_node
+
+            sg.add_node(node_id, make_step_send(node_id, node, fn))
+            continue
+
+        # --- Exclusive-choice node: routing via conditional edges (nice diagram + correct semantics) ---
+        def make_step_update(nid: str, node_obj: Any, fn_):
+            def step_node(state: LGBlobState) -> dict:
                 blob = cast(dict, state.get(opt.blob_key) or {})
                 out = fn_(blob)
 
@@ -286,37 +350,67 @@ def to_langgraph(
                     updates = _delta_to_updates(upd_native, schema) + list(getattr(out, "state_update", []) or [])
                     result_obj = out
 
-                edges = list(adj.get(nid, []))
+                # persist next_step_names for routing fallbacks (BasePredicate)
+                ns = list(getattr(result_obj, "next_step_names", []) or [])
+                if ns:
+                    updates = list(updates) + [("u", {"__next_step_names__": ns})]
+
+                # Emit blob delta as ops for reducer (unknown/dynamic keys supported via DSL ops)
+                return {opt.blob_key: {opt.blob_ops_key: updates}}
+
+            return step_node
+
+        sg.add_node(node_id, make_step_update(node_id, node, fn))
+
+        # Conditional router that recomputes next node(s) using the updated blob state.
+        def make_router(nid: str, node_obj: Any):
+            edges = list(adj.get(nid, []))
+
+            # Precompute possible destinations for the path_map (helps with diagram)
+            possible: set[str] = set()
+            for e in edges:
+                info = WorkflowEdgeInfo.from_workflow_edge(e)
+                possible.add(info.dst)
+
+            path_map = {d: d for d in sorted(possible)}
+            path_map[END] = END  # allow termination
+
+            class _LastResultProxy:
+                def __init__(self, next_step_names: list[str]):
+                    self.next_step_names = next_step_names
+
+            def router(state: LGBlobState):
+                blob = cast(dict, state.get(opt.blob_key) or {})
+                proxy = _LastResultProxy(list(blob.get("__next_step_names__", []) or []))
+
                 next_nodes = _route_next(
                     edges=edges,
                     state=blob,
-                    last_result=result_obj,
-                    fanout=bool(getattr(node_obj, "fanout", False)),
+                    last_result=proxy,
+                    fanout=False,
                     predicate_registry=predicate_registry,
                 )
 
                 terminal = bool(getattr(node_obj, "terminal", False)) or len(edges) == 0
                 if terminal or not next_nodes:
-                    goto = END
-                elif len(next_nodes) == 1:
-                    goto = next_nodes[0]
-                else:
-                    goto = [Send(n, {}) for n in next_nodes]
+                    return END
+                # Exclusive choice: pick the first (route_next already respects priority/default)
+                return next_nodes[0]
 
-                # emit blob delta as ops for reducer
-                return Command(goto=goto, update={opt.blob_key: {opt.blob_ops_key: updates}})
+            return router, path_map
 
-            return step_node
+        router_fn, path_map = make_router(node_id, node)
+        sg.add_conditional_edges(node_id, router_fn, path_map)
 
-        sg.add_node(node_id, make_step(node_id, node, fn))
+    # Blob init: ensure '__blob__' exists and carries a root token_id.
+    # If caller doesn't provide __blob__, start with {'__token_id__': 'root'}.
+    def _init_blob(state: dict) -> dict:
+        blob = dict(state.get(opt.blob_key) or {})
+        blob.setdefault("__token_id__", "root")
+        return {opt.blob_key: blob}
 
-    sg.add_edge(START, start.id)
-
-    # Add static edges only for visualization / compilation sanity.
-    for src, edges in adj.items():
-        for e in edges:
-            info = WorkflowEdgeInfo.from_workflow_edge(e)
-            sg.add_edge(src, info.dst)
-    sg.add_edge(start.id, END)  # allow END to appear even if routing ends early
+    sg.add_node("__init_blob__", _init_blob)
+    sg.add_edge(START, "__init_blob__")
+    sg.add_edge("__init_blob__", start.id)
 
     return sg.compile()

@@ -170,6 +170,6 @@ def test_converter_routes_predicates_and_default():
         predicate_registry={"p_true": PredAlwaysTrue()},
     )
     dump_langgraph_image(compiled, "predicate_default")
-    out = compiled.invoke({})
+    out = compiled.invoke({"__blob__": {}})
     
-    assert out["__blob__"]["path"] in ["a", "b"] or out.get("path") in ["a", "b"]
+    assert out["__blob__"]["path"] == "a"
