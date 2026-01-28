@@ -105,9 +105,11 @@ def _route_next(
     # Explicit routing override (duplicates preserved)
     ns = list(getattr(last_result, "next_step_names", []) or [])
     if ns:
-        return ns
-        # valid = {WorkflowEdgeInfo.from_workflow_edge(e).dst for e in edges}
-        # return [n for n in ns if n in valid]
+        # Explicit routing override (duplicates preserved), but must be filtered
+        # to valid outgoing destinations from this node to avoid leaking stale
+        # next_step_names into unrelated routers.
+        valid = {WorkflowEdgeInfo.from_workflow_edge(e).dst for e in edges}
+        return [n for n in ns if n in valid]
 
     candidates: list[tuple[int, str, str]] = []  # (priority, dst, multiplicity)
 
@@ -387,12 +389,14 @@ def to_langgraph(
                         upd_native = getattr(out, "update", None) or {}
                         updates = _delta_to_updates(upd_native, schema) + list(getattr(out, "state_update", []) or [])
                         result_obj = out
-
+                    # Clear one-shot routing hint each time to avoid leaking to downstream nodes
+                    # updates = [("u", {"__next_step_names__": []})] + list(updates)
+                
                     # persist next_step_names for routing fallbacks (BasePredicate)
                     ns = list(getattr(result_obj, "next_step_names", []) or [])
-                    if ns:
-                        updates = list(updates) + [("u", {"__next_step_names__": ns})]
-
+                    
+                    updates = list(updates) + [("u", {"__next_step_names__": ns})]
+                    
                     md = getattr(node_obj, "metadata", {}) or {}
                     if bool(md.get("wf_join", False)):
                         # Mark join as done and clear arrivals once it actually executes.
@@ -455,8 +459,8 @@ def to_langgraph(
 
                 # persist next_step_names for routing fallbacks (BasePredicate)
                 ns = list(getattr(result_obj, "next_step_names", []) or [])
-                if ns:
-                    updates = list(updates) + [("u", {"__next_step_names__": ns})]
+                # if ns:
+                updates = list(updates) + [("u", {"__next_step_names__": ns})]
 
                 # Emit blob delta as ops for reducer (unknown/dynamic keys supported via DSL ops)
                 return {opt.blob_key: {opt.blob_ops_key: updates}}
