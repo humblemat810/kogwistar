@@ -1,7 +1,8 @@
 
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, List
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Dict, List
 
 import pytest
 
@@ -10,7 +11,8 @@ pytest.importorskip("langgraph")
 from graph_knowledge_engine.workflow.contract import BasePredicate
 from graph_knowledge_engine.workflow.langgraph_converter import to_langgraph
 
-
+if TYPE_CHECKING:
+    from langgraph.graph.state import CompiledStateGraph
 # --- Minimum working fake shapes (MUST match tests/workflow/test_workflow_join.py) ---
 
 @dataclass
@@ -129,7 +131,17 @@ class PredAlwaysTrue(BasePredicate):
     def __call__(self, e, state, result):
         return True
 
+def dump_langgraph_mermaid(compiled: CompiledStateGraph):
+    graph = compiled.get_graph()
+    print(graph.draw_mermaid())
+def dump_langgraph_image(compiled: CompiledStateGraph, name="graph"):
+    graph = compiled.get_graph()
+    png_bytes = graph.draw_png()
 
+    out = Path(f"{name}.png")
+    out.write_bytes(png_bytes)
+    print(f"Wrote {out.resolve()}")
+    
 def test_converter_routes_predicates_and_default():
     wid = "wf_lg_pred"
     nodes = [
@@ -158,6 +170,7 @@ def test_converter_routes_predicates_and_default():
         step_resolver=resolver,
         predicate_registry={"p_true": PredAlwaysTrue()},
     )
-
+    dump_langgraph_image(compiled, "predicate_default")
     out = compiled.invoke({})
+    
     assert out["path"] == "a"

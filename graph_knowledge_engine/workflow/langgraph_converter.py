@@ -134,12 +134,14 @@ def to_langgraph(
 
     sg = StateGraph(LGState)
 
-    def apply_node(state: LGState, config: RunnableConfig | None = None) -> Command:
+    def apply_node(state: LGState, config: RunnableConfig) -> Command:
         pending = state.get(opt.updates_key, []) or []
         if pending:
             _apply_state_update(state, pending)
         state[opt.updates_key] = []
         goto = state.pop("__goto__", None)
+        if goto is None:
+            goto = END
         return Command(goto=goto)
 
     sg.add_node(opt.apply_node_id, apply_node)
@@ -149,7 +151,7 @@ def to_langgraph(
         fn = step_resolver.resolve(op) if hasattr(step_resolver, "resolve") else step_resolver(op)
 
         def make_step(nid: str, node_obj: Any, fn_):
-            def step_node(state: LGState, config: RunnableConfig | None = None) -> Command:
+            def step_node(state: LGState, config: RunnableConfig) -> Command:
                 out = fn_(state)
 
                 updates: List[StateUpdate] = []
