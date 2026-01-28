@@ -28,6 +28,10 @@ The orchestrator should populate `_deps` in the workflow initial_state.
 
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, Dict, Mapping, Optional, Union
+
+# Best-effort self-inspection for state schema inference
+import ast
+import inspect
 if TYPE_CHECKING:
     from tool_runner import ToolRunner
 
@@ -47,6 +51,7 @@ class MappingStepResolver:
     def __init__(self, handlers: Optional[Mapping[str, RawStepFn]] = None, *, default: Optional[RawStepFn] = None) -> None:
         self.handlers = dict(handlers or {})
         self.default = default
+        # Preferred merge mode per state key: 'u' overwrite, 'a' append, 'e' extend
         self._state_schema: dict[str, str] = {}
 
     def register(self, op: str) -> Callable[[RawStepFn], RawStepFn]:
@@ -72,17 +77,169 @@ class MappingStepResolver:
                 return RunFailure(conversation_node_id=ctx.state_view.get('workflow_node_id') , errors=[str(e)])  # match your RunFailure fields
         return _wrapped
 
+    # ------------------------------------------------------------------
+    # State schema (native update support + LangGraph conversion)
+    # ------------------------------------------------------------------
+
+    def set_state_schema(self, schema: Mapping[str, str]) -> None:
+        """Set preferred merge mode per state key.
+
+        Values should be one of:
+          - 'u' overwrite
+          - 'a' append to list
+          - 'e' extend list
+        """
+        self._state_schema = dict(schema)
+
+    def describe_state(self) -> dict[str, str]:
+        """Return the current state schema.
+
+        This is used by WorkflowRuntime (native dict updates) and by the
+        LangGraph converter (delta -> DSL bucketing).
+        """
+        return dict(self._state_schema)
+
+    def infer_state_schema_best_effort(self) -> dict[str, str]:
+        """Best-effort inference of state schema from resolver source.
+
+        We scan registered handler source code (when available) for patterns like:
+
+          state["x"] = ...                  -> 'u'
+          state.setdefault("lst", []).append(...) -> 'a'
+          state.setdefault("lst", []).extend(...) -> 'e'
+
+        This is intentionally conservative:
+        - it only captures *static string literal keys*
+        - it cannot see dynamic keys (f-strings, computed keys, dict unpacking)
+
+        Dynamic/unknown keys should still work via the legacy DSL ('u'/'a'/'e')
+        in RunResult.state_update.
+        """
+
+        schema: dict[str, str] = {}
+
+        def _mark(k: str, mode: str) -> None:
+            # if we see conflicting modes, prefer 'u' as safest default
+            prev = schema.get(k)
+            if prev is None:
+                schema[k] = mode
+            elif prev != mode:
+                schema[k] = "u"
+
+        for _op, fn in (self.handlers or {}).items():
+            try:
+                src = inspect.getsource(fn)
+            except Exception:
+                continue
+            try:
+                tree = ast.parse(src)
+            except Exception:
+                continue
+
+            # Very small pattern matcher; we do not attempt full dataflow.
+            for node in ast.walk(tree):
+                # state["k"] = ...
+                if isinstance(node, ast.Assign):
+                    for tgt in node.targets:
+                        if isinstance(tgt, ast.Subscript) and isinstance(tgt.slice, ast.Constant) and isinstance(tgt.slice.value, str):
+                            _mark(tgt.slice.value, "u")
+
+                # state.setdefault("k", []).append(...)
+                if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+                    attr = node.func.attr
+                    if attr not in ("append", "extend"):
+                        continue
+                    base = node.func.value
+                    if not isinstance(base, ast.Call) or not isinstance(base.func, ast.Attribute):
+                        continue
+                    if base.func.attr != "setdefault":
+                        continue
+                    if not base.args:
+                        continue
+                    key = base.args[0]
+                    if isinstance(key, ast.Constant) and isinstance(key.value, str):
+                        _mark(key.value, "a" if attr == "append" else "e")
+
+        # Don't mutate current schema automatically; return the suggestion.
+        return schema
+
+    # ------------------------------------------------------------------
+    # State schema for native updates + LangGraph conversion
+    # ------------------------------------------------------------------
+
     def set_state_schema(self, schema: Mapping[str, str]) -> None:
         """Set preferred merge mode per state key.
 
         Values should be one of: 'u' (overwrite), 'a' (append), 'e' (extend).
         """
-        self._state_schema = dict(schema)
+        self._state_schema = {str(k): str(v) for k, v in dict(schema).items()}
 
     def describe_state(self) -> dict[str, str]:
         """Return the state schema for native updates / LangGraph conversion."""
         return dict(self._state_schema)
 
+    def infer_state_schema_best_effort(self) -> dict[str, str]:
+        """Best-effort inference of keys touched by resolvers.
+
+        We intentionally keep this conservative:
+        - Any key assigned via state["k"] = ...  -> 'u'
+        - Any key via state.setdefault("k", []).append(...) -> 'a'
+        - Any key via state.setdefault("k", []).extend(...) -> 'e'
+
+        If inference fails, returns the existing schema unchanged.
+        """
+        inferred: dict[str, str] = dict(self._state_schema)
+
+        def _note(k: str, mode: str) -> None:
+            if k and mode in ("u", "a", "e"):
+                # if conflicts, prefer 'u' (safest) over list modes
+                prev = inferred.get(k)
+                if prev is None:
+                    inferred[k] = mode
+                elif prev != mode:
+                    inferred[k] = "u"
+
+        for op, fn in list(self.handlers.items()):
+            try:
+                src = inspect.getsource(fn)
+            except Exception:
+                continue
+            try:
+                tree = ast.parse(src)
+            except Exception:
+                continue
+
+            # We look for patterns, not full correctness.
+            for node in ast.walk(tree):
+                # state["k"] = ...
+                if isinstance(node, ast.Assign):
+                    for tgt in node.targets:
+                        if isinstance(tgt, ast.Subscript) and isinstance(tgt.value, ast.Name) and tgt.value.id == "state":
+                            sl = tgt.slice
+                            if isinstance(sl, ast.Constant) and isinstance(sl.value, str):
+                                _note(sl.value, "u")
+
+                # state.setdefault("k", []).append/extend
+                if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+                    attr = node.func.attr
+                    if attr not in ("append", "extend"):
+                        continue
+                    recv = node.func.value
+                    if not (isinstance(recv, ast.Call) and isinstance(recv.func, ast.Attribute)):
+                        continue
+                    if recv.func.attr != "setdefault":
+                        continue
+                    base = recv.func.value
+                    if not (isinstance(base, ast.Name) and base.id == "state"):
+                        continue
+                    if not recv.args:
+                        continue
+                    k0 = recv.args[0]
+                    if isinstance(k0, ast.Constant) and isinstance(k0.value, str):
+                        _note(k0.value, "a" if attr == "append" else "e")
+
+        self._state_schema = dict(inferred)
+        return dict(self._state_schema)
 
     def __call__(self, op: str) -> Callable[[StepContext], RunResult]:
         return self.resolve(op)

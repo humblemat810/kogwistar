@@ -2,7 +2,7 @@
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List
+from typing import Any, Dict, List
 
 import pytest
 
@@ -11,8 +11,7 @@ pytest.importorskip("langgraph")
 from graph_knowledge_engine.workflow.contract import BasePredicate
 from graph_knowledge_engine.workflow.langgraph_converter import to_langgraph
 
-if TYPE_CHECKING:
-    from langgraph.graph.state import CompiledStateGraph
+from langgraph.graph.state import CompiledStateGraph
 # --- Minimum working fake shapes (MUST match tests/workflow/test_workflow_join.py) ---
 
 @dataclass
