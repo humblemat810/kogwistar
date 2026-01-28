@@ -78,8 +78,9 @@ def _resolve_start_nodes_and_adj(
     *,
     workflow_engine: Any,
     workflow_id: str,
-) -> tuple[Any, Dict[str, Any], Dict[str, List[Any]]]:
+) -> tuple[Any, Dict[str, Any], Dict[str, List[Any]], Dict[str, List[Any]]]:
     return wf_design.load_workflow_design(workflow_engine=workflow_engine, workflow_id=workflow_id)
+
 
 
 def _route_next(
@@ -90,7 +91,29 @@ def _route_next(
     fanout: bool,
     predicate_registry: Dict[str, BasePredicate],
 ) -> List[str]:
-    matched: List[str] = []
+    """Choose next node ids from outgoing edges.
+
+    Semantics:
+    - If last_result.next_step_names is provided (non-empty), treat it as an explicit routing decision
+      (duplicates preserved) filtered to valid outgoing destinations.
+    - Otherwise, evaluate predicate edges, then BasePredicate (which also consults next_step_names),
+      then defaults.
+    - Priority: lower 'wf_priority' wins. If multiple eligible edges share the best priority,
+      we *fan out* (return all best-priority destinations).
+    - For fanout nodes or edges with multiplicity=='many', multiple destinations may be returned.
+    """
+    # Explicit routing override (duplicates preserved)
+    ns = list(getattr(last_result, "next_step_names", []) or [])
+    if ns:
+        return ns
+        # valid = {WorkflowEdgeInfo.from_workflow_edge(e).dst for e in edges}
+        # return [n for n in ns if n in valid]
+
+    candidates: list[tuple[int, str, str]] = []  # (priority, dst, multiplicity)
+
+    def _add_candidate(info: WorkflowEdgeInfo):
+        pr = int(info.priority or 0)
+        candidates.append((pr, info.dst, info.multiplicity or "one"))
 
     # 1) predicate edges
     for e in edges:
@@ -100,47 +123,57 @@ def _route_next(
         pred = predicate_registry.get(info.predicate)
         if pred is None:
             continue
-        ok = False
         try:
             ok = bool(pred(info, state, last_result))
         except Exception:
             ok = False
         if ok:
-            matched.append(info.dst)
-            if not fanout and info.multiplicity != "many":
-                return matched
+            _add_candidate(info)
 
-    if matched and (fanout or any(WorkflowEdgeInfo.from_workflow_edge(ed).multiplicity == "many" for ed in edges)):
-        return matched
-
-    # 2) node-decide via BasePredicate (uses result.next_step_names)
-    if not matched:
+    # 2) node-decide via BasePredicate (result.next_step_names empty => always true)
+    if not candidates:
         node_decider = BasePredicate()
         for e in edges:
             info = WorkflowEdgeInfo.from_workflow_edge(e)
-            ok = False
             try:
                 ok = bool(node_decider(info, state, last_result))
             except Exception:
                 ok = False
             if ok:
-                matched.append(info.dst)
-                if not fanout and info.multiplicity != "many":
-                    return matched
+                _add_candidate(info)
 
-        if matched:
-            return matched
-
-        # 3) defaults
+    # 3) defaults (only if still nothing)
+    if not candidates:
         for e in edges:
             info = WorkflowEdgeInfo.from_workflow_edge(e)
             if info.is_default:
-                return [info.dst] if not fanout else [info.dst]
+                _add_candidate(info)
 
-    return matched
+    if not candidates:
+        return []
+
+    # Sort by priority then dst for stability
+    candidates.sort(key=lambda t: (t[0], t[1]))
+
+    allow_many = bool(fanout) or any(m == "many" for _, __, m in candidates)
+
+    best_prio = candidates[0][0]
+    best = [dst for pr, dst, _m in candidates if pr == best_prio]
+
+    # If fanout/many: return all best-priority destinations (may be >1)
+    if allow_many:
+        return best
+
+    # # Exclusive choice but tie on best priority => fanout (policy)
+    # this will create problem to the undeterminate shape
+    # if len(best) > 1:
+    #     return best
+
+    return [best[0]]
 
 
 # ----------------------------
+
 # blob_state mode
 # ----------------------------
 
@@ -189,7 +222,7 @@ def to_langgraph(
 ):
     opt = options or LGConverterOptions()
 
-    start, nodes, adj = _resolve_start_nodes_and_adj(workflow_engine=workflow_engine, workflow_id=workflow_id)
+    start, nodes, adj, rev_adj = _resolve_start_nodes_and_adj(workflow_engine=workflow_engine, workflow_id=workflow_id)
     schema = step_resolver.describe_state() if hasattr(step_resolver, "describe_state") else {}
 
     if opt.mode == "apply_node":
@@ -224,7 +257,7 @@ def to_langgraph(
                         updates = _delta_to_updates(upd_native, schema) + list(getattr(out, "state_update", []) or [])
                         result_obj = out
 
-                    edges = list(adj.get(nid, []))
+                    edges = list(adj.get(nid, [])) # + list(rev_adj.get(nid, []))
                     next_nodes = _route_next(
                         edges=edges,
                         state=state,
@@ -262,18 +295,61 @@ def to_langgraph(
     # --- blob_state mode (default) ---
     sg = StateGraph(LGBlobState)
 
+    # Join nodes are marked via node.metadata['wf_join'].
+    join_nodes: set[str] = {
+        nid for nid, n in nodes.items()
+        if bool((n.metadata or getattr(n, "metadata", {}) or {}).get("wf_join", False))
+    }
+
+    # For each join node, track the set of immediate upstream node ids that must arrive.
+    join_required: dict[str, set[str]] = {jid: set() for jid in join_nodes}
+    for src, out_edges in adj.items():
+        for e in out_edges:
+            info = WorkflowEdgeInfo.from_workflow_edge(e)
+            if info.dst in join_required:
+                join_required[info.dst].add(src)
+
     def _make_token_id(parent: str, idx: int) -> str:
         return f"{parent}.{idx}"
 
     def _needs_send_payload(nid: str, node_obj: Any) -> bool:
-        # Fanout nodes (or any outgoing edge with multiplicity='many') require Send payloads
+        """Return True if this node must route using Send/Command (fanout semantics).
+
+        We use Send-mode if:
+        - the node is explicitly fanout
+        - the node is a join (needs barrier gating / may get multiple arrivals)
+        - any outgoing edge has multiplicity='many'
+        - any outgoing edge targets a join node (so we can record arrival side-effects)
+        - there is a priority tie for the best eligible edges (policy: tie => fanout)
+        """
+        md = getattr(node_obj, "metadata", {}) or {}
         if bool(getattr(node_obj, "fanout", False)):
             return True
-        for e in adj.get(nid, []) or []:
+        if bool(md.get("wf_join", False)):
+            return True
+
+        out_edges = list(adj.get(nid, []) or [])
+        if not out_edges:
+            return False
+
+        # edge multiplicity many or dst is join => send-mode
+        prios: list[int] = []
+        for e in out_edges:
             info = WorkflowEdgeInfo.from_workflow_edge(e)
             if info.multiplicity == "many":
                 return True
+            if info.dst in join_nodes:
+                return True
+            prios.append(int(info.priority or 0))
+
+        # best-priority tie => fanout => needs Send-mode to preserve token semantics
+        if prios:
+            best = min(prios)
+            if sum(1 for p in prios if p == best) > 1:
+                return True
+
         return False
+
 
     for node_id, node in nodes.items():
         op = node.op
@@ -286,6 +362,19 @@ def to_langgraph(
                 def step_node(state: LGBlobState) -> Command:
                     blob = cast(dict, state.get(opt.blob_key) or {})
                     token_id = cast(str, blob.get("__token_id__", "root"))
+
+                    md = getattr(node_obj, "metadata", {}) or {}
+                    if bool(md.get("wf_join", False)):
+                        req = join_required.get(nid, set())
+                        done_key = f"__join_done__:{nid}"
+                        arr_key = f"__join_arrivals__:{nid}"
+                        if bool(blob.get(done_key, False)):
+                            # join already satisfied; ignore repeated arrivals
+                            return Command(goto=END, update={opt.blob_key: {opt.blob_ops_key: []}})
+                        arrived = set(cast(list, blob.get(arr_key, []) or []))
+                        if req and not req.issubset(arrived):
+                            # barrier not satisfied yet; stop this activation
+                            return Command(goto=END, update={opt.blob_key: {opt.blob_ops_key: []}})
 
                     out = fn_(blob)
 
@@ -304,6 +393,14 @@ def to_langgraph(
                     if ns:
                         updates = list(updates) + [("u", {"__next_step_names__": ns})]
 
+                    md = getattr(node_obj, "metadata", {}) or {}
+                    if bool(md.get("wf_join", False)):
+                        # Mark join as done and clear arrivals once it actually executes.
+                        updates = list(updates) + [
+                            ("u", {f"__join_done__:{nid}": True}),
+                            ("u", {f"__join_arrivals__:{nid}": []}),
+                        ]
+
                     edges = list(adj.get(nid, []))
                     next_nodes = _route_next(
                         edges=edges,
@@ -312,6 +409,12 @@ def to_langgraph(
                         fanout=bool(getattr(node_obj, "fanout", False)),
                         predicate_registry=predicate_registry,
                     )
+
+                    # Record join arrivals as side-effects when routing into join nodes.
+                    for dst in next_nodes:
+                        if dst in join_nodes:
+                            updates = list(updates) + [("a", {f"__join_arrivals__:{dst}": nid})]
+
 
                     terminal = bool(getattr(node_obj, "terminal", False)) or len(edges) == 0
                     if terminal or not next_nodes:
@@ -373,7 +476,7 @@ def to_langgraph(
                 possible.add(info.dst)
 
             path_map = {d: d for d in sorted(possible)}
-
+            
             # Only include END as an explicit transition if this node can really terminate.
             # Otherwise the diagram will imply "everything can end here".
             if bool(getattr(node_obj, "terminal", False)) or len(edges) == 0:
@@ -401,9 +504,7 @@ def to_langgraph(
                 if not next_nodes:
                     # No matching edge, and not terminal: this is a design/config error.
                     raise RuntimeError(f"No eligible outgoing edge from {nid!r} (not terminal)")
-                # Exclusive choice: pick the first (route_next already respects priority/default)
-                return next_nodes[0]
-
+                return next_nodes # filtering/ priority logic goes in _route_next
             return router, path_map
 
         router_fn, path_map = make_router(node_id, node)

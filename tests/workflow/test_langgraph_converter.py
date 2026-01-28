@@ -3,11 +3,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Set
 
+pytest.importorskip("langgraph")
 
 from graph_knowledge_engine.workflow.contract import BasePredicate
 from graph_knowledge_engine.workflow.langgraph_converter import to_langgraph
-
 from langgraph.graph.state import CompiledStateGraph
+
+
+# -----------------------------
+# Minimum fake shapes (match test_workflow_join.py)
+# -----------------------------
 
 @dataclass
 class FakeNode:
@@ -57,9 +62,16 @@ def _n(node_id: str, *, workflow_id: str, op: str, start=False, terminal=False, 
         "wf_start": bool(start),
         "wf_terminal": bool(terminal),
         "wf_fanout": bool(fanout),
-        "wf_join" : bool(join)
     }
-    return FakeNode(id=node_id, metadata=md, op=md["wf_op"], terminal=terminal, fanout=fanout)
+    if join:
+        md["wf_join"] = True
+    return FakeNode(
+        id=node_id,
+        metadata=md,
+        op=md["wf_op"],
+        terminal=bool(md.get("wf_terminal")),
+        fanout=bool(md.get("wf_fanout")),
+    )
 
 
 def _e(
@@ -69,7 +81,7 @@ def _e(
     src: str,
     dst: str,
     predicate=None,
-    priority=100,
+    priority=0,
     is_default=False,
     multiplicity="one",
 ) -> FakeEdge:
@@ -111,19 +123,19 @@ class PredAlwaysTrue(BasePredicate):
     def __call__(self, e, state, result):
         return True
 
-def dump_langgraph_mermaid(compiled: CompiledStateGraph):
-    graph = compiled.get_graph()
-    print(graph.draw_mermaid())
+
 def dump_langgraph_image(compiled: CompiledStateGraph, name="graph"):
     graph = compiled.get_graph()
     png_bytes = graph.draw_png()
-
     out = Path(f"{name}.png")
     out.write_bytes(png_bytes)
-    print(f"Wrote {out.resolve()}")
+
+
 def _seen_nodes(compiled, init_state: Dict[str, Any]) -> Set[str]:
     seen: Set[str] = set()
+    evs = []
     for ev in compiled.stream(init_state, stream_mode="updates"):
+        evs.append(ev)
         for k in ev.keys():
             if isinstance(k, str) and not k.startswith("__"):
                 seen.add(k)
@@ -131,10 +143,6 @@ def _seen_nodes(compiled, init_state: Dict[str, Any]) -> Set[str]:
 
 
 def test_converter_predicate_default_is_exclusive_choice_and_auto_inits_blob():
-    """If predicate passes, default should NOT run.
-
-    This test invokes with {} to validate that the converter auto-initializes __blob__.
-    """
     wid = "wf_lg_pred_default"
     nodes = [
         _n("start", workflow_id=wid, op="noop", start=True),
@@ -162,7 +170,6 @@ def test_converter_predicate_default_is_exclusive_choice_and_auto_inits_blob():
         step_resolver=resolver,
         predicate_registry={"p_true": PredAlwaysTrue()},
     )
-    dump_langgraph_image(compiled, "predicate_default")
 
     out = compiled.invoke({})
     assert out["__blob__"]["path"] == "a"
@@ -172,20 +179,19 @@ def test_converter_predicate_default_is_exclusive_choice_and_auto_inits_blob():
     assert "b" not in seen
 
 
-def test_converter_same_priority_multiple_edges_fanout():
-    """If multiple eligible edges share the same best priority, we fan out."""
-    wid = "wf_lg_same_priority_fanout"
+def test_converter_fanout_no_join_spawns_both_branches():
+    wid = "wf_lg_fanout_no_join"
     nodes = [
-        _n("start", workflow_id=wid, op="noop", start=True),
+        _n("start", workflow_id=wid, op="noop", start=True, fanout=True),
         _n("a", workflow_id=wid, op="emit_a"),
         _n("b", workflow_id=wid, op="emit_b"),
         _n("end", workflow_id=wid, op="noop", terminal=True),
     ]
     edges = [
-        _e("e1", workflow_id=wid, src="start", dst="a", predicate="p_true", priority=0),
-        _e("e2", workflow_id=wid, src="start", dst="b", predicate="p_true", priority=0),
-        _e("e3", workflow_id=wid, src="a", dst="end", priority=0),
-        _e("e4", workflow_id=wid, src="b", dst="end", priority=0),
+        _e("e1", workflow_id=wid, src="start", dst="a", multiplicity="many"),
+        _e("e2", workflow_id=wid, src="start", dst="b", multiplicity="many"),
+        _e("e3", workflow_id=wid, src="a", dst="end"),
+        _e("e4", workflow_id=wid, src="b", dst="end"),
     ]
     engine = FakeWorkflowEngine(nodes, edges)
 
@@ -195,117 +201,76 @@ def test_converter_same_priority_multiple_edges_fanout():
         "emit_b": lambda state: RR([("a", {"events": "b"})]),
     })
 
-    compiled = to_langgraph(
-        workflow_engine=engine,
-        workflow_id=wid,
-        step_resolver=resolver,
-        predicate_registry={"p_true": PredAlwaysTrue()},
-    )
-    dump_langgraph_image(compiled, "same_priority_multiple_edges_fanout")
+    compiled = to_langgraph(workflow_engine=engine, workflow_id=wid, step_resolver=resolver, predicate_registry={})
     out = compiled.invoke({"__blob__": {}})
-    assert set(out["__blob__"].get("events", [])) == {"a"}
+    assert set(out["__blob__"].get("events", [])) == {"a", "b"}
 
     seen = _seen_nodes(compiled, {"__blob__": {}})
-    assert {"start", "a", "end"} <= seen
+    assert {"start", "a", "b", "end"} <= seen
 
 
-def test_converter_repetition_via_resolver_output():
-    """Repeated downstream execution is driven by resolver output, not edge multiplicity."""
-    wid = "wf_lg_repeat"
-
+def test_converter_fanout_then_join_barrier_emits_joined_once():
+    wid = "wf_lg_fanout_join"
     nodes = [
-        _n("start", workflow_id=wid, op="noop", start=True),
-        _n("fork", workflow_id=wid, op="emit_twice", fanout=True),
-        _n("x", workflow_id=wid, op="emit_x"),
-        _n("end", workflow_id=wid, op="noop", terminal=True),
-    ]
-
-    edges = [
-        _e("e1", workflow_id=wid, src="start", dst="fork", priority=0),
-        _e("e2", workflow_id=wid, src="fork", dst="x", priority=0),
-        _e("e3", workflow_id=wid, src="x", dst="end", priority=0),
-    ]
-
-    engine = FakeWorkflowEngine(nodes, edges)
-
-    resolver = Resolver({
-        "noop": lambda state: RR([]),
-
-        # ⬇️ repetition is explicit here
-        "emit_twice": lambda state: RR([
-            ("a", {"events": "x"}),
-            ("a", {"events": "x"}),
-        ]),
-
-        "emit_x": lambda state: RR([]),
-    })
-
-    compiled = to_langgraph(
-        workflow_engine=engine,
-        workflow_id=wid,
-        step_resolver=resolver,
-        predicate_registry={},
-    )
-
-    out = compiled.invoke({"__blob__": {}})
-
-    events = out["__blob__"].get("events", [])
-    assert events.count("x") == 2
-
-    seen = _seen_nodes(compiled, {"__blob__": {}})
-    assert {"start", "fork", "x", "end"} <= seen
-    
-def test_join_barrier_waits_for_all_branches():
-    wid = "wf_lg_join"
-
-    nodes = [
-        _n("start", workflow_id=wid, op="noop", start=True),
-        _n("fork", workflow_id=wid, op="noop", fanout=True),
+        _n("start", workflow_id=wid, op="noop", start=True, fanout=True),
         _n("a", workflow_id=wid, op="emit_a"),
         _n("b", workflow_id=wid, op="emit_b"),
         _n("join", workflow_id=wid, op="join_op", join=True),
         _n("end", workflow_id=wid, op="noop", terminal=True),
     ]
-
     edges = [
-        _e("e1", workflow_id=wid, src="start", dst="fork"),
-        _e("e2", workflow_id=wid, src="fork", dst="a"),
-        _e("e3", workflow_id=wid, src="fork", dst="b"),
-        _e("e4", workflow_id=wid, src="a", dst="join"),
-        _e("e5", workflow_id=wid, src="b", dst="join"),
-        _e("e6", workflow_id=wid, src="join", dst="end"),
+        _e("e1", workflow_id=wid, src="start", dst="a", multiplicity="many"),
+        _e("e2", workflow_id=wid, src="start", dst="b", multiplicity="many"),
+        _e("e3", workflow_id=wid, src="a", dst="join"),
+        _e("e4", workflow_id=wid, src="b", dst="join"),
+        _e("e5", workflow_id=wid, src="join", dst="end"),
     ]
-
     engine = FakeWorkflowEngine(nodes, edges)
 
     resolver = Resolver({
         "noop": lambda state: RR([]),
-
         "emit_a": lambda state: RR([("a", {"events": "a"})]),
         "emit_b": lambda state: RR([("a", {"events": "b"})]),
-
-        # join runs once, after both a & b
         "join_op": lambda state: RR([("a", {"events": "joined"})]),
     })
 
-    compiled = to_langgraph(
-        workflow_engine=engine,
-        workflow_id=wid,
-        step_resolver=resolver,
-        predicate_registry={},
-    )
-
+    compiled = to_langgraph(workflow_engine=engine, workflow_id=wid, step_resolver=resolver, predicate_registry={})
     out = compiled.invoke({"__blob__": {}})
 
     events = out["__blob__"].get("events", [])
-
-    # order-independent checks
     assert "a" in events
     assert "b" in events
-    assert "joined" in events
-
-    # joined must happen after both branches logically
     assert events.count("joined") == 1
 
     seen = _seen_nodes(compiled, {"__blob__": {}})
-    assert {"fork", "a", "b", "join", "end"} <= seen
+    assert {"start", "a", "b", "join", "end"} <= seen
+
+
+def test_converter_resolver_next_step_names_duplicates_repeat_downstream():
+    wid = "wf_lg_repeat_downstream"
+    nodes = [
+        _n("start", workflow_id=wid, op="noop", start=True),
+        _n("fork", workflow_id=wid, op="decide", fanout=True),
+        _n("x", workflow_id=wid, op="emit_x"),
+        _n("end", workflow_id=wid, op="noop", terminal=True),
+    ]
+    edges = [
+        _e("e1", workflow_id=wid, src="start", dst="fork"),
+        _e("e2", workflow_id=wid, src="fork", dst="x"),
+        _e("e3", workflow_id=wid, src="x", dst="end"),
+    ]
+    engine = FakeWorkflowEngine(nodes, edges)
+
+    resolver = Resolver({
+        "noop": lambda state: RR([]),
+        # Explicit routing override (duplicates preserved)
+        "decide": lambda state: RR([], next_step_names=["x", "x"]),
+        "emit_x": lambda state: RR([("a", {"events": "x"})]),
+    })
+
+    compiled = to_langgraph(workflow_engine=engine, workflow_id=wid, step_resolver=resolver, predicate_registry={})
+    seen = _seen_nodes(compiled, {"__blob__": {}})
+    out = compiled.invoke({"__blob__": {}})
+
+    events = out["__blob__"].get("events", [])
+    assert events.count("x") == 2

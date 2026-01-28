@@ -128,15 +128,22 @@ def build_workflow_from_engine(*, workflow_engine: Any, workflow_id: str) -> Wor
 
     return WorkflowSpec(workflow_id=workflow_id, start_node_id=start_node_id, nodes=nodes, out_edges=out_edges)
 
-def load_workflow_design(*, workflow_engine: GraphKnowledgeEngine, workflow_id: str) -> Tuple[WorkflowNode, Dict[str, WorkflowNode], Dict[str, List[WorkflowEdge]]]:
+def load_workflow_design(*, workflow_engine: GraphKnowledgeEngine, workflow_id: str) -> Tuple[
+            WorkflowNode, Dict[str, WorkflowNode], Dict[str, List[WorkflowEdge]], Dict[str, List[WorkflowEdge]]]:
     """
     Load workflow graph design from workflow_engine.
     Nodes/edges must be tagged with:
       node.metadata.entity_type="workflow_node"
       edge.metadata.entity_type="workflow_edge"
     """
-    nodes_raw: list[WorkflowNode] = workflow_engine.get_nodes(where={"$and": [{"entity_type": "workflow_node"},{ "workflow_id": workflow_id}]}, limit=5000, node_type = WorkflowNode)
-    edges_raw: list[WorkflowEdge] = workflow_engine.get_edges(where={"$and": [{"entity_type": "workflow_edge"},{ "workflow_id": workflow_id}]}, limit=20000, edge_type = WorkflowEdge)
+    nodes_raw: list[WorkflowNode] = workflow_engine.get_nodes(
+            where={"$and": [{"entity_type": "workflow_node"},
+                            { "workflow_id": workflow_id}]}, 
+            limit=5000, node_type = WorkflowNode)
+    edges_raw: list[WorkflowEdge] = workflow_engine.get_edges(
+            where={"$and": [{"entity_type": "workflow_edge"},
+                            { "workflow_id": workflow_id}]}, 
+            limit=20000, edge_type = WorkflowEdge)
 
     nodes: Dict[str, WorkflowNode] = {}
     start_nodes: List[WorkflowNode] = []
@@ -150,6 +157,7 @@ def load_workflow_design(*, workflow_engine: GraphKnowledgeEngine, workflow_id: 
         raise ValueError(f"workflow_id={workflow_id!r} must have exactly one start node (wf_start=True). Found {len(start_nodes)}")
 
     adj: Dict[str, List[WorkflowEdge]] = {nid: [] for nid in nodes}
+    rev_adj : Dict[str, List[WorkflowEdge]] = {nid: [] for nid in nodes}
     for e in edges_raw:
         md = e.metadata or {}
         src = e.source_ids[0]
@@ -158,12 +166,13 @@ def load_workflow_design(*, workflow_engine: GraphKnowledgeEngine, workflow_id: 
             raise ValueError(f"Workflow edge {e.id} connects non-workflow nodes: {src}->{dst}")
      
         adj[src].append(e)
+        rev_adj[dst].append(e)
     def get_node_priority(n: WorkflowEdge):
         return n.metadata['wf_priority']
     for src in adj:
         adj[src].sort(key=get_node_priority)
 
-    return start_nodes[0], nodes, adj
+    return start_nodes[0], nodes, adj, rev_adj
 
 
 def validate_workflow_design(
@@ -172,7 +181,7 @@ def validate_workflow_design(
     workflow_id: str,
     predicate_registry: Dict[str, Predicate],
 ):
-    start, nodes, adj = load_workflow_design(workflow_engine=workflow_engine, workflow_id=workflow_id)
+    start, nodes, adj, rev_adj = load_workflow_design(workflow_engine=workflow_engine, workflow_id=workflow_id)
     adj: dict[str, list[WorkflowEdge]]
     # predicate resolution
     for edges in adj.values():
