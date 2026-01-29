@@ -18,6 +18,16 @@ StateUpdate = Tuple[str, Dict[str, Any]]  # ('u'|'a'|'e', {k: v})
 class LGConverterOptions:
     """Options for workflow -> LangGraph conversion.
 
+    execution:
+      - 'visual' (default): produce a clean, easy-to-read LangGraph diagram.
+        * Fanout is modeled using normal edges so LangGraph runs all eligible downstreams.
+        * Token-id / Send-based semantics are intentionally NOT modeled (best-effort).
+        * Joins are NOT modeled.
+
+      - 'semantics': preserve more of the engine's execution semantics.
+        * Fanout / multiplicity and join gating may use Command+Send (token semantics).
+        * Diagram may be less "pretty".
+
     mode:
       - 'blob_state': keep the whole workflow state inside a single dict field '__blob__'.
         Step nodes emit *deltas* encoded as state_update DSL ('u'/'a'/'e'), and the
@@ -27,6 +37,7 @@ class LGConverterOptions:
         '__apply__' node to apply them.
     """
 
+    execution: Literal["visual", "semantics"] = "visual"
     mode: Literal["blob_state", "apply_node"] = "blob_state"
 
     # blob_state mode
@@ -105,11 +116,9 @@ def _route_next(
     # Explicit routing override (duplicates preserved)
     ns = list(getattr(last_result, "next_step_names", []) or [])
     if ns:
-        # Explicit routing override (duplicates preserved), but must be filtered
-        # to valid outgoing destinations from this node to avoid leaking stale
-        # next_step_names into unrelated routers.
-        valid = {WorkflowEdgeInfo.from_workflow_edge(e).dst for e in edges}
-        return [n for n in ns if n in valid]
+        return ns
+        # valid = {WorkflowEdgeInfo.from_workflow_edge(e).dst for e in edges}
+        # return [n for n in ns if n in valid]
 
     candidates: list[tuple[int, str, str]] = []  # (priority, dst, multiplicity)
 
@@ -293,8 +302,111 @@ def to_langgraph(
         return sg.compile()
 
     
-    
-    # --- blob_state mode (default) ---
+        
+        # --- blob_state mode ---
+
+
+    # visual execution: prefer clean diagram, drop token semantics / Send / joins.
+    if opt.execution == "visual":
+        sg = StateGraph(LGBlobState)
+
+        def _init_blob(state: dict) -> dict:
+            blob = dict(state.get(opt.blob_key) or {})
+            return {opt.blob_key: blob}
+
+        sg.add_node("__init_blob__", _init_blob)
+        sg.add_edge(START, "__init_blob__")
+        sg.add_edge("__init_blob__", start.id)
+
+        # Helper: whether a node should be treated as fanout in visual mode.
+        def _is_visual_fanout(nid: str, node_obj: Any) -> bool:
+            if bool(getattr(node_obj, "fanout", False)):
+                return True
+            for e in list(adj.get(nid, []) or []):
+                info = WorkflowEdgeInfo.from_workflow_edge(e)
+                if (info.multiplicity or "one") == "many":
+                    return True
+            return False
+
+        # Add step nodes
+        for node_id, node in nodes.items():
+            op = node.op
+            fn = step_resolver.resolve(op) if hasattr(step_resolver, "resolve") else step_resolver(op)
+
+            def make_step_update(nid: str, node_obj: Any, fn_):
+                def step_node(state: LGBlobState) -> dict:
+                    blob = cast(dict, state.get(opt.blob_key) or {})
+                    out = fn_(blob)
+
+                    if isinstance(out, dict):
+                        updates = _delta_to_updates(out, schema)
+                        class _R:
+                            def __init__(self): self.next_step_names = []
+                        result_obj = _R()
+                    else:
+                        upd_native = getattr(out, "update", None) or {}
+                        updates = _delta_to_updates(upd_native, schema) + list(getattr(out, "state_update", []) or [])
+                        result_obj = out
+
+                    # Persist next_step_names for predicate fallbacks (BasePredicate). Always clear/set.
+                    ns = list(getattr(result_obj, "next_step_names", []) or [])
+                    updates = list(updates) + [("u", {"__next_step_names__": ns})]
+
+                    return {opt.blob_key: {opt.blob_ops_key: updates}}
+                return step_node
+
+            sg.add_node(node_id, make_step_update(node_id, node, fn))
+
+        # Wire graph edges:
+        # - fanout nodes: connect directly to all outgoing destinations (LangGraph will schedule all).
+        # - non-fanout nodes: conditional router to choose one destination (predicate/default/priority).
+        for src, out_edges in adj.items():
+            node_obj = nodes[src]
+            edges = list(out_edges or [])
+
+            # terminal nodes don't need outgoing
+            if bool(getattr(node_obj, "terminal", False)) or not edges:
+                continue
+
+            if _is_visual_fanout(src, node_obj):
+                for e in edges:
+                    info = WorkflowEdgeInfo.from_workflow_edge(e)
+                    sg.add_edge(src, info.dst)
+            else:
+                # Router returns a single destination (exclusive choice).
+                def make_router(nid: str, node_obj: Any, edges: list[Any]):
+                    possible = {WorkflowEdgeInfo.from_workflow_edge(e).dst for e in edges}
+                    path_map = {d: d for d in sorted(possible)}
+                    # if node can really terminate, allow END
+                    if bool(getattr(node_obj, "terminal", False)):
+                        path_map[END] = END
+
+                    class _LastResultProxy:
+                        def __init__(self, next_step_names: list[str]):
+                            self.next_step_names = next_step_names
+
+                    def router(state: LGBlobState):
+                        blob = cast(dict, state.get(opt.blob_key) or {})
+                        proxy = _LastResultProxy(list(blob.get("__next_step_names__", []) or []))
+                        nxt = _route_next(
+                            edges=edges,
+                            state=blob,
+                            last_result=proxy,
+                            fanout=False,
+                            predicate_registry=predicate_registry,
+                        )
+                        if not nxt:
+                            raise RuntimeError(f"No eligible outgoing edge from {nid!r} (not terminal)")
+                        return nxt[0]
+                    return router, path_map
+
+                router_fn, path_map = make_router(src, node_obj, edges)
+                sg.add_conditional_edges(src, router_fn, path_map)
+
+        return sg.compile()
+
+    # semantics execution (uses Send/token/join modelling)
+
     sg = StateGraph(LGBlobState)
 
     # Join nodes are marked via node.metadata['wf_join'].
@@ -389,14 +501,11 @@ def to_langgraph(
                         upd_native = getattr(out, "update", None) or {}
                         updates = _delta_to_updates(upd_native, schema) + list(getattr(out, "state_update", []) or [])
                         result_obj = out
-                    # Clear one-shot routing hint each time to avoid leaking to downstream nodes
-                    # updates = [("u", {"__next_step_names__": []})] + list(updates)
-                
+
                     # persist next_step_names for routing fallbacks (BasePredicate)
                     ns = list(getattr(result_obj, "next_step_names", []) or [])
-                    
                     updates = list(updates) + [("u", {"__next_step_names__": ns})]
-                    
+
                     md = getattr(node_obj, "metadata", {}) or {}
                     if bool(md.get("wf_join", False)):
                         # Mark join as done and clear arrivals once it actually executes.
@@ -459,7 +568,7 @@ def to_langgraph(
 
                 # persist next_step_names for routing fallbacks (BasePredicate)
                 ns = list(getattr(result_obj, "next_step_names", []) or [])
-                # if ns:
+                
                 updates = list(updates) + [("u", {"__next_step_names__": ns})]
 
                 # Emit blob delta as ops for reducer (unknown/dynamic keys supported via DSL ops)

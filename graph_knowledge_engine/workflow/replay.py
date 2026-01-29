@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, Tuple, Optional
+from typing import Any, Dict, Tuple, Optional, List
 
 State = Dict[str, Any]
 
@@ -19,21 +19,46 @@ def load_checkpoint(*, conversation_engine: Any, run_id: str, step_seq: int) -> 
         raise ValueError("Node is not a workflow_checkpoint")
     return json.loads(md["state_json"])
 
+def _apply_state_update(state: State, state_update: List[Any]) -> None:
+    """
+    Replay-side reducer. Must match WorkflowRuntime.apply_state_update semantics.
+
+    Supported ops:
+      ('a', {k: v}) -> append v into list at state[k]
+      ('u', {k: v}) -> overwrite state[k] = v
+      ('e', {k: [..]}) -> extend list at state[k] with iterable
+    """
+    for item in state_update or []:
+        if not (isinstance(item, (list, tuple)) and len(item) == 2):
+            continue
+        op, payload = item[0], item[1]
+        if not isinstance(payload, dict):
+            continue
+
+        if op == "a":
+            for k, v in payload.items():
+                state.setdefault(k, []).append(v)
+
+        elif op == "u":
+            for k, v in payload.items():
+                state[k] = v
+
+        elif op == "e":
+            for k, v in payload.items():
+                state.setdefault(k, []).extend(v if isinstance(v, list) else list(v))
+
 
 def replay_to(*, conversation_engine: Any, run_id: str, target_step_seq: int) -> State:
     """
     Reconstruct state by:
       - finding the nearest checkpoint <= target_step_seq
-      - applying step exec results after that checkpoint up to target_step_seq
-
-    Default replay apply:
-      state["result.<op>"] = result
+      - applying persisted step exec state_updates after that checkpoint up to target_step_seq
     """
-    # find all checkpoints for run_id (simple scan by where; assumes your engine supports it)
     ckpts = conversation_engine.get_nodes(
-        where={"entity_type": "workflow_checkpoint", "run_id": run_id},
+        where={"$and": [{"entity_type": "workflow_checkpoint"}, {"run_id": run_id}]},
         limit=10000,
     )
+
     best = None
     best_seq = -1
     for n in ckpts:
@@ -44,11 +69,10 @@ def replay_to(*, conversation_engine: Any, run_id: str, target_step_seq: int) ->
     if best is None:
         raise ValueError(f"No checkpoint <= {target_step_seq} for run_id={run_id}")
 
-    import json as _json
-    state: State = _json.loads((best.metadata or {})["state_json"])
+    state: State = json.loads((best.metadata or {})["state_json"])
 
     steps = conversation_engine.get_nodes(
-        where={"entity_type": "workflow_step_exec", "run_id": run_id},
+        where={"$and": [{"entity_type": "workflow_step_exec"}, {"run_id": run_id}]},
         limit=200000,
     )
     steps_sorted = sorted(steps, key=lambda n: int((n.metadata or {}).get("step_seq", 0)))
@@ -59,9 +83,22 @@ def replay_to(*, conversation_engine: Any, run_id: str, target_step_seq: int) ->
             continue
         if seq > target_step_seq:
             break
+
         md = n.metadata or {}
-        op = md.get("op")
-        res = _json.loads(md["result_json"])
-        state[f"result.{op}"] = res
+        raw = md.get("result_json")
+        if not raw:
+            continue
+
+        res = json.loads(raw)  # this is RunSuccess/RunFailure model_dump() JSON
+        state_update = res.get("state_update") or []
+
+        # Apply the same reducer as runtime
+        _apply_state_update(state, state_update)
+
+        # Optional: if you want to keep the envelope for debugging, store separately:
+        # op = md.get("op")
+        # if op:
+        #     state.setdefault("_rt_step_exec", {})[str(seq)] = {"op": op, "result": res}
 
     return state
+

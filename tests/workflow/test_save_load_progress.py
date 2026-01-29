@@ -14,6 +14,7 @@ from graph_knowledge_engine.models import (
 
 from graph_knowledge_engine.workflow.runtime import WorkflowRuntime
 from graph_knowledge_engine.workflow.replay import load_checkpoint, replay_to
+from graph_knowledge_engine.workflow.resolvers import RunSuccess
 
 
 def _span() -> Span:
@@ -147,10 +148,12 @@ def test_runtime_checkpoint_load_and_replay(tmp_path: Path):
     def resolve_step(op: str):
         def _fn(ctx):
             # keep state JSONable
-            ctx.state.setdefault("op_log", [])
-            ctx.state["op_log"].append(op)
+            with ctx.state_write as state:
+                state.setdefault("op_log", [])
+                state["op_log"].append(op)
             # return JSONable result (will be stored at state["result.<op>"])
-            return {"op": op, "value": f"v_{op}"}
+            return RunSuccess(conversation_node_id= None, 
+                              state_update = [('a', {"op": op}),('u', {f"result.{op}": {'value': f"v_{op}"}} )])
         return _fn
 
     # IMPORTANT: set large checkpoint interval so only checkpoint at step_seq=0
@@ -287,9 +290,11 @@ def test_runtime_resume_from_checkpoint(tmp_path: Path):
 
     def resolve_step(op: str):
         def _fn(ctx):
-            ctx.state.setdefault("op_log", [])
-            ctx.state["op_log"].append(op)
-            return {"op": op, "value": f"v_{op}"}
+            with ctx.state_write as state:
+                state.setdefault("op_log", [])
+                state["op_log"].append(op)
+            return RunSuccess(conversation_node_id= None, 
+                              state_update = [('a', {"op": op}),('u', {f"result.{op}": {'value': f"v_{op}"}} )])
         return _fn
 
     # ---- Run #1 ----

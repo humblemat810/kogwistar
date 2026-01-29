@@ -1,7 +1,7 @@
 
 import pytest
 from dataclasses import dataclass
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Set
 
 pytest.importorskip("langgraph")
 
@@ -73,6 +73,15 @@ def _n(node_id: str, *, op: str, start: bool = False, terminal: bool = False, fa
     return FakeWorkflowNode(id=node_id, op=op, terminal=terminal, fanout=fanout, metadata=md)
 
 
+def _seen_nodes(compiled, init_state: Dict[str, Any]) -> Set[str]:
+    seen: Set[str] = set()
+    for ev in compiled.stream(init_state, stream_mode="updates"):
+        for k in ev.keys():
+            if isinstance(k, str) and not k.startswith("__"):
+                seen.add(k)
+    return seen
+
+
 def test_predicate_signature_and_default_routing():
     wid = "wf1"
     nodes = [
@@ -136,6 +145,10 @@ def test_parallel_fanout_merges_appends_real_langgraph():
     preds: Dict[str, BasePredicate] = {}
 
     compiled = to_langgraph(workflow_engine=engine, workflow_id=wid, step_resolver=resolver, predicate_registry=preds)
+
+    seen = _seen_nodes(compiled, {})
+    assert "x" in seen
+    assert "y" in seen
+
     out = compiled.invoke({})
-    # assert sorted(out.get("events", [])) == ["x", "y"]
     assert sorted(out.get("events") or (out["__blob__"]['events'])) == ["x", "y"]

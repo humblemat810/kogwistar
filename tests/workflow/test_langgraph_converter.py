@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Set
 pytest.importorskip("langgraph")
 
 from graph_knowledge_engine.workflow.contract import BasePredicate
-from graph_knowledge_engine.workflow.langgraph_converter import to_langgraph
+from graph_knowledge_engine.workflow.langgraph_converter import LGConverterOptions, to_langgraph
 from langgraph.graph.state import CompiledStateGraph
 
 
@@ -170,7 +170,7 @@ def test_converter_predicate_default_is_exclusive_choice_and_auto_inits_blob():
         step_resolver=resolver,
         predicate_registry={"p_true": PredAlwaysTrue()},
     )
-
+    dump_langgraph_image(compiled, "test_converter_predicate_default_is_exclusive_choice_and_auto_inits_blob")
     out = compiled.invoke({})
     assert out["__blob__"]["path"] == "a"
 
@@ -233,8 +233,11 @@ def test_converter_fanout_then_join_barrier_emits_joined_once():
         "emit_b": lambda state: RR([("a", {"events": "b"})]),
         "join_op": lambda state: RR([("a", {"events": "joined"})]),
     })
-
-    compiled = to_langgraph(workflow_engine=engine, workflow_id=wid, step_resolver=resolver, predicate_registry={})
+    options = LGConverterOptions(execution="semantics")
+    compiled = to_langgraph(workflow_engine=engine, workflow_id=wid, 
+                            step_resolver=resolver, 
+                            predicate_registry={},
+                            options=options)
     out = compiled.invoke({"__blob__": {}})
 
     events = out["__blob__"].get("events", [])
@@ -268,9 +271,13 @@ def test_converter_resolver_next_step_names_duplicates_repeat_downstream():
         "emit_x": lambda state: RR([("a", {"events": "x"})]),
     })
 
-    compiled = to_langgraph(workflow_engine=engine, workflow_id=wid, step_resolver=resolver, predicate_registry={})
+    options = LGConverterOptions(execution="semantics")
+    compiled = to_langgraph(workflow_engine=engine, workflow_id=wid, 
+                            step_resolver=resolver, 
+                            predicate_registry={},
+                            options=options)
     seen = _seen_nodes(compiled, {"__blob__": {}})
     out = compiled.invoke({"__blob__": {}})
-
+    
     events = out["__blob__"].get("events", [])
     assert events.count("x") == 2
