@@ -606,17 +606,9 @@ class WorkflowRuntime:
                 # default behavior: store under result.<op> and allow ops to also write into state
                 # state[f"result.{wn.op}"] = result result only visible 
 
-                # checkpoint
-                if (step_seq % self.checkpoint_every_n_steps) == 0:
-                    self._persist_checkpoint(
-                        conversation_id=conversation_id,
-                        workflow_id=workflow_id,
-                        run_id=run_id,
-                        step_seq=step_seq,
-                        state=state,
-                        last_exec_node = last_exec_node
-                    )
-
+                # NOTE: checkpoint must be persisted after routing/enqueueing next tokens so that
+                # the state snapshot contains a correct _rt_join frontier (pending/inflight) for resume.
+                step_seq_current = step_seq
                 step_seq += 1
                 
                 # route
@@ -624,6 +616,16 @@ class WorkflowRuntime:
                     # token ends here -> it will never reach any remaining joins
                     _dec(mask)
                     _persist_rt_join_runtime()
+
+                    if (step_seq_current % self.checkpoint_every_n_steps) == 0:
+                        self._persist_checkpoint(
+                            conversation_id=conversation_id,
+                            workflow_id=workflow_id,
+                            run_id=run_id,
+                            step_seq=step_seq_current,
+                            state=state,
+                            last_exec_node=last_exec_node,
+                        )
                     continue
 
                 edges = adj.get(node_id, [])
@@ -632,6 +634,16 @@ class WorkflowRuntime:
                 if not next_nodes:
                     _dec(mask)
                     _persist_rt_join_runtime()
+
+                    if (step_seq_current % self.checkpoint_every_n_steps) == 0:
+                        self._persist_checkpoint(
+                            conversation_id=conversation_id,
+                            workflow_id=workflow_id,
+                            run_id=run_id,
+                            step_seq=step_seq_current,
+                            state=state,
+                            last_exec_node=last_exec_node,
+                        )
                     continue
 
                 # continuation token
@@ -669,6 +681,16 @@ class WorkflowRuntime:
                         pending_tokens.add(t)
                         scheduled_q.put(t)
                         _persist_rt_join_runtime()
+
+                if (step_seq_current % self.checkpoint_every_n_steps) == 0:
+                    self._persist_checkpoint(
+                        conversation_id=conversation_id,
+                        workflow_id=workflow_id,
+                        run_id=run_id,
+                        step_seq=step_seq_current,
+                        state=state,
+                        last_exec_node=last_exec_node,
+                    )
         self.state_lock.pop(run_id)
 
     def _route_next(

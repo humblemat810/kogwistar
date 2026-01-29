@@ -284,8 +284,11 @@ def test_runtime_resume_from_checkpoint(tmp_path: Path):
     # Re-open workflow engine from disk to prove the design is actually stored
     workflow_engine2 = GraphKnowledgeEngine(persist_directory=str(wf_dir), kg_graph_type="workflow")
 
+    # predicate_registry = {
+    #     "has_done_a": lambda st, _r: "result.a" in st,
+    # }
     predicate_registry = {
-        "has_done_a": lambda st, _r: "result.a" in st,
+        "has_done_a": lambda e, st, r: "result.a" in st,
     }
 
     def resolve_step(op: str):
@@ -343,3 +346,125 @@ def test_runtime_resume_from_checkpoint(tmp_path: Path):
     assert final2["result.b"]["value"] == "v_b"      # executed
     assert final2["result.end"]["value"] == "v_end"  # executed
     assert "a" not in final2.get("op_log", [])       # did not re-run 'a'
+
+
+
+def test_runtime_resume_from_checkpoint_frontier(tmp_path: Path):
+    """True resume from checkpoint using runtime frontier (_rt_join).
+
+    This validates that checkpoints capture a resume-able scheduler frontier,
+    so a new WorkflowRuntime run can continue from the *next pending node*
+    without re-entering the workflow start node.
+
+    Workflow: a -> b -> end
+
+    Run #1 executes step_seq=0 (a). We load checkpoint at step_seq=0. That checkpoint must contain
+    a pending token targeting node 'b'.
+
+    Run #2 starts with initial_state=ckpt0 and a NEW run_id. It must execute b->end only.
+    """
+    wf_dir = tmp_path / "wf"
+    conv_dir = tmp_path / "conv"
+
+    workflow_id = "wf_resume_from_checkpoint_frontier"
+
+    workflow_engine = GraphKnowledgeEngine(persist_directory=str(wf_dir), kg_graph_type="workflow")
+    conversation_engine = GraphKnowledgeEngine(persist_directory=str(conv_dir), kg_graph_type="conversation")
+
+    # ---- Build workflow: a -> b -> end ----
+    n_a = _wf_node(workflow_id=workflow_id, node_id=f"wf|{workflow_id}|a", op="a", start=True)
+    n_b = _wf_node(workflow_id=workflow_id, node_id=f"wf|{workflow_id}|b", op="b")
+    n_end = _wf_node(workflow_id=workflow_id, node_id=f"wf|{workflow_id}|end", op="end", terminal=True)
+
+    for n in [n_a, n_b, n_end]:
+        workflow_engine.add_node(n)
+
+    workflow_engine.add_edge(
+        _wf_edge(
+            workflow_id=workflow_id,
+            edge_id=f"wf|{workflow_id}|e|a->b",
+            src=n_a.id,
+            dst=n_b.id,
+            predicate=None,
+            priority=100,
+            is_default=True,
+        )
+    )
+    workflow_engine.add_edge(
+        _wf_edge(
+            workflow_id=workflow_id,
+            edge_id=f"wf|{workflow_id}|e|b->end",
+            src=n_b.id,
+            dst=n_end.id,
+            predicate=None,
+            priority=100,
+            is_default=True,
+        )
+    )
+
+    predicate_registry = {}
+
+    def resolve_step(op: str):
+        def _fn(ctx):
+            with ctx.state_write as state:
+                state.setdefault("op_log", [])
+                state["op_log"].append(op)
+            return RunSuccess(
+                conversation_node_id=None,
+                state_update=[
+                    ("a", {"op": op}),
+                    ("u", {f"result.{op}": {"value": f"v_{op}"}}),
+                ],
+            )
+        return _fn
+
+    rt1 = WorkflowRuntime(
+        workflow_engine=GraphKnowledgeEngine(persist_directory=str(wf_dir), kg_graph_type="workflow"),
+        conversation_engine=conversation_engine,
+        step_resolver=resolve_step,
+        predicate_registry=predicate_registry,
+        checkpoint_every_n_steps=1,
+        max_workers=1,
+    )
+
+    final1, run_id1 = rt1.run(
+        workflow_id=workflow_id,
+        conversation_id="conv1",
+        turn_node_id="turn1",
+        initial_state={},
+    )
+
+    assert final1["op_log"] == ["a", "b", "end"]
+
+    ckpt0 = load_checkpoint(conversation_engine=conversation_engine, run_id=run_id1, step_seq=0)
+    assert ckpt0["result.a"]["value"] == "v_a"
+
+    # checkpoint must include runtime frontier
+    assert "_rt_join" in ckpt0
+    pend = (ckpt0.get("_rt_join") or {}).get("pending") or []
+    # pending tokens are tuples like (node_id, mask, token_id, parent_token_id)
+    assert any((isinstance(t, (list, tuple)) and len(t) >= 1 and str(t[0]).endswith("|b")) for t in pend)
+
+    rt2 = WorkflowRuntime(
+        workflow_engine=GraphKnowledgeEngine(persist_directory=str(wf_dir), kg_graph_type="workflow"),
+        conversation_engine=conversation_engine,
+        step_resolver=resolve_step,
+        predicate_registry=predicate_registry,
+        checkpoint_every_n_steps=1,
+        max_workers=1,
+    )
+
+    final2, _run_id2 = rt2.run(
+        workflow_id=workflow_id,
+        conversation_id="conv2",
+        turn_node_id="turn2",
+        initial_state=ckpt0,
+        run_id=None,  # new run id; avoids collisions
+    )
+
+    assert final2["result.a"]["value"] == "v_a"
+    assert final2["result.b"]["value"] == "v_b"
+    assert final2["result.end"]["value"] == "v_end"
+
+    # ensure 'a' was not re-executed (it should only appear once, carried from ckpt)
+    assert final2.get("op_log", []).count("a") == 1
