@@ -932,6 +932,8 @@ class ConversationOrchestrator:
                     prev_turn_meta_summary=prev_turn_meta_summary,
                     prev_node = prev_node,
                 )
+                if type(mem) is dict:
+                    mem = MemoryRetrievalResult(mem)
                 st.memory = mem
                 kg_args = dict(
                         user_text=content,
@@ -940,7 +942,8 @@ class ConversationOrchestrator:
                         seed_kg_node_ids=list(getattr(mem, "seed_kg_node_ids", []) or []),
                     )
                 # KG retrieve tool
-                kg: KnowledgeRetrievalResult = self.tool_runner.run_tool(
+                kg: KnowledgeRetrievalResult
+                kg, kg_call_node = self.tool_runner.run_tool(
                     conversation_id=conversation_id,
                     user_id=user_id,
                     turn_node_id=turn_node_id,
@@ -957,6 +960,8 @@ class ConversationOrchestrator:
                     render_result=lambda r: getattr(r, "reasoning", "")[:800],
                     prev_turn_meta_summary=prev_turn_meta_summary
                 )
+                if type(kg) is dict:
+                    kg = KnowledgeRetrievalResult(kg)
                 st.knowledge = kg
 
                 # pin memory (not a tool call; it's a graph mutation derived from the tool outputs)

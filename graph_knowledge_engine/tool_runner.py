@@ -63,7 +63,7 @@ class ToolRunner:
             raise Exception('unreachable')
         # Tool call node (assistant role)
         call_node_content = f"Calling tool {tool_name}"
-        call_id = str(self.tool_call_id_factory(user_id, conversation_id, last_node.safe_get_id(), call_node_content,  str(args), str(kwargs)))
+        call_id = str(self.tool_call_id_factory(tool_name, user_id, conversation_id, last_node.safe_get_id(), call_node_content,  str(args), str(kwargs)))
         span = Span(
             collection_page_url=f"conversation/{conversation_id}",
             document_page_url=f"conversation/{conversation_id}#{call_id}",

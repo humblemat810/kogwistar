@@ -10,6 +10,8 @@ from pydantic import BaseModel, Field
 from typing import Callable, TypeVar, ParamSpec, cast
 from joblib import Memory
 
+from graph_knowledge_engine.id_provider import stable_id
+
 P = ParamSpec("P")
 R = TypeVar("R")
 from itertools import count
@@ -21,7 +23,8 @@ def cached(memory: Memory, fn: Callable[P, R], *args, **kwargs) -> Callable[P, R
     return cast(Callable[P, R], memory.cache(fn, *args, **kwargs))
 def test_conversation_flow(engine:GraphKnowledgeEngine, conversation_engine:GraphKnowledgeEngine):
     user_id = "test_conversation_flow::test_user"
-    my_factory = tool_id_factory()
+    # my_factory = tool_id_factory()
+    my_factory = stable_id
     conversation_engine.tool_call_id_factory = my_factory
     orc=conversation_engine._get_orchestrator(ref_knowledge_engine=engine)
     orc.tool_runner.tool_call_id_factory = my_factory

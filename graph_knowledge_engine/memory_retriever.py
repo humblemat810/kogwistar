@@ -110,18 +110,18 @@ class MemoryRetriever:
         query_embedding: List[float],
         user_text: str,
         context_text: str,
-        n_result
+        n_results
     ) -> MemoryRetrievalResult:
         # Broad memory retrieval across same user
         where = {"user_id": user_id}
         memory_nodes = self.conversation_engine.query_nodes(query_embeddings = [query_embedding],
-            n_results=n_result,
+            n_results=n_results,
             where=where,
             include=["metadatas", "documents", "embeddings"], node_type=ConversationNode
         )[0]
         where = {"user_id": user_id}
         memory_edges = self.conversation_engine.query_edges(query_embeddings = [query_embedding],
-            n_results=n_result,
+            n_results=n_results,
             where=where,
             include=["metadatas", "documents", "embeddings"], edge_type=ConversationEdge
         )[0]
