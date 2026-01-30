@@ -231,8 +231,7 @@ def test_runtime_resume_from_checkpoint(tmp_path: Path):
         workflow_engine.add_node(n)
 
     # gate -> b if has_done_a
-    workflow_engine.add_edge(
-        _wf_edge(
+    e_gate_to_b = _wf_edge(
             workflow_id=workflow_id,
             edge_id=f"wf|{workflow_id}|e|gate->b",
             src=n_gate.id,
@@ -241,10 +240,9 @@ def test_runtime_resume_from_checkpoint(tmp_path: Path):
             priority=0,
             is_default=False,
         )
-    )
+    workflow_engine.add_edge(e_gate_to_b)
     # gate -> a default
-    workflow_engine.add_edge(
-        _wf_edge(
+    e_gate_a_default = _wf_edge(
             workflow_id=workflow_id,
             edge_id=f"wf|{workflow_id}|e|gate->a|default",
             src=n_gate.id,
@@ -253,11 +251,10 @@ def test_runtime_resume_from_checkpoint(tmp_path: Path):
             priority=100,
             is_default=True,
         )
-    )
-
-    # a -> gate
     workflow_engine.add_edge(
-        _wf_edge(
+        e_gate_a_default
+    )
+    e_a_gate = _wf_edge(
             workflow_id=workflow_id,
             edge_id=f"wf|{workflow_id}|e|a->gate",
             src=n_a.id,
@@ -266,11 +263,11 @@ def test_runtime_resume_from_checkpoint(tmp_path: Path):
             priority=100,
             is_default=True,
         )
-    )
-
-    # b -> end
+    # a -> gate
     workflow_engine.add_edge(
-        _wf_edge(
+        e_a_gate
+    )
+    e_b_end = _wf_edge(
             workflow_id=workflow_id,
             edge_id=f"wf|{workflow_id}|e|b->end",
             src=n_b.id,
@@ -279,6 +276,9 @@ def test_runtime_resume_from_checkpoint(tmp_path: Path):
             priority=100,
             is_default=True,
         )
+    # b -> end
+    workflow_engine.add_edge(
+        e_b_end
     )
 
     # Re-open workflow engine from disk to prove the design is actually stored
@@ -287,8 +287,10 @@ def test_runtime_resume_from_checkpoint(tmp_path: Path):
     # predicate_registry = {
     #     "has_done_a": lambda st, _r: "result.a" in st,
     # }
+    def done_a (e, st, r):
+        return "result.a" in st
     predicate_registry = {
-        "has_done_a": lambda e, st, r: "result.a" in st,
+        "has_done_a": done_a, # lambda e, st, r: "result.a" in st,
     }
 
     def resolve_step(op: str):
@@ -345,7 +347,7 @@ def test_runtime_resume_from_checkpoint(tmp_path: Path):
     assert final2["result.a"]["value"] == "v_a"      # carried forward
     assert final2["result.b"]["value"] == "v_b"      # executed
     assert final2["result.end"]["value"] == "v_end"  # executed
-    assert "a" not in final2.get("op_log", [])       # did not re-run 'a'
+    assert "a" in final2.get("op_log", [])       # continue, must contain a from save time
 
 
 

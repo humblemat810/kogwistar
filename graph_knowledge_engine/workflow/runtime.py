@@ -700,62 +700,64 @@ class WorkflowRuntime:
         last_result: RunResult,
         fanout: bool,
     ) -> List[str]:
-        # waterfall, edge predicate, if no next step, inspect node decision -> finally check any default
+        # Waterfall routing:
+        #   1) evaluate explicit edge predicates (e.predicate != None)
+        #   2) if none match, evaluate unconditional edges (e.predicate == None) using BasePredicate
+        #      (i.e., node-level "next_step_names" decision)
+        #   3) finally, pick any is_default edge
+
         matched: List[str] = []
+
+        # (1) explicit predicates
         for e in edges:
-            workflow_info = WorkflowEdgeInfo.from_workflow_edge(e)
             if e.predicate is None:
                 continue
             pred = self.predicate_registry.get(e.predicate)
             if pred is None:
                 continue
-            ok = False
+            workflow_info = WorkflowEdgeInfo.from_workflow_edge(e)
             try:
                 ok = bool(pred(workflow_info, state, last_result))
             except Exception:
                 ok = False
             if ok:
                 matched.append(e.target_ids[0])
-                if not fanout and e.multiplicity != "many":
+                if not fanout and getattr(e, "multiplicity", "one") != "many":
                     return matched
 
-        if matched and (fanout or any(getattr(ed, "multiplicity", "one") == "many" for ed in edges)):
-            return matched
-        
-        
+        # If we have any matches already, return them (fanout supports multiple)
+        if matched:
+            return matched if fanout else matched[0:1]
+
+        # (2) unconditional edges (node-level decision)
         from typing import cast
         from .contract import BasePredicate
-        # fall back if no predicate ever gove, then let node decide
-        if not matched:
-            # node decide logic
-            for e in edges:
-                # if e.predicate is None:
-                pred = cast(Predicate, BasePredicate())
-                
-                workflow_info = WorkflowEdgeInfo.from_workflow_edge(e)
-                # else:
-                    # should not run
-                    # pred = self.predicate_registry.get(e.predicate)
-                try:
-                    ok = bool(pred(workflow_info, state, last_result))
-                except Exception:
-                    ok = False
-                if ok:
-                    matched.append(e.target_ids[0])
-                    if not fanout and e.multiplicity != "many":
-                        return matched
-                
-            if matched:
-                return matched
-            for e in edges:
-                if e.is_default:
-                    if fanout:
-                        return e.target_ids
-                    else:
-                        return e.target_ids[0:1]
-        # not matched and no default set
-        
-        return matched
+
+        node_decider = cast(Predicate, BasePredicate())
+        for e in edges:
+            if e.predicate is not None:
+                # IMPORTANT: do NOT apply BasePredicate to predicate edges.
+                # Doing so makes predicate edges always-true and breaks routing.
+                continue
+            workflow_info = WorkflowEdgeInfo.from_workflow_edge(e)
+            try:
+                ok = bool(node_decider(workflow_info, state, last_result))
+            except Exception:
+                ok = False
+            if ok:
+                matched.append(e.target_ids[0])
+                if not fanout and getattr(e, "multiplicity", "one") != "many":
+                    return matched
+
+        if matched:
+            return matched if fanout else matched[0:1]
+
+        # (3) default edge
+        for e in edges:
+            if getattr(e, "is_default", False):
+                return e.target_ids if fanout else e.target_ids[0:1]
+
+        return []
 
     # --------------------
     # Persistence helpers (conversation_engine)

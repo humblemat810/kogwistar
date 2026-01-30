@@ -2596,10 +2596,10 @@ class GraphKnowledgeEngine:
             base_metadata[0].update(_strip_none({
                             "entity_type": edge_metadata.get("entity_type"),
                             "workflow_id": edge_metadata.get("workflow_id"),
-                            "wf_priority": edge_metadata.get("wf_priority"),
-                            "wf_is_default": edge_metadata.get("wf_is_default"),
-                            "wf_predicate": edge_metadata.get("predicate"),
-                            "wf_multiplicity": edge_metadata.get("wf_multiplicity"),
+                            "wf_priority": edge_metadata.get("wf_priority") or edge_metadata.get("priority"),
+                            "wf_is_default": edge_metadata.get("wf_is_default") or edge_metadata.get("is_default"),
+                            "wf_predicate": edge_metadata.get("wf_predicate") or edge_metadata.get("predicate"),
+                            "wf_multiplicity": edge_metadata.get("wf_multiplicity") or edge_metadata.get("multiplicity"),
                 }))
         self.edge_collection.add(
             ids=[edge.id],
