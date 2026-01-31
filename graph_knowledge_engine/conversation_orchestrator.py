@@ -885,6 +885,41 @@ class ConversationOrchestrator:
                                    self_span, prev_node, summary_char_threshold,
                                    prev_turn_meta_summary)        
         return add_turn_result
+    def join_tool_node_to_turn(self, conversation_id, node_id, turn_node_id, prev_turn_meta_summary):
+        eid = str(stable_id("tool_call_entry", conversation_id, node_id, turn_node_id))
+        edge = ConversationEdge(
+            id=eid,
+            source_ids=[node_id],
+            target_ids=[turn_node_id],
+            relation="tool_call_entry_point",
+            label=f"tool_call_entry_point:{node_id}:{turn_node_id}",
+            type="relationship",
+            summary="tool_call_entry_point:{node_id}:{turn_node_id}",
+            doc_id=f"conv:{conversation_id}",
+            domain_id=None,
+            canonical_entity_id=None,
+            properties=None,
+            embedding=None,
+            mentions=[Grounding(spans=[
+                Span(
+                    collection_page_url=f"conversation/{conversation_id}",
+                    document_page_url=f"conversation/{conversation_id}",
+                    doc_id=f"conv:{conversation_id}",
+                    chunk_id = None,
+                    source_cluster_id = None,
+                    insertion_method="tool_call",
+                    page_number=1, start_char=0, end_char=1,
+                    excerpt="tool_call entry point", context_before="", context_after="",
+                    verification=MentionVerification(method="system", is_verified=True, score=1.0, notes="link")
+                )
+            ])],
+            metadata={"char_distance_from_last_summary": prev_turn_meta_summary.prev_node_char_distance_from_last_summary,
+                            "turn_distance_from_last_summary": prev_turn_meta_summary.prev_node_distance_from_last_summary,
+                            "tail_turn_index":prev_turn_meta_summary.tail_turn_index},
+            source_edge_ids=[],
+            target_edge_ids=[]
+        )
+        self.conversation_engine.add_edge(edge)
     def gen_machine_response_turns(self, user_id, conversation_id, turn_node_id, new_index,
                                    embedding, content: str, 
                                    filtering_callback: Callable[..., tuple[RetrievalResult, str]], 
@@ -930,10 +965,10 @@ class ConversationOrchestrator:
                     handler=mem_retriever.retrieve,
                     render_result=lambda r: getattr(r, "reasoning", "")[:800],
                     prev_turn_meta_summary=prev_turn_meta_summary,
-                    prev_node = prev_node,
+                    prev_node=prev_node,
+                    orchestrator=self,
                 )
-                if type(mem) is dict:
-                    mem = MemoryRetrievalResult(mem)
+                # self.join_tool_node_to_turn(conversation_id, call_node, turn_node_id, prev_turn_meta_summary)
                 st.memory = mem
                 kg_args = dict(
                         user_text=content,
@@ -958,8 +993,10 @@ class ConversationOrchestrator:
                     
                     handler=kg_retriever.retrieve,
                     render_result=lambda r: getattr(r, "reasoning", "")[:800],
-                    prev_turn_meta_summary=prev_turn_meta_summary
+                    prev_turn_meta_summary=prev_turn_meta_summary,
+                    orchestrator=self,
                 )
+                # self.join_tool_node_to_turn(conversation_id, kg_call_node, turn_node_id, prev_turn_meta_summary)
                 if type(kg) is dict:
                     kg = KnowledgeRetrievalResult(kg)
                 st.knowledge = kg

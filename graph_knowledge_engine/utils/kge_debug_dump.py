@@ -269,6 +269,7 @@ def main() -> None:
 if __name__ == "__main__":
     main()
 
+# dump app data
 # python graph_knowledge_engine\utils\kge_debug_dump.py bundle \
 #    --kg-persist-dir C:\Users\chanh\AppData\Local\Temp\pytest-of-chanh\pytest-793\test_workflow_runtime_uses_def0\kg \
 #    --conversation-persist-dir C:\Users\chanh\AppData\Local\Temp\pytest-of-chanh\pytest-793\test_workflow_runtime_uses_def0\conv \
@@ -277,7 +278,7 @@ if __name__ == "__main__":
 #    --out-dir C:\Users\chanh\AppData\Local\Temp\pytest-of-chanh\pytest-793\bundle \
 #    --cdc-ws-url ws://127.0.0.1:8787/changes/ws \
 
-
+# dump a CDC listener one graph
 # python graph_knowledge_engine/utils/kge_debug_dump.py \
 #   --persist-dir ./chroma_db \
 #   --graph-type knowledge \

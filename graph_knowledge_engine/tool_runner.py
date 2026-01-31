@@ -18,10 +18,13 @@ from typing import TYPE_CHECKING, Any, Callable, Optional, TypeVar, Iterable, Tu
 
 from pydantic import Json
 
+
 from .models import BaseToolResult, ConversationNode, ConversationEdge, Grounding, MentionVerification, Span
-from graph_knowledge_engine.models import MetaFromLastSummary
 if TYPE_CHECKING:
+    from graph_knowledge_engine.models import MetaFromLastSummary
     from graph_knowledge_engine.engine import GraphKnowledgeEngine
+    from graph_knowledge_engine.conversation_orchestrator import ConversationOrchestrator
+
 T = TypeVar("T", bound = BaseToolResult)
 
 
@@ -42,6 +45,8 @@ class ToolRunner:
     def __init__(self, *, tool_call_id_factory, conversation_engine: GraphKnowledgeEngine) -> None:
         self.engine = conversation_engine
         self.tool_call_id_factory :Callable[..., str]= tool_call_id_factory
+    def join_tool_node_to_turn(self, orchestrator: ConversationOrchestrator, conversation_id, call_node, turn_node_id, prev_turn_meta_summary):
+        orchestrator.join_tool_node_to_turn(conversation_id, call_node.safe_get_id(), turn_node_id, prev_turn_meta_summary)
     def run_tool(
         self,
         *,
@@ -55,7 +60,8 @@ class ToolRunner:
         handler: Callable[..., T],
         prev_turn_meta_summary: MetaFromLastSummary,
         render_result: Optional[Callable[[T], str]] = None,
-        prev_node: ConversationNode | None = None
+        prev_node: ConversationNode | None = None,
+        orchestrator: ConversationOrchestrator | None = None
     ) -> Tuple[T, str]:
         """Execute a tool handler and record tool_call/tool_result nodes."""
         last_node = self.engine._get_conversation_tail(conversation_id)
@@ -110,15 +116,16 @@ class ToolRunner:
         self.engine.add_node(call_node, None)
         prev_turn_meta_summary.prev_node_char_distance_from_last_summary+= len(call_node_content)
         prev_turn_meta_summary.prev_node_distance_from_last_summary+= 1
-        
+        if orchestrator:
+            self.join_tool_node_to_turn(orchestrator, conversation_id, call_node, turn_node_id, prev_turn_meta_summary)
         # Execute
         try:
             result: BaseToolResult = handler(**kwargs)
         except Exception as _e:
             result: BaseToolResult = handler(**kwargs)
         if result:
-          if n := result.get('node_id_entry'):
-            n: ConversationNode
+          if tn := result.node_id_entry:
+            n: ConversationNode = self.engine.get_nodes([tn], node_type = ConversationNode)[0]
             self_span = Span(
                 collection_page_url=f"conversation/{conversation_id}",
                 document_page_url=f"conversation/{conversation_id}#{n.safe_get_id()}",
@@ -155,7 +162,7 @@ class ToolRunner:
                                            "turn_distance_from_last_summary": 0,
                                            "entity_type": "tool-call->details",
                                            "in_conversation": False,
-                                        #    "tail_turn_index": state["prev_turn_meta_summary"]["tail_turn_index"]
+                                        
                                            },
                                  )
             self.engine.add_edge(e)
@@ -260,7 +267,7 @@ class ToolRunner:
                                            "turn_distance_from_last_summary": 0,
                                            "entity_type": "tool-call->tool-result",
                                            "in_conversation": False,
-                                        #    "tail_turn_index": state["prev_turn_meta_summary"]["tail_turn_index"]
+                                        
                                            },
                                  )
         self.engine.add_edge(e)

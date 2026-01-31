@@ -5,7 +5,7 @@ from langchain_core.language_models import BaseChatModel
 import pathlib
 import time
 from . import models
-from .models import AddTurnResult, MetaFromLastSummary, RetrievalResult, WorkflowCheckpointNode
+from .models import AddTurnResult, MetaFromLastSummary, RetrievalResult, WorkflowCheckpointNode, WorkflowNode, WorkflowStepExecNode
 from .engine_sqlite import EngineSQLite
 
 if True:
@@ -118,6 +118,8 @@ T = TypeVar("T", Node, Edge)
 # TT= TypeVar("TT", Type[Node], Type[Edge])
 TNode = TypeVar("TNode", bound=Node)
 TEdge = TypeVar("TEdge", bound=Edge)
+AnyNode=Union[Node, ConversationNode, WorkflowNode, WorkflowStepExecNode, WorkflowStepExecNode]
+TAnyNode = TypeVar("TAnyNode", bound=AnyNode)
 
 def _refs_hash(refs) -> str:
     

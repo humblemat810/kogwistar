@@ -894,7 +894,7 @@ class WorkflowRuntime:
             #                                "target_id":result.conversation_node_id,
             #                                "char_distance_from_last_summary": 0,
             #                                "turn_distance_from_last_summary": 0,
-            #                             #    "tail_turn_index": state["prev_turn_meta_summary"]["tail_turn_index"]
+            #                             
             #                                },
             #                      )
             # self.conversation_engine.add_edge(e)
@@ -933,7 +933,7 @@ class WorkflowRuntime:
                                            "target_id":[n.safe_get_id()],
                                            "char_distance_from_last_summary": 0,
                                            "turn_distance_from_last_summary": 0,
-                                        #    "tail_turn_index": state["prev_turn_meta_summary"]["tail_turn_index"]
+                                        
                                            },
                                  )
             self.conversation_engine.add_edge(e)
@@ -972,7 +972,7 @@ class WorkflowRuntime:
                                            "target_id":[result.conversation_node_id],
                                            "char_distance_from_last_summary": 0,
                                            "turn_distance_from_last_summary": 0,
-                                        #    "tail_turn_index": state["prev_turn_meta_summary"]["tail_turn_index"]
+                                        
                                            },)
             
             self.conversation_engine.add_edge(e)
@@ -1048,7 +1048,7 @@ class WorkflowRuntime:
                                            "target_id":[n.safe_get_id()],
                                            "char_distance_from_last_summary": 0,
                                            "turn_distance_from_last_summary": 0,
-                                        #    "tail_turn_index": state["prev_turn_meta_summary"]["tail_turn_index"]
+                                        
                                            },
                                  )
         self.conversation_engine.add_edge(e)

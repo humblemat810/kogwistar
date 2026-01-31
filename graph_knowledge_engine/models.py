@@ -838,8 +838,8 @@ class RetrievalResult:
     nodes: List[Node]
     edges: List[Edge]
 @dataclass
-class BaseToolResult(TypedDict):
-    node_id_entry: str | None
+class BaseToolResult():
+    node_id_entry: str | None # if a tool has created 1 or network of connected node, an entry point of reference
 
 @dataclass(kw_only=True)
 class MemoryRetrievalResult(BaseToolResult):

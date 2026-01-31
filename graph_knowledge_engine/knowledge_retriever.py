@@ -8,6 +8,7 @@ from langchain_core.language_models import BaseChatModel
 from graph_knowledge_engine.agentic_answering import snapshot_hash
 from graph_knowledge_engine.engine import GraphKnowledgeEngine
 from graph_knowledge_engine.models import KnowledgeRetrievalResult, RetrievalResult
+from graph_knowledge_engine.id_provider import stable_id
 
 from .models import ConversationNode, ConversationEdge, FilteringResult, Grounding, MetaFromLastSummary, Span
 
@@ -140,9 +141,9 @@ class KnowledgeRetriever:
             selected, reasoning = self.filtering_callback(self.llm, user_text, cand_node_list_str, cand_edge_list_str, 
                                                           [i.id for i in candidates.nodes],
                                                           [i.id for i in candidates.edges], context_text)
-            return KnowledgeRetrievalResult(candidate=candidates, selected=selected, reasoning=reasoning)
+            return KnowledgeRetrievalResult(node_id_entry=None, candidate=candidates, selected=selected, reasoning=reasoning)
         else:
-            return KnowledgeRetrievalResult(candidate=RetrievalResult(nodes = [], edges = []), 
+            return KnowledgeRetrievalResult(node_id_entry=None, candidate=RetrievalResult(nodes = [], edges = []), 
                                             selected=FilteringResult(node_ids = [], edge_ids = []),  
                                             reasoning=reasoning)
         
@@ -211,7 +212,7 @@ class KnowledgeRetriever:
             sh = snapshot_hash(snap)
             prev_turn_meta_summary.tail_turn_index += 1
             ptr_node = ConversationNode(
-                id=None,
+                id=None or str(stable_id("knowledge_pin_node", turn_node_id, kg.safe_get_id())),
                 label=f"Ref: {kg_meta.get('label')}",
                 type="reference_pointer",
                 doc_id=None,
@@ -243,13 +244,13 @@ class KnowledgeRetriever:
                 
             )
             
-            ptr_id = cast(str, ptr_node.id)
+            ptr_id = ptr_node.safe_get_id()
             self.conversation_engine.add_node(ptr_node)
             pinned_pointer_node_ids.append(ptr_id)
             
             # edge_id = str(uuid.uuid4())
             edge = ConversationEdge(
-                id=None,
+                id=str(stable_id("knowledge_pin_edge", turn_node_id, ptr_node.safe_get_id())),
                 source_ids=[turn_node_id],
                 target_ids=[ptr_id],
                 relation="references",
