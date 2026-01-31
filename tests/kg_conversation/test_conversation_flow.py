@@ -1,7 +1,9 @@
 import json
+from pathlib import Path
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.prompts import ChatPromptTemplate
+from graph_knowledge_engine.cdc.oplog import OplogWriter
 from graph_knowledge_engine.engine import GraphKnowledgeEngine
 from graph_knowledge_engine.models import FilteringResult, MetaFromLastSummary, Node, Span, Grounding, MentionVerification, ConversationNode
 from langchain_core.messages import AIMessage
@@ -22,6 +24,12 @@ def tool_id_factory(prefix: str = "tool-id"):
 def cached(memory: Memory, fn: Callable[P, R], *args, **kwargs) -> Callable[P, R]:
     return cast(Callable[P, R], memory.cache(fn, *args, **kwargs))
 def test_conversation_flow(engine:GraphKnowledgeEngine, conversation_engine:GraphKnowledgeEngine):
+    # wf_dir = tmp_path / "wf"
+    # conv_dir = tmp_path / "conv"
+    # kg_dir = tmp_path / "kg"
+    
+    engine._oplog = OplogWriter(Path(".") / "bundle" / "kg_changes.jsonl", fsync=False)
+    conversation_engine._oplog = OplogWriter(Path(".") / "bundle" / "conv_changes.jsonl", fsync=False)
     user_id = "test_conversation_flow::test_user"
     # my_factory = tool_id_factory()
     my_factory = stable_id
@@ -76,6 +84,7 @@ def test_conversation_flow(engine:GraphKnowledgeEngine, conversation_engine:Grap
         embeddings=[[0.1]*384], # Dummy embedding
         metadatas=[meta]
     )
+    engine.add_node(n1) 
     engine.add_node(n2) 
     # Mock embedding function to return same dimension
     # conversation_engine._ef = lambda x: [[0.1]*384 for _ in x]
@@ -146,7 +155,7 @@ def test_conversation_flow(engine:GraphKnowledgeEngine, conversation_engine:Grap
     # Verify Reference (FakeLLM returns ['N1'])
     # The code: relevant_kg_ids = ['N1'] -> creates reference node -> creates edge
     ref_nodes = conversation_engine.node_collection.get(where={"entity_type": "knowledge_reference"})
-    from pathlib import Path
+    
     
     # template_html = Path("graph_knowledge_engine/templates/d3.html").read_text(encoding="utf-8")
     # out_dir = Path(".") / "bundle"
