@@ -346,10 +346,13 @@ class WorkflowRuntime:
         self.max_workers = max_workers
         self.state_lock : dict[RunID, Lock] = {} # look up of run specific state lock
         # somewhere in your runtime init (or run())
-        self.sink = SQLiteEventSink(
-            db_path=str(pathlib.Path(conversation_engine.persist_directory) / "wf_trace.sqlite"),
-            drop_when_full=True,  # trace can be best-effort; set False if you want backpressure
-        )
+        if getattr(workflow_engine, "persist_directory", None) is not None:
+            self.sink = SQLiteEventSink(
+                db_path=str(pathlib.Path(workflow_engine.persist_directory) / "wf_trace.sqlite"),
+                drop_when_full=True,  # trace can be best-effort; set False if you want backpressure
+            )
+        else:
+            self.sink = None
         self.emitter = EventEmitter(sink=self.sink, logger=logging.getLogger("workflow.trace"))
     def apply_state_update(self, mute_state: WorkflowState, state_update: list[tuple[str, dict[str, Any]]] | list[StateUpdate]):
         # inplace update state
