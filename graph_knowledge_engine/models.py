@@ -1382,7 +1382,7 @@ class WorkflowEdge(Edge):
         return v
     @property
     def predicate(self):
-        return self.metadata.get('wf_predicate')
+        return str(self.metadata.get('wf_predicate'))
     @property
     def multiplicity(self):
         return self.metadata.get('wf_multiplicity')

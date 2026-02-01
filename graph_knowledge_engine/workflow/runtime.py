@@ -6,7 +6,10 @@ import queue
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, List, Optional, Tuple, cast
 from concurrent.futures import ThreadPoolExecutor
+import pathlib
+import logging
 
+from graph_knowledge_engine.id_provider import stable_id
 from ..conversation_orchestrator import get_id_for_conversation_turn_edge
 from graph_knowledge_engine.models import WorkflowNode, MentionVerification, ConversationEdge, WorkflowEdge, WorkflowRunNode
 
@@ -190,7 +193,10 @@ from typing import Dict, List, Mapping, TypedDict, Iterator, TypeVar
 from types import MappingProxyType
 import threading
 import queue
-
+@dataclass
+class RouteDecision:
+    evaluated: list[tuple[str, bool]]        # (predicate_name, ok)
+    selected: list[tuple[str, str, str]] 
 
 class _StateWriteTxn:
     def __init__(self, ctx: "StepContext"):
@@ -212,12 +218,18 @@ from typing import Dict, List, Mapping
 from types import MappingProxyType
 import threading, queue
 
+from .telemetry import TraceContext, SQLiteEventSink, EventEmitter, bind_logger, BoundLoggerAdapter
+
 @dataclass
 class StepContext:
     run_id: str
     workflow_id: str
     workflow_node_id: str
     op: str
+    token_id: str
+    conversation_id: str
+    turn_node_id: str
+    attempt: int
     # Accept `state=` in __init__ but don't store it as a field
     state: InitVar["WorkflowState"]
 
@@ -250,6 +262,17 @@ class StepContext:
             except queue.Empty:
                 break
         return out
+    @property
+    def conv_trace_ctx(self) -> TraceContext:
+        return TraceContext(
+            run_id=self.run_id,
+            token_id=self.token_id,
+            step_seq=self.step_seq,
+            node_id=self.workflow_node_id,
+            attempt=1,
+            conversation_id=self.conversation_id,
+            turn_node_id=self.turn_node_id,
+        )
 
 def _now_ms() -> int:
     return int(time.time() * 1000)
@@ -303,6 +326,12 @@ class WorkflowRuntime:
         self.checkpoint_every_n_steps = max(1, int(checkpoint_every_n_steps))
         self.max_workers = max_workers
         self.state_lock : dict[RunID, Lock] = {} # look up of run specific state lock
+        # somewhere in your runtime init (or run())
+        self.sink = SQLiteEventSink(
+            db_path=str(pathlib.Path(conversation_engine.persist_directory) / "wf_trace.sqlite"),
+            drop_when_full=True,  # trace can be best-effort; set False if you want backpressure
+        )
+        self.emitter = EventEmitter(sink=self.sink, logger=logging.getLogger("workflow.trace"))
     def apply_state_update(self, mute_state: WorkflowState, state_update: list[tuple[str, dict[str, Any]]] | list[StateUpdate]):
         # inplace update state
         for update_item in state_update:
@@ -476,12 +505,15 @@ class WorkflowRuntime:
         else:
             start_mask = int(_may_reach_join.get(start_id, 0))
             _inc(start_mask)
-            t = (str(start_id), int(start_mask), uuid.uuid4().hex, None)
+            t = (str(start_id), 
+                 int(start_mask), 
+                 run_id, #uuid.uuid4().hex, # token_id = run-id 
+                 None)
             pending_tokens.add(t)
             scheduled_q.put(t)
             _persist_rt_join_runtime()
 
-        def worker(node_id: str, state, token_id: str, parent_token_id: str | None, step_seq: int, mask: int) -> None:
+        def worker(node_id: str, state: WorkflowState, token_id: str, parent_token_id: str | None, step_seq: int, mask: int) -> None:
             wn: WorkflowNode
             wn = nodes[node_id]
             op = nodes[node_id].op
@@ -496,9 +528,15 @@ class WorkflowRuntime:
                     op=op,
                     state=state,
                     message_queue=mq,
-                    step_seq = step_seq
+                    step_seq = step_seq,
+                    token_id = token_id,
+                    conversation_id=state.get("conversation_id"),
+                    turn_node_id=state.get("turn_node_id"),
+                    attempt=1,
                 )
+                self.emitter.step_started(ctx.conv_trace_ctx)
                 res: RunResult = fn(ctx)
+                
             except Exception as e:
                 status = "error"
                 res = RunFailure(conversation_node_id = None, status = "failure", errors = [str(e)], state_update = [])
@@ -648,7 +686,7 @@ class WorkflowRuntime:
 
                 # continuation token
                 first = True
-                for nxt in next_nodes:
+                for i_fanout, nxt in next_nodes:
                     nxt = str(nxt)
                     nxt_mask = int(_may_reach_join.get(nxt, 0))
 
@@ -667,7 +705,7 @@ class WorkflowRuntime:
                         first = False
                     else:
                         # fanout child gets a NEW token_id
-                        child_token_id = uuid.uuid4().hex
+                        child_token_id = stable_id("token_id", f"{parent_token_id}/{step_seq_current}:{i_fanout}:{nxt}").hex #uuid.uuid4().hex
                         t = (str(nxt), int(nxt_mask), child_token_id, str(token_id))
 
                         try:
@@ -707,7 +745,7 @@ class WorkflowRuntime:
         #   3) finally, pick any is_default edge
 
         matched: List[str] = []
-
+        route_decision = RouteDecision([],[])
         # (1) explicit predicates
         for e in edges:
             if e.predicate is None:
