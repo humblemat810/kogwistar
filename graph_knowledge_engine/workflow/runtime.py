@@ -193,10 +193,7 @@ from typing import Dict, List, Mapping, TypedDict, Iterator, TypeVar
 from types import MappingProxyType
 import threading
 import queue
-@dataclass
-class RouteDecision:
-    evaluated: list[tuple[str, bool]]        # (predicate_name, ok)
-    selected: list[tuple[str, str, str]] 
+
 
 class _StateWriteTxn:
     def __init__(self, ctx: "StepContext"):
@@ -221,26 +218,47 @@ import threading, queue
 from .telemetry import TraceContext, SQLiteEventSink, EventEmitter, bind_logger, BoundLoggerAdapter
 
 @dataclass
+class RouteDecision:
+    """Structured routing outcome used for trace emission.
+
+    evaluated: list of (edge_id_with_predicate, ok) entries for every predicate/base evaluation attempted.
+    selected:  list of (edge_id, to_node_id, reason) entries for chosen edges.
+    """
+    evaluated: List[Tuple[str, bool]]
+    selected: List[Tuple[str, str, str]]
+
+
+@dataclass
 class StepContext:
+    # --- execution identity ---
     run_id: str
     workflow_id: str
     workflow_node_id: str
     op: str
     token_id: str
-    conversation_id: str
-    turn_node_id: str
     attempt: int
-    # Accept `state=` in __init__ but don't store it as a field
-    state: InitVar["WorkflowState"]
+    step_seq: int
 
-    message_queue: "queue.Queue[Dict[str, Json]]"
-    step_seq : int
+    # --- optional provenance (may be None for non-conversational workloads) ---
+    conversation_id: str | None = None
+    turn_node_id: str | None = None
+
+    # --- runtime capabilities ---
+    message_queue: "queue.Queue[Dict[str, Json]]" = field(repr=False, default_factory=queue.Queue)
+    events: EventEmitter | None = field(repr=False, default=None)
+
+    # Accept `state=` in __init__ but don't store it as a field
+    state: InitVar["WorkflowState"] = None  # type: ignore[assignment]
+
     # real storage
     _state: "WorkflowState" = field(init=False, repr=False)
     _state_lock: threading.RLock = field(default_factory=threading.RLock, init=False, repr=False)
+    log: BoundLoggerAdapter = field(init=False, repr=False)
 
     def __post_init__(self, state: "WorkflowState") -> None:
         self._state = state
+        # bind a correlated logger for resolver-level details
+        self.log = bind_logger(logging.getLogger("workflow.resolver"), self.trace_ctx)
 
     @property
     def state_view(self) -> Mapping[str, Json]:
@@ -255,24 +273,25 @@ class StepContext:
 
     def drain(self, max_items: int = 200) -> List[Dict[str, Json]]:
         raise Exception("current design does not allow mq drained in context, but only by orchestrator")
-        out: List[Dict[str, Json]] = []
-        for _ in range(max_items):
-            try:
-                out.append(self.message_queue.get_nowait())
-            except queue.Empty:
-                break
-        return out
+
     @property
-    def conv_trace_ctx(self) -> TraceContext:
+    def trace_ctx(self) -> TraceContext:
+        # generic trace context; conversation_id/turn_node_id may be None
         return TraceContext(
             run_id=self.run_id,
             token_id=self.token_id,
             step_seq=self.step_seq,
             node_id=self.workflow_node_id,
-            attempt=1,
+            attempt=self.attempt,
             conversation_id=self.conversation_id,
             turn_node_id=self.turn_node_id,
         )
+
+    # Back-compat alias: older code used conv_trace_ctx
+    @property
+    def conv_trace_ctx(self) -> TraceContext:
+        return self.trace_ctx
+
 
 def _now_ms() -> int:
     return int(time.time() * 1000)
@@ -480,6 +499,20 @@ class WorkflowRuntime:
             turn_node_id=turn_node_id,
             status="running",
         )
+        # trace: workflow run started
+        try:
+            tc_run = TraceContext(
+                run_id=str(run_id),
+                token_id=str(run_id),  # root token id is run_id for now
+                step_seq=0,
+                node_id=str(start_id) if 'start_id' in locals() else "start",
+                attempt=1,
+                conversation_id=str(conversation_id) if conversation_id is not None else None,
+                turn_node_id=str(turn_node_id) if turn_node_id is not None else None,
+            )
+            self.emitter.emit(type="workflow_run_started", ctx=tc_run, payload={"workflow_id": str(workflow_id)})
+        except Exception:
+            pass
         state_mutex_lock: threading.Lock = threading.Lock()
         scheduled_q: queue.Queue[Tuple[str, int, str, str | None]] = queue.Queue()  # (node_id, mask, token_id, parent_token_id)
         pending_tokens: set[tuple[str, int, str, str | None]] = set()
@@ -522,29 +555,38 @@ class WorkflowRuntime:
             try:
                 fn: Callable[..., RunResult] = self.step_resolver(op)
                 ctx = StepContext(
-                    run_id=run_id,
-                    workflow_id=workflow_id,
-                    workflow_node_id=node_id,
-                    op=op,
+                    run_id=str(run_id),
+                    workflow_id=str(workflow_id),
+                    workflow_node_id=str(node_id),
+                    op=str(op),
+                    token_id=str(token_id),
+                    attempt=1,
+                    step_seq=int(step_seq),
+                    conversation_id=str(conversation_id) if conversation_id is not None else None,
+                    turn_node_id=str(turn_node_id) if turn_node_id is not None else None,
                     state=state,
                     message_queue=mq,
-                    step_seq = step_seq,
-                    token_id = token_id,
-                    conversation_id=state.get("conversation_id"),
-                    turn_node_id=state.get("turn_node_id"),
-                    attempt=1,
+                    events=self.emitter,
                 )
-                self.emitter.step_started(ctx.conv_trace_ctx)
+                # step attempt start
+                self.emitter.step_started(ctx.trace_ctx)
+
                 res: RunResult = fn(ctx)
-                
+                status = "ok" if getattr(res, "status", None) != "failure" else "failure"
+
             except Exception as e:
                 status = "error"
-                res = RunFailure(conversation_node_id = None, status = "failure", errors = [str(e)], state_update = [])
+                res = RunFailure(conversation_node_id=None, status="failure", errors=[str(e)], state_update=[])
             try:
                 mq.put_nowait(res.model_dump())
             except queue.Full as _e:
                 raise
             t1 = _now_ms()
+            # step attempt complete (best-effort; never break worker)
+            try:
+                self.emitter.step_completed(ctx.trace_ctx, status=str(status), duration_ms=max(0, t1 - t0))
+            except Exception:
+                pass
             done_q.put((node_id, res, max(0, t1 - t0), token_id, parent_token_id, status, mask))
 
         inflight: Dict[tuple[str, int, str], Any] = {}
@@ -554,6 +596,12 @@ class WorkflowRuntime:
                 if not inflight and scheduled_q.empty() and done_q.empty():
                     # done
                     self._update_workflow_run_status(conversation_id, run_id, "done")
+                    # trace: workflow run completed
+                    try:
+                        tc_done = TraceContext(run_id=str(run_id), token_id=str(run_id), step_seq=int(step_seq), node_id="run", attempt=1, conversation_id=str(conversation_id) if conversation_id is not None else None, turn_node_id=str(turn_node_id) if turn_node_id is not None else None)
+                        self.emitter.emit(type="workflow_run_completed", ctx=tc_done, payload={"workflow_id": str(workflow_id)})
+                    except Exception:
+                        pass
                     return state, run_id     
                 # schedule while capacity
                 while len(inflight) < self.max_workers:
@@ -571,16 +619,62 @@ class WorkflowRuntime:
                             # token reached the join -> no longer "before" this join
                             _dec(join_bit)
                             mask = _mask_without_join(mask, nid)
+                            # trace: token arrived at join (it is no longer 'before' this join)
+                            try:
+                                join_idx = _join_pos.get(nid)
+                                outstanding = int(_join_outstanding[join_idx]) if join_idx is not None else 0
+                                tcj = TraceContext(
+                                    run_id=str(run_id),
+                                    token_id=str(token_id),
+                                    step_seq=int(step_seq),
+                                    node_id=str(nid),
+                                    attempt=1,
+                                    conversation_id=str(conversation_id) if conversation_id is not None else None,
+                                    turn_node_id=str(turn_node_id) if turn_node_id is not None else None,
+                                )
+                                self.emitter.join_event(tcj, join_node_id=str(nid), kind="arrived", outstanding=outstanding)
+                            except Exception:
+                                pass
 
                         _join_waiters[nid].append(mask)
                         _persist_rt_join_runtime()
+                        # trace: token waiting at join
+                        try:
+                            join_idx = _join_pos.get(nid)
+                            outstanding = int(_join_outstanding[join_idx]) if join_idx is not None else 0
+                            tcj = TraceContext(
+                                run_id=str(run_id),
+                                token_id=str(token_id),
+                                step_seq=int(step_seq),
+                                node_id=str(nid),
+                                attempt=1,
+                                conversation_id=str(conversation_id) if conversation_id is not None else None,
+                                turn_node_id=str(turn_node_id) if turn_node_id is not None else None,
+                            )
+                            self.emitter.join_event(tcj, join_node_id=str(nid), kind="waiting", outstanding=outstanding)
+                        except Exception:
+                            pass
 
                         # Release join when no more tokens are outstanding BEFORE it.
                         # We merge all waiting tokens into ONE continuation token.
                         join_idx = _join_pos.get(nid)
                         if _join_is_merge[nid]:
                             if join_idx is not None and _join_outstanding[join_idx] == 0:
-                                
+                                # trace: join released (all outstanding tokens before join have arrived)
+                                try:
+                                    tcj = TraceContext(
+                                        run_id=str(run_id),
+                                        token_id=str(token_id),
+                                        step_seq=int(step_seq),
+                                        node_id=str(nid),
+                                        attempt=1,
+                                        conversation_id=str(conversation_id) if conversation_id is not None else None,
+                                        turn_node_id=str(turn_node_id) if turn_node_id is not None else None,
+                                    )
+                                    self.emitter.join_event(tcj, join_node_id=str(nid), kind="released", outstanding=0)
+                                except Exception:
+                                    pass
+
                                 wait_masks = _join_waiters[nid]
                                 _join_waiters[nid] = []
 
@@ -667,6 +761,16 @@ class WorkflowRuntime:
                             state=state,
                             last_exec_node=last_exec_node,
                         )
+
+                        try:
+
+                            tc_ck = TraceContext(run_id=str(run_id), token_id=str(token_id), step_seq=int(step_seq_current), node_id=str(node_id), attempt=1, conversation_id=str(conversation_id), turn_node_id=str(turn_node_id))
+
+                            self.emitter.emit(type="checkpoint_saved", ctx=tc_ck, payload={"step_seq": int(step_seq_current)})
+
+                        except Exception:
+
+                            pass
                     continue
 
                 edges = adj.get(node_id, [])
@@ -692,8 +796,20 @@ class WorkflowRuntime:
                             "next_nodes": [str(x) for x in (next_nodes or [])],
                         },
                     )
-                except Exception:
+                    # Also emit per-evaluation/per-selection events for telemetry consumers
+                    for pred_name, ok in getattr(route_decision, "evaluated", []):
+                        try:
+                            self.emitter.predicate_evaluated(tc, predicate=str(pred_name), value=bool(ok))
+                        except Exception:
+                            pass
+                    for edge_id, to_node_id, reason in getattr(route_decision, "selected", []):
+                        try:
+                            self.emitter.edge_selected(tc, edge_id=str(edge_id), to_node_id=str(to_node_id), reason=str(reason))
+                        except Exception:
+                            pass
+
                     # Tracing must never break execution
+                except Exception:
                     pass
 
                 if not next_nodes:
@@ -709,6 +825,16 @@ class WorkflowRuntime:
                             state=state,
                             last_exec_node=last_exec_node,
                         )
+
+                        try:
+
+                            tc_ck = TraceContext(run_id=str(run_id), token_id=str(token_id), step_seq=int(step_seq_current), node_id=str(node_id), attempt=1, conversation_id=str(conversation_id), turn_node_id=str(turn_node_id))
+
+                            self.emitter.emit(type="checkpoint_saved", ctx=tc_ck, payload={"step_seq": int(step_seq_current)})
+
+                        except Exception:
+
+                            pass
                     continue
 
                 # continuation token
@@ -744,6 +870,24 @@ class WorkflowRuntime:
                             mq.put_nowait({"type": "token.spawn", "parent_token_id": str(token_id), "child_token_id": child_token_id, "from_node_id": node_id, "to_node_id": str(nxt)})
                         except queue.Full:
                             pass
+                        # trace token spawn
+                        try:
+                            tc_spawn = TraceContext(
+                                run_id=str(run_id),
+                                token_id=str(token_id),
+                                step_seq=int(step_seq_current),
+                                node_id=str(node_id),
+                                attempt=1,
+                                conversation_id=str(conversation_id) if conversation_id is not None else None,
+                                turn_node_id=str(turn_node_id) if turn_node_id is not None else None,
+                            )
+                            self.emitter.emit(
+                                type="token_spawned",
+                                ctx=tc_spawn,
+                                payload={"parent_token_id": str(token_id), "child_token_id": str(child_token_id), "to_node_id": str(nxt)},
+                            )
+                        except Exception:
+                            pass
 
                         # fanout creates a new token (new outstanding obligations)
                         _inc(nxt_mask)
@@ -761,6 +905,16 @@ class WorkflowRuntime:
                         state=state,
                         last_exec_node=last_exec_node,
                     )
+
+                    try:
+
+                        tc_ck = TraceContext(run_id=str(run_id), token_id=str(token_id), step_seq=int(step_seq_current), node_id=str(node_id), attempt=1, conversation_id=str(conversation_id), turn_node_id=str(turn_node_id))
+
+                        self.emitter.emit(type="checkpoint_saved", ctx=tc_ck, payload={"step_seq": int(step_seq_current)})
+
+                    except Exception:
+
+                        pass
         self.state_lock.pop(run_id)
 
     def _route_next(
@@ -1175,4 +1329,4 @@ class WorkflowRuntime:
                                         
                                            },
                                  )
-        self.conversation_engine.add_edge(e)
+            self.conversation_engine.add_edge(e)
