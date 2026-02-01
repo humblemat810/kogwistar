@@ -615,26 +615,28 @@ class WorkflowRuntime:
                     # If this is a join/barrier node, it doesn't execute immediately.
                     if nid in _join_waiters:
                         join_bit = _bit_for_join(nid)
-                        if mask & join_bit:
+                        was_before_join = bool(mask & join_bit)
+                        if was_before_join:
+
                             # token reached the join -> no longer "before" this join
                             _dec(join_bit)
                             mask = _mask_without_join(mask, nid)
-                            # trace: token arrived at join (it is no longer 'before' this join)
-                            try:
-                                join_idx = _join_pos.get(nid)
-                                outstanding = int(_join_outstanding[join_idx]) if join_idx is not None else 0
-                                tcj = TraceContext(
-                                    run_id=str(run_id),
-                                    token_id=str(token_id),
-                                    step_seq=int(step_seq),
-                                    node_id=str(nid),
-                                    attempt=1,
-                                    conversation_id=str(conversation_id) if conversation_id is not None else None,
-                                    turn_node_id=str(turn_node_id) if turn_node_id is not None else None,
-                                )
-                                self.emitter.join_event(tcj, join_node_id=str(nid), kind="arrived", outstanding=outstanding)
-                            except Exception:
-                                pass
+                        # trace: token arrived at join
+                        try:
+                            join_idx = _join_pos.get(nid)
+                            outstanding = int(_join_outstanding[join_idx]) if join_idx is not None else 0
+                            tcj = TraceContext(
+                                run_id=str(run_id),
+                                token_id=str(token_id),
+                                step_seq=int(step_seq),
+                                node_id=str(nid),
+                                attempt=1,
+                                conversation_id=str(conversation_id) if conversation_id is not None else None,
+                                turn_node_id=str(turn_node_id) if turn_node_id is not None else None,
+                            )
+                            self.emitter.join_event(tcj, join_node_id=str(nid), kind="arrived", outstanding=outstanding)
+                        except Exception:
+                            pass
 
                         _join_waiters[nid].append(mask)
                         _persist_rt_join_runtime()
@@ -1329,4 +1331,4 @@ class WorkflowRuntime:
                                         
                                            },
                                  )
-            self.conversation_engine.add_edge(e)
+        self.conversation_engine.add_edge(e)
