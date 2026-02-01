@@ -637,6 +637,9 @@ class WorkflowRuntime:
                     duration_ms=dur_ms,
                     result=run_result,
                     state=state,
+                    token_id=str(token_id),
+                    parent_token_id=(str(parent_token_id) if parent_token_id is not None else None),
+                    join_mask=int(mask),
                     last_exec_node = last_exec_node
                 )
 
@@ -667,7 +670,31 @@ class WorkflowRuntime:
                     continue
 
                 edges = adj.get(node_id, [])
-                next_nodes = self._route_next(edges, state, run_result, wn.fanout)
+                next_nodes, route_decision = self._route_next(edges, state, run_result, wn.fanout)
+
+                # Trace routing decision (includes rejections) at orchestration choke point
+                try:
+                    tc = TraceContext(
+                        run_id=str(run_id),
+                        token_id=str(token_id),
+                        step_seq=int(step_seq_current),
+                        node_id=str(node_id),
+                        attempt=1,
+                        conversation_id=str(conversation_id),
+                        turn_node_id=str(turn_node_id),
+                    )
+                    self.emitter.emit(
+                        type="routing_decision",
+                        ctx=tc,
+                        payload={
+                            "evaluated": [(a, bool(b)) for a, b in getattr(route_decision, 'evaluated', [])],
+                            "selected": [(e, t, r) for e, t, r in getattr(route_decision, 'selected', [])],
+                            "next_nodes": [str(x) for x in (next_nodes or [])],
+                        },
+                    )
+                except Exception:
+                    # Tracing must never break execution
+                    pass
 
                 if not next_nodes:
                     _dec(mask)
@@ -686,7 +713,7 @@ class WorkflowRuntime:
 
                 # continuation token
                 first = True
-                for i_fanout, nxt in next_nodes:
+                for i_fanout, nxt in enumerate(next_nodes):
                     nxt = str(nxt)
                     nxt_mask = int(_may_reach_join.get(nxt, 0))
 
@@ -699,13 +726,18 @@ class WorkflowRuntime:
                             _dec(leaving)
                             _persist_rt_join_runtime()
 
+                        gained = nxt_mask & ~mask
+                        if gained:
+                            _inc(gained)
+                            _persist_rt_join_runtime()
+
                         pending_tokens.add(t)
                         scheduled_q.put(t)
                         _persist_rt_join_runtime()
                         first = False
                     else:
                         # fanout child gets a NEW token_id
-                        child_token_id = stable_id("token_id", f"{parent_token_id}/{step_seq_current}:{i_fanout}:{nxt}").hex #uuid.uuid4().hex
+                        child_token_id = stable_id("token_id", f"{token_id}/{step_seq_current}:{i_fanout}:{nxt}").hex #uuid.uuid4().hex
                         t = (str(nxt), int(nxt_mask), child_token_id, str(token_id))
 
                         try:
@@ -737,35 +769,71 @@ class WorkflowRuntime:
         state: WorkflowState,
         last_result: RunResult,
         fanout: bool,
-    ) -> List[str]:
-        # Waterfall routing:
-        #   1) evaluate explicit edge predicates (e.predicate != None)
-        #   2) if none match, evaluate unconditional edges (e.predicate == None) using BasePredicate
-        #      (i.e., node-level "next_step_names" decision)
-        #   3) finally, pick any is_default edge
+    ) -> tuple[List[str], RouteDecision]:
+        """
+        Waterfall routing:
 
+          1) Evaluate explicit edge predicates (e.predicate != None) in order.
+             - Record *all* predicate evaluations (true/false) into RouteDecision.evaluated.
+             - Select the first matching edge unless fanout/multiplicity allows multiple.
+
+          2) If no predicate edges match, evaluate unconditional edges (e.predicate == None)
+             using BasePredicate (node-level "next_step_names" decision).
+
+          3) If still nothing matches, pick any is_default edge.
+
+        Returns:
+          (next_node_ids, route_decision)
+
+        NOTE: This function is pure with respect to tracing; the caller is responsible
+        for emitting RouteDecision into the trace sink.
+        """
         matched: List[str] = []
-        route_decision = RouteDecision([],[])
+        decision = RouteDecision(evaluated=[], selected=[])
+
+        def _edge_id(e: WorkflowEdge) -> str:
+            return str(getattr(e, "id", None) or getattr(e, "edge_id", None) or f"{getattr(e, 'predicate', None)}->{(getattr(e, 'target_ids', None) or [''])[0]}")
+
+        def _first_target(e: WorkflowEdge) -> Optional[str]:
+            tids = getattr(e, "target_ids", None) or []
+            if not tids:
+                return None
+            return str(tids[0])
+
+        def _stop_on_first(e: WorkflowEdge) -> bool:
+            # stop if not fanout and edge multiplicity is not 'many'
+            return (not fanout) and (getattr(e, "multiplicity", "one") != "many")
+
         # (1) explicit predicates
         for e in edges:
-            if e.predicate is None:
+            if getattr(e, "predicate", None) is None:
                 continue
-            pred = self.predicate_registry.get(e.predicate)
+            tgt = _first_target(e)
+            if tgt is None:
+                continue
+
+            pred_name = str(getattr(e, "predicate", ""))
+            pred = self.predicate_registry.get(pred_name)
             if pred is None:
+                # record missing predicate as rejection (False)
+                decision.evaluated.append((f"{_edge_id(e)}:{pred_name}", False))
                 continue
+
             workflow_info = WorkflowEdgeInfo.from_workflow_edge(e)
             try:
                 ok = bool(pred(workflow_info, state, last_result))
             except Exception:
                 ok = False
-            if ok:
-                matched.append(e.target_ids[0])
-                if not fanout and getattr(e, "multiplicity", "one") != "many":
-                    return matched
 
-        # If we have any matches already, return them (fanout supports multiple)
+            decision.evaluated.append((f"{_edge_id(e)}:{pred_name}", ok))
+            if ok:
+                matched.append(tgt)
+                decision.selected.append((_edge_id(e), tgt, "predicate"))
+                if _stop_on_first(e):
+                    return matched[0:1], decision
+
         if matched:
-            return matched if fanout else matched[0:1]
+            return (matched if fanout else matched[0:1]), decision
 
         # (2) unconditional edges (node-level decision)
         from typing import cast
@@ -773,29 +841,41 @@ class WorkflowRuntime:
 
         node_decider = cast(Predicate, BasePredicate())
         for e in edges:
-            if e.predicate is not None:
-                # IMPORTANT: do NOT apply BasePredicate to predicate edges.
-                # Doing so makes predicate edges always-true and breaks routing.
+            if getattr(e, "predicate", None) is not None:
                 continue
+            tgt = _first_target(e)
+            if tgt is None:
+                continue
+
             workflow_info = WorkflowEdgeInfo.from_workflow_edge(e)
             try:
                 ok = bool(node_decider(workflow_info, state, last_result))
             except Exception:
                 ok = False
+
+            # Record unconditional evaluations too (use a synthetic name)
+            decision.evaluated.append((f"{_edge_id(e)}:<base>", ok))
             if ok:
-                matched.append(e.target_ids[0])
-                if not fanout and getattr(e, "multiplicity", "one") != "many":
-                    return matched
+                matched.append(tgt)
+                decision.selected.append((_edge_id(e), tgt, "base"))
+                if _stop_on_first(e):
+                    return matched[0:1], decision
 
         if matched:
-            return matched if fanout else matched[0:1]
+            return (matched if fanout else matched[0:1]), decision
 
         # (3) default edge
         for e in edges:
-            if getattr(e, "is_default", False):
-                return e.target_ids if fanout else e.target_ids[0:1]
+            if bool(getattr(e, "is_default", False)):
+                tids = [str(x) for x in (getattr(e, "target_ids", None) or [])]
+                if not tids:
+                    continue
+                picked = tids if fanout else tids[0:1]
+                # record default selection once
+                decision.selected.append((_edge_id(e), picked[0], "default"))
+                return picked, decision
 
-        return []
+        return [], decision
 
     # --------------------
     # Persistence helpers (conversation_engine)
@@ -859,6 +939,9 @@ class WorkflowRuntime:
         duration_ms: int,
         result: RunResult,
         state: WorkflowState,
+        token_id: str | None = None,
+        parent_token_id: str | None = None,
+        join_mask: int | None = None,
         last_exec_node: Optional[WorkflowStepExecNode| WorkflowRunNode] = None
     ) -> WorkflowStepExecNode:
         # from graph_knowledge_engine.models import WorkflowStepExecNode, Grounding, Span  # adjust import path
@@ -891,6 +974,9 @@ class WorkflowRuntime:
                 "status": status,
                 "duration_ms": duration_ms,
                 "result_json": result_json,
+                "token_id": token_id,
+                "parent_token_id": parent_token_id,
+                "join_mask": join_mask,
                 "conversation_id": conversation_id,
                 "char_distance_from_last_summary": 0,
                 "turn_distance_from_last_summary": 0,
