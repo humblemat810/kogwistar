@@ -2127,6 +2127,7 @@ class GraphKnowledgeEngine:
         self.backend = ChromaBackend(
             node_collection=self.node_collection,
             edge_collection=self.edge_collection,
+            edge_endpoints_collection=self.edge_endpoints_collection,
         )
         # Chroma has no transaction semantics for vector ops; keep a no-op UoW
         # surface so callers can consistently write `with engine.uow(): ...`.
@@ -2670,7 +2671,7 @@ class GraphKnowledgeEngine:
             ep_ids   = [r["id"] for r in rows]
             ep_docs  = [json.dumps(r) for r in rows]
             ep_metas: list[dict] = rows  # already sanitized (no None)
-            self.edge_endpoints_collection.add(
+            self.backend.edge_endpoints_add(
                 ids=ep_ids,
                 documents=ep_docs,
                 metadatas=ep_metas,
@@ -2770,7 +2771,7 @@ class GraphKnowledgeEngine:
         if insertion_method:
             return self.ids_with_insertion_method(kind="edge", insertion_method=insertion_method, doc_id=doc_id)
         # original behavior via endpoints table:
-        eps = self.edge_endpoints_collection.get(where={"doc_id": doc_id}, include=["metadatas"])
+        eps = self.backend.edge_endpoints_get(where={"doc_id": doc_id}, include=["metadatas"])
         result = set()
         for m in (eps.get("metadatas") or []):
             if m and m.get("edge_id"):
@@ -2805,7 +2806,7 @@ class GraphKnowledgeEngine:
         return changed
     def rebuild_edge_refs_for_doc(self, doc_id: str) -> int:
         # Prefer endpoints index to discover edges touching the doc quickly
-        eps = self.edge_endpoints_collection.get(where={"doc_id": doc_id}, include=["documents"])
+        eps = self.backend.edge_endpoints_get(where={"doc_id": doc_id}, include=["documents"])
         edge_ids = list({json.loads(d)["edge_id"] for d in (eps.get("documents") or [])})
         if not edge_ids:
             return 0
@@ -2900,7 +2901,7 @@ class GraphKnowledgeEngine:
         # also delete their endpoint rows
         # endpoints ids start with f"{edge_id}::"
         # we can delete via where on edge_id for simplicity:
-        self.edge_endpoints_collection.delete(where=cast(dict[str, Any], {"edge_id": {"$in": edge_ids}}))
+        self.backend.edge_endpoints_delete(where=cast(dict[str, Any], {"edge_id": {"$in": edge_ids}}))
     # ----------------------------
     # Vector queries
     # ----------------------------
@@ -3389,7 +3390,7 @@ class GraphKnowledgeEngine:
         # edges: derive by edge_endpoints rows filtered by doc_id
         edge_ids = set()
         try:
-            ee = self.edge_endpoints_collection.get(where={"doc_id": doc_id}, include=["metadatas"])
+            ee = self.backend.edge_endpoints_get(where={"doc_id": doc_id}, include=["metadatas"])
             for m in (ee.get("metadatas") or []):
                 if m and m.get("edge_id"):
                     edge_ids.add(m["edge_id"])
@@ -3453,7 +3454,7 @@ class GraphKnowledgeEngine:
 
             # Always drop this doc’s endpoints rows; they are doc-scoped fanout rows
             try:
-                self.edge_endpoints_collection.delete(where={"edge_id": eid, "doc_id": doc_id})
+                self.backend.edge_endpoints_delete(where={"edge_id": eid, "doc_id": doc_id})
             except Exception:
                 pass
 
@@ -3470,7 +3471,7 @@ class GraphKnowledgeEngine:
                     except Exception:
                         pass
                     try:
-                        self.edge_endpoints_collection.delete(where={"edge_id": eid})
+                        self.backend.edge_endpoints_delete(where={"edge_id": eid})
                     except Exception:
                         pass
                     summary["deleted_edges"] += 1
@@ -3482,7 +3483,7 @@ class GraphKnowledgeEngine:
         except Exception:
             pass
         try:
-            self.edge_endpoints_collection.delete(where={"doc_id": doc_id})
+            self.backend.edge_endpoints_delete(where={"doc_id": doc_id})
         except Exception:
             pass
 
@@ -3587,7 +3588,7 @@ class GraphKnowledgeEngine:
         - For same_as hyperedges: if >=2 nodes remain, rebalance into star; else delete.
         Returns sets of edge IDs: {'deleted_edges': set, 'updated_edges': set}
         """
-        eps = self.edge_endpoints_collection.get(
+        eps = self.backend.edge_endpoints_get(
             where={"$and": [{"endpoint_id": node_id}, {"endpoint_type" : "node"}]}, include=["documents"]
             )
         if not eps["ids"]:
@@ -3612,7 +3613,7 @@ class GraphKnowledgeEngine:
                 edge_deleted, new_edge = self._rebalance_same_as_edge(e, removed_node_id=node_id)
                 if edge_deleted or (new_edge is None):
                     self.edge_collection.delete(ids=[eid])
-                    self.edge_endpoints_collection.delete(where={"edge_id": eid})
+                    self.backend.edge_endpoints_delete(where={"edge_id": eid})
                     removed_edge_ids.add(eid)
                 else:
                     # Update the edge
@@ -3635,7 +3636,7 @@ class GraphKnowledgeEngine:
                     )
                     self._index_edge_refs(new_edge)
                     # Rebuild endpoints from scratch to match new star form
-                    self.edge_endpoints_collection.delete(where={"edge_id": eid})
+                    self.backend.edge_endpoints_delete(where={"edge_id": eid})
                     ep_ids, ep_docs, ep_metas = [], [], []
                     for role, node_ids in (("src", new_edge.source_ids or []), ("tgt", new_edge.target_ids or [])):
                         for nid in node_ids:
@@ -3663,7 +3664,7 @@ class GraphKnowledgeEngine:
                             ep_docs.append(json.dumps(meta_ep))
                             ep_metas.append(meta_ep)
                     if ep_ids:
-                        self.edge_endpoints_collection.add(ids=ep_ids, documents=ep_docs, metadatas=ep_metas, 
+                        self.backend.edge_endpoints_add(ids=ep_ids, documents=ep_docs, metadatas=ep_metas, 
                                                            embeddings=[self._iterative_defensive_emb(d) for d in ep_docs])
                     updated_edge_ids.add(eid)
                 continue
@@ -3675,7 +3676,7 @@ class GraphKnowledgeEngine:
             if not new_src or not new_tgt:
                 # delete the whole edge + its endpoint rows
                 self.edge_collection.delete(ids=[eid])
-                self.edge_endpoints_collection.delete(where={"edge_id": eid})
+                self.backend.edge_endpoints_delete(where={"edge_id": eid})
                 removed_edge_ids.add(eid)
             else:
                 e.source_ids, e.target_ids = new_src, new_tgt
@@ -3696,7 +3697,7 @@ class GraphKnowledgeEngine:
                     })],
                 )
                 # remove only the touched endpoint rows
-                self.edge_endpoints_collection.delete(where={"$and": [{"edge_id": eid}, {"node_id": node_id}]})
+                self.backend.edge_endpoints_delete(where={"$and": [{"edge_id": eid}, {"node_id": node_id}]})
                 updated_edge_ids.add(eid)
                 self._index_edge_refs(e)
 
@@ -3722,14 +3723,14 @@ class GraphKnowledgeEngine:
             updated_edges.update(res["updated_edges"])
         
         # 3) delete edges explicitly created by this document via endpoints table
-        eps = self.edge_endpoints_collection.get(where={"doc_id": document_id})
+        eps = self.backend.edge_endpoints_get(where={"doc_id": document_id})
         eps_doc = eps.get("documents", [])
         if eps_doc is None:
             raise Exception(f"edge endpoint collection lost for document id {document_id}")
         edge_ids = list({json.loads(doc)["edge_id"] for doc in eps_doc})
         if edge_ids:
             self.edge_collection.delete(ids=edge_ids)
-            self.edge_endpoints_collection.delete(where={"doc_id": document_id})
+            self.backend.edge_endpoints_delete(where={"doc_id": document_id})
             self.edge_refs_collection.delete(where={"node_id": {"$in": edge_ids}})
             deleted_edges.update(edge_ids)
         updated_edges = updated_edges - deleted_edges
@@ -3834,7 +3835,7 @@ class GraphKnowledgeEngine:
                 ep_metas.append(meta_ep)
 
         if ep_ids:
-            self.edge_endpoints_collection.add(
+            self.backend.edge_endpoints_add(
                 ids=ep_ids,
                 documents=ep_docs,
                 metadatas=ep_metas,

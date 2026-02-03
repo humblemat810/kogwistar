@@ -84,6 +84,35 @@ class StorageBackend(Protocol):
     def edge_delete(self, *, ids: Sequence[str]) -> None:
         ...
 
+    # ---- edge endpoints (hypergraph incidence materialization) ----
+    def edge_endpoints_add(
+        self,
+        *,
+        ids: Sequence[str],
+        documents: Sequence[str],
+        metadatas: Sequence[JSONDict],
+        embeddings: Optional[Sequence[Sequence[float]]] = None,
+    ) -> None:
+        ...
+
+    def edge_endpoints_get(
+        self,
+        *,
+        ids: Optional[Sequence[str]] = None,
+        where: Optional[JSONDict] = None,
+        include: Optional[list[str]] = None,
+        limit: int = 200,
+    ) -> JSONDict:
+        ...
+
+    def edge_endpoints_delete(
+        self,
+        *,
+        ids: Optional[Sequence[str]] = None,
+        where: Optional[JSONDict] = None,
+    ) -> None:
+        ...
+
 
 @dataclass
 class NoopUnitOfWork(UnitOfWork):
@@ -104,6 +133,7 @@ class ChromaBackend(StorageBackend):
 
     node_collection: Any
     edge_collection: Any
+    edge_endpoints_collection: Any
 
     def node_add(
         self,
@@ -180,3 +210,50 @@ class ChromaBackend(StorageBackend):
 
     def edge_delete(self, *, ids: Sequence[str]) -> None:
         self.edge_collection.delete(ids=list(ids))
+
+    def edge_endpoints_add(
+        self,
+        *,
+        ids: Sequence[str],
+        documents: Sequence[str],
+        metadatas: Sequence[JSONDict],
+        embeddings: Optional[Sequence[Sequence[float]]] = None,
+    ) -> None:
+        kwargs: JSONDict = {
+            "ids": list(ids),
+            "documents": list(documents),
+            "metadatas": list(metadatas),
+        }
+        if embeddings is not None:
+            kwargs["embeddings"] = [list(e) for e in embeddings]
+        self.edge_endpoints_collection.add(**kwargs)
+
+    def edge_endpoints_get(
+        self,
+        *,
+        ids: Optional[Sequence[str]] = None,
+        where: Optional[JSONDict] = None,
+        include: Optional[list[str]] = None,
+        limit: int = 200,
+    ) -> JSONDict:
+        kwargs: JSONDict = {"limit": int(limit)}
+        if ids is not None:
+            kwargs["ids"] = list(ids)
+        if where is not None:
+            kwargs["where"] = dict(where)
+        if include is not None:
+            kwargs["include"] = list(include)
+        return self.edge_endpoints_collection.get(**kwargs)
+
+    def edge_endpoints_delete(
+        self,
+        *,
+        ids: Optional[Sequence[str]] = None,
+        where: Optional[JSONDict] = None,
+    ) -> None:
+        kwargs: JSONDict = {}
+        if ids is not None:
+            kwargs["ids"] = list(ids)
+        if where is not None:
+            kwargs["where"] = dict(where)
+        self.edge_endpoints_collection.delete(**kwargs)
