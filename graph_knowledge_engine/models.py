@@ -588,6 +588,14 @@ class TombstoneMixin(BaseModel):
         return v
 
 class Node(IdPolicyMixin, TombstoneMixin, LevelAwareMixin, ChromaValidateSourceMixin, ChromaMixin, GraphEntityRefBase):
+    """
+    Base **provenance-heavy** knowledge graph node.
+    
+    This is the fundamental unit of the knowledge graph. Unlike typical graph nodes,
+    it enforces strict provenance tracking via `ReferenceSession` (spans, verification).
+    It supports lifecycle management (tombstoning), hierarchy (level awareness),
+    and vector embedding.
+    """
     # Node with ref session enforced and level awareness
     id_kind: ClassVar[str] = "kg.node"
     def safe_get_id(self):
@@ -619,8 +627,12 @@ class Node(IdPolicyMixin, TombstoneMixin, LevelAwareMixin, ChromaValidateSourceM
     #     return self
 
 class ConversationNode(ConversationRoleMixin, Node):
-    """Specialized node for conversation elements.
-    Inherits data schema from Node (via metadata storage) but adds conversation behaviors.
+    """
+    Specialized node for conversation elements, extending the base **knowledge graph**.
+
+    This subclass represents conversation turns, summaries, and system messages
+    as first-class citizens in the graph. It inherits the provenance capabilities of `Node`
+    but adds conversation-specific metadata (role, turn_index, etc.).
     """
     # id_policy: ClassVar[Literal["event", "canonical"]] = "canonical"
     # id_kind: ClassVar[str] = "model"  # override per subclass if you want stable separation
@@ -676,6 +688,13 @@ class ConversationNode(ConversationRoleMixin, Node):
             raise
         return updates
 class Edge(IdPolicyMixin, ChromaValidateSourceMixin, ChromaMixin, EdgeMixin, GraphEntityRefBase):
+    """
+    Base **provenance-heavy** knowledge graph edge.
+
+    Represents a relationship between nodes. Like `Node`, it carries full provenance
+    metadata (where this relationship was asserted), supporting "hypergraph" features
+    via edge-to-edge connections and rich metadata.
+    """
     # Edge with ref session enforced
     id_kind: ClassVar[str] = "kg.edge"
     def safe_get_id(self):
@@ -706,7 +725,12 @@ class Edge(IdPolicyMixin, ChromaValidateSourceMixin, ChromaMixin, EdgeMixin, Gra
     #     self.node_id = stable_id(self.id_kind, *key)
     #     return self
 class ConversationEdge( Edge):
-    """Specialized edge for conversation links (next_turn, references, summarizes)."""
+    """
+    Specialized edge for conversation links, extending the base **knowledge graph**.
+
+    Used for `next_turn` flow, `references` to knowledge, and `summarizes` relationships.
+    Inherits provenance features from `Edge`.
+    """
     metadata: dict#ConversationNodeMetadata
     id_kind: ClassVar[str] = "conversation.edge"
     # id_policy: ClassVar[Literal["event", "canonical"]] = "canonical"
@@ -1348,7 +1372,10 @@ class WorkflowEdgeMetadata(BaseModel):
 
 class WorkflowNode(Node):
     """
-    Typed wrapper for workflow design nodes (persist in workflow_engine).
+    Typed wrapper for **workflow design** nodes, extending the base **knowledge graph**.
+
+    Workflow steps are stored as nodes in the graph. This allows the workflow definition
+    itself to be managed, queried, and verified using the same engine as the knowledge data.
     """
     metadata: dict
     id_kind: ClassVar[str] = "workflow.node"
@@ -1372,7 +1399,10 @@ class WorkflowNode(Node):
         return self.metadata.get('wf_fanout') or False
 class WorkflowEdge(Edge):
     """
-    Stored as a normal Edge, but with workflow edge metadata validation.
+    Typed wrapper for **workflow transitions**, extending the base **knowledge graph**.
+
+    Represents transitions between workflow steps (nodes). Includes metadata for
+    predicates, priority, and branching logic.
     """
     metadata: dict
     id_kind: ClassVar[str] = "workflow.edge"

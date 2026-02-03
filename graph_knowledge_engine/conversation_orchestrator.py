@@ -1,6 +1,7 @@
 """Conversation orchestrator (KGE-native, LangGraph-free).
 
-This module owns *policy + control flow* for conversation turns, while delegating
+This module serves as the **workflow entry point** for conversation interactions.
+It owns *policy + control flow* for conversation turns, while delegating
 all persistence/mutation to the conversation engine.
 
 It is intentionally lightweight and uses your existing retrievers/agents.
@@ -69,7 +70,11 @@ def get_id_for_conversation_turn_edge(id_kind, user_id, conversation_id,content,
     return str(stable_id(id_kind, user_id, conversation_id, content, str(new_index), str(source_ids), str(target_ids), 
                          str(source_edge_ids), str(target_edge_ids), entity_type))
 class ConversationOrchestrator:
-    """KGE-native orchestrator.
+    """KGE-native orchestrator and workflow entry point.
+
+    This class acts as the central coordinator for the conversation workflow.
+    It orchestrates the flow of adding turns (`add_conversation_turn_workflow_v2`),
+    retrieving context (memory/knowledge), and generating responses.
 
     Minimal, surgical refactor:
     - engine.add_conversation_turn(...) stays stable

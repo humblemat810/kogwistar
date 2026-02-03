@@ -324,7 +324,16 @@ def _make_trace_span(*, conversation_id: str, excerpt: str, doc_id: str) -> Any:
 from threading import Lock
 class WorkflowRuntime:
     """
-    Executes a workflow design from workflow_engine and persists run traces to conversation_engine.
+    Core engine for executing graph-based **workflow designs**.
+
+    This runtime:
+    1.  Reads the workflow design (nodes/edges) from the `workflow_engine`.
+    2.  Executes steps using the provided `step_resolver`.
+    3.  Manages state transitions, branching, and join/barrier logic.
+    4.  Persists execution traces (`WorkflowRunNode`, `WorkflowStepExecNode`) and checkpoints
+        to the `conversation_engine` (or whichever engine is designated for traces).
+
+    It is the backend execution engine used by high-level orchestrators like `ConversationOrchestrator`.
     """
 
     def __init__(

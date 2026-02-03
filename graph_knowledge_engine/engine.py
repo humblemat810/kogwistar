@@ -939,7 +939,18 @@ class CustomEmbeddingFunction(EmbeddingFunction):
 @dataclass
 class GraphKnowledgeEngine:
     """
-    Method are generally arranged by low level to high level, from static generic helper to task specific calls
+    The **Base Abstraction** for the knowledge graph/graph database.
+
+    This engine manages the lifecycle of **provenance-heavy primitives** (`Node`, `Edge`).
+    Unlike typical graph databases, every primitive here carries rich metadata about its origin
+    (source document, span, verification status).
+
+    Key responsibilities:
+    - Persisting nodes and edges with full provenance.
+    - Managing extensions like `ConversationNode` and `WorkflowNode` (via subclasses).
+    - Providing low-level to high-level APIs for extraction, storage, and adjudication.
+
+    Methods are generally arranged from low-level generic helpers to task-specific calls.
     High-level orchestration for extracting, storing, and adjudicating knowledge graph data.
     """
 
