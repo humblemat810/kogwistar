@@ -1,5 +1,6 @@
 from __future__ import annotations
 from types import MethodType
+from contextlib import contextmanager
 
 from langchain_core.language_models import BaseChatModel
 import pathlib
@@ -7,6 +8,7 @@ import time
 from . import models
 from .models import AddTurnResult, MetaFromLastSummary, RetrievalResult, WorkflowCheckpointNode, WorkflowNode, WorkflowStepExecNode
 from .engine_sqlite import EngineSQLite
+from .storage_backend import ChromaBackend, NoopUnitOfWork
 
 if True:
     """_summary_
@@ -1017,6 +1019,25 @@ class GraphKnowledgeEngine:
     @embedding_function.setter
     def embedding_function(self, val):
         self._ef = val
+
+    @contextmanager
+    def uow(self):
+        """Unit-of-work boundary for engine persistence.
+
+        Today this wraps the engine's meta SQLite store (seq allocation, future
+        outbox/checkpoints, etc.). In a future Postgres backend, this will wrap
+        a real SQL transaction that may include both meta + vector writes.
+
+        Yields:
+            A SQLite connection for callers that need it, while keeping the
+            calling style stable across backends.
+        """
+        # Note: EngineSQLite already provides safe transactions.
+        # See EngineSQLite.transaction().
+        with self.meta_sqlite.transaction() as conn:
+            # Vector backend transaction (Chroma: no-op; Postgres: real)
+            with self._backend_uow.transaction():
+                yield conn
         
     def _infer_doc_id_from_ref(self, ref: Span) -> Optional[str]:
         """Best-effort: prefer explicit ref.doc_id; else try to parse document_page_url like 'document/<id>'."""
@@ -1991,7 +2012,11 @@ class GraphKnowledgeEngine:
         merge_policy=None,           # callable(left, right, verdict) -> str (canonical_id)
         verifier=None,               # callable(extracted, full_text, ref, **kw) -> ReferenceSession
         kg_graph_type : EngineType = 'knowledge',
-        debug_dir: pathlib.Path | None = None
+        debug_dir: pathlib.Path | None = None,
+        # Advanced: allow the caller to force multiple logical engines to share
+        # the same meta SQLite file (and later: the same Postgres database).
+        meta_sqlite: EngineSQLite | None = None,
+        meta_sqlite_filename: str = "meta.sqlite",
     ):
         """
         embedding_function: callable(texts: List[str]) -> List[List[float]].
@@ -2000,7 +2025,10 @@ class GraphKnowledgeEngine:
           - ENV SENTENCE_TRANSFORMERS_MODEL, or
           - "all-MiniLM-L6-v2".
         """
-        self.meta_sqlite = EngineSQLite(pathlib.Path(persist_directory or "./chroma_db"), 'meta.sqlite')
+        self.meta_sqlite = meta_sqlite or EngineSQLite(
+            pathlib.Path(persist_directory or "./chroma_db"),
+            meta_sqlite_filename,
+        )
         self.meta_sqlite.ensure_initialized()
         self.changes = ChangeBus()
         if cdc_publish_endpoint := os.environ.get('CDC_PUBLISH_ENDPOINT'):
@@ -2089,6 +2117,20 @@ class GraphKnowledgeEngine:
                                 metadata={"hnsw:space": "cosine"})
         self.node_refs_collection = self.chroma_client.get_or_create_collection("node_refs")
         self.edge_refs_collection = self.chroma_client.get_or_create_collection("edge_refs")
+
+        # ----------------------------
+        # Backend adapter (Phase 1)
+        # ----------------------------
+        # Wrap the collections behind a tiny backend interface. This is a
+        # no-behavior-change refactor that makes it possible to add a
+        # Postgres/pgvector backend later.
+        self.backend = ChromaBackend(
+            node_collection=self.node_collection,
+            edge_collection=self.edge_collection,
+        )
+        # Chroma has no transaction semantics for vector ops; keep a no-op UoW
+        # surface so callers can consistently write `with engine.uow(): ...`.
+        self._backend_uow = NoopUnitOfWork()
 
         # self.llm = AzureChatOpenAI(
         #     deployment_name=os.getenv("OPENAI_DEPLOYMENT_NAME_GPT4_1"),
@@ -2397,7 +2439,7 @@ class GraphKnowledgeEngine:
         total_endpoint_count = node_endpoint_count + edge_endpoint_count
         doc = edge.model_dump_json(field_mode='backend', exclude = ['embedding'])
         # main edge row
-        self.edge_collection.add(
+        self.backend.edge_add(
             ids=[edge.id],
             documents=[doc],
             embeddings=[edge.embedding] if edge.embedding is not None else [self._iterative_defensive_emb(str(doc))],
@@ -2455,7 +2497,7 @@ class GraphKnowledgeEngine:
         # lock, col = self.get_collection_lock('node')
         # with lock:
         
-        self.node_collection.add(
+        self.backend.node_add(
             ids=[node.safe_get_id()],
             documents=[doc],
             embeddings=[node.embedding] if node.embedding is not None else [self._iterative_defensive_emb(str(doc))],
