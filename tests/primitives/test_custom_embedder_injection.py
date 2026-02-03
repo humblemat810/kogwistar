@@ -1,6 +1,3 @@
-from chromadb import Client
-from chromadb.config import Settings
-
 class DummyEF:
     def __call__(self, texts):
         # 2D toy embedding
