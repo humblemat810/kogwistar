@@ -253,7 +253,7 @@ def test_tracing_routing_decision_end_to_end(tmp_path: Path):
     # Flush async SQLite writer
     rt.sink.close()
 
-    events = _fetch_events(_trace_db_path(conversation_engine), run_id=run_id)
+    events = _fetch_events(_trace_db_path(workflow_engine), run_id=run_id)
     types = [e["type"] for e in events]
 
     # Lifecycle
@@ -359,7 +359,7 @@ def test_tracing_join_events_end_to_end(tmp_path: Path):
 
     rt.sink.close()
 
-    events = _fetch_events(_trace_db_path(conversation_engine), run_id=run_id)
+    events = _fetch_events(_trace_db_path(workflow_engine), run_id=run_id)
     types = [e["type"] for e in events]
 
     assert "join_arrived" in types, f"join events missing; saw {sorted(set(types))}"
