@@ -194,8 +194,8 @@ from types import MappingProxyType
 import threading
 import queue
 
-
-class RunResult(BaseModel):
+@dataclass
+class RunResult():
     run_id: str
     final_state: WorkflowState
     mq: queue.Queue[Dict[str, Json]]
