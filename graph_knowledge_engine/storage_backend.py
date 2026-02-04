@@ -1,32 +1,27 @@
 from __future__ import annotations
 
-"""Backend abstraction for persistence + vector index.
+"""
+Storage backend abstraction.
 
-This module introduces a small interface layer so `engine.py` can be refactored
-incrementally:
+Goal: remove direct Chroma collection usage from engine.py so we can later plug in
+a Postgres+pgvector backend with the same surface.
 
-Phase 1 goals (what this file provides now)
--------------------------------------------
-* A `StorageBackend` protocol capturing the Chroma operations currently used
-  directly inside `GraphKnowledgeEngine`.
-* A `ChromaBackend` implementation that simply forwards to existing Chroma
-  collections (no behavior change).
-* A `UnitOfWork` context manager surface so callers can write
-  `with engine.uow(): ...` even when the backend is non-transactional.
+This backend is intentionally "thin": it mostly forwards calls to underlying
+stores. Semantics live in engine/runtime, not in the backend.
 
-Phase 2 goals (future)
-----------------------
-* Add `PostgresBackend` implementing the same protocol using SQLAlchemy
-  + pgvector + JSONB.
-* In Postgres mode, `UnitOfWork` will open a real SQL transaction.
-* In Chroma mode, UoW remains a no-op for vector operations, but can still wrap
-  the engine's SQLite meta store (outbox/checkpoints/etc.).
+Key design points:
+- Methods accept **kwargs and forward to the underlying backend implementation.
+- Chroma backend supports the same collection set the engine uses today:
+  node_index, nodes, edges, edge_endpoints, documents, domains, node_docs,
+  node_refs, edge_refs.
+- UnitOfWork exists so engine/runtime can write `with engine.uow(): ...`.
+  In Chroma mode it's a no-op for the vector index; transactions are handled by
+  the meta store (SQLite today, Postgres later).
 """
 
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Any, Dict, Iterator, Optional, Protocol, Sequence
-
+from typing import Any, Dict, Iterator, Optional, Protocol
 
 JSONDict = Dict[str, Any]
 
@@ -37,529 +32,202 @@ class UnitOfWork(Protocol):
         ...
 
 
-class StorageBackend(Protocol):
-    """Minimal set of operations the engine needs.
-
-    This is intentionally not a full Chroma API clone; it's the subset used by
-    `engine.py` today. We can grow this interface as we refactor.
-    """
-
-    # ---- nodes ----
-    def node_add(
-        self,
-        *,
-        ids: Sequence[str],
-        documents: Sequence[str],
-        metadatas: Sequence[JSONDict],
-        embeddings: Optional[Sequence[Sequence[float]]] = None,
-    ) -> None:
-        ...
-
-    def node_get(self, *, ids: Optional[Sequence[str]] = None, where: Optional[JSONDict] = None, include: Optional[list[str]] = None, limit: int = 200) -> JSONDict:
-        ...
-
-    def node_query(
-        self,
-        *,
-        query_texts: Optional[Sequence[str]] = None,
-        query_embeddings: Optional[Any] = None,
-        n_results: int = 10,
-        where: Optional[JSONDict] = None,
-        include: Optional[list[str]] = None,
-    ) -> JSONDict:
-        ...
-
-    def node_delete(self, *, ids: Sequence[str]) -> None:
-        ...
-
-    # ---- edges ----
-    def edge_add(
-        self,
-        *,
-        ids: Sequence[str],
-        documents: Sequence[str],
-        metadatas: Sequence[JSONDict],
-        embeddings: Optional[Sequence[Sequence[float]]] = None,
-    ) -> None:
-        ...
-
-    def edge_get(self, *, ids: Optional[Sequence[str]] = None, where: Optional[JSONDict] = None, include: Optional[list[str]] = None, limit: int = 200) -> JSONDict:
-        ...
-
-    def edge_query(
-        self,
-        *,
-        query_texts: Optional[Sequence[str]] = None,
-        query_embeddings: Optional[Any] = None,
-        n_results: int = 10,
-        where: Optional[JSONDict] = None,
-        include: Optional[list[str]] = None,
-    ) -> JSONDict:
-        ...
-
-    def edge_delete(self, *, ids: Sequence[str]) -> None:
-        ...
-
-    # ---- node docs / refs / documents / domains ----
-    def node_docs_add(
-        self,
-        *,
-        ids: Sequence[str],
-        documents: Sequence[str],
-        metadatas: Sequence[JSONDict],
-        embeddings: Optional[Sequence[Sequence[float]]] = None,
-    ) -> None:
-        ...
-
-    def node_docs_get(
-        self,
-        *,
-        ids: Optional[Sequence[str]] = None,
-        where: Optional[JSONDict] = None,
-        include: Optional[list[str]] = None,
-        limit: int = 200,
-    ) -> JSONDict:
-        ...
-
-    def node_docs_delete(self, *, ids: Optional[Sequence[str]] = None, where: Optional[JSONDict] = None) -> None:
-        ...
-
-    def node_refs_add(
-        self,
-        *,
-        ids: Sequence[str],
-        documents: Sequence[str],
-        metadatas: Sequence[JSONDict],
-        embeddings: Optional[Sequence[Sequence[float]]] = None,
-    ) -> None:
-        ...
-
-    def node_refs_get(
-        self,
-        *,
-        ids: Optional[Sequence[str]] = None,
-        where: Optional[JSONDict] = None,
-        include: Optional[list[str]] = None,
-        limit: int = 200,
-    ) -> JSONDict:
-        ...
-
-    def node_refs_delete(self, *, ids: Optional[Sequence[str]] = None, where: Optional[JSONDict] = None) -> None:
-        ...
-
-    def edge_refs_add(
-        self,
-        *,
-        ids: Sequence[str],
-        documents: Sequence[str],
-        metadatas: Sequence[JSONDict],
-        embeddings: Optional[Sequence[Sequence[float]]] = None,
-    ) -> None:
-        ...
-
-    def edge_refs_get(
-        self,
-        *,
-        ids: Optional[Sequence[str]] = None,
-        where: Optional[JSONDict] = None,
-        include: Optional[list[str]] = None,
-        limit: int = 200,
-    ) -> JSONDict:
-        ...
-
-    def edge_refs_delete(self, *, ids: Optional[Sequence[str]] = None, where: Optional[JSONDict] = None) -> None:
-        ...
-
-    def document_add(
-        self,
-        *,
-        ids: Sequence[str],
-        documents: Sequence[str],
-        metadatas: Sequence[JSONDict],
-        embeddings: Optional[Sequence[Sequence[float]]] = None,
-    ) -> None:
-        ...
-
-    def document_get(
-        self,
-        *,
-        ids: Optional[Sequence[str]] = None,
-        where: Optional[JSONDict] = None,
-        include: Optional[list[str]] = None,
-        limit: int = 200,
-    ) -> JSONDict:
-        ...
-
-    def document_delete(self, *, ids: Optional[Sequence[str]] = None, where: Optional[JSONDict] = None) -> None:
-        ...
-
-    def domain_add(
-        self,
-        *,
-        ids: Sequence[str],
-        documents: Sequence[str],
-        metadatas: Sequence[JSONDict],
-        embeddings: Optional[Sequence[Sequence[float]]] = None,
-    ) -> None:
-        ...
-
-    def domain_get(
-        self,
-        *,
-        ids: Optional[Sequence[str]] = None,
-        where: Optional[JSONDict] = None,
-        include: Optional[list[str]] = None,
-        limit: int = 200,
-    ) -> JSONDict:
-        ...
-
-    def domain_delete(self, *, ids: Optional[Sequence[str]] = None, where: Optional[JSONDict] = None) -> None:
-        ...
-
-    # ---- edge endpoints (hypergraph incidence materialization) ----
-    def edge_endpoints_add(
-        self,
-        *,
-        ids: Sequence[str],
-        documents: Sequence[str],
-        metadatas: Sequence[JSONDict],
-        embeddings: Optional[Sequence[Sequence[float]]] = None,
-    ) -> None:
-        ...
-
-    def edge_endpoints_get(
-        self,
-        *,
-        ids: Optional[Sequence[str]] = None,
-        where: Optional[JSONDict] = None,
-        include: Optional[list[str]] = None,
-        limit: int = 200,
-    ) -> JSONDict:
-        ...
-
-    def edge_endpoints_delete(
-        self,
-        *,
-        ids: Optional[Sequence[str]] = None,
-        where: Optional[JSONDict] = None,
-    ) -> None:
-        ...
-
-
 @dataclass
 class NoopUnitOfWork(UnitOfWork):
-    """UoW that does nothing (for Chroma-only paths)."""
-
     @contextmanager
     def transaction(self) -> Iterator[None]:
         yield
 
 
-@dataclass
-class ChromaBackend(StorageBackend):
-    """Thin wrapper around existing Chroma collections.
+class StorageBackend(Protocol):
+    # Generic dispatch (optional to use directly)
+    def call(self, collection_key: str, method: str, **kwargs) -> Any: ...
 
-    NOTE: we deliberately keep method names distinct from Chroma's to avoid the
-    temptation to grow a full Chroma compatibility layer.
+    # Node index (optional)
+    def node_index_get(self, **kwargs) -> Any: ...
+    def node_index_query(self, **kwargs) -> Any: ...
+    def node_index_add(self, **kwargs) -> Any: ...
+    def node_index_upsert(self, **kwargs) -> Any: ...
+    def node_index_update(self, **kwargs) -> Any: ...
+    def node_index_delete(self, **kwargs) -> Any: ...
+
+    # Nodes
+    def node_get(self, **kwargs) -> Any: ...
+    def node_query(self, **kwargs) -> Any: ...
+    def node_add(self, **kwargs) -> Any: ...
+    def node_upsert(self, **kwargs) -> Any: ...
+    def node_update(self, **kwargs) -> Any: ...
+    def node_delete(self, **kwargs) -> Any: ...
+
+    # Edges
+    def edge_get(self, **kwargs) -> Any: ...
+    def edge_query(self, **kwargs) -> Any: ...
+    def edge_add(self, **kwargs) -> Any: ...
+    def edge_upsert(self, **kwargs) -> Any: ...
+    def edge_update(self, **kwargs) -> Any: ...
+    def edge_delete(self, **kwargs) -> Any: ...
+
+    # Edge endpoints (hypergraph incidence/materialization)
+    def edge_endpoints_get(self, **kwargs) -> Any: ...
+    def edge_endpoints_query(self, **kwargs) -> Any: ...
+    def edge_endpoints_add(self, **kwargs) -> Any: ...
+    def edge_endpoints_upsert(self, **kwargs) -> Any: ...
+    def edge_endpoints_update(self, **kwargs) -> Any: ...
+    def edge_endpoints_delete(self, **kwargs) -> Any: ...
+
+    # Documents
+    def document_get(self, **kwargs) -> Any: ...
+    def document_query(self, **kwargs) -> Any: ...
+    def document_add(self, **kwargs) -> Any: ...
+    def document_upsert(self, **kwargs) -> Any: ...
+    def document_update(self, **kwargs) -> Any: ...
+    def document_delete(self, **kwargs) -> Any: ...
+
+    # Domains
+    def domain_get(self, **kwargs) -> Any: ...
+    def domain_query(self, **kwargs) -> Any: ...
+    def domain_add(self, **kwargs) -> Any: ...
+    def domain_upsert(self, **kwargs) -> Any: ...
+    def domain_update(self, **kwargs) -> Any: ...
+    def domain_delete(self, **kwargs) -> Any: ...
+
+    # Node docs
+    def node_docs_get(self, **kwargs) -> Any: ...
+    def node_docs_query(self, **kwargs) -> Any: ...
+    def node_docs_add(self, **kwargs) -> Any: ...
+    def node_docs_upsert(self, **kwargs) -> Any: ...
+    def node_docs_update(self, **kwargs) -> Any: ...
+    def node_docs_delete(self, **kwargs) -> Any: ...
+
+    # Node refs
+    def node_refs_get(self, **kwargs) -> Any: ...
+    def node_refs_query(self, **kwargs) -> Any: ...
+    def node_refs_add(self, **kwargs) -> Any: ...
+    def node_refs_upsert(self, **kwargs) -> Any: ...
+    def node_refs_update(self, **kwargs) -> Any: ...
+    def node_refs_delete(self, **kwargs) -> Any: ...
+
+    # Edge refs
+    def edge_refs_get(self, **kwargs) -> Any: ...
+    def edge_refs_query(self, **kwargs) -> Any: ...
+    def edge_refs_add(self, **kwargs) -> Any: ...
+    def edge_refs_upsert(self, **kwargs) -> Any: ...
+    def edge_refs_update(self, **kwargs) -> Any: ...
+    def edge_refs_delete(self, **kwargs) -> Any: ...
+
+
+class ChromaBackend:
+    """
+    Thin wrapper around Chroma collections.
+
+    Important: this class does NOT try to implement transactions; callers should
+    treat vector writes as best-effort unless they use an outbox pattern.
     """
 
-    node_collection: Any
-    edge_collection: Any
-    edge_endpoints_collection: Any
-    document_collection: Optional[Any] = None
-    domain_collection: Optional[Any] = None
-    node_docs_collection: Optional[Any] = None
-    node_refs_collection: Optional[Any] = None
-    edge_refs_collection: Optional[Any] = None
-
-    def node_add(
+    def __init__(
         self,
         *,
-        ids: Sequence[str],
-        documents: Sequence[str],
-        metadatas: Sequence[JSONDict],
-        embeddings: Optional[Sequence[Sequence[float]]] = None,
-    ) -> None:
-        kwargs: JSONDict = {
-            "ids": list(ids),
-            "documents": list(documents),
-            "metadatas": list(metadatas),
+        node_index_collection: Any,
+        node_collection: Any,
+        edge_collection: Any,
+        edge_endpoints_collection: Any,
+        document_collection: Any,
+        domain_collection: Any,
+        node_docs_collection: Any,
+        node_refs_collection: Any,
+        edge_refs_collection: Any,
+    ):
+        self._collections: Dict[str, Any] = {
+            "node_index": node_index_collection,
+            "node": node_collection,
+            "edge": edge_collection,
+            "edge_endpoints": edge_endpoints_collection,
+            "document": document_collection,
+            "domain": domain_collection,
+            "node_docs": node_docs_collection,
+            "node_refs": node_refs_collection,
+            "edge_refs": edge_refs_collection,
         }
-        if embeddings is not None:
-            kwargs["embeddings"] = [list(e) for e in embeddings]
-        self.node_collection.add(**kwargs)
 
-    def node_get(self, *, ids: Optional[Sequence[str]] = None, where: Optional[JSONDict] = None, include: Optional[list[str]] = None, limit: int = 200) -> JSONDict:
-        kwargs: JSONDict = {"limit": int(limit)}
-        if ids is not None:
-            kwargs["ids"] = list(ids)
-        if where is not None:
-            kwargs["where"] = dict(where)
-        if include is not None:
-            kwargs["include"] = list(include)
-        return self.node_collection.get(**kwargs)
+    def _c(self, key: str) -> Any:
+        try:
+            return self._collections[key]
+        except KeyError as e:
+            raise KeyError(f"Unknown collection_key={key!r}") from e
 
-    def node_query(
-        self,
-        *,
-        query_texts: Optional[Sequence[str]] = None,
-        query_embeddings: Optional[Any] = None,
-        n_results: int = 10,
-        where: Optional[JSONDict] = None,
-        include: Optional[list[str]] = None,
-    ) -> JSONDict:
-        kwargs: JSONDict = {"n_results": int(n_results)}
-        if query_embeddings is not None:
-            kwargs["query_embeddings"] = query_embeddings
-        elif query_texts is not None:
-            kwargs["query_texts"] = list(query_texts)
-        else:
-            raise ValueError("node_query requires query_texts or query_embeddings")
-        if where is not None:
-            kwargs["where"] = dict(where)
-        if include is not None:
-            kwargs["include"] = list(include)
-        return self.node_collection.query(**kwargs)
+    def call(self, collection_key: str, method: str, **kwargs) -> Any:
+        coll = self._c(collection_key)
+        fn = getattr(coll, method)
+        return fn(**kwargs)
 
-    def node_delete(self, *, ids: Sequence[str]) -> None:
-        self.node_collection.delete(ids=list(ids))
+    # --- node_index ---
+    def node_index_get(self, **kwargs) -> Any: return self.call("node_index", "get", **kwargs)
+    def node_index_query(self, **kwargs) -> Any: return self.call("node_index", "query", **kwargs)
+    def node_index_add(self, **kwargs) -> Any: return self.call("node_index", "add", **kwargs)
+    def node_index_upsert(self, **kwargs) -> Any: return self.call("node_index", "upsert", **kwargs)
+    def node_index_update(self, **kwargs) -> Any: return self.call("node_index", "update", **kwargs)
+    def node_index_delete(self, **kwargs) -> Any: return self.call("node_index", "delete", **kwargs)
 
-    def edge_add(
-        self,
-        *,
-        ids: Sequence[str],
-        documents: Sequence[str],
-        metadatas: Sequence[JSONDict],
-        embeddings: Optional[Sequence[Sequence[float]]] = None,
-    ) -> None:
-        kwargs: JSONDict = {
-            "ids": list(ids),
-            "documents": list(documents),
-            "metadatas": list(metadatas),
-        }
-        if embeddings is not None:
-            kwargs["embeddings"] = [list(e) for e in embeddings]
-        self.edge_collection.add(**kwargs)
+    # --- nodes ---
+    def node_get(self, **kwargs) -> Any: return self.call("node", "get", **kwargs)
+    def node_query(self, **kwargs) -> Any: return self.call("node", "query", **kwargs)
+    def node_add(self, **kwargs) -> Any: return self.call("node", "add", **kwargs)
+    def node_upsert(self, **kwargs) -> Any: return self.call("node", "upsert", **kwargs)
+    def node_update(self, **kwargs) -> Any: return self.call("node", "update", **kwargs)
+    def node_delete(self, **kwargs) -> Any: return self.call("node", "delete", **kwargs)
 
-    def edge_get(self, *, ids: Optional[Sequence[str]] = None, where: Optional[JSONDict] = None, include: Optional[list[str]] = None, limit: int = 200) -> JSONDict:
-        kwargs: JSONDict = {"limit": int(limit)}
-        if ids is not None:
-            kwargs["ids"] = list(ids)
-        if where is not None:
-            kwargs["where"] = dict(where)
-        if include is not None:
-            kwargs["include"] = list(include)
-        return self.edge_collection.get(**kwargs)
+    # --- edges ---
+    def edge_get(self, **kwargs) -> Any: return self.call("edge", "get", **kwargs)
+    def edge_query(self, **kwargs) -> Any: return self.call("edge", "query", **kwargs)
+    def edge_add(self, **kwargs) -> Any: return self.call("edge", "add", **kwargs)
+    def edge_upsert(self, **kwargs) -> Any: return self.call("edge", "upsert", **kwargs)
+    def edge_update(self, **kwargs) -> Any: return self.call("edge", "update", **kwargs)
+    def edge_delete(self, **kwargs) -> Any: return self.call("edge", "delete", **kwargs)
 
-    def edge_query(
-        self,
-        *,
-        query_texts: Optional[Sequence[str]] = None,
-        query_embeddings: Optional[Any] = None,
-        n_results: int = 10,
-        where: Optional[JSONDict] = None,
-        include: Optional[list[str]] = None,
-    ) -> JSONDict:
-        kwargs: JSONDict = {"n_results": int(n_results)}
-        if query_embeddings is not None:
-            kwargs["query_embeddings"] = query_embeddings
-        elif query_texts is not None:
-            kwargs["query_texts"] = list(query_texts)
-        else:
-            raise ValueError("edge_query requires query_texts or query_embeddings")
-        if where is not None:
-            kwargs["where"] = dict(where)
-        if include is not None:
-            kwargs["include"] = list(include)
-        return self.edge_collection.query(**kwargs)
+    # --- edge_endpoints ---
+    def edge_endpoints_get(self, **kwargs) -> Any: return self.call("edge_endpoints", "get", **kwargs)
+    def edge_endpoints_query(self, **kwargs) -> Any: return self.call("edge_endpoints", "query", **kwargs)
+    def edge_endpoints_add(self, **kwargs) -> Any: return self.call("edge_endpoints", "add", **kwargs)
+    def edge_endpoints_upsert(self, **kwargs) -> Any: return self.call("edge_endpoints", "upsert", **kwargs)
+    def edge_endpoints_update(self, **kwargs) -> Any: return self.call("edge_endpoints", "update", **kwargs)
+    def edge_endpoints_delete(self, **kwargs) -> Any: return self.call("edge_endpoints", "delete", **kwargs)
 
-    def edge_delete(self, *, ids: Sequence[str]) -> None:
-        self.edge_collection.delete(ids=list(ids))
+    # --- documents ---
+    def document_get(self, **kwargs) -> Any: return self.call("document", "get", **kwargs)
+    def document_query(self, **kwargs) -> Any: return self.call("document", "query", **kwargs)
+    def document_add(self, **kwargs) -> Any: return self.call("document", "add", **kwargs)
+    def document_upsert(self, **kwargs) -> Any: return self.call("document", "upsert", **kwargs)
+    def document_update(self, **kwargs) -> Any: return self.call("document", "update", **kwargs)
+    def document_delete(self, **kwargs) -> Any: return self.call("document", "delete", **kwargs)
 
-    def edge_endpoints_add(
-        self,
-        *,
-        ids: Sequence[str],
-        documents: Sequence[str],
-        metadatas: Sequence[JSONDict],
-        embeddings: Optional[Sequence[Sequence[float]]] = None,
-    ) -> None:
-        kwargs: JSONDict = {
-            "ids": list(ids),
-            "documents": list(documents),
-            "metadatas": list(metadatas),
-        }
-        if embeddings is not None:
-            kwargs["embeddings"] = [list(e) for e in embeddings]
-        self.edge_endpoints_collection.add(**kwargs)
+    # --- domains ---
+    def domain_get(self, **kwargs) -> Any: return self.call("domain", "get", **kwargs)
+    def domain_query(self, **kwargs) -> Any: return self.call("domain", "query", **kwargs)
+    def domain_add(self, **kwargs) -> Any: return self.call("domain", "add", **kwargs)
+    def domain_upsert(self, **kwargs) -> Any: return self.call("domain", "upsert", **kwargs)
+    def domain_update(self, **kwargs) -> Any: return self.call("domain", "update", **kwargs)
+    def domain_delete(self, **kwargs) -> Any: return self.call("domain", "delete", **kwargs)
 
-    def edge_endpoints_get(
-        self,
-        *,
-        ids: Optional[Sequence[str]] = None,
-        where: Optional[JSONDict] = None,
-        include: Optional[list[str]] = None,
-        limit: int = 200,
-    ) -> JSONDict:
-        kwargs: JSONDict = {"limit": int(limit)}
-        if ids is not None:
-            kwargs["ids"] = list(ids)
-        if where is not None:
-            kwargs["where"] = dict(where)
-        if include is not None:
-            kwargs["include"] = list(include)
-        return self.edge_endpoints_collection.get(**kwargs)
+    # --- node_docs ---
+    def node_docs_get(self, **kwargs) -> Any: return self.call("node_docs", "get", **kwargs)
+    def node_docs_query(self, **kwargs) -> Any: return self.call("node_docs", "query", **kwargs)
+    def node_docs_add(self, **kwargs) -> Any: return self.call("node_docs", "add", **kwargs)
+    def node_docs_upsert(self, **kwargs) -> Any: return self.call("node_docs", "upsert", **kwargs)
+    def node_docs_update(self, **kwargs) -> Any: return self.call("node_docs", "update", **kwargs)
+    def node_docs_delete(self, **kwargs) -> Any: return self.call("node_docs", "delete", **kwargs)
 
-    def edge_endpoints_delete(
-        self,
-        *,
-        ids: Optional[Sequence[str]] = None,
-        where: Optional[JSONDict] = None,
-    ) -> None:
-        kwargs: JSONDict = {}
-        if ids is not None:
-            kwargs["ids"] = list(ids)
-        if where is not None:
-            kwargs["where"] = dict(where)
-        self.edge_endpoints_collection.delete(**kwargs)
+    # --- node_refs ---
+    def node_refs_get(self, **kwargs) -> Any: return self.call("node_refs", "get", **kwargs)
+    def node_refs_query(self, **kwargs) -> Any: return self.call("node_refs", "query", **kwargs)
+    def node_refs_add(self, **kwargs) -> Any: return self.call("node_refs", "add", **kwargs)
+    def node_refs_upsert(self, **kwargs) -> Any: return self.call("node_refs", "upsert", **kwargs)
+    def node_refs_update(self, **kwargs) -> Any: return self.call("node_refs", "update", **kwargs)
+    def node_refs_delete(self, **kwargs) -> Any: return self.call("node_refs", "delete", **kwargs)
 
-    # ---- node docs / refs / documents / domains ----
-    def _req(self, col: Optional[Any], name: str) -> Any:
-        if col is None:
-            raise RuntimeError(f"ChromaBackend missing collection: {name}")
-        return col
-
-    def node_docs_add(self, *, ids: Sequence[str], documents: Sequence[str], metadatas: Sequence[JSONDict], embeddings: Optional[Sequence[Sequence[float]]] = None) -> None:
-        col = self._req(self.node_docs_collection, "node_docs_collection")
-        kwargs: JSONDict = {"ids": list(ids), "documents": list(documents), "metadatas": list(metadatas)}
-        if embeddings is not None:
-            kwargs["embeddings"] = [list(e) for e in embeddings]
-        col.add(**kwargs)
-
-    def node_docs_get(self, *, ids: Optional[Sequence[str]] = None, where: Optional[JSONDict] = None, include: Optional[list[str]] = None, limit: int = 200) -> JSONDict:
-        col = self._req(self.node_docs_collection, "node_docs_collection")
-        kwargs: JSONDict = {"limit": int(limit)}
-        if ids is not None:
-            kwargs["ids"] = list(ids)
-        if where is not None:
-            kwargs["where"] = dict(where)
-        if include is not None:
-            kwargs["include"] = list(include)
-        return col.get(**kwargs)
-
-    def node_docs_delete(self, *, ids: Optional[Sequence[str]] = None, where: Optional[JSONDict] = None) -> None:
-        col = self._req(self.node_docs_collection, "node_docs_collection")
-        kwargs: JSONDict = {}
-        if ids is not None:
-            kwargs["ids"] = list(ids)
-        if where is not None:
-            kwargs["where"] = dict(where)
-        col.delete(**kwargs)
-
-    def node_refs_add(self, *, ids: Sequence[str], documents: Sequence[str], metadatas: Sequence[JSONDict], embeddings: Optional[Sequence[Sequence[float]]] = None) -> None:
-        col = self._req(self.node_refs_collection, "node_refs_collection")
-        kwargs: JSONDict = {"ids": list(ids), "documents": list(documents), "metadatas": list(metadatas)}
-        if embeddings is not None:
-            kwargs["embeddings"] = [list(e) for e in embeddings]
-        col.add(**kwargs)
-
-    def node_refs_get(self, *, ids: Optional[Sequence[str]] = None, where: Optional[JSONDict] = None, include: Optional[list[str]] = None, limit: int = 200) -> JSONDict:
-        col = self._req(self.node_refs_collection, "node_refs_collection")
-        kwargs: JSONDict = {"limit": int(limit)}
-        if ids is not None:
-            kwargs["ids"] = list(ids)
-        if where is not None:
-            kwargs["where"] = dict(where)
-        if include is not None:
-            kwargs["include"] = list(include)
-        return col.get(**kwargs)
-
-    def node_refs_delete(self, *, ids: Optional[Sequence[str]] = None, where: Optional[JSONDict] = None) -> None:
-        col = self._req(self.node_refs_collection, "node_refs_collection")
-        kwargs: JSONDict = {}
-        if ids is not None:
-            kwargs["ids"] = list(ids)
-        if where is not None:
-            kwargs["where"] = dict(where)
-        col.delete(**kwargs)
-
-    def edge_refs_add(self, *, ids: Sequence[str], documents: Sequence[str], metadatas: Sequence[JSONDict], embeddings: Optional[Sequence[Sequence[float]]] = None) -> None:
-        col = self._req(self.edge_refs_collection, "edge_refs_collection")
-        kwargs: JSONDict = {"ids": list(ids), "documents": list(documents), "metadatas": list(metadatas)}
-        if embeddings is not None:
-            kwargs["embeddings"] = [list(e) for e in embeddings]
-        col.add(**kwargs)
-
-    def edge_refs_get(self, *, ids: Optional[Sequence[str]] = None, where: Optional[JSONDict] = None, include: Optional[list[str]] = None, limit: int = 200) -> JSONDict:
-        col = self._req(self.edge_refs_collection, "edge_refs_collection")
-        kwargs: JSONDict = {"limit": int(limit)}
-        if ids is not None:
-            kwargs["ids"] = list(ids)
-        if where is not None:
-            kwargs["where"] = dict(where)
-        if include is not None:
-            kwargs["include"] = list(include)
-        return col.get(**kwargs)
-
-    def edge_refs_delete(self, *, ids: Optional[Sequence[str]] = None, where: Optional[JSONDict] = None) -> None:
-        col = self._req(self.edge_refs_collection, "edge_refs_collection")
-        kwargs: JSONDict = {}
-        if ids is not None:
-            kwargs["ids"] = list(ids)
-        if where is not None:
-            kwargs["where"] = dict(where)
-        col.delete(**kwargs)
-
-    def document_add(self, *, ids: Sequence[str], documents: Sequence[str], metadatas: Sequence[JSONDict], embeddings: Optional[Sequence[Sequence[float]]] = None) -> None:
-        col = self._req(self.document_collection, "document_collection")
-        kwargs: JSONDict = {"ids": list(ids), "documents": list(documents), "metadatas": list(metadatas)}
-        if embeddings is not None:
-            kwargs["embeddings"] = [list(e) for e in embeddings]
-        col.add(**kwargs)
-
-    def document_get(self, *, ids: Optional[Sequence[str]] = None, where: Optional[JSONDict] = None, include: Optional[list[str]] = None, limit: int = 200) -> JSONDict:
-        col = self._req(self.document_collection, "document_collection")
-        kwargs: JSONDict = {"limit": int(limit)}
-        if ids is not None:
-            kwargs["ids"] = list(ids)
-        if where is not None:
-            kwargs["where"] = dict(where)
-        if include is not None:
-            kwargs["include"] = list(include)
-        return col.get(**kwargs)
-
-    def document_delete(self, *, ids: Optional[Sequence[str]] = None, where: Optional[JSONDict] = None) -> None:
-        col = self._req(self.document_collection, "document_collection")
-        kwargs: JSONDict = {}
-        if ids is not None:
-            kwargs["ids"] = list(ids)
-        if where is not None:
-            kwargs["where"] = dict(where)
-        col.delete(**kwargs)
-
-    def domain_add(self, *, ids: Sequence[str], documents: Sequence[str], metadatas: Sequence[JSONDict], embeddings: Optional[Sequence[Sequence[float]]] = None) -> None:
-        col = self._req(self.domain_collection, "domain_collection")
-        kwargs: JSONDict = {"ids": list(ids), "documents": list(documents), "metadatas": list(metadatas)}
-        if embeddings is not None:
-            kwargs["embeddings"] = [list(e) for e in embeddings]
-        col.add(**kwargs)
-
-    def domain_get(self, *, ids: Optional[Sequence[str]] = None, where: Optional[JSONDict] = None, include: Optional[list[str]] = None, limit: int = 200) -> JSONDict:
-        col = self._req(self.domain_collection, "domain_collection")
-        kwargs: JSONDict = {"limit": int(limit)}
-        if ids is not None:
-            kwargs["ids"] = list(ids)
-        if where is not None:
-            kwargs["where"] = dict(where)
-        if include is not None:
-            kwargs["include"] = list(include)
-        return col.get(**kwargs)
-
-    def domain_delete(self, *, ids: Optional[Sequence[str]] = None, where: Optional[JSONDict] = None) -> None:
-        col = self._req(self.domain_collection, "domain_collection")
-        kwargs: JSONDict = {}
-        if ids is not None:
-            kwargs["ids"] = list(ids)
-        if where is not None:
-            kwargs["where"] = dict(where)
-        col.delete(**kwargs)
+    # --- edge_refs ---
+    def edge_refs_get(self, **kwargs) -> Any: return self.call("edge_refs", "get", **kwargs)
+    def edge_refs_query(self, **kwargs) -> Any: return self.call("edge_refs", "query", **kwargs)
+    def edge_refs_add(self, **kwargs) -> Any: return self.call("edge_refs", "add", **kwargs)
+    def edge_refs_upsert(self, **kwargs) -> Any: return self.call("edge_refs", "upsert", **kwargs)
+    def edge_refs_update(self, **kwargs) -> Any: return self.call("edge_refs", "update", **kwargs)
+    def edge_refs_delete(self, **kwargs) -> Any: return self.call("edge_refs", "delete", **kwargs)

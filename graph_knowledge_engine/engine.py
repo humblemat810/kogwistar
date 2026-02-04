@@ -2,7 +2,6 @@ from __future__ import annotations
 from types import MethodType
 from contextlib import contextmanager
 import contextvars
-import sqlite3
 
 from langchain_core.language_models import BaseChatModel
 import pathlib
@@ -588,6 +587,35 @@ def de_alias_ids(llm_result, real_for_alias):
         e.source_ids = [r(x) for x in e.source_ids]
         e.target_ids = [r(x) for x in e.target_ids]
     return llm_result
+def _backend_update_record_lifecycle(
+    *,
+    backend: Any,
+    kind: str,
+    record_id: str,
+    lifecycle_patch: dict,
+) -> bool:
+    """Update one record's lifecycle metadata via backend get/update methods."""
+    get_fn = getattr(backend, f"{kind}_get", None)
+    upd_fn = getattr(backend, f"{kind}_update", None)
+    if get_fn is None or upd_fn is None:
+        raise AttributeError(f"backend missing {kind}_get/{kind}_update")
+    got = get_fn(ids=[record_id], include=["documents", "metadatas"])
+    ids = got.get("ids") or []
+    if not ids:
+        return False
+
+    doc = (got.get("documents") or [None])[0]
+    meta = (got.get("metadatas") or [None])[0]
+    base = _safe_json_dict(doc)
+
+    base_meta = base.get("metadata") if isinstance(base.get("metadata"), dict) else {}
+    base["metadata"] = _merge_meta(base_meta, lifecycle_patch)
+
+    new_meta = _merge_meta(meta if isinstance(meta, dict) else {}, lifecycle_patch)
+
+    upd_fn(ids=[record_id], documents=[json.dumps(base, ensure_ascii=False)], metadatas=[new_meta])
+    return True
+
 def _update_record_lifecycle(
     *,
     collection: Any,
@@ -957,6 +985,8 @@ class GraphKnowledgeEngine:
     Methods are generally arranged from low-level generic helpers to task-specific calls.
     High-level orchestration for extracting, storing, and adjudicating knowledge graph data.
     """
+    _uow_ctx_conn: contextvars.ContextVar[object | None]  = contextvars.ContextVar("gke_uow_conn", default=None)
+    _uow_ctx_depth :contextvars.ContextVar[int]= contextvars.ContextVar("gke_uow_depth", default=0)
 
     #--------------------
     # Puhlic Interface
@@ -1021,62 +1051,6 @@ class GraphKnowledgeEngine:
     @embedding_function.setter
     def embedding_function(self, val):
         self._ef = val
-
-    @contextmanager
-    def uow(self):
-        """Unit-of-work boundary for engine persistence.
-
-        Today this wraps the engine's meta SQLite store (seq allocation, future
-        outbox/checkpoints, etc.). In a future Postgres backend, this will wrap
-        a real SQL transaction that may include both meta + vector writes.
-
-        Yields:
-            A SQLite connection for callers that need it, while keeping the
-            calling style stable across backends.
-        """
-        # Nested UoW policy: join/reuse the outer transaction.
-        # This prevents "BEGIN within BEGIN" failures and ensures that a workflow
-        # step has exactly one commit point.
-        _uow_conn_var: contextvars.ContextVar[sqlite3.Connection | None] = getattr(
-            self, "_uow_conn_var", None
-        )
-        _uow_depth_var: contextvars.ContextVar[int] = getattr(self, "_uow_depth_var", None)
-
-        if _uow_conn_var is None:
-            _uow_conn_var = contextvars.ContextVar("gke_uow_conn", default=None)
-            setattr(self, "_uow_conn_var", _uow_conn_var)
-        if _uow_depth_var is None:
-            _uow_depth_var = contextvars.ContextVar("gke_uow_depth", default=0)
-            setattr(self, "_uow_depth_var", _uow_depth_var)
-
-        existing_conn = _uow_conn_var.get()
-        if existing_conn is not None:
-            # Join existing transaction.
-            _uow_depth_var.set(_uow_depth_var.get() + 1)
-            try:
-                yield existing_conn
-            finally:
-                _uow_depth_var.set(max(0, _uow_depth_var.get() - 1))
-            return
-
-        # Outermost UoW: open a fresh meta transaction + backend transaction.
-        conn = self.meta_sqlite.connect()
-        _uow_conn_var.set(conn)
-        _uow_depth_var.set(1)
-        try:
-            conn.execute("BEGIN IMMEDIATE")
-            with self._backend_uow.transaction():
-                yield conn
-            conn.commit()
-        except Exception:
-            try:
-                conn.rollback()
-            finally:
-                raise
-        finally:
-            _uow_conn_var.set(None)
-            _uow_depth_var.set(0)
-            conn.close()
         
     def _infer_doc_id_from_ref(self, ref: Span) -> Optional[str]:
         """Best-effort: prefer explicit ref.doc_id; else try to parse document_page_url like 'document/<id>'."""
@@ -1113,12 +1087,12 @@ class GraphKnowledgeEngine:
             obj = node_or_id
         else:
             # try node first, then edge
-            got = self.node_collection.get(ids=[node_or_id], include=["documents"])
+            got = self.backend.node_get(ids=[node_or_id], include=["documents"])
             doc_list = got.get("documents") or []
             if doc_list:
                 obj = Node.model_validate_json(doc_list[0])
             else:
-                got = self.edge_collection.get(ids=[node_or_id], include=["documents"])
+                got = self.backend.edge_get(ids=[node_or_id], include=["documents"])
                 edoc_list = got.get("documents") or []
                 if not edoc_list:
                     raise ValueError(f"Unknown node/edge id: {node_or_id}")
@@ -1221,16 +1195,56 @@ class GraphKnowledgeEngine:
         return out
     ## update only allow redirect and soft delete  and delete node 
     def tombstone_node(self, node_id: str, **kw) -> bool:
-        return tombstone_record(collection=self.node_collection, record_id=node_id, **kw)
+        patch = {
+            "lifecycle_status": "tombstoned",
+            "redirect_to_id": None,
+            "deleted_at": kw.get("deleted_at") or _utc_now_iso(),
+        }
+        if kw.get("reason"):
+            patch["delete_reason"] = kw["reason"]
+        if kw.get("deleted_by"):
+            patch["deleted_by"] = kw["deleted_by"]
+        return _backend_update_record_lifecycle(backend=self.backend, kind="node", record_id=node_id, lifecycle_patch=patch)
 
     def redirect_node(self, from_id: str, to_id: str, **kw) -> bool:
-        return redirect_record(collection=self.node_collection, from_id=from_id, to_id=to_id, **kw)
+        if from_id == to_id:
+            return False
+        patch = {
+            "lifecycle_status": "tombstoned",
+            "redirect_to_id": str(to_id),
+            "deleted_at": kw.get("deleted_at") or _utc_now_iso(),
+        }
+        if kw.get("reason"):
+            patch["delete_reason"] = kw["reason"]
+        if kw.get("deleted_by"):
+            patch["deleted_by"] = kw["deleted_by"]
+        return _backend_update_record_lifecycle(backend=self.backend, kind="node", record_id=from_id, lifecycle_patch=patch)
 
     def tombstone_edge(self, edge_id: str, **kw) -> bool:
-        return tombstone_record(collection=self.edge_collection, record_id=edge_id, **kw)
+        patch = {
+            "lifecycle_status": "tombstoned",
+            "redirect_to_id": None,
+            "deleted_at": kw.get("deleted_at") or _utc_now_iso(),
+        }
+        if kw.get("reason"):
+            patch["delete_reason"] = kw["reason"]
+        if kw.get("deleted_by"):
+            patch["deleted_by"] = kw["deleted_by"]
+        return _backend_update_record_lifecycle(backend=self.backend, kind="edge", record_id=edge_id, lifecycle_patch=patch)
 
     def redirect_edge(self, from_id: str, to_id: str, **kw) -> bool:
-        return redirect_record(collection=self.edge_collection, from_id=from_id, to_id=to_id, **kw)
+        if from_id == to_id:
+            return False
+        patch = {
+            "lifecycle_status": "tombstoned",
+            "redirect_to_id": str(to_id),
+            "deleted_at": kw.get("deleted_at") or _utc_now_iso(),
+        }
+        if kw.get("reason"):
+            patch["delete_reason"] = kw["reason"]
+        if kw.get("deleted_by"):
+            patch["deleted_by"] = kw["deleted_by"]
+        return _backend_update_record_lifecycle(backend=self.backend, kind="edge", record_id=from_id, lifecycle_patch=patch)
     ## get
     def get_nodes(
         self,
@@ -1252,7 +1266,7 @@ class GraphKnowledgeEngine:
             ids=ids,
             include=include,
             where=where,
-            limit=limit or 200,
+            limit=limit
         )
         nodes = self.nodes_from_single_or_id_query_result(got, node_type=node_type)
 
@@ -1285,13 +1299,8 @@ class GraphKnowledgeEngine:
             else:
                 raise ValueError("either query or query embeddings must be specified")
         
-        got = self.backend.node_query(
-            query_embeddings=query_embeddings,
-            n_results=int(kwargs.pop("n_results", kwargs.pop("k", 10)) or 10),
-            where=kwargs.pop("where", None),
-            include=include,
-            **kwargs,
-        )
+        got = self.backend.node_query(query_embeddings=query_embeddings, *args, 
+                                        include=include, **kwargs)
         
         return self.nodes_from_query_result(got, node_type = node_type)
     def query_edges(self,*args, query = None, query_embeddings = None, 
@@ -1305,13 +1314,8 @@ class GraphKnowledgeEngine:
             else:
                 raise ValueError("either query or query embeddings must be specified")
         
-        got = self.backend.edge_query(
-            query_embeddings=query_embeddings,
-            n_results=int(kwargs.pop("n_results", kwargs.pop("k", 10)) or 10),
-            where=kwargs.pop("where", None),
-            include=include,
-            **kwargs,
-        )
+        got = self.backend.edge_query(query_embeddings=query_embeddings, *args, 
+                                        include=include, **kwargs)
         
         return self.edges_from_query_result(got, edge_type=edge_type)
     def nodes_from_single_or_id_query_result(
@@ -1449,8 +1453,8 @@ class GraphKnowledgeEngine:
         got = self.backend.edge_get(
             ids=ids,
             include=include,
-            where=where,
-            limit=limit or 400,
+            where = where,
+            limit = limit
         )
         edges = self.edges_from_single_or_id_query_result(got, edge_type=edge_type, include = include)
 
@@ -1507,18 +1511,18 @@ class GraphKnowledgeEngine:
     def _json_or_none(obj: Any) -> Optional[str]:
         return json.dumps(obj) if obj is not None else None
     def _exists_node(self, rid: str) -> bool:
-        g = self.node_collection.get(ids=[rid])
+        g = self.backend.node_get(ids=[rid])
         return (g.get("ids") or [None])[0] == rid
 
     def _exists_edge(self, rid: str) -> bool:
-        g = self.edge_collection.get(ids=[rid])
+        g = self.backend.edge_get(ids=[rid])
         return (g.get("ids") or [None])[0] == rid
 
     def _exists_any(self, rid: str) -> bool:
         return self._exists_node(rid) or self._exists_edge(rid)
     def _select_doc_context(self, doc_id: str, max_nodes: int = 200, max_edges: int = 400):
-        nodes = self.node_collection.get(where={"doc_id": doc_id}, include=["documents"])
-        edges = self.edge_collection.get(where={"doc_id": doc_id}, include=["documents"])
+        nodes = self.backend.node_get(where={"doc_id": doc_id}, include=["documents"])
+        edges = self.backend.edge_get(where={"doc_id": doc_id}, include=["documents"])
 
         node_items = []
         for i, (nid, ndoc) in enumerate(zip(nodes.get("ids", []) or [], nodes.get("documents", []) or [])):
@@ -1558,10 +1562,10 @@ class GraphKnowledgeEngine:
 
         missing_nodes, missing_edges = set(), set()
         if need_nodes:
-            got = set(self.node_collection.get(ids=list(need_nodes)).get("ids") or [])
+            got = set(self.backend.node_get(ids=list(need_nodes)).get("ids") or [])
             missing_nodes = need_nodes - got
         if need_edges:
-            got = set(self.edge_collection.get(ids=list(need_edges)).get("ids") or [])
+            got = set(self.backend.edge_get(ids=list(need_edges)).get("ids") or [])
             missing_edges = need_edges - got
 
         if missing_nodes or missing_edges:
@@ -1571,14 +1575,14 @@ class GraphKnowledgeEngine:
     def _assert_endpoints_exist(self, edge: Edge | PureChromaEdge):
         need_nodes = set((edge.source_ids or []) + (edge.target_ids or []))
         if need_nodes:
-            got = set(self.node_collection.get(ids=list(need_nodes)).get("ids") or [])
+            got = set(self.backend.node_get(ids=list(need_nodes)).get("ids") or [])
             if got != need_nodes:
                 raise ValueError(f"Missing node endpoints: {sorted(need_nodes - got)}")
 
         for attr in ("source_edge_ids", "target_edge_ids"):
             ids = getattr(edge, attr, None) or []
             if ids:
-                got = set(self.edge_collection.get(ids=ids).get("ids") or [])
+                got = set(self.backend.edge_get(ids=ids).get("ids") or [])
                 if got != set(ids):
                     raise ValueError(f"Missing edge endpoints in {attr}: {sorted(set(ids)-got)}")
     def _build_deps(self, parsed):
@@ -1644,7 +1648,7 @@ class GraphKnowledgeEngine:
                 if self._exists_node(rid):
                     # merge refs only if present
                     if ln.mentions:
-                        prior = self.node_collection.get(ids=[rid], include=["documents", "metadatas"])
+                        prior = self.backend.node_get(ids=[rid], include=["documents", "metadatas"])
                         prior_meta = (prior.get("metadatas") or [None])[0] or {}
                         prior_mentions = cast(str, prior_meta.get("mentions"))
                         merged_list, merged_json = _merge_refs(prior_mentions, ln.mentions)
@@ -1657,7 +1661,7 @@ class GraphKnowledgeEngine:
                         for sp in groundings.spans:
                             span_validator.validate_span(span = sp)
                         n.mentions = [groundings]
-                        self.node_collection.update(
+                        self.backend.node_update(
                             ids=[rid],
                             documents=[n.model_dump_json(field_mode='backend')],
                             metadatas=[{
@@ -1680,7 +1684,7 @@ class GraphKnowledgeEngine:
                 if self._exists_edge(rid):
                     # merge refs; optionally reconcile endpoints if you permit LLM to edit them
                     if le.mentions:
-                        prior = self.edge_collection.get(ids=[rid], include=["documents", "metadatas"])
+                        prior = self.backend.edge_get(ids=[rid], include=["documents", "metadatas"])
                         prior_meta = (prior.get("metadatas") or [None])[0] or {}
                         prior_mentions = cast(str, prior_meta.get("mentions"))
                         merged_list, merged_json = _merge_refs(prior_mentions, le.mentions)
@@ -1692,7 +1696,7 @@ class GraphKnowledgeEngine:
                         for sp in groundings.spans:
                             span_validator.validate_span(span = sp)
                         e.mentions = [groundings]
-                        self.edge_collection.update(
+                        self.backend.edge_update(
                             ids=[rid],
                             documents=[e.model_dump_json(field_mode='backend')],
                             metadatas=[{
@@ -2061,11 +2065,7 @@ class GraphKnowledgeEngine:
         merge_policy=None,           # callable(left, right, verdict) -> str (canonical_id)
         verifier=None,               # callable(extracted, full_text, ref, **kw) -> ReferenceSession
         kg_graph_type : EngineType = 'knowledge',
-        debug_dir: pathlib.Path | None = None,
-        # Advanced: allow the caller to force multiple logical engines to share
-        # the same meta SQLite file (and later: the same Postgres database).
-        meta_sqlite: EngineSQLite | None = None,
-        meta_sqlite_filename: str = "meta.sqlite",
+        debug_dir: pathlib.Path | None = None
     ):
         """
         embedding_function: callable(texts: List[str]) -> List[List[float]].
@@ -2074,10 +2074,7 @@ class GraphKnowledgeEngine:
           - ENV SENTENCE_TRANSFORMERS_MODEL, or
           - "all-MiniLM-L6-v2".
         """
-        self.meta_sqlite = meta_sqlite or EngineSQLite(
-            pathlib.Path(persist_directory or "./chroma_db"),
-            meta_sqlite_filename,
-        )
+        self.meta_sqlite = EngineSQLite(pathlib.Path(persist_directory or "./chroma_db"), 'meta.sqlite')
         self.meta_sqlite.ensure_initialized()
         self.changes = ChangeBus()
         if cdc_publish_endpoint := os.environ.get('CDC_PUBLISH_ENDPOINT'):
@@ -2149,10 +2146,6 @@ class GraphKnowledgeEngine:
         self.node_collection = self.chroma_client.get_or_create_collection(
             "nodes", embedding_function=self._ef, metadata={"hnsw:space": "cosine"}
         )
-        self.node_collection.get(limit = 1)
-        with self.get_collection_lock('node')[0]:
-            self.node_collection
-        self.node_collection.query(query_texts = ['hello world'])
         self.edge_collection = self.chroma_client.get_or_create_collection(
             "edges", embedding_function=self._ef, metadata={"hnsw:space": "cosine"}
         )
@@ -2166,14 +2159,9 @@ class GraphKnowledgeEngine:
                                 metadata={"hnsw:space": "cosine"})
         self.node_refs_collection = self.chroma_client.get_or_create_collection("node_refs")
         self.edge_refs_collection = self.chroma_client.get_or_create_collection("edge_refs")
-
-        # ----------------------------
-        # Backend adapter (Phase 1)
-        # ----------------------------
-        # Wrap the collections behind a tiny backend interface. This is a
-        # no-behavior-change refactor that makes it possible to add a
-        # Postgres/pgvector backend later.
+        # Backend adapter (Phase 1: Chroma)
         self.backend = ChromaBackend(
+            node_index_collection=self.node_index_collection,
             node_collection=self.node_collection,
             edge_collection=self.edge_collection,
             edge_endpoints_collection=self.edge_endpoints_collection,
@@ -2183,8 +2171,6 @@ class GraphKnowledgeEngine:
             node_refs_collection=self.node_refs_collection,
             edge_refs_collection=self.edge_refs_collection,
         )
-        # Chroma has no transaction semantics for vector ops; keep a no-op UoW
-        # surface so callers can consistently write `with engine.uow(): ...`.
         self._backend_uow = NoopUnitOfWork()
 
         # self.llm = AzureChatOpenAI(
@@ -2282,7 +2268,7 @@ class GraphKnowledgeEngine:
     def _maybe_reindex_edge_refs(self, edge: Edge, *, force: bool = False) -> None:
         
         new_fp = _refs_fingerprint(edge.mentions or [])
-        meta = self.edge_collection.get(ids=[edge.id], include=["metadatas"])
+        meta = self.backend.edge_get(ids=[edge.id], include=["metadatas"])
         old_fp = None
         metadatas = meta.get("metadatas")
         if metadatas and metadatas[0]:
@@ -2297,12 +2283,12 @@ class GraphKnowledgeEngine:
         docset_ok = (current_doc_ids == expect_doc_ids)
 
         if force or (new_fp != old_fp) or (not count_ok) or (not docset_ok):
-            self.edge_collection.update(ids=[edge.id], metadatas=[{"edge_refs_fp": new_fp}])
+            self.backend.edge_update(ids=[edge.id], metadatas=[{"edge_refs_fp": new_fp}])
             self._index_edge_refs(edge)
 
     def _maybe_reindex_node_refs(self, node: Node, *, force: bool = False) -> None:
         new_fp = _refs_fingerprint(node.mentions or [])
-        meta = self.node_collection.get(ids=[node.id], include=["metadatas"])
+        meta = self.backend.node_get(ids=[node.id], include=["metadatas"])
         old_fp = None
         metadatas = meta.get("metadatas")
         if metadatas and metadatas[0]:
@@ -2316,7 +2302,7 @@ class GraphKnowledgeEngine:
         docset_ok = (current_doc_ids == expect_doc_ids)
 
         if force or (new_fp != old_fp) or (not count_ok) or (not docset_ok):
-            self.node_collection.update(ids=[node.id], metadatas=[{"node_refs_fp": new_fp}])
+            self.backend.node_update(ids=[node.id], metadatas=[{"node_refs_fp": new_fp}])
             self._index_node_refs(node)
     def _index_edge_refs(self, edge: Edge) -> list[str]:
         self._delete_edge_ref_rows(edge.id)
@@ -2431,11 +2417,11 @@ class GraphKnowledgeEngine:
     
     def check_document_exist(self, document_id : str | list[str]):
         doc_ids = [document_id] if type(document_id) is str else document_id
-        got = self.document_collection.get(ids=doc_ids, include=[])
+        got = self.backend.document_get(ids=doc_ids, include=[])
         return set(got['ids']).union(set(document_id))
         
     def _fetch_document_text(self, document_id: str) -> str:
-        got = self.document_collection.get(ids=[document_id], include=["documents"])
+        got = self.backend.document_get(ids=[document_id], include=["documents"])
         if got and got.get("documents"):
             docs = got.get("documents")
             if docs:
@@ -2443,7 +2429,7 @@ class GraphKnowledgeEngine:
             else:
                 raise Exception("document lost")
         # fallback: try lookup by where
-        got = self.document_collection.get(where={"doc_id": document_id}, include=["documents"])
+        got = self.backend.document_get(where={"doc_id": document_id}, include=["documents"])
         if got and got.get("documents"):
             docs = got.get("documents")
             if docs:
@@ -2472,7 +2458,7 @@ class GraphKnowledgeEngine:
         doc, meta = _node_doc_and_meta(node)
         if meta.get("doc_id"):
             meta.pop('doc_id') 
-        self.node_collection.add(
+        self.backend.node_add(
             ids=[node.id],
             documents=[doc],
             embeddings=[node.embedding] if node.embedding is not None else [self._iterative_defensive_emb(str(doc))],
@@ -2514,14 +2500,52 @@ class GraphKnowledgeEngine:
                 "total_endpoint_count": total_endpoint_count,
             })],
         )
+
+    # ---- Unit of Work (meta-store transaction boundary) ----
+    def _ensure_uow_ctxvars(self):
+        
+        cls = self.__class__
+        if not hasattr(cls, "_uow_ctx_conn"):
+            cls._uow_ctx_conn = contextvars.ContextVar("gke_uow_conn", default=None)
+            cls._uow_ctx_depth = contextvars.ContextVar("gke_uow_depth", default=0)
+
+    @contextmanager
+    def uow(self):
+        """Nest-safe Unit of Work for meta-store writes.
+
+        Nested calls join the outer transaction; only the outermost commits/rolls back.
+        """
+        self._ensure_uow_ctxvars()
+        cls = self.__class__
+        depth = cls._uow_ctx_depth.get()
+        if depth > 0:
+            cls._uow_ctx_depth.set(depth + 1)
+            try:
+                yield cls._uow_ctx_conn.get()
+            finally:
+                cls._uow_ctx_depth.set(cls._uow_ctx_depth.get() - 1)
+            return
+
+        cls._uow_ctx_depth.set(1)
+        try:
+            with self.meta_sqlite.transaction() as conn:
+                token = cls._uow_ctx_conn.set(conn)
+                try:
+                    with self._backend_uow.transaction():
+                        yield conn
+                finally:
+                    cls._uow_ctx_conn.reset(token)
+        finally:
+            cls._uow_ctx_depth.set(0)
+
     def get_collection_lock(self, collection_name):
+        """Return the lock for a given collection name.
+
+        Note: callers should not depend on the raw Chroma collection object; use backend methods instead.
+        """
         if collection_name not in self.collection_lock:
             raise ValueError(f"{collection_name} has not implemented lock")
-        if collection_name == "node":
-            col = self.node_collection
-        if collection_name == "edge":
-            col = self.edge_collection
-        return (self.collection_lock[collection_name], col)
+        return self.collection_lock[collection_name]
     @conversation_only
     def max_node_seq_present(self, conversation_id):
         return self.meta_sqlite.next_user_seq(conversation_id)
@@ -2586,7 +2610,7 @@ class GraphKnowledgeEngine:
         def _maybe_doc_for_edge(eid: str) -> str | None:
             if doc_id is not None:
                 return doc_id
-            meta = self.edge_collection.get(ids=[eid], include=["metadatas"])
+            meta = self.backend.edge_get(ids=[eid], include=["metadatas"])
             metadata= meta.get("metadatas")
             if metadata and metadata[0]:
                 if type(metadata[0].get("doc_id")) is str:
@@ -2605,7 +2629,7 @@ class GraphKnowledgeEngine:
         def _per_node_doc(nid: str) -> str | None:
             if doc_id is not None:
                 return doc_id
-            meta = self.node_collection.get(ids=[nid], include=["metadatas"])
+            meta = self.backend.node_get(ids=[nid], include=["metadatas"])
             metadata= meta.get("metadatas")
             if metadata and metadata[0]:
                 if type(metadata[0].get("doc_id")) is str:
@@ -2711,7 +2735,7 @@ class GraphKnowledgeEngine:
                             "wf_predicate": edge_metadata.get("wf_predicate") or edge_metadata.get("predicate"),
                             "wf_multiplicity": edge_metadata.get("wf_multiplicity") or edge_metadata.get("multiplicity"),
                 }))
-        self.edge_collection.add(
+        self.backend.edge_add(
             ids=[edge.id],
             documents=[str(doc)],
             embeddings=[edge.embedding] if edge.embedding is not None else [self._iterative_defensive_emb(str(doc))],
@@ -2742,7 +2766,7 @@ class GraphKnowledgeEngine:
     def add_document(self, document: Document):
         if document.embeddings is None:
             document.embeddings = self._iterative_defensive_emb(str(document.content))
-        self.document_collection.add(
+        self.backend.document_add(
             ids=[document.id],
             documents=[str(document.content)],
             embeddings = [cast(Sequence[float], document.embeddings)] if document.embeddings is not None else [self._iterative_defensive_emb(str(document.content))],
@@ -2764,7 +2788,7 @@ class GraphKnowledgeEngine:
         )
 
     def add_domain(self, domain: Domain):
-        self.domain_collection.add(
+        self.backend.domain_add(
             ids=[domain.id],
             documents=[domain.model_dump_json()],
             metadatas=[
@@ -2791,15 +2815,15 @@ class GraphKnowledgeEngine:
                 ids.append(rid)
                 docs.append(json.dumps(row))
                 metas.append(row)
-            self.backend.node_docs_add(ids=ids, documents=docs, metadatas=metas, embeddings=[self._iterative_defensive_emb(d) for d in docs])
+            self.backend.node_docs_add(ids=ids, documents=docs, metadatas=metas, embeddings = [self._iterative_defensive_emb(d) for d in docs])
 
         # 2) Denormalize onto node metadata (convenience only)
         #    Fetch current to avoid writing the same value repeatedly.
-        current = self.node_collection.get(ids=[node.id], include=["metadatas"])
+        current = self.backend.node_get(ids=[node.id], include=["metadatas"])
         cur_meta = (current.get("metadatas") or [None])[0] or {}
         new_doc_ids_json = json.dumps(doc_ids)
         if cur_meta.get("doc_ids") != new_doc_ids_json:
-            self.node_collection.update(
+            self.backend.node_update(
                 ids=[node.id],
                 metadatas=[{"doc_ids": new_doc_ids_json}]
             )
@@ -2818,7 +2842,7 @@ class GraphKnowledgeEngine:
                     result.add(m.get("node_id"))
             return sorted(result)
         # slow fallback:
-        got = self.node_collection.get(where={"doc_id": doc_id})
+        got = self.backend.node_get(where={"doc_id": doc_id})
         return got.get("ids") or []
 
     def _edge_ids_by_doc(self, doc_id: str, insertion_method: Optional[str] = None) -> list[str]:
@@ -2835,7 +2859,7 @@ class GraphKnowledgeEngine:
 
     def _prune_node_refs_for_doc(self, node_id: str, doc_id: str) -> bool:
         """Remove references to doc_id from node; delete node_docs link; refresh denormalized meta."""
-        got = self.node_collection.get(ids=[node_id], include=["documents", 'metadatas'])
+        got = self.backend.node_get(ids=[node_id], include=["documents", 'metadatas'])
         docs = got.get("documents")
         if not (docs and docs[0]):
             return False
@@ -2852,7 +2876,7 @@ class GraphKnowledgeEngine:
         changed = len(node.mentions or []) != before
         if changed:
             # Update node JSON
-            self.node_collection.update(ids=[node_id], documents=[node.model_dump_json(field_mode='backend')])
+            self.backend.node_update(ids=[node_id], documents=[node.model_dump_json(field_mode='backend')])
             # Drop (node,doc) link
             self.backend.node_docs_delete(where={"$and": [{"node_id": node_id}, {"doc_id": doc_id}]})
             # Refresh denormalized doc_ids meta
@@ -2864,7 +2888,7 @@ class GraphKnowledgeEngine:
         edge_ids = list({json.loads(d)["edge_id"] for d in (eps.get("documents") or [])})
         if not edge_ids:
             return 0
-        got = self.edge_collection.get(ids=edge_ids, include=["documents"])
+        got = self.backend.edge_get(ids=edge_ids, include=["documents"])
         cnt = 0
         for js in (got.get("documents") or []):
             e = Edge.model_validate_json(js)
@@ -2873,10 +2897,10 @@ class GraphKnowledgeEngine:
         return cnt
 
     def rebuild_all_edge_refs(self) -> int:
-        got = self.edge_collection.get()
+        got = self.backend.edge_get()
         total = 0
         for eid in (got.get("ids") or []):
-            edges = self.edge_collection.get(ids=[eid], include=["documents"])
+            edges = self.backend.edge_get(ids=[eid], include=["documents"])
             if edge_docs:=edges.get("documents"):
                 e = Edge.model_validate_json(edge_docs[0])
                 self._index_edge_refs(e)
@@ -2893,12 +2917,12 @@ class GraphKnowledgeEngine:
         ids = self.edges_by_doc(doc_id, where)
         if not ids:
             return []
-        got = self.edge_collection.get(ids=ids, include=["documents"])
+        got = self.backend.edge_get(ids=ids, include=["documents"])
         return [Edge.model_validate_json(js) for js in (got.get("documents") or [])]
     def nodes_by_ids(self, node_ids):
-        return self.node_collection.get(node_ids)
+        return self.backend.node_get(node_ids)
     def edges_by_ids(self, edge_ids):
-        return self.edge_collection.get(edge_ids)
+        return self.backend.edge_get(edge_ids)
     def nodes_by_doc(self, doc_id: str, *, where : Optional[dict] = None) -> list[str]:
         where = {"doc_id": doc_id} if not where else {
             "$and": [{"doc_id": doc_id}] + [{k:v} for k,v in where.items()]
@@ -2910,7 +2934,7 @@ class GraphKnowledgeEngine:
         ids = self.nodes_by_doc(doc_id, where = where)
         if not ids:
             return []
-        got = self.node_collection.get(ids=ids, include=["documents"])
+        got = self.backend.node_get(ids=ids, include=["documents"])
         return [Node.model_validate_json(js) for js in (got.get("documents") or [])]
     
     def rebuild_node_refs_for_doc(self, doc_id: str) -> int:
@@ -2920,13 +2944,13 @@ class GraphKnowledgeEngine:
             rows = self.backend.node_docs_get(where={"doc_id": doc_id}, include=["documents"])
             node_ids = list({json.loads(d)["node_id"] for d in (rows.get("documents") or [])})
         else:
-            got = self.node_collection.get(where={"doc_id": doc_id}, include=["documents"])
+            got = self.backend.node_get(where={"doc_id": doc_id}, include=["documents"])
             node_ids = list(got.get("ids") or [])
 
         if not node_ids:
             return 0
 
-        got = self.node_collection.get(ids=node_ids, include=["documents"])
+        got = self.backend.node_get(ids=node_ids, include=["documents"])
         cnt = 0
         for js in (got.get("documents") or []):
             n = Node.model_validate_json(js)
@@ -2935,10 +2959,10 @@ class GraphKnowledgeEngine:
         return cnt
 
     def rebuild_all_node_refs(self) -> int:
-        got = self.node_collection.get()
+        got = self.backend.node_get()
         total = 0
         for nid in (got.get("ids") or []):
-            doc = self.node_collection.get(ids=[nid], include=["documents"])
+            doc = self.backend.node_get(ids=[nid], include=["documents"])
             if nod_docs := doc.get("documents"):
                 n = Node.model_validate_json(nod_docs[0])
                 self._index_node_refs(n)
@@ -2951,7 +2975,7 @@ class GraphKnowledgeEngine:
     def _delete_edges_by_ids(self, edge_ids: list[str]):
         if not edge_ids:
             return
-        self.edge_collection.delete(ids=edge_ids)
+        self.backend.edge_delete(ids=edge_ids)
         # also delete their endpoint rows
         # endpoints ids start with f"{edge_id}::"
         # we can delete via where on edge_id for simplicity:
@@ -2960,15 +2984,15 @@ class GraphKnowledgeEngine:
     # Vector queries
     # ----------------------------
     def vector_search_nodes(self, embedding: List[float], top_k: int = 5):
-        return self.node_collection.query(query_embeddings=[embedding], n_results=top_k)
+        return self.backend.node_query(query_embeddings=[embedding], n_results=top_k)
 
     def vector_search_edges(self, embedding: List[float], top_k: int = 5):
-        return self.edge_collection.query(query_embeddings=[embedding], n_results=top_k)
+        return self.backend.edge_query(query_embeddings=[embedding], n_results=top_k)
     def _choose_anchor(self, node_ids: list[str]) -> str:
         """Pick a stable anchor for same_as rebalancing: prefer a node with a canonical id; else min UUID."""
         if not node_ids:
             raise ValueError("No nodes to anchor")
-        nodes = self.node_collection.get(ids=node_ids, include=["documents"])
+        nodes = self.backend.node_get(ids=node_ids, include=["documents"])
         for nid, ndoc in zip(nodes.get("ids") or [], nodes.get("documents") or []):
             n = Node.model_validate_json(ndoc)
             if n.canonical_entity_id:
@@ -3010,7 +3034,7 @@ class GraphKnowledgeEngine:
                 
                 # skip-if-exists mode
                 if mode == "skip-if-exists":
-                    got = self.node_collection.get(ids=[ln.id])
+                    got = self.backend.node_get(ids=[ln.id])
                     if got.get("ids"):  # already there
                         node_ids.append(ln.id)
                         continue
@@ -3034,7 +3058,7 @@ class GraphKnowledgeEngine:
                 le: Edge = obj
                 
                 if mode == "skip-if-exists":
-                    got = self.edge_collection.get(ids=[le.id])
+                    got = self.backend.edge_get(ids=[le.id])
                     if got.get("ids"):
                         edge_ids.append(le.id)
                         continue
@@ -3110,7 +3134,7 @@ class GraphKnowledgeEngine:
                 ln.mentions = self._dealias_span(ln.mentions, document.id)
                 # skip-if-exists mode
                 if mode == "skip-if-exists":
-                    got = self.node_collection.get(ids=[ln.id])
+                    got = self.backend.node_get(ids=[ln.id])
                     if got.get("ids"):  # already there
                         node_ids.append(ln.id)
                         continue
@@ -3132,7 +3156,7 @@ class GraphKnowledgeEngine:
                 le: Edge = Edge.model_validate(obj.model_dump(), context={'insertion_method': 'llm_graph_extraction'})
                 le.mentions = self._dealias_span(le.mentions, document.id)
                 if mode == "skip-if-exists":
-                    got = self.edge_collection.get(ids=[le.id])
+                    got = self.backend.edge_get(ids=[le.id])
                     if got.get("ids"):
                         edge_ids.append(le.id)
                         continue
@@ -3219,7 +3243,7 @@ class GraphKnowledgeEngine:
         
     def get_document(self, doc_id: str):
 
-        doc_get_result = self.document_collection.get(doc_id)
+        doc_get_result = self.backend.document_get(doc_id)
         if len(doc_get_result['ids']) == 0:
             raise ValueError(f"no document found for doc id = {doc_id}")
         metadatas = doc_get_result["metadatas"]
@@ -3303,7 +3327,7 @@ class GraphKnowledgeEngine:
                     for sp in g.spans:
                         span_validator.validate_span(doc_id = doc_id, span = sp)
                 if mode == "skip-if-exists":
-                    got = self.node_collection.get(ids=[ln.id])
+                    got = self.backend.node_get(ids=[ln.id])
                     if got.get("ids"):  # already there
                         node_ids.append(ln.id)
                         continue
@@ -3323,7 +3347,7 @@ class GraphKnowledgeEngine:
                     for sp in g.spans:
                         span_validator.validate_span(doc_id = doc_id, span = sp)
                 if mode == "skip-if-exists":
-                    got = self.edge_collection.get(ids=[le.id])
+                    got = self.backend.edge_get(ids=[le.id])
                     if got.get("ids"):
                         edge_ids.append(le.id)
                         continue
@@ -3374,10 +3398,11 @@ class GraphKnowledgeEngine:
         }
 
         # ---- helpers -------------------------------------------------------------
-        def _load_many(col, ids):
+        def _load_many(kind: str, ids):
             if not ids:
                 return {}
-            got = col.get(ids=list(ids), include=["documents"])
+            get_fn = getattr(self.backend, f"{kind}_get");
+            got = get_fn(ids=list(ids), include=["documents"])
             docs = got.get("documents") or []
             ids_out = got.get("ids") or []
             out = {}
@@ -3386,7 +3411,7 @@ class GraphKnowledgeEngine:
                     d = json.loads(mj)
                 except Exception:
                     try:
-                        d = (Node if col is self.node_collection else Edge).model_validate_json(mj).model_dump()
+                        d = (Node if kind == "node" else Edge).model_validate_json(mj).model_dump()
                     except Exception:
                         d = None
                 if d is not None and i < len(ids_out):
@@ -3396,11 +3421,11 @@ class GraphKnowledgeEngine:
         def _save_node(d: dict):
             # keep existing metadata (doc_id, etc.) and update document JSON
             nid = d["id"]
-            prior = self.node_collection.get(ids=[nid], include=["metadatas"])
+            prior = self.backend.node_get(ids=[nid], include=["metadatas"])
             meta = (prior.get("metadatas") or [None])[0] or {}
             meta = dict(meta)  # shallow copy
             # write
-            self.node_collection.update(
+            self.backend.node_update(
                 ids=[nid],
                 documents=[json.dumps(d, ensure_ascii=False)],
                 metadatas=[meta],
@@ -3413,10 +3438,10 @@ class GraphKnowledgeEngine:
 
         def _save_edge(d: dict):
             eid = d["id"]
-            prior = self.edge_collection.get(ids=[eid], include=["metadatas"])
+            prior = self.backend.edge_get(ids=[eid], include=["metadatas"])
             meta = (prior.get("metadatas") or [None])[0] or {}
             meta = dict(meta)
-            self.edge_collection.update(
+            self.backend.edge_update(
                 ids=[eid],
                 documents=[json.dumps(d, ensure_ascii=False)],
                 metadatas=[meta],
@@ -3435,7 +3460,7 @@ class GraphKnowledgeEngine:
         except Exception:
             # fallback: query node collection by doc_id metadata if present
             try:
-                q = self.node_collection.get(where={"doc_id": doc_id})
+                q = self.backend.node_get(where={"doc_id": doc_id})
                 for nid in (q.get("ids") or []):
                     node_ids.add(nid)
             except Exception:
@@ -3452,7 +3477,7 @@ class GraphKnowledgeEngine:
         except Exception:
             # fallback: direct edge_collection metadata
             try:
-                q = self.edge_collection.get(where={"doc_id": doc_id})
+                q = self.backend.edge_get(where={"doc_id": doc_id})
                 for eid in (q.get("ids") or []):
                     edge_ids.add(eid)
             except Exception:
@@ -3460,7 +3485,7 @@ class GraphKnowledgeEngine:
 
         # ---- 2) load, filter references, and persist or delete -------------------
         # Nodes
-        nodes_map = _load_many(self.node_collection, node_ids)
+        nodes_map = _load_many("node", node_ids)
         for nid, d in nodes_map.items():
             refs = d.get("references") or []
             keep = []
@@ -3479,7 +3504,7 @@ class GraphKnowledgeEngine:
                 else:
                     # no refs left → delete node, node_docs rows, and (optionally) any edges’ endpoints for this doc if tied
                     try:
-                        self.node_collection.delete(ids=[nid])
+                        self.backend.node_delete(ids=[nid])
                     except Exception:
                         pass
                     try:
@@ -3495,7 +3520,7 @@ class GraphKnowledgeEngine:
                     pass
 
         # Edges
-        edges_map = _load_many(self.edge_collection, edge_ids)
+        edges_map = _load_many("edge", edge_ids)
         for eid, d in edges_map.items():
             refs = d.get("references") or []
             keep = []
@@ -3521,7 +3546,7 @@ class GraphKnowledgeEngine:
                 else:
                     # No refs remain → delete edge entirely (and any leftover endpoints just in case)
                     try:
-                        self.edge_collection.delete(ids=[eid])
+                        self.backend.edge_delete(ids=[eid])
                     except Exception:
                         pass
                     try:
@@ -3613,7 +3638,7 @@ class GraphKnowledgeEngine:
         # optional within-doc adjudication
         if auto_adjudicate:
             # naive label+type buckets; you can plug your candidate generator here
-            data = self.node_collection.get(where={"doc_id": doc_id}, include=["documents"])
+            data = self.backend.node_get(where={"doc_id": doc_id}, include=["documents"])
             buckets = {}
             for ndoc in (data.get("documents") or []):
                 n = Node.model_validate_json(ndoc)
@@ -3652,7 +3677,7 @@ class GraphKnowledgeEngine:
         else:
             raise Exception("Document loss")
         edge_ids = list({json.loads(doc)["edge_id"] for doc in eps_doc})
-        edges = self.edge_collection.get(ids=edge_ids, include=[ "documents", "metadatas"])
+        edges = self.backend.edge_get(ids=edge_ids, include=[ "documents", "metadatas"])
 
         removed_edge_ids: set[str] = set()
         updated_edge_ids: set[str] = set()
@@ -3666,13 +3691,13 @@ class GraphKnowledgeEngine:
                 new_edge: Edge | None
                 edge_deleted, new_edge = self._rebalance_same_as_edge(e, removed_node_id=node_id)
                 if edge_deleted or (new_edge is None):
-                    self.edge_collection.delete(ids=[eid])
+                    self.backend.edge_delete(ids=[eid])
                     self.backend.edge_endpoints_delete(where={"edge_id": eid})
                     removed_edge_ids.add(eid)
                 else:
                     # Update the edge
                      # help pylance
-                    self.edge_collection.update(
+                    self.backend.edge_update(
                         ids=[eid],
                         documents=[new_edge.model_dump_json(field_mode='backend')],
                         metadatas=[_strip_none({
@@ -3696,7 +3721,7 @@ class GraphKnowledgeEngine:
                         for nid in node_ids:
                             ep_id = f"{eid}::{role}::{nid}"
                             # derive per-endpoint doc_id from node JSON if available
-                            node_doc = self.node_collection.get(ids=[nid], include=["documents"])
+                            node_doc = self.backend.node_get(ids=[nid], include=["documents"])
                             if node_doc is None:
                                 raise Exception(f"node_doc for {nid} is lost")
                             per_doc_id = None
@@ -3729,12 +3754,12 @@ class GraphKnowledgeEngine:
 
             if not new_src or not new_tgt:
                 # delete the whole edge + its endpoint rows
-                self.edge_collection.delete(ids=[eid])
+                self.backend.edge_delete(ids=[eid])
                 self.backend.edge_endpoints_delete(where={"edge_id": eid})
                 removed_edge_ids.add(eid)
             else:
                 e.source_ids, e.target_ids = new_src, new_tgt
-                self.edge_collection.update(
+                self.backend.edge_update(
                     ids=[eid],
                     documents=[e.model_dump_json(field_mode='backend')],
                     metadatas=[_strip_none({
@@ -3783,7 +3808,7 @@ class GraphKnowledgeEngine:
             raise Exception(f"edge endpoint collection lost for document id {document_id}")
         edge_ids = list({json.loads(doc)["edge_id"] for doc in eps_doc})
         if edge_ids:
-            self.edge_collection.delete(ids=edge_ids)
+            self.backend.edge_delete(ids=edge_ids)
             self.backend.edge_endpoints_delete(where={"doc_id": document_id})
             self.backend.edge_refs_delete(where={"node_id": {"$in": edge_ids}})
             deleted_edges.update(edge_ids)
@@ -3794,17 +3819,17 @@ class GraphKnowledgeEngine:
             # remove only refs for this doc
             self._prune_node_refs_for_doc(nid, document_id)
             # if node has no refs left, delete it
-            got = self.node_collection.get(ids=[nid], include=["documents"])
+            got = self.backend.node_get(ids=[nid], include=["documents"])
             if docs := got.get("documents"):
                 if docs[0]:
                 # n = Node.model_validate_json(got["documents"][0])
                     if not json.loads(docs[0]).get('references') : # none or empty list
-                        self.node_collection.delete(ids=[nid])
+                        self.backend.node_delete(ids=[nid])
                         deleted_node_ids.append(nid)
                     self.backend.node_refs_delete(where=cast(dict[str, Any], {"node_id": {"$in": node_ids}}))
-        doc_ids = set(self.document_collection.get(where={"doc_id": document_id})['ids'])
-        self.document_collection.delete(where={"doc_id": document_id})
-        doc_ids_after = set(self.document_collection.get(where={"doc_id": document_id})['ids'])
+        doc_ids = set(self.backend.document_get(where={"doc_id": document_id})['ids'])
+        self.backend.document_delete(where={"doc_id": document_id})
+        doc_ids_after = set(self.backend.document_get(where={"doc_id": document_id})['ids'])
         return {
             "roll"
             "rolled_back_doc_id": doc_ids - doc_ids_after,
@@ -3831,13 +3856,13 @@ class GraphKnowledgeEngine:
     # ----------------------------
     def _fetch_target(self, t: AdjudicationTarget) -> Node | Edge:
         if t.kind == "node":
-            got = self.node_collection.get(ids=[t.id], include=["documents"])
+            got = self.backend.node_get(ids=[t.id], include=["documents"])
             if docs := got.get("documents"): 
                 return Node.model_validate_json(docs[0])
             else:
                 raise ValueError(f"Node {t.id} not found")
         else: # edge
-            got = self.edge_collection.get(ids=[t.id], include=["documents"])
+            got = self.backend.edge_get(ids=[t.id], include=["documents"])
             if docs:=got.get("documents"): 
                 return Edge.model_validate_json(docs[0])
             else:
@@ -3852,7 +3877,7 @@ class GraphKnowledgeEngine:
     def add_edge_with_endpoint_docs(self, edge: Edge, endpoint_doc_ids: dict[str, str | None]):
         # Add the main edge row (neutral doc_id)
         doc = edge.model_dump_json(field_mode='backend')
-        self.edge_collection.add(
+        self.backend.edge_add(
             ids=[edge.id],
             documents=[],
             embeddings=[edge.embedding] if edge.embedding else [self._iterative_defensive_emb(doc)],
@@ -3897,10 +3922,10 @@ class GraphKnowledgeEngine:
             )
     def _classify_endpoint_id(self, rid: str) -> str:
         """Return 'node' or 'edge' by checking collections; raise if not found."""
-        hit = self.node_collection.get(ids=[rid])
+        hit = self.backend.node_get(ids=[rid])
         if (hit.get("ids") or [None])[0] == rid:
             return "node"
-        hit = self.edge_collection.get(ids=[rid])
+        hit = self.backend.edge_get(ids=[rid])
         if (hit.get("ids") or [None])[0] == rid:
             return "edge"
         raise ValueError(f"Unknown endpoint id {rid!r} (not a node or edge)")
@@ -4084,14 +4109,14 @@ class GraphKnowledgeEngine:
         idx: CollectionLike | None
         # Choose index & key
         if kind == "node":
-            idx = getattr(self, "node_refs_collection", None)
+            idx = True  # refs index exists in backend
             key = "node_id"
-            primary = self.node_collection
+            primary = None
             model_cls = Node
         else:
-            idx = getattr(self.backend, "edge_refs_collection", None)
+            idx = True  # refs index exists in backend
             key = "edge_id"
-            primary = self.edge_collection
+            primary = None
             model_cls = Edge
 
         # ---------- Fast path: indexed rows ----------
@@ -4101,14 +4126,16 @@ class GraphKnowledgeEngine:
                 where["doc_id"] = doc_id
             if ids:
                 where[key]= {"$in": list(ids)}
-            rows = idx.get(where=where, include=["metadatas"])
+            get_refs = self.backend.node_refs_get if kind == "node" else self.backend.edge_refs_get
+            rows = get_refs(where=where, include=["metadatas"])
             picked = {str(m.get(key)) for m in (rows.get("metadatas") or []) if m and m.get(key)}
             return sorted(picked)
 
         # ---------- Fallback: scan primary JSON ----------
         # (only used if you didn’t create the index collection)
         if ids:
-            got = primary.get(ids=list(ids), include=["documents"])
+            get_primary = self.backend.node_get if kind == "node" else self.backend.edge_get
+            got = get_primary(ids=list(ids), include=["documents"])
             documents = got.get("documents") or []
             entity_ids = got.get("ids") or []
         else:
@@ -4217,7 +4244,7 @@ class GraphKnowledgeEngine:
             min_seq = self.max_node_seq_present(conversation_id)
         if self.kg_graph_type != "conversation":
             raise Exception("conversation only allowed to be on canva engine")
-        got = self.node_collection.get(
+        got = self.backend.node_get(
             where={"$and":[
                 {"conversation_id": conversation_id},                 
                 ]
@@ -4247,7 +4274,7 @@ class GraphKnowledgeEngine:
         # For now, we scan.
         if self.kg_graph_type != "conversation":
             raise Exception("conversation only allowed to be on canva engine")
-        got = self.node_collection.get(
+        got = self.backend.node_get(
             where={"$and":[
                 {"conversation_id": conversation_id}, 
                 {"in_conversation_chain": True}

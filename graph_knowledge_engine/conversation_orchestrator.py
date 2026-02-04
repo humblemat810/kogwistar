@@ -638,14 +638,15 @@ class ConversationOrchestrator:
             
         
 
-        final_state, run_id = runtime.run(
+        
+        run_result = runtime.run(
             workflow_id=workflow_id,
             conversation_id=conversation_id,
             turn_node_id=turn_node_id,
             initial_state=init_state,
             run_id=f"add_turn|{turn_node_id}",
         )
-
+        final_state, run_id = run_result.final_state, run_result.run_id
         # ----------------------------
         # 6) Map final state to legacy AddTurnResult
         # ----------------------------
