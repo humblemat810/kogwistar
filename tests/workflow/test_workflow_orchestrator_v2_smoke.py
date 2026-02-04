@@ -14,7 +14,7 @@ def test_workflow_runtime_uses_default_resolver(tmp_path):
     from graph_knowledge_engine.models import WorkflowEdge, WorkflowNode, Span, Grounding, MentionVerification
     from graph_knowledge_engine.workflow.runtime import WorkflowRuntime
     from graph_knowledge_engine.conversation_state_contracts import WorkflowStateModel, WorkflowState
-    from graph_knowledge_engine.workflow.runtime import RunResult, State
+    from graph_knowledge_engine.workflow.runtime import StepRunResult, State
     from graph_knowledge_engine.workflow.resolvers import default_resolver, MappingStepResolver
     from graph_knowledge_engine.tool_runner import ToolRunner
     
@@ -197,7 +197,7 @@ def test_workflow_runtime_uses_default_resolver(tmp_path):
     # -----------------------------
     workflow_engine2 = GraphKnowledgeEngine(persist_directory=str(wf_dir), kg_graph_type="workflow")
     
-    def predicate_should_summarize(state: State, r: RunResult) -> bool:
+    def predicate_should_summarize(state: State, r: StepRunResult) -> bool:
         # default_resolver sets ctx.state["decide"] = {"need_summary": bool}
         return bool(state.get("decide", {}).get("need_summary"))
 
@@ -267,7 +267,7 @@ def test_workflow_runtime_uses_default_resolver(tmp_path):
     init_state["_deps"] = deps
     
     try:
-        final_state, run_id = rt.run(
+        run_result = rt.run(
             workflow_id=workflow_id,
             conversation_id="conv_smoke",
             turn_node_id="turn_smoke",
@@ -279,6 +279,7 @@ def test_workflow_runtime_uses_default_resolver(tmp_path):
         # Important cleanup so it doesn't affect other tests
         monitoring.register_callback(TOOL_ID, monitoring.events.CALL, None)
         monitoring.free_tool_id(TOOL_ID)
+    final_state, run_id = run_result.final_state, run_result.run_id
     # assert hits >= 1
     assert run_id
     assert final_state.get("started") is True

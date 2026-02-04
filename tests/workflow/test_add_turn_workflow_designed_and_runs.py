@@ -244,13 +244,13 @@ def test_add_turn_workflow_design_and_run(tmp_path):
         max_workers=2,
     )
 
-    final_state, run_id = rt.run(
+    run_result = rt.run(
         workflow_id=workflow_id,
         conversation_id="conv1",
         turn_node_id="turn1",
         initial_state={"memory": None, "kg": None},
     )
-
+    final_state, run_id = run_result.final_state, run_result.run_id
     # Basic assertions: the workflow executed and checkpointed
     assert run_id.startswith("run|")
     assert "answer" in final_state

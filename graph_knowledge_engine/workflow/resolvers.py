@@ -38,10 +38,10 @@ if TYPE_CHECKING:
 Json = Any
 
 # Import your real RunResult types from runtime/models
-from graph_knowledge_engine.workflow.runtime import RunFailure, RunResult, RunSuccess, StepContext
+from graph_knowledge_engine.workflow.runtime import RunFailure, StepRunResult, RunSuccess, StepContext
 from graph_knowledge_engine.models import ConversationEdge
 from graph_knowledge_engine.conversation_orchestrator import get_id_for_conversation_turn_edge
-RawStepFn = Callable[[StepContext], Union[Json, RunResult]]
+RawStepFn = Callable[[StepContext], Union[Json, StepRunResult]]
 
 @dataclass
 class MappingStepResolver:
@@ -60,12 +60,12 @@ class MappingStepResolver:
             return fn
         return _decorator
 
-    def resolve(self, op: str) -> Callable[[StepContext], RunResult]:
+    def resolve(self, op: str) -> Callable[[StepContext], StepRunResult]:
         raw = self.handlers.get(op) or self.default
         if raw is None:
             raise KeyError(f"No step handler registered for op={op!r}")
 
-        def _wrapped(ctx: StepContext) -> RunResult:
+        def _wrapped(ctx: StepContext) -> StepRunResult:
             try:
                 out = raw(ctx)
                 if isinstance(out, (RunSuccess, RunFailure)):
@@ -156,7 +156,7 @@ class MappingStepResolver:
         self._state_schema = dict(inferred)
         return dict(self._state_schema)
 
-    def __call__(self, op: str) -> Callable[[StepContext], RunResult]:
+    def __call__(self, op: str) -> Callable[[StepContext], StepRunResult]:
         return self.resolve(op)
     
     
@@ -171,7 +171,7 @@ def _deps(ctx: StepContext) -> Dict[str, Any]:
 
 
 @default_resolver.register("start")
-def _start(ctx: StepContext) -> RunResult:
+def _start(ctx: StepContext) -> StepRunResult:
     with ctx.state_write as state:
         state.setdefault("op_log", []).append("start")
         state["started"] = True
@@ -180,7 +180,7 @@ def _start(ctx: StepContext) -> RunResult:
 
 
 @default_resolver.register("memory_retrieve")
-def _memory_retrieve(ctx: StepContext) -> RunResult:
+def _memory_retrieve(ctx: StepContext) -> StepRunResult:
     """Retrieve candidate memories.
 
     Writes:
@@ -244,7 +244,7 @@ def _memory_retrieve(ctx: StepContext) -> RunResult:
 
 
 @default_resolver.register("kg_retrieve")
-def _kg_retrieve(ctx: StepContext) -> RunResult:
+def _kg_retrieve(ctx: StepContext) -> StepRunResult:
     """Retrieve KG facts/links based on query and memory seed ids."""
     deps = _deps(ctx)
     with ctx.state_write as state:
@@ -305,7 +305,7 @@ def _kg_retrieve(ctx: StepContext) -> RunResult:
 
 
 @default_resolver.register("memory_pin")
-def _memory_pin(ctx: StepContext) -> RunResult:
+def _memory_pin(ctx: StepContext) -> StepRunResult:
     """Pin selected memory into the conversation graph."""
     deps = _deps(ctx)
     with ctx.state_write as state:
@@ -353,7 +353,7 @@ def _memory_pin(ctx: StepContext) -> RunResult:
 
 
 @default_resolver.register("kg_pin")
-def _kg_pin(ctx: StepContext) -> RunResult:
+def _kg_pin(ctx: StepContext) -> StepRunResult:
     """Pin selected KG nodes/edges (as pointers) into the conversation graph."""
     deps = _deps(ctx)
     with ctx.state_write as state:
@@ -393,7 +393,7 @@ def _kg_pin(ctx: StepContext) -> RunResult:
 
 
 @default_resolver.register("answer")
-def _answer(ctx: StepContext) -> RunResult:
+def _answer(ctx: StepContext) -> StepRunResult:
     """Run answer-only agent, then link assistant turn into conversation chain."""
     deps = _deps(ctx)
     with ctx.state_write as state:
@@ -450,7 +450,7 @@ def _answer(ctx: StepContext) -> RunResult:
 
 
 @default_resolver.register("decide_summarize")
-def _decide_summarize(ctx: StepContext) -> RunResult:
+def _decide_summarize(ctx: StepContext) -> StepRunResult:
     """Decide whether to summarize, using the same policy as legacy."""
     deps = _deps(ctx)
     with ctx.state_write as state:
@@ -486,7 +486,7 @@ def _decide_summarize(ctx: StepContext) -> RunResult:
 
 
 @default_resolver.register("summarize")
-def _summarize(ctx: StepContext) -> RunResult:
+def _summarize(ctx: StepContext) -> StepRunResult:
     """Summarize last batch and reset distances (legacy behavior)."""
     deps = _deps(ctx)
     with ctx.state_write as state:
@@ -526,7 +526,7 @@ def _summarize(ctx: StepContext) -> RunResult:
 
 
 @default_resolver.register("end")
-def _end(ctx: StepContext) -> RunResult:
+def _end(ctx: StepContext) -> StepRunResult:
     with ctx.state_write as state:
         state.setdefault("op_log", []).append("end")
     result = RunSuccess(conversation_node_id=None, state_update=[('u',{"done": True})])

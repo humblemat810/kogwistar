@@ -11,7 +11,7 @@ from graph_knowledge_engine.models import (
 )
 from typing import TYPE_CHECKING
 
-from graph_knowledge_engine.workflow.runtime import RunResult, State
+from graph_knowledge_engine.workflow.runtime import StepRunResult, State
 
 if TYPE_CHECKING:
     from graph_knowledge_engine.workflow.runtime import StepContext
@@ -234,11 +234,11 @@ def test_add_turn_like_workflow_dump_bundles(tmp_path: Path):
     # -----------------------------
     # 2) Consumer: run stored design (runnable proof)
     # -----------------------------
-    def predicate_should_pin_memory(state: State, r: RunResult):
+    def predicate_should_pin_memory(state: State, r: StepRunResult):
         return bool(state.get("memory", {}).get("selected_ids"))
-    def predicate_should_pin_kg(state: State, r: RunResult):
+    def predicate_should_pin_kg(state: State, r: StepRunResult):
         return bool(state.get("kg", {}).get("selected_ids"))
-    def predicate_should_summarize(state: State, r: RunResult):
+    def predicate_should_summarize(state: State, r: StepRunResult):
         return bool(state.get("decide", {}).get("need_summary"))
     predicate_registry = {
         "should_pin_memory": predicate_should_pin_memory,
@@ -290,82 +290,92 @@ def test_add_turn_like_workflow_dump_bundles(tmp_path: Path):
     def _start(ctx: StepContext):
         # ctx.state.setdefault("op_log", []).append("start")
         ctx.message_queue.put_nowait(('a', {"op_log": "start"}))
-        ctx.state["started"] = True
+        with ctx.state_write as state:
+            state["started"] = True
         conversation_node_id_created_during_process = None
         return RunSuccess(conversation_node_id=conversation_node_id_created_during_process, 
-                          state_update=[{"started": True}])
+                          state_update=[('u', {"started": True})])
 
     @resolver.register("memory_retrieve")
     def _memory_retrieve(ctx: StepContext):
         # ctx.state.setdefault("op_log", []).append("memory_retrieve")
-        ctx.message_queue.put_nowait(('a', {"op_log": "memory_retrieve"}))
-        ctx.state["memory"] = {"selected_ids": ["m1"], "text": "memory context"}
+        with ctx.state_write as state:
+            ctx.message_queue.put_nowait(('a', {"op_log": "memory_retrieve"}))
+            state["memory"] = {"selected_ids": ["m1"], "text": "memory context"}
         conversation_node_id_created_during_process = None
         return RunSuccess(conversation_node_id=conversation_node_id_created_during_process, 
-                          state_update=[{"ok": True}])
+                          state_update=[('u', {"ok": True})])
     @resolver.register("kg_retrieve")
     def _kg_retrieve(ctx: StepContext):
         # ctx.state.setdefault("op_log", []).append("kg_retrieve")
         ctx.message_queue.put_nowait(('a', {"op_log": "kg_retrieve"}))
-        ctx.state["kg"] = {"selected_ids": ["k1"], "facts": ["f1"]}
+        with ctx.state_write as state:
+            state["kg"] = {"selected_ids": ["k1"], "facts": ["f1"]}
         # return {"ok": True}
         conversation_node_id_created_during_process = None
         return RunSuccess(conversation_node_id=conversation_node_id_created_during_process, 
-                          state_update=[{"ok": True}])
+                          state_update=[('u', {"ok": True})])
     @resolver.register("memory_pin")
     def _memory_pin(ctx: StepContext):
         # ctx.state.setdefault("op_log", []).append("memory_pin")
         ctx.message_queue.put_nowait(('a', {"op_log": "memory_pin"}))
-        ctx.state["memory_pin"] = {"pinned_ids": ["m1"]}
+        with ctx.state_write as state:
+            state["memory_pin"] = {"pinned_ids": ["m1"]}
         # return {"ok": True}
         conversation_node_id_created_during_process = None
         return RunSuccess(conversation_node_id=conversation_node_id_created_during_process, 
-                          state_update=[{"ok": True}])
+                          state_update=[('u',{"ok": True})])
     @resolver.register("kg_pin")
     def _kg_pin(ctx: StepContext):
         # ctx.state.setdefault("op_log", []).append("kg_pin")
         ctx.message_queue.put_nowait(('a', {"op_log": "kg_pin"}))
-        ctx.state["kg_pin"] = {"pinned_ids": ["k1"]}
+        with ctx.state_write as state:
+            state["kg_pin"] = {"pinned_ids": ["k1"]}
         # return {"ok": True}
         conversation_node_id_created_during_process = None
         return RunSuccess(conversation_node_id=conversation_node_id_created_during_process, 
-                          state_update=[{"ok": True}])
+                          state_update=[('u',{"ok": True})])
     @resolver.register("answer")
     def _answer(ctx: StepContext):
         # ctx.state.setdefault("op_log", []).append("answer")
         ctx.message_queue.put_nowait(('a', {"op_log": "answer"}))
-        ctx.state["answer"] = {"text": "answer text", "llm_decision_need_summary": True}
+        with ctx.state_write as state:
+            state["answer"] = {"text": "answer text", "llm_decision_need_summary": True}
         # return ctx.state["answer"]
         conversation_node_id_created_during_process = None
         return RunSuccess(conversation_node_id=conversation_node_id_created_during_process, 
-                          state_update=[{"answer": ctx.state["answer"]}])
+                          state_update=[('u',{"answer": ctx.state_view["answer"]})])
     @resolver.register("decide_summarize")
     def _decide(ctx: StepContext):
         # ctx.state.setdefault("op_log", []).append("decide_summarize")
         ctx.message_queue.put_nowait(('a', {"op_log": "decide_summarize"}))
-        need = bool(ctx.state.get("answer", {}).get("llm_decision_need_summary"))
-        ctx.state["decide"] = {"need_summary": need}
+        need = bool(ctx.state_view.get("answer", {}).get("llm_decision_need_summary"))
+        with ctx.state_write as state:
+            state["decide"] = {"need_summary": need}
         # return ctx.state["decide"]
         conversation_node_id_created_during_process = None
         return RunSuccess(conversation_node_id=conversation_node_id_created_during_process, 
-                          state_update=[ctx.state["decide"]])
+                          state_update=[('u', ctx.state_view["decide"])])
     @resolver.register("summarize")
     def _summarize(ctx: StepContext):
         # ctx.state.setdefault("op_log", []).append("summarize")
         ctx.message_queue.put_nowait(('a', {"op_log": "decide_summarize"}))
-        ctx.state["summary"] = {"text": "summary text"}
+        with ctx.state_write as state:
+            state["summary"] = {"text": "summary text"}
         # return ctx.state["summary"]
         conversation_node_id_created_during_process = None
         return RunSuccess(conversation_node_id=conversation_node_id_created_during_process, 
-                          state_update=[{"ok": True}])
+                          state_update=[('u', {"ok": True})])
     @resolver.register("end")
     def _end(ctx: StepContext):
-        # ctx.state.setdefault("op_log", []).append("end")
+        with ctx.state_write as state:
+            state.setdefault("op_log", []).append("end")
+            state["ended"] = True
         ctx.message_queue.put_nowait(('a', {"op_log": "end"}))
         # return {"done": True}
         conversation_node_id_created_during_process = None
         return RunSuccess(conversation_node_id=conversation_node_id_created_during_process, 
-                          state_update=[{"done": True}])    
+                          state_update=[('u', {"done": True})])
     # IMPORTANT: re-open workflow_engine from disk to prove "saved graph is runnable"
     workflow_engine2 = GraphKnowledgeEngine(persist_directory=str(wf_dir), kg_graph_type="workflow")
     rt = WorkflowRuntime(
@@ -377,14 +387,16 @@ def test_add_turn_like_workflow_dump_bundles(tmp_path: Path):
         max_workers=1,
     )
 
-    final_state, run_id = rt.run(
+    run_result = rt.run(
         workflow_id=workflow_id,
         conversation_id="conv_manual",
         turn_node_id="turn_manual",
         initial_state={},
     )
+    final_state, run_id = run_result.final_state, run_result.run_id
     assert run_id
-    assert final_state["op_log"][1] == "memory_retrieve"
+    assert run_result.mq.queue[2][1]['op_log'] == 'memory_retrieve'
+    # assert final_state["op_log"][1] == "memory_retrieve"
 
     # -----------------------------
     # 3) D3 bundle dumps (HTML) for manual inspection

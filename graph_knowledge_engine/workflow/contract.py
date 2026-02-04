@@ -88,9 +88,9 @@ class WorkflowEdgeInfo:
 if TYPE_CHECKING:
     from ..conversation_state_contracts import WorkflowState
     Predicate = Callable[[WorkflowEdgeInfo, WorkflowState, Result], bool]
-    from .runtime import RunResult
+    from .runtime import StepRunResult
 class BasePredicate():
-    def __call__(self, e:WorkflowEdgeInfo,  state: WorkflowState, result: RunResult):
+    def __call__(self, e:WorkflowEdgeInfo,  state: WorkflowState, result: StepRunResult):
         if result.next_step_names:
             return e.name in result.next_step_names
         else:

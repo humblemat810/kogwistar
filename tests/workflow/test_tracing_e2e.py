@@ -243,13 +243,13 @@ def test_tracing_routing_decision_end_to_end(tmp_path: Path):
         max_workers=1,
     )
 
-    final_state, run_id = rt.run(
+    run_result = rt.run(
         workflow_id=workflow_id,
         conversation_id="conv_trace_1",
         turn_node_id="turn_trace_1",
         initial_state={},  # predicate false at first gate
     )
-
+    final_state, run_id = run_result.final_state, run_result.run_id
     # Flush async SQLite writer
     rt.sink.close()
 
@@ -350,13 +350,13 @@ def test_tracing_join_events_end_to_end(tmp_path: Path):
         max_workers=2,
     )
 
-    final_state, run_id = rt.run(
+    run_result = rt.run(
         workflow_id=workflow_id,
         conversation_id="conv_trace_2",
         turn_node_id="turn_trace_2",
         initial_state={},
     )
-
+    final_state, run_id = run_result.final_state, run_result.run_id
     rt.sink.close()
 
     events = _fetch_events(_trace_db_path(workflow_engine), run_id=run_id)

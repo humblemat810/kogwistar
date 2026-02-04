@@ -163,13 +163,13 @@ def test_persisted_workflow_design_is_runnable(tmp_path):
         max_workers=1,
     )
 
-    final_state, run_id = rt.run(
+    run_result = rt.run(
         workflow_id=workflow_id,
         conversation_id="conv1",
         turn_node_id="turn1",
         initial_state={},
     )
-
+    final_state, run_id = run_result.final_state, run_result.run_id
     assert run_id  # non-empty
     assert final_state["ops"] == ["a", "b", "end"]
 

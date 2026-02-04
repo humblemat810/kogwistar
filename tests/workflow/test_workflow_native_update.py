@@ -144,12 +144,12 @@ def test_workflow_runtime_native_update_schema_applies_known_and_falls_back_unkn
         max_workers=1,
     )
 
-    state, _run_id = rt.run(
+    run_result = rt.run(
         workflow_id=wid,
         conversation_id="c1",
         turn_node_id="t1",
         initial_state={},
     )
-
-    assert state["op_log"] == ["x"]
-    assert state["dyn"] == 1
+    final_state, _run_id = run_result.final_state, run_result.run_id
+    assert final_state["op_log"] == ["x"]
+    assert final_state["dyn"] == 1

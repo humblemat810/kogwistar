@@ -184,8 +184,8 @@ class RunFailure(BaseModel):
     errors: list[str]
     next_step_names: list[str] = []  # empty will by default fan out all
     status: Literal["failure"] = "failure"
-RunResult: TypeAlias = RunSuccess | RunFailure
-StepFn: TypeAlias = Callable[["StepContext"], RunResult]
+StepRunResult: TypeAlias = RunSuccess | RunFailure
+StepFn: TypeAlias = Callable[["StepContext"], StepRunResult]
 from ..conversation_state_contracts import WorkflowState
 
 from dataclasses import dataclass, field
@@ -194,6 +194,11 @@ from types import MappingProxyType
 import threading
 import queue
 
+
+class RunResult(BaseModel):
+    run_id: str
+    final_state: WorkflowState
+    mq: queue.Queue[Dict[str, Json]]
 
 class _StateWriteTxn:
     def __init__(self, ctx: "StepContext"):
@@ -349,7 +354,7 @@ class WorkflowRuntime:
         from graph_knowledge_engine.engine import GraphKnowledgeEngine
         self.workflow_engine: GraphKnowledgeEngine = workflow_engine
         self.conversation_engine: GraphKnowledgeEngine = conversation_engine
-        self.step_resolver: Callable[[str], Callable[..., RunResult]] = step_resolver
+        self.step_resolver: Callable[[str], Callable[..., StepRunResult]] = step_resolver
         self.predicate_registry = predicate_registry
         self.checkpoint_every_n_steps = max(1, int(checkpoint_every_n_steps))
         self.max_workers = max_workers
@@ -388,7 +393,7 @@ class WorkflowRuntime:
         turn_node_id: str,
         initial_state: WorkflowState,
         run_id: Optional[str] = None,
-    ) -> Tuple[WorkflowState, str]:
+    ) -> RunResult:
         """
         Returns (final_state, run_id).
 
@@ -529,9 +534,9 @@ class WorkflowRuntime:
         scheduled_q: queue.Queue[Tuple[str, int, str, str | None]] = queue.Queue()  # (node_id, mask, token_id, parent_token_id)
         pending_tokens: set[tuple[str, int, str, str | None]] = set()
         inflight_tokens: set[tuple[str, int, str, str | None]] = set()
-        done_q: queue.Queue[Tuple[str, RunResult, int, str, str | None, str, int]] = queue.Queue()  # (node_id, result, duration_ms, token_id, parent_token_id, status, mask)
+        done_q: queue.Queue[Tuple[str, StepRunResult, int, str, str | None, str, int]] = queue.Queue()  # (node_id, result, duration_ms, token_id, parent_token_id, status, mask)
         
-        graveyard: queue.Queue[Tuple[str, RunResult, int, str, str | None, str, int]] = queue.Queue()  
+        graveyard: queue.Queue[Tuple[str, StepRunResult, int, str, str | None, str, int]] = queue.Queue()  
         def _persist_rt_join_runtime() -> None:
             # Persist both pending + inflight as pending-on-resume (idempotent).
             combined = sorted(pending_tokens.union(inflight_tokens))
@@ -565,7 +570,7 @@ class WorkflowRuntime:
             t0 = _now_ms()
             status = "ok"
             try:
-                fn: Callable[..., RunResult] = self.step_resolver(op)
+                fn: Callable[..., StepRunResult] = self.step_resolver(op)
                 ctx = StepContext(
                     run_id=str(run_id),
                     workflow_id=str(workflow_id),
@@ -583,7 +588,7 @@ class WorkflowRuntime:
                 # step attempt start
                 self.emitter.step_started(ctx.trace_ctx)
 
-                res: RunResult = fn(ctx)
+                res: StepRunResult = fn(ctx)
                 status = "ok" if getattr(res, "status", None) != "failure" else "failure"
 
             except Exception as e:
@@ -614,7 +619,8 @@ class WorkflowRuntime:
                         self.emitter.emit(type="workflow_run_completed", ctx=tc_done, payload={"workflow_id": str(workflow_id)})
                     except Exception:
                         pass
-                    return state, run_id     
+                    self.state_lock.pop(run_id)
+                    return RunResult(final_state=state, run_id=run_id, mq=mq)
                 # schedule while capacity
                 while len(inflight) < self.max_workers:
                     try:
@@ -929,13 +935,13 @@ class WorkflowRuntime:
                     except Exception:
 
                         pass
-        self.state_lock.pop(run_id)
+        raise Exception('unreacheable')
 
     def _route_next(
         self,
         edges: List[WorkflowEdge],
         state: WorkflowState,
-        last_result: RunResult,
+        last_result: StepRunResult,
         fanout: bool,
     ) -> tuple[List[str], RouteDecision]:
         """
@@ -1105,7 +1111,7 @@ class WorkflowRuntime:
         op: str,
         status: str,
         duration_ms: int,
-        result: RunResult,
+        result: StepRunResult,
         state: WorkflowState,
         token_id: str | None = None,
         parent_token_id: str | None = None,

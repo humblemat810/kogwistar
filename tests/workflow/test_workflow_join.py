@@ -174,10 +174,11 @@ def test_join_barrier_waits_for_all_arrivals(max_workers: int):
     )
 
     state: Dict[str, Any] = {}
-    out = final_state, _run_id = rt.run(workflow_id=wid, conversation_id="conv_test", 
+    run_result = rt.run(workflow_id=wid, conversation_id="conv_test", 
                                         turn_node_id="turn_test", 
                                         initial_state=state)
-
+    final_state, run_id = run_result.final_state, run_result.run_id
+    out = final_state, run_id
     assert state.get("ended") is True
     events = state.get("events", [])
     names = [x[0] for x in events]
@@ -264,12 +265,12 @@ def test_join_does_not_wait_for_branch_that_can_no_longer_reach_it():
     )
 
     state: Dict[str, Any] = {}
-    final_state, _run_id = rt.run(workflow_id=wid, conversation_id="conv_test", turn_node_id="turn_test", initial_state=state)
-
-    assert state.get("ended") is True
+    run_result = rt.run(workflow_id=wid, conversation_id="conv_test", turn_node_id="turn_test", initial_state=state)
+    final_state, _run_id = run_result.final_state, run_result.run_id
+    assert final_state.get("ended") is True
     # join must have released even though 'a' never reaches join
-    assert "b_done" in state.get("events", [])
-    assert "end" in state.get("events", [])
+    assert "b_done" in final_state.get("events", [])
+    assert "end" in final_state.get("events", [])
 
 
 
@@ -361,10 +362,10 @@ def test_nested_joins_human_debug(capsys):
     )
 
     state: Dict[str, Any] = {"_rt_join_debug": True}
-    final_state, _run_id = rt.run(workflow_id=wid, conversation_id="conv_test", turn_node_id="turn_test", initial_state=state)
-
-    assert state.get("ended") is True
-    events = state.get("events", [])
+    run_result = rt.run(workflow_id=wid, conversation_id="conv_test", turn_node_id="turn_test", initial_state=state)
+    final_state, _run_id = run_result.final_state, run_result.run_id
+    assert final_state.get("ended") is True
+    events = final_state.get("events", [])
     names = [n for n, _t in events]
     assert names.count("end") == 1
     assert "a_done" in names and "b_done" in names and "c_done" in names and "d_done" in names

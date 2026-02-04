@@ -167,13 +167,14 @@ def test_runtime_checkpoint_load_and_replay(tmp_path: Path):
         max_workers=1,
     )
 
-    final_state, run_id = rt.run(
+    
+    run_result = rt.run(
         workflow_id=workflow_id,
         conversation_id="conv1",
         turn_node_id="turn1",
         initial_state={},
     )
-
+    final_state, run_id = run_result.final_state, run_result.run_id
     # Sanity: ensure it ran all steps
     assert final_state["op_log"] == ["a", "b", "end"]
     assert final_state["result.a"]["value"] == "v_a"
@@ -312,13 +313,13 @@ def test_runtime_resume_from_checkpoint(tmp_path: Path):
         max_workers=1,
     )
 
-    final1, run_id1 = rt1.run(
+    run_result = rt1.run(
         workflow_id=workflow_id,
         conversation_id="conv1",
         turn_node_id="turn1",
         initial_state={},
     )
-
+    final1, run_id1 = run_result.final_state, run_result.run_id
     assert final1["result.a"]["value"] == "v_a"
 
     # load checkpoint after step_seq=1 (with max_workers=1, step order is deterministic)
@@ -336,14 +337,14 @@ def test_runtime_resume_from_checkpoint(tmp_path: Path):
         max_workers=1,
     )
 
-    final2, run_id2 = rt2.run(
+    run_result = rt2.run(
         workflow_id=workflow_id,
         conversation_id="conv2",
         turn_node_id="turn2",
         initial_state=ckpt_after_a,
         run_id=None,  # new run id; avoids id collisions in persisted nodes
     )
-
+    final2, run_id2 = run_result.final_state, run_result.run_id
     assert final2["result.a"]["value"] == "v_a"      # carried forward
     assert final2["result.b"]["value"] == "v_b"      # executed
     assert final2["result.end"]["value"] == "v_end"  # executed
@@ -429,13 +430,13 @@ def test_runtime_resume_from_checkpoint_frontier(tmp_path: Path):
         max_workers=1,
     )
 
-    final1, run_id1 = rt1.run(
+    run_result = rt1.run(
         workflow_id=workflow_id,
         conversation_id="conv1",
         turn_node_id="turn1",
         initial_state={},
     )
-
+    final1, run_id1 = run_result.final_state, run_result.run_id
     assert final1["op_log"] == ["a", "b", "end"]
 
     ckpt0 = load_checkpoint(conversation_engine=conversation_engine, run_id=run_id1, step_seq=0)
@@ -456,14 +457,14 @@ def test_runtime_resume_from_checkpoint_frontier(tmp_path: Path):
         max_workers=1,
     )
 
-    final2, _run_id2 = rt2.run(
+    run_result = rt2.run(
         workflow_id=workflow_id,
         conversation_id="conv2",
         turn_node_id="turn2",
         initial_state=ckpt0,
         run_id=None,  # new run id; avoids collisions
     )
-
+    final2, run_id2 = run_result.final_state, run_result.run_id
     assert final2["result.a"]["value"] == "v_a"
     assert final2["result.b"]["value"] == "v_b"
     assert final2["result.end"]["value"] == "v_end"
