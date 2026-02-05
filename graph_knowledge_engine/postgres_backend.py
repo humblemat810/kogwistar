@@ -32,6 +32,31 @@ else:
 
 Json = Dict[str, Any]
 
+def where_to_sqlalchemy(metadata_col, where: dict) -> sa.ColumnElement:
+    # Supports: equality, $in, $and
+    if not where:
+        return sa.true()
+
+    if "$and" in where:
+        parts = [where_to_sqlalchemy(metadata_col, w) for w in where["$and"]]
+        return sa.and_(*parts) if parts else sa.true()
+
+    clauses = []
+    for k, v in where.items():
+        if k == "$and":
+            continue
+
+        key_expr = metadata_col.op("->>")(k)  # text
+        if isinstance(v, dict):
+            if "$in" in v:
+                vals = [str(x) for x in v["$in"]]
+                clauses.append(key_expr.in_(vals))
+            else:
+                raise NotImplementedError(f"Unsupported operator for {k}: {v}")
+        else:
+            clauses.append(key_expr == str(v))
+
+    return sa.and_(*clauses) if clauses else sa.true()
 
 class PostgresUnitOfWork:
     """A simple UoW wrapper around SQLAlchemy Engine.begin()."""
