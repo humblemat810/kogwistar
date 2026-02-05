@@ -1,25 +1,34 @@
 from __future__ import annotations
 
-"""PostgreSQL + pgvector backend (minimal).
+"""PostgreSQL + pgvector backend (Phase 2).
 
-This module intentionally implements only the first slice needed for refactor:
+Implements:
 - nodes: add/get/delete/query (vector similarity)
 - edge_endpoints: add/get/delete (incidence materialization)
+- where-clause translation compatible with the subset of Chroma where used in engine:
+    * equality: {"field": value}
+    * boolean logic: {"$and": [..]}, {"$or": [..]}
+    * membership: {"field": {"$in": [..]}}
+    * comparisons: $gt/$gte/$lt/$lte/$ne
 
-Other collections should be added in later slices once tests pass.
-
-Design notes:
-- Metadata is stored as JSONB.
-- Embedding storage uses pgvector (Vector column).
-- Upserts are implemented via INSERT .. ON CONFLICT .. DO UPDATE.
+Notes
+-----
+* Metadata is stored as JSONB in a single column ("metadata").
+* Documents are stored as TEXT in a single column ("document").
+* Embeddings are stored in a pgvector column ("embedding").
+* For "get" operations we return Chroma-like shapes:
+    - get(): flat lists for ids/documents/metadatas (Chroma's get)
+    - query(): nested lists for ids/documents/metadatas/distances (Chroma's query)
 """
 
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, cast
 
 import sqlalchemy as sa
-from sqlalchemy.dialects.postgresql import JSONB
-from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.dialects import postgresql as psql
+
+JSONB = psql.JSONB
+
 try:
     # pip install pgvector
     from pgvector.sqlalchemy import Vector  # type: ignore
@@ -32,31 +41,6 @@ else:
 
 Json = Dict[str, Any]
 
-def where_to_sqlalchemy(metadata_col, where: dict) -> sa.ColumnElement:
-    # Supports: equality, $in, $and
-    if not where:
-        return sa.true()
-
-    if "$and" in where:
-        parts = [where_to_sqlalchemy(metadata_col, w) for w in where["$and"]]
-        return sa.and_(*parts) if parts else sa.true()
-
-    clauses = []
-    for k, v in where.items():
-        if k == "$and":
-            continue
-
-        key_expr = metadata_col.op("->>")(k)  # text
-        if isinstance(v, dict):
-            if "$in" in v:
-                vals = [str(x) for x in v["$in"]]
-                clauses.append(key_expr.in_(vals))
-            else:
-                raise NotImplementedError(f"Unsupported operator for {k}: {v}")
-        else:
-            clauses.append(key_expr == str(v))
-
-    return sa.and_(*clauses) if clauses else sa.true()
 
 class PostgresUnitOfWork:
     """A simple UoW wrapper around SQLAlchemy Engine.begin()."""
@@ -77,10 +61,108 @@ class PgVectorConfig:
     edge_endpoints_table: str = "gke_edge_endpoints"
 
 
+def _jsonb_text(col: sa.ColumnElement, key: str) -> sa.ColumnElement:
+    """(metadata ->> key) as SQLAlchemy expression."""
+    return col.op("->>")(key)
+
+
+def _cast_for_compare(expr_text: sa.ColumnElement, sample_value: Any) -> sa.ColumnElement:
+    """Cast JSONB text extract to a comparable type based on RHS value."""
+    if isinstance(sample_value, bool):
+        return sa.cast(expr_text, sa.Boolean)
+    if isinstance(sample_value, int):
+        # numeric comparisons should work for ints and numeric strings
+        return sa.cast(expr_text, sa.BigInteger)
+    if isinstance(sample_value, float):
+        return sa.cast(expr_text, sa.Float)
+    # fallback: text compare
+    return expr_text
+
+
+def where_jsonb(metadata_col: sa.ColumnElement, where: Json) -> sa.ColumnElement:
+    """Translate a Chroma-like where dict into SQLAlchemy boolean clause.
+
+    Supported:
+      - {"field": value}
+      - {"field": {"$in": [...]}}
+      - {"field": {"$gt"/$gte/$lt/$lte/$ne: value}}
+      - {"$and": [cond, ...]}
+      - {"$or": [cond, ...]}
+
+    For any unsupported operator, raises NotImplementedError so you catch it early.
+    """
+
+    if not where:
+        return sa.true()
+
+    if "$and" in where:
+        parts = where.get("$and") or []
+        if not isinstance(parts, list):
+            raise TypeError("$and must be a list")
+        return sa.and_(*[where_jsonb(metadata_col, cast(Json, p)) for p in parts])  # type: ignore[name-defined]
+
+    if "$or" in where:
+        parts = where.get("$or") or []
+        if not isinstance(parts, list):
+            raise TypeError("$or must be a list")
+        return sa.or_(*[where_jsonb(metadata_col, cast(Json, p)) for p in parts])  # type: ignore[name-defined]
+
+    clauses: List[sa.ColumnElement] = []
+    for k, v in where.items():
+        if k in ("$and", "$or"):
+            continue
+
+        lhs_text = _jsonb_text(metadata_col, k)
+
+        if isinstance(v, dict):
+            # Operator form
+            if "$in" in v:
+                vals = v["$in"]
+                if not isinstance(vals, list):
+                    raise TypeError(f"$in for {k} must be a list")
+                clauses.append(lhs_text.in_([str(x) for x in vals]))
+                continue
+
+            # comparisons (cast based on RHS)
+            for op in ("$gt", "$gte", "$lt", "$lte", "$ne"):
+                if op in v:
+                    rhs = v[op]
+                    lhs = _cast_for_compare(lhs_text, rhs)
+                    if op == "$gt":
+                        clauses.append(lhs > rhs)
+                    elif op == "$gte":
+                        clauses.append(lhs >= rhs)
+                    elif op == "$lt":
+                        clauses.append(lhs < rhs)
+                    elif op == "$lte":
+                        clauses.append(lhs <= rhs)
+                    elif op == "$ne":
+                        clauses.append(lhs != rhs)
+                    break
+            else:
+                raise NotImplementedError(f"Unsupported where operator for key={k}: {v}")
+        else:
+            # equality
+            if v is None:
+                clauses.append(lhs_text.is_(None))
+            else:
+                clauses.append(lhs_text == str(v))
+
+    return sa.and_(*clauses) if clauses else sa.true()
+
+
 class PgVectorBackend:
     """Minimal pgvector backend implementing node + edge_endpoints operations."""
 
-    def __init__(self, *, engine: sa.Engine, embedding_dim: int, schema: str, nodes_table: str, edge_endpoints_table: str):
+    def __init__(
+        self,
+        *,
+        engine: sa.Engine,
+        embedding_dim: int,
+        schema: str,
+        nodes_table: str,
+        edge_endpoints_table: str,
+    ):
         if Vector is None:  # pragma: no cover
             raise RuntimeError(
                 "pgvector is not installed. Install with `pip install pgvector` to use PgVectorBackend."
@@ -105,12 +187,11 @@ class PgVectorBackend:
             sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), onupdate=sa.func.now(), nullable=False),
         )
 
-        # Hyperedge incidence materialization:
-        # one row per (edge_id, endpoint_node_id, role, ord)
+        # Hyperedge incidence materialization: one row per (edge_id, endpoint_node_id, role, ord)
         self.edge_endpoints = sa.Table(
             self.edge_endpoints_table_name,
             md,
-            sa.Column("id", sa.String, primary_key=True),  # stable synthetic id from engine (edge_id|role|ord|endpoint)
+            sa.Column("id", sa.String, primary_key=True),  # stable synthetic id (edge_id|role|ord|endpoint)
             sa.Column("document", sa.Text, nullable=True),
             sa.Column("metadata", JSONB, nullable=False, server_default=sa.text("'{}'::jsonb")),
             sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
@@ -132,7 +213,14 @@ class PgVectorBackend:
     # -------------------------
     # Nodes
     # -------------------------
-    def node_add(self, *, ids: Sequence[str], documents: Sequence[str], metadatas: Sequence[Json], embeddings: Optional[Sequence[List[float]]] = None) -> None:
+    def node_add(
+        self,
+        *,
+        ids: Sequence[str],
+        documents: Sequence[str],
+        metadatas: Sequence[Json],
+        embeddings: Optional[Sequence[List[float]]] = None,
+    ) -> None:
         if embeddings is not None and len(embeddings) != len(ids):
             raise ValueError("embeddings length must match ids length")
 
@@ -147,7 +235,7 @@ class PgVectorBackend:
                 }
             )
 
-        stmt = pg_insert(self.nodes).values(rows)
+        stmt = psql.insert(self.nodes).values(rows)
         stmt = stmt.on_conflict_do_update(
             index_elements=[self.nodes.c.id],
             set_={
@@ -160,22 +248,31 @@ class PgVectorBackend:
         with self.engine.begin() as conn:
             conn.execute(stmt)
 
-    def node_get(self, *, ids: Optional[Sequence[str]] = None, where: Optional[Json] = None, include: Optional[List[str]] = None, limit: int = 200) -> Dict[str, Any]:
-        include = include or ["documents", "metadatas", "ids"]
-        q = sa.select(self.nodes.c.id, self.nodes.c.document, self.nodes.c.metadata).limit(int(limit))
+    def node_get(
+        self,
+        *,
+        ids: Optional[Sequence[str]] = None,
+        where: Optional[Json] = None,
+        include: Optional[List[str]] = None,
+        limit: int = 200,
+    ) -> Dict[str, Any]:
+        include = include or ["documents", "metadatas"]
+        q = sa.select(self.nodes.c.id, self.nodes.c.document, self.nodes.c.metadata, self.nodes.c.embedding).limit(int(limit))
         if ids is not None:
             q = q.where(self.nodes.c.id.in_(list(ids)))
         if where:
-            q = q.where(self._where_jsonb(self.nodes.c.metadata, where))
+            q = q.where(where_jsonb(self.nodes.c.metadata, where))
 
         with self.engine.begin() as conn:
             rows = conn.execute(q).fetchall()
 
-        out: Dict[str, Any] = {"ids": [[r.id for r in rows]]}
+        out: Dict[str, Any] = {"ids": [r.id for r in rows]}
         if "documents" in include:
-            out["documents"] = [[r.document for r in rows]]
+            out["documents"] = [r.document for r in rows]
         if "metadatas" in include:
-            out["metadatas"] = [[r.metadata for r in rows]]
+            out["metadatas"] = [dict(r.metadata or {}) for r in rows]
+        if "embeddings" in include:
+            out["embeddings"] = [list(r.embedding) if r.embedding is not None else None for r in rows]
         return out
 
     def node_delete(self, *, ids: Optional[Sequence[str]] = None, where: Optional[Json] = None) -> None:
@@ -183,17 +280,22 @@ class PgVectorBackend:
         if ids is not None:
             stmt = stmt.where(self.nodes.c.id.in_(list(ids)))
         if where:
-            stmt = stmt.where(self._where_jsonb(self.nodes.c.metadata, where))
+            stmt = stmt.where(where_jsonb(self.nodes.c.metadata, where))
         with self.engine.begin() as conn:
             conn.execute(stmt)
 
-    def node_query(self, *, query_embeddings: Sequence[List[float]], n_results: int = 10, where: Optional[Json] = None, include: Optional[List[str]] = None) -> Dict[str, Any]:
-        include = include or ["documents", "metadatas", "ids", "distances"]
+    def node_query(
+        self,
+        *,
+        query_embeddings: Sequence[List[float]],
+        n_results: int = 10,
+        where: Optional[Json] = None,
+        include: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        include = include or ["documents", "metadatas", "distances"]
         if not query_embeddings:
             raise ValueError("query_embeddings is required for PgVectorBackend")
 
-        # Use cosine distance (<=>) by default (pgvector). If you prefer L2, use <->.
-        # We return "distances" matching Chroma semantics (smaller is closer).
         results_ids: List[List[str]] = []
         results_docs: List[List[Optional[str]]] = []
         results_metas: List[List[Json]] = []
@@ -208,13 +310,13 @@ class PgVectorBackend:
                     (self.nodes.c.embedding.op("<=>")(sa.bindparam("qv"))).label("distance"),
                 ).where(self.nodes.c.embedding.is_not(None))
                 if where:
-                    q = q.where(self._where_jsonb(self.nodes.c.metadata, where))
+                    q = q.where(where_jsonb(self.nodes.c.metadata, where))
                 q = q.order_by(sa.text("distance asc")).limit(int(n_results))
 
                 rows = conn.execute(q, {"qv": qv}).fetchall()
                 results_ids.append([r.id for r in rows])
                 results_docs.append([r.document for r in rows])
-                results_metas.append([r.metadata for r in rows])
+                results_metas.append([dict(r.metadata or {}) for r in rows])
                 results_dists.append([float(r.distance) for r in rows])
 
         out: Dict[str, Any] = {"ids": results_ids}
@@ -239,7 +341,7 @@ class PgVectorBackend:
                     "metadata": metadatas[i] if i < len(metadatas) else {},
                 }
             )
-        stmt = pg_insert(self.edge_endpoints).values(rows)
+        stmt = psql.insert(self.edge_endpoints).values(rows)
         stmt = stmt.on_conflict_do_update(
             index_elements=[self.edge_endpoints.c.id],
             set_={
@@ -251,22 +353,29 @@ class PgVectorBackend:
         with self.engine.begin() as conn:
             conn.execute(stmt)
 
-    def edge_endpoints_get(self, *, ids: Optional[Sequence[str]] = None, where: Optional[Json] = None, include: Optional[List[str]] = None, limit: int = 200) -> Dict[str, Any]:
-        include = include or ["documents", "metadatas", "ids"]
+    def edge_endpoints_get(
+        self,
+        *,
+        ids: Optional[Sequence[str]] = None,
+        where: Optional[Json] = None,
+        include: Optional[List[str]] = None,
+        limit: int = 200,
+    ) -> Dict[str, Any]:
+        include = include or ["documents", "metadatas"]
         q = sa.select(self.edge_endpoints.c.id, self.edge_endpoints.c.document, self.edge_endpoints.c.metadata).limit(int(limit))
         if ids is not None:
             q = q.where(self.edge_endpoints.c.id.in_(list(ids)))
         if where:
-            q = q.where(self._where_jsonb(self.edge_endpoints.c.metadata, where))
+            q = q.where(where_jsonb(self.edge_endpoints.c.metadata, where))
 
         with self.engine.begin() as conn:
             rows = conn.execute(q).fetchall()
 
-        out: Dict[str, Any] = {"ids": [[r.id for r in rows]]}
+        out: Dict[str, Any] = {"ids": [r.id for r in rows]}
         if "documents" in include:
-            out["documents"] = [[r.document for r in rows]]
+            out["documents"] = [r.document for r in rows]
         if "metadatas" in include:
-            out["metadatas"] = [[r.metadata for r in rows]]
+            out["metadatas"] = [dict(r.metadata or {}) for r in rows]
         return out
 
     def edge_endpoints_delete(self, *, ids: Optional[Sequence[str]] = None, where: Optional[Json] = None) -> None:
@@ -274,19 +383,6 @@ class PgVectorBackend:
         if ids is not None:
             stmt = stmt.where(self.edge_endpoints.c.id.in_(list(ids)))
         if where:
-            stmt = stmt.where(self._where_jsonb(self.edge_endpoints.c.metadata, where))
+            stmt = stmt.where(where_jsonb(self.edge_endpoints.c.metadata, where))
         with self.engine.begin() as conn:
             conn.execute(stmt)
-
-    # -------------------------
-    # Helpers
-    # -------------------------
-    def _where_jsonb(self, col: sa.ColumnElement, where: Json) -> sa.ColumnElement:
-        """Minimal where translation: only supports equality on scalar keys."""
-        clauses = []
-        for k, v in where.items():
-            # Chroma where may include operators; minimal impl supports direct equality only.
-            if isinstance(v, dict):
-                raise NotImplementedError(f"Operator where not implemented for key={k}: {v}")
-            clauses.append(col.op("->>")(k) == str(v))
-        return sa.and_(*clauses) if clauses else sa.true()
