@@ -968,7 +968,7 @@ class Document(ModeSlicingMixin, BaseModel):
         return Document(content = text, type = "text", metadata = {}, **kwarg)
     @staticmethod
     def from_dummy(text: str="", **kwarg):
-        return Document(id="_dummy", content = text, type = "text", metadata = {}, **kwarg)
+        return Document(id="_dummy", content=text, type="text", metadata={}, embeddings=None, source_map=None, **kwarg)
     def validate_text_span(self, span: Span):
         if span.chunk_id is not None:
             raise Exception(f"text span should not have chunk ID, found chunk_id={span.chunk_id}")
