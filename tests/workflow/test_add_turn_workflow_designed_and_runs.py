@@ -208,30 +208,31 @@ def test_add_turn_workflow_design_and_run(tmp_path):
     def resolve_step(op: str):
         def _fn(ctx):
             # keep everything JSONable
-            if op == "memory_retrieve":
-                ctx.state["memory"] = {"selected_ids": ["m1"], "text": "memory context"}
-                return {"ok": True}
-            if op == "kg_retrieve":
-                ctx.state["kg"] = {"selected_ids": ["k1"], "facts": ["f1"]}
-                return {"ok": True}
-            if op == "memory_pin":
-                ctx.state["memory_pin"] = {"pinned": ["m1"]}
-                return {"ok": True}
-            if op == "kg_pin":
-                ctx.state["kg_pin"] = {"pinned": ["k1"]}
-                return {"ok": True}
-            if op == "answer":
-                ctx.state["answer"] = {"text": "hello", "llm_decision_need_summary": True}
-                return ctx.state["answer"]
-            if op == "decide_summarize":
-                need = bool(ctx.state.get("answer", {}).get("llm_decision_need_summary"))
-                ctx.state["decide"] = {"need_summary": need}
-                return ctx.state["decide"]
-            if op == "summarize":
-                ctx.state["summary"] = {"text": "summary"}
-                return ctx.state["summary"]
-            if op == "end":
-                return {"done": True}
+            with ctx.state_write as state:
+                if op == "memory_retrieve":
+                    state["memory"] = {"selected_ids": ["m1"], "text": "memory context"}
+                    return {"ok": True}
+                if op == "kg_retrieve":
+                    state["kg"] = {"selected_ids": ["k1"], "facts": ["f1"]}
+                    return {"ok": True}
+                if op == "memory_pin":
+                    state["memory_pin"] = {"pinned": ["m1"]}
+                    return {"ok": True}
+                if op == "kg_pin":
+                    state["kg_pin"] = {"pinned": ["k1"]}
+                    return {"ok": True}
+                if op == "answer":
+                    state["answer"] = {"text": "hello", "llm_decision_need_summary": True}
+                    return ctx.state_view["answer"]
+                if op == "decide_summarize":
+                    need = bool(ctx.state_view.get("answer", {}).get("llm_decision_need_summary"))
+                    state["decide"] = {"need_summary": need}
+                    return ctx.state_view["decide"]
+                if op == "summarize":
+                    state["summary"] = {"text": "summary"}
+                    return ctx.state_view["summary"]
+                if op == "end":
+                    return {"done": True}
             raise KeyError(op)
         return _fn
 

@@ -68,7 +68,7 @@ def build_workflow_from_engine(*, workflow_engine: Any, workflow_id: str) -> Wor
     """
 
     nodes_raw = workflow_engine.get_nodes(where={"$and": [{"entity_type": "workflow_node"}, {"workflow_id": workflow_id}]}, limit=5000)
-    edges_raw = workflow_engine.get_edges(where={"$and": [{"entity_type": "workflow_node"}, {"workflow_id": workflow_id}]}, limit=20000)
+    edges_raw = workflow_engine.get_edges(where={"$and": [{"entity_type": "workflow_edge"}, {"workflow_id": workflow_id}]}, limit=20000)
 
     nodes: Dict[str, WFNode] = {}
     start_node_id: Optional[str] = None

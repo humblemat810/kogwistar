@@ -11,7 +11,7 @@ from graph_knowledge_engine.models import (
     Span,
     MentionVerification,
 )
-from graph_knowledge_engine.workflow.runtime import WorkflowRuntime
+from graph_knowledge_engine.workflow.runtime import RunSuccess, WorkflowRuntime
 
 
 def _span() -> Span:
@@ -144,14 +144,17 @@ def test_persisted_workflow_design_is_runnable(tmp_path):
 
     # minimal predicates (none used)
     predicate_registry = {}
+    
 
     # step resolver that records it ran
     def resolve_step(op: str):
         def _fn(ctx):
             # Keep JSONable state so checkpoints can serialize.
-            ctx.state.setdefault("ops", [])
-            ctx.state["ops"].append(op)
-            return {"op": op}
+            with ctx.state_write as state:
+                state.setdefault("ops", [])
+                state["ops"].append(op)
+                # {"op": op}
+            return RunSuccess(conversation_node_id=None,state_update = [('u', {"op": op})], )
         return _fn
 
     rt = WorkflowRuntime(
