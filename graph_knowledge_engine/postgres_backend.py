@@ -40,6 +40,8 @@ Index/materialization collections (non-vector):
 """
 
 from dataclasses import dataclass
+from contextlib import contextmanager
+import contextvars
 import json
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
@@ -60,14 +62,44 @@ Json = Dict[str, Any]
 JSONB = psql.JSONB
 
 
+_pg_uow_conn: contextvars.ContextVar[sa.Connection | None] = contextvars.ContextVar(
+    "gke_pg_uow_conn", default=None
+)
+
+
+@contextmanager
+def _set_active_conn(conn: sa.Connection):
+    token = _pg_uow_conn.set(conn)
+    try:
+        yield
+    finally:
+        _pg_uow_conn.reset(token)
+
+
+def get_active_conn() -> sa.Connection | None:
+    return _pg_uow_conn.get()
+
+
 class PostgresUnitOfWork:
-    """Backend unit-of-work: wraps a SQL transaction."""
+    """Backend unit-of-work: wraps a SQL transaction and exposes it to the backend.
+
+    PgVectorBackend methods will *join* the active connection if one is set.
+    """
 
     def __init__(self, *, engine: sa.Engine):
         self._engine = engine
 
+    @contextmanager
     def transaction(self):
-        return self._engine.begin()
+        existing = get_active_conn()
+        if existing is not None:
+            # Join outer transaction
+            yield
+            return
+
+        with self._engine.begin() as conn:
+            with _set_active_conn(conn):
+                yield
 
 
 @dataclass(frozen=True)
@@ -77,6 +109,8 @@ class PgVectorConfig:
     schema: str = "public"
     nodes_table: str = "gke_nodes"
     edges_table: str = "gke_edges"
+    documents_table: str = "gke_documents"
+    domains_table: str = "gke_domains"
     edge_endpoints_table: str = "gke_edge_endpoints"
     edge_refs_table: str = "gke_edge_refs"
     node_docs_table: str = "gke_node_docs"
@@ -170,6 +204,8 @@ class PgVectorBackend:
         schema: str = "public",
         nodes_table: str = "gke_nodes",
         edges_table: str = "gke_edges",
+        documents_table: str = "gke_documents",
+        domains_table: str = "gke_domains",
         edge_endpoints_table: str = "gke_edge_endpoints",
         edge_refs_table: str = "gke_edge_refs",
         node_docs_table: str = "gke_node_docs",
@@ -202,6 +238,28 @@ class PgVectorBackend:
 
         self.edges = sa.Table(
             edges_table,
+            md,
+            sa.Column("id", sa.String, primary_key=True),
+            sa.Column("document", sa.Text, nullable=True),
+            sa.Column("metadata", JSONB, nullable=False, server_default=sa.text("'{}'::jsonb")),
+            sa.Column("embedding", Vector(self.embedding_dim), nullable=True),
+            sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
+            sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), onupdate=sa.func.now(), nullable=False),
+        )
+
+        self.documents = sa.Table(
+            documents_table,
+            md,
+            sa.Column("id", sa.String, primary_key=True),
+            sa.Column("document", sa.Text, nullable=True),
+            sa.Column("metadata", JSONB, nullable=False, server_default=sa.text("'{}'::jsonb")),
+            sa.Column("embedding", Vector(self.embedding_dim), nullable=True),
+            sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
+            sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), onupdate=sa.func.now(), nullable=False),
+        )
+
+        self.domains = sa.Table(
+            domains_table,
             md,
             sa.Column("id", sa.String, primary_key=True),
             sa.Column("document", sa.Text, nullable=True),
@@ -278,6 +336,20 @@ class PgVectorBackend:
     # Shared helpers
     # ----------------------------
 
+    @contextmanager
+    def _conn(self):
+        """Yield an active SQLAlchemy connection.
+
+        If the runtime/engine opened a PostgresUnitOfWork transaction, backend
+        methods will join it. Otherwise we open an implicit transaction here.
+        """
+        active = get_active_conn()
+        if active is not None:
+            yield active
+            return
+        with self.engine.begin() as conn:
+            yield conn
+
     def _get_flat(
         self,
         table: sa.Table,
@@ -298,7 +370,7 @@ class PgVectorBackend:
         if where:
             q = q.where(where_jsonb(table.c.metadata, where, numeric_keys=self.numeric_keys))
 
-        with self.engine.begin() as conn:
+        with self._conn() as conn:
             rows = conn.execute(q).fetchall()
 
         out: Dict[str, Any] = {"ids": [r.id for r in rows]}
@@ -316,7 +388,7 @@ class PgVectorBackend:
             stmt = stmt.where(table.c.id.in_(list(ids)))
         if where:
             stmt = stmt.where(where_jsonb(table.c.metadata, where, numeric_keys=self.numeric_keys))
-        with self.engine.begin() as conn:
+        with self._conn() as conn:
             conn.execute(stmt)
 
     def _upsert(
@@ -353,7 +425,7 @@ class PgVectorBackend:
 
         stmt = stmt.on_conflict_do_update(index_elements=[table.c.id], set_=set_map)
 
-        with self.engine.begin() as conn:
+        with self._conn() as conn:
             conn.execute(stmt)
 
     def _query_vector(
@@ -375,7 +447,7 @@ class PgVectorBackend:
         metas_out: List[List[Json]] = []
         dists_out: List[List[float]] = []
 
-        with self.engine.begin() as conn:
+        with self._conn() as conn:
             for qv in query_embeddings:
                 q = sa.select(
                     table.c.id,
@@ -417,7 +489,7 @@ class PgVectorBackend:
         patch_text = sa.bindparam("patch_text", type_=sa.Text)
         merged = table.c.metadata.op("||")(sa.cast(patch_text, JSONB))
 
-        with self.engine.begin() as conn:
+        with self._conn() as conn:
             for _id, patch in zip(ids, metadatas):
                 stmt = (
                     sa.update(table)
@@ -426,11 +498,39 @@ class PgVectorBackend:
                 )
                 conn.execute(stmt, {"patch_text": json.dumps(patch)})
 
+    def _query_nonvector(
+        self,
+        table: sa.Table,
+        *,
+        where: Optional[Json],
+        n_results: int,
+        include: List[str],
+    ) -> Dict[str, Any]:
+        """Best-effort query for non-vector tables.
+
+        Chroma's `.query()` is fundamentally vector-similarity driven.
+        For materialized/index tables we treat `query()` as a filtered read and
+        return a Chroma-shaped nested payload.
+        """
+
+        flat = self._get_flat(table, ids=None, where=where, include=["documents", "metadatas"], limit=int(n_results))
+        out: Dict[str, Any] = {"ids": [flat.get("ids", [])]}
+        if "documents" in include:
+            out["documents"] = [flat.get("documents", [])]
+        if "metadatas" in include:
+            out["metadatas"] = [flat.get("metadatas", [])]
+        if "distances" in include:
+            out["distances"] = [[0.0 for _ in out["ids"][0]]]
+        return out
+
     # ----------------------------
     # Nodes
     # ----------------------------
 
     def node_add(self, *, ids: Sequence[str], documents: Sequence[str], metadatas: Sequence[Json], embeddings: Optional[Sequence[Sequence[float]]] = None) -> None:
+        self._upsert(self.nodes, ids=ids, documents=documents, metadatas=metadatas, embeddings=embeddings)
+
+    def node_upsert(self, *, ids: Sequence[str], documents: Sequence[str], metadatas: Sequence[Json], embeddings: Optional[Sequence[Sequence[float]]] = None) -> None:
         self._upsert(self.nodes, ids=ids, documents=documents, metadatas=metadatas, embeddings=embeddings)
 
     def node_get(self, *, ids: Optional[Sequence[str]] = None, where: Optional[Json] = None, include: Optional[List[str]] = None, limit: int = 200) -> Dict[str, Any]:
@@ -454,6 +554,9 @@ class PgVectorBackend:
     def edge_add(self, *, ids: Sequence[str], documents: Sequence[str], metadatas: Sequence[Json], embeddings: Optional[Sequence[Sequence[float]]] = None) -> None:
         self._upsert(self.edges, ids=ids, documents=documents, metadatas=metadatas, embeddings=embeddings)
 
+    def edge_upsert(self, *, ids: Sequence[str], documents: Sequence[str], metadatas: Sequence[Json], embeddings: Optional[Sequence[Sequence[float]]] = None) -> None:
+        self._upsert(self.edges, ids=ids, documents=documents, metadatas=metadatas, embeddings=embeddings)
+
     def edge_get(self, *, ids: Optional[Sequence[str]] = None, where: Optional[Json] = None, include: Optional[List[str]] = None, limit: int = 200) -> Dict[str, Any]:
         include = include or ["documents", "metadatas"]
         return self._get_flat(self.edges, ids=ids, where=where, include=include, limit=limit)
@@ -469,6 +572,54 @@ class PgVectorBackend:
         self._update_metadata_merge(self.edges, ids=ids, metadatas=metadatas)
 
     # ----------------------------
+    # Documents
+    # ----------------------------
+
+    def document_add(self, *, ids: Sequence[str], documents: Sequence[str], metadatas: Sequence[Json], embeddings: Optional[Sequence[Sequence[float]]] = None) -> None:
+        self._upsert(self.documents, ids=ids, documents=documents, metadatas=metadatas, embeddings=embeddings)
+
+    def document_upsert(self, *, ids: Sequence[str], documents: Sequence[str], metadatas: Sequence[Json], embeddings: Optional[Sequence[Sequence[float]]] = None) -> None:
+        self._upsert(self.documents, ids=ids, documents=documents, metadatas=metadatas, embeddings=embeddings)
+
+    def document_get(self, *, ids: Optional[Sequence[str]] = None, where: Optional[Json] = None, include: Optional[List[str]] = None, limit: int = 200) -> Dict[str, Any]:
+        include = include or ["documents", "metadatas"]
+        return self._get_flat(self.documents, ids=ids, where=where, include=include, limit=limit)
+
+    def document_delete(self, *, ids: Optional[Sequence[str]] = None, where: Optional[Json] = None) -> None:
+        self._delete(self.documents, ids=ids, where=where)
+
+    def document_query(self, *, query_embeddings: Sequence[Sequence[float]], n_results: int = 10, where: Optional[Json] = None, include: Optional[List[str]] = None) -> Dict[str, Any]:
+        include = include or ["documents", "metadatas", "distances"]
+        return self._query_vector(self.documents, query_embeddings=query_embeddings, n_results=n_results, where=where, include=include)
+
+    def document_update(self, *, ids: Sequence[str], metadatas: Sequence[Json]) -> None:
+        self._update_metadata_merge(self.documents, ids=ids, metadatas=metadatas)
+
+    # ----------------------------
+    # Domains
+    # ----------------------------
+
+    def domain_add(self, *, ids: Sequence[str], documents: Sequence[str], metadatas: Sequence[Json], embeddings: Optional[Sequence[Sequence[float]]] = None) -> None:
+        self._upsert(self.domains, ids=ids, documents=documents, metadatas=metadatas, embeddings=embeddings)
+
+    def domain_upsert(self, *, ids: Sequence[str], documents: Sequence[str], metadatas: Sequence[Json], embeddings: Optional[Sequence[Sequence[float]]] = None) -> None:
+        self._upsert(self.domains, ids=ids, documents=documents, metadatas=metadatas, embeddings=embeddings)
+
+    def domain_get(self, *, ids: Optional[Sequence[str]] = None, where: Optional[Json] = None, include: Optional[List[str]] = None, limit: int = 200) -> Dict[str, Any]:
+        include = include or ["documents", "metadatas"]
+        return self._get_flat(self.domains, ids=ids, where=where, include=include, limit=limit)
+
+    def domain_delete(self, *, ids: Optional[Sequence[str]] = None, where: Optional[Json] = None) -> None:
+        self._delete(self.domains, ids=ids, where=where)
+
+    def domain_query(self, *, query_embeddings: Sequence[Sequence[float]], n_results: int = 10, where: Optional[Json] = None, include: Optional[List[str]] = None) -> Dict[str, Any]:
+        include = include or ["documents", "metadatas", "distances"]
+        return self._query_vector(self.domains, query_embeddings=query_embeddings, n_results=n_results, where=where, include=include)
+
+    def domain_update(self, *, ids: Sequence[str], metadatas: Sequence[Json]) -> None:
+        self._update_metadata_merge(self.domains, ids=ids, metadatas=metadatas)
+
+    # ----------------------------
     # Edge endpoints
     # ----------------------------
 
@@ -476,9 +627,19 @@ class PgVectorBackend:
         # embeddings ignored for this collection (kept for callsite compatibility)
         self._upsert(self.edge_endpoints, ids=ids, documents=documents, metadatas=metadatas, embeddings=None)
 
+    def edge_endpoints_upsert(self, *, ids: Sequence[str], documents: Sequence[str], metadatas: Sequence[Json], embeddings: Any = None) -> None:
+        self._upsert(self.edge_endpoints, ids=ids, documents=documents, metadatas=metadatas, embeddings=None)
+
     def edge_endpoints_get(self, *, ids: Optional[Sequence[str]] = None, where: Optional[Json] = None, include: Optional[List[str]] = None, limit: int = 200) -> Dict[str, Any]:
         include = include or ["documents", "metadatas"]
         return self._get_flat(self.edge_endpoints, ids=ids, where=where, include=include, limit=limit)
+
+    def edge_endpoints_query(self, *, query_embeddings: Any = None, n_results: int = 10, where: Optional[Json] = None, include: Optional[List[str]] = None) -> Dict[str, Any]:
+        include = include or ["documents", "metadatas"]
+        return self._query_nonvector(self.edge_endpoints, where=where, n_results=n_results, include=include)
+
+    def edge_endpoints_update(self, *, ids: Sequence[str], metadatas: Sequence[Json]) -> None:
+        self._update_metadata_merge(self.edge_endpoints, ids=ids, metadatas=metadatas)
 
     def edge_endpoints_delete(self, *, ids: Optional[Sequence[str]] = None, where: Optional[Json] = None) -> None:
         self._delete(self.edge_endpoints, ids=ids, where=where)
@@ -490,9 +651,19 @@ class PgVectorBackend:
     def edge_refs_add(self, *, ids: Sequence[str], documents: Sequence[str], metadatas: Sequence[Json], embeddings: Any = None) -> None:
         self._upsert(self.edge_refs, ids=ids, documents=documents, metadatas=metadatas, embeddings=None)
 
+    def edge_refs_upsert(self, *, ids: Sequence[str], documents: Sequence[str], metadatas: Sequence[Json], embeddings: Any = None) -> None:
+        self._upsert(self.edge_refs, ids=ids, documents=documents, metadatas=metadatas, embeddings=None)
+
     def edge_refs_get(self, *, ids: Optional[Sequence[str]] = None, where: Optional[Json] = None, include: Optional[List[str]] = None, limit: int = 200) -> Dict[str, Any]:
         include = include or ["documents", "metadatas"]
         return self._get_flat(self.edge_refs, ids=ids, where=where, include=include, limit=limit)
+
+    def edge_refs_query(self, *, query_embeddings: Any = None, n_results: int = 10, where: Optional[Json] = None, include: Optional[List[str]] = None) -> Dict[str, Any]:
+        include = include or ["documents", "metadatas"]
+        return self._query_nonvector(self.edge_refs, where=where, n_results=n_results, include=include)
+
+    def edge_refs_update(self, *, ids: Sequence[str], metadatas: Sequence[Json]) -> None:
+        self._update_metadata_merge(self.edge_refs, ids=ids, metadatas=metadatas)
 
     def edge_refs_delete(self, *, ids: Optional[Sequence[str]] = None, where: Optional[Json] = None) -> None:
         self._delete(self.edge_refs, ids=ids, where=where)
@@ -504,9 +675,19 @@ class PgVectorBackend:
     def node_docs_add(self, *, ids: Sequence[str], documents: Sequence[str], metadatas: Sequence[Json], embeddings: Any = None) -> None:
         self._upsert(self.node_docs, ids=ids, documents=documents, metadatas=metadatas, embeddings=None)
 
+    def node_docs_upsert(self, *, ids: Sequence[str], documents: Sequence[str], metadatas: Sequence[Json], embeddings: Any = None) -> None:
+        self._upsert(self.node_docs, ids=ids, documents=documents, metadatas=metadatas, embeddings=None)
+
     def node_docs_get(self, *, ids: Optional[Sequence[str]] = None, where: Optional[Json] = None, include: Optional[List[str]] = None, limit: int = 200) -> Dict[str, Any]:
         include = include or ["documents", "metadatas"]
         return self._get_flat(self.node_docs, ids=ids, where=where, include=include, limit=limit)
+
+    def node_docs_query(self, *, query_embeddings: Any = None, n_results: int = 10, where: Optional[Json] = None, include: Optional[List[str]] = None) -> Dict[str, Any]:
+        include = include or ["documents", "metadatas"]
+        return self._query_nonvector(self.node_docs, where=where, n_results=n_results, include=include)
+
+    def node_docs_update(self, *, ids: Sequence[str], metadatas: Sequence[Json]) -> None:
+        self._update_metadata_merge(self.node_docs, ids=ids, metadatas=metadatas)
 
     def node_docs_delete(self, *, ids: Optional[Sequence[str]] = None, where: Optional[Json] = None) -> None:
         self._delete(self.node_docs, ids=ids, where=where)
@@ -518,9 +699,19 @@ class PgVectorBackend:
     def node_refs_add(self, *, ids: Sequence[str], documents: Sequence[str], metadatas: Sequence[Json], embeddings: Any = None) -> None:
         self._upsert(self.node_refs, ids=ids, documents=documents, metadatas=metadatas, embeddings=None)
 
+    def node_refs_upsert(self, *, ids: Sequence[str], documents: Sequence[str], metadatas: Sequence[Json], embeddings: Any = None) -> None:
+        self._upsert(self.node_refs, ids=ids, documents=documents, metadatas=metadatas, embeddings=None)
+
     def node_refs_get(self, *, ids: Optional[Sequence[str]] = None, where: Optional[Json] = None, include: Optional[List[str]] = None, limit: int = 200) -> Dict[str, Any]:
         include = include or ["documents", "metadatas"]
         return self._get_flat(self.node_refs, ids=ids, where=where, include=include, limit=limit)
+
+    def node_refs_query(self, *, query_embeddings: Any = None, n_results: int = 10, where: Optional[Json] = None, include: Optional[List[str]] = None) -> Dict[str, Any]:
+        include = include or ["documents", "metadatas"]
+        return self._query_nonvector(self.node_refs, where=where, n_results=n_results, include=include)
+
+    def node_refs_update(self, *, ids: Sequence[str], metadatas: Sequence[Json]) -> None:
+        self._update_metadata_merge(self.node_refs, ids=ids, metadatas=metadatas)
 
     def node_refs_delete(self, *, ids: Optional[Sequence[str]] = None, where: Optional[Json] = None) -> None:
         self._delete(self.node_refs, ids=ids, where=where)
@@ -536,6 +727,8 @@ def build_postgres_backend(cfg: PgVectorConfig) -> Tuple[PgVectorBackend, Postgr
         schema=cfg.schema,
         nodes_table=cfg.nodes_table,
         edges_table=cfg.edges_table,
+        documents_table=cfg.documents_table,
+        domains_table=cfg.domains_table,
         edge_endpoints_table=cfg.edge_endpoints_table,
         edge_refs_table=cfg.edge_refs_table,
         node_docs_table=cfg.node_docs_table,
