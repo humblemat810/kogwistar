@@ -1,11 +1,14 @@
 from __future__ import annotations
 
-"""EnginePostgres wiring (minimal).
+"""EnginePostgres wiring.
 
-This is a minimal, practical starting point for Postgres + pgvector:
+This module is intentionally thin: it wires SQLAlchemy Engine + PgVectorBackend
+and returns a UnitOfWork you can plug into the engine.
 
-- Vector/index backend: PgVectorBackend (nodes + edge_endpoints only).
-- Unit-of-work: PostgresUnitOfWork (wraps SQLAlchemy Engine.begin()).
+Vector/index collections supported by PgVectorBackend:
+  - nodes, edges
+  - edge_endpoints, edge_refs
+  - node_docs, node_refs
 
 Note: Your meta store is still EngineSQLite today. A later step is to migrate
 meta tables to Postgres (either fully, or via a dual-write/outbox strategy).
@@ -32,7 +35,11 @@ def build_postgres_backend(cfg: EnginePostgresConfig) -> Tuple[PgVectorBackend, 
         embedding_dim=cfg.embedding_dim,
         schema=cfg.schema,
         nodes_table=cfg.nodes_table,
+        edges_table=cfg.edges_table,
         edge_endpoints_table=cfg.edge_endpoints_table,
+        edge_refs_table=cfg.edge_refs_table,
+        node_docs_table=cfg.node_docs_table,
+        node_refs_table=cfg.node_refs_table,
     )
     backend.ensure_schema()
 
