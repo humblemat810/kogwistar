@@ -15,7 +15,7 @@ cachetools==5.5.2
 certifi==2025.8.3
 cffi==1.17.1
 charset-normalizer==3.4.2
-chromadb==1.0.15
+chromadb==1.4.1
 click==8.2.1
 colorama==0.4.6
 coloredlogs==15.0.1
@@ -24,6 +24,7 @@ cyclopts==3.22.5
 dataclasses-json==0.6.7
 distro==1.9.0
 dnspython==2.7.0
+docker==7.1.0
 docstring_parser==0.17.0
 docutils==0.22
 durationpy==0.10
@@ -118,11 +119,17 @@ overrides==7.7.0
 packaging==25.0
 parse==1.20.2
 pathable==0.4.4
+pathspec==0.12.1
+pgvector==0.4.2
 pluggy==1.6.0
 posthog==5.4.0
 propcache==0.3.2
 proto-plus==1.26.1
 protobuf==6.31.1
+psycopg==3.3.2
+psycopg-binary==3.3.2
+psycopg-pool==3.3.0
+psycopg2==2.9.11
 pyasn1==0.6.1
 pyasn1_modules==0.4.2
 pybase64==1.4.2
@@ -165,6 +172,7 @@ sse-starlette==3.0.2
 starlette==0.47.2
 sympy==1.14.0
 tenacity==9.1.2
+testcontainers==4.14.1
 tiktoken==0.10.0
 tokenizers==0.21.4
 tqdm==4.67.1
@@ -172,6 +180,7 @@ typer==0.16.0
 typing-inspect==0.9.0
 typing-inspection==0.4.1
 typing_extensions==4.14.1
+tzdata==2025.3
 urllib3==2.5.0
 uuid_utils==0.12.0
 uvicorn==0.35.0
