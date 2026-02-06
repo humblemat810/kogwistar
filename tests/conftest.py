@@ -1,5 +1,9 @@
 # tests/conftest.py
 import shutil, uuid, json
+
+import sqlalchemy as sa
+from testcontainers.postgres import PostgresContainer
+
 import os
 import sys
 import pathlib
@@ -11,7 +15,7 @@ from graph_knowledge_engine.models import (
     LLMMergeAdjudication, AdjudicationVerdict, Node, Span, Grounding,
     ConversationEdge, ConversationNode, MentionVerification
 )
-from typing import Any, List, Optional, Sequence
+from typing import Any, List, Optional, Sequence, Iterator
 from langchain_core.runnables import Runnable
 from graph_knowledge_engine.models import LLMMergeAdjudication, AdjudicationVerdict
 
@@ -43,6 +47,53 @@ class FakeStructuredRunnable(Runnable):
     async def abatch(self, inputs: List[Any], config: Optional[dict] = None, **kwargs: Any) -> List[Any]:
         return [self.invoke(i, config=config, **kwargs) for i in inputs]
 
+
+@pytest.fixture(scope="session")
+def pg_container() -> Iterator[PostgresContainer]:
+    """
+    Spin up a disposable Postgres for the whole test session.
+
+    Requirements:
+      - Docker daemon running (Docker Desktop on Windows/macOS)
+      - Python deps: testcontainers[postgresql], psycopg[binary], sqlalchemy
+    """
+    image = os.getenv("GKE_TEST_PG_IMAGE", "postgres:16")
+    os.environ['TESTCONTAINERS_RYUK_DISABLED'] = "true"
+    with PostgresContainer(image) as pg:
+        yield pg
+
+
+@pytest.fixture(scope="session")
+def pg_dsn(pg_container: PostgresContainer) -> str:
+    """
+    SQLAlchemy DSN for the running test container.
+    """
+    url = pg_container.get_connection_url()
+    # Normalize to psycopg (optional). Comment out if you rely on psycopg2.
+    url = url.replace("postgresql://", "postgresql+psycopg://")
+    return url
+
+
+@pytest.fixture(scope="session")
+def sa_engine(pg_dsn: str) -> sa.Engine:
+    return sa.create_engine(pg_dsn, future=True)
+
+
+@pytest.fixture()
+def pg_schema(sa_engine: sa.Engine) -> Iterator[str]:
+    """
+    Unique schema per test, dropped afterwards.
+
+    Tests should pass this schema into PgVectorBackend(schema=...).
+    """
+    schema = f"gke_test_{uuid.uuid4().hex}"
+    with sa_engine.begin() as conn:
+        conn.execute(sa.text(f'CREATE SCHEMA IF NOT EXISTS "{schema}"'))
+    try:
+        yield schema
+    finally:
+        with sa_engine.begin() as conn:
+            conn.execute(sa.text(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))
 
 class FakeLLMForAdjudication:
     """

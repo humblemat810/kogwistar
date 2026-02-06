@@ -967,7 +967,7 @@ class CustomEmbeddingFunction(EmbeddingFunction):
         return self._emb(documents_or_texts)
 
 
-
+from graph_knowledge_engine.postgres_backend import PgVectorBackend
 @dataclass
 class GraphKnowledgeEngine:
     """
@@ -2065,7 +2065,8 @@ class GraphKnowledgeEngine:
         merge_policy=None,           # callable(left, right, verdict) -> str (canonical_id)
         verifier=None,               # callable(extracted, full_text, ref, **kw) -> ReferenceSession
         kg_graph_type : EngineType = 'knowledge',
-        debug_dir: pathlib.Path | None = None
+        debug_dir: pathlib.Path | None = None,
+        backend : str | PgVectorBackend | None = None
     ):
         """
         embedding_function: callable(texts: List[str]) -> List[List[float]].
@@ -2127,50 +2128,54 @@ class GraphKnowledgeEngine:
             vecs = self._ef([text])  # DefaultEmbeddingFunction is callable(texts: List[str]) -> List[List[float]]
             return vecs[0] if vecs else None
         self._embed_one = _embed_one
-
-        # 2) Chroma client + collections; inject embedder on vectorized collections
-        self.chroma_client = Client(
-            Settings(
-                is_persistent=True,
-                persist_directory=persist_directory or "./chroma_db",
-                anonymized_telemetry=False,
+        if backend is None or (type(backend) is str and backend == 'chroma'):
+            # 2) Chroma client + collections; inject embedder on vectorized collections
+            self.chroma_client = Client(
+                Settings(
+                    is_persistent=True,
+                    persist_directory=persist_directory or "./chroma_db",
+                    anonymized_telemetry=False,
+                )
             )
-        )
         # IMPORTANT: pass embedding_function to vector collections
-        from threading import Lock
-        self.collection_lock={"node": Lock(), "edge": Lock()}
-        
-        self.node_index_collection = self.chroma_client.get_or_create_collection(
-            "nodes_index", embedding_function=self._ef, metadata={"hnsw:space": "cosine"}
-        )
-        self.node_collection = self.chroma_client.get_or_create_collection(
-            "nodes", embedding_function=self._ef, metadata={"hnsw:space": "cosine"}
-        )
-        self.edge_collection = self.chroma_client.get_or_create_collection(
-            "edges", embedding_function=self._ef, metadata={"hnsw:space": "cosine"}
-        )
-        self.edge_endpoints_collection = self.chroma_client.get_or_create_collection("edge_endpoints", embedding_function=self._ef, 
-                                metadata={"hnsw:space": "cosine"})
-        self.document_collection = self.chroma_client.get_or_create_collection("documents", embedding_function=self._ef, 
-                                metadata={"hnsw:space": "cosine"})
-        self.domain_collection = self.chroma_client.get_or_create_collection("domains", embedding_function=self._ef, 
-                                metadata={"hnsw:space": "cosine"})
-        self.node_docs_collection = self.chroma_client.get_or_create_collection("node_docs", embedding_function=self._ef, 
-                                metadata={"hnsw:space": "cosine"})
-        self.node_refs_collection = self.chroma_client.get_or_create_collection("node_refs")
-        self.edge_refs_collection = self.chroma_client.get_or_create_collection("edge_refs")
-        # Backend adapter (Phase 1: Chroma)
-        self.backend = ChromaBackend(
-            node_index_collection=self.node_index_collection,
-            node_collection=self.node_collection,
-            edge_collection=self.edge_collection,
-            edge_endpoints_collection=self.edge_endpoints_collection,
-            document_collection=self.document_collection,
-            domain_collection=self.domain_collection,
-            node_docs_collection=self.node_docs_collection,
-            node_refs_collection=self.node_refs_collection,
-            edge_refs_collection=self.edge_refs_collection,
-        )
+            from threading import Lock
+            self.collection_lock={"node": Lock(), "edge": Lock()}
+            
+            self.node_index_collection = self.chroma_client.get_or_create_collection(
+                "nodes_index", embedding_function=self._ef, metadata={"hnsw:space": "cosine"}
+            )
+            self.node_collection = self.chroma_client.get_or_create_collection(
+                "nodes", embedding_function=self._ef, metadata={"hnsw:space": "cosine"}
+            )
+            self.edge_collection = self.chroma_client.get_or_create_collection(
+                "edges", embedding_function=self._ef, metadata={"hnsw:space": "cosine"}
+            )
+            self.edge_endpoints_collection = self.chroma_client.get_or_create_collection("edge_endpoints", embedding_function=self._ef, 
+                                    metadata={"hnsw:space": "cosine"})
+            self.document_collection = self.chroma_client.get_or_create_collection("documents", embedding_function=self._ef, 
+                                    metadata={"hnsw:space": "cosine"})
+            self.domain_collection = self.chroma_client.get_or_create_collection("domains", embedding_function=self._ef, 
+                                    metadata={"hnsw:space": "cosine"})
+            self.node_docs_collection = self.chroma_client.get_or_create_collection("node_docs", embedding_function=self._ef, 
+                                    metadata={"hnsw:space": "cosine"})
+            self.node_refs_collection = self.chroma_client.get_or_create_collection("node_refs")
+            self.edge_refs_collection = self.chroma_client.get_or_create_collection("edge_refs")
+            # Backend adapter (Phase 1: Chroma)
+            self.backend = ChromaBackend(
+                node_index_collection=self.node_index_collection,
+                node_collection=self.node_collection,
+                edge_collection=self.edge_collection,
+                edge_endpoints_collection=self.edge_endpoints_collection,
+                document_collection=self.document_collection,
+                domain_collection=self.domain_collection,
+                node_docs_collection=self.node_docs_collection,
+                node_refs_collection=self.node_refs_collection,
+                edge_refs_collection=self.edge_refs_collection,
+            )
+        elif type(backend) is PgVectorBackend:
+            self.backend = backend
+        else:
+            raise ValueError("Unrecognised argument for backend")
         self._backend_uow = NoopUnitOfWork()
 
         # self.llm = AzureChatOpenAI(
@@ -2310,7 +2315,7 @@ class GraphKnowledgeEngine:
         ids, docs, metas = [], [], []
         for i, ref in enumerate(edge.mentions or []):
             rid = f"{edge.id}::ref::{i}"
-            did = getattr(ref, "doc_id", None)
+            did = getattr(ref, "doc_id", None) or edge.doc_id
             ver = getattr(ref, "verification", None)
             row = _strip_none({
                 "id": rid,
@@ -2339,7 +2344,7 @@ class GraphKnowledgeEngine:
         ids, docs, metas = [], [], []
         for i, ref in enumerate(node.mentions or []):
             rid = f"{node.id}::ref::{i}"
-            did = getattr(ref, "doc_id", None)
+            did = getattr(ref, "doc_id", None) or node.doc_id
             ver = getattr(ref, "verification", None)
             row = _strip_none({
                 "id": rid,
@@ -2354,7 +2359,8 @@ class GraphKnowledgeEngine:
                 "start_char": getattr(ref, "start_char", None),
                 "end_char": getattr(ref, "end_char", None),
             })
-            ids.append(rid); docs.append(json.dumps(row)); metas.append(row)
+            ids.append(rid); docs.append(json.dumps(row))
+            metas.append(row)
 
         if ids:
             self.backend.node_refs_add(ids=ids, documents=docs, metadatas=metas, embeddings=[self._iterative_defensive_emb(str(d)) for d in docs])
@@ -2687,7 +2693,6 @@ class GraphKnowledgeEngine:
         edge.source_edge_ids = getattr(edge, "source_edge_ids", []) or [] + s_edges
         edge.target_ids = t_nodes
         edge.target_edge_ids = getattr(edge, "target_edge_ids", []) or [] + t_edges
-        edge.doc_id = doc_id
         # single-call safety for ad-hoc usage
         self._assert_endpoints_exist(edge)
 
@@ -2702,7 +2707,7 @@ class GraphKnowledgeEngine:
         # from chromadb.base_types import Metadata
         doc = edge.model_dump_json(field_mode='backend', exclude = ['embedding'])
         base_metadata : list[dict[str,Any]]= [_strip_none({
-                "doc_id": doc_id,
+                "doc_id": doc_id or edge.doc_id,
                 "relation": edge.relation,
                 "source_ids": _json_or_none(edge.source_ids),
                 "target_ids": _json_or_none(edge.target_ids),
