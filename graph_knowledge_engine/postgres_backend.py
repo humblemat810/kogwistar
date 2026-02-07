@@ -116,6 +116,89 @@ class PgVectorConfig:
     node_docs_table: str = "gke_node_docs"
     node_refs_table: str = "gke_node_refs"
 
+@dataclass(frozen=True)
+class CollectionSpec:
+    """Configuration for a collection-like table.
+
+    We keep the public backend API explicit (node_add/edge_add/etc) but route
+    the common behavior through a small facade to avoid duplication.
+    """
+
+    vector: bool
+    ignore_embeddings: bool = False
+
+
+class PgCollectionFacade:
+    """Small, precise adapter that implements the repeated Chroma-shaped verbs."""
+
+    def __init__(self, backend: "PgVectorBackend", table: sa.Table, spec: CollectionSpec):
+        self._b = backend
+        self._t = table
+        self._s = spec
+
+    def add(
+        self,
+        *,
+        ids: Sequence[str],
+        documents: Sequence[str],
+        metadatas: Sequence[Json],
+        embeddings: Optional[Sequence[Sequence[float]]] = None,
+    ) -> None:
+        if self._s.ignore_embeddings:
+            embeddings = None
+        self._b._upsert(self._t, ids=ids, documents=documents, metadatas=metadatas, embeddings=embeddings)
+
+    def upsert(
+        self,
+        *,
+        ids: Sequence[str],
+        documents: Sequence[str],
+        metadatas: Sequence[Json],
+        embeddings: Optional[Sequence[Sequence[float]]] = None,
+    ) -> None:
+        self.add(ids=ids, documents=documents, metadatas=metadatas, embeddings=embeddings)
+
+    def get(
+        self,
+        *,
+        ids: Optional[Sequence[str]] = None,
+        where: Optional[Json] = None,
+        include: Optional[List[str]] = None,
+        limit: int = 200,
+    ) -> Dict[str, Any]:
+        include = include or ["documents", "metadatas"]
+        return self._b._get_flat(self._t, ids=ids, where=where, include=include, limit=limit)
+
+    def delete(self, *, ids: Optional[Sequence[str]] = None, where: Optional[Json] = None) -> None:
+        self._b._delete(self._t, ids=ids, where=where)
+
+    def query(
+        self,
+        *,
+        query_embeddings: Optional[Sequence[Sequence[float]]] = None,
+        n_results: int = 10,
+        where: Optional[Json] = None,
+        include: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        if self._s.vector:
+            include = include or ["documents", "metadatas", "distances"]
+            if query_embeddings is None:
+                raise ValueError("query_embeddings is required for vector collections")
+            return self._b._query_vector(
+                self._t,
+                query_embeddings=query_embeddings,
+                n_results=n_results,
+                where=where,
+                include=include,
+            )
+
+        include = include or ["documents", "metadatas"]
+        return self._b._query_nonvector(self._t, where=where, n_results=n_results, include=include)
+
+    def update(self, *, ids: Sequence[str], metadatas: Sequence[Json]) -> None:
+        self._b._update_metadata_merge(self._t, ids=ids, metadatas=metadatas)
+
+
 
 # ----------------------------
 # where DSL → SQLAlchemy
@@ -317,6 +400,8 @@ class PgVectorBackend:
             sa.Index(f"ix_{node_refs_table}_doc", sa.text("(metadata->>'doc_id')")),
             sa.Index(f"ix_{node_refs_table}_node", sa.text("(metadata->>'node_id')")),
         )
+
+        self._init_facades()
 
         self._md = md
 
@@ -523,198 +608,199 @@ class PgVectorBackend:
             out["distances"] = [[0.0 for _ in out["ids"][0]]]
         return out
 
+# ----------------------------
+# Collections (facades)
+# ----------------------------
+
+    def _init_facades(self) -> None:
+        # Vector collections
+        self._nodes_c = PgCollectionFacade(self, self.nodes, CollectionSpec(vector=True))
+        self._edges_c = PgCollectionFacade(self, self.edges, CollectionSpec(vector=True))
+        self._documents_c = PgCollectionFacade(self, self.documents, CollectionSpec(vector=True))
+        self._domains_c = PgCollectionFacade(self, self.domains, CollectionSpec(vector=True))
+
+        # Non-vector collections (materialized/index tables)
+        nv = CollectionSpec(vector=False, ignore_embeddings=True)
+        self._edge_endpoints_c = PgCollectionFacade(self, self.edge_endpoints, nv)
+        self._edge_refs_c = PgCollectionFacade(self, self.edge_refs, nv)
+        self._node_docs_c = PgCollectionFacade(self, self.node_docs, nv)
+        self._node_refs_c = PgCollectionFacade(self, self.node_refs, nv)
+
     # ----------------------------
     # Nodes
     # ----------------------------
 
     def node_add(self, *, ids: Sequence[str], documents: Sequence[str], metadatas: Sequence[Json], embeddings: Optional[Sequence[Sequence[float]]] = None) -> None:
-        self._upsert(self.nodes, ids=ids, documents=documents, metadatas=metadatas, embeddings=embeddings)
+        self._nodes_c.add(ids=ids, documents=documents, metadatas=metadatas, embeddings=embeddings)
 
     def node_upsert(self, *, ids: Sequence[str], documents: Sequence[str], metadatas: Sequence[Json], embeddings: Optional[Sequence[Sequence[float]]] = None) -> None:
-        self._upsert(self.nodes, ids=ids, documents=documents, metadatas=metadatas, embeddings=embeddings)
+        self._nodes_c.upsert(ids=ids, documents=documents, metadatas=metadatas, embeddings=embeddings)
 
     def node_get(self, *, ids: Optional[Sequence[str]] = None, where: Optional[Json] = None, include: Optional[List[str]] = None, limit: int = 200) -> Dict[str, Any]:
-        include = include or ["documents", "metadatas"]
-        return self._get_flat(self.nodes, ids=ids, where=where, include=include, limit=limit)
+        return self._nodes_c.get(ids=ids, where=where, include=include, limit=limit)
 
     def node_delete(self, *, ids: Optional[Sequence[str]] = None, where: Optional[Json] = None) -> None:
-        self._delete(self.nodes, ids=ids, where=where)
+        self._nodes_c.delete(ids=ids, where=where)
 
     def node_query(self, *, query_embeddings: Sequence[Sequence[float]], n_results: int = 10, where: Optional[Json] = None, include: Optional[List[str]] = None) -> Dict[str, Any]:
-        include = include or ["documents", "metadatas", "distances"]
-        return self._query_vector(self.nodes, query_embeddings=query_embeddings, n_results=n_results, where=where, include=include)
+        return self._nodes_c.query(query_embeddings=query_embeddings, n_results=n_results, where=where, include=include)
 
     def node_update(self, *, ids: Sequence[str], metadatas: Sequence[Json]) -> None:
-        self._update_metadata_merge(self.nodes, ids=ids, metadatas=metadatas)
+        self._nodes_c.update(ids=ids, metadatas=metadatas)
 
     # ----------------------------
     # Edges
     # ----------------------------
 
     def edge_add(self, *, ids: Sequence[str], documents: Sequence[str], metadatas: Sequence[Json], embeddings: Optional[Sequence[Sequence[float]]] = None) -> None:
-        self._upsert(self.edges, ids=ids, documents=documents, metadatas=metadatas, embeddings=embeddings)
+        self._edges_c.add(ids=ids, documents=documents, metadatas=metadatas, embeddings=embeddings)
 
     def edge_upsert(self, *, ids: Sequence[str], documents: Sequence[str], metadatas: Sequence[Json], embeddings: Optional[Sequence[Sequence[float]]] = None) -> None:
-        self._upsert(self.edges, ids=ids, documents=documents, metadatas=metadatas, embeddings=embeddings)
+        self._edges_c.upsert(ids=ids, documents=documents, metadatas=metadatas, embeddings=embeddings)
 
     def edge_get(self, *, ids: Optional[Sequence[str]] = None, where: Optional[Json] = None, include: Optional[List[str]] = None, limit: int = 200) -> Dict[str, Any]:
-        include = include or ["documents", "metadatas"]
-        return self._get_flat(self.edges, ids=ids, where=where, include=include, limit=limit)
+        return self._edges_c.get(ids=ids, where=where, include=include, limit=limit)
 
     def edge_delete(self, *, ids: Optional[Sequence[str]] = None, where: Optional[Json] = None) -> None:
-        self._delete(self.edges, ids=ids, where=where)
+        self._edges_c.delete(ids=ids, where=where)
 
     def edge_query(self, *, query_embeddings: Sequence[Sequence[float]], n_results: int = 10, where: Optional[Json] = None, include: Optional[List[str]] = None) -> Dict[str, Any]:
-        include = include or ["documents", "metadatas", "distances"]
-        return self._query_vector(self.edges, query_embeddings=query_embeddings, n_results=n_results, where=where, include=include)
+        return self._edges_c.query(query_embeddings=query_embeddings, n_results=n_results, where=where, include=include)
 
     def edge_update(self, *, ids: Sequence[str], metadatas: Sequence[Json]) -> None:
-        self._update_metadata_merge(self.edges, ids=ids, metadatas=metadatas)
+        self._edges_c.update(ids=ids, metadatas=metadatas)
 
     # ----------------------------
     # Documents
     # ----------------------------
 
     def document_add(self, *, ids: Sequence[str], documents: Sequence[str], metadatas: Sequence[Json], embeddings: Optional[Sequence[Sequence[float]]] = None) -> None:
-        self._upsert(self.documents, ids=ids, documents=documents, metadatas=metadatas, embeddings=embeddings)
+        self._documents_c.add(ids=ids, documents=documents, metadatas=metadatas, embeddings=embeddings)
 
     def document_upsert(self, *, ids: Sequence[str], documents: Sequence[str], metadatas: Sequence[Json], embeddings: Optional[Sequence[Sequence[float]]] = None) -> None:
-        self._upsert(self.documents, ids=ids, documents=documents, metadatas=metadatas, embeddings=embeddings)
+        self._documents_c.upsert(ids=ids, documents=documents, metadatas=metadatas, embeddings=embeddings)
 
     def document_get(self, *, ids: Optional[Sequence[str]] = None, where: Optional[Json] = None, include: Optional[List[str]] = None, limit: int = 200) -> Dict[str, Any]:
-        include = include or ["documents", "metadatas"]
-        return self._get_flat(self.documents, ids=ids, where=where, include=include, limit=limit)
+        return self._documents_c.get(ids=ids, where=where, include=include, limit=limit)
 
     def document_delete(self, *, ids: Optional[Sequence[str]] = None, where: Optional[Json] = None) -> None:
-        self._delete(self.documents, ids=ids, where=where)
+        self._documents_c.delete(ids=ids, where=where)
 
     def document_query(self, *, query_embeddings: Sequence[Sequence[float]], n_results: int = 10, where: Optional[Json] = None, include: Optional[List[str]] = None) -> Dict[str, Any]:
-        include = include or ["documents", "metadatas", "distances"]
-        return self._query_vector(self.documents, query_embeddings=query_embeddings, n_results=n_results, where=where, include=include)
+        return self._documents_c.query(query_embeddings=query_embeddings, n_results=n_results, where=where, include=include)
 
     def document_update(self, *, ids: Sequence[str], metadatas: Sequence[Json]) -> None:
-        self._update_metadata_merge(self.documents, ids=ids, metadatas=metadatas)
+        self._documents_c.update(ids=ids, metadatas=metadatas)
 
     # ----------------------------
     # Domains
     # ----------------------------
 
     def domain_add(self, *, ids: Sequence[str], documents: Sequence[str], metadatas: Sequence[Json], embeddings: Optional[Sequence[Sequence[float]]] = None) -> None:
-        self._upsert(self.domains, ids=ids, documents=documents, metadatas=metadatas, embeddings=embeddings)
+        self._domains_c.add(ids=ids, documents=documents, metadatas=metadatas, embeddings=embeddings)
 
     def domain_upsert(self, *, ids: Sequence[str], documents: Sequence[str], metadatas: Sequence[Json], embeddings: Optional[Sequence[Sequence[float]]] = None) -> None:
-        self._upsert(self.domains, ids=ids, documents=documents, metadatas=metadatas, embeddings=embeddings)
+        self._domains_c.upsert(ids=ids, documents=documents, metadatas=metadatas, embeddings=embeddings)
 
     def domain_get(self, *, ids: Optional[Sequence[str]] = None, where: Optional[Json] = None, include: Optional[List[str]] = None, limit: int = 200) -> Dict[str, Any]:
-        include = include or ["documents", "metadatas"]
-        return self._get_flat(self.domains, ids=ids, where=where, include=include, limit=limit)
+        return self._domains_c.get(ids=ids, where=where, include=include, limit=limit)
 
     def domain_delete(self, *, ids: Optional[Sequence[str]] = None, where: Optional[Json] = None) -> None:
-        self._delete(self.domains, ids=ids, where=where)
+        self._domains_c.delete(ids=ids, where=where)
 
     def domain_query(self, *, query_embeddings: Sequence[Sequence[float]], n_results: int = 10, where: Optional[Json] = None, include: Optional[List[str]] = None) -> Dict[str, Any]:
-        include = include or ["documents", "metadatas", "distances"]
-        return self._query_vector(self.domains, query_embeddings=query_embeddings, n_results=n_results, where=where, include=include)
+        return self._domains_c.query(query_embeddings=query_embeddings, n_results=n_results, where=where, include=include)
 
     def domain_update(self, *, ids: Sequence[str], metadatas: Sequence[Json]) -> None:
-        self._update_metadata_merge(self.domains, ids=ids, metadatas=metadatas)
+        self._domains_c.update(ids=ids, metadatas=metadatas)
 
     # ----------------------------
     # Edge endpoints
     # ----------------------------
 
     def edge_endpoints_add(self, *, ids: Sequence[str], documents: Sequence[str], metadatas: Sequence[Json], embeddings: Any = None) -> None:
-        # embeddings ignored for this collection (kept for callsite compatibility)
-        self._upsert(self.edge_endpoints, ids=ids, documents=documents, metadatas=metadatas, embeddings=None)
+        self._edge_endpoints_c.add(ids=ids, documents=documents, metadatas=metadatas, embeddings=None)
 
     def edge_endpoints_upsert(self, *, ids: Sequence[str], documents: Sequence[str], metadatas: Sequence[Json], embeddings: Any = None) -> None:
-        self._upsert(self.edge_endpoints, ids=ids, documents=documents, metadatas=metadatas, embeddings=None)
+        self._edge_endpoints_c.upsert(ids=ids, documents=documents, metadatas=metadatas, embeddings=None)
 
     def edge_endpoints_get(self, *, ids: Optional[Sequence[str]] = None, where: Optional[Json] = None, include: Optional[List[str]] = None, limit: int = 200) -> Dict[str, Any]:
-        include = include or ["documents", "metadatas"]
-        return self._get_flat(self.edge_endpoints, ids=ids, where=where, include=include, limit=limit)
+        return self._edge_endpoints_c.get(ids=ids, where=where, include=include, limit=limit)
 
     def edge_endpoints_query(self, *, query_embeddings: Any = None, n_results: int = 10, where: Optional[Json] = None, include: Optional[List[str]] = None) -> Dict[str, Any]:
-        include = include or ["documents", "metadatas"]
-        return self._query_nonvector(self.edge_endpoints, where=where, n_results=n_results, include=include)
+        return self._edge_endpoints_c.query(query_embeddings=None, n_results=n_results, where=where, include=include)
 
     def edge_endpoints_update(self, *, ids: Sequence[str], metadatas: Sequence[Json]) -> None:
-        self._update_metadata_merge(self.edge_endpoints, ids=ids, metadatas=metadatas)
+        self._edge_endpoints_c.update(ids=ids, metadatas=metadatas)
 
     def edge_endpoints_delete(self, *, ids: Optional[Sequence[str]] = None, where: Optional[Json] = None) -> None:
-        self._delete(self.edge_endpoints, ids=ids, where=where)
+        self._edge_endpoints_c.delete(ids=ids, where=where)
 
     # ----------------------------
     # Edge refs
     # ----------------------------
 
     def edge_refs_add(self, *, ids: Sequence[str], documents: Sequence[str], metadatas: Sequence[Json], embeddings: Any = None) -> None:
-        self._upsert(self.edge_refs, ids=ids, documents=documents, metadatas=metadatas, embeddings=None)
+        self._edge_refs_c.add(ids=ids, documents=documents, metadatas=metadatas, embeddings=None)
 
     def edge_refs_upsert(self, *, ids: Sequence[str], documents: Sequence[str], metadatas: Sequence[Json], embeddings: Any = None) -> None:
-        self._upsert(self.edge_refs, ids=ids, documents=documents, metadatas=metadatas, embeddings=None)
+        self._edge_refs_c.upsert(ids=ids, documents=documents, metadatas=metadatas, embeddings=None)
 
     def edge_refs_get(self, *, ids: Optional[Sequence[str]] = None, where: Optional[Json] = None, include: Optional[List[str]] = None, limit: int = 200) -> Dict[str, Any]:
-        include = include or ["documents", "metadatas"]
-        return self._get_flat(self.edge_refs, ids=ids, where=where, include=include, limit=limit)
+        return self._edge_refs_c.get(ids=ids, where=where, include=include, limit=limit)
 
     def edge_refs_query(self, *, query_embeddings: Any = None, n_results: int = 10, where: Optional[Json] = None, include: Optional[List[str]] = None) -> Dict[str, Any]:
-        include = include or ["documents", "metadatas"]
-        return self._query_nonvector(self.edge_refs, where=where, n_results=n_results, include=include)
+        return self._edge_refs_c.query(query_embeddings=None, n_results=n_results, where=where, include=include)
 
     def edge_refs_update(self, *, ids: Sequence[str], metadatas: Sequence[Json]) -> None:
-        self._update_metadata_merge(self.edge_refs, ids=ids, metadatas=metadatas)
+        self._edge_refs_c.update(ids=ids, metadatas=metadatas)
 
     def edge_refs_delete(self, *, ids: Optional[Sequence[str]] = None, where: Optional[Json] = None) -> None:
-        self._delete(self.edge_refs, ids=ids, where=where)
+        self._edge_refs_c.delete(ids=ids, where=where)
 
     # ----------------------------
     # Node docs
     # ----------------------------
 
     def node_docs_add(self, *, ids: Sequence[str], documents: Sequence[str], metadatas: Sequence[Json], embeddings: Any = None) -> None:
-        self._upsert(self.node_docs, ids=ids, documents=documents, metadatas=metadatas, embeddings=None)
+        self._node_docs_c.add(ids=ids, documents=documents, metadatas=metadatas, embeddings=None)
 
     def node_docs_upsert(self, *, ids: Sequence[str], documents: Sequence[str], metadatas: Sequence[Json], embeddings: Any = None) -> None:
-        self._upsert(self.node_docs, ids=ids, documents=documents, metadatas=metadatas, embeddings=None)
+        self._node_docs_c.upsert(ids=ids, documents=documents, metadatas=metadatas, embeddings=None)
 
     def node_docs_get(self, *, ids: Optional[Sequence[str]] = None, where: Optional[Json] = None, include: Optional[List[str]] = None, limit: int = 200) -> Dict[str, Any]:
-        include = include or ["documents", "metadatas"]
-        return self._get_flat(self.node_docs, ids=ids, where=where, include=include, limit=limit)
+        return self._node_docs_c.get(ids=ids, where=where, include=include, limit=limit)
 
     def node_docs_query(self, *, query_embeddings: Any = None, n_results: int = 10, where: Optional[Json] = None, include: Optional[List[str]] = None) -> Dict[str, Any]:
-        include = include or ["documents", "metadatas"]
-        return self._query_nonvector(self.node_docs, where=where, n_results=n_results, include=include)
+        return self._node_docs_c.query(query_embeddings=None, n_results=n_results, where=where, include=include)
 
     def node_docs_update(self, *, ids: Sequence[str], metadatas: Sequence[Json]) -> None:
-        self._update_metadata_merge(self.node_docs, ids=ids, metadatas=metadatas)
+        self._node_docs_c.update(ids=ids, metadatas=metadatas)
 
     def node_docs_delete(self, *, ids: Optional[Sequence[str]] = None, where: Optional[Json] = None) -> None:
-        self._delete(self.node_docs, ids=ids, where=where)
+        self._node_docs_c.delete(ids=ids, where=where)
 
     # ----------------------------
     # Node refs
     # ----------------------------
 
     def node_refs_add(self, *, ids: Sequence[str], documents: Sequence[str], metadatas: Sequence[Json], embeddings: Any = None) -> None:
-        self._upsert(self.node_refs, ids=ids, documents=documents, metadatas=metadatas, embeddings=None)
+        self._node_refs_c.add(ids=ids, documents=documents, metadatas=metadatas, embeddings=None)
 
     def node_refs_upsert(self, *, ids: Sequence[str], documents: Sequence[str], metadatas: Sequence[Json], embeddings: Any = None) -> None:
-        self._upsert(self.node_refs, ids=ids, documents=documents, metadatas=metadatas, embeddings=None)
+        self._node_refs_c.upsert(ids=ids, documents=documents, metadatas=metadatas, embeddings=None)
 
     def node_refs_get(self, *, ids: Optional[Sequence[str]] = None, where: Optional[Json] = None, include: Optional[List[str]] = None, limit: int = 200) -> Dict[str, Any]:
-        include = include or ["documents", "metadatas"]
-        return self._get_flat(self.node_refs, ids=ids, where=where, include=include, limit=limit)
+        return self._node_refs_c.get(ids=ids, where=where, include=include, limit=limit)
 
     def node_refs_query(self, *, query_embeddings: Any = None, n_results: int = 10, where: Optional[Json] = None, include: Optional[List[str]] = None) -> Dict[str, Any]:
-        include = include or ["documents", "metadatas"]
-        return self._query_nonvector(self.node_refs, where=where, n_results=n_results, include=include)
+        return self._node_refs_c.query(query_embeddings=None, n_results=n_results, where=where, include=include)
 
     def node_refs_update(self, *, ids: Sequence[str], metadatas: Sequence[Json]) -> None:
-        self._update_metadata_merge(self.node_refs, ids=ids, metadatas=metadatas)
+        self._node_refs_c.update(ids=ids, metadatas=metadatas)
 
     def node_refs_delete(self, *, ids: Optional[Sequence[str]] = None, where: Optional[Json] = None) -> None:
-        self._delete(self.node_refs, ids=ids, where=where)
+        self._node_refs_c.delete(ids=ids, where=where)
 
 
 def build_postgres_backend(cfg: PgVectorConfig) -> Tuple[PgVectorBackend, PostgresUnitOfWork]:

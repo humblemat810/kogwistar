@@ -2176,7 +2176,13 @@ class GraphKnowledgeEngine:
             self.backend = backend
         else:
             raise ValueError("Unrecognised argument for backend")
-        self._backend_uow = NoopUnitOfWork()
+        # Backend UoW: in Postgres mode this becomes a real SQL transaction.
+        if isinstance(getattr(self, "backend", None), PgVectorBackend):
+            from graph_knowledge_engine.postgres_backend import PostgresUnitOfWork
+
+            self._backend_uow = PostgresUnitOfWork(engine=self.backend.engine)
+        else:
+            self._backend_uow = NoopUnitOfWork()
 
         # self.llm = AzureChatOpenAI(
         #     deployment_name=os.getenv("OPENAI_DEPLOYMENT_NAME_GPT4_1"),

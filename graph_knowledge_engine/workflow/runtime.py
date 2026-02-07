@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, List, Optional,
 from concurrent.futures import ThreadPoolExecutor
 import pathlib
 import logging
+from contextlib import nullcontext
 
 from graph_knowledge_engine.id_provider import stable_id
 from ..conversation_orchestrator import get_id_for_conversation_turn_edge
@@ -350,6 +351,7 @@ class WorkflowRuntime:
         predicate_registry: Dict[str, Predicate],
         checkpoint_every_n_steps: int = 1,
         max_workers: int = 4,
+        transaction_mode: str | None = None,  # "step" | "run" | "none" (default auto)
     ) -> None:
         from graph_knowledge_engine.engine import GraphKnowledgeEngine
         self.workflow_engine: GraphKnowledgeEngine = workflow_engine
@@ -358,6 +360,16 @@ class WorkflowRuntime:
         self.predicate_registry = predicate_registry
         self.checkpoint_every_n_steps = max(1, int(checkpoint_every_n_steps))
         self.max_workers = max_workers
+        # Transaction policy: default to per-step transactions when conversation_engine is Postgres-backed.
+        if transaction_mode is None:
+            try:
+                from graph_knowledge_engine.postgres_backend import PgVectorBackend
+
+                self.transaction_mode = "step" if isinstance(getattr(conversation_engine, "backend", None), PgVectorBackend) else "none"
+            except Exception:
+                self.transaction_mode = "none"
+        else:
+            self.transaction_mode = str(transaction_mode)
         self.state_lock : dict[RunID, Lock] = {} # look up of run specific state lock
         # somewhere in your runtime init (or run())
         if getattr(workflow_engine, "persist_directory", None) is not None:
@@ -368,6 +380,18 @@ class WorkflowRuntime:
         else:
             self.sink = None
         self.emitter = EventEmitter(sink=self.sink, logger=logging.getLogger("workflow.trace"))
+
+    def _maybe_step_uow(self):
+        """Open a UoW transaction only when transaction_mode=='step'.
+
+        This keeps callsites clean:
+            with self._maybe_step_uow():
+                ...
+        """
+        if self.transaction_mode == "step":
+            return self.conversation_engine.uow()
+        return nullcontext()
+
     def apply_state_update(self, mute_state: WorkflowState, state_update: list[tuple[str, dict[str, Any]]] | list[StateUpdate]):
         # inplace update state
         for update_item in state_update:
@@ -588,7 +612,11 @@ class WorkflowRuntime:
                 # step attempt start
                 self.emitter.step_started(ctx.trace_ctx)
 
-                res: StepRunResult = fn(ctx)
+                # Transaction boundary (best-effort): resolver is expected to call
+                # engine methods; when backed by Postgres this ensures those writes
+                # are committed or rolled back atomically for this step.
+                with self._maybe_step_uow():
+                    res: StepRunResult = fn(ctx)
                 status = "ok" if getattr(res, "status", None) != "failure" else "failure"
 
             except Exception as e:
@@ -730,8 +758,9 @@ class WorkflowRuntime:
                 node_id, run_result, dur_ms, token_id, parent_token_id, status, mask = done_task
                 graveyard.put_nowait(done_task)
                 run_state_lock: Lock = self.state_lock[str(run_id)]
-                with run_state_lock:
-                    self.apply_state_update(mute_state=state, state_update = run_result.state_update)
+                with self._maybe_step_uow():
+                    with run_state_lock:
+                        self.apply_state_update(mute_state=state, state_update=run_result.state_update)
                     
                 inflight.pop((node_id, mask, str(token_id)), None)
                 inflight_tokens.discard((str(node_id), int(mask), str(token_id), parent_token_id))
@@ -739,23 +768,24 @@ class WorkflowRuntime:
 
                 wn = nodes[node_id]
 
-                # persist step exec trace node
-                last_exec_node = self._persist_step_exec(
-                    conversation_id=conversation_id,
-                    workflow_id=workflow_id,
-                    run_id=run_id,
-                    step_seq=step_seq,
-                    workflow_node_id=node_id,
-                    op=wn.op,
-                    status=status,
-                    duration_ms=dur_ms,
-                    result=run_result,
-                    state=state,
-                    token_id=str(token_id),
-                    parent_token_id=(str(parent_token_id) if parent_token_id is not None else None),
-                    join_mask=int(mask),
-                    last_exec_node = last_exec_node
-                )
+                # persist step exec trace node (same transaction as state update when possible)
+                with self._maybe_step_uow():
+                    last_exec_node = self._persist_step_exec(
+                            conversation_id=conversation_id,
+                            workflow_id=workflow_id,
+                            run_id=run_id,
+                            step_seq=step_seq,
+                            workflow_node_id=node_id,
+                            op=wn.op,
+                            status=status,
+                            duration_ms=dur_ms,
+                            result=run_result,
+                            state=state,
+                            token_id=str(token_id),
+                            parent_token_id=(str(parent_token_id) if parent_token_id is not None else None),
+                            join_mask=int(mask),
+                            last_exec_node=last_exec_node
+                        )
 
                 # single-writer state apply:
                 # default behavior: store under result.<op> and allow ops to also write into state
@@ -773,15 +803,15 @@ class WorkflowRuntime:
                     _persist_rt_join_runtime()
 
                     if (step_seq_current % self.checkpoint_every_n_steps) == 0:
-                        self._persist_checkpoint(
-                            conversation_id=conversation_id,
-                            workflow_id=workflow_id,
-                            run_id=run_id,
-                            step_seq=step_seq_current,
-                            state=state,
-                            last_exec_node=last_exec_node,
-                        )
-
+                        with self._maybe_step_uow():
+                            self._persist_checkpoint(
+                                    conversation_id=conversation_id,
+                                    workflow_id=workflow_id,
+                                    run_id=run_id,
+                                    step_seq=step_seq_current,
+                                    state=state,
+                                    last_exec_node=last_exec_node,
+                            )
                         try:
 
                             tc_ck = TraceContext(run_id=str(run_id), token_id=str(token_id), step_seq=int(step_seq_current), node_id=str(node_id), attempt=1, conversation_id=str(conversation_id), turn_node_id=str(turn_node_id))
@@ -837,15 +867,15 @@ class WorkflowRuntime:
                     _persist_rt_join_runtime()
 
                     if (step_seq_current % self.checkpoint_every_n_steps) == 0:
-                        self._persist_checkpoint(
-                            conversation_id=conversation_id,
-                            workflow_id=workflow_id,
-                            run_id=run_id,
-                            step_seq=step_seq_current,
-                            state=state,
-                            last_exec_node=last_exec_node,
-                        )
-
+                        with self._maybe_step_uow():
+                            self._persist_checkpoint(
+                                    conversation_id=conversation_id,
+                                    workflow_id=workflow_id,
+                                    run_id=run_id,
+                                    step_seq=step_seq_current,
+                                    state=state,
+                                    last_exec_node=last_exec_node,
+                            )
                         try:
 
                             tc_ck = TraceContext(run_id=str(run_id), token_id=str(token_id), step_seq=int(step_seq_current), node_id=str(node_id), attempt=1, conversation_id=str(conversation_id), turn_node_id=str(turn_node_id))
@@ -917,15 +947,15 @@ class WorkflowRuntime:
                         _persist_rt_join_runtime()
 
                 if (step_seq_current % self.checkpoint_every_n_steps) == 0:
-                    self._persist_checkpoint(
-                        conversation_id=conversation_id,
-                        workflow_id=workflow_id,
-                        run_id=run_id,
-                        step_seq=step_seq_current,
-                        state=state,
-                        last_exec_node=last_exec_node,
-                    )
-
+                    with self._maybe_step_uow():
+                            self._persist_checkpoint(
+                                conversation_id=conversation_id,
+                                workflow_id=workflow_id,
+                                run_id=run_id,
+                                step_seq=step_seq_current,
+                                state=state,
+                                last_exec_node=last_exec_node,
+                            )
                     try:
 
                         tc_ck = TraceContext(run_id=str(run_id), token_id=str(token_id), step_seq=int(step_seq_current), node_id=str(node_id), attempt=1, conversation_id=str(conversation_id), turn_node_id=str(turn_node_id))
