@@ -106,6 +106,9 @@ class PostgresUnitOfWork:
 class PgVectorConfig:
     dsn: str
     embedding_dim: int
+    # Distance metric used for similarity search.
+    # Supported: "cosine" (default), "l2", "ip" (inner product).
+    distance: str = "cosine"
     schema: str = "public"
     nodes_table: str = "gke_nodes"
     edges_table: str = "gke_edges"
@@ -279,11 +282,34 @@ def where_jsonb(
 class PgVectorBackend:
     """pgvector backend implementing a Chroma-shaped interface for engine usage."""
 
+    @staticmethod
+    def _normalize_distance(distance: str) -> str:
+        d = (distance or "").strip().lower()
+        if d in ("cos", "cosine"):
+            return "cosine"
+        if d in ("l2", "euclid", "euclidean"):
+            return "l2"
+        if d in ("ip", "inner", "inner_product", "innerproduct"):
+            return "ip"
+        raise ValueError(f"Unsupported distance metric: {distance!r}. Use one of: cosine, l2, ip")
+
+    def _distance_operator(self) -> str:
+        # pgvector operators:
+        #   <->  L2 distance
+        #   <#>  negative inner product (lower is closer)
+        #   <=>  cosine distance
+        return {"cosine": "<=>", "l2": "<->", "ip": "<#>"}[self.distance]
+
+    def _hnsw_ops_class(self) -> str:
+        # ops class depends on metric
+        return {"cosine": "vector_cosine_ops", "l2": "vector_l2_ops", "ip": "vector_ip_ops"}[self.distance]
+
     def __init__(
         self,
         *,
         engine: sa.Engine,
         embedding_dim: int,
+        distance: str = "cosine",
         schema: str = "public",
         nodes_table: str = "gke_nodes",
         edges_table: str = "gke_edges",
@@ -302,6 +328,7 @@ class PgVectorBackend:
 
         self.engine = engine
         self.embedding_dim = int(embedding_dim)
+        self.distance = self._normalize_distance(distance)
         self.schema = schema
         self.numeric_keys = numeric_keys or set(_NUMERIC_KEYS_DEFAULT)
 
@@ -404,6 +431,7 @@ class PgVectorBackend:
         self._init_facades()
 
         self._md = md
+        self.ensure_schema()
 
     # ----------------------------
     # DDL / bootstrap
@@ -416,6 +444,26 @@ class PgVectorBackend:
             if self.schema and self.schema != "public":
                 conn.execute(sa.text(f'CREATE SCHEMA IF NOT EXISTS "{self.schema}"'))
             self._md.create_all(conn)
+
+            # Optional-but-useful vector indexes. We default to HNSW because it's
+            # generally strong out of the box and doesn't require ANALYZE/training.
+            #
+            # NOTE: older pgvector versions may not support HNSW; if so, users can
+            # drop these statements or switch to ivfflat.
+            ops = self._hnsw_ops_class()
+            for tbl, name in (
+                (self.nodes.name, "nodes"),
+                (self.edges.name, "edges"),
+                (self.documents.name, "documents"),
+                (self.domains.name, "domains"),
+            ):
+                idx = f"idx_{name}_embedding_hnsw"
+                conn.execute(
+                    sa.text(
+                        f'CREATE INDEX IF NOT EXISTS "{idx}" ON "{self.schema}"."{tbl}" '
+                        f"USING hnsw (embedding {ops})"
+                    )
+                )
 
     # ----------------------------
     # Shared helpers
@@ -488,6 +536,15 @@ class PgVectorBackend:
         if embeddings is not None and len(embeddings) != len(ids):
             raise ValueError("embeddings length must match ids length")
 
+        if embeddings is not None:
+            for i, e in enumerate(embeddings):
+                if e is None:
+                    continue
+                if len(e) != self.embedding_dim:
+                    raise ValueError(
+                        f"embedding dim mismatch at index {i}: got {len(e)}, expected {self.embedding_dim}"
+                    )
+
         rows: List[Dict[str, Any]] = []
         for i, _id in enumerate(ids):
             row: Dict[str, Any] = {
@@ -512,6 +569,7 @@ class PgVectorBackend:
 
         with self._conn() as conn:
             conn.execute(stmt)
+            
 
     def _query_vector(
         self,
@@ -531,20 +589,39 @@ class PgVectorBackend:
         docs_out: List[List[Optional[str]]] = []
         metas_out: List[List[Json]] = []
         dists_out: List[List[float]] = []
-
+        from pgvector.sqlalchemy import Vector as PgVector
+        from sqlalchemy import Float, cast
         with self._conn() as conn:
             for qv in query_embeddings:
-                q = sa.select(
-                    table.c.id,
-                    table.c.document,
-                    table.c.metadata,
-                    (table.c.embedding.op("<=>")(sa.bindparam("qv"))).label("distance"),
-                ).where(table.c.embedding.is_not(None))
+                op_map = {
+                    "cosine": "<=>",
+                    "l2": "<->",
+                    "ip": "<#>",
+                }
+                op = op_map[self.distance]  # or whatever field name you use
+
+                qv_param = sa.bindparam("qv", type_=PgVector(self.embedding_dim))
+
+                distance_expr = cast(
+                    table.c.embedding.op(op)(qv_param),
+                    Float,
+                ).label("distance")
+
+                q = (
+                    sa.select(
+                        table.c.id,
+                        table.c.document,
+                        table.c.metadata,
+                        distance_expr,
+                    )
+                    .where(table.c.embedding.is_not(None))
+                )
 
                 if where:
                     q = q.where(where_jsonb(table.c.metadata, where, numeric_keys=self.numeric_keys))
 
-                q = q.order_by(sa.text("distance asc")).limit(int(n_results))
+                q = q.order_by(distance_expr.asc()).limit(int(n_results))
+
                 rows = conn.execute(q, {"qv": list(qv)}).fetchall()
 
                 ids_out.append([r.id for r in rows])
@@ -810,6 +887,7 @@ def build_postgres_backend(cfg: PgVectorConfig) -> Tuple[PgVectorBackend, Postgr
     backend = PgVectorBackend(
         engine=engine,
         embedding_dim=cfg.embedding_dim,
+        distance=getattr(cfg, "distance", "cosine"),
         schema=cfg.schema,
         nodes_table=cfg.nodes_table,
         edges_table=cfg.edges_table,
