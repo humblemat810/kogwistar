@@ -1,4 +1,5 @@
 
+
 import pytest
 from dataclasses import dataclass
 from typing import Any, Dict, List, Set
@@ -114,7 +115,7 @@ def test_predicate_signature_and_default_routing():
     assert out.get("path") or (out["__blob__"]['path']) == "a"
 
 
-def test_parallel_fanout_merges_appends_real_langgraph():
+def test_parallel_fanout_merges_appends_real_langgraph(backend_kind):
     wid = "wf2"
     nodes = [
         _n("start", op="noop", start=True),

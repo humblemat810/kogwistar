@@ -4,6 +4,39 @@ from graph_knowledge_engine.workflow.design import build_workflow_from_engine
 
 # Adjust this import to your actual engine location:
 # e.g. from graph_knowledge_engine.engine import GraphKnowledgeEngine
+
+from graph_knowledge_engine.engine import GraphKnowledgeEngine
+from graph_knowledge_engine.postgres_backend import PgVectorBackend
+
+def _fake_ef_dim(dim: int):
+    def _ef(texts):
+        return [[0.0] * dim for _ in texts]
+    return _ef
+
+def _make_engine_pair(*, backend_kind: str, tmp_path, sa_engine=None, pg_schema: str | None=None, dim: int = 3):
+    """
+    Build (kg_engine, conv_engine) for either chroma or pgvector.
+    """
+    ef = _fake_ef_dim(dim)
+
+    if backend_kind == "chroma":
+        kg_engine = GraphKnowledgeEngine(persist_directory=str(tmp_path / "kg"), kg_graph_type="knowledge", embedding_function=ef)
+        conv_engine = GraphKnowledgeEngine(persist_directory=str(tmp_path / "conv"), kg_graph_type="conversation", embedding_function=ef)
+        return kg_engine, conv_engine
+
+    if backend_kind == "pg":
+        if sa_engine is None or pg_schema is None:
+            pytest.skip("pg backend requested but sa_engine/pg_schema fixtures not available")
+        kg_schema = f"{pg_schema}_kg"
+        conv_schema = f"{pg_schema}_conv"
+        kg_backend = PgVectorBackend(engine=sa_engine, embedding_dim=dim, schema=kg_schema)
+        conv_backend = PgVectorBackend(engine=sa_engine, embedding_dim=dim, schema=conv_schema)
+        kg_engine = GraphKnowledgeEngine(persist_directory=str(tmp_path / "kg_meta"), kg_graph_type="knowledge", embedding_function=ef, backend=kg_backend)
+        conv_engine = GraphKnowledgeEngine(persist_directory=str(tmp_path / "conv_meta"), kg_graph_type="conversation", embedding_function=ef, backend=conv_backend)
+        return kg_engine, conv_engine
+
+    raise ValueError(f"unknown backend_kind: {backend_kind!r}")
+
 from graph_knowledge_engine.engine import GraphKnowledgeEngine
 
 from graph_knowledge_engine.models import (
@@ -31,12 +64,17 @@ def _span():
         verification=MentionVerification(method="human", is_verified=True, score=1.0, notes="test"),
     )
 
-def test_workflow_design_creation_and_persistence(tmp_path):
+@pytest.mark.parametrize("backend_kind", ["chroma", "pg"])
+def test_workflow_design_creation_and_persistence(tmp_path, backend_kind, sa_engine=None, pg_schema=None):
     """
     This test scope is to test runnable and persistance and loadable, not the actual completeness of the orchestration
     """
     
-    wf_engine = GraphKnowledgeEngine(persist_directory=str(tmp_path / "wf"), kg_graph_type="workflow")
+    if backend_kind == "chroma":
+        wf_engine = GraphKnowledgeEngine(persist_directory=str(tmp_path / "wf"), kg_graph_type="workflow")
+    else:
+        wf_backend = PgVectorBackend(engine=sa_engine, embedding_dim=3, schema=f"{pg_schema}_wf")
+        wf_engine = GraphKnowledgeEngine(persist_directory=str(tmp_path / "wf_meta"), kg_graph_type="workflow", backend=wf_backend, embedding_function=_fake_ef_dim(3))
     workflow_id = "wf_demo"
 
     g = Grounding(spans=[_span()])
@@ -107,7 +145,11 @@ def test_workflow_design_creation_and_persistence(tmp_path):
     wf_engine.add_edge(e)
 
     # Reopen: ensures persistence works
-    wf_engine2 = GraphKnowledgeEngine(persist_directory=str(tmp_path / "wf"), kg_graph_type="workflow")
+    if backend_kind == "chroma":
+        wf_engine2 = GraphKnowledgeEngine(persist_directory=str(tmp_path / "wf"), kg_graph_type="workflow")
+    else:
+        wf_backend2 = PgVectorBackend(engine=sa_engine, embedding_dim=3, schema=f"{pg_schema}_wf")
+        wf_engine2 = GraphKnowledgeEngine(persist_directory=str(tmp_path / "wf_meta"), kg_graph_type="workflow", backend=wf_backend2, embedding_function=_fake_ef_dim(3))
 
     spec = build_workflow_from_engine(workflow_engine=wf_engine2, workflow_id=workflow_id)
 

@@ -5,6 +5,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 
 def _template_html() -> str:
     # Minimal template that matches the injection points used by the new dump util

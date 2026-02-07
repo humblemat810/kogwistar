@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import pathlib
 import importlib
+
+import pytest
 
 
 def _minimal_bundle_template() -> str:
@@ -24,6 +27,113 @@ window.__BUNDLE_META__ = null;
 
 
 import re
+
+import pytest
+from graph_knowledge_engine.engine import GraphKnowledgeEngine
+from graph_knowledge_engine.postgres_backend import PgVectorBackend
+
+def _fake_ef_dim(dim: int):
+    def _ef(texts):
+        return [[0.0] * dim for _ in texts]
+    return _ef
+
+def _make_engine_pair(*, backend_kind: str, tmp_path, sa_engine=None, pg_schema: str | None=None, dim: int = 3):
+    """
+    Build (kg_engine, conv_engine) for either chroma or pgvector.
+    """
+    ef = _fake_ef_dim(dim)
+
+    if backend_kind == "chroma":
+        kg_engine = GraphKnowledgeEngine(persist_directory=str(tmp_path / "kg"), kg_graph_type="knowledge", embedding_function=ef)
+        conv_engine = GraphKnowledgeEngine(persist_directory=str(tmp_path / "conv"), kg_graph_type="conversation", embedding_function=ef)
+        return kg_engine, conv_engine
+
+    if backend_kind == "pg":
+        if sa_engine is None or pg_schema is None:
+            pytest.skip("pg backend requested but sa_engine/pg_schema fixtures not available")
+        kg_schema = f"{pg_schema}_kg"
+        conv_schema = f"{pg_schema}_conv"
+        kg_backend = PgVectorBackend(engine=sa_engine, embedding_dim=dim, schema=kg_schema)
+        conv_backend = PgVectorBackend(engine=sa_engine, embedding_dim=dim, schema=conv_schema)
+        kg_engine = GraphKnowledgeEngine(persist_directory=str(tmp_path / "kg_meta"), kg_graph_type="knowledge", embedding_function=ef, backend=kg_backend)
+        conv_engine = GraphKnowledgeEngine(persist_directory=str(tmp_path / "conv_meta"), kg_graph_type="conversation", embedding_function=ef, backend=conv_backend)
+        return kg_engine, conv_engine
+
+    raise ValueError(f"unknown backend_kind: {backend_kind!r}")
+
+
+@pytest.fixture(params=["chroma", "pg"])
+def seeded_kg_and_conversation(request, tmp_path, sa_engine=None, pg_schema=None):
+    """
+    Override the global fixture with a parametrized version so the same tests
+    run against both chroma and pg backends.
+    """
+    backend_kind: str = request.param
+    kg_engine, conv_engine = _make_engine_pair(
+        backend_kind=backend_kind, tmp_path=tmp_path, sa_engine=sa_engine, pg_schema=pg_schema, dim=3
+    )
+
+    from graph_knowledge_engine.models import Node, ConversationNode, Grounding, Span, MentionVerification
+
+    def _span():
+        return Span(
+            collection_page_url="test",
+            document_page_url="test",
+            doc_id="seed",
+            insertion_method="pytest-seed",
+            page_number=1,
+            start_char=0,
+            end_char=1,
+            excerpt="x",
+            context_before="",
+            context_after="",
+            chunk_id=None,
+            source_cluster_id=None,
+            verification=MentionVerification(method="human", is_verified=True, score=1.0, notes="seed"),
+        )
+
+    g = Grounding(spans=[_span()])
+
+    def _node(i: str, emb):
+        n = Node(
+            id=i,
+            label=i,
+            type="entity",
+            doc_id="KG_DOC",
+            summary=i,
+            mentions=[g],
+            properties={},
+            metadata={"name": i},
+            domain_id=None,
+            canonical_entity_id=None,
+        )
+        n.embedding = emb
+        return n
+
+    kg_engine.add_node(_node("A", [1.0, 0.0, 0.0]))
+    kg_engine.add_node(_node("B", [0.9, 0.1, 0.0]))
+    kg_engine.add_node(_node("C", [0.0, 1.0, 0.0]))
+
+    conv_n = ConversationNode(
+        id="conv|turn|1",
+        label="turn1",
+        type="conversation_turn",
+        doc_id="CONV_DOC",
+        summary="turn1",
+        mentions=[g],
+        properties={"refers_to_id": "A"},
+        metadata={"role": "user"},
+        domain_id=None,
+        canonical_entity_id=None,
+    )
+    conv_engine.add_node(conv_n)
+
+    kg_dir = pathlib.Path(getattr(kg_engine, "persist_directory", str(tmp_path / "kg")))
+    conv_dir = pathlib.Path(getattr(conv_engine, "persist_directory", str(tmp_path / "conv")))
+    kg_seed = {"node_ids": ["A", "B", "C"]}
+    conv_seed = {"node_ids": ["conv|turn|1"]}
+    return kg_engine, conv_engine, kg_seed, conv_seed, kg_dir, conv_dir
+
 # Regex-based extraction is used instead of string slicing because:
 # - HTML formatting may change
 # - JSON may contain semicolons in string values

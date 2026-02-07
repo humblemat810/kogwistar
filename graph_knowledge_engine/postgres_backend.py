@@ -328,9 +328,12 @@ class PgVectorBackend:
 
         self.engine = engine
         self.embedding_dim = int(embedding_dim)
-        self.distance = self._normalize_distance(distance)
+        self.distance = str(self._normalize_distance(distance)).lower()
         self.schema = schema
         self.numeric_keys = numeric_keys or set(_NUMERIC_KEYS_DEFAULT)
+
+        if self.distance not in {"cosine", "l2", "ip"}:
+            raise ValueError("distance must be one of: 'cosine', 'l2', 'ip'")
 
         md = sa.MetaData(schema=self.schema)
 
@@ -569,7 +572,6 @@ class PgVectorBackend:
 
         with self._conn() as conn:
             conn.execute(stmt)
-            
 
     def _query_vector(
         self,
@@ -589,24 +591,23 @@ class PgVectorBackend:
         docs_out: List[List[Optional[str]]] = []
         metas_out: List[List[Json]] = []
         dists_out: List[List[float]] = []
-        from pgvector.sqlalchemy import Vector as PgVector
-        from sqlalchemy import Float, cast
+
+        # Operator mapping per pgvector docs:
+        #   <->  : L2 distance
+        #   <#>  : negative inner product
+        #   <=>  : cosine distance
+        op_map = {"cosine": "<=>", "l2": "<->", "ip": "<#>"}
+        op = op_map[self.distance]
+
+        # Bind the RHS as a real pgvector type to avoid adapter / text-cast issues.
+        qv_param = sa.bindparam("qv", type_=Vector(self.embedding_dim))
+
+        # IMPORTANT: cast to Float so the pgvector result processor doesn't try
+        # to parse this column as a Vector.
+        distance_expr = sa.cast(table.c.embedding.op(op)(qv_param), sa.Float).label("distance")
+
         with self._conn() as conn:
             for qv in query_embeddings:
-                op_map = {
-                    "cosine": "<=>",
-                    "l2": "<->",
-                    "ip": "<#>",
-                }
-                op = op_map[self.distance]  # or whatever field name you use
-
-                qv_param = sa.bindparam("qv", type_=PgVector(self.embedding_dim))
-
-                distance_expr = cast(
-                    table.c.embedding.op(op)(qv_param),
-                    Float,
-                ).label("distance")
-
                 q = (
                     sa.select(
                         table.c.id,
@@ -621,7 +622,6 @@ class PgVectorBackend:
                     q = q.where(where_jsonb(table.c.metadata, where, numeric_keys=self.numeric_keys))
 
                 q = q.order_by(distance_expr.asc()).limit(int(n_results))
-
                 rows = conn.execute(q, {"qv": list(qv)}).fetchall()
 
                 ids_out.append([r.id for r in rows])
@@ -887,7 +887,6 @@ def build_postgres_backend(cfg: PgVectorConfig) -> Tuple[PgVectorBackend, Postgr
     backend = PgVectorBackend(
         engine=engine,
         embedding_dim=cfg.embedding_dim,
-        distance=getattr(cfg, "distance", "cosine"),
         schema=cfg.schema,
         nodes_table=cfg.nodes_table,
         edges_table=cfg.edges_table,

@@ -142,7 +142,7 @@ def _seen_nodes(compiled, init_state: Dict[str, Any]) -> Set[str]:
     return seen
 
 
-def test_converter_predicate_default_is_exclusive_choice_and_auto_inits_blob():
+def test_converter_predicate_default_is_exclusive_choice_and_auto_inits_blob(backend_kind):
     wid = "wf_lg_pred_default"
     nodes = [
         _n("start", workflow_id=wid, op="noop", start=True),
@@ -179,7 +179,7 @@ def test_converter_predicate_default_is_exclusive_choice_and_auto_inits_blob():
     assert "b" not in seen
 
 
-def test_converter_fanout_no_join_spawns_both_branches():
+def test_converter_fanout_no_join_spawns_both_branches(backend_kind):
     wid = "wf_lg_fanout_no_join"
     nodes = [
         _n("start", workflow_id=wid, op="noop", start=True, fanout=True),
@@ -209,7 +209,7 @@ def test_converter_fanout_no_join_spawns_both_branches():
     assert {"start", "a", "b", "end"} <= seen
 
 
-def test_converter_fanout_then_join_barrier_emits_joined_once():
+def test_converter_fanout_then_join_barrier_emits_joined_once(backend_kind):
     wid = "wf_lg_fanout_join"
     nodes = [
         _n("start", workflow_id=wid, op="noop", start=True, fanout=True),
@@ -249,7 +249,7 @@ def test_converter_fanout_then_join_barrier_emits_joined_once():
     assert {"start", "a", "b", "join", "end"} <= seen
 
 
-def test_converter_resolver_next_step_names_duplicates_repeat_downstream():
+def test_converter_resolver_next_step_names_duplicates_repeat_downstream(backend_kind):
     wid = "wf_lg_repeat_downstream"
     nodes = [
         _n("start", workflow_id=wid, op="noop", start=True),
