@@ -37,7 +37,7 @@ def _fake_ef_dim(dim: int):
         return [[0.0] * dim for _ in texts]
     return _ef
 
-def _make_engine_pair(*, backend_kind: str, tmp_path, sa_engine=None, pg_schema: str | None=None, dim: int = 3):
+def _make_engine_pair(*, backend_kind: str, tmp_path, sa_engine, pg_schema: str, dim: int = 3):
     """
     Build (kg_engine, conv_engine) for either chroma or pgvector.
     """
@@ -63,7 +63,7 @@ def _make_engine_pair(*, backend_kind: str, tmp_path, sa_engine=None, pg_schema:
 
 
 @pytest.fixture(params=["chroma", "pg"])
-def seeded_kg_and_conversation(request, tmp_path, sa_engine=None, pg_schema=None):
+def seeded_kg_and_conversation(request, tmp_path, sa_engine, pg_schema):
     """
     Override the global fixture with a parametrized version so the same tests
     run against both chroma and pg backends.

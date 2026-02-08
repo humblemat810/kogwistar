@@ -23,7 +23,7 @@ def _fake_ef_dim(dim: int):
         return [[0.0] * dim for _ in texts]
     return _ef
 
-def _make_engine_pair(*, backend_kind: str, tmp_path, sa_engine=None, pg_schema: str | None=None, dim: int = 3):
+def _make_engine_pair(*, backend_kind: str, tmp_path, sa_engine, pg_schema, dim: int = 3):
     """
     Build (kg_engine, conv_engine) for either chroma or pgvector.
     """

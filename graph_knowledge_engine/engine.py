@@ -9,7 +9,9 @@ import time
 from . import models
 from .models import AddTurnResult, MetaFromLastSummary, RetrievalResult, WorkflowCheckpointNode, WorkflowNode, WorkflowStepExecNode
 from .engine_sqlite import EngineSQLite
+from .engine_postgres_meta import EnginePostgresMetaStore
 from .storage_backend import ChromaBackend, NoopUnitOfWork
+from .postgres_backend import PgVectorBackend
 
 if True:
     """_summary_
@@ -2075,8 +2077,6 @@ class GraphKnowledgeEngine:
           - ENV SENTENCE_TRANSFORMERS_MODEL, or
           - "all-MiniLM-L6-v2".
         """
-        self.meta_sqlite = EngineSQLite(pathlib.Path(persist_directory or "./chroma_db"), 'meta.sqlite')
-        self.meta_sqlite.ensure_initialized()
         self.changes = ChangeBus()
         if cdc_publish_endpoint := os.environ.get('CDC_PUBLISH_ENDPOINT'):
             self.changes.add_sink(FastAPIChangeSink(cdc_publish_endpoint))
@@ -2172,8 +2172,13 @@ class GraphKnowledgeEngine:
                 node_refs_collection=self.node_refs_collection,
                 edge_refs_collection=self.edge_refs_collection,
             )
+            self.meta_sqlite = EngineSQLite(pathlib.Path(persist_directory or "./chroma_db"), 'meta.sqlite')
+            self.meta_sqlite.ensure_initialized()
         elif type(backend) is PgVectorBackend:
             self.backend = backend
+            meta_postgre = EnginePostgresMetaStore(engine=self.backend.engine, schema=self.backend.schema)
+            meta_postgre.ensure_initialized()
+            self.meta_sqlite = meta_postgre
         else:
             raise ValueError("Unrecognised argument for backend")
         # Backend UoW: in Postgres mode this becomes a real SQL transaction.
