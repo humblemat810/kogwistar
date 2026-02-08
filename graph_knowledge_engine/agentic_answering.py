@@ -428,10 +428,12 @@ class AgenticAnsweringAgent:
 
     def _retrieve_candidates(self, question: str) -> list[dict[str, Any]]:
         emb = self.knowledge_engine._iterative_defensive_emb(question)
-        res = self.knowledge_engine.node_collection.query(
+        # Always go through the backend interface (so PG/Chroma backends behave identically)
+        res = self.knowledge_engine.backend.node_query(
             query_embeddings=[emb],
             n_results=self.config.max_candidates,
             where={"level_from_root": {"$lte": self.config.max_retrieval_level}},
+            include=["documents", "metadatas"],
         )
         ids = (res.get("ids") or [[]])[0]
         metas = (res.get("metadatas") or [[]])[0]
@@ -518,7 +520,7 @@ Select at most {max_used} node ids.
         total = 0
 
         for nid in node_ids:
-            got = agent.knowledge_engine.node_collection.get(ids=[nid], include=["documents", "metadatas"])
+            got = agent.knowledge_engine.backend.node_get(ids=[nid], include=["documents", "metadatas"])
             docs = (got.get("documents") or [None])[0]
             metas = (got.get("metadatas") or [{}])
             meta = metas[0] if metas else {}
@@ -841,7 +843,7 @@ Return JSON per schema. Be conservative: if key details are missing, set needs_m
     def _ensure_run_anchor(self, *, conversation_id: str, run_id: str) -> str:
         scope = f"conv:{conversation_id}"
         rid = pointer_id(scope=scope, pointer_kind="agent_run", target_kind="run", target_id=run_id)
-        existing = self.conversation_engine.node_collection.get(ids=[rid])
+        existing = self.conversation_engine.backend.node_get(ids=[rid], include=[])
         if existing.get("ids"):
             return rid
 
@@ -881,9 +883,9 @@ Return JSON per schema. Be conservative: if key details are missing, set needs_m
         pid = pointer_id(scope=scope, pointer_kind="kg_node", target_kind="node", target_id=kg_node_id)
 
         # If exists, still ensure run->evidence edge exists (idempotent)
-        existing = self.conversation_engine.node_collection.get(ids=[pid])
+        existing = self.conversation_engine.backend.node_get(ids=[pid], include=[])
         if not existing.get("ids"):
-            kg = self.knowledge_engine.node_collection.get(ids=[kg_node_id], include=["metadatas"])
+            kg = self.knowledge_engine.backend.node_get(ids=[kg_node_id], include=["metadatas"])
             meta = (kg.get("metadatas") or [{}])[0] or {}
             snap = {
                 "entity_id": kg_node_id,
@@ -924,7 +926,7 @@ Return JSON per schema. Be conservative: if key details are missing, set needs_m
 
         # Link run -> evidence
         eid = edge_id(scope=scope, rel="used_evidence", src=run_node_id, dst=pid)
-        ex_edge = self.conversation_engine.edge_collection.get(ids=[eid])
+        ex_edge = self.conversation_engine.backend.edge_get(ids=[eid], include=[])
         if not ex_edge.get("ids"):
             edge = ConversationEdge(
                 id=eid,
@@ -987,7 +989,7 @@ Return JSON per schema. Be conservative: if key details are missing, set needs_m
                               prev_turn_meta_summary) -> None:
         scope = f"conv:{conversation_id}"
         eid = edge_id(scope=scope, rel="generated", src=run_node_id, dst=response_node_id)
-        ex = self.conversation_engine.edge_collection.get(ids=[eid])
+        ex = self.conversation_engine.backend.edge_get(ids=[eid], include=[])
         if ex.get("ids"):
             return
         
