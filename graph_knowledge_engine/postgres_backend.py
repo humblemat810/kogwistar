@@ -210,9 +210,56 @@ class PgCollectionFacade:
 _NUMERIC_KEYS_DEFAULT: Set[str] = {"seq"}
 
 
-def _json_text(col: sa.ColumnElement, key: str) -> sa.ColumnElement:
+def _json_text(metadata_col: sa.ColumnElement, key: str) -> sa.ColumnElement:
     # (metadata ->> 'key') yields text
-    return col.op("->>")(key)
+    return metadata_col.op("->>")(key)
+
+
+def _json_typed(
+    metadata_col: sa.ColumnElement,
+    key: str,
+    rhs: Any,
+    *,
+    numeric_keys: Set[str],
+) -> sa.ColumnElement:
+    """
+    Return a SQLAlchemy expression for metadata[key] with an appropriate type.
+
+    Postgres JSONB `->>` returns TEXT, which breaks numeric/boolean comparisons.
+    We instead use JSONB index access + typed accessors for comparisons.
+    """
+    try:
+        node = metadata_col[key]  # type: ignore[index]
+    except Exception:
+        node = None
+
+    # Force numeric by key (override)
+    if key in numeric_keys:
+        if node is not None:
+            return node.as_integer()
+        return sa.cast(_json_text(metadata_col, key), sa.BigInteger)
+
+    # Infer from rhs
+    if isinstance(rhs, bool):
+        if node is not None:
+            return node.as_boolean()
+        return sa.cast(_json_text(metadata_col, key), sa.Boolean)
+
+    # bool is a subclass of int; handled above
+    if isinstance(rhs, int):
+        if node is not None:
+            return node.as_integer()
+        return sa.cast(_json_text(metadata_col, key), sa.BigInteger)
+
+    if isinstance(rhs, float):
+        if node is not None:
+            return node.as_float()
+        return sa.cast(_json_text(metadata_col, key), sa.Float)
+
+    # Default: treat as text
+    if node is not None:
+        return node.astext
+    return _json_text(metadata_col, key)
 
 
 def where_jsonb(
@@ -221,9 +268,19 @@ def where_jsonb(
     *,
     numeric_keys: Optional[Set[str]] = None,
 ) -> sa.ColumnElement:
-    """Translate a Chroma-like `where` dict into a SQLAlchemy boolean expression over JSONB."""
+    """Translate a Chroma-like `where` dict into a SQLAlchemy boolean expression over JSONB.
 
-    numeric_keys = numeric_keys or _NUMERIC_KEYS_DEFAULT
+    Supports:
+      - {"k": v}
+      - {"k": {"$in": [...]}}
+      - {"k": {"$gt/$gte/$lt/$lte/$ne": v}}
+      - {"$and": [..]}, {"$or": [..]}
+
+    Important:
+      Postgres JSONB `->>` returns TEXT. For numeric/boolean comparisons we must cast.
+    """
+
+    numeric_keys_set = set(numeric_keys or _NUMERIC_KEYS_DEFAULT)
     if not where:
         return sa.true()
 
@@ -231,45 +288,70 @@ def where_jsonb(
         parts = where.get("$and") or []
         if not isinstance(parts, list):
             raise TypeError("$and must be a list")
-        return sa.and_(*[where_jsonb(metadata_col, p, numeric_keys=numeric_keys) for p in parts]) if parts else sa.true()
+        return (
+            sa.and_(*[where_jsonb(metadata_col, p, numeric_keys=numeric_keys_set) for p in parts])
+            if parts
+            else sa.true()
+        )
 
     if "$or" in where:
         parts = where.get("$or") or []
         if not isinstance(parts, list):
             raise TypeError("$or must be a list")
-        return sa.or_(*[where_jsonb(metadata_col, p, numeric_keys=numeric_keys) for p in parts]) if parts else sa.true()
+        return (
+            sa.or_(*[where_jsonb(metadata_col, p, numeric_keys=numeric_keys_set) for p in parts])
+            if parts
+            else sa.true()
+        )
 
     clauses: List[sa.ColumnElement] = []
     for k, v in where.items():
         if k in ("$and", "$or"):
             continue
 
-        lhs_text = _json_text(metadata_col, k)
-        lhs_num = sa.cast(lhs_text, sa.BigInteger) if k in numeric_keys else None
-
         if isinstance(v, dict):
             if "$in" in v:
                 vals = v["$in"]
                 if not isinstance(vals, list):
                     raise TypeError(f"$in for {k} must be a list")
-                clauses.append(lhs_text.in_([str(x) for x in vals]))
+
+                sample = next((x for x in vals if x is not None), None)
+                if sample is None:
+                    clauses.append(sa.false())
+                    continue
+
+                lhs = _json_typed(metadata_col, k, sample, numeric_keys=numeric_keys_set)
+
+                if isinstance(sample, bool):
+                    rhs_list = [bool(x) for x in vals]
+                elif isinstance(sample, int) and not isinstance(sample, bool):
+                    rhs_list = [int(x) for x in vals]
+                elif isinstance(sample, float):
+                    rhs_list = [float(x) for x in vals]
+                else:
+                    rhs_list = [str(x) for x in vals]
+
+                clauses.append(lhs.in_(rhs_list))
                 continue
 
             for op, rhs in v.items():
+                lhs = _json_typed(metadata_col, k, rhs, numeric_keys=numeric_keys_set)
+
                 if op == "$gt":
-                    clauses.append((lhs_num if lhs_num is not None else lhs_text) > rhs)
+                    clauses.append(lhs > rhs)
                 elif op == "$gte":
-                    clauses.append((lhs_num if lhs_num is not None else lhs_text) >= rhs)
+                    clauses.append(lhs >= rhs)
                 elif op == "$lt":
-                    clauses.append((lhs_num if lhs_num is not None else lhs_text) < rhs)
+                    clauses.append(lhs < rhs)
                 elif op == "$lte":
-                    clauses.append((lhs_num if lhs_num is not None else lhs_text) <= rhs)
+                    clauses.append(lhs <= rhs)
                 elif op == "$ne":
-                    clauses.append(lhs_text != str(rhs))
+                    clauses.append(lhs != rhs)
                 else:
                     raise NotImplementedError(f"Unsupported where operator: {op} (key={k})")
         else:
-            clauses.append(lhs_text == str(v))
+            lhs = _json_typed(metadata_col, k, v, numeric_keys=numeric_keys_set)
+            clauses.append(lhs == v)
 
     return sa.and_(*clauses) if clauses else sa.true()
 
@@ -591,7 +673,7 @@ class PgVectorBackend:
         docs_out: List[List[Optional[str]]] = []
         metas_out: List[List[Json]] = []
         dists_out: List[List[float]] = []
-
+        
         # Operator mapping per pgvector docs:
         #   <->  : L2 distance
         #   <#>  : negative inner product
@@ -605,19 +687,16 @@ class PgVectorBackend:
         # IMPORTANT: cast to Float so the pgvector result processor doesn't try
         # to parse this column as a Vector.
         distance_expr = sa.cast(table.c.embedding.op(op)(qv_param), sa.Float).label("distance")
-
+        want_embeddings = "embeddings" in include
+        if want_embeddings:
+            embs_out: List[List[float]] = []
         with self._conn() as conn:
             for qv in query_embeddings:
-                q = (
-                    sa.select(
-                        table.c.id,
-                        table.c.document,
-                        table.c.metadata,
-                        distance_expr,
-                    )
-                    .where(table.c.embedding.is_not(None))
-                )
-
+                cols = [table.c.id, table.c.document, table.c.metadata, distance_expr]
+                if want_embeddings:
+                    cols.append(table.c.embedding)
+                q = sa.select(*cols).where(table.c.embedding.is_not(None))
+                
                 if where:
                     q = q.where(where_jsonb(table.c.metadata, where, numeric_keys=self.numeric_keys))
 
@@ -628,6 +707,8 @@ class PgVectorBackend:
                 docs_out.append([r.document for r in rows])
                 metas_out.append([dict(r.metadata or {}) for r in rows])
                 dists_out.append([float(r.distance) for r in rows])
+                if want_embeddings:
+                    embs_out.append([list(r.embedding) for r in rows])
 
         out: Dict[str, Any] = {"ids": ids_out}
         if "documents" in include:
@@ -636,6 +717,8 @@ class PgVectorBackend:
             out["metadatas"] = metas_out
         if "distances" in include:
             out["distances"] = dists_out
+        if want_embeddings:
+            out["embeddings"] = embs_out
         return out
 
     def _update_metadata_merge(self, table: sa.Table, *, ids: Sequence[str], metadatas: Sequence[Json]) -> None:

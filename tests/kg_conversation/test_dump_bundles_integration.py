@@ -32,20 +32,25 @@ import pytest
 from graph_knowledge_engine.engine import GraphKnowledgeEngine
 from graph_knowledge_engine.postgres_backend import PgVectorBackend
 
-def _fake_ef_dim(dim: int):
-    def _ef(texts):
-        return [[0.0] * dim for _ in texts]
-    return _ef
+# def _fake_ef_dim(dim: int):
+#     def _ef(texts):
+#         return [[0.0] * dim for _ in texts]
+#     _ef.name = "_fake_ef_dim"
+#     return _ef
 
 def _make_engine_pair(*, backend_kind: str, tmp_path, sa_engine, pg_schema: str, dim: int = 3):
     """
     Build (kg_engine, conv_engine) for either chroma or pgvector.
     """
-    ef = _fake_ef_dim(dim)
+    # ef = _fake_ef_dim(dim)
 
     if backend_kind == "chroma":
-        kg_engine = GraphKnowledgeEngine(persist_directory=str(tmp_path / "kg"), kg_graph_type="knowledge", embedding_function=ef)
-        conv_engine = GraphKnowledgeEngine(persist_directory=str(tmp_path / "conv"), kg_graph_type="conversation", embedding_function=ef)
+        kg_engine = GraphKnowledgeEngine(persist_directory=str(tmp_path / "kg"), kg_graph_type="knowledge"
+                                        #  , embedding_function=ef
+                                         )
+        conv_engine = GraphKnowledgeEngine(persist_directory=str(tmp_path / "conv"), kg_graph_type="conversation"
+                                        #    , embedding_function=ef
+                                           )
         return kg_engine, conv_engine
 
     if backend_kind == "pg":
@@ -55,8 +60,12 @@ def _make_engine_pair(*, backend_kind: str, tmp_path, sa_engine, pg_schema: str,
         conv_schema = f"{pg_schema}_conv"
         kg_backend = PgVectorBackend(engine=sa_engine, embedding_dim=dim, schema=kg_schema)
         conv_backend = PgVectorBackend(engine=sa_engine, embedding_dim=dim, schema=conv_schema)
-        kg_engine = GraphKnowledgeEngine(persist_directory=str(tmp_path / "kg_meta"), kg_graph_type="knowledge", embedding_function=ef, backend=kg_backend)
-        conv_engine = GraphKnowledgeEngine(persist_directory=str(tmp_path / "conv_meta"), kg_graph_type="conversation", embedding_function=ef, backend=conv_backend)
+        kg_engine = GraphKnowledgeEngine(persist_directory=str(tmp_path / "kg_meta"), kg_graph_type="knowledge", 
+                                        #  embedding_function=ef, 
+                                         backend=kg_backend)
+        conv_engine = GraphKnowledgeEngine(persist_directory=str(tmp_path / "conv_meta"), kg_graph_type="conversation", 
+                                        #    embedding_function=ef, 
+                                           backend=conv_backend)
         return kg_engine, conv_engine
 
     raise ValueError(f"unknown backend_kind: {backend_kind!r}")
@@ -74,7 +83,8 @@ def seeded_kg_and_conversation(request, tmp_path, sa_engine, pg_schema):
     )
 
     from graph_knowledge_engine.models import Node, ConversationNode, Grounding, Span, MentionVerification
-
+    conv_id = "test-conv-seeded_kg_and_conversation"
+    t0_text = "show me what happened in the graph engine"
     def _span():
         return Span(
             collection_page_url="test",
@@ -84,7 +94,7 @@ def seeded_kg_and_conversation(request, tmp_path, sa_engine, pg_schema):
             page_number=1,
             start_char=0,
             end_char=1,
-            excerpt="x",
+            excerpt=t0_text,
             context_before="",
             context_after="",
             chunk_id=None,
@@ -106,8 +116,9 @@ def seeded_kg_and_conversation(request, tmp_path, sa_engine, pg_schema):
             metadata={"name": i},
             domain_id=None,
             canonical_entity_id=None,
+            embedding=emb,
+            level_from_root=0,
         )
-        n.embedding = emb
         return n
 
     kg_engine.add_node(_node("A", [1.0, 0.0, 0.0]))
@@ -117,14 +128,25 @@ def seeded_kg_and_conversation(request, tmp_path, sa_engine, pg_schema):
     conv_n = ConversationNode(
         id="conv|turn|1",
         label="turn1",
-        type="conversation_turn",
+        type="entity",
         doc_id="CONV_DOC",
         summary="turn1",
         mentions=[g],
         properties={"refers_to_id": "A"},
-        metadata={"role": "user"},
         domain_id=None,
         canonical_entity_id=None,
+        metadata={
+                "entity_type": "conversation_turn",
+                "level_from_root": 0,
+                "char_distance_from_last_summary": len(t0_text),
+                "turn_distance_from_last_summary": 1,
+                "in_conversation_chain": True,
+            },
+        role="user",  # type: ignore
+        turn_index=0,
+        conversation_id=conv_id,
+        embedding=[0.0, 2.1, 0.18],
+        level_from_root=0,
     )
     conv_engine.add_node(conv_n)
 
@@ -211,7 +233,8 @@ def test_cli_pair_real_persisted(tmp_path: Path, seeded_kg_and_conversation):
     # The CLI creates engines from persist dirs, so we pass the same dirs.
     kg_dir = Path(kg_engine.persist_directory) if hasattr(kg_engine, "persist_directory") else (tmp_path / "chroma_kg")
     conv_dir = Path(conv_engine.persist_directory) if hasattr(conv_engine, "persist_directory") else (tmp_path / "chroma_conv")
-
+    workflow_dir = Path(conv_engine.persist_directory) if hasattr(conv_engine, "persist_directory") else (tmp_path / "workflow")
+    
     template = tmp_path / "d3.html"
     template.write_text("""<script>
 window.__EMBEDDED_DATA__ = null;
@@ -222,9 +245,10 @@ window.__BUNDLE_META__ = null;
 
     cmd = [
         sys.executable, "-m", "graph_knowledge_engine.utils.kge_debug_dump",
-        "pair",
+        "bundle",
         "--kg-persist-dir", str(kg_dir),
         "--conversation-persist-dir", str(conv_dir),
+        "--workflow-persist-dir", str(workflow_dir),
         "--template", str(template),
         "--out-dir", str(out_dir),
         "--kg-doc-id", "KG_DOC",

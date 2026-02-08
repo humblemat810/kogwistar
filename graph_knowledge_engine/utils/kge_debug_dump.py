@@ -15,7 +15,7 @@ if TYPE_CHECKING:
     from graph_knowledge_engine.engine import GraphKnowledgeEngine, EngineType
 from graph_knowledge_engine.visualization.graph_viz import to_d3_force
 
-_GRAPH_TYPE = Literal["knowledge", "conversation"]
+_GRAPH_TYPE = Literal["knowledge", "conversation", "workflow"]
 
 
 def build_engine(*, persist_dir: Path, graph_type: _GRAPH_TYPE) -> GraphKnowledgeEngine:
@@ -186,10 +186,11 @@ def _cmd_one(args: argparse.Namespace) -> None:
 
 
 def _cmd_pair(args: argparse.Namespace) -> None:
+    "name is still pair but it is bundle"
     if not args.empty:
         kg_engine = build_engine(persist_dir=Path(args.kg_persist_dir), graph_type="knowledge")
         conv_engine = build_engine(persist_dir=Path(args.conversation_persist_dir), graph_type="conversation")
-        workflow_engine =build_engine(persist_dir=Path(args.workflow_persist_dir), graph_type="conversation")
+        workflow_engine =build_engine(persist_dir=Path(args.workflow_persist_dir), graph_type="workflow")
     else:
         kg_engine = None
         conv_engine=None
@@ -271,6 +272,7 @@ if __name__ == "__main__":
 
 # dump app data
 # python graph_knowledge_engine\utils\kge_debug_dump.py bundle \
+#    bundle
 #    --kg-persist-dir C:\Users\chanh\AppData\Local\Temp\pytest-of-chanh\pytest-793\test_workflow_runtime_uses_def0\kg \
 #    --conversation-persist-dir C:\Users\chanh\AppData\Local\Temp\pytest-of-chanh\pytest-793\test_workflow_runtime_uses_def0\conv \
 #    --workflow-persist-dir C:\Users\chanh\AppData\Local\Temp\pytest-of-chanh\pytest-793\test_workflow_runtime_uses_def0\wf \
@@ -280,6 +282,7 @@ if __name__ == "__main__":
 
 # dump a CDC listener one graph
 # python graph_knowledge_engine/utils/kge_debug_dump.py \
+#   bundle 
 #   --persist-dir ./chroma_db \
 #   --graph-type knowledge \
 #   --template ./d3.html \
@@ -289,6 +292,7 @@ if __name__ == "__main__":
 
 
 # python graph_knowledge_engine/utils/kge_debug_dump.py \
+#   bundle
 #   --template ./d3.html \
 #   --out-dir ./empty_cdc_streamer \
 #   --empty \

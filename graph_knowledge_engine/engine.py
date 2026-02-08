@@ -4296,7 +4296,7 @@ class GraphKnowledgeEngine:
                 {"in_conversation_chain": True}
                 ]
                    + ([{"turn_index": {"$gte": min_turn_index}}]
-                      if min_turn_index else [])
+                      if min_turn_index is not None else [])
                       },
             include=["documents", "metadatas", "embeddings"]
         )

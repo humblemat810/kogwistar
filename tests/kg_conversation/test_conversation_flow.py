@@ -20,7 +20,7 @@ from graph_knowledge_engine.postgres_backend import PgVectorBackend
 
 def _fake_ef_dim(dim: int):
     def _ef(texts):
-        return [[0.0] * dim for _ in texts]
+        return [[0.01] * dim for _ in texts]
     return _ef
 
 def _make_engine_pair(*, backend_kind: str, tmp_path, sa_engine, pg_schema, dim: int = 3):
@@ -59,7 +59,7 @@ def cached(memory: Memory, fn: Callable[P, R], *args, **kwargs) -> Callable[P, R
     return cast(Callable[P, R], memory.cache(fn, *args, **kwargs))
 @pytest.mark.parametrize("backend_kind", ["chroma", "pg"])
 def test_conversation_flow(backend_kind: str, tmp_path, sa_engine, pg_schema):
-    engine, conversation_engine = _make_engine_pair(backend_kind=backend_kind, tmp_path=tmp_path, sa_engine=sa_engine, pg_schema=pg_schema, dim=3)
+    engine, conversation_engine = _make_engine_pair(backend_kind=backend_kind, tmp_path=tmp_path, sa_engine=sa_engine, pg_schema=pg_schema, dim=384)
     # wf_dir = tmp_path / "wf"
     # conv_dir = tmp_path / "conv"
     # kg_dir = tmp_path / "kg"
@@ -114,7 +114,8 @@ def test_conversation_flow(backend_kind: str, tmp_path, sa_engine, pg_schema):
     )    
     # Add manually to bypass ingestion logic complexity
     doc, meta = engine._node_doc_and_meta(n1)
-    engine.node_collection.add(
+
+    engine.backend.node_add(
         ids=[n1.id],
         documents=[doc],
         embeddings=[[0.1]*384], # Dummy embedding
@@ -132,7 +133,7 @@ def test_conversation_flow(backend_kind: str, tmp_path, sa_engine, pg_schema):
     assert conv_id
     assert start_node_id_returned == start_node_id
     # Check start node
-    start_nodes_dict = conversation_engine.node_collection.get(where={"conversation_id": conv_id})
+    start_nodes_dict = conversation_engine.backend.node_get(where={"conversation_id": conv_id})
     assert len(start_nodes_dict['ids']) == 1
     start_nodes : list[Node] = conversation_engine.get_nodes(ids = start_nodes_dict['ids'])
     assert start_nodes
@@ -181,7 +182,7 @@ def test_conversation_flow(backend_kind: str, tmp_path, sa_engine, pg_schema):
     turn_id = res.user_turn_node_id
     
     # Verify Turn Node
-    user_turn_node_data = conversation_engine.node_collection.get(ids=[turn_id])
+    user_turn_node_data = conversation_engine.backend.node_get(ids=[turn_id])
     assert user_turn_node_data['ids']
 
     user_tn_doc = json.loads(user_turn_node_data['documents'][0])
@@ -190,7 +191,7 @@ def test_conversation_flow(backend_kind: str, tmp_path, sa_engine, pg_schema):
     
     # Verify Reference (FakeLLM returns ['N1'])
     # The code: relevant_kg_ids = ['N1'] -> creates reference node -> creates edge
-    ref_nodes = conversation_engine.node_collection.get(where={"entity_type": "knowledge_reference"})
+    ref_nodes = conversation_engine.backend.node_get(where={"entity_type": "knowledge_reference"})
     
     
     # template_html = Path("graph_knowledge_engine/templates/d3.html").read_text(encoding="utf-8")
@@ -209,7 +210,7 @@ def test_conversation_flow(backend_kind: str, tmp_path, sa_engine, pg_schema):
     assert ref_doc['properties']['refers_to_id'] == "N2"
     
     # Verify Edge (Turn -> Ref)
-    edges = conversation_engine.edge_collection.get(where={"relation": "references"})
+    edges = conversation_engine.backend.edge_get(where={"relation": "references"})
     assert len(edges['ids']) == 1
     e_doc = json.loads(edges['documents'][0])
     assert e_doc['source_ids'] == [turn_id]

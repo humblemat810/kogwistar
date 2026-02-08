@@ -1070,21 +1070,21 @@ def seed_conversation_graph(
     }
 
 
-def seed_both_graphs(
-    *,
-    kg_engine: Any,
-    conversation_engine: Any,
-    user_id: str = "U_TEST",
-) -> dict[str, Any]:
-    kg_seed = seed_kg_graph(kg_engine=kg_engine, kg_doc_id="D_KG_001")
-    conv_seed = seed_conversation_graph(
-        conversation_engine=conversation_engine,
-        user_id=user_id,
-        conversation_id="CONV_TEST_001",
-        start_node_id="CONV_START_001",
-        kg_seed=kg_seed,
-    )
-    return {"kg": kg_seed, "conversation": conv_seed}
+# def seed_both_graphs(
+#     *,
+#     kg_engine: Any,
+#     conversation_engine: Any,
+#     user_id: str = "U_TEST",
+# ) -> dict[str, Any]:
+#     kg_seed = seed_kg_graph(kg_engine=kg_engine, kg_doc_id="D_KG_001")
+#     conv_seed = seed_conversation_graph(
+#         conversation_engine=conversation_engine,
+#         user_id=user_id,
+#         conversation_id="CONV_TEST_001",
+#         start_node_id="CONV_START_001",
+#         kg_seed=kg_seed,
+#     )
+#     return {"kg": kg_seed, "conversation": conv_seed}
 
 
 
