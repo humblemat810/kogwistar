@@ -48,12 +48,12 @@ class GraphQuery:
     # ---- doc scoping ----
     def nodes_in_doc(self, doc_id: str) -> List[Node]:
         ids = self.e._nodes_by_doc(doc_id)
-        got = self.e.node_collection.get(ids=ids, include=["documents"]) if ids else {"documents": []}
+        got = self.e.backend.node_get(ids=ids, include=["documents"]) if ids else {"documents": []}
         return [Node.model_validate_json(d) for d in (got.get("documents") or []) if d]
 
     def edges_in_doc(self, doc_id: str) -> List[Edge]:
         ids = self.e._edge_ids_by_doc(doc_id)
-        got = self.e.edge_collection.get(ids=ids, include=["documents"]) if ids else {"documents": []}
+        got = self.e.backend.edge_get(ids=ids, include=["documents"]) if ids else {"documents": []}
         return [Edge.model_validate_json(d) for d in (got.get("documents") or []) if d]
 
     def document_subgraph(self, doc_id: str, *, center_ids: Optional[Iterable[str]] = None, hops: int = 1) -> Dict[str, List]:
@@ -79,7 +79,7 @@ class GraphQuery:
     def final_summary_node_id(self, doc_id: str) -> Optional[str]:
         """Find the single node that has a 'summarizes_document' edge -> docnode:{doc_id}."""
         tgt = f"docnode:{doc_id}"
-        eps = self.e.edge_endpoints_collection.get(
+        eps = self.e.backend.edge_endpoints_get(
             where={"$and": [
                 {"endpoint_id": tgt}, {"endpoint_type": "node"}, {"role": "tgt"}, {"relation": "summarizes_document"}
             ]},
@@ -90,7 +90,7 @@ class GraphQuery:
             return None
         # For each edge, fetch its src node endpoint
         for eid in eids:
-            srcs = self.e.edge_endpoints_collection.get(
+            srcs = self.e.backend.edge_endpoints_get(
                 where={"$and": [
                     {"edge_id": eid}, {"endpoint_type": "node"}, {"role": "src"}
                 ]},
@@ -105,7 +105,7 @@ class GraphQuery:
         rid = self.final_summary_node_id(doc_id)
         if not rid:
             return None
-        got = self.e.node_collection.get(ids=[rid], include=["documents"]) if rid else {"documents": []}
+        got = self.e.backend.node_get(ids=[rid], include=["documents"]) if rid else {"documents": []}
         if got.get("documents"):
             return Node.model_validate_json(got["documents"][0])
         return None
@@ -125,7 +125,7 @@ class GraphQuery:
         nodes, edges = set(), set()
         if is_node:
             q = {"$and": [{"endpoint_type": 'node'},{"endpoint_id": rid}]} if doc_id is None else {"$and": [{"endpoint_type": 'node'},{"endpoint_id": rid}, {"doc_id": doc_id}]}
-            eps = self.e.edge_endpoints_collection.get(where=q, include=["documents"])
+            eps = self.e.backend.edge_endpoints_get(where=q, include=["documents"])
             for d in eps.get("documents") or []:
                 row = json.loads(d)
                 edges.add(row["edge_id"])
@@ -142,7 +142,7 @@ class GraphQuery:
             if direction in ("src", "tgt"):
                 clause.append({"role": direction})
             q = {"$and": clause} if len(clause) > 1 else {"edge_id": rid}
-            eps = self.e.edge_endpoints_collection.get(where=q, include=["documents"])
+            eps = self.e.backend.edge_endpoints_get(where=q, include=["documents"])
             for d in eps.get("documents") or []:
                 row = json.loads(d)
                 if row["endpoint_type"] == "node":
@@ -208,7 +208,7 @@ class GraphQuery:
         if doc_id:
             where["doc_id"] = doc_id
         # Pull candidate set by doc scope, then filter by JSON to avoid over‑constraining Chroma metadata
-        got = self.e.node_collection.get(where=where, include=["documents"])
+        got = self.e.backend.node_get(where=(where or None), include=["documents"])
         out: List[str] = []
         for nid, ndoc in zip(got.get("ids") or [], got.get("documents") or []):
             if not nid or not ndoc:
@@ -254,7 +254,7 @@ class GraphQuery:
             where = None
         elif len(where) > 1:
             where = {"$and": [{k:v} for k,v in where.items()]}
-        edges = self.e.edge_collection.get(where=where, include=["documents"])
+        edges = self.e.backend.edge_get(where=where, include=["documents"])
         out: List[str] = []
         for eid, edoc in zip(edges.get("ids") or [], edges.get("documents") or []):
             if not eid or not edoc:
@@ -264,8 +264,8 @@ class GraphQuery:
             ok_src = src_label_contains is None
             ok_tgt = tgt_label_contains is None
             if (src_label_contains or tgt_label_contains):
-                srcs = self.e.node_collection.get(ids=e.source_ids or [], include=["documents"])
-                tgts = self.e.node_collection.get(ids=e.target_ids or [], include=["documents"])
+                srcs = self.e.backend.node_get(ids=e.source_ids or [], include=["documents"])
+                tgts = self.e.backend.node_get(ids=e.target_ids or [], include=["documents"])
                 src_labels = [Node.model_validate_json(j).label for j in (srcs.get("documents") or []) if j]
                 tgt_labels = [Node.model_validate_json(j).label for j in (tgts.get("documents") or []) if j]
                 if src_label_contains:
@@ -286,7 +286,7 @@ class GraphQuery:
 
     # ---- semantic seed ----
     def semantic_seed_then_expand(self, query_embedding: List[float], *, top_k: int = 5, hops: int = 1):
-        hits = self.e.node_collection.query(query_embeddings=[query_embedding], n_results=top_k)
+        hits = self.e.backend.node_query(query_embeddings=[query_embedding], n_results=top_k)
         seed_ids = [nid for nid in (hits.get("ids") or [[]])[0]]
         layers = self.k_hop(seed_ids, k=hops)
         return {"seeds": seed_ids, "layers": layers}
@@ -310,10 +310,10 @@ class GraphQuery:
                     # _where['and'].append()
                 else:
                     _where = {"$and": [where, _where]}
-        hits = self.e.node_collection.query(query_texts=[query_text], n_results=top_k, where = _where)
+        hits = self.e.backend.node_query(query_texts=[query_text], n_results=top_k, where = _where)
         seed_ids = [nid for nid in (hits.get("ids") or [[]])[0] if nid]
         layers = self.k_hop(seed_ids, k=hops)
-        out_layers = [{'nodes': self.e.node_collection.get(list(l['nodes']))['documents'] if l['nodes'] else [], 
-          'edges':  self.e.edge_collection.get(list(l['edges']))['documents'] if l['edges'] else []} for l in layers]
+        out_layers = [{'nodes': self.e.backend.node_get(ids=list(l['nodes']))['documents'] if l['nodes'] else [], 
+          'edges':  self.e.backend.edge_get(ids=list(l['edges']))['documents'] if l['edges'] else []} for l in layers]
         res =  {"seeds": hits['documents'][0], "layers": out_layers}
         return res

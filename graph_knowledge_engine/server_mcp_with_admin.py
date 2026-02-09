@@ -480,7 +480,7 @@ def document_id_from_file_name(file_name: str):
     elif type(file_name) is list:
         filenames = file_name
         
-    docs = engine.document_collection.get(ids = filenames) # this is only where we do not use shortid
+    docs = engine.backend.document_get(ids = filenames) # this is only where we do not use shortid
     sids = [shortids.l2s_id(i) for i in docs['ids']]
     to_return = [{"file_name": i, "id": shortids.l2s_id(i)} for i in docs['ids']]
     return DocIdsOut(id_mapping = to_return)
@@ -616,11 +616,11 @@ def admin_delete_doc(doc_id: str):
 
     # Delete endpoints and mapping tables first
     try:
-        engine.edge_endpoints_collection.delete(where={"doc_id": doc_id})
+        engine.backend.edge_endpoints_delete(where={"doc_id": doc_id})
     except Exception:
         pass
     try:
-        engine.node_docs_collection.delete(where={"doc_id": doc_id})
+        engine.backend.node_docs_delete(where={"doc_id": doc_id})
     except Exception:
         pass
 
@@ -628,24 +628,24 @@ def admin_delete_doc(doc_id: str):
     
     try:
         if edge_ids:
-            engine.edge_refs_collection.delete(ids=edge_ids)
-            engine.edge_collection.delete(ids=edge_ids)
+            engine.backend.edge_refs_delete(ids=edge_ids)
+            engine.backend.edge_delete(ids=edge_ids)
         else:
-            engine.edge_collection.delete(where={"doc_id": doc_id})
+            engine.backend.edge_delete(where={"doc_id": doc_id})
     except Exception:
         pass
     try:
         if node_ids:
-            engine.node_refs_collection.delete(ids=edge_ids)
-            engine.node_collection.delete(ids=node_ids)
+            engine.backend.node_refs_delete(ids=edge_ids)
+            engine.backend.node_delete(ids=node_ids)
         else:
-            engine.node_collection.delete(where={"doc_id": doc_id})
+            engine.backend.node_delete(where={"doc_id": doc_id})
     except Exception:
         pass
 
     # Optional: document row (if you keep one)
     try:
-        engine.document_collection.delete(where={"doc_id": doc_id})
+        engine.backend.document_delete(where={"doc_id": doc_id})
     except Exception:
         pass
 
@@ -1011,7 +1011,7 @@ class AddIndexEntriesInput(BaseModel):
 
 import sqlite3
 def maybe_index_vector(item: IndexingItem):
-    engine.node_index_collection.upsert(
+    engine.backend.node_index_upsert(
         # collection_name="semantic_index",
         ids=[f"idx:{item.node_id}"],
         metadatas=[{
@@ -1210,7 +1210,7 @@ def search_index_hybrid(q: str, limit: int = 10, resolve_node = False) -> Dict[s
     fts_rows = cur.fetchall()
 
     # 2. Semantic (vector)
-    vector_results = engine.node_index_collection.query(
+    vector_results = engine.backend.node_index_query(
         # collection_name="semantic_index",
         query_texts=[q],
         n_results=limit
@@ -1256,14 +1256,18 @@ def search_index_hybrid(q: str, limit: int = 10, resolve_node = False) -> Dict[s
                 pass
             else:
                 ids[i["node_id"]] = i
-        res = engine.node_collection.get(ids = list(ids.keys()))
-        cols = ['ids'] + res['included']
-        rows = {}
-        for i, id in enumerate(res["ids"]):
-            rows[id] = {}
-            row = rows[id]
-            for col in cols:
-                row[col] = res[col][i]
+        res = engine.backend.node_get(ids=list(ids.keys()), include=["documents", "metadatas"]) 
+        rows: dict[str, dict] = {}
+        res_ids = res.get("ids") or []
+        res_docs = res.get("documents") or []
+        res_metas = res.get("metadatas") or []
+        for i, nid in enumerate(res_ids):
+            if not nid:
+                continue
+            rows[str(nid)] = {
+                "documents": res_docs[i] if i < len(res_docs) else None,
+                "metadatas": res_metas[i] if i < len(res_metas) else None,
+            }
         to_return = ranked[:limit]
         for i in to_return:
             i.update(rows[i['node_id']])
@@ -1338,14 +1342,14 @@ def _fetch_nodes(ids: List[str]) -> List[Node]:
     if hasattr(engine, "get_nodes"):
         return engine.get_nodes(ids)
     # fallback
-    got = engine.node_collection.get(ids=ids, include=["documents"])
+    got = engine.backend.node_get(ids=ids, include=["documents"])
     return [Node.model_validate_json(j) for j in (got.get("documents") or [])]
 
 def _fetch_edges(ids: List[str]) -> List[Edge]:
     if hasattr(engine, "get_edges"):
         return engine.get_edges(ids)
     # fallback
-    got = engine.edge_collection.get(ids=ids, include=["documents"])
+    got = engine.backend.edge_get(ids=ids, include=["documents"])
     return [Edge.model_validate_json(j) for j in (got.get("documents") or [])]
 
 def _primary_doc_of(n: Node) -> Optional[str]:
@@ -1666,9 +1670,9 @@ def _ids_matching_where(kind: Literal["node", "edge"], where: Dict[str, Any]) ->
     if not where:
         return set()
     if kind == "node":
-        res = engine.node_collection.get(where=where)  # returns dict with 'ids'
+        res = engine.backend.node_get(where=where)  # returns dict with 'ids'
     else:
-        res = engine.edge_collection.get(where=where)
+        res = engine.backend.edge_get(where=where)
     return set(res.get("ids") or [])
 
 
