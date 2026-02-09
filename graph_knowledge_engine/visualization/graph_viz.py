@@ -68,8 +68,8 @@ def _ids_by_doc(engine, doc_id: Optional[str]) -> Tuple[List[str], List[str]]:
     """Find ids scoped to a doc (fallback-safe)."""
     if not doc_id:
         # whole-graph fallback (cheap)
-        n = engine.node_collection.get()
-        e = engine.edge_collection.get()
+        n = engine.backend.node_get()
+        e = engine.backend.edge_get()
         return (n.get("ids") or []), (e.get("ids") or [])
     # Prefer engine helpers if present
     try:
@@ -77,7 +77,7 @@ def _ids_by_doc(engine, doc_id: Optional[str]) -> Tuple[List[str], List[str]]:
     except Exception:
         # fallback: query node_docs table if present
         try:
-            rows = engine.node_docs_collection.get(where={"doc_id": doc_id}, include=["metadatas"])
+            rows = engine.backend.node_docs_get(where={"doc_id": doc_id}, include=["metadatas"])
             node_ids : list= list({(m or {}).get("node_id") for m in (rows.get("metadatas") or []) if m and m.get("node_id")})
         except Exception:
             node_ids = []
@@ -86,7 +86,7 @@ def _ids_by_doc(engine, doc_id: Optional[str]) -> Tuple[List[str], List[str]]:
     except Exception:
         # fallback: query endpoints table if present
         try:
-            eps = engine.edge_endpoints_collection.get(where={"doc_id": doc_id}, include=["metadatas"])
+            eps = engine.backend.edge_endpoints_get(where={"doc_id": doc_id}, include=["metadatas"])
             edge_ids :list= list({(m or {}).get("edge_id") for m in (eps.get("metadatas") or []) if m and m.get("edge_id")})
         except Exception:
             edge_ids = []

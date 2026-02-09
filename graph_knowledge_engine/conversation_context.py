@@ -599,7 +599,7 @@ class EngineConversationStore:
     def get_turns(self, conversation_id: str) -> list[ContextMessage]:
         # 1) fetch all conversation nodes for this conversation_id
         # NOTE: adapt include/where to your Chroma wrapper API
-        res = self.engine.node_collection.get(
+        res = self.engine.backend.node_get(
             where={"conversation_id": conversation_id},
             include=["metadatas", "documents", "ids"],  # or whatever your wrapper uses
         )

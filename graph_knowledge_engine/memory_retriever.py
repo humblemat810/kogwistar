@@ -127,16 +127,6 @@ class MemoryRetriever:
         )[0]
         
         
-        # rows = self.conversation_engine.node_collection.query(
-        #     query_embeddings=[query_embedding],
-        #     n_results=self.n_results,
-        #     where=where,
-        #     include=["metadatas", "documents", "embeddings"],
-        # )
-        # _nodes = self.conversation_engine.nodes_from_query_result(rows, node_type = ConversationNode)
-        # candidate_ids: List[str] = (rows.get("ids") or [[]])[0] or []
-        # candidate_docs: List[str] = (rows.get("documents") or [[]])[0] or []
-        # candidate_metas = (rows.get("metadatas") or [[]])[0] or []
         
         def _rank(m : Node | Edge):
                 t = m.type or m.metadata.get("entity_type") or ""
@@ -186,19 +176,7 @@ class MemoryRetriever:
         conv_nodes : List[ConversationNode] = []
         conv_edges : List[ConversationNode] = []
         if selected:
-            # if selected.candidate_kg_node_ids:
-                # selected_rows = self.conversation_engine.node_collection.get(ids=selected_ids, include=["metadatas","documents"])
-                # # nodes = self.conversation_engine.nodes_from_query_result(rows, node_type = ConversationNode)
-                # docs = selected_rows.get("documents") or []
-                # metadatas =selected_rows.get("metadatas") or []
-                # for doc, meta in zip(docs, metadatas) :
-                #     try:
-                #         djson = json.loads(doc)
-                #         djson.update({'metadata':meta})
-                #         n = ConversationNode.model_validate(djson)
-                #     except Exception:
-                #         continue
-                
+
                 for n in selected.nodes:
                     if n.type != "reference_pointer":
                         non_kg_node_ids.append(n.safe_get_id())

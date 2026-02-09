@@ -82,29 +82,7 @@ class KnowledgeRetriever:
                                   .nodes_from_single_or_id_query_result(self.ref_knowledge_engine.nodes_by_ids(nodes)),
                                   edges = self.ref_knowledge_engine
                                   .edges_from_single_or_id_query_result(self.ref_knowledge_engine.edges_by_ids(edges)))
-            # got = self.ref_knowledge_engine.node_collection.get(ids=[sid], include=["metadatas"])
-            # if not got.get("ids"):
-            #     continue
-            # meta = (got.get("metadatas") or [{}])[0] or {}
-            # seed_summary = str(meta.get("summary") or meta.get("label") or "")
-            # q_text = f"{user_text}\n\nRelated memory / prior context:\n{seed_summary}"
-            # q_emb = self.ref_knowledge_engine.iterative_defensive_emb(q_text)
-            # rows = self.ref_knowledge_engine.node_collection.query(
-            #     query_embeddings=[q_emb],
-            #     n_results=self.deep_per_seed_results,
-            #     where={"level_from_root": {"$lte": self.max_retrieval_level}},
-            #     include=["metadatas"],
-            # )
-            # ids = (rows.get("ids") or [[]])[0] or []
-            # out.extend(ids)
-
-        # seen = set()
-        # dedup: List[str] = []
-        # for x in out:
-        #     if x not in seen:
-        #         seen.add(x)
-        #         dedup.append(x)
-        # return dedup
+            
 
     def retrieve(
         self,
@@ -129,8 +107,6 @@ class KnowledgeRetriever:
 
         reasoning = ""
         if candidates.edges or candidates.nodes:
-            # rows = self.ref_knowledge_engine.node_collection.get(ids=candidate_ids, include=["metadatas"])
-            # metas = rows.get("metadatas") or []
             
             cand_node_list_str = "\n".join(
                 [f"-Node ID: {node.id} | Label: {node.metadata.get('label')} | Summary: {node.metadata.get('summary')}" for node in candidates.nodes]
@@ -189,13 +165,7 @@ class KnowledgeRetriever:
             else:
                 raise Exception("selected_knowledge and selected_knowledge_nodes cannot be both None")
         for kg  in nodes:
-            # kg_got = self.ref_knowledge_engine.node_collection.get(ids=[kg_node_id], include=["documents", "embeddings", "metadatas"])
-            
-            # if not kg_got.get("ids"):
-            #     continue
-            
-            
-            # kg = ref_kg_engine.nodes_from_single_or_id_query_result( kg_got)
+
             
             kg_meta = kg.metadata
             summary = str(kg_meta.get("summary", ""))
@@ -278,13 +248,7 @@ class KnowledgeRetriever:
             
 
         for kg in edges:
-            # kg_got = self.ref_knowledge_engine.node_collection.get(ids=[kg_id], include=["documents", "embeddings", "metadatas"])
-            
-            # if not kg_got.get("ids"):
-            #     continue
-            
-            
-            # kg = ref_kg_engine.nodes_from_single_or_id_query_result( kg_got)
+
             
             kg_meta = kg.metadata
             summary = str(kg_meta.get("summary", ""))

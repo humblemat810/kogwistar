@@ -243,7 +243,7 @@ class BaseDocumentGraphIngestor:
         node_id = f"docnode:{doc_id}"
         if not self.engine._exists_node(node_id):
             from graph_knowledge_engine.models import Node, Span
-            embeddings = self.engine.document_collection.get(doc_id, include = ['embeddings'])['embeddings'][0]
+            embeddings = self.engine.backend.document_get(doc_id, include = ['embeddings'])['embeddings'][0]
             ref = self._ref(doc_id = doc_id,excerpt = None, span = Span(start_page=1, end_page=len(leaves), start_char=0, end_char=len(leaves[-1].text)))
             n = Node(
                 id=node_id,

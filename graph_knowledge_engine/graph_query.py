@@ -38,11 +38,11 @@ class GraphQuery:
 
     # ---- internals ----
     def _is_node(self, rid: str) -> bool:
-        hit = self.e.node_collection.get(ids=[rid])
+        hit = self.e.backend.node_get(ids=[rid])
         return (hit.get("ids") or [None])[0] == rid
 
     def _is_edge(self, rid: str) -> bool:
-        hit = self.e.edge_collection.get(ids=[rid])
+        hit = self.e.backend.edge_get(ids=[rid])
         return (hit.get("ids") or [None])[0] == rid
 
     # ---- doc scoping ----
@@ -131,7 +131,7 @@ class GraphQuery:
                 edges.add(row["edge_id"])
                 # pull opposite endpoints
                 if allow_jump_edge:
-                    eps2 = self.e.edge_endpoints_collection.get(where={"edge_id": row["edge_id"]}, include=["documents"])
+                    eps2 = self.e.backend.edge_endpoints_get(where={"edge_id": row["edge_id"]}, include=["documents"])
                     for d2 in eps2.get("documents") or []:
                         r2 = json.loads(d2)
                         if r2.get("endpoint_type") == "node" and r2["endpoint_id"] != rid:

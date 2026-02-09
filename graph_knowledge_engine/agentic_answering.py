@@ -810,35 +810,6 @@ Return JSON per schema. Be conservative: if key details are missing, set needs_m
                 prompt.append(("system", str_e[:1000] + '...' + str_e[-1000] if len(str_e) > 2000 else str_e))
             parsed : BaseM = res['parsed']
             return parsed.model_dump()
-#     def _generate_answer(self, *, system_prompt: str, question: str, used_nodes: list[str]) -> str:
-#         # Pull minimal summaries (lazy, bounded)
-#         ctx_lines = []
-#         for nid in used_nodes[: self.config.max_used]:
-#             got = self.knowledge_engine.node_collection.get(ids=[nid], include=["metadatas"])
-#             metas = got.get("metadatas") or []
-#             meta = metas[0] if metas else {}
-#             ctx_lines.append(f"- {nid}: {meta.get('label','')} | {meta.get('summary','')}")
-#         ctx = "\n".join(ctx_lines)
-
-#         prompt = ChatPromptTemplate.from_messages(
-#             [
-#                 ("system", system_prompt or "You are a helpful assistant."),
-#                 (
-#                     "human",
-#                     """Answer the user. Use the provided evidence if helpful.
-
-# User question:
-# {question}
-
-# Evidence (id | label | summary):
-# {ctx}
-# """,
-#                 ),
-#             ]
-#         )
-#         res = (prompt | self.llm).invoke({"question": question, "ctx": ctx})
-#         # langchain message
-#         return str(getattr(res, "content", res))
 
     def _ensure_run_anchor(self, *, conversation_id: str, run_id: str) -> str:
         scope = f"conv:{conversation_id}"
