@@ -931,11 +931,6 @@ from typing import Any, Callable, cast, Sequence
 import numpy as np
 from numpy.typing import NDArray
 
-# If you're using Chroma's base classes:
-from chromadb.utils.embedding_functions import EmbeddingFunction
-
-
-
 class CustomEmbeddingFunction(EmbeddingFunction):
     @staticmethod
     def name() -> str:

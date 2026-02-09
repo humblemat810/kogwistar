@@ -365,7 +365,7 @@ class ContextSources:
     # Phase 1
     # -------------------------
     def _load_node_rows(self, conversation_id: str) -> tuple[list[Any], list[Any], list[Any]]:
-        got = self.engine.node_collection.get(
+        got = self.engine.backend.node_get(
             where={"conversation_id": conversation_id},
             include=["documents", "metadatas"],
         )
@@ -455,7 +455,7 @@ class ContextSources:
         if not (self.include_memory_context or self.include_pinned_kg_refs):
             return _EdgeSelection(memctx_ids, ptr_ids, edge_ids_for_memctx, edge_ids_for_ptr)
 
-        egot = self.engine.edge_collection.get(
+        egot = self.engine.backend.edge_get(
             where={"doc_id": f"conv:{conversation_id}"},
             include=["metadatas"],
         )

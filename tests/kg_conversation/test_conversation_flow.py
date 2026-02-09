@@ -2,7 +2,9 @@ import json
 from pathlib import Path
 
 import pytest
-
+import functools
+from chromadb.utils.embedding_functions import EmbeddingFunction
+from chromadb.api.types import Embeddings
 from langchain_core.language_models import BaseChatModel
 from langchain_core.prompts import ChatPromptTemplate
 from graph_knowledge_engine.cdc.oplog import OplogWriter
@@ -11,27 +13,50 @@ from graph_knowledge_engine.models import FilteringResult, MetaFromLastSummary, 
 from langchain_core.messages import AIMessage
 from pydantic import BaseModel, Field
 
-from typing import Callable, TypeVar, ParamSpec, cast
+from typing import Callable, TypeVar, ParamSpec, cast, Sequence, Any
 from joblib import Memory
 
 from graph_knowledge_engine.id_provider import stable_id
 
 from graph_knowledge_engine.postgres_backend import PgVectorBackend
 
-def _fake_ef_dim(dim: int):
-    def _ef(texts):
-        return [[0.01] * dim for _ in texts]
-    return _ef
+# def _fake_ef_dim(dim: int):
+#     def _ef(texts):
+#         return [[0.01] * dim for _ in texts]
+#     return _ef
 
+
+class FakeEmbeddingFunction(EmbeddingFunction):
+    @staticmethod
+    def name() -> str:
+        return "default"
+
+    def __init__(self, model_name: str = "all-minilm:l6-v2", dim = 3):
+
+        def ef(prompts: Sequence[str]) -> Embeddings:
+            res: Embeddings = []
+            for p in prompts:
+                # Boundary: ollama types are weak -> cast once.
+                r = [0.01] * dim
+                
+                res.append(r)
+            return res
+
+        self._emb: Callable[[Sequence[str]], Embeddings] = ef
+
+    def __call__(self, documents_or_texts: Sequence[str]) -> Embeddings:
+        return self._emb(documents_or_texts)
 def _make_engine_pair(*, backend_kind: str, tmp_path, sa_engine, pg_schema, dim: int = 3):
     """
     Build (kg_engine, conv_engine) for either chroma or pgvector.
     """
-    ef = _fake_ef_dim(dim)
+    # ef = _fake_ef_dim(dim)
 
     if backend_kind == "chroma":
-        kg_engine = GraphKnowledgeEngine(persist_directory=str(tmp_path / "kg"), kg_graph_type="knowledge", embedding_function=ef)
-        conv_engine = GraphKnowledgeEngine(persist_directory=str(tmp_path / "conv"), kg_graph_type="conversation", embedding_function=ef)
+        kg_engine = GraphKnowledgeEngine(persist_directory=str(tmp_path / "kg"), kg_graph_type="knowledge", embedding_function=FakeEmbeddingFunction(dim=dim)
+                                         )
+        conv_engine = GraphKnowledgeEngine(persist_directory=str(tmp_path / "conv"), kg_graph_type="conversation", embedding_function=FakeEmbeddingFunction(dim=dim)
+                                           )
         return kg_engine, conv_engine
 
     if backend_kind == "pg":
@@ -41,8 +66,10 @@ def _make_engine_pair(*, backend_kind: str, tmp_path, sa_engine, pg_schema, dim:
         conv_schema = f"{pg_schema}_conv"
         kg_backend = PgVectorBackend(engine=sa_engine, embedding_dim=dim, schema=kg_schema)
         conv_backend = PgVectorBackend(engine=sa_engine, embedding_dim=dim, schema=conv_schema)
-        kg_engine = GraphKnowledgeEngine(persist_directory=str(tmp_path / "kg_meta"), kg_graph_type="knowledge", embedding_function=ef, backend=kg_backend)
-        conv_engine = GraphKnowledgeEngine(persist_directory=str(tmp_path / "conv_meta"), kg_graph_type="conversation", embedding_function=ef, backend=conv_backend)
+        kg_engine = GraphKnowledgeEngine(persist_directory=str(tmp_path / "kg_meta"), 
+                                         kg_graph_type="knowledge", embedding_function=FakeEmbeddingFunction(dim=dim), backend=kg_backend)
+        conv_engine = GraphKnowledgeEngine(persist_directory=str(tmp_path / "conv_meta"),
+                                           kg_graph_type="conversation", embedding_function=FakeEmbeddingFunction(dim=dim), backend=conv_backend)
         return kg_engine, conv_engine
 
     raise ValueError(f"unknown backend_kind: {backend_kind!r}")
