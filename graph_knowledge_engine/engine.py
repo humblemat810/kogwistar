@@ -1420,6 +1420,7 @@ class GraphKnowledgeEngine:
                     entity_id=str(entity_id),
                     index_kind=str(index_kind),
                     op=str(op),
+                    namespace = namespace or self.namespace,
                 )
             except Exception as e:
                 mark_failed = getattr(self.meta_sqlite, "mark_index_job_failed", None)
@@ -1433,10 +1434,10 @@ class GraphKnowledgeEngine:
             applied += 1
         return applied
 
-    def _apply_index_job(self, *, job_id: str, entity_kind: str, entity_id: str, index_kind: str, op: str) -> None:
+    def _apply_index_job(self, *, job_id: str, entity_kind: str, entity_id: str, index_kind: str, op: str, namespace: str) -> None:
         if index_kind not in self._PHASE1_JOIN_INDEX_KINDS:
             return
-
+        namespace = namespace or self.namespace
         # Phase 2: fingerprints + drift detection
         coalesce_key = f"{entity_kind}:{entity_id}:{index_kind}"
         get_applied = getattr(self.meta_sqlite, "get_index_applied_fingerprint", None)
@@ -1468,14 +1469,14 @@ class GraphKnowledgeEngine:
             return _fp(ids)
 
         # We never skip DELETE: it's cheap + guarantees drift repair for deletes/tombstones.
-        applied_fp = get_applied(coalesce_key) if callable(get_applied) else None
+        applied_fp = self.meta_sqlite.get_index_applied_fingerprint(namespace=namespace, coalesce_key=coalesce_key) if callable(get_applied) else None
 
         if entity_kind == "node":
             if index_kind == "node_docs":
                 if op == "DELETE":
                     self.backend.node_docs_delete(where={"node_id": entity_id})
                     if callable(set_applied):
-                        set_applied(coalesce_key=coalesce_key, applied_fingerprint=None, last_job_id=job_id)
+                        set_applied(namespace=namespace, coalesce_key=coalesce_key, applied_fingerprint=None, last_job_id=job_id)
                 else:
                     got = self.backend.node_get(ids=[entity_id], include=["documents","metadatas"])
                     docs = got.get("documents") or []
@@ -1487,9 +1488,7 @@ class GraphKnowledgeEngine:
                         # Tombstoned base: derived must be deleted (anti-resurrection)
                         self.backend.node_docs_delete(where={"node_id": entity_id})
                     if callable(set_applied):
-                        set_applied(coalesce_key=coalesce_key, applied_fingerprint=None, last_job_id=job_id)
-                        if callable(set_applied):
-                            set_applied(coalesce_key=coalesce_key, applied_fingerprint=None, last_job_id=job_id)
+                        set_applied(namespace=namespace, coalesce_key=coalesce_key, applied_fingerprint=None, last_job_id=job_id)
                         return
                     desired_fp = _fp(_extract_doc_ids_from_refs(n.mentions))
                     if op != "DELETE" and applied_fp is not None and applied_fp == desired_fp:
@@ -1497,13 +1496,13 @@ class GraphKnowledgeEngine:
                             return
                     self._index_node_docs(n)
                     if callable(set_applied):
-                        set_applied(coalesce_key=coalesce_key, applied_fingerprint=desired_fp, last_job_id=job_id)
+                        set_applied(namespace=namespace, coalesce_key=coalesce_key, applied_fingerprint=desired_fp, last_job_id=job_id)
 
             elif index_kind == "node_refs":
                 if op == "DELETE":
                     self._delete_node_ref_rows(entity_id)
                     if callable(set_applied):
-                        set_applied(coalesce_key=coalesce_key, applied_fingerprint=None, last_job_id=job_id)
+                        set_applied(namespace=namespace, coalesce_key=coalesce_key, applied_fingerprint=None, last_job_id=job_id)
                 else:
                     got = self.backend.node_get(ids=[entity_id], include=["documents","metadatas"])
                     docs = got.get("documents") or []
@@ -1514,7 +1513,7 @@ class GraphKnowledgeEngine:
                     if _is_tombstoned(meta0):
                         self._delete_node_ref_rows(entity_id)
                         if callable(set_applied):
-                            set_applied(coalesce_key=coalesce_key, applied_fingerprint=None, last_job_id=job_id)
+                            set_applied(namespace=namespace, coalesce_key=coalesce_key, applied_fingerprint=None, last_job_id=job_id)
                         return
                     spans_payload = []
                     for g in (n.mentions or []):
@@ -1536,7 +1535,7 @@ class GraphKnowledgeEngine:
                             return
                     self._index_node_refs(n)
                     if callable(set_applied):
-                        set_applied(coalesce_key=coalesce_key, applied_fingerprint=desired_fp, last_job_id=job_id)
+                        set_applied(namespace=namespace, coalesce_key=coalesce_key, applied_fingerprint=desired_fp, last_job_id=job_id)
             return
 
         if entity_kind == "edge":
@@ -2902,7 +2901,7 @@ class GraphKnowledgeEngine:
                             "wf_multiplicity": edge_metadata.get("wf_multiplicity") or edge_metadata.get("multiplicity"),
                 }))
         self.backend.edge_add(
-            ids=[edge.id],
+            ids=[edge.safe_get_id()],
             documents=[str(doc)],
             embeddings=[edge.embedding] if edge.embedding is not None else [self._iterative_defensive_emb(str(doc))],
             metadatas=base_metadata,
@@ -2910,7 +2909,7 @@ class GraphKnowledgeEngine:
 
         # Phase 1: enqueue derived index work; fast path drains immediately.
         if self._phase1_enable_index_jobs:
-            self.enqueue_index_jobs_for_edge(edge.id, op="UPSERT")
+            self.enqueue_index_jobs_for_edge(edge.safe_get_id(), op="UPSERT")
             self.reconcile_indexes(max_jobs=50)
         else:
             self._maybe_reindex_edge_refs(edge)
