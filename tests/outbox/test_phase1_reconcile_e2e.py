@@ -196,7 +196,7 @@ def test_stuck_doing_job_is_stealable_after_lease_expiry(e2e_engine: GraphKnowle
     """Covers the 'halted forever' scenario: DOING with expired lease must be reclaimed."""
     eng = e2e_engine
     _assert_backend_kind(eng)
-
+    import re
     eng.add_node(_mk_node("n_stuck", doc_id="d1"))
     jid = eng.enqueue_index_job(entity_kind="node", entity_id="n_stuck", index_kind="node_docs", op="UPSERT")
 
@@ -205,9 +205,22 @@ def test_stuck_doing_job_is_stealable_after_lease_expiry(e2e_engine: GraphKnowle
     if hasattr(eng.meta_sqlite, "transaction"):
         with eng.meta_sqlite.transaction() as conn:
             if isinstance(eng.meta_sqlite, EnginePostgresMetaStore):
+                # PG uses per-test schema; schema-qualify the table.
+                schema = eng.meta_sqlite.schema
+                table = getattr(eng.meta_sqlite, "index_jobs_table", "index_jobs")
+                # Very defensive, keep schema/table safe even though fixtures should already sanitize schema.
+                if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", schema):
+                    raise AssertionError(f"invalid schema in test: {schema!r}")
+                if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", table):
+                    raise AssertionError(f"invalid table in test: {table!r}")
+                ij = f"{schema}.{table}"                
                 conn.execute(
                     sa.text(
-                        "UPDATE index_jobs SET status='DOING', lease_until=NOW() - (:secs || ' seconds')::interval, updated_at=NOW() WHERE job_id=:job_id"
+                        f"UPDATE {ij} "
+                        "SET status='DOING', "
+                        "    lease_until=NOW() - (:secs || ' seconds')::interval, "
+                        "    updated_at=NOW() "
+                        "WHERE job_id=:job_id"
                     ),
                     {"secs": 10, "job_id": jid},
                 )

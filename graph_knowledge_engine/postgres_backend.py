@@ -198,8 +198,8 @@ class PgCollectionFacade:
         include = include or ["documents", "metadatas"]
         return self._b._query_nonvector(self._t, where=where, n_results=n_results, include=include)
 
-    def update(self, *, ids: Sequence[str], metadatas: Sequence[Json]) -> None:
-        self._b._update_metadata_merge(self._t, ids=ids, metadatas=metadatas)
+    def update(self, *, ids: Sequence[str], documents=Sequence[str], metadatas: Sequence[Json]) -> None:
+        self._b._update_doc_and_metadata_merge(self._t, ids=ids, documents=documents, metadatas=metadatas)
 
 
 
@@ -721,27 +721,57 @@ class PgVectorBackend:
             out["embeddings"] = embs_out
         return out
 
-    def _update_metadata_merge(self, table: sa.Table, *, ids: Sequence[str], metadatas: Sequence[Json]) -> None:
-        """Merge a metadata patch into existing metadata for each id.
+    def _update_doc_and_metadata_merge(
+        self,
+        table: sa.Table,
+        *,
+        ids: Sequence[str],
+        documents: Optional[Sequence[Optional[str]]] = None,
+        metadatas: Optional[Sequence[Json]] = None,
+    ) -> None:
+        """Update document and/or merge metadata patch for each id.
 
-        We intentionally bind patch as TEXT (JSON string) and cast to JSONB
-        inside SQL. This avoids psycopg2 "can't adapt type 'dict'" issues.
+        Parity requirement: Chroma's `Collection.update()` can accept both
+        documents and metadatas. Postgres can apply both atomically within a
+        transaction; if a UnitOfWork is active, we join it.
+
+        Notes:
+        * `documents` replaces the document value (can be None).
+        * `metadatas` is merged (JSONB || patch).
+        * JSON patch is bound as TEXT then cast to JSONB to avoid psycopg2
+          adaptation issues for dict.
         """
 
-        if len(ids) != len(metadatas):
+        if documents is None and metadatas is None:
+            return
+
+        if documents is not None and len(documents) != len(ids):
+            raise ValueError("documents length must match ids length")
+        if metadatas is not None and len(metadatas) != len(ids):
             raise ValueError("metadatas length must match ids length")
 
         patch_text = sa.bindparam("patch_text", type_=sa.Text)
-        merged = table.c.metadata.op("||")(sa.cast(patch_text, JSONB))
+        merged_expr = table.c.metadata
+        if metadatas is not None:
+            merged_expr = table.c.metadata.op("||")(sa.cast(patch_text, JSONB))
 
         with self._conn() as conn:
-            for _id, patch in zip(ids, metadatas):
-                stmt = (
-                    sa.update(table)
-                    .where(table.c.id == _id)
-                    .values(metadata=merged, updated_at=sa.func.now())
-                )
-                conn.execute(stmt, {"patch_text": json.dumps(patch)})
+            for i, _id in enumerate(ids):
+                values: Dict[str, Any] = {"updated_at": sa.func.now()}
+                params: Dict[str, Any] = {}
+
+                if documents is not None:
+                    values["document"] = documents[i]
+                if metadatas is not None:
+                    values["metadata"] = merged_expr
+                    params["patch_text"] = json.dumps(metadatas[i])
+
+                stmt = sa.update(table).where(table.c.id == _id).values(**values)
+                conn.execute(stmt, params)
+
+    def _update_metadata_merge(self, table: sa.Table, *, ids: Sequence[str], metadatas: Sequence[Json]) -> None:
+        """Backward-compatible metadata-only merge."""
+        self._update_doc_and_metadata_merge(table, ids=ids, documents=None, metadatas=metadatas)
 
     def _query_nonvector(
         self,
@@ -805,8 +835,14 @@ class PgVectorBackend:
     def node_query(self, *, query_embeddings: Sequence[Sequence[float]], n_results: int = 10, where: Optional[Json] = None, include: Optional[List[str]] = None) -> Dict[str, Any]:
         return self._nodes_c.query(query_embeddings=query_embeddings, n_results=n_results, where=where, include=include)
 
-    def node_update(self, *, ids: Sequence[str], metadatas: Sequence[Json]) -> None:
-        self._nodes_c.update(ids=ids, metadatas=metadatas)
+    def node_update(
+        self,
+        *,
+        ids: Sequence[str],
+        documents: Optional[Sequence[Optional[str]]] = None,
+        metadatas: Optional[Sequence[Json]] = None,
+    ) -> None:
+        self._nodes_c.update(ids=ids, documents=documents, metadatas=metadatas)
 
     # ----------------------------
     # Edges
@@ -827,8 +863,14 @@ class PgVectorBackend:
     def edge_query(self, *, query_embeddings: Sequence[Sequence[float]], n_results: int = 10, where: Optional[Json] = None, include: Optional[List[str]] = None) -> Dict[str, Any]:
         return self._edges_c.query(query_embeddings=query_embeddings, n_results=n_results, where=where, include=include)
 
-    def edge_update(self, *, ids: Sequence[str], metadatas: Sequence[Json]) -> None:
-        self._edges_c.update(ids=ids, metadatas=metadatas)
+    def edge_update(
+        self,
+        *,
+        ids: Sequence[str],
+        documents: Optional[Sequence[Optional[str]]] = None,
+        metadatas: Optional[Sequence[Json]] = None,
+    ) -> None:
+        self._edges_c.update(ids=ids, documents=documents, metadatas=metadatas)
 
     # ----------------------------
     # Documents
@@ -849,8 +891,14 @@ class PgVectorBackend:
     def document_query(self, *, query_embeddings: Sequence[Sequence[float]], n_results: int = 10, where: Optional[Json] = None, include: Optional[List[str]] = None) -> Dict[str, Any]:
         return self._documents_c.query(query_embeddings=query_embeddings, n_results=n_results, where=where, include=include)
 
-    def document_update(self, *, ids: Sequence[str], metadatas: Sequence[Json]) -> None:
-        self._documents_c.update(ids=ids, metadatas=metadatas)
+    def document_update(
+        self,
+        *,
+        ids: Sequence[str],
+        documents: Optional[Sequence[Optional[str]]] = None,
+        metadatas: Optional[Sequence[Json]] = None,
+    ) -> None:
+        self._documents_c.update(ids=ids, documents=documents, metadatas=metadatas)
 
     # ----------------------------
     # Domains
@@ -871,8 +919,14 @@ class PgVectorBackend:
     def domain_query(self, *, query_embeddings: Sequence[Sequence[float]], n_results: int = 10, where: Optional[Json] = None, include: Optional[List[str]] = None) -> Dict[str, Any]:
         return self._domains_c.query(query_embeddings=query_embeddings, n_results=n_results, where=where, include=include)
 
-    def domain_update(self, *, ids: Sequence[str], metadatas: Sequence[Json]) -> None:
-        self._domains_c.update(ids=ids, metadatas=metadatas)
+    def domain_update(
+        self,
+        *,
+        ids: Sequence[str],
+        documents: Optional[Sequence[Optional[str]]] = None,
+        metadatas: Optional[Sequence[Json]] = None,
+    ) -> None:
+        self._domains_c.update(ids=ids, documents=documents, metadatas=metadatas)
 
     # ----------------------------
     # Edge endpoints
@@ -890,8 +944,14 @@ class PgVectorBackend:
     def edge_endpoints_query(self, *, query_embeddings: Any = None, n_results: int = 10, where: Optional[Json] = None, include: Optional[List[str]] = None) -> Dict[str, Any]:
         return self._edge_endpoints_c.query(query_embeddings=None, n_results=n_results, where=where, include=include)
 
-    def edge_endpoints_update(self, *, ids: Sequence[str], metadatas: Sequence[Json]) -> None:
-        self._edge_endpoints_c.update(ids=ids, metadatas=metadatas)
+    def edge_endpoints_update(
+        self,
+        *,
+        ids: Sequence[str],
+        documents: Optional[Sequence[Optional[str]]] = None,
+        metadatas: Optional[Sequence[Json]] = None,
+    ) -> None:
+        self._edge_endpoints_c.update(ids=ids, documents=documents, metadatas=metadatas)
 
     def edge_endpoints_delete(self, *, ids: Optional[Sequence[str]] = None, where: Optional[Json] = None) -> None:
         self._edge_endpoints_c.delete(ids=ids, where=where)
@@ -912,8 +972,14 @@ class PgVectorBackend:
     def edge_refs_query(self, *, query_embeddings: Any = None, n_results: int = 10, where: Optional[Json] = None, include: Optional[List[str]] = None) -> Dict[str, Any]:
         return self._edge_refs_c.query(query_embeddings=None, n_results=n_results, where=where, include=include)
 
-    def edge_refs_update(self, *, ids: Sequence[str], metadatas: Sequence[Json]) -> None:
-        self._edge_refs_c.update(ids=ids, metadatas=metadatas)
+    def edge_refs_update(
+        self,
+        *,
+        ids: Sequence[str],
+        documents: Optional[Sequence[Optional[str]]] = None,
+        metadatas: Optional[Sequence[Json]] = None,
+    ) -> None:
+        self._edge_refs_c.update(ids=ids, documents=documents, metadatas=metadatas)
 
     def edge_refs_delete(self, *, ids: Optional[Sequence[str]] = None, where: Optional[Json] = None) -> None:
         self._edge_refs_c.delete(ids=ids, where=where)
@@ -934,8 +1000,14 @@ class PgVectorBackend:
     def node_docs_query(self, *, query_embeddings: Any = None, n_results: int = 10, where: Optional[Json] = None, include: Optional[List[str]] = None) -> Dict[str, Any]:
         return self._node_docs_c.query(query_embeddings=None, n_results=n_results, where=where, include=include)
 
-    def node_docs_update(self, *, ids: Sequence[str], metadatas: Sequence[Json]) -> None:
-        self._node_docs_c.update(ids=ids, metadatas=metadatas)
+    def node_docs_update(
+        self,
+        *,
+        ids: Sequence[str],
+        documents: Optional[Sequence[Optional[str]]] = None,
+        metadatas: Optional[Sequence[Json]] = None,
+    ) -> None:
+        self._node_docs_c.update(ids=ids, documents=documents, metadatas=metadatas)
 
     def node_docs_delete(self, *, ids: Optional[Sequence[str]] = None, where: Optional[Json] = None) -> None:
         self._node_docs_c.delete(ids=ids, where=where)
@@ -956,8 +1028,14 @@ class PgVectorBackend:
     def node_refs_query(self, *, query_embeddings: Any = None, n_results: int = 10, where: Optional[Json] = None, include: Optional[List[str]] = None) -> Dict[str, Any]:
         return self._node_refs_c.query(query_embeddings=None, n_results=n_results, where=where, include=include)
 
-    def node_refs_update(self, *, ids: Sequence[str], metadatas: Sequence[Json]) -> None:
-        self._node_refs_c.update(ids=ids, metadatas=metadatas)
+    def node_refs_update(
+        self,
+        *,
+        ids: Sequence[str],
+        documents: Optional[Sequence[Optional[str]]] = None,
+        metadatas: Optional[Sequence[Json]] = None,
+    ) -> None:
+        self._node_refs_c.update(ids=ids, documents=documents, metadatas=metadatas)
 
     def node_refs_delete(self, *, ids: Optional[Sequence[str]] = None, where: Optional[Json] = None) -> None:
         self._node_refs_c.delete(ids=ids, where=where)

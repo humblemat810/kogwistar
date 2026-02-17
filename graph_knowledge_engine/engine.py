@@ -632,7 +632,8 @@ def _backend_update_record_lifecycle(
 
     new_meta = _merge_meta(meta if isinstance(meta, dict) else {}, lifecycle_patch)
     doc = json.dumps(base, ensure_ascii=False)
-    upd_fn(ids=[record_id], documents=[json.dumps(base, ensure_ascii=False)], metadatas=[new_meta], embeddings = [embedding])
+    upd_fn(ids=[record_id], documents=[json.dumps(base, ensure_ascii=False)], metadatas=[new_meta],embeddings = [embedding]
+           )
     return True
 
 ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
