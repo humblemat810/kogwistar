@@ -1487,9 +1487,9 @@ class GraphKnowledgeEngine:
                     if _is_tombstoned(meta0):
                         # Tombstoned base: derived must be deleted (anti-resurrection)
                         self.backend.node_docs_delete(where={"node_id": entity_id})
-                    if callable(set_applied):
-                        set_applied(namespace=namespace, coalesce_key=coalesce_key, applied_fingerprint=None, last_job_id=job_id)
-                        return
+                        if callable(set_applied):
+                            set_applied(namespace=namespace, coalesce_key=coalesce_key, applied_fingerprint=None, last_job_id=job_id)
+                            return
                     desired_fp = _fp(_extract_doc_ids_from_refs(n.mentions))
                     if op != "DELETE" and applied_fp is not None and applied_fp == desired_fp:
                         if _actual_fp() == desired_fp:
