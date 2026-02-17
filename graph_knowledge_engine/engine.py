@@ -1358,6 +1358,7 @@ class GraphKnowledgeEngine:
         index_kind: str,
         op: str,
         payload_json: str | None = None,
+        namespace: str | None = None,
     ) -> str:
         """Enqueue a durable job to converge a derived/join index.
 
@@ -1371,15 +1372,16 @@ class GraphKnowledgeEngine:
         enqueue = getattr(self.meta_sqlite, "enqueue_index_job", None)
         if enqueue is None:
             return ""
-        self.meta_sqlite.enqueue_index_job(
+        job_id2 = self.meta_sqlite.enqueue_index_job(
             job_id=job_id,
+            namespace=(self.namespace if namespace is None else namespace),
             entity_kind=entity_kind,
             entity_id=entity_id,
             index_kind=index_kind,
             op=op,
             payload_json=payload_json,
         )
-        return job_id
+        return str(job_id2) if job_id2 else job_id
 
     def enqueue_index_jobs_for_node(self, node_id: str, *, op: str) -> None:
         for idx in ("node_docs", "node_refs"):
@@ -1389,7 +1391,7 @@ class GraphKnowledgeEngine:
         for idx in ("edge_refs", "edge_endpoints"):
             self.enqueue_index_job(entity_kind="edge", entity_id=edge_id, index_kind=idx, op=op)
 
-    def reconcile_indexes(self, *, max_jobs: int = 100, lease_seconds: int = 60) -> int:
+    def reconcile_indexes(self, *, max_jobs: int = 100, lease_seconds: int = 60, namespace: str | None = None) -> int:
         """Drain index_jobs and converge join-like derived indexes.
 
         Safe to call repeatedly. Uses expiring leases to prevent "halt forever".
@@ -1401,7 +1403,7 @@ class GraphKnowledgeEngine:
         if claim is None:
             return 0
 
-        jobs = claim(limit=max_jobs, lease_seconds=lease_seconds)
+        jobs = claim(limit=max_jobs, lease_seconds=lease_seconds, namespace=(self.namespace if namespace is None else namespace))
         applied = 0
         for job in jobs:
             # EngineSQLite returns IndexJobRow; PG meta returns dict.
@@ -1413,6 +1415,7 @@ class GraphKnowledgeEngine:
 
             try:
                 self._apply_index_job(
+                    job_id=str(job_id),
                     entity_kind=str(entity_kind),
                     entity_id=str(entity_id),
                     index_kind=str(index_kind),
@@ -1430,45 +1433,151 @@ class GraphKnowledgeEngine:
             applied += 1
         return applied
 
-    def _apply_index_job(self, *, entity_kind: str, entity_id: str, index_kind: str, op: str) -> None:
+    def _apply_index_job(self, *, job_id: str, entity_kind: str, entity_id: str, index_kind: str, op: str) -> None:
         if index_kind not in self._PHASE1_JOIN_INDEX_KINDS:
             return
+
+        # Phase 2: fingerprints + drift detection
+        coalesce_key = f"{entity_kind}:{entity_id}:{index_kind}"
+        get_applied = getattr(self.meta_sqlite, "get_index_applied_fingerprint", None)
+        set_applied = getattr(self.meta_sqlite, "set_index_applied_fingerprint", None)
+
+        def _fp(obj: object) -> str:
+            blob = json.dumps(obj, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            return hashlib.blake2b(blob, digest_size=16).hexdigest()
+
+        def _actual_fp() -> str:
+            # Fingerprint the current derived rows (drift detection).
+            if entity_kind == "node":
+                if index_kind == "node_docs":
+                    got = self.backend.node_docs_get(where={"node_id": entity_id})
+                elif index_kind == "node_refs":
+                    got = self.backend.node_refs_get(where={"node_id": entity_id})
+                else:
+                    got = {"ids": []}
+            elif entity_kind == "edge":
+                if index_kind == "edge_refs":
+                    got = self.backend.edge_refs_get(where={"edge_id": entity_id})
+                elif index_kind == "edge_endpoints":
+                    got = self.backend.edge_endpoints_get(where={"edge_id": entity_id})
+                else:
+                    got = {"ids": []}
+            else:
+                got = {"ids": []}
+            ids = sorted(list(got.get("ids") or []))
+            return _fp(ids)
+
+        # We never skip DELETE: it's cheap + guarantees drift repair for deletes/tombstones.
+        applied_fp = get_applied(coalesce_key) if callable(get_applied) else None
 
         if entity_kind == "node":
             if index_kind == "node_docs":
                 if op == "DELETE":
                     self.backend.node_docs_delete(where={"node_id": entity_id})
+                    if callable(set_applied):
+                        set_applied(coalesce_key=coalesce_key, applied_fingerprint=None, last_job_id=job_id)
                 else:
-                    got = self.backend.node_get(ids=[entity_id], include=["documents"])
+                    got = self.backend.node_get(ids=[entity_id], include=["documents","metadatas"])
                     docs = got.get("documents") or []
                     if not docs or not docs[0]:
                         raise Exception("document not found")
                     n = Node.model_validate_json(docs[0])
+                    meta0 = (got.get("metadatas") or [None])[0] or {}
+                    if _is_tombstoned(meta0):
+                        # Tombstoned base: derived must be deleted (anti-resurrection)
+                        self.backend.node_docs_delete(where={"node_id": entity_id})
+                    if callable(set_applied):
+                        set_applied(coalesce_key=coalesce_key, applied_fingerprint=None, last_job_id=job_id)
+                        if callable(set_applied):
+                            set_applied(coalesce_key=coalesce_key, applied_fingerprint=None, last_job_id=job_id)
+                        return
+                    desired_fp = _fp(_extract_doc_ids_from_refs(n.mentions))
+                    if op != "DELETE" and applied_fp is not None and applied_fp == desired_fp:
+                        if _actual_fp() == desired_fp:
+                            return
                     self._index_node_docs(n)
+                    if callable(set_applied):
+                        set_applied(coalesce_key=coalesce_key, applied_fingerprint=desired_fp, last_job_id=job_id)
 
             elif index_kind == "node_refs":
                 if op == "DELETE":
                     self._delete_node_ref_rows(entity_id)
+                    if callable(set_applied):
+                        set_applied(coalesce_key=coalesce_key, applied_fingerprint=None, last_job_id=job_id)
                 else:
-                    got = self.backend.node_get(ids=[entity_id], include=["documents"])
+                    got = self.backend.node_get(ids=[entity_id], include=["documents","metadatas"])
                     docs = got.get("documents") or []
                     if not docs or not docs[0]:
                         raise Exception("document not found")
                     n = Node.model_validate_json(docs[0])
+                    meta0 = (got.get("metadatas") or [None])[0] or {}
+                    if _is_tombstoned(meta0):
+                        self._delete_node_ref_rows(entity_id)
+                        if callable(set_applied):
+                            set_applied(coalesce_key=coalesce_key, applied_fingerprint=None, last_job_id=job_id)
+                        return
+                    spans_payload = []
+                    for g in (n.mentions or []):
+                        for sp in getattr(g, "spans", []) or []:
+                            ver = getattr(sp, "verification", None)
+                            spans_payload.append({
+                                "doc_id": getattr(sp, "doc_id", None),
+                                "insertion_method": getattr(sp, "insertion_method", None),
+                                "page": getattr(sp, "page_number", None),
+                                "sc": getattr(sp, "start_char", None),
+                                "ec": getattr(sp, "end_char", None),
+                                "method": getattr(ver, "method", None),
+                                "is_verified": getattr(ver, "is_verified", None),
+                                "score": getattr(ver, "score", None),
+                            })
+                    desired_fp = _fp(spans_payload)
+                    if op != "DELETE" and applied_fp is not None and applied_fp == desired_fp:
+                        if _actual_fp() == desired_fp:
+                            return
                     self._index_node_refs(n)
+                    if callable(set_applied):
+                        set_applied(coalesce_key=coalesce_key, applied_fingerprint=desired_fp, last_job_id=job_id)
             return
 
         if entity_kind == "edge":
             if index_kind == "edge_refs":
                 if op == "DELETE":
                     self._delete_edge_ref_rows(entity_id)
+                    if callable(set_applied):
+                        set_applied(coalesce_key=coalesce_key, applied_fingerprint=None, last_job_id=job_id)
                 else:
-                    got = self.backend.edge_get(ids=[entity_id], include=["documents"])
+                    got = self.backend.edge_get(ids=[entity_id], include=["documents","metadatas"])
                     docs = got.get("documents") or []
                     if not docs or not docs[0]:
                         raise Exception("document not found")
                     e = Edge.model_validate_json(docs[0])
+                    meta0 = (got.get("metadatas") or [None])[0] or {}
+                    if _is_tombstoned(meta0):
+                        self._delete_edge_ref_rows(entity_id)
+                        if callable(set_applied):
+                            set_applied(coalesce_key=coalesce_key, applied_fingerprint=None, last_job_id=job_id)
+                        return
+                    spans_payload = []
+                    for g in (e.mentions or []):
+                        for sp in getattr(g, "spans", []) or []:
+                            ver = getattr(sp, "verification", None)
+                            spans_payload.append({
+                                "doc_id": getattr(sp, "doc_id", None),
+                                "insertion_method": getattr(sp, "insertion_method", None),
+                                "page": getattr(sp, "page_number", None),
+                                "sc": getattr(sp, "start_char", None),
+                                "ec": getattr(sp, "end_char", None),
+                                "method": getattr(ver, "method", None),
+                                "is_verified": getattr(ver, "is_verified", None),
+                                "score": getattr(ver, "score", None),
+                            })
+                    desired_fp = _fp(spans_payload)
+                    if op != "DELETE" and applied_fp is not None and applied_fp == desired_fp:
+                        if _actual_fp() == desired_fp:
+                            return
                     self._index_edge_refs(e)
+                    if callable(set_applied):
+                        set_applied(coalesce_key=coalesce_key, applied_fingerprint=desired_fp, last_job_id=job_id)
                 return
 
             if index_kind == "edge_endpoints":
@@ -1477,6 +1586,8 @@ class GraphKnowledgeEngine:
                     ids = got.get("ids") or []
                     if ids:
                         self.backend.edge_endpoints_delete(ids=ids)
+                    if callable(set_applied):
+                        set_applied(coalesce_key=coalesce_key, applied_fingerprint=None, last_job_id=job_id)
                     return
 
                 got = self.backend.edge_get(ids=[entity_id], include=["documents", "metadatas"])
@@ -1496,6 +1607,20 @@ class GraphKnowledgeEngine:
                 rows = self._fanout_endpoints_rows(e, doc_id)
                 if not rows:
                     raise Exception("endpoints not found, even hypder edge contains at least one endpoint")
+                desired_fp = _fp(sorted(rows, key=lambda r: r.get("id") or ""))
+                meta0 = (got.get("metadatas") or [None])[0] or {}
+                if _is_tombstoned(meta0):
+                    # Tombstoned base: derived must be deleted.
+                    got2 = self.backend.edge_endpoints_get(where={"edge_id": entity_id}, include=[])
+                    ids2 = got2.get("ids") or []
+                    if ids2:
+                        self.backend.edge_endpoints_delete(ids=ids2)
+                    if callable(set_applied):
+                        set_applied(coalesce_key=coalesce_key, applied_fingerprint=None, last_job_id=job_id)
+                    return
+                if op != "DELETE" and applied_fp is not None and applied_fp == desired_fp:
+                    if _actual_fp() == desired_fp:
+                        return
                 ep_ids = [r["id"] for r in rows]
                 ep_docs = [json.dumps(r) for r in rows]
                 ep_metas = rows
@@ -1505,6 +1630,8 @@ class GraphKnowledgeEngine:
                     metadatas=ep_metas,
                     embeddings=[self._iterative_defensive_emb(str(d)) for d in ep_docs],
                 )
+                if callable(set_applied):
+                    set_applied(coalesce_key=coalesce_key, applied_fingerprint=desired_fp, last_job_id=job_id)
                 return
 
     # ----------------------------
@@ -2080,7 +2207,8 @@ class GraphKnowledgeEngine:
         verifier=None,               # callable(extracted, full_text, ref, **kw) -> ReferenceSession
         kg_graph_type : EngineType = 'knowledge',
         debug_dir: pathlib.Path | None = None,
-        backend : str | PgVectorBackend | None = None
+        backend : str | PgVectorBackend | None = None,
+        namespace: str = "default"
     ):
         """
         embedding_function: callable(texts: List[str]) -> List[List[float]].
@@ -2101,6 +2229,7 @@ class GraphKnowledgeEngine:
         self.tool_call_id_factory: Callable[[],str] | None = None
         self.kg_graph_type = kg_graph_type
         self.persist_directory = persist_directory
+        self.namespace = namespace
         self.query = GraphQuery(self)
         self.allow_cross_kind_adjudication = True  # can be set by user
         self.cross_kind_strategy = "reifies"       # "reifies" | "equivalent" (default "reifies")

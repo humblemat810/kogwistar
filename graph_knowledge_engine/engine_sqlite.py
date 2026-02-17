@@ -11,9 +11,11 @@ from typing import Any, Iterator, List, Optional
 @dataclass(frozen=True)
 class IndexJobRow:
     job_id: str
+    namespace: str
     entity_kind: str
     entity_id: str
     index_kind: str
+    coalesce_key: str
     op: str
     status: str
     lease_until: Optional[int]
@@ -88,9 +90,11 @@ class EngineSQLite:
                 """
                 CREATE TABLE IF NOT EXISTS index_jobs (
                     job_id       TEXT PRIMARY KEY,
+                    namespace    TEXT NOT NULL DEFAULT 'default',
                     entity_kind  TEXT NOT NULL,
                     entity_id    TEXT NOT NULL,
                     index_kind   TEXT NOT NULL,
+                    coalesce_key TEXT NOT NULL,
                     op           TEXT NOT NULL,
                     status       TEXT NOT NULL,
                     lease_until  INTEGER,
@@ -108,6 +112,41 @@ class EngineSQLite:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_index_jobs_entity ON index_jobs(entity_kind, entity_id, index_kind)"
             )
+
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_index_jobs_namespace ON index_jobs(namespace)"
+            )
+
+            # Ensure legacy schemas have namespace.
+            cols = [r[1] for r in conn.execute("PRAGMA table_info(index_jobs)").fetchall()]
+            if "namespace" not in cols:
+                conn.execute("ALTER TABLE index_jobs ADD COLUMN namespace TEXT NOT NULL DEFAULT 'default'")
+            # Phase 2: coalescing + fingerprints
+            # Ensure legacy DBs have the new column(s).
+            cols = [r[1] for r in conn.execute("PRAGMA table_info(index_jobs)").fetchall()]
+            if "coalesce_key" not in cols:
+                conn.execute("ALTER TABLE index_jobs ADD COLUMN coalesce_key TEXT NOT NULL DEFAULT ''")
+
+            # Unique pending job per coalesce_key (partial unique index)
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_index_jobs_pending_coalesce ON index_jobs(coalesce_key) WHERE status='PENDING'"
+            )
+
+            # Applied fingerprints for derived indexes
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS index_applied_state (
+                    coalesce_key        TEXT PRIMARY KEY,
+                    applied_fingerprint TEXT,
+                    applied_at          INTEGER NOT NULL,
+                    last_job_id         TEXT
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_index_applied_state_key ON index_applied_state(coalesce_key)"
+            )
+
 
     # ------------------------------------------------------------------
     # Connection / transaction helpers
@@ -249,38 +288,80 @@ class EngineSQLite:
         self,
         *,
         job_id: str,
+        namespace: str = "default",
         entity_kind: str,
         entity_id: str,
         index_kind: str,
         op: str,
         payload_json: Optional[str] = None,
-    ) -> None:
-        """Insert a new job (PENDING). If job_id already exists, do not overwrite."""
+    ) -> str:
+        """Enqueue a job, coalescing repeated PENDING work by (entity_kind, entity_id, index_kind).
+
+        Returns the job_id that should be used by the caller (may be an existing pending job).
+        """
         now = self._now_epoch()
+        coalesce_key = f"{entity_kind}:{entity_id}:{index_kind}"
         with self.transaction() as conn:
+            row = conn.execute(
+                """
+                SELECT job_id, op
+                FROM index_jobs
+                WHERE coalesce_key = ? AND status = 'PENDING'
+                ORDER BY created_at ASC
+                LIMIT 1
+                """,
+                (coalesce_key,),
+            ).fetchone()
+            if row:
+                existing_job_id = str(row[0])
+                existing_op = str(row[1] or "")
+                next_op = "DELETE" if (op == "DELETE" or existing_op == "DELETE") else op
+                conn.execute(
+                    """
+                    UPDATE index_jobs
+                    SET op = ?, payload_json = ?, updated_at = ?
+                    WHERE job_id = ?
+                    """,
+                    (next_op, payload_json, now, existing_job_id),
+                )
+                return existing_job_id
+
             conn.execute(
                 """
                 INSERT OR IGNORE INTO index_jobs(
-                    job_id, entity_kind, entity_id, index_kind, op,
+                    job_id, entity_kind, entity_id, index_kind, coalesce_key, op,
                     status, lease_until, retry_count, last_error, payload_json,
                     created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, 'PENDING', NULL, 0, NULL, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, 'PENDING', NULL, 0, NULL, ?, ?, ?)
                 """,
-                (job_id, entity_kind, entity_id, index_kind, op, payload_json, now, now),
+                (job_id, entity_kind, entity_id, index_kind, coalesce_key, op, payload_json, now, now),
             )
+            return job_id
 
-    def claim_index_jobs(self, *, limit: int = 50, lease_seconds: int = 60) -> List[IndexJobRow]:
+
+    
+    def claim_index_jobs(
+        self,
+        *,
+        limit: int = 50,
+        lease_seconds: int = 60,
+        namespace: Optional[str] = "default",
+    ) -> List[IndexJobRow]:
         """Claim up to `limit` jobs with an expiring lease.
 
         Steals jobs whose lease has expired (covers "halt forever" stalls).
+
+        If namespace is None, claims across all namespaces. Otherwise claims only that namespace.
         """
         if limit <= 0:
             return []
         now = self._now_epoch()
         lease_until = now + int(lease_seconds)
         with self.transaction() as conn:
+            ns_filter = "" if namespace is None else "AND namespace = ?"
+            ns_param: List[Any] = [] if namespace is None else [namespace]
             rows = conn.execute(
-                """
+                f"""
                 WITH candidates AS (
                     SELECT job_id
                     FROM index_jobs
@@ -288,16 +369,17 @@ class EngineSQLite:
                         status IN ('PENDING', 'FAILED')
                         OR (status = 'DOING' AND lease_until IS NOT NULL AND lease_until < ?)
                     )
+                    {ns_filter}
                     ORDER BY created_at ASC
                     LIMIT ?
                 )
                 UPDATE index_jobs
                 SET status = 'DOING', lease_until = ?, updated_at = ?
                 WHERE job_id IN (SELECT job_id FROM candidates)
-                RETURNING job_id, entity_kind, entity_id, index_kind, op, status,
-                          lease_until, retry_count, last_error, payload_json, created_at, updated_at
+                RETURNING job_id, namespace, entity_kind, entity_id, index_kind, op, status,
+                        lease_until, retry_count, last_error, payload_json, created_at, updated_at
                 """,
-                (now, limit, lease_until, now),
+                (now, *ns_param, limit, lease_until, now),
             ).fetchall()
 
         out: List[IndexJobRow] = []
@@ -305,17 +387,18 @@ class EngineSQLite:
             out.append(
                 IndexJobRow(
                     job_id=str(r[0]),
-                    entity_kind=str(r[1]),
-                    entity_id=str(r[2]),
-                    index_kind=str(r[3]),
-                    op=str(r[4]),
-                    status=str(r[5]),
-                    lease_until=int(r[6]) if r[6] is not None else None,
-                    retry_count=int(r[7] or 0),
-                    last_error=str(r[8]) if r[8] is not None else None,
-                    payload_json=str(r[9]) if r[9] is not None else None,
-                    created_at=int(r[10]),
-                    updated_at=int(r[11]),
+                    namespace=str(r[1]),
+                    entity_kind=str(r[2]),
+                    entity_id=str(r[3]),
+                    index_kind=str(r[4]),
+                    op=str(r[5]),
+                    status=str(r[6]),
+                    lease_until=int(r[7]) if r[7] is not None else None,
+                    retry_count=int(r[8] or 0),
+                    last_error=str(r[9]) if r[9] is not None else None,
+                    payload_json=str(r[10]) if r[10] is not None else None,
+                    created_at=int(r[11]),
+                    updated_at=int(r[12]),
                 )
             )
         return out
@@ -345,16 +428,26 @@ class EngineSQLite:
                 (error[:2000], now, job_id),
             )
 
-    def list_index_jobs(self, *, status: Optional[str] = None, entity_id: Optional[str] = None) -> List[IndexJobRow]:
+    
+    def list_index_jobs(
+        self,
+        *,
+        status: Optional[str] = None,
+        entity_id: Optional[str] = None,
+        namespace: Optional[str] = "default",
+    ) -> List[IndexJobRow]:
         where = []
         params: List[Any] = []
+        if namespace is not None:
+            where.append("namespace = ?")
+            params.append(namespace)
         if status is not None:
             where.append("status = ?")
             params.append(status)
         if entity_id is not None:
             where.append("entity_id = ?")
             params.append(entity_id)
-        sql = "SELECT job_id, entity_kind, entity_id, index_kind, op, status, lease_until, retry_count, last_error, payload_json, created_at, updated_at FROM index_jobs"
+        sql = "SELECT job_id, namespace, entity_kind, entity_id, index_kind, op, status, lease_until, retry_count, last_error, payload_json, created_at, updated_at FROM index_jobs"
         if where:
             sql += " WHERE " + " AND ".join(where)
         sql += " ORDER BY created_at ASC"
@@ -363,17 +456,18 @@ class EngineSQLite:
         return [
             IndexJobRow(
                 job_id=str(r[0]),
-                entity_kind=str(r[1]),
-                entity_id=str(r[2]),
-                index_kind=str(r[3]),
-                op=str(r[4]),
-                status=str(r[5]),
-                lease_until=int(r[6]) if r[6] is not None else None,
-                retry_count=int(r[7] or 0),
-                last_error=str(r[8]) if r[8] is not None else None,
-                payload_json=str(r[9]) if r[9] is not None else None,
-                created_at=int(r[10]),
-                updated_at=int(r[11]),
+                namespace=str(r[1]),
+                entity_kind=str(r[2]),
+                entity_id=str(r[3]),
+                index_kind=str(r[4]),
+                op=str(r[5]),
+                status=str(r[6]),
+                lease_until=int(r[7]) if r[7] is not None else None,
+                retry_count=int(r[8] or 0),
+                last_error=str(r[9]) if r[9] is not None else None,
+                payload_json=str(r[10]) if r[10] is not None else None,
+                created_at=int(r[11]),
+                updated_at=int(r[12]),
             )
             for r in rows
         ]
@@ -426,3 +520,37 @@ class EngineSQLite:
     - BEGIN IMMEDIATE prevents writer starvation under read load.
     db.set_user_seq("alice", 17)
     """
+
+
+    # ------------------------------------------------------------------
+    # Phase 2: applied fingerprints (derived index status)
+    # ------------------------------------------------------------------
+
+    def get_index_applied_fingerprint(self, coalesce_key: str) -> Optional[str]:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT applied_fingerprint FROM index_applied_state WHERE coalesce_key = ?",
+                (coalesce_key,),
+            ).fetchone()
+            return str(row[0]) if row and row[0] is not None else None
+
+    def set_index_applied_fingerprint(
+        self,
+        *,
+        coalesce_key: str,
+        applied_fingerprint: Optional[str],
+        last_job_id: Optional[str] = None,
+    ) -> None:
+        now = self._now_epoch()
+        with self.transaction() as conn:
+            conn.execute(
+                """
+                INSERT INTO index_applied_state(coalesce_key, applied_fingerprint, applied_at, last_job_id)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(coalesce_key)
+                DO UPDATE SET applied_fingerprint = excluded.applied_fingerprint,
+                              applied_at = excluded.applied_at,
+                              last_job_id = excluded.last_job_id
+                """,
+                (coalesce_key, applied_fingerprint, now, last_job_id),
+            )

@@ -22,9 +22,11 @@ class IndexJob:
     """
 
     job_id: str
+    namespace: str
     entity_kind: str
     entity_id: str
     index_kind: str
+    coalesce_key: str
     op: str
     status: str
     lease_until: Optional[str] = None
@@ -84,9 +86,11 @@ class EnginePostgresMetaStore:
             conn.execute(sa.text(f"""
                 CREATE TABLE IF NOT EXISTS {ij} (
                     job_id TEXT PRIMARY KEY,
+                    namespace TEXT NOT NULL DEFAULT 'default',
                     entity_kind TEXT NOT NULL,
                     entity_id TEXT NOT NULL,
                     index_kind TEXT NOT NULL,
+                    coalesce_key TEXT NOT NULL,
                     op TEXT NOT NULL,
                     status TEXT NOT NULL,
                     lease_until TIMESTAMPTZ NULL,
@@ -99,6 +103,30 @@ class EnginePostgresMetaStore:
             """))
             conn.execute(sa.text(f"CREATE INDEX IF NOT EXISTS idx_index_jobs_status_lease ON {ij}(status, lease_until)"))
             conn.execute(sa.text(f"CREATE INDEX IF NOT EXISTS idx_index_jobs_entity ON {ij}(entity_kind, entity_id, index_kind)"))
+
+            conn.execute(sa.text(f"ALTER TABLE {ij} ADD COLUMN IF NOT EXISTS namespace TEXT NOT NULL DEFAULT 'default'"))
+            conn.execute(sa.text(f"CREATE INDEX IF NOT EXISTS idx_index_jobs_namespace ON {ij}(namespace)"))
+            # Phase 2: coalescing + fingerprints
+            # Ensure legacy schemas have coalesce_key
+            cols = [r[0] for r in conn.execute(sa.text(f"SELECT column_name FROM information_schema.columns WHERE table_schema=:s AND table_name=:t"), {"s": schema, "t": self.index_jobs_table}).fetchall()]
+            if "coalesce_key" not in cols:
+                conn.execute(sa.text(f"ALTER TABLE {ij} ADD COLUMN coalesce_key TEXT NOT NULL DEFAULT ''"))
+
+            # Unique pending job per coalesce_key (partial unique index)
+            conn.execute(sa.text(f"CREATE UNIQUE INDEX IF NOT EXISTS uq_index_jobs_pending_coalesce ON {ij}(coalesce_key) WHERE status='PENDING'"))
+
+            # Applied fingerprints for derived indexes
+            ias = f"{schema}.index_applied_state"
+            conn.execute(sa.text(f"""
+                CREATE TABLE IF NOT EXISTS {ias} (
+                    coalesce_key TEXT PRIMARY KEY,
+                    applied_fingerprint TEXT NULL,
+                    applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    last_job_id TEXT NULL
+                )
+            """))
+            conn.execute(sa.text(f"CREATE INDEX IF NOT EXISTS idx_index_applied_state_key ON {ias}(coalesce_key)"))
+
 
     # ----------------------------
     # Transaction helpers
@@ -177,41 +205,82 @@ class EnginePostgresMetaStore:
         self,
         *,
         job_id: str,
+        namespace: str = "default",
         entity_kind: str,
         entity_id: str,
         index_kind: str,
         op: str,
         payload_json: Optional[str] = None,
-    ) -> None:
+    ) -> str:
+        """Enqueue a job, coalescing repeated PENDING work by (entity_kind, entity_id, index_kind).
+
+        Returns the job_id that should be used by the caller (may be an existing pending job).
+        """
         ij = (
             f"{self.schema}.{self.index_jobs_table}"
             if self.index_jobs_table == "index_jobs"
             else f"{self.schema}.\"{self.index_jobs_table}\""
         )
+        coalesce_key = f"{entity_kind}:{entity_id}:{index_kind}"
+
         with self.transaction() as conn:
+            # Lock any existing pending row for this key (prevents duplicate inserts under concurrency).
+            row = conn.execute(
+                sa.text(
+                    f"""
+                    SELECT job_id, op
+                    FROM {ij}
+                    WHERE coalesce_key = :ck AND status='PENDING'
+                    ORDER BY created_at ASC
+                    LIMIT 1
+                    FOR UPDATE
+                    """
+                ),
+                {"ck": coalesce_key},
+            ).fetchone()
+
+            if row:
+                existing_job_id = str(row[0])
+                existing_op = str(row[1] or "")
+                next_op = "DELETE" if (op == "DELETE" or existing_op == "DELETE") else op
+                conn.execute(
+                    sa.text(
+                        f"""
+                        UPDATE {ij}
+                        SET op=:op, payload_json=:payload_json, updated_at=NOW()
+                        WHERE job_id=:job_id
+                        """
+                    ),
+                    {"op": next_op, "payload_json": payload_json, "job_id": existing_job_id},
+                )
+                return existing_job_id
+
             conn.execute(
                 sa.text(
                     f"""
                     INSERT INTO {ij}(
-                        job_id, entity_kind, entity_id, index_kind, op,
+                        job_id, entity_kind, entity_id, index_kind, coalesce_key, op,
                         status, lease_until, retry_count, last_error, payload_json, created_at, updated_at
                     )
-                    VALUES (:job_id, :entity_kind, :entity_id, :index_kind, :op,
+                    VALUES (:job_id, :entity_kind, :entity_id, :index_kind, :ck, :op,
                             'PENDING', NULL, 0, NULL, :payload_json, NOW(), NOW())
                     ON CONFLICT (job_id) DO NOTHING
                     """
                 ),
                 {
                     "job_id": job_id,
+                    "namespace": namespace,
                     "entity_kind": entity_kind,
                     "entity_id": entity_id,
                     "index_kind": index_kind,
+                    "ck": coalesce_key,
                     "op": op,
                     "payload_json": payload_json,
                 },
             )
+            return job_id
 
-    def claim_index_jobs(self, *, limit: int = 50, lease_seconds: int = 60) -> List[Dict[str, Any]]:
+    def claim_index_jobs(self, *, limit: int = 50, lease_seconds: int = 60, namespace: Optional[str] = "default") -> List[Dict[str, Any]]:
         if limit <= 0:
             return []
         ij = (
@@ -230,6 +299,7 @@ class EnginePostgresMetaStore:
                             status IN ('PENDING','FAILED')
                             OR (status='DOING' AND lease_until IS NOT NULL AND lease_until < NOW())
                         )
+                        AND (:namespace IS NULL OR namespace = :namespace)
                         ORDER BY created_at ASC
                         LIMIT :limit
                         FOR UPDATE SKIP LOCKED
@@ -240,11 +310,11 @@ class EnginePostgresMetaStore:
                         updated_at = NOW()
                     FROM candidates c
                     WHERE j.job_id = c.job_id
-                    RETURNING j.job_id, j.entity_kind, j.entity_id, j.index_kind, j.op, j.status,
+                    RETURNING j.job_id, j.entity_kind, j.entity_id, j.index_kind, j.coalesce_key, j.op, j.status,
                               j.lease_until, j.retry_count, j.last_error, j.payload_json
                     """
                 ),
-                {"limit": int(limit), "lease_seconds": int(lease_seconds)},
+                {"limit": int(limit), "lease_seconds": int(lease_seconds), "namespace": namespace},
             )
             rows = res.mappings().all()
         return [dict(r) for r in rows]
@@ -279,6 +349,7 @@ class EnginePostgresMetaStore:
     def list_index_jobs(
         self,
         *,
+        namespace: Optional[str] = "default",
         status: Optional[str] = None,
         entity_kind: Optional[str] = None,
         entity_id: Optional[str] = None,
@@ -292,6 +363,9 @@ class EnginePostgresMetaStore:
         )
         where: List[str] = []
         params: Dict[str, Any] = {"limit": int(limit)}
+        if namespace is not None:
+            where.append("namespace = :namespace")
+            params["namespace"] = namespace
         if status:
             where.append("status = :status")
             params["status"] = status
@@ -307,7 +381,7 @@ class EnginePostgresMetaStore:
         where_sql = ("WHERE " + " AND ".join(where)) if where else ""
         sql = sa.text(
             f"""
-            SELECT job_id, entity_kind, entity_id, index_kind, op, status,
+            SELECT job_id, entity_kind, entity_id, index_kind, coalesce_key, op, status,
                    lease_until, retry_count, last_error, payload_json
             FROM {ij}
             {where_sql}
@@ -322,9 +396,11 @@ class EnginePostgresMetaStore:
             out.append(
                 IndexJob(
                     job_id=str(r.get("job_id")),
+                    namespace=str(r.get("namespace")),
                     entity_kind=str(r.get("entity_kind")),
                     entity_id=str(r.get("entity_id")),
                     index_kind=str(r.get("index_kind")),
+                    coalesce_key=str(r.get("coalesce_key")),
                     op=str(r.get("op")),
                     status=str(r.get("status")),
                     lease_until=(str(r.get("lease_until")) if r.get("lease_until") is not None else None),
@@ -334,3 +410,40 @@ class EnginePostgresMetaStore:
                 )
             )
         return out
+
+
+    # ----------------------------
+    # Phase 2: applied fingerprints (derived index status)
+    # ----------------------------
+
+    def get_index_applied_fingerprint(self, coalesce_key: str) -> Optional[str]:
+        ias = f"{self.schema}.index_applied_state"
+        with self.transaction() as conn:
+            row = conn.execute(
+                sa.text(f"SELECT applied_fingerprint FROM {ias} WHERE coalesce_key=:ck"),
+                {"ck": coalesce_key},
+            ).fetchone()
+            return str(row[0]) if row and row[0] is not None else None
+
+    def set_index_applied_fingerprint(
+        self,
+        *,
+        coalesce_key: str,
+        applied_fingerprint: Optional[str],
+        last_job_id: Optional[str] = None,
+    ) -> None:
+        ias = f"{self.schema}.index_applied_state"
+        with self.transaction() as conn:
+            conn.execute(
+                sa.text(
+                    f"""
+                    INSERT INTO {ias}(coalesce_key, applied_fingerprint, applied_at, last_job_id)
+                    VALUES (:ck, :fp, NOW(), :jid)
+                    ON CONFLICT(coalesce_key)
+                    DO UPDATE SET applied_fingerprint = EXCLUDED.applied_fingerprint,
+                                  applied_at = NOW(),
+                                  last_job_id = EXCLUDED.last_job_id
+                    """
+                ),
+                {"ck": coalesce_key, "fp": applied_fingerprint, "jid": last_job_id},
+            )
