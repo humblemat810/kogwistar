@@ -446,16 +446,29 @@ def _json_or_none(v):
     return None if v is None else json.dumps(v)
 
 
-def _extract_doc_ids_from_refs(refs) -> list[str]:
+def _extract_doc_ids_from_refs(refs: list[Span] | list[Grounding]) -> list[str]:
     out = []
     for r in refs or []:
-        did = getattr(r, "doc_id", None)
-        if not did and getattr(r, "document_page_url", None):
-            m = re.search(r"document/([A-Za-z0-9\-]+)", r.document_page_url)
-            if m:
-                did = m.group(1)
-        if did:
-            out.append(did)
+        if type(r) is Grounding:
+            for span in r.spans:
+                did = getattr(span, "doc_id", None)
+                if not did and getattr(span, "document_page_url", None):
+                    m = re.search(r"document/([A-Za-z0-9\-]+)", span.document_page_url)
+                    if m:
+                        did = m.group(1)
+                if did:
+                    out.append(did)
+        elif type(r) is Span:
+            # legacy is grounding    
+            did = getattr(r, "doc_id", None)
+            if not did and getattr(r, "document_page_url", None):
+                m = re.search(r"document/([A-Za-z0-9\-]+)", r.document_page_url)
+                if m:
+                    did = m.group(1)
+            if did:
+                out.append(did)
+        else:
+            raise ValueError(f"ref type of type {type(r) is unsupported}")
     # unique + stable order
     return sorted(dict.fromkeys(out))
 def _node_doc_and_meta(n: Union["Node", "PureChromaNode"]) -> tuple[str, dict]:

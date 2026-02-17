@@ -1,11 +1,16 @@
 import time
+import json
 import pathlib
 
 import pytest
 
 from graph_knowledge_engine.engine import GraphKnowledgeEngine
 from graph_knowledge_engine.models import Node, Edge, Grounding, Span
+from graph_knowledge_engine.storage_backend import ChromaBackend
 from graph_knowledge_engine.postgres_backend import PgVectorBackend
+
+# Reuse raw helpers to avoid duplicating Chroma plumbing.
+from tests.conftest import add_node_raw, add_edge_raw
 
 
 def _mk_span(doc_id: str) -> Span:
@@ -52,51 +57,42 @@ def _mk_edge(edge_id: str, *, src: str, tgt: str, doc_id: str) -> Edge:
     )
 
 
-def add_node_raw(engine: GraphKnowledgeEngine, node: Node, *, embedding_dim: int = 384) -> None:
-    """Backend-agnostic 'raw' insert: write base entity only (no derived joins)."""
-    doc, meta = engine._node_doc_and_meta(node)
-    if node.embedding is None:
-        node.embedding = [0.1] * embedding_dim
-    engine.backend.node_add(
-        ids=[node.safe_get_id()],
-        documents=[doc],
-        embeddings=[list(node.embedding)],
-        metadatas=[meta],
-    )
+@pytest.fixture(params=["chroma", "pgvector"], ids=["chroma", "pgvector"])
+def e2e_engine(
+    request: pytest.FixtureRequest,
+    tmp_path: pathlib.Path,
+    sa_engine,  # provided by tests/conftest.py
+    pg_schema,  # provided by tests/conftest.py
+) -> GraphKnowledgeEngine:
+    """E2E engine fixture that runs the same test suite against both backends."""
 
+    if request.param == "chroma":
+        persist_dir = tmp_path / "chroma"
+        persist_dir.mkdir(parents=True, exist_ok=True)
+        eng = GraphKnowledgeEngine(persist_directory=str(persist_dir))
+    else:
+        # Skip cleanly if pgvector isn't installed in this environment.
+        pytest.importorskip("pgvector")
+        backend = PgVectorBackend(engine=sa_engine, embedding_dim=3, schema=pg_schema)
+        eng = GraphKnowledgeEngine(backend=backend)
 
-def add_edge_raw(engine: GraphKnowledgeEngine, edge: Edge, *, embedding_dim: int = 384) -> None:
-    doc, meta = engine._edge_doc_and_meta(edge)
-    if edge.embedding is None:
-        edge.embedding = [0.1] * embedding_dim
-    engine.backend.edge_add(
-        ids=[edge.safe_get_id()],
-        documents=[doc],
-        embeddings=[list(edge.embedding)],
-        metadatas=[meta],
-    )
+    # Test helper (not used by production code): lets tests assert backend type.
+    eng._test_backend_kind = request.param  # type: ignore[attr-defined]
+    return eng
 
 
 def _ids(coll_get: dict) -> list[str]:
     return list(coll_get.get("ids") or [])
 
 
-@pytest.fixture(params=["chroma", "pgvector"])
-def e2e_engine(request, tmp_path: pathlib.Path, sa_engine, pg_schema) -> GraphKnowledgeEngine:
-    """Parametrized engine: Chroma (SQLite meta) and PgVector (Postgres meta)."""
-    if request.param == "chroma":
-        persist_dir = tmp_path / "chroma"
-        persist_dir.mkdir(parents=True, exist_ok=True)
-        return GraphKnowledgeEngine(persist_directory=str(persist_dir))
-
-    # pgvector
-    backend = PgVectorBackend(engine=sa_engine, embedding_dim=384, schema=pg_schema)
-    return GraphKnowledgeEngine(backend=backend)
-
-
 def test_reconcile_builds_all_joins_from_raw_entities(e2e_engine: GraphKnowledgeEngine):
     """E2E: if join collections are empty (crash between base write and join write), reconcile must converge."""
     eng = e2e_engine
+
+    if getattr(eng, "_test_backend_kind", None) == "pgvector":
+        assert isinstance(eng.backend, PgVectorBackend)
+    else:
+        assert isinstance(eng.backend, ChromaBackend)
 
     n1 = _mk_node("n1", doc_id="d1")
     n2 = _mk_node("n2", doc_id="d1")
@@ -117,29 +113,34 @@ def test_reconcile_builds_all_joins_from_raw_entities(e2e_engine: GraphKnowledge
     assert processed >= 1
 
     # node_docs contains n1<->d1, n2<->d1
-    got = eng.backend.node_docs_get(where={"doc_id": "d1"}, include=["ids", "metadatas"])
+    got = eng.backend.node_docs_get(where={"doc_id": "d1"}, include=["metadatas"])
     ids = _ids(got)
     assert any(i.startswith("n1::") for i in ids)
     assert any(i.startswith("n2::") for i in ids)
 
     # node_refs contain doc_id=d1 rows
-    got = eng.backend.node_refs_get(where={"doc_id": "d1"}, include=["ids"])
+    got = eng.backend.node_refs_get(where={"doc_id": "d1"})
     assert len(_ids(got)) >= 2
 
     # edge_endpoints contain src/tgt rows
-    got = eng.backend.edge_endpoints_get(where={"edge_id": "e1"}, include=["ids", "metadatas"])
+    got = eng.backend.edge_endpoints_get(where={"edge_id": "e1"}, include=["metadatas"])
     ids = _ids(got)
     assert any("::src::" in i for i in ids)
     assert any("::tgt::" in i for i in ids)
 
     # edge_refs contain doc_id=d1
-    got = eng.backend.edge_refs_get(where={"doc_id": "d1"}, include=["ids"])
+    got = eng.backend.edge_refs_get(where={"doc_id": "d1"})
     assert len(_ids(got)) >= 1
 
 
 def test_race_job_before_entity_exists_recovers_on_later_insert(e2e_engine: GraphKnowledgeEngine):
-    """Race: job refers to entity not yet present. It should fail, then succeed once base exists."""
+    """If reconcile runs while a job references an entity not yet present, it should fail + retry later."""
     eng = e2e_engine
+
+    if getattr(eng, "_test_backend_kind", None) == "pgvector":
+        assert isinstance(eng.backend, PgVectorBackend)
+    else:
+        assert isinstance(eng.backend, ChromaBackend)
 
     jid = eng.enqueue_index_job(entity_kind="node", entity_id="n_race", index_kind="node_docs", op="UPSERT")
     eng.reconcile_indexes(max_jobs=10)
@@ -148,19 +149,26 @@ def test_race_job_before_entity_exists_recovers_on_later_insert(e2e_engine: Grap
     assert jid in failed
 
     # Later the base entity arrives
-    add_node_raw(eng, _mk_node("n_race", doc_id="d1"))
+    new_node = _mk_node("n_race", doc_id="d1")
+    add_node_raw(eng, new_node)
 
     eng.reconcile_indexes(max_jobs=10)
 
     done_ids = {j.job_id for j in eng.meta_sqlite.list_index_jobs(status="DONE")}
     assert jid in done_ids
 
+    # node_docs rows are keyed by node_id (not a generic entity_id)
     got = eng.backend.node_docs_get(where={"node_id": "n_race"})
     assert len(_ids(got)) >= 1
 
 
 def test_tombstoned_entities_never_resurrect_derived_rows(e2e_engine: GraphKnowledgeEngine):
     eng = e2e_engine
+
+    if getattr(eng, "_test_backend_kind", None) == "pgvector":
+        assert isinstance(eng.backend, PgVectorBackend)
+    else:
+        assert isinstance(eng.backend, ChromaBackend)
 
     add_node_raw(eng, _mk_node("n_dead", doc_id="d1"))
 
@@ -169,7 +177,7 @@ def test_tombstoned_entities_never_resurrect_derived_rows(e2e_engine: GraphKnowl
     eng.enqueue_index_job(entity_kind="node", entity_id="n_dead", index_kind="node_refs", op="UPSERT")
     eng.reconcile_indexes(max_jobs=10)
 
-    assert len(_ids(eng.backend.node_docs_get(where={"entity_id": "n_dead"}, include=["ids"]))) >= 1
+    assert len(_ids(eng.backend.node_docs_get(where={"node_id": "n_dead"}))) >= 1
 
     # Tombstone base record
     assert eng.tombstone_node("n_dead") is True
@@ -179,27 +187,33 @@ def test_tombstoned_entities_never_resurrect_derived_rows(e2e_engine: GraphKnowl
     eng.enqueue_index_job(entity_kind="node", entity_id="n_dead", index_kind="node_refs", op="UPSERT")
     eng.reconcile_indexes(max_jobs=10)
 
-    assert len(_ids(eng.backend.node_docs_get(where={"entity_id": "n_dead"}, include=["ids"]))) == 0
-    assert len(_ids(eng.backend.node_refs_get(where={"entity_id": "n_dead"}, include=["ids"]))) == 0
+    assert len(_ids(eng.backend.node_docs_get(where={"node_id": "n_dead"}))) == 0
+    assert len(_ids(eng.backend.node_refs_get(where={"node_id": "n_dead"}))) == 0
 
 
 def test_stuck_doing_job_is_stealable_after_lease_expiry(e2e_engine: GraphKnowledgeEngine):
     """Covers the 'halted forever' scenario: DOING with expired lease must be reclaimed."""
     eng = e2e_engine
 
+    if getattr(eng, "_test_backend_kind", None) == "pgvector":
+        assert isinstance(eng.backend, PgVectorBackend)
+    else:
+        assert isinstance(eng.backend, ChromaBackend)
+
     add_node_raw(eng, _mk_node("n_stuck", doc_id="d1"))
     jid = eng.enqueue_index_job(entity_kind="node", entity_id="n_stuck", index_kind="node_docs", op="UPSERT")
 
     # Force the job into DOING with an expired lease to simulate a crashed worker.
     # (We do it at the metastore level; this is not monkeypatching runtime logic.)
-    with eng.meta_sqlite.transaction() as conn:
-        conn.execute(
-            "UPDATE index_jobs SET status='DOING', lease_until=?, updated_at=? WHERE job_id=?",
-            (time.time() - 10.0, time.time(), jid),
-        )
+    if hasattr(eng.meta_sqlite, "transaction"):
+        with eng.meta_sqlite.transaction() as conn:
+            conn.execute(
+                "UPDATE index_jobs SET status='DOING', lease_until=?, updated_at=? WHERE job_id=?",
+                (time.time() - 10.0, time.time(), jid),
+            )
 
     eng.reconcile_indexes(max_jobs=10, lease_seconds=5)
 
-    done_ids = {j["job_id"] for j in eng.meta_sqlite.list_index_jobs(status="DONE")}
+    done_ids = {j.job_id for j in eng.meta_sqlite.list_index_jobs(status="DONE")}
     assert jid in done_ids
-    assert len(_ids(eng.backend.node_docs_get(where={"entity_id": "n_stuck"}, include=["ids"]))) >= 1
+    assert len(_ids(eng.backend.node_docs_get(where={"node_id": "n_stuck"}))) >= 1
