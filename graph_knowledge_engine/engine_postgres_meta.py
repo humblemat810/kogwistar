@@ -3,7 +3,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from dataclasses import dataclass
 import re
-from typing import Iterator, Optional
+from typing import Any, Dict, Iterator, List, Optional
 
 import sqlalchemy as sa
 
@@ -34,6 +34,7 @@ class EnginePostgresMetaStore:
     schema: str = "public"
     global_table: str = "global_seq"
     user_table: str = "user_seq"
+    index_jobs_table: str = "index_jobs"
 
     def __post_init__(self) -> None:
         if not _SCHEMA_RE.match(self.schema):
@@ -77,6 +78,26 @@ class EnginePostgresMetaStore:
             conn.execute(sa.text(
                 f"CREATE TABLE IF NOT EXISTS {ut} (user_id TEXT PRIMARY KEY, value BIGINT NOT NULL)"
             ))
+
+            ij = f"{schema}.{self.index_jobs_table}" if self.index_jobs_table == "index_jobs" else f"{schema}.\"{self.index_jobs_table}\""
+            conn.execute(sa.text(f"""
+                CREATE TABLE IF NOT EXISTS {ij} (
+                    job_id TEXT PRIMARY KEY,
+                    entity_kind TEXT NOT NULL,
+                    entity_id TEXT NOT NULL,
+                    index_kind TEXT NOT NULL,
+                    op TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    lease_until TIMESTAMPTZ NULL,
+                    retry_count INTEGER NOT NULL DEFAULT 0,
+                    last_error TEXT NULL,
+                    payload_json TEXT NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+            """))
+            conn.execute(sa.text(f"CREATE INDEX IF NOT EXISTS idx_index_jobs_status_lease ON {ij}(status, lease_until)"))
+            conn.execute(sa.text(f"CREATE INDEX IF NOT EXISTS idx_index_jobs_entity ON {ij}(entity_kind, entity_id, index_kind)"))
 
 
     # ----------------------------
@@ -163,3 +184,109 @@ class EnginePostgresMetaStore:
             DO UPDATE SET value = EXCLUDED.value
             """
         ), {"user_id": user_id, "value": int(value)})
+
+    # ----------------------------
+    # Index jobs (outbox-style derived-index convergence)
+    # ----------------------------
+
+    def enqueue_index_job(
+        self,
+        *,
+        job_id: str,
+        entity_kind: str,
+        entity_id: str,
+        index_kind: str,
+        op: str,
+        payload_json: Optional[str] = None,
+    ) -> None:
+        ij = f"{self.schema}.{self.index_jobs_table}" if self.index_jobs_table == "index_jobs" else f"{self.schema}.\"{self.index_jobs_table}\""
+        with self.transaction() as conn:
+            conn.execute(
+                sa.text(
+                    f"""
+                    INSERT INTO {ij}(
+                        job_id, entity_kind, entity_id, index_kind, op,
+                        status, lease_until, retry_count, last_error, payload_json, created_at, updated_at
+                    )
+                    VALUES (:job_id, :entity_kind, :entity_id, :index_kind, :op,
+                            'PENDING', NULL, 0, NULL, :payload_json, NOW(), NOW())
+                    ON CONFLICT (job_id) DO NOTHING
+                    """
+                ),
+                {
+                    "job_id": job_id,
+                    "entity_kind": entity_kind,
+                    "entity_id": entity_id,
+                    "index_kind": index_kind,
+                    "op": op,
+                    "payload_json": payload_json,
+                },
+            )
+
+    def claim_index_jobs(self, *, limit: int = 50, lease_seconds: int = 60) -> List[Dict[str, Any]]:
+        """Claim up to `limit` jobs with an expiring lease.
+
+        Uses row-level locking + SKIP LOCKED to support multiple drainers.
+        Steals jobs whose lease has expired.
+        """
+        if limit <= 0:
+            return []
+        ij = f"{self.schema}.{self.index_jobs_table}" if self.index_jobs_table == "index_jobs" else f"{self.schema}.\"{self.index_jobs_table}\""
+        with self.transaction() as conn:
+            res = conn.execute(
+                sa.text(
+                    f"""
+                    WITH candidates AS (
+                        SELECT job_id
+                        FROM {ij}
+                        WHERE (
+                            status IN ('PENDING','FAILED')
+                            OR (status='DOING' AND lease_until IS NOT NULL AND lease_until < NOW())
+                        )
+                        ORDER BY created_at ASC
+                        LIMIT :limit
+                        FOR UPDATE SKIP LOCKED
+                    )
+                    UPDATE {ij} j
+                    SET status='DOING',
+                        lease_until = NOW() + (:lease_seconds || ' seconds')::interval,
+                        updated_at = NOW()
+                    FROM candidates c
+                    WHERE j.job_id = c.job_id
+                    RETURNING j.job_id, j.entity_kind, j.entity_id, j.index_kind, j.op, j.status,
+                              j.lease_until, j.retry_count, j.last_error, j.payload_json
+                    """
+                ),
+                {"limit": int(limit), "lease_seconds": int(lease_seconds)},
+            )
+            rows = res.mappings().all()
+        return [dict(r) for r in rows]
+
+    def mark_index_job_done(self, job_id: str) -> None:
+        ij = f"{self.schema}.{self.index_jobs_table}" if self.index_jobs_table == "index_jobs" else f"{self.schema}.\"{self.index_jobs_table}\""
+        with self.transaction() as conn:
+            conn.execute(
+                sa.text(
+                    f"""
+                    UPDATE {ij}
+                    SET status='DONE', lease_until=NULL, updated_at=NOW()
+                    WHERE job_id=:job_id
+                    """
+                ),
+                {"job_id": job_id},
+            )
+
+    def mark_index_job_failed(self, job_id: str, error: str) -> None:
+        ij = f"{self.schema}.{self.index_jobs_table}" if self.index_jobs_table == "index_jobs" else f"{self.schema}.\"{self.index_jobs_table}\""
+        with self.transaction() as conn:
+            conn.execute(
+                sa.text(
+                    f"""
+                    UPDATE {ij}
+                    SET status='FAILED', lease_until=NULL, retry_count=retry_count+1,
+                        last_error=:err, updated_at=NOW()
+                    WHERE job_id=:job_id
+                    """
+                ),
+                {"job_id": job_id, "err": (error or "")[:2000]},
+            )

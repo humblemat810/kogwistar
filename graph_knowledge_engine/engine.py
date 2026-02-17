@@ -5,6 +5,7 @@ import contextvars
 
 from langchain_core.language_models import BaseChatModel
 import pathlib
+import uuid
 import time
 from . import models
 from .models import AddTurnResult, MetaFromLastSummary, RetrievalResult, WorkflowCheckpointNode, WorkflowNode, WorkflowStepExecNode
@@ -785,7 +786,6 @@ class CustomEmbeddingFunction(EmbeddingFunction):
         return self._emb(documents_or_texts)
 
 
-from graph_knowledge_engine.postgres_backend import PgVectorBackend
 @dataclass
 class GraphKnowledgeEngine:
     """
@@ -1022,7 +1022,11 @@ class GraphKnowledgeEngine:
             patch["delete_reason"] = kw["reason"]
         if kw.get("deleted_by"):
             patch["deleted_by"] = kw["deleted_by"]
-        return _backend_update_record_lifecycle(backend=self.backend, kind="node", record_id=node_id, lifecycle_patch=patch)
+        ok = _backend_update_record_lifecycle(backend=self.backend, kind="node", record_id=node_id, lifecycle_patch=patch)
+        if ok and self._phase1_enable_index_jobs:
+            self.enqueue_index_jobs_for_node(node_id, op="DELETE")
+            self.reconcile_indexes(max_jobs=50)
+        return ok
 
     def redirect_node(self, from_id: str, to_id: str, **kw) -> bool:
         if from_id == to_id:
@@ -1036,7 +1040,11 @@ class GraphKnowledgeEngine:
             patch["delete_reason"] = kw["reason"]
         if kw.get("deleted_by"):
             patch["deleted_by"] = kw["deleted_by"]
-        return _backend_update_record_lifecycle(backend=self.backend, kind="node", record_id=from_id, lifecycle_patch=patch)
+        ok = _backend_update_record_lifecycle(backend=self.backend, kind="node", record_id=from_id, lifecycle_patch=patch)
+        if ok and self._phase1_enable_index_jobs:
+            self.enqueue_index_jobs_for_node(from_id, op="DELETE")
+            self.reconcile_indexes(max_jobs=50)
+        return ok
 
     def tombstone_edge(self, edge_id: str, **kw) -> bool:
         patch = {
@@ -1048,7 +1056,11 @@ class GraphKnowledgeEngine:
             patch["delete_reason"] = kw["reason"]
         if kw.get("deleted_by"):
             patch["deleted_by"] = kw["deleted_by"]
-        return _backend_update_record_lifecycle(backend=self.backend, kind="edge", record_id=edge_id, lifecycle_patch=patch)
+        ok = _backend_update_record_lifecycle(backend=self.backend, kind="edge", record_id=edge_id, lifecycle_patch=patch)
+        if ok and self._phase1_enable_index_jobs:
+            self.enqueue_index_jobs_for_edge(edge_id, op="DELETE")
+            self.reconcile_indexes(max_jobs=50)
+        return ok
 
     def redirect_edge(self, from_id: str, to_id: str, **kw) -> bool:
         if from_id == to_id:
@@ -1062,7 +1074,11 @@ class GraphKnowledgeEngine:
             patch["delete_reason"] = kw["reason"]
         if kw.get("deleted_by"):
             patch["deleted_by"] = kw["deleted_by"]
-        return _backend_update_record_lifecycle(backend=self.backend, kind="edge", record_id=from_id, lifecycle_patch=patch)
+        ok = _backend_update_record_lifecycle(backend=self.backend, kind="edge", record_id=from_id, lifecycle_patch=patch)
+        if ok and self._phase1_enable_index_jobs:
+            self.enqueue_index_jobs_for_edge(from_id, op="DELETE")
+            self.reconcile_indexes(max_jobs=50)
+        return ok
     ## get
     def get_nodes(
         self,
@@ -1310,6 +1326,169 @@ class GraphKnowledgeEngine:
         ids = got.get("ids") or []
         if ids:
             self.backend.node_refs_delete(ids=ids)
+
+    # ----------------------------
+    # Phase 1: durable index jobs + reconciler
+    # ----------------------------
+
+    _PHASE1_JOIN_INDEX_KINDS = ("node_docs", "node_refs", "edge_refs", "edge_endpoints")
+
+    def enqueue_index_job(
+        self,
+        *,
+        entity_kind: str,
+        entity_id: str,
+        index_kind: str,
+        op: str,
+        payload_json: str | None = None,
+    ) -> str:
+        """Enqueue a durable job to converge a derived/join index.
+
+        Correctness must not rely on the fast path.
+        Returns the job_id.
+        """
+        if not self._phase1_enable_index_jobs:
+            return ""
+        job_id = str(uuid.uuid4())
+        # EngineSQLite and EnginePostgresMetaStore expose the same API.
+        enqueue = getattr(self.meta_sqlite, "enqueue_index_job", None)
+        if enqueue is None:
+            return ""
+        self.meta_sqlite.enqueue_index_job(
+            job_id=job_id,
+            entity_kind=entity_kind,
+            entity_id=entity_id,
+            index_kind=index_kind,
+            op=op,
+            payload_json=payload_json,
+        )
+        return job_id
+
+    def enqueue_index_jobs_for_node(self, node_id: str, *, op: str) -> None:
+        for idx in ("node_docs", "node_refs"):
+            self.enqueue_index_job(entity_kind="node", entity_id=node_id, index_kind=idx, op=op)
+
+    def enqueue_index_jobs_for_edge(self, edge_id: str, *, op: str) -> None:
+        for idx in ("edge_refs", "edge_endpoints"):
+            self.enqueue_index_job(entity_kind="edge", entity_id=edge_id, index_kind=idx, op=op)
+
+    def reconcile_indexes(self, *, max_jobs: int = 100, lease_seconds: int = 60) -> int:
+        """Drain index_jobs and converge join-like derived indexes.
+
+        Safe to call repeatedly. Uses expiring leases to prevent "halt forever".
+        Returns number of successfully applied jobs.
+        """
+        if not self._phase1_enable_index_jobs:
+            return 0
+        claim = getattr(self.meta_sqlite, "claim_index_jobs", None)
+        if claim is None:
+            return 0
+
+        jobs = claim(limit=max_jobs, lease_seconds=lease_seconds)
+        applied = 0
+        for job in jobs:
+            # EngineSQLite returns IndexJobRow; PG meta returns dict.
+            job_id = getattr(job, "job_id", None) or job.get("job_id")
+            entity_kind = getattr(job, "entity_kind", None) or job.get("entity_kind")
+            entity_id = getattr(job, "entity_id", None) or job.get("entity_id")
+            index_kind = getattr(job, "index_kind", None) or job.get("index_kind")
+            op = getattr(job, "op", None) or job.get("op")
+
+            try:
+                self._apply_index_job(
+                    entity_kind=str(entity_kind),
+                    entity_id=str(entity_id),
+                    index_kind=str(index_kind),
+                    op=str(op),
+                )
+            except Exception as e:
+                mark_failed = getattr(self.meta_sqlite, "mark_index_job_failed", None)
+                if mark_failed is not None and job_id:
+                    mark_failed(str(job_id), f"{type(e).__name__}: {e}")
+                continue
+
+            mark_done = getattr(self.meta_sqlite, "mark_index_job_done", None)
+            if mark_done is not None and job_id:
+                mark_done(str(job_id))
+            applied += 1
+        return applied
+
+    def _apply_index_job(self, *, entity_kind: str, entity_id: str, index_kind: str, op: str) -> None:
+        if index_kind not in self._PHASE1_JOIN_INDEX_KINDS:
+            return
+
+        if entity_kind == "node":
+            if index_kind == "node_docs":
+                if op == "DELETE":
+                    self.backend.node_docs_delete(where={"node_id": entity_id})
+                else:
+                    got = self.backend.node_get(ids=[entity_id], include=["documents"])
+                    docs = got.get("documents") or []
+                    if not docs or not docs[0]:
+                        raise Exception("document not found")
+                    n = Node.model_validate_json(docs[0])
+                    self._index_node_docs(n)
+
+            elif index_kind == "node_refs":
+                if op == "DELETE":
+                    self._delete_node_ref_rows(entity_id)
+                else:
+                    got = self.backend.node_get(ids=[entity_id], include=["documents"])
+                    docs = got.get("documents") or []
+                    if not docs or not docs[0]:
+                        raise Exception("document not found")
+                    n = Node.model_validate_json(docs[0])
+                    self._index_node_refs(n)
+            return
+
+        if entity_kind == "edge":
+            if index_kind == "edge_refs":
+                if op == "DELETE":
+                    self._delete_edge_ref_rows(entity_id)
+                else:
+                    got = self.backend.edge_get(ids=[entity_id], include=["documents"])
+                    docs = got.get("documents") or []
+                    if not docs or not docs[0]:
+                        raise Exception("document not found")
+                    e = Edge.model_validate_json(docs[0])
+                    self._index_edge_refs(e)
+                return
+
+            if index_kind == "edge_endpoints":
+                if op == "DELETE":
+                    got = self.backend.edge_endpoints_get(where={"edge_id": entity_id}, include=[])
+                    ids = got.get("ids") or []
+                    if ids:
+                        self.backend.edge_endpoints_delete(ids=ids)
+                    return
+
+                got = self.backend.edge_get(ids=[entity_id], include=["documents", "metadatas"])
+                docs = got.get("documents") or []
+                if not docs or not docs[0]:
+                    raise Exception("document not found")
+                e = Edge.model_validate_json(docs[0])
+                meta = (got.get("metadatas") or [None])[0] or {}
+                doc_id = meta.get("doc_id") if isinstance(meta, dict) else None
+
+                # delete existing
+                existing = self.backend.edge_endpoints_get(where={"edge_id": entity_id}, include=[])
+                ex_ids = existing.get("ids") or []
+                if ex_ids:
+                    self.backend.edge_endpoints_delete(ids=ex_ids)
+
+                rows = self._fanout_endpoints_rows(e, doc_id)
+                if not rows:
+                    raise Exception("endpoints not found, even hypder edge contains at least one endpoint")
+                ep_ids = [r["id"] for r in rows]
+                ep_docs = [json.dumps(r) for r in rows]
+                ep_metas = rows
+                self.backend.edge_endpoints_add(
+                    ids=ep_ids,
+                    documents=ep_docs,
+                    metadatas=ep_metas,
+                    embeddings=[self._iterative_defensive_emb(str(d)) for d in ep_docs],
+                )
+                return
 
     # ----------------------------
     # Utilities
@@ -1921,6 +2100,7 @@ class GraphKnowledgeEngine:
         # self.batch_adjudicator: BatchAdjudicator = batch_adjudicator or LLMBatchAdjudicatorImpl(self)
         self.verifier: Verifier = verifier or DefaultVerifier(self, VerifierConfig(use_embeddings=False))
         self.merge_policy = merge_policy or PreferExistingCanonical(self)
+        self.meta_sqlite : EngineSQLite | EnginePostgresMetaStore
         load_dotenv()
         # from chromadb.utils.embedding_functions import ONNXMiniLM_L6_V2
         # ef = ONNXMiniLM_L6_V2(preferred_providers=["CUDAExecutionProvider", ]) # 'TensorrtExecutionProvider'
@@ -2033,6 +2213,11 @@ class GraphKnowledgeEngine:
                         
                         # other params...
                         )
+
+        # Phase 1 resilience: derived "join indexes" (node_docs/node_refs/edge_refs/edge_endpoints)
+        # are converged via a durable outbox-style index job queue (EngineSQLite or EnginePostgresMetaStore).
+        # Fast path may attempt to apply immediately; correctness relies on reconciliation.
+        self._phase1_enable_index_jobs: bool = True
         self.embeddings: Optional[Callable[[str], Optional[List[float]]]] = None
         if _HAS_AZURE_EMB:
             emb_deployment = os.getenv("OPENAI_EMBED_DEPLOYMENT")
@@ -2415,12 +2600,15 @@ class GraphKnowledgeEngine:
             embeddings=[node.embedding] if node.embedding is not None else [self._iterative_defensive_emb(str(doc))],
             metadatas=[meta],
         )
-    
-        # self.get_nodes([node.id], type(node))
-        # node_cls = getattr(models, type(node).__name__)
-        # self.get_nodes([node.id], node_cls)
-        self._index_node_docs(node)
-        self._maybe_reindex_node_refs(node)
+
+        # Phase 1: enqueue derived index work; fast path drains immediately.
+        if self._phase1_enable_index_jobs:
+            self.enqueue_index_jobs_for_node(node.safe_get_id(), op="UPSERT")
+            self.reconcile_indexes(max_jobs=50)
+        else:
+            # legacy direct indexing
+            self._index_node_docs(node)
+            self._maybe_reindex_node_refs(node)
         self._emit_change(
             op="node.upsert",
             entity=EntityRefModel(kind="node", id=node.safe_get_id(), 
@@ -2573,20 +2761,25 @@ class GraphKnowledgeEngine:
             embeddings=[edge.embedding] if edge.embedding is not None else [self._iterative_defensive_emb(str(doc))],
             metadatas=base_metadata,
         )
-        self._maybe_reindex_edge_refs(edge)
-        # endpoints fan-out
-        
-        rows = self._fanout_endpoints_rows(edge, doc_id)
-        if rows:
-            ep_ids   = [r["id"] for r in rows]
-            ep_docs  = [json.dumps(r) for r in rows]
-            ep_metas: list[dict] = rows  # already sanitized (no None)
-            self.backend.edge_endpoints_add(
-                ids=ep_ids,
-                documents=ep_docs,
-                metadatas=ep_metas,
-                embeddings=[self._iterative_defensive_emb(str(d)) for d in ep_docs]
-            )
+
+        # Phase 1: enqueue derived index work; fast path drains immediately.
+        if self._phase1_enable_index_jobs:
+            self.enqueue_index_jobs_for_edge(edge.id, op="UPSERT")
+            self.reconcile_indexes(max_jobs=50)
+        else:
+            self._maybe_reindex_edge_refs(edge)
+            # endpoints fan-out
+            rows = self._fanout_endpoints_rows(edge, doc_id)
+            if rows:
+                ep_ids   = [r["id"] for r in rows]
+                ep_docs  = [json.dumps(r) for r in rows]
+                ep_metas: list[dict] = rows  # already sanitized (no None)
+                self.backend.edge_endpoints_add(
+                    ids=ep_ids,
+                    documents=ep_docs,
+                    metadatas=ep_metas,
+                    embeddings=[self._iterative_defensive_emb(str(d)) for d in ep_docs]
+                )
         
         self._emit_change(
             op="edge.upsert",
