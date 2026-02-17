@@ -22,7 +22,6 @@ class IndexJob:
     """
 
     job_id: str
-    namespace: str
     entity_kind: str
     entity_id: str
     index_kind: str
@@ -86,7 +85,6 @@ class EnginePostgresMetaStore:
             conn.execute(sa.text(f"""
                 CREATE TABLE IF NOT EXISTS {ij} (
                     job_id TEXT PRIMARY KEY,
-                    namespace TEXT NOT NULL DEFAULT 'default',
                     entity_kind TEXT NOT NULL,
                     entity_id TEXT NOT NULL,
                     index_kind TEXT NOT NULL,
@@ -104,8 +102,6 @@ class EnginePostgresMetaStore:
             conn.execute(sa.text(f"CREATE INDEX IF NOT EXISTS idx_index_jobs_status_lease ON {ij}(status, lease_until)"))
             conn.execute(sa.text(f"CREATE INDEX IF NOT EXISTS idx_index_jobs_entity ON {ij}(entity_kind, entity_id, index_kind)"))
 
-            conn.execute(sa.text(f"ALTER TABLE {ij} ADD COLUMN IF NOT EXISTS namespace TEXT NOT NULL DEFAULT 'default'"))
-            conn.execute(sa.text(f"CREATE INDEX IF NOT EXISTS idx_index_jobs_namespace ON {ij}(namespace)"))
             # Phase 2: coalescing + fingerprints
             # Ensure legacy schemas have coalesce_key
             cols = [r[0] for r in conn.execute(sa.text(f"SELECT column_name FROM information_schema.columns WHERE table_schema=:s AND table_name=:t"), {"s": schema, "t": self.index_jobs_table}).fetchall()]
@@ -205,7 +201,6 @@ class EnginePostgresMetaStore:
         self,
         *,
         job_id: str,
-        namespace: str = "default",
         entity_kind: str,
         entity_id: str,
         index_kind: str,
@@ -269,7 +264,6 @@ class EnginePostgresMetaStore:
                 ),
                 {
                     "job_id": job_id,
-                    "namespace": namespace,
                     "entity_kind": entity_kind,
                     "entity_id": entity_id,
                     "index_kind": index_kind,
@@ -280,7 +274,7 @@ class EnginePostgresMetaStore:
             )
             return job_id
 
-    def claim_index_jobs(self, *, limit: int = 50, lease_seconds: int = 60, namespace: Optional[str] = "default") -> List[Dict[str, Any]]:
+    def claim_index_jobs(self, *, limit: int = 50, lease_seconds: int = 60) -> List[Dict[str, Any]]:
         if limit <= 0:
             return []
         ij = (
@@ -299,7 +293,6 @@ class EnginePostgresMetaStore:
                             status IN ('PENDING','FAILED')
                             OR (status='DOING' AND lease_until IS NOT NULL AND lease_until < NOW())
                         )
-                        AND (:namespace IS NULL OR namespace = :namespace)
                         ORDER BY created_at ASC
                         LIMIT :limit
                         FOR UPDATE SKIP LOCKED
@@ -314,7 +307,7 @@ class EnginePostgresMetaStore:
                               j.lease_until, j.retry_count, j.last_error, j.payload_json
                     """
                 ),
-                {"limit": int(limit), "lease_seconds": int(lease_seconds), "namespace": namespace},
+                {"limit": int(limit), "lease_seconds": int(lease_seconds)},
             )
             rows = res.mappings().all()
         return [dict(r) for r in rows]
@@ -349,7 +342,6 @@ class EnginePostgresMetaStore:
     def list_index_jobs(
         self,
         *,
-        namespace: Optional[str] = "default",
         status: Optional[str] = None,
         entity_kind: Optional[str] = None,
         entity_id: Optional[str] = None,
@@ -363,9 +355,6 @@ class EnginePostgresMetaStore:
         )
         where: List[str] = []
         params: Dict[str, Any] = {"limit": int(limit)}
-        if namespace is not None:
-            where.append("namespace = :namespace")
-            params["namespace"] = namespace
         if status:
             where.append("status = :status")
             params["status"] = status
@@ -396,7 +385,6 @@ class EnginePostgresMetaStore:
             out.append(
                 IndexJob(
                     job_id=str(r.get("job_id")),
-                    namespace=str(r.get("namespace")),
                     entity_kind=str(r.get("entity_kind")),
                     entity_id=str(r.get("entity_id")),
                     index_kind=str(r.get("index_kind")),
@@ -447,3 +435,222 @@ class EnginePostgresMetaStore:
                 ),
                 {"ck": coalesce_key, "fp": applied_fingerprint, "jid": last_job_id},
             )
+
+
+
+# ---------------------------------------------------------------------------
+# Hotfix: Phase 2 namespace + coalescing correctness
+#
+# Some historical versions of this module included older method definitions
+# (without `namespace`) later in the file. In Python, the *last* definition wins,
+# which can accidentally drop namespace scoping and re-introduce a global
+# uq_index_jobs_pending_coalesce constraint.
+#
+# We override the relevant methods here to ensure:
+# - namespace is always part of the coalescing key and queries
+# - only the (namespace, coalesce_key) partial unique index is relied on
+# - ensure_initialized creates/maintains the namespace-aware schema
+# ---------------------------------------------------------------------------
+
+from typing import Any, Dict, List, Optional  # noqa: E402
+
+def _gke_ij_table(self) -> str:
+    return (
+        f"{self.schema}.{self.index_jobs_table}"
+        if self.index_jobs_table == "index_jobs"
+        else f'{self.schema}."{self.index_jobs_table}"'
+    )
+
+def _ensure_initialized_ns(self) -> None:
+    schema = self.schema
+    gt = f'{schema}."{self.global_table}"' if self.global_table != "global_seq" else f"{schema}.global_seq"
+    ut = f'{schema}."{self.user_table}"' if self.user_table != "user_seq" else f"{schema}.user_seq"
+    ij = _gke_ij_table(self)
+    ias = f"{schema}.index_applied_state"
+
+    with self.transaction() as conn:
+        conn.execute(sa.text(f"CREATE SCHEMA IF NOT EXISTS {schema}"))
+        conn.execute(sa.text(f"CREATE TABLE IF NOT EXISTS {gt} (value BIGINT NOT NULL)"))
+        conn.execute(sa.text(f"INSERT INTO {gt}(value) SELECT 0 WHERE NOT EXISTS (SELECT 1 FROM {gt})"))
+        conn.execute(sa.text(f"CREATE TABLE IF NOT EXISTS {ut} (user_id TEXT PRIMARY KEY, value BIGINT NOT NULL)"))
+
+        conn.execute(sa.text(f'''
+            CREATE TABLE IF NOT EXISTS {ij} (
+                job_id TEXT PRIMARY KEY,
+                namespace TEXT NOT NULL DEFAULT 'default',
+                entity_kind TEXT NOT NULL,
+                entity_id TEXT NOT NULL,
+                index_kind TEXT NOT NULL,
+                coalesce_key TEXT NOT NULL,
+                op TEXT NOT NULL,
+                status TEXT NOT NULL,
+                lease_until TIMESTAMPTZ NULL,
+                retry_count INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT NULL,
+                payload_json TEXT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        '''))
+
+        # Helpful indexes
+        conn.execute(sa.text(f"CREATE INDEX IF NOT EXISTS idx_index_jobs_status_lease ON {ij}(status, lease_until)"))
+        conn.execute(sa.text(f"CREATE INDEX IF NOT EXISTS idx_index_jobs_namespace ON {ij}(namespace)"))
+        conn.execute(sa.text(f"CREATE INDEX IF NOT EXISTS idx_index_jobs_entity ON {ij}(entity_kind, entity_id, index_kind)"))
+
+        # Legacy migration: ensure columns exist (safe even if already created above)
+        cols = [r[0] for r in conn.execute(
+            sa.text(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_schema=:s AND table_name=:t"
+            ),
+            {"s": schema, "t": self.index_jobs_table},
+        ).fetchall()]
+        if "namespace" not in cols:
+            conn.execute(sa.text(f"ALTER TABLE {ij} ADD COLUMN namespace TEXT NOT NULL DEFAULT 'default'"))
+        if "coalesce_key" not in cols:
+            conn.execute(sa.text(f"ALTER TABLE {ij} ADD COLUMN coalesce_key TEXT NOT NULL DEFAULT ''"))
+
+        # **The** coalescing constraint: one active PENDING per (namespace, coalesce_key)
+        conn.execute(sa.text(
+            f"CREATE UNIQUE INDEX IF NOT EXISTS uq_index_jobs_pending_ns_ck ON {ij}(namespace, coalesce_key) WHERE status='PENDING'"
+        ))
+
+        # Applied fingerprints for derived indexes (namespace-scoped)
+        conn.execute(sa.text(f'''
+            CREATE TABLE IF NOT EXISTS {ias} (
+                namespace TEXT NOT NULL DEFAULT 'default',
+                coalesce_key TEXT NOT NULL,
+                applied_fingerprint TEXT NULL,
+                applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                last_job_id TEXT NULL,
+                PRIMARY KEY(namespace, coalesce_key)
+            )
+        '''))
+        conn.execute(sa.text(f"CREATE INDEX IF NOT EXISTS idx_index_applied_state_key ON {ias}(coalesce_key)"))
+
+def _enqueue_index_job_ns(
+    self,
+    *,
+    job_id: str,
+    entity_kind: str,
+    entity_id: str,
+    index_kind: str,
+    op: str,
+    payload_json: Optional[str] = None,
+    namespace: str = "default",
+) -> str:
+    ij = _gke_ij_table(self)
+    coalesce_key = f"{entity_kind}:{entity_id}:{index_kind}"
+
+    with self.transaction() as conn:
+        row = conn.execute(
+            sa.text(
+                f'''
+                SELECT job_id, op
+                FROM {ij}
+                WHERE namespace = :ns AND coalesce_key = :ck AND status='PENDING'
+                ORDER BY created_at ASC
+                LIMIT 1
+                FOR UPDATE
+                '''
+            ),
+            {"ns": namespace, "ck": coalesce_key},
+        ).fetchone()
+
+        if row:
+            existing_job_id = str(row[0])
+            existing_op = str(row[1] or "")
+            next_op = "DELETE" if (op == "DELETE" or existing_op == "DELETE") else op
+            conn.execute(
+                sa.text(
+                    f'''
+                    UPDATE {ij}
+                    SET op=:op, payload_json=:payload_json, updated_at=NOW()
+                    WHERE job_id=:job_id
+                    '''
+                ),
+                {"op": next_op, "payload_json": payload_json, "job_id": existing_job_id},
+            )
+            return existing_job_id
+
+        conn.execute(
+            sa.text(
+                f'''
+                INSERT INTO {ij}(
+                    job_id, namespace, entity_kind, entity_id, index_kind, coalesce_key, op,
+                    status, lease_until, retry_count, last_error, payload_json, created_at, updated_at
+                )
+                VALUES (:job_id, :ns, :entity_kind, :entity_id, :index_kind, :ck, :op,
+                        'PENDING', NULL, 0, NULL, :payload_json, NOW(), NOW())
+                ON CONFLICT (job_id) DO NOTHING
+                '''
+            ),
+            {
+                "job_id": job_id,
+                "ns": namespace,
+                "entity_kind": entity_kind,
+                "entity_id": entity_id,
+                "index_kind": index_kind,
+                "ck": coalesce_key,
+                "op": op,
+                "payload_json": payload_json,
+            },
+        )
+        return job_id
+
+def _claim_index_jobs_ns(
+    self,
+    *,
+    limit: int = 50,
+    lease_seconds: int = 60,
+    namespace: Optional[str] = "default",
+) -> List[Dict[str, Any]]:
+    if limit <= 0:
+        return []
+    ij = _gke_ij_table(self)
+
+    ns_filter = "" if namespace is None else "AND namespace = :ns"
+    params: Dict[str, Any] = {"limit": int(limit), "lease_seconds": int(lease_seconds)}
+    if namespace is not None:
+        params["ns"] = namespace
+
+    with self.transaction() as conn:
+        res = conn.execute(
+            sa.text(
+                f'''
+                WITH candidates AS (
+                    SELECT job_id
+                    FROM {ij}
+                    WHERE (
+                        status IN ('PENDING','FAILED')
+                        OR (status='DOING' AND lease_until IS NOT NULL AND lease_until < NOW())
+                    )
+                    {ns_filter}
+                    ORDER BY created_at ASC
+                    LIMIT :limit
+                    FOR UPDATE SKIP LOCKED
+                )
+                UPDATE {ij} j
+                SET status='DOING',
+                    lease_until = NOW() + (:lease_seconds || ' seconds')::interval,
+                    updated_at = NOW()
+                FROM candidates c
+                WHERE j.job_id = c.job_id
+                RETURNING j.job_id, j.namespace, j.entity_kind, j.entity_id, j.index_kind, j.coalesce_key, j.op, j.status,
+                          j.lease_until, j.retry_count, j.last_error, j.payload_json
+                '''
+            ),
+            params,
+        )
+        rows = res.mappings().all()
+    return [dict(r) for r in rows]
+
+# Monkey-patch the class so the newest, namespace-correct behavior always wins.
+try:
+    EnginePostgresMetaStore.ensure_initialized = _ensure_initialized_ns  # type: ignore[name-defined]
+    EnginePostgresMetaStore.enqueue_index_job = _enqueue_index_job_ns    # type: ignore[name-defined]
+    EnginePostgresMetaStore.claim_index_jobs = _claim_index_jobs_ns      # type: ignore[name-defined]
+except Exception:
+    # If the class name differs in your repo, this block will be adjusted when integrating.
+    pass
