@@ -143,11 +143,6 @@ class EngineSQLite:
                     last_job_id         TEXT,
                     PRIMARY KEY(namespace, coalesce_key)
                 )
-,
-                    applied_fingerprint TEXT,
-                    applied_at          INTEGER NOT NULL,
-                    last_job_id         TEXT
-                )
                 """
             )
             conn.execute(
