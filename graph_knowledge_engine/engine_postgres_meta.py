@@ -14,20 +14,38 @@ _SCHEMA_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 @dataclass
-class EnginePostgresMetaStore:
-    """
-    Postgres-backed replacement for EngineSQLite.
+class IndexJob:
+    """Typed view of an index job.
 
-    Purpose:
+    EngineSQLite returns job objects (not dicts). This class mirrors that shape
+    so tests can be backend-agnostic.
+    """
+
+    job_id: str
+    entity_kind: str
+    entity_id: str
+    index_kind: str
+    op: str
+    status: str
+    lease_until: Optional[str] = None
+    retry_count: int = 0
+    last_error: Optional[str] = None
+    payload_json: Optional[str] = None
+
+
+@dataclass
+class EnginePostgresMetaStore:
+    """Postgres-backed replacement for EngineSQLite.
+
+    Responsibilities:
       - allocate monotonic sequence numbers (global + per-user)
-      - provide a transaction context that *joins* the active Postgres UoW connection
-        when present, so seq allocation and graph writes are in the SAME transaction.
+      - provide a transaction context that joins the active Postgres UoW
+      - persist outbox-style index jobs with leasing for derived-index convergence
 
     Tables (in `schema`):
-      - global_seq(value BIGINT NOT NULL) with a single row
+      - global_seq(value BIGINT NOT NULL) single-row
       - user_seq(user_id TEXT PRIMARY KEY, value BIGINT NOT NULL)
-
-    This is intentionally small and mirrors EngineSQLite semantics closely.
+      - index_jobs(...) durable queue
     """
 
     engine: sa.Engine
@@ -40,23 +58,6 @@ class EnginePostgresMetaStore:
         if not _SCHEMA_RE.match(self.schema):
             raise ValueError(f"invalid schema: {self.schema!r}")
 
-    def ensure_tables(self) -> None:
-        with self.engine.begin() as conn:
-            conn.execute(sa.text(f"CREATE SCHEMA IF NOT EXISTS {self.schema}"))
-            conn.execute(sa.text(f"""
-                CREATE TABLE IF NOT EXISTS {self.schema}.user_seq (
-                    user_id TEXT PRIMARY KEY,
-                    value BIGINT NOT NULL
-                )
-            """))
-            conn.execute(sa.text(f"""
-                CREATE TABLE IF NOT EXISTS {self.schema}.global_seq (
-                    singleton BOOLEAN PRIMARY KEY DEFAULT TRUE,
-                    value BIGINT NOT NULL
-                )
-            """))
-
-
     # ----------------------------
     # Initialization
     # ----------------------------
@@ -66,12 +67,8 @@ class EnginePostgresMetaStore:
         ut = f'{schema}."{self.user_table}"' if self.user_table != "user_seq" else f"{schema}.user_seq"
 
         with self.transaction() as conn:
-            # Ensure schema exists
             conn.execute(sa.text(f"CREATE SCHEMA IF NOT EXISTS {schema}"))
-            # Tables
-            conn.execute(sa.text(f"CREATE TABLE IF NOT EXISTS {gt} (value BIGINT NOT NULL)"))            # The above ON CONFLICT requires a constraint; for single-row table, we keep it simple:
-            # if table is empty, insert 0; otherwise do nothing.
-            # Implement as: INSERT ... SELECT ... WHERE NOT EXISTS ...
+            conn.execute(sa.text(f"CREATE TABLE IF NOT EXISTS {gt} (value BIGINT NOT NULL)"))
             conn.execute(sa.text(
                 f"INSERT INTO {gt}(value) SELECT 0 WHERE NOT EXISTS (SELECT 1 FROM {gt})"
             ))
@@ -79,7 +76,11 @@ class EnginePostgresMetaStore:
                 f"CREATE TABLE IF NOT EXISTS {ut} (user_id TEXT PRIMARY KEY, value BIGINT NOT NULL)"
             ))
 
-            ij = f"{schema}.{self.index_jobs_table}" if self.index_jobs_table == "index_jobs" else f"{schema}.\"{self.index_jobs_table}\""
+            ij = (
+                f"{schema}.{self.index_jobs_table}"
+                if self.index_jobs_table == "index_jobs"
+                else f"{schema}.\"{self.index_jobs_table}\""
+            )
             conn.execute(sa.text(f"""
                 CREATE TABLE IF NOT EXISTS {ij} (
                     job_id TEXT PRIMARY KEY,
@@ -99,18 +100,11 @@ class EnginePostgresMetaStore:
             conn.execute(sa.text(f"CREATE INDEX IF NOT EXISTS idx_index_jobs_status_lease ON {ij}(status, lease_until)"))
             conn.execute(sa.text(f"CREATE INDEX IF NOT EXISTS idx_index_jobs_entity ON {ij}(entity_kind, entity_id, index_kind)"))
 
-
     # ----------------------------
     # Transaction helpers
     # ----------------------------
     @contextmanager
     def transaction(self) -> Iterator[sa.Connection]:
-        """
-        Start a transaction if none exists; otherwise join the active UoW connection.
-
-        This matches PostgresUnitOfWork semantics but yields the connection so callers can
-        execute SQL within the same transactional boundary.
-        """
         existing = get_active_conn()
         if existing is not None:
             yield existing
@@ -125,16 +119,12 @@ class EnginePostgresMetaStore:
     # ----------------------------
     def next_global_seq(self) -> int:
         with self.transaction() as conn:
-            return self.next_global_seq_conn(conn)
-
-    def next_global_seq_conn(self, conn: sa.Connection) -> int:
-        gt = f"{self.schema}.global_seq"
-        row = conn.execute(sa.text(f"UPDATE {gt} SET value = value + 1 RETURNING value")).fetchone()
-        if not row:
-            # Defensive: if table is empty, initialize and retry
-            conn.execute(sa.text(f"INSERT INTO {gt}(value) SELECT 0 WHERE NOT EXISTS (SELECT 1 FROM {gt})"))
+            gt = f"{self.schema}.global_seq"
             row = conn.execute(sa.text(f"UPDATE {gt} SET value = value + 1 RETURNING value")).fetchone()
-        return int(row[0])
+            if not row:
+                conn.execute(sa.text(f"INSERT INTO {gt}(value) SELECT 0 WHERE NOT EXISTS (SELECT 1 FROM {gt})"))
+                row = conn.execute(sa.text(f"UPDATE {gt} SET value = value + 1 RETURNING value")).fetchone()
+            return int(row[0])
 
     def current_global_seq(self) -> int:
         gt = f"{self.schema}.global_seq"
@@ -147,20 +137,17 @@ class EnginePostgresMetaStore:
     # ----------------------------
     def next_user_seq(self, user_id: str) -> int:
         with self.transaction() as conn:
-            return self.next_user_seq_conn(conn, user_id)
-
-    def next_user_seq_conn(self, conn: sa.Connection, user_id: str) -> int:
-        ut = f"{self.schema}.user_seq"
-        row = conn.execute(sa.text(
-            f"""
-            INSERT INTO {ut}(user_id, value)
-            VALUES (:user_id, 1)
-            ON CONFLICT(user_id)
-            DO UPDATE SET value = {ut}.value + 1
-            RETURNING value
-            """
-        ), {"user_id": user_id}).fetchone()
-        return int(row[0])
+            ut = f"{self.schema}.user_seq"
+            row = conn.execute(sa.text(
+                f"""
+                INSERT INTO {ut}(user_id, value)
+                VALUES (:user_id, 1)
+                ON CONFLICT(user_id)
+                DO UPDATE SET value = {ut}.value + 1
+                RETURNING value
+                """
+            ), {"user_id": user_id}).fetchone()
+            return int(row[0])
 
     def current_user_seq(self, user_id: str) -> int:
         ut = f"{self.schema}.user_seq"
@@ -171,22 +158,19 @@ class EnginePostgresMetaStore:
     def set_user_seq(self, user_id: str, value: int) -> None:
         if value < 0:
             raise ValueError("value must be >= 0")
-        with self.transaction() as conn:
-            self.set_user_seq_conn(conn, user_id, value)
-
-    def set_user_seq_conn(self, conn: sa.Connection, user_id: str, value: int) -> None:
         ut = f"{self.schema}.user_seq"
-        conn.execute(sa.text(
-            f"""
-            INSERT INTO {ut}(user_id, value)
-            VALUES (:user_id, :value)
-            ON CONFLICT(user_id)
-            DO UPDATE SET value = EXCLUDED.value
-            """
-        ), {"user_id": user_id, "value": int(value)})
+        with self.transaction() as conn:
+            conn.execute(sa.text(
+                f"""
+                INSERT INTO {ut}(user_id, value)
+                VALUES (:user_id, :value)
+                ON CONFLICT(user_id)
+                DO UPDATE SET value = EXCLUDED.value
+                """
+            ), {"user_id": user_id, "value": int(value)})
 
     # ----------------------------
-    # Index jobs (outbox-style derived-index convergence)
+    # Index jobs
     # ----------------------------
 
     def enqueue_index_job(
@@ -199,7 +183,11 @@ class EnginePostgresMetaStore:
         op: str,
         payload_json: Optional[str] = None,
     ) -> None:
-        ij = f"{self.schema}.{self.index_jobs_table}" if self.index_jobs_table == "index_jobs" else f"{self.schema}.\"{self.index_jobs_table}\""
+        ij = (
+            f"{self.schema}.{self.index_jobs_table}"
+            if self.index_jobs_table == "index_jobs"
+            else f"{self.schema}.\"{self.index_jobs_table}\""
+        )
         with self.transaction() as conn:
             conn.execute(
                 sa.text(
@@ -224,14 +212,13 @@ class EnginePostgresMetaStore:
             )
 
     def claim_index_jobs(self, *, limit: int = 50, lease_seconds: int = 60) -> List[Dict[str, Any]]:
-        """Claim up to `limit` jobs with an expiring lease.
-
-        Uses row-level locking + SKIP LOCKED to support multiple drainers.
-        Steals jobs whose lease has expired.
-        """
         if limit <= 0:
             return []
-        ij = f"{self.schema}.{self.index_jobs_table}" if self.index_jobs_table == "index_jobs" else f"{self.schema}.\"{self.index_jobs_table}\""
+        ij = (
+            f"{self.schema}.{self.index_jobs_table}"
+            if self.index_jobs_table == "index_jobs"
+            else f"{self.schema}.\"{self.index_jobs_table}\""
+        )
         with self.transaction() as conn:
             res = conn.execute(
                 sa.text(
@@ -263,30 +250,87 @@ class EnginePostgresMetaStore:
         return [dict(r) for r in rows]
 
     def mark_index_job_done(self, job_id: str) -> None:
-        ij = f"{self.schema}.{self.index_jobs_table}" if self.index_jobs_table == "index_jobs" else f"{self.schema}.\"{self.index_jobs_table}\""
+        ij = (
+            f"{self.schema}.{self.index_jobs_table}"
+            if self.index_jobs_table == "index_jobs"
+            else f"{self.schema}.\"{self.index_jobs_table}\""
+        )
         with self.transaction() as conn:
-            conn.execute(
-                sa.text(
-                    f"""
-                    UPDATE {ij}
-                    SET status='DONE', lease_until=NULL, updated_at=NOW()
-                    WHERE job_id=:job_id
-                    """
-                ),
-                {"job_id": job_id},
-            )
+            conn.execute(sa.text(
+                f"UPDATE {ij} SET status='DONE', lease_until=NULL, updated_at=NOW() WHERE job_id=:job_id"
+            ), {"job_id": job_id})
 
     def mark_index_job_failed(self, job_id: str, error: str) -> None:
-        ij = f"{self.schema}.{self.index_jobs_table}" if self.index_jobs_table == "index_jobs" else f"{self.schema}.\"{self.index_jobs_table}\""
+        ij = (
+            f"{self.schema}.{self.index_jobs_table}"
+            if self.index_jobs_table == "index_jobs"
+            else f"{self.schema}.\"{self.index_jobs_table}\""
+        )
         with self.transaction() as conn:
-            conn.execute(
-                sa.text(
-                    f"""
-                    UPDATE {ij}
-                    SET status='FAILED', lease_until=NULL, retry_count=retry_count+1,
-                        last_error=:err, updated_at=NOW()
-                    WHERE job_id=:job_id
-                    """
-                ),
-                {"job_id": job_id, "err": (error or "")[:2000]},
+            conn.execute(sa.text(
+                f"""
+                UPDATE {ij}
+                SET status='FAILED', lease_until=NULL, retry_count=retry_count+1,
+                    last_error=:err, updated_at=NOW()
+                WHERE job_id=:job_id
+                """
+            ), {"job_id": job_id, "err": (error or "")[:2000]})
+
+    def list_index_jobs(
+        self,
+        *,
+        status: Optional[str] = None,
+        entity_kind: Optional[str] = None,
+        entity_id: Optional[str] = None,
+        index_kind: Optional[str] = None,
+        limit: int = 1000,
+    ) -> List[IndexJob]:
+        ij = (
+            f"{self.schema}.{self.index_jobs_table}"
+            if self.index_jobs_table == "index_jobs"
+            else f"{self.schema}.\"{self.index_jobs_table}\""
+        )
+        where: List[str] = []
+        params: Dict[str, Any] = {"limit": int(limit)}
+        if status:
+            where.append("status = :status")
+            params["status"] = status
+        if entity_kind:
+            where.append("entity_kind = :entity_kind")
+            params["entity_kind"] = entity_kind
+        if entity_id:
+            where.append("entity_id = :entity_id")
+            params["entity_id"] = entity_id
+        if index_kind:
+            where.append("index_kind = :index_kind")
+            params["index_kind"] = index_kind
+        where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+        sql = sa.text(
+            f"""
+            SELECT job_id, entity_kind, entity_id, index_kind, op, status,
+                   lease_until, retry_count, last_error, payload_json
+            FROM {ij}
+            {where_sql}
+            ORDER BY created_at ASC
+            LIMIT :limit
+            """
+        )
+        with self.transaction() as conn:
+            rows = conn.execute(sql, params).mappings().all()
+        out: List[IndexJob] = []
+        for r in rows:
+            out.append(
+                IndexJob(
+                    job_id=str(r.get("job_id")),
+                    entity_kind=str(r.get("entity_kind")),
+                    entity_id=str(r.get("entity_id")),
+                    index_kind=str(r.get("index_kind")),
+                    op=str(r.get("op")),
+                    status=str(r.get("status")),
+                    lease_until=(str(r.get("lease_until")) if r.get("lease_until") is not None else None),
+                    retry_count=int(r.get("retry_count") or 0),
+                    last_error=(str(r.get("last_error")) if r.get("last_error") is not None else None),
+                    payload_json=(str(r.get("payload_json")) if r.get("payload_json") is not None else None),
+                )
             )
+        return out
