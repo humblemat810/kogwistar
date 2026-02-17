@@ -198,8 +198,25 @@ class PgCollectionFacade:
         include = include or ["documents", "metadatas"]
         return self._b._query_nonvector(self._t, where=where, n_results=n_results, include=include)
 
-    def update(self, *, ids: Sequence[str], documents=Sequence[str], metadatas: Sequence[Json]) -> None:
-        self._b._update_doc_and_metadata_merge(self._t, ids=ids, documents=documents, metadatas=metadatas)
+    def update(
+        self,
+        *,
+        ids: Sequence[str],
+        documents: Optional[Sequence[Optional[str]]] = None,
+        metadatas: Optional[Sequence[Json]] = None,
+        embeddings: Optional[Sequence[Sequence[float]]] = None,
+    ) -> None:
+        """Chroma-shaped update.
+
+        Parity with Chroma: update existing ids' documents/metadatas.
+        For vector collections we also allow updating embeddings (atomic in Postgres).
+        For non-vector collections embeddings are ignored.
+        """
+        if self._s.ignore_embeddings:
+            embeddings = None
+        self._b._update_doc_meta_embedding_merge(
+            self._t, ids=ids, documents=documents, metadatas=metadatas, embeddings=embeddings
+        )
 
 
 
@@ -721,34 +738,47 @@ class PgVectorBackend:
             out["embeddings"] = embs_out
         return out
 
-    def _update_doc_and_metadata_merge(
+    def _update_doc_meta_embedding_merge(
         self,
         table: sa.Table,
         *,
         ids: Sequence[str],
         documents: Optional[Sequence[Optional[str]]] = None,
         metadatas: Optional[Sequence[Json]] = None,
+        embeddings: Optional[Sequence[Sequence[float]]] = None,
     ) -> None:
-        """Update document and/or merge metadata patch for each id.
+        """Update document and/or merge metadata patch and/or update embedding for each id.
 
-        Parity requirement: Chroma's `Collection.update()` can accept both
-        documents and metadatas. Postgres can apply both atomically within a
+        Parity requirement: engine-level `update()` and `upsert()` share a compatible
+        shape. Postgres can apply document+metadata+embedding atomically within a
         transaction; if a UnitOfWork is active, we join it.
 
-        Notes:
+        Semantics:
         * `documents` replaces the document value (can be None).
         * `metadatas` is merged (JSONB || patch).
-        * JSON patch is bound as TEXT then cast to JSONB to avoid psycopg2
-          adaptation issues for dict.
+        * `embeddings` replaces the embedding value (vector tables only). For
+          non-vector tables, it is ignored.
         """
 
-        if documents is None and metadatas is None:
+        if documents is None and metadatas is None and embeddings is None:
             return
 
         if documents is not None and len(documents) != len(ids):
             raise ValueError("documents length must match ids length")
         if metadatas is not None and len(metadatas) != len(ids):
             raise ValueError("metadatas length must match ids length")
+        if embeddings is not None and len(embeddings) != len(ids):
+            raise ValueError("embeddings length must match ids length")
+
+        # Validate embedding dimensions early.
+        if embeddings is not None and "embedding" in table.c:
+            for i, e in enumerate(embeddings):
+                if e is None:
+                    continue
+                if len(e) != self.embedding_dim:
+                    raise ValueError(
+                        f"embedding dim mismatch at index {i}: got {len(e)}, expected {self.embedding_dim}"
+                    )
 
         patch_text = sa.bindparam("patch_text", type_=sa.Text)
         merged_expr = table.c.metadata
@@ -762,12 +792,31 @@ class PgVectorBackend:
 
                 if documents is not None:
                     values["document"] = documents[i]
+
                 if metadatas is not None:
                     values["metadata"] = merged_expr
                     params["patch_text"] = json.dumps(metadatas[i])
 
+                if embeddings is not None and "embedding" in table.c:
+                    # If caller passes None, we clear the embedding.
+                    e = embeddings[i]
+                    values["embedding"] = list(e) if e is not None else None
+
                 stmt = sa.update(table).where(table.c.id == _id).values(**values)
                 conn.execute(stmt, params)
+
+    def _update_doc_and_metadata_merge(
+        self,
+        table: sa.Table,
+        *,
+        ids: Sequence[str],
+        documents: Optional[Sequence[Optional[str]]] = None,
+        metadatas: Optional[Sequence[Json]] = None,
+    ) -> None:
+        """Backward compatible wrapper: update doc + merge metadata (no embedding)."""
+        self._update_doc_meta_embedding_merge(
+            table, ids=ids, documents=documents, metadatas=metadatas, embeddings=None
+        )
 
     def _update_metadata_merge(self, table: sa.Table, *, ids: Sequence[str], metadatas: Sequence[Json]) -> None:
         """Backward-compatible metadata-only merge."""
@@ -841,8 +890,9 @@ class PgVectorBackend:
         ids: Sequence[str],
         documents: Optional[Sequence[Optional[str]]] = None,
         metadatas: Optional[Sequence[Json]] = None,
+        embeddings: Optional[Sequence[Sequence[float]]] = None,
     ) -> None:
-        self._nodes_c.update(ids=ids, documents=documents, metadatas=metadatas)
+        self._nodes_c.update(ids=ids, documents=documents, metadatas=metadatas, embeddings=embeddings)
 
     # ----------------------------
     # Edges
@@ -869,8 +919,9 @@ class PgVectorBackend:
         ids: Sequence[str],
         documents: Optional[Sequence[Optional[str]]] = None,
         metadatas: Optional[Sequence[Json]] = None,
+        embeddings: Optional[Sequence[Sequence[float]]] = None,
     ) -> None:
-        self._edges_c.update(ids=ids, documents=documents, metadatas=metadatas)
+        self._edges_c.update(ids=ids, documents=documents, metadatas=metadatas, embeddings=embeddings)
 
     # ----------------------------
     # Documents
@@ -897,8 +948,9 @@ class PgVectorBackend:
         ids: Sequence[str],
         documents: Optional[Sequence[Optional[str]]] = None,
         metadatas: Optional[Sequence[Json]] = None,
+        embeddings: Optional[Sequence[Sequence[float]]] = None,
     ) -> None:
-        self._documents_c.update(ids=ids, documents=documents, metadatas=metadatas)
+        self._documents_c.update(ids=ids, documents=documents, metadatas=metadatas, embeddings=embeddings)
 
     # ----------------------------
     # Domains
@@ -925,8 +977,9 @@ class PgVectorBackend:
         ids: Sequence[str],
         documents: Optional[Sequence[Optional[str]]] = None,
         metadatas: Optional[Sequence[Json]] = None,
+        embeddings: Optional[Sequence[Sequence[float]]] = None,
     ) -> None:
-        self._domains_c.update(ids=ids, documents=documents, metadatas=metadatas)
+        self._domains_c.update(ids=ids, documents=documents, metadatas=metadatas, embeddings=embeddings)
 
     # ----------------------------
     # Edge endpoints
@@ -950,8 +1003,9 @@ class PgVectorBackend:
         ids: Sequence[str],
         documents: Optional[Sequence[Optional[str]]] = None,
         metadatas: Optional[Sequence[Json]] = None,
+        embeddings: Optional[Sequence[Sequence[float]]] = None,
     ) -> None:
-        self._edge_endpoints_c.update(ids=ids, documents=documents, metadatas=metadatas)
+        self._edge_endpoints_c.update(ids=ids, documents=documents, metadatas=metadatas, embeddings=embeddings)
 
     def edge_endpoints_delete(self, *, ids: Optional[Sequence[str]] = None, where: Optional[Json] = None) -> None:
         self._edge_endpoints_c.delete(ids=ids, where=where)
@@ -978,8 +1032,9 @@ class PgVectorBackend:
         ids: Sequence[str],
         documents: Optional[Sequence[Optional[str]]] = None,
         metadatas: Optional[Sequence[Json]] = None,
+        embeddings: Optional[Sequence[Sequence[float]]] = None,
     ) -> None:
-        self._edge_refs_c.update(ids=ids, documents=documents, metadatas=metadatas)
+        self._edge_refs_c.update(ids=ids, documents=documents, metadatas=metadatas, embeddings=embeddings)
 
     def edge_refs_delete(self, *, ids: Optional[Sequence[str]] = None, where: Optional[Json] = None) -> None:
         self._edge_refs_c.delete(ids=ids, where=where)
@@ -1006,8 +1061,9 @@ class PgVectorBackend:
         ids: Sequence[str],
         documents: Optional[Sequence[Optional[str]]] = None,
         metadatas: Optional[Sequence[Json]] = None,
+        embeddings: Optional[Sequence[Sequence[float]]] = None,
     ) -> None:
-        self._node_docs_c.update(ids=ids, documents=documents, metadatas=metadatas)
+        self._node_docs_c.update(ids=ids, documents=documents, metadatas=metadatas, embeddings=embeddings)
 
     def node_docs_delete(self, *, ids: Optional[Sequence[str]] = None, where: Optional[Json] = None) -> None:
         self._node_docs_c.delete(ids=ids, where=where)
@@ -1034,8 +1090,9 @@ class PgVectorBackend:
         ids: Sequence[str],
         documents: Optional[Sequence[Optional[str]]] = None,
         metadatas: Optional[Sequence[Json]] = None,
+        embeddings: Optional[Sequence[Sequence[float]]] = None,
     ) -> None:
-        self._node_refs_c.update(ids=ids, documents=documents, metadatas=metadatas)
+        self._node_refs_c.update(ids=ids, documents=documents, metadatas=metadatas, embeddings=embeddings)
 
     def node_refs_delete(self, *, ids: Optional[Sequence[str]] = None, where: Optional[Json] = None) -> None:
         self._node_refs_c.delete(ids=ids, where=where)
