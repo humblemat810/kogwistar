@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextvars
 import sqlite3
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -7,6 +8,22 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator, List, Optional
 
+
+
+_active_sqlite_conn: contextvars.ContextVar[sqlite3.Connection | None] = contextvars.ContextVar(
+    "gke_sqlite_active_conn", default=None
+)
+
+def get_active_sqlite_conn() -> sqlite3.Connection | None:
+    return _active_sqlite_conn.get()
+
+@contextmanager
+def _set_active_sqlite_conn(conn: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
+    token = _active_sqlite_conn.set(conn)
+    try:
+        yield conn
+    finally:
+        _active_sqlite_conn.reset(token)
 
 @dataclass(frozen=True)
 class IndexJobRow:
@@ -216,6 +233,9 @@ class EngineSQLite:
             isolation_level=None,
         )
         conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute("PRAGMA busy_timeout=30000")
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
         return conn
 
     @contextmanager
@@ -229,10 +249,18 @@ class EngineSQLite:
             with db.transaction() as conn:
                 ...
         """
+        existing = get_active_sqlite_conn()
+        if existing is not None:
+            # Nested transaction scope: join outer UoW/transaction.
+            # Do NOT BEGIN/COMMIT/ROLLBACK here.
+            yield existing
+            return
+
         conn = self.connect()
         try:
             conn.execute("BEGIN IMMEDIATE" if immediate else "BEGIN")
-            yield conn
+            with _set_active_sqlite_conn(conn):
+                yield conn
             conn.commit()
         except Exception:
             conn.rollback()

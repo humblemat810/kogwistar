@@ -1,0 +1,105 @@
+import uuid
+import pathlib
+import pytest
+
+from graph_knowledge_engine.engine import GraphKnowledgeEngine
+from graph_knowledge_engine.models import Node, Grounding, Span
+
+EMBEDDING_DIM = 3
+
+def _emb(*args, **kwargs):
+    return [0.1] * EMBEDDING_DIM
+
+def _mk_span(doc_id: str) -> Span:
+    sp = Span.from_dummy_for_document()
+    sp.doc_id = doc_id
+    return sp
+
+def _mk_node(node_id: str, *, doc_id: str) -> Node:
+    return Node(
+        id=node_id,
+        label=f"Node {node_id}",
+        type="entity",
+        summary=f"Summary {node_id}",
+        doc_id=doc_id,
+        mentions=[Grounding(spans=[_mk_span(doc_id)])],
+        metadata={"level_from_root": 0, "entity_type": "kg_entity"},
+        embedding=[0.1] * EMBEDDING_DIM,
+        level_from_root=0,
+        domain_id=None,
+        canonical_entity_id=None,
+        properties=None,
+    )
+
+@pytest.fixture
+def chroma_engine(tmp_path: pathlib.Path) -> GraphKnowledgeEngine:
+    persist_dir = tmp_path / "chroma"
+    persist_dir.mkdir(parents=True, exist_ok=True)
+    eng = GraphKnowledgeEngine(persist_directory=str(persist_dir))
+    eng._test_backend_kind = "chroma"  # type: ignore[attr-defined]
+    eng._ef._emb = _emb
+    return eng
+
+
+def test_phase3_chroma_replay_repairs_missing_vector_state(chroma_engine):
+    """
+    Chroma cannot rollback, so the Phase-3 correctness story is:
+      - meta event log is durable
+      - replay can repair vector/index state after partial failure
+
+    We simulate “vector state lost” by deleting from backend directly (NO new event),
+    then replay should restore it from entity_events.
+    """
+    eng = chroma_engine
+    ns = f"phase3_repair_{uuid.uuid4().hex}"
+    eng.namespace = ns
+
+    nid = "n_repair_1"
+    eng.add_node(_mk_node(nid, doc_id="d1"))
+
+    # Ensure it exists
+    got1 = eng.backend.node_get(ids=[nid], include=["metadatas", "documents"])
+    assert got1.get("ids") and nid in got1["ids"]
+
+    # Simulate “vector store lost the row” without logging a new event
+    eng.backend.node_delete(ids=[nid])
+
+    got2 = eng.backend.node_get(ids=[nid], include=["metadatas", "documents"])
+    assert got2.get("ids") in ([], None) or len(got2.get("ids", [])) == 0
+
+    # Repair by replay
+    last_seq = eng.replay_namespace(namespace=ns, apply_indexes=True)
+    assert last_seq >= 1
+
+    got3 = eng.backend.node_get(ids=[nid], include=["metadatas", "documents"])
+    assert got3.get("ids") and nid in got3["ids"]
+
+def test_phase3_chroma_replay_overwrites_tampered_content(chroma_engine):
+    eng = chroma_engine
+    ns = f"phase3_tamper_{uuid.uuid4().hex}"
+    eng.namespace = ns
+
+    node = _mk_node("n1", doc_id="d1")
+    eng.add_node(node)
+
+    # Capture canonical view (what we expect after repair)
+    canon = eng.backend.node_get(ids=["n1"], include=["documents", "metadatas", "embeddings"])
+
+    # Tamper: overwrite documents/metadatas/embeddings directly in backend
+    eng.backend.node_upsert(  # or whatever low-level API you have
+        ids=["n1"],
+        documents=["TAMPERED"],
+        metadatas=[{"tampered": True}],
+        embeddings=[[9.9] * EMBEDDING_DIM],
+    )
+
+    tampered = eng.backend.node_get(ids=["n1"], include=["documents", "metadatas", "embeddings"])
+    assert tampered["documents"][0] == "TAMPERED"
+
+    # Repair by replay
+    eng.replay_namespace(namespace=ns, apply_indexes=False)
+
+    repaired = eng.backend.node_get(ids=["n1"], include=["documents", "metadatas", "embeddings"])
+    assert repaired["documents"][0] == canon["documents"][0]
+    assert repaired["metadatas"][0] == canon["metadatas"][0]
+    # embeddings assertion depends on whether you persist/recompute them
