@@ -245,7 +245,7 @@ class Span(ModeSlicingMixin, BaseModel):
         # data_dump = data.model_dump()
         if type(data) is dict:
             if data.get('insertion_method') is None:
-                insertion_method = info.context["insertion_method"]
+                insertion_method = info.context and info.context["insertion_method"]
                 data['insertion_method'] = insertion_method
         return data
     @model_validator(mode="after")

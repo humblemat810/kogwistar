@@ -1,14 +1,15 @@
 from fastapi.testclient import TestClient
 
 # Import your FastAPI app
-from graph_knowledge_engine.server_mcp_with_admin import app
-
-client = TestClient(app)
 
 DOC_ID = "pytest-doc-upsert-1"
 
 def test_graph_upsert_llm_batch_with_references():
     # clean slate (best-effort)
+    
+    from graph_knowledge_engine.server_mcp_with_admin import app
+
+    client = TestClient(app)
     client.delete(f"/admin/doc/{DOC_ID}")
 
     payload = {

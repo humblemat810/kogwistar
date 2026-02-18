@@ -1040,9 +1040,27 @@ class GraphKnowledgeEngine:
         if kw.get("deleted_by"):
             patch["deleted_by"] = kw["deleted_by"]
         ok = _backend_update_record_lifecycle(backend=self.backend, kind="node", record_id=node_id, lifecycle_patch=patch)
+
+        # Phase 2b: append immutable event log (best-effort)
+        if ok:
+            try:
+                payload = {"entity_id": node_id}
+                if kw.get("reason") is not None:
+                    payload["reason"] = kw.get("reason")
+                if kw.get("deleted_by") is not None:
+                    payload["deleted_by"] = kw.get("deleted_by")
+                self._append_event_for_entity(
+                    namespace=getattr(self, "namespace", "default"),
+                    entity_kind="node",
+                    entity_id=node_id,
+                    op="TOMBSTONE",
+                    payload=payload,
+                )
+            except Exception:
+                pass
         if ok and self._phase1_enable_index_jobs:
             self.enqueue_index_jobs_for_node(node_id, op="DELETE")
-            self.reconcile_indexes(max_jobs=50)
+            applied = self.reconcile_indexes(max_jobs=50)
         return ok
 
     def redirect_node(self, from_id: str, to_id: str, **kw) -> bool:
@@ -1074,10 +1092,100 @@ class GraphKnowledgeEngine:
         if kw.get("deleted_by"):
             patch["deleted_by"] = kw["deleted_by"]
         ok = _backend_update_record_lifecycle(backend=self.backend, kind="edge", record_id=edge_id, lifecycle_patch=patch)
-        if ok and self._phase1_enable_index_jobs:
-            self.enqueue_index_jobs_for_edge(edge_id, op="DELETE")
-            self.reconcile_indexes(max_jobs=50)
-        return ok
+
+        # Phase 2b: append immutable event log (best-effort)
+        if ok:
+            try:
+                payload = {"entity_id": edge_id}
+                if kw.get("reason") is not None:
+                    payload["reason"] = kw.get("reason")
+                if kw.get("deleted_by") is not None:
+                    payload["deleted_by"] = kw.get("deleted_by")
+                self._append_event_for_entity(
+                    namespace=getattr(self, "namespace", "default"),
+                    entity_kind="edge",
+                    entity_id=edge_id,
+                    op="TOMBSTONE",
+                    payload=payload,
+                )
+            except Exception:
+                pass
+                if ok and self._phase1_enable_index_jobs:
+                    self.enqueue_index_jobs_for_edge(edge_id, op="DELETE")
+                    self.reconcile_indexes(max_jobs=50)
+                return ok
+
+
+    def replay_namespace(
+        self,
+        *,
+        namespace: str = "default",
+        from_seq: int = 1,
+        to_seq: int | None = None,
+        apply_indexes: bool = False,
+    ) -> int:
+        """
+        Replay entity events into the current engine.
+
+        Phase 2b: replay MUST NOT emit new entity_events. We guard via self._disable_event_log.
+        """
+        iter_events = getattr(self.meta_sqlite, "iter_entity_events", None)
+        if iter_events is None:
+            return 0
+
+        last_seq = 0
+        prev_log = getattr(self, "_disable_event_log", False)
+        prev_idx = getattr(self, "_phase1_enable_index_jobs", False)
+
+        self._disable_event_log = True
+        if not apply_indexes:
+            self._phase1_enable_index_jobs = False
+
+        try:
+            for seq, ek, eid, op, payload_json in iter_events(
+                namespace=namespace,
+                from_seq=int(from_seq),
+                to_seq=(int(to_seq) if to_seq is not None else None),
+            ):
+                payload = {}
+                try:
+                    payload = json.loads(payload_json)
+                except Exception:
+                    payload = {}
+
+                if ek == "node":
+                    if op in ("ADD", "REPLACE"):
+                        try:
+                            node = models.Node.model_validate(payload)
+                        except Exception:
+                            # tolerate older shapes
+                            node = models.Node.model_validate_json(json.dumps(payload))
+                        self.add_node(node)
+                    elif op in ("TOMBSTONE", "DELETE"):
+                        self.tombstone_node(str(eid))
+
+                elif ek == "edge":
+                    if op in ("ADD", "REPLACE"):
+                        try:
+                            edge = models.Edge.model_validate(payload)
+                        except Exception:
+                            edge = models.Edge.model_validate_json(json.dumps(payload))
+                        self.add_edge(edge)
+                    elif op in ("TOMBSTONE", "DELETE"):
+                        self.tombstone_edge(str(eid))
+
+                last_seq = int(seq)
+        finally:
+            self._disable_event_log = prev_log
+            self._phase1_enable_index_jobs = prev_idx
+
+        if apply_indexes and getattr(self, "_phase1_enable_index_jobs", False):
+            try:
+                self.reconcile_indexes(max_jobs=200)
+            except Exception:
+                pass
+
+        return last_seq
 
     def redirect_edge(self, from_id: str, to_id: str, **kw) -> bool:
         if from_id == to_id:
@@ -1383,6 +1491,42 @@ class GraphKnowledgeEngine:
         )
         return str(job_id2) if job_id2 else job_id
 
+    
+
+
+    # ------------------------------------------------------------------
+    # Phase 2b: event log foundation
+    # ------------------------------------------------------------------
+
+    def _append_event_for_entity(
+        self,
+        *,
+        namespace: str,
+        entity_kind: str,
+        entity_id: str,
+        op: str,
+        payload: dict,
+    ) -> None:
+        """
+        Best-effort append to the meta outbox. Must never block the primary write path.
+        Replay suppresses this via self._disable_event_log.
+        """
+        if getattr(self, "_disable_event_log", False):
+            return
+        append = getattr(self.meta_sqlite, "append_entity_event", None)
+        if append is None:
+            return
+
+        event_id = str(uuid.uuid4())
+        payload_json = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        append(
+            namespace=namespace,
+            event_id=event_id,
+            entity_kind=entity_kind,
+            entity_id=entity_id,
+            op=op,
+            payload_json=payload_json,
+        )
     def enqueue_index_jobs_for_node(self, node_id: str, *, op: str) -> None:
         for idx in ("node_docs", "node_refs"):
             self.enqueue_index_job(entity_kind="node", entity_id=node_id, index_kind=idx, op=op)
@@ -2229,6 +2373,7 @@ class GraphKnowledgeEngine:
         self.kg_graph_type = kg_graph_type
         self.persist_directory = persist_directory
         self.namespace = namespace
+        self._disable_event_log = False
         self.query = GraphQuery(self)
         self.allow_cross_kind_adjudication = True  # can be set by user
         self.cross_kind_strategy = "reifies"       # "reifies" | "equivalent" (default "reifies")
@@ -2746,6 +2891,21 @@ class GraphKnowledgeEngine:
             metadatas=[meta],
         )
 
+
+        # Phase 2b: append immutable event log (best-effort)
+        try:
+            # node.mentions[0].spans[0].model_dump(field_mode='backend')
+            payload = node.model_dump(field_mode='backend', exclude = ['embedding'])
+            self._append_event_for_entity(
+                namespace=getattr(self, "namespace", "default"),
+                entity_kind="node",
+                entity_id=node.safe_get_id(),
+                op="ADD",
+                payload=payload if isinstance(payload, dict) else {},
+            )
+        except Exception:
+            pass
+
         # Phase 1: enqueue derived index work; fast path drains immediately.
         if self._phase1_enable_index_jobs:
             self.enqueue_index_jobs_for_node(node.safe_get_id(), op="UPSERT")
@@ -2906,6 +3066,20 @@ class GraphKnowledgeEngine:
             embeddings=[edge.embedding] if edge.embedding is not None else [self._iterative_defensive_emb(str(doc))],
             metadatas=base_metadata,
         )
+
+
+        # Phase 2b: append immutable event log (best-effort)
+        try:
+            payload = edge.model_dump(field_mode='backend', exclude = ['embedding'])
+            self._append_event_for_entity(
+                namespace=getattr(self, "namespace", "default"),
+                entity_kind="edge",
+                entity_id=edge.safe_get_id(),
+                op="ADD",
+                payload=payload if isinstance(payload, dict) else {},
+            )
+        except Exception:
+            pass
 
         # Phase 1: enqueue derived index work; fast path drains immediately.
         if self._phase1_enable_index_jobs:

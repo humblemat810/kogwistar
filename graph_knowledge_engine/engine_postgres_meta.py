@@ -122,6 +122,51 @@ class EnginePostgresMetaStore:
             conn.execute(sa.text(f"CREATE INDEX IF NOT EXISTS idx_index_applied_state_key ON {ias}(coalesce_key)"))
 
 
+            # -------------------------------
+            # Phase 2b: event log foundation
+            # -------------------------------
+
+            conn.execute(sa.text(f"""
+            CREATE TABLE IF NOT EXISTS {schema}.namespace_seq (
+                namespace TEXT PRIMARY KEY,
+                next_seq  BIGINT NOT NULL
+            )
+            """))
+            conn.execute(sa.text(f"""
+            INSERT INTO {schema}.namespace_seq(namespace, next_seq)
+            VALUES ('default', 1)
+            ON CONFLICT(namespace) DO NOTHING
+            """))
+
+            conn.execute(sa.text(f"""
+            CREATE TABLE IF NOT EXISTS {schema}.entity_events (
+                namespace    TEXT NOT NULL DEFAULT 'default',
+                seq          BIGINT NOT NULL,
+                event_id     TEXT NOT NULL,
+                entity_kind  TEXT NOT NULL,
+                entity_id    TEXT NOT NULL,
+                op           TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                PRIMARY KEY(namespace, seq),
+                UNIQUE(event_id)
+            )
+            """))
+            conn.execute(sa.text(f"""
+            CREATE INDEX IF NOT EXISTS idx_entity_events_aggregate
+            ON {schema}.entity_events(namespace, entity_kind, entity_id, seq)
+            """))
+
+            conn.execute(sa.text(f"""
+            CREATE TABLE IF NOT EXISTS {schema}.replay_cursors (
+                namespace  TEXT NOT NULL DEFAULT 'default',
+                consumer   TEXT NOT NULL,
+                last_seq   BIGINT NOT NULL,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                PRIMARY KEY(namespace, consumer)
+            )
+            """))
+
     # ----------------------------
     # Transaction helpers
     # ----------------------------
@@ -462,4 +507,122 @@ class EnginePostgresMetaStore:
                     """
                 ),
                 {"ns": namespace, "ck": coalesce_key, "fp": applied_fingerprint, "jid": last_job_id},
+            )
+
+
+    # ------------------------------------------------------------------
+    # Phase 2b: event log foundation
+    # ------------------------------------------------------------------
+
+    def alloc_event_seq(self, namespace: str = "default") -> int:
+        schema = self.schema
+        with self.transaction() as conn:
+            row = conn.execute(
+                sa.text(f"""
+                    UPDATE {schema}.namespace_seq
+                    SET next_seq = next_seq + 1
+                    WHERE namespace = :ns
+                    RETURNING next_seq - 1
+                """),
+                {"ns": namespace},
+            ).fetchone()
+            if row is not None:
+                return int(row[0])
+
+            conn.execute(
+                sa.text(f"INSERT INTO {schema}.namespace_seq(namespace, next_seq) VALUES (:ns, 2)"),
+                {"ns": namespace},
+            )
+            return 1
+
+
+    def append_entity_event(
+        self,
+        *,
+        namespace: str = "default",
+        event_id: str,
+        entity_kind: str,
+        entity_id: str,
+        op: str,
+        payload_json: str,
+    ) -> int:
+        schema = self.schema
+        seq = self.alloc_event_seq(namespace)
+        with self.transaction() as conn:
+            conn.execute(
+                sa.text(f"""
+                    INSERT INTO {schema}.entity_events(
+                        namespace, seq, event_id, entity_kind, entity_id, op, payload_json
+                    )
+                    VALUES (:ns, :seq, :eid, :ek, :id, :op, :payload)
+                """),
+                {
+                    "ns": namespace,
+                    "seq": seq,
+                    "eid": event_id,
+                    "ek": entity_kind,
+                    "id": entity_id,
+                    "op": op,
+                    "payload": payload_json,
+                },
+            )
+        return seq
+
+
+    def iter_entity_events(
+        self,
+        *,
+        namespace: str = "default",
+        from_seq: int = 1,
+        to_seq: int | None = None,
+    ):
+        schema = self.schema
+        with self.transaction() as conn:
+            if to_seq is None:
+                rows = conn.execute(
+                    sa.text(f"""
+                        SELECT seq, entity_kind, entity_id, op, payload_json
+                        FROM {schema}.entity_events
+                        WHERE namespace=:ns AND seq >= :from_seq
+                        ORDER BY seq ASC
+                    """),
+                    {"ns": namespace, "from_seq": int(from_seq)},
+                )
+            else:
+                rows = conn.execute(
+                    sa.text(f"""
+                        SELECT seq, entity_kind, entity_id, op, payload_json
+                        FROM {schema}.entity_events
+                        WHERE namespace=:ns AND seq BETWEEN :from_seq AND :to_seq
+                        ORDER BY seq ASC
+                    """),
+                    {"ns": namespace, "from_seq": int(from_seq), "to_seq": int(to_seq)},
+                )
+            yield from rows
+
+
+    def cursor_get(self, *, namespace: str, consumer: str) -> int:
+        schema = self.schema
+        with self.transaction() as conn:
+            row = conn.execute(
+                sa.text(f"""
+                    SELECT last_seq FROM {schema}.replay_cursors
+                    WHERE namespace=:ns AND consumer=:c
+                """),
+                {"ns": namespace, "c": consumer},
+            ).fetchone()
+        return int(row[0]) if row else 0
+
+
+    def cursor_set(self, *, namespace: str, consumer: str, last_seq: int) -> None:
+        schema = self.schema
+        with self.transaction() as conn:
+            conn.execute(
+                sa.text(f"""
+                    INSERT INTO {schema}.replay_cursors(namespace, consumer, last_seq, updated_at)
+                    VALUES (:ns, :c, :s, NOW())
+                    ON CONFLICT(namespace, consumer)
+                    DO UPDATE SET last_seq=EXCLUDED.last_seq, updated_at=NOW()
+                """),
+                {"ns": namespace, "c": consumer, "s": int(last_seq)},
             )

@@ -149,6 +149,58 @@ class EngineSQLite:
                 "CREATE INDEX IF NOT EXISTS idx_index_applied_state_key ON index_applied_state(coalesce_key)"
             )
 
+            # -------------------------------
+            # Phase 2b: event log foundation
+            # -------------------------------
+
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS namespace_seq (
+                    namespace TEXT PRIMARY KEY,
+                    next_seq   INTEGER NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                "INSERT OR IGNORE INTO namespace_seq(namespace, next_seq) VALUES ('default', 1)"
+            )
+
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS entity_events (
+                    namespace    TEXT NOT NULL DEFAULT 'default',
+                    seq          INTEGER NOT NULL,
+                    event_id     TEXT NOT NULL,
+                    entity_kind  TEXT NOT NULL,     -- 'node' | 'edge'
+                    entity_id    TEXT NOT NULL,
+                    op           TEXT NOT NULL,     -- 'ADD' | 'TOMBSTONE' | 'DELETE' | 'REPLACE'
+                    payload_json TEXT NOT NULL,
+                    created_at   INTEGER NOT NULL,
+                    PRIMARY KEY(namespace, seq),
+                    UNIQUE(event_id)
+                )
+                """
+            )
+
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_entity_events_aggregate
+                ON entity_events(namespace, entity_kind, entity_id, seq)
+                """
+            )
+
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS replay_cursors (
+                    namespace  TEXT NOT NULL DEFAULT 'default',
+                    consumer   TEXT NOT NULL,
+                    last_seq   INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL,
+                    PRIMARY KEY(namespace, consumer)
+                )
+                """
+            )
+
 
     # ------------------------------------------------------------------
     # Connection / transaction helpers
@@ -566,4 +618,157 @@ class EngineSQLite:
                               last_job_id = excluded.last_job_id
                 """,
                 (namespace, coalesce_key, applied_fingerprint, now, last_job_id),
+            )
+
+
+    # ------------------------------------------------------------------
+    # Phase 2b: event log foundation
+    # ------------------------------------------------------------------
+
+    def alloc_event_seq(self, namespace: str = "default") -> int:
+        with self.transaction() as conn:
+            row = conn.execute(
+                """
+                UPDATE namespace_seq
+                SET next_seq = next_seq + 1
+                WHERE namespace = ?
+                RETURNING next_seq - 1
+                """,
+                (namespace,),
+            ).fetchone()
+
+            if row is not None:
+                return int(row[0])
+
+            conn.execute(
+                "INSERT INTO namespace_seq(namespace, next_seq) VALUES (?, 2)",
+                (namespace,),
+            )
+            return 1
+
+
+    def append_entity_event(
+        self,
+        *,
+        namespace: str = "default",
+        event_id: str,
+        entity_kind: str,
+        entity_id: str,
+        op: str,
+        payload_json: str,
+    ) -> int:
+        seq = self.alloc_event_seq(namespace)
+        now = self._now_epoch()
+        with self.transaction() as conn:
+            conn.execute(
+                """
+                INSERT INTO entity_events(
+                    namespace, seq, event_id,
+                    entity_kind, entity_id, op,
+                    payload_json, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (namespace, seq, event_id, entity_kind, entity_id, op, payload_json, now),
+            )
+        return seq
+
+    def iter_entity_events( # mini batched
+        self,
+        *,
+        namespace: str = "default",
+        from_seq: int = 1,
+        to_seq: int | None = None,
+        batch_size: int = 500,
+    ):
+        next_seq = int(from_seq)
+        while True:
+            with self.connect() as conn:
+                if to_seq is None:
+                    rows = list(
+                        conn.execute(
+                            """
+                            SELECT seq, entity_kind, entity_id, op, payload_json
+                            FROM entity_events
+                            WHERE namespace = ? AND seq >= ?
+                            ORDER BY seq ASC
+                            LIMIT ?
+                            """,
+                            (namespace, next_seq, int(batch_size)),
+                        )
+                    )
+                else:
+                    rows = list(
+                        conn.execute(
+                            """
+                            SELECT seq, entity_kind, entity_id, op, payload_json
+                            FROM entity_events
+                            WHERE namespace = ? AND seq >= ? AND seq <= ?
+                            ORDER BY seq ASC
+                            LIMIT ?
+                            """,
+                            (namespace, next_seq, int(to_seq), int(batch_size)),
+                        )
+                    )
+
+            if not rows:
+                break
+
+            for r in rows:
+                yield r
+
+            # advance cursor: next batch starts after the last seq we just yielded
+            next_seq = int(rows[-1][0]) + 1
+
+    # def iter_entity_events(
+    #     self,
+    #     *,
+    #     namespace: str = "default",
+    #     from_seq: int = 1,
+    #     to_seq: int | None = None,
+    # ):
+    #     with self.connect() as conn:
+    #         if to_seq is None:
+    #             rows = conn.execute(
+    #                 """
+    #                 SELECT seq, entity_kind, entity_id, op, payload_json
+    #                 FROM entity_events
+    #                 WHERE namespace = ? AND seq >= ?
+    #                 ORDER BY seq ASC
+    #                 """,
+    #                 (namespace, from_seq),
+    #             )
+    #         else:
+    #             rows = conn.execute(
+    #                 """
+    #                 SELECT seq, entity_kind, entity_id, op, payload_json
+    #                 FROM entity_events
+    #                 WHERE namespace = ? AND seq BETWEEN ? AND ?
+    #                 ORDER BY seq ASC
+    #                 """,
+    #                 (namespace, from_seq, to_seq),
+    #             )
+    #         yield from rows
+
+
+    def cursor_get(self, *, namespace: str, consumer: str) -> int:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT last_seq FROM replay_cursors WHERE namespace=? AND consumer=?",
+                (namespace, consumer),
+            ).fetchone()
+        return int(row[0]) if row else 0
+
+
+    def cursor_set(self, *, namespace: str, consumer: str, last_seq: int) -> None:
+        now = self._now_epoch()
+        with self.transaction() as conn:
+            conn.execute(
+                """
+                INSERT INTO replay_cursors(namespace, consumer, last_seq, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(namespace, consumer) DO UPDATE
+                SET last_seq=excluded.last_seq, updated_at=excluded.updated_at
+                """,
+                (namespace, consumer, int(last_seq), now),
             )
