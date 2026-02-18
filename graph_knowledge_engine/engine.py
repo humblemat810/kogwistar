@@ -1126,14 +1126,22 @@ class GraphKnowledgeEngine:
         repair_backend: bool = False,
     ) -> int:
         """
-        Replay entity events into the current engine.
+        Replay entity events into the current engine (projection rebuild).
 
-        Phase 2b: replay MUST NOT emit new entity_events. We guard via self._disable_event_log.
+        IMPORTANT (event sourcing):
+        - Replay MUST NOT emit new entity_events. We enforce this via self._disable_event_log.
+        - The event log is the source of truth; backends (Chroma/pgvector) are projections.
 
-        Phase 3b (optional): `repair_backend=True` turns replay into a *repair* pass.
-        Some backends (notably Chroma) treat `add` as "insert" rather than upsert.
-        In repair mode, we best-effort delete the target id before re-applying an ADD/REPLACE
-        so the materialized store is forced back to the event-sourced truth.
+        Semantics:
+        - repair_backend=False (default): "normal replay"
+            Applies events through normal add/tombstone code paths.
+            For Chroma, writes may be create-only (collection.add), so replay is sufficient to
+            rebuild missing rows, but may NOTtityoverwrite tampered-but-present rows.
+
+        - repair_backend=True: "repair replay"
+            Best-effort forces overwrite of backend projection state to match the event stream.
+            Intended for Chroma drift/tampering scenarios where ids already exist but content is wrong.
+            Must still not emit new entity_events.
         """
         iter_events = getattr(self.meta_sqlite, "iter_entity_events", None)
         if iter_events is None:
@@ -1544,6 +1552,22 @@ class GraphKnowledgeEngine:
         """
         Best-effort append to the meta outbox. Must never block the primary write path.
         Replay suppresses this via self._disable_event_log.
+        """
+        """
+        ### Replay vs Repair Replay (Event Sourcing / Projections)
+
+        The entity event log (`entity_events`) is the source of truth. Storage backends (Chroma / pgvector)
+        are projections derived from the event stream.
+
+        - `replay_namespace(...)` replays events to rebuild projection state.
+        - For create-only backends like Chroma (`collection.add`), normal replay can rebuild missing ids,
+            but cannot overwrite ids that already exist with corrupted/tampered content.
+
+        - `replay_namespace(..., repair_backend=True)` (or `replay_repair_namespace(...)`) performs a
+        "repair replay" that best-effort overwrites projection state to match the event log.
+        - Use this when you suspect backend drift/tampering.
+
+        Invariant: replay never emits new `entity_events` (guarded by `_disable_event_log`).
         """
         if getattr(self, "_disable_event_log", False):
             return

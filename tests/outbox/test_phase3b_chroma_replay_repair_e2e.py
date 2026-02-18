@@ -207,3 +207,60 @@ def test_phase3b_chroma_replay_repair_overwrites_tampered_edge(chroma_engine: Gr
     eng.replay_repair_namespace(namespace=ns, apply_indexes=False)
 
     assert eng.get_edges(ids=[eid])[0].label == "Correct Edge"
+
+
+def _count_events(eng: GraphKnowledgeEngine, ns: str) -> int:
+    return sum(1 for _ in eng.meta_sqlite.iter_entity_events(namespace=ns, from_seq=1))
+
+
+def _max_seq(eng: GraphKnowledgeEngine, ns: str) -> int:
+    last = 0
+    for seq, *_rest in eng.meta_sqlite.iter_entity_events(namespace=ns, from_seq=1):
+        last = int(seq)
+    return last
+def test_phase3b_replay_does_not_emit_new_entity_events_normal_or_repair(chroma_engine):
+    eng = chroma_engine
+    ns = f"phase3b_noevents_{uuid.uuid4().hex}"
+    eng.namespace = ns
+
+    # Create an event (normal engine write)
+    nid = "n1"
+    eng.add_node(_mk_node(nid, doc_id="d1", label="CORRECT"))
+
+    before_count = _count_events(eng, ns)
+    before_max_seq = _max_seq(eng, ns)
+    assert before_count >= 1
+    assert before_max_seq >= 1
+
+    # Normal replay (should not add events)
+    eng.replay_namespace(namespace=ns, apply_indexes=False)
+    assert _count_events(eng, ns) == before_count
+    assert _max_seq(eng, ns) == before_max_seq
+
+    # Simulate tampering WITHOUT emitting new events:
+    # best effort: delete from backend directly, then re-add wrong content with event log disabled.
+    eng.backend.node_delete(ids=[nid])
+
+    wrong = _mk_node(nid, doc_id="d1", label = "TAMPERED")
+    wrong.label = "TAMPERED"
+    wrong.summary = "TAMPERED"
+
+    prev = getattr(eng, "_disable_event_log", False)
+    eng._disable_event_log = True
+    try:
+        eng.add_node(wrong)  # writes projection state but does NOT append entity_events
+    finally:
+        eng._disable_event_log = prev
+
+    # Repair replay (should also not add events)
+    # Use whatever API you implemented in 3b:
+    # - eng.replay_namespace(..., repair_backend=True)
+    # - or eng.replay_repair_namespace(...)
+    if "repair_backend" in eng.replay_namespace.__code__.co_varnames:
+        eng.replay_namespace(namespace=ns, apply_indexes=False, repair_backend=True)
+    else:
+        # If you implemented a wrapper instead:
+        eng.replay_repair_namespace(namespace=ns, apply_indexes=False)  # type: ignore[attr-defined]
+
+    assert _count_events(eng, ns) == before_count
+    assert _max_seq(eng, ns) == before_max_seq
