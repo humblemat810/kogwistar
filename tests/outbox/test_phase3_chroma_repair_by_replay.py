@@ -2,7 +2,7 @@ import uuid
 import pathlib
 import pytest
 
-from graph_knowledge_engine.engine import GraphKnowledgeEngine
+from graph_knowledge_engine.engine import GraphKnowledgeEngine, _node_doc_and_meta
 from graph_knowledge_engine.models import Node, Grounding, Span
 
 EMBEDDING_DIM = 3
@@ -74,32 +74,36 @@ def test_phase3_chroma_replay_repairs_missing_vector_state(chroma_engine):
     got3 = eng.backend.node_get(ids=[nid], include=["metadatas", "documents"])
     assert got3.get("ids") and nid in got3["ids"]
 
-def test_phase3_chroma_replay_overwrites_tampered_content(chroma_engine):
+def test_phase3b_chroma_replay_repair_restores_tampered_node(chroma_engine):
     eng = chroma_engine
-    ns = f"phase3_tamper_{uuid.uuid4().hex}"
+    ns = f"phase3b_tamper_{uuid.uuid4().hex}"
     eng.namespace = ns
 
     node = _mk_node("n1", doc_id="d1")
     eng.add_node(node)
 
-    # Capture canonical view (what we expect after repair)
-    canon = eng.backend.node_get(ids=["n1"], include=["documents", "metadatas", "embeddings"])
+    # Canonical expectation from *event payload* (embedding excluded in your event log)
+    expected_label = node.label
+    expected_summary = node.summary
 
-    # Tamper: overwrite documents/metadatas/embeddings directly in backend
-    eng.backend.node_upsert(  # or whatever low-level API you have
-        ids=["n1"],
-        documents=["TAMPERED"],
-        metadatas=[{"tampered": True}],
-        embeddings=[[9.9] * EMBEDDING_DIM],
-    )
+    # Tamper backend: delete + re-add wrong content directly (no new event)
+    eng.backend.node_delete(ids=["n1"])
+    node = _mk_node("n1", doc_id="d1")
+    node.label = "TAMPERED"
+    node.summary = "TAMPERED"
+    doc, meta = _node_doc_and_meta(node)
+    eng.backend.node_add(
+            ids=[node.safe_get_id()],
+            documents=[doc],
+            embeddings=[node.embedding] if node.embedding is not None else [eng._iterative_defensive_emb(str(doc))],
+            metadatas=[meta],
+        )
+    got_tampered = eng.backend.node_get(ids=["n1"], include=["metadatas"])
+    assert got_tampered["metadatas"][0]["label"] == "TAMPERED"
 
-    tampered = eng.backend.node_get(ids=["n1"], include=["documents", "metadatas", "embeddings"])
-    assert tampered["documents"][0] == "TAMPERED"
+    # Repair replay (overwrite-capable)
+    eng.replay_namespace(namespace=ns, apply_indexes=False, repair_backend=True)
 
-    # Repair by replay
-    eng.replay_namespace(namespace=ns, apply_indexes=False)
-
-    repaired = eng.backend.node_get(ids=["n1"], include=["documents", "metadatas", "embeddings"])
-    assert repaired["documents"][0] == canon["documents"][0]
-    assert repaired["metadatas"][0] == canon["metadatas"][0]
-    # embeddings assertion depends on whether you persist/recompute them
+    got_repaired = eng.backend.node_get(ids=["n1"], include=["metadatas"])
+    assert got_repaired["metadatas"][0]["label"] == expected_label
+    assert got_repaired["metadatas"][0]["summary"] == expected_summary

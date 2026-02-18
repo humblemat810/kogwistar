@@ -1123,11 +1123,17 @@ class GraphKnowledgeEngine:
         from_seq: int = 1,
         to_seq: int | None = None,
         apply_indexes: bool = False,
+        repair_backend: bool = False,
     ) -> int:
         """
         Replay entity events into the current engine.
 
         Phase 2b: replay MUST NOT emit new entity_events. We guard via self._disable_event_log.
+
+        Phase 3b (optional): `repair_backend=True` turns replay into a *repair* pass.
+        Some backends (notably Chroma) treat `add` as "insert" rather than upsert.
+        In repair mode, we best-effort delete the target id before re-applying an ADD/REPLACE
+        so the materialized store is forced back to the event-sourced truth.
         """
         iter_events = getattr(self.meta_sqlite, "iter_entity_events", None)
         if iter_events is None:
@@ -1152,6 +1158,17 @@ class GraphKnowledgeEngine:
                     payload = json.loads(payload_json)
                 except Exception:
                     payload = {}
+
+                # Repair mode: force overwrite semantics for backends that don't upsert on add.
+                if repair_backend and op in ("ADD", "REPLACE"):
+                    try:
+                        if ek == "node":
+                            self.backend.node_delete(ids=[str(eid)])
+                        elif ek == "edge":
+                            self.backend.edge_delete(ids=[str(eid)])
+                    except Exception:
+                        # Best-effort: missing rows / unsupported delete should not stop replay.
+                        pass
 
                 if ek == "node":
                     if op in ("ADD", "REPLACE"):
@@ -1186,6 +1203,23 @@ class GraphKnowledgeEngine:
                 pass
 
         return last_seq
+
+    def replay_repair_namespace(
+        self,
+        *,
+        namespace: str = "default",
+        from_seq: int = 1,
+        to_seq: int | None = None,
+        apply_indexes: bool = False,
+    ) -> int:
+        """Convenience wrapper: replay with backend repair semantics enabled."""
+        return self.replay_namespace(
+            namespace=namespace,
+            from_seq=from_seq,
+            to_seq=to_seq,
+            apply_indexes=apply_indexes,
+            repair_backend=True,
+        )
 
     def redirect_edge(self, from_id: str, to_id: str, **kw) -> bool:
         if from_id == to_id:
