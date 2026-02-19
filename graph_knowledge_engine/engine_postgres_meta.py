@@ -441,7 +441,7 @@ class EnginePostgresMetaStore:
         where_sql = ("WHERE " + " AND ".join(where)) if where else ""
         sql = sa.text(
             f"""
-            SELECT job_id, namespace, entity_kind, entity_id, index_kind, op, status,
+            SELECT job_id, namespace, entity_kind, entity_id, index_kind, coalesce_key, op, status,
                    lease_until, retry_count, last_error, payload_json
             FROM {ij}
             {where_sql}

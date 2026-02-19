@@ -717,7 +717,7 @@ class PgVectorBackend:
                 if where:
                     q = q.where(where_jsonb(table.c.metadata, where, numeric_keys=self.numeric_keys))
 
-                q = q.order_by(distance_expr.asc()).limit(int(n_results))
+                q = q.order_by(distance_expr.asc(), table.c.id.asc()).limit(int(n_results))
                 rows = conn.execute(q, {"qv": list(qv)}).fetchall()
 
                 ids_out.append([r.id for r in rows])
