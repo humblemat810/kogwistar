@@ -80,7 +80,7 @@ def test_pgvector_normal_replay_overwrites_tampered_rows(pg_engine, sa_engine, p
     schema = pg_schema
     with sa_engine.begin() as conn:
         conn.execute(
-            sa.text(f'UPDATE "{schema}".gke_nodes SET metadata = :m::jsonb WHERE id = :id'),
+            sa.text(f'UPDATE "{schema}".gke_nodes SET metadata = CAST(:m AS JSONB) WHERE id = :id'),
             {"m": json.dumps({"tampered": True}), "id": "n1"},
         )
 
