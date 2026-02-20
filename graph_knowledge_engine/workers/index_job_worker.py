@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, Optional, TYPE_CHECKING
 
+if TYPE_CHECKING:
+    from graph_knowledge_engine.engine import GraphKnowledgeEngine
 
 @dataclass
 class WorkerTickMetrics:
@@ -28,7 +30,7 @@ class IndexJobWorker:
     def __init__(
         self,
         *,
-        engine: Any,
+        engine: GraphKnowledgeEngine,
         max_inflight: int = 1,
         batch_size: int = 50,
         lease_seconds: int = 60,
