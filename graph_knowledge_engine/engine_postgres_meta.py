@@ -26,6 +26,8 @@ class IndexJob:
     op: str
     status: str
     lease_until: Optional[str] = None
+    next_run_at: Optional[str] = None
+    max_retries: int = 10
     retry_count: int = 0
     last_error: Optional[str] = None
     payload_json: Optional[str] = None
@@ -90,17 +92,25 @@ class EnginePostgresMetaStore:
                     retry_count INTEGER NOT NULL DEFAULT 0,
                     last_error TEXT NULL,
                     payload_json TEXT NULL,
+                    next_run_at TIMESTAMPTZ NULL,
+                    max_retries INTEGER NOT NULL DEFAULT 10,
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 )
             """))
             conn.execute(sa.text(f"CREATE INDEX IF NOT EXISTS idx_index_jobs_status_lease ON {ij}(status, lease_until)"))
+            conn.execute(sa.text(f"CREATE INDEX IF NOT EXISTS idx_index_jobs_status_next_run ON {ij}(status, next_run_at)"))
             conn.execute(sa.text(f"CREATE INDEX IF NOT EXISTS idx_index_jobs_entity ON {ij}(entity_kind, entity_id, index_kind)"))
             conn.execute(sa.text(f"CREATE INDEX IF NOT EXISTS idx_index_jobs_namespace ON {ij}(namespace)"))
 
             # Legacy safety: ensure columns exist (no-op on fresh schemas)
             conn.execute(sa.text(f"ALTER TABLE {ij} ADD COLUMN IF NOT EXISTS namespace TEXT NOT NULL DEFAULT 'default'"))
             conn.execute(sa.text(f"ALTER TABLE {ij} ADD COLUMN IF NOT EXISTS coalesce_key TEXT NOT NULL DEFAULT ''"))
+
+            # Phase 5: scheduling / DLQ controls
+            conn.execute(sa.text(f"ALTER TABLE {ij} ADD COLUMN IF NOT EXISTS next_run_at TIMESTAMPTZ NULL"))
+            conn.execute(sa.text(f"ALTER TABLE {ij} ADD COLUMN IF NOT EXISTS max_retries INTEGER NOT NULL DEFAULT 10"))
+
 
             # Phase 2: coalescing constraint (namespaced)
             conn.execute(sa.text(
@@ -250,6 +260,7 @@ class EnginePostgresMetaStore:
         index_kind: str,
         op: str,
         payload_json: Optional[str] = None,
+        max_retries: int = 10,
     ) -> str:
         """Enqueue a job, coalescing repeated PENDING work by (namespace, coalesce_key)."""
         ij = (
@@ -295,10 +306,10 @@ class EnginePostgresMetaStore:
                     f"""
                     INSERT INTO {ij}(
                         job_id, namespace, entity_kind, entity_id, index_kind, coalesce_key, op,
-                        status, lease_until, retry_count, last_error, payload_json, created_at, updated_at
+                        status, lease_until, next_run_at, max_retries, retry_count, last_error, payload_json, created_at, updated_at
                     )
                     VALUES (:job_id, :ns, :entity_kind, :entity_id, :index_kind, :ck, :op,
-                            'PENDING', NULL, 0, NULL, :payload_json, NOW(), NOW())
+                            'PENDING', NULL, NULL, :max_retries, 0, NULL, :payload_json, NOW(), NOW())
                     ON CONFLICT (job_id) DO NOTHING
                     """
                 ),
@@ -311,6 +322,7 @@ class EnginePostgresMetaStore:
                     "ck": coalesce_key,
                     "op": op,
                     "payload_json": payload_json,
+                    "max_retries": int(max_retries),
                 },
             )
             return job_id
@@ -337,7 +349,7 @@ class EnginePostgresMetaStore:
                         SELECT job_id
                         FROM {ij}
                         WHERE (
-                            status IN ('PENDING','FAILED')
+                            status = 'PENDING' AND (next_run_at IS NULL OR next_run_at <= NOW())
                             OR (status='DOING' AND lease_until IS NOT NULL AND lease_until < NOW())
                         )
                         AND (:namespace IS NULL OR namespace = :namespace)
@@ -352,7 +364,7 @@ class EnginePostgresMetaStore:
                     FROM candidates c
                     WHERE j.job_id = c.job_id
                     RETURNING j.job_id, j.namespace, j.entity_kind, j.entity_id, j.index_kind, j.coalesce_key, j.op, j.status,
-                              j.lease_until, j.retry_count, j.last_error, j.payload_json
+                              j.lease_until, j.next_run_at, j.max_retries, j.retry_count, j.last_error, j.payload_json
                     """
                 ),
                 {"limit": int(limit), "lease_seconds": int(lease_seconds), "namespace": namespace},
@@ -372,6 +384,8 @@ class EnginePostgresMetaStore:
                     op=str(r.get("op")),
                     status=str(r.get("status")),
                     lease_until=(str(r.get("lease_until")) if r.get("lease_until") is not None else None),
+                    next_run_at=(str(r.get("next_run_at")) if r.get("next_run_at") is not None else None),
+                    max_retries=int(r.get("max_retries") or 10),
                     retry_count=int(r.get("retry_count") or 0),
                     last_error=(str(r.get("last_error")) if r.get("last_error") is not None else None),
                     payload_json=(str(r.get("payload_json")) if r.get("payload_json") is not None else None),
@@ -390,21 +404,65 @@ class EnginePostgresMetaStore:
                 f"UPDATE {ij} SET status='DONE', lease_until=NULL, updated_at=NOW() WHERE job_id=:job_id"
             ), {"job_id": job_id})
 
-    def mark_index_job_failed(self, job_id: str, error: str) -> None:
+    def mark_index_job_failed(self, job_id: str, error: str, *, final: bool = True) -> None:
+        """Mark a job failed.
+
+        If final=True, job becomes terminal FAILED (DLQ) and will never be reclaimed.
+        If final=False, caller should use bump_retry_and_requeue(...).
+        """
         ij = (
             f"{self.schema}.{self.index_jobs_table}"
             if self.index_jobs_table == "index_jobs"
-            else f"{self.schema}.\"{self.index_jobs_table}\""
+            else f"{self.schema}.{self.index_jobs_table}"
         )
         with self.transaction() as conn:
-            conn.execute(sa.text(
-                f"""
-                UPDATE {ij}
-                SET status='FAILED', lease_until=NULL, retry_count=retry_count+1,
-                    last_error=:err, updated_at=NOW()
-                WHERE job_id=:job_id
-                """
-            ), {"job_id": job_id, "err": (error or "")[:2000]})
+            conn.execute(
+                sa.text(
+                    f"""
+                    UPDATE {ij}
+                    SET status = CASE WHEN :final THEN 'FAILED' ELSE status END,
+                        lease_until=NULL,
+                        last_error=:err,
+                        updated_at=NOW()
+                    WHERE job_id=:job_id
+                    """
+                ),
+                {"job_id": job_id, "err": (error or "")[:2000], "final": bool(final)},
+            )
+
+    def bump_retry_and_requeue(self, job_id: str, error: str, *, next_run_at_seconds: int) -> None:
+        """Increment retry_count and requeue as PENDING with a delay.
+
+        Jobs exceeding max_retries are moved to terminal FAILED automatically.
+        """
+        ij = (
+            f"{self.schema}.{self.index_jobs_table}"
+            if self.index_jobs_table == "index_jobs"
+            else f"{self.schema}.{self.index_jobs_table}"
+        )
+        delay = max(0, int(next_run_at_seconds))
+        with self.transaction() as conn:
+            conn.execute(
+                sa.text(
+                    f"""
+                    UPDATE {ij}
+                    SET retry_count = retry_count + 1,
+                        last_error = :err,
+                        status = CASE
+                            WHEN (retry_count + 1) >= max_retries THEN 'FAILED'
+                            ELSE 'PENDING'
+                        END,
+                        lease_until = NULL,
+                        next_run_at = CASE
+                            WHEN (retry_count + 1) >= max_retries THEN NULL
+                            ELSE NOW() + (:delay || ' seconds')::interval
+                        END,
+                        updated_at = NOW()
+                    WHERE job_id=:job_id
+                    """
+                ),
+                {"job_id": job_id, "err": (error or "")[:2000], "delay": delay},
+            )
 
     def list_index_jobs(
         self,
@@ -442,7 +500,7 @@ class EnginePostgresMetaStore:
         sql = sa.text(
             f"""
             SELECT job_id, namespace, entity_kind, entity_id, index_kind, coalesce_key, op, status,
-                   lease_until, retry_count, last_error, payload_json
+                   lease_until, next_run_at, max_retries, retry_count, last_error, payload_json
             FROM {ij}
             {where_sql}
             ORDER BY created_at ASC
@@ -464,6 +522,8 @@ class EnginePostgresMetaStore:
                     op=str(r.get("op")),
                     status=str(r.get("status")),
                     lease_until=(str(r.get("lease_until")) if r.get("lease_until") is not None else None),
+                    next_run_at=(str(r.get("next_run_at")) if r.get("next_run_at") is not None else None),
+                    max_retries=int(r.get("max_retries") or 10),
                     retry_count=int(r.get("retry_count") or 0),
                     last_error=(str(r.get("last_error")) if r.get("last_error") is not None else None),
                     payload_json=(str(r.get("payload_json")) if r.get("payload_json") is not None else None),

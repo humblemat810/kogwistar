@@ -36,6 +36,8 @@ class IndexJobRow:
     op: str
     status: str
     lease_until: Optional[int]
+    next_run_at: Optional[int]
+    max_retries: int
     retry_count: int
     last_error: Optional[str]
     payload_json: Optional[str]
@@ -115,6 +117,8 @@ class EngineSQLite:
                     op           TEXT NOT NULL,
                     status       TEXT NOT NULL,
                     lease_until  INTEGER,
+                    next_run_at INTEGER,
+                    max_retries INTEGER NOT NULL DEFAULT 10,
                     retry_count  INTEGER NOT NULL DEFAULT 0,
                     last_error   TEXT,
                     payload_json TEXT,
@@ -143,6 +147,15 @@ class EngineSQLite:
             cols = [r[1] for r in conn.execute("PRAGMA table_info(index_jobs)").fetchall()]
             if "coalesce_key" not in cols:
                 conn.execute("ALTER TABLE index_jobs ADD COLUMN coalesce_key TEXT NOT NULL DEFAULT ''")
+
+
+            # Phase 5: scheduling / DLQ controls
+            cols = [r[1] for r in conn.execute("PRAGMA table_info(index_jobs)").fetchall()]
+            if "next_run_at" not in cols:
+                conn.execute("ALTER TABLE index_jobs ADD COLUMN next_run_at INTEGER")
+            cols = [r[1] for r in conn.execute("PRAGMA table_info(index_jobs)").fetchall()]
+            if "max_retries" not in cols:
+                conn.execute("ALTER TABLE index_jobs ADD COLUMN max_retries INTEGER NOT NULL DEFAULT 10")
 
             # Unique pending job per (namespace, coalesce_key) (partial unique index)
             conn.execute(
@@ -375,6 +388,7 @@ class EngineSQLite:
         index_kind: str,
         op: str,
         payload_json: Optional[str] = None,
+        max_retries: int = 10,
         namespace: str = 'default',
     ) -> str:
         """Enqueue a job, coalescing repeated PENDING work by (entity_kind, entity_id, index_kind).
@@ -409,18 +423,20 @@ class EngineSQLite:
                 return existing_job_id
 
             conn.execute(
-                """
-                INSERT OR IGNORE INTO index_jobs(
-                    job_id, namespace, entity_kind, entity_id, index_kind, coalesce_key, op,
-                    status, lease_until, retry_count, last_error, payload_json,
-                    created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDING', NULL, 0, NULL, ?, ?, ?)
-                """,
-                (job_id, namespace, entity_kind, entity_id, index_kind, coalesce_key, op, payload_json, now, now),
-            )
+    """
+    INSERT OR IGNORE INTO index_jobs(
+        job_id, namespace, entity_kind, entity_id, index_kind, coalesce_key, op,
+        status, lease_until, next_run_at, max_retries, retry_count, last_error, payload_json,
+        created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDING', NULL, NULL, ?, 0, NULL, ?, ?, ?)
+    """,
+    (job_id, namespace, entity_kind, entity_id, index_kind, coalesce_key, op,
+     max_retries, payload_json, now, now),
+)
             return job_id
 
 
+    
     def claim_index_jobs(
         self,
         *,
@@ -430,7 +446,11 @@ class EngineSQLite:
     ) -> List[IndexJobRow]:
         """Claim up to `limit` jobs with an expiring lease.
 
-        Steals jobs whose lease has expired (covers "halt forever" stalls).
+        Eligibility:
+        - PENDING jobs whose next_run_at <= now (or NULL)
+        - DOING jobs whose lease has expired (lease stealing)
+
+        FAILED is terminal (DLQ) and is never reclaimed.
 
         If namespace is None, claims across all namespaces. Otherwise claims only that namespace.
         """
@@ -447,8 +467,8 @@ class EngineSQLite:
                     SELECT job_id
                     FROM index_jobs
                     WHERE (
-                        status IN ('PENDING', 'FAILED')
-                        OR (status = 'DOING' AND lease_until IS NOT NULL AND lease_until < ?)
+                        (status='PENDING' AND (next_run_at IS NULL OR next_run_at <= ?))
+                        OR (status='DOING' AND lease_until IS NOT NULL AND lease_until < ?)
                     )
                     {ns_filter}
                     ORDER BY created_at ASC
@@ -458,9 +478,9 @@ class EngineSQLite:
                 SET status = 'DOING', lease_until = ?, updated_at = ?
                 WHERE job_id IN (SELECT job_id FROM candidates)
                 RETURNING job_id, namespace, entity_kind, entity_id, index_kind, coalesce_key, op, status,
-                          lease_until, retry_count, last_error, payload_json, created_at, updated_at
+                        lease_until, next_run_at, max_retries, retry_count, last_error, payload_json, created_at, updated_at
                 """,
-                (now, *ns_param, limit, lease_until, now),
+                (now, now, *ns_param, limit, lease_until, now),
             ).fetchall()
 
         out: List[IndexJobRow] = []
@@ -476,15 +496,16 @@ class EngineSQLite:
                     op=str(r[6]),
                     status=str(r[7]),
                     lease_until=int(r[8]) if r[8] is not None else None,
-                    retry_count=int(r[9] or 0),
-                    last_error=str(r[10]) if r[10] is not None else None,
-                    payload_json=str(r[11]) if r[11] is not None else None,
-                    created_at=int(r[12]),
-                    updated_at=int(r[13]),
+                    next_run_at=int(r[9]) if r[9] is not None else None,
+                    max_retries=int(r[10] or 10),
+                    retry_count=int(r[11] or 0),
+                    last_error=str(r[12]) if r[12] is not None else None,
+                    payload_json=str(r[13]) if r[13] is not None else None,
+                    created_at=int(r[14]),
+                    updated_at=int(r[15]),
                 )
             )
         return out
-
     def mark_index_job_done(self, job_id: str) -> None:
         now = self._now_epoch()
         with self.transaction() as conn:
@@ -497,19 +518,48 @@ class EngineSQLite:
                 (now, job_id),
             )
 
-    def mark_index_job_failed(self, job_id: str, error: str) -> None:
+        
+    def mark_index_job_failed(self, job_id: str, error: str, *, final: bool = True) -> None:
+        """Mark a job failed.
+
+        If final=True, job becomes terminal FAILED (DLQ) and will never be reclaimed.
+        """
         now = self._now_epoch()
         with self.transaction() as conn:
             conn.execute(
                 """
                 UPDATE index_jobs
-                SET status='FAILED', lease_until=NULL, retry_count=retry_count+1,
-                    last_error=?, updated_at=?
-                WHERE job_id=?
+                SET status = CASE WHEN ? THEN 'FAILED' ELSE status END,
+                    lease_until = NULL,
+                    last_error = ?,
+                    updated_at = ?
+                WHERE job_id = ?
                 """,
-                (error[:2000], now, job_id),
+                (1 if final else 0, (error or "")[:2000], now, job_id),
             )
 
+    def bump_retry_and_requeue(self, job_id: str, error: str, *, next_run_at_seconds: int) -> None:
+        """Increment retry_count and requeue as PENDING with a delay.
+
+        Jobs exceeding max_retries are moved to terminal FAILED automatically.
+        """
+        now = self._now_epoch()
+        delay = max(0, int(next_run_at_seconds))
+        next_run_at = now + delay
+        with self.transaction() as conn:
+            conn.execute(
+                """
+                UPDATE index_jobs
+                SET retry_count = retry_count + 1,
+                    last_error = ?,
+                    status = CASE WHEN (retry_count + 1) >= max_retries THEN 'FAILED' ELSE 'PENDING' END,
+                    lease_until = NULL,
+                    next_run_at = CASE WHEN (retry_count + 1) >= max_retries THEN NULL ELSE ? END,
+                    updated_at = ?
+                WHERE job_id = ?
+                """,
+                ((error or "")[:2000], next_run_at, now, job_id),
+            )
     def list_index_jobs(
         self,
         *,
@@ -537,7 +587,7 @@ class EngineSQLite:
         if index_kind is not None:
             where.append("index_kind = ?")
             params.append(index_kind)
-        sql = "SELECT job_id, namespace, entity_kind, entity_id, index_kind, coalesce_key, op, status, lease_until, retry_count, last_error, payload_json, created_at, updated_at FROM index_jobs"
+        sql = "SELECT job_id, namespace, entity_kind, entity_id, index_kind, coalesce_key, op, status, lease_until, next_run_at, max_retries, retry_count, last_error, payload_json, created_at, updated_at FROM index_jobs"
         if where:
             sql += " WHERE " + " AND ".join(where)
         sql += " ORDER BY created_at ASC LIMIT ?" 
@@ -555,11 +605,13 @@ class EngineSQLite:
                 op=str(r[6]),
                 status=str(r[7]),
                 lease_until=int(r[8]) if r[8] is not None else None,
-                retry_count=int(r[9] or 0),
-                last_error=str(r[10]) if r[10] is not None else None,
-                payload_json=str(r[11]) if r[11] is not None else None,
-                created_at=int(r[12]),
-                updated_at=int(r[13]),
+                next_run_at=int(r[9]) if r[9] is not None else None,
+                max_retries=int(r[10] or 10),
+                retry_count=int(r[11] or 0),
+                last_error=str(r[12]) if r[12] is not None else None,
+                payload_json=str(r[13]) if r[13] is not None else None,
+                created_at=int(r[14]),
+                updated_at=int(r[15]),
             )
             for r in rows
         ]

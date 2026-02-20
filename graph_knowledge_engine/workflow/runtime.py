@@ -16,7 +16,25 @@ from graph_knowledge_engine.models import WorkflowNode, MentionVerification, Con
 
 from .design import validate_workflow_design, Predicate
 from .serialize import try_serialize_with_ref
+RESERVED_ROOT_KEYS = {
+    "_deps",
+    "_rt_join",
+}
 
+RESERVED_PREFIXES = ("_", "__")
+
+def validate_initial_state(initial_state: dict):
+    for key in initial_state:
+        if key in RESERVED_ROOT_KEYS:
+            raise ValueError(
+                f"'{key}' is reserved by the runtime and cannot be provided by user code."
+            )
+
+        if key.startswith(RESERVED_PREFIXES):
+            raise ValueError(
+                f"Keys starting with '_' or '__' are reserved. "
+                f"Invalid key: '{key}'"
+            )
 # ------------------------------------------------------------------
 # Join/barrier support (capability tracking via MAY-reach bitsets)
 # ------------------------------------------------------------------
@@ -424,6 +442,8 @@ class WorkflowRuntime:
         Design lives in workflow_engine.
         Traces/checkpoints live in conversation_engine.
         """
+        validate_initial_state(initial_state)
+        
         run_id = run_id or f"run|{uuid.uuid4()}"
         self.state_lock[str(run_id)] = Lock()
         

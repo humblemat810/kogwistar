@@ -13,7 +13,7 @@ from .engine_sqlite import EngineSQLite
 from .engine_postgres_meta import EnginePostgresMetaStore
 from .storage_backend import ChromaBackend, NoopUnitOfWork
 from .postgres_backend import PgVectorBackend
-
+from .workers.index_job_worker import IndexJobWorker
 if True:
     """_summary_
 
@@ -1614,6 +1614,10 @@ class GraphKnowledgeEngine:
             entity_id = getattr(job, "entity_id", None) or job.get("entity_id")
             index_kind = getattr(job, "index_kind", None) or job.get("index_kind")
             op = getattr(job, "op", None) or job.get("op")
+            retry_count = getattr(job, "retry_count", None) if not isinstance(job, dict) else job.get("retry_count")
+            max_retries = getattr(job, "max_retries", None) if not isinstance(job, dict) else job.get("max_retries")
+            try_rc = int(retry_count or 0)
+            try_mr = int(max_retries or 10)
 
             try:
                 self._apply_index_job(
@@ -1625,9 +1629,20 @@ class GraphKnowledgeEngine:
                     namespace = namespace or self.namespace,
                 )
             except Exception as e:
+                err = f"{type(e).__name__}: {e}"
+                # Phase 5: retry policy with backoff + DLQ(terminal FAILED)
+                bump = getattr(self.meta_sqlite, "bump_retry_and_requeue", None)
                 mark_failed = getattr(self.meta_sqlite, "mark_index_job_failed", None)
-                if mark_failed is not None and job_id:
-                    mark_failed(str(job_id), f"{type(e).__name__}: {e}")
+                if job_id:
+                    next_retry = try_rc + 1
+                    if bump is not None and next_retry < try_mr:
+                        # Exponential backoff with cap.
+                        # retry 0 -> 1s, 1 -> 2s, 2 -> 4s ... capped.
+                        delay = min(300, 2 ** min(next_retry - 1, 8))
+                        bump(str(job_id), err, next_run_at_seconds=int(delay))
+                    elif mark_failed is not None:
+                        # Terminal DLQ
+                        mark_failed(str(job_id), err, final=True)
                 continue
 
             mark_done = getattr(self.meta_sqlite, "mark_index_job_done", None)
@@ -1635,6 +1650,31 @@ class GraphKnowledgeEngine:
                 mark_done(str(job_id))
             applied += 1
         return applied
+
+    def make_index_job_worker(
+        self,
+        *,
+        max_inflight: int = 1,
+        batch_size: int = 50,
+        lease_seconds: int = 60,
+        max_jobs_per_tick: int = 200,
+        namespace: str | None = None,
+    ) -> "IndexJobWorker":
+        """Create an operational IndexJobWorker.
+
+        The worker is intentionally not used implicitly by the engine hot path.
+        Run it in a separate process (or call worker.tick() from a scheduler).
+        """
+        
+
+        return IndexJobWorker(
+            engine=self,
+            max_inflight=max_inflight,
+            batch_size=batch_size,
+            lease_seconds=lease_seconds,
+            max_jobs_per_tick=max_jobs_per_tick,
+            namespace=namespace,
+        )
 
     def _apply_index_job(self, *, job_id: str, entity_kind: str, entity_id: str, index_kind: str, op: str, namespace: str) -> None:
         if index_kind not in self._PHASE1_JOIN_INDEX_KINDS:
@@ -2450,18 +2490,7 @@ class GraphKnowledgeEngine:
         self.merge_policy = merge_policy or PreferExistingCanonical(self)
         self.meta_sqlite : EngineSQLite | EnginePostgresMetaStore
         load_dotenv()
-        # from chromadb.utils.embedding_functions import ONNXMiniLM_L6_V2
-        # ef = ONNXMiniLM_L6_V2(preferred_providers=["CUDAExecutionProvider", ]) # 'TensorrtExecutionProvider'
-        # try:
-        #     ef('test')
-        # except:
-        #     ef = ONNXMiniLM_L6_V2(preferred_providers=['CPUExecutionProvider'])
-        #     try:
-        #         ef("test")
-        #     except:
-        #         pro = ef.ort.get_available_providers()[0]
-        #         ef = ONNXMiniLM_L6_V2(preferred_providers=[pro])
-        #         ef("test")
+
         self._alias_books: dict[str, AliasBook] = {}
         ef = embedding_function or CustomEmbeddingFunction()
         self.embedding_length_limit = 512
