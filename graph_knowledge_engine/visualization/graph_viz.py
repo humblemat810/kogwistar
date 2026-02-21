@@ -160,26 +160,8 @@ def _collect_ids(
     node_ids = _filter_by_insertion_method(engine, node_ids, "node", insertion_method, by_doc_id=doc_id)
     edge_ids = _filter_by_insertion_method(engine, edge_ids, "edge", insertion_method, by_doc_id=doc_id)
     return node_ids, edge_ids
-def _emit_hyper_links(edge, add_link):
-    """
-    edge: your persisted edge record (already 'reified' as an edge-node elsewhere)
-          with fields: id (edge-node id), relation, source_ids, target_ids,
-          source_edge_ids, target_edge_ids
-    add_link: callable(source_id, target_id, relation, role) to append a link
-    """
-    eid = edge.id  # this is the edge-node id used in the viz
 
-    # All sources (nodes + edges) connect INTO the edge-node
-    for s in (edge.source_ids or []):
-        add_link(s, eid, edge.relation, "src")
-    for se in (edge.source_edge_ids or []):
-        add_link(se, eid, edge.relation, "src")
-
-    # All targets (nodes + edges) connect OUT OF the edge-node
-    for t in (edge.target_ids or []):
-        add_link(eid, t, edge.relation, "tgt")
-    for te in (edge.target_edge_ids or []):
-        add_link(eid, te, edge.relation, "tgt")
+        
 
 def to_d3_force(
     engine,
