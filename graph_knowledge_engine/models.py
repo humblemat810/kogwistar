@@ -960,7 +960,7 @@ class Document(ModeSlicingMixin, BaseModel):
     type: BackendType[DtoType[Literal["text", "ocr_document", "text_chunked"] | str]] = Field(..., description="Type of document, e.g., 'ocr', 'pdf'")
     metadata: BackendType[DtoType[Optional[Dict[str, Any]]]] = Field(None, description="Additional metadata for the document")
     domain_id: BackendType[Optional[str]] = Field(None, description="Optional domain this document belongs to")
-    processed: BackendType[bool] = Field(False, description="Whether the document has been processed")
+    processed: BackendType[bool] = Field(False, description="Whether the document has been processed, source map is produced, set true only you are migrating from server or is directly from trusted ingestor")
     embeddings: BackendType[Optional[Any]] = Field(..., description="embedding for collection")
     source_map: BackendType[Optional[Dict[str, Any]]] = Field(..., description="source_map for chunk boundary, not for LLM ingestion, chunk id to character index range")
     @staticmethod

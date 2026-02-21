@@ -23,7 +23,7 @@ import pathlib
 from pydantic import BaseModel, Field
 from starlette.middleware.base import BaseHTTPMiddleware
 import time
-from typing import List, Optional
+from typing import Callable, List, Optional
 from typing import Any, Dict, Set
 import uuid
 from graph_knowledge_engine.shortids import run_id_ctx, run_id_scope
@@ -53,12 +53,14 @@ TOOL_NAMESPACE: dict[str, set[str]] = {}
 def tool_roles(roles: set[Role] | Role):
     """Annotate a tool with allowed roles (e.g. {Role.RO, Role.RW} or Role.RW)."""
     allowed = {roles} if isinstance(roles, Role) else set(roles)
-    def deco(fn: FunctionTool):
-        name = getattr(fn, "name", None) or fn.name
+    def deco(fn: Callable):
+        name = getattr(fn, "name", None) or getattr(fn, "__name__", None)
+        if name is None:
+            raise Exception('name not found')
         # we record by function name here; FastMCP uses that as tool name by default
         TOOL_ROLES[name] = {r.value for r in allowed}
-        original_fn = fn.fn
-        @functools.wraps(fn.fn)
+        original_fn = fn
+        @functools.wraps(fn)
         def wrapper(*args, **kwargs):
             user_role = get_current_role()
             if user_role not in allowed:
@@ -66,7 +68,7 @@ def tool_roles(roles: set[Role] | Role):
             # if ROLE_ORDER.get(user_role, 0) < ROLE_ORDER.get(min_role, 0):
             #     raise HTTPException(status_code=403, detail=f"Forbidden: requires role '{min_role}', you have '{user_role}'")
             return original_fn(*args, **kwargs)
-        fn.fn = wrapper
+        fn = wrapper
         return fn
     
 
@@ -233,54 +235,98 @@ def create_conversation():
     raise NotImplementedError()
     pass
 
-from fastmcp.tools.tool_manager import ToolManager
-import inspect
-from functools import wraps
-from typing import Type
-def patch_toolmanager_list_tools(ToolManager: Type):
+# --- FastMCP 3.x RBAC middleware (replaces ToolManager monkeypatch from 2.x) ---
+#
+# FastMCP 3 removed ToolManager, so the supported way to filter tool visibility is
+# via middleware hooks (on_list_tools / on_call_tool).
+try:
+    from fastmcp.server.middleware import Middleware  # type: ignore
+except Exception:  # pragma: no cover
+    class Middleware:  # minimal fallback so import-time doesn't explode
+        pass
+
+
+def _tool_allowed(tool_name: str, *, role: str, namespace: str) -> bool:
+    allowed_roles = TOOL_ROLES.get(tool_name, {Role.RO.value})
+    allowed_namespaces = TOOL_NAMESPACE.get(tool_name, {NameSpace.DOCS.value})
+    return (role in allowed_roles) and (namespace in allowed_namespaces)
+
+
+class RbacMiddleware(Middleware):
+    """RBAC for MCP tools.
+
+    - Filters tools from tools/list so unauthorized tools are not visible.
+    - Blocks tools/call even if a client guesses the name.
+
+    Authorization is derived from JWT claims populated by JWTProtectMiddleware
+    (claims_ctx ContextVar). This preserves seam-boundary behavior for both MCP
+    and FastAPI endpoints.
     """
-    Monkey-patch ToolManager.list_tools to post-filter its result based on policy_ctx.
-    Works whether the original is sync or async.
-    """
-    orig = getattr(ToolManager, "list_tools")
 
-    # Detect if the original is defined as coroutine
-    is_async = inspect.iscoroutinefunction(orig)
+    async def on_list_tools(self, context, call_next):
+        tools = await call_next(context)
+        role = get_current_role()
+        ns = get_current_namespace()
+        out = []
+        for t in list(tools):
+            name = getattr(t, "name", None) or (t.get("name") if isinstance(t, dict) else None)
+            if not name:
+                out.append(t)
+                continue
+            if _tool_allowed(str(name), role=role, namespace=ns):
+                out.append(t)
+        return out
 
-    if is_async:
-        @wraps(orig)
-        async def wrapped(self, *args, **kwargs): # type: ignore
-            res = await orig(self, *args, **kwargs)
-            return _filter_tool_list(res)
-    else:
-        @wraps(orig)
-        def wrapped(self, *args, **kwargs):
-            res = orig(self, *args, **kwargs)
-            return _filter_tool_list(res)
-
-    # Bind as an instance method on the class
-    setattr(ToolManager, "list_tools", wrapped)
-patch_toolmanager_list_tools(ToolManager)
+    async def on_call_tool(self, context, call_next):
+        role = get_current_role()
+        ns = get_current_namespace()
+        req = getattr(context, "request", None)
+        tool_name = None
+        for attr in ("name", "tool_name", "tool"):
+            if req is not None and hasattr(req, attr):
+                tool_name = getattr(req, attr)
+                break
+        if tool_name is None and isinstance(req, dict):
+            tool_name = req.get("name") or req.get("tool_name") or req.get("tool")
+        if isinstance(tool_name, dict):
+            tool_name = tool_name.get("name")
+        if tool_name:
+            if not _tool_allowed(str(tool_name), role=role, namespace=ns):
+                raise HTTPException(status_code=403, detail=f"Tool '{tool_name}' not permitted for role '{role}' in namespace '{ns}'")
+        return await call_next(context)
 class JWTProtectMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
-        if claims_ctx.get() is None:
-            path = request.url.path
-            if any(path.startswith(p) for p in PROTECTED_PREFIXES):
-                token = _extract_bearer(request)
-                if not token:
-                    return JSONResponse({"detail": "Missing bearer token"}, status_code=401)
-                try:
-                    claims = verify_jwt(token)
-                    request.state.claims = claims
-                    token_ = claims_ctx.set(claims)
-                    try:
-                        with run_id_scope(token):
-                            return await call_next(request)
-                    finally:
-                        claims_ctx.reset(token_)
-                except HTTPException as e:
-                    return JSONResponse({"detail": e.detail}, status_code=e.status_code)
-        return await call_next(request)
+        # IMPORTANT: some /api endpoints enforce auth via require_role()/require_ns(),
+        # which read from claims_ctx. So we must populate claims_ctx whenever a
+        # bearer token is present, not only for PROTECTED_PREFIXES.
+        if claims_ctx.get() is not None:
+            return await call_next(request)
+
+        path = request.url.path
+        is_protected = any(path.startswith(p) for p in PROTECTED_PREFIXES)
+        token = _extract_bearer(request)
+
+        if not token:
+            if is_protected:
+                return JSONResponse({"detail": "Missing bearer token"}, status_code=401)
+            return await call_next(request)
+
+        try:
+            claims = verify_jwt(token)
+        except HTTPException as e:
+            # If endpoint isn't globally protected, treat invalid token as anonymous.
+            # Handlers that require auth will still reject via require_role/ns.
+            if is_protected:
+                return JSONResponse({"detail": e.detail}, status_code=e.status_code)
+            return await call_next(request)
+
+        request.state.claims = claims
+        token_ = claims_ctx.set(claims)
+        try:
+            with run_id_scope(token):
+                return await call_next(request)
+        finally:
+            claims_ctx.reset(token_)
 
 
 def get_current_role() -> str:
@@ -317,14 +363,16 @@ def require_ns(expected: set[NameSpace] | NameSpace):
     if expected in NameSpace or type(expected) is str:
         expected2 = {expected}
     
-    def deco(fn: FunctionTool):
+    def deco(fn: Callable):
         # allowed : set[NameSpace | str] = expected2
         allowed = expected2
-        name = getattr(fn, "name", None) or fn.name
+        name = getattr(fn, "name", None) or getattr(fn, "__name__", None)
+        if name is None:
+            raise Exception('name not found')
         # we record by function name here; FastMCP uses that as tool name by default
         TOOL_NAMESPACE[name] = allowed
-        original_fn = fn.fn
-        @functools.wraps(fn.fn)
+        original_fn = fn
+        @functools.wraps(fn)
         def wrapper(*args, **kwargs):
             actual = get_current_namespace()
             if actual != expected:
@@ -332,7 +380,7 @@ def require_ns(expected: set[NameSpace] | NameSpace):
                 raise HTTPException(status_code=403, detail=f"Forbidden: namespace '{actual}' cannot call this tool")
                 
             return original_fn(*args, **kwargs)
-        fn.fn = wrapper
+        fn = wrapper
         return fn
         
     return deco
@@ -343,7 +391,7 @@ def require_ns(expected: set[NameSpace] | NameSpace):
     #             # MCP tools throw regular exceptions; FastMCP wraps as tool error
     #             raise PermissionError(f"Forbidden: namespace '{actual}' cannot call this tool (expected '{expected}').")
     #         return fn(*args, **kwargs)
-mcp = FastMCP("KnowledgeEngine + MCP + Admin")
+mcp = FastMCP("KnowledgeEngine + MCP + Admin", middleware=[RbacMiddleware()])
 
 # ---- Query I/O (same as before) ----
 class FindEdgesOut(BaseModel):
@@ -813,11 +861,33 @@ def api_graph_upsert_llm(inp: GraphUpsertLLMIn):
     require_role("rw")
     # 1) Ensure the document row exists (idempotent)
     if inp.content is not None:
-        engine.add_document(Document(id=inp.doc_id, content=inp.content, type=inp.doc_type))
+        engine.add_document(
+            Document(
+                id=inp.doc_id,
+                content=inp.content,
+                type=inp.doc_type,
+                metadata={},          # if you want
+                embeddings=None,      # REQUIRED by Pydantic because Field(...)
+                source_map=None,      # REQUIRED by Pydantic because Field(...)
+                domain_id=None,
+                processed=False
+            )
+        )
     else:
         # create a placeholder if completely missing so refs can anchor to doc_id
         if not engine._fetch_document_text(inp.doc_id):
-            engine.add_document(Document(id=inp.doc_id, content="", type=inp.doc_type))
+            engine.add_document(
+                Document(
+                    id=inp.doc_id,
+                    content=inp.content,
+                    type=inp.doc_type,
+                    metadata={},          # if you want
+                    embeddings=None,      # REQUIRED by Pydantic because Field(...)
+                    source_map=None,      # REQUIRED by Pydantic because Field(...)
+                    domain_id=None,
+                    processed=False
+                )
+        )
 
     # 2) Validate to your LLM models (references REQUIRED by GraphEntityBase)
     #    This matches your extractor path which later calls FromLLMSlice.

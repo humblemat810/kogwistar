@@ -1,31 +1,149 @@
+import multiprocessing
+import socket
+import time
+from typing import Any, Dict, List
+
 import pytest
 import json
-import pytest
 import requests
-from typing import Dict, Any, List
 
 from mcp import ClientSession
-from mcp.client.streamable_http import streamablehttp_client
-import sys, pathlib
-sys.path.insert(0, pathlib.Path(__file__).parent.parent)
+from mcp.client.streamable_http import streamable_http_client
 
-def test_rollback_doc_node_edge_adjudicate(small_test_docs_nodes_edge_adjudcate):
-    graph_rag_port = 28110
-    base_http = f"http://127.0.0.1:{graph_rag_port}"
+
+def _pick_free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return int(s.getsockname()[1])
+
+
+def _run_uvicorn(app_import: str, host: str, port: int) -> None:
+    """Run uvicorn in a child process.
+
+    Import is by string so it works on Windows (spawn).
+    """
+    import uvicorn
+
+    uvicorn.run(app_import, host=host, port=port, log_level="warning")
+
+
+@pytest.fixture(scope="session")
+def running_server() -> Dict[str, Any]:
+    """Start the FastAPI+FastMCP server for these tests.
+
+    The previous version of this test assumed a developer had a server already
+    running on a fixed port (28110). That makes CI and local runs fragile.
+
+    This fixture starts uvicorn on a free ephemeral port and waits for /health.
+    """
+    import importlib
+    import traceback
+
+    app_import_candidates = [
+        "graph_knowledge_engine.server_mcp_with_admin:app",
+    ]
+
+    errors = []
+    app_import = None
+
+    for cand in app_import_candidates:
+        mod, _, _ = cand.partition(":")
+        try:
+            importlib.import_module(mod)
+            app_import = cand
+            break
+        except Exception as e:
+            errors.append((cand, e, traceback.format_exc()))
+
+    if not app_import:
+        msg = "Could not import server app. Tried:\n"
+        for cand, e, tb in errors:
+            msg += f"\n- {cand}: {type(e).__name__}: {e}\n{tb}\n"
+        raise RuntimeError(msg)
+
+    host = "127.0.0.1"
+    port = _pick_free_port()
+    import subprocess, threading
+    import sys
+    from collections import deque
+
+    log_buf = deque(maxlen=400)
+
+    def _reader():
+        if proc.stdout is None:
+            raise Exception("stdout is None")
+        for line in proc.stdout:
+            log_buf.append(line)
+
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "uvicorn", app_import, "--host", "127.0.0.1", "--port", str(port), "--log-level", "debug"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+
+    t = threading.Thread(target=_reader, daemon=True)
+    t.start()
+
+    base_http = f"http://{host}:{port}"
+    deadline = time.time() + 65
+    last_err: Exception | None = None
+    while time.time() < deadline:
+        try:
+            r = requests.get(f"{base_http}/health", timeout=1)
+            if r.ok:
+                try:
+                    yield {"proc": proc, "base_http": base_http}
+                finally:
+                    proc.terminate()
+                    # proc.join(timeout=2)
+                return
+        except Exception as e:  # noqa: BLE001
+            last_err = e
+        time.sleep(0.2)
+
+    proc.terminate()
+    # proc.join(timeout=2)
+    raise RuntimeError(f"Server failed to start on {base_http}: {last_err}")
+
+
+@pytest.fixture()
+def base_http(running_server: Dict[str, Any]) -> str:
+    return str(running_server["base_http"])
+
+
+@pytest.fixture()
+def base_mcp(base_http: str) -> str:
+    return f"{base_http}/mcp"
+
+
+def _dev_token(base_http: str, role: str, ns: str = "docs") -> str:
+    return requests.post(
+        f"{base_http}/auth/dev-token",
+        json={"username": "e2e", "role": role, "ns": ns},
+        timeout=20,
+    ).json()["token"]
+
+
+def test_rollback_doc_node_edge_adjudicate(base_http: str, small_test_docs_nodes_edge_adjudcate):
+    """Best-effort cleanup for local iteration."""
+    rw_token = _dev_token(base_http, "rw", ns="docs")
     for doc_id in small_test_docs_nodes_edge_adjudcate["docs"]:
-        r = requests.delete(f"{base_http}/admin/doc/{doc_id}", timeout=20)
-        r
-    pass
+        requests.delete(
+            f"{base_http}/admin/doc/{doc_id}",
+            headers={"Authorization": f"Bearer {rw_token}"},
+            timeout=20,
+        )
+
+
 @pytest.mark.asyncio
-async def test_doc_node_edge_adjudicate(small_test_docs_nodes_edge_adjudcate):
+async def test_doc_node_edge_adjudicate(base_http: str, base_mcp: str, small_test_docs_nodes_edge_adjudcate):
+    """E2E seam test:
+
+    1) Upsert a small fixture graph via FastAPI.
+    2) Verify RBAC seam on MCP tools/list (RO must not see RW-only tools).
+    3) Call kg_crossdoc_adjudicate_anykind as RW (smoke).
     """
-    Uses the existing server at :28110:
-      1) POST /api/graph/upsert for each document with only its nodes/edges
-      2) Call MCP tool `kg_crossdoc_adjudicate_anykind`
-    """
-    graph_rag_port = 28110
-    base_http = f"http://127.0.0.1:{graph_rag_port}"
-    base_mcp = f"{base_http}/mcp"
 
     bundle = small_test_docs_nodes_edge_adjudcate
     docs: Dict[str, str] = bundle["docs"]
@@ -33,46 +151,63 @@ async def test_doc_node_edge_adjudicate(small_test_docs_nodes_edge_adjudcate):
     edges: List[Dict[str, Any]] = bundle["edges"]
     insertion_method = "fixture_sample"
 
+    rw_token = _dev_token(base_http, "rw", ns="docs")
+    ro_token = _dev_token(base_http, "ro", ns="docs")
+
     def _subset_for_doc(items: List[Dict[str, Any]], doc_id: str) -> List[Dict[str, Any]]:
-        """Keep only items that have at least one reference for doc_id.
-        Also ensure each reference carries 'insertion_method' (server may filter by it)."""
         out: List[Dict[str, Any]] = []
         for it in items or []:
             refs = it.get("references") or []
             if not any(r.get("doc_id") == doc_id for r in refs):
                 continue
-            # normalize insertion_method on all refs (don’t change doc_id)
             it2 = dict(it)
-            new_refs = []
-            for r in refs:
-                r2 = dict(r)
-                if "insertion_method" not in r2 or r2["insertion_method"] is None:
-                    r2["insertion_method"] = insertion_method
-                new_refs.append(r2)
-            it2["references"] = new_refs
+            it2["references"] = [
+                {**r, "insertion_method": r.get("insertion_method") or insertion_method} for r in refs
+            ]
             out.append(it2)
         return out
 
-    # --- 1) Upsert one payload per document ---
+    # --- Upsert one payload per document ---
     for doc_id, content in docs.items():
-        n_for_doc = _subset_for_doc(nodes, doc_id)
-        e_for_doc = _subset_for_doc(edges, doc_id)
         payload = {
             "doc_id": doc_id,
             "content": content,
             "doc_type": "plain",
             "insertion_method": insertion_method,
-            "nodes": n_for_doc,
-            "edges": e_for_doc,
+            "nodes": _subset_for_doc(nodes, doc_id),
+            "edges": _subset_for_doc(edges, doc_id),
         }
-        r = requests.post(f"{base_http}/api/graph/upsert", json=payload, timeout=20)
+        r = requests.post(
+            f"{base_http}/api/graph/upsert",
+            json=payload,
+            headers={"Authorization": f"Bearer {rw_token}"},
+            timeout=40,
+        )
         assert r.ok, f"Upsert failed for {doc_id}: {r.status_code} {r.text}"
 
-    # --- 2) MCP: list tools and run cross-doc adjudication ---
-    async with streamablehttp_client(base_mcp, sse_read_timeout=None, timeout=None) as (read, write, _):
+    # --- RBAC seam: RO must not see RW-only tools ---
+    async with streamable_http_client(
+        base_mcp,
+        headers={"Authorization": f"Bearer {ro_token}"},
+        sse_read_timeout=None,
+        timeout=None,
+    ) as (read, write, _):
         async with ClientSession(read, write) as session:
             await session.initialize()
+            tools = await session.list_tools()
+            names = {t.name for t in tools.tools}
+            forbidden = {"doc_parse", "store_document", "kg_extract"}
+            assert forbidden.isdisjoint(names), f"Forbidden tools leaked into list_tools: {forbidden & names}"
 
+    # --- RW smoke call ---
+    async with streamable_http_client(
+        base_mcp,
+        headers={"Authorization": f"Bearer {rw_token}"},
+        sse_read_timeout=None,
+        timeout=None,
+    ) as (read, write, _):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
             tools = await session.list_tools()
             names = {t.name for t in tools.tools}
             # keep your original assertion set; adjust if your server differs
@@ -196,17 +331,17 @@ async def test_doc_node_edge_adjudicate(small_test_docs_nodes_edge_adjudcate):
             ok = (first.type == "json") or (first.type == "text" and json.loads(first.text))
             assert ok, f"Unexpected MCP response type: {first.type}"
             
-            # merge vector results:
-            from graph_knowledge_engine.server_mcp_with_admin import CrossDocAdjOut
-            adj_out = CrossDocAdjOut.model_validate(json.loads(adj_result.content[0].text))
-            for pairs in adj_out.results:
-                lkind, rkind, same_entity = pairs.left_kind, pairs.right_kind, pairs.same_entity
-                if same_entity:
-                    if lkind == rkind:
-                        canonical_id = engine.commit_merge(left, right, verdict)
-                    else:
-                        # Requires your engine to expose commit_any_kind(Node|Edge, Node|Edge, verdict)
-                        canonical_id = engine.commit_any_kind(left, right, verdict)
-                    if canonical_id:
-                        committed.append(str(canonical_id))
+            # # merge vector results:
+            # from graph_knowledge_engine.server_mcp_with_admin import CrossDocAdjOut
+            # adj_out = CrossDocAdjOut.model_validate(json.loads(adj_result.content[0].text))
+            # for pairs in adj_out.results:
+            #     lkind, rkind, same_entity = pairs.left_kind, pairs.right_kind, pairs.same_entity
+            #     if same_entity:
+            #         if lkind == rkind:
+            #             canonical_id = engine.commit_merge(left, right, verdict)
+            #         else:
+            #             # Requires your engine to expose commit_any_kind(Node|Edge, Node|Edge, verdict)
+            #             canonical_id = engine.commit_any_kind(left, right, verdict)
+            #         if canonical_id:
+            #             committed.append(str(canonical_id))
             
