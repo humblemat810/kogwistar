@@ -799,7 +799,6 @@ class CustomEmbeddingFunction(EmbeddingFunction):
         return self._emb(documents_or_texts)
 
 
-@dataclass
 class GraphKnowledgeEngine:
     """
     The **Base Abstraction** for the knowledge graph/graph database.
@@ -816,18 +815,14 @@ class GraphKnowledgeEngine:
     Methods are generally arranged from low-level generic helpers to task-specific calls.
     High-level orchestration for extracting, storing, and adjudicating knowledge graph data.
     """
-    _uow_ctx_conn: contextvars.ContextVar[object | None]  = contextvars.ContextVar("gke_uow_conn", default=None)
-    _uow_ctx_depth :contextvars.ContextVar[int]= contextvars.ContextVar("gke_uow_depth", default=0)
+    
 
     #--------------------
     # Puhlic Interface
     #--------------------
     def _filter_items_by_resolve_mode(self, items: list[T], resolve_mode: str) -> list[T]:
-        if resolve_mode == "include_tombstones":
-            return items
-        if resolve_mode in ("active_only", "redirect"):
-            return [x for x in items if ((getattr(x, "metadata", {}) or {}).get("lifecycle_status") or "active")=="active"]
-        return items    
+        return self.lifecycle.filter_items(items, resolve_mode)
+
     def _resolve_redirect_chain(
         self,
         *,
@@ -835,39 +830,22 @@ class GraphKnowledgeEngine:
         fetch_by_ids: Callable[[Sequence[str]], list[T]],
         resolve_mode: Literal["active_only", "redirect", "include_tombstones"],
     ) -> list[T]:
-        if resolve_mode != "redirect":
-            return initial_items
+        return self.lifecycle.resolve_redirect_chain(
+            initial_items=initial_items,
+            fetch_by_ids=fetch_by_ids,
+            resolve_mode=resolve_mode,
+        )
+    def tombstone_node(self, node_id: str, **kw) -> bool:
+        return self.lifecycle.tombstone_node(node_id, **kw)
 
-        resolved: dict[str, T] = {}
-        visited: set[str] = set()
-        frontier: list[T] = list(initial_items)
+    def redirect_node(self, from_id: str, to_id: str, **kw) -> bool:
+        return self.lifecycle.redirect_node(from_id, to_id, **kw)
 
-        while frontier:
-            next_frontier_ids: set[str] = set()
+    def tombstone_edge(self, edge_id: str, **kw) -> bool:
+        return self.lifecycle.tombstone_edge(edge_id, **kw)
 
-            for item in frontier:
-                item_id = str(item.id)
-                if item_id in visited:
-                    continue
-                visited.add(item_id)
-
-                meta = getattr(item, "metadata", {}) or {}
-                status = meta.get("lifecycle_status")
-                redirect_to = meta.get("redirect_to_id")
-
-                if status == "tombstoned" or redirect_to:
-                    next_frontier_ids.add(str(redirect_to))
-                else:
-                    resolved[item_id] = item
-
-            if not next_frontier_ids:
-                break
-
-            frontier = fetch_by_ids(list(next_frontier_ids))
-
-        # In redirect mode: never return tombstoned items
-        return [x for x in resolved.values() if ((getattr(x, "metadata", {}) or {}).get("lifecycle_status") or "active")=="active"]
-
+    def redirect_edge(self, from_id: str, to_id: str, **kw) -> bool:
+        return self.lifecycle.redirect_edge(from_id, to_id, **kw)
     def node_ids_by_doc(self, doc_id: str) -> List[str]:
         
         return self._nodes_by_doc(doc_id)
@@ -1005,182 +983,9 @@ class GraphKnowledgeEngine:
 
                 if max_contexts and len(out) >= max_contexts:
                     break                            
-        for ref in refs:
-            # 2) locate the backing document
-            doc_id = self._infer_doc_id_from_ref(ref)
-            pages = doc_cache.get(doc_id)
-            full_doc = None
-            if not pages:
-                full_doc = self._fetch_document_text(doc_id) if doc_id else None
-                pages = self._coerce_pages(full_doc)
-                doc_cache[doc_id] = pages
-            excerpt = getattr(ref, "excerpt", None)
-            mention = excerpt or (label or "")
-
-            ctx_text = excerpt or None
-            span_start = None
-            span_end = None
-            # if ref.start_page == ref.end_page:
-            #     pages[ref.start_page]
-            # for p in range(ref.start_page, ref.end_page):
-            
-            def _coerce_to_referencable_text(text_or_ast_str):
-                
-                try:
-                    return ('\n'.join((i['text'] for i in ast.literal_eval(text_or_ast_str)['OCR_text_clusters'])))
-                except Exception as e :
-                    return text_or_ast_str
-                    
-                if type(text_or_ast_str) is str:
-                    return text_or_ast_str
-                else:
-                    return ast.literal_eval(text_or_ast_str)
-                pass
-            if full_doc: # has doc in db
-                page_relevant = {p[0]: p[1] for p in pages if (p[0] >= ref.start_page and  p[0] <= ref.end_page )}
-                if ref.start_page and ref.end_page:
-                    if ref.start_page == ref.end_page:
-                        ctx_text = ""
-                        if ref.start_char and ref.end_char:
-                            try:
-                                page_split_page = _coerce_to_referencable_text(page_relevant[ref.start_page])
-                            except:
-                                raise
-                            ctx_text = _coerce_to_referencable_text(page_relevant[ref.start_page])[max(ref.start_char-window_chars, 0): ref.end_char+window_chars]
-                    else:
-                        ctx_text = ""
-                        ctx_text += _coerce_to_referencable_text(page_relevant[ref.start_page])[max(ref.start_char-window_chars, 0):]
-                        for p_num in range(ref.start_page+1,ref.end_page):
-                            ctx_text += _coerce_to_referencable_text(page_relevant[ref.start_page])[:]
-                            ctx_text += '\n\f'
-                        ctx_text += _coerce_to_referencable_text(page_relevant[ref.start_page])[: ref.end_char+window_chars]
-                    if len(ctx_text) == 0:
-                        raise Exception("Context empty")
-                if ctx_text is None:
-                    # Try exact excerpt first (best anchor)
-                    idx = full_doc.find(excerpt) if excerpt else -1
-                    # Fallback to label if allowed
-                    if idx < 0 and label and prefer_label_fallback:
-                        idx = full_doc.find(label)
-
-                    if idx >= 0:
-                        # If we matched on excerpt, use its length; else label length
-                        length = len(excerpt) if excerpt else (len(label) if label else 0)
-                        span_start = idx
-                        span_end = idx + length
-                        left = max(0, span_start - window_chars)
-                        right = min(len(full_doc), span_end + window_chars)
-                        ctx_text = full_doc[left:right]
-            
-
-            out.append({
-                "doc_id": doc_id,
-                "collection_page_url": getattr(ref, "collection_page_url", None),
-                "document_page_url": getattr(ref, "document_page_url", None),
-                "start_page": getattr(ref, "start_page", None),
-                "end_page": getattr(ref, "end_page", None),
-                "start_char": getattr(ref, "start_char", None),
-                "end_char": getattr(ref, "end_char", None),
-                "insertion_method": getattr(ref, "insertion_method", None),
-                "verification": (ref.verification.model_dump() if getattr(ref, "verification", None) else None),
-                "context": ctx_text,             # expanded context or stored excerpt
-                "mention": mention,              # what to highlight / quote in a prompt
-                "loc_found": (span_start is not None),
-                "loc_span": [span_start, span_end] if span_start is not None else None,
-                # Always include the raw ref in case you need exact fields later
-                "ref": ref.model_dump(field_mode = 'backend'),
-            })
-
-            if max_contexts and len(out) >= max_contexts:
-                break
+        
 
         return out
-    ## update only allow redirect and soft delete  and delete node 
-    def tombstone_node(self, node_id: str, **kw) -> bool:
-        patch = {
-            "lifecycle_status": "tombstoned",
-            "redirect_to_id": None,
-            "deleted_at": kw.get("deleted_at") or _utc_now_iso(),
-        }
-        if kw.get("reason"):
-            patch["delete_reason"] = kw["reason"]
-        if kw.get("deleted_by"):
-            patch["deleted_by"] = kw["deleted_by"]
-        ok = _backend_update_record_lifecycle(backend=self.backend, kind="node", record_id=node_id, lifecycle_patch=patch)
-
-        # Phase 2b: append immutable event log (best-effort)
-        if ok:
-            try:
-                payload = {"entity_id": node_id}
-                if kw.get("reason") is not None:
-                    payload["reason"] = kw.get("reason")
-                if kw.get("deleted_by") is not None:
-                    payload["deleted_by"] = kw.get("deleted_by")
-                self._append_event_for_entity(
-                    namespace=getattr(self, "namespace", "default"),
-                    entity_kind="node",
-                    entity_id=node_id,
-                    op="TOMBSTONE",
-                    payload=payload,
-                )
-            except Exception:
-                pass
-        if ok and self._phase1_enable_index_jobs:
-            self.enqueue_index_jobs_for_node(node_id, op="DELETE")
-            applied = self.reconcile_indexes(max_jobs=50)
-        return ok
-
-    def redirect_node(self, from_id: str, to_id: str, **kw) -> bool:
-        if from_id == to_id:
-            return False
-        patch = {
-            "lifecycle_status": "tombstoned",
-            "redirect_to_id": str(to_id),
-            "deleted_at": kw.get("deleted_at") or _utc_now_iso(),
-        }
-        if kw.get("reason"):
-            patch["delete_reason"] = kw["reason"]
-        if kw.get("deleted_by"):
-            patch["deleted_by"] = kw["deleted_by"]
-        ok = _backend_update_record_lifecycle(backend=self.backend, kind="node", record_id=from_id, lifecycle_patch=patch)
-        if ok and self._phase1_enable_index_jobs:
-            self.enqueue_index_jobs_for_node(from_id, op="DELETE")
-            self.reconcile_indexes(max_jobs=50)
-        return ok
-
-    def tombstone_edge(self, edge_id: str, **kw) -> bool:
-        patch = {
-            "lifecycle_status": "tombstoned",
-            "redirect_to_id": None,
-            "deleted_at": kw.get("deleted_at") or _utc_now_iso(),
-        }
-        if kw.get("reason"):
-            patch["delete_reason"] = kw["reason"]
-        if kw.get("deleted_by"):
-            patch["deleted_by"] = kw["deleted_by"]
-        ok = _backend_update_record_lifecycle(backend=self.backend, kind="edge", record_id=edge_id, lifecycle_patch=patch)
-
-        # Phase 2b: append immutable event log (best-effort)
-        if ok:
-            try:
-                payload = {"entity_id": edge_id}
-                if kw.get("reason") is not None:
-                    payload["reason"] = kw.get("reason")
-                if kw.get("deleted_by") is not None:
-                    payload["deleted_by"] = kw.get("deleted_by")
-                self._append_event_for_entity(
-                    namespace=getattr(self, "namespace", "default"),
-                    entity_kind="edge",
-                    entity_id=edge_id,
-                    op="TOMBSTONE",
-                    payload=payload,
-                )
-            except Exception:
-                pass
-                if ok and self._phase1_enable_index_jobs:
-                    self.enqueue_index_jobs_for_edge(edge_id, op="DELETE")
-                    self.reconcile_indexes(max_jobs=50)
-                return ok
 
 
     def replay_namespace(
@@ -1296,23 +1101,7 @@ class GraphKnowledgeEngine:
             repair_backend=True,
         )
 
-    def redirect_edge(self, from_id: str, to_id: str, **kw) -> bool:
-        if from_id == to_id:
-            return False
-        patch = {
-            "lifecycle_status": "tombstoned",
-            "redirect_to_id": str(to_id),
-            "deleted_at": kw.get("deleted_at") or _utc_now_iso(),
-        }
-        if kw.get("reason"):
-            patch["delete_reason"] = kw["reason"]
-        if kw.get("deleted_by"):
-            patch["deleted_by"] = kw["deleted_by"]
-        ok = _backend_update_record_lifecycle(backend=self.backend, kind="edge", record_id=from_id, lifecycle_patch=patch)
-        if ok and self._phase1_enable_index_jobs:
-            self.enqueue_index_jobs_for_edge(from_id, op="DELETE")
-            self.reconcile_indexes(max_jobs=50)
-        return ok
+    
     ## get
     def get_nodes(
         self,
@@ -1621,11 +1410,6 @@ class GraphKnowledgeEngine:
             payload_json=payload_json,
         )
     
-    @property
-    def indexing(self) -> IndexingSubsystem:
-        if self._indexing is None:
-            self._indexing = IndexingSubsystem(self)
-        return self._indexing
     def enqueue_index_job(self, *args, **kwargs) -> str:
         return self.indexing.enqueue_index_job(*args, **kwargs)
 
@@ -2235,21 +2019,33 @@ class GraphKnowledgeEngine:
           - ENV SENTENCE_TRANSFORMERS_MODEL, or
           - "all-MiniLM-L6-v2".
         """
+        load_dotenv()
+        self.kg_graph_type = kg_graph_type
+        self.persist_directory = persist_directory
+        self.namespace = namespace
+        
+        
+        self.indexing = IndexingSubsystem(self)
+        
+        
+        self._uow_ctx_conn: contextvars.ContextVar[object | None]  = contextvars.ContextVar("gke_uow_conn", default=None)
+        self._uow_ctx_depth :contextvars.ContextVar[int]= contextvars.ContextVar("gke_uow_depth", default=0)
+        
         self.changes = ChangeBus()
         if cdc_publish_endpoint := os.environ.get('CDC_PUBLISH_ENDPOINT'):
             self.changes.add_sink(FastAPIChangeSink(cdc_publish_endpoint))
-        self._indexing = None
+
         # from .debug_producer import DebugEventProducer
         # self._debug_producer = DebugEventProducer("http://127.0.0.1:8000")
         self._oplog = None
         if debug_dir is not None:
             self._oplog = OplogWriter(debug_dir / "changes.jsonl", fsync=False)
         self.tool_call_id_factory: Callable[[],str] | None = None
-        self.kg_graph_type = kg_graph_type
-        self.persist_directory = persist_directory
-        self.namespace = namespace
+
         self._disable_event_log = False
         self.query = GraphQuery(self)
+        
+        
         self.allow_cross_kind_adjudication = True  # can be set by user
         self.cross_kind_strategy = "reifies"       # "reifies" | "equivalent" (default "reifies")
         # to do- refractor via composition. protocol template in strategies.py, strategies helper in ./strategies/
@@ -2261,12 +2057,10 @@ class GraphKnowledgeEngine:
         from graph_knowledge_engine.strategies import IAdjudicator
         self.proposer = proposer or VectorProposer(self)
         self.adjudicator : IAdjudicator = adjudicator or Adjudicator(self)
-        # self.pair_adjudicator: PairAdjudicator = adjudicator or LLMPairAdjudicatorImpl(self)
-        # self.batch_adjudicator: BatchAdjudicator = batch_adjudicator or LLMBatchAdjudicatorImpl(self)
         self.verifier: Verifier = verifier or DefaultVerifier(self, VerifierConfig(use_embeddings=False))
         self.merge_policy = merge_policy or PreferExistingCanonical(self)
         self.meta_sqlite : EngineSQLite | EnginePostgresMetaStore
-        load_dotenv()
+        
 
         self._alias_books: dict[str, AliasBook] = {}
         ef = embedding_function or CustomEmbeddingFunction()
@@ -2338,6 +2132,11 @@ class GraphKnowledgeEngine:
             self._backend_uow = PostgresUnitOfWork(engine=self.backend.engine)
         else:
             self._backend_uow = NoopUnitOfWork()
+
+
+        from .lifecycle import LifecycleSubsystem
+        self._backend_update_record_lifecycle = _backend_update_record_lifecycle
+        self.lifecycle = LifecycleSubsystem(self)
 
         # self.llm = AzureChatOpenAI(
         #     deployment_name=os.getenv("OPENAI_DEPLOYMENT_NAME_GPT4_1"),
@@ -2439,7 +2238,7 @@ class GraphKnowledgeEngine:
     def _maybe_reindex_edge_refs(self, edge: Edge, *, force: bool = False) -> None:
         
         new_fp = _refs_fingerprint(edge.mentions or [])
-        meta = self.backend.edge_get(ids=[edge.id], include=["metadatas"])
+        meta = self.backend.edge_get(ids=[edge.safe_get_id()], include=["metadatas"])
         old_fp = None
         metadatas = meta.get("metadatas")
         if metadatas and metadatas[0]:
@@ -2454,7 +2253,7 @@ class GraphKnowledgeEngine:
         docset_ok = (current_doc_ids == expect_doc_ids)
 
         if force or (new_fp != old_fp) or (not count_ok) or (not docset_ok):
-            self.backend.edge_update(ids=[edge.id], metadatas=[{"edge_refs_fp": new_fp}])
+            self.backend.edge_update(ids=[edge.safe_get_id()], metadatas=[{"edge_refs_fp": new_fp}])
             self._index_edge_refs(edge)
 
     def _maybe_reindex_node_refs(self, node: Node, *, force: bool = False) -> None:
@@ -2677,10 +2476,9 @@ class GraphKnowledgeEngine:
     # ---- Unit of Work (meta-store transaction boundary) ----
     def _ensure_uow_ctxvars(self):
         
-        cls = self.__class__
-        if not hasattr(cls, "_uow_ctx_conn"):
-            cls._uow_ctx_conn = contextvars.ContextVar("gke_uow_conn", default=None)
-            cls._uow_ctx_depth = contextvars.ContextVar("gke_uow_depth", default=0)
+        if not hasattr(self, "_uow_ctx_conn"):
+            self._uow_ctx_conn = contextvars.ContextVar("gke_uow_conn", default=None)
+            self._uow_ctx_depth = contextvars.ContextVar("gke_uow_depth", default=0)
 
     @contextmanager
     def uow(self):
@@ -2689,27 +2487,27 @@ class GraphKnowledgeEngine:
         Nested calls join the outer transaction; only the outermost commits/rolls back.
         """
         self._ensure_uow_ctxvars()
-        cls = self.__class__
-        depth = cls._uow_ctx_depth.get()
+        
+        depth = self._uow_ctx_depth.get()
         if depth > 0:
-            cls._uow_ctx_depth.set(depth + 1)
+            self._uow_ctx_depth.set(depth + 1)
             try:
-                yield cls._uow_ctx_conn.get()
+                yield self._uow_ctx_conn.get()
             finally:
-                cls._uow_ctx_depth.set(cls._uow_ctx_depth.get() - 1)
+                self._uow_ctx_depth.set(self._uow_ctx_depth.get() - 1)
             return
 
-        cls._uow_ctx_depth.set(1)
+        self._uow_ctx_depth.set(1)
         try:
             with self.meta_sqlite.transaction() as conn:
-                token = cls._uow_ctx_conn.set(conn)
+                token = self._uow_ctx_conn.set(conn)
                 try:
                     with self._backend_uow.transaction():
                         yield conn
                 finally:
-                    cls._uow_ctx_conn.reset(token)
+                    self._uow_ctx_conn.reset(token)
         finally:
-            cls._uow_ctx_depth.set(0)
+            self._uow_ctx_depth.set(0)
 
     def get_collection_lock(self, collection_name):
         """Return the lock for a given collection name.
@@ -2733,7 +2531,7 @@ class GraphKnowledgeEngine:
             node_conv: ConversationNode = cast(ConversationNode, node)
             try:
                 conv_id = node_conv.conversation_id
-            except:
+            except Exception as _e:
                 conv_id = node_conv.metadata["conversation_id"]
             
             if conv_id is None:
