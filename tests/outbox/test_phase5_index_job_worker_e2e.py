@@ -60,7 +60,7 @@ def test_phase5_job_fail_increments_retry_and_requeues(eng, monkeypatch):
     def _boom(**kwargs):
         raise RuntimeError("boom")
 
-    monkeypatch.setattr(eng, "_apply_index_job", lambda **kw: _boom(**kw))
+    monkeypatch.setattr(eng.indexing, "apply_index_job", lambda **kw: _boom(**kw))
 
     worker = IndexJobWorker(engine=eng, batch_size=1, lease_seconds=60, max_jobs_per_tick=1, namespace=ns)
     m = worker.tick()
@@ -89,7 +89,7 @@ def test_phase5_job_exceeds_max_retry_becomes_dlq_terminal(eng, monkeypatch):
         max_retries=2,
     )
 
-    monkeypatch.setattr(eng, "_apply_index_job", lambda **kw: (_ for _ in ()).throw(RuntimeError("boom")))
+    monkeypatch.setattr(eng.indexing, "apply_index_job", lambda **kw: (_ for _ in ()).throw(RuntimeError("boom")))
 
     worker = IndexJobWorker(engine=eng, batch_size=1, lease_seconds=60, max_jobs_per_tick=1, namespace=ns)
 
@@ -153,7 +153,7 @@ def test_phase5_idempotent_apply_under_at_least_once(eng, monkeypatch):
         # idempotent write to a set (projection side-effect)
         applied.add((kw["entity_kind"], kw["entity_id"], kw["index_kind"], kw["op"]))
 
-    monkeypatch.setattr(eng, "_apply_index_job", lambda **kw: _apply(**kw))
+    monkeypatch.setattr(eng.indexing, "apply_index_job", lambda **kw: _apply(**kw))
 
     eng.meta_sqlite.enqueue_index_job(
         namespace=ns,

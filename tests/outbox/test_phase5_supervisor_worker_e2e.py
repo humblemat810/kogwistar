@@ -40,7 +40,7 @@ def test_phase5_supervisor_runs_worker_processes_job_then_graceful_shutdown(tmp_
         eng.namespace = ns  # type: ignore[attr-defined]
 
         job_id = f"job_{uuid.uuid4().hex}"
-        # enqueue a NOOP job: engine._apply_index_job will just return; worker still marks DONE
+        # enqueue a NOOP job: engine.indexing.apply_index_job will just return; worker still marks DONE
         eng.meta_sqlite.enqueue_index_job(
             namespace=ns,
             job_id=job_id,

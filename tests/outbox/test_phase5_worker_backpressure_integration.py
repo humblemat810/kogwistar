@@ -64,7 +64,7 @@ def test_phase5_worker_backpressure_integration_respects_caps(
     _enqueue_jobs(eng.meta_sqlite, ns=ns, n=n_jobs)
 
     applied = set()
-    monkeypatch.setattr(eng, "_apply_index_job", lambda **kw: applied.add(kw["job_id"]))
+    monkeypatch.setattr(eng.indexing, "apply_index_job", lambda **kw: applied.add(kw["job_id"]))
 
     worker = IndexJobWorker(
         engine=eng,

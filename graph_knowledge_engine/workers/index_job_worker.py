@@ -6,8 +6,9 @@ import signal
 import sys
 import time
 from dataclasses import dataclass
-from typing import Any, Callable, Optional
-
+from typing import Any, Callable, Optional, TYPE_CHECKING
+if TYPE_CHECKING:
+    from ..engine import GraphKnowledgeEngine
 
 @dataclass
 class WorkerTickMetrics:
@@ -22,7 +23,7 @@ class IndexJobWorker:
     """Operational worker for index_jobs.
 
     - Uses meta store's claim/ack/requeue APIs.
-    - Applies jobs via engine._apply_index_job(...).
+    - Applies jobs via engine.indexing.apply_index_job(...).
 
     This is intentionally decoupled from the Engine hot path.
     """
@@ -30,7 +31,7 @@ class IndexJobWorker:
     def __init__(
         self,
         *,
-        engine: Any,
+        engine: GraphKnowledgeEngine,
         max_inflight: int = 1,
         batch_size: int = 50,
         lease_seconds: int = 60,
@@ -91,7 +92,7 @@ class IndexJobWorker:
                 try_mr = int(max_retries or 10)
 
                 try:
-                    self.engine._apply_index_job(
+                    self.engine.indexing.apply_index_job(
                         job_id=str(job_id),
                         entity_kind=str(entity_kind),
                         entity_id=str(entity_id),

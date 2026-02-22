@@ -860,6 +860,7 @@ def api_graph_upsert_llm(inp: GraphUpsertLLMIn):
     - Supports hyperedges (edge->edge) in a single batch via engine’s topo-sorted ingest.
     - insertion method and other non llm fields such as backend/ frontend fields are dropped, and will be inserted with overrides
        e.g. insertion method will be overridden with llm_graph_extraction because it assume data is uploaded by llm
+    - null doc id and content if just upload a node edge graph without dangling node/edges
     
     """
     require_role("rw")
@@ -913,7 +914,7 @@ def api_graph_upsert_llm(inp: GraphUpsertLLMIn):
     # 4) Persist using your first-class persistence path (allocates nn:/ne:, topo-sorts, enforces endpoints)
     persisted = engine.persist_graph_extraction(
         document=Document(id=inp.doc_id, content=inp.content or engine._fetch_document_text(inp.doc_id) or "", type=inp.doc_type, 
-                          embeddings = None, source_map = None),
+                          embeddings = None, source_map = None, metadata=None, domain_id=None, processed=None),
         parsed=parsed,
         mode="append",
     )

@@ -70,7 +70,7 @@ def test_phase5_crash_after_apply_before_ack_eventually_converges(eng, monkeypat
         # projection effect should be idempotent
         applied.add((kw["entity_kind"], kw["entity_id"], kw["index_kind"], kw["op"]))
 
-    monkeypatch.setattr(eng, "_apply_index_job", lambda **kw: _apply(**kw))
+    monkeypatch.setattr(eng.indexing, "apply_index_job", lambda **kw: _apply(**kw))
 
     # Simulate crash after apply but before ack: make meta mark-done raise once.
     # IMPORTANT: the worker is expected to *catch* this and requeue/fail, not crash the whole process.
