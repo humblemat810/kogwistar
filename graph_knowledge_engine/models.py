@@ -851,10 +851,32 @@ class LLMGraphExtraction(ModeSlicingMixin, BaseModel):
             dumped = sliced
         else:
             raise(ValueError("Unsupported type for 'sliced'"))
-        for ne in dumped['nodes'] + dumped['edges']:
-            for r in ne['references']:
-                r['insertion_method'] = insertion_method
-        return cls.model_validate(dumped, context = {"insertion_method" : insertion_method})
+        # Backwards-compatibility:
+        #   - historical payloads used `references: [SpanLike, ...]`
+        #   - current models use `mentions: [Grounding{spans:[Span,...]}, ...]`
+        # This helper accepts either and normalizes to `mentions`.
+        for ne in (dumped.get('nodes') or []) + (dumped.get('edges') or []):
+            # If a caller provided `references` (legacy), map it to a single grounding.
+            if 'mentions' not in ne and 'references' in ne and ne.get('references') is not None:
+                refs = ne.get('references') or []
+                # refs is expected to be a list of Span-like dicts
+                ne['mentions'] = [{"spans": refs}]
+            # Some callers used `groundings` instead of `mentions`.
+            if 'mentions' not in ne and 'groundings' in ne and ne.get('groundings') is not None:
+                ne['mentions'] = ne.pop('groundings')
+
+            # Inject insertion_method into every span (backend-only provenance tag).
+            for g in (ne.get('mentions') or []):
+                spans = (g or {}).get('spans') or []
+                for s in spans:
+                    if isinstance(s, dict):
+                        s['insertion_method'] = insertion_method
+
+            # Finally, drop legacy key to avoid confusing validators.
+            if 'references' in ne:
+                ne.pop('references', None)
+
+        return cls.model_validate(dumped, context={"insertion_method": insertion_method})
 
 
 @dataclass
@@ -1045,7 +1067,7 @@ class Document(ModeSlicingMixin, BaseModel):
     def get_content_by_span(self, span: Span)-> str:
         if self.type == 'ocr':
             return self.get_content_as_ocr_doc_by_span(span)
-        elif self.type == ['text',  "text_chunked"]:
+        elif self.type in ['text',  "text_chunked"]:
             return self.get_content_as_text_doc_by_span(span)
         else:
             raise Exception ("Unknown document type")

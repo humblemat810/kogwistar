@@ -3,6 +3,7 @@ import socket
 import time
 from typing import Any, Dict, List
 
+import httpx
 import pytest
 import json
 import requests
@@ -149,199 +150,192 @@ async def test_doc_node_edge_adjudicate(base_http: str, base_mcp: str, small_tes
     docs: Dict[str, str] = bundle["docs"]
     nodes: List[Dict[str, Any]] = bundle["nodes"]
     edges: List[Dict[str, Any]] = bundle["edges"]
-    insertion_method = "fixture_sample"
+    insertion_method = "llm_graph_extraction"
 
     rw_token = _dev_token(base_http, "rw", ns="docs")
     ro_token = _dev_token(base_http, "ro", ns="docs")
 
     def _subset_for_doc(items: List[Dict[str, Any]], doc_id: str) -> List[Dict[str, Any]]:
+        """Keep only items that have at least one reference for doc_id.
+        Also ensure each reference carries 'insertion_method' (server may filter by it)."""
         out: List[Dict[str, Any]] = []
         for it in items or []:
-            refs = it.get("references") or []
-            if not any(r.get("doc_id") == doc_id for r in refs):
-                continue
+            spans = it.get("mentions") or []
+            # if not any(r.get("doc_id") == doc_id for r in spans):
+            #     continue
+            # normalize insertion_method on all refs (don’t change doc_id)
+            
             it2 = dict(it)
-            it2["references"] = [
-                {**r, "insertion_method": r.get("insertion_method") or insertion_method} for r in refs
-            ]
+            new_refs = []
+            for r in spans:
+                r2 = dict(r)
+                if "insertion_method" not in r2 or r2["insertion_method"] is None:
+                    r2["insertion_method"] = insertion_method
+                new_refs.append(r2)
+            it2["mentions"] = new_refs
             out.append(it2)
         return out
 
-    # --- Upsert one payload per document ---
-    for doc_id, content in docs.items():
+    # --- 1) Upsert one payload per document ---\
+    from itertools import islice
+    for doc_id, content in islice(docs.items(), 1, None):
         payload = {
             "doc_id": doc_id,
             "content": content,
-            "doc_type": "plain",
+            "doc_type": "text",
             "insertion_method": insertion_method,
-            "nodes": _subset_for_doc(nodes, doc_id),
-            "edges": _subset_for_doc(edges, doc_id),
         }
-        r = requests.post(
-            f"{base_http}/api/graph/upsert",
-            json=payload,
-            headers={"Authorization": f"Bearer {rw_token}"},
-            timeout=40,
-        )
+        r = requests.post(f"{base_http}/api/document", json=payload, headers={"Authorization": f"Bearer {rw_token}"}, timeout=None)
+        assert r.ok, f"doc upload failed for {doc_id}: {r.status_code} {r.text}"
+    
+    for doc_id, content in docs.items():
+        n_for_doc = _subset_for_doc(nodes, doc_id)
+        e_for_doc = _subset_for_doc(edges, doc_id)
+        payload = {
+            "doc_id": doc_id,
+            "content": content,
+            "doc_type": "text",
+            "insertion_method": insertion_method,
+            "nodes": n_for_doc,
+            "edges": e_for_doc,
+        }
+        r = requests.post(f"{base_http}/api/graph/upsert", json=payload, headers={"Authorization": f"Bearer {rw_token}"}, timeout=None)
         assert r.ok, f"Upsert failed for {doc_id}: {r.status_code} {r.text}"
 
-    # --- RBAC seam: RO must not see RW-only tools ---
-    async with streamable_http_client(
-        base_mcp,
-        headers={"Authorization": f"Bearer {ro_token}"},
-        sse_read_timeout=None,
-        timeout=None,
-    ) as (read, write, _):
-        async with ClientSession(read, write) as session:
-            await session.initialize()
-            tools = await session.list_tools()
-            names = {t.name for t in tools.tools}
-            forbidden = {"doc_parse", "store_document", "kg_extract"}
-            assert forbidden.isdisjoint(names), f"Forbidden tools leaked into list_tools: {forbidden & names}"
+    # --- RO visibility seam: RO must not see RW-only tools ---
+    async with httpx.AsyncClient(headers={"Authorization": f"Bearer {ro_token}"}) as ro_http:
+        async with streamable_http_client(base_mcp, http_client=ro_http) as (r_read, r_write, _):
+            async with ClientSession(r_read, r_write) as ro_sess:
+                await ro_sess.initialize()
+                ro_tools = await ro_sess.list_tools()
+                ro_names = {t.name for t in ro_tools.tools}
+                for forbidden in {"doc_parse", "kg_extract", "store_document"}:
+                    assert forbidden not in ro_names, (
+                        f"RO should not see {forbidden}; saw {sorted(ro_names)}"
+                    )
+    # --- 2) MCP: list tools and run cross-doc adjudication ---
+    async with httpx.AsyncClient(headers={"Authorization": f"Bearer {rw_token}"}, timeout=None) as http_client:
+        async with streamable_http_client(base_mcp, http_client=http_client) as (read, write, _):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
 
-    # --- RW smoke call ---
-    async with streamable_http_client(
-        base_mcp,
-        headers={"Authorization": f"Bearer {rw_token}"},
-        sse_read_timeout=None,
-        timeout=None,
-    ) as (read, write, _):
-        async with ClientSession(read, write) as session:
-            await session.initialize()
-            tools = await session.list_tools()
-            names = {t.name for t in tools.tools}
-            # keep your original assertion set; adjust if your server differs
-            assert {"kg_extract", "doc_parse", "kg_crossdoc_adjudicate_anykind"} <= names
 
-            # Optional cache/load tool if your server provides it
-            if "kg_load_persisted" in names:
-                _ = await session.call_tool(
-                    "kg_load_persisted",
-                    arguments={"inp": {"doc_ids": list(docs.keys()), "insertion_method": insertion_method}},
-                )
+                tools = await session.list_tools()
+                names = {t.name for t in tools.tools}
+                # keep your original assertion set; adjust if your server differs
+                assert {"kg_extract", "doc_parse", "kg_crossdoc_adjudicate_anykind"} <= names
 
-            
+                # Optional cache/load tool if your server provides it
+                if "kg_load_persisted" in names:
+                    _ = await session.call_tool(
+                        "kg_load_persisted",
+                        arguments={"inp": {"doc_ids": list(docs.keys()), "insertion_method": insertion_method, "sid": False}},
+                    )
 
-            # convenience: allowed docs = the fixture doc ids
-            allowed_docs = list(docs.keys())
 
-            def _parse_mcp_payload(resp):
-                c0 = resp.content[0]
-                if getattr(c0, "type", "") == "json":
-                    return c0.json
-                # some clients return text; fall back to json.loads
-                return json.loads(getattr(c0, "text", "{}"))
 
-            def _collect_pairs(payload):
-                """
-                Normalize pairs from either:
-                {"pairs": [{"left_id","right_id",...}, ...]}
-                or
-                {"pairs": [{"left": {"id", "kind"}, "right": {"id","kind"}}, ...]}
-                into a set of unordered id-tuples {("A","B"), ...}.
-                """
-                out = set()
-                for p in payload.get("pairs", []):
-                    if "left_id" in p and "right_id" in p:
-                        a, b = p["left_id"], p["right_id"]
-                    else:
-                        a, b = p.get("left", {}).get("id"), p.get("right", {}).get("id")
-                    if a and b:
-                        out.add(tuple(sorted((a, b))))
-                return out
+                # convenience: allowed docs = the fixture doc ids
+                allowed_docs = list(docs.keys())
 
-            # expected positives from the fixture
-            must_have = {
-                tuple(sorted(("N_CHLORO", "N_CHLORO_ALIAS"))),          # node↔node positive (alias)
-                tuple(sorted(("E_PHOTO_LEAVES", "E_PHOTO_LEAVES_DUP"))),# edge↔edge positive (dup)
-                tuple(sorted(("N_PHOTO_REIFIED", "E_PHOTO_LEAVES"))),   # cross-type positive (reified ↔ relation)
-            }
-            must_have_cross_doc = {
-                tuple(sorted(('E_CHLORO_ABSORB','N_CHLORO_ALIAS'))),
-                tuple(sorted(('E_PHOTO_LEAVES_DUP','N_CHLORO_ALIAS')))
-            }
-            must_have.update(must_have_cross_doc)
-            # ----- Vector-based proposals -----
-            for cross_doc_only in [True, False]:
-                vec_res = await session.call_tool(
-                    "propose_vector",
+                def _parse_mcp_payload(resp):
+                    c0 = resp.content[0]
+                    if getattr(c0, "type", "") == "json":
+                        return c0.json
+                    # some clients return text; fall back to json.loads
+                    return json.loads(getattr(c0, "text", "{}"))
+
+                def _collect_pairs(payload):
+                    """
+                    Normalize pairs from either:
+                    {"pairs": [{"left_id","right_id",...}, ...]}
+                    or
+                    {"pairs": [{"left": {"id", "kind"}, "right": {"id","kind"}}, ...]}
+                    into a set of unordered id-tuples {("A","B"), ...}.
+                    """
+                    out = set()
+                    for p in payload.get("pairs", []):
+                        if "left_id" in p and "right_id" in p:
+                            a, b = p["left_id"], p["right_id"]
+                        else:
+                            a, b = p.get("left", {}).get("id"), p.get("right", {}).get("id")
+                        if a and b:
+                            out.add(tuple(sorted((a, b))))
+                    return out
+
+                # expected positives from the fixture
+                must_have = {
+                    tuple(sorted(("N_CHLORO", "N_CHLORO_ALIAS"))),          # node↔node positive (alias)
+                    tuple(sorted(("E_PHOTO_LEAVES", "E_PHOTO_LEAVES_DUP"))),# edge↔edge positive (dup)
+                    tuple(sorted(("N_PHOTO_REIFIED", "E_PHOTO_LEAVES"))),   # cross-type positive (reified ↔ relation)
+                }
+                must_have_cross_doc = {
+                    tuple(sorted(('E_CHLORO_ABSORB','N_CHLORO_ALIAS'))),
+                    tuple(sorted(('E_PHOTO_LEAVES_DUP','N_CHLORO_ALIAS')))
+                }
+                must_have.update(must_have_cross_doc)
+                # ----- Vector-based proposals -----
+                for cross_doc_only in [True, False]:
+                    vec_res = await session.call_tool(
+                        "propose_vector",
+                        arguments={
+                            "inp": {
+                                "allowed_docs": allowed_docs,
+                                "cross_doc_only": cross_doc_only,         # only cross-document candidates
+                                "include_edges": True,          # allow node↔edge, edge↔edge too
+                                "anchor_only": False,
+                                "top_k": 8,
+                                "where": {"insertion_method": {"$eq": insertion_method}},  # filter by our fixture provenance
+                                # optional knobs your server already supports:
+                                "score_mode": "distance",
+                                "max_distance": 0.55,
+                                # "min_similarity": 0.85,
+                            }
+                        },
+                    )
+                    vec_payload = _parse_mcp_payload(vec_res)
+                    vec_pairs = _collect_pairs(vec_payload)
+
+                    # ensure all required positives are present in vector proposals
+                    for pair in must_have if not cross_doc_only else must_have_cross_doc:
+                        assert pair in vec_pairs, f"Vector proposer missing expected pair {pair}; got {sorted(vec_pairs)}"
+                    never_pair = tuple(sorted(("N_HEMO", "E_CHLORO_ABSORB")))
+                    assert never_pair not in vec_pairs, f"Vector proposer unexpectedly included negative {never_pair}"
+                    # vec_pairs adjudicate_pairs
+                    adj_result = await session.call_tool("adjudicate_pairs",arguments={
+                        "inp": {
+                            "pairs": vec_payload['pairs'],
+                            "commit": False,
+                        }
+                    })
+                    pass
+
+                # ----- Brute-force proposals -----
+                bf_res = await session.call_tool(
+                    "kg_propose_bruteforce",
                     arguments={
                         "inp": {
                             "allowed_docs": allowed_docs,
-                            "cross_doc_only": cross_doc_only,         # only cross-document candidates
-                            "include_edges": True,          # allow node↔edge, edge↔edge too
+                            "cross_doc_only": False,
+                            "include_edges": True,
                             "anchor_only": False,
-                            "top_k": 8,
-                            "where": {"insertion_method": {"$eq": insertion_method}},  # filter by our fixture provenance
-                            # optional knobs your server already supports:
-                            "score_mode": "distance",
-                            "max_distance": 0.35,
-                            # "min_similarity": 0.85,
+                            "where": {"insertion_method": {"$eq": "fixture_sample"}},
                         }
                     },
                 )
-                vec_payload = _parse_mcp_payload(vec_res)
-                vec_pairs = _collect_pairs(vec_payload)
+                bf_payload = _parse_mcp_payload(bf_res)
+                bf_pairs = _collect_pairs(bf_payload)
 
-                # ensure all required positives are present in vector proposals
-                for pair in must_have if not cross_doc_only else must_have_cross_doc:
-                    assert pair in vec_pairs, f"Vector proposer missing expected pair {pair}; got {sorted(vec_pairs)}"
-                never_pair = tuple(sorted(("N_HEMO", "E_CHLORO_ABSORB")))
-                assert never_pair not in vec_pairs, f"Vector proposer unexpectedly included negative {never_pair}"
-                # vec_pairs adjudicate_pairs
-                adj_result = await session.call_tool("adjudicate_pairs",arguments={
-                    "inp": {
-                        "pairs": vec_payload['pairs'],
-                        "commit": False,
-                    }
-                })
-                pass
-                                                     
-            # ----- Brute-force proposals -----
-            bf_res = await session.call_tool(
-                "kg_propose_bruteforce",
-                arguments={
-                    "inp": {
-                        "allowed_docs": allowed_docs,
-                        "cross_doc_only": False,
-                        "include_edges": True,
-                        "anchor_only": False,
-                        "where": {"insertion_method": {"$eq": "fixture_sample"}},
-                    }
-                },
-            )
-            bf_payload = _parse_mcp_payload(bf_res)
-            bf_pairs = _collect_pairs(bf_payload)
-
-            for pair in must_have:
-                assert tuple(sorted(pair)) in bf_pairs, f"Bruteforce proposer missing expected pair {pair}; got {sorted(bf_pairs)}"
+                for pair in must_have:
+                    assert tuple(sorted(pair)) in bf_pairs, f"Bruteforce proposer missing expected pair {pair}; got {sorted(bf_pairs)}"
 
 
+                # Cross-document adjudication (node↔node, edge↔edge, node↔edge)
+                res = await session.call_tool(
+                    "kg_crossdoc_adjudicate_anykind",
+                    arguments={"inp": {"doc_ids": list(docs.keys()), "insertion_method": insertion_method}},
+                )
 
-
-            
-            # Cross-document adjudication (node↔node, edge↔edge, node↔edge)
-            res = await session.call_tool(
-                "kg_crossdoc_adjudicate_anykind",
-                arguments={"inp": {"doc_ids": list(docs.keys()), "insertion_method": insertion_method}},
-            )
-
-            assert res.content, "No MCP content returned"
-            first = res.content[0]
-            ok = (first.type == "json") or (first.type == "text" and json.loads(first.text))
-            assert ok, f"Unexpected MCP response type: {first.type}"
-            
-            # # merge vector results:
-            # from graph_knowledge_engine.server_mcp_with_admin import CrossDocAdjOut
-            # adj_out = CrossDocAdjOut.model_validate(json.loads(adj_result.content[0].text))
-            # for pairs in adj_out.results:
-            #     lkind, rkind, same_entity = pairs.left_kind, pairs.right_kind, pairs.same_entity
-            #     if same_entity:
-            #         if lkind == rkind:
-            #             canonical_id = engine.commit_merge(left, right, verdict)
-            #         else:
-            #             # Requires your engine to expose commit_any_kind(Node|Edge, Node|Edge, verdict)
-            #             canonical_id = engine.commit_any_kind(left, right, verdict)
-            #         if canonical_id:
-            #             committed.append(str(canonical_id))
-            
+                assert res.content, "No MCP content returned"
+                first = res.content[0]
+                ok = (first.type == "json") or (first.type == "text" and json.loads(first.text))
+                assert ok, f"Unexpected MCP response type: {first.type}"

@@ -83,7 +83,7 @@ def kg_semantic_seed_then_expand_text(
 class DocParseIn(BaseModel):
     doc_id: str
     content: str
-    type: str = "plain"
+    type: str = "text"
 
 class DocParseOut(BaseModel):
     doc_id: str
@@ -132,7 +132,7 @@ def kg_extract(inp: KGExtractIn) -> KGExtractOut:
 
     # 4) Persist
     persisted = engine.persist_graph_extraction(
-        document=Document(id=inp.doc_id, content=content, type="plain"),
+        document=Document(id=inp.doc_id, content=content, type="text"),
         parsed=parsed,
         mode=inp.mode,
     )

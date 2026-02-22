@@ -127,12 +127,7 @@ TEdge = TypeVar("TEdge", bound=Edge)
 AnyNode=Union[Node, ConversationNode, WorkflowNode, WorkflowStepExecNode, WorkflowStepExecNode]
 TAnyNode = TypeVar("TAnyNode", bound=AnyNode)
 
-def _refs_hash(refs) -> str:
     
-    return hashlib.sha1(json.dumps(
-        [r.model_dump() for r in (refs or [])],
-        sort_keys=True
-    ).encode()).hexdigest()
 from typing import Callable, TypeVar, ParamSpec, cast
 from joblib import Memory
 
@@ -938,6 +933,77 @@ class GraphKnowledgeEngine:
         out: List[Dict[str, Any]] = []
         doc_cache = {}
         
+        def _coerce_to_referencable_text(text_or_ast_str):
+            
+            try:
+                return ('\n'.join((i['text'] for i in ast.literal_eval(text_or_ast_str)['OCR_text_clusters'])))
+            except Exception as _e :
+                return text_or_ast_str
+        # ne['mentions'] = [{"spans": refs}]
+        mentions = getattr(obj, "mentions", None) or []
+        for mention in mentions:
+            for span in mention.spans:
+                span : Span
+                doc_id = self._infer_doc_id_from_ref(span)
+                
+                pages = doc_cache.get(doc_id)
+                full_doc = None
+                if not pages:
+                    full_doc = self._fetch_document_text(doc_id) if doc_id else None
+                    pages = self._coerce_pages(full_doc)
+                    doc_cache[doc_id] = pages
+                excerpt = getattr(span, "excerpt", None)
+                ctx_text = excerpt or (label or "")
+                span_start = None
+                span_end = None
+
+                if full_doc: # has doc in db
+                    page_relevant = {p[0]: p[1] for p in pages if (p[0] >= span.page_number and  p[0] <= span.page_number )}
+                    if span.page_number and span.page_number:
+                        if span.page_number == span.page_number:
+                            ctx_text = ""
+                            if span.start_char and span.end_char:
+                                try:
+                                    page_split_page = _coerce_to_referencable_text(page_relevant[span.page_number])
+                                except:
+                                    raise
+                                ctx_text = _coerce_to_referencable_text(page_relevant[span.page_number])[max(span.start_char-window_chars, 0): span.end_char+window_chars]
+
+                    if ctx_text is None:
+                        # Try exact excerpt first (best anchor)
+                        idx = full_doc.find(excerpt) if excerpt else -1
+                        # Fallback to label if allowed
+                        if idx < 0 and label and prefer_label_fallback:
+                            idx = full_doc.find(label)
+
+                        if idx >= 0:
+                            # If we matched on excerpt, use its length; else label length
+                            length = len(excerpt) if excerpt else (len(label) if label else 0)
+                            span_start = idx
+                            span_end = idx + length
+                            left = max(0, span_start - window_chars)
+                            right = min(len(full_doc), span_end + window_chars)
+                            ctx_text = full_doc[left:right]
+                out.append({
+                    "doc_id": doc_id,
+                    "collection_page_url": getattr(span, "collection_page_url", None),
+                    "document_page_url": getattr(span, "document_page_url", None),
+                    "start_page": getattr(span, "start_page", None),
+                    "end_page": getattr(span, "end_page", None),
+                    "start_char": getattr(span, "start_char", None),
+                    "end_char": getattr(span, "end_char", None),
+                    "insertion_method": getattr(span, "insertion_method", None),
+                    "verification": (span.verification.model_dump() if getattr(span, "verification", None) else None),
+                    "context": ctx_text,             # expanded context or stored excerpt
+                    "mention": mention,              # what to highlight / quote in a prompt
+                    "loc_found": (span_start is not None),
+                    "loc_span": [span_start, span_end] if span_start is not None else None,
+                    # Always include the raw ref in case you need exact fields later
+                    "ref": span.model_dump(field_mode = 'backend'),
+                })
+
+                if max_contexts and len(out) >= max_contexts:
+                    break                            
         for ref in refs:
             # 2) locate the backing document
             doc_id = self._infer_doc_id_from_ref(ref)
@@ -1021,7 +1087,7 @@ class GraphKnowledgeEngine:
                 "loc_found": (span_start is not None),
                 "loc_span": [span_start, span_end] if span_start is not None else None,
                 # Always include the raw ref in case you need exact fields later
-                "ref": ref.model_dump(),
+                "ref": ref.model_dump(field_mode = 'backend'),
             })
 
             if max_contexts and len(out) >= max_contexts:
@@ -2302,7 +2368,6 @@ class GraphKnowledgeEngine:
                  )
             )
             template_messages.extend(to_append)
-            # ([("system", f"last answer has error \n\n Last attemp: ```{last_iteration_result.get('parsed').model_dump()} ``` ")]  else []
         prompt = ChatPromptTemplate.from_messages(template_messages)
         try:
             chain = prompt | self.llm.with_structured_output(LLMGraphExtraction['llm'], 
@@ -2312,7 +2377,6 @@ class GraphKnowledgeEngine:
             realised_prmopt = steps[0].invoke({"alias_nodes": alias_nodes_str, "alias_edges": alias_edges_str, "document": content, "_DOC_ALIAS" : _DOC_ALIAS})
             llm_raw = steps[1].invoke(realised_prmopt)
             result = steps[2].invoke(llm_raw)
-            # result = chain.invoke({"alias_nodes": alias_nodes_str, "alias_edges": alias_edges_str, "document": content, "_DOC_ALIAS" : _DOC_ALIAS})
         except Exception as e:
             raise e
         return result.get("raw"), result.get("parsed"), result.get("parsing_error")
@@ -2731,25 +2795,26 @@ class GraphKnowledgeEngine:
         self._delete_node_ref_rows(node.id)
 
         ids, docs, metas = [], [], []
-        for i, ref in enumerate(node.mentions or []):
-            rid = f"{node.id}::ref::{i}"
-            did = getattr(ref, "doc_id", None) or node.doc_id
-            ver = getattr(ref, "verification", None)
-            row = _strip_none({
-                "id": rid,
-                "node_id": node.id,
-                "doc_id": did,
-                "insertion_method" : getattr(ref, "insertion_method", None),
-                "verification_method": getattr(ver, "method", None),
-                "is_verified": getattr(ver, "is_verified", None),
-                "verificication_score": getattr(ver, "score", None),
-                "start_page": getattr(ref, "start_page", None),
-                "end_page": getattr(ref, "end_page", None),
-                "start_char": getattr(ref, "start_char", None),
-                "end_char": getattr(ref, "end_char", None),
-            })
-            ids.append(rid); docs.append(json.dumps(row))
-            metas.append(row)
+        for i, mention in enumerate(node.mentions or []):
+            for j, span in enumerate(mention.spans):
+                rid = f"{node.id}::mention::{i}::span::{j}"
+                did = getattr(span, "doc_id", None) or node.doc_id
+                ver = getattr(span, "verification", None)
+                row = _strip_none({
+                    "id": rid,
+                    "node_id": node.id,
+                    "doc_id": did,
+                    "insertion_method" : getattr(span, "insertion_method", None),
+                    "verification_method": getattr(ver, "method", None),
+                    "is_verified": getattr(ver, "is_verified", None),
+                    "verificication_score": getattr(ver, "score", None),
+                    "page_number": getattr(span, "start_page", None),
+                    "excerpt": getattr(span, "excerpt", None),
+                    "start_char": getattr(span, "start_char", None),
+                    "end_char": getattr(span, "end_char", None),
+                })
+                ids.append(rid); docs.append(json.dumps(row))
+                metas.append(row)
 
         if ids:
             self.backend.node_refs_add(ids=ids, documents=docs, metadatas=metas, embeddings=[self._iterative_defensive_emb(str(d)) for d in docs])
@@ -3125,7 +3190,7 @@ class GraphKnowledgeEngine:
                 "domain_id": edge.domain_id,
                 "canonical_entity_id": edge.canonical_entity_id,
                 "properties": _json_or_none(edge.properties),
-                "references": _json_or_none([r.model_dump() for r in (edge.mentions or [])]),
+                "references": _json_or_none([r.model_dump(field_mode = 'backend') for r in (edge.mentions or [])]),
                 "node_endpoint_count": node_endpoint_count,   # receptive range
                 "edge_endpoint_count": edge_endpoint_count,
                 "total_endpoint_count": total_endpoint_count,
@@ -3215,7 +3280,7 @@ class GraphKnowledgeEngine:
             entity=EntityRefModel(kind="doc_node", id=document.id, 
                     kg_graph_type=self.kg_graph_type,
                     url=self.persist_directory),
-            payload=document.to_jsonable() if hasattr(document, "to_jsonable") else document.model_dump(exclude=['embedding']),
+            payload=document.to_jsonable() if hasattr(document, "to_jsonable") else document.model_dump(exclude=['embeddings']),
         )
 
     def add_domain(self, domain: Domain):
@@ -3557,52 +3622,56 @@ class GraphKnowledgeEngine:
         span_validator: BaseDocValidator = self.get_span_validator_of_doc_type(document = document)
         nodes_added = edges_added = 0
         nl = '\n'
-        for rid in order:
-            kind, obj = id2kind[rid], id2obj[rid]
-            # for ln in parsed.nodes:
-            if kind == 'node':
-                ln: Node = Node.model_validate(obj.model_dump(), context={'insertion_method': 'llm_graph_extraction'})
-                ln.mentions = self._dealias_span(ln.mentions, document.id)
-                # skip-if-exists mode
-                if mode == "skip-if-exists":
-                    got = self.backend.node_get(ids=[ln.id])
-                    if got.get("ids"):  # already there
-                        node_ids.append(ln.id)
-                        continue
+        try:
+            for rid in order:
+                kind, obj = id2kind[rid], id2obj[rid]
+                # for ln in parsed.nodes:
+                if kind == 'node':
+                    ln: Node = Node.model_validate(obj.model_dump(field_mode='llm'), context={'insertion_method': 'llm_graph_extraction'})
+                    ln.mentions = self._dealias_span(ln.mentions, document.id)
+                    # skip-if-exists mode
+                    if mode == "skip-if-exists":
+                        got = self.backend.node_get(ids=[ln.id])
+                        if got.get("ids"):  # already there
+                            node_ids.append(ln.id)
+                            continue
 
-                for g in ln.mentions:
-                    for sp in g.spans:
-                        result = span_validator.validate_span(doc_id = doc_id, span = sp, engine = self, doc=document)
-                        if result['correctness'] != True:
-                            raise Exception(f"Incorrect span occur in grounding {str(g)} span {str(sp)}")
-                n = ln.model_copy(deep=True)
-                emb_text = f"{n.label}: {n.summary} : {nl.join(i['context'] for i in self.extract_reference_contexts(ln)[:1])}"
-                if emb_text is None:
+                    for i_g, g in enumerate(ln.mentions):
+                        for i_sp, sp in enumerate(g.spans):
+                            result = span_validator.validate_span(doc_id = doc_id, span = sp, engine = self, doc=document 
+                                                                    if document.id == sp.doc_id else self.get_document(sp.doc_id))
+                            if result['correctness'] != True:
+                                raise Exception(f"Incorrect span occur in grounding {str(g)} span {str(sp)}")
+                    n = ln.model_copy(deep=True)
                     emb_text = f"{n.label}: {n.summary} : {nl.join(i['context'] for i in self.extract_reference_contexts(ln)[:1])}"
-                n.embedding = self._ef([emb_text])[0]
-                self.add_node(n, doc_id=doc_id)
-                node_ids.append(n.id)
-            elif kind == 'edge':
-            # for le in parsed.edges:
-                le: Edge = Edge.model_validate(obj.model_dump(), context={'insertion_method': 'llm_graph_extraction'})
-                le.mentions = self._dealias_span(le.mentions, document.id)
-                if mode == "skip-if-exists":
-                    got = self.backend.edge_get(ids=[le.id])
-                    if got.get("ids"):
-                        edge_ids.append(le.id)
-                        continue
-                # refs = [Span.model_validate(i.model_dump(field_mode = 'backend'), context={'insertion_method': i.insertion_method or 'llm_graph_extraction'}) for i in le.mentions]
-                
-                for g in le.mentions:
-                    for sp in g.spans:
-                        result = span_validator.validate_span(doc_id = doc_id, span = sp, engine = self, doc=document)
-                        if result['correctness'] != True:
-                            raise Exception(f"Incorrect span occur in grounding {str(g)} span {str(sp)}")
-                e = le.model_copy(deep=True)
-                e.embedding = self._ef([f"{le.label}: {le.summary} : {nl.join(i['context'] for i in self.extract_reference_contexts(le)[:1])}"])[0]
-                self.add_edge(e, doc_id=doc_id)
-                edge_ids.append(e.id)
-
+                    if emb_text is None:
+                        emb_text = f"{n.label}: {n.summary} : {nl.join(i['context'] for i in self.extract_reference_contexts(ln)[:1])}"
+                    n.embedding = self._ef([emb_text])[0]
+                    self.add_node(n, doc_id=doc_id)
+                    node_ids.append(n.id)
+                elif kind == 'edge':
+                # for le in parsed.edges:
+                    le: Edge = Edge.model_validate(obj.model_dump(field_mode='llm'), context={'insertion_method': 'llm_graph_extraction'})
+                    le.mentions = self._dealias_span(le.mentions, document.id)
+                    if mode == "skip-if-exists":
+                        got = self.backend.edge_get(ids=[le.id])
+                        if got.get("ids"):
+                            edge_ids.append(le.id)
+                            continue
+                    # refs = [Span.model_validate(i.model_dump(field_mode = 'backend'), context={'insertion_method': i.insertion_method or 'llm_graph_extraction'}) for i in le.mentions]
+                    
+                    for g in le.mentions:
+                        for sp in g.spans:
+                            result = span_validator.validate_span(doc_id = doc_id, span = sp, engine = self, doc=document
+                                                                if document.id == sp.doc_id else self.get_document(sp.doc_id))
+                            if result['correctness'] != True:
+                                raise Exception(f"Incorrect span occur in grounding {str(g)} span {str(sp)}")
+                    e = le.model_copy(deep=True)
+                    e.embedding = self._ef([f"{le.label}: {le.summary} : {nl.join(i['context'] for i in self.extract_reference_contexts(le)[:1])}"])[0]
+                    self.add_edge(e, doc_id=doc_id)
+                    edge_ids.append(e.id)
+        except Exception as _e:
+            raise
         return {
             "document_id": doc_id,
             "node_ids": node_ids,
@@ -3663,7 +3732,7 @@ class GraphKnowledgeEngine:
                                     raise NotImplementedError("string method options not iplemented")
                             if result['correctness'] == False:
                                 pre_parsed_node_or_edge: Node | Edge = pre_parse_nodes_or_edges[i]
-                                validation_error_group.append(f"Error found for {pre_parsed_node_or_edge.model_dump()}: {str(result)}")
+                                validation_error_group.append(f"Error found for {pre_parsed_node_or_edge.model_dump(field_mode = 'backend')}: {str(result)}")
                             
         # resolve nn:/ne:/aliases -> UUIDs here
         # and run self._preflight_validate(parsed, doc_id) LATER (we don’t know doc_id yet)
@@ -3674,7 +3743,7 @@ class GraphKnowledgeEngine:
         
     def get_document(self, doc_id: str):
 
-        doc_get_result = self.backend.document_get(doc_id)
+        doc_get_result = self.backend.document_get(ids = [doc_id])
         if len(doc_get_result['ids']) == 0:
             raise ValueError(f"no document found for doc id = {doc_id}")
         metadatas = doc_get_result["metadatas"]
@@ -3842,7 +3911,7 @@ class GraphKnowledgeEngine:
                     d = json.loads(mj)
                 except Exception:
                     try:
-                        d = (Node if kind == "node" else Edge).model_validate_json(mj).model_dump()
+                        d = (Node if kind == "node" else Edge).model_validate_json(mj).model_dump(field_mode = 'backend')
                     except Exception:
                         d = None
                 if d is not None and i < len(ids_out):
@@ -4141,7 +4210,7 @@ class GraphKnowledgeEngine:
                             "domain_id": new_edge.domain_id,
                             "canonical_entity_id": new_edge.canonical_entity_id,
                             "properties": _json_or_none(new_edge.properties),
-                            "references": _json_or_none([ref.model_dump() for ref in (new_edge.mentions or [])]),
+                            "references": _json_or_none([ref.model_dump(field_mode = 'backend') for ref in (new_edge.mentions or [])]),
                         })],
                     )
                     self._index_edge_refs(new_edge)
@@ -4203,7 +4272,7 @@ class GraphKnowledgeEngine:
                         "domain_id": e.domain_id,
                         "canonical_entity_id": e.canonical_entity_id,
                         "properties": _json_or_none(e.properties),
-                        "references": _json_or_none([ref.model_dump() for ref in (e.mentions or [])]),
+                        "references": _json_or_none([ref.model_dump(field_mode = 'backend') for ref in (e.mentions or [])]),
                     })],
                 )
                 # remove only the touched endpoint rows
@@ -4322,7 +4391,7 @@ class GraphKnowledgeEngine:
                 "domain_id": edge.domain_id,
                 "canonical_entity_id": edge.canonical_entity_id,
                 "properties": json.dumps(edge.properties) if edge.properties is not None else None,
-                "references": json.dumps([ref.model_dump() for ref in (edge.mentions or [])]),
+                "references": json.dumps([ref.model_dump(field_mode = 'backend') for ref in (edge.mentions or [])]),
             })],
         )
 

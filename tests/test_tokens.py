@@ -45,7 +45,7 @@ async def test_readonly_token_blocks_writes_and_allows_reads():
             # 3b) Write tool should fail for RO token
             # Try a minimal write tool. Use store_document (or doc_parse / kg_extract).
             err_resp = await session.call_tool("store_document", arguments={
-                "inp": {"id": "RO_BLOCK_TEST", "content": "hello", "type": "plain"}
+                "inp": {"id": "RO_BLOCK_TEST", "content": "hello", "type": "text"}
             })
             # If the server properly guards with require_role("rw"), this should not succeed.
             # Some MCP client libs return an error envelope instead of raising — check both paths:

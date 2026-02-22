@@ -44,7 +44,7 @@ def test_graph_query_structural_end_to_end(tmp_path):
     e = make_engine(tmp_path)
 
     # 1) Real document row
-    doc = Document(id="D1", content="Smoking causes lung cancer.", type="plain")
+    doc = Document(id="D1", content="Smoking causes lung cancer.", type="text")
     e.add_document(doc)
 
     # 2) Real nodes (persisted into Chroma)

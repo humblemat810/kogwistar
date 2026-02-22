@@ -15,7 +15,7 @@ def test_graph_upsert_llm_batch_with_references():
     payload = {
         "doc_id": DOC_ID,
         "content": "A short contract: Alice contracts with Bob. Includes a penalty clause.",
-        "doc_type": "plain",
+        "doc_type": "text",
         "insertion_method": "api_upsert",
         "nodes": [
             {

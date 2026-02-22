@@ -22,7 +22,31 @@ from graph_knowledge_engine.models import LLMMergeAdjudication, AdjudicationVerd
 
 from pathlib import Path
 
-
+def _mk_span_from_excerpt(*, doc_id: str, content: str, excerpt: str, insertion_method: str, page_number: int = 1):
+    idx = content.index(excerpt)  # will raise if excerpt not present -> good early failure
+    start = idx
+    end = idx + len(excerpt)
+    return {
+        "collection_page_url": "N/A",
+        "document_page_url": "N/A",
+        "doc_id": doc_id,
+        "insertion_method": insertion_method,
+        "page_number": page_number,
+        "start_char": start,
+        "end_char": end,
+        "excerpt": excerpt,
+        "context_before": content[max(0, start - 40):start],
+        "context_after": content[end:end + 40],
+        # optional fields
+        "chunk_id": None,
+        "source_cluster_id": None,
+        "verification": {
+            "method": "heuristic",
+            "is_verified": False,
+            "score": None,
+            "notes": "no explicit verification from LLM",
+        },
+    }
 class FakeStructuredRunnable(Runnable):
     """A minimal Runnable that returns a fixed structured result."""
     def __init__(self, parsed: Any, include_raw: bool = False):
@@ -242,6 +266,9 @@ def real_small_graph():
     return e, doc_id
 @pytest.fixture()
 def small_test_docs_nodes_edge_adjudcate():
+    """
+    sample llm extracted tripples emulating data from llm graph extraction with insertion_method = "llm_graph_extraction"
+    """
     # ---------- 0) Documents (exact strings you provided) ----------
     docs = {
         "DOC_A": (
@@ -302,25 +329,28 @@ def small_test_docs_nodes_edge_adjudcate():
         text = docs[doc_id]
         idx = text.find(excerpt)
         if idx < 0:
-            # try case-insensitive
-            idx = text.lower().find(excerpt.lower())
-        if idx < 0:
-            raise AssertionError(f"Excerpt not found in {doc_id}: {excerpt!r}")
+            raise AssertionError(
+                f"Exact excerpt not found in {doc_id}: {excerpt!r}"
+            )
         return idx, idx + len(excerpt)
 
     def _ref(doc_id: str, excerpt: str, method: str = "llm"):
         s, e = _find_span(doc_id, excerpt)
+        # Span-like dict compatible with graph_knowledge_engine.models.Span
+        # (kept as a dict because this fixture emulates a JSON payload).
         return {
             "doc_id": doc_id,
             "collection_page_url": "N/A",
             "document_page_url": "N/A",
-            "start_page": 1,
-            "end_page": 1,
+            "page_number": 1,
             "start_char": s,
             "end_char": e,
             "excerpt": docs[doc_id][s:e],
+            "context_before": docs[doc_id][max(0, s - 40) : s],
+            "context_after": docs[doc_id][e : min(len(docs[doc_id]), e + 40)],
+            # Optional verification payload
             "verification": {"method": method, "is_verified": True, "score": 1.0, "notes": "fixture"},
-            "insertion_method": "fixture_sample",
+            "insertion_method": "llm_graph_extraction",
         }
     # ---------- Nodes ----------
     nodes = [
@@ -329,75 +359,75 @@ def small_test_docs_nodes_edge_adjudcate():
             "label": "Chlorophyll",
             "type": "entity",
             "summary": "A green pigment found in plants.",
-            "references": [
+            "mentions": [{"spans": [
                 _ref("DOC_A", "Chlorophyll is the molecule that absorbs sunlight."),
                 _ref("DOC_C", "chlorophyll is essential for photosynthesis"),
-            ],
+            ]}],
         },
         {
             "id": "N_CHLORO_ALIAS",
             "label": "Chlorophyll (pigment)",
             "type": "entity",
             "summary": "Alias name for the same pigment.",
-            "references": [
+            "mentions": [{"spans": [
                 _ref("DOC_C", "the pigment chlorophyll is essential"),
-            ],
+            ]}],
         },
         {
             "id": "N_CHLORO_A",
             "label": "Chlorophyll a",
             "type": "entity",
             "summary": "One variant of chlorophyll.",
-            "references": [
+            "mentions": [{"spans": [
                 _ref("DOC_B", "chlorophyll a and chlorophyll b are present."),
-            ],
+            ]}],
         },
         {
             "id": "N_PHOTOSYN",
             "label": "Photosynthesis",
             "type": "entity",
             "summary": "Converts light energy to chemical energy.",
-            "references": [
+            "mentions": [{"spans": [
                 _ref("DOC_A", "Photosynthesis is a process used by plants to convert light energy"),
                 _ref("DOC_C", "rate of photosynthesis with wavelengths that chlorophyll absorbs"),
-            ],
+            ]}],
         },
         {
             "id": "N_LEAVES",
             "label": "Leaves",
             "type": "entity",
             "summary": "Plant organs that host photosynthesis.",
-            "references": [
+            "mentions": [{"spans": [
                 _ref("DOC_A", "Plants perform photosynthesis in their leaves."),
                 _ref("DOC_B", "The pigment chlorophyll gives leaves their green color."),
-            ],
+            ]}],
         },
         {
             "id": "N_SUN",
             "label": "Sunlight",
             "type": "entity",
             "summary": "Incoming solar radiation.",
-            "references": [
+            "mentions": [{"spans": [
                 _ref("DOC_A", "light energy into chemical energy"),
-            ],
+            ]}],
         },
         {
             "id": "N_HEMO",
             "label": "Hemoglobin",
             "type": "entity",
             "summary": "Oxygen transport protein in blood.",
-            "references": [
+            "mentions": [{"spans": [
                 _ref("DOC_D", "Hemoglobin absorbs oxygen in red blood cells and transports it to tissues."),
-            ],
+            ]}],
         },
         {
             "id": "N_OXY",
             "label": "Oxygen",
             "type": "entity",
             "summary": "O₂ molecule transported in blood.",
-            "references": [
+            "mentions": [{"spans": [
                 _ref("DOC_D", "Hemoglobin absorbs oxygen in red blood cells and transports it to tissues."),
-            ],
+            ]}],
         },
         # Reified relation as a node (for cross-type positive)
         {
@@ -406,9 +436,9 @@ def small_test_docs_nodes_edge_adjudcate():
             "type": "entity",
             "summary": "Photosynthesis occurs in Leaves", # Reified relation concept.
             "properties": {"signature_text": "occurs_in(Photosynthesis, Leaves)"},
-            "references": [
+            "mentions": [{"spans": [
                 _ref("DOC_A", "Plants perform photosynthesis in their leaves."),
-            ],
+            ]}],
         },
     ]
 
@@ -424,9 +454,9 @@ def small_test_docs_nodes_edge_adjudcate():
             "target_ids": ["N_SUN"],
             "source_edge_ids": [],
             "target_edge_ids": [],
-            "references": [
+            "mentions": [{"spans": [
                 _ref("DOC_A", "Chlorophyll is the molecule that absorbs sunlight."),
-            ],
+            ]}],
             "properties": {"signature_text": "absorbs(Chlorophyll, Sunlight)"},
         },
         {
@@ -439,9 +469,9 @@ def small_test_docs_nodes_edge_adjudcate():
             "target_ids": ["N_LEAVES"],
             "source_edge_ids": [],
             "target_edge_ids": [],
-            "references": [
+            "mentions": [{"spans": [
                 _ref("DOC_A", "Plants perform photosynthesis in their leaves."),
-            ],
+            ]}],
             "properties": {"signature_text": "occurs_in(Photosynthesis, Leaves)"},
         },
         {
@@ -454,9 +484,9 @@ def small_test_docs_nodes_edge_adjudcate():
             "target_ids": ["N_LEAVES"],
             "source_edge_ids": [],
             "target_edge_ids": [],
-            "references": [
+            "mentions": [{"spans": [
                 _ref("DOC_A", "Plants perform photosynthesis in their leaves."),
-            ],
+            ]}],
             "properties": {"signature_text": "occurs_in(Photosynthesis, Leaves)"},
         },
         {
@@ -469,9 +499,9 @@ def small_test_docs_nodes_edge_adjudcate():
             "target_ids": ["N_OXY"],
             "source_edge_ids": [],
             "target_edge_ids": [],
-            "references": [
+            "mentions": [{"spans": [
                 _ref("DOC_D", "Hemoglobin absorbs oxygen in red blood cells and transports it to tissues."),
-            ],
+            ]}],
             "properties": {"signature_text": "transports(Hemoglobin, Oxygen)"},
         },
     ]
@@ -502,6 +532,13 @@ def small_test_docs_nodes_edge_adjudcate():
             ["N_HEMO", "E_CHLORO_ABSORB"],             # unrelated
         ],
     }
+
+    # Pre-flight validate the JSON-ish payload against the current models.
+    # This keeps the fixture from silently drifting out-of-date with models.py.
+    try:
+        _ = LLMGraphExtraction.FromLLMSlice({"nodes": nodes, "edges": edges}, insertion_method="fixture_sample")
+    except Exception as e:
+        raise AssertionError(f"Fixture small_test_docs_nodes_edge_adjudcate is not model-compatible: {e}")
 
     sample_dataset = {"docs": docs, "nodes": nodes, "edges": edges, "adjudication_pairs": adjudication_pairs}
 

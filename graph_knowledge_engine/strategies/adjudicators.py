@@ -343,6 +343,7 @@ class Adjudicator(IAdjudicator):
             ("system",
             "You adjudicate candidate pairs, including cross-type pairs (entity↔relation, etc.). "
             "Use the mapping table to interpret question_code. "
+            "This is for hypergraph application, equalize if a node is representing a relationship indicated by an edge. "
             "Return only the structured JSON per schema. Use the short ids exactly."),
             ("human", "Mapping table:\n{mapping}\n\nPairs:\n{pairs}")
         ])

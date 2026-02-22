@@ -39,7 +39,7 @@ def _preseed_chroma_dir(persist_dir: str):
         )
 
     eng = GraphKnowledgeEngine(persist_directory=persist_dir)
-    doc = Document(id="D1", content="Smoking causes lung cancer.", type="plain")
+    doc = Document(id="D1", content="Smoking causes lung cancer.", type="text")
     eng.add_document(doc)
 
     n_smoke = Node(label="Smoking", type="entity", summary="habit", mentions=[ref(doc.id,"Smoking")], doc_id=doc.id)

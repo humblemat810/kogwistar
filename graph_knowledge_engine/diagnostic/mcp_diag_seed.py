@@ -54,7 +54,7 @@ async def main():
     ap.add_argument("--url", required=True, help="MCP Streamable HTTP endpoint (e.g., http://127.0.0.1:8765/mcp)")
     ap.add_argument("--doc-id", required=True)
     ap.add_argument("--text", default="Smoking causes lung cancer.")
-    ap.add_argument("--type", default="plain")
+    ap.add_argument("--type", default="text")
     ap.add_argument("--mode", default="replace", choices=["replace", "append", "skip-if-exists"])
     ap.add_argument("--relation", default="causes", help="Relation to list in the sanity query")
     ap.add_argument("--delete", action="store_true", help="After test, call non-MCP admin delete endpoint")

@@ -479,7 +479,7 @@ from .models import Document, PureGraph
 class DocParseIn(Document['dto']):
     id: Optional[str] # pyright: ignore[reportGeneralTypeIssues, reportIncompatibleVariableOverride]
     content: str
-    type: str = "plain"
+    type: str = "text"
 
 class DocParseOut(BaseModel):
     doc_id: str
@@ -838,7 +838,7 @@ class GraphUpsertLLMIn(BaseModel):
     """
     doc_id: str = Field(..., description="Document id to scope persistence")
     content: Optional[str] = Field(None, description="If provided and doc is new, store this as document content")
-    doc_type: str = Field("plain", description="Document type")
+    doc_type: str = Field("text", description="Document type")
     insertion_method: str = Field("api_upsert", description="Provenance tag copied into each ReferenceSession")
     nodes: List[Dict[str, Any]] = Field(default_factory=list, description="LLMNode['llm']-shaped dicts")
     edges: List[Dict[str, Any]] = Field(default_factory=list, description="LLMEdge['llm']-shaped dicts")
@@ -854,12 +854,16 @@ class DocumentGraphUpsertOut(BaseModel):
 def api_graph_upsert_llm(inp: GraphUpsertLLMIn):
     """
     Upsert a (hyper)graph in one shot:
+    - High level api with less control and more defaults
     - Validates against the LLM Graph schema (which REQUIRES non-empty 'references').
     - Injects `insertion_method` into every ReferenceSession.
     - Supports hyperedges (edge->edge) in a single batch via engine’s topo-sorted ingest.
+    - insertion method and other non llm fields such as backend/ frontend fields are dropped, and will be inserted with overrides
+       e.g. insertion method will be overridden with llm_graph_extraction because it assume data is uploaded by llm
+    
     """
     require_role("rw")
-    # 1) Ensure the document row exists (idempotent)
+    # 1) Ensure the document row exists (idempotent) but metadata are all missing if created in this fun
     if inp.content is not None:
         engine.add_document(
             Document(
@@ -908,7 +912,8 @@ def api_graph_upsert_llm(inp: GraphUpsertLLMIn):
 
     # 4) Persist using your first-class persistence path (allocates nn:/ne:, topo-sorts, enforces endpoints)
     persisted = engine.persist_graph_extraction(
-        document=Document(id=inp.doc_id, content=inp.content or engine._fetch_document_text(inp.doc_id) or "", type=inp.doc_type),
+        document=Document(id=inp.doc_id, content=inp.content or engine._fetch_document_text(inp.doc_id) or "", type=inp.doc_type, 
+                          embeddings = None, source_map = None),
         parsed=parsed,
         mode="append",
     )
@@ -942,8 +947,23 @@ class DocumentUpsertResult(BaseModel):
 
 @app.post("/api/document")
 async def document_upsert(inp: DocumentUpsert, response_model=DocumentUpsertResult):
-    ocr_doc_dict = json.loads(inp.content)
-    doc = Document.from_ocr(id=inp.doc_id, ocr_content=ocr_doc_dict, type=inp.doc_type)
+    if inp.doc_type == 'text':
+        doc =  Document(
+                id=inp.doc_id,
+                content=inp.content,
+                type=inp.doc_type,
+                metadata={},          # if you want
+                embeddings=None,      # REQUIRED by Pydantic because Field(...)
+                source_map=None,      # REQUIRED by Pydantic because Field(...)
+                domain_id=None,
+                processed=False
+            )
+    elif inp.doc_type == "ocr":
+        ocr_doc_dict = json.loads(inp.content)
+        doc = Document.from_ocr(id=inp.doc_id, ocr_content=ocr_doc_dict, type=inp.doc_type)
+    else:
+        raise Exception(f"Unrecognised doc type{inp.doc_type}")
+    
     if doc.metadata is None:
         
         doc.metadata = {"insertion_method": inp.insertion_method}
@@ -952,7 +972,7 @@ async def document_upsert(inp: DocumentUpsert, response_model=DocumentUpsertResu
     engine.add_document(doc)
 @app.post("/api/document.upsert_tree", response_model=DocumentGraphUpsertResult)
 async def document_upsert_tree(payload: DocumentGraphUpsert):
-    """Upsert a generic tree with document root"""
+    """Upsert a generic tree with document root, use only when complete control of all backend fields are clearly known."""
     from .models import GraphExtractionWithIDs
     try:
         res = engine.persist_document_graph_extraction(
@@ -1351,12 +1371,15 @@ from typing import Literal, Tuple
 class LoadPersistedIn(BaseModel):
     doc_ids: List[str]
     insertion_method: Optional[str] = None  # e.g. "graph_extractor", "api_upsert"
+    sid : bool = True
 
 class LoadPersistedOut(BaseModel):
     node_ids: List[str]
     edge_ids: List[str]
 
-def _load_persisted_graph(doc_ids: List[str], insertion_method: Optional[str] = None) -> LoadPersistedOut:
+def _load_persisted_graph(doc_ids: List[str]
+                          , insertion_method: Optional[str] = None
+                          ) -> LoadPersistedOut:
     """Return ID sets pulled from persistence (optionally filter by insertion_method)."""
     node_ids: set[str] = set()
     edge_ids: set[str] = set()
@@ -1373,9 +1396,10 @@ def _load_persisted_graph(doc_ids: List[str], insertion_method: Optional[str] = 
 @mcp.tool()
 def kg_load_persisted(inp: LoadPersistedIn) -> LoadPersistedOut:
     """MCP: read back persisted IDs for the given docs (fast; no LLM)."""
-    all_persisted = _load_persisted_graph(inp.doc_ids, insertion_method=inp.insertion_method)
-    all_persisted.node_ids = sorted( shortids.l2s_id(nid) for nid in all_persisted.node_ids)
-    all_persisted.edge_ids = sorted( shortids.l2s_id(eid) for eid in all_persisted.edge_ids)
+    all_persisted = _load_persisted_graph(inp.doc_ids, insertion_method=getattr(inp, "insertion_method", None))
+    if inp.sid:
+        all_persisted.node_ids = sorted( shortids.l2s_id(nid) for nid in all_persisted.node_ids)
+        all_persisted.edge_ids = sorted( shortids.l2s_id(eid) for eid in all_persisted.edge_ids)
     return all_persisted
 
 # ---------- Cross-document adjudication (same-kind & cross-kind) ----------
