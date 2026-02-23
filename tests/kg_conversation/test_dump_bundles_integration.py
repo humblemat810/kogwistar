@@ -138,8 +138,6 @@ def seeded_kg_and_conversation(request, tmp_path, sa_engine, pg_schema):
         metadata={
                 "entity_type": "conversation_turn",
                 "level_from_root": 0,
-                "char_distance_from_last_summary": len(t0_text),
-                "turn_distance_from_last_summary": 1,
                 "in_conversation_chain": True,
             },
         role="user",  # type: ignore

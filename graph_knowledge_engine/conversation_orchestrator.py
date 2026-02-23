@@ -532,10 +532,7 @@ class ConversationOrchestrator:
             properties={},
             metadata={
                 "entity_type": "conversation_turn",
-                "level_from_root": 0,
-                "char_distance_from_last_summary": prev_turn_meta_summary.prev_node_char_distance_from_last_summary,
-                "turn_distance_from_last_summary": prev_turn_meta_summary.prev_node_distance_from_last_summary,
-                "tail_turn_index": prev_turn_meta_summary.tail_turn_index,
+                "level_from_root": 0,                "tail_turn_index": prev_turn_meta_summary.tail_turn_index,
                 "in_conversation_chain": in_conv,
             },
             domain_id=None,
@@ -715,10 +712,7 @@ class ConversationOrchestrator:
                 canonical_entity_id=None,
                 properties={"entity_type": "conversation_edge"},
                 embedding=None,
-                metadata={"relation":"next_turn", "target_id":turn_node.id,
-                          "char_distance_from_last_summary": prev_turn_meta_summary.prev_node_char_distance_from_last_summary,
-                            "turn_distance_from_last_summary": prev_turn_meta_summary.prev_node_distance_from_last_summary,
-                            "tail_turn_index": prev_turn_meta_summary.tail_turn_index,
+                metadata={"relation":"next_turn", "target_id":turn_node.id, "causal_type":"chain",                            "tail_turn_index": prev_turn_meta_summary.tail_turn_index,
                             },
                 source_edge_ids=[],
                 target_edge_ids=[],
@@ -829,10 +823,7 @@ class ConversationOrchestrator:
                 metadata={
                     "entity_type": "conversation_turn",
                     "turn_index": new_index,
-                    "level_from_root": 0,
-                    "char_distance_from_last_summary": prev_turn_meta_summary.prev_node_char_distance_from_last_summary,
-                    "turn_distance_from_last_summary": prev_turn_meta_summary.prev_node_distance_from_last_summary,
-                    "tail_turn_index": prev_turn_meta_summary.tail_turn_index,
+                    "level_from_root": 0,                    "tail_turn_index": prev_turn_meta_summary.tail_turn_index,
                     "in_conversation_chain": in_conv,
                 },
                 domain_id=None,
@@ -919,9 +910,7 @@ class ConversationOrchestrator:
                     verification=MentionVerification(method="system", is_verified=True, score=1.0, notes="link")
                 )
             ])],
-            metadata={"char_distance_from_last_summary": prev_turn_meta_summary.prev_node_char_distance_from_last_summary,
-                            "turn_distance_from_last_summary": prev_turn_meta_summary.prev_node_distance_from_last_summary,
-                            "tail_turn_index":prev_turn_meta_summary.tail_turn_index},
+            metadata={                            "tail_turn_index":prev_turn_meta_summary.tail_turn_index},
             source_edge_ids=[],
             target_edge_ids=[]
         )
@@ -1227,9 +1216,7 @@ class ConversationOrchestrator:
                     verification=MentionVerification(method="system", is_verified=True, score=1.0, notes="link")
                 )
             ])],
-            metadata={"char_distance_from_last_summary": prev_turn_meta_summary.prev_node_char_distance_from_last_summary,
-                            "turn_distance_from_last_summary": prev_turn_meta_summary.prev_node_distance_from_last_summary,
-                            "tail_turn_index":prev_turn_meta_summary.tail_turn_index},
+            metadata={                            "tail_turn_index":prev_turn_meta_summary.tail_turn_index},
             source_edge_ids=[],
             target_edge_ids=[]
         )

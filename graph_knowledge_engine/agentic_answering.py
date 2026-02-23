@@ -1,8 +1,6 @@
 """Agentic answering runtime.
-
 This module is intentionally separate from engine.py so the orchestration logic can evolve
 without entangling the core storage engine.
-
 The initial implementation focuses on:
  - creating an AgentRunAnchor node in the conversation canvas
  - performing bounded retrieval from the knowledge graph
@@ -10,16 +8,13 @@ The initial implementation focuses on:
  - selecting *used* evidence via an LLM step
  - projecting *used* evidence into the conversation canvas as pointer nodes
  - generating the final assistant response
-
 Design notes:
  - The knowledge graph is mutable; therefore, projection stores a minimal snapshot hash.
  - Canvas projection is idempotent via deterministic pointer ids.
  - This implementation keeps the trace store minimal; it can be replaced with a richer
    orchestration trace/control engine later.
 """
-
 from __future__ import annotations
-
 from dataclasses import dataclass
 import hashlib
 import json
@@ -27,26 +22,19 @@ import pathlib
 import re
 import time
 import base64
-
 from typing import Any, Callable, Iterable, Optional, Self, Sequence, Type, TypeVar
-
 from pydantic import BaseModel, Field
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.language_models.chat_models import BaseChatModel
-
 from .models import ConversationNode, ConversationEdge, Grounding, MetaFromLastSummary, Span, Node
 BaseM = TypeVar("BaseM", bound=BaseModel)
-
 def _stable_json(obj: Any) -> str:
     return json.dumps(obj, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-
-
 def snapshot_hash(payload: Any) -> str:
     """Compute a stable hash for a snapshot payload."""
     h = hashlib.sha256()
     h.update(_stable_json(payload).encode("utf-8"))
     return h.hexdigest()
-
 def deterministic_id(prefix: str, fingerprint: dict, bits: int = 96) -> str:
     s = json.dumps(fingerprint, sort_keys=True, separators=(",", ":")).encode("utf-8")
     h = hashlib.sha256(s).digest()
@@ -54,7 +42,6 @@ def deterministic_id(prefix: str, fingerprint: dict, bits: int = 96) -> str:
     short = h[:nbytes]
     token = base64.b32encode(short).decode("ascii").rstrip("=")
     return f"{prefix}:{token.lower()}"
-
 def pointer_id(*, scope: str, pointer_kind: str, target_kind: str, target_id: str) -> str:
     fp = {
         "scope": scope,
@@ -63,8 +50,6 @@ def pointer_id(*, scope: str, pointer_kind: str, target_kind: str, target_id: st
         "target_id": target_id,  # INCLUDED IN FINGERPRINT
     }
     return deterministic_id("ptr", fp)
-
-
 def edge_id(*, scope: str, rel: str, src: str, dst: str) -> str:
     fp = {
         "scope": scope,
@@ -73,36 +58,24 @@ def edge_id(*, scope: str, rel: str, src: str, dst: str) -> str:
         "dst": dst,
     }
     return deterministic_id("e", fp)
-
-
 class EvidenceSelection(BaseModel):
     """LLM output selecting what is actually used for answering."""
-
     used_node_ids: list[str] = Field(default_factory=list, description="Knowledge node ids used")
     used_edge_ids: list[str] = Field(default_factory=list, description="Knowledge edge ids used (optional)")
     reasoning: str = Field("", description="Short reasoning for selection")
-
-
 class AnswerModel(BaseModel):
     text: str = Field(..., description="Final assistant response")
-
-
 class SpanRef(BaseModel):
     """Reference to a specific span within a node's materialized mentions/spans.
-
     Indices are ephemeral and only guaranteed valid for the evidence pack used in the same run.
     """
     source_node_id: str = Field(..., description="Knowledge node id that owns the mention/span")
     mention_index: int = Field(..., ge=0, description="Index into mentions list")
     span_index: int = Field(..., ge=0, description="Index into spans list within the mention")
-
-
 class ClaimWithCitations(BaseModel):
     """A single atomic claim with supporting citations."""
     claim: str = Field(..., description="A single factual claim or assertion")
     citations: list[SpanRef] = Field(default_factory=list, description="Supporting span references")
-
-
 class AnswerWithCitations(BaseModel):
     """Answer text plus claim-level span citations."""
     text: str = Field(..., description="Final assistant response")
@@ -110,7 +83,6 @@ class AnswerWithCitations(BaseModel):
     claims: list[ClaimWithCitations] = Field(default_factory=list, description="Key claims with citations")
 from typing import Callable, TypeVar, ParamSpec, cast
 from joblib import Memory
-
 P = ParamSpec("P")
 R = TypeVar("R")
 def cached(memory: Memory, fn: Callable[P, R], *args, **kwargs) -> Callable[P, R]:
@@ -121,28 +93,22 @@ class AnswerEvaluation(BaseModel):
     needs_more_info: bool = Field(..., description="Whether we should retrieve/expand and answer again")
     missing_aspects: list[str] = Field(default_factory=list, description="What is missing if more info is needed")
     notes: str = Field("", description="Optional short rationale")
-
 @dataclass
 class AgentConfig:
     # Retrieval
     max_candidates: int = 20
     max_used: int = 8
     max_retrieval_level: int = 4
-
     # Control flow
     max_iter: int = 2  # bounded answering loop
-
     # Evidence selection strategy
     evidence_selector: str = "llm"  # "llm" or "bm25"
-
     # Materialization depth for OCR / structured docs (policy may escalate shallow->deep)
     materialize_depth: str = "shallow"  # "shallow" or "deep"
-
     # Budget knobs for materialization (kept simple; your resolvers can interpret these)
     max_chars_per_item: int = 900
     max_total_chars: int = 12000
 from .engine import GraphKnowledgeEngine
-
 class AgenticAnsweringAgent:
     """Agent that answers within a conversation canvas using a separate knowledge engine."""
     @staticmethod
@@ -159,7 +125,6 @@ class AgenticAnsweringAgent:
             question=question,
             candidates=candidates,
         )
-
     def select_used_evidence_cached(
         self,
         *,
@@ -228,24 +193,19 @@ class AgenticAnsweringAgent:
         system_prompt = self.conversation_engine.get_system_prompt(conversation_id)
         if not question:
             raise ValueError("No user message found in conversation")
-
         # 2) Create run anchor in canvas
         run_id = f"run_{int(time.time()*1000)}"
         run_node_id = self._ensure_run_anchor(conversation_id=conversation_id, run_id=run_id)
-
         # Policy knobs that can escalate across iterations
         max_candidates = self.config.max_candidates
         materialize_depth = self.config.materialize_depth
-
         last_eval: AnswerEvaluation | None = None
         last_answer: AnswerWithCitations | None = None
         last_used: list[str] = []
         last_projected: list[str] = []
-
         for it in range(max(1, self.config.max_iter)):
             # 3) Retrieve candidate KG nodes (bounded)
             candidates = self._retrieve_candidates(question)[:max_candidates]
-
             # 4) Select used evidence (LLM or cheap fallback)
             if (self.config.evidence_selector or "llm").lower() == "bm25":
                 selection = self._select_used_evidence_bm25(question=question, candidates=candidates)
@@ -256,7 +216,6 @@ class AgenticAnsweringAgent:
                     candidates=candidates,
                     cache_dir = self.cache_dir
                 )
-
             used_node_ids = selection.used_node_ids[: self.config.max_used]
             last_used = used_node_ids
             from .utils.pydanic_model_consumer_wrapper import cache_pydantic_structured
@@ -290,7 +249,6 @@ class AgenticAnsweringAgent:
             #     max_chars_per_item=self.config.max_chars_per_item,
             #     max_total_chars=self.config.max_total_chars,
             # )
-
             # 6) Generate answer with claim-level citations (SpanRef indices into evidence_pack)
             mem=Memory(location = str((pathlib.Path(".joblib")/"_generate_answer_with_citations").absolute()))
             cached_call = cache_pydantic_structured(fn = self._generate_answer_with_citations,
@@ -328,7 +286,6 @@ class AgenticAnsweringAgent:
             )
             ans = AnswerWithCitations.model_validate(ans)
             last_answer = ans
-
             # 7) Evaluate sufficiency / need-more-info
             cached_call3 = cache_pydantic_structured(fn = self._evaluate_answer,
                                                     memory = mem,
@@ -348,11 +305,9 @@ class AgenticAnsweringAgent:
             last_eval = AnswerEvaluation.model_validate(last_eval)
             if not last_eval.needs_more_info or last_eval.is_sufficient:
                 break
-
             # Escalation: deepen materialization + widen candidates for next iter
             materialize_depth = "deep"
             max_candidates = min(max_candidates * 2, 200)
-
         # # 8) DEMO, uncommment to demo
         # 
         # Project used evidence to canvas (idempotent) using final selection
@@ -366,7 +321,6 @@ class AgenticAnsweringAgent:
         #     )
         #     projected_pointer_ids.append(pid)
         # last_projected = projected_pointer_ids
-
         # 9) Persist assistant response as conversation node and link to run
         assistant_text = (last_answer.text if last_answer else "")
         # tail_turn = self.conversation_engine._get_conversation_tail(conversation_id, prev_turn_meta_summary.tail_turn_index)
@@ -393,7 +347,6 @@ class AgenticAnsweringAgent:
             provenance_span = Span.from_dummy_for_conversation(),
             prev_turn_meta_summary=prev_turn_meta_summary,
         )
-
         return {
             "run_node_id": run_node_id,
             "assistant_turn_node_id": assistant_turn_node_id,
@@ -404,11 +357,9 @@ class AgenticAnsweringAgent:
             "evaluation": (last_eval.model_dump() if last_eval else {}),
             "turn_node_dump" : assistant_turn_node.model_dump()
         }
-
     def _get_last_user_text(self, conversation: Any) -> str:
         if conversation is None:
             return ""
-
         # NEW: handle ContextMessage objects
         if isinstance(conversation, (list, tuple)):
             for msg in reversed(conversation):
@@ -416,16 +367,12 @@ class AgenticAnsweringAgent:
                 content = getattr(msg, "content", None)
                 if role == "user" and content:
                     return str(content)
-
                 # keep old dict support too
                 if isinstance(msg, dict) and msg.get("role") == "user":
                     return str(msg.get("content") or "")
-
         if isinstance(conversation, str):
             return conversation
-
         return str(getattr(conversation, "last_user_text", "") or "")
-
     def _retrieve_candidates(self, question: str) -> list[dict[str, Any]]:
         emb = self.knowledge_engine._iterative_defensive_emb(question)
         # Always go through the backend interface (so PG/Chroma backends behave identically)
@@ -449,27 +396,22 @@ class AgenticAnsweringAgent:
                 }
             )
         return out
-
     def _select_used_evidence(self, *, system_prompt: str, question: str, candidates: Sequence[dict[str, Any]]) -> dict:
         # Compact candidate representation
         cand_lines = []
         for c in candidates:
             cand_lines.append(f"- {c['id']}: {c.get('label','')} | {c.get('summary','')}")
         cand_text = "\n".join(cand_lines)
-
         prompt = ChatPromptTemplate.from_messages(
             [
                 ("system", system_prompt or "You are a helpful assistant."),
                 (
                     "human",
                     """You are selecting which knowledge items are actually USED to answer the user.
-
 User question:
 {question}
-
 Candidate knowledge nodes (id | label | summary):
 {candidates}
-
 Return JSON with keys: used_node_ids (list of ids), used_edge_ids (optional), reasoning (short).
 Select at most {max_used} node ids.
 """,
@@ -482,11 +424,8 @@ Select at most {max_used} node ids.
         cand_ids = {c["id"] for c in candidates}
         sel.used_node_ids = [i for i in sel.used_node_ids if i in cand_ids][: self.config.max_used]
         return sel.model_dump()
-
-
     def _select_used_evidence_bm25(self, *, question: str, candidates: Sequence[dict[str, Any]]) -> EvidenceSelection:
         """Cheap lexical fallback evidence selector (token overlap scoring).
-
         Note: This is intentionally simple; it is meant as a cost-saving fallback.
         """
         q_tokens = {t for t in re.findall(r"[A-Za-z0-9_]+", question.lower()) if len(t) >= 3}
@@ -513,21 +452,17 @@ Select at most {max_used} node ids.
         max_total_chars: int,
     ) -> dict[str, Any]:
         """Build an evidence pack that includes mentions/spans candidates for citation picking.
-
         This does NOT change any schema in storage; it only prepares a compact per-run view.
         """
         pack: dict[str, Any] = {"nodes": []}
         total = 0
-
         for nid in node_ids:
             got = agent.knowledge_engine.backend.node_get(ids=[nid], include=["documents", "metadatas"])
             docs = (got.get("documents") or [None])[0]
             metas = (got.get("metadatas") or [{}])
             meta = metas[0] if metas else {}
-
             label = meta.get("label") or meta.get("title") or ""
             summary: str = str(meta.get("summary") or "")
-
             # Heuristic materialization:
             # - shallow: prefer summary
             # - deep: include doc text if available, else summary
@@ -535,15 +470,12 @@ Select at most {max_used} node ids.
                 text = docs.strip()
             else:
                 text = summary.strip() or (docs.strip() if isinstance(docs, str) else "")
-
             if not text:
                 text = ""
-
             text = text[:max_chars_per_item]
             if total + len(text) > max_total_chars:
                 break
             total += len(text)
-
             # Mentions/spans candidates:
             # If meta already includes mentions/spans, prefer them. Otherwise create a single mention/span candidate
             mentions = meta.get("mentions")
@@ -570,11 +502,9 @@ Select at most {max_used} node ids.
                     mentions = None
             else:
                 mentions = None
-
             if not mentions:
                 # single synthetic mention/span candidate using the materialized text
                 mentions = [{"spans": [{"excerpt": text, "doc_id": meta.get("doc_id"), "page_number": meta.get("page_number"), "document_page_url": meta.get("document_page_url")}]}]
-
             pack["nodes"].append(
                 {
                     "node_id": nid,
@@ -616,19 +546,15 @@ Select at most {max_used} node ids.
                 (
                     "human",
                     """Answer the user using ONLY the provided evidence when making factual claims.
-
 User question:
 {question}
-
 Evidence pack (cite using SpanRef: source_node_id + mention_index + span_index):
 {evidence}
-
 Requirements:
 - Provide a helpful answer in `text`.
 - Provide `claims` as a list of key factual claims (bullet-sized).
 - For each claim, include 1-3 citations pointing to specific spans (M index + S index) from the evidence pack.
 - If the evidence is insufficient, write the best possible answer and make claims conservative.
-
 Return JSON that matches the provided schema.
 """,
                     ),
@@ -679,7 +605,6 @@ Return JSON that matches the provided schema.
                 return False
             ex = (spans[r.span_index] or {}).get("excerpt") or ""
             return bool(str(ex).strip())
-
         bad = False
         for c in answer_validated.claims:
             for r in c.citations:
@@ -688,10 +613,8 @@ Return JSON that matches the provided schema.
                     break
             if bad:
                 break
-
         if not bad:
             return answer_validated.model_dump()
-
         # Repair prompt: give the evidence again and ask to re-emit citations only
         lines: list[str] = []
         for n in evidence_pack.get("nodes", []):
@@ -711,16 +634,12 @@ Return JSON that matches the provided schema.
                 (
                     "human",
                     """Your previous citations contained invalid references.
-
 User question:
 {question}
-
 Evidence pack:
 {evidence}
-
 Previous answer text:
 {answer_text}
-
 Please return a corrected AnswerWithCitations JSON.
 Rules:
 - Keep `text` as close as possible.
@@ -766,26 +685,20 @@ Rules:
         for n in evidence_pack.get("nodes", []):
             ev_lines.append(f"- {n.get('node_id')}: {n.get('label','')} | {n.get('summary','')}")
         ev_text = "\n".join(ev_lines)
-
         prompt = ChatPromptTemplate.from_messages(
             [
                 ("system", system_prompt or "You are a careful evaluator."),
                 (
                     "human",
                     """Decide whether the provided evidence is sufficient to answer the user question.
-
 User question:
 {question}
-
 Answer:
 {answer}
-
 Used node ids:
 {used_ids}
-
 Evidence summaries:
 {evidence}
-
 Return JSON per schema. Be conservative: if key details are missing, set needs_more_info=true.
 """,
                 ),
@@ -810,14 +723,12 @@ Return JSON per schema. Be conservative: if key details are missing, set needs_m
                 prompt.append(("system", str_e[:1000] + '...' + str_e[-1000] if len(str_e) > 2000 else str_e))
             parsed : BaseM = res['parsed']
             return parsed.model_dump()
-
     def _ensure_run_anchor(self, *, conversation_id: str, run_id: str) -> str:
         scope = f"conv:{conversation_id}"
         rid = pointer_id(scope=scope, pointer_kind="agent_run", target_kind="run", target_id=run_id)
         existing = self.conversation_engine.backend.node_get(ids=[rid], include=[])
         if existing.get("ids"):
             return rid
-
         sp = Span.from_dummy_for_conversation()
         node = ConversationNode(
             id=rid,
@@ -829,17 +740,12 @@ Return JSON per schema. Be conservative: if key details are missing, set needs_m
             turn_index=None,
             properties={"run_id": run_id, "entity_type": "agent_run"},
             mentions=[Grounding(spans=[sp])],
-            metadata={"level_from_root": 0, "entity_type": "agent_run", 
-                      "char_distance_from_last_summary": 0, 
-                      "turn_distance_from_last_summary": 0, 
-                      "in_conversation_chain": False},
+            metadata={"level_from_root": 0, "entity_type": "agent_run", "in_conversation_chain": False},
             domain_id=None,
             canonical_entity_id=None,
-
         )
         self.conversation_engine.add_node(node)
         return rid
-
     def _project_kg_node(
         self,
         *,
@@ -852,7 +758,6 @@ Return JSON per schema. Be conservative: if key details are missing, set needs_m
     ) -> str:
         scope = f"conv:{conversation_id}"
         pid = pointer_id(scope=scope, pointer_kind="kg_node", target_kind="node", target_id=kg_node_id)
-
         # If exists, still ensure run->evidence edge exists (idempotent)
         existing = self.conversation_engine.backend.node_get(ids=[pid], include=[])
         if not existing.get("ids"):
@@ -883,18 +788,13 @@ Return JSON per schema. Be conservative: if key details are missing, set needs_m
                     "entity_type": "knowledge_reference",
                 },
                 mentions=[Grounding(spans=[provenance_span])],
-                metadata={"level_from_root": 0, "entity_type": "knowledge_reference", 
-                          "char_distance_from_last_summary": prev_turn_meta_summary.prev_node_char_distance_from_last_summary, 
-                          "turn_distance_from_last_summary": prev_turn_meta_summary.prev_node_distance_from_last_summary, 
-                          "in_conversatino_chain": False},
+                metadata={"level_from_root": 0, "entity_type": "knowledge_reference", "in_conversation_chain": False},
                 domain_id=None,
                 canonical_entity_id=None,
             )
             prev_turn_meta_summary.prev_node_distance_from_last_summary += 1
             prev_turn_meta_summary.prev_node_char_distance_from_last_summary += len(str(meta.get("summary")))
-            prev_turn_meta_summary.tail_turn_index += 1
             self.conversation_engine.add_node(node)
-
         # Link run -> evidence
         eid = edge_id(scope=scope, rel="used_evidence", src=run_node_id, dst=pid)
         ex_edge = self.conversation_engine.backend.edge_get(ids=[eid], include=[])
@@ -921,7 +821,6 @@ Return JSON per schema. Be conservative: if key details are missing, set needs_m
             )
             self.conversation_engine.add_edge(edge)
         return pid
-
     def _add_assistant_turn(self, *, conversation_id: str, content: str, provenance_span: Span, turn_index : int, 
                             prev_turn_meta_summary: MetaFromLastSummary) -> tuple[str, ConversationNode]:
         # Minimal assistant turn node
@@ -939,12 +838,7 @@ Return JSON per schema. Be conservative: if key details are missing, set needs_m
             turn_index=turn_index,
             properties={"content": content, "entity_type": "assistant_turn"},
             mentions=[Grounding(spans=[provenance_span])],
-            metadata={"level_from_root": 0, 
-                      "entity_type": "assistant_turn", 
-                      "char_distance_from_last_summary": prev_turn_meta_summary.prev_node_char_distance_from_last_summary, 
-                      "turn_distance_from_last_summary": prev_turn_meta_summary.prev_node_distance_from_last_summary, 
-                      "tail_turn_index": prev_turn_meta_summary.tail_turn_index,
-                      "in_conversation_chain":True},
+            metadata={"level_from_root": 0, "entity_type": "assistant_turn", "tail_turn_index": prev_turn_meta_summary.tail_turn_index, "in_conversation_chain": True},
             domain_id=None,
             canonical_entity_id=None,
             embedding=emb.tolist()
@@ -954,7 +848,6 @@ Return JSON per schema. Be conservative: if key details are missing, set needs_m
         prev_turn_meta_summary.prev_node_distance_from_last_summary += 1
         
         return nid, node
-
     def _link_run_to_response(self, *, conversation_id: str, run_node_id: str, response_node_id: str, used_node_ids : list[str], 
                               provenance_span: Span | list[Span],
                               prev_turn_meta_summary) -> None:

@@ -432,19 +432,77 @@ class BaseNodeMetadata(BaseModel):
     model_config = ConfigDict(extra="allow")
 
 class ConversationNodeMetadata(BaseNodeMetadata):
+    """Metadata for conversation nodes.
+
+    **Invariant (Phase 1):** summary-distance accounting is stored on edges (e.g. `next_turn`)
+    rather than nodes. Nodes MUST NOT carry:
+    - `char_distance_from_last_summary`
+    - `turn_distance_from_last_summary`
+
+    This keeps node identity stable and avoids accidental "rewriting the past" via node updates.
+    """
     level_from_root: int = Field(..., ge=0)
     entity_type: str = Field("conversation_node")
-    char_distance_from_last_summary: int
-    turn_distance_from_last_summary: int
 
     model_config = ConfigDict(extra="allow")
+
+    @model_validator(mode="after")
+    def _forbid_summary_distance_fields(self) -> Self:
+        # These must never appear on nodes. Accounting belongs to edges.
+        extra = self.__dict__.get("__pydantic_extra__", {}) or {}
+        forbidden = {"char_distance_from_last_summary", "turn_distance_from_last_summary",
+                     "prev_node_char_distance_from_last_summary", "prev_node_distance_from_last_summary",
+                     "prev_turn_meta_summary"}
+        present = forbidden.intersection(set(extra.keys()))
+        if present:
+            raise ValueError(f"ConversationNodeMetadata must not contain summary-distance fields: {sorted(present)}")
+        return self
+
     
 class ConversationEdgeMetadata(BaseNodeMetadata):
-    
-    char_distance_from_last_summary: int
-    turn_distance_from_last_summary: int
+    """Metadata for conversation edges.
+
+    Phase 1 introduces `causal_type` to make edge intent explicit and enforceable.
+    When absent, it can be inferred from `relation` via a mapping.
+    """
+    causal_type: Optional[Literal[
+        "chain",
+        "dependency",
+        "reuse",
+        "annotation",
+        "summary",
+        "reference",
+        "internal",
+    ]] = None
+
+    # Accounting currently lives on edges (canonical counters will be normalized in Phase 2).
+    char_distance_from_last_summary: Optional[int] = None
+    turn_distance_from_last_summary: Optional[int] = None
 
     model_config = ConfigDict(extra="allow")
+
+
+
+# --- Phase 1: Conversation edge intent classification (causality) ---
+
+CONVERSATION_EDGE_CAUSAL_TYPE_BY_RELATION: dict[str, str] = {
+    # Canonical chain
+    "next_turn": "chain",
+
+    # Tool / retrieval wiring (non-causal references)
+    "tool_call_entry_point": "reference",
+    "run_result": "reference",
+    "has_memory_context": "reference",
+    "has_knowledge_context": "reference",
+
+    # Summaries describe past, but do not causally "create" the past
+    "summarizes": "summary",
+
+    # Default catch-all for conversation edges
+}
+
+def infer_conversation_edge_causal_type(relation: str) -> str:
+    return CONVERSATION_EDGE_CAUSAL_TYPE_BY_RELATION.get(relation, "reference")
 
 class ChromaMixin(BaseModel):
     id: Optional[str] = Field(default = None, description="Unique identifier")
@@ -680,9 +738,7 @@ class ConversationNode(ConversationRoleMixin, Node):
     def get_extra_update(self) -> dict:
         try:
             updates = {
-                "char_distance_from_last_summary": self.metadata["char_distance_from_last_summary"],
-                "turn_distance_from_last_summary": self.metadata["turn_distance_from_last_summary"],
-                "in_conversation_chain": self.metadata["in_conversation_chain"]
+                "in_conversation_chain": self.metadata.get("in_conversation_chain")
             }
         except Exception as _e:
             raise
@@ -758,9 +814,7 @@ class ConversationEdge( Edge):
     def get_extra_update(self) -> dict:
         try:
             updates = {
-                "char_distance_from_last_summary": self.metadata["char_distance_from_last_summary"],
-                "turn_distance_from_last_summary": self.metadata["turn_distance_from_last_summary"],
-                "in_conversation_chain": self.metadata["in_conversation_chain"]
+                "in_conversation_chain": self.metadata.get("in_conversation_chain")
             }
         except Exception as _e:
             raise
