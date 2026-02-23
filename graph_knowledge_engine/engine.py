@@ -45,7 +45,7 @@ if True:
 from .conversation_context import ContextItem, ContextSources, ConversationContextView, DroppedItem, ContextRenderer, Role
 import numpy as np
 import ast
-from typing import Iterator, List, Optional, Dict, Any, Self, Tuple, TypeAlias, cast
+from typing import Iterator, List, Optional, Dict, Any, Self, Tuple, TypeAlias, cast, Callable
 from .typing_interfaces import CollectionLike, EmbeddingFunctionLike
 from dataclasses import dataclass, field
 from .graph_query import GraphQuery
@@ -2040,7 +2040,9 @@ class GraphKnowledgeEngine:
         self._oplog = None
         if debug_dir is not None:
             self._oplog = OplogWriter(debug_dir / "changes.jsonl", fsync=False)
-        self.tool_call_id_factory: Callable[[],str] | None = None
+        # Tool call node IDs: default to random UUID, but allow deterministic factories (uuid5/stable_id).
+        # ToolRunner may pass context args; keep this factory variadic.
+        self.tool_call_id_factory: Callable[..., str] = (lambda *a, **k: str(uuid.uuid4()))
 
         self._disable_event_log = False
         self.query = GraphQuery(self)
@@ -2446,8 +2448,8 @@ class GraphKnowledgeEngine:
         # single-call safety for ad-hoc usage
         self._assert_endpoints_exist(edge)
 
-        # Phase 1: enforce conversation-edge invariants (chain linearity, causal rules)
-        if self.kg_graph_type == "conversation" and isinstance(edge, models.ConversationEdge):
+        # Phase 1: conversation invariants
+        if isinstance(edge, models.ConversationEdge):
             self._validate_conversation_edge_add(edge)
 
         # receptive range counts
@@ -2476,6 +2478,19 @@ class GraphKnowledgeEngine:
                 "total_endpoint_count": total_endpoint_count,
             })],
         )
+
+        # endpoints fan-out (persisted incidence index; required for conversation invariants)
+        rows = self._fanout_endpoints_rows(edge, getattr(edge, "doc_id", None))
+        if rows:
+            ep_ids   = [r["id"] for r in rows]
+            ep_docs  = [json.dumps(r) for r in rows]
+            ep_metas: list[dict] = rows  # already sanitized (no None)
+            self.backend.edge_endpoints_add(
+                ids=ep_ids,
+                documents=ep_docs,
+                metadatas=ep_metas,
+                embeddings=[self._iterative_defensive_emb(str(d)) for d in ep_docs],
+            )
 
     # ---- Unit of Work (meta-store transaction boundary) ----
     def _ensure_uow_ctxvars(self):
@@ -2532,13 +2547,21 @@ class GraphKnowledgeEngine:
         if doc_id is not None:
             node.doc_id = doc_id  # may use engine.extract_reference_contexts
         # Conversation pin contract: once a pin-pointer node is created, it must never be overwritten.
-        # A second attempt to pin the same pointer should be a no-op (not an error, not an update).
-        # We enforce this here (engine boundary) because multiple higher-level callers may attempt
-        # to re-pin the same knowledge_reference pointer.
+        # A second attempt to pin the same pointer is a no-op (idempotent).
         if self.kg_graph_type == "conversation":
             et = (getattr(node, "metadata", None) or {}).get("entity_type")
             if et == "knowledge_reference" and node.id is not None and self._exists_node(node.id):
                 return
+
+            # Phase 1 accounting invariant: distances/meta-summary must live on edges, not on nodes.
+            forbidden = {"prev_turn_meta_summary", "char_distance_from_last_summary", "turn_distance_from_last_summary"}
+            md0 = getattr(node, "metadata", None) or {}
+            leaked = forbidden.intersection(md0.keys())
+            if leaked:
+                raise ValueError(
+                    "ConversationNode.metadata must not contain accounting fields "
+                    f"{sorted(leaked)}; store these on ConversationEdge.metadata instead."
+                )
         if self.kg_graph_type == "conversation":
             node_conv: ConversationNode = cast(ConversationNode, node)
             try:
@@ -2599,24 +2622,23 @@ class GraphKnowledgeEngine:
     def _entity_is_conversation(self, node: Node | Edge):
         return type(node) in [ConversationEdge, ConversationNode]
     def _fanout_endpoints_rows(self, edge: Edge, doc_id: str | None):
-# IMPORTANT (Conversation Graph Invariants)
-# edge_endpoints rows are the canonical adjacency index.
-# Conversation structural invariants (chain linearity, dependency freeze)
-# MUST be validated using edge_endpoints_get(where=...) and NOT by scanning edges.
-#
-# Required metadata keys in endpoint rows:
-#   - edge_id
-#   - relation
-#   - role ("src" | "tgt")
-#   - endpoint_type ("node" | "edge")
-#   - endpoint_id
-#
-# If this schema changes, update:
-#   - _validate_conversation_edge_add
-#   - bundle exporters
-#   - any uniqueness enforcement logic        
         """Convert a multi endpoint to multiple rows
-        
+        IMPORTANT (Conversation Graph Invariants)
+        edge_endpoints rows are the canonical adjacency index.
+        Conversation structural invariants (chain linearity, dependency freeze)
+        MUST be validated using edge_endpoints_get(where=...) and NOT by scanning edges.
+
+        Required metadata keys in endpoint rows:
+        - edge_id
+        - relation
+        - role ("src" | "tgt")
+        - endpoint_type ("node" | "edge")
+        - endpoint_id
+
+        If this schema changes, update:
+        - _validate_conversation_edge_add
+        - bundle exporters
+        - any uniqueness enforcement logic                
         Self-edge to endpoint node one
         
         Self-edge to endpoint node two
@@ -2660,13 +2682,12 @@ class GraphKnowledgeEngine:
             return None
 
         rows = []
-# NOTE(semantics): edge_endpoints rows are the *persisted incidence index* for hypergraph edges.
-# They must retain these keys for correctness + future backend refactors:
-#   - edge_id, relation, role ('src'|'tgt'), endpoint_type ('node'|'edge'), endpoint_id
-# Conversation chain invariants (e.g., next_turn uniqueness) are validated using this materialized index.
-# If you change this schema, update _validate_conversation_edge_add() and any bundle/debug exporters.
-#
-# node endpoints
+        causal_type = None
+        if isinstance(edge, models.ConversationEdge):
+            md = edge.metadata or {}
+            causal_type = md.get("causal_type") or models.infer_conversation_edge_causal_type(edge.relation)
+
+        # node endpoints
         for role, node_ids in (("src", edge.source_ids or []), ("tgt", edge.target_ids or [])):
             for nid in node_ids:
                 r = {
@@ -2676,6 +2697,7 @@ class GraphKnowledgeEngine:
                     "endpoint_type": "node",
                     "role": role,
                     "relation": edge.relation,
+                    **({"causal_type": causal_type} if causal_type else {}),
                 }
                 did = _per_node_doc(nid)
                 if did is not None:
@@ -2692,6 +2714,7 @@ class GraphKnowledgeEngine:
                     "endpoint_type": "edge",
                     "role": role,
                     "relation": edge.relation,
+                    **({"causal_type": causal_type} if causal_type else {}),
                 }
                 did = _maybe_doc_for_edge(mid)
                 if did is not None:
@@ -2700,126 +2723,105 @@ class GraphKnowledgeEngine:
 
         # strip Nones just in case
         return [{k: v for k, v in r.items() if v is not None} for r in rows]
-
-
-    # --- Phase 1: Conversation edge causality enforcement (endpoint-indexed) ---
+    # -----------------------------
+    # Phase 1: Conversation invariants (endpoint-indexed)
+    # -----------------------------
     #
-    # IMPORTANT REMINDER:
-    # Conversation invariants (e.g. `next_turn` linearity) must be validated using the persisted
-    # edge_endpoints incidence rows (see _fanout_endpoints_rows schema note), NOT by scanning all edges
-    # or by vector similarity queries. edge_endpoints_get(where=...) is the "SQL-like WHERE" primitive
-    # across backends (Chroma-style `.get(where=...)`, PgVector->SQL).
+    # IMPORTANT REMINDER (do not delete lightly):
+    # `edge_endpoints` rows are the *persisted incidence index* for hypergraph edges.
+    # They are NOT an optional projection: they are required to enforce conversation
+    # invariants (e.g. `next_turn` linearity) without scanning all edges.
     #
-    # If you change endpoint row keys, update these validators and the bundle/debug exporters.
+    def _where_and(self, *clauses: dict) -> dict:
+        """Combine multiple where clauses with explicit AND."""
+        flat = [c for c in clauses if c]
+        if not flat:
+            return {}
+        if len(flat) == 1:
+            return flat[0]
+        return {"$and": flat}
 
+    def _edge_endpoints_exists(self, *, where: dict) -> bool:
+        """Return True if any edge_endpoints row matches `where`."""
+        try:
+            res = self.backend.edge_endpoints_get(where=where, include=["metadatas"], limit=1)
+        except TypeError:
+            res = self.backend.edge_endpoints_get(where=where, include=["metadatas"])
+        ids = (res or {}).get("ids") or []
+        return len(ids) > 0
+    @conversation_only
     def _normalize_conversation_edge_metadata(self, edge: models.ConversationEdge) -> None:
         """Backfill `causal_type` for conversation edges from relation mapping."""
         md = dict(edge.metadata or {})
         if md.get("causal_type") is None:
-            try:
-                md["causal_type"] = models.infer_conversation_edge_causal_type(edge.relation)
-            except Exception:
-                md["causal_type"] = "reference"
+            md["causal_type"] = models.infer_conversation_edge_causal_type(edge.relation)
         edge.metadata = md
-
-    def _edge_endpoints_exists(self, *, where: dict) -> bool:
-        """
-        Existence check using metadata filter.
-        This MUST use edge_endpoints_get(where=...) and NOT vector query.
-        """
-        res = self.backend.edge_endpoints_get(
-            where=where,
-            limit=1,
-            include=["metadatas"]
-        )
-        return bool(res and res.get("ids"))
-
-
+    @conversation_only
     def _validate_conversation_edge_add(self, edge: models.ConversationEdge) -> None:
-        """
-        Enforce conversation structural invariants using endpoint index.
-        NO full graph scans allowed.
-        """
+        """Enforce conversation structural invariants using the endpoint index.
 
+        Phase 1 enforces:
+        - `next_turn`/chain edges are linear: at most one outgoing per source, at most one incoming per target.
+        - dependency-freeze: cannot add NEW dependency-incoming edges into a node that has already
+          emitted any chain/dependency outgoing edge.
+
+        Notes:
+        - No full graph scans: validation must be expressible as edge_endpoints existence checks.
+        - All checks must be scoped to the conversation via `doc_id == f"conv:{conversation_id}"`.
+        """
         self._normalize_conversation_edge_metadata(edge)
-
-        causal_type = (
-            (edge.metadata or {}).get("causal_type")
-            or models.infer_conversation_edge_causal_type(edge.relation)
-        )
+        md = edge.metadata or {}
+        causal_type = md.get("causal_type") or "reference"
 
         src = (edge.source_ids or [None])[0]
         tgt = (edge.target_ids or [None])[0]
+        doc_id = getattr(edge, "doc_id", None)
 
-        # ---------------------------------------------------
-        # 1️⃣ Chain / next_turn linearity
-        # ---------------------------------------------------
+        if not doc_id:
+            conv_id = md.get("conversation_id") or md.get("conv_id")
+            if conv_id:
+                doc_id = f"conv:{conv_id}"
+
         if edge.relation == "next_turn" or causal_type == "chain":
-
             if src is None or tgt is None:
-                raise ValueError("next_turn requires single source and single target")
+                raise ValueError("next_turn requires single source_id and single target_id")
+            if (getattr(edge, "source_edge_ids", []) or []) or (getattr(edge, "target_edge_ids", []) or []):
+                raise ValueError("next_turn must be node-to-node only (no edge endpoints)")
 
-            # Outgoing uniqueness: src can have only one next_turn outgoing
-            if self._edge_endpoints_exists(where={"$and": [
+            w_out = self._where_and(
                 {"relation": "next_turn"},
                 {"role": "src"},
                 {"endpoint_type": "node"},
                 {"endpoint_id": src},
-                ]}):
+                ({"doc_id": doc_id} if doc_id else {}),
+            )
+            if self._edge_endpoints_exists(where=w_out):
                 raise ValueError(f"next_turn outgoing already exists for source_id={src}")
 
-            # Incoming uniqueness: tgt can have only one next_turn incoming
-            if self._edge_endpoints_exists(where={"$and": [
+            w_in = self._where_and(
                 {"relation": "next_turn"},
                 {"role": "tgt"},
                 {"endpoint_type": "node"},
                 {"endpoint_id": tgt},
-                ]}):
+                ({"doc_id": doc_id} if doc_id else {}),
+            )
+            if self._edge_endpoints_exists(where=w_in):
                 raise ValueError(f"next_turn incoming already exists for target_id={tgt}")
 
-            return  # nothing else applies
-
-
-        # ---------------------------------------------------
-        # 2️⃣ Dependency Freeze Rule (Optimized)
-        # ---------------------------------------------------
         if causal_type == "dependency":
-
             if tgt is None:
-                return
-
-            # A node is "used" if it already has outgoing chain or dependency edges.
-            # That means:
-            #   exists endpoint row where:
-            #     role == "src"
-            #     endpoint_id == tgt
-            #     relation in {"next_turn", <dependency relations>}
-            #
-            # We do NOT scan edges. We only check adjacency index.
-
-            # Check outgoing chain
-            if self._edge_endpoints_exists(where={"$and": [
-                {"relation": "next_turn"},
+                raise ValueError("dependency edges require a single target_id (node)")
+            w_used = self._where_and(
                 {"role": "src"},
                 {"endpoint_type": "node"},
-                {"endpoint_id": tgt}],
-            }):
-                raise ValueError(
-                    f"Cannot add dependency incoming edge into already-used node {tgt}"
-                )
+                {"endpoint_id": tgt},
+                {"causal_type": {"$in": ["chain", "dependency"]}},
+                ({"doc_id": doc_id} if doc_id else {}),
+            )
+            if self._edge_endpoints_exists(where=w_used):
+                raise ValueError(f"Cannot add dependency incoming edge into already-used node {tgt}")
 
-            # Check outgoing dependency edges
-            if self._edge_endpoints_exists(where={"$and": [
-                {"relation": edge.relation},
-                {"role": "src"},
-                {"endpoint_type": "node"},
-                {"endpoint_id": tgt}],
-            }):
-                raise ValueError(
-                    f"Cannot add dependency incoming edge into already-used node {tgt}"
-                )
 
-            return
     def add_edge(self, edge: Edge, doc_id: Optional[str] = None):
 
         # may use engine.extract_reference_contexts
@@ -2833,7 +2835,7 @@ class GraphKnowledgeEngine:
         # single-call safety for ad-hoc usage
         self._assert_endpoints_exist(edge)
 
-        # Phase 1: enforce conversation-edge structural invariants
+        # Phase 1: conversation invariants
         if isinstance(edge, models.ConversationEdge):
             self._validate_conversation_edge_add(edge)
 
@@ -2909,7 +2911,7 @@ class GraphKnowledgeEngine:
         else:
             self._maybe_reindex_edge_refs(edge)
             # endpoints fan-out
-            rows = self._fanout_endpoints_rows(edge, doc_id)
+            rows = self._fanout_endpoints_rows(edge, getattr(edge, 'doc_id', None) or doc_id)
             if rows:
                 ep_ids   = [r["id"] for r in rows]
                 ep_docs  = [json.dumps(r) for r in rows]
@@ -4404,8 +4406,6 @@ class GraphKnowledgeEngine:
             metadata={"level_from_root": 0, 
                       "entity_type": "conversation_start", 
                       "turn_index": -1,
-                      "char_distance_from_last_summary": 0, 
-                      "turn_distance_from_last_summary" : -1,
                       "in_conversation_chain": True},
             domain_id=None,
             canonical_entity_id=None,
@@ -4517,9 +4517,29 @@ class GraphKnowledgeEngine:
         return embedding
     @conversation_only
     def last_summary_of_node(engine, node: ConversationNode):
-            return engine.get_nodes(where = {"$and" : [
-                    {"conversation_id": node.conversation_id} , 
-                    {"turn_index": node.turn_index - node.metadata['turn_distance_from_last_summary']}]}, node_type = ConversationNode)
+        """Return the most recent summary node at or before `node.turn_index`.
+
+        Phase 1 removed `turn_distance_from_last_summary` from node metadata.
+        """
+        summaries = engine.get_nodes(
+            where=engine._where_and(
+                {"conversation_id": node.conversation_id},
+                {"entity_type": "conversation_summary"},
+            ),
+            node_type=ConversationNode,
+            limit=20000,
+        )
+        best = None
+        best_idx = -1
+        for s in summaries or []:
+            ti = getattr(s, "turn_index", None)
+            if ti is None:
+                continue
+            if node.turn_index is not None and ti <= node.turn_index and ti > best_idx:
+                best = s
+                best_idx = ti
+        return [best] if best is not None else []
+
     @conversation_only
     def add_conversation_turn(self, user_id: str, conversation_id: str, turn_id: str, mem_id: 
                             str, role: str, content: str, 
@@ -4558,23 +4578,22 @@ class GraphKnowledgeEngine:
         NOTE: we key the cache by (id(ref_knowledge_engine), id(self.llm)) so callers can swap
         knowledge engines or LLMs in tests without global side effects.
         """
+
+        from .conversation_orchestrator import ConversationOrchestrator        
         key = (id(ref_knowledge_engine), id(self.llm))
-        cache = getattr(self, "_orch_cache", None)
+        cache : dict[Any, ConversationOrchestrator] = getattr(self, "_orch_cache", None)
         if cache is None:
             cache = {}
             setattr(self, "_orch_cache", cache)
         if key in cache:
             return cache[key]
 
-        from .conversation_orchestrator import ConversationOrchestrator
-        kwargs = {}
-        if self.tool_call_id_factory is not None:
-            kwargs.update({"tool_call_id_factory": self.tool_call_id_factory})
+
         orch = ConversationOrchestrator(
             conversation_engine=self,
             ref_knowledge_engine=ref_knowledge_engine,
             llm=self.llm,
-            **kwargs,
+            tool_call_id_factory = self.tool_call_id_factory
         )
         cache[key] = orch
         return orch

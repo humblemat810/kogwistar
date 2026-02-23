@@ -91,7 +91,7 @@ class MetaFromLastSummary:
     
     prev_node_char_distance_from_last_summary: int
     prev_node_distance_from_last_summary: int
-    tail_turn_index: int=0
+    tail_turn_index: int=0  # works more like a node seq number
 @dataclass(frozen=True)
 class AddTurnResult():
     user_turn_node_id: str

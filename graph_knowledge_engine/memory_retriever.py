@@ -278,9 +278,6 @@ class MemoryRetriever:
                 "entity_type": "memory_context",
                 "type": "entity",
                 "level_from_root": 0, 
-                "char_distance_from_last_summary": prev_turn_meta_summary.prev_node_char_distance_from_last_summary,  # memory itself is a summary of other nodes
-                "turn_distance_from_last_summary": prev_turn_meta_summary.prev_node_distance_from_last_summary,
-                "tail_turn_index": prev_turn_meta_summary.tail_turn_index,
                 "user_id": user_id,
                 "conversation_id": current_conversation_id,
                 "turn_index": turn_index,

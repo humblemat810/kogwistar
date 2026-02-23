@@ -44,7 +44,7 @@ class ToolEventIds:
 class ToolRunner:
     def __init__(self, *, tool_call_id_factory, conversation_engine: GraphKnowledgeEngine) -> None:
         self.engine = conversation_engine
-        self.tool_call_id_factory :Callable[..., str]= tool_call_id_factory or conversation_engine.tool_call_id_factory
+        self.tool_call_id_factory :Callable[..., str]= tool_call_id_factory
     def join_tool_node_to_turn(self, orchestrator: ConversationOrchestrator, conversation_id, call_node, turn_node_id, prev_turn_meta_summary):
         orchestrator.join_tool_node_to_turn(conversation_id, call_node.safe_get_id(), turn_node_id, prev_turn_meta_summary)
     def run_tool(
@@ -106,9 +106,6 @@ class ToolRunner:
             },
             metadata={"entity_type": "tool_call", "tool_name": tool_name,
                       "level_from_root": 0, 
-                      "char_distance_from_last_summary": prev_turn_meta_summary.prev_node_char_distance_from_last_summary, 
-                      "turn_distance_from_last_summary": prev_turn_meta_summary.prev_node_distance_from_last_summary,
-                      "tail_turn_index" : prev_turn_meta_summary.tail_turn_index,
                       "in_conversation_chain": True},
             domain_id=None,
             canonical_entity_id=None,
@@ -220,9 +217,6 @@ class ToolRunner:
             },
             metadata={"entity_type": "tool_result", "tool_name": tool_name,
                       "level_from_root": 0, 
-                      "char_distance_from_last_summary": prev_turn_meta_summary.prev_node_char_distance_from_last_summary, 
-                      "turn_distance_from_last_summary": prev_turn_meta_summary.prev_node_distance_from_last_summary,
-                      "tail_turn_index": prev_turn_meta_summary.tail_turn_index,
                       "in_conversation_chain": True},
             domain_id=None,
             canonical_entity_id=None,

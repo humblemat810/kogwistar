@@ -203,9 +203,12 @@ class FakeCollection:
         docs = [self._rows[i].get("document") for i in ids]
         return {"ids": [ids], "metadatas": [metas], "documents": [docs]}
 
-    def put(self, _id: str, *, metadata=None, document=None):
+    def add(self, _id: str, *, metadata=None, document=None):
         self._rows[_id] = {"metadata": metadata or {}, "document": document}
-
+    def upsert(self, _id: str, *, metadata=None, document=None):
+        self._rows[_id] = {"metadata": metadata or {}, "document": document}
+    def update(self, _id: str, *, metadata=None, document=None):
+        self._rows[_id] = {"metadata": metadata or {}, "document": document}        
     def __len__(self):
         return len(self._rows)
 
@@ -215,6 +218,24 @@ class FakeEmbedding:
 
     def tolist(self):
         return list(self._values)
+
+class _BackendShim:
+    """Chroma-like backend shim exposing node_get/edge_get for AgenticAnsweringAgent."""
+    def __init__(self, node_collection: FakeCollection, edge_collection: FakeCollection):
+        self._nodes = node_collection
+        self._edges = edge_collection
+
+    def node_get(self, *, ids, include=None, where=None, limit=None, offset=None):
+        # where/limit/offset ignored for this shim
+        return self._nodes.get(ids=ids, include=include)
+    
+    def node_query(self, *, query_embeddings, n_results, include=None, where=None, limit=None, offset=None):
+        # where/limit/offset ignored for this shim
+        return self._nodes.query(query_embeddings = query_embeddings, n_results = n_results)
+
+    def edge_get(self, *, ids, include=None, where=None, limit=None, offset=None):
+        return self._edges.get(ids=ids, include=include)
+
 class FakeConversationEngine:
     def __init__(self, conversation_id: str, messages):
         self._conversation_id = conversation_id
@@ -222,6 +243,7 @@ class FakeConversationEngine:
         self.node_collection = FakeCollection()
         self.edge_collection = FakeCollection()
         self._iterative_defensive_emb = self.iterative_defensive_emb
+        self.backend = _BackendShim(self.node_collection, self.edge_collection)
     def get_conversation_view(
         self,
         *,
@@ -245,10 +267,10 @@ class FakeConversationEngine:
         return "You are a helpful assistant."
 
     def add_node(self, node):
-        self.node_collection.put(node.id, metadata=getattr(node, "metadata", {}), document=getattr(node, "summary", None))
+        self.node_collection.add(node.id, metadata=getattr(node, "metadata", {}), document=getattr(node, "summary", None))
 
     def add_edge(self, edge):
-        self.edge_collection.put(
+        self.edge_collection.add(
             edge.id,
             metadata={"relation": edge.relation, "src": edge.source_ids, "dst": edge.target_ids},
             document=getattr(edge, "summary", None),
@@ -262,7 +284,9 @@ class FakeConversationEngine:
 class FakeKnowledgeEngine:
     def __init__(self):
         self.node_collection = FakeCollection()
+        self.edge_collection = FakeCollection()
         self._iterative_defensive_emb = self.iterative_defensive_emb
+        self.backend = _BackendShim(self.node_collection, self.edge_collection)
 
     def iterative_defensive_emb(self, text: str):
         return FakeEmbedding([0.0])
@@ -279,9 +303,9 @@ def engines():
         ],
     )
     kg = FakeKnowledgeEngine()
-    kg.node_collection.put("A", metadata={"label": "Foo", "summary": "Foo is a thing.", "type": "concept"})
-    kg.node_collection.put("B", metadata={"label": "Bar", "summary": "Bar is related.", "type": "concept"})
-    kg.node_collection.put("C", metadata={"label": "Baz", "summary": "Baz is extra.", "type": "concept"})
+    kg.node_collection.add("A", metadata={"label": "Foo", "summary": "Foo is a thing.", "type": "concept"})
+    kg.node_collection.add("B", metadata={"label": "Bar", "summary": "Bar is related.", "type": "concept"})
+    kg.node_collection.add("C", metadata={"label": "Baz", "summary": "Baz is extra.", "type": "concept"})
     return conv, kg, conversation_id
 
 
@@ -412,7 +436,6 @@ def test_agent_answer_creates_run_anchor_projects_used_evidence(monkeypatch, eng
     )
     monkeypatch.setattr(conv, "get_conversation_view", fake_get_conversation_view)
     monkeypatch.setattr(agent, "_select_used_evidence", fake_select)
-    monkeypatch.setattr(agent, "_generate_answer", fake_generate)
     from graph_knowledge_engine.models import MetaFromLastSummary
     
     out = agent.answer(conversation_id=conversation_id, prev_turn_meta_summary = MetaFromLastSummary(0,0))

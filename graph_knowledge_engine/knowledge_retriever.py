@@ -180,7 +180,7 @@ class KnowledgeRetriever:
                 "canonical_entity_id": meta.get("canonical_entity_id"),
             }
             sh = snapshot_hash(snap)
-            prev_turn_meta_summary.tail_turn_index += 1
+            # Phase-1 invariant: do NOT mutate tail_turn_index for sidecar pins
             ptr_node = ConversationNode(
                 id=None or str(stable_id("knowledge_pin_node", turn_node_id, kg.safe_get_id())),
                 label=f"Ref: {kg_meta.get('label')}",
@@ -203,9 +203,6 @@ class KnowledgeRetriever:
                     "target_namespace": "kg",
                     "entity_type": "knowledge_reference",
                     "level_from_root": 0,
-                    "char_distance_from_last_summary": prev_turn_meta_summary.prev_node_char_distance_from_last_summary,
-                    "turn_distance_from_last_summary": prev_turn_meta_summary.prev_node_distance_from_last_summary,
-                    "tail_turn_index" : prev_turn_meta_summary.tail_turn_index,
                     "snapshot_hash": sh,
                     "in_conversation_chain": False,
                 },
@@ -254,7 +251,7 @@ class KnowledgeRetriever:
             summary = str(kg_meta.get("summary", ""))
 
             # ptr_id = str(uuid.uuid4())
-            prev_turn_meta_summary.tail_turn_index +=1
+            # Phase-1 invariant: do NOT mutate tail_turn_index for sidecar pins
             ptr_node = ConversationNode(
                 id=None,
                 label=f"Ref: {kg_meta.get('label')}",
@@ -274,9 +271,6 @@ class KnowledgeRetriever:
                 metadata={
                     "entity_type": "knowledge_reference",
                     "level_from_root": 0,
-                    "char_distance_from_last_summary": prev_turn_meta_summary.prev_node_char_distance_from_last_summary,
-                    "turn_distance_from_last_summary": prev_turn_meta_summary.prev_node_distance_from_last_summary,
-                    "tail_turn_index": prev_turn_meta_summary.tail_turn_index,
                     "in_conversation_chain": False,
                 },
                 domain_id=None,

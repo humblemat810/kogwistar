@@ -13,7 +13,7 @@ def test_conversation_pin_knowledge_reference_is_noop(tmp_path):
     conversation_id = "conv:test_conversation_pin_knowledge_reference_is_noop"
     user_id = "u1"
 
-    eng.create_conversation(user_id=user_id, conversation_id=conversation_id, start_turn_id="start")
+    eng.create_conversation(user_id=user_id, conv_id=conversation_id, node_id="start")
 
     span = Span(
         collection_page_url=f"conversation/{conversation_id}",
@@ -60,6 +60,6 @@ def test_conversation_pin_knowledge_reference_is_noop(tmp_path):
     n2.summary = "MUTATED"
     eng.add_node(n2)
 
-    got = eng.get_node(nid)
-    assert got is not None
-    assert got.summary == "ORIGINAL"
+    nodes = eng.get_nodes(nid)
+    assert len(nodes) ==1
+    assert nodes[0].summary == "ORIGINAL"

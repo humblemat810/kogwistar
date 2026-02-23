@@ -264,15 +264,22 @@ def test_conversation_flow(backend_kind: str, tmp_path, sa_engine, pg_schema):
     last_node_ids = []
     last_node_ids.append(conversation_engine._get_conversation_tail(conv_id))
     for i in range(i_start, i_end):
-        res = conversation_engine.add_conversation_turn(user_id, conv_id, turn_id = f"assistant_turn_{i}" if i%2 else f"user_turn_{i}",mem_id =  f"msg turn_{i}",
-                                                  role="system", content=f"turn dummy filler turn {i}", 
-                                                  ref_knowledge_engine=engine,
-                                                 filtering_callback = candiate_filtering_callback_cached,
-                                                 prev_turn_meta_summary=prev_turn_meta_summary)
+        res = conversation_engine.add_conversation_turn(
+            user_id,
+            conv_id,
+            turn_id=f"assistant_turn_{i}" if i % 2 else f"user_turn_{i}",
+            mem_id=f"msg turn_{i}",
+            role="system",
+            content=f"turn dummy filler turn {i}",
+            ref_knowledge_engine=engine,
+            filtering_callback=candiate_filtering_callback_cached,
+            prev_turn_meta_summary=prev_turn_meta_summary,
+            add_turn_only=False,
+        )
         last_node_ids.append(conversation_engine._get_conversation_tail(conv_id))
         prev_turn_meta_summary : MetaFromLastSummary = res.prev_turn_meta_summary
         template_html = Path("graph_knowledge_engine/templates/d3.html").read_text(encoding="utf-8")
-        out_dir = Path(".") / "bundle" / f"turn{i}"
+        out_dir = Path(".") / "bundle" / f"turn {res.turn_index}-{i}"
         from graph_knowledge_engine.utils.kge_debug_dump import dump_paired_bundles
         dump_paired_bundles(
             kg_engine=engine,

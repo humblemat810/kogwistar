@@ -7,6 +7,7 @@ from graph_knowledge_engine.models import ConversationEdge, MetaFromLastSummary
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from graph_knowledge_engine.engine import GraphKnowledgeEngine
+
 def _mk_edge(*, src: str, tgt: str, relation: str, causal_type: str, doc_id: str) -> ConversationEdge:
     # ConversationEdgeMetadata requires distance fields; for Phase-1 we keep them on edges.
     return ConversationEdge(
@@ -55,6 +56,7 @@ def _mk_three_turns(conversation_engine: GraphKnowledgeEngine, kg_engine: GraphK
         role="user",
         content="u1",
         ref_knowledge_engine=kg_engine,
+        add_turn_only=True,
     )
 
     # Turn 2 (assistant/system)
@@ -66,6 +68,7 @@ def _mk_three_turns(conversation_engine: GraphKnowledgeEngine, kg_engine: GraphK
         role="assistant",
         content="a1",
         ref_knowledge_engine=kg_engine,
+        add_turn_only=True,
         prev_turn_meta_summary=r1.prev_turn_meta_summary,
     )
 
@@ -78,6 +81,7 @@ def _mk_three_turns(conversation_engine: GraphKnowledgeEngine, kg_engine: GraphK
         role="user",
         content="u2",
         ref_knowledge_engine=kg_engine,
+        add_turn_only=True,
         prev_turn_meta_summary=r2.prev_turn_meta_summary,
     )
 
