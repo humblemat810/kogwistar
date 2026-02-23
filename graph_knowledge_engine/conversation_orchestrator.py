@@ -684,7 +684,7 @@ class ConversationOrchestrator:
         conversation_engine: GraphKnowledgeEngine,
         ref_knowledge_engine: GraphKnowledgeEngine,
         workflow_engine: GraphKnowledgeEngine | None = None,
-        tool_call_id_factory = uuid.uuid4,
+        tool_call_id_factory = None,
         llm: BaseChatModel | None = None,
     ) -> None:
         self.conversation_engine: GraphKnowledgeEngine = conversation_engine

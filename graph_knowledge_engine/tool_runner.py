@@ -44,7 +44,7 @@ class ToolEventIds:
 class ToolRunner:
     def __init__(self, *, tool_call_id_factory, conversation_engine: GraphKnowledgeEngine) -> None:
         self.engine = conversation_engine
-        self.tool_call_id_factory :Callable[..., str]= tool_call_id_factory
+        self.tool_call_id_factory :Callable[..., str]= tool_call_id_factory or conversation_engine.tool_call_id_factory
     def join_tool_node_to_turn(self, orchestrator: ConversationOrchestrator, conversation_id, call_node, turn_node_id, prev_turn_meta_summary):
         orchestrator.join_tool_node_to_turn(conversation_id, call_node.safe_get_id(), turn_node_id, prev_turn_meta_summary)
     def run_tool(

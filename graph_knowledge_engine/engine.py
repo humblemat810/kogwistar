@@ -2599,6 +2599,22 @@ class GraphKnowledgeEngine:
     def _entity_is_conversation(self, node: Node | Edge):
         return type(node) in [ConversationEdge, ConversationNode]
     def _fanout_endpoints_rows(self, edge: Edge, doc_id: str | None):
+# IMPORTANT (Conversation Graph Invariants)
+# edge_endpoints rows are the canonical adjacency index.
+# Conversation structural invariants (chain linearity, dependency freeze)
+# MUST be validated using edge_endpoints_get(where=...) and NOT by scanning edges.
+#
+# Required metadata keys in endpoint rows:
+#   - edge_id
+#   - relation
+#   - role ("src" | "tgt")
+#   - endpoint_type ("node" | "edge")
+#   - endpoint_id
+#
+# If this schema changes, update:
+#   - _validate_conversation_edge_add
+#   - bundle exporters
+#   - any uniqueness enforcement logic        
         """Convert a multi endpoint to multiple rows
         
         Self-edge to endpoint node one
@@ -2696,16 +2712,6 @@ class GraphKnowledgeEngine:
     #
     # If you change endpoint row keys, update these validators and the bundle/debug exporters.
 
-    def _edge_endpoints_exists(self, *, where: dict) -> bool:
-        """Return True if any edge_endpoints row matches the `where` filter."""
-        try:
-            res = self.backend.edge_endpoints_get(where=where, include=["metadatas"], limit=1)
-        except TypeError:
-            # Some backends may not accept `limit`; fall back safely.
-            res = self.backend.edge_endpoints_get(where=where, include=["metadatas"])
-        ids = (res or {}).get("ids") or []
-        return len(ids) > 0
-
     def _normalize_conversation_edge_metadata(self, edge: models.ConversationEdge) -> None:
         """Backfill `causal_type` for conversation edges from relation mapping."""
         md = dict(edge.metadata or {})
@@ -2716,63 +2722,104 @@ class GraphKnowledgeEngine:
                 md["causal_type"] = "reference"
         edge.metadata = md
 
-    def _validate_conversation_edge_add(self, edge: models.ConversationEdge) -> None:
-        """Validate conversation-edge structural invariants (append-only, causal correctness).
-
-        Phase 1 enforces:
-        - `next_turn` chain edges: at most one outgoing per source, at most one incoming per target.
-        - Dependency-freeze (only for `causal_type=='dependency'`): no new dependency incoming edges
-          into nodes that are already 'used' (have any outgoing chain or dependency edge).
+    def _edge_endpoints_exists(self, *, where: dict) -> bool:
         """
+        Existence check using metadata filter.
+        This MUST use edge_endpoints_get(where=...) and NOT vector query.
+        """
+        res = self.backend.edge_endpoints_get(
+            where=where,
+            limit=1,
+            include=["metadatas"]
+        )
+        return bool(res and res.get("ids"))
+
+
+    def _validate_conversation_edge_add(self, edge: models.ConversationEdge) -> None:
+        """
+        Enforce conversation structural invariants using endpoint index.
+        NO full graph scans allowed.
+        """
+
         self._normalize_conversation_edge_metadata(edge)
-        causal_type = (edge.metadata or {}).get("causal_type") or "reference"
 
-        # --- chain / next_turn uniqueness (endpoint-indexed; no full scans) ---
+        causal_type = (
+            (edge.metadata or {}).get("causal_type")
+            or models.infer_conversation_edge_causal_type(edge.relation)
+        )
+
+        src = (edge.source_ids or [None])[0]
+        tgt = (edge.target_ids or [None])[0]
+
+        # ---------------------------------------------------
+        # 1️⃣ Chain / next_turn linearity
+        # ---------------------------------------------------
         if edge.relation == "next_turn" or causal_type == "chain":
-            src = (edge.source_ids or [None])[0]
-            tgt = (edge.target_ids or [None])[0]
-            if src is None or tgt is None:
-                raise ValueError("next_turn requires a single source_id and single target_id")
-            # Guard: chain edges must be node-to-node only
-            if (getattr(edge, "source_edge_ids", []) or []) or (getattr(edge, "target_edge_ids", []) or []):
-                raise ValueError("next_turn must not reference edge endpoints (node-to-node only)")
 
-            # Outgoing uniqueness: any next_turn endpoint where this node is the src endpoint?
-            if self._edge_endpoints_exists(where={
-                "relation": "next_turn",
-                "role": "src",
-                "endpoint_type": "node",
-                "endpoint_id": src,
-            }):
+            if src is None or tgt is None:
+                raise ValueError("next_turn requires single source and single target")
+
+            # Outgoing uniqueness: src can have only one next_turn outgoing
+            if self._edge_endpoints_exists(where={"$and": [
+                {"relation": "next_turn"},
+                {"role": "src"},
+                {"endpoint_type": "node"},
+                {"endpoint_id": src},
+                ]}):
                 raise ValueError(f"next_turn outgoing already exists for source_id={src}")
 
-            # Incoming uniqueness: any next_turn endpoint where this node is the tgt endpoint?
-            if self._edge_endpoints_exists(where={
-                "relation": "next_turn",
-                "role": "tgt",
-                "endpoint_type": "node",
-                "endpoint_id": tgt,
-            }):
+            # Incoming uniqueness: tgt can have only one next_turn incoming
+            if self._edge_endpoints_exists(where={"$and": [
+                {"relation": "next_turn"},
+                {"role": "tgt"},
+                {"endpoint_type": "node"},
+                {"endpoint_id": tgt},
+                ]}):
                 raise ValueError(f"next_turn incoming already exists for target_id={tgt}")
 
-        # --- dependency freeze (kept conservative; conversation graphs are small) ---
+            return  # nothing else applies
+
+
+        # ---------------------------------------------------
+        # 2️⃣ Dependency Freeze Rule (Optimized)
+        # ---------------------------------------------------
         if causal_type == "dependency":
-            # Freeze rule: cannot add new dependency incoming edges into a node that has already
-            # produced outputs (chain or dependency).
-            tgt = (edge.target_ids or [None])[0]
-            existing = self.get_edges(where=None, limit=20000)
-            used_outgoing_sources = set()
-            for e in existing:
-                if not isinstance(e, models.ConversationEdge):
-                    continue
-                md = e.metadata or {}
-                c = md.get("causal_type") or models.infer_conversation_edge_causal_type(e.relation)
-                if c in ("chain", "dependency"):
-                    src = (e.source_ids or [None])[0]
-                    if src is not None:
-                        used_outgoing_sources.add(src)
-            if tgt in used_outgoing_sources:
-                raise ValueError(f"Cannot add dependency incoming edge into already-used node {tgt}")
+
+            if tgt is None:
+                return
+
+            # A node is "used" if it already has outgoing chain or dependency edges.
+            # That means:
+            #   exists endpoint row where:
+            #     role == "src"
+            #     endpoint_id == tgt
+            #     relation in {"next_turn", <dependency relations>}
+            #
+            # We do NOT scan edges. We only check adjacency index.
+
+            # Check outgoing chain
+            if self._edge_endpoints_exists(where={"$and": [
+                {"relation": "next_turn"},
+                {"role": "src"},
+                {"endpoint_type": "node"},
+                {"endpoint_id": tgt}],
+            }):
+                raise ValueError(
+                    f"Cannot add dependency incoming edge into already-used node {tgt}"
+                )
+
+            # Check outgoing dependency edges
+            if self._edge_endpoints_exists(where={"$and": [
+                {"relation": edge.relation},
+                {"role": "src"},
+                {"endpoint_type": "node"},
+                {"endpoint_id": tgt}],
+            }):
+                raise ValueError(
+                    f"Cannot add dependency incoming edge into already-used node {tgt}"
+                )
+
+            return
     def add_edge(self, edge: Edge, doc_id: Optional[str] = None):
 
         # may use engine.extract_reference_contexts
@@ -4520,11 +4567,14 @@ class GraphKnowledgeEngine:
             return cache[key]
 
         from .conversation_orchestrator import ConversationOrchestrator
-
+        kwargs = {}
+        if self.tool_call_id_factory is not None:
+            kwargs.update({"tool_call_id_factory": self.tool_call_id_factory})
         orch = ConversationOrchestrator(
             conversation_engine=self,
             ref_knowledge_engine=ref_knowledge_engine,
             llm=self.llm,
+            **kwargs,
         )
         cache[key] = orch
         return orch

@@ -47,8 +47,6 @@ def test_conversation_pin_knowledge_reference_is_noop(tmp_path):
         metadata={
             "entity_type": "knowledge_reference",
             "level_from_root": 0,
-            "char_distance_from_last_summary": 0,
-            "turn_distance_from_last_summary": 0,
             "in_conversation_chain": False,
             "conversation_id": conversation_id,
         },

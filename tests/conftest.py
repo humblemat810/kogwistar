@@ -20,6 +20,10 @@ from langchain_core.runnables import Runnable
 from graph_knowledge_engine.models import LLMMergeAdjudication, AdjudicationVerdict
 
 
+_TEST_NS = uuid.UUID("00000000-0000-0000-0000-000000000000")
+@pytest.fixture(scope="session")
+def stable_uuid(*parts: object) -> str:
+    return str(uuid.uuid5(_TEST_NS, "|".join(str(p) for p in parts)))
 from pathlib import Path
 
 def _mk_span_from_excerpt(*, doc_id: str, content: str, excerpt: str, insertion_method: str, page_number: int = 1):
