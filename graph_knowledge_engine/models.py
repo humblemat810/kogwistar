@@ -449,11 +449,11 @@ class ConversationNodeMetadata(BaseNodeMetadata):
     @model_validator(mode="after")
     def _forbid_summary_distance_fields(self) -> Self:
         # These must never appear on nodes. Accounting belongs to edges.
-        extra = self.__dict__.get("__pydantic_extra__", {}) or {}
+        # extra = self.model_fields_set or {}
         forbidden = {"char_distance_from_last_summary", "turn_distance_from_last_summary",
                      "prev_node_char_distance_from_last_summary", "prev_node_distance_from_last_summary",
                      "prev_turn_meta_summary"}
-        present = forbidden.intersection(set(extra.keys()))
+        present = forbidden.intersection(self.model_fields_set)
         if present:
             raise ValueError(f"ConversationNodeMetadata must not contain summary-distance fields: {sorted(present)}")
         return self

@@ -2759,6 +2759,8 @@ class GraphKnowledgeEngine:
     @conversation_only
     def _validate_conversation_edge_add(self, edge: models.ConversationEdge) -> None:
         """Enforce conversation structural invariants using the endpoint index.
+        
+        Override to implement own topology requirement/ validator
 
         Phase 1 enforces:
         - `next_turn`/chain edges are linear: at most one outgoing per source, at most one incoming per target.
@@ -3087,9 +3089,9 @@ class GraphKnowledgeEngine:
         got = self.backend.edge_get(ids=ids, include=["documents"])
         return [Edge.model_validate_json(js) for js in (got.get("documents") or [])]
     def nodes_by_ids(self, node_ids):
-        return self.backend.node_get(node_ids)
+        return self.backend.node_get(ids = node_ids)
     def edges_by_ids(self, edge_ids):
-        return self.backend.edge_get(edge_ids)
+        return self.backend.edge_get(ids = edge_ids)
     def nodes_by_doc(self, doc_id: str, *, where : Optional[dict] = None) -> list[str]:
         where = {"doc_id": doc_id} if not where else {
             "$and": [{"doc_id": doc_id}] + [{k:v} for k,v in where.items()]
@@ -4406,7 +4408,8 @@ class GraphKnowledgeEngine:
             metadata={"level_from_root": 0, 
                       "entity_type": "conversation_start", 
                       "turn_index": -1,
-                      "in_conversation_chain": True},
+                      "in_conversation_chain": True,
+                      "in_ui_chain": True},
             domain_id=None,
             canonical_entity_id=None,
             level_from_root = 0,

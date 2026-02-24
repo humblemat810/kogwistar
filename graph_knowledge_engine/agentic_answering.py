@@ -935,7 +935,8 @@ Return JSON per schema. Be conservative: if key details are missing, set needs_m
             mentions=[Grounding(spans=[provenance_span])],
             metadata={"level_from_root": 0, 
                       "entity_type": "assistant_turn", 
-                      "in_conversation_chain":True},
+                      "in_conversation_chain":True, 
+                      "in_ui_chain": True},
             domain_id=None,
             canonical_entity_id=None,
             embedding=emb.tolist()

@@ -76,6 +76,12 @@ class ConversationOrchestrator:
     It orchestrates the flow of adding turns (`add_conversation_turn_workflow_v2`),
     retrieving context (memory/knowledge), and generating responses.
 
+    Simple orchestrator that bind one knowledge base and one conversation.
+    
+    Use workflow primitive if each step may bind to a different knowledge base,
+    or use a knowledge router that has same api but delegate to get knowledge from network of
+    knowledge bases
+    
     Minimal, surgical refactor:
     - engine.add_conversation_turn(...) stays stable
     - orchestration steps live here
@@ -535,6 +541,7 @@ class ConversationOrchestrator:
                 "entity_type": "conversation_turn",
                 "level_from_root": 0,
                 "in_conversation_chain": in_conv,
+                "in_ui_chain": True,
             },
             domain_id=None,
             canonical_entity_id=None,
@@ -831,6 +838,7 @@ class ConversationOrchestrator:
                     "turn_index": new_index,
                     "level_from_root": 0,
                     "in_conversation_chain": in_conv,
+                    "in_ui_chain": True,
                 },
                 domain_id=None,
                 canonical_entity_id=None,
@@ -1085,6 +1093,15 @@ class ConversationOrchestrator:
                     prev_turn_meta_summary.prev_node_distance_from_last_summary=0
                     add_turn_result = replace(add_turn_result, turn_index = new_index)
                 return add_turn_result
+    def get_chain_nodes(self, user_id, conversation_id):
+        return self.conversation_engine.get_nodes(where= { "$and": 
+            [{"in_ui_chain": True}] +  
+            [{"user_id": user_id}] if user_id else [] +
+            [{"conversation_id": conversation_id}] if conversation_id else [] })
+        
+    def get_chain_length(self, user_id, conversation_id):
+        return len(self.get_chain_nodes(user_id, conversation_id))
+        
     # @conversation_only
     def _summarize_conversation_batch(self, conversation_id: str, current_index: int, 
                                       batch_size: int = 5, in_conv=True , user_id: str = None, 
@@ -1186,7 +1203,9 @@ class ConversationOrchestrator:
             metadata={"level_from_root": 1, 
                       "entity_type": "conversation_summary",
                       "turn_index": new_index, 
-                      "in_conversation_chain": in_conv}, # Summary is higher level?
+                      "in_conversation_chain": in_conv,  # Summary is higher level?
+                      "in_ui_chain": True},
+                      
             domain_id=None,
             canonical_entity_id=None
         )
@@ -1280,6 +1299,10 @@ class ConversationOrchestrator:
             # add next turn relationship
             
         return summary_node.id
+    # @property
+    # def ui_turn_id(self):
+    #     nodes=  self.conversation_engine.get_nodes(where= {"in_conversation_chain": True})
+    #     return len(nodes)
     def answer_only(self, *, conversation_id: str, model_names: Optional[list[str]] = None, prev_turn_meta_summary: MetaFromLastSummary) -> ConversationAIResponse:
         """Generate an answer for an existing conversation (no new user turn ingestion)."""
 

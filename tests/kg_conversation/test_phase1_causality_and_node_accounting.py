@@ -80,7 +80,7 @@ def _bind(eng: GraphKnowledgeEngine, *, existing_endpoints: list[dict]):
     eng._edge_endpoints_exists = _edge_endpoints_exists  # type: ignore
 
 
-def test_next_turn_outgoing_uniqueness_enforced():
+def test_conversation_engine_next_turn_outgoing_uniqueness_enforced():
     eng = GraphKnowledgeEngine.__new__(GraphKnowledgeEngine)
 
     # Existing edge A -> B implies an outgoing next_turn endpoint for src=A
@@ -89,12 +89,12 @@ def test_next_turn_outgoing_uniqueness_enforced():
         {"doc_id": "conv:c", "relation": "next_turn", "role": "tgt", "endpoint_type": "node", "endpoint_id": "B"},
     ]
     _bind(eng, existing_endpoints=existing_endpoints)
-
+    eng.kg_graph_type = "conversation"
     with pytest.raises(ValueError):
         eng._validate_conversation_edge_add(_mk_edge("A", "C"))
 
 
-def test_next_turn_incoming_uniqueness_enforced():
+def test_conversation_engine_next_turn_incoming_uniqueness_enforced():
     eng = GraphKnowledgeEngine.__new__(GraphKnowledgeEngine)
 
     # Existing edge A -> B implies an incoming next_turn endpoint for tgt=B
@@ -103,6 +103,6 @@ def test_next_turn_incoming_uniqueness_enforced():
         {"doc_id": "conv:c", "relation": "next_turn", "role": "tgt", "endpoint_type": "node", "endpoint_id": "B"},
     ]
     _bind(eng, existing_endpoints=existing_endpoints)
-
+    eng.kg_graph_type = "conversation"
     with pytest.raises(ValueError):
         eng._validate_conversation_edge_add(_mk_edge("C", "B"))
