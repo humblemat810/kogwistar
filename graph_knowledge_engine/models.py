@@ -92,6 +92,162 @@ class MetaFromLastSummary:
     prev_node_char_distance_from_last_summary: int
     prev_node_distance_from_last_summary: int
     tail_turn_index: int=0  # works more like a node seq number
+    
+# @dataclass(frozen=True)
+# class ContextCost:
+#     """Canonical cost abstraction for prompt/context accounting.
+
+#     - `char_count` is always populated (cheap proxy).
+#     - `token_count` is optional and depends on the configured estimator.
+#     """
+#     char_count: int
+#     token_count: int | None = None
+
+#     def __add__(self, other: "ContextCost") -> "ContextCost":
+#         tc = None
+#         if self.token_count is not None and other.token_count is not None:
+#             tc = self.token_count + other.token_count
+#         return ContextCost(char_count=self.char_count + other.char_count, token_count=tc)
+
+@dataclass(frozen=True)
+class ContextCost:
+    """Canonical cost abstraction for prompt/context accounting."""
+    char_count: int = 0
+    token_count: int | None = None
+
+    def __add__(self, other: "ContextCost") -> "ContextCost":
+        tc = None
+        if self.token_count is not None and other.token_count is not None:
+            tc = self.token_count + other.token_count
+        return ContextCost(char_count=self.char_count + other.char_count, token_count=tc)
+
+    def to_flat_metadata(self, *, prefix: str = "cost") -> Dict[str, Any]:
+        # You requested dot keys.
+        return {
+            f"{prefix}.char_count": int(self.char_count),
+            f"{prefix}.token_count": (None if self.token_count is None else int(self.token_count)),
+        }
+
+    @staticmethod
+    def from_flat_metadata(meta: Dict[str, Any], *, prefix: str = "cost") -> "ContextCost":
+        cc_key = f"{prefix}.char_count"
+        tc_key = f"{prefix}.token_count"
+
+        char_count = int(meta.get(cc_key, 0) or 0)
+        token_raw = meta.get(tc_key, None)
+        token_count: Optional[int]
+        if token_raw is None or token_raw == "":
+            token_count = None
+        else:
+            token_count = int(token_raw)
+
+        return ContextCost(char_count=char_count, token_count=token_count)
+# class ContextSnapshotMetadata(BaseModel):
+#     """Metadata schema for a context_snapshot ConversationNode.
+
+#     Stored inside ConversationNode.metadata (which is extra=allow), but validated
+#     at creation time.
+#     """
+
+#     entity_type: Literal["context_snapshot"] = "context_snapshot"
+#     level_from_root: int = Field(0, ge=0)
+
+#     # Execution identity
+#     run_id: str
+#     run_step_seq: int = Field(..., ge=0)
+#     attempt_seq: int = Field(0, ge=0)
+
+#     # Snapshot content
+#     stage: str
+#     model_name: str = ""
+#     budget_tokens: int = Field(0, ge=0)
+#     tail_turn_index: int = Field(0, ge=0)
+
+#     # Determinism + audit
+#     used_node_ids: List[str] = Field(default_factory=list)
+#     rendered_context_hash: str
+#     cost: ContextCost = Field(default_factory=ContextCost)
+
+#     model_config = ConfigDict(extra="allow")    
+class ContextSnapshotMetadata(BaseModel):
+    entity_type: Literal["context_snapshot"] = "context_snapshot"
+    level_from_root: int = Field(0, ge=0)
+
+    # Execution identity
+    run_id: str
+    run_step_seq: int = Field(..., ge=0)
+    attempt_seq: int = Field(0, ge=0)
+
+    # Snapshot content
+    stage: str
+    model_name: str = ""
+    budget_tokens: int = Field(0, ge=0)
+    tail_turn_index: int = Field(0, ge=0)
+
+    # Determinism + audit
+    used_node_ids: List[str] = Field(default_factory=list)
+    rendered_context_hash: str
+    cost: ContextCost = Field(default_factory=ContextCost)
+
+    model_config = ConfigDict(extra="allow")
+
+    # ---- Storage helpers for Chroma / flat metadata ----
+
+    def to_chroma_metadata(self) -> Dict[str, Any]:
+        """
+        Flatten to Chroma-friendly metadata (primitives only).
+        Keeps all extra fields too, but flattens `cost`.
+        """
+        d = self.model_dump(mode="python", exclude={"cost"})
+        d.update(self.cost.to_flat_metadata(prefix="cost"))
+        return d
+
+    @classmethod
+    def from_chroma_metadata(cls, meta: Dict[str, Any]) -> "ContextSnapshotMetadata":
+        """
+        Reconstruct from flat Chroma metadata. Accepts either:
+        - flattened cost keys (cost.char_count / cost.token_count), or
+        - legacy nested `cost` dict (if any exists)
+        """
+        data = dict(meta)
+
+        # If `cost` was stored nested for some reason, tolerate it.
+        cost_val = data.pop("cost", None)
+        if isinstance(cost_val, dict):
+            cost = ContextCost(
+                char_count=int(cost_val.get("char_count", 0) or 0),
+                token_count=(None if cost_val.get("token_count", None) is None else int(cost_val["token_count"])),
+            )
+        else:
+            cost = ContextCost.from_flat_metadata(data, prefix="cost")
+
+        # Strip flattened fields so they don't end up as "extra"
+        data.pop("cost.char_count", None)
+        data.pop("cost.token_count", None)
+
+        obj = cls(**data, cost=cost)
+        return obj
+
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_flat_cost_on_direct_init(cls, values: Any) -> Any:
+        """
+        Optional: allows ContextSnapshotMetadata(**meta_from_chroma) directly,
+        without calling from_chroma_metadata().
+        """
+        if not isinstance(values, dict):
+            return values
+        if "cost" in values:
+            return values
+
+        # If flattened cost present, assemble `cost`
+        if "cost.char_count" in values or "cost.token_count" in values:
+            cost = ContextCost.from_flat_metadata(values, prefix="cost")
+            values = dict(values)
+            values["cost"] = cost
+            # Do NOT remove the keys here; let extra=allow keep them if desired.
+            # If you prefer strictness, you can pop them here.
+        return values
 @dataclass(frozen=True)
 class AddTurnResult():
     user_turn_node_id: str

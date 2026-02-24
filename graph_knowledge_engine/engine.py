@@ -2437,8 +2437,7 @@ class GraphKnowledgeEngine:
             metadatas=[meta],
         )
     def add_pure_edge(self, edge: PureChromaEdge):
-        """low level api, do not fanout and add endpoint, no duplicate checking
-        just add "edge" object in db. no id assigned, 
+        """low level api, do not fanout and add endpoint, no duplicate checking just add "edge" object in db. no id assigned, 
         rely on backend db auto allocation if provided or raise error"""
         s_nodes, s_edges, t_nodes, t_edges = self._split_endpoints(edge.source_ids, edge.target_ids)
         edge.source_ids = s_nodes

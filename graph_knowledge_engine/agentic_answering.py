@@ -34,7 +34,16 @@ from pydantic import BaseModel, Field
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.language_models.chat_models import BaseChatModel
 
-from .models import ConversationNode, ConversationEdge, Grounding, MetaFromLastSummary, Span, Node
+from .models import (
+    ConversationNode,
+    ConversationEdge,
+    Grounding,
+    MetaFromLastSummary,
+    Span,
+    Node,
+    ContextSnapshotMetadata,
+    ContextCost,
+)
 BaseM = TypeVar("BaseM", bound=BaseModel)
 
 def _stable_json(obj: Any) -> str:
@@ -46,6 +55,19 @@ def snapshot_hash(payload: Any) -> str:
     h = hashlib.sha256()
     h.update(_stable_json(payload).encode("utf-8"))
     return h.hexdigest()
+
+
+def context_messages_hash(messages: Sequence[Any]) -> str:
+    """Stable hash of a list of LLM messages.
+
+    Works for both dict-based messages and ContextMessage objects.
+    """
+    norm: list[dict[str, Any]] = []
+    for m in messages or []:
+        role = getattr(m, "role", None) or (m.get("role") if isinstance(m, dict) else None)
+        content = getattr(m, "content", None) or (m.get("content") if isinstance(m, dict) else None)
+        norm.append({"role": str(role or ""), "content": str(content or "")})
+    return snapshot_hash({"messages": norm})
 
 def deterministic_id(prefix: str, fingerprint: dict, bits: int = 96) -> str:
     s = json.dumps(fingerprint, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -233,6 +255,10 @@ class AgenticAnsweringAgent:
         run_id = f"run_{int(time.time()*1000)}"
         run_node_id = self._ensure_run_anchor(conversation_id=conversation_id, run_id=run_id)
 
+        # Phase 2B: deterministic step identity for snapshot nodes (local to this agent run).
+        run_step_seq = 0
+        attempt_seq = 0
+
         # Policy knobs that can escalate across iterations
         max_candidates = self.config.max_candidates
         materialize_depth = self.config.materialize_depth
@@ -250,6 +276,23 @@ class AgenticAnsweringAgent:
             if (self.config.evidence_selector or "llm").lower() == "bm25":
                 selection = self._select_used_evidence_bm25(question=question, candidates=candidates)
             else:
+                # Context snapshot before evidence-selection LLM call.
+                self._persist_context_snapshot(
+                    conversation_id=conversation_id,
+                    run_id=run_id,
+                    run_step_seq=run_step_seq,
+                    attempt_seq=attempt_seq,
+                    stage="select_used_evidence",
+                    view=view,
+                    model_name=str(getattr(self.llm, "model_name", "") or ""),
+                    budget_tokens=int(getattr(view, "token_budget", 0) or 0),
+                    tail_turn_index=int(prev_turn_meta_summary.tail_turn_index or 0),
+                    extra_hash_payload={
+                        "question": question,
+                        "candidate_ids": [c.get("node_id") for c in (candidates or []) if isinstance(c, dict) and c.get("node_id")],
+                    },
+                )
+                run_step_seq += 1
                 selection = self.select_used_evidence_cached(
                     system_prompt=system_prompt,
                     question=question,
@@ -298,6 +341,24 @@ class AgenticAnsweringAgent:
                                                     model = None,
                                                     ignore = ["agent"]
                                                     )            
+            # Context snapshot before answer-with-citations LLM call.
+            self._persist_context_snapshot(
+                conversation_id=conversation_id,
+                run_id=run_id,
+                run_step_seq=run_step_seq,
+                attempt_seq=attempt_seq,
+                stage="generate_answer_with_citations",
+                view=view,
+                model_name=str(getattr(self.llm, "model_name", "") or ""),
+                budget_tokens=int(getattr(view, "token_budget", 0) or 0),
+                tail_turn_index=int(prev_turn_meta_summary.tail_turn_index or 0),
+                extra_hash_payload={
+                    "question": question,
+                    "used_node_ids": used_node_ids,
+                    "evidence_pack_hash": snapshot_hash(evidence_pack),
+                },
+            )
+            run_step_seq += 1
             ans_json = cached_call(
                 agent = self,
                 system_prompt=system_prompt,
@@ -315,6 +376,24 @@ class AgenticAnsweringAgent:
                                                     model = None,
                                                     ignore = ["agent", "answer_in_model"]
                                                     )
+            # Context snapshot before citation repair (may call LLM on invalid citations).
+            self._persist_context_snapshot(
+                conversation_id=conversation_id,
+                run_id=run_id,
+                run_step_seq=run_step_seq,
+                attempt_seq=attempt_seq,
+                stage="validate_or_repair_citations",
+                view=view,
+                model_name=str(getattr(self.llm, "model_name", "") or ""),
+                budget_tokens=int(getattr(view, "token_budget", 0) or 0),
+                tail_turn_index=int(prev_turn_meta_summary.tail_turn_index or 0),
+                extra_hash_payload={
+                    "question": question,
+                    "used_node_ids": used_node_ids,
+                    "answer_hash": snapshot_hash(ans.model_dump()),
+                },
+            )
+            run_step_seq += 1
             ans = cached_call3(
                 agent = self,
                 system_prompt=system_prompt,
@@ -335,6 +414,24 @@ class AgenticAnsweringAgent:
                                                     model = None,
                                                     ignore = ["agent", "out_model"]
                                                     )
+            # Context snapshot before evaluation LLM call.
+            self._persist_context_snapshot(
+                conversation_id=conversation_id,
+                run_id=run_id,
+                run_step_seq=run_step_seq,
+                attempt_seq=attempt_seq,
+                stage="evaluate_answer",
+                view=view,
+                model_name=str(getattr(self.llm, "model_name", "") or ""),
+                budget_tokens=int(getattr(view, "token_budget", 0) or 0),
+                tail_turn_index=int(prev_turn_meta_summary.tail_turn_index or 0),
+                extra_hash_payload={
+                    "question": question,
+                    "used_node_ids": used_node_ids,
+                    "answer_text": ans.text,
+                },
+            )
+            run_step_seq += 1
             last_eval = self._evaluate_answer(
                 agent = self,
                 system_prompt=system_prompt,
@@ -837,6 +934,139 @@ Return JSON per schema. Be conservative: if key details are missing, set needs_m
         )
         self.conversation_engine.add_node(node)
         return rid
+
+    def _persist_context_snapshot(
+        self,
+        *,
+        conversation_id: str,
+        run_id: str,
+        run_step_seq: int,
+        attempt_seq: int,
+        stage: str,
+        view: Any,
+        model_name: str,
+        budget_tokens: int,
+        tail_turn_index: int,
+        extra_hash_payload: dict[str, Any] | None = None,
+    ) -> str:
+        """Persist a Phase 2B context_snapshot node + depends_on edges.
+
+        This is intentionally lightweight and append-only:
+        - snapshot node id is deterministic for (run_id, run_step_seq, attempt_seq, stage)
+        - depends_on edges include ordinals derived from the context item order
+        """
+
+        scope = f"conv:{conversation_id}"
+        sid = deterministic_id(
+            "ctxsnap",
+            {
+                "scope": scope,
+                "run_id": run_id,
+                "run_step_seq": int(run_step_seq),
+                "attempt_seq": int(attempt_seq),
+                "stage": stage,
+            },
+            bits=120,
+        )
+
+        # Derive ordered used_node_ids from view.items (already packed + ordered).
+        ordered: list[str] = []
+        seen: set[str] = set()
+        for it in getattr(view, "items", []) or []:
+            nid = getattr(it, "node_id", None)
+            if nid and nid not in seen:
+                ordered.append(str(nid))
+                seen.add(str(nid))
+
+        msg_hash = context_messages_hash(getattr(view, "messages", []) or [])
+        payload = {
+            "base_context_hash": msg_hash,
+            "stage": stage,
+            "extra": extra_hash_payload or {},
+        }
+        rendered_hash = snapshot_hash(payload)
+
+        # Cost: cheap but canonical
+        char_count = 0
+        for m in getattr(view, "messages", []) or []:
+            content = getattr(m, "content", None) or (m.get("content") if isinstance(m, dict) else "")
+            char_count += len(str(content or ""))
+        token_count = int(getattr(view, "tokens_used", 0) or 0)
+
+        meta = ContextSnapshotMetadata(
+            run_id=run_id,
+            run_step_seq=int(run_step_seq),
+            attempt_seq=int(attempt_seq),
+            stage=stage,
+            model_name=str(model_name or ""),
+            budget_tokens=int(budget_tokens or 0),
+            tail_turn_index=int(max(0, tail_turn_index or 0)),
+            used_node_ids=ordered,
+            rendered_context_hash=rendered_hash,
+            cost=ContextCost(char_count=char_count, token_count=token_count),
+        )
+
+        # Idempotent node upsert: if already exists, skip creation.
+        existing = self.conversation_engine.backend.node_get(ids=[sid], include=[])
+        if not existing.get("ids"):
+            sp = Span.from_dummy_for_conversation()
+            node = ConversationNode(
+                id=sid,
+                label=f"ContextSnapshot {stage} step={run_step_seq} attempt={attempt_seq}",
+                type="entity",
+                summary=f"context_snapshot:{stage}",
+                conversation_id=conversation_id,
+                role="system",  # type: ignore
+                turn_index=None,
+                properties={
+                    "entity_type": "context_snapshot",
+                    "stage": stage,
+                },
+                mentions=[Grounding(spans=[sp])],
+                metadata={
+                    **meta.to_chroma_metadata(), # .model_dump(),
+                    "in_conversation_chain": False,
+                    "in_ui_chain": False,
+                },
+                domain_id=None,
+                canonical_entity_id=None,
+            )
+            self.conversation_engine.add_node(node)
+
+        # depends_on edges with ordinals
+        for ordinal, nid in enumerate(ordered):
+            eid = edge_id(scope=scope, rel="depends_on", src=sid, dst=nid)
+            e_existing = self.conversation_engine.backend.edge_get(ids=[eid], include=[])
+            if e_existing.get("ids"):
+                continue
+            sp = Span.from_dummy_for_conversation()
+            edge = ConversationEdge(
+                id=eid,
+                source_ids=[sid],
+                target_ids=[nid],
+                relation="depends_on",
+                label=f"depends_on:{sid}->{nid}",
+                type="relationship",
+                summary="depends_on",
+                doc_id=f"conv:{conversation_id}",
+                domain_id=None,
+                canonical_entity_id=None,
+                properties=None,
+                embedding=None,
+                mentions=[Grounding(spans=[sp])],
+                metadata={
+                    "run_id": run_id,
+                    "run_step_seq": int(run_step_seq),
+                    "attempt_seq": int(attempt_seq),
+                    "ordinal": int(ordinal),
+                    "stage": stage,
+                },
+                source_edge_ids=[],
+                target_edge_ids=[],
+            )
+            self.conversation_engine.add_edge(edge)
+
+        return sid
 
     def _project_kg_node(
         self,

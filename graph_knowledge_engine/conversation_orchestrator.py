@@ -59,6 +59,74 @@ class OrchestratorState:
 
     # answer
     answer: ConversationAIResponse | None = None
+
+
+@dataclass
+class ExecClock:
+    """Execution clock for append-only conversation runs.
+
+    - run_id: identifies an execution attempt scope (defaults to conversation_id).
+    - run_step_seq: coarse monotonic step counter within a run.
+    - attempt_seq: retry counter for the same step (append-only retries).
+
+    This stays in conversation_orchestrator.py (no workflow primitive dependency).
+    """
+
+    run_id: str
+    run_step_seq: int
+    attempt_seq: int = 0
+
+    def bump_step(self) -> "ExecClock":
+        return replace(self, run_step_seq=self.run_step_seq + 1, attempt_seq=0)
+
+    def bump_attempt(self) -> "ExecClock":
+        return replace(self, attempt_seq=self.attempt_seq + 1)
+
+
+def _infer_prev_run_step_seq(conversation_engine: GraphKnowledgeEngine, conversation_id: str) -> int:
+    """Best-effort: derive last run_step_seq from conversation tail node metadata."""
+    try:
+        tail = conversation_engine._get_conversation_tail(conversation_id)
+    except Exception:
+        tail = None
+    if tail is None:
+        return 0
+    try:
+        return int((tail.metadata or {}).get("run_step_seq") or 0)
+    except Exception:
+        return 0
+
+
+def _stamp_meta(meta: dict | None, *, run_id: str, run_step_seq: int, attempt_seq: int) -> dict:
+    """Stamp run fields into metadata without overwriting existing values."""
+    out = dict(meta or {})
+    out.setdefault("run_id", run_id)
+    out.setdefault("run_step_seq", run_step_seq)
+    out.setdefault("attempt_seq", attempt_seq)
+    return out
+
+
+def _estimate_tokens_from_chars(char_count: int, token_estimator: Callable[[str], int] | None = None) -> int:
+    """Estimate token count from character count.
+
+    Default proxy is ~4 chars/token (deterministic + cheap).
+    If token_estimator is provided, estimate on a bounded sample and scale linearly.
+    """
+    if char_count <= 0:
+        return 0
+    if token_estimator is None:
+        return max(1, (char_count + 3) // 4)
+
+    sample_n = min(4096, char_count)
+    sample = "a" * sample_n
+    try:
+        sample_tokens = int(token_estimator(sample))
+    except Exception:
+        return max(1, (char_count + 3) // 4)
+    if sample_tokens <= 0:
+        return max(1, (char_count + 3) // 4)
+    return max(1, int(round(sample_tokens * (char_count / sample_n))))
+
 from graph_knowledge_engine.models import MetaFromLastSummary, RetrievalResult
 
 
@@ -87,7 +155,8 @@ class ConversationOrchestrator:
     - orchestration steps live here
     - tool-call/tool-result events are recorded in the conversation graph
     """
-
+    def create_conversation(self, *args, **kwargs):
+        self.conversation_engine.create_conversation(*args, **kwargs)
     # ----------------------------
     # Workflow-v2: design + step resolver
     # ----------------------------
@@ -141,7 +210,7 @@ class ConversationOrchestrator:
                 doc_id=node_id,
                 summary=label,
                 properties={},
-                metadata={
+                metadata=_stamp_meta({
                     "entity_type": "workflow_node",
                     "workflow_id": workflow_id,
                     "wf_op": op,
@@ -149,7 +218,7 @@ class ConversationOrchestrator:
                     "wf_terminal": terminal,
                     "wf_fanout": fanout,
                     "wf_version": "v1",
-                },
+                }, run_id=clock.run_id, run_step_seq=clock.run_step_seq, attempt_seq=clock.attempt_seq),
             )
 
         # Use workflow_id namespacing to avoid node id collisions across workflows.
@@ -232,6 +301,8 @@ class ConversationOrchestrator:
         max_retrieval_level: int,
         summary_char_threshold: int,
         prev_turn_meta_summary: MetaFromLastSummary,
+        summary_token_threshold: int | None = None,
+        token_estimator: Callable[[str], int] | None = None,
     ):
         """Factory returning a resolver(op_name)->StepFn.
 
@@ -406,7 +477,8 @@ class ConversationOrchestrator:
                     should = False
                     if prev_turn_meta_summary.prev_node_distance_from_last_summary - 5 >= 0:
                         should = True
-                    if prev_turn_meta_summary.prev_node_char_distance_from_last_summary > summary_char_threshold:
+                    if (prev_turn_meta_summary.prev_node_char_distance_from_last_summary > summary_char_threshold
+                     or (summary_token_threshold is not None and _estimate_tokens_from_chars(prev_turn_meta_summary.prev_node_char_distance_from_last_summary, token_estimator) > summary_token_threshold)):
                         should = True
                     if bool(ans.get("llm_decision_need_summary", False)):
                         should = True
@@ -450,6 +522,8 @@ class ConversationOrchestrator:
         workflow_id: str,
         max_retrieval_level: int = 2,
         summary_char_threshold: int = 12000,
+        summary_token_threshold: int | None = None,
+        token_estimator: Callable[[str], int] | None = None,
         in_conv: bool = True,
         prev_turn_meta_summary: MetaFromLastSummary | None = None,
     ) -> AddTurnResult:
@@ -705,10 +779,24 @@ class ConversationOrchestrator:
                                       tool_call_id_factory=tool_call_id_factory)
         self.tail_search_includes = ["conversation_turn","conversation_summary"]
     def add_link_to_new_turn(self, edge_id, turn_node, prev_node, conversation_id, span,prev_turn_meta_summary:MetaFromLastSummary,
-                             causal_type: str | None='chain'):
+                             causal_type: str | None='chain', 
+                             clock: ExecClock | None = None):
+
             # eid = stable_id("edge")
             
             
+            
+            meta = {"relation":"next_turn", "target_id":turn_node.id,
+                        "char_distance_from_last_summary": prev_turn_meta_summary.prev_node_char_distance_from_last_summary,
+                            "turn_distance_from_last_summary": prev_turn_meta_summary.prev_node_distance_from_last_summary,
+                            "tail_turn_index": prev_turn_meta_summary.tail_turn_index,
+                            **({"causal_type": causal_type} if causal_type else{})
+                            }
+            if clock is not None:
+                meta = _stamp_meta(meta, run_id=clock.run_id, 
+                                   run_step_seq=clock.run_step_seq, 
+                                   attempt_seq=clock.attempt_seq)
+
             seq_edge = ConversationEdge(
                 id=edge_id,
                 source_ids=[prev_node.id],
@@ -723,12 +811,7 @@ class ConversationOrchestrator:
                 canonical_entity_id=None,
                 properties={"entity_type": "conversation_edge"},
                 embedding=None,
-                metadata={"relation":"next_turn", "target_id":turn_node.id,
-                          "char_distance_from_last_summary": prev_turn_meta_summary.prev_node_char_distance_from_last_summary,
-                            "turn_distance_from_last_summary": prev_turn_meta_summary.prev_node_distance_from_last_summary,
-                            "tail_turn_index": prev_turn_meta_summary.tail_turn_index,
-                            **({"causal_type": causal_type} if causal_type else{})
-                            },
+                metadata=meta,
                 source_edge_ids=[],
                 target_edge_ids=[],
             )
@@ -749,6 +832,9 @@ class ConversationOrchestrator:
         filtering_callback: Callable[..., tuple[RetrievalResult, str]],
         max_retrieval_level: int = 2,
         summary_char_threshold: int = 12000,
+        summary_token_threshold: int | None = None,
+        summary_turn_threshold=5,
+        token_estimator: Callable[[str], int] | None = None,
         in_conv: bool = True,
         prev_turn_meta_summary : MetaFromLastSummary | None = None,
         add_turn_only = None
@@ -770,6 +856,8 @@ class ConversationOrchestrator:
         )
         if prev_turn_meta_summary is None:
             prev_turn_meta_summary = MetaFromLastSummary(0,0)
+        _prev_step = _infer_prev_run_step_seq(self.conversation_engine, conversation_id)
+        clock = ExecClock(run_id=conversation_id, run_step_seq=_prev_step).bump_step()
         prev_node = self.conversation_engine._get_conversation_tail(conversation_id)
         if prev_node is not None:
             new_index = (prev_node.turn_index + 1) if prev_node.turn_index is not None else 0
@@ -835,14 +923,14 @@ class ConversationOrchestrator:
                 conversation_id=conversation_id,
                 mentions=[Grounding(spans=[self_span])],
                 properties={},
-                metadata={
+                metadata=_stamp_meta({
                     "entity_type": "conversation_turn",
                     "turn_index": new_index,
                     "level_from_root": 0,
                     "in_conversation_chain": in_conv,
                     "in_ui_chain": True,
-                },
-                domain_id=None,
+                }, run_id=clock.run_id, run_step_seq=clock.run_step_seq, attempt_seq=clock.attempt_seq),
+                 domain_id=None,
                 canonical_entity_id=None,
             )
         prev_turn_meta_summary.prev_node_char_distance_from_last_summary += len(content)
@@ -864,8 +952,8 @@ class ConversationOrchestrator:
                                                             "conversation_edge")
             seq_edge = self.add_link_to_new_turn(seq_edge_id, turn_node, prev_node, conversation_id, 
                                                     span=self_span, 
-                                                    prev_turn_meta_summary=prev_turn_meta_summary, causal_type='chain')
-            prev_node = turn_node
+                                                    prev_turn_meta_summary=prev_turn_meta_summary, causal_type='chain', clock=clock)
+        prev_node = turn_node
         st.current_turn_node_id = turn_node_id
         st.turn_index = new_index
         st.self_span = self_span
@@ -896,7 +984,10 @@ class ConversationOrchestrator:
                                 embedding, content, 
                                 filtering_callback, max_retrieval_level, st, mem_id,
                                 self_span, prev_node, summary_char_threshold,
-                                prev_turn_meta_summary)        
+                                prev_turn_meta_summary=prev_turn_meta_summary,
+                                summary_token_threshold=summary_token_threshold,
+                                summary_turn_threshold = summary_turn_threshold,
+                                token_estimator=token_estimator)        
         return add_turn_result
     def join_tool_node_to_turn(self, conversation_id, node_id, turn_node_id, prev_turn_meta_summary):
         eid = str(stable_id("tool_call_entry", conversation_id, node_id, turn_node_id))
@@ -942,8 +1033,13 @@ class ConversationOrchestrator:
                                    mem_id:str,
                                    self_span:Span, 
                                    prev_node:ConversationNode|None, 
+                                   
                                    summary_char_threshold:int,
-                                   prev_turn_meta_summary:MetaFromLastSummary):
+                                   prev_turn_meta_summary:MetaFromLastSummary,
+                                   summary_turn_threshold:int = 5,
+                                   summary_token_threshold: int | None = None,
+                                   token_estimator: Callable[[str], int] | None = None,
+                                   ):
         # 3) Retrieval + pinning (recorded as tool events)
                 mem_retriever = MemoryRetriever(
                     conversation_engine=self.conversation_engine,
@@ -1083,11 +1179,15 @@ class ConversationOrchestrator:
                 # 5) Summarization trigger policy remains here; implementation stays in engine.
                 
                 if new_index > 0 and (
-                    prev_turn_meta_summary.prev_node_distance_from_last_summary - 5 >= 0
+                    prev_turn_meta_summary.prev_node_distance_from_last_summary - summary_turn_threshold >= 0
                     or prev_turn_meta_summary.prev_node_char_distance_from_last_summary > summary_char_threshold
+                    or (summary_token_threshold is not None and 
+                        _estimate_tokens_from_chars(prev_turn_meta_summary.prev_node_char_distance_from_last_summary, 
+                                                        token_estimator) > summary_token_threshold)
                     or (response and bool(getattr(response, "llm_decision_need_summary", False)))
                 ):
-                    added_id = self._summarize_conversation_batch(conversation_id, new_index,prev_turn_meta_summary=prev_turn_meta_summary)
+                    added_id = self._summarize_conversation_batch(conversation_id, new_index,prev_turn_meta_summary=prev_turn_meta_summary
+                                )
                     # prev_turn_meta_summary.tail_turn_index = new_index
                     # summary added, user visible in chain node + 1
                     new_index += 1
