@@ -704,7 +704,8 @@ class ConversationOrchestrator:
         self.tool_runner = ToolRunner(conversation_engine=conversation_engine,
                                       tool_call_id_factory=tool_call_id_factory)
         self.tail_search_includes = ["conversation_turn","conversation_summary"]
-    def add_link_to_new_turn(self, edge_id, turn_node, prev_node, conversation_id, span,prev_turn_meta_summary:MetaFromLastSummary):
+    def add_link_to_new_turn(self, edge_id, turn_node, prev_node, conversation_id, span,prev_turn_meta_summary:MetaFromLastSummary,
+                             causal_type: str | None='chain'):
             # eid = stable_id("edge")
             
             
@@ -726,6 +727,7 @@ class ConversationOrchestrator:
                           "char_distance_from_last_summary": prev_turn_meta_summary.prev_node_char_distance_from_last_summary,
                             "turn_distance_from_last_summary": prev_turn_meta_summary.prev_node_distance_from_last_summary,
                             "tail_turn_index": prev_turn_meta_summary.tail_turn_index,
+                            **({"causal_type": causal_type} if causal_type else{})
                             },
                 source_edge_ids=[],
                 target_edge_ids=[],
@@ -862,7 +864,7 @@ class ConversationOrchestrator:
                                                             "conversation_edge")
             seq_edge = self.add_link_to_new_turn(seq_edge_id, turn_node, prev_node, conversation_id, 
                                                     span=self_span, 
-                                                    prev_turn_meta_summary=prev_turn_meta_summary)
+                                                    prev_turn_meta_summary=prev_turn_meta_summary, causal_type='chain')
             prev_node = turn_node
         st.current_turn_node_id = turn_node_id
         st.turn_index = new_index

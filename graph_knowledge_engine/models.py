@@ -562,7 +562,7 @@ class ChromaValidateSourceMixin(BaseModel):
 
 class LevelAwareMixin(BaseModel):
     """Mixin to handle level_from_root synchronization with metadata"""
-    level_from_root: Optional[int] = Field(None, description="Hierarchy level from root")
+    level_from_root: Optional[int] = Field(None, description="Hierarchy level from root, metadata store final authoritative")
 
     @model_validator(mode="before")
     @classmethod

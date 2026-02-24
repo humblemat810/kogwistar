@@ -3,10 +3,15 @@ from __future__ import annotations
 
 import pytest
 
-from graph_knowledge_engine.models import ConversationEdge, MetaFromLastSummary
+from graph_knowledge_engine.models import ConversationEdge, MetaFromLastSummary, Span, Grounding
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from graph_knowledge_engine.engine import GraphKnowledgeEngine
+def _mk_span(doc_id: str) -> Span:
+    sp = Span.from_dummy_for_document()
+    sp.doc_id = doc_id
+    return sp
+
 
 def _mk_edge(*, src: str, tgt: str, relation: str, causal_type: str, doc_id: str) -> ConversationEdge:
     # ConversationEdgeMetadata requires distance fields; for Phase-1 we keep them on edges.
@@ -21,7 +26,7 @@ def _mk_edge(*, src: str, tgt: str, relation: str, causal_type: str, doc_id: str
         target_edge_ids=[],
         relation=relation,
         doc_id=doc_id,
-        mentions=[],
+        mentions=[Grounding(spans=[_mk_span(f"{src}->{tgt}")])],
         properties={},
         metadata={
             "entity_type": "conversation_edge",
@@ -35,7 +40,9 @@ def _mk_edge(*, src: str, tgt: str, relation: str, causal_type: str, doc_id: str
     )
 
 
-def _mk_three_turns(conversation_engine: GraphKnowledgeEngine, kg_engine: GraphKnowledgeEngine, *, user_id: str, conv_id: str):
+def _mk_three_turns(conversation_engine: GraphKnowledgeEngine, kg_engine: GraphKnowledgeEngine, *, user_id: str, conv_id: str,
+                    #causal_type: str="chain"
+                    ):
     from graph_knowledge_engine.id_provider import stable_id
     conversation_engine.tool_call_id_factory = stable_id
     kg_engine.tool_call_id_factory = stable_id
@@ -128,7 +135,9 @@ def test_dependency_freeze_rule_does_not_scan_all_edges(conversation_engine, eng
 
     We assert that get_edges() is not called during validation (regression guard).
     """
-    t1, t2, t3 = _mk_three_turns(conversation_engine, engine, user_id="u", conv_id="conv_dep_freeze")
+    t1, t2, t3 = _mk_three_turns(conversation_engine, engine, user_id="u", conv_id="conv_dep_freeze"
+                                 #, causal_type='chain'
+                                 )
 
     # If implementation regresses to scanning, fail fast.
     if hasattr(conversation_engine, "get_edges"):

@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from graph_knowledge_engine.models import ConversationNodeMetadata, ConversationEdge
+from graph_knowledge_engine.models import ConversationNodeMetadata, ConversationEdge, Span, Grounding
 from graph_knowledge_engine.engine import GraphKnowledgeEngine
 
 
@@ -16,7 +16,10 @@ def test_node_metadata_forbids_summary_distance_fields():
                 "turn_distance_from_last_summary": 2,
             }
         )
-
+def _mk_span(doc_id: str) -> Span:
+    sp = Span.from_dummy_for_document()
+    sp.doc_id = doc_id
+    return sp
 
 def _mk_edge(src: str, tgt: str) -> ConversationEdge:
     # Avoid heavy validation; we only need fields used by Phase-1 invariants.
@@ -31,7 +34,7 @@ def _mk_edge(src: str, tgt: str) -> ConversationEdge:
         type="relationship",
         summary="Sequential flow",
         doc_id="conv:c",
-        mentions=[],
+        mentions=[Grounding(spans=[_mk_span(f"{src}->{tgt}")])],
         properties={},
         embedding=None,
         metadata={"relation": "next_turn", "target_id": tgt, "causal_type": "chain"},
