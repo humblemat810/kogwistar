@@ -830,8 +830,6 @@ Return JSON per schema. Be conservative: if key details are missing, set needs_m
             properties={"run_id": run_id, "entity_type": "agent_run"},
             mentions=[Grounding(spans=[sp])],
             metadata={"level_from_root": 0, "entity_type": "agent_run", 
-                      "char_distance_from_last_summary": 0, 
-                      "turn_distance_from_last_summary": 0, 
                       "in_conversation_chain": False},
             domain_id=None,
             canonical_entity_id=None,
@@ -884,15 +882,12 @@ Return JSON per schema. Be conservative: if key details are missing, set needs_m
                 },
                 mentions=[Grounding(spans=[provenance_span])],
                 metadata={"level_from_root": 0, "entity_type": "knowledge_reference", 
-                          "char_distance_from_last_summary": prev_turn_meta_summary.prev_node_char_distance_from_last_summary, 
-                          "turn_distance_from_last_summary": prev_turn_meta_summary.prev_node_distance_from_last_summary, 
-                          "in_conversatino_chain": False},
+                          "in_conversation_chain": False},
                 domain_id=None,
                 canonical_entity_id=None,
             )
             prev_turn_meta_summary.prev_node_distance_from_last_summary += 1
             prev_turn_meta_summary.prev_node_char_distance_from_last_summary += len(str(meta.get("summary")))
-            prev_turn_meta_summary.tail_turn_index += 1
             self.conversation_engine.add_node(node)
 
         # Link run -> evidence
@@ -928,7 +923,6 @@ Return JSON per schema. Be conservative: if key details are missing, set needs_m
         nid = pointer_id(scope=f"conv:{conversation_id}", pointer_kind="turn", target_kind="assistant", target_id=str(int(time.time()*1000)))
         import numpy as np
         emb = cast(np.ndarray, self.conversation_engine.iterative_defensive_emb(content))
-        prev_turn_meta_summary.tail_turn_index+=1
         node = ConversationNode(
             id=nid,
             label="Assistant",
@@ -941,10 +935,8 @@ Return JSON per schema. Be conservative: if key details are missing, set needs_m
             mentions=[Grounding(spans=[provenance_span])],
             metadata={"level_from_root": 0, 
                       "entity_type": "assistant_turn", 
-                      "char_distance_from_last_summary": prev_turn_meta_summary.prev_node_char_distance_from_last_summary, 
-                      "turn_distance_from_last_summary": prev_turn_meta_summary.prev_node_distance_from_last_summary, 
-                      "tail_turn_index": prev_turn_meta_summary.tail_turn_index,
-                      "in_conversation_chain":True},
+                      "in_conversation_chain":True, 
+                      "in_ui_chain": True},
             domain_id=None,
             canonical_entity_id=None,
             embedding=emb.tolist()
@@ -952,7 +944,7 @@ Return JSON per schema. Be conservative: if key details are missing, set needs_m
         self.conversation_engine.add_node(node)
         prev_turn_meta_summary.prev_node_char_distance_from_last_summary += len(content)
         prev_turn_meta_summary.prev_node_distance_from_last_summary += 1
-        
+        prev_turn_meta_summary.tail_turn_index += 1
         return nid, node
 
     def _link_run_to_response(self, *, conversation_id: str, run_node_id: str, response_node_id: str, used_node_ids : list[str], 

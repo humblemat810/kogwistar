@@ -258,21 +258,33 @@ def test_conversation_flow(backend_kind: str, tmp_path, sa_engine, pg_schema):
     # Add 5 more turns to guarantee reach index 5.
     
     #hard code index below
+    conversation_orchestrator = conversation_engine._get_orchestrator(ref_knowledge_engine=engine)
     last_turn_node = conversation_engine._get_conversation_tail(conv_id)
-    i_start = (last_turn_node.turn_index or 0) if last_turn_node is not None else 0
+    user_conv_chain_length = conversation_orchestrator.get_chain_length(user_id=user_id, conversation_id=conv_id)
+    i_start = user_conv_chain_length
+    if i_start is None:
+        i_start = (last_turn_node.turn_index or 0) if last_turn_node is not None else 0
     i_end = i_start + 5
     last_node_ids = []
     last_node_ids.append(conversation_engine._get_conversation_tail(conv_id))
     for i in range(i_start, i_end):
-        res = conversation_engine.add_conversation_turn(user_id, conv_id, turn_id = f"assistant_turn_{i}" if i%2 else f"user_turn_{i}",mem_id =  f"msg turn_{i}",
-                                                  role="system", content=f"turn dummy filler turn {i}", 
-                                                  ref_knowledge_engine=engine,
-                                                 filtering_callback = candiate_filtering_callback_cached,
-                                                 prev_turn_meta_summary=prev_turn_meta_summary)
+        assert i == conversation_orchestrator.get_chain_length(user_id=user_id, conversation_id=conv_id)
+        res = conversation_orchestrator.add_conversation_turn(
+            user_id=user_id,
+            conversation_id=conv_id,
+            turn_id=f"assistant_turn_{i}" if i % 2 else f"user_turn_{i}",
+            mem_id=f"msg turn_{i}",
+            role="system",
+            content=f"turn dummy filler turn {i}",
+            # ref_knowledge_engine=engine,
+            filtering_callback=candiate_filtering_callback_cached,
+            prev_turn_meta_summary=prev_turn_meta_summary,
+            add_turn_only= not (i==(i_end -1)),
+        )
         last_node_ids.append(conversation_engine._get_conversation_tail(conv_id))
         prev_turn_meta_summary : MetaFromLastSummary = res.prev_turn_meta_summary
         template_html = Path("graph_knowledge_engine/templates/d3.html").read_text(encoding="utf-8")
-        out_dir = Path(".") / "bundle" / f"turn{i}"
+        out_dir = Path(".") / "bundle" / f"turn {res.turn_index}-{i}"
         from graph_knowledge_engine.utils.kge_debug_dump import dump_paired_bundles
         dump_paired_bundles(
             kg_engine=engine,

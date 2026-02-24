@@ -20,6 +20,10 @@ from langchain_core.runnables import Runnable
 from graph_knowledge_engine.models import LLMMergeAdjudication, AdjudicationVerdict
 
 
+_TEST_NS = uuid.UUID("00000000-0000-0000-0000-000000000000")
+@pytest.fixture(scope="session")
+def stable_uuid(*parts: object) -> str:
+    return str(uuid.uuid5(_TEST_NS, "|".join(str(p) for p in parts)))
 from pathlib import Path
 
 def _mk_span_from_excerpt(*, doc_id: str, content: str, excerpt: str, insertion_method: str, page_number: int = 1):
@@ -818,8 +822,6 @@ def seed_conversation_graph(
         metadata={
             "entity_type": "conversation_turn",
             "level_from_root": 0,
-            "char_distance_from_last_summary": len(t0_text),
-            "turn_distance_from_last_summary": 1,
             "in_conversation_chain": True,
         },
         domain_id=None,
@@ -855,8 +857,6 @@ def seed_conversation_graph(
         metadata={
             "entity_type": "conversation_turn",
             "level_from_root": 0,
-            "char_distance_from_last_summary": len(t0_text) + len(t1_text),
-            "turn_distance_from_last_summary": 2,
             "in_conversation_chain": True,
         },
         domain_id=None,
@@ -877,12 +877,11 @@ def seed_conversation_graph(
         summary="Sequential flow",
         doc_id=f"conv:{conv_id}",
         mentions=[mk_grounding(t1_span)],
+        metadata={"causal_type": "chain"},
         domain_id=None,
         canonical_entity_id=None,
         properties={"entity_type": "conversation_edge"},
         embedding=None,
-        metadata={"char_distance_from_last_summary": turn1.metadata["prev_node_char_distance_from_last_summary"],
-                "turn_distance_from_last_summary": turn1.metadata["prev_node_distance_from_last_summary"],},
         source_edge_ids=[],
         target_edge_ids=[],
     )
@@ -917,8 +916,6 @@ def seed_conversation_graph(
         metadata={
             "entity_type": "memory_context",
             "level_from_root": 0,
-            "char_distance_from_last_summary": 0,
-            "turn_distance_from_last_summary": 0,
             "in_conversation_chain": False,
         },
         domain_id=None,
@@ -953,8 +950,6 @@ def seed_conversation_graph(
         metadata={
             "entity_type": "conversation_summary",
             "level_from_root": 1,
-            "char_distance_from_last_summary": 0,
-            "turn_distance_from_last_summary": 0,
             "in_conversation_chain": True,
         },
         domain_id=None,
@@ -979,8 +974,7 @@ def seed_conversation_graph(
         properties=None,
         embedding=None,
         mentions=[mk_grounding(summ_span)],
-        metadata={"char_distance_from_last_summary": summ.metadata["prev_node_char_distance_from_last_summary"],
-                "turn_distance_from_last_summary": summ.metadata["prev_node_distance_from_last_summary"]},
+        metadata={"causal_type": "summary"},
         source_edge_ids=[],
         target_edge_ids=[],
     )
@@ -1017,8 +1011,6 @@ def seed_conversation_graph(
         metadata={
             "entity_type": "kg_ref",
             "level_from_root": 0,
-            "char_distance_from_last_summary": 0,
-            "turn_distance_from_last_summary": 0,
             "in_conversation_chain": False,
         },
         domain_id=None,
@@ -1043,8 +1035,7 @@ def seed_conversation_graph(
         properties={"ref_kind": "kg"},
         embedding=None,
         mentions=[mk_grounding(kg_ref_span)],
-        metadata={"char_distance_from_last_summary": kg_ref_node.metadata["prev_node_char_distance_from_last_summary"],
-                "turn_distance_from_last_summary": kg_ref_node.metadata["prev_node_distance_from_last_summary"]},
+        metadata={"causal_type": "reference"},
         source_edge_ids=[],
         target_edge_ids=[],
     )
@@ -1074,8 +1065,6 @@ def seed_conversation_graph(
             # REQUIRED by ConversationNodeMetadata
             "level_from_root": 0,
             "entity_type": "kg_ref",
-            "char_distance_from_last_summary": 0,
-            "turn_distance_from_last_summary": 0,
             "in_conversation_chain": False,
 
             # OPTIONAL but useful (ConversationRoleMixin syncs these too)
