@@ -88,6 +88,100 @@ class DroppedItem:
     reason: DropReason
     token_cost: int
 
+
+from typing import Protocol, Callable, Mapping
+
+# -------------------------
+# Phase 2B: Pluggable ordering strategies (snapshot-friendly)
+# -------------------------
+
+class ContextOrderingStrategy(Protocol):
+    """Ordering policy for context items.
+
+    IMPORTANT: This influences only *new* context construction.
+    Replay must use the persisted snapshot order (ordinals / used_node_ids).
+    """
+    name: str
+
+    def pre_pack(self, items: list[ContextItem]) -> list[ContextItem]:
+        """Return the iteration order used for packing/budgeting."""
+
+    def post_pack(self, kept: list[ContextItem]) -> list[ContextItem]:
+        """Return final order fed into the renderer."""
+
+class OrderingRegistry:
+    def __init__(self) -> None:
+        self._m: dict[str, ContextOrderingStrategy] = {}
+
+    def register(self, strat: ContextOrderingStrategy) -> None:
+        self._m[strat.name] = strat
+
+    def get(self, name: str | None) -> ContextOrderingStrategy:
+        if not name:
+            name = "default"
+        if name not in self._m:
+            raise KeyError(f"Unknown ordering strategy: {name!r}. Known: {sorted(self._m)}")
+        return self._m[name]
+
+ORDERING_REGISTRY = OrderingRegistry()
+
+class _DefaultOrdering:
+    """Matches the current repository behavior (do not change defaults)."""
+    name = "default"
+    def pre_pack(self, items: list[ContextItem]) -> list[ContextItem]:
+        out = list(items)
+        # Pinned first, then priority (lower=more important)
+        out.sort(key=lambda x: (not x.pinned, x.priority, x.kind, (x.node_id or "")))
+        return out
+    def post_pack(self, kept: list[ContextItem]) -> list[ContextItem]:
+        # Keep as chosen by packing (stable)
+        return list(kept)
+
+class _GraphDerivedOrdering:
+    """Preserve gather order as much as possible (stable, minimal policy)."""
+    name = "graph_derived"
+    def pre_pack(self, items: list[ContextItem]) -> list[ContextItem]:
+        return list(items)
+    def post_pack(self, kept: list[ContextItem]) -> list[ContextItem]:
+        return list(kept)
+
+class _GroupedPolicyOrdering:
+    """Group by kind then stable within group (human-friendly prompts)."""
+    name = "grouped_policy"
+    _rank: dict[str, int] = {
+        "system_prompt": 0,
+        "head_summary": 1,
+        "memory_context": 2,
+        "pinned_memory": 2,
+        "pinned_kg_ref": 3,
+        "kg_ref": 3,
+        "tool_state": 4,
+        "tail_turn": 5,
+    }
+    def pre_pack(self, items: list[ContextItem]) -> list[ContextItem]:
+        out = list(items)
+        out.sort(key=lambda x: (not x.pinned, x.priority, self._rank.get(x.kind, 99), (x.node_id or "")))
+        return out
+    def post_pack(self, kept: list[ContextItem]) -> list[ContextItem]:
+        out = list(kept)
+        # turns in chronological order if provided
+        def turn_ix(it: ContextItem) -> int:
+            if it.kind != "tail_turn":
+                return 10**9
+            extra = it.extra or {}
+            return int(extra.get("turn_index", 10**9))
+        out.sort(key=lambda x: (self._rank.get(x.kind, 99), turn_ix(x), (x.node_id or "")))
+        return out
+
+ORDERING_REGISTRY.register(_DefaultOrdering())
+ORDERING_REGISTRY.register(_GraphDerivedOrdering())
+ORDERING_REGISTRY.register(_GroupedPolicyOrdering())
+
+def apply_ordering(*, items: list[ContextItem], ordering: str | None, phase: Literal["pre_pack","post_pack"]) -> list[ContextItem]:
+    strat = ORDERING_REGISTRY.get(ordering)
+    if phase == "pre_pack":
+        return strat.pre_pack(items)
+    return strat.post_pack(items)
 from pydantic import BaseModel, model_validator
 # @dataclass(frozen=True)
 class ConversationContextView(BaseModel):
@@ -233,7 +327,7 @@ class ConversationContextBuilder:
         self.tokenizer = tokenizer
         self.renderer = renderer
 
-    def build(self, *, conversation_id: str, purpose: str, budget_tokens: int) -> ConversationContextView:
+    def build(self, *, conversation_id: str, purpose: str, budget_tokens: int, ordering_strategy: str | None = None) -> ConversationContextView:
         # 1) gather candidates
         candidates: list[ContextItem] = self.sources.gather(
             conversation_id=conversation_id,
@@ -248,7 +342,7 @@ class ConversationContextBuilder:
 
         # 3) deterministic ordering: pinned first, then priority, then recency if needed
         # (sources should encode recency into priority or provide stable tie-break keys)
-        priced.sort(key=lambda x: (not x.pinned, x.priority))
+        priced = apply_ordering(items=priced, ordering=ordering_strategy, phase="pre_pack")
 
         # 4) pack
         kept: list[ContextItem] = []
@@ -278,7 +372,10 @@ class ConversationContextBuilder:
                     raise ValueError("System prompt alone exceeds budget")
                 dropped.append(DroppedItem(kind=it.kind, node_id=it.node_id, reason="over_budget", token_cost=it.token_cost))
 
-        # 5) render to LLM messages
+        # 5) final ordering for rendering
+        kept = apply_ordering(items=list(kept), ordering=ordering_strategy, phase="post_pack")
+
+        # 6) render to LLM messages
         messages = self.renderer.render(kept, purpose=purpose)
 
         # 6) build trace fields

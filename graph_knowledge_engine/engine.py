@@ -6,6 +6,7 @@ import contextvars
 from langchain_core.language_models import BaseChatModel
 import pathlib
 import uuid
+from .id_provider import stable_id
 import time
 from . import models
 from .models import AddTurnResult, MetaFromLastSummary, RetrievalResult, WorkflowCheckpointNode, WorkflowNode, WorkflowStepExecNode
@@ -15,6 +16,7 @@ from .storage_backend import ChromaBackend, NoopUnitOfWork
 from .postgres_backend import PgVectorBackend
 from .workers.index_job_worker import IndexJobWorker
 from .indexing import IndexingSubsystem
+from .conversation_context import apply_ordering
 if True:
     """_summary_
 
@@ -74,6 +76,8 @@ from .models import (
     QUESTION_DESC,
     AdjudicationVerdict,
     LLMMergeAdjudication,
+    ContextSnapshotMetadata,
+    ContextCost,
     ConversationNodeMetadata,
     ConversationAIResponse,
     FilteringResponse, 
@@ -2437,7 +2441,8 @@ class GraphKnowledgeEngine:
             metadatas=[meta],
         )
     def add_pure_edge(self, edge: PureChromaEdge):
-        """low level api, do not fanout and add endpoint, no duplicate checking just add "edge" object in db. no id assigned, 
+        """low level api, do not fanout and add endpoint, no duplicate checking
+        just add "edge" object in db. no id assigned, 
         rely on backend db auto allocation if provided or raise error"""
         s_nodes, s_edges, t_nodes, t_edges = self._split_endpoints(edge.source_ids, edge.target_ids)
         edge.source_ids = s_nodes
@@ -4642,6 +4647,7 @@ class GraphKnowledgeEngine:
         include_summaries: bool = True,
         include_memory_context: bool = True,
         include_pinned_kg_refs: bool = True,
+        ordering_strategy: str | None = None,
     ):
         
 
@@ -4679,42 +4685,81 @@ class GraphKnowledgeEngine:
             priced.append(ContextItem(**{**it.__dict__, "token_cost": cost}))
 
         # Packing policy
-        pinned_non_turn = [i for i in priced if i.pinned and i.kind != "tail_turn"]
-        tail_turn_items = [i for i in priced if i.kind == "tail_turn"]
+        if ordering_strategy is None or ordering_strategy == "default":
+            pinned_non_turn = [i for i in priced if i.pinned and i.kind != "tail_turn"]
+            tail_turn_items = [i for i in priced if i.kind == "tail_turn"]
 
-        pinned_non_turn.sort(key=lambda x: x.priority)
-        tail_turn_items.sort(key=lambda x: x.priority)  # newest first (lowest priority)
+            pinned_non_turn.sort(key=lambda x: x.priority)
+            tail_turn_items.sort(key=lambda x: x.priority)  # newest first (lowest priority)
 
-        kept: list[ContextItem] = []
-        dropped: list[DroppedItem] = []
-        used = 0
+            kept: list[ContextItem] = []
+            dropped: list[DroppedItem] = []
+            used = 0
 
-        def _try_add(it: ContextItem) -> bool:
-            nonlocal used
-            if used + it.token_cost <= budget_tokens:
-                kept.append(it)
-                used += it.token_cost
-                return True
-
-            # compress if allowed
-            if it.max_tokens is not None and it.max_tokens < it.token_cost:
-                new_text = it.text[: max(1, it.max_tokens * 4)]  # cheap truncation placeholder
-                new_cost = tokenizer.count_tokens(new_text)
-                if used + new_cost <= budget_tokens:
-                    kept.append(ContextItem(**{**it.__dict__, "text": new_text, "token_cost": new_cost}))
-                    used += new_cost
-                    dropped.append(DroppedItem(kind=it.kind, node_id=it.node_id, reason="compressed", token_cost=it.token_cost))
+            def _try_add(it: ContextItem) -> bool:
+                nonlocal used
+                if used + it.token_cost <= budget_tokens:
+                    kept.append(it)
+                    used += it.token_cost
                     return True
 
-            dropped.append(DroppedItem(kind=it.kind, node_id=it.node_id, reason="over_budget", token_cost=it.token_cost))
-            return False
+                # compress if allowed
+                if it.max_tokens is not None and it.max_tokens < it.token_cost:
+                    new_text = it.text[: max(1, it.max_tokens * 4)]  # cheap truncation placeholder
+                    new_cost = tokenizer.count_tokens(new_text)
+                    if used + new_cost <= budget_tokens:
+                        kept.append(ContextItem(**{**it.__dict__, "text": new_text, "token_cost": new_cost}))
+                        used += new_cost
+                        dropped.append(DroppedItem(kind=it.kind, node_id=it.node_id, reason="compressed", token_cost=it.token_cost))
+                        return True
 
-        for it in pinned_non_turn:
-            _try_add(it)
+                dropped.append(DroppedItem(kind=it.kind, node_id=it.node_id, reason="over_budget", token_cost=it.token_cost))
+                return False
 
-        for it in tail_turn_items:
-            _try_add(it)
+            for it in pinned_non_turn:
+                _try_add(it)
 
+            for it in tail_turn_items:
+                _try_add(it)
+
+            # Restore chronological order for turns
+            non_turn_kept = [i for i in kept if i.kind != "tail_turn"]
+            turn_kept: list[ContextItem] = [i for i in kept if i.kind == "tail_turn"]
+            turn_kept.sort(key=lambda x: int((x.extra or {}).get("turn_index", 10**9)))
+            kept = non_turn_kept + turn_kept
+        else:
+            # Pluggable ordering path: strategy controls iteration order and final rendering order.
+            iter_items = apply_ordering(items=list(priced), ordering=ordering_strategy, phase="pre_pack")
+
+            kept = []
+            dropped = []
+            used = 0
+
+            def _try_add(it: ContextItem) -> bool:
+                nonlocal used
+                if used + it.token_cost <= budget_tokens:
+                    kept.append(it)
+                    used += it.token_cost
+                    return True
+
+                if it.max_tokens is not None and it.max_tokens < it.token_cost:
+                    new_text = it.text[: max(1, it.max_tokens * 4)]
+                    new_cost = tokenizer.count_tokens(new_text)
+                    if used + new_cost <= budget_tokens:
+                        kept.append(ContextItem(**{**it.__dict__, "text": new_text, "token_cost": new_cost}))
+                        used += new_cost
+                        dropped.append(DroppedItem(kind=it.kind, node_id=it.node_id, reason="compressed", token_cost=it.token_cost))
+                        return True
+
+                if it.kind == "system_prompt":
+                    raise ValueError("System prompt alone exceeds budget")
+                dropped.append(DroppedItem(kind=it.kind, node_id=it.node_id, reason="over_budget", token_cost=it.token_cost))
+                return False
+
+            for it in iter_items:
+                _try_add(it)
+
+            kept = apply_ordering(items=list(kept), ordering=ordering_strategy, phase="post_pack")
         # Restore chronological order for turns
         non_turn_kept = [i for i in kept if i.kind != "tail_turn"]
         turn_kept: list[ContextItem] = [i for i in kept if i.kind == "tail_turn"]
@@ -4751,6 +4796,204 @@ class GraphKnowledgeEngine:
         )
         # view.assert_valid()
         return view
+
+    # ----------------------------
+    # Phase 2B: Context Snapshot Nodes
+    # ----------------------------
+    
+    @conversation_only
+    def make_conversation_span(self, conversation_id):
+        from .models import Span
+        sp = Span.from_dummy_for_conversation(conversation_id)
+        return sp
+        
+    @conversation_only
+    def persist_context_snapshot(
+        self,
+        *,
+        conversation_id: str,
+        run_id: str,
+        run_step_seq: int,
+        attempt_seq: int = 0,
+        stage: str,
+        view: Any,
+        model_name: str = "",
+        budget_tokens: int = 0,
+        tail_turn_index: int = 0,
+        extra_hash_payload = None
+    ) -> str:
+        """Persist a context_snapshot node + depends_on edges for a single LLM call.
+
+        IMPORTANT invariants:
+        - The snapshot is a *real* node persisted in the conversation graph.
+        - It is NOT part of the conversation chain or UI chain (both flags false).
+        - Accounting lives only on the snapshot node metadata (never on arbitrary nodes).
+        - Edges are deterministic/idempotent.
+        """
+        import hashlib, json
+
+        def _stable_json(obj: Any) -> str:
+            return json.dumps(obj, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+        def _snapshot_hash(payload: Any) -> str:
+            h = hashlib.sha256()
+            h.update(_stable_json(payload).encode("utf-8"))
+            return h.hexdigest()
+
+        # normalize messages for stable hashing
+        msgs = list(getattr(view, "messages", None) or [])
+        norm_msgs: list[dict[str, str]] = []
+        for m in msgs:
+            role = getattr(m, "role", None) or (m.get("role") if isinstance(m, dict) else None)
+            content = getattr(m, "content", None) or (m.get("content") if isinstance(m, dict) else None)
+            norm_msgs.append({"role": str(role or ""), "content": str(content or "")})
+        rendered_hash = _snapshot_hash({"messages": norm_msgs, "extra_hash_payload": extra_hash_payload})
+
+        used_node_ids: list[str] = []
+        for it in (getattr(view, "items", None) or []):
+            nid = getattr(it, "node_id", None)
+            if nid:
+                used_node_ids.append(str(nid))
+
+        # Accounting (tokens_used already comes from your unified accounting layer)
+        char_count = sum(len(m.get("content", "")) for m in norm_msgs)
+        token_count = getattr(getattr(view, "cost", None), "token_count", None)
+        if token_count is None:
+            token_count = getattr(view, "tokens_used", None)
+
+        cost = ContextCost(char_count=int(char_count), token_count=(None if token_count is None else int(token_count)))
+
+        meta_model = ContextSnapshotMetadata(
+            run_id=run_id,
+            run_step_seq=int(run_step_seq),
+            attempt_seq=int(attempt_seq),
+            stage=str(stage),
+            model_name=str(model_name or ""),
+            budget_tokens=int(budget_tokens or 0),
+            tail_turn_index=int(tail_turn_index or 0),
+            used_node_ids=list(used_node_ids),
+            rendered_context_hash=str(rendered_hash),
+            cost=cost,
+        )
+
+        # Deterministic snapshot node id (stable per run/step/attempt/stage)
+        sid = str(stable_id(
+            "conversation.context_snapshot",
+            conversation_id,
+            run_id,
+            stage,
+            str(int(run_step_seq)),
+            str(int(attempt_seq)),
+        ))
+
+        # Idempotent upsert: if exists, do nothing (but still ensure edges exist)
+        existing = self.backend.node_get(ids=[str(sid)], include=[])
+        if not existing.get("ids"):
+            node = ConversationNode(
+                id=sid,
+                label="Context Snapshot",
+                type="entity",
+                summary="",
+                conversation_id=conversation_id,
+                role="system",  # type: ignore
+                turn_index=None,
+                properties={"entity_type": "context_snapshot"},
+                mentions=[Grounding(spans=[self.make_conversation_span(conversation_id)])],
+                metadata={
+                    # chain flags MUST be false
+                    "entity_type": "context_snapshot",
+                    "level_from_root": 0,
+                    "in_conversation_chain": False,
+                    "in_ui_chain": False,
+                    **meta_model.to_chroma_metadata(),
+                },
+                domain_id=None,
+                canonical_entity_id=None,
+            )
+            self.add_node(node)
+
+        # Deterministic depends_on edges from snapshot -> each used node
+        scope = f"conv:{conversation_id}"
+        for ordinal, nid in enumerate(used_node_ids):
+            eid = str(stable_id("conversation.edge", scope, "depends_on", sid, nid, str(ordinal)))
+            ex = self.backend.edge_get(ids=[eid], include=[])
+            if ex.get("ids"):
+                continue
+            doc_id = scope
+            sp = Span.from_dummy_for_conversation(doc_id=doc_id)
+            edge = ConversationEdge(
+                id=eid,
+                source_ids=[sid],
+                target_ids=[nid],
+                relation="depends_on",
+                label=f"depends_on:{sid}->{nid}",
+                type="relationship",
+                summary=f"Context snapshot {sid} depends on node {nid}",
+                doc_id=doc_id,
+                mentions=[Grounding(spans=[sp])],
+                domain_id=None,
+                canonical_entity_id=None,
+                properties={"entity_type": "conversation_edge", 
+                            "ordinal": ordinal},
+                embedding=None,
+                metadata={
+                    "entity_type": "conversation_edge",
+                    "ordinal": ordinal,
+                    "run_id": run_id,
+                    "run_step_seq": int(run_step_seq),
+                    "attempt_seq": int(attempt_seq),
+                    "tail_turn_index": int(tail_turn_index or 0),
+                },
+                source_edge_ids=[],
+                target_edge_ids=[],
+            )
+            self.add_edge(edge)
+
+        return sid
+
+    @conversation_only
+    def latest_context_snapshot_node(
+        self,
+        *,
+        conversation_id: str,
+        run_id: str | None = None,
+    ) -> ConversationNode | None:
+        """Return the most recent context_snapshot node (best-effort).
+
+        We avoid storing any accounting on arbitrary nodes; instead, you can use this
+        to drive summary triggers from the last persisted snapshot.
+        """
+        where = {"entity_type": "context_snapshot"}
+        if run_id is not None:
+            where["run_id"] = run_id
+        snaps = self.query_nodes(where=where)
+        if not snaps:
+            return None
+        # prefer highest run_step_seq, fallback to insertion order
+        def _k(n: ConversationNode):
+            try:
+                return int((n.metadata or {}).get("run_step_seq", 0))
+            except Exception:
+                return 0
+        return sorted(snaps, key=_k)[-1]
+    @conversation_only
+    def latest_context_snapshot_cost(
+        self,
+        *,
+        conversation_id: str,
+        stage: str | None = None,
+    ) -> ContextCost | None:
+        """Convenience: parse ContextCost from the latest context_snapshot metadata."""
+        n = self.latest_context_snapshot_node(conversation_id=conversation_id, stage=stage)
+        if n is None:
+            return None
+        meta = getattr(n, "metadata", {}) or {}
+        try:
+            cs = ContextSnapshotMetadata.from_chroma_metadata(meta)
+            return cs.cost
+        except Exception:
+            # tolerate older / malformed snapshots
+            return None    
     @conversation_only
     def get_ai_conversation_response(self, conversation_id, ref_knowledge_engine, model_names = None)->ConversationAIResponse:
         """Answer-only entry point.

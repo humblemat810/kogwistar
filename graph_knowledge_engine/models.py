@@ -313,8 +313,11 @@ class Span(ModeSlicingMixin, BaseModel):
                                         None, description="Result of validating the mention correctness"
                                     )
     @staticmethod
-    def from_dummy_for_conversation():
-        doc_id = "_conv:_dummy"
+    def from_dummy_for_conversation(doc_id = "_conv:_dummy"):
+        if doc_id.startswith("_conv:"):
+            pass
+        else:
+            doc_id = "_conv:"+doc_id
         dummy_span = Span(
             collection_page_url=f"conversation/{doc_id}",
             document_page_url=f"conversation/{doc_id}",

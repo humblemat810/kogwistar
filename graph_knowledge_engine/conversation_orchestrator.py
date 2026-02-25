@@ -473,13 +473,38 @@ class ConversationOrchestrator:
             if op_name == "decide_summarize":
                 def _run(ctx: StepContext):
                     ans = ctx.state.get("answer") or {}
-                    # Same policy as legacy: distance>=5 OR char_threshold exceeded OR model says so.
+                    # Phase 2B policy: derive trigger from the latest context_snapshot cost (preferred),
+                    # falling back to legacy distances only if no snapshot exists.
                     should = False
-                    if prev_turn_meta_summary.prev_node_distance_from_last_summary - 5 >= 0:
-                        should = True
-                    if (prev_turn_meta_summary.prev_node_char_distance_from_last_summary > summary_char_threshold
-                     or (summary_token_threshold is not None and _estimate_tokens_from_chars(prev_turn_meta_summary.prev_node_char_distance_from_last_summary, token_estimator) > summary_token_threshold)):
-                        should = True
+
+                    snap_cost = None
+                    try:
+                        snap_cost = self.conversation_engine.latest_context_snapshot_cost(
+                            conversation_id=conversation_id,
+                            stage="generate_answer_with_citations",
+                        )
+                    except Exception:
+                        snap_cost = None
+
+                    if snap_cost is not None:
+                        if snap_cost.char_count > summary_char_threshold:
+                            should = True
+                        if (summary_token_threshold is not None
+                            and snap_cost.token_count is not None
+                            and int(snap_cost.token_count) > int(summary_token_threshold)):
+                            should = True
+                    else:
+                        # Legacy fallback (should disappear once every LLM call produces snapshots)
+                        if prev_turn_meta_summary.prev_node_distance_from_last_summary - 5 >= 0:
+                            should = True
+                        if (prev_turn_meta_summary.prev_node_char_distance_from_last_summary > summary_char_threshold
+                            or (summary_token_threshold is not None
+                                and _estimate_tokens_from_chars(
+                                    prev_turn_meta_summary.prev_node_char_distance_from_last_summary,
+                                    token_estimator,
+                                ) > summary_token_threshold)):
+                            should = True
+
                     if bool(ans.get("llm_decision_need_summary", False)):
                         should = True
 
@@ -769,6 +794,7 @@ class ConversationOrchestrator:
         tool_call_id_factory: Callable | None = None,
         llm: BaseChatModel | None = None,
     ) -> None:
+        tool_call_id_factory = tool_call_id_factory or conversation_engine.tool_call_id_factory
         if tool_call_id_factory is None:
             raise Exception ("missing tool_call_id_factory")
         self.conversation_engine: GraphKnowledgeEngine = conversation_engine
@@ -1270,10 +1296,35 @@ class ConversationOrchestrator:
                 ("system", "Summarize this conversation segment into a concise memory."),
                 ("human", full_text)
             ])
-            
-            summary_res = (summary_prompt | self.llm).invoke({})
+
+            summary_res = (summary_prompt | self.llm).invoke({"full_text": full_text})
             summary_content = summary_res.content
             return summary_content
+
+        # Phase 2B: persist context snapshot BEFORE the LLM call (summary stage).
+        from types import SimpleNamespace
+        char_count = len(str(full_text or ""))
+        view = SimpleNamespace(
+            messages=[
+                {"role": "system", "content": "Summarize this conversation segment into a concise memory."},
+                {"role": "user", "content": str(full_text or "")},
+            ],
+            items=[SimpleNamespace(node_id=nid) for nid in (batch_ids or [])],
+            tokens_used=_estimate_tokens_from_chars(char_count),
+        )
+        clock = ExecClock(run_id=f"summary|{conversation_id}", run_step_seq=int(current_index), attempt_seq=0)
+        self.conversation_engine.persist_context_snapshot(
+            conversation_id=conversation_id,
+            run_id=clock.run_id,
+            run_step_seq=clock.run_step_seq,
+            attempt_seq=clock.attempt_seq,
+            stage="summary",
+            view=view,
+            model_name=getattr(self.llm, "model_name", "") or "",
+            budget_tokens=0,
+            tail_turn_index=int(prev_turn_meta_summary.tail_turn_index if prev_turn_meta_summary else 0),
+        )
+        
         summary_content = get_summary(full_text)
         # Dedupe spans for provenance
         unique_spans = []
@@ -1287,7 +1338,7 @@ class ConversationOrchestrator:
         import json
         # Create Summary Node
         new_index = prev_turn_meta_summary.tail_turn_index + 1
-        content = '\n'.join(i['text'] for i in get_summary(full_text)) # type: ignore
+        content = str(summary_content)
         summary_turn_id = get_id_for_conversation_turn(ConversationNode.id_kind, user_id, 
                                             conversation_id, content, str(new_index), "system", "conversation_summary", str(in_conv))
         summary_node = ConversationNode(
