@@ -2,15 +2,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Iterable
+from typing import Any, Mapping
 
-# NOTE:
-# This helper is intentionally defensive about the underlying Node/Edge shapes.
-# In this repo, nodes/edges are typically Pydantic models, but some backends/tests may surface dict-like shapes.
+RUN_META_KEYS_PREFIXES = ("run_", "attempt_", "worker_", "timestamp", "ts_", "duration", "latency")
 
 
 def _get(obj: Any, key: str, default: Any = None) -> Any:
-    """Get attribute or dict key."""
     if obj is None:
         return default
     if isinstance(obj, dict):
@@ -23,8 +20,18 @@ def _meta(obj: Any) -> dict[str, Any]:
     return m or {}
 
 
+def _strip_run_meta(meta: Mapping[str, Any]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for k, v in meta.items():
+        if any(k.startswith(p) for p in RUN_META_KEYS_PREFIXES):
+            continue
+        if k in {"run_id", "run_step_seq", "attempt_seq"}:
+            continue
+        out[k] = v
+    return out
+
+
 def _edge_tuple(e: Any) -> tuple[str, str, str, str]:
-    """(edge_id, relation, source_id, target_id) canonical tuple."""
     eid = str(_get(e, "id", _get(e, "edge_id", "")))
     rel = str(_get(e, "relation", _get(e, "type", _get(e, "label", ""))))
     src = str(_get(e, "source", _get(e, "source_id", _get(e, "src", ""))))
@@ -32,39 +39,29 @@ def _edge_tuple(e: Any) -> tuple[str, str, str, str]:
     return (eid, rel, src, dst)
 
 
-def _node_tuple(n: Any) -> tuple[str, str]:
-    """(node_id, entity_type)"""
-    nid = str(_get(n, "id", ""))
-    et = str(_meta(n).get("entity_type", _get(n, "entity_type", "")))
-    return (nid, et)
+def _is_workflow_trace_node(n: Any) -> bool:
+    et = _meta(n).get("entity_type")
+    return et in {"workflow_node", "workflow_edge", "workflow_run", "workflow_step_exec", "workflow_checkpoint"}
+
+
+def _is_workflow_trace_edge(e: Any) -> bool:
+    rel = str(_get(e, "relation", _get(e, "type", _get(e, "label", ""))))
+    return rel.startswith("workflow_")
 
 
 @dataclass(frozen=True)
 class ConvGraphView:
-    """Canonical, comparison-friendly projection of a conversation graph.
-
-    Designed for v1-v2 reconciliation:
-    - focuses on domain artifacts (turns, pins, summaries, snapshots)
-    - ignores workflow trace artifacts (which will be filtered upstream by the extractor once v2 exists)
-    """
     ui_chain_turn_ids: tuple[str, ...]
-    next_turn_edges: tuple[tuple[str, str, str, str], ...]          # (edge_id, relation, src, dst)
+    next_turn_edges: tuple[tuple[str, str, str, str], ...]
     references_edges: tuple[tuple[str, str, str, str], ...]
     summarizes_edges: tuple[tuple[str, str, str, str], ...]
     depends_on_edges: tuple[tuple[str, str, str, str], ...]
-
     summary_node_ids: tuple[str, ...]
     snapshot_node_ids: tuple[str, ...]
-    # snapshot_id -> (char_count, token_count)
     snapshot_costs: tuple[tuple[str, int, int | None], ...]
 
 
 def extract_conv_view(conversation_engine: Any, *, conversation_id: str | None = None) -> ConvGraphView:
-    """Extract a canonical view.
-
-    If conversation_id is provided, we scope nodes/edges to that conversation when possible.
-    """
-    # --- Nodes ---
     if conversation_id is not None:
         try:
             nodes = conversation_engine.get_nodes(where={"conversation_id": conversation_id})
@@ -73,12 +70,13 @@ def extract_conv_view(conversation_engine: Any, *, conversation_id: str | None =
     else:
         nodes = conversation_engine.get_nodes()
 
-    # Partition nodes by entity_type
+    domain_nodes = [n for n in nodes if not _is_workflow_trace_node(n)]
+
     turns: list[Any] = []
     summaries: list[Any] = []
     snaps: list[Any] = []
 
-    for n in nodes:
+    for n in domain_nodes:
         md = _meta(n)
         et = md.get("entity_type")
         if et == "conversation_turn" and md.get("in_ui_chain") is True:
@@ -88,11 +86,9 @@ def extract_conv_view(conversation_engine: Any, *, conversation_id: str | None =
         elif et == "context_snapshot":
             snaps.append(n)
 
-    # Sort turns deterministically (prefer turn_index if present)
     def _turn_sort_key(n: Any) -> tuple[int, str]:
-        idx = _get(n, "turn_index", None)
-        if idx is None:
-            idx = _get(_get(n, "properties", {}), "turn_index", None)
+        md = _meta(n)
+        idx = md.get("turn_index", _get(n, "turn_index", None))
         try:
             i = int(idx)
         except Exception:
@@ -108,7 +104,7 @@ def extract_conv_view(conversation_engine: Any, *, conversation_id: str | None =
     snapshot_costs_list: list[tuple[str, int, int | None]] = []
     for s in snaps:
         sid = str(_get(s, "id", ""))
-        md = _meta(s)
+        md = _strip_run_meta(_meta(s))
         cc = md.get("cost.char_count", 0)
         tc = md.get("cost.token_count", None)
         try:
@@ -122,23 +118,21 @@ def extract_conv_view(conversation_engine: Any, *, conversation_id: str | None =
         snapshot_costs_list.append((sid, cc_i, tc_i))
     snapshot_costs = tuple(sorted(snapshot_costs_list, key=lambda t: t[0]))
 
-    # --- Edges ---
     def _safe_get_edges(where: dict[str, Any]) -> list[Any]:
         try:
             return conversation_engine.get_edges(where=where)
         except Exception:
             return []
 
-    next_turn = [_edge_tuple(e) for e in _safe_get_edges({"relation": "next_turn"})]
-    refs = [_edge_tuple(e) for e in _safe_get_edges({"relation": "references"})]
-    summarizes = [_edge_tuple(e) for e in _safe_get_edges({"relation": "summarizes"})]
-    depends = [_edge_tuple(e) for e in _safe_get_edges({"relation": "depends_on"})]
+    def _canon_edges(rel: str) -> tuple[tuple[str, str, str, str], ...]:
+        edges = _safe_get_edges({"relation": rel})
+        edges = [e for e in edges if not _is_workflow_trace_edge(e)]
+        return tuple(sorted(_edge_tuple(e) for e in edges))
 
-    # Sort edge tuples for stable comparisons
-    next_turn_edges = tuple(sorted(next_turn))
-    references_edges = tuple(sorted(refs))
-    summarizes_edges = tuple(sorted(summarizes))
-    depends_on_edges = tuple(sorted(depends))
+    next_turn_edges = _canon_edges("next_turn")
+    references_edges = _canon_edges("references")
+    summarizes_edges = _canon_edges("summarizes")
+    depends_on_edges = _canon_edges("depends_on")
 
     return ConvGraphView(
         ui_chain_turn_ids=ui_chain_turn_ids,
@@ -152,6 +146,7 @@ def extract_conv_view(conversation_engine: Any, *, conversation_id: str | None =
     )
 
 
+
 def diff_views(a: ConvGraphView, b: ConvGraphView) -> str:
     """Human-friendly diff for pytest failures."""
     parts: list[str] = []
@@ -162,7 +157,28 @@ def diff_views(a: ConvGraphView, b: ConvGraphView) -> str:
             parts.append(f"- {field} differs:\n  a={av}\n  b={bv}")
     return "\n".join(parts) if parts else "(no diff)"
 
+def assert_tier0_invariants(view: ConvGraphView) -> None:
+    outgoing: dict[str, int] = {}
+    for _, _, src, _ in view.next_turn_edges:
+        outgoing[src] = outgoing.get(src, 0) + 1
+    bad = {src: c for src, c in outgoing.items() if c > 1}
+    if bad:
+        raise AssertionError(f"Tier0 violation: multiple outgoing next_turn edges: {bad}")
+
+
+def _diff(a: Any, b: Any) -> str:
+    parts: list[str] = []
+    for field in a.__dataclass_fields__.keys():
+        av = getattr(a, field)
+        bv = getattr(b, field)
+        if av != bv:
+            parts.append(f"- {field} differs:\n  a={av}\n  b={bv}")
+    return "\n".join(parts) if parts else "(no diff)"
 
 def assert_views_equivalent(a: ConvGraphView, b: ConvGraphView) -> None:
     if a != b:
         raise AssertionError(diff_views(a, b))
+    
+def assert_tier1_equal(a: ConvGraphView, b: ConvGraphView) -> None:
+    if a != b:
+        raise AssertionError(_diff(a, b))

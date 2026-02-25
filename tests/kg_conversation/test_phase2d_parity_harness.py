@@ -4,23 +4,22 @@ from __future__ import annotations
 import pytest
 from types import SimpleNamespace
 from typing import Any, Type, TypeVar, cast
-
 from pydantic import BaseModel
 from langchain_core.language_models import BaseChatModel
 from langchain_core.runnables import Runnable
 
 from graph_knowledge_engine.id_provider import stable_id
+from graph_knowledge_engine.conversation_orchestrator import ConversationOrchestrator
+from graph_knowledge_engine.models import MetaFromLastSummary, RetrievalResult
 from graph_knowledge_engine.models import ConversationNode, MetaFromLastSummary, Span, Grounding
 from graph_knowledge_engine.conversation_orchestrator import ConversationOrchestrator, get_id_for_conversation_turn
 from graph_knowledge_engine.agentic_answering import AgentConfig, AgenticAnsweringAgent, AnswerWithCitations, AnswerEvaluation
 
-from test_phase2a_accounting import _make_engine_pair  # reuse canonical engine fixture builder
-
+from test_phase2a_accounting import _make_engine_pair
 from tests._helpers.conv_view import extract_conv_view, assert_views_equivalent
+from tests._helpers.conv_view import extract_conv_view, assert_tier0_invariants, assert_tier1_equal
 from tests._helpers.runners import run_v1_scenario, run_v2_scenario
-
 BaseM = TypeVar("BaseM", bound=BaseModel)
-
 
 class DummyLLM(Runnable):
     model_name = "dummy-llm"
@@ -30,7 +29,6 @@ class DummyLLM(Runnable):
 
 
 dummy_llm = cast(BaseChatModel, DummyLLM())
-
 
 def _mk_span(doc_id: str) -> Span:
     sp = Span.from_dummy_for_conversation()
@@ -200,12 +198,88 @@ def test_phase2d_parity_harness_summary_snapshot(backend_kind, tmp_path, sa_engi
     view_b = extract_conv_view(conv_b, conversation_id=cid_b)
     assert_views_equivalent(view_a, view_b)
 
+def _filtering_callback_stub(*args, **kwargs):
+    # Should never be called in backbone-only scenario (add_turn_only=True),
+    # but must exist to satisfy the orchestrator signature.
+    return RetrievalResult(relevant_kg_node_ids=[], relevant_kg_edge_ids=[], selected_kg_node_ids=[], selected_kg_edge_ids=[]), ""
+
+
+def scenario_backbone_only(*, mode: str, backend_kind: str, tmp_path, sa_engine, pg_schema, monkeypatch) -> tuple[Any, str]:
+    kg, conv = _make_engine_pair(
+        backend_kind=backend_kind,
+        tmp_path=tmp_path,
+        sa_engine=sa_engine,
+        pg_schema=pg_schema,
+        dim=3,
+    )
+    conv.tool_call_id_factory = stable_id
+
+    orch = ConversationOrchestrator(
+        conversation_engine=conv,
+        ref_knowledge_engine=kg,
+        llm=dummy_llm,
+        tool_call_id_factory=stable_id,
+    )
+
+    conversation_id = "phase2d_backbone"
+    user_id = "u_backbone"
+    turn_id = "turn_0"
+    mem_id = "mem0"
+
+    prev = MetaFromLastSummary(prev_node_char_distance_from_last_summary=0, prev_node_distance_from_last_summary=0, tail_turn_index=0)
+
+    if mode == "v1":
+        orch.add_conversation_turn(
+            user_id=user_id,
+            conversation_id=conversation_id,
+            turn_id=turn_id,
+            mem_id=mem_id,
+            role="user",
+            content="hi",
+            filtering_callback=_filtering_callback_stub,
+            add_turn_only=True,
+            prev_turn_meta_summary=prev,
+        )
+    else:
+        orch.add_conversation_turn_workflow_v2(
+            run_id="harnass",
+            user_id=user_id,
+            conversation_id=conversation_id,
+            turn_id=turn_id,
+            mem_id=mem_id,
+            role="user",
+            content="hi",
+            filtering_callback=_filtering_callback_stub,
+            workflow_id="harness-wf",
+            add_turn_only=True,
+            prev_turn_meta_summary=prev,
+        )
+
+    return conv, conversation_id
+
 
 @pytest.mark.parametrize("backend_kind", ["chroma", "pg"])
-def test_phase2d_parity_harness_answer_flow_snapshots(backend_kind, tmp_path, sa_engine, pg_schema, monkeypatch):
-    conv_a, cid_a = run_v1_scenario(scenario_answer_flow_snapshots, backend_kind=backend_kind, tmp_path=tmp_path, sa_engine=sa_engine, pg_schema=pg_schema, monkeypatch=monkeypatch)
-    conv_b, cid_b = run_v2_scenario(scenario_answer_flow_snapshots, backend_kind=backend_kind, tmp_path=tmp_path, sa_engine=sa_engine, pg_schema=pg_schema, monkeypatch=monkeypatch)
+def test_phase2d_tiered_parity_backbone(backend_kind, tmp_path, sa_engine, pg_schema, monkeypatch):
+    conv_a, cid_a = run_v1_scenario(
+        scenario_backbone_only,
+        backend_kind=backend_kind,
+        tmp_path=tmp_path,
+        sa_engine=sa_engine,
+        pg_schema=pg_schema,
+        monkeypatch=monkeypatch,
+    )
+    conv_b, cid_b = run_v2_scenario(
+        scenario_backbone_only,
+        backend_kind=backend_kind,
+        tmp_path=tmp_path,
+        sa_engine=sa_engine,
+        pg_schema=pg_schema,
+        monkeypatch=monkeypatch,
+    )
 
     view_a = extract_conv_view(conv_a, conversation_id=cid_a)
     view_b = extract_conv_view(conv_b, conversation_id=cid_b)
-    assert_views_equivalent(view_a, view_b)
+
+    assert_tier0_invariants(view_a)
+    assert_tier0_invariants(view_b)
+    assert_tier1_equal(view_a, view_b)

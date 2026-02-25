@@ -187,12 +187,12 @@ def validate_workflow_design(
     for edges in adj.values():
         edges: list[WorkflowEdge]
         for e in edges:
-            predicate:str | None = e.metadata.get("predicate")
+            predicate: str | None = (e.metadata.get("wf_predicate") if (e.metadata or {}).get("wf_predicate") is not None else e.metadata.get("predicate"))
             if predicate is not None and predicate not in predicate_registry:
                 raise ValueError(f"Unknown predicate {predicate!r} on workflow edge {e.id}")
 
     # must have at least one terminal reachable ignoring predicates
-    terminals = {nid for nid, n in nodes.items() if n.metadata.get("terminal") or len(adj.get(nid, [])) == 0}
+    terminals = {nid for nid, n in nodes.items() if (n.metadata.get("wf_terminal") or n.metadata.get("terminal")) or len(adj.get(nid, [])) == 0}
     if not terminals:
         raise ValueError("Workflow has no terminal nodes and no sink nodes")
 
