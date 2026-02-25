@@ -17,6 +17,7 @@ from graph_knowledge_engine.models import WorkflowNode, MentionVerification, Con
 from .design import validate_workflow_design, Predicate
 from .serialize import try_serialize_with_ref
 RESERVED_ROOT_KEYS = {
+    "_deps",
     "_rt_join",
 }
 
@@ -25,14 +26,15 @@ RESERVED_PREFIXES = ("_", "__")
 def validate_initial_state(initial_state: dict):
     allowed_reserved = {"_deps", "_rt_join"}
     for key in initial_state:
-        # _rt_join is runtime-owned; _deps is orchestrator-injected and is allowed (not checkpoint-safe).
-        if key in RESERVED_ROOT_KEYS:
+        # Reserved root keys are runtime-owned; some are allowed for checkpoint/resume.
+        if key in RESERVED_ROOT_KEYS and key not in allowed_reserved:
             raise ValueError(f"'{key}' is reserved by the runtime and cannot be provided by user code.")
         if key.startswith(RESERVED_PREFIXES) and key not in allowed_reserved:
             raise ValueError(
                 f"Keys starting with '_' or '__' are reserved. "
                 f"Invalid key: '{key}'"
             )
+
 # ------------------------------------------------------------------
 # Join/barrier support (capability tracking via MAY-reach bitsets)
 # ------------------------------------------------------------------

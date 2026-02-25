@@ -4,6 +4,7 @@ from __future__ import annotations
 import pytest
 from types import SimpleNamespace
 from typing import Any, Type, TypeVar, cast
+
 from pydantic import BaseModel
 from langchain_core.language_models import BaseChatModel
 from langchain_core.runnables import Runnable
@@ -15,11 +16,15 @@ from graph_knowledge_engine.models import ConversationNode, MetaFromLastSummary,
 from graph_knowledge_engine.conversation_orchestrator import ConversationOrchestrator, get_id_for_conversation_turn
 from graph_knowledge_engine.agentic_answering import AgentConfig, AgenticAnsweringAgent, AnswerWithCitations, AnswerEvaluation
 
-from test_phase2a_accounting import _make_engine_pair
+from test_phase2a_accounting import _make_engine_pair  # reuse canonical engine fixture builder
+
 from tests._helpers.conv_view import extract_conv_view, assert_views_equivalent
-from tests._helpers.conv_view import extract_conv_view, assert_tier0_invariants, assert_tier1_equal
+from tests._helpers.conv_view import assert_tier0_invariants, assert_tier1_equal
+
 from tests._helpers.runners import run_v1_scenario, run_v2_scenario
+
 BaseM = TypeVar("BaseM", bound=BaseModel)
+
 
 class DummyLLM(Runnable):
     model_name = "dummy-llm"
@@ -29,6 +34,7 @@ class DummyLLM(Runnable):
 
 
 dummy_llm = cast(BaseChatModel, DummyLLM())
+
 
 def _mk_span(doc_id: str) -> Span:
     sp = Span.from_dummy_for_conversation()
@@ -282,4 +288,14 @@ def test_phase2d_tiered_parity_backbone(backend_kind, tmp_path, sa_engine, pg_sc
 
     assert_tier0_invariants(view_a)
     assert_tier0_invariants(view_b)
-    assert_tier1_equal(view_a, view_b)
+    assert_tier1_equal(view_a, view_b)    
+
+
+@pytest.mark.parametrize("backend_kind", ["chroma", "pg"])
+def test_phase2d_parity_harness_answer_flow_snapshots(backend_kind, tmp_path, sa_engine, pg_schema, monkeypatch):
+    conv_a, cid_a = run_v1_scenario(scenario_answer_flow_snapshots, backend_kind=backend_kind, tmp_path=tmp_path, sa_engine=sa_engine, pg_schema=pg_schema, monkeypatch=monkeypatch)
+    conv_b, cid_b = run_v2_scenario(scenario_answer_flow_snapshots, backend_kind=backend_kind, tmp_path=tmp_path, sa_engine=sa_engine, pg_schema=pg_schema, monkeypatch=monkeypatch)
+
+    view_a = extract_conv_view(conv_a, conversation_id=cid_a)
+    view_b = extract_conv_view(conv_b, conversation_id=cid_b)
+    assert_views_equivalent(view_a, view_b)
