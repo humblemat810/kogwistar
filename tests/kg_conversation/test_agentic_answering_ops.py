@@ -1,0 +1,301 @@
+from __future__ import annotations
+
+import contextlib
+from dataclasses import dataclass
+from types import SimpleNamespace
+from typing import Any, Dict, Iterator, List
+
+import pytest
+
+from graph_knowledge_engine.models import Span
+from graph_knowledge_engine.models import RunFailure
+from graph_knowledge_engine.workflow.resolvers import default_resolver
+from graph_knowledge_engine.models import RunSuccess
+
+
+@dataclass
+class _FakeStepContext:
+    """Minimal StepContext shim used by resolver unit tests.
+
+    The real runtime provides richer behavior (checkpoints, provenance, etc).
+    For resolver unit tests we only need:
+      - ctx.state_view (read-only mapping)
+      - ctx.state_write (context manager giving mutable state dict)
+    """
+
+    state: Dict[str, Any]
+
+    @property
+    def state_view(self) -> Dict[str, Any]:
+        return self.state
+
+    @property
+    def state_write(self):
+        @contextlib.contextmanager
+        def _cm() -> Iterator[Dict[str, Any]]:
+            yield self.state
+
+        return _cm()
+
+
+class _StubConversationEngine:
+    def __init__(self, *, last_user_text: str = "hello") -> None:
+        self._last_user_text = last_user_text
+
+    def get_conversation_view(self, *, conversation_id: str, user_id=None, purpose: str, budget_tokens: int = 0):
+        return SimpleNamespace(
+            token_budget=budget_tokens,
+            messages=[SimpleNamespace(role="user", content=self._last_user_text)],
+        )
+
+    def get_system_prompt(self, conversation_id: str) -> str:
+        return "SYSTEM"
+
+
+class _StubAgentConfig:
+    def __init__(self):
+        self.max_candidates = 3
+        self.materialize_depth = "shallow"
+        self.max_chars_per_item = 200
+        self.max_total_chars = 1000
+        self.max_used = 2
+        self.max_iter = 1
+        self.evidence_selector = "bm25"
+
+
+class _StubAgent:
+    def __init__(self):
+        self.config = _StubAgentConfig()
+        self.cache_dir = None
+        self._project_calls: List[str] = []
+
+    def _ensure_run_anchor(self, *, conversation_id: str, run_id: str) -> str:
+        return f"run:{conversation_id}:{run_id}"
+
+    def _get_last_user_text(self, messages: Any) -> str:
+        for m in reversed(messages or []):
+            if getattr(m, "role", None) == "user":
+                return str(getattr(m, "content", ""))
+        return ""
+
+    def _retrieve_candidates(self, question: str):
+        return [
+            {"id": "n1", "label": "L1", "summary": "S1", "doc": "D1"},
+            {"id": "n2", "label": "L2", "summary": "S2", "doc": "D2"},
+            {"id": "n3", "label": "L3", "summary": "S3", "doc": "D3"},
+        ]
+
+    def _select_used_evidence_bm25(self, *, question: str, candidates: List[dict]):
+        return SimpleNamespace(
+            used_node_ids=[candidates[0]["id"], candidates[1]["id"]],
+            model_dump=lambda: {"used_node_ids": ["n1", "n2"], "used_edge_ids": [], "reasoning": "stub"},
+        )
+    @staticmethod
+    def _materialize_evidence_pack(agent, *, node_ids: List[str], depth: str, max_chars_per_item: int, max_total_chars: int):
+        return {"nodes": [{"node_id": nid, "mentions": [{"spans": [{"excerpt": f"e:{nid}"}]}]} for nid in node_ids]}
+
+    def rehydrate_evidence_pack_from_digest(self, *, digest: dict, enforce_hash_match: bool = False):
+        return {
+            "evidence_pack": self._materialize_evidence_pack(self,
+                node_ids=list(digest.get("node_ids") or []),
+                depth=str(digest.get("depth") or "shallow"),
+                max_chars_per_item=200,
+                max_total_chars=1000,
+            )
+        }
+
+    def _persist_context_snapshot(self, **kwargs):
+        return "snap:1"
+
+    def select_used_evidence_cached(self, **kwargs):
+        # should not be called in these tests (bm25 path)
+        raise AssertionError("select_used_evidence_cached should not be called")
+    @staticmethod
+    def _generate_answer_with_citations(agent, **kwargs):
+        return {"text": "ok", "reasoning": "", "claims": []}
+
+    def _validate_or_repair_citations(self, **kwargs):
+        return {"text": "ok", "reasoning": "", "claims": []}
+
+    def _evaluate_answer(self, **kwargs):
+        return {"is_sufficient": True, "needs_more_info": False, "missing_aspects": [], "notes": ""}
+
+    def _project_kg_node(self, *, conversation_id: str, run_node_id: str, kg_node_id: str, provenance_span: Span, prev_turn_meta_summary):
+        pid = f"ptr:{conversation_id}:{kg_node_id}"
+        self._project_calls.append(pid)
+        return pid
+
+    def _add_assistant_turn(self, *, conversation_id: str, content: str, provenance_span: Span, turn_index: int, prev_turn_meta_summary):
+        return (
+            f"turn:{conversation_id}:{turn_index}",
+            SimpleNamespace(model_dump=lambda: {"id": f"turn:{conversation_id}:{turn_index}", "content": content}),
+        )
+
+    def _link_run_to_response(self, **kwargs):
+        return None
+
+
+def _mk_state(*, agent: _StubAgent, conv_engine: _StubConversationEngine) -> Dict[str, Any]:
+    return {
+        "conversation_id": "c1",
+        "user_id": "u1",
+        "turn_node_id": "t0",
+        "turn_index": 0,
+        "_deps": {
+            "agent": agent,
+            "conversation_engine": conv_engine,
+            "llm": SimpleNamespace(model_name="dummy"),
+            "prev_turn_meta_summary": SimpleNamespace(
+                tail_turn_index=0,
+                prev_node_char_distance_from_last_summary=0,
+                prev_node_distance_from_last_summary=0,
+            ),
+        },
+    }
+
+
+def _run_op(op: str, state: Dict[str, Any]):
+    ctx = _FakeStepContext(state)
+    fn = default_resolver.resolve(op)
+    res = fn(ctx)
+    assert isinstance(res, (RunSuccess, RunFailure))
+
+    # The real WorkflowRuntime applies `state_update` merges.
+    for mode, payload in getattr(res, "state_update", []) or []:
+        if mode == "u":
+            assert isinstance(payload, dict)
+            state.update(payload)
+        elif mode == "a":
+            assert isinstance(payload, dict)
+            for k, v in payload.items():
+                state.setdefault(k, [])
+                state[k].append(v)
+        elif mode == "e":
+            assert isinstance(payload, dict)
+            for k, v in payload.items():
+                state.setdefault(k, [])
+                state[k].extend(list(v))
+    return res
+
+
+def test_aa_prepare_sets_run_identity():
+    agent = _StubAgent()
+    ce = _StubConversationEngine(last_user_text="Q")
+    state = _mk_state(agent=agent, conv_engine=ce)
+    res = _run_op("aa_prepare", state)
+    assert isinstance(res, RunSuccess)
+    assert state.get("run_id")
+    assert state.get("run_node_id")
+
+
+def test_aa_get_view_and_question_populates_question_and_system_prompt():
+    agent = _StubAgent()
+    ce = _StubConversationEngine(last_user_text="What is X?")
+    state = _mk_state(agent=agent, conv_engine=ce)
+    _run_op("aa_prepare", state)
+    res = _run_op("aa_get_view_and_question", state)
+    assert isinstance(res, RunSuccess)
+    assert state["system_prompt"] == "SYSTEM"
+    assert state["question"] == "What is X?"
+
+
+def test_aa_retrieve_candidates_populates_candidates_list():
+    agent = _StubAgent()
+    ce = _StubConversationEngine(last_user_text="Q")
+    state = _mk_state(agent=agent, conv_engine=ce)
+    _run_op("aa_get_view_and_question", state)
+    res = _run_op("aa_retrieve_candidates", state)
+    assert isinstance(res, RunSuccess)
+    assert isinstance(state.get("candidates"), list)
+    assert len(state["candidates"]) > 0
+
+
+def test_aa_select_used_evidence_writes_used_node_ids_subset():
+    agent = _StubAgent()
+    ce = _StubConversationEngine(last_user_text="Q")
+    state = _mk_state(agent=agent, conv_engine=ce)
+    _run_op("aa_get_view_and_question", state)
+    _run_op("aa_retrieve_candidates", state)
+    res = _run_op("aa_select_used_evidence", state)
+    assert isinstance(res, RunSuccess)
+    assert state.get("used_node_ids") == ["n1", "n2"]
+
+
+def test_aa_materialize_evidence_pack_writes_digest_and_runtime_pack():
+    agent = _StubAgent()
+    ce = _StubConversationEngine(last_user_text="Q")
+    state = _mk_state(agent=agent, conv_engine=ce)
+    state["used_node_ids"] = ["n1", "n2"]
+    res = _run_op("aa_materialize_evidence_pack", state)
+    assert isinstance(res, RunSuccess)
+    digest = state.get("evidence_pack_digest")
+    assert isinstance(digest, dict)
+    assert digest.get("node_ids") == ["n1", "n2"]
+    assert digest.get("evidence_pack_hash")
+    assert state.get("_rt", {}).get("evidence_pack")
+
+
+def test_aa_generate_answer_with_citations_writes_answer():
+    agent = _StubAgent()
+    ce = _StubConversationEngine(last_user_text="Q")
+    state = _mk_state(agent=agent, conv_engine=ce)
+    _run_op("aa_get_view_and_question", state)
+    state["used_node_ids"] = ["n1"]
+    state["evidence_pack_digest"] = {
+        "node_ids": ["n1"],
+        "depth": "shallow",
+        "max_chars_per_item": 200,
+        "max_total_chars": 1000,
+        "evidence_pack_hash": "h",
+    }
+    res = _run_op("aa_generate_answer_with_citations", state)
+    assert isinstance(res, RunSuccess)
+    assert state.get("answer", {}).get("text") == "ok"
+
+
+def test_aa_evaluate_answer_writes_evaluation():
+    agent = _StubAgent()
+    ce = _StubConversationEngine(last_user_text="Q")
+    state = _mk_state(agent=agent, conv_engine=ce)
+    _run_op("aa_get_view_and_question", state)
+    state["used_node_ids"] = ["n1"]
+    state["answer"] = {"text": "ok"}
+    state["evidence_pack_digest"] = {
+        "node_ids": ["n1"],
+        "depth": "shallow",
+        "max_chars_per_item": 200,
+        "max_total_chars": 1000,
+        "evidence_pack_hash": "h",
+    }
+    res = _run_op("aa_evaluate_answer", state)
+    assert isinstance(res, RunSuccess)
+    assert state.get("evaluation", {}).get("is_sufficient") is True
+
+
+def test_aa_project_pointers_calls_agent_projection_for_each_used_node():
+    agent = _StubAgent()
+    ce = _StubConversationEngine(last_user_text="Q")
+    state = _mk_state(agent=agent, conv_engine=ce)
+    _run_op("aa_prepare", state)
+    state["used_node_ids"] = ["n1", "n2"]
+    res = _run_op("aa_project_pointers", state)
+    assert isinstance(res, RunSuccess)
+    assert state.get("projected_pointer_ids") == ["ptr:c1:n1", "ptr:c1:n2"]
+    assert agent._project_calls == ["ptr:c1:n1", "ptr:c1:n2"]
+
+
+def test_aa_persist_response_writes_agentic_answering_result_and_prev_turn_meta_summary():
+    agent = _StubAgent()
+    ce = _StubConversationEngine(last_user_text="Q")
+    state = _mk_state(agent=agent, conv_engine=ce)
+    _run_op("aa_prepare", state)
+    state["answer"] = {"text": "ok"}
+    state["evaluation"] = {"is_sufficient": True, "needs_more_info": False}
+    state["used_node_ids"] = ["n1"]
+    state["projected_pointer_ids"] = ["ptr:c1:n1"]
+    res = _run_op("aa_persist_response", state)
+    assert isinstance(res, RunSuccess)
+    out = state.get("agentic_answering_result")
+    assert isinstance(out, dict)
+    assert out.get("assistant_text") == "ok"
+    assert state.get("prev_turn_meta_summary", {}).get("tail_turn_index") == 0
