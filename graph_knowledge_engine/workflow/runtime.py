@@ -1,4 +1,5 @@
 from __future__ import annotations
+import warnings
 
 import time
 import uuid
@@ -24,17 +25,41 @@ RESERVED_ROOT_KEYS = {
 RESERVED_PREFIXES = ("_", "__")
 
 def validate_initial_state(initial_state: dict):
-    allowed_reserved = {"_deps", "_rt_join"}
+    """Validate user-provided initial workflow state.
+
+    Workflow state is user-land *except* for a small set of underscore-prefixed
+    keys that are reserved for runtime/DI plumbing.
+
+    Allowed underscore keys:
+      - _deps    : injected dependencies (non-serializable; must not be checkpointed)
+      - _rt_join : runtime-owned join/barrier bookkeeping (checkpoint/resume)
+
+    All other keys starting with '_' are reserved and will be rejected.
+
+    Note: when underscore keys are present, we emit a RuntimeWarning to make the
+    use of advanced/internal features explicit (helps debugging).
+    """
+    allowed_underscore = {"_deps", "_rt_join"}
+
     for key in initial_state:
-        # Reserved root keys are runtime-owned; some are allowed for checkpoint/resume.
-        if key in RESERVED_ROOT_KEYS and key not in allowed_reserved:
-            raise ValueError(f"'{key}' is reserved by the runtime and cannot be provided by user code.")
-        if key.startswith(RESERVED_PREFIXES) and key not in allowed_reserved:
+        if key in allowed_underscore:
+            warnings.warn(
+                f"Using advanced underscore state key '{key}'. This key is reserved for runtime/DI plumbing.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            continue
+
+        if key in RESERVED_ROOT_KEYS:
+            raise ValueError(
+                f"'{key}' is reserved by the runtime and cannot be provided by user code."
+            )
+
+        if key.startswith(RESERVED_PREFIXES):
             raise ValueError(
                 f"Keys starting with '_' or '__' are reserved. "
                 f"Invalid key: '{key}'"
             )
-
 # ------------------------------------------------------------------
 # Join/barrier support (capability tracking via MAY-reach bitsets)
 # ------------------------------------------------------------------

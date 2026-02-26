@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 
-from ..models import MetaFromLastSummary
+from ..models import MetaFromLastSummary, KnowledgeRetrievalResult, MemoryRetrievalResult
 from .runtime import StateUpdate
 """Workflow step resolvers.
 
@@ -179,6 +179,57 @@ def _start(ctx: StepContext) -> StepRunResult:
     return result
 
 
+@default_resolver.register("context_snapshot")
+def _context_snapshot(ctx: StepContext) -> StepRunResult:
+    """Persist a ContextSnapshot node capturing the *actual* LLM prompt inputs.
+
+    Expected dependencies (best-effort):
+      - deps['conversation_engine'] : GraphKnowledgeEngine (conversation)
+      - deps['llm']                : model (for model_name)
+
+    Expected state (best-effort):
+      - conversation_id
+      - (optional) run_id / run_step_seq / attempt_seq
+
+    Notes:
+      - This op is intentionally lightweight. The *meaning* of the snapshot is
+        defined by what you pass in `llm_input_payload` and `evidence_pack_digest`.
+      - For full determinism, callers should provide stable run_id/step numbers.
+    """
+    deps = _deps(ctx)
+    ce = deps["conversation_engine"]
+    llm = deps.get("llm")
+    sv = ctx.state_view
+
+    conversation_id = str(sv["conversation_id"])
+    run_id = str(sv.get("run_id") or deps.get("run_id") or f"run_{conversation_id}")
+    run_step_seq = int(sv.get("run_step_seq") or deps.get("run_step_seq") or 0)
+    attempt_seq = int(sv.get("attempt_seq") or deps.get("attempt_seq") or 0)
+    stage = str(sv.get("stage") or deps.get("stage") or "answer")
+
+    # Build the prompt context (debug/telemetry artifact).
+    view = ce.get_conversation_view(conversation_id=conversation_id, purpose="answer")
+
+    snap_id = ce.persist_context_snapshot(
+        conversation_id=conversation_id,
+        run_id=run_id,
+        run_step_seq=run_step_seq,
+        attempt_seq=attempt_seq,
+        stage=stage,
+        view=view,
+        model_name=str(getattr(llm, "model_name", "") or ""),
+        budget_tokens=int(getattr(view, "token_budget", 0) or 0),
+        tail_turn_index=int(getattr(deps.get("prev_turn_meta_summary"), "tail_turn_index", 0) or 0),
+        llm_input_payload={
+            "system_prompt": ce.get_system_prompt(conversation_id),
+            "user_text": sv.get("user_text"),
+        },
+        evidence_pack_digest=sv.get("evidence_pack_digest"),
+    )
+
+    return RunSuccess(conversation_node_id=snap_id, state_update=[('a', {"op_log": f"context_snapshot:{snap_id}"})])
+
+
 @default_resolver.register("memory_retrieve")
 def _memory_retrieve(ctx: StepContext) -> StepRunResult:
     """Retrieve candidate memories.
@@ -237,7 +288,7 @@ def _memory_retrieve(ctx: StepContext) -> StepRunResult:
 
     # ctx.state["memory_raw"] = mem
     memj = to_jsonable(mem)
-    state_update = [('u', {'memory': memj})]
+    state_update: list[StateUpdate] = [('u', {'memory': memj})]
     # ctx.state["memory"] = memj
     result = RunSuccess(conversation_node_id=call_node_id, state_update=state_update)
     return result
@@ -315,7 +366,7 @@ def _memory_pin(ctx: StepContext) -> StepRunResult:
 
     prev_turn_meta_summary = deps.get("prev_turn_meta_summary")
     state = ctx.state_view
-    mem_raw = state.get("memory_raw")
+    mem_rehydrated = MemoryRetrievalResult(**state.get("memj"))
     mem_retriever = MemoryRetriever(
         conversation_engine=deps["conversation_engine"],
         llm=deps["llm"],
@@ -324,9 +375,9 @@ def _memory_pin(ctx: StepContext) -> StepRunResult:
 
     out = None
     if (
-        mem_raw is not None
-        and getattr(mem_raw, "selected", None)
-        and getattr(mem_raw, "memory_context_text", None)
+        mem_rehydrated is not None
+        and getattr(mem_rehydrated, "selected", None)
+        and getattr(mem_rehydrated, "memory_context_text", None)
     ):
         out = mem_retriever.pin_selected(
             user_id=state["user_id"],
@@ -335,8 +386,8 @@ def _memory_pin(ctx: StepContext) -> StepRunResult:
             mem_id=state["mem_id"],
             turn_index=state["turn_index"],
             self_span=state["self_span"],
-            selected_memory=getattr(mem_raw, "selected"),
-            memory_context_text=getattr(mem_raw, "memory_context_text"),
+            selected_memory=getattr(mem_rehydrated, "selected"),
+            memory_context_text=getattr(mem_rehydrated, "memory_context_text"),
             prev_turn_meta_summary=prev_turn_meta_summary,
         )
 
@@ -348,7 +399,7 @@ def _memory_pin(ctx: StepContext) -> StepRunResult:
         "pinned_edge_ids": [e.id for e in getattr(out, "pinned_edges", [])] if out else [],
     }
     # ctx.state["memory_pin"] = outj
-    state_update = [('u', {'mem_pin': outj})]
+    state_update = [('u', {'memory_pin': outj})]
     return RunSuccess(conversation_node_id=None, state_update=state_update)
 
 
@@ -372,17 +423,17 @@ def _kg_pin(ctx: StepContext) -> StepRunResult:
         max_retrieval_level=max_retrieval_level,
     )
 
-    kg_raw = state.get("kg_raw")
+    kg_rehydrated = KnowledgeRetrievalResult(**state.get("kg_pin"))
     pinned_ptrs: list[str] = []
     pinned_edges: list[str] = []
-    if kg_raw is not None and getattr(kg_raw, "selected", None):
+    if kg_rehydrated is not None and getattr(kg_rehydrated, "selected", None):
         pinned_ptrs, pinned_edges = kg_retriever.pin_selected(
             user_id=state["user_id"],
             conversation_id=state["conversation_id"],
             turn_node_id=state["turn_node_id"],
             turn_index=state["turn_index"],
             self_span=state["self_span"],
-            selected_knowledge=getattr(kg_raw, "selected"),
+            selected_knowledge=getattr(kg_rehydrated, "selected"),
             prev_turn_meta_summary=prev_turn_meta_summary,
         )
 
@@ -476,12 +527,13 @@ def _decide_summarize(ctx: StepContext) -> StepRunResult:
     #     "prev_node_char_distance_from_last_summary": getattr(prev_turn_meta_summary, "prev_node_char_distance_from_last_summary", 0),
     #     "prev_node_distance_from_last_summary": getattr(prev_turn_meta_summary, "prev_node_distance_from_last_summary", 0),
     # }
-    state_update=[('u', {"should_summarize": should}),
-                #    'u', {"prev_turn_meta_summary": {
-                #             "prev_node_char_distance_from_last_summary": getattr(prev_turn_meta_summary, "prev_node_char_distance_from_last_summary", 0),
-                #             "prev_node_distance_from_last_summary": getattr(prev_turn_meta_summary, "prev_node_distance_from_last_summary", 0),
-                #         }}
-                  ]
+    summary = {
+        "should_summarize": bool(should),
+        "summary_char_threshold": int(summary_char_threshold),
+        "summary_token_threshold": int(deps.get("summary_token_threshold")) if deps.get("summary_token_threshold") is not None else None,
+        "summary_turn_threshold": int(deps.get("summary_turn_threshold", 5)),
+    }
+    state_update: list[StateUpdate] = [('u', {"summary": summary})]
     return RunSuccess(conversation_node_id=None, state_update=state_update)
 
 
@@ -520,7 +572,17 @@ def _summarize(ctx: StepContext) -> StepRunResult:
     #     "prev_node_char_distance_from_last_summary": 0,
     #     "prev_node_distance_from_last_summary": 0,
     # }
-    state_update:list[StateUpdate] = [('u', {"summary_id": added_id}), ('u', {"prev_turn_meta_summary" : prev_turn_meta_summary})]
+    summary = {
+        "should_summarize": True,
+        "did_summarize": True,
+        "summary_node_id": added_id,
+    }
+    mts = {
+        "prev_node_char_distance_from_last_summary": 0,
+        "prev_node_distance_from_last_summary": 0,
+        "tail_turn_index": int(getattr(prev_turn_meta_summary, "tail_turn_index", 0)),
+    }
+    state_update: list[StateUpdate] = [('u', {"summary": summary}), ('u', {"prev_turn_meta_summary": mts})]
     result = RunSuccess(conversation_node_id=added_id, state_update=state_update)
     return result
 

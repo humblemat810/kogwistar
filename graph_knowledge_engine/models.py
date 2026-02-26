@@ -248,6 +248,28 @@ class ContextSnapshotMetadata(BaseModel):
             # Do NOT remove the keys here; let extra=allow keep them if desired.
             # If you prefer strictness, you can pop them here.
         return values
+
+
+class EvidencePackDigest(BaseModel):
+    """A compact, rehydratable description of an evidence pack.
+
+    Mental model:
+    - The *evidence pack* is a concrete JSON payload materialized from KG nodes
+      (and their neighborhood) for citation picking.
+    - This digest stores the parameters needed to rebuild that pack later.
+
+    Rehydration is best-effort:
+    - If the underlying KG changes, re-materialization may differ.
+    - When `evidence_pack_hash` is present, callers can detect drift.
+    """
+
+    node_ids: list[str] = Field(default_factory=list)
+    depth: str = Field("shallow", description="Materialization depth hint (e.g. shallow/deep)")
+    max_chars_per_item: int = Field(0, ge=0)
+    max_total_chars: int = Field(0, ge=0)
+    evidence_pack_hash: str | None = None
+
+    model_config = ConfigDict(extra="allow")
 @dataclass(frozen=True)
 class AddTurnResult():
     user_turn_node_id: str

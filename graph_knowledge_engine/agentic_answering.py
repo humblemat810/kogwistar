@@ -291,6 +291,11 @@ class AgenticAnsweringAgent:
                         "question": question,
                         "candidate_ids": [c.get("node_id") for c in (candidates or []) if isinstance(c, dict) and c.get("node_id")],
                     },
+                    llm_input_payload={
+                        "system_prompt": system_prompt,
+                        "question": question,
+                        "candidate_ids": [c.get("node_id") for c in (candidates or []) if isinstance(c, dict) and c.get("node_id")],
+                    },
                 )
                 run_step_seq += 1
                 selection = self.select_used_evidence_cached(
@@ -319,6 +324,16 @@ class AgenticAnsweringAgent:
                 max_chars_per_item=self.config.max_chars_per_item,
                 max_total_chars=self.config.max_total_chars,
             )
+
+            # Digest is persisted inside ContextSnapshot so we can re-materialize later.
+            from .models import EvidencePackDigest
+            evidence_digest = EvidencePackDigest(
+                node_ids=list(used_node_ids),
+                depth=str(materialize_depth),
+                max_chars_per_item=int(self.config.max_chars_per_item),
+                max_total_chars=int(self.config.max_total_chars),
+                evidence_pack_hash=str(snapshot_hash(evidence_pack)),
+            ).model_dump(mode="python")
             # cached_entry = cache_pydantic_structured(
             #     memory=mem,
             #     model=FakeSelection,
@@ -357,6 +372,11 @@ class AgenticAnsweringAgent:
                     "used_node_ids": used_node_ids,
                     "evidence_pack_hash": snapshot_hash(evidence_pack),
                 },
+                llm_input_payload={
+                    "system_prompt": system_prompt,
+                    "question": question,
+                },
+                evidence_pack_digest=evidence_digest,
             )
             run_step_seq += 1
             ans_json = cached_call(
@@ -392,6 +412,12 @@ class AgenticAnsweringAgent:
                     "used_node_ids": used_node_ids,
                     "answer_hash": snapshot_hash(ans.model_dump()),
                 },
+                llm_input_payload={
+                    "system_prompt": system_prompt,
+                    "question": question,
+                    "answer_text": getattr(ans, "text", None),
+                },
+                evidence_pack_digest=evidence_digest,
             )
             run_step_seq += 1
             ans = cached_call3(
@@ -430,6 +456,12 @@ class AgenticAnsweringAgent:
                     "used_node_ids": used_node_ids,
                     "answer_text": ans.text,
                 },
+                llm_input_payload={
+                    "system_prompt": system_prompt,
+                    "question": question,
+                    "answer_text": ans.text,
+                },
+                evidence_pack_digest=evidence_digest,
             )
             run_step_seq += 1
             last_eval = self._evaluate_answer(
@@ -682,6 +714,36 @@ Select at most {max_used} node ids.
                 }
             )
         return pack
+
+    def rehydrate_evidence_pack_from_digest(self, *, digest: dict[str, Any]) -> dict[str, Any]:
+        """Re-materialize an evidence pack from a persisted digest.
+
+        The digest is expected to match :class:`EvidencePackDigest` from models.py.
+
+        This is **best-effort** rehydration:
+        - If the underlying KG has changed, the reconstructed pack may differ.
+        - If the digest includes `evidence_pack_hash`, callers can compare.
+        """
+        from .models import EvidencePackDigest
+
+        d = EvidencePackDigest.model_validate(digest)
+        pack = self._materialize_evidence_pack(
+            agent=self,
+            node_ids=list(d.node_ids),
+            depth=str(d.depth),
+            max_chars_per_item=int(d.max_chars_per_item or 0),
+            max_total_chars=int(d.max_total_chars or 0),
+        )
+        try:
+            pack_hash = snapshot_hash(pack)
+        except Exception:
+            pack_hash = None
+        return {
+            "evidence_pack": pack,
+            "rehydrated_hash": pack_hash,
+            "expected_hash": d.evidence_pack_hash,
+            "hash_matches": (pack_hash == d.evidence_pack_hash) if (pack_hash and d.evidence_pack_hash) else None,
+        }
     @staticmethod
     def _generate_answer_with_citations(
         agent: "AgenticAnsweringAgent",
@@ -949,6 +1011,8 @@ Return JSON per schema. Be conservative: if key details are missing, set needs_m
         budget_tokens: int,
         tail_turn_index: int,
         extra_hash_payload: dict[str, Any] | None = None,
+        llm_input_payload: dict[str, Any] | None = None,
+        evidence_pack_digest: dict[str, Any] | None = None,
     ) -> str:
         """Phase 2B wrapper (kept for API stability).
 
@@ -965,6 +1029,8 @@ Return JSON per schema. Be conservative: if key details are missing, set needs_m
             budget_tokens=int(budget_tokens or 0),
             tail_turn_index=int(max(0, tail_turn_index or 0)),
             extra_hash_payload=extra_hash_payload,
+            llm_input_payload=llm_input_payload,
+            evidence_pack_digest=evidence_pack_digest,
         )
 
     def _project_kg_node(

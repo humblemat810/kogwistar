@@ -183,8 +183,22 @@ def apply_ordering(*, items: list[ContextItem], ordering: str | None, phase: Lit
         return strat.pre_pack(items)
     return strat.post_pack(items)
 from pydantic import BaseModel, model_validator
-# @dataclass(frozen=True)
-class ConversationContextView(BaseModel):
+
+
+class PromptContext(BaseModel):
+    """A rendered prompt context for an LLM call.
+
+    Mental model:
+    - This object is the *LLM-facing* view: an ordered list of `ContextItem`s
+      plus the final `ContextMessage`s that will be sent to the model.
+    - It is primarily a **debug/telemetry artifact** produced at runtime.
+      It is safe to persist as a *snapshot* when you need replayability.
+    - It is NOT meant to represent the entire conversation graph.
+
+    Naming:
+    - This used to be called `ConversationContextView`.
+      We keep a backwards-compatible alias below.
+    """
     conversation_id: str
     purpose: str
 
@@ -265,6 +279,10 @@ class ConversationContextView(BaseModel):
                     raise ValueError(f"Unknown drop reason: {getattr(d, 'reason', None)}")
         return self
 
+
+# Backwards-compatibility: older code may still import ConversationContextView.
+ConversationContextView = PromptContext
+
 class ContextRenderer:
     def render(self, items, *, purpose: str):
 
@@ -327,7 +345,7 @@ class ConversationContextBuilder:
         self.tokenizer = tokenizer
         self.renderer = renderer
 
-    def build(self, *, conversation_id: str, purpose: str, budget_tokens: int, ordering_strategy: str | None = None) -> ConversationContextView:
+    def build(self, *, conversation_id: str, purpose: str, budget_tokens: int, ordering_strategy: str | None = None) -> PromptContext:
         # 1) gather candidates
         candidates: list[ContextItem] = self.sources.gather(
             conversation_id=conversation_id,
@@ -389,7 +407,7 @@ class ConversationContextBuilder:
         pinned_memory_ids = tuple(i.node_id for i in kept if i.kind == "pinned_memory" and i.node_id)
         pinned_kg_ref_ids = tuple(i.node_id for i in kept if i.kind == "pinned_kg_ref" and i.node_id)
 
-        return ConversationContextView(
+        return PromptContext(
             conversation_id=conversation_id,
             purpose=purpose,
             token_budget=budget_tokens,
@@ -420,6 +438,17 @@ class _EdgeSelection:
     edge_ids_for_memctx: set[str]
     edge_ids_for_ptr: set[str]
 class ContextSources:
+    """Gather *candidate* context items from the conversation graph.
+
+    This is a convenience/debug layer.
+
+    It does **not** mean "persist the entire conversation graph".
+    The returned items are merely inputs to prompt construction.
+
+    If you need replayable prompt inputs, persist a **ContextSnapshot** that
+    captures the final PromptContext (messages/items) and any evidence-pack
+    digests used for answering.
+    """
     def __init__(
         self,
         *,

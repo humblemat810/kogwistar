@@ -181,23 +181,31 @@ def validate_workflow_design(
     workflow_id: str,
     predicate_registry: Dict[str, Predicate],
 ):
+    """Validate an engine-backed workflow design.
+
+    Supports both legacy metadata keys (predicate/terminal/start/priority)
+    and the newer wf_* schema (wf_predicate/wf_terminal/wf_start/wf_priority).
+    """
     start, nodes, adj, rev_adj = load_workflow_design(workflow_engine=workflow_engine, workflow_id=workflow_id)
     adj: dict[str, list[WorkflowEdge]]
+
     # predicate resolution
     for edges in adj.values():
-        edges: list[WorkflowEdge]
         for e in edges:
-            predicate: str | None = (e.metadata.get("wf_predicate") if (e.metadata or {}).get("wf_predicate") is not None else e.metadata.get("predicate"))
-            if predicate is not None and predicate not in predicate_registry:
-                raise ValueError(f"Unknown predicate {predicate!r} on workflow edge {e.id}")
+            pred: str | None = e.metadata.get("wf_predicate", e.metadata.get("predicate"))
+            if pred is not None and pred not in predicate_registry:
+                raise ValueError(f"Unknown predicate {pred!r} on workflow edge {e.id}")
 
     # must have at least one terminal reachable ignoring predicates
-    terminals = {nid for nid, n in nodes.items() if (n.metadata.get("wf_terminal") or n.metadata.get("terminal")) or len(adj.get(nid, [])) == 0}
+    terminals = {
+        nid
+        for nid, n in nodes.items()
+        if (n.metadata.get("wf_terminal", n.metadata.get("terminal")) or len(adj.get(nid, [])) == 0)
+    }
     if not terminals:
         raise ValueError("Workflow has no terminal nodes and no sink nodes")
 
-    start: WorkflowNode
-    seen = set()
+    seen: set[str] = set()
     stack = [start.id]
     while stack:
         cur = stack.pop()
@@ -205,13 +213,172 @@ def validate_workflow_design(
             continue
         seen.add(cur)
         for e in adj.get(cur, []):
-            e: WorkflowEdge
             for target_id in e.target_ids:
                 if target_id not in seen:
                     stack.append(target_id)
-            # if e.dst not in seen:
-            #     stack.append(e.dst)
 
     if not any(t in seen for t in terminals):
         raise ValueError("No terminal reachable from start (ignoring predicates).")
     return start, nodes, adj
+
+
+class BaseWorkflowDesigner:
+
+    """Base helper for building/validating workflow designs.
+
+    This is intentionally lightweight: it does not assume any conversation-specific
+    invariants. Subclasses can add domain constraints.
+    """
+
+    def __init__(self, *, workflow_engine: Any, predicate_registry: Dict[str, Predicate]):
+        self.workflow_engine = workflow_engine
+        self.predicate_registry = predicate_registry
+
+    def validate(self, *, workflow_id: str):
+        return validate_workflow_design(
+            workflow_engine=self.workflow_engine,
+            workflow_id=workflow_id,
+            predicate_registry=self.predicate_registry,
+        )
+
+
+class ConversationWorkflowDesigner(BaseWorkflowDesigner):
+
+    """Conversation-specific designer.
+
+    Phase 2D Step 1/2:
+    - ensure a minimal backbone design exists (start -> end)
+    - validate the design schema + predicate resolution
+
+    Phase 2D Step 3+:
+    - will enforce stricter conversation invariants (chain linearity, sidecar rules, etc.)
+    """
+
+    def ensure_add_turn_flow(
+        self,
+        *,
+        workflow_id: str,
+        mode: str = "full",
+        include_context_snapshot: bool = True,
+    ) -> tuple[WorkflowNode, dict[str, WorkflowNode], dict[str, list[WorkflowEdge]]]:
+        """Ensure the Phase-2D add_turn workflow design exists.
+
+        This is the single source of truth for conversation workflow charts.
+
+        - mode="backbone": creates a minimal start->end workflow (start op="start")
+        - mode="full": creates the v1-parity add_turn flow using step ops resolved by the resolver.
+        """
+        if mode not in ("backbone", "full"):
+            raise ValueError(f"Unknown mode={mode!r}; expected 'backbone' or 'full'")
+
+        # If already present and valid, return it.
+        try:
+            return self.validate(workflow_id=workflow_id)
+        except Exception:
+            pass
+
+        # Lazy import to avoid circular deps for model classes.
+        from ..models import WorkflowNode, WorkflowEdge
+
+        wid = lambda suffix: f"wf:{workflow_id}:{suffix}"
+
+        def add_node(*, node_id: str, label: str, op: str | None, start: bool = False, terminal: bool = False, fanout: bool = False):
+            n = WorkflowNode(
+                id=node_id,
+                label=label,
+                type="entity",
+                doc_id=node_id,
+                summary=label,
+                properties={},
+                metadata={
+                    "entity_type": "workflow_node",
+                    "workflow_id": workflow_id,
+                    "wf_op": op,
+                    "wf_start": start,
+                    "wf_terminal": terminal,
+                    "wf_fanout": fanout,
+                    "wf_version": "v2",
+                },
+            )
+            self.workflow_engine.add_node(n)
+
+        def add_edge(*, edge_id: str, src: str, dst: str, pred: str | None, priority: int = 100, is_default: bool = False, multiplicity: str = "one"):
+            e = WorkflowEdge(
+                id=edge_id,
+                label="wf_next",
+                type="entity",
+                doc_id=edge_id,
+                summary="wf_next",
+                properties={},
+                source_id=src,
+                target_ids=[dst],
+                metadata={
+                    "entity_type": "workflow_edge",
+                    "workflow_id": workflow_id,
+                    "wf_edge_kind": "wf_next",
+                    "wf_predicate": pred,
+                    "wf_priority": priority,
+                    "wf_is_default": is_default,
+                    "wf_multiplicity": multiplicity,
+                },
+            )
+            self.workflow_engine.add_edge(e)
+
+        # ----------------------------
+        # Backbone: start -> end
+        # ----------------------------
+        if mode == "backbone":
+            start_id = wid("start")
+            end_id = wid("end")
+            add_node(node_id=start_id, label="Start", op="start", start=True, terminal=False)
+            add_node(node_id=end_id, label="End", op=None, start=False, terminal=True)
+            add_edge(edge_id=wid("next_start_end"), src=start_id, dst=end_id, pred="always", priority=100, is_default=True)
+            return self.validate(workflow_id=workflow_id)
+
+        # ----------------------------
+        # Full v1-parity add_turn flow
+        # ----------------------------
+        add_node(node_id=wid("start"), label="Start (memory_retrieve)", op="memory_retrieve", start=True, terminal=False)
+        add_node(node_id=wid("kg"), label="KG retrieve", op="kg_retrieve", fanout=True)
+        add_node(node_id=wid("pin_mem"), label="Pin memory", op="memory_pin")
+        add_node(node_id=wid("pin_kg"), label="Pin knowledge", op="kg_pin")
+        add_node(node_id=wid("answer"), label="Answer", op="answer")
+
+        if include_context_snapshot:
+            add_node(node_id=wid("ctx_snap"), label="Context snapshot", op="context_snapshot")
+
+        add_node(node_id=wid("decide_sum"), label="Decide summarize", op="decide_summarize")
+        add_node(node_id=wid("summarize"), label="Summarize", op="summarize")
+        add_node(node_id=wid("end"), label="End", op=None, terminal=True)
+
+        # edges
+        add_edge(edge_id=wid("e1"), src=wid("start"), dst=wid("kg"), pred=None, is_default=True)
+
+        # From KG retrieve, optionally pin both memory and KG (fanout node).
+        add_edge(edge_id=wid("e2"), src=wid("kg"), dst=wid("pin_mem"), pred="should_pin_memory", priority=0)
+        add_edge(edge_id=wid("e3"), src=wid("kg"), dst=wid("pin_kg"), pred="should_pin_kg", priority=1)
+
+        # If no pins happen, go straight to answer.
+        add_edge(edge_id=wid("e4"), src=wid("kg"), dst=wid("answer"), pred=None, is_default=True)
+        # After pins, continue to answer.
+        add_edge(edge_id=wid("e5"), src=wid("pin_mem"), dst=wid("answer"), pred=None, is_default=True)
+        add_edge(edge_id=wid("e6"), src=wid("pin_kg"), dst=wid("answer"), pred=None, is_default=True)
+
+        if include_context_snapshot:
+            add_edge(edge_id=wid("e7"), src=wid("answer"), dst=wid("ctx_snap"), pred=None, is_default=True)
+            add_edge(edge_id=wid("e7b"), src=wid("ctx_snap"), dst=wid("decide_sum"), pred=None, is_default=True)
+        else:
+            add_edge(edge_id=wid("e7"), src=wid("answer"), dst=wid("decide_sum"), pred=None, is_default=True)
+
+        add_edge(edge_id=wid("e8"), src=wid("decide_sum"), dst=wid("summarize"), pred="should_summarize", priority=0)
+        add_edge(edge_id=wid("e9"), src=wid("decide_sum"), dst=wid("end"), pred=None, is_default=True)
+        add_edge(edge_id=wid("e10"), src=wid("summarize"), dst=wid("end"), pred=None, is_default=True)
+
+        return self.validate(workflow_id=workflow_id)
+
+    def ensure_backbone(self, *, workflow_id: str) -> tuple[WorkflowNode, dict[str, WorkflowNode], dict[str, list[WorkflowEdge]]]:
+        """Backward-compatible alias for backbone design.
+
+        Kept for existing tests/callers; delegates to :meth:`ensure_add_turn_flow`.
+        """
+        return self.ensure_add_turn_flow(workflow_id=workflow_id, mode="backbone", include_context_snapshot=False)

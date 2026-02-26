@@ -4820,7 +4820,9 @@ class GraphKnowledgeEngine:
         model_name: str = "",
         budget_tokens: int = 0,
         tail_turn_index: int = 0,
-        extra_hash_payload = None
+        extra_hash_payload = None,
+        llm_input_payload: dict[str, Any] | None = None,
+        evidence_pack_digest: dict[str, Any] | None = None,
     ) -> str:
         """Persist a context_snapshot node + depends_on edges for a single LLM call.
 
@@ -4840,14 +4842,21 @@ class GraphKnowledgeEngine:
             h.update(_stable_json(payload).encode("utf-8"))
             return h.hexdigest()
 
-        # normalize messages for stable hashing
+        # normalize messages for stable hashing + persistence
         msgs = list(getattr(view, "messages", None) or [])
         norm_msgs: list[dict[str, str]] = []
         for m in msgs:
             role = getattr(m, "role", None) or (m.get("role") if isinstance(m, dict) else None)
             content = getattr(m, "content", None) or (m.get("content") if isinstance(m, dict) else None)
             norm_msgs.append({"role": str(role or ""), "content": str(content or "")})
-        rendered_hash = _snapshot_hash({"messages": norm_msgs, "extra_hash_payload": extra_hash_payload})
+        rendered_hash = _snapshot_hash(
+            {
+                "messages": norm_msgs,
+                "llm_input_payload": llm_input_payload,
+                "evidence_pack_digest": evidence_pack_digest,
+                "extra_hash_payload": extra_hash_payload,
+            }
+        )
 
         used_node_ids: list[str] = []
         for it in (getattr(view, "items", None) or []):
@@ -4897,7 +4906,15 @@ class GraphKnowledgeEngine:
                 conversation_id=conversation_id,
                 role="system",  # type: ignore
                 turn_index=None,
-                properties={"entity_type": "context_snapshot"},
+                # IMPORTANT:
+                # - `properties` may store nested JSON; keep large payloads here.
+                # - `metadata` must remain Chroma-friendly (flat, primitives).
+                properties={
+                    "entity_type": "context_snapshot",
+                    "prompt_messages": norm_msgs,
+                    "llm_input_payload": llm_input_payload or {},
+                    "evidence_pack_digest": evidence_pack_digest or {},
+                },
                 mentions=[Grounding(spans=[self.make_conversation_span(conversation_id)])],
                 metadata={
                     # chain flags MUST be false
@@ -4976,6 +4993,46 @@ class GraphKnowledgeEngine:
             except Exception:
                 return 0
         return sorted(snaps, key=_k)[-1]
+
+    @conversation_only
+    def get_context_snapshot_payload(
+        self,
+        *,
+        snapshot_node_id: str,
+    ) -> dict[str, Any]:
+        """Return the persisted payload for a context_snapshot node.
+
+        This is intentionally "dumb": it just returns what we persisted
+        in `ConversationNode.properties`.
+
+        Use-cases:
+        - replay/debug: inspect the exact prompt messages used
+        - rehydration: fetch `evidence_pack_digest` then ask the answering agent
+          (which knows how to materialize KG evidence) to rebuild the pack.
+        """
+        got = self.backend.node_get(ids=[snapshot_node_id], include=["documents", "metadatas"])
+        ids = got.get("ids") or []
+        if not ids:
+            raise KeyError(f"context snapshot node not found: {snapshot_node_id!r}")
+        # We store ConversationNode JSON in `documents` (engine convention).
+        doc = (got.get("documents") or [None])[0]
+        if isinstance(doc, str):
+            import json
+            try:
+                payload = json.loads(doc)
+                if isinstance(payload, dict):
+                    props = payload.get("properties") or {}
+                    return {
+                        "properties": props,
+                        "metadata": (payload.get("metadata") or {}),
+                    }
+            except Exception:
+                pass
+        # Fallback: if we can't decode, at least return flat metadatas
+        return {
+            "properties": {},
+            "metadata": (got.get("metadatas") or [{}])[0] or {},
+        }
     @conversation_only
     def latest_context_snapshot_cost(
         self,
