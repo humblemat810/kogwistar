@@ -12,6 +12,7 @@ import logging
 from contextlib import nullcontext
 
 from graph_knowledge_engine.id_provider import stable_id
+from graph_knowledge_engine.models import RunSuccess, RunFailure, StateUpdate
 from ..conversation_orchestrator import get_id_for_conversation_turn_edge
 from graph_knowledge_engine.models import WorkflowNode, MentionVerification, ConversationEdge, WorkflowEdge, WorkflowRunNode
 
@@ -202,33 +203,12 @@ State = Dict[str, Json]
 from typing import TypedDict, Literal, TypeAlias, Any, Type, Literal, Union
 from .contract import WorkflowEdgeInfo
 from dataclasses import dataclass
-from pydantic import BaseModel
 
-StateAppendUpdate = tuple[Literal['u'], Any]
-StateOverwriteUpdate = tuple[Literal['a'], Any]
-StateUpdate = Union[StateAppendUpdate , StateOverwriteUpdate]
+
 from graph_knowledge_engine.models import WorkflowStepExecNode, Grounding, Span
     
+from graph_knowledge_engine.models import StepRunResult
 
-class RunSuccess(BaseModel):
-    conversation_node_id: str|None  # node id of the 'entry point' of the node cluster created in a resolver step, 
-    #step can create multiple node edges but at least should expose a node to connect to the main node net
-    state_update: list[StateUpdate]
-    # Optional native update dict (schema-driven). This does NOT replace state_update.
-    # When present, WorkflowRuntime.run() applies it using state_schema and then
-    # falls back unknown keys into DSL ('u') overwrite semantics.
-    update: dict[str, Any] | None = None
-    next_step_names: list[str] = []  # empty will by default fan out all
-    status: Literal["success"] = "success"
-
-class RunFailure(BaseModel):
-    conversation_node_id: Optional[str]
-    state_update: list[StateUpdate] # can still update, append an error message
-    update: dict[str, Any] | None = None
-    errors: list[str]
-    next_step_names: list[str] = []  # empty will by default fan out all
-    status: Literal["failure"] = "failure"
-StepRunResult: TypeAlias = RunSuccess | RunFailure
 StepFn: TypeAlias = Callable[["StepContext"], StepRunResult]
 from ..conversation_state_contracts import WorkflowState
 
@@ -534,7 +514,8 @@ class WorkflowRuntime:
                 "join_node_ids": join_node_ids,
                 "join_outstanding": list(_join_outstanding),
                 "join_waiters": {jid: list(masks) for jid, masks in _join_waiters.items()},
-                "pending": [(nid, int(mask), str(token_id), (str(parent_token_id) if parent_token_id is not None else None)) for nid, mask, token_id, parent_token_id in pending],
+                "pending": [(nid, int(mask), str(token_id), (str(parent_token_id) if parent_token_id is not None else None)) 
+                                    for nid, mask, token_id, parent_token_id in pending],
             }
 
         def _rt_join_restore() -> list[tuple[str, int, str, str | None]] | None:

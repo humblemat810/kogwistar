@@ -264,6 +264,7 @@ class EvidencePackDigest(BaseModel):
     """
 
     node_ids: list[str] = Field(default_factory=list)
+    edge_ids: list[str] = Field(default_factory=list)
     depth: str = Field("shallow", description="Materialization depth hint (e.g. shallow/deep)")
     max_chars_per_item: int = Field(0, ge=0)
     max_total_chars: int = Field(0, ge=0)
@@ -1803,3 +1804,27 @@ EntitiyTypeToEdgeTypeMapping = {
     "edge" : Edge,
     "conversation_edge": ConversationEdge,
 }
+
+StateAppendUpdate = tuple[Literal['u'], Any]
+StateOverwriteUpdate = tuple[Literal['a'], Any]
+StateUpdate = Union[StateAppendUpdate , StateOverwriteUpdate]
+class RunSuccess(BaseModel):
+    conversation_node_id: str|None  # node id of the 'entry point' of the node cluster created in a resolver step, 
+    #step can create multiple node edges but at least should expose a node to connect to the main node net
+    state_update: list[StateUpdate]
+    # Optional native update dict (schema-driven). This does NOT replace state_update.
+    # When present, WorkflowRuntime.run() applies it using state_schema and then
+    # falls back unknown keys into DSL ('u') overwrite semantics.
+    update: dict[str, Any] | None = None
+    next_step_names: list[str] = []  # empty will by default fan out all
+    status: Literal["success"] = "success"
+
+
+class RunFailure(BaseModel):
+    conversation_node_id: Optional[str]
+    state_update: list[StateUpdate] # can still update, append an error message
+    update: dict[str, Any] | None = None
+    errors: list[str]
+    next_step_names: list[str] = []  # empty will by default fan out all
+    status: Literal["failure"] = "failure"
+StepRunResult: TypeAlias = RunSuccess | RunFailure    

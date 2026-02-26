@@ -10,7 +10,7 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.runnables import Runnable
 
 from graph_knowledge_engine.id_provider import stable_id
-from graph_knowledge_engine.models import ConversationNode, MetaFromLastSummary, Span, Grounding, RetrievalResult, SelectedItems
+from graph_knowledge_engine.models import ConversationNode, MetaFromLastSummary, Span, Grounding, RetrievalResult
 from graph_knowledge_engine.conversation_orchestrator import ConversationOrchestrator, get_id_for_conversation_turn
 from graph_knowledge_engine.agentic_answering import AgentConfig, AgenticAnsweringAgent, AnswerWithCitations, AnswerEvaluation
 
@@ -233,7 +233,7 @@ def scenario_backbone_only(*, mode: str, backend_kind: str, tmp_path, sa_engine,
             mem_id="m1",
             role="user",  # type: ignore
             content="hello",
-            filtering_callback=lambda **kw: (RetrievalResult(selected=SelectedItems(node_ids=[], edge_ids=[]), reasoning=""), ""),
+            filtering_callback=lambda **kw: (RetrievalResult(nodes=[], edges=[])),
             add_turn_only=True,
         )
         return conv, "v1"
@@ -246,7 +246,7 @@ def scenario_backbone_only(*, mode: str, backend_kind: str, tmp_path, sa_engine,
             mem_id="m1",
             role="user",  # type: ignore
             content="hello",
-            filtering_callback=lambda **kw: (RetrievalResult(selected=SelectedItems(node_ids=[], edge_ids=[]), reasoning=""), ""),
+            filtering_callback=lambda **kw: (RetrievalResult(nodes=[], edges=[])),
             workflow_id="phase2d_backbone",
             add_turn_only=True,
             max_workers=1,

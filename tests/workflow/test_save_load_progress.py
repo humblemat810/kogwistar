@@ -14,7 +14,7 @@ from graph_knowledge_engine.models import (
 
 from graph_knowledge_engine.workflow.runtime import WorkflowRuntime
 from graph_knowledge_engine.workflow.replay import load_checkpoint, replay_to
-from graph_knowledge_engine.workflow.resolvers import RunSuccess
+from graph_knowledge_engine.models import RunSuccess
 
 
 def _span() -> Span:

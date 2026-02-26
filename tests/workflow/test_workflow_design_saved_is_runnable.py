@@ -11,7 +11,8 @@ from graph_knowledge_engine.models import (
     Span,
     MentionVerification,
 )
-from graph_knowledge_engine.workflow.runtime import RunSuccess, WorkflowRuntime
+from graph_knowledge_engine.workflow.runtime import WorkflowRuntime
+from graph_knowledge_engine.models import RunSuccess
 
 
 def _span() -> Span:

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 
 from ..models import MetaFromLastSummary, KnowledgeRetrievalResult, MemoryRetrievalResult
-from .runtime import StateUpdate
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from .runtime import StateUpdate
 """Workflow step resolvers.
 
 This module provides a registry-based step resolver that can be used by
@@ -34,16 +36,21 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, Mapping, Optional, Union
 # Best-effort self-inspection for state schema inference
 import ast
 import inspect
-if TYPE_CHECKING:
-    from tool_runner import ToolRunner
 
 Json = Any
+if TYPE_CHECKING:
+    from tool_runner import ToolRunner
+    from graph_knowledge_engine.workflow.runtime import StepRunResult, StepContext
+    RawStepFn = Callable[[StepContext], Union[Json, StepRunResult]]
+
+from graph_knowledge_engine.models import RunSuccess
 
 # Import your real RunResult types from runtime/models
-from graph_knowledge_engine.workflow.runtime import RunFailure, StepRunResult, RunSuccess, StepContext
+
+
 from graph_knowledge_engine.models import ConversationEdge, Span
-from graph_knowledge_engine.conversation_orchestrator import get_id_for_conversation_turn_edge
-RawStepFn = Callable[[StepContext], Union[Json, StepRunResult]]
+
+
 
 # Agentic answering helper types
 from ..agentic_answering import AgenticAnsweringAgent, snapshot_hash, AnswerWithCitations, AnswerEvaluation
@@ -67,6 +74,7 @@ class MappingStepResolver:
 
     def resolve(self, op: str) -> Callable[[StepContext], StepRunResult]:
         raw = self.handlers.get(op) or self.default
+        from graph_knowledge_engine.models import RunFailure
         if raw is None:
             raise KeyError(f"No step handler registered for op={op!r}")
 
@@ -458,6 +466,7 @@ def _kg_pin(ctx: StepContext) -> StepRunResult:
 @default_resolver.register("answer")
 def _answer(ctx: StepContext) -> StepRunResult:
     """Run answer-only agent, then link assistant turn into conversation chain."""
+    from graph_knowledge_engine.conversation_orchestrator import get_id_for_conversation_turn_edge
     deps = _deps(ctx)
     with ctx.state_write as state:
         state.setdefault("op_log", []).append("answer")
@@ -667,6 +676,7 @@ def _aa_get_view_and_question(ctx: StepContext) -> StepRunResult:
     question = agent._get_last_user_text(messages)
     system_prompt = deps["conversation_engine"].get_system_prompt(conversation_id)
     if not question:
+        from graph_knowledge_engine.models import RunFailure
         return RunFailure(conversation_node_id=None, state_update=[('a', {"op_log": "aa_get_view_and_question: no user message"})], errors=["No user message found in conversation"])
 
     # Store view runtime-only (may not be jsonable).
@@ -768,6 +778,7 @@ def _aa_materialize_evidence_pack(ctx: StepContext) -> StepRunResult:
     agent = _aa_agent(ctx)
     sv = ctx.state_view
     used_node_ids = list(sv.get("used_node_ids") or [])
+    used_edge_ids = list(sv.get("used_edge_ids") or [])
     materialize_depth = str(sv.get("materialize_depth") or agent.config.materialize_depth)
 
     from ..utils.pydanic_model_consumer_wrapper import cache_pydantic_structured
@@ -792,6 +803,7 @@ def _aa_materialize_evidence_pack(ctx: StepContext) -> StepRunResult:
     evidence_pack_hash = snapshot_hash(evidence_pack)
     evidence_digest = EvidencePackDigest(
         node_ids=list(used_node_ids),
+        edge_ids=list(used_edge_ids),
         depth=str(materialize_depth),
         max_chars_per_item=int(agent.config.max_chars_per_item),
         max_total_chars=int(agent.config.max_total_chars),
