@@ -27,6 +27,8 @@ The orchestrator should populate `_deps` in the workflow initial_state.
 """
 
 from dataclasses import dataclass
+import pathlib
+import time
 from typing import TYPE_CHECKING, Any, Callable, Dict, Mapping, Optional, Union
 
 # Best-effort self-inspection for state schema inference
@@ -39,9 +41,12 @@ Json = Any
 
 # Import your real RunResult types from runtime/models
 from graph_knowledge_engine.workflow.runtime import RunFailure, StepRunResult, RunSuccess, StepContext
-from graph_knowledge_engine.models import ConversationEdge
+from graph_knowledge_engine.models import ConversationEdge, Span
 from graph_knowledge_engine.conversation_orchestrator import get_id_for_conversation_turn_edge
 RawStepFn = Callable[[StepContext], Union[Json, StepRunResult]]
+
+# Agentic answering helper types
+from ..agentic_answering import AgenticAnsweringAgent, snapshot_hash, AnswerWithCitations, AnswerEvaluation
 
 @dataclass
 class MappingStepResolver:
@@ -170,6 +175,16 @@ def _deps(ctx: StepContext) -> Dict[str, Any]:
     return deps
 
 
+def _aa_agent(ctx: StepContext):
+    deps = _deps(ctx)
+    agent: AgenticAnsweringAgent | None = deps.get("agent")
+    if agent is None:
+        raise Exception("agent missing in dependency")
+    if agent is None:
+        raise RuntimeError("agentic answering ops require deps['agent']")
+    return agent
+
+
 @default_resolver.register("start")
 def _start(ctx: StepContext) -> StepRunResult:
     with ctx.state_write as state:
@@ -286,10 +301,8 @@ def _memory_retrieve(ctx: StepContext) -> StepRunResult:
             prev_turn_meta_summary=prev_turn_meta_summary,
         )
 
-    # ctx.state["memory_raw"] = mem
     memj = to_jsonable(mem)
-    state_update: list[StateUpdate] = [('u', {'memory': memj})]
-    # ctx.state["memory"] = memj
+    state_update: list[StateUpdate] = [('u', {"memory": memj})]
     result = RunSuccess(conversation_node_id=call_node_id, state_update=state_update)
     return result
 
@@ -350,7 +363,6 @@ def _kg_retrieve(ctx: StepContext) -> StepRunResult:
         )
     # ctx.state["kg_raw"] = kg
     kgj = to_jsonable(kg)
-    # ctx.state["kg"] = kgj
     state_update = [('u', {'kg': kgj})]
     return RunSuccess(conversation_node_id=call_node_id, state_update=state_update)
 
@@ -366,7 +378,7 @@ def _memory_pin(ctx: StepContext) -> StepRunResult:
 
     prev_turn_meta_summary = deps.get("prev_turn_meta_summary")
     state = ctx.state_view
-    mem_rehydrated = MemoryRetrievalResult(**state.get("memj"))
+    mem_rehydrated = MemoryRetrievalResult(**state.get("memory"))
     mem_retriever = MemoryRetriever(
         conversation_engine=deps["conversation_engine"],
         llm=deps["llm"],
@@ -423,7 +435,7 @@ def _kg_pin(ctx: StepContext) -> StepRunResult:
         max_retrieval_level=max_retrieval_level,
     )
 
-    kg_rehydrated = KnowledgeRetrievalResult(**state.get("kg_pin"))
+    kg_rehydrated = KnowledgeRetrievalResult(**state.get("kg"))
     pinned_ptrs: list[str] = []
     pinned_edges: list[str] = []
     if kg_rehydrated is not None and getattr(kg_rehydrated, "selected", None):
@@ -593,3 +605,561 @@ def _end(ctx: StepContext) -> StepRunResult:
         state.setdefault("op_log", []).append("end")
     result = RunSuccess(conversation_node_id=None, state_update=[('u',{"done": True})])
     return result
+
+
+# =====================================================================
+# Agentic Answering workflow ops (rewrite of AgenticAnsweringAgent.answer)
+# =====================================================================
+
+
+@default_resolver.register("aa_prepare")
+def _aa_prepare(ctx: StepContext) -> StepRunResult:
+    agent = _aa_agent(ctx)
+    sv = ctx.state_view
+    conversation_id = str(sv["conversation_id"])
+
+    # Keep these aligned with agentic_answering.answer() defaults.
+    run_id = str(sv.get("run_id") or f"run_{int(time.time()*1000)}")
+
+    # Create run anchor in canvas.
+    run_node_id = agent._ensure_run_anchor(conversation_id=conversation_id, run_id=run_id)
+
+    # Step identity counters.
+    run_step_seq = int(sv.get("run_step_seq") or 0)
+    attempt_seq = int(sv.get("attempt_seq") or 0)
+    iter_idx = int(sv.get("iter_idx") or 0)
+
+    # Policy knobs that can escalate across iterations.
+    max_candidates = int(sv.get("max_candidates") or agent.config.max_candidates)
+    materialize_depth = str(sv.get("materialize_depth") or agent.config.materialize_depth)
+
+    state_update: list[StateUpdate] = [
+        ('u', {
+            "run_id": run_id,
+            "run_node_id": run_node_id,
+            "run_step_seq": run_step_seq,
+            "attempt_seq": attempt_seq,
+            "iter_idx": iter_idx,
+            "max_candidates": max_candidates,
+            "materialize_depth": materialize_depth,
+        }),
+        ('a', {"op_log": "aa_prepare"}),
+    ]
+    return RunSuccess(conversation_node_id=run_node_id, state_update=state_update)
+
+
+@default_resolver.register("aa_get_view_and_question")
+def _aa_get_view_and_question(ctx: StepContext) -> StepRunResult:
+    agent = _aa_agent(ctx)
+    deps = _deps(ctx)
+    sv = ctx.state_view
+    conversation_id = str(sv["conversation_id"])
+    user_id = sv.get("user_id")
+
+    # Fetch conversation state.
+    view = deps["conversation_engine"].get_conversation_view(
+        conversation_id=conversation_id,
+        user_id=user_id,
+        purpose="answer",
+        budget_tokens=6000,
+    )
+    messages = getattr(view, "messages", None)
+    question = agent._get_last_user_text(messages)
+    system_prompt = deps["conversation_engine"].get_system_prompt(conversation_id)
+    if not question:
+        return RunFailure(conversation_node_id=None, state_update=[('a', {"op_log": "aa_get_view_and_question: no user message"})], errors=["No user message found in conversation"])
+
+    # Store view runtime-only (may not be jsonable).
+    with ctx.state_write as state:
+        state.setdefault("_rt", {})["view"] = view
+
+    state_update: list[StateUpdate] = [
+        ('u', {"system_prompt": system_prompt, "question": question}),
+        ('a', {"op_log": "aa_get_view_and_question"}),
+    ]
+    return RunSuccess(conversation_node_id=None, state_update=state_update)
+
+
+@default_resolver.register("aa_retrieve_candidates")
+def _aa_retrieve_candidates(ctx: StepContext) -> StepRunResult:
+    agent = _aa_agent(ctx)
+    sv = ctx.state_view
+    question = str(sv.get("question") or "")
+    max_candidates = int(sv.get("max_candidates") or agent.config.max_candidates)
+
+    candidates = agent._retrieve_candidates(question)[:max_candidates]
+    state_update: list[StateUpdate] = [
+        ('u', {"candidates": candidates}),
+        ('a', {"op_log": f"aa_retrieve_candidates:{len(candidates)}"}),
+    ]
+    return RunSuccess(conversation_node_id=None, state_update=state_update)
+
+
+@default_resolver.register("aa_select_used_evidence")
+def _aa_select_used_evidence(ctx: StepContext) -> StepRunResult:
+    agent = _aa_agent(ctx)
+    deps = _deps(ctx)
+    sv = ctx.state_view
+
+    conversation_id = str(sv["conversation_id"])
+    run_id = str(sv.get("run_id") or "")
+    run_step_seq = int(sv.get("run_step_seq") or 0)
+    attempt_seq = int(sv.get("attempt_seq") or 0)
+
+    question = str(sv.get("question") or "")
+    system_prompt = str(sv.get("system_prompt") or "")
+    candidates = list(sv.get("candidates") or [])
+
+    # Pull view for snapshots.
+    view = (sv.get("_rt") or {}).get("view")
+    if view is None:
+        view = deps["conversation_engine"].get_conversation_view(conversation_id=conversation_id, purpose="answer")
+        with ctx.state_write as state:
+            state.setdefault("_rt", {})["view"] = view
+
+    if (agent.config.evidence_selector or "llm").lower() == "bm25":
+        selection = agent._select_used_evidence_bm25(question=question, candidates=candidates)
+        selection_dict = selection.model_dump()
+    else:
+        prev_turn_meta_summary = deps.get("prev_turn_meta_summary")
+        agent._persist_context_snapshot(
+            conversation_id=conversation_id,
+            run_id=run_id,
+            run_step_seq=run_step_seq,
+            attempt_seq=attempt_seq,
+            stage="select_used_evidence",
+            view=view,
+            model_name=str(getattr(deps.get("llm"), "model_name", "") or ""),
+            budget_tokens=int(getattr(view, "token_budget", 0) or 0),
+            tail_turn_index=int(getattr(prev_turn_meta_summary, "tail_turn_index", 0) or 0),
+            extra_hash_payload={
+                "question": question,
+                "candidate_ids": [c.get("id") for c in (candidates or []) if isinstance(c, dict) and c.get("id")],
+            },
+            llm_input_payload={
+                "system_prompt": system_prompt,
+                "question": question,
+                "candidate_ids": [c.get("id") for c in (candidates or []) if isinstance(c, dict) and c.get("id")],
+            },
+        )
+        run_step_seq += 1
+        selection = agent.select_used_evidence_cached(
+            system_prompt=system_prompt,
+            question=question,
+            candidates=candidates,
+            cache_dir=agent.cache_dir,
+        )
+        selection_dict = selection.model_dump()
+
+    used_node_ids = list((selection_dict.get("used_node_ids") or [])[: agent.config.max_used])
+    state_update: list[StateUpdate] = [
+        ('u', {
+            "selection": selection_dict,
+            "used_node_ids": used_node_ids,
+            "run_step_seq": run_step_seq,
+        }),
+        ('a', {"op_log": f"aa_select_used_evidence:{len(used_node_ids)}"}),
+    ]
+    return RunSuccess(conversation_node_id=None, state_update=state_update)
+
+
+@default_resolver.register("aa_materialize_evidence_pack")
+def _aa_materialize_evidence_pack(ctx: StepContext) -> StepRunResult:
+    agent = _aa_agent(ctx)
+    sv = ctx.state_view
+    used_node_ids = list(sv.get("used_node_ids") or [])
+    materialize_depth = str(sv.get("materialize_depth") or agent.config.materialize_depth)
+
+    from ..utils.pydanic_model_consumer_wrapper import cache_pydantic_structured
+    from joblib import Memory
+    from ..models import EvidencePackDigest
+
+    mem = Memory(location=str((pathlib.Path(".joblib") / "_materialize_evidence_pack").absolute()))
+    cached_call = cache_pydantic_structured(
+        fn=agent._materialize_evidence_pack,
+        memory=mem,
+        model=None, # no llm
+        ignore=["agent"],
+    )
+    evidence_pack = cached_call(
+        agent=agent,
+        node_ids=used_node_ids,
+        depth=materialize_depth,
+        max_chars_per_item=agent.config.max_chars_per_item,
+        max_total_chars=agent.config.max_total_chars,
+    )
+
+    evidence_pack_hash = snapshot_hash(evidence_pack)
+    evidence_digest = EvidencePackDigest(
+        node_ids=list(used_node_ids),
+        depth=str(materialize_depth),
+        max_chars_per_item=int(agent.config.max_chars_per_item),
+        max_total_chars=int(agent.config.max_total_chars),
+        evidence_pack_hash=str(evidence_pack_hash),
+    ).model_dump(mode="python")
+
+    with ctx.state_write as state:
+        state.setdefault("_rt", {})["evidence_pack"] = evidence_pack
+
+    state_update: list[StateUpdate] = [
+        ('u', {"evidence_pack_digest": evidence_digest}),
+        ('a', {"op_log": "aa_materialize_evidence_pack"}),
+    ]
+    return RunSuccess(conversation_node_id=None, state_update=state_update)
+
+
+@default_resolver.register("aa_generate_answer_with_citations")
+def _aa_generate_answer_with_citations(ctx: StepContext) -> StepRunResult:
+    agent = _aa_agent(ctx)
+    deps = _deps(ctx)
+    sv = ctx.state_view
+
+    conversation_id = str(sv["conversation_id"])
+    run_id = str(sv.get("run_id") or "")
+    run_step_seq = int(sv.get("run_step_seq") or 0)
+    attempt_seq = int(sv.get("attempt_seq") or 0)
+
+    system_prompt = str(sv.get("system_prompt") or "")
+    question = str(sv.get("question") or "")
+    used_node_ids = list(sv.get("used_node_ids") or [])
+    evidence_digest = sv.get("evidence_pack_digest")
+
+    evidence_pack = (sv.get("_rt") or {}).get("evidence_pack")
+    if evidence_pack is None:
+        re = agent.rehydrate_evidence_pack_from_digest(digest=evidence_digest or {})
+        evidence_pack = re.get("evidence_pack")
+        with ctx.state_write as state:
+            state.setdefault("_rt", {})["evidence_pack"] = evidence_pack
+
+    # Pull view for snapshots.
+    view = (sv.get("_rt") or {}).get("view")
+    if view is None:
+        view = deps["conversation_engine"].get_conversation_view(conversation_id=conversation_id, purpose="answer")
+        with ctx.state_write as state:
+            state.setdefault("_rt", {})["view"] = view
+
+    from ..utils.pydanic_model_consumer_wrapper import cache_pydantic_structured
+    from joblib import Memory
+    mem = Memory(location=str((pathlib.Path(".joblib") / "_generate_answer_with_citations").absolute()))
+    cached_call = cache_pydantic_structured(
+        fn=agent._generate_answer_with_citations,
+        memory=mem,
+        model=AnswerWithCitations,
+        ignore=["agent"],
+    )
+
+    prev_turn_meta_summary = deps.get("prev_turn_meta_summary")
+    agent._persist_context_snapshot(
+        conversation_id=conversation_id,
+        run_id=run_id,
+        run_step_seq=run_step_seq,
+        attempt_seq=attempt_seq,
+        stage="generate_answer_with_citations",
+        view=view,
+        model_name=str(getattr(deps.get("llm"), "model_name", "") or ""),
+        budget_tokens=int(getattr(view, "token_budget", 0) or 0),
+        tail_turn_index=int(getattr(prev_turn_meta_summary, "tail_turn_index", 0) or 0),
+        extra_hash_payload={
+            "question": question,
+            "used_node_ids": used_node_ids,
+            "evidence_pack_hash": snapshot_hash(evidence_pack),
+        },
+        llm_input_payload={
+            "system_prompt": system_prompt,
+            "question": question,
+        },
+        evidence_pack_digest=evidence_digest,
+    )
+    run_step_seq += 1
+
+    ans_json = cached_call(
+        agent=agent,
+        system_prompt=system_prompt,
+        question=question,
+        evidence_pack=evidence_pack,
+        used_node_ids=used_node_ids,
+        out_model_schema=AnswerWithCitations.model_json_schema(),
+        out_model=AnswerWithCitations,
+    )
+    ans = AnswerWithCitations.model_validate(ans_json).model_dump(mode="python")
+
+    state_update: list[StateUpdate] = [
+        ('u', {"answer": ans, "run_step_seq": run_step_seq}),
+        ('a', {"op_log": "aa_generate_answer_with_citations"}),
+    ]
+    return RunSuccess(conversation_node_id=None, state_update=state_update)
+
+
+@default_resolver.register("aa_validate_or_repair_citations")
+def _aa_validate_or_repair_citations(ctx: StepContext) -> StepRunResult:
+    agent = _aa_agent(ctx)
+    deps = _deps(ctx)
+    sv = ctx.state_view
+
+    conversation_id = str(sv["conversation_id"])
+    run_id = str(sv.get("run_id") or "")
+    run_step_seq = int(sv.get("run_step_seq") or 0)
+    attempt_seq = int(sv.get("attempt_seq") or 0)
+
+    system_prompt = str(sv.get("system_prompt") or "")
+    question = str(sv.get("question") or "")
+    used_node_ids = list(sv.get("used_node_ids") or [])
+    evidence_digest = sv.get("evidence_pack_digest")
+    answer = sv.get("answer") or {}
+
+    evidence_pack = (sv.get("_rt") or {}).get("evidence_pack")
+    if evidence_pack is None:
+        re = agent.rehydrate_evidence_pack_from_digest(digest=evidence_digest or {})
+        evidence_pack = re.get("evidence_pack")
+        with ctx.state_write as state:
+            state.setdefault("_rt", {})["evidence_pack"] = evidence_pack
+
+    view = (sv.get("_rt") or {}).get("view")
+    if view is None:
+        view = deps["conversation_engine"].get_conversation_view(conversation_id=conversation_id, purpose="answer")
+        with ctx.state_write as state:
+            state.setdefault("_rt", {})["view"] = view
+
+    from ..utils.pydanic_model_consumer_wrapper import cache_pydantic_structured
+    from joblib import Memory
+    mem = Memory(location=str((pathlib.Path(".joblib") / "_generate_answer_with_citations").absolute()))
+    cached_call = cache_pydantic_structured(
+        fn=agent._validate_or_repair_citations,
+        memory=mem,
+        model=AnswerWithCitations,
+        ignore=["agent", "answer_in_model"],
+    )
+
+    prev_turn_meta_summary = deps.get("prev_turn_meta_summary")
+    agent._persist_context_snapshot(
+        conversation_id=conversation_id,
+        run_id=run_id,
+        run_step_seq=run_step_seq,
+        attempt_seq=attempt_seq,
+        stage="validate_or_repair_citations",
+        view=view,
+        model_name=str(getattr(deps.get("llm"), "model_name", "") or ""),
+        budget_tokens=int(getattr(view, "token_budget", 0) or 0),
+        tail_turn_index=int(getattr(prev_turn_meta_summary, "tail_turn_index", 0) or 0),
+        extra_hash_payload={
+            "question": question,
+            "used_node_ids": used_node_ids,
+            "answer_hash": snapshot_hash(answer),
+        },
+        llm_input_payload={
+            "system_prompt": system_prompt,
+            "question": question,
+            "answer_text": (answer.get("text") if isinstance(answer, dict) else None),
+        },
+        evidence_pack_digest=evidence_digest,
+    )
+    run_step_seq += 1
+
+    repaired = cached_call(
+        agent=agent,
+        system_prompt=system_prompt,
+        question=question,
+        evidence_pack=evidence_pack,
+        used_node_ids=used_node_ids,
+        answer=answer,
+        answer_in_model=AnswerWithCitations,
+    )
+    repaired = AnswerWithCitations.model_validate(repaired).model_dump(mode="python")
+
+    state_update: list[StateUpdate] = [
+        ('u', {"answer": repaired, "run_step_seq": run_step_seq}),
+        ('a', {"op_log": "aa_validate_or_repair_citations"}),
+    ]
+    return RunSuccess(conversation_node_id=None, state_update=state_update)
+
+
+@default_resolver.register("aa_evaluate_answer")
+def _aa_evaluate_answer(ctx: StepContext) -> StepRunResult:
+    agent = _aa_agent(ctx)
+    deps = _deps(ctx)
+    sv = ctx.state_view
+
+    conversation_id = str(sv["conversation_id"])
+    run_id = str(sv.get("run_id") or "")
+    run_step_seq = int(sv.get("run_step_seq") or 0)
+    attempt_seq = int(sv.get("attempt_seq") or 0)
+
+    system_prompt = str(sv.get("system_prompt") or "")
+    question = str(sv.get("question") or "")
+    used_node_ids = list(sv.get("used_node_ids") or [])
+    answer = sv.get("answer") or {}
+    evidence_digest = sv.get("evidence_pack_digest")
+
+    evidence_pack = (sv.get("_rt") or {}).get("evidence_pack")
+    if evidence_pack is None:
+        re = agent.rehydrate_evidence_pack_from_digest(digest=evidence_digest or {})
+        evidence_pack = re.get("evidence_pack")
+        with ctx.state_write as state:
+            state.setdefault("_rt", {})["evidence_pack"] = evidence_pack
+
+    view = (sv.get("_rt") or {}).get("view")
+    if view is None:
+        view = deps["conversation_engine"].get_conversation_view(conversation_id=conversation_id, purpose="answer")
+        with ctx.state_write as state:
+            state.setdefault("_rt", {})["view"] = view
+
+    prev_turn_meta_summary = deps.get("prev_turn_meta_summary")
+    agent._persist_context_snapshot(
+        conversation_id=conversation_id,
+        run_id=run_id,
+        run_step_seq=run_step_seq,
+        attempt_seq=attempt_seq,
+        stage="evaluate_answer",
+        view=view,
+        model_name=str(getattr(deps.get("llm"), "model_name", "") or ""),
+        budget_tokens=int(getattr(view, "token_budget", 0) or 0),
+        tail_turn_index=int(getattr(prev_turn_meta_summary, "tail_turn_index", 0) or 0),
+        extra_hash_payload={
+            "question": question,
+            "used_node_ids": used_node_ids,
+            "answer_text": (answer.get("text") if isinstance(answer, dict) else ""),
+        },
+        llm_input_payload={
+            "system_prompt": system_prompt,
+            "question": question,
+            "answer_text": (answer.get("text") if isinstance(answer, dict) else ""),
+        },
+        evidence_pack_digest=evidence_digest,
+    )
+    run_step_seq += 1
+
+    eval_json = agent._evaluate_answer(
+        agent=agent,
+        system_prompt=system_prompt,
+        question=question,
+        answer_text=str(answer.get("text") if isinstance(answer, dict) else ""),
+        used_node_ids=used_node_ids,
+        evidence_pack=evidence_pack,
+        out_model_schema=AnswerEvaluation.model_json_schema(),
+        out_model=AnswerEvaluation,
+    )
+    evaluation = AnswerEvaluation.model_validate(eval_json).model_dump(mode="python")
+
+    # Escalation knobs applied here (same as answer()).
+    max_candidates = int(sv.get("max_candidates") or agent.config.max_candidates)
+    materialize_depth = str(sv.get("materialize_depth") or agent.config.materialize_depth)
+    if bool(evaluation.get("needs_more_info")) and not bool(evaluation.get("is_sufficient")):
+        materialize_depth = "deep"
+        max_candidates = min(max_candidates * 2, 200)
+
+    state_update: list[StateUpdate] = [
+        ('u', {
+            "evaluation": evaluation,
+            "run_step_seq": run_step_seq,
+            "max_candidates": max_candidates,
+            "materialize_depth": materialize_depth,
+        }),
+        ('a', {"op_log": "aa_evaluate_answer"}),
+    ]
+    return RunSuccess(conversation_node_id=None, state_update=state_update)
+
+
+@default_resolver.register("aa_project_pointers")
+def _aa_project_pointers(ctx: StepContext) -> StepRunResult:
+    agent = _aa_agent(ctx)
+    sv = ctx.state_view
+    conversation_id = str(sv["conversation_id"])
+    run_node_id = str(sv.get("run_node_id") or "")
+    used_node_ids = list(sv.get("used_node_ids") or [])
+    deps = _deps(ctx)
+    prev_turn_meta_summary = deps.get("prev_turn_meta_summary")
+    if prev_turn_meta_summary is None:
+        raise Exception("prev_turn_meta_summary missing from dependency")
+    projected: list[str] = []
+    for kid in used_node_ids:
+        pid = agent._project_kg_node(
+            conversation_id=conversation_id,
+            run_node_id=run_node_id,
+            kg_node_id=kid,
+            provenance_span=Span.from_dummy_for_conversation(),
+            prev_turn_meta_summary=prev_turn_meta_summary
+        )
+        projected.append(pid)
+
+    state_update: list[StateUpdate] = [
+        ('u', {"projected_pointer_ids": projected}),
+        ('a', {"op_log": f"aa_project_pointers:{len(projected)}"}),
+    ]
+    return RunSuccess(conversation_node_id=None, state_update=state_update)
+
+
+@default_resolver.register("aa_maybe_iterate")
+def _aa_maybe_iterate(ctx: StepContext) -> StepRunResult:
+    sv = ctx.state_view
+    evaluation = sv.get("evaluation") or {}
+    iter_idx = int(sv.get("iter_idx") or 0)
+    max_iter = int(sv.get("max_iter") or 1)
+
+    needs_more = bool((evaluation or {}).get("needs_more_info"))
+    sufficient = bool((evaluation or {}).get("is_sufficient"))
+
+    should_iterate = bool(needs_more and not sufficient and (iter_idx + 1 < max_iter))
+    next_iter = (iter_idx + 1) if should_iterate else iter_idx
+
+    state_update: list[StateUpdate] = [
+        ('u', {"should_iterate": should_iterate, "iter_idx": next_iter}),
+        ('a', {"op_log": f"aa_maybe_iterate:{should_iterate}"}),
+    ]
+    return RunSuccess(conversation_node_id=None, state_update=state_update)
+
+
+@default_resolver.register("aa_persist_response")
+def _aa_persist_response(ctx: StepContext) -> StepRunResult:
+    agent = _aa_agent(ctx)
+    deps = _deps(ctx)
+    sv = ctx.state_view
+
+    conversation_id = str(sv["conversation_id"])
+    run_node_id = str(sv.get("run_node_id") or "")
+    used_node_ids = list(sv.get("used_node_ids") or [])
+    projected_pointer_ids = list(sv.get("projected_pointer_ids") or [])
+    answer = sv.get("answer") or {}
+    evaluation = sv.get("evaluation") or {}
+    
+    prev_turn_meta_summary = deps.get("prev_turn_meta_summary")
+    tail_turn_index = int(getattr(prev_turn_meta_summary, "tail_turn_index", 0) or 0)
+
+    assistant_text = str(answer.get("text") or "")
+    assistant_turn_node_id, assistant_turn_node = agent._add_assistant_turn(
+        conversation_id=conversation_id,
+        content=assistant_text,
+        provenance_span=Span.from_dummy_for_conversation(),
+        turn_index=tail_turn_index + 1,
+        prev_turn_meta_summary=prev_turn_meta_summary,
+    )
+    agent._link_run_to_response(
+        conversation_id=conversation_id,
+        run_node_id=run_node_id,
+        response_node_id=assistant_turn_node_id,
+        used_node_ids=used_node_ids,
+        provenance_span=Span.from_dummy_for_conversation(),
+        prev_turn_meta_summary=prev_turn_meta_summary,
+    )
+
+    # surface prev_turn_meta_summary as jsonable for downstream callers.
+    mts = {
+        "prev_node_char_distance_from_last_summary": int(getattr(prev_turn_meta_summary, "prev_node_char_distance_from_last_summary", 0) or 0),
+        "prev_node_distance_from_last_summary": int(getattr(prev_turn_meta_summary, "prev_node_distance_from_last_summary", 0) or 0),
+        "tail_turn_index": int(getattr(prev_turn_meta_summary, "tail_turn_index", 0) or 0),
+    }
+    result_payload = {
+        "run_node_id": run_node_id,
+        "assistant_turn_node_id": assistant_turn_node_id,
+        "assistant_text": assistant_text,
+        "used_node_ids": used_node_ids,
+        "projected_pointer_ids": projected_pointer_ids,
+        "claim_citations": answer,
+        "evaluation": evaluation,
+        "turn_node_dump": assistant_turn_node.model_dump() if hasattr(assistant_turn_node, "model_dump") else {},
+    }
+
+    state_update: list[StateUpdate] = [
+        ('u', {"agentic_answering_result": result_payload, "prev_turn_meta_summary": mts}),
+        ('a', {"op_log": "aa_persist_response"}),
+    ]
+    return RunSuccess(conversation_node_id=assistant_turn_node_id, state_update=state_update)

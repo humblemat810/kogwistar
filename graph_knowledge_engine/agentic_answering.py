@@ -534,6 +534,110 @@ class AgenticAnsweringAgent:
             "turn_node_dump" : assistant_turn_node.model_dump()
         }
 
+    # ----------------------------
+    # Workflow-v2 entrypoint
+    # ----------------------------
+    def answer_workflow_v2(
+        self,
+        *,
+        conversation_id: str,
+        user_id: str | None = None,
+        prev_turn_meta_summary: MetaFromLastSummary,
+        workflow_engine: "GraphKnowledgeEngine" | None = None,
+        workflow_id: str = "agentic_answering.v2",
+        run_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Run agentic answering using the workflow runtime.
+
+        This keeps the same object (no separate V2 class), but routes execution
+        through `WorkflowRuntime` + resolvers.
+        """
+        workflow_engine = workflow_engine or self.conversation_engine
+
+        # Ensure design exists.
+        from .workflow.design import AgenticAnsweringWorkflowDesigner
+
+        predicate_registry = {
+            "always": lambda st, r: True,
+            "aa_should_iterate": lambda st, r: bool(st.get("should_iterate")),
+        }
+
+        designer = AgenticAnsweringWorkflowDesigner(workflow_engine=workflow_engine, predicate_registry=predicate_registry)
+        designer.ensure_answer_flow(workflow_id=workflow_id, mode="full")
+
+        # Resolver registry (handlers live in workflow/resolvers.py)
+        from .workflow.resolvers import MappingStepResolver, default_resolver
+
+        class AgenticStepResolver(MappingStepResolver):
+            def __init__(self) -> None:
+                super().__init__(handlers=dict(default_resolver.handlers), default=default_resolver.default)
+
+        resolve_step = AgenticStepResolver()
+
+        # Runtime
+        from .workflow.runtime import WorkflowRuntime
+
+        runtime = WorkflowRuntime(
+            workflow_engine=workflow_engine,
+            conversation_engine=self.conversation_engine,
+            step_resolver=resolve_step,
+            predicate_registry=predicate_registry,
+            checkpoint_every_n_steps=1,
+            max_workers=4,
+        )
+
+        # Choose a turn_node_id for checkpoint/tracing.
+        tail = self.conversation_engine._get_conversation_tail(conversation_id)
+        if tail is None:
+            raise ValueError(f"conversation_id={conversation_id!r} has no tail node")
+        turn_node_id = str(getattr(tail, "id", None) or getattr(tail, "node_id", None) or "")
+        if not turn_node_id:
+            raise ValueError("Failed to infer turn_node_id from conversation tail")
+
+        # Initial state: keep schema jsonable, stash heavy objects in deps.
+        init_state: dict[str, Any] = {
+            "conversation_id": conversation_id,
+            "user_id": user_id,
+            "turn_node_id": turn_node_id,
+            "run_id": run_id,
+            "iter_idx": 0,
+            "max_iter": int(self.config.max_iter),
+            "max_candidates": int(self.config.max_candidates),
+            "materialize_depth": str(self.config.materialize_depth),
+            "should_iterate": False,
+            "_deps": {
+                "agent": self,
+                "conversation_engine": self.conversation_engine,
+                "knowledge_engine": self.knowledge_engine,
+                "llm": self.llm,
+                "prev_turn_meta_summary": prev_turn_meta_summary,
+            },
+        }
+
+        run_result = runtime.run(
+            workflow_id=workflow_id,
+            conversation_id=conversation_id,
+            turn_node_id=turn_node_id,
+            initial_state=init_state,
+            run_id=(run_id or f"agentic_answer|{turn_node_id}"),
+        )
+        final_state, rid = run_result.final_state, run_result.run_id
+
+        # Update caller's prev_turn_meta_summary in-place.
+        mts = final_state.get("prev_turn_meta_summary") or {}
+        prev_turn_meta_summary.prev_node_char_distance_from_last_summary = int(
+            mts.get("prev_node_char_distance_from_last_summary", prev_turn_meta_summary.prev_node_char_distance_from_last_summary)
+        )
+        prev_turn_meta_summary.prev_node_distance_from_last_summary = int(
+            mts.get("prev_node_distance_from_last_summary", prev_turn_meta_summary.prev_node_distance_from_last_summary)
+        )
+        prev_turn_meta_summary.tail_turn_index = int(mts.get("tail_turn_index", prev_turn_meta_summary.tail_turn_index))
+
+        out = final_state.get("agentic_answering_result") or {}
+        out["workflow_run_id"] = rid
+        out["workflow_id"] = workflow_id
+        return out
+
     def _get_last_user_text(self, conversation: Any) -> str:
         if conversation is None:
             return ""
@@ -564,7 +668,7 @@ class AgenticAnsweringAgent:
             where={"level_from_root": {"$lte": self.config.max_retrieval_level}},
             include=["documents", "metadatas"],
         )
-        ids = (res.get("ids") or [[]])[0]
+        ids = (res.get("node_ids") or [[]])[0]
         metas = (res.get("metadatas") or [[]])[0]
         docs = (res.get("documents") or [[]])[0]
         out: list[dict[str, Any]] = []
@@ -715,7 +819,12 @@ Select at most {max_used} node ids.
             )
         return pack
 
-    def rehydrate_evidence_pack_from_digest(self, *, digest: dict[str, Any]) -> dict[str, Any]:
+    def rehydrate_evidence_pack_from_digest(
+        self,
+        *,
+        digest: dict[str, Any],
+        enforce_hash_match: bool = False,
+    ) -> dict[str, Any]:
         """Re-materialize an evidence pack from a persisted digest.
 
         The digest is expected to match :class:`EvidencePackDigest` from models.py.
@@ -738,12 +847,19 @@ Select at most {max_used} node ids.
             pack_hash = snapshot_hash(pack)
         except Exception:
             pack_hash = None
-        return {
+        out = {
             "evidence_pack": pack,
             "rehydrated_hash": pack_hash,
             "expected_hash": d.evidence_pack_hash,
             "hash_matches": (pack_hash == d.evidence_pack_hash) if (pack_hash and d.evidence_pack_hash) else None,
         }
+
+        if enforce_hash_match and out.get("hash_matches") is False:
+            raise ValueError(
+                "EvidencePackDigest rehydration hash mismatch; underlying KG likely changed. "
+                f"expected={out.get('expected_hash')!r} got={out.get('rehydrated_hash')!r}"
+            )
+        return out
     @staticmethod
     def _generate_answer_with_citations(
         agent: "AgenticAnsweringAgent",
@@ -753,8 +869,8 @@ Select at most {max_used} node ids.
         evidence_pack: dict[str, Any],
         used_node_ids: list[str],
         out_model_schema: dict[str, Any],
-        out_model: Type[BaseM]
-    ) -> list | dict:
+        out_model: Type[BaseM] = AnswerWithCitations
+    ) :
         """Ask the LLM to answer AND cite exact mention/span indices from the provided evidence pack."""
         # Build a compact, indexable representation for the LLM
         lines: list[str] = []
@@ -799,11 +915,10 @@ Return JSON that matches the provided schema.
         prompt = get_prompt()
         for i_retry in range(agent.max_retry):
             chain = prompt | agent.llm.with_structured_output(out_model, include_raw = True)
-            res=chain.invoke({"question": question, "evidence": evidence_text})
+            res:dict =chain.invoke({"question": question, "evidence": evidence_text})
             if res['parsing_error']:
-                i_retry+=1
-                if i_retry >= agent.max_retry:
-                    i_retry = 0
+                if i_retry+1 >= agent.max_retry:
+                    raise Exception(f"retry too many errors parsing: {res['parsing_error']}")
                 e = res['parsing_error']
                 str_e = str(e)
                 prompt.append(("system", str_e[:1000] + '...' + str_e[-1000] if len(str_e) > 2000 else str_e))
@@ -821,7 +936,7 @@ Return JSON that matches the provided schema.
         used_node_ids: list[str],
         answer: dict| list,
         answer_in_model : Type[AnswerWithCitations]
-    ) -> dict | list: # AnswerWithCitations:
+    ) -> AnswerWithCitations:
         answer_validated: AnswerWithCitations = answer_in_model.model_validate(answer)
         """Validate citations; if invalid, ask LLM to repair once."""
         def is_valid_ref(r: SpanRef) -> bool:
@@ -897,11 +1012,10 @@ Rules:
         repair_prompt = get_prompt()
         for i_retry in range(agent.max_retry):
             chain = repair_prompt | agent.llm.with_structured_output(AnswerWithCitations, include_raw = True)
-            res=chain.invoke({"question": question, "evidence": evidence_text})
+            res:dict=chain.invoke({"question": question, "evidence": evidence_text})
             if res['parsing_error']:
-                i_retry+=1
-                if i_retry >= agent.max_retry:
-                    i_retry = 0
+                if i_retry+1 >= agent.max_retry:
+                    raise Exception(f"retry too many errors parsing: {res['parsing_error']}")
                 e = res['parsing_error']
                 str_e = str(e)
                 repair_prompt.append(("system", str_e[:1000] + '...' + str_e[-1000] if len(str_e) > 2000 else str_e))
@@ -961,9 +1075,8 @@ Return JSON per schema. Be conservative: if key details are missing, set needs_m
                 {"question": question, "answer": answer_text, "used_ids": ", ".join(used_node_ids), "evidence": ev_text}
             )
             if res['parsing_error']:
-                i_retry+=1
-                if i_retry >= agent.max_retry:
-                    i_retry = 0
+                if i_retry+1 >= agent.max_retry:
+                    raise Exception(f"retry too many errors parsing: {res['parsing_error']}")
                 e = res['parsing_error']
                 str_e = str(e)
                 prompt.append(("system", str_e[:1000] + '...' + str_e[-1000] if len(str_e) > 2000 else str_e))

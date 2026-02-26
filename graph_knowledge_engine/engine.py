@@ -4911,9 +4911,9 @@ class GraphKnowledgeEngine:
                 # - `metadata` must remain Chroma-friendly (flat, primitives).
                 properties={
                     "entity_type": "context_snapshot",
-                    "prompt_messages": norm_msgs,
-                    "llm_input_payload": llm_input_payload or {},
-                    "evidence_pack_digest": evidence_pack_digest or {},
+                    "prompt_messages": json.dumps(norm_msgs),
+                    "llm_input_payload": json.dumps(llm_input_payload or {}),
+                    "evidence_pack_digest": json.dumps(evidence_pack_digest or {}),
                 },
                 mentions=[Grounding(spans=[self.make_conversation_span(conversation_id)])],
                 metadata={
