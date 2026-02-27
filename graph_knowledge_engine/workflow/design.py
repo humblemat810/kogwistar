@@ -413,10 +413,10 @@ class AgenticAnsweringWorkflowDesigner(BaseWorkflowDesigner):
         except Exception:
             pass
 
-        from ..models import WorkflowNode, WorkflowEdge
+        from ..models import WorkflowNode, WorkflowEdge, Span, Grounding
 
         wid = lambda suffix: f"wf:{workflow_id}:{suffix}"
-
+        sp = Span.from_dummy_for_workflow(workflow_id)
         def add_node(*, node_id: str, label: str, op: str | None, start: bool = False, terminal: bool = False, fanout: bool = False):
             n = WorkflowNode(
                 id=node_id,
@@ -425,6 +425,7 @@ class AgenticAnsweringWorkflowDesigner(BaseWorkflowDesigner):
                 doc_id=node_id,
                 summary=label,
                 properties={},
+                mentions = [Grounding(spans=[sp])],
                 metadata={
                     "entity_type": "workflow_node",
                     "workflow_id": workflow_id,
@@ -437,7 +438,7 @@ class AgenticAnsweringWorkflowDesigner(BaseWorkflowDesigner):
             )
             self.workflow_engine.add_node(n)
 
-        def add_edge(*, edge_id: str, src: str, dst: str, pred: str | None, priority: int = 100, is_default: bool = False, multiplicity: str = "one"):
+        def add_edge(*, edge_id: str, src: str, dst: str, relation, pred: str | None, priority: int = 100, is_default: bool = False, multiplicity: str = "one"):
             e = WorkflowEdge(
                 id=edge_id,
                 label="wf_next",
@@ -445,8 +446,14 @@ class AgenticAnsweringWorkflowDesigner(BaseWorkflowDesigner):
                 doc_id=edge_id,
                 summary="wf_next",
                 properties={},
-                source_id=src,
+                source_ids=[src],
                 target_ids=[dst],
+                
+                source_edge_ids=[], # wf no hyper graphs
+                target_edge_ids=[],  # wf no hyper graphs
+                
+                relation = relation,
+                mentions = [Grounding(spans=[sp])],
                 metadata={
                     "entity_type": "workflow_edge",
                     "workflow_id": workflow_id,
@@ -467,7 +474,7 @@ class AgenticAnsweringWorkflowDesigner(BaseWorkflowDesigner):
             end_id = wid("end")
             add_node(node_id=start_id, label="Start", op="start", start=True, terminal=False)
             add_node(node_id=end_id, label="End", op=None, start=False, terminal=True)
-            add_edge(edge_id=wid("next_start_end"), src=start_id, dst=end_id, pred="always", priority=100, is_default=True)
+            add_edge(edge_id=wid("next_start_end"), relation="wf_next", src=start_id, dst=end_id, pred="always", priority=100, is_default=True)
             return self.validate(workflow_id=workflow_id)
 
         # ----------------------------
@@ -485,24 +492,24 @@ class AgenticAnsweringWorkflowDesigner(BaseWorkflowDesigner):
         add_node(node_id=wid("project"), label="Project pointers", op="aa_project_pointers")
         add_node(node_id=wid("iterate"), label="Maybe iterate", op="aa_maybe_iterate")
         add_node(node_id=wid("persist"), label="Persist assistant + link run", op="aa_persist_response")
-        add_node(node_id=wid("end"), label="End", op=None, terminal=True)
+        add_node(node_id=wid("end"), label="End", op="noop", terminal=True)
 
         # linear edges
-        add_edge(edge_id=wid("e1"), src=wid("start"), dst=wid("prepare"), pred=None, is_default=True)
-        add_edge(edge_id=wid("e2"), src=wid("prepare"), dst=wid("view"), pred=None, is_default=True)
-        add_edge(edge_id=wid("e3"), src=wid("view"), dst=wid("retrieve"), pred=None, is_default=True)
-        add_edge(edge_id=wid("e4"), src=wid("retrieve"), dst=wid("select"), pred=None, is_default=True)
-        add_edge(edge_id=wid("e5"), src=wid("select"), dst=wid("materialize"), pred=None, is_default=True)
-        add_edge(edge_id=wid("e6"), src=wid("materialize"), dst=wid("answer"), pred=None, is_default=True)
-        add_edge(edge_id=wid("e7"), src=wid("answer"), dst=wid("repair"), pred=None, is_default=True)
-        add_edge(edge_id=wid("e8"), src=wid("repair"), dst=wid("eval"), pred=None, is_default=True)
-        add_edge(edge_id=wid("e9"), src=wid("eval"), dst=wid("project"), pred=None, is_default=True)
-        add_edge(edge_id=wid("e10"), src=wid("project"), dst=wid("iterate"), pred=None, is_default=True)
+        add_edge(edge_id=wid("e1"), src=wid("start"), dst=wid("prepare"), relation="wf_next", pred=None, is_default=True)
+        add_edge(edge_id=wid("e2"), src=wid("prepare"), dst=wid("view"), relation="wf_next", pred=None, is_default=True)
+        add_edge(edge_id=wid("e3"), src=wid("view"), dst=wid("retrieve"), relation="wf_next", pred=None, is_default=True)
+        add_edge(edge_id=wid("e4"), src=wid("retrieve"), dst=wid("select"), relation="wf_next", pred=None, is_default=True)
+        add_edge(edge_id=wid("e5"), src=wid("select"), dst=wid("materialize"), relation="wf_next", pred=None, is_default=True)
+        add_edge(edge_id=wid("e6"), src=wid("materialize"), dst=wid("answer"), relation="wf_next", pred=None, is_default=True)
+        add_edge(edge_id=wid("e7"), src=wid("answer"), dst=wid("repair"), relation="wf_next", pred=None, is_default=True)
+        add_edge(edge_id=wid("e8"), src=wid("repair"), dst=wid("eval"), relation="wf_next", pred=None, is_default=True)
+        add_edge(edge_id=wid("e9"), src=wid("eval"), dst=wid("project"), relation="wf_next", pred=None, is_default=True)
+        add_edge(edge_id=wid("e10"), src=wid("project"), dst=wid("iterate"), relation="wf_next", pred=None, is_default=True)
 
         # branch: iterate -> retrieve OR persist
-        add_edge(edge_id=wid("e11"), src=wid("iterate"), dst=wid("retrieve"), pred="aa_should_iterate", priority=0)
-        add_edge(edge_id=wid("e12"), src=wid("iterate"), dst=wid("persist"), pred="always", priority=100, is_default=True)
+        add_edge(edge_id=wid("e11"), src=wid("iterate"), dst=wid("retrieve"), pred="aa_should_iterate", relation="wf_conditional", priority=0)
+        add_edge(edge_id=wid("e12"), src=wid("iterate"), dst=wid("persist"), pred="always", priority=100, relation="wf_next", is_default=True)
 
-        add_edge(edge_id=wid("e13"), src=wid("persist"), dst=wid("end"), pred=None, is_default=True)
+        add_edge(edge_id=wid("e13"), src=wid("persist"), dst=wid("end"), relation="wf_next", pred=None, is_default=True)
 
         return self.validate(workflow_id=workflow_id)

@@ -336,6 +336,24 @@ class Span(ModeSlicingMixin, BaseModel):
                                         None, description="Result of validating the mention correctness"
                                     )
     @staticmethod
+    def from_dummy_for_workflow(doc_id = "_wf:_dummy"):
+        if doc_id.startswith("_wf:"):
+            pass
+        else:
+            doc_id = "_wf:"+doc_id
+        dummy_span = Span(
+            collection_page_url=f"workflow/{doc_id}",
+            document_page_url=f"workflow/{doc_id}",
+            doc_id=f"{doc_id}",
+            insertion_method="system",
+            page_number=1, start_char=0, end_char=1,
+            excerpt="", context_before="", context_after="",
+            chunk_id = None,
+            source_cluster_id = None,
+            verification=MentionVerification(method="system", is_verified=True, score=1.0, notes="start node")
+        )
+        return dummy_span
+    @staticmethod
     def from_dummy_for_conversation(doc_id = "_conv:_dummy"):
         if doc_id.startswith("_conv:"):
             pass

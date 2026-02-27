@@ -164,6 +164,16 @@
             "program": "${file}",
             "console": "integratedTerminal",
             "justMyCode": false
+        },
+        
+        {
+            "name": "Python Debugger: Current File at project root",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${file}",
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal",
+            "justMyCode": false
         }
     ]
 }

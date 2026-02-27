@@ -3,7 +3,7 @@ from __future__ import annotations
 import json, os
 from pathlib import Path
 from typing import Iterator, Optional
-from .change_bus import ChangeEvent
+from .change_event import ChangeEvent
 
 class OplogWriter:
     def __init__(self, path: Path, *, fsync: bool = False):

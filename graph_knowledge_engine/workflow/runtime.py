@@ -580,7 +580,7 @@ class WorkflowRuntime:
             self.emitter.emit(type="workflow_run_started", ctx=tc_run, payload={"workflow_id": str(workflow_id)})
         except Exception:
             pass
-        state_mutex_lock: threading.Lock = threading.Lock()
+        # state_mutex_lock: threading.Lock = threading.Lock()
         scheduled_q: queue.Queue[Tuple[str, int, str, str | None]] = queue.Queue()  # (node_id, mask, token_id, parent_token_id)
         pending_tokens: set[tuple[str, int, str, str | None]] = set()
         inflight_tokens: set[tuple[str, int, str, str | None]] = set()

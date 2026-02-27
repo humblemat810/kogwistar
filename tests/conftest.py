@@ -202,7 +202,8 @@ def tmp_chroma_dir(tmp_path_factory):
 
 @pytest.fixture(scope="function")
 def engine(tmp_chroma_dir, monkeypatch):
-    eng = GraphKnowledgeEngine(persist_directory=tmp_chroma_dir, embedding_cache_path=os.path.join(os.getcwd(), '.embedding_cache'))
+    eng = GraphKnowledgeEngine(persist_directory=os.path.join(tmp_chroma_dir, "kg"), 
+                               embedding_cache_path=os.path.join(os.getcwd(), '.embedding_cache'))
     # Patch the real LLM with a deterministic fake
     #eng.llm = _CompositeFakeLLM()
     return eng
@@ -214,11 +215,16 @@ def tmp_conv_chroma_dir(tmp_path_factory):
     shutil.rmtree(d, ignore_errors=True)
 @pytest.fixture(scope="function")
 def conversation_engine(tmp_conv_chroma_dir, monkeypatch):
-    eng = GraphKnowledgeEngine(persist_directory=tmp_conv_chroma_dir, kg_graph_type = "conversation")
+    eng = GraphKnowledgeEngine(persist_directory=os.path.join(tmp_conv_chroma_dir, "conversation"), kg_graph_type = "conversation")
     # Patch the real LLM with a deterministic fake
     #eng.llm = _CompositeFakeLLM()
     return eng
-
+@pytest.fixture(scope="function")
+def workflow_engine(tmp_conv_chroma_dir, monkeypatch):
+    eng = GraphKnowledgeEngine(persist_directory=os.path.join(tmp_conv_chroma_dir, "workflow"), kg_graph_type = "workflow")
+    # Patch the real LLM with a deterministic fake
+    #eng.llm = _CompositeFakeLLM()
+    return eng
 @pytest.fixture()
 def real_small_graph():
     e = GraphKnowledgeEngine(persist_directory = "small_graph")

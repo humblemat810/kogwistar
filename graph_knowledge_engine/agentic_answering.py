@@ -546,7 +546,7 @@ class AgenticAnsweringAgent:
         conversation_id: str,
         user_id: str | None = None,
         prev_turn_meta_summary: MetaFromLastSummary,
-        workflow_engine: "GraphKnowledgeEngine" | None = None,
+        workflow_engine: "GraphKnowledgeEngine | None" = None,
         workflow_id: str = "agentic_answering.v2",
         run_id: str | None = None,
     ) -> dict[str, Any]:
@@ -907,7 +907,7 @@ Select at most {max_used} node ids.
         for e in evidence_pack.get("edges", []) or []:
             eid = e.get("id")
             rel = e.get("relation") or "related"
-            summ = (e.get("summary") or "").replace("\n", " \ ").strip()
+            summ = (e.get("summary") or "").replace("\n", r" \ ").strip()
             if summ:
                 summ = summ[:240]
             lines.append(f"EDGE {eid} | {rel}: {summ}")
