@@ -579,7 +579,7 @@
           .force("center", d3.forceCenter(width/2, height/2))
           .force("gravityX", gravX)
           .force("gravityY", gravY)
-          .alpha(1)
+          .alpha(0.5).alphaDecay(0.08).velocityDecay(0.6)
           .on("tick", () => {
             linkSel.attr("d", linkPath);
 

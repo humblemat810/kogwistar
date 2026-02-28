@@ -26,7 +26,7 @@ class FakeNode:
 class FakeEdge:
     id: str
     label: str
-    predicate: str
+    predicate: str | None
     source_ids: List[str]
     target_ids: List[str]
     multiplicity: str
@@ -84,7 +84,7 @@ def _e(
     return FakeEdge(
         id=edge_id,
         label=f"{src} to {dst}",
-        predicate=str(md["wf_predicate"]),
+        predicate=str(md["wf_predicate"]) if md["wf_predicate"] is not None else None,
         source_ids=[src],
         target_ids=[dst],
         multiplicity=md["wf_multiplicity"],

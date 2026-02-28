@@ -1,16 +1,19 @@
 
 """
-Developer debug harness (full script): start CDC bridge, generate a CDC-enabled D3 bundle
-(using graph_knowledge_engine.utils.kge_debug_dump.dump_d3_bundle), capture WS stream to
-a JSONL file, run pytest, and validate captured events.
+Developer debug harness (full script): start CDC bridge, generate CDC-enabled D3 bundles
+(using graph_knowledge_engine.utils.kge_debug_dump.dump_d3_bundle), capture WS stream,
+run pytest, and validate captured events.
 
-This is intended for LOCAL DEV. It does NOT belong under tests/.
+This version generates THREE pages (conversation/workflow/knowledge) with optional
+bridge-side stream filtering via `?stream=...`.
+
+LOCAL DEV ONLY. Do NOT place under tests/.
 
 Example:
-  python debug_cdc_answer_workflow_v2_v2.py --open-browser \
+  python debug_cdc_answer_workflow_v2_v4.py --open-browser \
     --pytest "-k test_answer_workflow_v2_runs_end_to_end -s" \
-    --bridge-app "change_bridge:app" \
-    --template "graph_knowledge_engine/templates/d3.html"
+    --bridge-app "change_bridge_v2:app" \
+    --template "d3.html"
 """
 from __future__ import annotations
 
@@ -24,6 +27,9 @@ import socket
 import subprocess
 import sys
 import threading
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from graph_knowledge_engine.engine import EngineType
 import time
 import webbrowser
 from dataclasses import dataclass
@@ -189,7 +195,7 @@ def start_ws_capture_in_thread(ws_url: str, out_path: Path) -> tuple[threading.T
     def runner() -> None:
         asyncio.run(_ws_capture_task(ws_url, out_path, stop_evt))
 
-    t = threading.Thread(target=runner, daemon=True)
+    t = threading.Thread(target=runner, daemon=True, name = "async th _ws_capture_task")
     t.start()
     return t, stop_evt
 
@@ -248,7 +254,7 @@ def start_static_server(root_dir: Path, host: str, port: int) -> tuple[threading
         finally:
             os.chdir(cwd)
 
-    t = threading.Thread(target=serve, daemon=True)
+    t = threading.Thread(target=serve, daemon=True, name = "static cdc viewer http server")
     t.start()
     return t, httpd
 
@@ -257,7 +263,7 @@ def start_static_server(root_dir: Path, host: str, port: int) -> tuple[threading
 # Bundle rendering via kge_debug_dump
 # -------------------------
 
-def render_cdc_bundle_via_util(*, template_path: Path, out_html: Path, ws_url: str) -> None:
+def dump_bundle(*, template_path: Path, out_html: Path, engine_type: EngineType, ws_url: str) -> None:
     try:
         from graph_knowledge_engine.utils.kge_debug_dump import dump_d3_bundle  # type: ignore
     except Exception as e:
@@ -265,20 +271,21 @@ def render_cdc_bundle_via_util(*, template_path: Path, out_html: Path, ws_url: s
             "Failed to import graph_knowledge_engine.utils.kge_debug_dump.dump_d3_bundle. "
             "Run this from repo root with your venv activated."
         ) from e
-
+    
+    
     template_html = template_path.read_text(encoding="utf-8")
     dump_d3_bundle(
         engine=None,
-        engine_type="conversation",
+        engine_type=engine_type,
         template_html=template_html,
         out_html=out_html,
         doc_id=None,
         mode="reify",
         insertion_method=None,
-        bundle_meta={"note": "CDC debug bundle", "ws": ws_url},
+        bundle_meta={"note": "CDC debug bundle", "engine_type": engine_type, "ws": ws_url},
         cdc_enabled=True,
         cdc_ws_url=ws_url,
-        embed_empty=True,  # listen-only
+        embed_empty=True,
     )
 
 
@@ -304,24 +311,35 @@ def main() -> int:
     bridge_port = args.bridge_port or _find_free_port()
     bridge_http = f"http://{args.bridge_host}:{bridge_port}"
     ws_base = f"ws://{args.bridge_host}:{bridge_port}/changes/ws"
-    ws_url_since0 = ws_base + "?since=0"
+
+    stream_urls = {
+        "conversation": ws_base + "?since=0&stream=conversation",
+        "workflow": ws_base + "?since=0&stream=workflow",
+        "knowledge": ws_base + "?since=0&stream=knowledge",
+    }
 
     template_path = (repo_root / args.template).resolve()
     if not template_path.exists():
         raise RuntimeError(f"d3.html template not found: {template_path}")
 
-    bundle_path = out_dir / "conversation.bundle.cdc.html"
-    render_cdc_bundle_via_util(template_path=template_path, out_html=bundle_path, ws_url=ws_url_since0)
+    bundle_paths = {
+        "conversation": out_dir / "conversation.bundle.cdc.html",
+        "workflow": out_dir / "workflow.bundle.cdc.html",
+        "knowledge": out_dir / "kg.bundle.cdc.html",
+    }
+    dump_bundle(template_path=template_path, out_html=bundle_paths["conversation"], engine_type="conversation", ws_url=stream_urls["conversation"])
+    dump_bundle(template_path=template_path, out_html=bundle_paths["workflow"], engine_type="workflow", ws_url=stream_urls["workflow"])
+    dump_bundle(template_path=template_path, out_html=bundle_paths["knowledge"], engine_type="knowledge", ws_url=stream_urls["knowledge"])
 
     page_port = _find_free_port()
     _, httpd = start_static_server(out_dir, "127.0.0.1", page_port)
-    page_url = f"http://127.0.0.1:{page_port}/{bundle_path.name}"
+    page_urls = {k: f"http://127.0.0.1:{page_port}/{p.name}" for k, p in bundle_paths.items()}
 
-    print(f"[CDC] Bundle: {bundle_path}")
-    print(f"[CDC] Page URL: {page_url}")
-    print(f"[CDC] Bridge ingest: {bridge_http}/ingest")
-    print(f"[CDC] WS: {ws_url_since0}")
     print(f"[CDC] Output dir: {out_dir}")
+    print(f"[CDC] Bridge ingest: {bridge_http}/ingest")
+    for k in ("conversation", "workflow", "knowledge"):
+        print(f"[CDC] {k} WS: {stream_urls[k]}")
+        print(f"[CDC] {k} page: {page_urls[k]}")
     bridge_log_path = out_dir / "cdc_bridge.log"
     bridge = start_uvicorn(args.bridge_app, args.bridge_host, bridge_port, args.bridge_dir, bridge_log_path)
     try:
@@ -346,15 +364,19 @@ def main() -> int:
     _, stop_evt = start_ws_capture_in_thread(ws_base, cdc_log_path)
 
     if args.open_browser:
-        webbrowser.open(page_url)
+        for k in ("conversation", "workflow", "knowledge"):
+            webbrowser.open(page_urls[k])
 
     env = os.environ.copy()
     env.setdefault("CDC_BRIDGE_ENDPOINT", bridge_http)
-    env.setdefault("CDC_WS_URL", ws_url_since0)
-    env.setdefault("CDC_BUNDLE_URL", page_url)
+    env.setdefault("CDC_WS_URL", stream_urls["conversation"])
     env.setdefault("CDC_OUT_DIR", str(out_dir))
+    env.setdefault("CDC_PAGE_CONVERSATION", page_urls["conversation"])
+    env.setdefault("CDC_PAGE_WORKFLOW", page_urls["workflow"])
+    env.setdefault("CDC_PAGE_KNOWLEDGE", page_urls["knowledge"])
 
     print(f"[pytest] running: pytest {args.pytest}")
+    # test_answer_workflow_v2_runs_end_to_end
     p = subprocess.run([sys.executable, "-m", "pytest", *args.pytest.split()], cwd=str(repo_root), env=env)
     rc = int(p.returncode)
 

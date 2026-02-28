@@ -2037,7 +2037,7 @@ class GraphKnowledgeEngine:
         
         self.changes = ChangeBus()
         if cdc_publish_endpoint := os.environ.get('CDC_PUBLISH_ENDPOINT'):
-            self.changes.add_sink(FastAPIChangeSink(cdc_publish_endpoint))
+            self.changes.add_sink(FastAPIChangeSink(cdc_publish_endpoint, name=f"{self.kg_graph_type}-fastapi-sink"))
 
         # from .debug_producer import DebugEventProducer
         # self._debug_producer = DebugEventProducer("http://127.0.0.1:8000")

@@ -33,6 +33,9 @@ from typing import Any, Callable, Iterable, Optional, Self, Sequence, Type, Type
 from pydantic import BaseModel, Field
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.language_models.chat_models import BaseChatModel
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from .workflow.contract import WorkflowEdgeInfo, WorkflowState
 
 from .models import (
     ConversationNode,
@@ -43,6 +46,7 @@ from .models import (
     Node,
     ContextSnapshotMetadata,
     ContextCost,
+    StepRunResult,
 )
 BaseM = TypeVar("BaseM", bound=BaseModel)
 
@@ -559,10 +563,14 @@ class AgenticAnsweringAgent:
 
         # Ensure design exists.
         from .workflow.design import AgenticAnsweringWorkflowDesigner
-
+        def predicate_always(workflow_info: WorkflowEdgeInfo, state: WorkflowState, last_result: StepRunResult):
+            return True
+        
+        def aa_should_iterate(workflow_info: WorkflowEdgeInfo, state: WorkflowState, last_result: StepRunResult):
+            return bool(state.get("should_iterate"))
         predicate_registry = {
-            "always": lambda st, r: True,
-            "aa_should_iterate": lambda st, r: bool(st.get("should_iterate")),
+            "always": predicate_always, #lambda st, r: True,
+            "aa_should_iterate": aa_should_iterate, #lambda st, r: bool(st.get("should_iterate")),
         }
 
         designer = AgenticAnsweringWorkflowDesigner(workflow_engine=workflow_engine, predicate_registry=predicate_registry)

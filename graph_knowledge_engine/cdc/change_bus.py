@@ -60,10 +60,10 @@ class ChangeBus:
 
 import requests
 class FastAPIChangeSink:
-    def __init__(self, endpoint: str, *, max_queue: int = 5000):
+    def __init__(self, endpoint: str, *, max_queue: int = 5000, name: str = 'fastapi sink'):
         self.endpoint = endpoint.rstrip("/")
         self.q: queue.Queue[dict] = queue.Queue(maxsize=max_queue)
-        self._t = threading.Thread(target=self._run, daemon=True)
+        self._t = threading.Thread(target=self._run, daemon=True, name=name)
         self._t.start()
 
     def publish(self, event) -> None:
@@ -78,7 +78,7 @@ class FastAPIChangeSink:
         while True:
             ev = self.q.get()
             try:
-                session.post(url, json=ev, timeout=0.5)
+                session.post(url, json=ev, timeout=2.5)
             except requests.exceptions.ConnectTimeout:
                 # allow bridge not set up usage
                 pass

@@ -1,31 +1,85 @@
 from __future__ import annotations
 
+import argparse
 import asyncio
 import json
 import logging
+import sys
 from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query
+import uvicorn
+from fastapi import FastAPI, Query, WebSocket, WebSocketDisconnect
 
 # Canonical ChangeEvent type (used by engine).
 from .change_event import ChangeEvent
 from .oplog import OplogReader, OplogWriter
-import sys
 
-sys.path.insert(0, str(Path(__file__).absolute().parent.parent.parent))
 logger = logging.getLogger(__name__)
-# logger.addHandler(logging.NullHandler())
+log_path = Path(".cdc_debug") / "cdc_bridge.log"
+log_path.parent.mkdir(parents=True, exist_ok=True)
+
+# Configure handler (append mode by default)
+handler = logging.FileHandler(log_path, mode="a", encoding="utf-8")
+
+formatter = logging.Formatter(
+    "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+)
+handler.setFormatter(formatter)
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+logger.addHandler(handler)
+
+# Optional: prevent duplicate logs if root logger also configured
+logger.propagate = False
+
+
+# Example usage
+logger.info("CDC bridge started")
+
+
+def _event_graph_type(evj: dict[str, Any]) -> Optional[str]:
+    """Best-effort extraction of graph type from a ChangeEvent jsonable dict.
+
+    We primarily rely on `evj["entity"]["kg_graph_type"]` (the canonical field
+    used across the repo), but keep fallbacks for older / custom emitters.
+    """
+    ent = (evj.get("entity") or {}) if isinstance(evj, dict) else {}
+    g = (
+        ent.get("kg_graph_type")
+        or ent.get("graph_type")
+        or evj.get("kg_graph_type")
+        or evj.get("graph_type")
+    )
+    return str(g) if g is not None else None
+
+
+def _stream_match(evj: dict[str, Any], stream: Optional[str]) -> bool:
+    """Return True if event should be sent to a subscriber with `stream` filter.
+
+    Backward compatible behavior:
+      - stream=None -> accept all events
+    """
+    if not stream:
+        return True
+    gt = _event_graph_type(evj)
+    return (gt == stream)
 
 
 def create_app(*, oplog_file: Path, fsync: bool = False) -> FastAPI:
-    """CDC bridge server with replay.
+    """CDC bridge server with replay + optional stream filtering.
 
     Responsibilities:
       - Accept ChangeEvent JSON via POST /ingest (single event or {"events": [...]}).
       - Append every event to a file oplog (durable).
       - Broadcast live events to websocket subscribers (/changes/ws).
       - On websocket connect, replay oplog events with seq > ?since, then tail live.
+
+    Optional filtering:
+      - WebSocket subscribers may pass `?stream=<graph_type>` to only receive events
+        for that graph_type (e.g. conversation/workflow/knowledge).
+      - If omitted, behavior is unchanged: subscriber receives all events.
 
     Notes:
       - The engine remains "core/db only" and simply posts events.
@@ -37,18 +91,22 @@ def create_app(*, oplog_file: Path, fsync: bool = False) -> FastAPI:
     oplog_writer = OplogWriter(oplog_file, fsync=fsync)
     oplog_reader = OplogReader(oplog_file)
 
-    subscribers: set[WebSocket] = set()
+    # Each subscriber can optionally request a stream filter.
+    subscribers: dict[WebSocket, Optional[str]] = {}
     subs_lock = asyncio.Lock()
     ingest_lock = asyncio.Lock()
 
     async def _broadcast_jsonable(evj: dict[str, Any]) -> None:
         # Snapshot subscriber list to avoid holding lock across network I/O.
         async with subs_lock:
-            targets = list(subscribers)
+            targets = list(subscribers.items())
 
         dead: list[WebSocket] = []
         msg = json.dumps(evj, ensure_ascii=False)
-        for ws in targets:
+
+        for ws, stream in targets:
+            if not _stream_match(evj, stream):
+                continue
             try:
                 await ws.send_text(msg)
             except Exception:
@@ -57,7 +115,7 @@ def create_app(*, oplog_file: Path, fsync: bool = False) -> FastAPI:
         if dead:
             async with subs_lock:
                 for ws in dead:
-                    subscribers.discard(ws)
+                    subscribers.pop(ws, None)
 
     @app.post("/ingest")
     async def ingest(body: dict) -> dict[str, Any]:
@@ -103,6 +161,10 @@ def create_app(*, oplog_file: Path, fsync: bool = False) -> FastAPI:
             default=0,
             description="Replay events with seq > since before switching to live tail.",
         ),
+        stream: Optional[str] = Query(
+            default=None,
+            description="Optional graph-type filter (conversation/workflow/knowledge). Backward compatible when omitted.",
+        ),
     ) -> None:
         await websocket.accept()
 
@@ -117,17 +179,21 @@ def create_app(*, oplog_file: Path, fsync: bool = False) -> FastAPI:
         # Replay up to watermark
         for ev in oplog_reader.iter_since(since_seq=since, limit=None):
             if ev.seq <= watermark:
-                await websocket.send_text(json.dumps(ev.to_jsonable(), ensure_ascii=False))
+                evj = ev.to_jsonable()
+                if _stream_match(evj, stream):
+                    await websocket.send_text(json.dumps(evj, ensure_ascii=False))
             else:
                 break
 
         # Subscribe for live tail.
         async with subs_lock:
-            subscribers.add(websocket)
+            subscribers[websocket] = stream
 
         # Catch-up in case events arrived between watermark scan and subscribe.
         for ev in oplog_reader.iter_since(since_seq=watermark, limit=None):
-            await websocket.send_text(json.dumps(ev.to_jsonable(), ensure_ascii=False))
+            evj = ev.to_jsonable()
+            if _stream_match(evj, stream):
+                await websocket.send_text(json.dumps(evj, ensure_ascii=False))
 
         try:
             while True:
@@ -135,19 +201,74 @@ def create_app(*, oplog_file: Path, fsync: bool = False) -> FastAPI:
                 await websocket.receive_text()
         except WebSocketDisconnect:
             async with subs_lock:
-                subscribers.discard(websocket)
+                subscribers.pop(websocket, None)
 
     return app
 
 
-# Default app instance for uvicorn:
-#   uvicorn graph_knowledge_engine.cdc.change_bridge:app
-app = create_app(oplog_file=Path("data/cdc_oplog.jsonl"))
+def reset_oplog(oplog_file: Path) -> None:
+    """Delete past oplog file (best-effort), used by --reset-oplog at launch."""
+    try:
+        if oplog_file.exists():
+            oplog_file.unlink()
+            logger.info("reset_oplog removed %s", oplog_file)
+    except Exception as e:
+        logger.exception("reset_oplog failed for %s: %s", oplog_file, e)
 
 
-# uvicorn graph_knowledge_engine.cdc.change_bridge:app --host 127.0.0.1 --port 8787
-"""python - <<'PY'
-import asyncio,websockets
-async def m(): async with websockets.connect('ws://localhost:8787/changes/ws') as w: async for x in w: print(x)
-asyncio.run(m())
-PY"""
+def main(argv: Optional[list[str]] = None) -> int:
+    p = argparse.ArgumentParser(description="CDC change bridge launcher")
+    p.add_argument("--host", default="127.0.0.1")
+    p.add_argument("--port", type=int, default=8787)
+    p.add_argument("--oplog-file", type=Path, default=Path(".cdc_debug/data/cdc_oplog.jsonl"))
+    p.add_argument("--fsync", action="store_true", help="fsync oplog on each append (safer, slower)")
+    p.add_argument("--reset-oplog", action="store_true", help="delete oplog file before starting")
+    p.add_argument("--log-level", default="info", help="uvicorn log level (debug/info/warning/error/critical)")
+    p.add_argument("--access-log", action="store_true")
+    p.add_argument("--reload", action="store_true")
+
+    args = p.parse_args(argv)
+
+    # Ensure parent dir exists for oplog
+    args.oplog_file.parent.mkdir(parents=True, exist_ok=True)
+
+    if args.reset_oplog:
+        reset_oplog(args.oplog_file)
+
+    app = create_app(oplog_file=args.oplog_file, fsync=args.fsync)
+
+    uvicorn.run(
+        app,
+        host=args.host,
+        port=args.port,
+        log_level=args.log_level,
+        access_log=args.access_log,
+        reload=args.reload,
+    )
+    return 0
+
+if __name__ != "__main__":
+    app = create_app(oplog_file=Path(".cdc_debug/data/cdc_oplog.jsonl"))
+# Default app instance for uvicorn import-style launch (backward compatible)
+
+"""
+Normal usage:
+
+python -m graph_knowledge_engine.cdc.change_bridge --host 127.0.0.1 --port 8787
+
+Reset oplog on launch:
+
+python -m graph_knowledge_engine.cdc.change_bridge --reset-oplog
+
+Custom oplog path + fsync:
+
+python -m graph_knowledge_engine.cdc.change_bridge --oplog-file .cdc_debug/data/my_oplog.jsonl --fsync
+
+python -m graph_knowledge_engine.cdc.change_bridge --host 127.0.0.1 --port 8787 --oplog-file .cdc_debug/data/cdc_oplog.jsonl --reset-oplog
+"""
+if __name__ == "__main__":
+    raise SystemExit(main())
+
+    
+
+# uvicorn graph_knowledge_engine.cdc.change_bridge:app --host 127.0.0.1 --port 8787 --log-level info --access-log
