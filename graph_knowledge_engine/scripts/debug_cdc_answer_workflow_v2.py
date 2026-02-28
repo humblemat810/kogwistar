@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import functools
 import http.server
 import json
 import os
@@ -59,7 +60,7 @@ def _wait_http_up(url: str, timeout_s: float = 6.0) -> None:
     raise RuntimeError(f"Timed out waiting for server: {url} (last={last})")
 
 
-def _wait_tcp_open(host: str, port: int, timeout_s: float = 6.0) -> None:
+def _wait_tcp_open(host: str, port: int, timeout_s: float = 16.0) -> None:
     t0 = time.time()
     last = None
     while time.time() - t0 < timeout_s:
@@ -68,7 +69,7 @@ def _wait_tcp_open(host: str, port: int, timeout_s: float = 6.0) -> None:
                 return
         except Exception as e:
             last = e
-            time.sleep(0.1)
+            time.sleep(0.5)
     raise RuntimeError(f"Timed out waiting for TCP {host}:{port} (last={last})")
 
 
@@ -212,9 +213,7 @@ def start_uvicorn(app_import: str, host: str, port: int, app_dir: str, log_path:
 
     cmd = [
         sys.executable,
-        "-m",
-        "uvicorn",
-        app_import,
+        os.path.join(*app_import.rsplit(':',1)[0].split('.'))+".py", #app_import,
         "--app-dir",
         app_dir,
         "--host",
@@ -224,6 +223,7 @@ def start_uvicorn(app_import: str, host: str, port: int, app_dir: str, log_path:
         "--log-level",
         "info",
         "--access-log",
+        "--reset-oplog"
     ]
     p = subprocess.Popen(cmd, stdout=log_fh, stderr=subprocess.STDOUT, text=True)
     # Keep handle alive so the fd doesn't get closed early.
@@ -241,20 +241,19 @@ def stop_proc(p: subprocess.Popen) -> None:
         p.kill()
 
 
-def start_static_server(root_dir: Path, host: str, port: int) -> tuple[threading.Thread, http.server.ThreadingHTTPServer]:
-    handler = http.server.SimpleHTTPRequestHandler
-    cwd = os.getcwd()
-    os.chdir(str(root_dir))
-
+def start_static_server(
+    root_dir: Path, host: str, port: int
+) -> tuple[threading.Thread, http.server.ThreadingHTTPServer]:
+    root = str(root_dir.resolve())
+    
+    handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=root)
     httpd = http.server.ThreadingHTTPServer((host, port), handler)
 
-    def serve() -> None:
-        try:
-            httpd.serve_forever()
-        finally:
-            os.chdir(cwd)
-
-    t = threading.Thread(target=serve, daemon=True, name = "static cdc viewer http server")
+    t = threading.Thread(
+        target=httpd.serve_forever,
+        daemon=True,
+        name="static cdc viewer http server",
+    )
     t.start()
     return t, httpd
 
@@ -343,8 +342,8 @@ def main() -> int:
     bridge_log_path = out_dir / "cdc_bridge.log"
     bridge = start_uvicorn(args.bridge_app, args.bridge_host, bridge_port, args.bridge_dir, bridge_log_path)
     try:
-        _wait_tcp_open(args.bridge_host, bridge_port, timeout_s=6.0)
-        _wait_http_up(f"{bridge_http}/docs", timeout_s=6.0)
+        _wait_tcp_open(args.bridge_host, page_port, timeout_s=10.0)
+        _wait_http_up(f"{bridge_http}/docs", timeout_s=10.0)
     except Exception:
         if bridge.stdout:
             print("---- bridge logs ----")

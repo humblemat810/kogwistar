@@ -244,254 +244,6 @@ class ConversationOrchestrator:
             # If predicate_registry is required by validate() inside ensure_add_turn_flow(),
             # we still want to create the design. The designer will re-validate when runtime runs.
             designer.ensure_add_turn_flow(workflow_id=workflow_id, mode="full", include_context_snapshot=True)
-    def _make_add_turn_step_resolver(
-        self,
-        *,
-        user_id: str,
-        conversation_id: str,
-        turn_node_id: str,
-        turn_index: int,
-        role: Role,
-        content: str,
-        mem_id: str,
-        embedding: Any,
-        self_span: Span,
-        filtering_callback: Callable[..., tuple[RetrievalResult, str]],
-        max_retrieval_level: int,
-        summary_char_threshold: int,
-        prev_turn_meta_summary: MetaFromLastSummary,
-        summary_token_threshold: int | None = None,
-        token_estimator: Callable[[str], int] | None = None,
-    ):
-        """Factory returning a resolver(op_name)->StepFn.
-
-        Keeping this as a method (rather than a giant nested function) makes it:
-        - easier to unit test in isolation
-        - easier to share helper logic across workflows
-        - less likely to capture the wrong variables accidentally
-        """
-        raise NotImplementedError ("deterministic edge id not enforced")
-        from .workflow.runtime import StepContext
-        from .workflow.serialize import to_jsonable
-
-        def resolve_step(op_name: str):
-            if op_name == "memory_retrieve":
-                def _run(ctx: StepContext):
-                    mem_retriever = MemoryRetriever(
-                        conversation_engine=self.conversation_engine,
-                        llm=self.llm,
-                        filtering_callback=filtering_callback,
-                    )
-                    mem = self.tool_runner.run_tool(
-                        conversation_id=conversation_id,
-                        user_id=user_id,
-                        turn_node_id=turn_node_id,
-                        turn_index=turn_index,
-                        tool_name="memory_retrieve",
-                        args={"n_results": mem_retriever.n_results},
-                        handler=lambda: mem_retriever.retrieve(
-                            user_id=user_id,
-                            current_conversation_id=conversation_id,
-                            query_embedding=embedding,
-                            user_text=content,
-                            context_text="",
-                        ),
-                        render_result=lambda r: getattr(r, "reasoning", "")[:800],
-                        prev_turn_meta_summary=prev_turn_meta_summary,
-                    )
-                    # store both raw (for later pinning) and json mirror
-                    ctx.state["memory_raw"] = mem
-                    memj = to_jsonable(mem)
-                    ctx.state["memory"] = memj
-                    return memj
-                return _run
-
-            if op_name == "kg_retrieve":
-                def _run(ctx: StepContext):
-                    kg_retriever = KnowledgeRetriever(
-                        conversation_engine=self.conversation_engine,
-                        ref_knowledge_engine=self.ref_knowledge_engine,
-                        llm=self.llm,
-                        filtering_callback=filtering_callback,
-                        max_retrieval_level=max_retrieval_level,
-                    )
-                    mem_raw = ctx.state.get("memory_raw")
-                    seed_ids = list(getattr(mem_raw, "seed_kg_node_ids", []) or []) if mem_raw is not None else []
-                    kg = self.tool_runner.run_tool(
-                        conversation_id=conversation_id,
-                        user_id=user_id,
-                        turn_node_id=turn_node_id,
-                        turn_index=turn_index,
-                        tool_name="kg_retrieve",
-                        args={"max_retrieval_level": max_retrieval_level, "seed_kg_node_ids": seed_ids},
-                        handler=lambda: kg_retriever.retrieve(
-                            user_text=content,
-                            context_text="",
-                            query_embedding=embedding,
-                            seed_kg_node_ids=seed_ids,
-                        ),
-                        render_result=lambda r: getattr(r, "reasoning", "")[:800],
-                        prev_turn_meta_summary=prev_turn_meta_summary,
-                    )
-                    ctx.state["kg_raw"] = kg
-                    kgj = to_jsonable(kg)
-                    ctx.state["kg"] = kgj
-                    return kgj
-                return _run
-
-            if op_name == "memory_pin":
-                def _run(ctx: StepContext):
-                    mem_raw = ctx.state.get("memory_raw")
-                    mem_retriever = MemoryRetriever(
-                        conversation_engine=self.conversation_engine,
-                        llm=self.llm,
-                        filtering_callback=filtering_callback,
-                    )
-                    out = None
-                    if mem_raw is not None and getattr(mem_raw, "selected", None) and getattr(mem_raw, "memory_context_text", None):
-                        out = mem_retriever.pin_selected(
-                            user_id=user_id,
-                            current_conversation_id=conversation_id,
-                            turn_node_id=turn_node_id,
-                            mem_id=mem_id,
-                            turn_index=turn_index,
-                            self_span=self_span,
-                            selected_memory=getattr(mem_raw, "selected"),
-                            memory_context_text=getattr(mem_raw, "memory_context_text"),
-                            prev_turn_meta_summary=prev_turn_meta_summary,
-                        )
-
-                    ctx.state["memory_pin_raw"] = out
-                    outj = {
-                        "memory_context_node_id": getattr(getattr(out, "memory_context_node", None), "id", None) if out else None,
-                        "pinned_edge_ids": [e.id for e in getattr(out, "pinned_edges", [])] if out else [],
-                    }
-                    ctx.state["memory_pin"] = outj
-                    return outj
-                return _run
-
-            if op_name == "kg_pin":
-                def _run(ctx: StepContext):
-                    kg_raw = ctx.state.get("kg_raw")
-                    kg_retriever = KnowledgeRetriever(
-                        conversation_engine=self.conversation_engine,
-                        ref_knowledge_engine=self.ref_knowledge_engine,
-                        llm=self.llm,
-                        filtering_callback=filtering_callback,
-                        max_retrieval_level=max_retrieval_level,
-                    )
-                    pinned_ptrs: list[str] = []
-                    pinned_edges: list[str] = []
-                    if kg_raw is not None and getattr(kg_raw, "selected", None):
-                        pinned_ptrs, pinned_edges = kg_retriever.pin_selected(
-                            user_id=user_id,
-                            conversation_id=conversation_id,
-                            turn_node_id=turn_node_id,
-                            turn_index=turn_index,
-                            self_span=self_span,
-                            selected_knowledge=getattr(kg_raw, "selected"),
-                            prev_turn_meta_summary=prev_turn_meta_summary,
-                        )
-                    outj = {"pinned_pointer_node_ids": list(pinned_ptrs), "pinned_edge_ids": list(pinned_edges)}
-                    ctx.state["kg_pin"] = outj
-                    return outj
-                return _run
-
-            if op_name == "answer":
-                def _run(ctx: StepContext):
-                    resp = self.answer_only(conversation_id=conversation_id, prev_turn_meta_summary=prev_turn_meta_summary)
-                    ctx.state["answer_raw"] = resp
-
-                    # Link assistant node to the user turn for conversation chain continuity.
-                    response_node_id = getattr(resp, "response_node_id", None)
-                    if response_node_id:
-                        try:
-                            resp_node = self.conversation_engine.get_nodes([response_node_id])[0]
-                            self.add_link_to_new_turn(resp_node, self.conversation_engine.get_nodes([turn_node_id])[0], conversation_id, span=self_span)
-                        except Exception:
-                            pass
-
-                    # mirror legacy: advance distances after adding assistant turn, if available
-                    try:
-                        if response_node_id:
-                            txt = getattr(resp, "answer", None)
-                            if isinstance(txt, str):
-                                prev_turn_meta_summary.prev_node_char_distance_from_last_summary += len(txt)
-                            prev_turn_meta_summary.prev_node_distance_from_last_summary += 1
-                    except Exception:
-                        pass
-
-                    outj = {
-                        "response_node_id": response_node_id,
-                        "llm_decision_need_summary": bool(getattr(resp, "llm_decision_need_summary", False)),
-                    }
-                    ctx.state["answer"] = outj
-                    return outj
-                return _run
-
-            if op_name == "decide_summarize":
-                def _run(ctx: StepContext):
-                    ans = ctx.state.get("answer") or {}
-                    # Phase 2B policy: derive trigger from the latest context_snapshot cost (preferred),
-                    # falling back to legacy distances only if no snapshot exists.
-                    should = False
-
-                    snap_cost = None
-                    try:
-                        snap_cost = self.conversation_engine.latest_context_snapshot_cost(
-                            conversation_id=conversation_id,
-                            stage="generate_answer_with_citations",
-                        )
-                    except Exception:
-                        snap_cost = None
-
-                    if snap_cost is not None:
-                        if snap_cost.char_count > summary_char_threshold:
-                            should = True
-                        if (summary_token_threshold is not None
-                            and snap_cost.token_count is not None
-                            and int(snap_cost.token_count) > int(summary_token_threshold)):
-                            should = True
-                    else:
-                        # Legacy fallback (should disappear once every LLM call produces snapshots)
-                        if prev_turn_meta_summary.prev_node_distance_from_last_summary - 5 >= 0:
-                            should = True
-                        if (prev_turn_meta_summary.prev_node_char_distance_from_last_summary > summary_char_threshold
-                            or (summary_token_threshold is not None
-                                and _estimate_tokens_from_chars(
-                                    prev_turn_meta_summary.prev_node_char_distance_from_last_summary,
-                                    token_estimator,
-                                ) > summary_token_threshold)):
-                            should = True
-
-                    if bool(ans.get("llm_decision_need_summary", False)):
-                        should = True
-
-                    ctx.state["summary"] = {"should_summarize": should, "did_summarize": False}
-                    ctx.state["prev_turn_meta_summary"] = {
-                        "prev_node_char_distance_from_last_summary": prev_turn_meta_summary.prev_node_char_distance_from_last_summary,
-                        "prev_node_distance_from_last_summary": prev_turn_meta_summary.prev_node_distance_from_last_summary,
-                    }
-                    return ctx.state["summary"]
-                return _run
-
-            if op_name == "summarize":
-                def _run(ctx: StepContext):
-                    added_id = self._summarize_conversation_batch(conversation_id, turn_index + 1, prev_turn_meta_summary=prev_turn_meta_summary)
-                    # legacy resets after summarization
-                    prev_turn_meta_summary.prev_node_char_distance_from_last_summary = 0
-                    prev_turn_meta_summary.prev_node_distance_from_last_summary = 0
-                    ctx.state["summary"] = {"should_summarize": True, "did_summarize": True, "summary_node_id": added_id}
-                    ctx.state["prev_turn_meta_summary"] = {
-                        "prev_node_char_distance_from_last_summary": 0,
-                        "prev_node_distance_from_last_summary": 0,
-                    }
-                    return ctx.state["summary"]
-                return _run
-
-            raise KeyError(f"Unknown workflow op: {op_name}")
-
-        return resolve_step
     def add_turn_only_workflow(self,
                 *,
                 run_id: str,
@@ -858,35 +610,28 @@ class ConversationOrchestrator:
                 ),
                 "add_link_to_new_turn": self.add_link_to_new_turn,
             }
-        init_state: WorkflowState = cast(WorkflowState, WorkflowStateModel(
-            conversation_id=conversation_id,
-            user_id=user_id,
-            turn_node_id=turn_node_id,
-            turn_index=new_index,
-            mem_id=mem_id,
-            self_span=self_span,
-            role=str(role),
-            user_text=content,
-            embedding=embedding,
-            prev_turn_meta_summary=PrevTurnMetaSummaryModel(
-                prev_node_char_distance_from_last_summary=prev_turn_meta_summary.prev_node_char_distance_from_last_summary,
-                prev_node_distance_from_last_summary=prev_turn_meta_summary.prev_node_distance_from_last_summary,
-                tail_turn_index=prev_turn_meta_summary.tail_turn_index,
-            ),
-            _deps= {
-                    "conversation_engine": self.conversation_engine,
-                    "ref_knowledge_engine": self.ref_knowledge_engine,
-                    "llm": self.llm,
-                    "filtering_callback": filtering_callback,
-                }
-        ).model_dump())
+        init_state: WorkflowState = cast(
+            WorkflowState,
+            WorkflowStateModel(
+                conversation_id=conversation_id,
+                user_id=user_id,
+                turn_node_id=turn_node_id,
+                turn_index=new_index,
+                mem_id=mem_id,
+                self_span=self_span,
+                role=str(role),
+                user_text=content,
+                embedding=embedding,
+                prev_turn_meta_summary=PrevTurnMetaSummaryModel(
+                    prev_node_char_distance_from_last_summary=prev_turn_meta_summary.prev_node_char_distance_from_last_summary,
+                    prev_node_distance_from_last_summary=prev_turn_meta_summary.prev_node_distance_from_last_summary,
+                    tail_turn_index=prev_turn_meta_summary.tail_turn_index,
+                ),
+            ).model_dump(),
+        )
+        # Dependency injection for workflow step resolvers (workflow/resolvers.py)
         init_state["_deps"] = deps
 
-            # Dependency injection for default_resolver (resolvers.py)
-            
-        
-
-        
         run_result = runtime.run(
             workflow_id=workflow_id,
             conversation_id=conversation_id,

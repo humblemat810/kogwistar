@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import sys
+import pathlib
+if __name__=="__main__":
+    sys.path.insert(0, str(pathlib.Path(__file__).absolute().parent.parent.parent))
+
 import argparse
 import asyncio
 import json
 import logging
-import sys
+
 from pathlib import Path
 from typing import Any, Optional
 
@@ -12,8 +17,8 @@ import uvicorn
 from fastapi import FastAPI, Query, WebSocket, WebSocketDisconnect
 
 # Canonical ChangeEvent type (used by engine).
-from .change_event import ChangeEvent
-from .oplog import OplogReader, OplogWriter
+from graph_knowledge_engine.cdc.change_event import ChangeEvent
+from graph_knowledge_engine.cdc.oplog import OplogReader, OplogWriter
 
 logger = logging.getLogger(__name__)
 log_path = Path(".cdc_debug") / "cdc_bridge.log"
@@ -217,6 +222,8 @@ def reset_oplog(oplog_file: Path) -> None:
 
 
 def main(argv: Optional[list[str]] = None) -> int:
+    if argv is None:
+        argv=sys.argv[1:]
     p = argparse.ArgumentParser(description="CDC change bridge launcher")
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8787)
@@ -226,6 +233,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     p.add_argument("--log-level", default="info", help="uvicorn log level (debug/info/warning/error/critical)")
     p.add_argument("--access-log", action="store_true")
     p.add_argument("--reload", action="store_true")
+    p.add_argument("--app-dir")
 
     args = p.parse_args(argv)
 
@@ -267,6 +275,7 @@ python -m graph_knowledge_engine.cdc.change_bridge --oplog-file .cdc_debug/data/
 python -m graph_knowledge_engine.cdc.change_bridge --host 127.0.0.1 --port 8787 --oplog-file .cdc_debug/data/cdc_oplog.jsonl --reset-oplog
 """
 if __name__ == "__main__":
+    import sys
     raise SystemExit(main())
 
     

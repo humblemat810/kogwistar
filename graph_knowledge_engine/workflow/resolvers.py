@@ -202,6 +202,260 @@ def _start(ctx: StepContext) -> StepRunResult:
     return result
 
 
+
+
+# ------------------------------------------------------------------
+# Phase B.1 backbone ops (conversation chain mutations as primitives)
+# ------------------------------------------------------------------
+
+def _get_prev_turn_meta_summary_from_state_or_deps(ctx: "StepContext") -> Any:
+    """Return a MetaFromLastSummary-like object.
+
+    - Prefer deps['prev_turn_meta_summary'] (mutable, legacy object).
+    - Else, synthesize a lightweight object from state['prev_turn_meta_summary'] dict.
+    """
+    deps = _deps(ctx)
+    mts = deps.get("prev_turn_meta_summary")
+    if mts is not None:
+        return mts
+    d = ctx.state_view.get("prev_turn_meta_summary") or {}
+    # return MetaFromLastSummary(**d)
+    # tiny duck-typed object
+    class _MTS:
+        __slots__ = ("prev_node_char_distance_from_last_summary", "prev_node_distance_from_last_summary", "tail_turn_index")
+        def __init__(self, dd: dict[str, Any]):
+            self.prev_node_char_distance_from_last_summary = int(dd.get("prev_node_char_distance_from_last_summary", 0))
+            self.prev_node_distance_from_last_summary = int(dd.get("prev_node_distance_from_last_summary", 0))
+            self.tail_turn_index = int(dd.get("tail_turn_index", 0))
+    return _MTS(dict(d))
+
+
+@default_resolver.register("add_user_turn")
+def _add_user_turn(ctx: "StepContext") -> "StepRunResult":
+    """Create/persist the user turn node (workflow primitive).
+
+    Expected state (best-effort):
+      - user_id, conversation_id, role, user_text
+      - turn_index (optional; defaults to mts.tail_turn_index)
+      - turn_id (optional; used as doc_id; defaults to state['turn_node_id'] if set)
+
+    Writes (via state_update):
+      - turn_node_id, turn_index, self_span, embedding
+      - prev_turn_meta_summary (json mirror if synthesized)
+    """
+    deps = _deps(ctx)
+    ce = deps["conversation_engine"]
+    sv = ctx.state_view
+
+    user_id = str(sv["user_id"])
+    conversation_id = str(sv["conversation_id"])
+    role = str(sv.get("role") or "user")
+    user_text = str(sv.get("user_text") or "")
+
+    mts = _get_prev_turn_meta_summary_from_state_or_deps(ctx)
+    turn_index = int(sv.get("turn_index") or getattr(mts, "tail_turn_index", 0) or 0)
+
+    # doc_id for the turn (keep external caller's turn_id if provided)
+    turn_doc_id = str(sv.get("turn_id") or sv.get("turn_node_id") or f"turn_{turn_index}")
+
+    # deterministic node id (align with orchestrator)
+    from graph_knowledge_engine.conversation_orchestrator import get_id_for_conversation_turn
+    from graph_knowledge_engine.models import ConversationNode, Grounding, MentionVerification, Span
+
+    node_id = get_id_for_conversation_turn(
+        ConversationNode.id_kind,
+        user_id,
+        conversation_id,
+        user_text,
+        str(turn_index),
+        role,
+        "conversation_turn",
+        str(bool(sv.get("in_conv", True))),
+    )
+
+    # embedding: prefer provided, else compute defensively if engine supports it
+    embedding = sv.get("embedding")
+    if embedding is None and hasattr(ce, "_iterative_defensive_emb"):
+        emb_text0 = f"{role}: {user_text}"
+        embedding = ce._iterative_defensive_emb(emb_text0)
+
+    span = Span(
+        collection_page_url=f"conversation/{conversation_id}",
+        document_page_url=f"conversation/{conversation_id}#{turn_doc_id}",
+        doc_id=f"conv:{conversation_id}",
+        insertion_method="conversation_turn",
+        page_number=1,
+        start_char=0,
+        end_char=len(user_text),
+        excerpt=user_text,
+        context_before="",
+        context_after="",
+        chunk_id=None,
+        source_cluster_id=None,
+        verification=MentionVerification(method="human", is_verified=True, score=1.0, notes="verbatim input"),
+    )
+
+    node = ConversationNode(
+        user_id=user_id,
+        id=node_id,
+        label=f"Turn {turn_index} ({role})",
+        type="entity",
+        doc_id=turn_doc_id,
+        summary=user_text,
+        role=role,  # type: ignore
+        turn_index=turn_index,
+        conversation_id=conversation_id,
+        mentions=[Grounding(spans=[span])],
+        properties={},
+        metadata={
+            "entity_type": "conversation_turn",
+            "level_from_root": 0,
+            "in_conversation_chain": bool(sv.get("in_conv", True)),
+            "in_ui_chain": True,
+        },
+        domain_id=None,
+        canonical_entity_id=None,
+    )
+    try:
+        node.embedding = embedding
+    except Exception:
+        pass
+
+    ce.add_node(node)
+
+    # advance legacy distances (mirror orchestrator) if mts is mutable
+    try:
+        mts.tail_turn_index = turn_index
+        mts.prev_node_char_distance_from_last_summary += len(user_text)
+        mts.prev_node_distance_from_last_summary += 1
+    except Exception:
+        pass
+
+    with ctx.state_write as state:
+        state.setdefault("op_log", []).append("add_user_turn")
+
+    mts_json = None
+    # if we synthesized mts (duck type), mirror it back as json so runtime can checkpoint it
+    try:
+        mts_json = {
+            "prev_node_char_distance_from_last_summary": int(getattr(mts, "prev_node_char_distance_from_last_summary", 0)),
+            "prev_node_distance_from_last_summary": int(getattr(mts, "prev_node_distance_from_last_summary", 0)),
+            "tail_turn_index": int(getattr(mts, "tail_turn_index", 0)),
+        }
+    except Exception:
+        mts_json = None
+
+    upd = {
+        "turn_node_id": node_id,
+        "turn_index": turn_index,
+        # "self_span": span,
+    }
+    if embedding is not None:
+        upd["embedding"] = embedding
+    if mts_json is not None:
+        upd["prev_turn_meta_summary"] = mts_json
+
+    return RunSuccess(conversation_node_id=node_id, state_update=[("u", upd)])
+
+
+@default_resolver.register("link_prev_turn")
+def _link_prev_turn(ctx: "StepContext") -> "StepRunResult":
+    """Link prev tail turn -> current turn via next_turn edge."""
+    deps = _deps(ctx)
+    ce = deps["conversation_engine"]
+    add_link_to_new_turn = deps.get("add_link_to_new_turn")
+    if not callable(add_link_to_new_turn):
+        raise RuntimeError("deps['add_link_to_new_turn'] must be callable for link_prev_turn")
+
+    sv = ctx.state_view
+    prev_turn_id = sv.get("prev_turn_id") or sv.get("prev_node_id")
+    if not prev_turn_id:
+        # nothing to link
+        return RunSuccess(conversation_node_id=None, state_update=[("a", {"op_log": "link_prev_turn:skipped"})])
+
+    turn_node_id = str(sv["turn_node_id"])
+    conversation_id = str(sv["conversation_id"])
+    user_id = str(sv["user_id"])
+    turn_index = int(sv.get("turn_index") or 0)
+    span = sv.get("self_span")
+
+    mts = _get_prev_turn_meta_summary_from_state_or_deps(ctx)
+
+    from graph_knowledge_engine.conversation_orchestrator import get_id_for_conversation_turn_edge
+    from graph_knowledge_engine.models import ConversationEdge
+
+    prev_node = ce.get_nodes([str(prev_turn_id)])[0]
+    turn_node = ce.get_nodes([turn_node_id])[0]
+
+    edge_id = get_id_for_conversation_turn_edge(
+        ConversationEdge.id_kind,
+        user_id,
+        conversation_id,
+        "next_turn",
+        turn_index,
+        [prev_node.id],
+        [turn_node.id],
+        [],
+        [],
+        "conversation_edge",
+    )
+
+    add_link_to_new_turn(edge_id, turn_node, prev_node, conversation_id, span=span, prev_turn_meta_summary=mts)
+
+    with ctx.state_write as state:
+        state.setdefault("op_log", []).append("link_prev_turn")
+
+    return RunSuccess(conversation_node_id=edge_id, state_update=[("u", {"prev_turn_edge_id": edge_id})])
+
+
+@default_resolver.register("link_assistant_turn")
+def _link_assistant_turn(ctx: "StepContext") -> "StepRunResult":
+    """Link user turn -> assistant response turn via next_turn edge."""
+    deps = _deps(ctx)
+    ce = deps["conversation_engine"]
+    add_link_to_new_turn = deps.get("add_link_to_new_turn")
+    if not callable(add_link_to_new_turn):
+        raise RuntimeError("deps['add_link_to_new_turn'] must be callable for link_assistant_turn")
+
+    sv = ctx.state_view
+    ans = sv.get("answer") or {}
+    response_node_id = (ans or {}).get("response_node_id") if isinstance(ans, dict) else None
+    if not response_node_id:
+        return RunSuccess(conversation_node_id=None, state_update=[("a", {"op_log": "link_assistant_turn:skipped"})])
+
+    user_turn_id = str(sv["turn_node_id"])
+    conversation_id = str(sv["conversation_id"])
+    user_id = str(sv["user_id"])
+    turn_index = int(sv.get("turn_index") or 0)
+    span = sv.get("self_span")
+    mts = _get_prev_turn_meta_summary_from_state_or_deps(ctx)
+
+    from graph_knowledge_engine.conversation_orchestrator import get_id_for_conversation_turn_edge
+    from graph_knowledge_engine.models import ConversationEdge
+
+    user_turn = ce.get_nodes([user_turn_id])[0]
+    resp_turn = ce.get_nodes([str(response_node_id)])[0]
+
+    edge_id = get_id_for_conversation_turn_edge(
+        ConversationEdge.id_kind,
+        user_id,
+        conversation_id,
+        "next_turn",
+        turn_index,
+        [user_turn.id],
+        [resp_turn.id],
+        [],
+        [],
+        "conversation_edge",
+    )
+
+    add_link_to_new_turn(edge_id, resp_turn, user_turn, conversation_id, span=span, prev_turn_meta_summary=mts)
+
+    with ctx.state_write as state:
+        state.setdefault("op_log", []).append("link_assistant_turn")
+
+    return RunSuccess(conversation_node_id=edge_id, state_update=[("u", {"assistant_turn_edge_id": edge_id})])
+
 @default_resolver.register("context_snapshot")
 def _context_snapshot(ctx: StepContext) -> StepRunResult:
     """Persist a ContextSnapshot node capturing the *actual* LLM prompt inputs.
