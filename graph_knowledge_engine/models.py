@@ -335,6 +335,7 @@ class Span(ModeSlicingMixin, BaseModel):
     verification: Annotated[Optional[MentionVerification], BackendField(), ExcludeMode("llm")] = Field(
                                         None, description="Result of validating the mention correctness"
                                     )
+    
     @staticmethod
     def from_dummy_for_workflow(doc_id = "_wf:_dummy"):
         if doc_id.startswith("_wf:"):
@@ -350,7 +351,7 @@ class Span(ModeSlicingMixin, BaseModel):
             excerpt="", context_before="", context_after="",
             chunk_id = None,
             source_cluster_id = None,
-            verification=MentionVerification(method="system", is_verified=True, score=1.0, notes="start node")
+            verification=MentionVerification(method="system", is_verified=True, score=1.0, notes="")
         )
         return dummy_span
     @staticmethod
@@ -368,7 +369,7 @@ class Span(ModeSlicingMixin, BaseModel):
             excerpt="", context_before="", context_after="",
             chunk_id = None,
             source_cluster_id = None,
-            verification=MentionVerification(method="system", is_verified=True, score=1.0, notes="start node")
+            verification=MentionVerification(method="system", is_verified=True, score=1.0, notes="")
         )
         return dummy_span
     @staticmethod
@@ -594,11 +595,15 @@ class GraphEntityRefBase(GraphEntityBase):
                 mentions = [Grounding.model_validate(i) for i in json.loads(data['mentions'])]
             else:
                 mentions = data['mentions']
+            if type(mentions) is not list:
+                raise TypeError("mentions should be a list of groundings")
             for mention in mentions:
                 if type(mention) is Grounding:
                     for span in mention.spans:
                         check_and_update_span_inplace(span)
                 else:
+                    
+                        
                     try:
                         mention_dict: dict = cast(dict, mention)
                         for span in mention_dict['spans']:
@@ -1688,14 +1693,16 @@ class WorkflowEdge(Edge):
         return v
     @property
     def predicate(self):
-        return str(self.metadata.get('wf_predicate'))
+        return self.metadata.get('wf_predicate')
     @property
     def multiplicity(self):
         return self.metadata.get('wf_multiplicity')
     @property
     def is_default(self):
         return self.metadata.get('wf_is_default')
-    
+    @property
+    def priority(self):
+        return int(self.metadata.get('wf_priority'))
 # -------------------------
 # Workflow traces: run/step/checkpoint (persist in conversation_engine)
 # -------------------------

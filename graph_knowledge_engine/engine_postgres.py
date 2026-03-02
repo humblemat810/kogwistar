@@ -28,7 +28,8 @@ class EnginePostgresConfig(PgVectorConfig):
 
 
 def build_postgres_backend(cfg: EnginePostgresConfig) -> Tuple[PgVectorBackend, PostgresUnitOfWork]:
-    engine = sa.create_engine(cfg.dsn, future=True)
+    max_workers = 4
+    engine = sa.create_engine(cfg.dsn, future=True, pool_size=max_workers+2,pool_timeout=10.0,)
 
     backend = PgVectorBackend(
         engine=engine,

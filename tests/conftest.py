@@ -26,6 +26,23 @@ def stable_uuid(*parts: object) -> str:
     return str(uuid.uuid5(_TEST_NS, "|".join(str(p) for p in parts)))
 from pathlib import Path
 
+import logging
+from pathlib import Path
+from graph_knowledge_engine.utils.log import EngineLogManager, EngineLogConfig
+
+def pytest_configure(config):
+    EngineLogManager.configure(
+        EngineLogConfig(
+            base_dir=Path(".logs/test"),
+            app_name="gke_test",
+            level=logging.DEBUG,
+            enable_files=True,        # <-- ENABLE FILE LOGGING
+            enable_sqlite=False,
+            mode="prod",              # <-- NOT pytest
+        )
+    )
+
+
 def _mk_span_from_excerpt(*, doc_id: str, content: str, excerpt: str, insertion_method: str, page_number: int = 1):
     idx = content.index(excerpt)  # will raise if excerpt not present -> good early failure
     start = idx

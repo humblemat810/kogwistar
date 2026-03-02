@@ -594,7 +594,7 @@ class AgenticAnsweringAgent:
             step_resolver=resolve_step,
             predicate_registry=predicate_registry,
             checkpoint_every_n_steps=1,
-            max_workers=4,
+            max_workers=1,
         )
 
         # Choose a turn_node_id for checkpoint/tracing.
@@ -679,7 +679,7 @@ class AgenticAnsweringAgent:
             where={"level_from_root": {"$lte": self.config.max_retrieval_level}},
             include=["documents", "metadatas"],
         )
-        ids = (res.get("node_ids") or [[]])[0]
+        ids = (res.get("ids") or [[]])[0]
         metas = (res.get("metadatas") or [[]])[0]
         docs = (res.get("documents") or [[]])[0]
         out: list[dict[str, Any]] = []

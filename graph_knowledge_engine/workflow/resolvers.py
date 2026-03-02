@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 
-from ..models import MetaFromLastSummary, KnowledgeRetrievalResult, MemoryRetrievalResult
+from ..models import MetaFromLastSummary, KnowledgeRetrievalResult, MemoryRetrievalResult, StateUpdate
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from .runtime import StateUpdate
@@ -198,7 +198,8 @@ def _start(ctx: StepContext) -> StepRunResult:
     with ctx.state_write as state:
         state.setdefault("op_log", []).append("start")
         state["started"] = True
-    result = RunSuccess(conversation_node_id=None, state_update=[('u',{"started": True})])
+    result = RunSuccess(conversation_node_id=None, state_update=[('u', {"started": True}), 
+                                                                 ('u', {'turn_index':0})])
     return result
 
 
@@ -219,7 +220,6 @@ def _get_prev_turn_meta_summary_from_state_or_deps(ctx: "StepContext") -> Any:
     if mts is not None:
         return mts
     d = ctx.state_view.get("prev_turn_meta_summary") or {}
-    # return MetaFromLastSummary(**d)
     # tiny duck-typed object
     class _MTS:
         __slots__ = ("prev_node_char_distance_from_last_summary", "prev_node_distance_from_last_summary", "tail_turn_index")
@@ -253,8 +253,11 @@ def _add_user_turn(ctx: "StepContext") -> "StepRunResult":
     user_text = str(sv.get("user_text") or "")
 
     mts = _get_prev_turn_meta_summary_from_state_or_deps(ctx)
-    turn_index = int(sv.get("turn_index") or getattr(mts, "tail_turn_index", 0) or 0)
-
+    if type(sv.get("turn_index")) is int:
+        turn_index = sv.get("turn_index")
+    else:
+        turn_index = int(getattr(mts, "tail_turn_index", 0) or 0)
+    turn_index += 1
     # doc_id for the turn (keep external caller's turn_id if provided)
     turn_doc_id = str(sv.get("turn_id") or sv.get("turn_node_id") or f"turn_{turn_index}")
 
@@ -262,7 +265,8 @@ def _add_user_turn(ctx: "StepContext") -> "StepRunResult":
     from graph_knowledge_engine.conversation_orchestrator import get_id_for_conversation_turn
     from graph_knowledge_engine.models import ConversationNode, Grounding, MentionVerification, Span
 
-    node_id = get_id_for_conversation_turn(
+    # deterministic node id (align with orchestrator); prefer provided turn_node_id if present.
+    expected_id = get_id_for_conversation_turn(
         ConversationNode.id_kind,
         user_id,
         conversation_id,
@@ -272,13 +276,14 @@ def _add_user_turn(ctx: "StepContext") -> "StepRunResult":
         "conversation_turn",
         str(bool(sv.get("in_conv", True))),
     )
+    provided_id = sv.get("turn_node_id")
+    node_id = str(provided_id) if provided_id else str(expected_id)
 
     # embedding: prefer provided, else compute defensively if engine supports it
     embedding = sv.get("embedding")
     if embedding is None and hasattr(ce, "_iterative_defensive_emb"):
         emb_text0 = f"{role}: {user_text}"
         embedding = ce._iterative_defensive_emb(emb_text0)
-
     span = Span(
         collection_page_url=f"conversation/{conversation_id}",
         document_page_url=f"conversation/{conversation_id}#{turn_doc_id}",
@@ -324,12 +329,12 @@ def _add_user_turn(ctx: "StepContext") -> "StepRunResult":
     ce.add_node(node)
 
     # advance legacy distances (mirror orchestrator) if mts is mutable
-    try:
-        mts.tail_turn_index = turn_index
-        mts.prev_node_char_distance_from_last_summary += len(user_text)
-        mts.prev_node_distance_from_last_summary += 1
-    except Exception:
-        pass
+
+    mts.tail_turn_index = turn_index
+    mts.prev_node_char_distance_from_last_summary += len(user_text)
+    mts.prev_node_distance_from_last_summary += 1
+
+
 
     with ctx.state_write as state:
         state.setdefault("op_log", []).append("add_user_turn")
@@ -348,13 +353,13 @@ def _add_user_turn(ctx: "StepContext") -> "StepRunResult":
     upd = {
         "turn_node_id": node_id,
         "turn_index": turn_index,
-        # "self_span": span,
+        "self_span": span,
     }
     if embedding is not None:
         upd["embedding"] = embedding
     if mts_json is not None:
         upd["prev_turn_meta_summary"] = mts_json
-
+    upd["turn_index"] = turn_index
     return RunSuccess(conversation_node_id=node_id, state_update=[("u", upd)])
 
 
@@ -427,6 +432,7 @@ def _link_assistant_turn(ctx: "StepContext") -> "StepRunResult":
     conversation_id = str(sv["conversation_id"])
     user_id = str(sv["user_id"])
     turn_index = int(sv.get("turn_index") or 0)
+    turn_index += 1
     span = sv.get("self_span")
     mts = _get_prev_turn_meta_summary_from_state_or_deps(ctx)
 
@@ -454,7 +460,9 @@ def _link_assistant_turn(ctx: "StepContext") -> "StepRunResult":
     with ctx.state_write as state:
         state.setdefault("op_log", []).append("link_assistant_turn")
 
-    return RunSuccess(conversation_node_id=edge_id, state_update=[("u", {"assistant_turn_edge_id": edge_id})])
+    return RunSuccess(conversation_node_id=edge_id, 
+                      state_update=[("u", {"assistant_turn_edge_id": edge_id, 
+                                            "turn_index": turn_index})])
 
 @default_resolver.register("context_snapshot")
 def _context_snapshot(ctx: StepContext) -> StepRunResult:
@@ -539,7 +547,7 @@ def _memory_retrieve(ctx: StepContext) -> StepRunResult:
             query_embedding=state_view["embedding"],
             user_text=state_view["user_text"],
             context_text="",
-            n_result = 12,
+            n_results = 12,
         )
     else:
         
@@ -556,7 +564,7 @@ def _memory_retrieve(ctx: StepContext) -> StepRunResult:
                 query_embedding=state_view["embedding"],
                 user_text=state_view["user_text"],
                 context_text="",
-                n_result = 12,
+                n_results = 12,
             ),
             handler=mem_retriever.retrieve,
             render_result=lambda r: getattr(r, "reasoning", "")[:800],
@@ -701,13 +709,16 @@ def _kg_pin(ctx: StepContext) -> StepRunResult:
     pinned_ptrs: list[str] = []
     pinned_edges: list[str] = []
     if kg_rehydrated is not None and getattr(kg_rehydrated, "selected", None):
+        from ..models import FilteringResult
+        # todo change model into pydantic if possible
+        selected = FilteringResult(**kg_rehydrated.selected)
         pinned_ptrs, pinned_edges = kg_retriever.pin_selected(
             user_id=state["user_id"],
             conversation_id=state["conversation_id"],
             turn_node_id=state["turn_node_id"],
             turn_index=state["turn_index"],
             self_span=state["self_span"],
-            selected_knowledge=getattr(kg_rehydrated, "selected"),
+            selected_knowledge=selected,
             prev_turn_meta_summary=prev_turn_meta_summary,
         )
 
@@ -719,100 +730,148 @@ def _kg_pin(ctx: StepContext) -> StepRunResult:
 
 @default_resolver.register("answer")
 def _answer(ctx: StepContext) -> StepRunResult:
-    """Run answer-only agent, then link assistant turn into conversation chain."""
-    from graph_knowledge_engine.conversation_orchestrator import get_id_for_conversation_turn_edge
+    """Run answering step (no chain linking here).
+
+    Phase C:
+    - Prefer agentic answering workflow if deps['agent'] is provided.
+    - Else fallback to deps['answer_only'] callable (legacy).
+
+    Writes:
+      state['answer'] = {'response_node_id': ..., 'llm_decision_need_summary': bool}
+    """
     deps = _deps(ctx)
     with ctx.state_write as state:
         state.setdefault("op_log", []).append("answer")
     state = ctx.state_view
-    prev_turn_meta_summary: MetaFromLastSummary = deps.get("prev_turn_meta_summary")
-    answer_only = deps.get("answer_only")
-    if not callable(answer_only):
-        raise RuntimeError("deps['answer_only'] must be callable")
-    from ..models import ConversationAIResponse
-    res_raw = answer_only(conversation_id=state["conversation_id"], prev_turn_meta_summary=prev_turn_meta_summary)
-    resp : ConversationAIResponse= ConversationAIResponse.model_validate(res_raw)
-    # ctx.state["answer_raw"] = resp
+    mts = _get_prev_turn_meta_summary_from_state_or_deps(ctx)
 
-    response_node_id = getattr(resp, "response_node_id", None)
-    if response_node_id:
-        # Link assistant node to the user turn for conversation chain continuity.
-        add_link_to_new_turn = deps.get("add_link_to_new_turn")
-        ce = deps["conversation_engine"]
-        if callable(add_link_to_new_turn):
-            try:
-                resp_node = ce.get_nodes([response_node_id])[0]
-                state = ctx.state_view
-                user_turn_node = ce.get_nodes([state["turn_node_id"]])[0]
-                seq_edge_id = get_id_for_conversation_turn_edge(ConversationEdge.id_kind, state['user_id'], 
-                                                                state['conversation_id'], 
-                                                                "next_turn", prev_turn_meta_summary.tail_turn_index,
-                                                                [user_turn_node.id], [resp_node.id], 
-                                                                [], [], 
-                                                                "conversation_edge")
-                state = ctx.state_view
-                add_link_to_new_turn(seq_edge_id, resp_node, user_turn_node, state["conversation_id"], 
-                                     span=state["self_span"], 
-                                     prev_turn_meta_summary=prev_turn_meta_summary)
-            except Exception as _e:
-                pass
+    response_node_id: str | None = None
+    llm_decision_need_summary: bool = False
 
-        # # Mirror legacy: advance distances after adding assistant turn, if available.
-        # try:
-        #     txt = getattr(resp, "answer", None)
-        #     if isinstance(txt, str):
-        #         prev_turn_meta_summary.prev_node_char_distance_from_last_summary += len(txt)
-        #     prev_turn_meta_summary.prev_node_distance_from_last_summary += 1
-        # except Exception:
-        #     pass
+    # 1) Agentic answering via workflow (preferred)
+    agent: AgenticAnsweringAgent = deps.get("agent")
+    if agent is not None:
+        try:
+            workflow_engine = deps.get("agentic_workflow_engine") or deps.get("workflow_engine")
+            out = agent.answer_workflow_v2(
+                conversation_id=state["conversation_id"],
+                user_id=state.get("user_id"),
+                prev_turn_meta_summary=mts,
+                workflow_engine=workflow_engine,
+            )
+            if isinstance(out, dict):
+                response_node_id = out.get("assistant_turn_node_id") or out.get("response_node_id")
+                # agentic path doesn't currently expose llm_decision_need_summary; keep False unless present
+                llm_decision_need_summary = bool(out.get("llm_decision_need_summary", False))
+        except Exception:
+            # fall back to legacy if provided
+            agent = None
+
+    # 2) Legacy answer_only callable
+    if response_node_id is None:
+        answer_only = deps.get("answer_only")
+        if not callable(answer_only):
+            raise RuntimeError("deps must provide either 'agent' or callable 'answer_only'")
+        res_raw = answer_only(conversation_id=state["conversation_id"], prev_turn_meta_summary=mts)
+        try:
+            from ..models import ConversationAIResponse
+            resp = ConversationAIResponse.model_validate(res_raw)
+            response_node_id = getattr(resp, "response_node_id", None)
+            llm_decision_need_summary = bool(getattr(resp, "llm_decision_need_summary", False))
+        except Exception:
+            # best-effort: accept dict-like
+            if isinstance(res_raw, dict):
+                response_node_id = res_raw.get("response_node_id") or res_raw.get("assistant_turn_node_id")
+                llm_decision_need_summary = bool(res_raw.get("llm_decision_need_summary", False))
 
     outj = {
         "response_node_id": response_node_id,
-        "llm_decision_need_summary": bool(getattr(resp, "llm_decision_need_summary", False)),
+        "llm_decision_need_summary": bool(llm_decision_need_summary),
     }
-    # ctx.state["answer"] = outj
-    state_update=[('u', {'answer': outj})]
-    return RunSuccess(conversation_node_id=response_node_id, state_update=state_update)
+    return RunSuccess(conversation_node_id=response_node_id, state_update=[("u", {"answer": outj})])
 
 
 @default_resolver.register("decide_summarize")
 def _decide_summarize(ctx: StepContext) -> StepRunResult:
-    """Decide whether to summarize, using the same policy as legacy."""
+    """Decide whether to summarize.
+
+    Phase D policy:
+    - Prefer latest context_snapshot cost (if available) for char/token thresholds.
+    - Fall back to legacy distance counters if no snapshot exists.
+    - Always respect answer.llm_decision_need_summary if present.
+    """
     deps = _deps(ctx)
     with ctx.state_write as state:
         state.setdefault("op_log", []).append("decide_summarize")
-    state = ctx.state_view
-    prev_turn_meta_summary: MetaFromLastSummary = deps.get("prev_turn_meta_summary")
+    st = ctx.state_view
+    mts = _get_prev_turn_meta_summary_from_state_or_deps(ctx)
+
     summary_char_threshold = int(deps.get("summary_char_threshold", 12000))
-    ans = state.get("answer") or {}
+    summary_turn_threshold = int(deps.get("summary_turn_threshold", 5))
+    summary_token_threshold = deps.get("summary_token_threshold")
+    token_estimator = deps.get("token_estimator")  # optional callable
+    stage = deps.get("summary_snapshot_stage") or "generate_answer_with_citations"
+
+    ans = st.get("answer") or {}
 
     should = False
-    try:
-        if prev_turn_meta_summary.prev_node_distance_from_last_summary - 5 >= 0:
-            should = True
-        if prev_turn_meta_summary.prev_node_char_distance_from_last_summary > summary_char_threshold:
-            should = True
-        if bool(ans.get("llm_decision_need_summary", False)):
-            should = True
-    except Exception:
-        pass
 
-    # state["summary"] = {"should_summarize": should, "did_summarize": False, "summary_node_id": None}
-    # state["prev_turn_meta_summary"] = {
-    #     "prev_node_char_distance_from_last_summary": getattr(prev_turn_meta_summary, "prev_node_char_distance_from_last_summary", 0),
-    #     "prev_node_distance_from_last_summary": getattr(prev_turn_meta_summary, "prev_node_distance_from_last_summary", 0),
-    # }
+    # 1) Snapshot-first
+    snap_cost = None
+    ce = deps.get("conversation_engine")
+    if ce is not None and hasattr(ce, "latest_context_snapshot_cost"):
+        try:
+            snap_cost = ce.latest_context_snapshot_cost(conversation_id=st["conversation_id"], stage=stage)
+        except Exception:
+            snap_cost = None
+
+    if snap_cost is not None:
+        try:
+            if int(getattr(snap_cost, "char_count", 0)) > summary_char_threshold:
+                should = True
+            if summary_token_threshold is not None:
+                tc = getattr(snap_cost, "token_count", None)
+                if tc is not None and int(tc) > int(summary_token_threshold):
+                    should = True
+        except Exception:
+            pass
+    else:
+        # 2) Legacy fallback
+        try:
+            if int(getattr(mts, "prev_node_distance_from_last_summary", 0)) - summary_turn_threshold >= 0:
+                should = True
+            char_dist = int(getattr(mts, "prev_node_char_distance_from_last_summary", 0))
+            if char_dist > summary_char_threshold:
+                should = True
+            if summary_token_threshold is not None:
+                # best-effort token estimate
+                if callable(token_estimator):
+                    tok = int(token_estimator("a" * min(4096, char_dist))) if char_dist > 0 else 0
+                    # scale linearly using proxy chars
+                    proxy = max(1, min(4096, char_dist))
+                    est = int(round(tok * (char_dist / proxy))) if proxy else tok
+                else:
+                    est = max(1, (char_dist + 3) // 4)
+                if est > int(summary_token_threshold):
+                    should = True
+        except Exception:
+            pass
+
+    # 3) LLM decision flag
+    if bool(ans.get("llm_decision_need_summary", False)):
+        should = True
+
     summary = {
         "should_summarize": bool(should),
         "summary_char_threshold": int(summary_char_threshold),
-        "summary_token_threshold": int(deps.get("summary_token_threshold")) if deps.get("summary_token_threshold") is not None else None,
-        "summary_turn_threshold": int(deps.get("summary_turn_threshold", 5)),
+        "summary_token_threshold": int(summary_token_threshold) if summary_token_threshold is not None else None,
+        "summary_turn_threshold": int(summary_turn_threshold),
     }
-    state_update: list[StateUpdate] = [('u', {"summary": summary})]
-    return RunSuccess(conversation_node_id=None, state_update=state_update)
+    return RunSuccess(conversation_node_id=None, state_update=[("u", {"summary": summary})])
 
 
 @default_resolver.register("summarize")
+
 def _summarize(ctx: StepContext) -> StepRunResult:
     """Summarize last batch and reset distances (legacy behavior)."""
     deps = _deps(ctx)
@@ -1049,6 +1108,7 @@ def _aa_materialize_evidence_pack(ctx: StepContext) -> StepRunResult:
     evidence_pack = cached_call(
         agent=agent,
         node_ids=used_node_ids,
+        edge_ids=used_edge_ids,
         depth=materialize_depth,
         max_chars_per_item=agent.config.max_chars_per_item,
         max_total_chars=agent.config.max_total_chars,

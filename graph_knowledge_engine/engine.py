@@ -2934,7 +2934,7 @@ class GraphKnowledgeEngine:
         # Phase 1: enqueue derived index work; fast path drains immediately.
         if self._phase1_enable_index_jobs:
             self.enqueue_index_jobs_for_edge(edge.safe_get_id(), op="UPSERT")
-            self.reconcile_indexes(max_jobs=50)
+            _applied = self.reconcile_indexes(max_jobs=50)
         else:
             self._maybe_reindex_edge_refs(edge)
             # endpoints fan-out

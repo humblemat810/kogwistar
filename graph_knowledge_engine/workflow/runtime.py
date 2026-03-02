@@ -614,55 +614,67 @@ class WorkflowRuntime:
             _persist_rt_join_runtime()
 
         def worker(node_id: str, state: WorkflowState, token_id: str, parent_token_id: str | None, step_seq: int, mask: int) -> None:
-            wn: WorkflowNode
-            wn = nodes[node_id]
-            op = nodes[node_id].op
-            t0 = _now_ms()
-            status = "ok"
+            t = threading.current_thread()
+            old_name = t.name
             try:
-                fn: Callable[..., StepRunResult] = self.step_resolver(op)
-                ctx = StepContext(
-                    run_id=str(run_id),
-                    workflow_id=str(workflow_id),
-                    workflow_node_id=str(node_id),
-                    op=str(op),
-                    token_id=str(token_id),
-                    attempt=1,
-                    step_seq=int(step_seq),
-                    conversation_id=str(conversation_id) if conversation_id is not None else None,
-                    turn_node_id=str(turn_node_id) if turn_node_id is not None else None,
-                    state=state,
-                    message_queue=mq,
-                    events=self.emitter,
-                )
-                # step attempt start
-                self.emitter.step_started(ctx.trace_ctx)
+                t.name = f"rt-wf-{workflow_id}-wf-{run_id}-step-{step_seq}-{node_id}"
+                wn: WorkflowNode
+                wn = nodes[node_id]
+                op = nodes[node_id].op
+                t0 = _now_ms()
+                status = "ok"
+                try:
+                    fn: Callable[..., StepRunResult] = self.step_resolver(op)
+                    ctx = StepContext(
+                        run_id=str(run_id),
+                        workflow_id=str(workflow_id),
+                        workflow_node_id=str(node_id),
+                        op=str(op),
+                        token_id=str(token_id),
+                        attempt=1,
+                        step_seq=int(step_seq),
+                        conversation_id=str(conversation_id) if conversation_id is not None else None,
+                        turn_node_id=str(turn_node_id) if turn_node_id is not None else None,
+                        state=state,
+                        message_queue=mq,
+                        events=self.emitter,
+                    )
+                    # step attempt start
+                    self.emitter.step_started(ctx.trace_ctx)
 
-                # Transaction boundary (best-effort): resolver is expected to call
-                # engine methods; when backed by Postgres this ensures those writes
-                # are committed or rolled back atomically for this step.
-                with self._maybe_step_uow():
-                    res: StepRunResult = fn(ctx)
-                status = "ok" if getattr(res, "status", None) != "failure" else "failure"
+                    # Transaction boundary (best-effort): resolver is expected to call
+                    # engine methods; when backed by Postgres this ensures those writes
+                    # are committed or rolled back atomically for this step.
+                    with self._maybe_step_uow():
+                        res: StepRunResult = fn(ctx)
+                    status = "ok" if getattr(res, "status", None) != "failure" else "failure"
 
-            except Exception as e:
-                status = "error"
-                res = RunFailure(conversation_node_id=None, status="failure", errors=[str(e)], state_update=[])
-            try:
-                mq.put_nowait(res.model_dump())
-            except queue.Full as _e:
-                raise
-            t1 = _now_ms()
-            # step attempt complete (best-effort; never break worker)
-            try:
-                self.emitter.step_completed(ctx.trace_ctx, status=str(status), duration_ms=max(0, t1 - t0))
-            except Exception:
-                pass
-            done_q.put((node_id, res, max(0, t1 - t0), token_id, parent_token_id, status, mask))
-
+                except Exception as e:
+                    status = "error"
+                    import traceback
+                    res = RunFailure(conversation_node_id=None, status="failure", errors=[str(e) + '\n'+ traceback.format_exc()], state_update=[])
+                try:
+                    mq.put_nowait(res.model_dump())
+                except queue.Full as _e:
+                    raise
+                t1 = _now_ms()
+                # step attempt complete (best-effort; never break worker)
+                try:
+                    self.emitter.step_completed(ctx.trace_ctx, status=str(status), duration_ms=max(0, t1 - t0))
+                except Exception:
+                    status = "status_report_error"
+                if status in ["error", "status_report_error"]:
+                    err_message = f"error on {node_id}, {res}"
+                    # to do, emit fail, then raise
+                    if getattr(wn, 'fail_actiion', "raise") == "raise":
+                        raise Exception(err_message)
+                
+                done_q.put((node_id, res, max(0, t1 - t0), token_id, parent_token_id, status, mask))
+            finally:
+                t.name = old_name
         inflight: Dict[tuple[str, int, str], Any] = {}
         last_exec_node = wf_run_root_node
-        with ThreadPoolExecutor(max_workers=self.max_workers) as pool:
+        with ThreadPoolExecutor(max_workers=self.max_workers, thread_name_prefix=f"rt-wf-{workflow_id}") as pool:
             while True:
                 if not inflight and scheduled_q.empty() and done_q.empty():
                     # done
@@ -777,7 +789,9 @@ class WorkflowRuntime:
 
                     inflight_tokens.add((str(nid), int(mask), str(token_id), parent_token_id))
                     _persist_rt_join_runtime()
-                    inflight[(nid, mask, str(token_id))] = pool.submit(worker, nid, state, token_id, parent_token_id, step_seq, mask)
+                    import contextvars
+                    ctx = contextvars.copy_context()
+                    inflight[(nid, mask, str(token_id))] = pool.submit(ctx.run, worker, nid, state, token_id, parent_token_id, step_seq, mask)
 
 
                 done_task = done_q.get()
@@ -1018,7 +1032,7 @@ class WorkflowRuntime:
         NOTE: This function is pure with respect to tracing; the caller is responsible
         for emitting RouteDecision into the trace sink.
         """
-        matched: List[str] = []
+        matched: List[tuple[WorkflowEdge, str]] = []
         decision = RouteDecision(evaluated=[], selected=[])
 
         def _edge_id(e: WorkflowEdge) -> str:
@@ -1036,12 +1050,12 @@ class WorkflowRuntime:
 
         # (1) explicit predicates
         for e in edges:
+            e: WorkflowEdge
             if getattr(e, "predicate", None) is None:
                 continue
             tgt = _first_target(e)
             if tgt is None:
                 continue
-
             pred_name = str(getattr(e, "predicate", ""))
             pred = self.predicate_registry.get(pred_name)
             if pred is None:
@@ -1057,13 +1071,27 @@ class WorkflowRuntime:
 
             decision.evaluated.append((f"{_edge_id(e)}:{pred_name}", ok))
             if ok:
-                matched.append(tgt)
+                matched.append((e, tgt))
                 decision.selected.append((_edge_id(e), tgt, "predicate"))
-                if _stop_on_first(e):
-                    return matched[0:1], decision
+        def get_edge_priority(edge: tuple[WorkflowEdge, str]):
+            return edge[0].priority
+        matched.sort(key = get_edge_priority, reverse = True)
 
-        if matched:
-            return (matched if fanout else matched[0:1]), decision
+        candidates = []
+        for e, next_node_id in matched:
+            if _stop_on_first(e):
+                if not candidates:
+                    candidates.append(next_node_id)
+                return candidates, decision
+            elif fanout:
+                candidates.append(next_node_id)
+            else:
+                # default unknown just add and return
+                if not candidates:
+                    candidates.append(next_node_id)
+                return candidates, decision
+        # if matched:
+        #     return (matched if fanout else matched[0:1]), decision
 
         # (2) unconditional edges (node-level decision)
         from typing import cast
@@ -1072,7 +1100,7 @@ class WorkflowRuntime:
         node_decider = cast(Predicate, BasePredicate())
         for e in edges:
             if getattr(e, "predicate", None) is not None:
-                continue
+                continue # skip as it is processed in earlier loo
             tgt = _first_target(e)
             if tgt is None:
                 continue

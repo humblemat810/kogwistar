@@ -110,7 +110,7 @@ class MemoryRetriever:
         query_embedding: List[float],
         user_text: str,
         context_text: str,
-        n_results
+        n_results: int
     ) -> MemoryRetrievalResult:
         # Broad memory retrieval across same user
         where = {"user_id": user_id}

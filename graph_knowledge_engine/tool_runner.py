@@ -121,7 +121,7 @@ class ToolRunner:
         except Exception as _e:
             result: BaseToolResult = handler(**kwargs)
         if result:
-          if tn := result.node_id_entry:
+          if tn := result.node_id_entry: # only tool that craeted nodes can be wrapped with node and edge linkages, some simple tools would not create and not use this code path
             n: ConversationNode = self.engine.get_nodes([tn], node_type = ConversationNode)[0]
             self_span = Span(
                 collection_page_url=f"conversation/{conversation_id}",

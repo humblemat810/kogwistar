@@ -139,28 +139,7 @@ def get_id_for_conversation_turn_edge(id_kind, user_id, conversation_id,content,
                                       source_edge_ids, target_edge_ids, entity_type):
     return str(stable_id(id_kind, user_id, conversation_id, content, str(new_index), str(source_ids), str(target_ids), 
                          str(source_edge_ids), str(target_edge_ids), entity_type))
-def get_self_span(content, conversation_id):
-    self_span = Span(
-        collection_page_url=f"conversation/{conversation_id}",
-        document_page_url=f"conversation/{conversation_id}",
-        doc_id=f"conv:{conversation_id}",
-        insertion_method="conversation_turn",
-        page_number=1,
-        start_char=0,
-        end_char=len(content),
-        excerpt=content,
-        context_before="",
-        context_after="",
-        chunk_id=None,
-        source_cluster_id=None,
-        verification=MentionVerification(
-            method="human",
-            is_verified=True,
-            score=1.0,
-            notes=f"test_workflow_runtime_uses_default_resolver",
-        ),
-    )
-    return self_span    
+
 
 # ---------------------------------------------------------------------------
 # Conversation-specific step resolver
@@ -230,6 +209,7 @@ class ConversationOrchestrator:
             predicate_registry={
                 # Dummy predicates to satisfy design-time validation; runtime supplies real logic.
                 "always": lambda st, r: True,
+                "in_conv": lambda st, r: bool(st.get("in_conv", True)),
                 "should_pin_memory": lambda st, r: True,
                 "should_pin_kg": lambda st, r: True,
                 "should_summarize": lambda st, r: True,
@@ -240,7 +220,8 @@ class ConversationOrchestrator:
         # If a stale/broken design exists, runtime validation will raise with the real registry.
         try:
             designer.ensure_add_turn_flow(workflow_id=workflow_id, mode="full", include_context_snapshot=True)
-        except Exception:
+        except Exception as _e:
+            raise
             # If predicate_registry is required by validate() inside ensure_add_turn_flow(),
             # we still want to create the design. The designer will re-validate when runtime runs.
             designer.ensure_add_turn_flow(workflow_id=workflow_id, mode="full", include_context_snapshot=True)
@@ -299,41 +280,12 @@ class ConversationOrchestrator:
             self_span.page_number = 1
             embedding = self.conversation_engine._iterative_defensive_emb(content)
 
-            turn_node = ConversationNode(
-                user_id=user_id,
-                id=turn_node_id,
-                label=f"Turn {new_index} ({role})",
-                type="entity",
-                doc_id=turn_node_id,
-                summary=content,
-                role=role,  # type: ignore
-                turn_index=new_index,
-                conversation_id=conversation_id,
-                mentions=[Grounding(spans=[self_span])],
-                properties={},
-                metadata={
-                    "entity_type": "conversation_turn",
-                    "turn_index": new_index,
-                    "level_from_root": 0,
-                    "in_conversation_chain": bool(in_conv),
-                    "in_ui_chain": True,
-                },
-                domain_id=None,
-                canonical_entity_id=None,
-            )
-            turn_node.embedding = embedding
-            self.conversation_engine.add_node(turn_node, None)
+            # Phase F: do not persist the user turn node or chain edge here.
 
-            # Link from previous tail to new turn in main chain (if applicable)
-            if in_conv:
-                seq_edge_id = get_id_for_conversation_turn_edge(ConversationEdge.id_kind, user_id, conversation_id, 
-                                                                "next_turn", new_index,
-                                                                [prev_node.id], [turn_node.id], 
-                                                                [], [], 
-                                                                "conversation_edge")
 
-                self.add_link_to_new_turn(seq_edge_id, turn_node, prev_node, conversation_id, span=self_span, 
-                                      prev_turn_meta_summary=prev_turn_meta_summary)
+            # The backbone workflow (mode=backbone) will run add_user_turn.
+
+
             # Run minimal workflow skeleton (for trace/state plumbing) - no retrieval/answer steps.
             from .workflow.runtime import WorkflowRuntime
 
@@ -490,15 +442,27 @@ class ConversationOrchestrator:
                 add_turn_only=add_turn_only,
             )
 
+                # ----------------------------
+        # 1) Prepare the user turn identifiers (NO persistence here)
         # ----------------------------
-        # 1) Create/persist the user turn node (mirror legacy)
-        # ----------------------------
+        # Phase F: orchestrator does not mutate the conversation graph.
+        # Node/edge creation happens inside workflow ops: add_user_turn + link_prev_turn.
         emb_text0 = f"{role}: {content}"
         embedding = self.conversation_engine._iterative_defensive_emb(emb_text0)
         if embedding is None:
             raise RuntimeError("uncalculatable embeddings")
 
-        turn_node_id = turn_id # or str(uuid.uuid4())
+        turn_node_id = get_id_for_conversation_turn(
+            ConversationNode.id_kind,
+            user_id,
+            conversation_id,
+            content,
+            str(new_index),
+            str(role),
+            "conversation_turn",
+            str(bool(in_conv)),
+        )
+
         self_span = Span(
             collection_page_url=f"conversation/{conversation_id}",
             document_page_url=f"conversation/{conversation_id}#{turn_node_id}",
@@ -514,46 +478,7 @@ class ConversationOrchestrator:
             source_cluster_id=None,
             verification=MentionVerification(method="human", is_verified=True, score=1.0, notes="verbatim input"),
         )
-
-        turn_node = ConversationNode(
-            user_id=user_id,
-            id=get_id_for_conversation_turn(ConversationNode.id_kind, user_id, 
-                                            conversation_id, content, str(new_index), role, "conversation_turn", str(in_conv)),
-            label=f"Turn {new_index} ({role})",
-            type="entity",
-            doc_id=turn_node_id,
-            summary=content,
-            role=role,  # type: ignore
-            turn_index=new_index,
-            conversation_id=conversation_id,
-            mentions=[Grounding(spans=[self_span])],
-            properties={},
-            metadata={
-                "entity_type": "conversation_turn",
-                "level_from_root": 0,
-                "in_conversation_chain": in_conv,
-                "in_ui_chain": True,
-            },
-            domain_id=None,
-            canonical_entity_id=None,
-        )
-        turn_node.embedding = embedding
-        self.conversation_engine.add_node(turn_node)
-        prev_turn_meta_summary.tail_turn_index = new_index
-        if prev_node is not None:
-            seq_edge_id = get_id_for_conversation_turn_edge(ConversationEdge.id_kind, user_id, conversation_id, 
-                                                                "next_turn", new_index,
-                                                                [prev_node.id], [turn_node.id], 
-                                                                [], [], 
-                                                                "conversation_edge")
-            self.add_link_to_new_turn(seq_edge_id, turn_node, prev_node, conversation_id, span=self_span, 
-                                      prev_turn_meta_summary=prev_turn_meta_summary)
-
-        # mirror legacy: advance distances after adding this user turn
-        prev_turn_meta_summary.prev_node_char_distance_from_last_summary += len(content)
-        prev_turn_meta_summary.prev_node_distance_from_last_summary += 1
-        new_index += 1
-        # ----------------------------
+# ----------------------------
         # 2) Ensure the workflow design exists
         # ----------------------------
         self._ensure_add_turn_workflow_design(workflow_id, conversation_id)
@@ -561,13 +486,21 @@ class ConversationOrchestrator:
         # ----------------------------
         # 3) Predicates (dynamic routing)
         # ----------------------------
-        predicate_registry = {
-            "always": lambda st, r: True,
-            "should_pin_memory": lambda st, r: bool((st.get("memory") or {}).get("selected")) and bool(
+        def always(workflow_info, st, r):
+            return True
+        def should_pin_memory(workflow_info, st, r):
+            return bool((st.get("memory") or {}).get("selected")) and bool(
                 (st.get("memory") or {}).get("memory_context_text")
-            ),
-            "should_pin_kg": lambda st, r: bool((st.get("kg") or {}).get("selected")),
-            "should_summarize": lambda st, r: bool(st.get("summary", {}).get("should_summarize", False)),
+            )
+        def should_pin_kg(workflow_info, st, r):
+            return bool((st.get("kg") or {}).get("selected"))
+        def should_summarize(workflow_info, st, r):
+            return bool(st.get("summary", {}).get("should_summarize", False))
+        predicate_registry = {
+            "always": always,
+            "should_pin_memory": should_pin_memory,
+            "should_pin_kg": should_pin_kg,
+            "should_summarize": should_summarize,
         }
 
         # ----------------------------
@@ -588,7 +521,7 @@ class ConversationOrchestrator:
             step_resolver=resolve_step,
             predicate_registry=predicate_registry,
             checkpoint_every_n_steps=1,
-            max_workers=4,
+            max_workers=1,
         )
         deps= {
                 "conversation_engine": self.conversation_engine,
@@ -599,6 +532,12 @@ class ConversationOrchestrator:
                 "max_retrieval_level": max_retrieval_level,
                 "summary_char_threshold": summary_char_threshold,
                 "prev_turn_meta_summary": prev_turn_meta_summary,
+                "agent": self.agentic_answering_agent,
+                "workflow_engine": self.workflow_engine,
+                "agentic_workflow_engine": self.workflow_engine,
+                "summary_token_threshold": summary_token_threshold,
+                "summary_turn_threshold": summary_turn_threshold,
+                "token_estimator": token_estimator,
                 "answer_only": lambda *, conversation_id, prev_turn_meta_summary: self.answer_only(
                     conversation_id=conversation_id,
                     prev_turn_meta_summary=prev_turn_meta_summary,
@@ -631,6 +570,9 @@ class ConversationOrchestrator:
         )
         # Dependency injection for workflow step resolvers (workflow/resolvers.py)
         init_state["_deps"] = deps
+        init_state["in_conv"] = bool(in_conv)
+        if prev_node is not None:
+            init_state["prev_turn_id"] = str(prev_node.id)
 
         run_result = runtime.run(
             workflow_id=workflow_id,
@@ -692,6 +634,18 @@ class ConversationOrchestrator:
         self.llm = llm or conversation_engine.llm
         self.tool_runner = ToolRunner(conversation_engine=conversation_engine,
                                       tool_call_id_factory=tool_call_id_factory)
+
+        # Agentic answering agent (used by workflow op 'answer' when provided).
+        try:
+            from .agentic_answering import AgenticAnsweringAgent
+            self.agentic_answering_agent = AgenticAnsweringAgent(
+                conversation_engine=self.conversation_engine,
+                knowledge_engine=self.ref_knowledge_engine,
+                llm=self.llm,
+            )
+        except Exception:
+            self.agentic_answering_agent = None
+
         self.tail_search_includes = ["conversation_turn","conversation_summary"]
     def add_link_to_new_turn(self, edge_id, turn_node, prev_node, conversation_id, span,prev_turn_meta_summary:MetaFromLastSummary,
                              causal_type: str | None='chain', 
@@ -975,7 +929,7 @@ class ConversationOrchestrator:
                         query_embedding=embedding,
                         user_text=content,
                         context_text="",
-                        n_results=12,
+                        n_resultss=12,
                     )
                 # memory retrieve tool
                 mem: MemoryRetrievalResult 
