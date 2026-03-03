@@ -116,7 +116,7 @@ class SQLiteEventSink:
 
         self._q: "queue.Queue[dict]" = queue.Queue(maxsize=queue_max)
         self._stop = threading.Event()
-        self._thr = threading.Thread(target=self._run, name="wf-trace-sqlite-writer", daemon=True)
+        self._thr = threading.Thread(target=self._run, name=f"wf-trace-sqlite-writer-{db_path}", daemon=True)
 
         self._init_db()
         self._thr.start()

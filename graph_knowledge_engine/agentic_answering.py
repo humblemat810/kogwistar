@@ -33,8 +33,21 @@ from typing import Any, Callable, Iterable, Optional, Self, Sequence, Type, Type
 from pydantic import BaseModel, Field
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.language_models.chat_models import BaseChatModel
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from .workflow.contract import WorkflowEdgeInfo, WorkflowState
 
-from .models import ConversationNode, ConversationEdge, Grounding, MetaFromLastSummary, Span, Node
+from .models import (
+    ConversationNode,
+    ConversationEdge,
+    Grounding,
+    MetaFromLastSummary,
+    Span,
+    Node,
+    ContextSnapshotMetadata,
+    ContextCost,
+    StepRunResult,
+)
 BaseM = TypeVar("BaseM", bound=BaseModel)
 
 def _stable_json(obj: Any) -> str:
@@ -46,6 +59,19 @@ def snapshot_hash(payload: Any) -> str:
     h = hashlib.sha256()
     h.update(_stable_json(payload).encode("utf-8"))
     return h.hexdigest()
+
+
+def context_messages_hash(messages: Sequence[Any]) -> str:
+    """Stable hash of a list of LLM messages.
+
+    Works for both dict-based messages and ContextMessage objects.
+    """
+    norm: list[dict[str, Any]] = []
+    for m in messages or []:
+        role = getattr(m, "role", None) or (m.get("role") if isinstance(m, dict) else None)
+        content = getattr(m, "content", None) or (m.get("content") if isinstance(m, dict) else None)
+        norm.append({"role": str(role or ""), "content": str(content or "")})
+    return snapshot_hash({"messages": norm})
 
 def deterministic_id(prefix: str, fingerprint: dict, bits: int = 96) -> str:
     s = json.dumps(fingerprint, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -205,6 +231,7 @@ class AgenticAnsweringAgent:
     # ----------------------------
     def answer(self, *, conversation_id: str, user_id=None, prev_turn_meta_summary:MetaFromLastSummary) -> dict[str, Any]:
         """Run bounded agentic answering with evidence selection + optional citation picking.
+        Non runtime workflow
         Must Enforce Builder pattern in this function
         build from each LLM call cached
         Returns a dict with keys (best-effort):
@@ -233,6 +260,10 @@ class AgenticAnsweringAgent:
         run_id = f"run_{int(time.time()*1000)}"
         run_node_id = self._ensure_run_anchor(conversation_id=conversation_id, run_id=run_id)
 
+        # Phase 2B: deterministic step identity for snapshot nodes (local to this agent run).
+        run_step_seq = 0
+        attempt_seq = 0
+
         # Policy knobs that can escalate across iterations
         max_candidates = self.config.max_candidates
         materialize_depth = self.config.materialize_depth
@@ -250,6 +281,28 @@ class AgenticAnsweringAgent:
             if (self.config.evidence_selector or "llm").lower() == "bm25":
                 selection = self._select_used_evidence_bm25(question=question, candidates=candidates)
             else:
+                # Context snapshot before evidence-selection LLM call.
+                self._persist_context_snapshot(
+                    conversation_id=conversation_id,
+                    run_id=run_id,
+                    run_step_seq=run_step_seq,
+                    attempt_seq=attempt_seq,
+                    stage="select_used_evidence",
+                    view=view,
+                    model_name=str(getattr(self.llm, "model_name", "") or ""),
+                    budget_tokens=int(getattr(view, "token_budget", 0) or 0),
+                    tail_turn_index=int(prev_turn_meta_summary.tail_turn_index or 0),
+                    extra_hash_payload={
+                        "question": question,
+                        "candidate_ids": [c.get("node_id") for c in (candidates or []) if isinstance(c, dict) and c.get("node_id")],
+                    },
+                    llm_input_payload={
+                        "system_prompt": system_prompt,
+                        "question": question,
+                        "candidate_ids": [c.get("node_id") for c in (candidates or []) if isinstance(c, dict) and c.get("node_id")],
+                    },
+                )
+                run_step_seq += 1
                 selection = self.select_used_evidence_cached(
                     system_prompt=system_prompt,
                     question=question,
@@ -258,6 +311,7 @@ class AgenticAnsweringAgent:
                 )
 
             used_node_ids = selection.used_node_ids[: self.config.max_used]
+            used_edge_ids = list(getattr(selection, "used_edge_ids", []) or [])
             last_used = used_node_ids
             from .utils.pydanic_model_consumer_wrapper import cache_pydantic_structured
             from joblib import Memory
@@ -272,10 +326,22 @@ class AgenticAnsweringAgent:
             evidence_pack = cached_call(
                 agent = self,
                 node_ids=used_node_ids,
+                edge_ids=used_edge_ids,
                 depth=materialize_depth,
                 max_chars_per_item=self.config.max_chars_per_item,
                 max_total_chars=self.config.max_total_chars,
             )
+
+            # Digest is persisted inside ContextSnapshot so we can re-materialize later.
+            from .models import EvidencePackDigest
+            evidence_digest = EvidencePackDigest(
+                node_ids=list(used_node_ids),
+                edge_ids=list(used_edge_ids or []),
+                depth=str(materialize_depth),
+                max_chars_per_item=int(self.config.max_chars_per_item),
+                max_total_chars=int(self.config.max_total_chars),
+                evidence_pack_hash=str(snapshot_hash(evidence_pack)),
+            ).model_dump(mode="python")
             # cached_entry = cache_pydantic_structured(
             #     memory=mem,
             #     model=FakeSelection,
@@ -298,6 +364,29 @@ class AgenticAnsweringAgent:
                                                     model = None,
                                                     ignore = ["agent"]
                                                     )            
+            # Context snapshot before answer-with-citations LLM call.
+            self._persist_context_snapshot(
+                conversation_id=conversation_id,
+                run_id=run_id,
+                run_step_seq=run_step_seq,
+                attempt_seq=attempt_seq,
+                stage="generate_answer_with_citations",
+                view=view,
+                model_name=str(getattr(self.llm, "model_name", "") or ""),
+                budget_tokens=int(getattr(view, "token_budget", 0) or 0),
+                tail_turn_index=int(prev_turn_meta_summary.tail_turn_index or 0),
+                extra_hash_payload={
+                    "question": question,
+                    "used_node_ids": used_node_ids,
+                    "evidence_pack_hash": snapshot_hash(evidence_pack),
+                },
+                llm_input_payload={
+                    "system_prompt": system_prompt,
+                    "question": question,
+                },
+                evidence_pack_digest=evidence_digest,
+            )
+            run_step_seq += 1
             ans_json = cached_call(
                 agent = self,
                 system_prompt=system_prompt,
@@ -315,6 +404,30 @@ class AgenticAnsweringAgent:
                                                     model = None,
                                                     ignore = ["agent", "answer_in_model"]
                                                     )
+            # Context snapshot before citation repair (may call LLM on invalid citations).
+            self._persist_context_snapshot(
+                conversation_id=conversation_id,
+                run_id=run_id,
+                run_step_seq=run_step_seq,
+                attempt_seq=attempt_seq,
+                stage="validate_or_repair_citations",
+                view=view,
+                model_name=str(getattr(self.llm, "model_name", "") or ""),
+                budget_tokens=int(getattr(view, "token_budget", 0) or 0),
+                tail_turn_index=int(prev_turn_meta_summary.tail_turn_index or 0),
+                extra_hash_payload={
+                    "question": question,
+                    "used_node_ids": used_node_ids,
+                    "answer_hash": snapshot_hash(ans.model_dump()),
+                },
+                llm_input_payload={
+                    "system_prompt": system_prompt,
+                    "question": question,
+                    "answer_text": getattr(ans, "text", None),
+                },
+                evidence_pack_digest=evidence_digest,
+            )
+            run_step_seq += 1
             ans = cached_call3(
                 agent = self,
                 system_prompt=system_prompt,
@@ -335,6 +448,30 @@ class AgenticAnsweringAgent:
                                                     model = None,
                                                     ignore = ["agent", "out_model"]
                                                     )
+            # Context snapshot before evaluation LLM call.
+            self._persist_context_snapshot(
+                conversation_id=conversation_id,
+                run_id=run_id,
+                run_step_seq=run_step_seq,
+                attempt_seq=attempt_seq,
+                stage="evaluate_answer",
+                view=view,
+                model_name=str(getattr(self.llm, "model_name", "") or ""),
+                budget_tokens=int(getattr(view, "token_budget", 0) or 0),
+                tail_turn_index=int(prev_turn_meta_summary.tail_turn_index or 0),
+                extra_hash_payload={
+                    "question": question,
+                    "used_node_ids": used_node_ids,
+                    "answer_text": ans.text,
+                },
+                llm_input_payload={
+                    "system_prompt": system_prompt,
+                    "question": question,
+                    "answer_text": ans.text,
+                },
+                evidence_pack_digest=evidence_digest,
+            )
+            run_step_seq += 1
             last_eval = self._evaluate_answer(
                 agent = self,
                 system_prompt=system_prompt,
@@ -404,6 +541,120 @@ class AgenticAnsweringAgent:
             "evaluation": (last_eval.model_dump() if last_eval else {}),
             "turn_node_dump" : assistant_turn_node.model_dump()
         }
+
+    # ----------------------------
+    # Workflow-v2 entrypoint
+    # ----------------------------
+    def answer_workflow_v2(
+        self,
+        *,
+        conversation_id: str,
+        user_id: str | None = None,
+        prev_turn_meta_summary: MetaFromLastSummary,
+        workflow_engine: "GraphKnowledgeEngine | None" = None,
+        workflow_id: str = "agentic_answering.v2",
+        run_id: str | None = None,
+        # quick-fix for nested runs: reuse outer trace emitter when available
+        events: Any | None = None,
+        trace: bool = True,
+    ) -> dict[str, Any]:
+        """Run agentic answering using the workflow runtime.
+
+        This keeps the same object (no separate V2 class), but routes execution
+        through `WorkflowRuntime` + resolvers.
+        """
+        workflow_engine = workflow_engine or self.conversation_engine
+
+        # Ensure design exists.
+        from .workflow.design import AgenticAnsweringWorkflowDesigner
+        def predicate_always(workflow_info: WorkflowEdgeInfo, state: WorkflowState, last_result: StepRunResult):
+            return True
+        
+        def aa_should_iterate(workflow_info: WorkflowEdgeInfo, state: WorkflowState, last_result: StepRunResult):
+            return bool(state.get("should_iterate"))
+        predicate_registry = {
+            "always": predicate_always, #lambda st, r: True,
+            "aa_should_iterate": aa_should_iterate, #lambda st, r: bool(st.get("should_iterate")),
+        }
+
+        designer = AgenticAnsweringWorkflowDesigner(workflow_engine=workflow_engine, predicate_registry=predicate_registry)
+        designer.ensure_answer_flow(workflow_id=workflow_id, mode="full")
+
+        # Resolver registry (handlers live in workflow/resolvers.py)
+        from .workflow.resolvers import MappingStepResolver, default_resolver
+
+        class AgenticStepResolver(MappingStepResolver):
+            def __init__(self) -> None:
+                super().__init__(handlers=dict(default_resolver.handlers), default=default_resolver.default)
+
+        resolve_step = AgenticStepResolver()
+
+        # Runtime
+        from .workflow.runtime import WorkflowRuntime
+
+        runtime = WorkflowRuntime(
+            workflow_engine=workflow_engine,
+            conversation_engine=self.conversation_engine,
+            step_resolver=resolve_step,
+            predicate_registry=predicate_registry,
+            checkpoint_every_n_steps=1,
+            max_workers=1,
+            # nested-safety: share outer emitter when provided, and/or disable trace sink creation
+            events=events,
+            trace=trace,
+        )
+
+        # Choose a turn_node_id for checkpoint/tracing.
+        tail = self.conversation_engine._get_conversation_tail(conversation_id)
+        if tail is None:
+            raise ValueError(f"conversation_id={conversation_id!r} has no tail node")
+        turn_node_id = str(getattr(tail, "id", None) or getattr(tail, "node_id", None) or "")
+        if not turn_node_id:
+            raise ValueError("Failed to infer turn_node_id from conversation tail")
+
+        # Initial state: keep schema jsonable, stash heavy objects in deps.
+        init_state: dict[str, Any] = {
+            "conversation_id": conversation_id,
+            "user_id": user_id,
+            "turn_node_id": turn_node_id,
+            "run_id": run_id,
+            "iter_idx": 0,
+            "max_iter": int(self.config.max_iter),
+            "max_candidates": int(self.config.max_candidates),
+            "materialize_depth": str(self.config.materialize_depth),
+            "should_iterate": False,
+            "_deps": {
+                "agent": self,
+                "conversation_engine": self.conversation_engine,
+                "knowledge_engine": self.knowledge_engine,
+                "llm": self.llm,
+                "prev_turn_meta_summary": prev_turn_meta_summary,
+            },
+        }
+
+        run_result = runtime.run(
+            workflow_id=workflow_id,
+            conversation_id=conversation_id,
+            turn_node_id=turn_node_id,
+            initial_state=init_state,
+            run_id=(run_id or f"agentic_answer|{turn_node_id}"),
+        )
+        final_state, rid = run_result.final_state, run_result.run_id
+
+        # Update caller's prev_turn_meta_summary in-place.
+        mts = final_state.get("prev_turn_meta_summary") or {}
+        prev_turn_meta_summary.prev_node_char_distance_from_last_summary = int(
+            mts.get("prev_node_char_distance_from_last_summary", prev_turn_meta_summary.prev_node_char_distance_from_last_summary)
+        )
+        prev_turn_meta_summary.prev_node_distance_from_last_summary = int(
+            mts.get("prev_node_distance_from_last_summary", prev_turn_meta_summary.prev_node_distance_from_last_summary)
+        )
+        prev_turn_meta_summary.tail_turn_index = int(mts.get("tail_turn_index", prev_turn_meta_summary.tail_turn_index))
+
+        out = final_state.get("agentic_answering_result") or {}
+        out["workflow_run_id"] = rid
+        out["workflow_id"] = workflow_id
+        return out
 
     def _get_last_user_text(self, conversation: Any) -> str:
         if conversation is None:
@@ -508,6 +759,7 @@ Select at most {max_used} node ids.
         agent: "AgenticAnsweringAgent",
         *,
         node_ids: list[str],
+        edge_ids: list[str] | None = None,
         depth: str,
         max_chars_per_item: int,
         max_total_chars: int,
@@ -516,8 +768,9 @@ Select at most {max_used} node ids.
 
         This does NOT change any schema in storage; it only prepares a compact per-run view.
         """
-        pack: dict[str, Any] = {"nodes": []}
+        pack: dict[str, Any] = {"nodes": [], "edges": []}
         total = 0
+        edge_ids = list(edge_ids or [])
 
         for nid in node_ids:
             got = agent.knowledge_engine.backend.node_get(ids=[nid], include=["documents", "metadatas"])
@@ -551,6 +804,7 @@ Select at most {max_used} node ids.
                 # trust existing structure; keep only excerpt-like fields for LLM
                 norm_mentions = []
                 for mi, mobj in enumerate(mentions):
+                    mobj: Grounding
                     spans = []
                     for si, sp in enumerate((mobj or {}).get("spans") or []):
                         if isinstance(sp, dict):
@@ -584,7 +838,64 @@ Select at most {max_used} node ids.
                     "mentions": mentions,
                 }
             )
+
+        # Materialize edges as compact hints. No endpoint expansion here.
+        for eid in edge_ids:
+            got = agent.knowledge_engine.backend.edge_get(ids=[eid], include=["metadatas"])
+            if not got.get("ids"):
+                continue
+            metas = (got.get("metadatas") or [{}])
+            meta = metas[0] if metas else {}
+            pack["edges"].append({
+                "id": eid,
+                "label": meta.get("label"),
+                "relation": meta.get("relation") or meta.get("type"),
+                "summary": meta.get("summary"),
+            })
         return pack
+
+    def rehydrate_evidence_pack_from_digest(
+        self,
+        *,
+        digest: dict[str, Any],
+        enforce_hash_match: bool = False,
+    ) -> dict[str, Any]:
+        """Re-materialize an evidence pack from a persisted digest.
+
+        The digest is expected to match :class:`EvidencePackDigest` from models.py.
+
+        This is **best-effort** rehydration:
+        - If the underlying KG has changed, the reconstructed pack may differ.
+        - If the digest includes `evidence_pack_hash`, callers can compare.
+        """
+        from .models import EvidencePackDigest
+
+        d = EvidencePackDigest.model_validate(digest)
+        pack = self._materialize_evidence_pack(
+            agent=self,
+            node_ids=list(d.node_ids),
+            edge_ids=list(getattr(d, "edge_ids", []) or []),
+            depth=str(d.depth),
+            max_chars_per_item=int(d.max_chars_per_item or 0),
+            max_total_chars=int(d.max_total_chars or 0),
+        )
+        try:
+            pack_hash = snapshot_hash(pack)
+        except Exception:
+            pack_hash = None
+        out = {
+            "evidence_pack": pack,
+            "rehydrated_hash": pack_hash,
+            "expected_hash": d.evidence_pack_hash,
+            "hash_matches": (pack_hash == d.evidence_pack_hash) if (pack_hash and d.evidence_pack_hash) else None,
+        }
+
+        if enforce_hash_match and out.get("hash_matches") is False:
+            raise ValueError(
+                "EvidencePackDigest rehydration hash mismatch; underlying KG likely changed. "
+                f"expected={out.get('expected_hash')!r} got={out.get('rehydrated_hash')!r}"
+            )
+        return out
     @staticmethod
     def _generate_answer_with_citations(
         agent: "AgenticAnsweringAgent",
@@ -594,8 +905,8 @@ Select at most {max_used} node ids.
         evidence_pack: dict[str, Any],
         used_node_ids: list[str],
         out_model_schema: dict[str, Any],
-        out_model: Type[BaseM]
-    ) -> list | dict:
+        out_model: Type[BaseM] = AnswerWithCitations
+    ) :
         """Ask the LLM to answer AND cite exact mention/span indices from the provided evidence pack."""
         # Build a compact, indexable representation for the LLM
         lines: list[str] = []
@@ -608,6 +919,14 @@ Select at most {max_used} node ids.
                     if ex:
                         ex = ex[:240]
                     lines.append(f"  M{mi} S{si}: {ex}")
+        # Add compact edge hints (structure preserved by projected endpoints; no citations required for edges)
+        for e in evidence_pack.get("edges", []) or []:
+            eid = e.get("id")
+            rel = e.get("relation") or "related"
+            summ = (e.get("summary") or "").replace("\n", r" \ ").strip()
+            if summ:
+                summ = summ[:240]
+            lines.append(f"EDGE {eid} | {rel}: {summ}")
         evidence_text = "\n".join(lines)
         def get_prompt():
             prompt = ChatPromptTemplate.from_messages(
@@ -640,11 +959,10 @@ Return JSON that matches the provided schema.
         prompt = get_prompt()
         for i_retry in range(agent.max_retry):
             chain = prompt | agent.llm.with_structured_output(out_model, include_raw = True)
-            res=chain.invoke({"question": question, "evidence": evidence_text})
+            res:dict =chain.invoke({"question": question, "evidence": evidence_text})
             if res['parsing_error']:
-                i_retry+=1
-                if i_retry >= agent.max_retry:
-                    i_retry = 0
+                if i_retry+1 >= agent.max_retry:
+                    raise Exception(f"retry too many errors parsing: {res['parsing_error']}")
                 e = res['parsing_error']
                 str_e = str(e)
                 prompt.append(("system", str_e[:1000] + '...' + str_e[-1000] if len(str_e) > 2000 else str_e))
@@ -652,6 +970,7 @@ Return JSON that matches the provided schema.
             return parsed.model_dump()
                 
                 
+
     @staticmethod
     def _validate_or_repair_citations(
         agent: "AgenticAnsweringAgent",
@@ -660,15 +979,25 @@ Return JSON that matches the provided schema.
         question: str,
         evidence_pack: dict[str, Any],
         used_node_ids: list[str],
-        answer: dict| list,
-        answer_in_model : Type[AnswerWithCitations]
-    ) -> dict | list: # AnswerWithCitations:
+        answer: dict | list,
+        answer_in_model: Type[AnswerWithCitations],
+    ) -> dict:
+        """Validate citations; if invalid, ask the LLM to repair once (with retries).
+
+        Returns a JSON dict compatible with AnswerWithCitations.
+        """
         answer_validated: AnswerWithCitations = answer_in_model.model_validate(answer)
-        """Validate citations; if invalid, ask LLM to repair once."""
+
+        def _node_by_id(nid: str) -> dict[str, Any] | None:
+            for n in evidence_pack.get("nodes", []) or []:
+                if str(n.get("node_id")) == nid:
+                    return n
+            return None
+
         def is_valid_ref(r: SpanRef) -> bool:
             if r.source_node_id not in used_node_ids:
                 return False
-            node = next((n for n in evidence_pack.get("nodes", []) if n.get("node_id") == r.source_node_id), None)
+            node = _node_by_id(r.source_node_id)
             if not node:
                 return False
             mentions = node.get("mentions") or []
@@ -692,10 +1021,12 @@ Return JSON that matches the provided schema.
         if not bad:
             return answer_validated.model_dump()
 
-        # Repair prompt: give the evidence again and ask to re-emit citations only
+        # Build evidence text again (same format as generation).
         lines: list[str] = []
-        for n in evidence_pack.get("nodes", []):
-            nid = n["node_id"]
+        for n in evidence_pack.get("nodes", []) or []:
+            nid = str(n.get("node_id") or "")
+            if not nid:
+                continue
             lines.append(f"NODE {nid} | {n.get('label','')}")
             for mi, m in enumerate(n.get("mentions") or []):
                 for si, sp in enumerate((m or {}).get("spans") or []):
@@ -703,9 +1034,20 @@ Return JSON that matches the provided schema.
                     if ex:
                         ex = ex[:240]
                     lines.append(f"  M{mi} S{si}: {ex}")
+
+        for e in evidence_pack.get("edges", []) or []:
+            eid = str(e.get("id") or "")
+            if not eid:
+                continue
+            rel = e.get("relation") or "related"
+            summ = (e.get("summary") or "").replace("\n", " ").strip()
+            if summ:
+                summ = summ[:240]
+            lines.append(f"EDGE {eid} | {rel}: {summ}")
+
         evidence_text = "\n".join(lines)
-        def get_prompt():
-            repair_prompt = ChatPromptTemplate.from_messages(
+
+        repair_prompt = ChatPromptTemplate.from_messages(
             [
                 ("system", system_prompt or "You are a helpful assistant."),
                 (
@@ -727,27 +1069,34 @@ Rules:
 - Fix `claims[].citations` so every SpanRef points to an existing NODE + M index + S index shown above.
 - Each claim should have at least 1 valid citation if possible; otherwise leave citations empty for that claim.
 """,
-                    ),
-                ]
-            )
-            return repair_prompt
-        # repair_prompt = get_prompt()
-        # chain = repair_prompt | agent.llm.with_structured_output(AnswerWithCitations)
-        # repaired: AnswerWithCitations = chain.invoke({"question": question, "evidence": evidence_text, "answer_text": answer.text})
-        # return repaired.model_dump()
-        repair_prompt = get_prompt()
-        for i_retry in range(agent.max_retry):
-            chain = repair_prompt | agent.llm.with_structured_output(AnswerWithCitations, include_raw = True)
-            res=chain.invoke({"question": question, "evidence": evidence_text})
-            if res['parsing_error']:
-                i_retry+=1
-                if i_retry >= agent.max_retry:
-                    i_retry = 0
-                e = res['parsing_error']
-                str_e = str(e)
-                repair_prompt.append(("system", str_e[:1000] + '...' + str_e[-1000] if len(str_e) > 2000 else str_e))
-            repaired: AnswerWithCitations = chain.invoke({"question": question, "evidence": evidence_text, "answer_text": answer.text})
-            return repaired.model_dump()    
+                ),
+            ]
+        )
+
+        chain = repair_prompt | agent.llm.with_structured_output(AnswerWithCitations, include_raw=True)
+        last_err: Exception | None = None
+        for _ in range(int(getattr(agent, "max_retry", 3) or 3)):
+            res = chain.invoke({"question": question, "evidence": evidence_text, "answer_text": answer_validated.text})
+            pe = res.get("parsing_error")
+            if pe:
+                last_err = pe if isinstance(pe, Exception) else Exception(str(pe))
+                continue
+            parsed = res.get("parsed")
+            if parsed is None:
+                last_err = Exception("Missing parsed output from structured_output")
+                continue
+            repaired = AnswerWithCitations.model_validate(parsed)
+            # If still bad, return repaired anyway (best effort) to avoid looping.
+            return repaired.model_dump()
+
+        # If repair cannot parse, fall back to the original (but mark citations empty).
+        stripped = answer_validated.model_copy(deep=True)
+        for c in stripped.claims:
+            c.citations = []
+        stripped.reasoning = (stripped.reasoning or "") + " | citation_repair_failed"
+        return stripped.model_dump()
+
+
     @staticmethod
     def _evaluate_answer(
         agent: "AgenticAnsweringAgent",
@@ -758,12 +1107,11 @@ Rules:
         used_node_ids: list[str],
         evidence_pack: dict[str, Any],
         out_model_schema: dict[str, Any],
-        out_model: Type[BaseM]
+        out_model: Type[BaseM],
     ) -> BaseM:
-        """Coarse sufficiency check. This is intentionally light in v0."""
-        # Provide compact evidence summaries only
-        ev_lines = []
-        for n in evidence_pack.get("nodes", []):
+        """Coarse sufficiency check (best-effort structured output)."""
+        ev_lines: list[str] = []
+        for n in evidence_pack.get("nodes", []) or []:
             ev_lines.append(f"- {n.get('node_id')}: {n.get('label','')} | {n.get('summary','')}")
         ev_text = "\n".join(ev_lines)
 
@@ -791,25 +1139,25 @@ Return JSON per schema. Be conservative: if key details are missing, set needs_m
                 ),
             ]
         )
-        chain = prompt | agent.llm.with_structured_output(out_model, include_raw = True)
-        
-        # if res['parsing_error']:
-        #     raise NotImplementedError
-        # return res["parsed"].model_dump() 
-        for i_retry in range(agent.max_retry):
-            chain = prompt | agent.llm.with_structured_output(out_model, include_raw = True)
-            res: dict = chain.invoke(
+
+        chain = prompt | agent.llm.with_structured_output(out_model, include_raw=True)
+        last_err: Exception | None = None
+        for _ in range(int(getattr(agent, "max_retry", 3) or 3)):
+            res = chain.invoke(
                 {"question": question, "answer": answer_text, "used_ids": ", ".join(used_node_ids), "evidence": ev_text}
             )
-            if res['parsing_error']:
-                i_retry+=1
-                if i_retry >= agent.max_retry:
-                    i_retry = 0
-                e = res['parsing_error']
-                str_e = str(e)
-                prompt.append(("system", str_e[:1000] + '...' + str_e[-1000] if len(str_e) > 2000 else str_e))
-            parsed : BaseM = res['parsed']
-            return parsed.model_dump()
+            pe = res.get("parsing_error")
+            if pe:
+                last_err = pe if isinstance(pe, Exception) else Exception(str(pe))
+                continue
+            parsed = res.get("parsed")
+            if parsed is None:
+                last_err = Exception("Missing parsed output from structured_output")
+                continue
+            return cast(BaseM, parsed).model_dump()
+
+        # fallback: pessimistic
+        return {"is_sufficient": False, "needs_more_info": True, "missing_aspects": [], "notes": f"eval_parse_failed:{last_err}"}
 
     def _ensure_run_anchor(self, *, conversation_id: str, run_id: str) -> str:
         scope = f"conv:{conversation_id}"
@@ -837,6 +1185,42 @@ Return JSON per schema. Be conservative: if key details are missing, set needs_m
         )
         self.conversation_engine.add_node(node)
         return rid
+
+
+    def _persist_context_snapshot(
+        self,
+        *,
+        conversation_id: str,
+        run_id: str,
+        run_step_seq: int,
+        attempt_seq: int,
+        stage: str,
+        view: Any,
+        model_name: str,
+        budget_tokens: int,
+        tail_turn_index: int,
+        extra_hash_payload: dict[str, Any] | None = None,
+        llm_input_payload: dict[str, Any] | None = None,
+        evidence_pack_digest: dict[str, Any] | None = None,
+    ) -> str:
+        """Phase 2B wrapper (kept for API stability).
+
+        Canonical implementation lives in GraphKnowledgeEngine.persist_context_snapshot().
+        """
+        return self.conversation_engine.persist_context_snapshot(
+            conversation_id=conversation_id,
+            run_id=run_id,
+            run_step_seq=int(run_step_seq),
+            attempt_seq=int(attempt_seq),
+            stage=stage,
+            view=view,
+            model_name=str(model_name or ""),
+            budget_tokens=int(budget_tokens or 0),
+            tail_turn_index=int(max(0, tail_turn_index or 0)),
+            extra_hash_payload=extra_hash_payload,
+            llm_input_payload=llm_input_payload,
+            evidence_pack_digest=evidence_pack_digest,
+        )
 
     def _project_kg_node(
         self,
@@ -917,6 +1301,139 @@ Return JSON per schema. Be conservative: if key details are missing, set needs_m
             self.conversation_engine.add_edge(edge)
         return pid
 
+    
+
+    def _project_kg_edge(
+        self,
+        *,
+        conversation_id: str,
+        run_node_id: str,
+        kg_edge_id: str,
+        provenance_span: Span,
+        prev_turn_meta_summary: MetaFromLastSummary,
+    ) -> str:
+        """Project a KG edge into the conversation graph as a **pointer edge**.
+
+        Invariants (per your override):
+        - Projection is idempotent via deterministic IDs.
+        - Structure is preserved by projecting KG endpoints into conversation endpoint IDs
+          using the SAME deterministic node projection function.
+        - Endpoint node pointers may be missing (dangling endpoints allowed); we do not
+          create incidence links and do not auto-project endpoint nodes.
+        - Usage is tracked separately (turn/run-scoped), not on the projection edge.
+        """
+        scope = f"conv:{conversation_id}"
+        peid = pointer_id(scope=scope, pointer_kind="kg_edge", target_kind="edge", target_id=kg_edge_id)
+
+        # Fetch KG edge metadata once (also used for the usage-pointer node summary).
+        eg = self.knowledge_engine.backend.edge_get(ids=[kg_edge_id], include=["metadatas"])
+        if not eg.get("ids"):
+            raise ValueError(f"KG edge not found: {kg_edge_id}")
+        meta = (eg.get("metadatas") or [{}])[0] or {}
+
+        existing = self.conversation_engine.backend.edge_get(ids=[peid], include=[])
+        if not existing.get("ids"):
+            kg_src_ids = list(meta.get("source_ids") or [])
+            kg_tgt_ids = list(meta.get("target_ids") or [])
+
+            # Deterministic endpoint projection IDs (nodes may be dangling / not yet created).
+            conv_src_ids = [
+                pointer_id(scope=scope, pointer_kind="kg_node", target_kind="node", target_id=sid)
+                for sid in kg_src_ids
+            ]
+            conv_tgt_ids = [
+                pointer_id(scope=scope, pointer_kind="kg_node", target_kind="node", target_id=tid)
+                for tid in kg_tgt_ids
+            ]
+
+            edge = ConversationEdge(
+                id=peid,
+                source_ids=conv_src_ids,
+                target_ids=conv_tgt_ids,
+                relation=str(meta.get("relation") or meta.get("type") or "kg_edge"),
+                label=str(meta.get("label") or "kg_edge"),
+                type="relationship",
+                summary=str(meta.get("summary") or ""),
+                doc_id=f"conv:{conversation_id}",
+                mentions=[Grounding(spans=[provenance_span])],
+                domain_id=None,
+                canonical_entity_id=None,
+                properties={
+                    "is_pointer": True,
+                    "refers_to_collection": "edges",
+                    "refers_to_entity_id": kg_edge_id,
+                    "target_namespace": "kg",
+                    "entity_type": "knowledge_reference_edge",
+                },
+                embedding=None,
+                metadata={
+                    "entity_type": "knowledge_reference_edge",
+                    "tail_turn_index": prev_turn_meta_summary.tail_turn_index,
+                },
+                source_edge_ids=[],
+                target_edge_ids=[],
+            )
+            self.conversation_engine.add_edge(edge)
+
+        # # Usage is recorded via a separate pointer-node so used_evidence remains node-targeted.
+        # edge_ptr_nid = pointer_id(scope=scope, pointer_kind="kg_edge_ptr", target_kind="edge", target_id=kg_edge_id)
+        # exn = self.conversation_engine.backend.node_get(ids=[edge_ptr_nid], include=[])
+        # if not exn.get("ids"):
+        #     node = ConversationNode(
+        #         id=edge_ptr_nid,
+        #         label=f"RefEdge {kg_edge_id}",
+        #         type="reference_pointer",
+        #         summary=str(meta.get("summary") or ""),
+        #         conversation_id=conversation_id,
+        #         role="system",  # type: ignore
+        #         turn_index=None,
+        #         properties={
+        #             "target_namespace": "kg",
+        #             "refers_to_collection": "edges",
+        #             "target_kind": "edge",
+        #             "target_id": kg_edge_id,
+        #             "entity_type": "knowledge_reference_edge",
+        #             "projection_edge_id": peid,
+        #         },
+        #         mentions=[Grounding(spans=[provenance_span])],
+        #         metadata={
+        #             "level_from_root": 0,
+        #             "entity_type": "knowledge_reference_edge",
+        #             "in_conversation_chain": False,
+        #         },
+        #         domain_id=None,
+        #         canonical_entity_id=None,
+        #     )
+        #     self.conversation_engine.add_node(node)
+
+        # ue = edge_id(scope=scope, rel="used_evidence", src=run_node_id, dst=edge_ptr_nid)
+        # ex_edge = self.conversation_engine.backend.edge_get(ids=[ue], include=[])
+        # if not ex_edge.get("ids"):
+        #     used = ConversationEdge(
+        #         id=ue,
+        #         source_ids=[run_node_id],
+        #         target_ids=[edge_ptr_nid],
+        #         relation="used_evidence",
+        #         label="used_evidence",
+        #         type="relationship",
+        #         summary="Agent used this evidence edge",
+        #         doc_id=f"conv:{conversation_id}",
+        #         mentions=[Grounding(spans=[provenance_span])],
+        #         domain_id=None,
+        #         canonical_entity_id=None,
+        #         properties={"entity_type": "conversation_edge"},
+        #         embedding=None,
+        #         metadata={
+        #             "char_distance_from_last_summary": prev_turn_meta_summary.prev_node_char_distance_from_last_summary,
+        #             "turn_distance_from_last_summary": prev_turn_meta_summary.prev_node_distance_from_last_summary,
+        #             "tail_turn_index": prev_turn_meta_summary.tail_turn_index,
+        #         },
+        #         source_edge_ids=[],
+        #         target_edge_ids=[],
+        #     )
+        #     self.conversation_engine.add_edge(used)
+
+        return peid
     def _add_assistant_turn(self, *, conversation_id: str, content: str, provenance_span: Span, turn_index : int, 
                             prev_turn_meta_summary: MetaFromLastSummary) -> tuple[str, ConversationNode]:
         # Minimal assistant turn node
@@ -925,7 +1442,7 @@ Return JSON per schema. Be conservative: if key details are missing, set needs_m
         emb = cast(np.ndarray, self.conversation_engine.iterative_defensive_emb(content))
         node = ConversationNode(
             id=nid,
-            label="Assistant",
+            label="Assistant turn",
             type="entity",
             summary=content,
             conversation_id=conversation_id,

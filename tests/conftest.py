@@ -1,6 +1,8 @@
 # tests/conftest.py
 import shutil, uuid, json
-
+import os
+import sitecustomize
+os.environ["ANONYMIZED_TELEMETRY"] = "FALSE"
 import sqlalchemy as sa
 from testcontainers.postgres import PostgresContainer
 
@@ -15,6 +17,7 @@ from graph_knowledge_engine.models import (
     LLMMergeAdjudication, AdjudicationVerdict, Node, Span, Grounding,
     ConversationEdge, ConversationNode, MentionVerification
 )
+from graph_knowledge_engine.postgres_backend import PgVectorBackend
 from typing import Any, List, Optional, Sequence, Iterator
 from langchain_core.runnables import Runnable
 from graph_knowledge_engine.models import LLMMergeAdjudication, AdjudicationVerdict
@@ -26,6 +29,64 @@ def stable_uuid(*parts: object) -> str:
     return str(uuid.uuid5(_TEST_NS, "|".join(str(p) for p in parts)))
 from pathlib import Path
 
+import logging
+from pathlib import Path
+from graph_knowledge_engine.utils.log import EngineLogManager, EngineLogConfig
+
+def pytest_configure(config):
+    EngineLogManager.configure(
+        # EngineLogConfig(
+            base_dir=Path(".logs/test"),
+            app_name="gke_test",
+            level=logging.DEBUG,
+            enable_files=True,        # <-- ENABLE FILE LOGGING
+            enable_sqlite=False,
+            # mode="prod",              # <-- NOT pytest
+            enable_jsonl=True
+        # )
+    )
+from chromadb.utils.embedding_functions import EmbeddingFunction
+from chromadb.api.types import Embeddings
+class FakeEmbeddingFunction(EmbeddingFunction):
+    @staticmethod
+    def name() -> str:
+        return "default"
+
+    def __init__(self, dim: int = 384):
+        self._dim = dim
+
+    def __call__(self, documents_or_texts: Sequence[str]) -> Embeddings:
+        return [[0.01] * self._dim for _ in documents_or_texts]
+    
+def _make_engine_pair(*, backend_kind: str, tmp_path, sa_engine, pg_schema, dim: int = 3, use_fake = False):
+    """
+    Build (kg_engine, conv_engine) for either chroma or pgvector.
+    """
+    # ef = _fake_ef_dim(dim)
+    _ef = None
+    if use_fake:
+        _ef = FakeEmbeddingFunction(dim=dim)
+    if backend_kind == "chroma":
+        kg_engine = GraphKnowledgeEngine(persist_directory=str(tmp_path / "kg"), kg_graph_type="knowledge", embedding_function=FakeEmbeddingFunction(dim=dim)
+                                         )
+        conv_engine = GraphKnowledgeEngine(persist_directory=str(tmp_path / "conv"), kg_graph_type="conversation", embedding_function=FakeEmbeddingFunction(dim=dim)
+                                           )
+        return kg_engine, conv_engine
+
+    if backend_kind == "pg":
+        if sa_engine is None or pg_schema is None:
+            pytest.skip("pg backend requested but sa_engine/pg_schema fixtures not available")
+        kg_schema = f"{pg_schema}_kg"
+        conv_schema = f"{pg_schema}_conv"
+        kg_backend = PgVectorBackend(engine=sa_engine, embedding_dim=dim, schema=kg_schema)
+        conv_backend = PgVectorBackend(engine=sa_engine, embedding_dim=dim, schema=conv_schema)
+        kg_engine = GraphKnowledgeEngine(persist_directory=str(tmp_path / "kg_meta"), 
+                                         kg_graph_type="knowledge", embedding_function=FakeEmbeddingFunction(dim=dim), backend=kg_backend)
+        conv_engine = GraphKnowledgeEngine(persist_directory=str(tmp_path / "conv_meta"),
+                                           kg_graph_type="conversation", embedding_function=FakeEmbeddingFunction(dim=dim), backend=conv_backend)
+        return kg_engine, conv_engine
+
+    raise ValueError(f"unknown backend_kind: {backend_kind!r}")
 def _mk_span_from_excerpt(*, doc_id: str, content: str, excerpt: str, insertion_method: str, page_number: int = 1):
     idx = content.index(excerpt)  # will raise if excerpt not present -> good early failure
     start = idx
@@ -202,7 +263,8 @@ def tmp_chroma_dir(tmp_path_factory):
 
 @pytest.fixture(scope="function")
 def engine(tmp_chroma_dir, monkeypatch):
-    eng = GraphKnowledgeEngine(persist_directory=tmp_chroma_dir, embedding_cache_path=os.path.join(os.getcwd(), '.embedding_cache'))
+    eng = GraphKnowledgeEngine(persist_directory=os.path.join(tmp_chroma_dir, "kg"), 
+                               embedding_cache_path=os.path.join(os.getcwd(), '.embedding_cache'))
     # Patch the real LLM with a deterministic fake
     #eng.llm = _CompositeFakeLLM()
     return eng
@@ -214,11 +276,16 @@ def tmp_conv_chroma_dir(tmp_path_factory):
     shutil.rmtree(d, ignore_errors=True)
 @pytest.fixture(scope="function")
 def conversation_engine(tmp_conv_chroma_dir, monkeypatch):
-    eng = GraphKnowledgeEngine(persist_directory=tmp_conv_chroma_dir, kg_graph_type = "conversation")
+    eng = GraphKnowledgeEngine(persist_directory=os.path.join(tmp_conv_chroma_dir, "conversation"), kg_graph_type = "conversation")
     # Patch the real LLM with a deterministic fake
     #eng.llm = _CompositeFakeLLM()
     return eng
-
+@pytest.fixture(scope="function")
+def workflow_engine(tmp_conv_chroma_dir, monkeypatch):
+    eng = GraphKnowledgeEngine(persist_directory=os.path.join(tmp_conv_chroma_dir, "workflow"), kg_graph_type = "workflow")
+    # Patch the real LLM with a deterministic fake
+    #eng.llm = _CompositeFakeLLM()
+    return eng
 @pytest.fixture()
 def real_small_graph():
     e = GraphKnowledgeEngine(persist_directory = "small_graph")

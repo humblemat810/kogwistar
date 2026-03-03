@@ -13,7 +13,6 @@ authors = [{ name = "Peter Chan", email = "humblemat@gmail.com" }]
 
 dependencies = [
   "pydantic>=2.6",
-  "chromadb>=0.5",
   "anyio>=4.0",
   "fastapi>=0.111",
   "uvicorn[standard]>=0.30",

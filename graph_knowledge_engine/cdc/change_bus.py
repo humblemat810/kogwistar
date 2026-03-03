@@ -6,6 +6,8 @@ from typing import Deque, Dict, Optional, List
 import threading
 import queue
 import time
+from graph_knowledge_engine.utils import log as logmod
+from graph_knowledge_engine.utils.log import bind_log_context
 from typing import Protocol
 
 class ChangeSink(Protocol):
@@ -60,27 +62,44 @@ class ChangeBus:
 
 import requests
 class FastAPIChangeSink:
-    def __init__(self, endpoint: str, *, max_queue: int = 5000):
+    def __init__(self, endpoint: str, *, max_queue: int = 5000, name: str = 'fastapi sink'):
         self.endpoint = endpoint.rstrip("/")
         self.q: queue.Queue[dict] = queue.Queue(maxsize=max_queue)
-        self._t = threading.Thread(target=self._run, daemon=True)
+        self._t = threading.Thread(target=self._run, daemon=True, name=name)
         self._t.start()
 
     def publish(self, event) -> None:
         try:
-            self.q.put_nowait(event.to_jsonable())
+            payload = event.to_jsonable()
+            # Capture current logging context (from the caller thread)
+            payload["_log_ctx"] = {
+                "engine_type": logmod._ctx_engine_type.get(),
+                "engine_id": logmod._ctx_engine_id.get(),
+                "conversation_id": logmod._ctx_conversation_id.get(),
+                # prefer event fields if provided
+                "workflow_run_id": event.run_id,
+                "step_id": event.step_id,
+            }
+            self.q.put_nowait(payload)
         except queue.Full:
-            pass  # debug channel, drop is OK
+            pass
 
     def _run(self):
         session = requests.Session()
         url = f"{self.endpoint}/ingest"
         while True:
             ev = self.q.get()
+            ctx = ev.pop("_log_ctx", None) or {}
             try:
-                session.post(url, json=ev, timeout=0.5)
-            except requests.exceptions.ConnectTimeout:
-                # allow bridge not set up usage
+                with bind_log_context(
+                    engine_type=ctx.get("engine_type"),
+                    engine_id=ctx.get("engine_id"),
+                    conversation_id=ctx.get("conversation_id"),
+                    workflow_run_id=ctx.get("workflow_run_id"),
+                    step_id=ctx.get("step_id"),
+                ):
+                    session.post(url, json=ev, timeout=2.5)
+            except (requests.exceptions.ConnectTimeout, requests.exceptions.ConnectionError):
                 pass
-            except Exception as _e:
+            except Exception:
                 raise

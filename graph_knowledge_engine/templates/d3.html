@@ -1,3 +1,15 @@
+<!--
+Component: Conversation Workflow Graph Debug viewer
+Description: Renders the CDC workflow visualization using D3.js
+
+Also contains a debugger tooling to heuristically turn some declarative node and edge scripts into graphs 
+for workflow high level visualization
+
+Author: Your Name
+Created: 2026-03-01
+-->
+
+
 <!doctype html>
 <html>
   <head>
@@ -69,6 +81,79 @@
         font: 12px/1.2 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
       }
       #cdcBadge.hidden { display:none; }
+
+      /* ===== Script → Graph panel (minimal add) ===== */
+      #scriptPanel {
+        position: fixed;
+        left: 8px;
+        top: 92px;
+        width: calc(100vw - 16px);
+        max-height: 82vh;
+        overflow: hidden;
+        background:#fff;
+        border-radius: 10px;
+        border: 1px solid #ddd;
+        box-shadow: 0 2px 12px rgba(0,0,0,.15);
+        z-index: 11;
+      }
+      #scriptPanel.hidden { display:none; }
+      #scriptPanel .hdr {
+        display:flex; align-items:center; justify-content:space-between; gap:10px;
+        padding: 8px 10px;
+        border-bottom: 1px solid #e5e5e5;
+        background: #fff;
+        font: 12px/1.2 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      }
+      #scriptPanel .hdr b { font-size: 12px; }
+      #scriptPanel .hdr .btns { display:flex; gap:6px; flex-wrap:wrap; align-items:center; }
+      #scriptPanel .editorWrap{
+        position: relative;
+        width: 100%;
+        height: 62vh;
+      }
+      #scriptPanel pre#scriptHi {
+        position: absolute;
+        inset: 0;
+        margin: 0;
+        padding: 12px 10px;
+        overflow: auto;
+        white-space: pre;
+        font: 15px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        box-sizing: border-box;
+        background: #fff;
+      }
+      #scriptPanel textarea#scriptSrc {
+        position: absolute;
+        inset: 0;
+        margin: 0;
+        padding: 12px 10px;
+        resize: none;
+        border: 0;
+        outline: none;
+        background: transparent;
+        color: transparent;           /* hide raw text; caret still visible */
+        caret-color: #111;            /* keep caret visible */
+        font: 15px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        box-sizing: border-box;
+        overflow: auto;
+      }
+      #scriptPanel .ln { display:inline-block; width: 3.2em; padding-right: 10px; color:#999; user-select:none; }
+      #scriptPanel .code { color:#111; }
+      #scriptPanel .cmt  { color:#9aa0a6; }
+      #scriptPanel .node { color:#0b6b3a; font-weight:600; }
+      #scriptPanel .edge { color:#1b4f9c; font-weight:600; }
+      #scriptPanel .ft {
+        padding: 8px 10px;
+        border-top: 1px solid #e5e5e5;
+        background: #fafafa;
+        font: 12px/1.25 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+        color: #444;
+      }
+      #scriptPanel .pill {
+        display:inline-block; padding:2px 8px; border-radius:999px;
+        border:1px solid #bbb; background:#fff; font: 12px/1.2 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      }
+
     </style>
     <script src="https://unpkg.com/d3@7"></script>
   </head>
@@ -122,7 +207,29 @@
       </span>
 
       <button id="applyFilters">Apply</button>
+      <button id="toggleScript" style="margin-left:10px;">Script ▾</button>
+      <button id="toggleCdc" style="margin-left:6px;">CDC: On</button>
       <span id="cdcBadge" class="hidden">CDC: <span id="cdcStatus">disabled</span></span>
+    </div>
+
+
+    <!-- Script → Graph panel (minimal add) -->
+    <div id="scriptPanel" class="hidden">
+      <div class="hdr">
+        <b>Script → Graph</b>
+        <div class="btns">
+          <button id="scriptParse">Parse & Render</button>
+          <button id="scriptSample">Load sample</button>
+          <label style="display:flex; gap:6px; align-items:center; font:12px/1.2 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;"><input type="checkbox" id="scriptReify" checked> Reify edges (♦)</label>
+          <span class="pill" id="scriptStats">nodes: 0 • links: 0</span>
+          <button id="scriptHide">Hide</button>
+        </div>
+      </div>
+      <div class="editorWrap"><pre id="scriptHi"></pre><textarea id="scriptSrc" spellcheck="false"></textarea></div>
+      <div class="ft">
+        Heuristics (loose): ignore <code>#</code> comments. Node if <code>node_id=</code> OR contains “node”+“add”.
+        Edge if contains <code>src=</code> and <code>dst=</code>/<code>tgt=</code>/<code>target=</code>/<code>to=</code>.
+      </div>
     </div>
 
     <div id="legend">
@@ -229,6 +336,23 @@
 
       function isNextTurnEdgeNode(n) {
         return n && n.type === "edge-node" && (n.label === "next_turn" || n.label === "next turn");
+      }
+
+      // CDC/workflow steps often carry status in metadata/properties, and sometimes only in summary text.
+      // Keep this conservative (no parsing throws) and default to non-failure.
+      function isFailureNode(n) {
+        try {
+          const p = (n && (n.properties || n.metadata)) || {};
+          const s = String(p.status || n.status || "").toLowerCase();
+          if (s === "failure" || s === "failed" || s === "error") return true;
+          const sum = String(n.summary || "").toLowerCase();
+          // Example: "{'step': 6, 'op': '...', 'status': 'failure', ...}"
+          if (sum.includes("'status'") && sum.includes("failure")) return true;
+          if (sum.includes("\"status\"") && sum.includes("failure")) return true;
+          return false;
+        } catch (_) {
+          return false;
+        }
       }
 
       function getTurnIndex(n) {
@@ -387,14 +511,18 @@
           gradSel = gradDefs
             .selectAll("linearGradient")
             .data(allLinks, keyEdge)
-            .join(enter => {
-              const g = enter.append("linearGradient")
-                .attr("id", d => gradIdForEdge(d))
-                .attr("gradientUnits", "userSpaceOnUse");
-              g.append("stop").attr("offset", "0%").attr("stop-color", "#b3b3b3");
-              g.append("stop").attr("offset", "100%").attr("stop-color", "#000");
-              return g;
-            });
+            .join(
+              enter => {
+                const g = enter.append("linearGradient")
+                  .attr("id", d => gradIdForEdge(d))
+                  .attr("gradientUnits", "userSpaceOnUse");
+                g.append("stop").attr("offset", "0%").attr("stop-color", "#b3b3b3");
+                g.append("stop").attr("offset", "100%").attr("stop-color", "#000");
+                return g;
+              },
+              update => update,
+              exit => exit.remove()
+            );
         }
         rebuildGradients();
 
@@ -474,6 +602,7 @@
         let linkSel;
         let nodeCircle;
         let nodeDiamond;
+        let nodeFailRing;
         let labelSel;
 
         const diamondPath = d3.symbol().type(d3.symbolDiamond).size(120);
@@ -524,6 +653,22 @@
               exit => exit.remove()
             );
 
+          // Failure ring (minimal overlay): red circle around existing marker.
+          // Keep pointer-events off so it doesn't steal clicks/drags.
+          nodeFailRing = gNodes.selectAll("circle.fail-ring")
+            .data(entities.filter(isFailureNode), d => d.id)
+            .join(
+              enter => enter.append("circle")
+                .attr("class", "fail-ring")
+                .attr("r", 9)
+                .attr("fill", "none")
+                .attr("stroke", "#d00")
+                .attr("stroke-width", 2.2)
+                .attr("pointer-events", "none"),
+              update => update,
+              exit => exit.remove()
+            );
+
           nodeDiamond = gNodes.selectAll("path")
             .data(eNodes, d => d.id)
             .join(
@@ -557,11 +702,13 @@
         function applyFocusStyles(){
           const hasFocus = focusSet.size > 0;
           nodeCircle.classed("focus-node", d => focusSet.has(d.id));
+          if (nodeFailRing) nodeFailRing.classed("focus-node", d => focusSet.has(d.id));
           nodeDiamond.classed("focus-node", d => focusSet.has(d.id));
           labelSel.classed("focus-label", d => focusSet.has(d.id));
 
           if (hasFocus) {
             nodeCircle.classed("dim", d => !focusSet.has(d.id));
+            if (nodeFailRing) nodeFailRing.classed("dim", d => !focusSet.has(d.id));
             nodeDiamond.classed("dim", d => !focusSet.has(d.id));
             labelSel.classed("dim", d => !focusSet.has(d.id));
           }
@@ -579,7 +726,7 @@
           .force("center", d3.forceCenter(width/2, height/2))
           .force("gravityX", gravX)
           .force("gravityY", gravY)
-          .alpha(1)
+          .alpha(0.5).alphaDecay(0.08).velocityDecay(0.6)
           .on("tick", () => {
             linkSel.attr("d", linkPath);
 
@@ -590,6 +737,7 @@
               .attr("y2", d => (d.target && d.target.y) || 0);
 
             nodeCircle.attr("cx", d => d.x).attr("cy", d => d.y);
+            if (nodeFailRing) nodeFailRing.attr("cx", d => d.x).attr("cy", d => d.y);
             nodeDiamond.attr("transform", d => `translate(${d.x},${d.y})`);
             labelSel.attr("x", d => d.x + 6).attr("y", d => d.y + 3);
           });
@@ -781,6 +929,7 @@
           }
 
           nodeCircle.classed("hidden", d => !nodeVisible.get(d.id));
+          if (nodeFailRing) nodeFailRing.classed("hidden", d => !nodeVisible.get(d.id));
           nodeDiamond.classed("hidden", d => !nodeVisible.get(d.id));
           labelSel.classed("hidden", d => !nodeVisible.get(d.id));
 
@@ -1152,6 +1301,257 @@
           applyFocusStyles();
         }
 
+        
+        // ===== Script → Graph (minimal add) =====
+        function _isCommentLine(line){ return line.trim().startsWith("#"); }
+        function _extractQuotedStrings(line) {
+          const re = /(["'])(.*?)\1/g;
+          const out = [];
+          let m;
+          while ((m = re.exec(line)) !== null) out.push(m[2]);
+          return out;
+        }
+        function _extractAfterKey(line, key) {
+          const re = new RegExp(
+            String.raw`${key}\s*=\s*(?:[a-zA-Z_]\w*\s*\(\s*)?(["'])(.*?)\1`,
+            "i"
+          );
+          const m = line.match(re);
+          return m ? m[2] : null;
+        }
+        function _looksLikeNode(line) {
+          const s = line.toLowerCase();
+          if (s.includes("node_id=")) return true;
+          if (s.includes("add") && s.includes("node")) return true;
+          return false;
+        }
+        function _looksLikeEdge(line) {
+          const s = line.toLowerCase();
+          const hasSrc = /\bsrc\s*=/.test(s);
+          const hasDst = /\b(?:dst|tgt|target|to)\s*=/.test(s);
+          return hasSrc && hasDst;
+        }
+
+                function parseScriptToGraph(text, opts) {
+                  const options = opts || {};
+                  const reifyEdges = options.reifyEdges !== false; // default true
+                  const nodes = new Map(); // id -> node
+                  const links = [];
+                  const lines = (text || "").split(/\r?\n/);
+
+                  function ensureNode(id, label, type) {
+                    if (!id || id === "??") return;
+                    if (!nodes.has(id)) {
+                      nodes.set(id, { id, label: label || id, type: type || "entity", summary: "", properties: {} });
+                    } else if (label) {
+                      const n = nodes.get(id);
+                      if (!n.label || n.label === n.id) n.label = label;
+                    }
+                    if (type) {
+                      const n = nodes.get(id);
+                      n.type = type;
+                    }
+                  }
+
+                  function mkEdgeNodeId(edgeId) {
+                    // Avoid colliding with existing workflow node ids
+                    return "EDGE_NODE:" + String(edgeId);
+                  }
+
+                  for (let i = 0; i < lines.length; i++) {
+                    const raw = lines[i];
+                    const lineNo = i + 1;
+                    const line = raw.trim();
+                    if (!line) continue;
+                    if (_isCommentLine(line)) continue;
+
+                    if (_looksLikeEdge(line)) {
+                      const edgeId = _extractAfterKey(line, "edge_id") || _extractAfterKey(line, "id") || `edge@L${lineNo}`;
+                      const src = _extractAfterKey(line, "src") || null;
+                      const dst = _extractAfterKey(line, "dst") || _extractAfterKey(line, "tgt") || _extractAfterKey(line, "target") || _extractAfterKey(line, "to") || null;
+                      const rel = _extractAfterKey(line, "pred") || _extractAfterKey(line, "relation") || "edge";
+                      const q = _extractQuotedStrings(line);
+
+                      let fsrc = src, fdst = dst;
+                      if ((!fsrc || !fdst) && q.length >= 2) {
+                        if (!fsrc && !fdst) {
+                          fsrc = q[q.length - 2];
+                          fdst = q[q.length - 1];
+                        } else {
+                          fsrc = fsrc || q[0];
+                          fdst = fdst || q[1];
+                        }
+                      }
+                      fsrc = fsrc || "??";
+                      fdst = fdst || "??";
+
+                      ensureNode(fsrc);
+                      ensureNode(fdst);
+
+                      const props = { lineNo, rawLine: raw, edge_id: String(edgeId), pred: rel, src: fsrc, dst: fdst };
+
+                      if (reifyEdges) {
+                        const enId = mkEdgeNodeId(edgeId);
+                        ensureNode(enId, rel, "edge-node");
+                        // Two links around the edge-node so diamonds render
+                        links.push({
+                          id: String(edgeId) + ":in",
+                          source: fsrc,
+                          target: enId,
+                          relation: rel,
+                          label: rel,
+                          properties: props
+                        });
+                        links.push({
+                          id: String(edgeId) + ":out",
+                          source: enId,
+                          target: fdst,
+                          relation: rel,
+                          label: rel,
+                          properties: props
+                        });
+                      } else {
+                        links.push({
+                          id: String(edgeId),
+                          source: fsrc,
+                          target: fdst,
+                          relation: rel,
+                          label: rel,
+                          properties: props
+                        });
+                      }
+                      continue;
+                    }
+
+                    if (_looksLikeNode(line)) {
+                      const nodeId = _extractAfterKey(line, "node_id") || _extractAfterKey(line, "id") || null;
+                      const label = _extractAfterKey(line, "label") || null;
+                      const op = _extractAfterKey(line, "op") || null;
+                      const q = _extractQuotedStrings(line);
+                      const fid = nodeId || (q.length ? q[0] : `node@L${lineNo}`);
+
+                      ensureNode(fid, label || fid, "entity");
+                      if (op) {
+                        const n = nodes.get(fid);
+                        n.properties = n.properties || {};
+                        n.properties.op = op;
+                      }
+                      continue;
+                    }
+                  }
+
+                  return { nodes: Array.from(nodes.values()), links };
+                }
+
+        function updateRelationsMenuFromLinks(){
+          // uniqueRelations is const binding but mutable array; keep minimal
+          uniqueRelations.length = 0;
+          const rels = Array.from(new Set(allLinks.map(e => (e.relation || e.label || "").toLowerCase()).filter(Boolean))).sort();
+          for (const r of rels) uniqueRelations.push(r);
+          buildRelMenu();
+        }
+
+        function replaceGraphFromParsed(parsed){
+          model.nodesById.clear();
+          model.linksById.clear();
+
+          for (const n of (parsed.nodes || [])) {
+            model.nodesById.set(n.id, { ...n });
+          }
+          for (const l of (parsed.links || [])) {
+            const sid = (typeof l.source === "object" ? l.source.id : l.source);
+            const tid = (typeof l.target === "object" ? l.target.id : l.target);
+            const rel = (l.relation || l.label || "");
+            const key = l.id || `${sid}->${tid}:${rel}`;
+            model.linksById.set(key, { ...l, id: key });
+          }
+
+          refreshFromModel();
+          updateRelationsMenuFromLinks();
+          if (typeof applyVisibility === "function") applyVisibility();
+        }
+
+        // Script panel wiring
+        const scriptPanel = document.getElementById("scriptPanel");
+        const toggleScript = document.getElementById("toggleScript");
+        const scriptHide = document.getElementById("scriptHide");
+        const scriptParse = document.getElementById("scriptParse");
+        const scriptSample = document.getElementById("scriptSample");
+        const scriptSrc = document.getElementById("scriptSrc");
+        const scriptStats = document.getElementById("scriptStats");
+
+        const scriptHi = document.getElementById("scriptHi");
+
+        function _escHtml(s){
+          return String(s)
+            .replace(/&/g,"&amp;")
+            .replace(/</g,"&lt;")
+            .replace(/>/g,"&gt;")
+            .replace(/"/g,"&quot;")
+            .replace(/'/g,"&#39;");
+        }
+
+        function renderScriptHighlight(){
+          if (!scriptHi) return;
+          const text = scriptSrc.value || "";
+          const lines = text.split(/\r?\n/);
+
+          const parts = [];
+          for (let i = 0; i < lines.length; i++){
+            const raw = lines[i];
+            const ln = i + 1;
+            const trimmed = raw.trim();
+
+            let cls = "code";
+            if (trimmed.startsWith("#")) cls = "cmt";
+            else if (_looksLikeEdge(trimmed)) cls = "edge";
+            else if (_looksLikeNode(trimmed)) cls = "node";
+
+            parts.push(
+              `<span class="ln">${ln}</span><span class="${cls}">${_escHtml(raw || " ")}</span>`
+            );
+          }
+          scriptHi.innerHTML = parts.join("\n");
+
+          // Keep highlight scroll synced
+          scriptHi.scrollTop = scriptSrc.scrollTop;
+          scriptHi.scrollLeft = scriptSrc.scrollLeft;
+        }
+
+        // Keep highlight updated as user types/pastes, and keep scroll synced.
+        scriptSrc.addEventListener("input", renderScriptHighlight);
+        scriptSrc.addEventListener("scroll", () => {
+          if (!scriptHi) return;
+          scriptHi.scrollTop = scriptSrc.scrollTop;
+          scriptHi.scrollLeft = scriptSrc.scrollLeft;
+        });
+
+        function showScriptPanel(){ scriptPanel.classList.remove("hidden"); renderScriptHighlight(); }
+        function hideScriptPanel(){ scriptPanel.classList.add("hidden"); }
+
+        if (toggleScript) toggleScript.onclick = () => {
+          if (scriptPanel.classList.contains("hidden")) showScriptPanel();
+          else hideScriptPanel();
+        };
+        if (scriptHide) scriptHide.onclick = hideScriptPanel;
+
+        const SCRIPT_SAMPLE = `add_node(node_id=wid("start"), label="Start", op="start", start=True, terminal=False)
+add_node(node_id=wid("add_user"), label="Add user turn", op="add_user_turn")
+add_node(node_id=wid("mem"), label="Memory retrieve", op="memory_retrieve")
+add_edge(edge_id=wid("e0"), src=wid("start"), dst=wid("add_user"), pred="always")
+add_edge(edge_id=wid("e1"), src=wid("add_user"), dst=wid("mem"), pred="always")`;
+
+        if (scriptSample) scriptSample.onclick = () => { scriptSrc.value = SCRIPT_SAMPLE; showScriptPanel(); };
+
+        if (scriptParse) scriptParse.onclick = () => {
+          renderScriptHighlight();
+          const reifyEdges = !!(document.getElementById('scriptReify') && document.getElementById('scriptReify').checked);
+          const parsed = parseScriptToGraph(scriptSrc.value || "", { reifyEdges });
+          if (scriptStats) scriptStats.textContent = `nodes: ${parsed.nodes.length} • links: ${parsed.links.length}`;
+          replaceGraphFromParsed(parsed);
+        };
+
+
         function resolveCdcWsUrl(){
           const explicit = window.__CDC_WS_URL__;
           if (explicit && typeof explicit === "string") return explicit;
@@ -1174,6 +1574,7 @@
           const status = document.getElementById("cdcStatus");
           if (!badge || !status) return;
           if (window.__CDC_ENABLED__) badge.classList.remove("hidden");
+          else badge.classList.add("hidden");
           status.textContent = label;
 
           // Panel status + log (debug)
@@ -1181,7 +1582,47 @@
           cdcPanelSetStatus(label);
           cdcLog(`[CDC] status=${label}`);
         }
+// --- FIXED CDC LOGIC ---
+        function scheduleCdcReconnect() {
+          if (!window.__CDC_ENABLED__) return;
+          if (cdcReconnectTimer) return;
+          const delay = Math.min(10000, 500 * Math.pow(1.6, cdcReconnectAttempt++));
+          setCdcStatus(`reconnecting in ${Math.round(delay)}ms`);
+          cdcReconnectTimer = setTimeout(() => {
+            cdcReconnectTimer = null;
+            connectCdcWs();
+          }, delay);
+        }
 
+        function disableCdc() {
+          window.__CDC_ENABLED__ = false;
+          // 1. Kill the timer so it doesn't fire while we are turning off
+          if (cdcReconnectTimer) { clearTimeout(cdcReconnectTimer); cdcReconnectTimer = null; }
+          // 2. Wipe handlers and close so onclose doesn't trigger a reconnect
+          if (cdcWs) {
+            cdcWs.onopen = cdcWs.onmessage = cdcWs.onerror = cdcWs.onclose = null;
+            cdcWs.close();
+            cdcWs = null;
+          }
+          setCdcStatus("disabled");
+          if (document.getElementById('toggleCdc')) document.getElementById('toggleCdc').textContent = "CDC: Off";
+        }
+
+        function enableCdc() {
+          window.__CDC_ENABLED__ = true;
+          cdcReconnectAttempt = 0; // Reset backoff
+          if (document.getElementById('toggleCdc')) document.getElementById('toggleCdc').textContent = "CDC: On";
+          connectCdcWs();
+        }
+
+        // Wire up the button
+        const toggleCdcBtn = document.getElementById('toggleCdc');
+        if (toggleCdcBtn) {
+          toggleCdcBtn.onclick = () => {
+            if (window.__CDC_ENABLED__) disableCdc();
+            else enableCdc();
+          };
+        }
 
         function scheduleCdcReconnect(){
           if (!window.__CDC_ENABLED__) return;
@@ -1266,14 +1707,38 @@
           cdcWs.onclose = (e) => {
             setCdcStatus("disconnected");
             cdcLog(`[CDC] ws close code=${e && e.code} reason=${(e && e.reason) || ""}`);
+              // ---- CDC toggle button (minimal add) ----
+                const toggleCdcBtn = document.getElementById("toggleCdc");
+                function disableCdc(){
+                  window.__CDC_ENABLED__ = false;
+                  try { if (cdcReconnectTimer) { clearTimeout(cdcReconnectTimer); cdcReconnectTimer = null; } } catch {}
+                  try { if (cdcWs) { cdcWs.onopen = cdcWs.onmessage = cdcWs.onerror = cdcWs.onclose = null; cdcWs.close(); } } catch {}
+                  cdcWs = null;
+                  setCdcStatus("disabled");
+                  if (toggleCdcBtn) toggleCdcBtn.textContent = "CDC: Off";
+                }
+                function enableCdc(){
+                  window.__CDC_ENABLED__ = true;
+                  if (toggleCdcBtn) toggleCdcBtn.textContent = "CDC: On";
+                  connectCdcWs();
+                }
+                if (toggleCdcBtn) {
+                  toggleCdcBtn.onclick = () => {
+                    if (window.__CDC_ENABLED__) disableCdc();
+                    else enableCdc();
+                  };
+                }
+
             scheduleCdcReconnect();
           };
         }
 
         cdcLog(`[CDC] enabled=${window.__CDC_ENABLED__} ws_url=${window.__CDC_WS_URL__ || "(null)"} bundle_graph_type=${BUNDLE_GRAPH_TYPE || "(null)"}`);
         if (window.__CDC_ENABLED__) {
+          if (document.getElementById('toggleCdc')) document.getElementById('toggleCdc').textContent = 'CDC: On';
           connectCdcWs();
         } else {
+          if (document.getElementById('toggleCdc')) document.getElementById('toggleCdc').textContent = 'CDC: Off';
           setCdcStatus("disabled");
         }
 

@@ -91,7 +91,175 @@ class MetaFromLastSummary:
     
     prev_node_char_distance_from_last_summary: int
     prev_node_distance_from_last_summary: int
+    # distances are rough estimate, also serve as a stub for injection if accounting
+    # calculations are done in the process and the two distances indicates how to inject
+    # Do not rely on the two to make strict decisions
+    
     tail_turn_index: int=0  # works more like a node seq number
+    
+
+@dataclass(frozen=True)
+class ContextCost:
+    """Canonical cost abstraction for prompt/context accounting."""
+    char_count: int = 0
+    token_count: int | None = None
+
+    def __add__(self, other: "ContextCost") -> "ContextCost":
+        tc = None
+        if self.token_count is not None and other.token_count is not None:
+            tc = self.token_count + other.token_count
+        return ContextCost(char_count=self.char_count + other.char_count, token_count=tc)
+
+    def to_flat_metadata(self, *, prefix: str = "cost") -> Dict[str, Any]:
+        # You requested dot keys.
+        return {
+            f"{prefix}.char_count": int(self.char_count),
+            f"{prefix}.token_count": (None if self.token_count is None else int(self.token_count)),
+        }
+
+    @staticmethod
+    def from_flat_metadata(meta: Dict[str, Any], *, prefix: str = "cost") -> "ContextCost":
+        cc_key = f"{prefix}.char_count"
+        tc_key = f"{prefix}.token_count"
+
+        char_count = int(meta.get(cc_key, 0) or 0)
+        token_raw = meta.get(tc_key, None)
+        token_count: Optional[int]
+        if token_raw is None or token_raw == "":
+            token_count = None
+        else:
+            token_count = int(token_raw)
+
+        return ContextCost(char_count=char_count, token_count=token_count)
+# class ContextSnapshotMetadata(BaseModel):
+#     """Metadata schema for a context_snapshot ConversationNode.
+
+#     Stored inside ConversationNode.metadata (which is extra=allow), but validated
+#     at creation time.
+#     """
+
+#     entity_type: Literal["context_snapshot"] = "context_snapshot"
+#     level_from_root: int = Field(0, ge=0)
+
+#     # Execution identity
+#     run_id: str
+#     run_step_seq: int = Field(..., ge=0)
+#     attempt_seq: int = Field(0, ge=0)
+
+#     # Snapshot content
+#     stage: str
+#     model_name: str = ""
+#     budget_tokens: int = Field(0, ge=0)
+#     tail_turn_index: int = Field(0, ge=0)
+
+#     # Determinism + audit
+#     used_node_ids: List[str] = Field(default_factory=list)
+#     rendered_context_hash: str
+#     cost: ContextCost = Field(default_factory=ContextCost)
+
+#     model_config = ConfigDict(extra="allow")    
+class ContextSnapshotMetadata(BaseModel):
+    entity_type: Literal["context_snapshot"] = "context_snapshot"
+    level_from_root: int = Field(0, ge=0)
+
+    # Execution identity
+    run_id: str
+    run_step_seq: int = Field(..., ge=0)
+    attempt_seq: int = Field(0, ge=0)
+
+    # Snapshot content
+    stage: str
+    model_name: str = ""
+    budget_tokens: int = Field(0, ge=0)
+    tail_turn_index: int = Field(0, ge=0)
+
+    # Determinism + audit
+    used_node_ids: List[str] = Field(default_factory=list)
+    rendered_context_hash: str
+    cost: ContextCost = Field(default_factory=ContextCost)
+
+    model_config = ConfigDict(extra="allow")
+
+    # ---- Storage helpers for Chroma / flat metadata ----
+
+    def to_chroma_metadata(self) -> Dict[str, Any]:
+        """
+        Flatten to Chroma-friendly metadata (primitives only).
+        Keeps all extra fields too, but flattens `cost`.
+        """
+        d = self.model_dump(mode="python", exclude={"cost"})
+        d.update(self.cost.to_flat_metadata(prefix="cost"))
+        return d
+
+    @classmethod
+    def from_chroma_metadata(cls, meta: Dict[str, Any]) -> "ContextSnapshotMetadata":
+        """
+        Reconstruct from flat Chroma metadata. Accepts either:
+        - flattened cost keys (cost.char_count / cost.token_count), or
+        - legacy nested `cost` dict (if any exists)
+        """
+        data = dict(meta)
+
+        # If `cost` was stored nested for some reason, tolerate it.
+        cost_val = data.pop("cost", None)
+        if isinstance(cost_val, dict):
+            cost = ContextCost(
+                char_count=int(cost_val.get("char_count", 0) or 0),
+                token_count=(None if cost_val.get("token_count", None) is None else int(cost_val["token_count"])),
+            )
+        else:
+            cost = ContextCost.from_flat_metadata(data, prefix="cost")
+
+        # Strip flattened fields so they don't end up as "extra"
+        data.pop("cost.char_count", None)
+        data.pop("cost.token_count", None)
+
+        obj = cls(**data, cost=cost)
+        return obj
+
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_flat_cost_on_direct_init(cls, values: Any) -> Any:
+        """
+        Optional: allows ContextSnapshotMetadata(**meta_from_chroma) directly,
+        without calling from_chroma_metadata().
+        """
+        if not isinstance(values, dict):
+            return values
+        if "cost" in values:
+            return values
+
+        # If flattened cost present, assemble `cost`
+        if "cost.char_count" in values or "cost.token_count" in values:
+            cost = ContextCost.from_flat_metadata(values, prefix="cost")
+            values = dict(values)
+            values["cost"] = cost
+            # Do NOT remove the keys here; let extra=allow keep them if desired.
+            # If you prefer strictness, you can pop them here.
+        return values
+
+
+class EvidencePackDigest(BaseModel):
+    """A compact, rehydratable description of an evidence pack.
+
+    Mental model:
+    - The *evidence pack* is a concrete JSON payload materialized from KG nodes
+      (and their neighborhood) for citation picking.
+    - This digest stores the parameters needed to rebuild that pack later.
+
+    Rehydration is best-effort:
+    - If the underlying KG changes, re-materialization may differ.
+    - When `evidence_pack_hash` is present, callers can detect drift.
+    """
+
+    node_ids: list[str] = Field(default_factory=list)
+    edge_ids: list[str] = Field(default_factory=list)
+    depth: str = Field("shallow", description="Materialization depth hint (e.g. shallow/deep)")
+    max_chars_per_item: int = Field(0, ge=0)
+    max_total_chars: int = Field(0, ge=0)
+    evidence_pack_hash: str | None = None
+
+    model_config = ConfigDict(extra="allow")
 @dataclass(frozen=True)
 class AddTurnResult():
     user_turn_node_id: str
@@ -156,9 +324,31 @@ class Span(ModeSlicingMixin, BaseModel):
     verification: Annotated[Optional[MentionVerification], BackendField(), ExcludeMode("llm")] = Field(
                                         None, description="Result of validating the mention correctness"
                                     )
+    
     @staticmethod
-    def from_dummy_for_conversation():
-        doc_id = "_conv:_dummy"
+    def from_dummy_for_workflow(doc_id = "_wf:_dummy"):
+        if doc_id.startswith("_wf:"):
+            pass
+        else:
+            doc_id = "_wf:"+doc_id
+        dummy_span = Span(
+            collection_page_url=f"workflow/{doc_id}",
+            document_page_url=f"workflow/{doc_id}",
+            doc_id=f"{doc_id}",
+            insertion_method="system",
+            page_number=1, start_char=0, end_char=1,
+            excerpt="", context_before="", context_after="",
+            chunk_id = None,
+            source_cluster_id = None,
+            verification=MentionVerification(method="system", is_verified=True, score=1.0, notes="")
+        )
+        return dummy_span
+    @staticmethod
+    def from_dummy_for_conversation(doc_id = "_conv:_dummy"):
+        if doc_id.startswith("_conv:"):
+            pass
+        else:
+            doc_id = "_conv:"+doc_id
         dummy_span = Span(
             collection_page_url=f"conversation/{doc_id}",
             document_page_url=f"conversation/{doc_id}",
@@ -168,7 +358,7 @@ class Span(ModeSlicingMixin, BaseModel):
             excerpt="", context_before="", context_after="",
             chunk_id = None,
             source_cluster_id = None,
-            verification=MentionVerification(method="system", is_verified=True, score=1.0, notes="start node")
+            verification=MentionVerification(method="system", is_verified=True, score=1.0, notes="")
         )
         return dummy_span
     @staticmethod
@@ -394,11 +584,15 @@ class GraphEntityRefBase(GraphEntityBase):
                 mentions = [Grounding.model_validate(i) for i in json.loads(data['mentions'])]
             else:
                 mentions = data['mentions']
+            if type(mentions) is not list:
+                raise TypeError("mentions should be a list of groundings")
             for mention in mentions:
                 if type(mention) is Grounding:
                     for span in mention.spans:
                         check_and_update_span_inplace(span)
                 else:
+                    
+                        
                     try:
                         mention_dict: dict = cast(dict, mention)
                         for span in mention_dict['spans']:
@@ -767,19 +961,6 @@ class Edge(IdPolicyMixin, ChromaValidateSourceMixin, ChromaMixin, EdgeMixin, Gra
         """
         return self.summary, self.relation, str(self.source_ids), str(self.target_ids), str(self.source_edge_ids), str(self.target_edge_ids)
 
-    # @model_validator(mode="after")
-    # def _ensure_id(self) -> Self:
-    #     if self.node_id is not None:
-    #         return self        
-
-    #     if self.id_policy == "event":
-    #         self.id = str(new_id_str())
-    #         return self
-
-    #     # canonical
-    #     key = self.identity_key()  # must be stable & non-empty
-    #     self.node_id = stable_id(self.id_kind, *key)
-    #     return self
 class ConversationEdge( Edge):
     """
     Specialized edge for conversation links, extending the base **knowledge graph**.
@@ -1488,14 +1669,16 @@ class WorkflowEdge(Edge):
         return v
     @property
     def predicate(self):
-        return str(self.metadata.get('wf_predicate'))
+        return self.metadata.get('wf_predicate')
     @property
     def multiplicity(self):
         return self.metadata.get('wf_multiplicity')
     @property
     def is_default(self):
         return self.metadata.get('wf_is_default')
-    
+    @property
+    def priority(self):
+        return int(self.metadata.get('wf_priority'))
 # -------------------------
 # Workflow traces: run/step/checkpoint (persist in conversation_engine)
 # -------------------------
@@ -1622,3 +1805,27 @@ EntitiyTypeToEdgeTypeMapping = {
     "edge" : Edge,
     "conversation_edge": ConversationEdge,
 }
+
+StateAppendUpdate = tuple[Literal['u'], Any]
+StateOverwriteUpdate = tuple[Literal['a'], Any]
+StateUpdate = Union[StateAppendUpdate , StateOverwriteUpdate]
+class RunSuccess(BaseModel):
+    conversation_node_id: str|None  # node id of the 'entry point' of the node cluster created in a resolver step, 
+    #step can create multiple node edges but at least should expose a node to connect to the main node net
+    state_update: list[StateUpdate]
+    # Optional native update dict (schema-driven). This does NOT replace state_update.
+    # When present, WorkflowRuntime.run() applies it using state_schema and then
+    # falls back unknown keys into DSL ('u') overwrite semantics.
+    update: dict[str, Any] | None = None
+    next_step_names: list[str] = []  # empty will by default fan out all
+    status: Literal["success"] = "success"
+
+
+class RunFailure(BaseModel):
+    conversation_node_id: Optional[str]
+    state_update: list[StateUpdate] # can still update, append an error message
+    update: dict[str, Any] | None = None
+    errors: list[str]
+    next_step_names: list[str] = []  # empty will by default fan out all
+    status: Literal["failure"] = "failure"
+StepRunResult: TypeAlias = RunSuccess | RunFailure    

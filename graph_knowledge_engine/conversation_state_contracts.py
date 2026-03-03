@@ -33,20 +33,20 @@ class WorkflowStateModel(BaseModel):
     embedding: Any
 
     memory: Optional[Any] = None
-    memory_raw: Optional[Any] = None
+    # memory_raw: Optional[Any] = None # not serializable, not used
     kg: Optional[Any] = None
-    kg_raw: Optional[Any] = None
+    # kg_raw: Optional[Any] = None # not serializable, not used
     memory_pin: Optional[Any] = None
-    memory_pin_raw: Optional[Any] = None
+    # memory_pin_raw: Optional[Any] = None # not serializable, not used
     kg_pin: Optional[Any] = None
     answer: Optional[Any] = None
-    answer_raw: Optional[Any] = None
+    # answer_raw: Optional[Any] = None # not serializable, not used
     
     summary: SummaryStateModel = Field(default_factory=SummaryStateModel)
     prev_turn_meta_summary: PrevTurnMetaSummaryModel
-    # _deps : dict[str,Any]
+    _deps : dict[str,Any]
     def dump_state(self) -> WorkflowState:
-        return cast(WorkflowState, self.model_dump())
+        return cast(WorkflowState, self.model_dump(exclude=set(['_deps'])))
 class PrevTurnMetaSummaryDict(TypedDict):
     prev_node_char_distance_from_last_summary: int
     prev_node_distance_from_last_summary: int
@@ -77,12 +77,12 @@ class WorkflowState(TypedDict):
     memory: Optional[Json]
     memory_raw: Optional[Any]  # not JSON; only safe if you accept non-serializable checkpoints
     kg: Optional[Json]
-    kg_raw: Optional[Any]
+    # kg_raw: Optional[Any]
     memory_pin: Optional[Json]
-    memory_pin_raw: Optional[Any]
+    # memory_pin_raw: Optional[Any]
     kg_pin: Optional[Json]
     answer: Optional[Json]
-    answer_raw: Optional[Any]
+    # answer_raw: Optional[Any]
 
     summary: SummaryStateDict
     prev_turn_meta_summary: PrevTurnMetaSummaryDict

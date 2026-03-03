@@ -12,11 +12,12 @@ from graph_knowledge_engine.models import (
 from typing import TYPE_CHECKING
 
 from graph_knowledge_engine.workflow.runtime import StepRunResult, State
+from graph_knowledge_engine.models import RunFailure, RunSuccess
 
 if TYPE_CHECKING:
     from graph_knowledge_engine.workflow.runtime import StepContext
 
-from graph_knowledge_engine.workflow.runtime import WorkflowRuntime, RunSuccess, RunFailure
+from graph_knowledge_engine.workflow.runtime import WorkflowRuntime
 
 # IMPORTANT: use your existing dumper (calls to_d3_force internally)
 from graph_knowledge_engine.utils.kge_debug_dump import dump_paired_bundles  # type: ignore

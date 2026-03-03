@@ -8,37 +8,6 @@ from graph_knowledge_engine.workflow.design import build_workflow_from_engine
 from graph_knowledge_engine.engine import GraphKnowledgeEngine
 from graph_knowledge_engine.postgres_backend import PgVectorBackend
 
-def _fake_ef_dim(dim: int):
-    def _ef(texts):
-        return [[0.0] * dim for _ in texts]
-    return _ef
-
-def _make_engine_pair(*, backend_kind: str, tmp_path, sa_engine, pg_schema: str, dim: int = 3):
-    """
-    Build (kg_engine, conv_engine) for either chroma or pgvector.
-    """
-    ef = _fake_ef_dim(dim)
-
-    if backend_kind == "chroma":
-        kg_engine = GraphKnowledgeEngine(persist_directory=str(tmp_path / "kg"), kg_graph_type="knowledge", embedding_function=ef)
-        conv_engine = GraphKnowledgeEngine(persist_directory=str(tmp_path / "conv"), kg_graph_type="conversation", embedding_function=ef)
-        return kg_engine, conv_engine
-
-    if backend_kind == "pg":
-        if sa_engine is None or pg_schema is None:
-            pytest.skip("pg backend requested but sa_engine/pg_schema fixtures not available")
-        kg_schema = f"{pg_schema}_kg"
-        conv_schema = f"{pg_schema}_conv"
-        kg_backend = PgVectorBackend(engine=sa_engine, embedding_dim=dim, schema=kg_schema)
-        conv_backend = PgVectorBackend(engine=sa_engine, embedding_dim=dim, schema=conv_schema)
-        kg_engine = GraphKnowledgeEngine(persist_directory=str(tmp_path / "kg_meta"), kg_graph_type="knowledge", embedding_function=ef, backend=kg_backend)
-        conv_engine = GraphKnowledgeEngine(persist_directory=str(tmp_path / "conv_meta"), kg_graph_type="conversation", embedding_function=ef, backend=conv_backend)
-        return kg_engine, conv_engine
-
-    raise ValueError(f"unknown backend_kind: {backend_kind!r}")
-
-from graph_knowledge_engine.engine import GraphKnowledgeEngine
-
 from graph_knowledge_engine.models import (
     WorkflowNode,
     WorkflowEdge,

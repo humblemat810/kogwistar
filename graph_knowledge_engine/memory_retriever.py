@@ -110,7 +110,7 @@ class MemoryRetriever:
         query_embedding: List[float],
         user_text: str,
         context_text: str,
-        n_results
+        n_results: int
     ) -> MemoryRetrievalResult:
         # Broad memory retrieval across same user
         where = {"user_id": user_id}
@@ -124,7 +124,7 @@ class MemoryRetriever:
             n_results=n_results,
             where=where,
             include=["metadatas", "documents", "embeddings"], edge_type=ConversationEdge
-        )[0]
+        )[0] # supposed not work, conversation edge has no role mixin and not retrievable no matter how given current state
         
         
         
