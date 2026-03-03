@@ -11,7 +11,7 @@ from graph_knowledge_engine.models import ConversationNode, MetaFromLastSummary,
 from graph_knowledge_engine.conversation_orchestrator import ConversationOrchestrator, get_id_for_conversation_turn, _estimate_tokens_from_chars
 from graph_knowledge_engine.agentic_answering import AgentConfig, AgenticAnsweringAgent, AnswerWithCitations, AnswerEvaluation
 
-from test_phase2a_accounting import _make_engine_pair, FakeEmbeddingFunction
+from tests.conftest import _make_engine_pair
 
 
 from langchain_core.runnables import Runnable
@@ -31,7 +31,7 @@ def _mk_span(doc_id: str) -> Span:
     return sp
 @pytest.mark.parametrize("backend_kind", ["chroma", "pg"])
 def test_summary_creates_context_snapshot_before_llm_call(backend_kind, tmp_path, sa_engine, pg_schema, monkeypatch):
-    kg, conv = _make_engine_pair(backend_kind=backend_kind, tmp_path=tmp_path, sa_engine=sa_engine, pg_schema=pg_schema, dim=3)
+    kg, conv = _make_engine_pair(backend_kind=backend_kind, tmp_path=tmp_path, sa_engine=sa_engine, pg_schema=pg_schema, dim=3, use_fake = True)
     conv.tool_call_id_factory = stable_id
     orch = ConversationOrchestrator(conversation_engine=conv, ref_knowledge_engine=kg, llm=dummy_llm, tool_call_id_factory=stable_id)
 
@@ -81,7 +81,7 @@ def test_summary_creates_context_snapshot_before_llm_call(backend_kind, tmp_path
 
 @pytest.mark.parametrize("backend_kind", ["chroma", "pg"])
 def test_answer_flow_creates_context_snapshots_and_edges(backend_kind, tmp_path, sa_engine, pg_schema, monkeypatch):
-    kg, conv = _make_engine_pair(backend_kind=backend_kind, tmp_path=tmp_path, sa_engine=sa_engine, pg_schema=pg_schema, dim=3)
+    kg, conv = _make_engine_pair(backend_kind=backend_kind, tmp_path=tmp_path, sa_engine=sa_engine, pg_schema=pg_schema, dim=3, use_fake=True)
     
     conversation_id = "c2"
     user_id = "u2"

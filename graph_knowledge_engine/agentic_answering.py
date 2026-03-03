@@ -554,6 +554,9 @@ class AgenticAnsweringAgent:
         workflow_engine: "GraphKnowledgeEngine | None" = None,
         workflow_id: str = "agentic_answering.v2",
         run_id: str | None = None,
+        # quick-fix for nested runs: reuse outer trace emitter when available
+        events: Any | None = None,
+        trace: bool = True,
     ) -> dict[str, Any]:
         """Run agentic answering using the workflow runtime.
 
@@ -596,6 +599,9 @@ class AgenticAnsweringAgent:
             predicate_registry=predicate_registry,
             checkpoint_every_n_steps=1,
             max_workers=1,
+            # nested-safety: share outer emitter when provided, and/or disable trace sink creation
+            events=events,
+            trace=trace,
         )
 
         # Choose a turn_node_id for checkpoint/tracing.

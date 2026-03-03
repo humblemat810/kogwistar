@@ -246,6 +246,24 @@ from types import MappingProxyType
 import threading, queue
 
 from .telemetry import TraceContext, SQLiteEventSink, EventEmitter, bind_logger, BoundLoggerAdapter
+# ------------------------------------------------------------------
+# Shared trace sink cache (process-local)
+# ------------------------------------------------------------------
+# Multiple WorkflowRuntime instances (including nested runs) may point at the same
+# persist_directory. Creating multiple SQLiteEventSink writers for the same DB path
+# is a common source of contention. For "quick fix" safety, we share a single sink
+# instance per db_path inside this process.
+_SINK_CACHE: dict[str, SQLiteEventSink] = {}
+_SINK_CACHE_LOCK = threading.Lock()
+
+def _get_shared_sqlite_sink(db_path: str, *, drop_when_full: bool = True) -> SQLiteEventSink:
+    with _SINK_CACHE_LOCK:
+        sink = _SINK_CACHE.get(db_path)
+        if sink is None:
+            sink = SQLiteEventSink(db_path=db_path, drop_when_full=drop_when_full)
+            _SINK_CACHE[db_path] = sink
+        return sink
+
 
 @dataclass
 class RouteDecision:
@@ -376,6 +394,10 @@ class WorkflowRuntime:
         checkpoint_every_n_steps: int = 1,
         max_workers: int = 4,
         transaction_mode: str | None = None,  # "step" | "run" | "none" (default auto)
+        # Quick-fix knobs for nested runs / resource sharing
+        trace: bool = True,
+        events: EventEmitter | None = None,
+        sink: SQLiteEventSink | None = None,
     ) -> None:
         from graph_knowledge_engine.engine import GraphKnowledgeEngine
         self.workflow_engine: GraphKnowledgeEngine = workflow_engine
@@ -395,15 +417,26 @@ class WorkflowRuntime:
         else:
             self.transaction_mode = str(transaction_mode)
         self.state_lock : dict[RunID, Lock] = {} # look up of run specific state lock
-        # somewhere in your runtime init (or run())
-        if getattr(workflow_engine, "persist_directory", None) is not None:
-            self.sink = SQLiteEventSink(
-                db_path=str(pathlib.Path(workflow_engine.persist_directory) / "wf_trace.sqlite"),
-                drop_when_full=True,  # trace can be best-effort; set False if you want backpressure
-            )
+
+        # --------------------------------------------------------------
+        # Trace plumbing (quick-fix for nested runtimes)
+        # --------------------------------------------------------------
+        # If an EventEmitter is provided, reuse it (prevents duplicate writers).
+        if events is not None:
+            self.emitter = events
+            self.sink = getattr(events, "sink", None)
         else:
-            self.sink = None
-        self.emitter = EventEmitter(sink=self.sink, logger=logging.getLogger("workflow.trace"))
+            if sink is not None:
+                self.sink = sink
+            elif (not trace):
+                self.sink = None
+            else:
+                self.sink = None
+                if getattr(workflow_engine, "persist_directory", None) is not None:
+                    db_path = str(pathlib.Path(workflow_engine.persist_directory) / "wf_trace.sqlite")
+                    # Share a single sink per db_path in this process to reduce SQLite contention.
+                    self.sink = _get_shared_sqlite_sink(db_path, drop_when_full=True)
+            self.emitter = EventEmitter(sink=self.sink, logger=logging.getLogger("workflow.trace"))
 
     def _maybe_step_uow(self):
         """Open a UoW transaction only when transaction_mode=='step'.
@@ -416,6 +449,34 @@ class WorkflowRuntime:
             return self.conversation_engine.uow()
         return nullcontext()
 
+
+
+    def _should_step_uow(self, op: str, state: WorkflowState) -> bool:
+        """Best-effort guard to avoid holding a step UoW across nested workflow execution.
+
+        Quick fix: if the current op is marked as a "nested op" by the resolver
+        (MappingStepResolver.nested_ops), we skip the outer step UoW so the nested
+        workflow can perform its own per-step UoWs without deadlocking/contending.
+
+        Fallback: if resolver doesn't expose nested_ops, keep the old heuristic for
+        `answer` calling `agent.answer_workflow_v2`.
+        """
+        if self.transaction_mode != "step":
+            return False
+        try:
+            nested_ops = getattr(self.step_resolver, "nested_ops", None)
+            if isinstance(nested_ops, set) and str(op) in nested_ops:
+                return False
+
+            if str(op) == "answer":
+                deps = state.get("_deps") if isinstance(state, dict) else None
+                if isinstance(deps, dict):
+                    agent = deps.get("agent")
+                    if agent is not None and hasattr(agent, "answer_workflow_v2"):
+                        return False
+        except Exception:
+            return True
+        return True
     def apply_state_update(self, mute_state: WorkflowState, state_update: list[tuple[str, dict[str, Any]]] | list[StateUpdate]):
         # inplace update state
         for update_item in state_update:
@@ -652,7 +713,7 @@ class WorkflowRuntime:
                             # Transaction boundary (best-effort): resolver is expected to call
                             # engine methods; when backed by Postgres this ensures those writes
                             # are committed or rolled back atomically for this step.
-                            with self._maybe_step_uow():
+                            with (self.conversation_engine.uow() if self._should_step_uow(op, state) else __import__('contextlib').nullcontext()):
                                 res: StepRunResult = fn(ctx)
                             status = "ok" if getattr(res, "status", None) != "failure" else "failure"
 

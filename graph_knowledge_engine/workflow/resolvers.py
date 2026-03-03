@@ -70,10 +70,13 @@ class MappingStepResolver(BaseResolver):
     def __init__(self, handlers: Optional[Mapping[str, RawStepFn]] = None, *, default: Optional[RawStepFn] = None) -> None:
         self.handlers = dict(handlers or {})
         self.default = default
+        # Ops that are allowed to execute nested workflows (i.e., may call back into
+        # WorkflowRuntime). Runtime may use this to avoid holding a step-UoW open.
+        self.nested_ops: set[str] = set()
         # Preferred merge mode per state key: 'u' overwrite, 'a' append, 'e' extend
         self._state_schema: dict[str, str] = {}
 
-    def register(self, op: str) -> Callable[[RawStepFn], RawStepFn]:
+    def register(self, op: str, *, is_nested: bool = False) -> Callable[[RawStepFn], RawStepFn]:
         
         def _decorator(fn: RawStepFn) -> RawStepFn:
             
@@ -86,6 +89,8 @@ class MappingStepResolver(BaseResolver):
                                       step_id = ctx.workflow_node_id):
                     return fn(*arg, **kwarg)
             self.handlers[op] = fn #wrapped_fun        
+            if is_nested:
+                self.nested_ops.add(str(op))
             return wrapped_fun
         return _decorator
 
@@ -743,7 +748,7 @@ def _kg_pin(ctx: StepContext) -> StepRunResult:
     return RunSuccess(conversation_node_id=None, state_update=state_update)
 
 
-@default_resolver.register("answer")
+@default_resolver.register("answer", is_nested=True)
 def _answer(ctx: StepContext) -> StepRunResult:
     """Run answering step (no chain linking here).
 
@@ -773,6 +778,9 @@ def _answer(ctx: StepContext) -> StepRunResult:
                 user_id=state.get("user_id"),
                 prev_turn_meta_summary=mts,
                 workflow_engine=workflow_engine,
+                # reuse current runtime's emitter to avoid duplicate sqlite writers in nested runs
+                events=ctx.events,
+                trace=(ctx.events is None),
             )
             mts.tail_turn_index += 1
             if isinstance(out, dict):

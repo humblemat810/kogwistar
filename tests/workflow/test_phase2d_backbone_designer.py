@@ -5,9 +5,9 @@ from graph_knowledge_engine.workflow.design import ConversationWorkflowDesigner,
 
 def test_phase2d_conversation_designer_ensure_backbone(backend_kind, tmp_path, sa_engine, pg_schema):
     # Reuse canonical engine fixture builder.
-    from ..kg_conversation.test_phase2a_accounting import _make_engine_pair
+    from tests.conftest import _make_engine_pair
 
-    _kg, conv = _make_engine_pair(backend_kind=backend_kind, tmp_path=tmp_path, sa_engine=sa_engine, pg_schema=pg_schema, dim=3)
+    _kg, conv = _make_engine_pair(backend_kind=backend_kind, tmp_path=tmp_path, sa_engine=sa_engine, pg_schema=pg_schema, dim=3, use_fake=True)
 
     designer = ConversationWorkflowDesigner(
         workflow_engine=conv,
