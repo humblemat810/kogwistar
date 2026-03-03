@@ -1,6 +1,6 @@
 from __future__ import annotations
-
-
+import functools
+from graph_knowledge_engine.utils.log import bind_log_context
 from ..models import MetaFromLastSummary, KnowledgeRetrievalResult, MemoryRetrievalResult, StateUpdate
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
@@ -55,10 +55,17 @@ from graph_knowledge_engine.models import ConversationEdge, Span
 # Agentic answering helper types
 from ..agentic_answering import AgenticAnsweringAgent, snapshot_hash, AnswerWithCitations, AnswerEvaluation
 
+class BaseResolver:
+    ops: set
+
 @dataclass
-class MappingStepResolver:
+class MappingStepResolver(BaseResolver):
     handlers: Dict[str, RawStepFn]
     default: Optional[RawStepFn] = None
+    
+    @property
+    def ops(self):
+        return set(self.handlers)
 
     def __init__(self, handlers: Optional[Mapping[str, RawStepFn]] = None, *, default: Optional[RawStepFn] = None) -> None:
         self.handlers = dict(handlers or {})
@@ -67,9 +74,19 @@ class MappingStepResolver:
         self._state_schema: dict[str, str] = {}
 
     def register(self, op: str) -> Callable[[RawStepFn], RawStepFn]:
+        
         def _decorator(fn: RawStepFn) -> RawStepFn:
-            self.handlers[op] = fn
-            return fn
+            
+            
+            @functools.wraps(fn)
+            def wrapped_fun (*arg, **kwarg):
+                ctx: StepContext = arg[0]
+                with bind_log_context(op=op, conversation_id = ctx.conversation_id, 
+                                      workflow_run_id = f"{ctx.workflow_id}--{ctx.run_id}", 
+                                      step_id = ctx.workflow_node_id):
+                    return fn(*arg, **kwarg)
+            self.handlers[op] = fn #wrapped_fun        
+            return wrapped_fun
         return _decorator
 
     def resolve(self, op: str) -> Callable[[StepContext], StepRunResult]:
@@ -362,7 +379,6 @@ def _add_user_turn(ctx: "StepContext") -> "StepRunResult":
     upd["turn_index"] = turn_index
     return RunSuccess(conversation_node_id=node_id, state_update=[("u", upd)])
 
-
 @default_resolver.register("link_prev_turn")
 def _link_prev_turn(ctx: "StepContext") -> "StepRunResult":
     """Link prev tail turn -> current turn via next_turn edge."""
@@ -494,7 +510,6 @@ def _context_snapshot(ctx: StepContext) -> StepRunResult:
 
     # Build the prompt context (debug/telemetry artifact).
     view = ce.get_conversation_view(conversation_id=conversation_id, purpose="answer")
-
     snap_id = ce.persist_context_snapshot(
         conversation_id=conversation_id,
         run_id=run_id,
@@ -759,6 +774,7 @@ def _answer(ctx: StepContext) -> StepRunResult:
                 prev_turn_meta_summary=mts,
                 workflow_engine=workflow_engine,
             )
+            mts.tail_turn_index += 1
             if isinstance(out, dict):
                 response_node_id = out.get("assistant_turn_node_id") or out.get("response_node_id")
                 # agentic path doesn't currently expose llm_decision_need_summary; keep False unless present
@@ -818,7 +834,8 @@ def _decide_summarize(ctx: StepContext) -> StepRunResult:
 
     # 1) Snapshot-first
     snap_cost = None
-    ce = deps.get("conversation_engine")
+    from graph_knowledge_engine.engine import GraphKnowledgeEngine
+    ce: GraphKnowledgeEngine = deps.get("conversation_engine")
     if ce is not None and hasattr(ce, "latest_context_snapshot_cost"):
         try:
             snap_cost = ce.latest_context_snapshot_cost(conversation_id=st["conversation_id"], stage=stage)
@@ -911,6 +928,7 @@ def _summarize(ctx: StepContext) -> StepRunResult:
         "did_summarize": True,
         "summary_node_id": added_id,
     }
+    prev_turn_meta_summary.tail_turn_index += 1
     mts = {
         "prev_node_char_distance_from_last_summary": 0,
         "prev_node_distance_from_last_summary": 0,
@@ -954,7 +972,6 @@ def _aa_prepare(ctx: StepContext) -> StepRunResult:
     # Policy knobs that can escalate across iterations.
     max_candidates = int(sv.get("max_candidates") or agent.config.max_candidates)
     materialize_depth = str(sv.get("materialize_depth") or agent.config.materialize_depth)
-
     state_update: list[StateUpdate] = [
         ('u', {
             "run_id": run_id,
@@ -1466,7 +1483,7 @@ def _aa_persist_response(ctx: StepContext) -> StepRunResult:
         provenance_span=Span.from_dummy_for_conversation(),
         prev_turn_meta_summary=prev_turn_meta_summary,
     )
-
+    prev_turn_meta_summary.tail_turn_index += 1
     # surface prev_turn_meta_summary as jsonable for downstream callers.
     mts = {
         "prev_node_char_distance_from_last_summary": int(getattr(prev_turn_meta_summary, "prev_node_char_distance_from_last_summary", 0) or 0),

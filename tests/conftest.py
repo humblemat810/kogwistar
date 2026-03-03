@@ -32,14 +32,15 @@ from graph_knowledge_engine.utils.log import EngineLogManager, EngineLogConfig
 
 def pytest_configure(config):
     EngineLogManager.configure(
-        EngineLogConfig(
+        # EngineLogConfig(
             base_dir=Path(".logs/test"),
             app_name="gke_test",
             level=logging.DEBUG,
             enable_files=True,        # <-- ENABLE FILE LOGGING
             enable_sqlite=False,
-            mode="prod",              # <-- NOT pytest
-        )
+            # mode="prod",              # <-- NOT pytest
+            enable_jsonl=True
+        # )
     )
 
 

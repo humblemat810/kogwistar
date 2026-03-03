@@ -1,7 +1,8 @@
 
 import json
+import re
 from pathlib import Path
-from typing import Callable, Sequence, Any, TypeVar, ParamSpec, cast
+from typing import Callable, Sequence, Any, TypeVar, ParamSpec, cast, Literal
 
 import pytest
 from joblib import Memory
@@ -11,6 +12,8 @@ from chromadb.api.types import Embeddings
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage
+from langchain_core.outputs import ChatGeneration, ChatResult
+from langchain_core.runnables import Runnable, RunnableConfig
 
 from graph_knowledge_engine.engine import GraphKnowledgeEngine
 from graph_knowledge_engine.id_provider import stable_id
@@ -48,7 +51,7 @@ class FakeEmbeddingFunction(EmbeddingFunction):
         self._dim = dim
 
     def __call__(self, documents_or_texts: Sequence[str]) -> Embeddings:
-        return [[0.01] * self._dim for _ in documents_or_texts]
+        return cast(Embeddings, [[0.01] * self._dim for _ in documents_or_texts])
 
 
 class DeterministicLLM(BaseChatModel):
@@ -59,6 +62,21 @@ class DeterministicLLM(BaseChatModel):
       - real mode: we pass candiate_filtering_callback (prompting) which uses this LLM.
     """
 
+    class _StructuredRunnable(Runnable):
+        def __init__(self, llm: "DeterministicLLM", schema, include_raw: bool = False):
+            self._llm = llm
+            self._schema = schema
+            self._include_raw = include_raw
+
+        def invoke(self, input: Any, config: RunnableConfig | None = None, **kwargs: Any) -> Any:
+            parsed = self._llm._structured_payload(self._schema, input=input)
+            if self._include_raw:
+                return {"raw": None, "parsed": parsed, "parsing_error": None}
+            return parsed
+
+        async def ainvoke(self, input: Any, config: RunnableConfig | None = None, **kwargs: Any) -> Any:
+            return self.invoke(input, config=config, **kwargs)
+
     def __init__(self, content: str):
         super().__init__()
         self._content = content
@@ -67,11 +85,162 @@ class DeterministicLLM(BaseChatModel):
     def _llm_type(self) -> str:  # pragma: no cover
         return "deterministic"
 
+    def with_structured_output(self, schema, include_raw=False, **kwargs):
+        return DeterministicLLM._StructuredRunnable(self, schema=schema, include_raw=include_raw)
+
+    @staticmethod
+    def _flatten_prompt_text(input_obj: Any) -> str:
+        if input_obj is None:
+            return ""
+        if isinstance(input_obj, str):
+            return input_obj
+        if isinstance(input_obj, dict):
+            return "\n".join(f"{k}: {v}" for k, v in input_obj.items())
+        if isinstance(input_obj, (list, tuple, set)):
+            return "\n".join(DeterministicLLM._flatten_prompt_text(x) for x in input_obj)
+
+        msgs = []
+        to_messages = getattr(input_obj, "to_messages", None)
+        if callable(to_messages):
+            try:
+                msgs = to_messages()
+            except Exception:
+                msgs = []
+        if msgs:
+            return "\n".join(str(getattr(m, "content", "")) for m in msgs)
+
+        content = getattr(input_obj, "content", None)
+        if content is not None:
+            return str(content)
+        return str(input_obj)
+
+    @staticmethod
+    def _extract_ids(text: str) -> tuple[list[str], list[str]]:
+        node_ids = sorted(set(re.findall(r"K:[A-Za-z0-9_\-]+", text)))
+        edge_ids = sorted(set(re.findall(r"E:[A-Za-z0-9_\-]+", text)))
+        return node_ids, edge_ids
+
+    @staticmethod
+    def _score_id(id_: str, text_l: str) -> int:
+        score = 0
+        key = id_.split(":", 1)[-1].lower()
+        key_tokens = [t for t in re.split(r"[_\-]+", key) if t]
+        for t in key_tokens:
+            if t and t in text_l:
+                score += 2
+        if "apple" in text_l and "apple" in key:
+            score += 5
+        if "banana" in text_l and "banana" in key:
+            score += 5
+        if "sweet" in text_l and "sweet" in key:
+            score += 3
+        if "yellow" in text_l and "yellow" in key:
+            score += 3
+        if "fruit" in text_l and "fruit" in key:
+            score += 2
+        return score
+
+    def _heuristic_pick(self, text: str) -> tuple[list[str], list[str]]:
+        text_l = text.lower()
+        node_ids, edge_ids = self._extract_ids(text)
+
+        scored_nodes = sorted(
+            ((self._score_id(nid, text_l), nid) for nid in node_ids),
+            key=lambda x: (-x[0], x[1]),
+        )
+        scored_edges = sorted(
+            ((self._score_id(eid, text_l), eid) for eid in edge_ids),
+            key=lambda x: (-x[0], x[1]),
+        )
+
+        picked_nodes = [nid for s, nid in scored_nodes if s > 0][:8]
+        picked_edges = [eid for s, eid in scored_edges if s > 0][:8]
+
+        # deterministic fallback: still pick plausible non-empty candidates when present
+        if not picked_nodes and node_ids:
+            picked_nodes = node_ids[: min(3, len(node_ids))]
+        if not picked_edges and edge_ids:
+            picked_edges = edge_ids[: min(2, len(edge_ids))]
+        return picked_nodes, picked_edges
+
+    def _build_answer_with_citations(self, text: str, schema):
+        text_l = text.lower()
+        # evidence pack lines are like: NODE <id> | ...
+        evidence_node_ids = re.findall(r"NODE\s+([^\s|]+)", text)
+        first_node = evidence_node_ids[0] if evidence_node_ids else None
+
+        if "apple" in text_l:
+            ans_text = "Apple is a fruit, and it is often sweet."
+        elif "banana" in text_l:
+            ans_text = "Banana is a fruit, and it is typically yellow."
+        else:
+            ans_text = "Based on the provided evidence, this item is a fruit-like entity."
+
+        claim = {
+            "claim": ans_text,
+            "citations": ([{"source_node_id": first_node, "mention_index": 0, "span_index": 0}] if first_node else []),
+        }
+        payload = {
+            "text": ans_text,
+            "reasoning": "heuristic evidence-grounded deterministic answer",
+            "claims": [claim],
+        }
+        return schema.model_validate(payload)
+
+    def _build_answer_evaluation(self, text: str, schema):
+        text_l = text.lower()
+        weak = ("i don't know" in text_l) or ("insufficient" in text_l)
+        payload = {
+            "is_sufficient": not weak,
+            "needs_more_info": bool(weak),
+            "missing_aspects": [] if not weak else ["insufficient grounded evidence"],
+            "notes": "heuristic deterministic evaluation",
+        }
+        return schema.model_validate(payload)
+
+    def _structured_payload(self, schema, *, input: Any):
+        schema_name = getattr(schema, "__name__", str(schema))
+        text = self._flatten_prompt_text(input)
+
+        # Filtering callback path from engine.candiate_filtering_callback
+        if "FilteringResponse" in schema_name:
+            node_ids, edge_ids = self._heuristic_pick(text)
+            return schema.model_validate(
+                {
+                    "reasoning": "heuristic lexical overlap from user question and candidate labels",
+                    "relevant_ids": {"node_ids": node_ids, "edge_ids": edge_ids},
+                }
+            )
+        if "FilteringResult" in schema_name:
+            node_ids, edge_ids = self._heuristic_pick(text)
+            return schema.model_validate({"node_ids": node_ids, "edge_ids": edge_ids})
+
+        # Agentic answering path
+        if "EvidenceSelection" in schema_name:
+            node_ids, edge_ids = self._heuristic_pick(text)
+            return schema.model_validate(
+                {
+                    "used_node_ids": node_ids,
+                    "used_edge_ids": edge_ids,
+                    "reasoning": "heuristic evidence selection from candidate overlap",
+                }
+            )
+        if "AnswerWithCitations" in schema_name:
+            return self._build_answer_with_citations(text, schema)
+        if "AnswerEvaluation" in schema_name:
+            return self._build_answer_evaluation(text, schema)
+
+        # fallback to neutral empty validated instance if possible
+        try:
+            return schema.model_validate({})
+        except Exception:
+            return {}
+
     def _generate(self, messages, stop=None, run_manager=None, **kwargs):
-        return AIMessage(content=self._content)
+        return ChatResult(generations=[ChatGeneration(message=AIMessage(content=self._content))])
 
 
-def _make_engine(*, backend_kind: str, tmp_path: Path, sa_engine, pg_schema: str | None, graph_type: str, dim: int):
+def _make_engine(*, backend_kind: str, tmp_path: Path, sa_engine, pg_schema: str | None, graph_type: Literal["knowledge", "conversation", "workflow"], dim: int):
     engine = None
     if backend_kind == "chroma":
         engine = GraphKnowledgeEngine(
@@ -355,7 +524,7 @@ def _deterministic_answer_impl(*, question: str, knowledge_key: str) -> dict[str
 def test_conversation_flow_v2_param_e2e(
     backend_kind: str,
     llm_mode: str,
-    knowledge_builder: Callable[[GraphKnowledgeEngine], dict[str, Any]],
+    knowledge_builder: Callable[..., dict[str, Any]],
     knowledge_key: str,
     tmp_path: Path,
     sa_engine,
@@ -395,9 +564,10 @@ def test_conversation_flow_v2_param_e2e(
 
     # Filtering callback
     if llm_mode == "fake":
-        def filtering_callback(_llm, conversation_content, cand_node_list_str, cand_edge_list_str, candidates_node_ids, candidate_edge_ids, context_text):
+        def fake_filtering_callback(_llm, conversation_content, cand_node_list_str, cand_edge_list_str, candidates_node_ids, candidate_edge_ids, context_text):
             dumped = cached_filter(question=conversation_content, knowledge_key=knowledge_key)
             return FilteringResult.model_validate(dumped), "cached deterministic filter"
+        filtering_callback = fake_filtering_callback
     else:
         # Use the project's canonical prompting-based filter, but cache it (ignore llm).
         from graph_knowledge_engine.engine import candiate_filtering_callback
@@ -405,9 +575,10 @@ def test_conversation_flow_v2_param_e2e(
             fr, reason = candiate_filtering_callback(llm, conversation_content, cand_node_list_str, cand_edge_list_str, candidates_node_ids, candidate_edge_ids, context_text)
             return fr.model_dump(), reason
         cached_fn = cached(memory, cached_inner, ignore=["llm"])
-        def filtering_callback(llm: BaseChatModel, conversation_content, cand_node_list_str, cand_edge_list_str, candidates_node_ids, candidate_edge_ids, context_text):
+        def real_filtering_callback(llm: BaseChatModel, conversation_content, cand_node_list_str, cand_edge_list_str, candidates_node_ids, candidate_edge_ids, context_text):
             dumped, reason = cached_fn(llm, conversation_content, cand_node_list_str, cand_edge_list_str, candidates_node_ids, candidate_edge_ids, context_text)
             return FilteringResult.model_validate(dumped), reason
+        filtering_callback = real_filtering_callback
 
     # Answer harness (cached, serializable-only inner)
     def answer_only_harness(*, conversation_id: str, prev_turn_meta_summary: MetaFromLastSummary, user_text: str, **_):
@@ -420,7 +591,7 @@ def test_conversation_flow_v2_param_e2e(
             return ConversationAIResponse(
                 response_node_id=None,  # will be filled by engine call below if available
                 llm_decision_need_summary=bool(payload.get("need_summary", False)),
-                content=payload["content"],
+                text=payload["content"],
             )
         except Exception:
             class _Resp:
@@ -448,7 +619,7 @@ def test_conversation_flow_v2_param_e2e(
         mem_id="mem0",
         role="user",
         content=question,
-        filtering_callback=filtering_callback,
+        filtering_callback=cast(Any, filtering_callback),
         workflow_id="conversation.add_turn.v2.test",
         in_conv=True,
         add_turn_only=False,

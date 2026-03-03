@@ -124,7 +124,7 @@ class MemoryRetriever:
             n_results=n_results,
             where=where,
             include=["metadatas", "documents", "embeddings"], edge_type=ConversationEdge
-        )[0]
+        )[0] # supposed not work, conversation edge has no role mixin and not retrievable no matter how given current state
         
         
         

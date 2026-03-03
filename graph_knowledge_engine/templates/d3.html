@@ -338,6 +338,23 @@ Created: 2026-03-01
         return n && n.type === "edge-node" && (n.label === "next_turn" || n.label === "next turn");
       }
 
+      // CDC/workflow steps often carry status in metadata/properties, and sometimes only in summary text.
+      // Keep this conservative (no parsing throws) and default to non-failure.
+      function isFailureNode(n) {
+        try {
+          const p = (n && (n.properties || n.metadata)) || {};
+          const s = String(p.status || n.status || "").toLowerCase();
+          if (s === "failure" || s === "failed" || s === "error") return true;
+          const sum = String(n.summary || "").toLowerCase();
+          // Example: "{'step': 6, 'op': '...', 'status': 'failure', ...}"
+          if (sum.includes("'status'") && sum.includes("failure")) return true;
+          if (sum.includes("\"status\"") && sum.includes("failure")) return true;
+          return false;
+        } catch (_) {
+          return false;
+        }
+      }
+
       function getTurnIndex(n) {
         // Prefer explicit if you later add it, else parse from label/id.
         const t = n?.properties?.turn_index ?? n?.metadata?.turn_index;
@@ -585,6 +602,7 @@ Created: 2026-03-01
         let linkSel;
         let nodeCircle;
         let nodeDiamond;
+        let nodeFailRing;
         let labelSel;
 
         const diamondPath = d3.symbol().type(d3.symbolDiamond).size(120);
@@ -635,6 +653,22 @@ Created: 2026-03-01
               exit => exit.remove()
             );
 
+          // Failure ring (minimal overlay): red circle around existing marker.
+          // Keep pointer-events off so it doesn't steal clicks/drags.
+          nodeFailRing = gNodes.selectAll("circle.fail-ring")
+            .data(entities.filter(isFailureNode), d => d.id)
+            .join(
+              enter => enter.append("circle")
+                .attr("class", "fail-ring")
+                .attr("r", 9)
+                .attr("fill", "none")
+                .attr("stroke", "#d00")
+                .attr("stroke-width", 2.2)
+                .attr("pointer-events", "none"),
+              update => update,
+              exit => exit.remove()
+            );
+
           nodeDiamond = gNodes.selectAll("path")
             .data(eNodes, d => d.id)
             .join(
@@ -668,11 +702,13 @@ Created: 2026-03-01
         function applyFocusStyles(){
           const hasFocus = focusSet.size > 0;
           nodeCircle.classed("focus-node", d => focusSet.has(d.id));
+          if (nodeFailRing) nodeFailRing.classed("focus-node", d => focusSet.has(d.id));
           nodeDiamond.classed("focus-node", d => focusSet.has(d.id));
           labelSel.classed("focus-label", d => focusSet.has(d.id));
 
           if (hasFocus) {
             nodeCircle.classed("dim", d => !focusSet.has(d.id));
+            if (nodeFailRing) nodeFailRing.classed("dim", d => !focusSet.has(d.id));
             nodeDiamond.classed("dim", d => !focusSet.has(d.id));
             labelSel.classed("dim", d => !focusSet.has(d.id));
           }
@@ -701,6 +737,7 @@ Created: 2026-03-01
               .attr("y2", d => (d.target && d.target.y) || 0);
 
             nodeCircle.attr("cx", d => d.x).attr("cy", d => d.y);
+            if (nodeFailRing) nodeFailRing.attr("cx", d => d.x).attr("cy", d => d.y);
             nodeDiamond.attr("transform", d => `translate(${d.x},${d.y})`);
             labelSel.attr("x", d => d.x + 6).attr("y", d => d.y + 3);
           });
@@ -892,6 +929,7 @@ Created: 2026-03-01
           }
 
           nodeCircle.classed("hidden", d => !nodeVisible.get(d.id));
+          if (nodeFailRing) nodeFailRing.classed("hidden", d => !nodeVisible.get(d.id));
           nodeDiamond.classed("hidden", d => !nodeVisible.get(d.id));
           labelSel.classed("hidden", d => !nodeVisible.get(d.id));
 
@@ -1691,7 +1729,7 @@ add_edge(edge_id=wid("e1"), src=wid("add_user"), dst=wid("mem"), pred="always")`
                   };
                 }
 
-            cReconnect();
+            scheduleCdcReconnect();
           };
         }
 

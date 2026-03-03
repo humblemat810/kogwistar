@@ -91,13 +91,15 @@ class _StubAgent:
             model_dump=lambda: {"used_node_ids": ["n1", "n2"], "used_edge_ids": [], "reasoning": "stub"},
         )
     @staticmethod
-    def _materialize_evidence_pack(agent, *, node_ids: List[str], depth: str, max_chars_per_item: int, max_total_chars: int):
-        return {"nodes": [{"node_id": nid, "mentions": [{"spans": [{"excerpt": f"e:{nid}"}]}]} for nid in node_ids]}
+    def _materialize_evidence_pack(agent, *, node_ids: List[str], edge_ids: List[str] | None, depth: str, max_chars_per_item: int, max_total_chars: int):
+        return {"nodes": [{"node_id": nid, "mentions": [{"spans": [{"excerpt": f"e:{nid}"}]}]} for nid in node_ids], 
+                "edges": [{"node_id": nid, "mentions": [{"spans": [{"excerpt": f"e:{nid}"}]}]} for nid in edge_ids]}
 
     def rehydrate_evidence_pack_from_digest(self, *, digest: dict, enforce_hash_match: bool = False):
         return {
             "evidence_pack": self._materialize_evidence_pack(self,
                 node_ids=list(digest.get("node_ids") or []),
+                edge_ids=list(digest.get("edge_ids") or []),
                 depth=str(digest.get("depth") or "shallow"),
                 max_chars_per_item=200,
                 max_total_chars=1000,
@@ -226,11 +228,13 @@ def test_aa_materialize_evidence_pack_writes_digest_and_runtime_pack():
     ce = _StubConversationEngine(last_user_text="Q")
     state = _mk_state(agent=agent, conv_engine=ce)
     state["used_node_ids"] = ["n1", "n2"]
+    state["used_edge_ids"] = ["e1", "e2"]
     res = _run_op("aa_materialize_evidence_pack", state)
     assert isinstance(res, RunSuccess)
     digest = state.get("evidence_pack_digest")
     assert isinstance(digest, dict)
     assert digest.get("node_ids") == ["n1", "n2"]
+    assert digest.get("edge_ids") == ["e1", "e2"]
     assert digest.get("evidence_pack_hash")
     assert state.get("_rt", {}).get("evidence_pack")
 
@@ -298,4 +302,4 @@ def test_aa_persist_response_writes_agentic_answering_result_and_prev_turn_meta_
     out = state.get("agentic_answering_result")
     assert isinstance(out, dict)
     assert out.get("assistant_text") == "ok"
-    assert state.get("prev_turn_meta_summary", {}).get("tail_turn_index") == 0
+    assert state.get("prev_turn_meta_summary", {}).get("tail_turn_index") == 1

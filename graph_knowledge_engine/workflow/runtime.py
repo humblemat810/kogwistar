@@ -12,6 +12,7 @@ import logging
 from contextlib import nullcontext
 
 from graph_knowledge_engine.id_provider import stable_id
+from graph_knowledge_engine.utils.log import bind_log_context
 from graph_knowledge_engine.models import RunSuccess, RunFailure, StateUpdate
 from ..conversation_orchestrator import get_id_for_conversation_turn_edge
 from graph_knowledge_engine.models import WorkflowNode, MentionVerification, ConversationEdge, WorkflowEdge, WorkflowRunNode
@@ -437,7 +438,7 @@ class WorkflowRuntime:
         *,
         workflow_id: str,
         conversation_id: str,
-        turn_node_id: str,
+        turn_node_id: str, # parent run may trigger another run in a node
         initial_state: WorkflowState,
         run_id: Optional[str] = None,
     ) -> RunResult:
@@ -447,565 +448,571 @@ class WorkflowRuntime:
         Design lives in workflow_engine.
         Traces/checkpoints live in conversation_engine.
         """
-        validate_initial_state(initial_state)
+        with bind_log_context(conversation_id = conversation_id, 
+                                      workflow_run_id = f"{workflow_id}--{run_id}"):
         
-        run_id = run_id or f"run|{uuid.uuid4()}"
-        self.state_lock[str(run_id)] = Lock()
-        
-        # an interworker, orchestrator message channel
-        mq: queue.Queue[Dict[str, Json]] = queue.Queue(maxsize = 10000)
-
-        start, nodes, adj = validate_workflow_design(
-            workflow_engine=self.workflow_engine,
-            workflow_id=workflow_id,
-            predicate_registry=self.predicate_registry,
-        )
-
-        # ----------------------------
-        # Precompute MAY-reach join/barrier sets (ignoring predicates)
-        # ----------------------------
-        node_ids_list = list(nodes.keys())
-        join_node_ids: list[str] = []
-        _join_is_merge = {}
-        for _nid, _wn in nodes.items():
-            _md = getattr(_wn, "metadata", None) or {}
-            if bool(_md.get("wf_join", False)) or str(getattr(_wn, "op", "")) == "join":
-                join_node_ids.append(str(_nid))
-                _join_is_merge[str(_nid)] = bool(_md.get('wf_join_is_merge') if _md.get('wf_join_is_merge') is not None else True)
-        _may_reach_join = (
-            _compute_may_reach_join_bitsets(node_ids=node_ids_list, adj=adj, join_ids=join_node_ids)
-            if join_node_ids
-            else {nid: 0 for nid in node_ids_list}
-        )
-        _join_pos = {jid: i for i, jid in enumerate(join_node_ids)}
-        _join_outstanding: list[int] = [0 for _ in join_node_ids]  # tokens BEFORE each join
-        _join_waiters: dict[str, list[int]] = {jid: [] for jid in join_node_ids}  # store per-token mask at join
-        
-        def _inc(mask: int) -> None:
-            for bi in _iter_bits(mask):
-                _join_outstanding[bi] += 1
-
-        def _dec(mask: int) -> None:
-            for bi in _iter_bits(mask):
-                _join_outstanding[bi] -= 1
-                if _join_outstanding[bi] < 0:
-                    # defensive: never go negative
-                    _join_outstanding[bi] = 0
-
-        def _mask_without_join(mask: int, join_id: str) -> int:
-            bi = _join_pos.get(join_id)
-            if bi is None:
-                return mask
-            return mask & ~(1 << bi)
-
-        def _bit_for_join(join_id: str) -> int:
-            bi = _join_pos.get(join_id)
-            return (1 << bi) if bi is not None else 0
-        def _rt_join_get() -> dict:
-            return cast(dict, state.get("_rt_join", {}))
-
-        def _rt_join_set(payload: dict) -> None:
-            # Stored in workflow state so checkpoints can resume joins.
-            state["_rt_join"] = payload
-
-        def _rt_join_snapshot(pending: list[tuple[str, int, str, str | None]]) -> dict:
-            # Persist inflight as pending-on-resume by including them in pending list upstream.
-            return {
-                "join_node_ids": join_node_ids,
-                "join_outstanding": list(_join_outstanding),
-                "join_waiters": {jid: list(masks) for jid, masks in _join_waiters.items()},
-                "pending": [(nid, int(mask), str(token_id), (str(parent_token_id) if parent_token_id is not None else None)) 
-                                    for nid, mask, token_id, parent_token_id in pending],
-            }
-
-        def _rt_join_restore() -> list[tuple[str, int, str, str | None]] | None:
-            payload = _rt_join_get()
-            if not payload:
-                return None
-            if payload.get("join_node_ids") != join_node_ids:
-                # Design changed; discard stale join runtime.
-                return None
-            jo = payload.get("join_outstanding")
-            jw = payload.get("join_waiters")
-            pend = payload.get("pending")
-            if not isinstance(jo, list) or not isinstance(jw, dict) or not isinstance(pend, list):
-                return None
-            # restore counters/waiters
-            for i in range(min(len(_join_outstanding), len(jo))):
-                try:
-                    _join_outstanding[i] = int(jo[i])
-                except Exception:
-                    _join_outstanding[i] = 0
-            for jid in join_node_ids:
-                masks = jw.get(jid, [])
-                if isinstance(masks, list):
-                    _join_waiters[jid] = [int(x) for x in masks]
-            # pending tokens
-            out: list[tuple[str, int, str, str | None]] = []
-            for item in pend:
-                if isinstance(item, (list, tuple)) and len(item) == 4:
-                    out.append((str(item[0]), int(item[1]), str(item[2]), (str(item[3]) if item[3] is not None else None)))
-                elif isinstance(item, (list, tuple)) and len(item) == 3:
-                    # backward-compat: snapshots without parent_token_id
-                    out.append((str(item[0]), int(item[1]), str(item[2]), None))
-                elif isinstance(item, (list, tuple)) and len(item) == 2:
-                    # backward-compat: older snapshots without token_id/parent_token_id
-                    out.append((str(item[0]), int(item[1]), uuid.uuid4().hex, None))
-            return out
+            validate_initial_state(initial_state)
             
-        # start, nodes, adj = load_workflow_design(workflow_engine=self.workflow_engine, workflow_id=workflow_id)
+            run_id = run_id or f"run|{uuid.uuid4()}"
+            self.state_lock[str(run_id)] = Lock()
+            
+            # an interworker, orchestrator message channel
+            mq: queue.Queue[Dict[str, Json]] = queue.Queue(maxsize = 10000)
 
-        state: WorkflowState = initial_state
-        step_seq = 0
-
-        # Persist workflow_run node in conversation_engine
-        wf_run_root_node = self._persist_workflow_run(
-            conversation_id=conversation_id,
-            workflow_id=workflow_id,
-            run_id=run_id,
-            turn_node_id=turn_node_id,
-            status="running",
-        )
-        # trace: workflow run started
-        try:
-            tc_run = TraceContext(
-                run_id=str(run_id),
-                token_id=str(run_id),  # root token id is run_id for now
-                step_seq=0,
-                node_id=str(start_id) if 'start_id' in locals() else "start",
-                attempt=1,
-                conversation_id=str(conversation_id) if conversation_id is not None else None,
-                turn_node_id=str(turn_node_id) if turn_node_id is not None else None,
+            start, nodes, adj = validate_workflow_design(
+                workflow_engine=self.workflow_engine,
+                workflow_id=workflow_id,
+                predicate_registry=self.predicate_registry,
+                resolver = self.step_resolver
             )
-            self.emitter.emit(type="workflow_run_started", ctx=tc_run, payload={"workflow_id": str(workflow_id)})
-        except Exception:
-            pass
-        # state_mutex_lock: threading.Lock = threading.Lock()
-        scheduled_q: queue.Queue[Tuple[str, int, str, str | None]] = queue.Queue()  # (node_id, mask, token_id, parent_token_id)
-        pending_tokens: set[tuple[str, int, str, str | None]] = set()
-        inflight_tokens: set[tuple[str, int, str, str | None]] = set()
-        done_q: queue.Queue[Tuple[str, StepRunResult, int, str, str | None, str, int]] = queue.Queue()  # (node_id, result, duration_ms, token_id, parent_token_id, status, mask)
-        
-        graveyard: queue.Queue[Tuple[str, StepRunResult, int, str, str | None, str, int]] = queue.Queue()  
-        def _persist_rt_join_runtime() -> None:
-            # Persist both pending + inflight as pending-on-resume (idempotent).
-            combined = sorted(pending_tokens.union(inflight_tokens))
-            _rt_join_set(_rt_join_snapshot(combined))
-        start_id = start.safe_get_id()
 
-        # Resume-safe join runtime: if a checkpoint restored pending tokens + join counters,
-        # seed the scheduler from that payload. Otherwise start from the workflow start node.
-        restored = _rt_join_restore()
-        if restored:
-            for nid, mask, token_id, parent_token_id in restored:
-                t = (str(nid), int(mask), str(token_id), parent_token_id)
+            # ----------------------------
+            # Precompute MAY-reach join/barrier sets (ignoring predicates)
+            # ----------------------------
+            node_ids_list = list(nodes.keys())
+            join_node_ids: list[str] = []
+            _join_is_merge = {}
+            for _nid, _wn in nodes.items():
+                _md = getattr(_wn, "metadata", None) or {}
+                if bool(_md.get("wf_join", False)) or str(getattr(_wn, "op", "")) == "join":
+                    join_node_ids.append(str(_nid))
+                    _join_is_merge[str(_nid)] = bool(_md.get('wf_join_is_merge') if _md.get('wf_join_is_merge') is not None else True)
+            _may_reach_join = (
+                _compute_may_reach_join_bitsets(node_ids=node_ids_list, adj=adj, join_ids=join_node_ids)
+                if join_node_ids
+                else {nid: 0 for nid in node_ids_list}
+            )
+            _join_pos = {jid: i for i, jid in enumerate(join_node_ids)}
+            _join_outstanding: list[int] = [0 for _ in join_node_ids]  # tokens BEFORE each join
+            _join_waiters: dict[str, list[int]] = {jid: [] for jid in join_node_ids}  # store per-token mask at join
+            
+            def _inc(mask: int) -> None:
+                for bi in _iter_bits(mask):
+                    _join_outstanding[bi] += 1
+
+            def _dec(mask: int) -> None:
+                for bi in _iter_bits(mask):
+                    _join_outstanding[bi] -= 1
+                    if _join_outstanding[bi] < 0:
+                        # defensive: never go negative
+                        _join_outstanding[bi] = 0
+
+            def _mask_without_join(mask: int, join_id: str) -> int:
+                bi = _join_pos.get(join_id)
+                if bi is None:
+                    return mask
+                return mask & ~(1 << bi)
+
+            def _bit_for_join(join_id: str) -> int:
+                bi = _join_pos.get(join_id)
+                return (1 << bi) if bi is not None else 0
+            def _rt_join_get() -> dict:
+                return cast(dict, state.get("_rt_join", {}))
+
+            def _rt_join_set(payload: dict) -> None:
+                # Stored in workflow state so checkpoints can resume joins.
+                state["_rt_join"] = payload
+
+            def _rt_join_snapshot(pending: list[tuple[str, int, str, str | None]]) -> dict:
+                # Persist inflight as pending-on-resume by including them in pending list upstream.
+                return {
+                    "join_node_ids": join_node_ids,
+                    "join_outstanding": list(_join_outstanding),
+                    "join_waiters": {jid: list(masks) for jid, masks in _join_waiters.items()},
+                    "pending": [(nid, int(mask), str(token_id), (str(parent_token_id) if parent_token_id is not None else None)) 
+                                        for nid, mask, token_id, parent_token_id in pending],
+                }
+
+            def _rt_join_restore() -> list[tuple[str, int, str, str | None]] | None:
+                payload = _rt_join_get()
+                if not payload:
+                    return None
+                if payload.get("join_node_ids") != join_node_ids:
+                    # Design changed; discard stale join runtime.
+                    return None
+                jo = payload.get("join_outstanding")
+                jw = payload.get("join_waiters")
+                pend = payload.get("pending")
+                if not isinstance(jo, list) or not isinstance(jw, dict) or not isinstance(pend, list):
+                    return None
+                # restore counters/waiters
+                for i in range(min(len(_join_outstanding), len(jo))):
+                    try:
+                        _join_outstanding[i] = int(jo[i])
+                    except Exception:
+                        _join_outstanding[i] = 0
+                for jid in join_node_ids:
+                    masks = jw.get(jid, [])
+                    if isinstance(masks, list):
+                        _join_waiters[jid] = [int(x) for x in masks]
+                # pending tokens
+                out: list[tuple[str, int, str, str | None]] = []
+                for item in pend:
+                    if isinstance(item, (list, tuple)) and len(item) == 4:
+                        out.append((str(item[0]), int(item[1]), str(item[2]), (str(item[3]) if item[3] is not None else None)))
+                    elif isinstance(item, (list, tuple)) and len(item) == 3:
+                        # backward-compat: snapshots without parent_token_id
+                        out.append((str(item[0]), int(item[1]), str(item[2]), None))
+                    elif isinstance(item, (list, tuple)) and len(item) == 2:
+                        # backward-compat: older snapshots without token_id/parent_token_id
+                        out.append((str(item[0]), int(item[1]), uuid.uuid4().hex, None))
+                return out
+                
+            # start, nodes, adj = load_workflow_design(workflow_engine=self.workflow_engine, workflow_id=workflow_id)
+
+            state: WorkflowState = initial_state
+            step_seq = 0
+
+            # Persist workflow_run node in conversation_engine
+            wf_run_root_node = self._persist_workflow_run(
+                conversation_id=conversation_id,
+                workflow_id=workflow_id,
+                run_id=run_id,
+                turn_node_id=turn_node_id,
+                status="running",
+            )
+            # trace: workflow run started
+            try:
+                tc_run = TraceContext(
+                    run_id=str(run_id),
+                    token_id=str(run_id),  # root token id is run_id for now
+                    step_seq=0,
+                    node_id=str(start_id) if 'start_id' in locals() else "start",
+                    attempt=1,
+                    conversation_id=str(conversation_id) if conversation_id is not None else None,
+                    turn_node_id=str(turn_node_id) if turn_node_id is not None else None,
+                )
+                self.emitter.emit(type="workflow_run_started", ctx=tc_run, payload={"workflow_id": str(workflow_id)})
+            except Exception:
+                pass
+            # state_mutex_lock: threading.Lock = threading.Lock()
+            scheduled_q: queue.Queue[Tuple[str, int, str, str | None]] = queue.Queue()  # (node_id, mask, token_id, parent_token_id)
+            pending_tokens: set[tuple[str, int, str, str | None]] = set()
+            inflight_tokens: set[tuple[str, int, str, str | None]] = set()
+            done_q: queue.Queue[Tuple[str, StepRunResult, int, str, str | None, str, int]] = queue.Queue()  # (node_id, result, duration_ms, token_id, parent_token_id, status, mask)
+            
+            graveyard: queue.Queue[Tuple[str, StepRunResult, int, str, str | None, str, int]] = queue.Queue()  
+            def _persist_rt_join_runtime() -> None:
+                # Persist both pending + inflight as pending-on-resume (idempotent).
+                combined = sorted(pending_tokens.union(inflight_tokens))
+                _rt_join_set(_rt_join_snapshot(combined))
+            start_id = start.safe_get_id()
+
+            # Resume-safe join runtime: if a checkpoint restored pending tokens + join counters,
+            # seed the scheduler from that payload. Otherwise start from the workflow start node.
+            restored = _rt_join_restore()
+            if restored:
+                for nid, mask, token_id, parent_token_id in restored:
+                    t = (str(nid), int(mask), str(token_id), parent_token_id)
+                    pending_tokens.add(t)
+                    scheduled_q.put(t)
+                _persist_rt_join_runtime()
+            else:
+                start_mask = int(_may_reach_join.get(start_id, 0))
+                _inc(start_mask)
+                t = (str(start_id), 
+                    int(start_mask), 
+                    run_id, #uuid.uuid4().hex, # token_id = run-id 
+                    None)
                 pending_tokens.add(t)
                 scheduled_q.put(t)
-            _persist_rt_join_runtime()
-        else:
-            start_mask = int(_may_reach_join.get(start_id, 0))
-            _inc(start_mask)
-            t = (str(start_id), 
-                 int(start_mask), 
-                 run_id, #uuid.uuid4().hex, # token_id = run-id 
-                 None)
-            pending_tokens.add(t)
-            scheduled_q.put(t)
-            _persist_rt_join_runtime()
-
-        def worker(node_id: str, state: WorkflowState, token_id: str, parent_token_id: str | None, step_seq: int, mask: int) -> None:
-            t = threading.current_thread()
-            old_name = t.name
-            try:
-                t.name = f"rt-wf-{workflow_id}-wf-{run_id}-step-{step_seq}-{node_id}"
-                wn: WorkflowNode
-                wn = nodes[node_id]
-                op = nodes[node_id].op
-                t0 = _now_ms()
-                status = "ok"
-                try:
-                    fn: Callable[..., StepRunResult] = self.step_resolver(op)
-                    ctx = StepContext(
-                        run_id=str(run_id),
-                        workflow_id=str(workflow_id),
-                        workflow_node_id=str(node_id),
-                        op=str(op),
-                        token_id=str(token_id),
-                        attempt=1,
-                        step_seq=int(step_seq),
-                        conversation_id=str(conversation_id) if conversation_id is not None else None,
-                        turn_node_id=str(turn_node_id) if turn_node_id is not None else None,
-                        state=state,
-                        message_queue=mq,
-                        events=self.emitter,
-                    )
-                    # step attempt start
-                    self.emitter.step_started(ctx.trace_ctx)
-
-                    # Transaction boundary (best-effort): resolver is expected to call
-                    # engine methods; when backed by Postgres this ensures those writes
-                    # are committed or rolled back atomically for this step.
-                    with self._maybe_step_uow():
-                        res: StepRunResult = fn(ctx)
-                    status = "ok" if getattr(res, "status", None) != "failure" else "failure"
-
-                except Exception as e:
-                    status = "error"
-                    import traceback
-                    res = RunFailure(conversation_node_id=None, status="failure", errors=[str(e) + '\n'+ traceback.format_exc()], state_update=[])
-                try:
-                    mq.put_nowait(res.model_dump())
-                except queue.Full as _e:
-                    raise
-                t1 = _now_ms()
-                # step attempt complete (best-effort; never break worker)
-                try:
-                    self.emitter.step_completed(ctx.trace_ctx, status=str(status), duration_ms=max(0, t1 - t0))
-                except Exception:
-                    status = "status_report_error"
-                if status in ["error", "status_report_error"]:
-                    err_message = f"error on {node_id}, {res}"
-                    # to do, emit fail, then raise
-                    if getattr(wn, 'fail_actiion', "raise") == "raise":
-                        raise Exception(err_message)
-                
-                done_q.put((node_id, res, max(0, t1 - t0), token_id, parent_token_id, status, mask))
-            finally:
-                t.name = old_name
-        inflight: Dict[tuple[str, int, str], Any] = {}
-        last_exec_node = wf_run_root_node
-        with ThreadPoolExecutor(max_workers=self.max_workers, thread_name_prefix=f"rt-wf-{workflow_id}") as pool:
-            while True:
-                if not inflight and scheduled_q.empty() and done_q.empty():
-                    # done
-                    self._update_workflow_run_status(conversation_id, run_id, "done")
-                    # trace: workflow run completed
-                    try:
-                        tc_done = TraceContext(run_id=str(run_id), token_id=str(run_id), step_seq=int(step_seq), node_id="run", attempt=1, conversation_id=str(conversation_id) if conversation_id is not None else None, turn_node_id=str(turn_node_id) if turn_node_id is not None else None)
-                        self.emitter.emit(type="workflow_run_completed", ctx=tc_done, payload={"workflow_id": str(workflow_id)})
-                    except Exception:
-                        pass
-                    self.state_lock.pop(run_id)
-                    return RunResult(final_state=state, run_id=run_id, mq=mq)
-                # schedule while capacity
-                while len(inflight) < self.max_workers:
-                    try:
-                        nid, mask, token_id, parent_token_id = scheduled_q.get_nowait()
-                        pending_tokens.discard((str(nid), int(mask), str(token_id), parent_token_id))
-                        _persist_rt_join_runtime()
-                    except queue.Empty:
-                        break
-
-                    # If this is a join/barrier node, it doesn't execute immediately.
-                    if nid in _join_waiters:
-                        join_bit = _bit_for_join(nid)
-                        was_before_join = bool(mask & join_bit)
-                        if was_before_join:
-
-                            # token reached the join -> no longer "before" this join
-                            _dec(join_bit)
-                            mask = _mask_without_join(mask, nid)
-                        # trace: token arrived at join
-                        try:
-                            join_idx = _join_pos.get(nid)
-                            outstanding = int(_join_outstanding[join_idx]) if join_idx is not None else 0
-                            tcj = TraceContext(
-                                run_id=str(run_id),
-                                token_id=str(token_id),
-                                step_seq=int(step_seq),
-                                node_id=str(nid),
-                                attempt=1,
-                                conversation_id=str(conversation_id) if conversation_id is not None else None,
-                                turn_node_id=str(turn_node_id) if turn_node_id is not None else None,
-                            )
-                            self.emitter.join_event(tcj, join_node_id=str(nid), kind="arrived", outstanding=outstanding)
-                        except Exception:
-                            pass
-
-                        _join_waiters[nid].append(mask)
-                        _persist_rt_join_runtime()
-                        # trace: token waiting at join
-                        try:
-                            join_idx = _join_pos.get(nid)
-                            outstanding = int(_join_outstanding[join_idx]) if join_idx is not None else 0
-                            tcj = TraceContext(
-                                run_id=str(run_id),
-                                token_id=str(token_id),
-                                step_seq=int(step_seq),
-                                node_id=str(nid),
-                                attempt=1,
-                                conversation_id=str(conversation_id) if conversation_id is not None else None,
-                                turn_node_id=str(turn_node_id) if turn_node_id is not None else None,
-                            )
-                            self.emitter.join_event(tcj, join_node_id=str(nid), kind="waiting", outstanding=outstanding)
-                        except Exception:
-                            pass
-
-                        # Release join when no more tokens are outstanding BEFORE it.
-                        # We merge all waiting tokens into ONE continuation token.
-                        join_idx = _join_pos.get(nid)
-                        if _join_is_merge[nid]:
-                            if join_idx is not None and _join_outstanding[join_idx] == 0:
-                                # trace: join released (all outstanding tokens before join have arrived)
-                                try:
-                                    tcj = TraceContext(
-                                        run_id=str(run_id),
-                                        token_id=str(token_id),
-                                        step_seq=int(step_seq),
-                                        node_id=str(nid),
-                                        attempt=1,
-                                        conversation_id=str(conversation_id) if conversation_id is not None else None,
-                                        turn_node_id=str(turn_node_id) if turn_node_id is not None else None,
-                                    )
-                                    self.emitter.join_event(tcj, join_node_id=str(nid), kind="released", outstanding=0)
-                                except Exception:
-                                    pass
-
-                                wait_masks = _join_waiters[nid]
-                                _join_waiters[nid] = []
-
-                                # remove all waiter contributions (they will be merged)
-                                for wm in wait_masks:
-                                    _dec(wm)
-
-                                merged_mask = 0
-                                if wait_masks:
-                                    merged_mask = wait_masks[0]
-                                    for wm in wait_masks[1:]:
-                                        merged_mask &= wm
-
-                                # add merged token contribution
-                                _inc(merged_mask)
-
-                                # Push a synthetic completion for the join node (noop op).
-                                _persist_rt_join_runtime()
-                                # join_token_id = uuid.uuid4().hex
-                                # done_q.put((nid, RunSuccess(conversation_node_id=None, state_update=[]), 0, join_token_id, None, "ok", merged_mask))
-                                # continue
-                            else:
-                                # merge into 1, if not dec to 0, not the last to join, just continue
-                                continue
-                        
-
-                    inflight_tokens.add((str(nid), int(mask), str(token_id), parent_token_id))
-                    _persist_rt_join_runtime()
-                    import contextvars
-                    ctx = contextvars.copy_context()
-                    inflight[(nid, mask, str(token_id))] = pool.submit(ctx.run, worker, nid, state, token_id, parent_token_id, step_seq, mask)
-
-
-                done_task = done_q.get()
-                node_id, run_result, dur_ms, token_id, parent_token_id, status, mask = done_task
-                graveyard.put_nowait(done_task)
-                run_state_lock: Lock = self.state_lock[str(run_id)]
-                with self._maybe_step_uow():
-                    with run_state_lock:
-                        self.apply_state_update(mute_state=state, state_update=run_result.state_update)
-                    
-                inflight.pop((node_id, mask, str(token_id)), None)
-                inflight_tokens.discard((str(node_id), int(mask), str(token_id), parent_token_id))
                 _persist_rt_join_runtime()
 
-                wn = nodes[node_id]
-
-                # persist step exec trace node (same transaction as state update when possible)
-                with self._maybe_step_uow():
-                    last_exec_node = self._persist_step_exec(
-                            conversation_id=conversation_id,
-                            workflow_id=workflow_id,
-                            run_id=run_id,
-                            step_seq=step_seq,
-                            workflow_node_id=node_id,
-                            op=wn.op,
-                            status=status,
-                            duration_ms=dur_ms,
-                            result=run_result,
-                            state=state,
-                            token_id=str(token_id),
-                            parent_token_id=(str(parent_token_id) if parent_token_id is not None else None),
-                            join_mask=int(mask),
-                            last_exec_node=last_exec_node
-                        )
-
-                # single-writer state apply:
-                # default behavior: store under result.<op> and allow ops to also write into state
-                # state[f"result.{wn.op}"] = result result only visible 
-
-                # NOTE: checkpoint must be persisted after routing/enqueueing next tokens so that
-                # the state snapshot contains a correct _rt_join frontier (pending/inflight) for resume.
-                step_seq_current = step_seq
-                step_seq += 1
+            def worker(node_id: str, state: WorkflowState, token_id: str, parent_token_id: str | None, step_seq: int, mask: int) -> None:
                 
-                # route
-                if wn.terminal or len(adj.get(node_id, [])) == 0:
-                    # token ends here -> it will never reach any remaining joins
-                    _dec(mask)
-                    _persist_rt_join_runtime()
-
-                    if (step_seq_current % self.checkpoint_every_n_steps) == 0:
-                        with self._maybe_step_uow():
-                            self._persist_checkpoint(
-                                    conversation_id=conversation_id,
-                                    workflow_id=workflow_id,
-                                    run_id=run_id,
-                                    step_seq=step_seq_current,
-                                    state=state,
-                                    last_exec_node=last_exec_node,
-                            )
-                        try:
-
-                            tc_ck = TraceContext(run_id=str(run_id), token_id=str(token_id), step_seq=int(step_seq_current), node_id=str(node_id), attempt=1, conversation_id=str(conversation_id), turn_node_id=str(turn_node_id))
-
-                            self.emitter.emit(type="checkpoint_saved", ctx=tc_ck, payload={"step_seq": int(step_seq_current)})
-
-                        except Exception:
-
-                            pass
-                    continue
-
-                edges = adj.get(node_id, [])
-                next_nodes, route_decision = self._route_next(edges, state, run_result, wn.fanout)
-
-                # Trace routing decision (includes rejections) at orchestration choke point
+                t = threading.current_thread()
+                old_name = t.name
                 try:
-                    tc = TraceContext(
-                        run_id=str(run_id),
-                        token_id=str(token_id),
-                        step_seq=int(step_seq_current),
-                        node_id=str(node_id),
-                        attempt=1,
-                        conversation_id=str(conversation_id),
-                        turn_node_id=str(turn_node_id),
-                    )
-                    self.emitter.emit(
-                        type="routing_decision",
-                        ctx=tc,
-                        payload={
-                            "evaluated": [(a, bool(b)) for a, b in getattr(route_decision, 'evaluated', [])],
-                            "selected": [(e, t, r) for e, t, r in getattr(route_decision, 'selected', [])],
-                            "next_nodes": [str(x) for x in (next_nodes or [])],
-                        },
-                    )
-                    # Also emit per-evaluation/per-selection events for telemetry consumers
-                    for pred_name, ok in getattr(route_decision, "evaluated", []):
+                    t.name = f"rt-wf-{workflow_id}-wf-{run_id}-step-{step_seq}-{node_id}"
+                    wn: WorkflowNode
+                    wn = nodes[node_id]
+                    op = nodes[node_id].op
+                    t0 = _now_ms()
+                    status = "ok"
+                    with bind_log_context(step_id= f"{step_seq}-{node_id}", op = op):
                         try:
-                            self.emitter.predicate_evaluated(tc, predicate=str(pred_name), value=bool(ok))
-                        except Exception:
-                            pass
-                    for edge_id, to_node_id, reason in getattr(route_decision, "selected", []):
-                        try:
-                            self.emitter.edge_selected(tc, edge_id=str(edge_id), to_node_id=str(to_node_id), reason=str(reason))
-                        except Exception:
-                            pass
-
-                    # Tracing must never break execution
-                except Exception:
-                    pass
-
-                if not next_nodes:
-                    _dec(mask)
-                    _persist_rt_join_runtime()
-
-                    if (step_seq_current % self.checkpoint_every_n_steps) == 0:
-                        with self._maybe_step_uow():
-                            self._persist_checkpoint(
-                                    conversation_id=conversation_id,
-                                    workflow_id=workflow_id,
-                                    run_id=run_id,
-                                    step_seq=step_seq_current,
-                                    state=state,
-                                    last_exec_node=last_exec_node,
-                            )
-                        try:
-
-                            tc_ck = TraceContext(run_id=str(run_id), token_id=str(token_id), step_seq=int(step_seq_current), node_id=str(node_id), attempt=1, conversation_id=str(conversation_id), turn_node_id=str(turn_node_id))
-
-                            self.emitter.emit(type="checkpoint_saved", ctx=tc_ck, payload={"step_seq": int(step_seq_current)})
-
-                        except Exception:
-
-                            pass
-                    continue
-
-                # continuation token
-                first = True
-                for i_fanout, nxt in enumerate(next_nodes):
-                    nxt = str(nxt)
-                    nxt_mask = int(_may_reach_join.get(nxt, 0))
-
-                    if first:
-                        # continuation keeps token_id
-                        t = (str(nxt), int(nxt_mask), str(token_id), parent_token_id)
-
-                        leaving = mask & ~nxt_mask
-                        if leaving:
-                            _dec(leaving)
-                            _persist_rt_join_runtime()
-
-                        gained = nxt_mask & ~mask
-                        if gained:
-                            _inc(gained)
-                            _persist_rt_join_runtime()
-
-                        pending_tokens.add(t)
-                        scheduled_q.put(t)
-                        _persist_rt_join_runtime()
-                        first = False
-                    else:
-                        # fanout child gets a NEW token_id
-                        child_token_id = stable_id("token_id", f"{token_id}/{step_seq_current}:{i_fanout}:{nxt}").hex #uuid.uuid4().hex
-                        t = (str(nxt), int(nxt_mask), child_token_id, str(token_id))
-
-                        try:
-                            mq.put_nowait({"type": "token.spawn", "parent_token_id": str(token_id), "child_token_id": child_token_id, "from_node_id": node_id, "to_node_id": str(nxt)})
-                        except queue.Full:
-                            pass
-                        # trace token spawn
-                        try:
-                            tc_spawn = TraceContext(
+                            fn: Callable[..., StepRunResult] = self.step_resolver(op)
+                            ctx = StepContext(
                                 run_id=str(run_id),
+                                workflow_id=str(workflow_id),
+                                workflow_node_id=str(node_id),
+                                op=str(op),
                                 token_id=str(token_id),
-                                step_seq=int(step_seq_current),
-                                node_id=str(node_id),
                                 attempt=1,
+                                step_seq=int(step_seq),
                                 conversation_id=str(conversation_id) if conversation_id is not None else None,
                                 turn_node_id=str(turn_node_id) if turn_node_id is not None else None,
+                                state=state,
+                                message_queue=mq,
+                                events=self.emitter,
                             )
-                            self.emitter.emit(
-                                type="token_spawned",
-                                ctx=tc_spawn,
-                                payload={"parent_token_id": str(token_id), "child_token_id": str(child_token_id), "to_node_id": str(nxt)},
-                            )
+                            # step attempt start
+                            self.emitter.step_started(ctx.trace_ctx)
+
+                            # Transaction boundary (best-effort): resolver is expected to call
+                            # engine methods; when backed by Postgres this ensures those writes
+                            # are committed or rolled back atomically for this step.
+                            with self._maybe_step_uow():
+                                res: StepRunResult = fn(ctx)
+                            status = "ok" if getattr(res, "status", None) != "failure" else "failure"
+
+                        except Exception as e:
+                            status = "error"
+                            import traceback
+                            res = RunFailure(conversation_node_id=None, status="failure", errors=[str(e) + '\n'+ traceback.format_exc()], state_update=[])
+                        try:
+                            mq.put_nowait(res.model_dump())
+                        except queue.Full as _e:
+                            raise
+                        t1 = _now_ms()
+                        # step attempt complete (best-effort; never break worker)
+                        try:
+                            self.emitter.step_completed(ctx.trace_ctx, status=str(status), duration_ms=max(0, t1 - t0))
+                        except Exception:
+                            status = "status_report_error"
+                        if status in ["error", "status_report_error"]:
+                            err_message = f"error on {node_id}, {res}"
+                            # to do, emit fail, then raise
+                            if getattr(wn, 'fail_actiion', "raise") == "raise":
+                                raise Exception(err_message)
+                        
+                        done_q.put((node_id, res, max(0, t1 - t0), token_id, parent_token_id, status, mask))
+                finally:
+                    t.name = old_name
+            inflight: Dict[tuple[str, int, str], Any] = {}
+            last_exec_node = wf_run_root_node
+            with ThreadPoolExecutor(max_workers=self.max_workers, thread_name_prefix=f"rt-wf-{workflow_id}") as pool:
+                while True:
+                    if not inflight and scheduled_q.empty() and done_q.empty():
+                        # done
+                        self._update_workflow_run_status(conversation_id, run_id, "done")
+                        # trace: workflow run completed
+                        try:
+                            tc_done = TraceContext(run_id=str(run_id), token_id=str(run_id), step_seq=int(step_seq), node_id="run", attempt=1, conversation_id=str(conversation_id) if conversation_id is not None else None, turn_node_id=str(turn_node_id) if turn_node_id is not None else None)
+                            self.emitter.emit(type="workflow_run_completed", ctx=tc_done, payload={"workflow_id": str(workflow_id)})
                         except Exception:
                             pass
+                        self.state_lock.pop(run_id)
+                        return RunResult(final_state=state, run_id=run_id, mq=mq)
+                    # schedule while capacity
+                    while len(inflight) < self.max_workers:
+                        try:
+                            nid, mask, token_id, parent_token_id = scheduled_q.get_nowait()
+                            pending_tokens.discard((str(nid), int(mask), str(token_id), parent_token_id))
+                            _persist_rt_join_runtime()
+                        except queue.Empty:
+                            break
 
-                        # fanout creates a new token (new outstanding obligations)
-                        _inc(nxt_mask)
+                        # If this is a join/barrier node, it doesn't execute immediately.
+                        if nid in _join_waiters:
+                            join_bit = _bit_for_join(nid)
+                            was_before_join = bool(mask & join_bit)
+                            if was_before_join:
 
-                        pending_tokens.add(t)
-                        scheduled_q.put(t)
+                                # token reached the join -> no longer "before" this join
+                                _dec(join_bit)
+                                mask = _mask_without_join(mask, nid)
+                            # trace: token arrived at join
+                            try:
+                                join_idx = _join_pos.get(nid)
+                                outstanding = int(_join_outstanding[join_idx]) if join_idx is not None else 0
+                                tcj = TraceContext(
+                                    run_id=str(run_id),
+                                    token_id=str(token_id),
+                                    step_seq=int(step_seq),
+                                    node_id=str(nid),
+                                    attempt=1,
+                                    conversation_id=str(conversation_id) if conversation_id is not None else None,
+                                    turn_node_id=str(turn_node_id) if turn_node_id is not None else None,
+                                )
+                                self.emitter.join_event(tcj, join_node_id=str(nid), kind="arrived", outstanding=outstanding)
+                            except Exception:
+                                pass
+
+                            _join_waiters[nid].append(mask)
+                            _persist_rt_join_runtime()
+                            # trace: token waiting at join
+                            try:
+                                join_idx = _join_pos.get(nid)
+                                outstanding = int(_join_outstanding[join_idx]) if join_idx is not None else 0
+                                tcj = TraceContext(
+                                    run_id=str(run_id),
+                                    token_id=str(token_id),
+                                    step_seq=int(step_seq),
+                                    node_id=str(nid),
+                                    attempt=1,
+                                    conversation_id=str(conversation_id) if conversation_id is not None else None,
+                                    turn_node_id=str(turn_node_id) if turn_node_id is not None else None,
+                                )
+                                self.emitter.join_event(tcj, join_node_id=str(nid), kind="waiting", outstanding=outstanding)
+                            except Exception:
+                                pass
+
+                            # Release join when no more tokens are outstanding BEFORE it.
+                            # We merge all waiting tokens into ONE continuation token.
+                            join_idx = _join_pos.get(nid)
+                            if _join_is_merge[nid]:
+                                if join_idx is not None and _join_outstanding[join_idx] == 0:
+                                    # trace: join released (all outstanding tokens before join have arrived)
+                                    try:
+                                        tcj = TraceContext(
+                                            run_id=str(run_id),
+                                            token_id=str(token_id),
+                                            step_seq=int(step_seq),
+                                            node_id=str(nid),
+                                            attempt=1,
+                                            conversation_id=str(conversation_id) if conversation_id is not None else None,
+                                            turn_node_id=str(turn_node_id) if turn_node_id is not None else None,
+                                        )
+                                        self.emitter.join_event(tcj, join_node_id=str(nid), kind="released", outstanding=0)
+                                    except Exception:
+                                        pass
+
+                                    wait_masks = _join_waiters[nid]
+                                    _join_waiters[nid] = []
+
+                                    # remove all waiter contributions (they will be merged)
+                                    for wm in wait_masks:
+                                        _dec(wm)
+
+                                    merged_mask = 0
+                                    if wait_masks:
+                                        merged_mask = wait_masks[0]
+                                        for wm in wait_masks[1:]:
+                                            merged_mask &= wm
+
+                                    # add merged token contribution
+                                    _inc(merged_mask)
+
+                                    # Push a synthetic completion for the join node (noop op).
+                                    _persist_rt_join_runtime()
+                                    # join_token_id = uuid.uuid4().hex
+                                    # done_q.put((nid, RunSuccess(conversation_node_id=None, state_update=[]), 0, join_token_id, None, "ok", merged_mask))
+                                    # continue
+                                else:
+                                    # merge into 1, if not dec to 0, not the last to join, just continue
+                                    continue
+                            
+
+                        inflight_tokens.add((str(nid), int(mask), str(token_id), parent_token_id))
                         _persist_rt_join_runtime()
+                        import contextvars
+                        ctx = contextvars.copy_context()
+                        inflight[(nid, mask, str(token_id))] = pool.submit(ctx.run, worker, nid, state, token_id, parent_token_id, step_seq, mask)
 
-                if (step_seq_current % self.checkpoint_every_n_steps) == 0:
+
+                    done_task = done_q.get()
+                    node_id, run_result, dur_ms, token_id, parent_token_id, status, mask = done_task
+                    graveyard.put_nowait(done_task)
+                    run_state_lock: Lock = self.state_lock[str(run_id)]
                     with self._maybe_step_uow():
-                            self._persist_checkpoint(
+                        with run_state_lock:
+                            self.apply_state_update(mute_state=state, state_update=run_result.state_update)
+                        
+                    inflight.pop((node_id, mask, str(token_id)), None)
+                    inflight_tokens.discard((str(node_id), int(mask), str(token_id), parent_token_id))
+                    _persist_rt_join_runtime()
+
+                    wn = nodes[node_id]
+
+                    # persist step exec trace node (same transaction as state update when possible)
+                    with self._maybe_step_uow():
+                        last_exec_node = self._persist_step_exec(
                                 conversation_id=conversation_id,
                                 workflow_id=workflow_id,
                                 run_id=run_id,
-                                step_seq=step_seq_current,
+                                step_seq=step_seq,
+                                workflow_node_id=node_id,
+                                op=wn.op,
+                                status=status,
+                                duration_ms=dur_ms,
+                                result=run_result,
                                 state=state,
-                                last_exec_node=last_exec_node,
+                                token_id=str(token_id),
+                                parent_token_id=(str(parent_token_id) if parent_token_id is not None else None),
+                                join_mask=int(mask),
+                                last_exec_node=last_exec_node
                             )
+
+                    # single-writer state apply:
+                    # default behavior: store under result.<op> and allow ops to also write into state
+                    # state[f"result.{wn.op}"] = result result only visible 
+
+                    # NOTE: checkpoint must be persisted after routing/enqueueing next tokens so that
+                    # the state snapshot contains a correct _rt_join frontier (pending/inflight) for resume.
+                    step_seq_current = step_seq
+                    step_seq += 1
+                    
+                    # route
+                    if wn.terminal or len(adj.get(node_id, [])) == 0:
+                        # token ends here -> it will never reach any remaining joins
+                        _dec(mask)
+                        _persist_rt_join_runtime()
+
+                        if (step_seq_current % self.checkpoint_every_n_steps) == 0:
+                            with self._maybe_step_uow():
+                                self._persist_checkpoint(
+                                        conversation_id=conversation_id,
+                                        workflow_id=workflow_id,
+                                        run_id=run_id,
+                                        step_seq=step_seq_current,
+                                        state=state,
+                                        last_exec_node=last_exec_node,
+                                )
+                            try:
+
+                                tc_ck = TraceContext(run_id=str(run_id), token_id=str(token_id), step_seq=int(step_seq_current), node_id=str(node_id), attempt=1, conversation_id=str(conversation_id), turn_node_id=str(turn_node_id))
+
+                                self.emitter.emit(type="checkpoint_saved", ctx=tc_ck, payload={"step_seq": int(step_seq_current)})
+
+                            except Exception:
+
+                                pass
+                        continue
+
+                    edges = adj.get(node_id, [])
+                    next_nodes, route_decision = self._route_next(edges, state, run_result, wn.fanout)
+
+                    # Trace routing decision (includes rejections) at orchestration choke point
                     try:
+                        tc = TraceContext(
+                            run_id=str(run_id),
+                            token_id=str(token_id),
+                            step_seq=int(step_seq_current),
+                            node_id=str(node_id),
+                            attempt=1,
+                            conversation_id=str(conversation_id),
+                            turn_node_id=str(turn_node_id),
+                        )
+                        self.emitter.emit(
+                            type="routing_decision",
+                            ctx=tc,
+                            payload={
+                                "evaluated": [(a, bool(b)) for a, b in getattr(route_decision, 'evaluated', [])],
+                                "selected": [(e, t, r) for e, t, r in getattr(route_decision, 'selected', [])],
+                                "next_nodes": [str(x) for x in (next_nodes or [])],
+                            },
+                        )
+                        # Also emit per-evaluation/per-selection events for telemetry consumers
+                        for pred_name, ok in getattr(route_decision, "evaluated", []):
+                            try:
+                                self.emitter.predicate_evaluated(tc, predicate=str(pred_name), value=bool(ok))
+                            except Exception:
+                                pass
+                        for edge_id, to_node_id, reason in getattr(route_decision, "selected", []):
+                            try:
+                                self.emitter.edge_selected(tc, edge_id=str(edge_id), to_node_id=str(to_node_id), reason=str(reason))
+                            except Exception:
+                                pass
 
-                        tc_ck = TraceContext(run_id=str(run_id), token_id=str(token_id), step_seq=int(step_seq_current), node_id=str(node_id), attempt=1, conversation_id=str(conversation_id), turn_node_id=str(turn_node_id))
-
-                        self.emitter.emit(type="checkpoint_saved", ctx=tc_ck, payload={"step_seq": int(step_seq_current)})
-
+                        # Tracing must never break execution
                     except Exception:
-
                         pass
-        raise Exception('unreacheable')
+
+                    if not next_nodes:
+                        _dec(mask)
+                        _persist_rt_join_runtime()
+
+                        if (step_seq_current % self.checkpoint_every_n_steps) == 0:
+                            with self._maybe_step_uow():
+                                self._persist_checkpoint(
+                                        conversation_id=conversation_id,
+                                        workflow_id=workflow_id,
+                                        run_id=run_id,
+                                        step_seq=step_seq_current,
+                                        state=state,
+                                        last_exec_node=last_exec_node,
+                                )
+                            try:
+
+                                tc_ck = TraceContext(run_id=str(run_id), token_id=str(token_id), step_seq=int(step_seq_current), node_id=str(node_id), attempt=1, conversation_id=str(conversation_id), turn_node_id=str(turn_node_id))
+
+                                self.emitter.emit(type="checkpoint_saved", ctx=tc_ck, payload={"step_seq": int(step_seq_current)})
+
+                            except Exception:
+
+                                pass
+                        continue
+
+                    # continuation token
+                    first = True
+                    for i_fanout, nxt in enumerate(next_nodes):
+                        nxt = str(nxt)
+                        nxt_mask = int(_may_reach_join.get(nxt, 0))
+
+                        if first:
+                            # continuation keeps token_id
+                            t = (str(nxt), int(nxt_mask), str(token_id), parent_token_id)
+
+                            leaving = mask & ~nxt_mask
+                            if leaving:
+                                _dec(leaving)
+                                _persist_rt_join_runtime()
+
+                            gained = nxt_mask & ~mask
+                            if gained:
+                                _inc(gained)
+                                _persist_rt_join_runtime()
+
+                            pending_tokens.add(t)
+                            scheduled_q.put(t)
+                            _persist_rt_join_runtime()
+                            first = False
+                        else:
+                            # fanout child gets a NEW token_id
+                            child_token_id = stable_id("token_id", f"{token_id}/{step_seq_current}:{i_fanout}:{nxt}").hex #uuid.uuid4().hex
+                            t = (str(nxt), int(nxt_mask), child_token_id, str(token_id))
+
+                            try:
+                                mq.put_nowait({"type": "token.spawn", "parent_token_id": str(token_id), "child_token_id": child_token_id, "from_node_id": node_id, "to_node_id": str(nxt)})
+                            except queue.Full:
+                                pass
+                            # trace token spawn
+                            try:
+                                tc_spawn = TraceContext(
+                                    run_id=str(run_id),
+                                    token_id=str(token_id),
+                                    step_seq=int(step_seq_current),
+                                    node_id=str(node_id),
+                                    attempt=1,
+                                    conversation_id=str(conversation_id) if conversation_id is not None else None,
+                                    turn_node_id=str(turn_node_id) if turn_node_id is not None else None,
+                                )
+                                self.emitter.emit(
+                                    type="token_spawned",
+                                    ctx=tc_spawn,
+                                    payload={"parent_token_id": str(token_id), "child_token_id": str(child_token_id), "to_node_id": str(nxt)},
+                                )
+                            except Exception:
+                                pass
+
+                            # fanout creates a new token (new outstanding obligations)
+                            _inc(nxt_mask)
+
+                            pending_tokens.add(t)
+                            scheduled_q.put(t)
+                            _persist_rt_join_runtime()
+
+                    if (step_seq_current % self.checkpoint_every_n_steps) == 0:
+                        with self._maybe_step_uow():
+                                self._persist_checkpoint(
+                                    conversation_id=conversation_id,
+                                    workflow_id=workflow_id,
+                                    run_id=run_id,
+                                    step_seq=step_seq_current,
+                                    state=state,
+                                    last_exec_node=last_exec_node,
+                                )
+                        try:
+
+                            tc_ck = TraceContext(run_id=str(run_id), token_id=str(token_id), step_seq=int(step_seq_current), node_id=str(node_id), attempt=1, conversation_id=str(conversation_id), turn_node_id=str(turn_node_id))
+
+                            self.emitter.emit(type="checkpoint_saved", ctx=tc_ck, payload={"step_seq": int(step_seq_current)})
+
+                        except Exception:
+
+                            pass
+            raise Exception('unreacheable')
 
     def _route_next(
         self,

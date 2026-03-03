@@ -6,6 +6,8 @@ from typing import Deque, Dict, Optional, List
 import threading
 import queue
 import time
+from graph_knowledge_engine.utils import log as logmod
+from graph_knowledge_engine.utils.log import bind_log_context
 from typing import Protocol
 
 class ChangeSink(Protocol):
@@ -68,19 +70,36 @@ class FastAPIChangeSink:
 
     def publish(self, event) -> None:
         try:
-            self.q.put_nowait(event.to_jsonable())
+            payload = event.to_jsonable()
+            # Capture current logging context (from the caller thread)
+            payload["_log_ctx"] = {
+                "engine_type": logmod._ctx_engine_type.get(),
+                "engine_id": logmod._ctx_engine_id.get(),
+                "conversation_id": logmod._ctx_conversation_id.get(),
+                # prefer event fields if provided
+                "workflow_run_id": event.run_id,
+                "step_id": event.step_id,
+            }
+            self.q.put_nowait(payload)
         except queue.Full:
-            pass  # debug channel, drop is OK
+            pass
 
     def _run(self):
         session = requests.Session()
         url = f"{self.endpoint}/ingest"
         while True:
             ev = self.q.get()
+            ctx = ev.pop("_log_ctx", None) or {}
             try:
-                session.post(url, json=ev, timeout=2.5)
+                with bind_log_context(
+                    engine_type=ctx.get("engine_type"),
+                    engine_id=ctx.get("engine_id"),
+                    conversation_id=ctx.get("conversation_id"),
+                    workflow_run_id=ctx.get("workflow_run_id"),
+                    step_id=ctx.get("step_id"),
+                ):
+                    session.post(url, json=ev, timeout=2.5)
             except (requests.exceptions.ConnectTimeout, requests.exceptions.ConnectionError):
-                # allow bridge not set up usage
                 pass
-            except Exception as _e:
+            except Exception:
                 raise

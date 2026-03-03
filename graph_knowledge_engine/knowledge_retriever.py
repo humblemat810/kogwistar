@@ -183,7 +183,7 @@ class KnowledgeRetriever:
             # Phase-1 invariant: do NOT mutate tail_turn_index for sidecar pins
             ptr_node = ConversationNode(
                 id=None or str(stable_id("knowledge_pin_node", turn_node_id, kg.safe_get_id())),
-                label=f"Ref: {kg_meta.get('label')}",
+                label=f"Ref: {kg_meta.get('label') or getattr(kg, 'label', None)}",
                 type="reference_pointer",
                 doc_id=None,
                 summary=summary,
@@ -254,7 +254,7 @@ class KnowledgeRetriever:
             # Phase-1 invariant: do NOT mutate tail_turn_index for sidecar pins
             ptr_node = ConversationNode(
                 id=None,
-                label=f"Ref: {kg_meta.get('label')}",
+                label=f"Ref: {kg_meta.get('label') or getattr(kg, 'label', None)}",
                 type="reference_pointer",
                 doc_id=None,
                 summary=summary,

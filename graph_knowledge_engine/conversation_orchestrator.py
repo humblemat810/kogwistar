@@ -9,18 +9,16 @@ It is intentionally lightweight and uses your existing retrievers/agents.
 
 from __future__ import annotations
 
-import time
-import uuid
+
 from dataclasses import dataclass, field, replace
-from typing import Any, Callable, Dict, List, Optional, cast
+from typing import Any, Callable, List, Optional, cast
 
 from langchain_core.language_models import BaseChatModel
 
 from graph_knowledge_engine.engine import GraphKnowledgeEngine
 from .id_provider import stable_id
 from .conversation_state_contracts import WorkflowStateModel, PrevTurnMetaSummaryModel, WorkflowState
-from .workflow.design import validate_workflow_design
-from .models import WorkflowNode, WorkflowEdge
+
 from .models import (
     ConversationAIResponse,
     ConversationEdge,
@@ -320,7 +318,7 @@ class ConversationOrchestrator:
                     "filtering_callback": filtering_callback,
                 }
             ).model_dump())            
-
+            prev_turn_meta_summary.tail_turn_index += 1
             runtime.run(
                 workflow_id=backbone_wid,
                 conversation_id=conversation_id,
@@ -328,7 +326,7 @@ class ConversationOrchestrator:
                 initial_state=init_state,
                 run_id=f"add_turn_backbone|{turn_node_id}",
             )
-
+            
             return AddTurnResult(
                 user_turn_node_id=turn_node_id,
                 response_turn_node_id=None,

@@ -231,6 +231,7 @@ class AgenticAnsweringAgent:
     # ----------------------------
     def answer(self, *, conversation_id: str, user_id=None, prev_turn_meta_summary:MetaFromLastSummary) -> dict[str, Any]:
         """Run bounded agentic answering with evidence selection + optional citation picking.
+        Non runtime workflow
         Must Enforce Builder pattern in this function
         build from each LLM call cached
         Returns a dict with keys (best-effort):
@@ -797,6 +798,7 @@ Select at most {max_used} node ids.
                 # trust existing structure; keep only excerpt-like fields for LLM
                 norm_mentions = []
                 for mi, mobj in enumerate(mentions):
+                    mobj: Grounding
                     spans = []
                     for si, sp in enumerate((mobj or {}).get("spans") or []):
                         if isinstance(sp, dict):
@@ -1434,7 +1436,7 @@ Return JSON per schema. Be conservative: if key details are missing, set needs_m
         emb = cast(np.ndarray, self.conversation_engine.iterative_defensive_emb(content))
         node = ConversationNode(
             id=nid,
-            label="Assistant",
+            label="Assistant turn",
             type="entity",
             summary=content,
             conversation_id=conversation_id,

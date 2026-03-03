@@ -91,23 +91,12 @@ class MetaFromLastSummary:
     
     prev_node_char_distance_from_last_summary: int
     prev_node_distance_from_last_summary: int
+    # distances are rough estimate, also serve as a stub for injection if accounting
+    # calculations are done in the process and the two distances indicates how to inject
+    # Do not rely on the two to make strict decisions
+    
     tail_turn_index: int=0  # works more like a node seq number
     
-# @dataclass(frozen=True)
-# class ContextCost:
-#     """Canonical cost abstraction for prompt/context accounting.
-
-#     - `char_count` is always populated (cheap proxy).
-#     - `token_count` is optional and depends on the configured estimator.
-#     """
-#     char_count: int
-#     token_count: int | None = None
-
-#     def __add__(self, other: "ContextCost") -> "ContextCost":
-#         tc = None
-#         if self.token_count is not None and other.token_count is not None:
-#             tc = self.token_count + other.token_count
-#         return ContextCost(char_count=self.char_count + other.char_count, token_count=tc)
 
 @dataclass(frozen=True)
 class ContextCost:
@@ -972,19 +961,6 @@ class Edge(IdPolicyMixin, ChromaValidateSourceMixin, ChromaMixin, EdgeMixin, Gra
         """
         return self.summary, self.relation, str(self.source_ids), str(self.target_ids), str(self.source_edge_ids), str(self.target_edge_ids)
 
-    # @model_validator(mode="after")
-    # def _ensure_id(self) -> Self:
-    #     if self.node_id is not None:
-    #         return self        
-
-    #     if self.id_policy == "event":
-    #         self.id = str(new_id_str())
-    #         return self
-
-    #     # canonical
-    #     key = self.identity_key()  # must be stable & non-empty
-    #     self.node_id = stable_id(self.id_kind, *key)
-    #     return self
 class ConversationEdge( Edge):
     """
     Specialized edge for conversation links, extending the base **knowledge graph**.

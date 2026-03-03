@@ -15,8 +15,9 @@ from .engine_postgres_meta import EnginePostgresMetaStore
 from .storage_backend import ChromaBackend, NoopUnitOfWork
 from .postgres_backend import PgVectorBackend
 from .workers.index_job_worker import IndexJobWorker
+from .utils.log import bind_log_context
 from .indexing import IndexingSubsystem
-from .conversation_context import apply_ordering
+from .conversation_context import PromptContext, apply_ordering
 if True:
     """_summary_
 
@@ -802,6 +803,29 @@ class CustomEmbeddingFunction(EmbeddingFunction):
     def __call__(self, documents_or_texts: Sequence[str]) -> Embeddings:
         return self._emb(documents_or_texts)
 
+def engine_context(fn):
+    """
+    Decorator for engine boundary methods.
+    Automatically binds engine_type and common engine attributes.
+    Assumes `self` has:
+        - self.engine_id (optional)
+    And that method may accept:
+        - conversation_id
+        - workflow_run_id / run_id
+        - step_id
+    """
+    @wraps(fn)
+    def wrapper(self, *args, **kwargs):
+        with bind_log_context(
+            engine_type=getattr(self, "kg_graph_type", None),
+            engine_id=getattr(self, "engine_id", None),
+            conversation_id=kwargs.get("conversation_id") or kwargs.get("conv_id"),
+            workflow_run_id=kwargs.get("workflow_run_id") or kwargs.get("run_id"),
+            step_id=kwargs.get("step_id"),
+        ):
+            return fn(self, *args, **kwargs)
+    return wrapper
+
 
 class GraphKnowledgeEngine:
     """
@@ -844,7 +868,7 @@ class GraphKnowledgeEngine:
 
     def redirect_node(self, from_id: str, to_id: str, **kw) -> bool:
         return self.lifecycle.redirect_node(from_id, to_id, **kw)
-
+    @engine_context
     def tombstone_edge(self, edge_id: str, **kw) -> bool:
         return self.lifecycle.tombstone_edge(edge_id, **kw)
 
@@ -2518,6 +2542,7 @@ class GraphKnowledgeEngine:
     def get_last_seq_node(self, conversation_id, buffer = 5):
         
         pass
+    @engine_context
     def add_node(self, node: Node, doc_id: Optional[str] = None):
         if doc_id is not None:
             node.doc_id = doc_id  # may use engine.extract_reference_contexts
@@ -2882,6 +2907,7 @@ class GraphKnowledgeEngine:
                             "wf_multiplicity": edge_metadata.get("wf_multiplicity") or edge_metadata.get("multiplicity"),
                 }))
         return base_metadata
+    @engine_context
     def add_edge(self, edge: Edge, doc_id: Optional[str] = None):
 
         # may use engine.extract_reference_contexts
@@ -2957,6 +2983,7 @@ class GraphKnowledgeEngine:
                     url=self.persist_directory),
             payload=edge.to_jsonable() if hasattr(edge, "to_jsonable") else edge.model_dump(exclude=["embedding"]),
         )
+    @engine_context
     def add_document(self, document: Document):
         if document.embeddings is None:
             document.embeddings = self._iterative_defensive_emb(str(document.content))
@@ -4816,7 +4843,7 @@ class GraphKnowledgeEngine:
         run_step_seq: int,
         attempt_seq: int = 0,
         stage: str,
-        view: Any,
+        view: PromptContext,
         model_name: str = "",
         budget_tokens: int = 0,
         tail_turn_index: int = 0,
@@ -4859,7 +4886,7 @@ class GraphKnowledgeEngine:
         )
 
         used_node_ids: list[str] = []
-        for it in (getattr(view, "items", None) or []):
+        for it in view.items:
             nid = getattr(it, "node_id", None)
             if nid:
                 used_node_ids.append(str(nid))

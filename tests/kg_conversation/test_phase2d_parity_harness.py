@@ -46,6 +46,7 @@ def _materialize_evidence_pack_stub(
     agent: "AgenticAnsweringAgent",
     *,
     node_ids: list[str],
+    edge_ids: list[str] | None = None,
     depth: str,
     max_chars_per_item: int,
     max_total_chars: int,

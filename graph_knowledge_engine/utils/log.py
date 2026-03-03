@@ -163,7 +163,7 @@ _ctx_engine_id: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("
 _ctx_conversation_id: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("conversation_id", default=None)
 _ctx_workflow_run_id: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("workflow_run_id", default=None)
 _ctx_step_id: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("step_id", default=None)
-
+_ctx_op: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("op", default=None)
 
 class ContextFilter(logging.Filter):
     """Inject engine/runtime context into all log records."""
@@ -173,6 +173,7 @@ class ContextFilter(logging.Filter):
         record.conversation_id = _ctx_conversation_id.get() or "-"
         record.workflow_run_id = _ctx_workflow_run_id.get() or "-"
         record.step_id = _ctx_step_id.get() or "-"
+        record.op = _ctx_op.get() or "-"
         return True
 
 
@@ -184,6 +185,7 @@ def bind_log_context(
     conversation_id: Optional[str] = None,
     workflow_run_id: Optional[str] = None,
     step_id: Optional[str] = None,
+    op: Optional[str] = None,
 ) -> Iterator[None]:
     """
     Context manager to bind IDs to logs without passing them around.
@@ -201,6 +203,8 @@ def bind_log_context(
             tokens.append((_ctx_workflow_run_id, _ctx_workflow_run_id.set(workflow_run_id)))
         if step_id is not None:
             tokens.append((_ctx_step_id, _ctx_step_id.set(step_id)))
+        if op is not None:
+            tokens.append((_ctx_op, _ctx_op.set(op)))
 
         yield
     finally:
@@ -234,6 +238,7 @@ class EngineLogConfig:
 
     enable_sqlite: bool = False
     sqlite_db_path: Optional[Path] = None
+    enable_jsonl: bool = False
 
     mode: Literal["prod", "pytest"] = "prod"
 
@@ -252,41 +257,100 @@ class EngineLogManager:
     _config: Optional[EngineLogConfig] = None
     _loggers: Dict[str, logging.Logger] = {}
 
-    @classmethod
-    def configure(cls, cfg: EngineLogConfig) -> None:
-        cls._config = cfg
-
-        # Avoid double-config in reloads / repeated imports
-        if cls._configured:
-            return
-
-        # Ensure root is sensible; we mostly rely on named loggers under our namespace.
+    def configure(
+        *,
+        base_dir: Path,
+        app_name: str = "gke",
+        level: int = logging.INFO,
+        enable_console: bool = True,
+        enable_files: bool = True,
+        enable_jsonl: bool = True,
+        enable_sqlite: bool = False,
+        sqlite_db_path: Optional[Path] = None,
+        max_bytes: int = 10 * 1024 * 1024,
+        backup_count: int = 5,
+    ) -> None:
+        """
+        Call ONCE at process startup (or pytest_configure).
+        Installs handlers on ROOT only.
+        """
         root = logging.getLogger()
-        root.setLevel(min(root.level or cfg.level, cfg.level) if root.level else cfg.level)
+        root.setLevel(level)
 
-        # In pytest mode: do NOT add handlers; pytest will capture log records.
-        if cfg.mode == "pytest":
-            cls._configured = True
-            return
+        if root.handlers:
+            return  # avoid duplicate install
 
-        # PROD mode: install handlers if root has none (avoid duplication).
-        if not root.handlers:
-            # Console handler
-            sh = logging.StreamHandler(stream=sys.stderr)
-            sh.setLevel(cfg.level)
+        base_dir.mkdir(parents=True, exist_ok=True)
 
-            fmt = (
-                "%(asctime)s %(levelname)s "
-                "[%(name)s] "
-                "engine=%(engine_type)s engine_id=%(engine_id)s "
-                "conv=%(conversation_id)s run=%(workflow_run_id)s step=%(step_id)s "
-                "%(message)s"
-            )
-            sh.setFormatter(logging.Formatter(fmt))
+        fmt = (
+            "%(asctime)s %(levelname)s [%(name)s] "
+            "engine=%(engine_type)s engine_id=%(engine_id)s "
+            "conv=%(conversation_id)s run=%(workflow_run_id)s step=%(step_id)s op=%(op)s "
+            "%(message)s"
+        )
+
+        formatter = logging.Formatter(fmt)
+
+        # ---- Console ----
+        if enable_console:
+            sh = logging.StreamHandler()
+            sh.setLevel(level)
+            sh.setFormatter(formatter)
             sh.addFilter(ContextFilter())
             root.addHandler(sh)
 
-        cls._configured = True
+        if not enable_files:
+            return
+
+        # ---- Consolidated file ----
+        all_log = RotatingFileHandler(
+            base_dir / f"{app_name}.all.log",
+            maxBytes=max_bytes,
+            backupCount=backup_count,
+            encoding="utf-8",
+        )
+        all_log.setLevel(level)
+        all_log.setFormatter(formatter)
+        all_log.addFilter(ContextFilter())
+        root.addHandler(all_log)
+
+        # ---- Per-engine routing ----
+        for engine_type in ("conversation", "workflow", "kg"):
+
+            def engine_filter(record, et=engine_type):
+                return getattr(record, "engine_type", None) == et
+
+            h = RotatingFileHandler(
+                base_dir / f"{app_name}.{engine_type}.log",
+                maxBytes=max_bytes,
+                backupCount=backup_count,
+                encoding="utf-8",
+            )
+            h.setLevel(level)
+            h.setFormatter(formatter)
+            h.addFilter(ContextFilter())
+            h.addFilter(engine_filter)
+            root.addHandler(h)
+
+            if enable_jsonl:
+                j = RotatingFileHandler(
+                    base_dir / f"{app_name}.{engine_type}.jsonl",
+                    maxBytes=max_bytes,
+                    backupCount=backup_count,
+                    encoding="utf-8",
+                )
+                j.setLevel(level)
+                j.setFormatter(JsonlFormatter())
+                j.addFilter(ContextFilter())
+                j.addFilter(engine_filter)
+                root.addHandler(j)
+
+        # ---- SQLite (optional) ----
+        if enable_sqlite and sqlite_db_path is not None:
+            sqlite_handler = SQLiteHandler(str(sqlite_db_path))
+            sqlite_handler.setLevel(level)
+            sqlite_handler.addFilter(ContextFilter())
+            root.addHandler(sqlite_handler)
 
     @classmethod
     def _ensure_per_engine_handlers(cls, logger: logging.Logger, engine_type: EngineType) -> None:
@@ -317,7 +381,7 @@ class EngineLogManager:
                 "%(asctime)s %(levelname)s "
                 "[%(name)s] "
                 "engine=%(engine_type)s engine_id=%(engine_id)s "
-                "conv=%(conversation_id)s run=%(workflow_run_id)s step=%(step_id)s "
+                "conv=%(conversation_id)s run=%(workflow_run_id)s step=%(step_id)s op=%(op)s  "
                 "%(message)s"
             )
             fh.setFormatter(logging.Formatter(fmt))
