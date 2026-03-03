@@ -4886,7 +4886,7 @@ class GraphKnowledgeEngine:
         )
 
         used_node_ids: list[str] = []
-        for it in view.items:
+        for it in view.items: # edge ref is node now
             nid = getattr(it, "node_id", None)
             if nid:
                 used_node_ids.append(str(nid))

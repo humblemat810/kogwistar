@@ -605,7 +605,7 @@ class AgenticAnsweringWorkflowDesigner(BaseWorkflowDesigner):
         add_node(node_id=wid("project"), label="Project pointers", op="aa_project_pointers")
         add_node(node_id=wid("iterate"), label="Maybe iterate", op="aa_maybe_iterate")
         add_node(node_id=wid("persist"), label="Persist assistant + link run", op="aa_persist_response")
-        add_node(node_id=wid("end"), label="End", op="noop", terminal=True)
+        add_node(node_id=wid("end"), label="End", op="end", terminal=True)
 
         # linear edges
         add_edge(edge_id=wid("e1"), src=wid("start"), dst=wid("prepare"), relation="wf_next", pred=None, is_default=True)

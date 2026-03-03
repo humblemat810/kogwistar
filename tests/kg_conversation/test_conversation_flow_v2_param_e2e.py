@@ -638,10 +638,10 @@ def test_conversation_flow_v2_param_e2e(
         assert nid in set(res.relevant_kg_node_ids), f"expected KG node id {nid} to be referenced"
 
     # Verify: assistant response exists (if your pipeline creates it)
-    if res.response_turn_node_id is not None:
-        got_ai = conv.backend.node_get(ids=[res.response_turn_node_id])
-        assert got_ai["ids"], "assistant turn node missing"
-        ai_doc = json.loads(got_ai["documents"][0])
-        assert ai_doc["role"] == "assistant"
-        for term in meta["expect_terms"]:
-            assert term in ai_doc["summary"].lower()
+    # if res.response_turn_node_id is not None:
+    got_ai = conv.backend.node_get(ids=[res.response_turn_node_id])
+    assert got_ai["ids"], "assistant turn node missing"
+    ai_doc = json.loads(got_ai["documents"][0])
+    assert ai_doc["role"] == "assistant"
+    for term in meta["expect_terms"]:
+        assert term in ai_doc["summary"].lower()

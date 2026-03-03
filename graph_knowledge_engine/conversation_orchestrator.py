@@ -1105,7 +1105,7 @@ class ConversationOrchestrator:
             batch_ids.append(last_summary_node[-1].safe_get_id())
             batch_text.append(last_summary_node[-1].summary)
         for n in nodes:
-            turn_index = n.turn_index
+            turn_index = getattr(n, "turn_index", None) # non chain, snapshots/ subsidiary do not have turn index
             if turn_index is not None and start_index <= int(turn_index) <= current_index:
                 # Check type
                 # d = json.loads(doc)
