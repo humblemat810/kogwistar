@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from conversation.designer import ConversationWorkflowDesigner
+from graph_knowledge_engine.conversation.designer import ConversationWorkflowDesigner
 from graph_knowledge_engine.runtime.design import load_workflow_design
 
 

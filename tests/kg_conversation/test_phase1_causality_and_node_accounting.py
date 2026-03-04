@@ -1,9 +1,9 @@
 import pytest
 from pydantic import ValidationError
 
-from conversation.models import ConversationEdge, ConversationNodeMetadata
-from engine_core.models import Span, Grounding
-from graph_knowledge_engine.engine import GraphKnowledgeEngine
+from graph_knowledge_engine.conversation.models import ConversationEdge, ConversationNodeMetadata
+from graph_knowledge_engine.engine_core.models import Span, Grounding
+from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
 
 
 def test_node_metadata_forbids_summary_distance_fields():

@@ -30,7 +30,7 @@ import sys
 import threading
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
-    from graph_knowledge_engine.engine import EngineType
+    from graph_knowledge_engine.engine_core.engine import EngineType
 import time
 import webbrowser
 from dataclasses import dataclass

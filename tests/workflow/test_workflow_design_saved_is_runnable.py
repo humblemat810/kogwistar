@@ -3,15 +3,15 @@ import tempfile
 
 import pytest
 
-from graph_knowledge_engine.engine import GraphKnowledgeEngine
-from engine_core.models import (
+from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
+from graph_knowledge_engine.engine_core.models import (
     Grounding,
     Span,
     MentionVerification,
 )
 from graph_knowledge_engine.runtime.runtime import WorkflowRuntime
-from runtime.models import RunSuccess
-from runtime.models import WorkflowEdge, WorkflowNode
+from graph_knowledge_engine.runtime.models import RunSuccess
+from graph_knowledge_engine.runtime.models import WorkflowEdge, WorkflowNode
 
 
 def _span() -> Span:

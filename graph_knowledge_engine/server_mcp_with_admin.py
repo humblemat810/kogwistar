@@ -9,9 +9,9 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse, HTMLResponse
 # from mcp.server.fastmcp import FastMCP
 from fastmcp import FastMCP
-from graph_knowledge_engine.engine import GraphKnowledgeEngine
+from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
 from graph_knowledge_engine.graph_query import GraphQuery
-from graph_knowledge_engine.models import Document
+from graph_knowledge_engine.engine_core.models import Document
 from graph_knowledge_engine.visualization.graph_viz import to_cytoscape, to_d3_force
 from fastapi.templating import Jinja2Templates
 from fastapi import Request
@@ -475,7 +475,7 @@ def kg_semantic_seed_then_expand_text(text: str, top_k: int = 5, hops: int = 1, 
     return outsid
 
 # ---- Ingestion tools ----
-from .models import Document, PureGraph
+from .engine_core.models import Document, PureGraph
 class DocParseIn(Document['dto']):
     id: Optional[str] # pyright: ignore[reportGeneralTypeIssues, reportIncompatibleVariableOverride]
     content: str
@@ -553,7 +553,7 @@ def kg_extract(inp: KGExtractIn) -> KGExtractOut:
     content = engine._fetch_document_text(inp.id)
     if not content:
         raise ValueError(f"Document '{inp.id}' not found; run store_document first.")
-    from .models import LLMGraphExtraction
+    from .engine_core.models import LLMGraphExtraction
     # import pickle, os
     # cdir = os.path.join('.', '.kg_extract_cache')
     # os.makedirs(cdir, exist_ok = True)
@@ -827,7 +827,7 @@ async def document_validate_graph(payload: DocumentGraphProposal):
     ok = not node_errors and not edge_errors
     return DocumentGraphValidationResult(ok=ok, node_errors=node_errors, edge_errors=edge_errors)
 
-from graph_knowledge_engine.models import LLMGraphExtraction, Document
+from graph_knowledge_engine.engine_core.models import LLMGraphExtraction, Document
 
 class GraphUpsertLLMIn(BaseModel):
     """
@@ -974,7 +974,7 @@ async def document_upsert(inp: DocumentUpsert, response_model=DocumentUpsertResu
 @app.post("/api/document.upsert_tree", response_model=DocumentGraphUpsertResult)
 async def document_upsert_tree(payload: DocumentGraphUpsert):
     """Upsert a generic tree with document root, use only when complete control of all backend fields are clearly known."""
-    from .models import GraphExtractionWithIDs
+    from .engine_core.models import GraphExtractionWithIDs
     try:
         res = engine.persist_document_graph_extraction(
             parsed = GraphExtractionWithIDs(
@@ -1367,7 +1367,7 @@ def search_index_hybrid(q: str, limit: int = 10, resolve_node = False) -> Dict[s
 #=====================
 # Adjundicate persisted nodes
 #=====================
-from graph_knowledge_engine.models import AdjudicationQuestionCode, Node, Edge, AdjudicationVerdict
+from graph_knowledge_engine.engine_core.models import AdjudicationQuestionCode, Node, Edge, AdjudicationVerdict
 from typing import Literal, Tuple
 class LoadPersistedIn(BaseModel):
     doc_ids: List[str]

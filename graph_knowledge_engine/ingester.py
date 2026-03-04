@@ -9,12 +9,12 @@ from pydantic import BaseModel, Field
 from langchain_core.language_models import BaseChatModel
 import json
 from .engine import GraphKnowledgeEngine
-from .models import (
+from .engine_core.models import (
     Document,
     Edge,
     Span as GroundingSpan
 )
-from .models import Node
+from .engine_core.models import Node
 # --- relation name constants (optional but handy) ---
 REL_SUMMARIZES = "summarizes"   # parent -> child
 REL_DETAILS    = "details"      # child  -> parent
@@ -242,7 +242,7 @@ class BaseDocumentGraphIngestor:
     def _ensure_document_node(self, doc_id: str, *, title: str | None = None, leaves) -> str:
         node_id = f"docnode:{doc_id}"
         if not self.engine._exists_node(node_id):
-            from graph_knowledge_engine.models import Node, Span
+            from graph_knowledge_engine.engine_core.models import Node, Span
             embeddings = self.engine.backend.document_get(doc_id, include = ['embeddings'])['embeddings'][0]
             ref = self._ref(doc_id = doc_id,excerpt = None, span = Span(start_page=1, end_page=len(leaves), start_char=0, end_char=len(leaves[-1].text)))
             n = Node(

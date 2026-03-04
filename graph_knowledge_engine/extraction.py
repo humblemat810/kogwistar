@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 
-from graph_knowledge_engine.models import Span, Document, MentionVerification
+from graph_knowledge_engine.engine_core.models import Span, Document, MentionVerification
 from graph_knowledge_engine.typing_interfaces import EngineLike
 from typing import Type, Optional, List, Iterable, Callable
 try:

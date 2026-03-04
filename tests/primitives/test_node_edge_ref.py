@@ -1,5 +1,5 @@
-from graph_knowledge_engine.engine import GraphKnowledgeEngine
-from graph_knowledge_engine.models import Document, Node, Edge, Span, MentionVerification, Grounding
+from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
+from graph_knowledge_engine.engine_core.models import Document, Node, Edge, Span, MentionVerification, Grounding
 def test_node_refs_indexing(engine:GraphKnowledgeEngine):
     doc = Document(content="x", type="text", metadata = {}, domain_id= None, processed = False); engine.add_document(doc)
     ref_llm = Span(

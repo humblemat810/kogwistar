@@ -5,9 +5,9 @@ from pydantic import BaseModel
 from mcp.server.fastmcp import FastMCP
 import os
 
-from graph_knowledge_engine.engine import GraphKnowledgeEngine
+from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
 from graph_knowledge_engine.graph_query import GraphQuery
-from graph_knowledge_engine.models import Document
+from graph_knowledge_engine.engine_core.models import Document
 
 # ---------- Engine + MCP ----------
 persist_directory = os.environ.get("MCP_CHROMA_DIR") or "./.chroma-mcp"

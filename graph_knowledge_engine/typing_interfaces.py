@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from typing import Any, Callable, Dict, List, Mapping, Optional, Protocol, TypedDict, TypeAlias, TypeVar, Sequence, Union, runtime_checkable
-from .models import AdjudicationVerdict, Document as EngineDoc
+from .engine_core.models import AdjudicationVerdict, Document as EngineDoc
 # -------------------------
 # Collection / Vector store
 # -------------------------

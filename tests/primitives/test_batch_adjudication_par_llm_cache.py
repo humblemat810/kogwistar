@@ -6,8 +6,8 @@ from typing import Any, Dict, List, Tuple
 import pytest
 from joblib import Memory
 
-from graph_knowledge_engine.engine import GraphKnowledgeEngine
-from graph_knowledge_engine.models import (
+from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
+from graph_knowledge_engine.engine_core.models import (
     Document,
     MentionVerification,
     Node,

@@ -7,7 +7,7 @@ import pytest
 
 from graph_knowledge_engine.runtime.runtime import StepContext, WorkflowRuntime
 from graph_knowledge_engine.runtime.resolvers import MappingStepResolver
-from runtime.models import RunSuccess
+from graph_knowledge_engine.runtime.models import RunSuccess
 
 
 @dataclass

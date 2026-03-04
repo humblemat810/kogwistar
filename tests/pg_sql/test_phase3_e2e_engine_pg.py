@@ -3,9 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import List
 
-from graph_knowledge_engine.engine import GraphKnowledgeEngine
-from graph_knowledge_engine import models
-from graph_knowledge_engine.postgres_backend import PgVectorBackend, PostgresUnitOfWork
+from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
+from graph_knowledge_engine.engine_core import models
+from graph_knowledge_engine.engine_core.postgres_backend import PgVectorBackend, PostgresUnitOfWork
 
 
 def _dummy_grounding() -> models.Grounding:

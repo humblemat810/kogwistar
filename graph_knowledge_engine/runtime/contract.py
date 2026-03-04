@@ -67,7 +67,7 @@ class WorkflowEdgeInfo:
     edge_id: str
     src: str
     dst: str
-    predicate: Optional[str]
+    predicate: None | str
     priority: int
     is_default: bool
     multiplicity: str  # "one" | "many"

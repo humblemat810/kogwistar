@@ -7,10 +7,10 @@ from typing import Any, Dict, Iterator, List
 
 import pytest
 
-from engine_core.models import Span
-from runtime.models import RunFailure
+from graph_knowledge_engine.engine_core.models import Span
+from graph_knowledge_engine.runtime.models import RunFailure
 from graph_knowledge_engine.conversation.resolvers import default_resolver
-from runtime.models import RunSuccess
+from graph_knowledge_engine.runtime.models import RunSuccess
 
 
 @dataclass

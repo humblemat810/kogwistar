@@ -2,8 +2,8 @@ import uuid
 import pathlib
 import pytest
 
-from graph_knowledge_engine.engine import GraphKnowledgeEngine, _node_doc_and_meta
-from graph_knowledge_engine.models import Node, Grounding, Span
+from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine, _node_doc_and_meta
+from graph_knowledge_engine.engine_core.models import Node, Grounding, Span
 
 EMBEDDING_DIM = 3
 

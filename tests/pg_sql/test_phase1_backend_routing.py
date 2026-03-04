@@ -7,8 +7,8 @@ from typing import Any, Dict, List
 
 import pytest
 
-from graph_knowledge_engine.engine import GraphKnowledgeEngine
-from graph_knowledge_engine import models
+from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
+from graph_knowledge_engine.engine_core import models
 
 
 def _dummy_span(doc_id: str = "_dummy_doc") -> models.Span:

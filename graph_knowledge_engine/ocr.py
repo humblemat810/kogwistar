@@ -6,7 +6,7 @@ logger.addHandler(logging.NullHandler())
 ocr_json_version = "0.1"
 import time
 import base64
-from models import NonText_box_2d, OCRClusterResponse, SplitPage, SplitPageMeta, NonTextCluster, TextCluster
+from graph_knowledge_engine.engine_core.models import NonText_box_2d, OCRClusterResponse, SplitPage, SplitPageMeta, NonTextCluster, TextCluster
 from typing import Any, cast, Callable, Optional,  Literal, TypeAlias, Union
 import json
 from pydantic_extension.model_slicing import (ModeSlicingMixin, NotMode, FrontendField, BackendField, LLMField,

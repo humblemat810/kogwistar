@@ -9,11 +9,11 @@ from pydantic import BaseModel
 from langchain_core.language_models import BaseChatModel
 from langchain_core.runnables import Runnable
 
-from conversation.models import ConversationNode, MetaFromLastSummary, RetrievalResult
+from graph_knowledge_engine.conversation.models import ConversationNode, MetaFromLastSummary, RetrievalResult
 from graph_knowledge_engine.id_provider import stable_id
-from engine_core.models import Span, Grounding
+from graph_knowledge_engine.engine_core.models import Span, Grounding
 from graph_knowledge_engine.conversation.conversation_orchestrator import ConversationOrchestrator, get_id_for_conversation_turn
-from conversation.agentic_answering import AgentConfig, AgenticAnsweringAgent, AnswerWithCitations, AnswerEvaluation
+from graph_knowledge_engine.conversation.agentic_answering import AgentConfig, AgenticAnsweringAgent, AnswerWithCitations, AnswerEvaluation
 
 from tests.conftest import _make_engine_pair  # reuse canonical engine fixture builder
 

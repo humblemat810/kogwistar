@@ -15,8 +15,8 @@ from typing import Any, Callable, List, Optional, cast
 
 from langchain_core.language_models import BaseChatModel
 
-from conversation.models import ConversationEdge, MetaFromLastSummary
-from graph_knowledge_engine.engine import GraphKnowledgeEngine
+from .conversation.models import ConversationEdge, MetaFromLastSummary
+from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
 from .id_provider import stable_id
 from .conversation_state_contracts import WorkflowStateModel, PrevTurnMetaSummaryModel, WorkflowState
 
@@ -127,7 +127,7 @@ def _estimate_tokens_from_chars(char_count: int, token_estimator: Callable[[str]
         return max(1, (char_count + 3) // 4)
     return max(1, int(round(sample_tokens * (char_count / sample_n))))
 
-from conversation.models import RetrievalResult
+from .models import RetrievalResult
 
 
 def get_id_for_conversation_turn(id_kind, user_id, conversation_id, content, new_index, role, entity_type, in_conv):

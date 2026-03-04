@@ -2,7 +2,7 @@
 import pytest
 
 from graph_knowledge_engine.conversation.conversation_orchestrator import ConversationOrchestrator, _estimate_tokens_from_chars
-from conversation.models import FilteringResult
+from graph_knowledge_engine.conversation.models import FilteringResult
 from tests.conftest import _make_engine_pair 
 
 class FakeConversationEngine:
@@ -27,8 +27,8 @@ class FakeConversationEngine:
     def _get_conversation_tail(self, conversation_id: str, *a, **k):
         return self._tail
 from typing import Sequence, Callable
-from graph_knowledge_engine.engine import GraphKnowledgeEngine
-from graph_knowledge_engine.postgres_backend import PgVectorBackend
+from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
+from graph_knowledge_engine.engine_core.postgres_backend import PgVectorBackend
 from chromadb.utils.embedding_functions import EmbeddingFunction
 from chromadb.api.types import Embeddings
 class FakeEmbeddingFunction(EmbeddingFunction):

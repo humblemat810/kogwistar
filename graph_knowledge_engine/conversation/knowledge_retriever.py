@@ -5,16 +5,16 @@ from typing import Callable, List, Optional, Tuple, cast
 
 from langchain_core.language_models import BaseChatModel
 
-from conversation.models import RetrievalResult
+from .models import RetrievalResult
 
 from .models import ConversationEdge
 from graph_knowledge_engine.conversation.agentic_answering import snapshot_hash
-from graph_knowledge_engine.engine import GraphKnowledgeEngine
-from conversation.models import KnowledgeRetrievalResult
+from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
+from .models import KnowledgeRetrievalResult
 from graph_knowledge_engine.id_provider import stable_id
 
-from .models import ConversationNode, FilteringResult, Grounding, MetaFromLastSummary, Span
-
+from .models import ConversationNode, FilteringResult, MetaFromLastSummary
+from ..engine_core.models import Grounding, Span
 
 class KnowledgeRetriever:
     """

@@ -4,15 +4,15 @@ from typing import Any, Dict, List
 
 import pytest
 
-from conversation.models import WorkflowCheckpointNode, WorkflowRunNode, WorkflowStepExecNode
-from graph_knowledge_engine.engine import GraphKnowledgeEngine
-from engine_core.models import (
+from graph_knowledge_engine.conversation.models import WorkflowCheckpointNode, WorkflowRunNode, WorkflowStepExecNode
+from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
+from graph_knowledge_engine.engine_core.models import (
     Grounding,
     Span,
     MentionVerification,
 )
 from graph_knowledge_engine.runtime.runtime import WorkflowRuntime
-from runtime.models import WorkflowEdge, WorkflowNode
+from graph_knowledge_engine.runtime.models import WorkflowEdge, WorkflowNode
 
 
 def _span() -> Span:

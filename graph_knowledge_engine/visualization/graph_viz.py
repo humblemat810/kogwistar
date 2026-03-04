@@ -8,7 +8,7 @@ from ..runtime.models import WorkflowEdge, WorkflowNode
 
 from ..conversation.models import ConversationEdge, ConversationNode
 if TYPE_CHECKING:
-    from graph_knowledge_engine.engine import GraphKnowledgeEngine
+    from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
 
 
     from ..engine_core.models import Node, Edge#, ConversationNode, ConversationEdge, WorkflowEdge, WorkflowNode

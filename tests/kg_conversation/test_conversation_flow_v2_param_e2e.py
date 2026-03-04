@@ -15,11 +15,11 @@ from langchain_core.messages import AIMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.runnables import Runnable, RunnableConfig
 
-from conversation.models import FilteringResult, MetaFromLastSummary
-from graph_knowledge_engine.engine import GraphKnowledgeEngine
+from graph_knowledge_engine.conversation.models import FilteringResult, MetaFromLastSummary
+from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
 from graph_knowledge_engine.id_provider import stable_id
-from graph_knowledge_engine.postgres_backend import PgVectorBackend
-from engine_core.models import (
+from graph_knowledge_engine.engine_core.postgres_backend import PgVectorBackend
+from graph_knowledge_engine.engine_core.models import (
     Node,
     Span,
     Grounding,
@@ -29,7 +29,7 @@ from graph_knowledge_engine.conversation.conversation_orchestrator import Conver
 
 # Optional: knowledge-edge model may not exist in some repo versions.
 try:
-    from engine_core.models import Edge  # type: ignore
+    from graph_knowledge_engine.engine_core.models import Edge  # type: ignore
 except Exception:  # pragma: no cover
     Edge = None  # type: ignore
 
@@ -568,7 +568,7 @@ def test_conversation_flow_v2_param_e2e(
             return FilteringResult.model_validate(dumped), "cached deterministic filter"
     else:
         # Use the project's canonical prompting-based filter, but cache it (ignore llm).
-        from graph_knowledge_engine.engine import candiate_filtering_callback
+        from graph_knowledge_engine.engine_core.engine import candiate_filtering_callback
         def cached_inner(llm: BaseChatModel, conversation_content, cand_node_list_str, cand_edge_list_str, candidates_node_ids, candidate_edge_ids, context_text):
             fr, reason = candiate_filtering_callback(llm, conversation_content, cand_node_list_str, cand_edge_list_str, candidates_node_ids, candidate_edge_ids, context_text)
             return fr.model_dump(), reason
@@ -584,7 +584,7 @@ def test_conversation_flow_v2_param_e2e(
         # We keep this harness minimal: the v2 orchestrator expects a ConversationAIResponse-like object.
         # If your repo defines ConversationAIResponse, use it directly.
         try:
-            from conversation.models import ConversationAIResponse
+            from graph_knowledge_engine.conversation.models import ConversationAIResponse
             return ConversationAIResponse(
                 response_node_id=None,  # will be filled by engine call below if available
                 llm_decision_need_summary=bool(payload.get("need_summary", False)),

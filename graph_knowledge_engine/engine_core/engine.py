@@ -7,10 +7,8 @@ from langchain_core.language_models import BaseChatModel
 import pathlib
 import uuid
 
-import conversation.models
-from ..runtime.models import WorkflowNode
 
-from ..conversation.models import AddTurnResult, ContextSnapshotMetadata, ConversationAIResponse, ConversationEdge, ConversationNode, ConversationNodeMetadata, FilteringResponse, FilteringResult, MetaFromLastSummary, RetrievalResult, WorkflowStepExecNode
+from ..conversation.models import (AddTurnResult, ContextSnapshotMetadata, ConversationAIResponse, ConversationEdge, ConversationNode, ConversationNodeMetadata, FilteringResponse, FilteringResult, MetaFromLastSummary, RetrievalResult, WorkflowStepExecNode)
 from ..id_provider import stable_id
 import time
 from . import models
@@ -40,7 +38,7 @@ if True:
     from graph_knowledge_engine.strategies import adjudicators as AJ
     from graph_knowledge_engine.strategies import merge_policies as MP
     from graph_knowledge_engine.strategies import verifiers as VF
-    from graph_knowledge_engine.engine import GraphKnowledgeEngine
+    from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
 
     engine = GraphKnowledgeEngine(
         persist_directory="./chroma_db",
@@ -53,7 +51,7 @@ if True:
 from ..conversation.conversation_context import ContextItem, ContextSources, ConversationContextView, DroppedItem, ContextRenderer, Role
 import numpy as np
 import ast
-from typing import Iterator, List, Optional, Dict, Any, Self, Tuple, TypeAlias, cast
+from typing import TYPE_CHECKING, Iterator, List, Optional, Dict, Any, Self, Tuple, TypeAlias, cast
 from ..typing_interfaces import CollectionLike, EmbeddingFunctionLike
 from dataclasses import dataclass, field
 from ..graph_query import GraphQuery
@@ -124,11 +122,14 @@ except Exception:
 PageLike = Union[str, Dict[str, Any]]
 EngineType = Literal ['knowledge', 'conversation', 'workflow']
 NodeOrEdge: TypeAlias =  Node | Edge
+
+if TYPE_CHECKING:
+    from ..runtime.models import WorkflowNode
 T = TypeVar("T", Node, Edge)
 # TT= TypeVar("TT", Type[Node], Type[Edge])
 TNode = TypeVar("TNode", bound=Node)
 TEdge = TypeVar("TEdge", bound=Edge)
-AnyNode=Union[Node, ConversationNode, WorkflowNode, WorkflowStepExecNode, WorkflowStepExecNode]
+AnyNode = Union[Node, ConversationNode, WorkflowNode, WorkflowStepExecNode, WorkflowStepExecNode]
 TAnyNode = TypeVar("TAnyNode", bound=AnyNode)
 
     
@@ -2153,7 +2154,7 @@ class GraphKnowledgeEngine:
             raise ValueError("Unrecognised argument for backend")
         # Backend UoW: in Postgres mode this becomes a real SQL transaction.
         if isinstance(getattr(self, "backend", None), PgVectorBackend):
-            from graph_knowledge_engine.postgres_backend import PostgresUnitOfWork
+            from graph_knowledge_engine.engine_core.postgres_backend import PostgresUnitOfWork
 
             self._backend_uow = PostgresUnitOfWork(engine=self.backend.engine)
         else:

@@ -1,7 +1,7 @@
 from typing import Any, ClassVar, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from engine_core.models import Edge, Node
+from ..engine_core.models import Edge, Node
 
 
 class WorkflowNodeMetadata(BaseModel):
@@ -53,7 +53,7 @@ class WorkflowEdgeMetadata(BaseModel):
     """
     entity_type: str = Field("workflow_edge", description='Must be "workflow_edge"')
     workflow_id: str
-    wf_predicate: Optional[str] = None  # llm explanation: wf_predicate: “This path is meant for a specific condition.”
+    wf_predicate: None | str = None  # llm explanation: wf_predicate: “This path is meant for a specific condition.”
     wf_priority: int = 100
     wf_is_default: bool = False         # llm explanation: wf_is_default = what to do if the decision returns nothing
     wf_multiplicity: Literal["one", "many"] = "one"

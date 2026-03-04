@@ -1,6 +1,6 @@
-from conversation.models import ConversationNode
-from graph_knowledge_engine.engine import GraphKnowledgeEngine
-from engine_core.models import Grounding, Span, MentionVerification
+from graph_knowledge_engine.conversation.models import ConversationNode
+from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
+from graph_knowledge_engine.engine_core.models import Grounding, Span, MentionVerification
 
 
 def test_conversation_pin_knowledge_reference_is_noop(tmp_path):

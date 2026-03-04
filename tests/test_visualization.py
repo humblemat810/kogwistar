@@ -1,15 +1,15 @@
 import logging
 
-from engine_core.models import Document
+from graph_knowledge_engine.engine_core.models import Document
 from graph_knowledge_engine.visualization.basic_visualization import Visualizer
 from joblib import Memory
 import pathlib
 
 from graph_knowledge_engine.utils.kge_debug_dump import dump_d3_bundle
-from runtime.models import WorkflowEdge, WorkflowNode
+from graph_knowledge_engine.runtime.models import WorkflowEdge, WorkflowNode
 def test_pretty_print_graph(engine):
     import os
-    from graph_knowledge_engine.engine import GraphKnowledgeEngine
+    from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
     engine2: GraphKnowledgeEngine = engine
     doc_content = (
         "Photosynthesis is a process used by plants to convert light energy into chemical energy. "
@@ -42,7 +42,7 @@ def test_pretty_print_graph(engine):
     print(txt)
     logging.info(txt)
     
-from engine_core.models import Span, Grounding, MentionVerification
+from graph_knowledge_engine.engine_core.models import Span, Grounding, MentionVerification
 def _span() -> Span:
     return Span(
         collection_page_url="test",
@@ -118,7 +118,7 @@ def _wf_edge(
     )
 
 def test_d3_litmus_workflow_self_and_parallel(tmp_path):
-    from graph_knowledge_engine.engine import GraphKnowledgeEngine
+    from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
     wf_id = "wf_d3_litmus"
     wf_dir = tmp_path / "wf"
     workflow_engine = GraphKnowledgeEngine(persist_directory=str(wf_dir), kg_graph_type="workflow")

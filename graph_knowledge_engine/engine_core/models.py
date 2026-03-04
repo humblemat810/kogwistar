@@ -3,10 +3,6 @@ import logging
 import os
 from dataclasses import dataclass
 
-from runtime.models import RunFailure
-from runtime.models import RunSuccess
-
-
 if True:
     logger = logging.getLogger(__name__)
     logger.addHandler(logging.NullHandler())
@@ -26,15 +22,7 @@ from pydantic_extension.model_slicing import (ModeSlicingMixin, NotMode, Fronten
                 use_mode)
 from pydantic_extension.model_slicing.mixin import ExcludeMode, DtoField
 JsonPrimitive = Union[str, int, float, bool, None]
-# JSON: TypeAlias = (
-#     dict[str, "JSON"]
-#     | list["JSON"]
-#     | str
-#     | int
-#     | float
-#     | bool
-#     | None
-# )
+
 class AdjudicationQuestionCode(IntEnum):
     SAME_ENTITY = 1
     SAME_EVENT = 2

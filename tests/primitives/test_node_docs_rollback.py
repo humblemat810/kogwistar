@@ -1,7 +1,7 @@
 # tests/test_node_docs_rollback.py
 import json
-from graph_knowledge_engine.engine import GraphKnowledgeEngine
-from graph_knowledge_engine.models import Document, Node, Span, MentionVerification
+from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
+from graph_knowledge_engine.engine_core.models import Document, Node, Span, MentionVerification
 
 def _ref_for(doc_id: str) -> Span:
     return _span_for(doc_id)

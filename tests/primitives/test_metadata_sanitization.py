@@ -1,6 +1,6 @@
 # tests/test_metadata_sanitization.py
 import json
-from graph_knowledge_engine.models import Node, Span, MentionVerification, Grounding
+from graph_knowledge_engine.engine_core.models import Node, Span, MentionVerification, Grounding
 from chromadb import app
 
 def _ref_for(doc_id: str) -> Span:

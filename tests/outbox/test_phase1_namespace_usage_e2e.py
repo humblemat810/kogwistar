@@ -2,10 +2,10 @@ import pathlib
 
 import pytest
 
-from graph_knowledge_engine.engine import GraphKnowledgeEngine
-from graph_knowledge_engine.postgres_backend import PgVectorBackend
+from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
+from graph_knowledge_engine.engine_core.postgres_backend import PgVectorBackend
 
-from graph_knowledge_engine.models import Node, Edge, Grounding, Span
+from graph_knowledge_engine.engine_core.models import Node, Edge, Grounding, Span
 
 
 def _mk_span(doc_id: str) -> Span:

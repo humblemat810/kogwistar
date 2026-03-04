@@ -1,6 +1,6 @@
-from engine_core.models import Grounding, Span
-from runtime.design import BaseWorkflowDesigner
-from runtime.models import WorkflowEdge, WorkflowNode
+from ..engine_core.models import Grounding, Span
+from ..runtime.design import BaseWorkflowDesigner
+from ..runtime.models import WorkflowEdge, WorkflowNode
 from ..runtime.models import WorkflowNode
 
 

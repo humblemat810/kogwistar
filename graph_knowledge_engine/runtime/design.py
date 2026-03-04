@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from runtime.models import WorkflowNode
+from .models import WorkflowNode
 
 from .resolvers import BaseResolver
 
@@ -18,8 +18,8 @@ The codebase supports two workflow "spec" shapes:
 
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Callable, Tuple
-from runtime.models import WorkflowEdge
-from graph_knowledge_engine.engine import GraphKnowledgeEngine
+from graph_knowledge_engine.runtime.models import WorkflowEdge
+from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
 from .contract import BasePredicate
 
 PredicateName = Optional[str]

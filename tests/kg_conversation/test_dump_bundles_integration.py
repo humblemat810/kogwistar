@@ -10,9 +10,9 @@ import pytest
 import re
 
 # import pytest
-# from graph_knowledge_engine.engine import GraphKnowledgeEngine
-# from graph_knowledge_engine.postgres_backend import PgVectorBackend
-from conversation.models import ConversationNode
+# from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
+# from graph_knowledge_engine.engine_core.postgres_backend import PgVectorBackend
+from graph_knowledge_engine.conversation.models import ConversationNode
 from tests.conftest import _make_engine_pair
 
 def _minimal_bundle_template() -> str:
@@ -84,7 +84,7 @@ def seeded_kg_and_conversation(request, tmp_path, sa_engine, pg_schema):
         backend_kind=backend_kind, tmp_path=tmp_path, sa_engine=sa_engine, pg_schema=pg_schema, dim=3
     )
 
-    from engine_core.models import Node, Grounding, Span, MentionVerification
+    from graph_knowledge_engine.engine_core.models import Node, Grounding, Span, MentionVerification
     conv_id = "test-conv-seeded_kg_and_conversation"
     t0_text = "show me what happened in the graph engine"
     def _span():

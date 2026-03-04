@@ -3,8 +3,8 @@ import uuid
 import shutil
 import pytest
 
-from graph_knowledge_engine.engine import GraphKnowledgeEngine
-from graph_knowledge_engine.models import Node, Edge, Document
+from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
+from graph_knowledge_engine.engine_core.models import Node, Edge, Document
 
 @pytest.fixture(scope="function")
 def tmp_chroma_dir(tmp_path_factory):
@@ -23,8 +23,8 @@ def engine(tmp_chroma_dir):
 def _count_ids(get_result):
     return 0 if not get_result or "ids" not in get_result else len(get_result["ids"] or [])
 import json
-from graph_knowledge_engine.engine import GraphKnowledgeEngine
-from graph_knowledge_engine.models import Document, Node, Edge, Span
+from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
+from graph_knowledge_engine.engine_core.models import Document, Node, Edge, Span
 
 def test_rollback_single_document():
     engine = GraphKnowledgeEngine()

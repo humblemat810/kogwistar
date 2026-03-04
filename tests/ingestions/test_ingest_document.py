@@ -1,8 +1,8 @@
 import os
 import pytest
 import json
-from graph_knowledge_engine.engine import GraphKnowledgeEngine
-from graph_knowledge_engine.models import Document, Span, LLMGraphExtraction
+from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
+from graph_knowledge_engine.engine_core.models import Document, Span, LLMGraphExtraction
 from typing import cast
 import sys, pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))

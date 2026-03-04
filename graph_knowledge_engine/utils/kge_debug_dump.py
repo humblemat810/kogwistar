@@ -12,14 +12,14 @@ from jinja2 import Environment
 from jwt.algorithms import NoneAlgorithm
 from markupsafe import Markup
 if TYPE_CHECKING:
-    from graph_knowledge_engine.engine import GraphKnowledgeEngine, EngineType
+    from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine, EngineType
 from graph_knowledge_engine.visualization.graph_viz import to_d3_force
 
 _GRAPH_TYPE = Literal["knowledge", "conversation", "workflow"]
 
 
 def build_engine(*, persist_dir: Path, graph_type: _GRAPH_TYPE) -> GraphKnowledgeEngine:
-    from graph_knowledge_engine.engine import GraphKnowledgeEngine
+    from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
     return GraphKnowledgeEngine(persist_directory=str(persist_dir), kg_graph_type=graph_type)
 
 

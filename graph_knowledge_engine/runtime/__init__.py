@@ -9,7 +9,7 @@ from __future__ import annotations
 # from typing import TYPE_CHECKING
 
 # if TYPE_CHECKING:
-from conversation.designer import ConversationWorkflowDesigner
+from graph_knowledge_engine.conversation.designer import ConversationWorkflowDesigner
 from graph_knowledge_engine.runtime.contract import BasePredicate, WorkflowEdgeInfo, WorkflowNodeInfo, WorkflowSpec
 from graph_knowledge_engine.runtime.design import BaseWorkflowDesigner
 from graph_knowledge_engine.runtime.replay import load_checkpoint, replay_to

@@ -13,8 +13,8 @@ import sys
 import time
 from typing import Optional
 
-from graph_knowledge_engine.engine import GraphKnowledgeEngine
-from graph_knowledge_engine.postgres_backend import PgVectorBackend
+from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
+from graph_knowledge_engine.engine_core.postgres_backend import PgVectorBackend
 
 from .index_job_worker import IndexJobWorker, run_forever
 

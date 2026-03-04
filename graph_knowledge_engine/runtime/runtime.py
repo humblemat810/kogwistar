@@ -5,18 +5,18 @@ import time
 import uuid
 import queue
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, List, Optional, Tuple, cast
+from typing import Any, Callable, Dict, List, Optional, Tuple, cast
 from concurrent.futures import ThreadPoolExecutor
 import pathlib
 import logging
 from contextlib import nullcontext
 
-from conversation.models import ConversationEdge, WorkflowCheckpointNode, WorkflowRunNode, WorkflowStepExecNode
+from ..conversation.models import ConversationEdge, WorkflowCheckpointNode, WorkflowRunNode, WorkflowStepExecNode
 from graph_knowledge_engine.id_provider import stable_id
 from graph_knowledge_engine.utils.log import bind_log_context
-from runtime.models import StateUpdate
-from engine_core.models import MentionVerification
-from runtime.models import RunFailure, RunSuccess, WorkflowEdge, WorkflowNode
+from graph_knowledge_engine.runtime.models import StateUpdate
+from graph_knowledge_engine.engine_core.models import MentionVerification
+from graph_knowledge_engine.runtime.models import RunFailure, RunSuccess, WorkflowEdge, WorkflowNode
 
 from .design import validate_workflow_design, Predicate
 from .serialize import try_serialize_with_ref
@@ -207,7 +207,7 @@ from .contract import WorkflowEdgeInfo
 from dataclasses import dataclass
 
 
-from engine_core.models import Grounding, Span
+from graph_knowledge_engine.engine_core.models import Grounding, Span
     
 from .models import StepRunResult
 
@@ -400,7 +400,7 @@ class WorkflowRuntime:
         events: EventEmitter | None = None,
         sink: SQLiteEventSink | None = None,
     ) -> None:
-        from graph_knowledge_engine.engine import GraphKnowledgeEngine
+        from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
         self.workflow_engine: GraphKnowledgeEngine = workflow_engine
         self.conversation_engine: GraphKnowledgeEngine = conversation_engine
         self.step_resolver: Callable[[str], Callable[..., StepRunResult]] = step_resolver
@@ -410,7 +410,7 @@ class WorkflowRuntime:
         # Transaction policy: default to per-step transactions when conversation_engine is Postgres-backed.
         if transaction_mode is None:
             try:
-                from graph_knowledge_engine.postgres_backend import PgVectorBackend
+                from graph_knowledge_engine.engine_core.postgres_backend import PgVectorBackend
 
                 self.transaction_mode = "step" if isinstance(getattr(conversation_engine, "backend", None), PgVectorBackend) else "none"
             except Exception:
@@ -1218,7 +1218,7 @@ class WorkflowRuntime:
     ) -> bool: # return success failure result
         # current engine always persist on edit, no batch persist mode needed
         from . import serialize  # keep runtime import-light
-        from engine_core.models import Grounding, Span  # adjust import path to your package layout
+        from graph_knowledge_engine.engine_core.models import Grounding, Span  # adjust import path to your package layout
 
         excerpt = f"workflow_run {workflow_id} {run_id} status={status}"
         span = Span(**_make_trace_span(conversation_id=conversation_id, excerpt=excerpt, doc_id=f"conv:{conversation_id}"))
@@ -1437,7 +1437,7 @@ class WorkflowRuntime:
         state: WorkflowState,
         last_exec_node: WorkflowStepExecNode
     ) -> None:
-        from engine_core.models import Grounding, Span  # adjust import path
+        from graph_knowledge_engine.engine_core.models import Grounding, Span  # adjust import path
         
         state_copy = {k:v for k, v in state.items() if k != '_deps'}
         state_json = try_serialize_with_ref(state_copy)

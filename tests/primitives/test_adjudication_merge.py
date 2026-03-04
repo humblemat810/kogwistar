@@ -1,5 +1,5 @@
 import json
-from graph_knowledge_engine.models import (
+from graph_knowledge_engine.engine_core.models import (
     Document, Node, Span,
     AdjudicationVerdict,MentionVerification
 )
@@ -78,8 +78,8 @@ def test_adjudication_and_commit(engine):
     
 import pytest
 import uuid
-from graph_knowledge_engine.engine import GraphKnowledgeEngine
-from graph_knowledge_engine.models import (
+from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
+from graph_knowledge_engine.engine_core.models import (
     Node,
     Edge,
     Document,

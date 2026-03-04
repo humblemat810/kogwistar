@@ -154,7 +154,7 @@ def _main(argv: list[str]) -> int:
     parser.add_argument("--phase1-enable-index-jobs", action="store_true", help="Enable index_jobs feature flag")
     args = parser.parse_args(argv)
 
-    from graph_knowledge_engine.engine import GraphKnowledgeEngine
+    from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
 
     eng = GraphKnowledgeEngine(persist_directory=args.persist_directory)
     eng._phase1_enable_index_jobs = bool(args.phase1_enable_index_jobs)  # noqa: SLF001

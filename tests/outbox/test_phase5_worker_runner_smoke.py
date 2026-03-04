@@ -1,6 +1,6 @@
 import uuid
 
-from graph_knowledge_engine.engine import GraphKnowledgeEngine
+from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
 from graph_knowledge_engine.workers.run_index_job_worker import main
 
 

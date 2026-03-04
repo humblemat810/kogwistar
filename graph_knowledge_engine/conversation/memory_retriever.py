@@ -7,9 +7,9 @@ from typing import Callable, List, Optional, Tuple, cast
 from langchain_core.language_models import BaseChatModel
 
 from .models import ConversationEdge
-from conversation.models import RetrievalResult
+from .models import RetrievalResult
 from .models import ConversationNode, Grounding, MetaFromLastSummary, Span, Node, Edge, FilteringResult
-from .engine import GraphKnowledgeEngine
+from ..engine_core.engine import GraphKnowledgeEngine
 from pydantic import BaseModel
 
 

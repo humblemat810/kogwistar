@@ -3,10 +3,10 @@ from __future__ import annotations
 import os
 import typing as T
 
-import graph_knowledge_engine.engine as engmod
-from graph_knowledge_engine.engine import GraphKnowledgeEngine
+import graph_knowledge_engine.engine_core.engineas engmod
+from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
 from graph_knowledge_engine.graph_query import GraphQuery
-from graph_knowledge_engine.models import Document, Node, Edge, Span
+from graph_knowledge_engine.engine_core.models import Document, Node, Edge, Span
 # ---- Test helpers ----
 class _DummyLLM:
     """Prevents AzureChatOpenAI from initializing/networking during tests."""

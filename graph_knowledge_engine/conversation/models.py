@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 
-from engine_core.models import CONVERSATION_EDGE_CAUSAL_TYPE_BY_RELATION, BaseNodeMetadata, ContextCost, Edge, Node
+from graph_knowledge_engine.engine_core.models import CONVERSATION_EDGE_CAUSAL_TYPE_BY_RELATION, BaseNodeMetadata, ContextCost, Edge, Node
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 from typing import Any, ClassVar, Dict, List, Literal, Self, Tuple
@@ -325,7 +325,7 @@ class ConversationNode(ConversationRoleMixin, Node):
             raise
         return v
     def get_incoming_turn_edge(self, engine)-> "ConversationEdge | None":
-        from graph_knowledge_engine.engine import GraphKnowledgeEngine
+        from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
         engine2: GraphKnowledgeEngine = engine
         edges = engine2.query_edges(where={"relation": "next_turn", "target_id": self.id})
         assert len(edges) <= 1

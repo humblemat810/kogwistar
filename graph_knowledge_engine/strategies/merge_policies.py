@@ -1,6 +1,6 @@
 # strategies/merge_policies.py
 from __future__ import annotations
-from ..models import AdjudicationVerdict, AdjudicationTarget, Edge, Node, Span, MentionVerification
+from ..engine_core.models import AdjudicationVerdict, AdjudicationTarget, Edge, Node, Span, MentionVerification
 from .types import EngineLike, MergePolicy
 import uuid
 import json

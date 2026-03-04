@@ -3,8 +3,8 @@ import pytest
 from joblib import Memory
 from typing import List, cast
 
-from graph_knowledge_engine.engine import GraphKnowledgeEngine
-from graph_knowledge_engine.models import (
+from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
+from graph_knowledge_engine.engine_core.models import (
     Node,
     Edge,
     Document,
@@ -47,7 +47,7 @@ def _span_for(doc_id: str) -> Span:
     )
 from typing import List
 from pydantic import BaseModel
-from graph_knowledge_engine.models import LLMMergeAdjudication
+from graph_knowledge_engine.engine_core.models import LLMMergeAdjudication
 
 class BatchAdjudications(BaseModel):
     items: List[LLMMergeAdjudication]
@@ -98,7 +98,7 @@ def test_batch_adjudication_with_llm_cache(engine):
     def _adjudicate_with_llm_cached(mapping, payload):
         from langchain_openai import AzureChatOpenAI
         from langchain_core.prompts import ChatPromptTemplate
-        from graph_knowledge_engine.models import LLMMergeAdjudication
+        from graph_knowledge_engine.engine_core.models import LLMMergeAdjudication
 
         llm = AzureChatOpenAI(
             deployment_name=os.getenv("OPENAI_DEPLOYMENT_NAME_GPT4_1"), # type: ignore

@@ -1,7 +1,7 @@
 import uuid
 import pytest
 
-from graph_knowledge_engine.engine import GraphKnowledgeEngine
+from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
 from graph_knowledge_engine.workers.index_job_worker import IndexJobWorker
 
 
@@ -38,7 +38,7 @@ def eng(request, tmp_path, sa_engine, pg_schema) -> GraphKnowledgeEngine:
         return e
 
     pytest.importorskip("pgvector")
-    from graph_knowledge_engine.postgres_backend import PgVectorBackend
+    from graph_knowledge_engine.engine_core.postgres_backend import PgVectorBackend
 
     backend = PgVectorBackend(engine=sa_engine, embedding_dim=3, schema=pg_schema)
     backend.ensure_schema()

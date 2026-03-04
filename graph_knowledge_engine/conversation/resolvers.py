@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from conversation.models import ConversationEdge, ConversationNode, KnowledgeRetrievalResult, MemoryRetrievalResult
+from .models import ConversationEdge, ConversationNode, KnowledgeRetrievalResult, MemoryRetrievalResult
 
 from .models import MetaFromLastSummary
 from ..runtime.models import StateUpdate
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
-    from runtime.models import StateUpdate
+    from graph_knowledge_engine.runtime.models import StateUpdate
 """Workflow step resolvers.
 
 This module provides a registry-based step resolver that can be used by
@@ -46,12 +46,12 @@ if TYPE_CHECKING:
     from graph_knowledge_engine.runtime.runtime import StepRunResult
     RawStepFn = Callable[[StepContext], Union[Json, StepRunResult]]
 
-from runtime.models import RunSuccess
+from graph_knowledge_engine.runtime.models import RunSuccess
 
-# Import your real RunResult types from runtime/models
+# Import your real RunResult types from graph_knowledge_engine.runtime/models
 
 
-from engine_core.models import Span
+from graph_knowledge_engine.engine_core.models import Span
 
 
 
@@ -151,7 +151,7 @@ def _add_user_turn(ctx: "StepContext") -> "StepRunResult":
 
     # deterministic node id (align with orchestrator)
     from graph_knowledge_engine.conversation_orchestrator import get_id_for_conversation_turn
-    from engine_core.models import Grounding, MentionVerification, Span
+    from graph_knowledge_engine.engine_core.models import Grounding, MentionVerification, Span
 
     # deterministic node id (align with orchestrator); prefer provided turn_node_id if present.
     expected_id = get_id_for_conversation_turn(
@@ -274,7 +274,7 @@ def _link_prev_turn(ctx: "StepContext") -> "StepRunResult":
     mts = _get_prev_turn_meta_summary_from_state_or_deps(ctx)
 
     from .conversation_orchestrator import get_id_for_conversation_turn_edge
-    from conversation.models import ConversationEdge
+    from .models import ConversationEdge
 
     prev_node = ce.get_nodes([str(prev_turn_id)])[0]
     turn_node = ce.get_nodes([turn_node_id])[0]
@@ -707,7 +707,7 @@ def _decide_summarize(ctx: StepContext) -> StepRunResult:
 
     # 1) Snapshot-first
     snap_cost = None
-    from graph_knowledge_engine.engine import GraphKnowledgeEngine
+    from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
     ce: GraphKnowledgeEngine = deps.get("conversation_engine")
     if ce is not None and hasattr(ce, "latest_context_snapshot_cost"):
         try:
@@ -879,7 +879,7 @@ def _aa_get_view_and_question(ctx: StepContext) -> StepRunResult:
     question = agent._get_last_user_text(messages)
     system_prompt = deps["conversation_engine"].get_system_prompt(conversation_id)
     if not question:
-        from runtime.models import RunFailure
+        from graph_knowledge_engine.runtime.models import RunFailure
         return RunFailure(conversation_node_id=None, state_update=[('a', {"op_log": "aa_get_view_and_question: no user message"})], errors=["No user message found in conversation"])
 
     # Store view runtime-only (may not be jsonable).

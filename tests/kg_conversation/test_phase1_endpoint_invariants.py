@@ -3,11 +3,11 @@ from __future__ import annotations
 
 import pytest
 
-from conversation.models import ConversationEdge, MetaFromLastSummary
-from engine_core.models import Span, Grounding
+from graph_knowledge_engine.conversation.models import ConversationEdge, MetaFromLastSummary
+from graph_knowledge_engine.engine_core.models import Span, Grounding
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
-    from graph_knowledge_engine.engine import GraphKnowledgeEngine
+    from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
 def _mk_span(doc_id: str) -> Span:
     sp = Span.from_dummy_for_document()
     sp.doc_id = doc_id

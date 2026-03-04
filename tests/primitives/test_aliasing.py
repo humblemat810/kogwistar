@@ -2,14 +2,14 @@ import uuid
 import json
 import pytest
 
-from graph_knowledge_engine.engine import (
+from graph_knowledge_engine.engine_core.engine import (
     GraphKnowledgeEngine,
     AliasBook,
     uuid_to_base62,
     base62_to_uuid,
 )
 
-from graph_knowledge_engine.models import (
+from graph_knowledge_engine.engine_core.models import (
     LLMGraphExtraction,
     LLMNode,
     LLMEdge,

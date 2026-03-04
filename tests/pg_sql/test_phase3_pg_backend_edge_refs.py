@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
-from graph_knowledge_engine.postgres_backend import PgVectorBackend
+from graph_knowledge_engine.engine_core.postgres_backend import PgVectorBackend
 
 
 def _dummy_ref(*, doc_id: str, edge_id: str) -> tuple[str, str, Dict[str, Any], List[float] | None]:
