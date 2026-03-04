@@ -2,7 +2,8 @@
 from typing import List, Tuple, Any, Dict, runtime_checkable, Protocol, Sequence, Optional, Callable
 
 from pydantic import BaseModel
-from ..models import Node, Edge,AdjudicationQuestionCode, AdjudicationVerdict, AdjudicationTarget, LLMMergeAdjudication, Span
+from ..engine_core.storage_backend import StorageBackend
+from ..engine_core.models import Node, Edge,AdjudicationQuestionCode, AdjudicationVerdict, AdjudicationTarget, LLMMergeAdjudication, Span
 # ---------- Proposer ----------
 @runtime_checkable
 class MergeCandidateProposer(Protocol):
@@ -137,6 +138,9 @@ class EngineLike(Protocol):
     # llm runner
     @property
     def llm(self) -> BaseChatModel: ...
+
+    @property
+    def backend(self) -> StorageBackend: ...
 
     # @property
     # def embedding_function(self) -> Callable[list[Any], Any]: ...

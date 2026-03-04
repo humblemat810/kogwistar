@@ -5,8 +5,8 @@ from typing import Any, Dict, List, Optional
 
 import pytest
 
-from graph_knowledge_engine.workflow.langgraph_converter import to_langgraph, LGConverterOptions
-from graph_knowledge_engine.workflow.contract import BasePredicate
+from graph_knowledge_engine.runtime.langgraph_converter import to_langgraph, LGConverterOptions
+from graph_knowledge_engine.runtime.contract import BasePredicate
 
 
 # --- Minimum fake shapes (aligned with test_workflow_join.py) ---

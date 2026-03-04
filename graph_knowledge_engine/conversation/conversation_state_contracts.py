@@ -3,7 +3,8 @@ from __future__ import annotations
 from typing import Any, Optional, Callable, TypedDict, cast
 from pydantic import BaseModel, ConfigDict, Field
 
-from graph_knowledge_engine.models import MetaFromLastSummary, RetrievalResult
+from conversation.models import MetaFromLastSummary
+from conversation.models import RetrievalResult
 from .models import Span
 Json = Any
 

@@ -1,6 +1,6 @@
 import pytest
 
-from graph_knowledge_engine.workflow.contract import WorkflowSpec, validate_workflow
+from graph_knowledge_engine.runtime.contract import WorkflowSpec, validate_workflow
 
 
 class _FakeNode:

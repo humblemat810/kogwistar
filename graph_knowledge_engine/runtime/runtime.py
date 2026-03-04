@@ -11,11 +11,12 @@ import pathlib
 import logging
 from contextlib import nullcontext
 
+from conversation.models import ConversationEdge, WorkflowCheckpointNode, WorkflowRunNode, WorkflowStepExecNode
 from graph_knowledge_engine.id_provider import stable_id
 from graph_knowledge_engine.utils.log import bind_log_context
-from graph_knowledge_engine.models import RunSuccess, RunFailure, StateUpdate
-from ..conversation_orchestrator import get_id_for_conversation_turn_edge
-from graph_knowledge_engine.models import WorkflowNode, MentionVerification, ConversationEdge, WorkflowEdge, WorkflowRunNode
+from runtime.models import StateUpdate
+from engine_core.models import MentionVerification
+from runtime.models import RunFailure, RunSuccess, WorkflowEdge, WorkflowNode
 
 from .design import validate_workflow_design, Predicate
 from .serialize import try_serialize_with_ref
@@ -206,12 +207,12 @@ from .contract import WorkflowEdgeInfo
 from dataclasses import dataclass
 
 
-from graph_knowledge_engine.models import WorkflowStepExecNode, Grounding, Span
+from engine_core.models import Grounding, Span
     
-from graph_knowledge_engine.models import StepRunResult
+from .models import StepRunResult
 
 StepFn: TypeAlias = Callable[["StepContext"], StepRunResult]
-from ..conversation_state_contracts import WorkflowState
+from ..conversation.conversation_state_contracts import WorkflowState
 
 from dataclasses import dataclass, field
 from typing import Dict, List, Mapping, TypedDict, Iterator, TypeVar
@@ -1217,7 +1218,7 @@ class WorkflowRuntime:
     ) -> bool: # return success failure result
         # current engine always persist on edit, no batch persist mode needed
         from . import serialize  # keep runtime import-light
-        from graph_knowledge_engine.models import WorkflowRunNode, Grounding, Span  # adjust import path to your package layout
+        from engine_core.models import Grounding, Span  # adjust import path to your package layout
 
         excerpt = f"workflow_run {workflow_id} {run_id} status={status}"
         span = Span(**_make_trace_span(conversation_id=conversation_id, excerpt=excerpt, doc_id=f"conv:{conversation_id}"))
@@ -1436,7 +1437,7 @@ class WorkflowRuntime:
         state: WorkflowState,
         last_exec_node: WorkflowStepExecNode
     ) -> None:
-        from graph_knowledge_engine.models import WorkflowCheckpointNode, Grounding, Span  # adjust import path
+        from engine_core.models import Grounding, Span  # adjust import path
         
         state_copy = {k:v for k, v in state.items() if k != '_deps'}
         state_json = try_serialize_with_ref(state_copy)

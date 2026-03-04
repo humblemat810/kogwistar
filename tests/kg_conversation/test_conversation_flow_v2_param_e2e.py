@@ -2,7 +2,7 @@
 import json
 import re
 from pathlib import Path
-from typing import Callable, Sequence, Any, TypeVar, ParamSpec, cast, Literal
+from typing import Callable, Sequence, Any, TypeVar, ParamSpec, cast
 
 import pytest
 from joblib import Memory
@@ -15,22 +15,21 @@ from langchain_core.messages import AIMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.runnables import Runnable, RunnableConfig
 
+from conversation.models import FilteringResult, MetaFromLastSummary
 from graph_knowledge_engine.engine import GraphKnowledgeEngine
 from graph_knowledge_engine.id_provider import stable_id
 from graph_knowledge_engine.postgres_backend import PgVectorBackend
-from graph_knowledge_engine.models import (
+from engine_core.models import (
     Node,
     Span,
     Grounding,
     MentionVerification,
-    FilteringResult,
-    MetaFromLastSummary,
 )
-from graph_knowledge_engine.conversation_orchestrator import ConversationOrchestrator
+from graph_knowledge_engine.conversation.conversation_orchestrator import ConversationOrchestrator
 
 # Optional: knowledge-edge model may not exist in some repo versions.
 try:
-    from graph_knowledge_engine.models import Edge  # type: ignore
+    from engine_core.models import Edge  # type: ignore
 except Exception:  # pragma: no cover
     Edge = None  # type: ignore
 
@@ -240,7 +239,7 @@ class DeterministicLLM(BaseChatModel):
         return ChatResult(generations=[ChatGeneration(message=AIMessage(content=self._content))])
 
 
-def _make_engine(*, backend_kind: str, tmp_path: Path, sa_engine, pg_schema: str | None, graph_type: Literal["knowledge", "conversation", "workflow"], dim: int):
+def _make_engine(*, backend_kind: str, tmp_path: Path, sa_engine, pg_schema: str | None, graph_type: str, dim: int):
     engine = None
     if backend_kind == "chroma":
         engine = GraphKnowledgeEngine(
@@ -564,10 +563,9 @@ def test_conversation_flow_v2_param_e2e(
 
     # Filtering callback
     if llm_mode == "fake":
-        def fake_filtering_callback(_llm, conversation_content, cand_node_list_str, cand_edge_list_str, candidates_node_ids, candidate_edge_ids, context_text):
+        def filtering_callback(_llm, conversation_content, cand_node_list_str, cand_edge_list_str, candidates_node_ids, candidate_edge_ids, context_text):
             dumped = cached_filter(question=conversation_content, knowledge_key=knowledge_key)
             return FilteringResult.model_validate(dumped), "cached deterministic filter"
-        filtering_callback = fake_filtering_callback
     else:
         # Use the project's canonical prompting-based filter, but cache it (ignore llm).
         from graph_knowledge_engine.engine import candiate_filtering_callback
@@ -575,10 +573,9 @@ def test_conversation_flow_v2_param_e2e(
             fr, reason = candiate_filtering_callback(llm, conversation_content, cand_node_list_str, cand_edge_list_str, candidates_node_ids, candidate_edge_ids, context_text)
             return fr.model_dump(), reason
         cached_fn = cached(memory, cached_inner, ignore=["llm"])
-        def real_filtering_callback(llm: BaseChatModel, conversation_content, cand_node_list_str, cand_edge_list_str, candidates_node_ids, candidate_edge_ids, context_text):
+        def filtering_callback(llm: BaseChatModel, conversation_content, cand_node_list_str, cand_edge_list_str, candidates_node_ids, candidate_edge_ids, context_text):
             dumped, reason = cached_fn(llm, conversation_content, cand_node_list_str, cand_edge_list_str, candidates_node_ids, candidate_edge_ids, context_text)
             return FilteringResult.model_validate(dumped), reason
-        filtering_callback = real_filtering_callback
 
     # Answer harness (cached, serializable-only inner)
     def answer_only_harness(*, conversation_id: str, prev_turn_meta_summary: MetaFromLastSummary, user_text: str, **_):
@@ -587,7 +584,7 @@ def test_conversation_flow_v2_param_e2e(
         # We keep this harness minimal: the v2 orchestrator expects a ConversationAIResponse-like object.
         # If your repo defines ConversationAIResponse, use it directly.
         try:
-            from graph_knowledge_engine.models import ConversationAIResponse
+            from conversation.models import ConversationAIResponse
             return ConversationAIResponse(
                 response_node_id=None,  # will be filled by engine call below if available
                 llm_decision_need_summary=bool(payload.get("need_summary", False)),
@@ -619,7 +616,7 @@ def test_conversation_flow_v2_param_e2e(
         mem_id="mem0",
         role="user",
         content=question,
-        filtering_callback=cast(Any, filtering_callback),
+        filtering_callback=filtering_callback,
         workflow_id="conversation.add_turn.v2.test",
         in_conv=True,
         add_turn_only=False,

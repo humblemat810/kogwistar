@@ -1,10 +1,12 @@
 from __future__ import annotations
-import functools
-from graph_knowledge_engine.utils.log import bind_log_context
-from ..models import MetaFromLastSummary, KnowledgeRetrievalResult, MemoryRetrievalResult, StateUpdate
+
+from conversation.models import ConversationEdge, ConversationNode, KnowledgeRetrievalResult, MemoryRetrievalResult
+
+from .models import MetaFromLastSummary
+from ..runtime.models import StateUpdate
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
-    from .runtime import StateUpdate
+    from runtime.models import StateUpdate
 """Workflow step resolvers.
 
 This module provides a registry-based step resolver that can be used by
@@ -39,163 +41,27 @@ import inspect
 
 Json = Any
 if TYPE_CHECKING:
-    from tool_runner import ToolRunner
-    from graph_knowledge_engine.workflow.runtime import StepRunResult, StepContext
+    from .tool_runner import ToolRunner
+    from graph_knowledge_engine.runtime.runtime import StepContext
+    from graph_knowledge_engine.runtime.runtime import StepRunResult
     RawStepFn = Callable[[StepContext], Union[Json, StepRunResult]]
 
-from graph_knowledge_engine.models import RunSuccess
+from runtime.models import RunSuccess
 
 # Import your real RunResult types from runtime/models
 
 
-from graph_knowledge_engine.models import ConversationEdge, Span
+from engine_core.models import Span
 
 
 
 # Agentic answering helper types
-from ..agentic_answering import AgenticAnsweringAgent, snapshot_hash, AnswerWithCitations, AnswerEvaluation
+from .agentic_answering import AgenticAnsweringAgent, snapshot_hash, AnswerWithCitations, AnswerEvaluation
 
-class BaseResolver:
-    ops: set
+from graph_knowledge_engine.runtime.resolvers import BaseResolver, MappingStepResolver
 
-@dataclass
-class MappingStepResolver(BaseResolver):
-    handlers: Dict[str, RawStepFn]
-    default: Optional[RawStepFn] = None
-    
-    @property
-    def ops(self):
-        return set(self.handlers)
-
-    def __init__(self, handlers: Optional[Mapping[str, RawStepFn]] = None, *, default: Optional[RawStepFn] = None) -> None:
-        self.handlers = dict(handlers or {})
-        self.default = default
-        # Ops that are allowed to execute nested workflows (i.e., may call back into
-        # WorkflowRuntime). Runtime may use this to avoid holding a step-UoW open.
-        self.nested_ops: set[str] = set()
-        # Preferred merge mode per state key: 'u' overwrite, 'a' append, 'e' extend
-        self._state_schema: dict[str, str] = {}
-
-    def register(self, op: str, *, is_nested: bool = False) -> Callable[[RawStepFn], RawStepFn]:
-        
-        def _decorator(fn: RawStepFn) -> RawStepFn:
-            
-            
-            @functools.wraps(fn)
-            def wrapped_fun (*arg, **kwarg):
-                ctx: StepContext = arg[0]
-                with bind_log_context(op=op, conversation_id = ctx.conversation_id, 
-                                      workflow_run_id = f"{ctx.workflow_id}--{ctx.run_id}", 
-                                      step_id = ctx.workflow_node_id):
-                    return fn(*arg, **kwarg)
-            self.handlers[op] = fn #wrapped_fun        
-            if is_nested:
-                self.nested_ops.add(str(op))
-            return wrapped_fun
-        return _decorator
-
-    def resolve(self, op: str) -> Callable[[StepContext], StepRunResult]:
-        raw = self.handlers.get(op) or self.default
-        from graph_knowledge_engine.models import RunFailure
-        if raw is None:
-            raise KeyError(f"No step handler registered for op={op!r}")
-
-        def _wrapped(ctx: StepContext) -> StepRunResult:
-            try:
-                out = raw(ctx)
-                if isinstance(out, (RunSuccess, RunFailure)):
-                    return out
-                else:
-                    raise TypeError("Resolver must return StepRunResult")
-                # return out  # field name might be `data`/`payload` in your codebase
-            except Exception as e:
-                return RunFailure(conversation_node_id=ctx.state_view.get('workflow_node_id') , state_update = [('a', {'op_log': str(e)})], errors=[str(e)])  # match your RunFailure fields
-        return _wrapped
-
-
-    # ------------------------------------------------------------------
-    # State schema for native updates + LangGraph conversion
-    # ------------------------------------------------------------------
-
-    def set_state_schema(self, schema: Mapping[str, str]) -> None:
-        """Set preferred merge mode per state key.
-
-        Values should be one of: 'u' (overwrite), 'a' (append), 'e' (extend).
-        """
-        self._state_schema = {str(k): str(v) for k, v in dict(schema).items()}
-
-    def describe_state(self) -> dict[str, str]:
-        """Return the state schema for native updates / LangGraph conversion."""
-        return dict(self._state_schema)
-
-    def infer_state_schema_best_effort(self) -> dict[str, str]:
-        """Best-effort inference of keys touched by resolvers.
-
-        We intentionally keep this conservative:
-        - Any key assigned via state["k"] = ...  -> 'u'
-        - Any key via state.setdefault("k", []).append(...) -> 'a'
-        - Any key via state.setdefault("k", []).extend(...) -> 'e'
-
-        If inference fails, returns the existing schema unchanged.
-        """
-        inferred: dict[str, str] = dict(self._state_schema)
-
-        def _note(k: str, mode: str) -> None:
-            if k and mode in ("u", "a", "e"):
-                # if conflicts, prefer 'u' (safest) over list modes
-                prev = inferred.get(k)
-                if prev is None:
-                    inferred[k] = mode
-                elif prev != mode:
-                    inferred[k] = "u"
-
-        for op, fn in list(self.handlers.items()):
-            try:
-                src = inspect.getsource(fn)
-            except Exception:
-                continue
-            try:
-                tree = ast.parse(src)
-            except Exception:
-                continue
-
-            # We look for patterns, not full correctness.
-            for node in ast.walk(tree):
-                # state["k"] = ...
-                if isinstance(node, ast.Assign):
-                    for tgt in node.targets:
-                        if isinstance(tgt, ast.Subscript) and isinstance(tgt.value, ast.Name) and tgt.value.id == "state":
-                            sl = tgt.slice
-                            if isinstance(sl, ast.Constant) and isinstance(sl.value, str):
-                                _note(sl.value, "u")
-
-                # state.setdefault("k", []).append/extend
-                if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
-                    attr = node.func.attr
-                    if attr not in ("append", "extend"):
-                        continue
-                    recv = node.func.value
-                    if not (isinstance(recv, ast.Call) and isinstance(recv.func, ast.Attribute)):
-                        continue
-                    if recv.func.attr != "setdefault":
-                        continue
-                    base = recv.func.value
-                    if not (isinstance(base, ast.Name) and base.id == "state"):
-                        continue
-                    if not recv.args:
-                        continue
-                    k0 = recv.args[0]
-                    if isinstance(k0, ast.Constant) and isinstance(k0.value, str):
-                        _note(k0.value, "a" if attr == "append" else "e")
-
-        self._state_schema = dict(inferred)
-        return dict(self._state_schema)
-
-    def __call__(self, op: str) -> Callable[[StepContext], StepRunResult]:
-        return self.resolve(op)
-    
-    
 default_resolver = MappingStepResolver()
+conversation_default_resolver = default_resolver
 
 
 def _deps(ctx: StepContext) -> Dict[str, Any]:
@@ -285,7 +151,7 @@ def _add_user_turn(ctx: "StepContext") -> "StepRunResult":
 
     # deterministic node id (align with orchestrator)
     from graph_knowledge_engine.conversation_orchestrator import get_id_for_conversation_turn
-    from graph_knowledge_engine.models import ConversationNode, Grounding, MentionVerification, Span
+    from engine_core.models import Grounding, MentionVerification, Span
 
     # deterministic node id (align with orchestrator); prefer provided turn_node_id if present.
     expected_id = get_id_for_conversation_turn(
@@ -407,8 +273,8 @@ def _link_prev_turn(ctx: "StepContext") -> "StepRunResult":
 
     mts = _get_prev_turn_meta_summary_from_state_or_deps(ctx)
 
-    from graph_knowledge_engine.conversation_orchestrator import get_id_for_conversation_turn_edge
-    from graph_knowledge_engine.models import ConversationEdge
+    from .conversation_orchestrator import get_id_for_conversation_turn_edge
+    from conversation.models import ConversationEdge
 
     prev_node = ce.get_nodes([str(prev_turn_id)])[0]
     turn_node = ce.get_nodes([turn_node_id])[0]
@@ -457,8 +323,7 @@ def _link_assistant_turn(ctx: "StepContext") -> "StepRunResult":
     span = sv.get("self_span")
     mts = _get_prev_turn_meta_summary_from_state_or_deps(ctx)
 
-    from graph_knowledge_engine.conversation_orchestrator import get_id_for_conversation_turn_edge
-    from graph_knowledge_engine.models import ConversationEdge
+    from .conversation_orchestrator import get_id_for_conversation_turn_edge
 
     user_turn = ce.get_nodes([user_turn_id])[0]
     resp_turn = ce.get_nodes([str(response_node_id)])[0]
@@ -548,8 +413,8 @@ def _memory_retrieve(ctx: StepContext) -> StepRunResult:
     with ctx.state_write as state:
         state.setdefault("op_log", []).append("memory_retrieve")
 
-    from ..memory_retriever import MemoryRetriever
-    from ..workflow.serialize import to_jsonable
+    from .memory_retriever import MemoryRetriever
+    from ..runtime.serialize import to_jsonable
 
     mem_retriever = MemoryRetriever(
         conversation_engine=deps["conversation_engine"],
@@ -604,8 +469,8 @@ def _kg_retrieve(ctx: StepContext) -> StepRunResult:
     with ctx.state_write as state:
         state.setdefault("op_log", []).append("kg_retrieve")
 
-    from ..knowledge_retriever import KnowledgeRetriever
-    from ..workflow.serialize import to_jsonable
+    from .knowledge_retriever import KnowledgeRetriever
+    from ..runtime.serialize import to_jsonable
 
     max_retrieval_level = int(deps.get("max_retrieval_level", 2))
 
@@ -664,7 +529,7 @@ def _memory_pin(ctx: StepContext) -> StepRunResult:
     with ctx.state_write as state:
         state.setdefault("op_log", []).append("memory_pin")
 
-    from ..memory_retriever import MemoryRetriever
+    from .memory_retriever import MemoryRetriever
 
     prev_turn_meta_summary = deps.get("prev_turn_meta_summary")
     state = ctx.state_view
@@ -712,7 +577,7 @@ def _kg_pin(ctx: StepContext) -> StepRunResult:
     with ctx.state_write as state:
         state.setdefault("op_log", []).append("kg_pin")
     state = ctx.state_view
-    from ..knowledge_retriever import KnowledgeRetriever
+    from .knowledge_retriever import KnowledgeRetriever
 
     prev_turn_meta_summary = deps.get("prev_turn_meta_summary")
     max_retrieval_level = int(deps.get("max_retrieval_level", 2))
@@ -729,7 +594,7 @@ def _kg_pin(ctx: StepContext) -> StepRunResult:
     pinned_ptrs: list[str] = []
     pinned_edges: list[str] = []
     if kg_rehydrated is not None and getattr(kg_rehydrated, "selected", None):
-        from ..models import FilteringResult
+        from .models import FilteringResult
         # todo change model into pydantic if possible
         selected = FilteringResult(**kg_rehydrated.selected)
         pinned_ptrs, pinned_edges = kg_retriever.pin_selected(
@@ -798,7 +663,7 @@ def _answer(ctx: StepContext) -> StepRunResult:
             raise RuntimeError("deps must provide either 'agent' or callable 'answer_only'")
         res_raw = answer_only(conversation_id=state["conversation_id"], prev_turn_meta_summary=mts)
         try:
-            from ..models import ConversationAIResponse
+            from .models import ConversationAIResponse
             resp = ConversationAIResponse.model_validate(res_raw)
             response_node_id = getattr(resp, "response_node_id", None)
             llm_decision_need_summary = bool(getattr(resp, "llm_decision_need_summary", False))
@@ -1014,7 +879,7 @@ def _aa_get_view_and_question(ctx: StepContext) -> StepRunResult:
     question = agent._get_last_user_text(messages)
     system_prompt = deps["conversation_engine"].get_system_prompt(conversation_id)
     if not question:
-        from graph_knowledge_engine.models import RunFailure
+        from runtime.models import RunFailure
         return RunFailure(conversation_node_id=None, state_update=[('a', {"op_log": "aa_get_view_and_question: no user message"})], errors=["No user message found in conversation"])
 
     # Store view runtime-only (may not be jsonable).
@@ -1121,7 +986,7 @@ def _aa_materialize_evidence_pack(ctx: StepContext) -> StepRunResult:
 
     from ..utils.pydanic_model_consumer_wrapper import cache_pydantic_structured
     from joblib import Memory
-    from ..models import EvidencePackDigest
+    from .models import EvidencePackDigest
 
     mem = Memory(location=str((pathlib.Path(".joblib") / "_materialize_evidence_pack").absolute()))
     cached_call = cache_pydantic_structured(

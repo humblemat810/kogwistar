@@ -4,9 +4,8 @@ from __future__ import annotations
 import json
 import pytest
 from typing import Literal
-from graph_knowledge_engine.models import (
-    ConversationNode,
-    ConversationEdge,
+from conversation.models import ConversationEdge, ConversationNode
+from engine_core.models import (
     Grounding,
     Span,
     MentionVerification,

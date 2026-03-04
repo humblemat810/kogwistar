@@ -5,9 +5,11 @@ from typing import Callable, List, Optional, Tuple
 
 from langchain_core.language_models import BaseChatModel
 
+from .models import KnowledgeRetrievalResult
+
 from .memory_retriever import MemoryRetriever, MemoryRetrievalResult, MemoryPinResult
 from .knowledge_retriever import KnowledgeRetriever
-from .models import KnowledgeRetrievalResult, Span
+from ..engine_core.models import Span
 
 
 @dataclass

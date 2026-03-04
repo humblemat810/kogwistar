@@ -5,8 +5,8 @@ from typing import Any, Dict, List, Set
 
 pytest.importorskip("langgraph")
 
-from graph_knowledge_engine.workflow.contract import BasePredicate
-from graph_knowledge_engine.workflow.langgraph_converter import LGConverterOptions, to_langgraph
+from graph_knowledge_engine.runtime.contract import BasePredicate
+from graph_knowledge_engine.runtime.langgraph_converter import LGConverterOptions, to_langgraph
 from langgraph.graph.state import CompiledStateGraph
 
 

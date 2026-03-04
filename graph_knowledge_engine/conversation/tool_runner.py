@@ -18,10 +18,12 @@ from typing import TYPE_CHECKING, Any, Callable, Optional, TypeVar, Iterable, Tu
 
 from pydantic import Json
 
+from .models import ConversationEdge
 
-from .models import BaseToolResult, ConversationNode, ConversationEdge, Grounding, MentionVerification, Span
+
+from .models import BaseToolResult, ConversationNode, Grounding, MentionVerification, Span
 if TYPE_CHECKING:
-    from graph_knowledge_engine.models import MetaFromLastSummary
+    from conversation.models import MetaFromLastSummary
     from graph_knowledge_engine.engine import GraphKnowledgeEngine
     from graph_knowledge_engine.conversation_orchestrator import ConversationOrchestrator
 

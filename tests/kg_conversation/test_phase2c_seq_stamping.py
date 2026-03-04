@@ -2,7 +2,7 @@
 import pytest
 
 # These imports assume the repo layout: graph_knowledge_engine/*.py
-from graph_knowledge_engine.conversation_orchestrator import ConversationOrchestrator
+from graph_knowledge_engine.conversation.conversation_orchestrator import ConversationOrchestrator
 
 class FakeConversationEngine:
     def __init__(self):

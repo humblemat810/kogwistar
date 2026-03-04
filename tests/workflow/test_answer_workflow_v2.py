@@ -1,9 +1,9 @@
 
 import pytest
 
-from graph_knowledge_engine.agentic_answering import AgenticAnsweringAgent, AgentConfig, AnswerEvaluation, AnswerWithCitations, EvidenceSelection
+from conversation.agentic_answering import AgenticAnsweringAgent, AgentConfig, AnswerEvaluation, AnswerWithCitations, EvidenceSelection
 from graph_knowledge_engine.id_provider import stable_id
-from graph_knowledge_engine.models import MetaFromLastSummary
+from conversation.models import MetaFromLastSummary
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.runnables import Runnable
 

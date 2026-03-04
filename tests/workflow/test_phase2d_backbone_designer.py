@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from graph_knowledge_engine.workflow.design import ConversationWorkflowDesigner, load_workflow_design
+from conversation.designer import ConversationWorkflowDesigner
+from graph_knowledge_engine.runtime.design import load_workflow_design
 
 
 def test_phase2d_conversation_designer_ensure_backbone(backend_kind, tmp_path, sa_engine, pg_schema):

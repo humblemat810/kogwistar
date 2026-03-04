@@ -7,7 +7,7 @@ from typing import (
 from dataclasses import dataclass
 import json
 
-from ..models import Node, Edge
+from ..engine_core.models import Node, Edge
 from .types import MergeCandidateProposer, EngineLike  # your existing protocol types
 
 PairKind = Literal["node_node", "edge_edge", "node_edge", "any_any", "any_node", "any_edge", "node_any", "edge_any"]
@@ -256,7 +256,7 @@ class VectorProposer(MergeCandidateProposer):
         if include_nodes:
             # ---- search nodes given node and/or edge embedding in a list---------------------------------------
             
-            node_ref_result = engine.node_refs_collection.get(where=cand_where)
+            node_ref_result = engine.backend.node_refs_get(where=cand_where)
             ok_node_ids = set((i['node_id']) for i in node_ref_result['metadatas']) 
             node_results = engine.node_collection.query(
                 query_embeddings=q_embs,
@@ -271,7 +271,7 @@ class VectorProposer(MergeCandidateProposer):
             node_embs_per_q = node_results.get("embeddings") or []
         # ---- search edges given node and/or edge embedding in a list --------------------------------------------------
         if include_edges:
-            edge_ref_result = engine.edge_refs_collection.get(where=cand_where)
+            edge_ref_result = engine.backend.edge_refs_get(where=cand_where)
             ok_edge_ids = set((i['edge_id']) for i in edge_ref_result['metadatas']) 
             edge_results = engine.edge_collection.query(
                 query_embeddings=q_embs,
