@@ -3,9 +3,9 @@ import pytest
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
-from graph_knowledge_engine.workflow.langgraph_converter import LGConverterOptions, to_langgraph
-from graph_knowledge_engine.workflow.contract import BasePredicate
-from graph_knowledge_engine.models import RunSuccess
+from graph_knowledge_engine.runtime.langgraph_converter import LGConverterOptions, to_langgraph
+from graph_knowledge_engine.runtime.contract import BasePredicate
+from runtime.models import RunSuccess
 
 
 # ---- Minimum fake shapes (match tests/workflow/test_workflow_join.py) ----

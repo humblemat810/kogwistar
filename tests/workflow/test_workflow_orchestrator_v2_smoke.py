@@ -1,7 +1,9 @@
 
-from graph_knowledge_engine.engine import GraphKnowledgeEngine, candiate_filtering_callback
-from graph_knowledge_engine.conversation_orchestrator import ConversationOrchestrator
-from graph_knowledge_engine.models import MetaFromLastSummary
+from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine, candiate_filtering_callback
+from graph_knowledge_engine.conversation.conversation_orchestrator import ConversationOrchestrator
+from conversation.models import MetaFromLastSummary
+from runtime import MappingStepResolver
+from runtime.models import WorkflowEdge, WorkflowNode
 
 
 def test_workflow_runtime_uses_default_resolver(tmp_path):
@@ -11,12 +13,14 @@ def test_workflow_runtime_uses_default_resolver(tmp_path):
     assertions minimal and avoids HTML bundle dumping.
     """
 
-    from graph_knowledge_engine.models import WorkflowEdge, WorkflowNode, Span, Grounding, MentionVerification
-    from graph_knowledge_engine.workflow.runtime import WorkflowRuntime
-    from graph_knowledge_engine.conversation_state_contracts import WorkflowStateModel, WorkflowState
-    from graph_knowledge_engine.workflow.runtime import StepRunResult, State
-    from graph_knowledge_engine.workflow.resolvers import default_resolver, MappingStepResolver
-    from graph_knowledge_engine.tool_runner import ToolRunner
+    from engine_core.models import Span, Grounding, MentionVerification
+    from graph_knowledge_engine.runtime.runtime import WorkflowRuntime
+    from graph_knowledge_engine.conversation.conversation_state_contracts import WorkflowStateModel, WorkflowState
+    from graph_knowledge_engine.runtime.runtime import StepRunResult, State
+    from graph_knowledge_engine.conversation.resolvers import default_resolver
+    
+    
+    from graph_knowledge_engine.conversation.tool_runner import ToolRunner
     
     from typing import Callable, TypeVar, ParamSpec, cast
     from joblib import Memory
@@ -159,7 +163,7 @@ def test_workflow_runtime_uses_default_resolver(tmp_path):
     conv_id = conversation_id
     start_node_id = "test-start-turn-id-123"
     conv_id, start_node_id_returned = conversation_engine.create_conversation(user_id, conv_id, start_node_id)
-    from graph_knowledge_engine.models import FilteringResult
+    from conversation.models import FilteringResult
     from langchain_core.language_models import BaseChatModel
     # def wrapped_cached_callback(llm: BaseChatModel, conversation_content, 
     #                             cand_node_list_str, cand_edge_list_str, 
@@ -218,7 +222,7 @@ def test_workflow_runtime_uses_default_resolver(tmp_path):
                                       )
     # max_retrieval_level: int = 2
     # summary_char_threshold: int = 12000
-    from graph_knowledge_engine.conversation_orchestrator import ConversationOrchestrator
+    from graph_knowledge_engine.conversation.conversation_orchestrator import ConversationOrchestrator
     orchestrator = ConversationOrchestrator(workflow_engine=workflow_engine, 
                                             ref_knowledge_engine=ref_knowledge_engine,
                                             conversation_engine=conversation_engine,

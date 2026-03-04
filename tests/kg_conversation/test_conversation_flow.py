@@ -7,9 +7,10 @@ from chromadb.utils.embedding_functions import EmbeddingFunction
 from chromadb.api.types import Embeddings
 from langchain_core.language_models import BaseChatModel
 from langchain_core.prompts import ChatPromptTemplate
+from conversation.models import ConversationNode, FilteringResult, MetaFromLastSummary
 from graph_knowledge_engine.cdc.oplog import OplogWriter
 from graph_knowledge_engine.engine import GraphKnowledgeEngine
-from graph_knowledge_engine.models import FilteringResult, MetaFromLastSummary, Node, Span, Grounding, MentionVerification, ConversationNode
+from engine_core.models import Node, Span, Grounding, MentionVerification
 from langchain_core.messages import AIMessage
 from pydantic import BaseModel, Field
 

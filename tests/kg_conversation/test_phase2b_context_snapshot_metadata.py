@@ -1,6 +1,7 @@
 import pytest
 
-from graph_knowledge_engine.models import ContextCost, ContextSnapshotMetadata
+from conversation.models import ContextSnapshotMetadata
+from engine_core.models import ContextCost
 
 
 def test_context_cost_addition_token_optional():

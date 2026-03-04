@@ -1,5 +1,5 @@
-from ..engine import GraphKnowledgeEngine
-from ..models import Node, Edge, Span
+from ..engine_core.engine import GraphKnowledgeEngine
+from ..engine_core.models import Node, Edge, Span
 from typing import Iterable, Optional
 import json
 def _fmt_span_short(r: dict) -> str:

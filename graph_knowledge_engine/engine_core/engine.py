@@ -6,18 +6,23 @@ import contextvars
 from langchain_core.language_models import BaseChatModel
 import pathlib
 import uuid
-from .id_provider import stable_id
+
+import conversation.models
+from ..runtime.models import WorkflowNode
+
+from ..conversation.models import AddTurnResult, ContextSnapshotMetadata, ConversationAIResponse, ConversationEdge, ConversationNode, ConversationNodeMetadata, FilteringResponse, FilteringResult, MetaFromLastSummary, RetrievalResult, WorkflowStepExecNode
+from ..id_provider import stable_id
 import time
 from . import models
-from .models import AddTurnResult, MetaFromLastSummary, RetrievalResult, WorkflowCheckpointNode, WorkflowNode, WorkflowStepExecNode
+from ..conversation.models import WorkflowCheckpointNode
 from .engine_sqlite import EngineSQLite
 from .engine_postgres_meta import EnginePostgresMetaStore
 from .storage_backend import ChromaBackend, NoopUnitOfWork
 from .postgres_backend import PgVectorBackend
-from .workers.index_job_worker import IndexJobWorker
-from .utils.log import bind_log_context
+from ..workers.index_job_worker import IndexJobWorker
+from ..utils.log import bind_log_context
 from .indexing import IndexingSubsystem
-from .conversation_context import PromptContext, apply_ordering
+from ..conversation.conversation_context import PromptContext, apply_ordering
 if True:
     """_summary_
 
@@ -45,21 +50,19 @@ if True:
         verifier=VF.ensemble_default,          # or VF.coverage_only / VF.strict_with_min_span
     )
     """
-from .conversation_context import ContextItem, ContextSources, ConversationContextView, DroppedItem, ContextRenderer, Role
+from ..conversation.conversation_context import ContextItem, ContextSources, ConversationContextView, DroppedItem, ContextRenderer, Role
 import numpy as np
 import ast
 from typing import Iterator, List, Optional, Dict, Any, Self, Tuple, TypeAlias, cast
-from .typing_interfaces import CollectionLike, EmbeddingFunctionLike
+from ..typing_interfaces import CollectionLike, EmbeddingFunctionLike
 from dataclasses import dataclass, field
-from .graph_query import GraphQuery
+from ..graph_query import GraphQuery
 from chromadb import Client
 from chromadb.config import Settings
 from graph_knowledge_engine.extraction import BaseDocValidator
 from .models import (
     Node,
     Edge,
-    ConversationNode,
-    ConversationEdge,
     Document,
     Domain,
     Grounding,
@@ -77,14 +80,9 @@ from .models import (
     QUESTION_DESC,
     AdjudicationVerdict,
     LLMMergeAdjudication,
-    ContextSnapshotMetadata,
-    ContextCost,
-    ConversationNodeMetadata,
-    ConversationAIResponse,
-    FilteringResponse, 
-    FilteringResult
+    ContextCost
 )
-from .cdc.change_event import EntityRef, Op, EntityRefModel
+from ..cdc.change_event import EntityRef, Op, EntityRefModel
 from langchain_openai import AzureChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 import json
@@ -2078,10 +2076,10 @@ class GraphKnowledgeEngine:
         self.cross_kind_strategy = "reifies"       # "reifies" | "equivalent" (default "reifies")
         # to do- refractor via composition. protocol template in strategies.py, strategies helper in ./strategies/
         # strategies now are function objects
-        from .strategies import CompositeProposer, VectorProposer, DefaultVerifier, PreferExistingCanonical, Adjudicator
+        from ..strategies import CompositeProposer, VectorProposer, DefaultVerifier, PreferExistingCanonical, Adjudicator
         # from .strategies.adjudicators import LLMPairAdjudicatorImpl, LLMBatchAdjudicatorImpl
-        from .strategies.verifiers import DefaultVerifier, VerifierConfig
-        from .strategies.types import Verifier
+        from ..strategies.verifiers import DefaultVerifier, VerifierConfig
+        from ..strategies.types import Verifier
         from graph_knowledge_engine.strategies import IAdjudicator
         self.proposer = proposer or VectorProposer(self)
         self.adjudicator : IAdjudicator = adjudicator or Adjudicator(self)
@@ -2477,7 +2475,7 @@ class GraphKnowledgeEngine:
         # single-call safety for ad-hoc usage
         self._assert_endpoints_exist(edge)
         # Phase 1: conversation invariants + idempotent next_turn
-        if isinstance(edge, models.ConversationEdge):
+        if isinstance(edge, conversation.models.ConversationEdge):
             self._validate_conversation_edge_add(edge)
 
         
@@ -2728,7 +2726,7 @@ class GraphKnowledgeEngine:
             return rid.split("::", 1)[0]
         return None
 
-    def _conversation_doc_id_for_edge(self, edge: models.ConversationEdge) -> str | None:
+    def _conversation_doc_id_for_edge(self, edge: conversation.models.ConversationEdge) -> str | None:
         doc_id = getattr(edge, "doc_id", None)
         if isinstance(doc_id, str) and doc_id:
             return doc_id
@@ -2738,13 +2736,13 @@ class GraphKnowledgeEngine:
             return f"conv:{conv_id}"
         return None
     @conversation_only
-    def _normalize_conversation_edge_metadata(self, edge: models.ConversationEdge) -> None:
+    def _normalize_conversation_edge_metadata(self, edge: conversation.models.ConversationEdge) -> None:
         """Backfill `causal_type` for conversation edges from relation mapping."""
         md = dict(edge.metadata or {})
         if md.get("causal_type") is None:
-            md["causal_type"] = models.infer_conversation_edge_causal_type(edge.relation)
+            md["causal_type"] = conversation.models.infer_conversation_edge_causal_type(edge.relation)
         edge.metadata = md
-    def _is_duplicate_next_turn_noop(self, edge: models.ConversationEdge) -> bool:
+    def _is_duplicate_next_turn_noop(self, edge: conversation.models.ConversationEdge) -> bool:
         """True iff this is an *exact duplicate* next_turn (same conv, same src/tgt).
 
         Implemented via endpoint index + single edge fetch (no scans).
@@ -2794,7 +2792,7 @@ class GraphKnowledgeEngine:
         return bool(same_src and same_tgt and same_src_edges and same_tgt_edges)
 
     @conversation_only
-    def _validate_conversation_edge_add(self, edge: models.ConversationEdge) -> None:
+    def _validate_conversation_edge_add(self, edge: conversation.models.ConversationEdge) -> None:
         """Validate conversation-edge structural invariants (Phase 1).
 
         Enforces (conversation graphs only):
@@ -2810,7 +2808,7 @@ class GraphKnowledgeEngine:
 
         self._normalize_conversation_edge_metadata(edge)
         md = edge.metadata or {}
-        causal_type = md.get("causal_type") or models.infer_conversation_edge_causal_type(edge.relation)
+        causal_type = md.get("causal_type") or conversation.models.infer_conversation_edge_causal_type(edge.relation)
         doc_id = self._conversation_doc_id_for_edge(edge)
 
         src = (edge.source_ids or [None])[0]
@@ -2895,7 +2893,7 @@ class GraphKnowledgeEngine:
                  **({"causal_type": edge.metadata.get("causal_type")} if edge.metadata.get("causal_type") else{})
                 }))
         if self.kg_graph_type == "workflow":
-            from .models import WorkflowEdge
+            from ..runtime.models import WorkflowEdge
             edge = cast(WorkflowEdge, edge)
             edge_metadata = edge.metadata
             base_metadata.update(_strip_none({
@@ -2921,7 +2919,7 @@ class GraphKnowledgeEngine:
         # single-call safety for ad-hoc usage
         self._assert_endpoints_exist(edge)
         # Phase 1: conversation invariants + idempotent next_turn
-        if isinstance(edge, models.ConversationEdge):
+        if isinstance(edge, conversation.models.ConversationEdge):
             # Idempotent duplicate next_turn should be a NOOP.
             if self._is_duplicate_next_turn_noop(edge):
                 return
@@ -4435,50 +4433,92 @@ class GraphKnowledgeEngine:
     # ----------------------------
     # Conversation Abstraction
     # ----------------------------
+    def _get_conversation_service(
+        self,
+        *,
+        knowledge_engine: "GraphKnowledgeEngine | None" = None,
+        workflow_engine: "GraphKnowledgeEngine | None" = None,
+    ):
+        """Lazily build a conversation service façade for compatibility shims."""
+        cache = getattr(self, "_conversation_service_cache", None)
+        if cache is None:
+            cache = {}
+            self._conversation_service_cache = cache
+
+        ke = knowledge_engine or self
+        we = workflow_engine
+        key = (id(ke), id(we), id(self.llm))
+        svc = cache.get(key)
+        if svc is not None:
+            return svc
+        from graph_knowledge_engine.conversation import ConversationService
+
+        svc = ConversationService(
+            conversation_engine=cast(Any, self),
+            knowledge_engine=cast(Any, ke),
+            workflow_engine=cast(Any, we),
+            llm=self.llm,
+        )
+        cache[key] = svc
+        return svc
     @conversation_only
-    def create_conversation(self, user_id, conv_id = None, node_id: str | None | uuid.UUID = None) -> tuple[str, str]:
-        from .conversation_orchestrator import get_id_for_conversation_turn
+    def _create_conversation_primitive(self, user_id, conv_id=None, node_id: str | None | uuid.UUID = None) -> tuple[str, str]:
+        """Engine primitive for creating the conversation start node.
+
+        Kept as a primitive so ConversationService can delegate here without recursion.
+        """
+        from ..conversation.conversation_orchestrator import get_id_for_conversation_turn
         if self.kg_graph_type != "conversation":
             raise Exception("conversation only allowed to be on canva engine")
-        """Create a new conversation thread ID and reserve it with a start node."""
         new_index = -1
         conv_id = conv_id or str(uuid.uuid4())
-        node_id = node_id  or get_id_for_conversation_turn(ConversationNode.id_kind, user_id, 
-                                            conv_id, "Start of conversation", str(new_index), "system", "conversation_summary", in_conv=True)
-        # Create a start node to reserve the ID and anchor the conversation
+        node_id = node_id or get_id_for_conversation_turn(
+            ConversationNode.id_kind,
+            user_id,
+            conv_id,
+            "Start of conversation",
+            str(new_index),
+            "system",
+            "conversation_summary",
+            in_conv=True,
+        )
         start_node = ConversationNode(
             id=str(node_id),
-            user_id = user_id,
+            user_id=user_id,
             label="conversation start",
             type="entity",
             summary="Start of conversation",
             role="system",
             turn_index=-1,
             conversation_id=conv_id,
-            mentions=[Grounding(spans=[Span.from_dummy_for_conversation()])], # No mentions for start node
+            mentions=[Grounding(spans=[Span.from_dummy_for_conversation()])],
             properties={"status": "active"},
-            metadata={"level_from_root": 0, 
-                      "entity_type": "conversation_start", 
-                      "turn_index": -1,
-                      "in_conversation_chain": True,
-                      "in_ui_chain": True},
+            metadata={
+                "level_from_root": 0,
+                "entity_type": "conversation_start",
+                "turn_index": -1,
+                "in_conversation_chain": True,
+                "in_ui_chain": True,
+            },
             domain_id=None,
             canonical_entity_id=None,
-            level_from_root = 0,
-            doc_id = None,
-            embedding = None
-            
+            level_from_root=0,
+            doc_id=None,
+            embedding=None,
         )
-        
-        # We need to bypass the validator that might complain about empty mentions for GraphEntityRefBase
-        # Ideally ConversationNode should relax this, but if not, we provide a dummy or handle it.
-        # Since GraphEntityRefBase has a validator _require_non_empty_refs, we might need a dummy mention.
-        # Let's create a dummy system span.
         dummy_span = Span.from_dummy_for_conversation()
         start_node.mentions = [Grounding(spans=[dummy_span])]
         self.add_node(start_node)
-        
-        return conv_id, node_id
+        return conv_id, str(node_id)
+
+    @conversation_only
+    def create_conversation(self, user_id, conv_id = None, node_id: str | None | uuid.UUID = None) -> tuple[str, str]:
+        """Compatibility shim: route conversation creation through service façade."""
+        out = self._get_conversation_service().create_conversation(user_id, conv_id, node_id)
+        if not isinstance(out, tuple) or len(out) != 2:
+            raise TypeError("ConversationService.create_conversation must return (conversation_id, node_id)")
+        conv_out, node_out = out
+        return str(conv_out), str(node_out)
     
     @conversation_only
     def _get_last_seq_node(self, conversation_id, min_seq = None):
@@ -4607,9 +4647,8 @@ class GraphKnowledgeEngine:
         The orchestration policy (retrieve/filter/pin/answer/summarize) lives outside engine.py.
         The engine keeps storage/mutation primitives and a stable public API.
         """
-        orch = self._get_orchestrator(ref_knowledge_engine=ref_knowledge_engine)
-        orch.tool_runner.tool_call_id_factory
-        return orch.add_conversation_turn(
+        svc = self._get_conversation_service(knowledge_engine=ref_knowledge_engine)
+        return svc.add_conversation_turn(
             user_id=user_id,
             conversation_id=conversation_id,
             turn_id=turn_id,
@@ -4640,11 +4679,11 @@ class GraphKnowledgeEngine:
         if key in cache:
             return cache[key]
 
-        from .conversation_orchestrator import ConversationOrchestrator
+        from ..conversation.conversation_orchestrator import ConversationOrchestrator
 
         orch = ConversationOrchestrator(
-            conversation_engine=self,
-            ref_knowledge_engine=ref_knowledge_engine,
+            conversation_engine=cast(Any, self),
+            ref_knowledge_engine=cast(Any, ref_knowledge_engine),
             llm=self.llm,
             tool_call_id_factory=self.tool_call_id_factory
         )
@@ -4933,6 +4972,7 @@ class GraphKnowledgeEngine:
                 conversation_id=conversation_id,
                 role="system",  # type: ignore
                 turn_index=None,
+                level_from_root=0,
                 # IMPORTANT:
                 # - `properties` may store nested JSON; keep large payloads here.
                 # - `metadata` must remain Chroma-friendly (flat, primitives).
@@ -5001,6 +5041,7 @@ class GraphKnowledgeEngine:
         *,
         conversation_id: str,
         run_id: str | None = None,
+        stage: str | None = None,
     ) -> ConversationNode | None:
         """Return the most recent context_snapshot node (best-effort).
 
@@ -5010,6 +5051,8 @@ class GraphKnowledgeEngine:
         where = {"entity_type": "context_snapshot"}
         if run_id is not None:
             where["run_id"] = run_id
+        if stage is not None:
+            where["stage"] = stage
         snaps = self.query_nodes(where=where)
         if not snaps:
             return None
@@ -5085,8 +5128,8 @@ class GraphKnowledgeEngine:
         This stays as a stable public method, but delegates orchestration to the
         ConversationOrchestrator so policy/control-flow can evolve outside engine.py.
         """
-        orch = self._get_orchestrator(ref_knowledge_engine=ref_knowledge_engine)
-        return orch.answer_only(conversation_id=conversation_id, model_names=model_names)
+        svc = self._get_conversation_service(knowledge_engine=ref_knowledge_engine)
+        return svc.get_ai_conversation_response(conversation_id=conversation_id, model_names=model_names)
     def get_llm(self, model_name = None) -> BaseChatModel:
         # will implement other model names later
         return self.llm

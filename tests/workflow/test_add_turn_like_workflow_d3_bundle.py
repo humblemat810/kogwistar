@@ -1,23 +1,23 @@
 import json
 from pathlib import Path
 
-from graph_knowledge_engine.engine import GraphKnowledgeEngine
-from graph_knowledge_engine.models import (
-    WorkflowNode,
-    WorkflowEdge,
+from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
+from engine_core.models import (
     Grounding,
     Span,
     MentionVerification,
 )
 from typing import TYPE_CHECKING
 
-from graph_knowledge_engine.workflow.runtime import StepRunResult, State
-from graph_knowledge_engine.models import RunFailure, RunSuccess
+from graph_knowledge_engine.runtime.runtime import State
+from graph_knowledge_engine.runtime.models import StepRunResult
+from runtime.models import RunSuccess
+from runtime.models import RunFailure, WorkflowEdge, WorkflowNode
 
 if TYPE_CHECKING:
-    from graph_knowledge_engine.workflow.runtime import StepContext
+    from graph_knowledge_engine.runtime.runtime import StepContext
 
-from graph_knowledge_engine.workflow.runtime import WorkflowRuntime
+from graph_knowledge_engine.runtime.runtime import WorkflowRuntime
 
 # IMPORTANT: use your existing dumper (calls to_d3_force internally)
 from graph_knowledge_engine.utils.kge_debug_dump import dump_paired_bundles  # type: ignore
@@ -283,8 +283,8 @@ def test_add_turn_like_workflow_dump_bundles(tmp_path: Path):
     #             return {"done": True}
     #         raise KeyError(op)
     #     return _fn
-    from graph_knowledge_engine.workflow.resolvers import MappingStepResolver
-    from graph_knowledge_engine.workflow.runtime import StepContext
+    from graph_knowledge_engine.runtime.resolvers import MappingStepResolver
+    from graph_knowledge_engine.runtime.runtime import StepContext
     resolver = MappingStepResolver()
 
     @resolver.register("start")

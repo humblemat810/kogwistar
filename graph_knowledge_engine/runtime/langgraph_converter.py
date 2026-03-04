@@ -7,8 +7,8 @@ from typing_extensions import TypedDict
 from langgraph.graph import StateGraph, START, END
 from langgraph.types import Command, Send
 
-from graph_knowledge_engine.workflow import design as wf_design
-from graph_knowledge_engine.workflow.contract import BasePredicate, WorkflowEdgeInfo
+from graph_knowledge_engine.runtime import design as wf_design
+from graph_knowledge_engine.runtime.contract import BasePredicate, WorkflowEdgeInfo
 
 
 StateUpdate = Tuple[str, Dict[str, Any]]  # ('u'|'a'|'e', {k: v})

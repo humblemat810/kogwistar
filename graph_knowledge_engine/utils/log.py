@@ -417,7 +417,7 @@ class EngineLogManager:
         """
         Returns a logger for engine_type:
           - graph_knowledge_engine.conversation
-          - graph_knowledge_engine.workflow
+          - graph_knowledge_engine.runtime
           - graph_knowledge_engine.kg
         """
         name = f"graph_knowledge_engine.{engine_type}"

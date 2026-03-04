@@ -5,9 +5,9 @@ from typing import Any, Callable, Dict, List
 
 import pytest
 
-from graph_knowledge_engine.workflow.runtime import StepContext, WorkflowRuntime
-from graph_knowledge_engine.workflow.resolvers import MappingStepResolver
-from graph_knowledge_engine.models import RunSuccess
+from graph_knowledge_engine.runtime.runtime import StepContext, WorkflowRuntime
+from graph_knowledge_engine.runtime.resolvers import MappingStepResolver
+from runtime.models import RunSuccess
 
 
 @dataclass

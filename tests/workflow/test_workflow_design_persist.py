@@ -1,6 +1,6 @@
 import pytest
 
-from graph_knowledge_engine.workflow.design import build_workflow_from_engine
+from graph_knowledge_engine.runtime.design import build_workflow_from_engine
 
 # Adjust this import to your actual engine location:
 # e.g. from graph_knowledge_engine.engine import GraphKnowledgeEngine
@@ -8,13 +8,12 @@ from graph_knowledge_engine.workflow.design import build_workflow_from_engine
 from graph_knowledge_engine.engine import GraphKnowledgeEngine
 from graph_knowledge_engine.postgres_backend import PgVectorBackend
 
-from graph_knowledge_engine.models import (
-    WorkflowNode,
-    WorkflowEdge,
+from engine_core.models import (
     Grounding,
     Span,
     MentionVerification,
 )
+from runtime.models import WorkflowEdge, WorkflowNode
 
 def _span():
     return Span(

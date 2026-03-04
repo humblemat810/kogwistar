@@ -1,6 +1,7 @@
 # tests/conftest.py
 import shutil, uuid, json
 import os
+from conversation.models import ConversationEdge, ConversationNode
 import sitecustomize
 os.environ["ANONYMIZED_TELEMETRY"] = "FALSE"
 import sqlalchemy as sa
@@ -12,15 +13,15 @@ import pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parents))
 import pytest
 from graph_knowledge_engine.engine import GraphKnowledgeEngine
-from graph_knowledge_engine.models import (
+from engine_core.models import (
     Edge, LLMGraphExtraction, LLMNode, LLMEdge,
     LLMMergeAdjudication, AdjudicationVerdict, Node, Span, Grounding,
-    ConversationEdge, ConversationNode, MentionVerification
+    MentionVerification
 )
 from graph_knowledge_engine.postgres_backend import PgVectorBackend
 from typing import Any, List, Optional, Sequence, Iterator
 from langchain_core.runnables import Runnable
-from graph_knowledge_engine.models import LLMMergeAdjudication, AdjudicationVerdict
+from engine_core.models import LLMMergeAdjudication, AdjudicationVerdict
 
 
 _TEST_NS = uuid.UUID("00000000-0000-0000-0000-000000000000")

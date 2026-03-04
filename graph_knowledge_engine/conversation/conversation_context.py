@@ -3,7 +3,9 @@ from dataclasses import dataclass, field
 from typing import Any, Literal, Self, Sequence, TypeAlias 
 from .typing_interfaces import EngineLike
 from typing import Iterable
-from .models import ConversationNode, ConversationEdge
+
+from .models import ConversationEdge
+from .models import ConversationNode
 import json
 
 Role: TypeAlias =  Literal["system", "user", "assistant", "tool"]

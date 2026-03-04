@@ -3,7 +3,8 @@ from __future__ import annotations
 
 import pytest
 
-from graph_knowledge_engine.models import ConversationEdge, MetaFromLastSummary, Span, Grounding
+from conversation.models import ConversationEdge, MetaFromLastSummary
+from engine_core.models import Span, Grounding
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from graph_knowledge_engine.engine import GraphKnowledgeEngine

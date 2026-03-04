@@ -1,11 +1,12 @@
 import logging
 
-from graph_knowledge_engine.models import Document
+from engine_core.models import Document
 from graph_knowledge_engine.visualization.basic_visualization import Visualizer
 from joblib import Memory
 import pathlib
 
 from graph_knowledge_engine.utils.kge_debug_dump import dump_d3_bundle
+from runtime.models import WorkflowEdge, WorkflowNode
 def test_pretty_print_graph(engine):
     import os
     from graph_knowledge_engine.engine import GraphKnowledgeEngine
@@ -41,7 +42,7 @@ def test_pretty_print_graph(engine):
     print(txt)
     logging.info(txt)
     
-from graph_knowledge_engine.models import WorkflowNode, WorkflowEdge, Span, Grounding, MentionVerification
+from engine_core.models import Span, Grounding, MentionVerification
 def _span() -> Span:
     return Span(
         collection_page_url="test",

@@ -17,7 +17,7 @@ except ImportError:
         # very small fallback
         return 100.0 if a == b else 0.0
 
-from ..models import Node, Edge, MentionVerification, Span
+from ..engine_core.models import Node, Edge, MentionVerification, Span
 # from ..engine import GraphKnowledgeEngine
 @dataclass
 class VerifierConfig:
@@ -106,7 +106,7 @@ class DefaultVerifier(Verifier):
             return None
         return float(num / den)
     def _embed_one(self, text: str):
-        vecs = self.e.embedding_function([text])  # DefaultEmbeddingFunction is callable(texts: List[str]) -> List[List[float]]
+        vecs = self.e._ef([text])  # DefaultEmbeddingFunction is callable(texts: List[str]) -> List[List[float]]
         return vecs[0] if vecs else None
     def __init__(self, engine: EngineLike, config: Optional[VerifierConfig] = None):
         self.e: EngineLike = engine

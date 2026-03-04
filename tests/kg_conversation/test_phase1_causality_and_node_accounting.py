@@ -1,7 +1,8 @@
 import pytest
 from pydantic import ValidationError
 
-from graph_knowledge_engine.models import ConversationNodeMetadata, ConversationEdge, Span, Grounding
+from conversation.models import ConversationEdge, ConversationNodeMetadata
+from engine_core.models import Span, Grounding
 from graph_knowledge_engine.engine import GraphKnowledgeEngine
 
 

@@ -1,12 +1,17 @@
 
 import logging
 import os
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass
+
+from runtime.models import RunFailure
+from runtime.models import RunSuccess
+
+
 if True:
     logger = logging.getLogger(__name__)
     logger.addHandler(logging.NullHandler())
     logger.debug("loading models")
-from .id_provider import new_id_str, new_event_id, stable_id
+from ..id_provider import new_id_str, new_event_id, stable_id
 from typing import List, Literal, Optional, Dict, Any, Type, TypeAlias, TypedDict, Union, Annotated, ClassVar, Tuple, Self, cast
 from pydantic import BaseModel, Field, model_validator, field_validator, ValidationInfo, ConfigDict
 import uuid
@@ -55,7 +60,7 @@ QUESTION_DESC = {
     AdjudicationQuestionCode.CAUSAL: "Does one cause or lead to the other?",
     AdjudicationQuestionCode.ATTR_EQ: "Are these property values equivalent (unit/format differences allowed)?",
 }
-from .id_provider import new_event_id, stable_id
+from ..id_provider import new_event_id, stable_id
 from pydantic import BaseModel, Field
 from typing import Optional, ClassVar, Literal
 
@@ -85,19 +90,6 @@ class IdPolicyMixin(BaseModel):
         key = self.identity_key()  # must be stable & non-empty
         self.id = str(stable_id(self.id_kind, *key))
         return self
-Role :TypeAlias = Literal["user", "assistant", "system", "tool"]
-@dataclass
-class MetaFromLastSummary:
-    
-    prev_node_char_distance_from_last_summary: int
-    prev_node_distance_from_last_summary: int
-    # distances are rough estimate, also serve as a stub for injection if accounting
-    # calculations are done in the process and the two distances indicates how to inject
-    # Do not rely on the two to make strict decisions
-    
-    tail_turn_index: int=0  # works more like a node seq number
-    
-
 @dataclass(frozen=True)
 class ContextCost:
     """Canonical cost abstraction for prompt/context accounting."""
@@ -131,147 +123,7 @@ class ContextCost:
             token_count = int(token_raw)
 
         return ContextCost(char_count=char_count, token_count=token_count)
-# class ContextSnapshotMetadata(BaseModel):
-#     """Metadata schema for a context_snapshot ConversationNode.
 
-#     Stored inside ConversationNode.metadata (which is extra=allow), but validated
-#     at creation time.
-#     """
-
-#     entity_type: Literal["context_snapshot"] = "context_snapshot"
-#     level_from_root: int = Field(0, ge=0)
-
-#     # Execution identity
-#     run_id: str
-#     run_step_seq: int = Field(..., ge=0)
-#     attempt_seq: int = Field(0, ge=0)
-
-#     # Snapshot content
-#     stage: str
-#     model_name: str = ""
-#     budget_tokens: int = Field(0, ge=0)
-#     tail_turn_index: int = Field(0, ge=0)
-
-#     # Determinism + audit
-#     used_node_ids: List[str] = Field(default_factory=list)
-#     rendered_context_hash: str
-#     cost: ContextCost = Field(default_factory=ContextCost)
-
-#     model_config = ConfigDict(extra="allow")    
-class ContextSnapshotMetadata(BaseModel):
-    entity_type: Literal["context_snapshot"] = "context_snapshot"
-    level_from_root: int = Field(0, ge=0)
-
-    # Execution identity
-    run_id: str
-    run_step_seq: int = Field(..., ge=0)
-    attempt_seq: int = Field(0, ge=0)
-
-    # Snapshot content
-    stage: str
-    model_name: str = ""
-    budget_tokens: int = Field(0, ge=0)
-    tail_turn_index: int = Field(0, ge=0)
-
-    # Determinism + audit
-    used_node_ids: List[str] = Field(default_factory=list)
-    rendered_context_hash: str
-    cost: ContextCost = Field(default_factory=ContextCost)
-
-    model_config = ConfigDict(extra="allow")
-
-    # ---- Storage helpers for Chroma / flat metadata ----
-
-    def to_chroma_metadata(self) -> Dict[str, Any]:
-        """
-        Flatten to Chroma-friendly metadata (primitives only).
-        Keeps all extra fields too, but flattens `cost`.
-        """
-        d = self.model_dump(mode="python", exclude={"cost"})
-        d.update(self.cost.to_flat_metadata(prefix="cost"))
-        return d
-
-    @classmethod
-    def from_chroma_metadata(cls, meta: Dict[str, Any]) -> "ContextSnapshotMetadata":
-        """
-        Reconstruct from flat Chroma metadata. Accepts either:
-        - flattened cost keys (cost.char_count / cost.token_count), or
-        - legacy nested `cost` dict (if any exists)
-        """
-        data = dict(meta)
-
-        # If `cost` was stored nested for some reason, tolerate it.
-        cost_val = data.pop("cost", None)
-        if isinstance(cost_val, dict):
-            cost = ContextCost(
-                char_count=int(cost_val.get("char_count", 0) or 0),
-                token_count=(None if cost_val.get("token_count", None) is None else int(cost_val["token_count"])),
-            )
-        else:
-            cost = ContextCost.from_flat_metadata(data, prefix="cost")
-
-        # Strip flattened fields so they don't end up as "extra"
-        data.pop("cost.char_count", None)
-        data.pop("cost.token_count", None)
-
-        obj = cls(**data, cost=cost)
-        return obj
-
-    @model_validator(mode="before")
-    @classmethod
-    def _accept_flat_cost_on_direct_init(cls, values: Any) -> Any:
-        """
-        Optional: allows ContextSnapshotMetadata(**meta_from_chroma) directly,
-        without calling from_chroma_metadata().
-        """
-        if not isinstance(values, dict):
-            return values
-        if "cost" in values:
-            return values
-
-        # If flattened cost present, assemble `cost`
-        if "cost.char_count" in values or "cost.token_count" in values:
-            cost = ContextCost.from_flat_metadata(values, prefix="cost")
-            values = dict(values)
-            values["cost"] = cost
-            # Do NOT remove the keys here; let extra=allow keep them if desired.
-            # If you prefer strictness, you can pop them here.
-        return values
-
-
-class EvidencePackDigest(BaseModel):
-    """A compact, rehydratable description of an evidence pack.
-
-    Mental model:
-    - The *evidence pack* is a concrete JSON payload materialized from KG nodes
-      (and their neighborhood) for citation picking.
-    - This digest stores the parameters needed to rebuild that pack later.
-
-    Rehydration is best-effort:
-    - If the underlying KG changes, re-materialization may differ.
-    - When `evidence_pack_hash` is present, callers can detect drift.
-    """
-
-    node_ids: list[str] = Field(default_factory=list)
-    edge_ids: list[str] = Field(default_factory=list)
-    depth: str = Field("shallow", description="Materialization depth hint (e.g. shallow/deep)")
-    max_chars_per_item: int = Field(0, ge=0)
-    max_total_chars: int = Field(0, ge=0)
-    evidence_pack_hash: str | None = None
-
-    model_config = ConfigDict(extra="allow")
-@dataclass(frozen=True)
-class AddTurnResult():
-    user_turn_node_id: str
-    response_turn_node_id: str | None # if add system node with this method, no response required but optional
-    turn_index: int
-    relevant_kg_node_ids: list[str] = field(default_factory=list)
-    relevant_kg_edge_ids: list[str] = field(default_factory=list)
-    pinned_kg_pointer_node_ids: list[str] = field(default_factory=list)
-    pinned_kg_edge_ids: list[str] = field(default_factory=list)
-    memory_context_node_id: str |None = None
-    memory_context_edge_ids: list[str] = field(default_factory=list)
-    prev_turn_meta_summary : MetaFromLastSummary = field(default_factory=MetaFromLastSummary)
         # {
         #     "user_turn_node_id": turn_node_id,
         #     "response_turn_node_id": response_turn_node_id,
@@ -470,19 +322,7 @@ class Domain(IdPolicyMixin, BaseModel):
         """
         return self.__class__.__name__, str(self.id_policy)
 
-    # @model_validator(mode="after")
-    # def _ensure_id(self) -> Self:
-    #     if self.node_id is not None:
-    #         return self        
-
-    #     if self.id_policy == "event":
-    #         self.id = str(new_id_str())
-    #         return self
-
-    #     # canonical
-    #     key = self.identity_key()  # must be stable & non-empty
-    #     self.node_id = stable_id(self.id_kind, *key)
-    #     return self
+    
 # -------------------------
 # Core graph entities
 # -------------------------
@@ -625,58 +465,6 @@ class BaseNodeMetadata(BaseModel):
     """
     model_config = ConfigDict(extra="allow")
 
-class ConversationNodeMetadata(BaseNodeMetadata):
-    """Metadata for conversation nodes.
-
-    **Invariant (Phase 1):** summary-distance accounting is stored on edges (e.g. `next_turn`)
-    rather than nodes. Nodes MUST NOT carry:
-    - `char_distance_from_last_summary`
-    - `turn_distance_from_last_summary`
-
-    This keeps node identity stable and avoids accidental "rewriting the past" via node updates.
-    """
-    level_from_root: int = Field(..., ge=0)
-    entity_type: str = Field("conversation_node")
-
-    model_config = ConfigDict(extra="allow")
-
-    @model_validator(mode="after")
-    def _forbid_summary_distance_fields(self) -> Self:
-        # These must never appear on nodes. Accounting belongs to edges.
-        # extra = self.model_fields_set or {}
-        forbidden = {"char_distance_from_last_summary", "turn_distance_from_last_summary",
-                     "prev_node_char_distance_from_last_summary", "prev_node_distance_from_last_summary",
-                     "prev_turn_meta_summary"}
-        present = forbidden.intersection(self.model_fields_set)
-        if present:
-            raise ValueError(f"ConversationNodeMetadata must not contain summary-distance fields: {sorted(present)}")
-        return self
-
-    
-class ConversationEdgeMetadata(BaseNodeMetadata):
-    """Metadata for conversation edges.
-
-    Phase 1 introduces `causal_type` to make edge intent explicit and enforceable.
-    When absent, it can be inferred from `relation` via a mapping.
-    """
-    causal_type: Optional[Literal[
-        "chain",
-        "dependency",
-        "reuse",
-        "annotation",
-        "summary",
-        "reference",
-        "internal",
-    ]] = None
-
-    # Accounting currently lives on edges (canonical counters will be normalized in Phase 2).
-    char_distance_from_last_summary: Optional[int] = None
-    turn_distance_from_last_summary: Optional[int] = None
-
-    model_config = ConfigDict(extra="allow")
-
-
-
 # --- Phase 1: Conversation edge intent classification (causality) ---
 
 CONVERSATION_EDGE_CAUSAL_TYPE_BY_RELATION: dict[str, str] = {
@@ -694,9 +482,6 @@ CONVERSATION_EDGE_CAUSAL_TYPE_BY_RELATION: dict[str, str] = {
 
     # Default catch-all for conversation edges
 }
-
-def infer_conversation_edge_causal_type(relation: str) -> str:
-    return CONVERSATION_EDGE_CAUSAL_TYPE_BY_RELATION.get(relation, "reference")
 
 class ChromaMixin(BaseModel):
     id: Optional[str] = Field(default = None, description="Unique identifier")
@@ -779,54 +564,6 @@ class LevelAwareMixin(BaseModel):
             self.metadata["level_from_root"] = self.level_from_root
         return self
 
-class ConversationRoleMixin(BaseModel):
-    """Mixin to handle conversation roles and context"""
-    role: Optional[Literal["user", "assistant", "system", "tool"]] = Field(None, description="Role in conversation")
-    turn_index: Optional[int] = Field(None, description="Sequential turn index")
-    conversation_id: Optional[str] = Field(None, description="Conversation thread ID")
-    user_id: Optional[str] = Field(None, description="User ID (cross-conversation memory scope)")
-
-    @model_validator(mode="before")
-    @classmethod
-    def sync_conversation_metadata(cls, data: Any, info: ValidationInfo) -> Any:
-        if isinstance(data, dict):
-            metadata = data.get("metadata", {}) or {}
-            for field in ["role", "turn_index", "conversation_id", "user_id"]:
-                if field not in data and field in metadata:
-                    data[field] = metadata[field]
-        return data
-
-    @model_validator(mode="after")
-    def push_conversation_metadata(self) -> "ConversationRoleMixin":
-        if not hasattr(self, "metadata"):
-            return self
-        
-        if self.metadata is None:
-            self.metadata = {}
-            
-        for field in ["role", "turn_index", "conversation_id", "user_id"]:
-            val = getattr(self, field, None)
-            if val is not None:
-                self.metadata[field] = val
-        return self
-    
-
-
-
-class ConversationAIResponse(BaseModel):
-    """Standard response model for AI conversation responses."""
-
-    text: str = Field(default="", description="Assistant text response to the user.")
-    llm_decision_need_summary: bool = Field(default=False, description="If True, request summarization this turn.")
-
-    used_kg_node_ids: List[str] = Field(default_factory=list)
-    used_memory_node_ids: List[str] = Field(default_factory=list)
-    projected_conversation_node_ids: List[str] = Field(default_factory=list)
-    projected_conversation_edge_ids: List[str] = Field(default_factory=list)
-    run_trace_node_id: Optional[str] = None
-    response_node_id: str|None =  None
-    meta: Dict[str, Any] = Field(default_factory=dict)
-
 class TombstoneMixin(BaseModel):
     
     @field_validator('metadata', check_fields=False)
@@ -878,65 +615,6 @@ class Node(IdPolicyMixin, TombstoneMixin, LevelAwareMixin, ChromaValidateSourceM
     #     self.node_id = stable_id(self.id_kind, *key)
     #     return self
 
-class ConversationNode(ConversationRoleMixin, Node):
-    """
-    Specialized node for conversation elements, extending the base **knowledge graph**.
-
-    This subclass represents conversation turns, summaries, and system messages
-    as first-class citizens in the graph. It inherits the provenance capabilities of `Node`
-    but adds conversation-specific metadata (role, turn_index, etc.).
-    """
-    # id_policy: ClassVar[Literal["event", "canonical"]] = "canonical"
-    # id_kind: ClassVar[str] = "model"  # override per subclass if you want stable separation
-    id_kind: ClassVar[str] = "conversation.node"
-    def identity_key(self) -> Tuple[str, ...]:
-        # from conversation_orchestrator import get_id_for_conversation_turn
-        """
-        Subclasses with id_policy="canonical" MUST override this.
-        Should return stable, minimal identity parts.
-        """
-        return (self.id_kind, json.dumps(self.user_id), json.dumps(self.conversation_id), self.summary,
-                                            json.dumps(self.turn_index), json.dumps(self.role), json.dumps(self.metadata.get("entity_type")), 
-                                            json.dumps(self.metadata.get("in_conversation_chain")))
-        # return self.summary, str(self.doc_id), str(self.user_id), str(self.conversation_id), str(self.metadata.get("entity_type"))
-
-    # @model_validator(mode="after")
-    # def _ensure_id(self) -> Self:
-    #     if self.node_id is not None:
-    #         return self        
-
-    #     if self.id_policy == "event":
-    #         self.id = str(new_id_str())
-    #         return self
-
-    #     # canonical
-    #     key = self.identity_key()  # must be stable & non-empty
-    #     self.node_id = stable_id(self.id_kind, *key)
-    #     return self
-        
-    metadata: dict#ConversationNodeMetadata
-    @field_validator('metadata')
-    def check_fields(cls, v):
-        # convertible to ConversationNodeMetadata but never materialize the conversion. just a checker model
-        try:
-            ConversationNodeMetadata.model_validate(v)
-        except Exception as _e:
-            raise
-        return v
-    def get_incoming_turn_edge(self, engine)-> "ConversationEdge | None":
-        from graph_knowledge_engine.engine import GraphKnowledgeEngine
-        engine2: GraphKnowledgeEngine = engine
-        edges = engine2.query_edges(where={"relation": "next_turn", "target_id": self.id})
-        assert len(edges) <= 1
-        return edges[0] if edges else None
-    def get_extra_update(self) -> dict:
-        try:
-            updates = {
-                "in_conversation_chain": self.metadata.get("in_conversation_chain")
-            }
-        except Exception as _e:
-            raise
-        return updates
 class Edge(IdPolicyMixin, ChromaValidateSourceMixin, ChromaMixin, EdgeMixin, GraphEntityRefBase):
     """
     Base **provenance-heavy** knowledge graph edge.
@@ -961,45 +639,6 @@ class Edge(IdPolicyMixin, ChromaValidateSourceMixin, ChromaMixin, EdgeMixin, Gra
         """
         return self.summary, self.relation, str(self.source_ids), str(self.target_ids), str(self.source_edge_ids), str(self.target_edge_ids)
 
-class ConversationEdge( Edge):
-    """
-    Specialized edge for conversation links, extending the base **knowledge graph**.
-
-    Used for `next_turn` flow, `references` to knowledge, and `summarizes` relationships.
-    Inherits provenance features from `Edge`.
-    """
-    metadata: dict#ConversationNodeMetadata
-    id_kind: ClassVar[str] = "conversation.edge"
-    # id_policy: ClassVar[Literal["event", "canonical"]] = "canonical"
-    # id_kind: ClassVar[str] = "model"  # override per subclass if you want stable separation
-
-    def identity_key(self) -> Tuple[str, ...]:
-        """
-        Subclasses with id_policy="canonical" MUST override this.
-        Should return stable, minimal identity parts.
-        """
-        return (self.summary, str(self.doc_id), 
-                str(self.source_ids), str(self.target_ids), 
-                str(self.source_edge_ids), str(self.target_edge_ids),
-                str(self.metadata.get("entity_type")))
-
-    
-    @field_validator('metadata')    
-    def check_fields(cls, v):
-        # convertible to ConversationNodeMetadata but never materialize the conversion. just a checker model
-        try:
-            ConversationEdgeMetadata.model_validate(v)
-        except Exception as _e:
-            raise
-        return v    
-    def get_extra_update(self) -> dict:
-        try:
-            updates = {
-                "in_conversation_chain": self.metadata.get("in_conversation_chain")
-            }
-        except Exception as _e:
-            raise
-        return updates
 class LLMNode( LLMMixin, GraphEntityRefBase):
     """
     Represents a node extracted by an LLM from a document.
@@ -1114,37 +753,6 @@ class LLMGraphExtraction(ModeSlicingMixin, BaseModel):
         return cls.model_validate(dumped, context={"insertion_method": insertion_method})
 
 
-@dataclass
-class RetrievalResult:
-    nodes: List[Node]
-    edges: List[Edge]
-@dataclass
-class BaseToolResult():
-    node_id_entry: str | None # if a tool has created 1 or network of connected node, an entry point of reference
-
-@dataclass(kw_only=True)
-class MemoryRetrievalResult(BaseToolResult):
-    # Cross-conversation memory candidates (by user_id)
-    candidate: RetrievalResult
-    selected: None | RetrievalResult
-    reasoning: str
-
-    # Derived artifacts
-    memory_context_text: None | str
-    seed_kg_node_ids: List[str]
-
-
-@dataclass(kw_only=True)
-class MemoryPinResult(BaseToolResult):
-    memory_context_node: ConversationNode
-    pinned_edges: List[ConversationEdge]
-class FilteringResult(BaseModel):
-    node_ids: list[str] = Field(description = 'list of relevant node ids')
-    edge_ids: list[str] = Field(description = 'list of relevant edge ids')
-
-class FilteringResponse(BaseModel):
-    reasoning: str = Field(description = "workspace for reasoning relevance filtering")
-    relevant_ids: FilteringResult = Field(..., description = "a list of relevant node and edge ids")
 # -------------------------
 # Adjudication structures
 # -------------------------
@@ -1532,300 +1140,29 @@ class SplitPage(OCRClusterResponseBc):
             c_return['text'] = texts
             return c_return
 
-@dataclass(kw_only=True)
-class KnowledgeRetrievalResult(BaseToolResult):
-    candidate: RetrievalResult
-    selected: FilteringResult | None
-    reasoning: str
-    def get_filtered_candidate(self):
-        if self.selected:
-            set_node_ids = set(self.selected.node_ids)
-            set_edge_ids = set(self.selected.node_ids)
-            return RetrievalResult(
-                nodes=[i for i in self.candidate.nodes if i in set_node_ids],
-                edges=[i for i in self.candidate.edges if i in set_edge_ids]
-            )
-        
-        else:
-            raise Exception('selected field cannot be None when calling get_filtered_candidate')
-
-
-
-
-
-
-
-class WorkflowNodeMetadata(BaseModel):
-    """
-    Workflow *design* node metadata (stored in workflow_engine).
-
-    Required keys:
-      - entity_type="workflow_node"
-      - workflow_id
-      - wf_op (unless wf_terminal=True)
-
-    Optional:
-      - wf_version: used for replay compatibility + future cache invalidation
-      - wf_fanout: allow multiple outgoing edges to fire in parallel
-      - wf_start: marks the start node in this workflow_id
-      - wf_terminal: marks terminal node
-    """
-    entity_type: str = Field("workflow_node", description='Must be "workflow_node"')
-    workflow_id: str
-    wf_op: str = "noop"
-    wf_version: str = "v1"
-    wf_start: bool = False
-    wf_terminal: bool = False
-    wf_fanout: bool = False
-    wf_join: bool = False  # barrier/join node
-
-    model_config = ConfigDict(extra="allow")
-
-    @model_validator(mode="after")
-    def _validate(self) -> "WorkflowNodeMetadata":
-        if self.entity_type != "workflow_node":
-            raise ValueError("WorkflowNodeMetadata.entity_type must be 'workflow_node'")
-        if not self.wf_terminal and (self.wf_op is None or str(self.wf_op).strip() == ""):
-            raise ValueError("wf_op is required unless wf_terminal=True")
-        return self
-
-# class WorkflowEdgeMetadata(BaseModel):
-#     entity_type: str  # must be "workflow_edge"
-#     workflow_id: str
-#     wf_predicate: str | None   # symbolic predicate name
-#     wf_priority: int
-#     wf_is_default: bool
-#     wf_multiplicity: str       # "one" | "many"
-
-class WorkflowEdgeMetadata(BaseModel):
-    """
-    Workflow *design* edge metadata (stored in workflow_engine).
-
-    Keys:
-      - entity_type="workflow_edge"
-      - workflow_id
-      - wf_predicate: symbolic predicate name (None means unconditional)
-      - wf_priority: lower first
-      - wf_is_default: used if no predicate matches
-      - wf_multiplicity: "one"|"many"  (allows fanout)
-    """
-    entity_type: str = Field("workflow_edge", description='Must be "workflow_edge"')
-    workflow_id: str
-    wf_predicate: Optional[str] = None  # llm explanation: wf_predicate: “This path is meant for a specific condition.”
-    wf_priority: int = 100              
-    wf_is_default: bool = False         # llm explanation: wf_is_default = what to do if the decision returns nothing
-    wf_multiplicity: Literal["one", "many"] = "one"
-
-    model_config = ConfigDict(extra="allow")
-
-    @model_validator(mode="after")
-    def _validate(self) -> "WorkflowEdgeMetadata":
-        if self.entity_type != "workflow_edge":
-            raise ValueError("WorkflowEdgeMetadata.entity_type must be 'workflow_edge'")
-        if self.wf_priority < 0:
-            raise ValueError("wf_priority must be >= 0")
-        return self
-
-
-class WorkflowNode(Node):
-    """
-    Typed wrapper for **workflow design** nodes, extending the base **knowledge graph**.
-
-    Workflow steps are stored as nodes in the graph. This allows the workflow definition
-    itself to be managed, queried, and verified using the same engine as the knowledge data.
-    """
-    metadata: dict
-    id_kind: ClassVar[str] = "workflow.node"
-    @field_validator("metadata")
-    def check_metadataWFN(cls, v):
-        v2= WorkflowNodeMetadata.model_validate(v).model_dump()
-        v.update(v2)
-        return v
-    
-    @property
-    def op(self):
-        return self.metadata.get('wf_op') or "noop"
-    @property
-    def terminal(self):
-        return self.metadata.get('wf_terminal') or False
-    @property
-    def start(self):
-        return self.metadata.get('wf_start') or False
-    @property
-    def fanout(self):
-        return self.metadata.get('wf_fanout') or False
-class WorkflowEdge(Edge):
-    """
-    Typed wrapper for **workflow transitions**, extending the base **knowledge graph**.
-
-    Represents transitions between workflow steps (nodes). Includes metadata for
-    predicates, priority, and branching logic.
-    """
-    metadata: dict
-    id_kind: ClassVar[str] = "workflow.edge"
-    @field_validator("metadata")
-    def check_workflow_edge_metadata(cls, v):
-        v = WorkflowEdgeMetadata.model_validate(v).model_dump()
-        return v
-    @property
-    def predicate(self):
-        return self.metadata.get('wf_predicate')
-    @property
-    def multiplicity(self):
-        return self.metadata.get('wf_multiplicity')
-    @property
-    def is_default(self):
-        return self.metadata.get('wf_is_default')
-    @property
-    def priority(self):
-        return int(self.metadata.get('wf_priority'))
 # -------------------------
 # Workflow traces: run/step/checkpoint (persist in conversation_engine)
 # -------------------------
 
-class WorkflowRunMetadata(BaseNodeMetadata):
-    """
-    Trace node persisted in conversation_engine.
-
-    entity_type="workflow_run"
-    """
-    entity_type: str = Field("workflow_run", description='Must be "workflow_run"')
-    workflow_id: str
-    workflow_version: str = "v1"
-    run_id: str
-    conversation_id: str
-    turn_node_id: str
-    status: str = "running"  # running|done|error
-
-    model_config = ConfigDict(extra="allow")
-
-    @model_validator(mode="after")
-    def _validate(self) -> "WorkflowRunMetadata":
-        if self.entity_type != "workflow_run":
-            raise ValueError("WorkflowRunMetadata.entity_type must be 'workflow_run'")
-        return self
-
-
-class WorkflowStepExecMetadata(BaseNodeMetadata):
-    """
-    Trace node persisted in conversation_engine.
-
-    entity_type="workflow_step_exec"
-    """
-    entity_type: str = Field("workflow_step_exec", description='Must be "workflow_step_exec"')
-    run_id: str
-    workflow_id: str
-    workflow_node_id: str
-    step_seq: int
-    op: str
-    status: str = "ok"  # ok|error|skipped
-    duration_ms: int = 0
-    # serialized JSON result (string); for non-json store a ref object json
-    result_json: str
-
-    model_config = ConfigDict(extra="allow")
-
-    @model_validator(mode="after")
-    def _validate(self) -> "WorkflowStepExecMetadata":
-        if self.entity_type != "workflow_step_exec":
-            raise ValueError("WorkflowStepExecMetadata.entity_type must be 'workflow_step_exec'")
-        if self.step_seq < 0:
-            raise ValueError("step_seq must be >= 0")
-        return self
-
-
-class WorkflowCheckpointMetadata(BaseNodeMetadata):
-    """
-    Checkpoint persisted in conversation_engine.
-
-    entity_type="workflow_checkpoint"
-    """
-    entity_type: str = Field("workflow_checkpoint", description='Must be "workflow_checkpoint"')
-    run_id: str
-    workflow_id: str
-    step_seq: int
-    state_json: str  # serialized state snapshot
-
-    model_config = ConfigDict(extra="allow")
-
-    @model_validator(mode="after")
-    def _validate(self) -> "WorkflowCheckpointMetadata":
-        if self.entity_type != "workflow_checkpoint":
-            raise ValueError("WorkflowCheckpointMetadata.entity_type must be 'workflow_checkpoint'")
-        if self.step_seq < 0:
-            raise ValueError("step_seq must be >= 0")
-        return self
-
-
-class WorkflowRunNode(Node):
-    metadata: dict
-
-    @field_validator("metadata")
-    def check_metadata(cls, v):
-        WorkflowRunMetadata.model_validate(v)
-        return v
-
-
-class WorkflowStepExecNode(Node):
-    metadata: dict
-
-    @field_validator("metadata")
-    def check_metadata(cls, v):
-        WorkflowStepExecMetadata.model_validate(v)
-        return v
-
-
-class WorkflowCheckpointNode(Node):
-    metadata: dict
-
-    @field_validator("metadata")
-    def check_metadata(cls, v):
-        WorkflowCheckpointMetadata.model_validate(v)
-        return v
-    
 # deserialize form db
-EntitiyTypeToNodeTypeMapping = {
-    "workflow_checkpoint" : WorkflowCheckpointNode,
-    "workflow_step_exec": WorkflowStepExecNode,
-    "workflow_run" : WorkflowRunNode,
-    "workflow_node": WorkflowNode,
-    "node" : Node,
-    "conversation_node": ConversationNode,
-    "conversation_start": ConversationNode,
-    "conversation_turn": ConversationNode,
-    "conversation_summary": ConversationNode,
-    "tool_result" : ConversationNode,
-    "agent_run"   : ConversationNode,
-    "knowledge_reference": ConversationNode,
-}
+# EntitiyTypeToNodeTypeMapping = {
+#     "workflow_checkpoint" : WorkflowCheckpointNode,
+#     "workflow_step_exec": WorkflowStepExecNode,
+#     "workflow_run" : WorkflowRunNode,
+#     "workflow_node": WorkflowNode,
+#     "node" : Node,
+#     "conversation_node": ConversationNode,
+#     "conversation_start": ConversationNode,
+#     "conversation_turn": ConversationNode,
+#     "conversation_summary": ConversationNode,
+#     "tool_result" : ConversationNode,
+#     "agent_run"   : ConversationNode,
+#     "knowledge_reference": ConversationNode,
+# }
 
-EntitiyTypeToEdgeTypeMapping = {
+# EntitiyTypeToEdgeTypeMapping = {
     
-    "workflow_edge" : WorkflowEdge,
-    "edge" : Edge,
-    "conversation_edge": ConversationEdge,
-}
-
-StateAppendUpdate = tuple[Literal['u'], Any]
-StateOverwriteUpdate = tuple[Literal['a'], Any]
-StateUpdate = Union[StateAppendUpdate , StateOverwriteUpdate]
-class RunSuccess(BaseModel):
-    conversation_node_id: str|None  # node id of the 'entry point' of the node cluster created in a resolver step, 
-    #step can create multiple node edges but at least should expose a node to connect to the main node net
-    state_update: list[StateUpdate]
-    # Optional native update dict (schema-driven). This does NOT replace state_update.
-    # When present, WorkflowRuntime.run() applies it using state_schema and then
-    # falls back unknown keys into DSL ('u') overwrite semantics.
-    update: dict[str, Any] | None = None
-    next_step_names: list[str] = []  # empty will by default fan out all
-    status: Literal["success"] = "success"
-
-
-class RunFailure(BaseModel):
-    conversation_node_id: Optional[str]
-    state_update: list[StateUpdate] # can still update, append an error message
-    update: dict[str, Any] | None = None
-    errors: list[str]
-    next_step_names: list[str] = []  # empty will by default fan out all
-    status: Literal["failure"] = "failure"
-StepRunResult: TypeAlias = RunSuccess | RunFailure    
+#     "workflow_edge" : WorkflowEdge,
+#     "edge" : Edge,
+#     "conversation_edge": ConversationEdge,
+# }

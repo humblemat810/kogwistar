@@ -6,12 +6,13 @@ from typing import Any
 import pytest
 
 from graph_knowledge_engine.engine import GraphKnowledgeEngine
-from graph_knowledge_engine.models import WorkflowNode, WorkflowEdge, Span, Grounding
-from graph_knowledge_engine.models import RunSuccess
-from graph_knowledge_engine.workflow.runtime import WorkflowRuntime, StepContext
-from graph_knowledge_engine.workflow.resolvers import MappingStepResolver
+from engine_core.models import Span, Grounding
+from runtime.models import RunSuccess
+from graph_knowledge_engine.runtime.runtime import WorkflowRuntime, StepContext
+from graph_knowledge_engine.runtime.resolvers import MappingStepResolver
 import logging
 # Reuse your canonical engine factory (already parametrized in other tests)
+from runtime.models import WorkflowEdge, WorkflowNode
 from tests.conftest import _make_engine_pair, FakeEmbeddingFunction
 import os
 os.environ["ANONYMIZED_TELEMETRY"] = "FALSE"

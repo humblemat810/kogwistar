@@ -34,17 +34,15 @@ from pydantic import BaseModel, Field
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.language_models.chat_models import BaseChatModel
 from typing import TYPE_CHECKING
-if TYPE_CHECKING:
-    from .workflow.contract import WorkflowEdgeInfo, WorkflowState
 
-from .models import (
-    ConversationNode,
-    ConversationEdge,
+from .models import ContextSnapshotMetadata, ConversationEdge, ConversationNode, MetaFromLastSummary
+if TYPE_CHECKING:
+    from ..runtime import WorkflowEdgeInfo, WorkflowState
+
+from ..engine_core.models import (
     Grounding,
-    MetaFromLastSummary,
     Span,
     Node,
-    ContextSnapshotMetadata,
     ContextCost,
     StepRunResult,
 )
@@ -167,7 +165,7 @@ class AgentConfig:
     # Budget knobs for materialization (kept simple; your resolvers can interpret these)
     max_chars_per_item: int = 900
     max_total_chars: int = 12000
-from .engine import GraphKnowledgeEngine
+from ..engine import GraphKnowledgeEngine
 
 class AgenticAnsweringAgent:
     """Agent that answers within a conversation canvas using a separate knowledge engine."""
@@ -313,7 +311,7 @@ class AgenticAnsweringAgent:
             used_node_ids = selection.used_node_ids[: self.config.max_used]
             used_edge_ids = list(getattr(selection, "used_edge_ids", []) or [])
             last_used = used_node_ids
-            from .utils.pydanic_model_consumer_wrapper import cache_pydantic_structured
+            from ..utils.pydanic_model_consumer_wrapper import cache_pydantic_structured
             from joblib import Memory
             
             # 5) Materialize evidence pack for answering + citation picking
@@ -566,7 +564,7 @@ class AgenticAnsweringAgent:
         workflow_engine = workflow_engine or self.conversation_engine
 
         # Ensure design exists.
-        from .workflow.design import AgenticAnsweringWorkflowDesigner
+        from ..runtime import AgenticAnsweringWorkflowDesigner
         def predicate_always(workflow_info: WorkflowEdgeInfo, state: WorkflowState, last_result: StepRunResult):
             return True
         
@@ -581,7 +579,7 @@ class AgenticAnsweringAgent:
         designer.ensure_answer_flow(workflow_id=workflow_id, mode="full")
 
         # Resolver registry (handlers live in workflow/resolvers.py)
-        from .workflow.resolvers import MappingStepResolver, default_resolver
+        from .resolvers import MappingStepResolver, default_resolver
 
         class AgenticStepResolver(MappingStepResolver):
             def __init__(self) -> None:
@@ -590,7 +588,7 @@ class AgenticAnsweringAgent:
         resolve_step = AgenticStepResolver()
 
         # Runtime
-        from .workflow.runtime import WorkflowRuntime
+        from ..runtime.runtime import WorkflowRuntime
 
         runtime = WorkflowRuntime(
             workflow_engine=workflow_engine,

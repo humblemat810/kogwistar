@@ -35,6 +35,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
+
+from .models import WorkflowEdge
 if TYPE_CHECKING:
     from ..engine import GraphKnowledgeEngine
 
@@ -58,7 +60,7 @@ class WorkflowNodeInfo:
     terminal: bool
     fanout: bool
 
-from ..models import Edge, WorkflowEdge
+from ..engine_core.models import Edge
 @dataclass(frozen=True)
 class WorkflowEdgeInfo:
     name: str
@@ -86,9 +88,9 @@ class WorkflowEdgeInfo:
         )
         return info
 if TYPE_CHECKING:
-    from ..conversation_state_contracts import WorkflowState
+    from ..conversation.conversation_state_contracts import WorkflowState
     Predicate = Callable[[WorkflowEdgeInfo, WorkflowState, Result], bool]
-    from .runtime import StepRunResult
+    from .models import StepRunResult
 class BasePredicate():
     def __call__(self, e:WorkflowEdgeInfo,  state: WorkflowState, result: StepRunResult):
         if result.next_step_names:

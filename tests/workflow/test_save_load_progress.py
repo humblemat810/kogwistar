@@ -4,17 +4,16 @@ from pathlib import Path
 import pytest
 
 from graph_knowledge_engine.engine import GraphKnowledgeEngine
-from graph_knowledge_engine.models import (
-    WorkflowNode,
-    WorkflowEdge,
+from engine_core.models import (
     Grounding,
     Span,
     MentionVerification,
 )
 
-from graph_knowledge_engine.workflow.runtime import WorkflowRuntime
-from graph_knowledge_engine.workflow.replay import load_checkpoint, replay_to
-from graph_knowledge_engine.models import RunSuccess
+from graph_knowledge_engine.runtime.runtime import WorkflowRuntime
+from graph_knowledge_engine.runtime.replay import load_checkpoint, replay_to
+from runtime.models import RunSuccess
+from runtime.models import WorkflowEdge, WorkflowNode
 
 
 def _span() -> Span:
