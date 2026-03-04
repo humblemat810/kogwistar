@@ -14,7 +14,6 @@ from contextlib import nullcontext
 from graph_knowledge_engine.id_provider import stable_id
 from graph_knowledge_engine.utils.log import bind_log_context
 from graph_knowledge_engine.models import RunSuccess, RunFailure, StateUpdate
-from ..conversation_orchestrator import get_id_for_conversation_turn_edge
 from graph_knowledge_engine.models import WorkflowNode, MentionVerification, ConversationEdge, WorkflowEdge, WorkflowRunNode
 
 from .design import validate_workflow_design, Predicate
