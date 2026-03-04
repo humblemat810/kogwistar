@@ -170,7 +170,7 @@ class ConversationEdgeMetadata(BaseNodeMetadata):
     Phase 1 introduces `causal_type` to make edge intent explicit and enforceable.
     When absent, it can be inferred from `relation` via a mapping.
     """
-    causal_type: Optional[Literal[
+    causal_type: None | Literal[
         "chain",
         "dependency",
         "reuse",
@@ -178,11 +178,11 @@ class ConversationEdgeMetadata(BaseNodeMetadata):
         "summary",
         "reference",
         "internal",
-    ]] = None
+    ] = None
 
     # Accounting currently lives on edges (canonical counters will be normalized in Phase 2).
-    char_distance_from_last_summary: Optional[int] = None
-    turn_distance_from_last_summary: Optional[int] = None
+    char_distance_from_last_summary: None | int = None
+    turn_distance_from_last_summary: None | int = None
 
     model_config = ConfigDict(extra="allow")
 
@@ -193,10 +193,10 @@ def infer_conversation_edge_causal_type(relation: str) -> str:
 
 class ConversationRoleMixin(BaseModel):
     """Mixin to handle conversation roles and context"""
-    role: Optional[Literal["user", "assistant", "system", "tool"]] = Field(None, description="Role in conversation")
-    turn_index: Optional[int] = Field(None, description="Sequential turn index")
-    conversation_id: Optional[str] = Field(None, description="Conversation thread ID")
-    user_id: Optional[str] = Field(None, description="User ID (cross-conversation memory scope)")
+    role: None| Literal["user", "assistant", "system", "tool"] = Field(None, description="Role in conversation")
+    turn_index: None|int = Field(None, description="Sequential turn index")
+    conversation_id: None|str = Field(None, description="Conversation thread ID")
+    user_id: None|str = Field(None, description="User ID (cross-conversation memory scope)")
 
     @model_validator(mode="before")
     @classmethod
@@ -233,7 +233,7 @@ class ConversationAIResponse(BaseModel):
     used_memory_node_ids: List[str] = Field(default_factory=list)
     projected_conversation_node_ids: List[str] = Field(default_factory=list)
     projected_conversation_edge_ids: List[str] = Field(default_factory=list)
-    run_trace_node_id: Optional[str] = None
+    run_trace_node_id: None |str = None
     response_node_id: str|None =  None
     meta: Dict[str, Any] = Field(default_factory=dict)
 

@@ -1,7 +1,7 @@
 from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Literal, Self, Sequence, TypeAlias 
-from .typing_interfaces import EngineLike
+from graph_knowledge_engine.typing_interfaces import EngineLike
 from typing import Iterable
 
 from .models import ConversationEdge

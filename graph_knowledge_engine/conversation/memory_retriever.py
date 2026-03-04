@@ -8,8 +8,9 @@ from langchain_core.language_models import BaseChatModel
 
 from .models import ConversationEdge
 from .models import RetrievalResult
-from .models import ConversationNode, Grounding, MetaFromLastSummary, Span, Node, Edge, FilteringResult
+from .models import ConversationNode, MetaFromLastSummary, Node, Edge, FilteringResult
 from ..engine_core.engine import GraphKnowledgeEngine
+from ..engine_core.models import Grounding, Span
 from pydantic import BaseModel
 
 

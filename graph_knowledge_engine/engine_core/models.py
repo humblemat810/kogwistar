@@ -51,7 +51,7 @@ QUESTION_DESC = {
 from ..id_provider import new_event_id, stable_id
 from pydantic import BaseModel, Field
 from typing import Optional, ClassVar, Literal
-
+Role :TypeAlias = Literal["user", "assistant", "system", "tool"]
 class IdPolicyMixin(BaseModel):
     id: Optional[str] = Field(default=None)
     id_policy: ClassVar[Literal["event","canonical"]] = "event"

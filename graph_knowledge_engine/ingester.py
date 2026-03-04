@@ -8,7 +8,7 @@ from joblib import Memory
 from pydantic import BaseModel, Field
 from langchain_core.language_models import BaseChatModel
 import json
-from .engine import GraphKnowledgeEngine
+from .engine_core.engine import GraphKnowledgeEngine
 from .engine_core.models import (
     Document,
     Edge,

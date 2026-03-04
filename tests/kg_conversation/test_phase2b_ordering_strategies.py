@@ -1,6 +1,6 @@
 
 import pytest
-from graph_knowledge_engine.conversation_context import ContextItem, apply_ordering
+from graph_knowledge_engine.conversation.conversation_context import ContextItem, apply_ordering
 
 def _mk(kind, node_id, pinned=False, priority=100, turn_index=None):
     extra = {}

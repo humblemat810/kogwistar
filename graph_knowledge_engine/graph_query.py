@@ -8,7 +8,7 @@ from .engine_core.models import Node, Edge
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .engine import GraphKnowledgeEngine
+    from .engine_core.engine import GraphKnowledgeEngine
 
 
 class GraphQuery:

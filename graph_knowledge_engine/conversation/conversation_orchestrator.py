@@ -15,19 +15,17 @@ from typing import Any, Callable, List, Optional, cast
 
 from langchain_core.language_models import BaseChatModel
 
-from .conversation.models import ConversationEdge, MetaFromLastSummary
+from .models import ConversationEdge, MetaFromLastSummary
 from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
-from .id_provider import stable_id
+from graph_knowledge_engine.id_provider import stable_id
 from .conversation_state_contracts import WorkflowStateModel, PrevTurnMetaSummaryModel, WorkflowState
-
+from ..engine_core.models import Grounding, MentionVerification, Span, Role
 from .models import (
     ConversationAIResponse,
     ConversationNode,
-    Grounding,
+    
     KnowledgeRetrievalResult,
-    MentionVerification,
-    Span,
-    Role,
+    
     AddTurnResult
 )
 from .tool_runner import ToolRunner
@@ -142,7 +140,7 @@ def get_id_for_conversation_turn_edge(id_kind, user_id, conversation_id,content,
 # ---------------------------------------------------------------------------
 # Conversation-specific step resolver
 # ---------------------------------------------------------------------------
-from .conversation.resolvers import MappingStepResolver, default_resolver
+from .resolvers import MappingStepResolver, default_resolver
 
 
 class ConversationStepResolver(MappingStepResolver):
@@ -200,7 +198,7 @@ class ConversationOrchestrator:
         if self.workflow_engine is None:
             raise RuntimeError("workflow_engine must be provided for workflow_v2")
 
-        from .runtime.design import ConversationWorkflowDesigner
+        from .designer import ConversationWorkflowDesigner
 
         designer = ConversationWorkflowDesigner(
             workflow_engine=self.workflow_engine,
@@ -248,7 +246,7 @@ class ConversationOrchestrator:
             prev_node = self.conversation_engine._get_conversation_tail(conversation_id) if in_conv else None
             prev_turn_meta_summary, new_index = self.ensure_prev_turn_meta_summary_new_index(prev_node, prev_turn_meta_summary)
 
-            from .design import ConversationWorkflowDesigner
+            from .designer import ConversationWorkflowDesigner
 
             predicate_registry = {"always": lambda st, r: True}
             designer = ConversationWorkflowDesigner(workflow_engine=self.workflow_engine, predicate_registry=predicate_registry)
@@ -511,7 +509,7 @@ class ConversationOrchestrator:
         # ----------------------------
         # 5) Run with WorkflowRuntime (real persisted checkpoints)
         # ----------------------------
-        from .runtime.runtime import WorkflowRuntime
+        from ..runtime.runtime import WorkflowRuntime
 
         runtime = WorkflowRuntime(
             workflow_engine=self.workflow_engine,
@@ -1300,7 +1298,7 @@ class ConversationOrchestrator:
     def answer_only(self, *, conversation_id: str, model_names: Optional[list[str]] = None, prev_turn_meta_summary: MetaFromLastSummary) -> ConversationAIResponse:
         """Generate an answer for an existing conversation (no new user turn ingestion)."""
 
-        from .conversation.agentic_answering import AgenticAnsweringAgent, AgentConfig
+        from .agentic_answering import AgenticAnsweringAgent, AgentConfig
 
         model_names = model_names or [
             "gemini-3-flash-preview",

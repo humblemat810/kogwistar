@@ -150,7 +150,7 @@ def _add_user_turn(ctx: "StepContext") -> "StepRunResult":
     turn_doc_id = str(sv.get("turn_id") or sv.get("turn_node_id") or f"turn_{turn_index}")
 
     # deterministic node id (align with orchestrator)
-    from graph_knowledge_engine.conversation_orchestrator import get_id_for_conversation_turn
+    from graph_knowledge_engine.conversation.conversation_orchestrator import get_id_for_conversation_turn
     from graph_knowledge_engine.engine_core.models import Grounding, MentionVerification, Span
 
     # deterministic node id (align with orchestrator); prefer provided turn_node_id if present.

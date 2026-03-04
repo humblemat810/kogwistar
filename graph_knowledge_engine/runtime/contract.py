@@ -38,7 +38,7 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 
 from .models import WorkflowEdge
 if TYPE_CHECKING:
-    from ..engine import GraphKnowledgeEngine
+    from ..engine_core.engine import GraphKnowledgeEngine
 
 Json = Any
 State = Dict[str, Json]

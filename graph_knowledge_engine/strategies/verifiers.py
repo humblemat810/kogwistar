@@ -18,7 +18,7 @@ except ImportError:
         return 100.0 if a == b else 0.0
 
 from ..engine_core.models import Node, Edge, MentionVerification, Span
-# from ..engine import GraphKnowledgeEngine
+# from ..engine_core.engine import GraphKnowledgeEngine
 @dataclass
 class VerifierConfig:
     min_excerpt_len: int = 12

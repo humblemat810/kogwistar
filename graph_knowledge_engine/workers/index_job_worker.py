@@ -8,7 +8,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable, Optional, TYPE_CHECKING
 if TYPE_CHECKING:
-    from ..engine import GraphKnowledgeEngine
+    from ..engine_core.engine import GraphKnowledgeEngine
 
 @dataclass
 class WorkerTickMetrics:
