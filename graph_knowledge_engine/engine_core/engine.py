@@ -1486,9 +1486,9 @@ class GraphKnowledgeEngine:
     def chroma_sanitize_metadata(metadata: Dict[str, Any]) -> Dict[str, Any]:
         """Drop keys whose values are None. ChromaDB metadata rejects None values."""
         return _strip_none(metadata) #{k: v for k, v in metadata.items() if v is not None}
-    # @staticmethod
-    # def _strip_none(d: dict):
-    #     return _strip_none(d)
+    @staticmethod
+    def _strip_none(d: dict):
+        return _strip_none(d)
     @staticmethod
     def _json_or_none(obj: Any) -> Optional[str]:
         return json.dumps(obj) if obj is not None else None
@@ -4104,8 +4104,8 @@ class GraphKnowledgeEngine:
         for rid in (tgt_ids or []):
             (t_nodes if self._classify_endpoint_id(rid) == "node" else t_edges).append(rid)
         return s_nodes, s_edges, t_nodes, t_edges
-    def commit_merge(self, left: Node, right: Node, verdict: AdjudicationVerdict) -> str:
-        canonical_id = self.merge_policy.commit_merge(left, right, verdict)
+    def commit_merge(self, left: Node, right: Node, verdict: AdjudicationVerdict, method : str) -> str:
+        canonical_id = self.merge_policy.commit_merge(left, right, verdict, method)
         return canonical_id
     def commit_any_kind(self, node_or_edge_l: AdjudicationTarget, node_or_edge_r: AdjudicationTarget,
                         verdict: AdjudicationVerdict) -> str:

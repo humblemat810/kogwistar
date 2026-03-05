@@ -1,14 +1,43 @@
 # strategies/merge_policies.py
 from __future__ import annotations
-from ..engine_core.models import AdjudicationVerdict, AdjudicationTarget, Edge, Node, Span, MentionVerification
+from ..engine_core.models import AdjudicationVerdict, AdjudicationTarget, Edge, Node, Span, MentionVerification, Grounding, Span
 from .types import EngineLike, MergePolicy
 import uuid
 import json
 from graph_knowledge_engine.id_provider import new_id_str
+
+
+def adjundication_span(verdict: AdjudicationVerdict, left: Node, right: Node, adjundication_method: str):
+        # def get_self_span(content):
+    if not verdict.same_entity:
+        raise ValueError("only created when the result is positive verdict")
+    self_span = Span(
+        collection_page_url=f"adjudication/{left.safe_get_id()}-{right.safe_get_id()}",
+        document_page_url=f"adjudication/{left.safe_get_id()}-{right.safe_get_id()}",
+        doc_id=f"adjudication:{left.safe_get_id()}-{right.safe_get_id()}-{verdict.canonical_entity_id}",
+        insertion_method="adjudication run",
+        page_number=1,
+        start_char=0,
+        end_char=len(verdict.reason),
+        excerpt=verdict.reason,
+        context_before="",
+        context_after="",
+        chunk_id=None,
+        source_cluster_id=None,
+        verification=MentionVerification(
+            method="system",
+            is_verified=True,
+            score=verdict.confidence,
+            notes=adjundication_method,
+        ),
+    )
+    return self_span
+
+
 class PreferExistingCanonical(MergePolicy):
     def __init__(self, engine: EngineLike):
         self.e : EngineLike = engine
-    def commit_merge(self, left: Node, right: Node, verdict: AdjudicationVerdict) -> str:
+    def commit_merge(self, left: Node, right: Node, verdict: AdjudicationVerdict, method) -> str:
         """
         Apply a positive adjudication by assigning/propagating a canonical_entity_id
         and recording a `same_as` edge with provenance. Persists changes to Chroma.
@@ -33,19 +62,13 @@ class PreferExistingCanonical(MergePolicy):
             if prior.get("metadatas") and prior["metadatas"][0]:
                 doc_id = prior["metadatas"][0].get("doc_id")
             # Update document JSON
+            doc, meta = self.e._node_doc_and_meta(n)
+            emb = self.e._iterative_defensive_emb(doc)
             self.e.node_collection.update(
                 ids=[n.id],
-                documents=[n.model_dump_json()],
-                metadatas=[self.e._strip_none({
-                    "doc_id": doc_id,
-                    "label": n.label,
-                    "type": n.type,
-                    "summary": n.summary,
-                    "domain_id": n.domain_id,
-                    "canonical_entity_id": n.canonical_entity_id,
-                    "properties": self.e._json_or_none(n.properties),
-                    "references": self.e._json_or_none([ref.model_dump() for ref in (n.mentions or [])]),
-                })],
+                embeddings=[emb],
+                documents=[doc],
+                metadatas=[meta],
             )
             self.e._index_node_docs(n)
             self.e._index_node_refs(n)
@@ -56,22 +79,29 @@ class PreferExistingCanonical(MergePolicy):
         _persist_node(right)
 
         # 3) Build edge references from each side (pick a “best” mention per node)
-        def _best_ref(n: Node) -> Span:
-            # NEED-FIX
-            if n.mentions:
-                refs = sorted(n.mentions, key=lambda r: (getattr(r, "start_page", 10**9), getattr(r, "start_char", 10**9)))
-                ref = refs[0].model_copy(deep=True)
-                if ref.verification is None:
-                    ref.verification = MentionVerification(method="heuristic", is_verified=True, score=0.5, notes="adjudication evidence")
-                else:
-                    ref.verification.notes = (ref.verification.notes or "") + " | adjudication evidence"
-                return ref
-            # Fallback if ever empty (shouldn’t with your schema)
-            did = getattr(n, "doc_id", None) or "unknown"
-            return self.e._default_ref(did, excerpt=n.summary if hasattr(n, "summary") else None)
+        # def _best_ref(n: Node) -> Span:
+        #     # NEED-FIX
+        #     if n.mentions:
+        #         refs = sorted(n.mentions, key=lambda r: (getattr(r.spans[0], "start_page", 10**9), getattr(r, "start_char", 10**9)))
+        #         ref = refs[0].model_copy(deep=True)
+        #         def iter_span(mention: Grounding):
+                    
+        #                 for span in mention.spans:
+        #                     yield span
+        #         for sp in iter_span(ref):
+        #             if sp.verification is None:
+        #                 sp.verification = MentionVerification(method="heuristic", is_verified=True, score=0.5, notes="adjudication evidence")
+        #             else:
+        #                 sp.verification.notes = (sp.verification.notes or "") + " | adjudication evidence"
+        #             return sp
+                
+            
+            # # Fallback if ever empty (shouldn’t with your schema)
+            # did = getattr(n, "doc_id", None) or "unknown"
+            # return self.e._default_ref(did, excerpt=n.summary if hasattr(n, "summary") else None)
 
-        left_ref = _best_ref(left)
-        right_ref = _best_ref(right)
+        # left_ref = _best_ref(left)
+        # right_ref = _best_ref(right)
         s_nodes, s_edges, t_nodes, t_edges = self.e._split_endpoints([left.id], [right.id])
 
         same_as = Edge(
@@ -84,7 +114,7 @@ class PreferExistingCanonical(MergePolicy):
             source_ids=s_nodes,
             target_ids=t_nodes,
             properties={"confidence": verdict.confidence},
-            mentions=[left_ref, right_ref],
+            mentions=[Grounding(spans=[adjundication_span(verdict,left, right, method)])],
             doc_id="__adjudication__",   # neutral; endpoints will carry per-node doc_id
             source_edge_ids=s_edges,
             target_edge_ids=t_edges,

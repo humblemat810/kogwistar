@@ -1,21 +1,25 @@
-# tests/test_metadata_sanitization.py
 import json
-from graph_knowledge_engine.engine_core.models import Node, Span, MentionVerification, Grounding
-from chromadb import app
+
+from graph_knowledge_engine.engine_core.models import Grounding, MentionVerification, Node, Span
+
 
 def _ref_for(doc_id: str) -> Span:
-    return _span_for(doc_id)
-def _span_for(doc_id: str) -> Span:
     return Span(
         collection_page_url="c",
         document_page_url=f"document/{doc_id}",
-        start_page=1, end_page=1, start_char=0, end_char=1,
-        verification=MentionVerification(method="heuristic", is_verified=False, notes = None, score = 0.9), 
+        page_number=1,
+        start_char=0,
+        end_char=1,
+        verification=MentionVerification(method="heuristic", is_verified=False, notes=None, score=0.9),
         insertion_method="pytest-manual",
-        doc_id = doc_id,
-        source_cluster_id = None,
-        excerpt = None
+        doc_id=doc_id,
+        source_cluster_id=None,
+        chunk_id=None,
+        excerpt="A",
+        context_before="",
+        context_after="n entity without some metadata",
     )
+
 
 def test_chroma_metadata_strips_none(engine):
     n = Node(
@@ -23,20 +27,19 @@ def test_chroma_metadata_strips_none(engine):
         type="entity",
         summary="An entity without some metadata",
         domain_id=None,
-        properties=None,         # should get stripped from metadata
-        mentions=[Grounding([_ref_for(f'test-doc-id1-{__file__}')])],         # should get stripped from metadata
-        embedding=None,           # optional, should not be sent
-        canonical_entity_id = None,
-        doc_id = None,
-        metadata = {}
+        properties=None,
+        mentions=[Grounding(spans=[_ref_for(f"test-doc-id1-{__file__}")])],
+        embedding=None,
+        canonical_entity_id=None,
+        doc_id=None,
+        metadata={},
+        level_from_root=0,
     )
     engine.add_node(n)
-    got = engine.node_collection.get(ids=[n.id])
+    got = engine.backend.node_get(ids=[n.id], include=["metadatas"])
     assert got["ids"] == [n.id]
     meta = got["metadatas"][0]
-    # None fields should be absent
     assert "properties" not in meta
-    assert "references" in meta
-    # type/summary should be present
+    assert "mentions" in meta
     assert meta["type"] == "entity"
     assert meta["summary"] == "An entity without some metadata"

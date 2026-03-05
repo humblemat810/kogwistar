@@ -382,6 +382,10 @@ class GraphEntityRefBase(GraphEntityBase):
     mentions: Annotated[List[Grounding], FrontendField(),BackendField(),DtoField(),LLMField()] = Field(
         ..., min_items=1, description="Mentioning of the idea across possibly multiple paragraphs/ data sources"
     )
+    def iter_span(self):
+        for g in self.mentions:
+            for sp in g.spans:
+                yield sp
     #NEED-FIX
     @field_validator("mentions")
     @classmethod
