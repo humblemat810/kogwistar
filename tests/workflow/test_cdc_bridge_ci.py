@@ -50,7 +50,7 @@ def test_cdc_bridge_broadcasts_to_websocket_clients_ci() -> None:
         from graph_knowledge_engine.cdc.change_bridge import app  # type: ignore
     except Exception:  # pragma: no cover
         from change_bridge import app  # type: ignore
-
+    import time
     with TestClient(app) as client:
         with client.websocket_connect("/changes/ws") as ws:
             ev = {
@@ -58,6 +58,7 @@ def test_cdc_bridge_broadcasts_to_websocket_clients_ci() -> None:
                 "op": "node.upsert",
                 "entity": {"kind": "node", "id": "n1", "kg_graph_type": "conversation"},
                 "payload": {"x": 1},
+                "ts_unix_ms":int(time.time() * 1000)
             }
             r = client.post("/ingest", json=ev)
             assert r.status_code == 200

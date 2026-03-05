@@ -739,6 +739,8 @@ class WorkflowRuntime:
                                 raise Exception(err_message)
                         
                         done_q.put((node_id, res, max(0, t1 - t0), token_id, parent_token_id, status, mask))
+                except Exception as _e:
+                    raise
                 finally:
                     t.name = old_name
             inflight: Dict[tuple[str, int, str], Any] = {}

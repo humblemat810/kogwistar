@@ -154,6 +154,7 @@ def test_trace_sink_parallel_and_nested_minimal_sync(
         use_fake=True
     )
     workflow_engine = GraphKnowledgeEngine(
+        backend=backend_kind,
         persist_directory=str(tmp_path / "wf"),
         kg_graph_type="workflow",
         embedding_function=FakeEmbeddingFunction(dim=8),

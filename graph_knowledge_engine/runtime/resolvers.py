@@ -106,7 +106,10 @@ class MappingStepResolver(BaseResolver):
                     raise TypeError("Resolver must return StepRunResult")
                 # return out  # field name might be `data`/`payload` in your codebase
             except Exception as e:
-                return RunFailure(conversation_node_id=ctx.state_view.get('workflow_node_id') , state_update = [('a', {'op_log': str(e)})], errors=[str(e)])  # match your RunFailure fields
+                import traceback
+                return RunFailure(conversation_node_id=ctx.state_view.get('workflow_node_id') , 
+                                  state_update = [('a', {'op_log': str(e)})], 
+                                  errors=[str(e), traceback.format_exc()])  # match your RunFailure fields
         return _wrapped
 
 

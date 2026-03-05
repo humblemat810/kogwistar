@@ -12,6 +12,7 @@ from ..id_provider import stable_id
 import time
 from . import models
 
+
 from .engine_sqlite import EngineSQLite
 from .engine_postgres_meta import EnginePostgresMetaStore
 from .storage_backend import ChromaBackend, NoopUnitOfWork
@@ -666,6 +667,7 @@ def base62_to_uuid(s: str) -> str:
 def candiate_filtering_callback(llm: BaseChatModel, conversation_content, 
                                 cand_node_list_str, cand_edge_list_str, 
                                 candidate_node_ids: list[str], candidate_edge_ids: list[str], context_text):
+    from ..conversation.models import FilteringResponse, FilteringResult
     # candidate_node_ids = [i.id for i in candidates.nodes]
     # candidate_edge_ids = [i.id for i in candidates.edges]
     max_retry = 3
@@ -1229,7 +1231,9 @@ class GraphKnowledgeEngine:
             raise Exception("Missing Metadatas")
         
         res = []
-        from . import models
+        from . import models as core_models
+        from ..conversation import models as conversation_models
+        from ..runtime import models as runtime_models
         for d, emb, metadata in zip(docs, embs, metadatas):
             if type(emb) is list:
                 pass
@@ -1240,7 +1244,9 @@ class GraphKnowledgeEngine:
             override_node_type = None
             _class_name = metadata.get("_class_name")
             if _class_name:
-                node_cls = getattr(models, _class_name)
+                node_cls = (getattr(core_models, _class_name, None) 
+                            or getattr(conversation_models, _class_name, None) 
+                            or getattr(runtime_models, _class_name, None))
                 if node_cls:
                     override_node_type = node_cls
             if not override_node_type:
@@ -1270,7 +1276,9 @@ class GraphKnowledgeEngine:
         metadatas = cast(list[dict[str, Any]], got.get("metadatas"))
         if metadatas is None:
             raise Exception("Missing Metadatas")
-        
+        from . import models as core_models
+        from ..conversation import models as conversation_models
+        from ..runtime import models as runtime_models
         res = []
         import numpy as np
         for d, emb, metadata in zip(docs, embs, metadatas):
@@ -1284,7 +1292,9 @@ class GraphKnowledgeEngine:
             override_edge_type = None
             _class_name = metadata.get("_class_name")
             if _class_name:
-                edge_cls = getattr(models, _class_name)
+                edge_cls = (getattr(core_models, _class_name, None) 
+                            or getattr(conversation_models, _class_name, None) 
+                            or getattr(runtime_models, _class_name, None))
                 if edge_cls:
                     override_edge_type = edge_cls
    
@@ -4455,7 +4465,8 @@ class GraphKnowledgeEngine:
         self._get_conversation_service()._normalize_conversation_edge_metadata(cast(ConversationEdge, edge))
     @conversation_only
     def _validate_conversation_edge_add(self, edge: ConversationEdge) -> None:
-        
+        from ..conversation.models import (ConversationEdge, 
+                                   ConversationNode)
         self._get_conversation_service()._validate_conversation_edge_add(cast(ConversationEdge, edge))    
     @conversation_only
     def _create_conversation_primitive(self, user_id, conv_id=None, node_id: str | None | uuid.UUID = None) -> tuple[str, str]:

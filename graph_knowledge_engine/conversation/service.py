@@ -66,6 +66,7 @@ class ConversationService:
             ref_knowledge_engine=knowledge_engine,
             workflow_engine=workflow_engine,
             llm=self.llm,
+            tool_call_id_factory=stable_id
         )
 
     @classmethod

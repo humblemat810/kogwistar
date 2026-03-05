@@ -258,7 +258,7 @@ class ConversationWorkflowDesigner(BaseWorkflowDesigner):
                 end_id = wid("end")
                 add_node(node_id=start_id, label="Start", op="start", start=True, terminal=False)
                 add_node(node_id=add_id, label="Add user turn", op="add_user_turn", start=False, terminal=False)
-                add_node(node_id=end_id, label="End", op=None, start=False, terminal=True)
+                add_node(node_id=end_id, label="End", op="end", start=False, terminal=True)
                 add_edge(edge_id=wid("next_start_add"), src=start_id, dst=add_id, pred="always", priority=0, is_default=True)
                 add_edge(edge_id=wid("next_add_end"), src=add_id, dst=end_id, pred="always", priority=0, is_default=True)
                 return self.validate(workflow_id=workflow_id)

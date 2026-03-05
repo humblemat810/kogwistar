@@ -27,6 +27,12 @@ from graph_knowledge_engine.engine_core.models import (
 )
 from graph_knowledge_engine.conversation.conversation_orchestrator import ConversationOrchestrator
 
+pytestmark = [
+    pytest.mark.conversation,
+    pytest.mark.workflow,
+    pytest.mark.e2e,
+]
+
 # Optional: knowledge-edge model may not exist in some repo versions.
 try:
     from graph_knowledge_engine.engine_core.models import Edge  # type: ignore
@@ -511,8 +517,15 @@ def _deterministic_answer_impl(*, question: str, knowledge_key: str) -> dict[str
     return {"content": "I don't know.", "need_summary": False}
 
 
-@pytest.mark.parametrize("backend_kind", ["chroma", "pg"])
-@pytest.mark.parametrize("llm_mode", ["fake", "real"])
+@pytest.mark.parametrize(
+    "backend_kind,llm_mode",
+    [
+        pytest.param("chroma", "fake", id="chroma_fake", marks=[pytest.mark.ci]),
+        pytest.param("pg", "fake", id="pg_fake", marks=[pytest.mark.ci_full]),
+        pytest.param("chroma", "real", id="chroma_real", marks=[pytest.mark.nightly, pytest.mark.llm_real]),
+        pytest.param("pg", "real", id="pg_real", marks=[pytest.mark.nightly, pytest.mark.llm_real]),
+    ],
+)
 @pytest.mark.parametrize(
     "knowledge_builder,knowledge_key",
     [
@@ -578,8 +591,9 @@ def test_conversation_flow_v2_param_e2e(
             return FilteringResult.model_validate(dumped), reason
 
     # Answer harness (cached, serializable-only inner)
-    def answer_only_harness(*, conversation_id: str, prev_turn_meta_summary: MetaFromLastSummary, user_text: str, **_):
-        payload = cached_answer(question=user_text, knowledge_key=knowledge_key)
+    def answer_only_harness(*, conversation_id: str, prev_turn_meta_summary: MetaFromLastSummary,  **_):
+        
+        payload = cached_answer(question=question, knowledge_key=knowledge_key)
         # Use the project's conversation engine API for assistant turn creation if available
         # We keep this harness minimal: the v2 orchestrator expects a ConversationAIResponse-like object.
         # If your repo defines ConversationAIResponse, use it directly.

@@ -4,6 +4,7 @@ from typing import Any, Dict, List
 
 import pytest
 
+from graph_knowledge_engine.conversation.resolvers import RunSuccess
 from graph_knowledge_engine.conversation.models import WorkflowCheckpointNode, WorkflowRunNode, WorkflowStepExecNode
 from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
 from graph_knowledge_engine.engine_core.models import (
@@ -13,6 +14,8 @@ from graph_knowledge_engine.engine_core.models import (
 )
 from graph_knowledge_engine.runtime.runtime import WorkflowRuntime
 from graph_knowledge_engine.runtime.models import WorkflowEdge, WorkflowNode
+from graph_knowledge_engine.runtime.contract import validate_workflow, WorkflowSpec
+from graph_knowledge_engine.runtime.design import validate_workflow_design
 
 
 def _span() -> Span:
@@ -89,6 +92,7 @@ def _wf_edge(
             "wf_is_default": is_default,
             "wf_predicate": predicate,
             "wf_multiplicity": multiplicity,
+            "wf_join": True,
         },
         source_edge_ids=[],
         target_edge_ids=[],
@@ -115,8 +119,9 @@ def test_add_turn_workflow_design_and_run(tmp_path):
     n_dec   = _wf_node(workflow_id=workflow_id, node_id=f"wf|{workflow_id}|dec", op="decide_summarize")
     n_sum   = _wf_node(workflow_id=workflow_id, node_id=f"wf|{workflow_id}|sum", op="summarize")
     n_end   = _wf_node(workflow_id=workflow_id, node_id=f"wf|{workflow_id}|end", op="end", terminal=True)
-
-    for n in [n_start, n_kg, n_mpin, n_kpin, n_ans, n_dec, n_sum, n_end]:
+    all_nodes = [n_start, n_kg, n_mpin, n_kpin, n_ans, n_dec, n_sum, n_end]
+    nodes_dict = {n.safe_get_id(): n for n in all_nodes}
+    for n in all_nodes:
         wf_engine.add_node(n)
 
     # Edges:
@@ -132,21 +137,21 @@ def test_add_turn_workflow_design_and_run(tmp_path):
     wf_engine.add_edge(_wf_edge(
         workflow_id=workflow_id,
         edge_id=f"wf|{workflow_id}|e|kg->mpin",
-        src=n_kg.id, dst=n_mpin.id,
+        src=n_kg.safe_get_id(), dst=n_mpin.safe_get_id(),
         predicate="should_pin_memory", priority=0, is_default=False
     ))
     # kg_retrieve -> kg_pin (if should_pin_kg)
     wf_engine.add_edge(_wf_edge(
         workflow_id=workflow_id,
         edge_id=f"wf|{workflow_id}|e|kg->kpin",
-        src=n_kg.id, dst=n_kpin.id,
+        src=n_kg.safe_get_id(), dst=n_kpin.safe_get_id(),
         predicate="should_pin_kg", priority=1, is_default=False
     ))
     # If neither pin branch matches, go to answer by default
     wf_engine.add_edge(_wf_edge(
         workflow_id=workflow_id,
         edge_id=f"wf|{workflow_id}|e|kg->ans|default",
-        src=n_kg.id, dst=n_ans.id,
+        src=n_kg.safe_get_id(), dst=n_ans.safe_get_id(),
         predicate=None, priority=100, is_default=True
     ))
 
@@ -154,13 +159,13 @@ def test_add_turn_workflow_design_and_run(tmp_path):
     wf_engine.add_edge(_wf_edge(
         workflow_id=workflow_id,
         edge_id=f"wf|{workflow_id}|e|mpin->ans",
-        src=n_mpin.id, dst=n_ans.id,
+        src=n_mpin.safe_get_id(), dst=n_ans.safe_get_id(),
         predicate=None, priority=100, is_default=True
     ))
     wf_engine.add_edge(_wf_edge(
         workflow_id=workflow_id,
         edge_id=f"wf|{workflow_id}|e|kpin->ans",
-        src=n_kpin.id, dst=n_ans.id,
+        src=n_kpin.safe_get_id(), dst=n_ans.safe_get_id(),
         predicate=None, priority=100, is_default=True
     ))
 
@@ -168,71 +173,99 @@ def test_add_turn_workflow_design_and_run(tmp_path):
     wf_engine.add_edge(_wf_edge(
         workflow_id=workflow_id,
         edge_id=f"wf|{workflow_id}|e|ans->dec",
-        src=n_ans.id, dst=n_dec.id,
+        src=n_ans.safe_get_id(), dst=n_dec.safe_get_id(),
         predicate=None, priority=100, is_default=True
     ))
     # decide_summarize -> summarize (if should_summarize)
     wf_engine.add_edge(_wf_edge(
         workflow_id=workflow_id,
         edge_id=f"wf|{workflow_id}|e|dec->sum",
-        src=n_dec.id, dst=n_sum.id,
+        src=n_dec.safe_get_id(), dst=n_sum.safe_get_id(),
         predicate="should_summarize", priority=0, is_default=False
     ))
     # decide_summarize -> end (default)
     wf_engine.add_edge(_wf_edge(
         workflow_id=workflow_id,
         edge_id=f"wf|{workflow_id}|e|dec->end|default",
-        src=n_dec.id, dst=n_end.id,
+        src=n_dec.safe_get_id(), dst=n_end.safe_get_id(),
         predicate=None, priority=100, is_default=True
     ))
     # summarize -> end
     wf_engine.add_edge(_wf_edge(
         workflow_id=workflow_id,
         edge_id=f"wf|{workflow_id}|e|sum->end",
-        src=n_sum.id, dst=n_end.id,
+        src=n_sum.safe_get_id(), dst=n_end.safe_get_id(),
         predicate=None, priority=100, is_default=True
     ))
 
     # -----------------------
     # Consumer-side: run it
     # -----------------------
+    def should_pin_memory(workflow_info, st, r):
+        return bool((st.get("memory") or {}).get("selected")) and bool(
+            (st.get("memory") or {}).get("memory_context_text")
+        )
+    def should_pin_kg(workflow_info, st, r):
+        return bool((st.get("kg") or {}).get("selected"))
+    def should_summarize(workflow_info, st, r):
+        return bool(st.get("decide", {}).get("need_summary", False))
     predicate_registry = {
-        "should_pin_memory": lambda st, r: bool(st.get("memory", {}).get("selected_ids")),
-        "should_pin_kg": lambda st, r: bool(st.get("kg", {}).get("selected_ids")),
-        "should_summarize": lambda st, r: bool(st.get("decide", {}).get("need_summary")),
+        "should_pin_memory": should_pin_memory, #lambda st, r: bool(st.get("memory", {}).get("selected_ids")),
+        "should_pin_kg": should_pin_kg, #lambda st, r: bool(st.get("kg", {}).get("selected_ids")),
+        "should_summarize": should_summarize, # lambda st, r: bool(st.get("decide", {}).get("need_summary")),
     }
 
     def resolve_step(op: str):
         def _fn(ctx):
             # keep everything JSONable
-            with ctx.state_write as state:
-                if op == "memory_retrieve":
-                    state["memory"] = {"selected_ids": ["m1"], "text": "memory context"}
-                    return {"ok": True}
-                if op == "kg_retrieve":
-                    state["kg"] = {"selected_ids": ["k1"], "facts": ["f1"]}
-                    return {"ok": True}
-                if op == "memory_pin":
-                    state["memory_pin"] = {"pinned": ["m1"]}
-                    return {"ok": True}
-                if op == "kg_pin":
-                    state["kg_pin"] = {"pinned": ["k1"]}
-                    return {"ok": True}
-                if op == "answer":
-                    state["answer"] = {"text": "hello", "llm_decision_need_summary": True}
-                    return ctx.state_view["answer"]
-                if op == "decide_summarize":
-                    need = bool(ctx.state_view.get("answer", {}).get("llm_decision_need_summary"))
-                    state["decide"] = {"need_summary": need}
-                    return ctx.state_view["decide"]
-                if op == "summarize":
-                    state["summary"] = {"text": "summary"}
-                    return ctx.state_view["summary"]
-                if op == "end":
-                    return {"done": True}
-            raise KeyError(op)
+            try:
+                with ctx.state_write as state:
+                    if op == "memory_retrieve":
+                        state["memory"] = {"selected_ids": ["m1"], "text": "memory context"}
+                        return RunSuccess(conversation_node_id=None, state_update = [])
+                        # return {"ok": True}
+                    if op == "kg_retrieve":
+                        state["kg"] = {"selected_ids": ["k1"], "facts": ["f1"]}
+                        return RunSuccess(conversation_node_id=None, state_update = [])
+                        # return {"ok": True}
+                    if op == "memory_pin":
+                        state["memory_pin"] = {"pinned": ["m1"]}
+                        return RunSuccess(conversation_node_id=None, state_update = [])
+                        # return {"ok": True}
+                    if op == "kg_pin":
+                        state["kg_pin"] = {"pinned": ["k1"]}
+                        return RunSuccess(conversation_node_id=None, state_update = [])
+                        # return {"ok": True}
+                    if op == "answer":
+                        state["answer"] = {"text": "hello", "llm_decision_need_summary": True}
+                        return RunSuccess(conversation_node_id=None, state_update = [])
+                        # return ctx.state_view["answer"]
+                    if op == "decide_summarize":
+                        need = bool(ctx.state_view.get("answer", {}).get("llm_decision_need_summary"))
+                        state["decide"] = {"need_summary": need}
+                        return RunSuccess(conversation_node_id=None, state_update = [])
+                        # return ctx.state_view["decide"]
+                    if op == "summarize":
+                        state["summary"] = {"text": "summary"}
+                        return RunSuccess(conversation_node_id=None, state_update = [])
+                        # return ctx.state_view["summary"]
+                    if op == "end":
+                        return RunSuccess(conversation_node_id=None, state_update = [])
+                        # return {"done": True}
+                        
+                raise KeyError(op)
+            except Exception as _e:
+                raise
         return _fn
-
+    validate_workflow(engine=wf_engine, spec=WorkflowSpec(workflow_id, n_start.safe_get_id(),
+                            # nodes = nodes_dict,
+                            # out_edges = {e.safe_get_id():e for e in wf_engine.get_edges()}
+                            ), 
+                            predicate_registry=predicate_registry)
+    validate_workflow_design(    workflow_engine=wf_engine,
+        workflow_id=workflow_id,
+        predicate_registry=predicate_registry,
+        resolver=resolve_step)
     rt = WorkflowRuntime(
         workflow_engine=wf_engine,
         conversation_engine=conv_engine,

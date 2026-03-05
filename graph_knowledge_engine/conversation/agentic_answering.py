@@ -566,7 +566,7 @@ class AgenticAnsweringAgent:
         workflow_engine = workflow_engine or self.conversation_engine
 
         # Ensure design exists.
-        from ..runtime import AgenticAnsweringWorkflowDesigner
+        from ..conversation.designer import AgenticAnsweringWorkflowDesigner
         def predicate_always(workflow_info: WorkflowEdgeInfo, state: WorkflowState, last_result: StepRunResult):
             return True
         
