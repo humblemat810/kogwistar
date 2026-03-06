@@ -1,4 +1,4 @@
-# ARD-0001: Repository Restructuring --- Core, Workflow, Conversation (and Future Wisdom)
+﻿# ARD-0012: Repository Restructuring --- Core, Workflow, Conversation (and Future Wisdom)
 
 **Status:** Proposed (intended for incremental adoption)\
 **Date:** 2026-03-04\
@@ -48,7 +48,7 @@ The repository will follow a **layered architecture**.
 
 Dependency direction:
 
-wisdom → conversation → workflow → core
+wisdom â†’ conversation â†’ workflow â†’ core
 
 Rules:
 
@@ -346,3 +346,4 @@ Then executing workflows against them.
 ------------------------------------------------------------------------
 
 # End of ARD-0001
+

@@ -1,4 +1,4 @@
-# Conversation Engine Architecture Record (ARD)
+﻿# ARD-0006: Conversation Engine Architecture Record
 
 **Status:** Active Refactor  
 **Scope:** Conversation chain, summary gating, context building, replay determinism  
@@ -216,7 +216,7 @@ All evolution must be:
 
 ---
 
-## Phase 1 — Lock Current Contracts
+## Phase 1 â€” Lock Current Contracts
 
 Files:
 - `conversation_orchestrator.py`
@@ -231,7 +231,7 @@ Tasks:
 
 ---
 
-## Phase 2 — Normalize Summary Counters
+## Phase 2 â€” Normalize Summary Counters
 
 Files:
 - `conversation_orchestrator.py`
@@ -244,7 +244,7 @@ Tasks:
 
 ---
 
-## Phase 3 — Token Counter Abstraction
+## Phase 3 â€” Token Counter Abstraction
 
 Files:
 - `conversation_context.py`
@@ -257,7 +257,7 @@ Tasks:
 
 ---
 
-## Phase 4 — Persist Context Snapshot
+## Phase 4 â€” Persist Context Snapshot
 
 Files:
 - `conversation_orchestrator.py`
@@ -273,7 +273,7 @@ Tasks:
 
 ---
 
-## Phase 5 — Internal Sequencing
+## Phase 5 â€” Internal Sequencing
 
 Files:
 - `runtime.py`
@@ -286,7 +286,7 @@ Tasks:
 
 ---
 
-## Phase 6 — UI Projection Cleanup
+## Phase 6 â€” UI Projection Cleanup
 
 Tasks:
 - Compute `ui_turn_index` from visible nodes
@@ -294,7 +294,7 @@ Tasks:
 
 ---
 
-## Phase 7 — Deterministic Replay
+## Phase 7 â€” Deterministic Replay
 
 Tasks:
 - Rebuild context from snapshot
@@ -318,11 +318,11 @@ Tasks:
 
 We are moving from:
 
-> “Graph + LLM calls”
+> â€œGraph + LLM callsâ€
 
 to:
 
-> “Fully event-sourced conversational execution engine.”
+> â€œFully event-sourced conversational execution engine.â€
 
 This ensures:
 
