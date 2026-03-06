@@ -1917,9 +1917,9 @@ class GraphKnowledgeEngine:
             use_flattened_schema=False
             if isinstance(self.llm, ChatGoogleGenerativeAI):
                 use_flattened_schema = True
-                from .models import FlattenedLLMGraphExtraction
+                from .models import AssocFlattenedLLMGraphExtraction
                 structured = self.llm.with_structured_output(
-                    FlattenedLLMGraphExtraction['llm'],
+                    AssocFlattenedLLMGraphExtraction['llm'],
                     method="json_schema",
                     include_raw=True,
                 )
@@ -1937,7 +1937,7 @@ class GraphKnowledgeEngine:
             llm_raw = steps[1].invoke(realised_prmopt)
             result = steps[2].invoke(llm_raw)
             if use_flattened_schema:
-                flattened_parsed:FlattenedLLMGraphExtraction = result['parsed']
+                flattened_parsed:AssocFlattenedLLMGraphExtraction = result['parsed']
                 result['parsed'] = flattened_parsed.to_canonical(insertion_method="llm")
         except Exception as e:
             raise e

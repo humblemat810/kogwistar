@@ -941,6 +941,296 @@ class FlattenedLLMGraphExtraction(ModeSlicingMixin, BaseModel):
             edges=[edge.to_canonical(span_by_id=span_by_id) for edge in self.edges],
         )
 
+
+class AssocFlattenedGroundingRow(ModeSlicingMixin, BaseModel):
+    include_unmarked_for_modes: ClassVar[set[str]] = {"llm"}
+
+    id: str = Field(..., description="Required temporary grounding id within this extraction payload, e.g. 'gr:1'")
+
+
+class AssocNodeGroundingLink(ModeSlicingMixin, BaseModel):
+    include_unmarked_for_modes: ClassVar[set[str]] = {"llm"}
+
+    node_index: int = Field(..., ge=0, description="0-based node index into root-level `nodes` table")
+    grounding_id: str = Field(..., description="Grounding id linked to this node")
+
+
+class AssocEdgeGroundingLink(ModeSlicingMixin, BaseModel):
+    include_unmarked_for_modes: ClassVar[set[str]] = {"llm"}
+
+    edge_index: int = Field(..., ge=0, description="0-based edge index into root-level `edges` table")
+    grounding_id: str = Field(..., description="Grounding id linked to this edge")
+
+
+class AssocGroundingSpanLink(ModeSlicingMixin, BaseModel):
+    include_unmarked_for_modes: ClassVar[set[str]] = {"llm"}
+
+    grounding_id: str = Field(..., description="Grounding id linked to a span")
+    span_id: str = Field(..., description="Span id linked to the grounding")
+
+
+class AssocFlattenedLLMNode(LLMMixin, GraphEntityBase):
+    include_unmarked_for_modes: ClassVar[set[str]] = {"llm"}
+
+    @classmethod
+    def from_canonical(cls, node: "LLMNode") -> "AssocFlattenedLLMNode":
+        return cls(
+            id=node.id,
+            local_id=node.local_id,
+            label=node.label,
+            type=node.type,
+            summary=node.summary,
+            domain_id=node.domain_id,
+            canonical_entity_id=node.canonical_entity_id,
+            properties=node.properties,
+        )
+
+    def to_canonical(self, *, mentions: List[Grounding]) -> "LLMNode":
+        return LLMNode(
+            id=self.id,
+            local_id=self.local_id,
+            label=self.label,
+            type=self.type,
+            summary=self.summary,
+            domain_id=self.domain_id,
+            canonical_entity_id=self.canonical_entity_id,
+            properties=self.properties,
+            mentions=mentions,
+        )
+
+
+class AssocFlattenedLLMEdge(LLMMixin, EdgeMixin, GraphEntityBase):
+    include_unmarked_for_modes: ClassVar[set[str]] = {"llm"}
+
+    @classmethod
+    def from_canonical(cls, edge: "LLMEdge") -> "AssocFlattenedLLMEdge":
+        return cls(
+            id=edge.id,
+            local_id=edge.local_id,
+            label=edge.label,
+            type=edge.type,
+            summary=edge.summary,
+            domain_id=edge.domain_id,
+            canonical_entity_id=edge.canonical_entity_id,
+            properties=edge.properties,
+            source_ids=edge.source_ids,
+            target_ids=edge.target_ids,
+            relation=edge.relation,
+            source_edge_ids=edge.source_edge_ids,
+            target_edge_ids=edge.target_edge_ids,
+        )
+
+    def to_canonical(self, *, mentions: List[Grounding]) -> "LLMEdge":
+        return LLMEdge(
+            id=self.id,
+            local_id=self.local_id,
+            label=self.label,
+            type=self.type,
+            summary=self.summary,
+            domain_id=self.domain_id,
+            canonical_entity_id=self.canonical_entity_id,
+            properties=self.properties,
+            source_ids=self.source_ids,
+            target_ids=self.target_ids,
+            relation=self.relation,
+            source_edge_ids=self.source_edge_ids,
+            target_edge_ids=self.target_edge_ids,
+            mentions=mentions,
+        )
+
+
+class AssocFlattenedLLMGraphExtraction(ModeSlicingMixin, BaseModel):
+    include_unmarked_for_modes: ClassVar[set[str]] = {"llm"}
+
+    spans: List[FlattenedSpan] = Field(..., description="Root-level spans referenced by grounding-span link table")
+    nodes: List[AssocFlattenedLLMNode] = Field(..., description="Flattened nodes without nested mentions")
+    edges: List[AssocFlattenedLLMEdge] = Field(..., description="Flattened edges without nested mentions")
+    groundings: List[AssocFlattenedGroundingRow] = Field(..., description="Root-level grounding rows")
+    node_groundings: List[AssocNodeGroundingLink] = Field(
+        ..., description="Link table: node index -> grounding id (ordered mention list for each node)"
+    )
+    edge_groundings: List[AssocEdgeGroundingLink] = Field(
+        ..., description="Link table: edge index -> grounding id (ordered mention list for each edge)"
+    )
+    grounding_spans: List[AssocGroundingSpanLink] = Field(
+        ..., description="Link table: grounding id -> span id (ordered span list for each grounding)"
+    )
+
+    @field_validator("spans")
+    @classmethod
+    def _validate_unique_span_ids(cls, spans: List[FlattenedSpan]):
+        seen: set[str] = set()
+        for sp in spans:
+            if sp.id in seen:
+                raise ValueError(f"Duplicate span id found: {sp.id}")
+            seen.add(sp.id)
+        return spans
+
+    @field_validator("groundings")
+    @classmethod
+    def _validate_unique_grounding_ids(cls, groundings: List[AssocFlattenedGroundingRow]):
+        seen: set[str] = set()
+        for g in groundings:
+            if g.id in seen:
+                raise ValueError(f"Duplicate grounding id found: {g.id}")
+            seen.add(g.id)
+        return groundings
+
+    @model_validator(mode="after")
+    def _validate_references(self):
+        span_ids = {sp.id for sp in self.spans}
+        grounding_ids = {g.id for g in self.groundings}
+
+        node_ref_counts = {idx: 0 for idx in range(len(self.nodes))}
+        edge_ref_counts = {idx: 0 for idx in range(len(self.edges))}
+        grounding_entity_ref_counts = {gid: 0 for gid in grounding_ids}
+        grounding_span_counts = {gid: 0 for gid in grounding_ids}
+        referenced_spans: set[str] = set()
+
+        for link in self.node_groundings:
+            if link.node_index not in node_ref_counts:
+                raise ValueError(f"Node grounding link has invalid node_index: {link.node_index}")
+            if link.grounding_id not in grounding_ids:
+                raise ValueError(f"Node grounding link references unknown grounding id: {link.grounding_id}")
+            node_ref_counts[link.node_index] += 1
+            grounding_entity_ref_counts[link.grounding_id] += 1
+
+        for link in self.edge_groundings:
+            if link.edge_index not in edge_ref_counts:
+                raise ValueError(f"Edge grounding link has invalid edge_index: {link.edge_index}")
+            if link.grounding_id not in grounding_ids:
+                raise ValueError(f"Edge grounding link references unknown grounding id: {link.grounding_id}")
+            edge_ref_counts[link.edge_index] += 1
+            grounding_entity_ref_counts[link.grounding_id] += 1
+
+        for idx, count in node_ref_counts.items():
+            if count == 0:
+                raise ValueError(f"Node at index {idx} has no grounding links")
+        for idx, count in edge_ref_counts.items():
+            if count == 0 and len(self.edges) > 0:
+                raise ValueError(f"Edge at index {idx} has no grounding links")
+
+        for link in self.grounding_spans:
+            if link.grounding_id not in grounding_ids:
+                raise ValueError(f"Grounding-span link references unknown grounding id: {link.grounding_id}")
+            if link.span_id not in span_ids:
+                raise ValueError(f"Grounding-span link references unknown span id: {link.span_id}")
+            grounding_span_counts[link.grounding_id] += 1
+            referenced_spans.add(link.span_id)
+
+        unreferenced_groundings = [gid for gid, count in grounding_entity_ref_counts.items() if count == 0]
+        if unreferenced_groundings:
+            raise ValueError(f"Unreferenced groundings are not allowed: {sorted(unreferenced_groundings)}")
+
+        groundings_without_spans = [gid for gid, count in grounding_span_counts.items() if count == 0]
+        if groundings_without_spans:
+            raise ValueError(f"Groundings without span links are not allowed: {sorted(groundings_without_spans)}")
+
+        orphaned_spans = span_ids - referenced_spans
+        if orphaned_spans:
+            raise ValueError(f"Unreferenced spans are not allowed: {sorted(orphaned_spans)}")
+
+        return self
+
+    @classmethod
+    def from_canonical(
+        cls,
+        graph: "LLMGraphExtraction",
+        *,
+        insertion_method: Optional[str] = None,
+    ) -> "AssocFlattenedLLMGraphExtraction":
+        span_to_id: dict[tuple, str] = {}
+        flat_spans: list[FlattenedSpan] = []
+        flat_groundings: list[AssocFlattenedGroundingRow] = []
+        node_grounding_links: list[AssocNodeGroundingLink] = []
+        edge_grounding_links: list[AssocEdgeGroundingLink] = []
+        grounding_span_links: list[AssocGroundingSpanLink] = []
+
+        span_seq = 0
+        grounding_seq = 0
+
+        def intern_span(span: Span) -> str:
+            nonlocal span_seq
+            key = _span_identity_key(span)
+            existing = span_to_id.get(key)
+            if existing is not None:
+                return existing
+            span_seq += 1
+            span_id = f"sp:{span_seq}"
+            span_to_id[key] = span_id
+            resolved_insertion_method = insertion_method if insertion_method is not None else span.insertion_method
+            flat_spans.append(
+                FlattenedSpan.from_canonical(
+                    span,
+                    span_id=span_id,
+                    insertion_method=resolved_insertion_method,
+                )
+            )
+            return span_id
+
+        for node_idx, node in enumerate(graph.nodes):
+            for grounding in node.mentions:
+                grounding_seq += 1
+                grounding_id = f"gr:{grounding_seq}"
+                flat_groundings.append(AssocFlattenedGroundingRow(id=grounding_id))
+                node_grounding_links.append(AssocNodeGroundingLink(node_index=node_idx, grounding_id=grounding_id))
+                for span in grounding.spans:
+                    grounding_span_links.append(
+                        AssocGroundingSpanLink(grounding_id=grounding_id, span_id=intern_span(span))
+                    )
+
+        for edge_idx, edge in enumerate(graph.edges):
+            for grounding in edge.mentions:
+                grounding_seq += 1
+                grounding_id = f"gr:{grounding_seq}"
+                flat_groundings.append(AssocFlattenedGroundingRow(id=grounding_id))
+                edge_grounding_links.append(AssocEdgeGroundingLink(edge_index=edge_idx, grounding_id=grounding_id))
+                for span in grounding.spans:
+                    grounding_span_links.append(
+                        AssocGroundingSpanLink(grounding_id=grounding_id, span_id=intern_span(span))
+                    )
+
+        return cls(
+            spans=flat_spans,
+            nodes=[AssocFlattenedLLMNode.from_canonical(node) for node in graph.nodes],
+            edges=[AssocFlattenedLLMEdge.from_canonical(edge) for edge in graph.edges],
+            groundings=flat_groundings,
+            node_groundings=node_grounding_links,
+            edge_groundings=edge_grounding_links,
+            grounding_spans=grounding_span_links,
+        )
+
+    def to_canonical(self, *, insertion_method: Optional[str] = None) -> "LLMGraphExtraction":
+        span_by_id: dict[str, Span] = {sp.id: sp.to_canonical(insertion_method=insertion_method) for sp in self.spans}
+
+        grounding_spans_by_id: dict[str, list[Span]] = {g.id: [] for g in self.groundings}
+        for link in self.grounding_spans:
+            grounding_spans_by_id[link.grounding_id].append(span_by_id[link.span_id])
+
+        grounding_by_id: dict[str, Grounding] = {
+            grounding_id: Grounding(spans=spans)
+            for grounding_id, spans in grounding_spans_by_id.items()
+        }
+
+        node_mentions_by_index: dict[int, list[Grounding]] = {idx: [] for idx in range(len(self.nodes))}
+        edge_mentions_by_index: dict[int, list[Grounding]] = {idx: [] for idx in range(len(self.edges))}
+
+        for link in self.node_groundings:
+            node_mentions_by_index[link.node_index].append(grounding_by_id[link.grounding_id])
+        for link in self.edge_groundings:
+            edge_mentions_by_index[link.edge_index].append(grounding_by_id[link.grounding_id])
+
+        return LLMGraphExtraction(
+            nodes=[
+                node.to_canonical(mentions=node_mentions_by_index[idx])
+                for idx, node in enumerate(self.nodes)
+            ],
+            edges=[
+                edge.to_canonical(mentions=edge_mentions_by_index[idx])
+                for idx, edge in enumerate(self.edges)
+            ],
+        )
+
 class GraphExtractionWithIDs(ModeSlicingMixin, BaseModel):
     """represent a graph extracted by external tool and all ids are imported
 
@@ -972,6 +1262,9 @@ class LLMGraphExtraction(ModeSlicingMixin, BaseModel):
 
     def to_flattened(self, *, insertion_method: Optional[str] = None) -> "FlattenedLLMGraphExtraction":
         return FlattenedLLMGraphExtraction.from_canonical(self, insertion_method=insertion_method)
+
+    def to_assoc_flattened(self, *, insertion_method: Optional[str] = None) -> "AssocFlattenedLLMGraphExtraction":
+        return AssocFlattenedLLMGraphExtraction.from_canonical(self, insertion_method=insertion_method)
 
     @classmethod
     def from_normal_llm(
@@ -1008,26 +1301,34 @@ class LLMGraphExtraction(ModeSlicingMixin, BaseModel):
     @classmethod
     def from_flattened_llm(
         cls,
-        sliced: "Union[FlattenedLLMGraphExtraction, dict, BaseModel]",
+        sliced: "Union[FlattenedLLMGraphExtraction, AssocFlattenedLLMGraphExtraction, dict, BaseModel]",
         insertion_method,
     ) -> "LLMGraphExtraction":
+        if isinstance(sliced, AssocFlattenedLLMGraphExtraction):
+            return sliced.to_canonical(insertion_method=insertion_method)
         if isinstance(sliced, FlattenedLLMGraphExtraction):
-            flat = sliced
-        elif isinstance(sliced, BaseModel):
-            dumped = cls._normalize_flattened_payload_dict(sliced.model_dump())
-            flat = FlattenedLLMGraphExtraction.model_validate(
-                dumped,
-                context={"insertion_method": insertion_method},
-            )
+            return sliced.to_canonical(insertion_method=insertion_method)
+
+        if isinstance(sliced, BaseModel):
+            dumped = sliced.model_dump()
         elif type(sliced) is dict:
-            dumped = cls._normalize_flattened_payload_dict(sliced)
-            flat = FlattenedLLMGraphExtraction.model_validate(
-                dumped,
-                context={"insertion_method": insertion_method},
-            )
+            dumped = sliced
         else:
             raise ValueError("Unsupported type for 'sliced'")
 
+        if cls._looks_like_assoc_flattened_payload(dumped):
+            assoc_dumped = cls._normalize_assoc_flattened_payload_dict(dumped)
+            assoc = AssocFlattenedLLMGraphExtraction.model_validate(
+                assoc_dumped,
+                context={"insertion_method": insertion_method},
+            )
+            return assoc.to_canonical(insertion_method=insertion_method)
+
+        flat_dumped = cls._normalize_flattened_payload_dict(dumped)
+        flat = FlattenedLLMGraphExtraction.model_validate(
+            flat_dumped,
+            context={"insertion_method": insertion_method},
+        )
         return flat.to_canonical(insertion_method=insertion_method)
 
     @staticmethod
@@ -1049,7 +1350,34 @@ class LLMGraphExtraction(ModeSlicingMixin, BaseModel):
         return normalized
 
     @staticmethod
+    def _normalize_assoc_flattened_payload_dict(payload: dict) -> dict:
+        normalized = dict(payload)
+        alias_map = {
+            "grounding_rows": "groundings",
+            "node_grounding_links": "node_groundings",
+            "edge_grounding_links": "edge_groundings",
+            "grounding_span_links": "grounding_spans",
+        }
+        for alias_key, canonical_key in alias_map.items():
+            if canonical_key not in normalized and alias_key in normalized:
+                normalized[canonical_key] = normalized[alias_key]
+        return normalized
+
+    @staticmethod
+    def _looks_like_assoc_flattened_payload(payload: dict) -> bool:
+        base_keys = {"spans", "nodes", "edges", "groundings", "grounding_spans"}
+        if not base_keys.issubset(payload.keys()):
+            return False
+
+        has_node_link_table = ("node_groundings" in payload) or ("node_grounding_links" in payload)
+        has_edge_link_table = ("edge_groundings" in payload) or ("edge_grounding_links" in payload)
+        return has_node_link_table or has_edge_link_table
+
+    @staticmethod
     def _looks_like_flattened_payload(payload: dict) -> bool:
+        if LLMGraphExtraction._looks_like_assoc_flattened_payload(payload):
+            return True
+
         if "spans" not in payload:
             return False
 

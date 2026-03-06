@@ -36,6 +36,66 @@ logging.captureWarnings(True)
 from pathlib import Path
 from graph_knowledge_engine.utils.log import EngineLogManager, EngineLogConfig
 
+def pytest_addoption(parser):
+    parser.addoption(
+        "--run-manual",
+        action="store_true",
+        default=False,
+        help="Run tests marked as manual.",
+    )
+
+
+def _normalize_pytest_arg(value: str) -> str:
+    return value.replace("\\", "/").lstrip("./")
+
+
+def _is_specific_test_function_target(arg: str) -> bool:
+    """
+    True only for explicit function/method nodeids, e.g.:
+      - tests/x.py::test_case
+      - tests/x.py::TestClass::test_case
+      - tests/x.py::test_case[param]
+    False for file/class/folder targets.
+    """
+    if "::" not in arg:
+        return False
+    leaf = arg.rsplit("::", 1)[-1]
+    leaf_base = leaf.split("[", 1)[0]
+    return leaf_base.startswith("test_")
+
+
+def _is_manual_test_explicitly_selected(config: pytest.Config, item: pytest.Item) -> bool:
+    nodeid = _normalize_pytest_arg(item.nodeid)
+    cli_args = getattr(config.invocation_params, "args", ()) or ()
+
+    for raw_arg in cli_args:
+        if not isinstance(raw_arg, str):
+            continue
+        arg = _normalize_pytest_arg(raw_arg)
+        if not arg or arg.startswith("-"):
+            continue
+
+        # Explicit function/method nodeid selection only.
+        if _is_specific_test_function_target(arg):
+            if (nodeid == arg or nodeid.startswith(arg + "[") or nodeid.rsplit('/',1)[-1] in arg 
+                or pathlib.Path(arg).parts[-1] == nodeid.rsplit('/',1)[-1]):
+                return True
+
+    return False
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    if config.getoption("--run-manual"):
+        return
+
+    skip_manual = pytest.mark.skip(
+        reason="manual test skipped by default; run with --run-manual or target a specific test function."
+    )
+    for item in items:
+        if "manual" in item.keywords and not _is_manual_test_explicitly_selected(config, item):
+            item.add_marker(skip_manual)
+
+
 def pytest_configure(config):
     EngineLogManager.configure(
         # EngineLogConfig(

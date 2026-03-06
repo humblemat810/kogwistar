@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from graph_knowledge_engine.engine_core.models import (
+    AssocFlattenedLLMGraphExtraction,
     FlattenedLLMEdge,
     FlattenedLLMGraphExtraction,
     FlattenedLLMNode,
@@ -526,3 +527,124 @@ def test_from_flattened_llm_accepts_legacy_groundings_alias():
     graph = LLMGraphExtraction.from_flattened_llm(payload, insertion_method="llm")
     assert len(graph.nodes) == 1
     assert len(graph.nodes[0].mentions) == 1
+
+
+def _assoc_payload_one_node_one_grounding() -> dict:
+    return {
+        "spans": [
+            {
+                "id": "sp:1",
+                "collection_page_url": "collection/proof",
+                "document_page_url": "document/proof",
+                "doc_id": "doc:proof",
+                "insertion_method": "llm",
+                "page_number": 1,
+                "start_char": 0,
+                "end_char": 14,
+                "excerpt": "Proof step one",
+                "context_before": "",
+                "context_after": "",
+                "chunk_id": "chunk-1",
+                "source_cluster_id": "cluster-1",
+            }
+        ],
+        "nodes": [
+            {
+                "local_id": "nn:pythagorean_theorem",
+                "label": "Pythagorean theorem",
+                "type": "entity",
+                "summary": "A theorem relating sides of a right triangle.",
+            }
+        ],
+        "edges": [],
+        "groundings": [{"id": "gr:1"}],
+        "node_groundings": [{"node_index": 0, "grounding_id": "gr:1"}],
+        "edge_groundings": [],
+        "grounding_spans": [{"grounding_id": "gr:1", "span_id": "sp:1"}],
+    }
+
+
+def test_assoc_flattened_roundtrip_canonical_to_flattened_to_canonical():
+    sp1 = make_span(excerpt="Proof step one", page_number=1, start_char=0, end_char=14)
+    sp2 = make_span(excerpt="Proof step two", page_number=2, start_char=5, end_char=19)
+
+    node = make_node(make_mention(sp1), make_mention(sp2))
+    edge = make_edge(make_mention(sp1))
+    graph = LLMGraphExtraction.model_validate({"nodes": [node], "edges": [edge]})
+
+    assoc = AssocFlattenedLLMGraphExtraction.from_canonical(graph, insertion_method="llm")
+    roundtrip = assoc.to_canonical(insertion_method="llm")
+
+    assert len(assoc.spans) == 2
+    assert len(assoc.groundings) == 3
+    assert len(assoc.node_groundings) == 2
+    assert len(assoc.edge_groundings) == 1
+
+    assert_node_equal(graph.nodes[0], roundtrip.nodes[0])
+    assert_edge_equal(graph.edges[0], roundtrip.edges[0])
+
+
+def test_from_flattened_llm_accepts_assoc_flattened_shape():
+    payload = _assoc_payload_one_node_one_grounding()
+
+    graph = LLMGraphExtraction.from_flattened_llm(payload, insertion_method="llm")
+    assert len(graph.nodes) == 1
+    assert len(graph.nodes[0].mentions) == 1
+    assert len(graph.nodes[0].mentions[0].spans) == 1
+
+
+def test_dispatcher_from_llm_slice_detects_assoc_flattened():
+    payload = _assoc_payload_one_node_one_grounding()
+
+    graph = LLMGraphExtraction.FromLLMSlice(payload, insertion_method="llm")
+    assert len(graph.nodes) == 1
+    assert graph.nodes[0].label == "Pythagorean theorem"
+
+
+def test_assoc_flattened_validation_rejects_unknown_grounding_id():
+    payload = _assoc_payload_one_node_one_grounding()
+    payload["node_groundings"] = [{"node_index": 0, "grounding_id": "gr:missing"}]
+
+    with pytest.raises(ValueError, match="unknown grounding id"):
+        AssocFlattenedLLMGraphExtraction.model_validate(payload, context={"insertion_method": "llm"})
+
+
+def test_assoc_flattened_validation_rejects_unknown_span_id():
+    payload = _assoc_payload_one_node_one_grounding()
+    payload["grounding_spans"] = [{"grounding_id": "gr:1", "span_id": "sp:missing"}]
+
+    with pytest.raises(ValueError, match="unknown span id"):
+        AssocFlattenedLLMGraphExtraction.model_validate(payload, context={"insertion_method": "llm"})
+
+
+def test_assoc_flattened_validation_rejects_orphan_span_and_grounding():
+    payload = _assoc_payload_one_node_one_grounding()
+    payload["groundings"].append({"id": "gr:2"})
+    payload["spans"].append(
+        {
+            "id": "sp:2",
+            "collection_page_url": "collection/proof",
+            "document_page_url": "document/proof",
+            "doc_id": "doc:proof",
+            "insertion_method": "llm",
+            "page_number": 2,
+            "start_char": 10,
+            "end_char": 22,
+            "excerpt": "Orphan text",
+            "context_before": "",
+            "context_after": "",
+            "chunk_id": "chunk-2",
+            "source_cluster_id": "cluster-1",
+        }
+    )
+
+    with pytest.raises(ValueError, match="Unreferenced groundings|Unreferenced spans"):
+        AssocFlattenedLLMGraphExtraction.model_validate(payload, context={"insertion_method": "llm"})
+
+
+def test_assoc_flattened_validation_rejects_invalid_node_index():
+    payload = _assoc_payload_one_node_one_grounding()
+    payload["node_groundings"] = [{"node_index": 3, "grounding_id": "gr:1"}]
+
+    with pytest.raises(ValueError, match="invalid node_index"):
+        AssocFlattenedLLMGraphExtraction.model_validate(payload, context={"insertion_method": "llm"})
