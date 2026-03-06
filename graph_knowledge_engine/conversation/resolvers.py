@@ -90,6 +90,22 @@ def _start(ctx: StepContext) -> StepRunResult:
                                                                  ('u', {'turn_index':0})])
     return result
 
+@default_resolver.register("noop")
+def _noop(ctx: StepContext) -> StepRunResult:
+    with ctx.state_write as state:
+        state.setdefault("op_log", []).append("noop")
+        turn_index = state.get("turn_index")
+
+    mts = _get_prev_turn_meta_summary_from_state_or_deps(ctx)
+    if type(turn_index) is int:
+        pass
+    else:
+        turn_index = int(getattr(mts, "tail_turn_index", 0) or 0)
+    turn_index += 1
+    result = RunSuccess(conversation_node_id=None, state_update=[
+                                                                 ('u', {'turn_index':turn_index})])
+    return result
+
 
 
 
