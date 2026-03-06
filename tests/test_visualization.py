@@ -17,10 +17,14 @@ def test_pretty_print_graph(engine):
         "Plants perform photosynthesis in their leaves."
     )
     doc = Document(
+        id="doc::test::test_pretty_print_graph",
         content=doc_content,
         type="ocr",
         metadata={"source": "test"},
-        processed=False
+        processed=False,
+        source_map=None,
+        embeddings=engine2._iterative_defensive_emb(doc_content),
+        domain_id='test-cases'
     )
 
     # cache ONLY the pure extraction on the doc content
@@ -29,10 +33,10 @@ def test_pretty_print_graph(engine):
     os.makedirs(location, exist_ok = True)
     memory = Memory(location=location, verbose=0)
     @memory.cache
-    def _extract_only(content: str):
-        return engine2.extract_graph_with_llm(content=content)
+    def _extract_only(content: str, doc_type):
+        return engine2.extract_graph_with_llm(content=content, doc_type="text")
 
-    extracted = _extract_only(doc.content)
+    extracted = _extract_only(doc.model_dump(field_mode="dto")["content"], doc_type="text")
     parsed = extracted["parsed"]
     visualiser = Visualizer(engine=engine2)
     # persist deterministically (choose replace/append/skip-if-exists)

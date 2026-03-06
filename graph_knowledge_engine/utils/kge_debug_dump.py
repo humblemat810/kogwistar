@@ -44,7 +44,7 @@ def _render_template_html(template_html: str, *, context: dict) -> str:
 def dump_d3_bundle(
     *,
     engine: GraphKnowledgeEngine | None,
-    engine_type: EngineType | None, 
+    engine_type: EngineType | None=None, 
     template_html: str,
     out_html: Path,
     doc_id: Optional[str] = None,
@@ -58,6 +58,8 @@ def dump_d3_bundle(
     # If true, embed an empty graph (useful for "listen-only" live CDC pages).
     embed_empty: bool = False,
 ) -> Path:
+    if engine_type is None:
+        engine_type = engine.kg_graph_type
     if engine and engine_type != engine.kg_graph_type:
         raise Exception(f"argument engine_type {engine_type} disagree with engine kg_graph_type = {engine.kg_graph_type}")
     if not engine_type and not engine:

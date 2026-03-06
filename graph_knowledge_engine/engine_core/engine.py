@@ -1649,10 +1649,10 @@ class GraphKnowledgeEngine:
                         if not doc:
                             raise Exception("missing documents")
                         n = Node.model_validate_json(doc[0])
-                        groundings = Grounding(spans = [Span.model_validate(r) for r in merged_list])
-                        for sp in groundings.spans:
+                        mentions = Grounding(spans = [Span.model_validate(r) for r in merged_list])
+                        for sp in mentions.spans:
                             span_validator.validate_span(span = sp)
-                        n.mentions = [groundings]
+                        n.mentions = [mentions]
                         self.backend.node_update(
                             ids=[rid],
                             documents=[n.model_dump_json(field_mode='backend')],
@@ -1684,10 +1684,10 @@ class GraphKnowledgeEngine:
                         if not doc:
                             raise Exception("missing documents")
                         e = Edge.model_validate_json(doc[0])
-                        groundings = Grounding(spans = [Span.model_validate(r) for r in merged_list])
-                        for sp in groundings.spans:
+                        mentions = Grounding(spans = [Span.model_validate(r) for r in merged_list])
+                        for sp in mentions.spans:
                             span_validator.validate_span(span = sp)
-                        e.mentions = [groundings]
+                        e.mentions = [mentions]
                         self.backend.edge_update(
                             ids=[rid],
                             documents=[e.model_dump_json(field_mode='backend')],
@@ -1914,13 +1914,31 @@ class GraphKnowledgeEngine:
             template_messages.extend(to_append)
         prompt = ChatPromptTemplate.from_messages(template_messages)
         try:
-            chain = prompt | self.llm.with_structured_output(LLMGraphExtraction['llm'], 
-                                                             include_raw=True)
+            use_flattened_schema=False
+            if isinstance(self.llm, ChatGoogleGenerativeAI):
+                use_flattened_schema = True
+                from .models import FlattenedLLMGraphExtraction
+                structured = self.llm.with_structured_output(
+                    FlattenedLLMGraphExtraction['llm'],
+                    method="json_schema",
+                    include_raw=True,
+                )
+            else:
+                structured = self.llm.with_structured_output(
+                    LLMGraphExtraction["llm"],
+                    include_raw=True,
+                )
+            chain = prompt | structured
+            #self.llm.with_structured_output(LLMGraphExtraction['llm'], 
+            #                                                include_raw=True)
             from langchain_core.runnables import Runnable
             steps : list[Runnable] = chain.steps # type: ignore   langchain internal step is not exposed
             realised_prmopt = steps[0].invoke({"alias_nodes": alias_nodes_str, "alias_edges": alias_edges_str, "document": content, "_DOC_ALIAS" : _DOC_ALIAS})
             llm_raw = steps[1].invoke(realised_prmopt)
             result = steps[2].invoke(llm_raw)
+            if use_flattened_schema:
+                flattened_parsed:FlattenedLLMGraphExtraction = result['parsed']
+                result['parsed'] = flattened_parsed.to_canonical(insertion_method="llm")
         except Exception as e:
             raise e
         return result.get("raw"), result.get("parsed"), result.get("parsing_error")
@@ -2405,9 +2423,9 @@ class GraphKnowledgeEngine:
         GroundingOrGroundingSlice: Type = type(grounding) # more readable local variable for readability
         return GroundingOrGroundingSlice.model_validate({"spans": out})
 
-    def _dealias_span(self, groundings: List[Grounding] | None, real_doc_id: str
+    def _dealias_span(self, mentions: List[Grounding] | None, real_doc_id: str
                       ):
-        if not groundings or len(groundings) == 0:
+        if not mentions or len(mentions) == 0:
             # produce a default reference using the real doc id
             raise ValueError("No reference to dealias")
             # return [Span(
@@ -2416,7 +2434,7 @@ class GraphKnowledgeEngine:
             #     excerpt=fallback_snip or None,
             #     doc_id=real_doc_id,
             # )]
-        return [self._dealias_one_grounding(r, real_doc_id) for r in groundings]
+        return [self._dealias_one_grounding(r, real_doc_id) for r in mentions]
     
     
     def _target_from_node(self, n: "Node") -> "AdjudicationTarget":
@@ -3435,7 +3453,7 @@ class GraphKnowledgeEngine:
 
 
     def get_span_validator_of_doc_type(self, *, doc_id: str| None= None, 
-                                       doc_type: str | None = None, 
+                                       doc_type: Literal["text","ocr_document"]| str | None = None, 
                                        document: Document| None=None) -> BaseDocValidator:
         """infer doc type from either doc_id, type_type or document and return corresponding span validator"""
         if (doc_id is not None) + (doc_type is not  None) + (document is not None) == 1:

@@ -349,13 +349,13 @@ class Grounding(ModeSlicingMixin, BaseModel):
         pass
 
 class GraphEntityExtractionBase(GraphEntityBase):
-    # the mentions warps Grounding
+    # the groundings wrap grouped supporting spans
     
-    groundings: Annotated[Grounding, FrontendField(),BackendField(),DtoField(),LLMField()] = Field(
-        min_items=1, description="Mentioning of the idea across possibly multiple paragraphs"
+    mentions: Annotated[List[Grounding], FrontendField(),BackendField(),DtoField(),LLMField()] = Field(
+        ..., min_items=1, description="Mentioning of the idea across possibly multiple paragraphs"
     )
     #NEED-FIX
-    @field_validator("groundings")
+    @field_validator("mentions")
     @classmethod
     def _require_non_empty_groundings(cls, mentions: List[Grounding], info: ValidationInfo):
         
@@ -427,7 +427,7 @@ class GraphEntityRefBase(GraphEntityBase):
                         
                     try:
                         mention_dict: dict = cast(dict, mention)
-                        for span in mention_dict['spans']:
+                        for span in (mention_dict.get('spans') or []):
                             check_and_update_span_inplace(span)
                     except Exception as _e:
                         raise
@@ -642,8 +642,9 @@ class LLMNode( LLMMixin, GraphEntityRefBase):
       - leave id empty and set local_id = "nn:<slug>"
     If this references an existing node, set id to the provided alias (e.g., N3, N~abc, or UUID).
     """
-    
-    pass
+
+    def to_flattened(self, *, span_to_id: dict[tuple, str]) -> "FlattenedLLMNode":
+        return FlattenedLLMNode.from_canonical(self, span_to_id=span_to_id)
 
 class LLMEdge( LLMMixin, EdgeMixin, GraphEntityRefBase):
     """
@@ -658,8 +659,9 @@ class LLMEdge( LLMMixin, EdgeMixin, GraphEntityRefBase):
       - leave id empty and set local_id = "ne:<slug>"
     If this references an existing edge, set id to the provided alias (e.g., N3, N~abc, or UUID).
     """
-    
-    pass
+
+    def to_flattened(self, *, span_to_id: dict[tuple, str]) -> "FlattenedLLMEdge":
+        return FlattenedLLMEdge.from_canonical(self, span_to_id=span_to_id)
 
 class GroundginMandatoryExcerpt(Span):
     excerpt: str = Field(..., description="the direct excerpt from source doc from start char to end char. "
@@ -668,16 +670,276 @@ class GroundginMandatoryExcerpt(Span):
 class LLMNodeExtraction(LLMNode):
     "extracted node information"
     
-    groundings: Annotated[List[GroundginMandatoryExcerpt], FrontendField(),BackendField(),DtoField(),LLMField()] = Field(
+    mentions: Annotated[List[GroundginMandatoryExcerpt], FrontendField(),BackendField(),DtoField(),LLMField()] = Field(
         min_items=1, description="One or more locatable mentions supporting this entity"
     )# type: ignore
 
 class LLMEdgeExtraction(LLMEdge):
     "extracted edge information"
     
-    groundings: Annotated[List[GroundginMandatoryExcerpt], FrontendField(),BackendField(),DtoField(),LLMField()] = Field(
+    mentions: Annotated[List[GroundginMandatoryExcerpt], FrontendField(),BackendField(),DtoField(),LLMField()] = Field(
         min_items=1, description="One or more locatable mentions supporting this entity"
     )# type: ignore
+
+
+
+def _span_identity_key(span: Span) -> tuple:
+    """Stable key for deduplicating canonical spans inside one flattened payload."""
+    return (
+        span.collection_page_url,
+        span.document_page_url,
+        span.doc_id,
+        span.page_number,
+        span.start_char,
+        span.end_char,
+        span.excerpt,
+        span.context_before,
+        span.context_after,
+        span.chunk_id,
+        span.source_cluster_id,
+    )
+
+
+class FlattenedSpan(Span):
+    """LLM-facing flattened span with required temporary id."""
+    include_unmarked_for_modes: ClassVar[set[str]] = {"llm"}
+
+    id: str = Field(..., description="Required temporary span id within this extraction payload, e.g. 'sp:1'")
+
+    @classmethod
+    def from_canonical(
+        cls,
+        span: Span,
+        *,
+        span_id: str,
+        insertion_method: Optional[str] = None,
+    ) -> "FlattenedSpan":
+        # Respect llm slice semantics: keep llm fields (e.g. chunk_id), drop backend-only fields.
+        payload = span.model_dump(field_mode="llm")
+        payload["id"] = span_id
+        resolved_insertion_method = insertion_method if insertion_method is not None else span.insertion_method
+        return cls.model_validate(payload, context={"insertion_method": resolved_insertion_method})
+
+    def to_canonical(self, *, insertion_method: Optional[str] = None) -> Span:
+        # Use llm mode so chunk_id survives and insertion_method remains an explicit reconstruction concern.
+        payload = self.model_dump(field_mode="llm", exclude={"id"})
+        resolved_insertion_method = insertion_method if insertion_method is not None else self.insertion_method
+        payload["insertion_method"] = resolved_insertion_method
+        return Span.model_validate(payload, context={"insertion_method": resolved_insertion_method})
+
+
+class FlattenedGrounding(ModeSlicingMixin, BaseModel):
+    """Grouped support that references one or more root-level spans by id."""
+    include_unmarked_for_modes: ClassVar[set[str]] = {"llm"}
+
+    span_ids: Annotated[List[str], FrontendField(),BackendField(),DtoField(),LLMField()] = Field(
+        ..., min_items=1, description="One or more root-level span ids supporting this grounding"
+    )
+
+    @field_validator("span_ids")
+    @classmethod
+    def _require_non_empty_span_ids(cls, span_ids: List[str]):
+        if not span_ids:
+            raise ValueError("At least one span_id is required")
+        return span_ids
+
+    @classmethod
+    def from_canonical(cls, grounding: Grounding, *, span_to_id: dict[tuple, str]) -> "FlattenedGrounding":
+        return cls(span_ids=[span_to_id[_span_identity_key(span)] for span in grounding.spans])
+
+    def to_canonical(self, *, span_by_id: dict[str, Span]) -> Grounding:
+        spans: list[Span] = []
+        for span_id in self.span_ids:
+            try:
+                spans.append(span_by_id[span_id])
+            except KeyError as e:
+                raise KeyError(f"Unknown span id referenced by grounding: {span_id}") from e
+        return Grounding(spans=spans)
+
+
+class FlattenedLLMNode(LLMMixin, GraphEntityBase):
+    include_unmarked_for_modes: ClassVar[set[str]] = {"llm"}
+
+    mentions: Annotated[List[FlattenedGrounding], FrontendField(),BackendField(),DtoField(),LLMField()] = Field(
+        ..., min_items=1, description="One or more grouped evidence supports for this node"
+    )
+
+    @field_validator("mentions")
+    @classmethod
+    def _require_non_empty_groundings(cls, mentions: List[FlattenedGrounding]):
+        if not mentions:
+            raise ValueError("At least one grounding is required")
+        return mentions
+
+    @classmethod
+    def from_canonical(cls, node: "LLMNode", *, span_to_id: dict[tuple, str]) -> "FlattenedLLMNode":
+        return cls(
+            id=node.id,
+            local_id=node.local_id,
+            label=node.label,
+            type=node.type,
+            summary=node.summary,
+            domain_id=node.domain_id,
+            canonical_entity_id=node.canonical_entity_id,
+            properties=node.properties,
+            mentions=[FlattenedGrounding.from_canonical(g, span_to_id=span_to_id) for g in node.mentions],
+        )
+
+    def to_canonical(self, *, span_by_id: dict[str, Span]) -> "LLMNode":
+        return LLMNode(
+            id=self.id,
+            local_id=self.local_id,
+            label=self.label,
+            type=self.type,
+            summary=self.summary,
+            domain_id=self.domain_id,
+            canonical_entity_id=self.canonical_entity_id,
+            properties=self.properties,
+            mentions=[g.to_canonical(span_by_id=span_by_id) for g in self.mentions],
+        )
+
+
+class FlattenedLLMEdge(LLMMixin, EdgeMixin, GraphEntityBase):
+    include_unmarked_for_modes: ClassVar[set[str]] = {"llm"}
+
+    mentions: Annotated[List[FlattenedGrounding], FrontendField(),BackendField(),DtoField(),LLMField()] = Field(
+        ..., min_items=1, description="One or more grouped evidence supports for this edge"
+    )
+
+    @field_validator("mentions")
+    @classmethod
+    def _require_non_empty_groundings(cls, mentions: List[FlattenedGrounding]):
+        if not mentions:
+            raise ValueError("At least one grounding is required")
+        return mentions
+
+    @classmethod
+    def from_canonical(cls, edge: "LLMEdge", *, span_to_id: dict[tuple, str]) -> "FlattenedLLMEdge":
+        return cls(
+            id=edge.id,
+            local_id=edge.local_id,
+            label=edge.label,
+            type=edge.type,
+            summary=edge.summary,
+            domain_id=edge.domain_id,
+            canonical_entity_id=edge.canonical_entity_id,
+            properties=edge.properties,
+            source_ids=edge.source_ids,
+            target_ids=edge.target_ids,
+            relation=edge.relation,
+            source_edge_ids=edge.source_edge_ids,
+            target_edge_ids=edge.target_edge_ids,
+            mentions=[FlattenedGrounding.from_canonical(g, span_to_id=span_to_id) for g in edge.mentions],
+        )
+
+    def to_canonical(self, *, span_by_id: dict[str, Span]) -> "LLMEdge":
+        return LLMEdge(
+            id=self.id,
+            local_id=self.local_id,
+            label=self.label,
+            type=self.type,
+            summary=self.summary,
+            domain_id=self.domain_id,
+            canonical_entity_id=self.canonical_entity_id,
+            properties=self.properties,
+            source_ids=self.source_ids,
+            target_ids=self.target_ids,
+            relation=self.relation,
+            source_edge_ids=self.source_edge_ids,
+            target_edge_ids=self.target_edge_ids,
+            mentions=[g.to_canonical(span_by_id=span_by_id) for g in self.mentions],
+        )
+
+
+class FlattenedLLMGraphExtraction(ModeSlicingMixin, BaseModel):
+    include_unmarked_for_modes: ClassVar[set[str]] = {"llm"}
+
+    spans: List[FlattenedSpan] = Field(..., description="Root-level spans referenced by node/edge groundings")
+    nodes: List[FlattenedLLMNode] = Field(..., description="List of extracted flattened nodes")
+    edges: List[FlattenedLLMEdge] = Field(..., description="List of extracted flattened edges")
+
+    @field_validator("spans")
+    @classmethod
+    def _validate_unique_span_ids(cls, spans: List[FlattenedSpan]):
+        seen: set[str] = set()
+        for sp in spans:
+            if sp.id in seen:
+                raise ValueError(f"Duplicate span id found: {sp.id}")
+            seen.add(sp.id)
+        return spans
+
+    @model_validator(mode="after")
+    def _validate_references(self):
+        span_ids = {sp.id for sp in self.spans}
+        referenced: set[str] = set()
+        for node in self.nodes:
+            for grounding in node.mentions:
+                for span_id in grounding.span_ids:
+                    if span_id not in span_ids:
+                        raise ValueError(f"Node references unknown span id: {span_id}")
+                    referenced.add(span_id)
+        for edge in self.edges:
+            for grounding in edge.mentions:
+                for span_id in grounding.span_ids:
+                    if span_id not in span_ids:
+                        raise ValueError(f"Edge references unknown span id: {span_id}")
+                    referenced.add(span_id)
+        orphaned = span_ids - referenced
+        if orphaned:
+            raise ValueError(f"Unreferenced spans are not allowed: {sorted(orphaned)}")
+        return self
+
+    @classmethod
+    def from_canonical(
+        cls,
+        graph: "LLMGraphExtraction",
+        *,
+        insertion_method: Optional[str] = None,
+    ) -> "FlattenedLLMGraphExtraction":
+        span_to_id: dict[tuple, str] = {}
+        flat_spans: list[FlattenedSpan] = []
+        seq = 0
+
+        def intern_span(span: Span) -> str:
+            nonlocal seq
+            key = _span_identity_key(span)
+            existing = span_to_id.get(key)
+            if existing is not None:
+                return existing
+            seq += 1
+            span_id = f"sp:{seq}"
+            span_to_id[key] = span_id
+            resolved_insertion_method = insertion_method if insertion_method is not None else span.insertion_method
+            flat_spans.append(
+                FlattenedSpan.from_canonical(
+                    span,
+                    span_id=span_id,
+                    insertion_method=resolved_insertion_method,
+                )
+            )
+            return span_id
+
+        for node in graph.nodes:
+            for grounding in node.mentions:
+                for span in grounding.spans:
+                    intern_span(span)
+        for edge in graph.edges:
+            for grounding in edge.mentions:
+                for span in grounding.spans:
+                    intern_span(span)
+
+        return cls(
+            spans=flat_spans,
+            nodes=[node.to_flattened(span_to_id=span_to_id) for node in graph.nodes],
+            edges=[edge.to_flattened(span_to_id=span_to_id) for edge in graph.edges],
+        )
+
+    def to_canonical(self, *, insertion_method: Optional[str] = None) -> "LLMGraphExtraction":
+        span_by_id: dict[str, Span] = {sp.id: sp.to_canonical(insertion_method=insertion_method) for sp in self.spans}
+        return LLMGraphExtraction(
+            nodes=[node.to_canonical(span_by_id=span_by_id) for node in self.nodes],
+            edges=[edge.to_canonical(span_by_id=span_by_id) for edge in self.edges],
+        )
 
 class GraphExtractionWithIDs(ModeSlicingMixin, BaseModel):
     """represent a graph extracted by external tool and all ids are imported
@@ -696,53 +958,124 @@ class LLMGraphExtraction(ModeSlicingMixin, BaseModel):
     include_unmarked_for_modes: ClassVar[set[str]] = {"llm"}
     nodes: List[LLMNode] = Field(..., description="List of extracted nodes")
     edges: List[LLMEdge] = Field(..., description="List of extracted edges")
+
     @model_validator(mode="before")
     @classmethod
     def inject_context_on_children_before(cls, data: dict, info: ValidationInfo):
-        # You can inspect context and even transform incoming data
-        # (not required—context is already auto-propagated)
         _ = info.context or {}
         return data
+
     @model_validator(mode="after")
     def inject_context_on_children_after(self, info: ValidationInfo):
-        # You can inspect context and even transform incoming data
-        # (not required—context is already auto-propagated)
         _ = info.context or {}
         return self
+
+    def to_flattened(self, *, insertion_method: Optional[str] = None) -> "FlattenedLLMGraphExtraction":
+        return FlattenedLLMGraphExtraction.from_canonical(self, insertion_method=insertion_method)
+
     @classmethod
-    def FromLLMSlice(cls, sliced: "Union[LLMGraphExtraction['llm'] , dict]", insertion_method)->"LLMGraphExtraction":
+    def from_normal_llm(
+        cls,
+        sliced: "Union[LLMGraphExtraction['llm'], dict, BaseModel]",
+        insertion_method,
+    ) -> "LLMGraphExtraction":
         if isinstance(sliced, BaseModel):
             dumped = sliced.model_dump()
         elif type(sliced) is dict:
             dumped = sliced
         else:
-            raise(ValueError("Unsupported type for 'sliced'"))
-        # Backwards-compatibility:
-        #   - historical payloads used `references: [SpanLike, ...]`
-        #   - current models use `mentions: [Grounding{spans:[Span,...]}, ...]`
-        # This helper accepts either and normalizes to `mentions`.
+            raise ValueError("Unsupported type for 'sliced'")
+
         for ne in (dumped.get('nodes') or []) + (dumped.get('edges') or []):
-            # If a caller provided `references` (legacy), map it to a single grounding.
             if 'mentions' not in ne and 'references' in ne and ne.get('references') is not None:
                 refs = ne.get('references') or []
-                # refs is expected to be a list of Span-like dicts
                 ne['mentions'] = [{"spans": refs}]
-            # Some callers used `groundings` instead of `mentions`.
+
             if 'mentions' not in ne and 'groundings' in ne and ne.get('groundings') is not None:
                 ne['mentions'] = ne.pop('groundings')
 
-            # Inject insertion_method into every span (backend-only provenance tag).
             for g in (ne.get('mentions') or []):
                 spans = (g or {}).get('spans') or []
                 for s in spans:
                     if isinstance(s, dict):
                         s['insertion_method'] = insertion_method
 
-            # Finally, drop legacy key to avoid confusing validators.
             if 'references' in ne:
                 ne.pop('references', None)
 
         return cls.model_validate(dumped, context={"insertion_method": insertion_method})
+
+    @classmethod
+    def from_flattened_llm(
+        cls,
+        sliced: "Union[FlattenedLLMGraphExtraction, dict, BaseModel]",
+        insertion_method,
+    ) -> "LLMGraphExtraction":
+        if isinstance(sliced, FlattenedLLMGraphExtraction):
+            flat = sliced
+        elif isinstance(sliced, BaseModel):
+            dumped = cls._normalize_flattened_payload_dict(sliced.model_dump())
+            flat = FlattenedLLMGraphExtraction.model_validate(
+                dumped,
+                context={"insertion_method": insertion_method},
+            )
+        elif type(sliced) is dict:
+            dumped = cls._normalize_flattened_payload_dict(sliced)
+            flat = FlattenedLLMGraphExtraction.model_validate(
+                dumped,
+                context={"insertion_method": insertion_method},
+            )
+        else:
+            raise ValueError("Unsupported type for 'sliced'")
+
+        return flat.to_canonical(insertion_method=insertion_method)
+
+    @staticmethod
+    def _normalize_flattened_payload_dict(payload: dict) -> dict:
+        normalized = dict(payload)
+        for section in ("nodes", "edges"):
+            entries = normalized.get(section) or []
+            normalized_entries = []
+            for entry in entries:
+                if isinstance(entry, dict):
+                    entry_dict = dict(entry)
+                    if "mentions" not in entry_dict and entry_dict.get("groundings") is not None:
+                        entry_dict["mentions"] = entry_dict["groundings"]
+                    entry_dict.pop("groundings", None)
+                    normalized_entries.append(entry_dict)
+                else:
+                    normalized_entries.append(entry)
+            normalized[section] = normalized_entries
+        return normalized
+
+    @staticmethod
+    def _looks_like_flattened_payload(payload: dict) -> bool:
+        if "spans" not in payload:
+            return False
+
+        for entry in (payload.get("nodes") or []) + (payload.get("edges") or []):
+            if not isinstance(entry, dict):
+                continue
+            mentions = entry.get("mentions")
+            if mentions is None:
+                mentions = entry.get("groundings")
+            if not isinstance(mentions, list):
+                continue
+            for grounding in mentions:
+                if isinstance(grounding, dict) and "span_ids" in grounding:
+                    return True
+        return False
+
+    @classmethod
+    def FromLLMSlice(cls, sliced: "Union[LLMGraphExtraction['llm'], FlattenedLLMGraphExtraction, dict, BaseModel]", insertion_method) -> "LLMGraphExtraction":
+        if isinstance(sliced, FlattenedLLMGraphExtraction):
+            return cls.from_flattened_llm(sliced, insertion_method)
+
+        if type(sliced) is dict:
+            if cls._looks_like_flattened_payload(sliced):
+                return cls.from_flattened_llm(sliced, insertion_method)
+
+        return cls.from_normal_llm(sliced, insertion_method)
 
 
 # -------------------------

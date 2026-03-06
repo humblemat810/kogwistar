@@ -115,7 +115,7 @@ class NodeLike(Protocol):
     domain_id: Optional[str]
     canonical_entity_id: Optional[str]
     properties: Optional[Dict[str, Any]]
-    groundings: Optional[List[Any]]  # ReferenceSession, but keep it loose here
+    mentions: Optional[List[Any]]  # ReferenceSession, but keep it loose here
     embedding: Optional[List[float]]
     doc_id: Optional[str]
 
