@@ -25,8 +25,8 @@ async def _wait(url: str, timeout=15):
 
 # --- Preseed helper (same models/engine your server uses) ---
 def _preseed_chroma_dir(persist_dir: str):
-    from graph_knowledge_engine.engine import GraphKnowledgeEngine
-    from graph_knowledge_engine.models import Document, Node, Edge, Span
+    from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
+    from graph_knowledge_engine.engine_core.models import Document, Node, Edge, Span
 
     def ref(doc_id: str, excerpt: str = ""):
         return Span(

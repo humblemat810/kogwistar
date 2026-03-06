@@ -42,3 +42,18 @@ package-dir = {"" = "."}
 where = ["src"]
 include = ["graph_knowledge_engine*"]
 exclude = ["*.tests*", "*.test*", "tests*", "examples*", "diagnostic*"]
+
+[tool.pytest.ini_options]
+markers = [
+  "ci: required on pull-request CI",
+  "ci_full: required on full CI (post-merge / broader matrix)",
+  "nightly: nightly-only coverage",
+  "core: engine/core graph capabilities",
+  "workflow: workflow runtime and orchestration",
+  "conversation: conversation orchestration and resolvers",
+  "unit: no external systems, deterministic fast tests",
+  "integration: multi-component integration tests",
+  "e2e: end-to-end behavior tests across major components",
+  "llm_real: tests requiring non-fake LLM behavior or external LLM credentials",
+  "manual: manually triggered tests only",
+]

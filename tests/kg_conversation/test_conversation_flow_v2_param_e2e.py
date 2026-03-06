@@ -15,11 +15,11 @@ from langchain_core.messages import AIMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.runnables import Runnable, RunnableConfig
 
-from conversation.models import FilteringResult, MetaFromLastSummary
-from graph_knowledge_engine.engine import GraphKnowledgeEngine
+from graph_knowledge_engine.conversation.models import FilteringResult, MetaFromLastSummary
+from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
 from graph_knowledge_engine.id_provider import stable_id
-from graph_knowledge_engine.postgres_backend import PgVectorBackend
-from engine_core.models import (
+from graph_knowledge_engine.engine_core.postgres_backend import PgVectorBackend
+from graph_knowledge_engine.engine_core.models import (
     Node,
     Span,
     Grounding,
@@ -27,9 +27,15 @@ from engine_core.models import (
 )
 from graph_knowledge_engine.conversation.conversation_orchestrator import ConversationOrchestrator
 
+pytestmark = [
+    pytest.mark.conversation,
+    pytest.mark.workflow,
+    pytest.mark.e2e,
+]
+
 # Optional: knowledge-edge model may not exist in some repo versions.
 try:
-    from engine_core.models import Edge  # type: ignore
+    from graph_knowledge_engine.engine_core.models import Edge  # type: ignore
 except Exception:  # pragma: no cover
     Edge = None  # type: ignore
 
@@ -511,8 +517,15 @@ def _deterministic_answer_impl(*, question: str, knowledge_key: str) -> dict[str
     return {"content": "I don't know.", "need_summary": False}
 
 
-@pytest.mark.parametrize("backend_kind", ["chroma", "pg"])
-@pytest.mark.parametrize("llm_mode", ["fake", "real"])
+@pytest.mark.parametrize(
+    "backend_kind,llm_mode",
+    [
+        pytest.param("chroma", "fake", id="chroma_fake", marks=[pytest.mark.ci]),
+        pytest.param("pg", "fake", id="pg_fake", marks=[pytest.mark.ci_full]),
+        pytest.param("chroma", "real", id="chroma_real", marks=[pytest.mark.nightly, pytest.mark.llm_real]),
+        pytest.param("pg", "real", id="pg_real", marks=[pytest.mark.nightly, pytest.mark.llm_real]),
+    ],
+)
 @pytest.mark.parametrize(
     "knowledge_builder,knowledge_key",
     [
@@ -568,7 +581,7 @@ def test_conversation_flow_v2_param_e2e(
             return FilteringResult.model_validate(dumped), "cached deterministic filter"
     else:
         # Use the project's canonical prompting-based filter, but cache it (ignore llm).
-        from graph_knowledge_engine.engine import candiate_filtering_callback
+        from graph_knowledge_engine.engine_core.engine import candiate_filtering_callback
         def cached_inner(llm: BaseChatModel, conversation_content, cand_node_list_str, cand_edge_list_str, candidates_node_ids, candidate_edge_ids, context_text):
             fr, reason = candiate_filtering_callback(llm, conversation_content, cand_node_list_str, cand_edge_list_str, candidates_node_ids, candidate_edge_ids, context_text)
             return fr.model_dump(), reason
@@ -578,13 +591,14 @@ def test_conversation_flow_v2_param_e2e(
             return FilteringResult.model_validate(dumped), reason
 
     # Answer harness (cached, serializable-only inner)
-    def answer_only_harness(*, conversation_id: str, prev_turn_meta_summary: MetaFromLastSummary, user_text: str, **_):
-        payload = cached_answer(question=user_text, knowledge_key=knowledge_key)
+    def answer_only_harness(*, conversation_id: str, prev_turn_meta_summary: MetaFromLastSummary,  **_):
+        
+        payload = cached_answer(question=question, knowledge_key=knowledge_key)
         # Use the project's conversation engine API for assistant turn creation if available
         # We keep this harness minimal: the v2 orchestrator expects a ConversationAIResponse-like object.
         # If your repo defines ConversationAIResponse, use it directly.
         try:
-            from conversation.models import ConversationAIResponse
+            from graph_knowledge_engine.conversation.models import ConversationAIResponse
             return ConversationAIResponse(
                 response_node_id=None,  # will be filled by engine call below if available
                 llm_decision_need_summary=bool(payload.get("need_summary", False)),

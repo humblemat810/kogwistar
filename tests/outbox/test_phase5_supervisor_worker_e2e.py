@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from graph_knowledge_engine.engine import GraphKnowledgeEngine
+from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
 
 
 def _wait_until_done(eng: GraphKnowledgeEngine, *, ns: str, job_id: str, timeout_s: float = 10.0) -> None:

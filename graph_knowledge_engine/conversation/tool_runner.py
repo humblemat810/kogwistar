@@ -21,11 +21,12 @@ from pydantic import Json
 from .models import ConversationEdge
 
 
-from .models import BaseToolResult, ConversationNode, Grounding, MentionVerification, Span
+from .models import BaseToolResult, ConversationNode
+from ..engine_core.models import Grounding, MentionVerification, Span
 if TYPE_CHECKING:
-    from conversation.models import MetaFromLastSummary
-    from graph_knowledge_engine.engine import GraphKnowledgeEngine
-    from graph_knowledge_engine.conversation_orchestrator import ConversationOrchestrator
+    from .models import MetaFromLastSummary
+    from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
+    from graph_knowledge_engine.conversation.conversation_orchestrator import ConversationOrchestrator
 
 T = TypeVar("T", bound = BaseToolResult)
 

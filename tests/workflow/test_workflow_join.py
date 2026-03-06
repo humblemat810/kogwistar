@@ -7,7 +7,7 @@ import pytest
 
 from graph_knowledge_engine.runtime.runtime import StepContext, WorkflowRuntime
 from graph_knowledge_engine.runtime.resolvers import MappingStepResolver
-from runtime.models import RunSuccess
+from graph_knowledge_engine.runtime.models import RunSuccess
 
 
 @dataclass
@@ -225,7 +225,9 @@ def test_join_does_not_wait_for_branch_that_can_no_longer_reach_it():
 
     engine = FakeWorkflowEngine(nodes, edges)
     resolver = MappingStepResolver()
-
+    @resolver.register("noop")
+    def _fast(ctx):
+        return RunSuccess(conversation_node_id = None, state_update=[])
     @resolver.register("fast")
     def _fast(ctx):
         with ctx.state_write as st:
@@ -362,7 +364,7 @@ def test_nested_joins_human_debug(capsys):
         max_workers=2,
     )
 
-    state: Dict[str, Any] = {"_rt_join_debug": True}
+    state: Dict[str, Any] = {"testcase_rt_join_debug": True}
     run_result = rt.run(workflow_id=wid, conversation_id="conv_test", turn_node_id="turn_test", initial_state=state)
     final_state, _run_id = run_result.final_state, run_result.run_id
     assert final_state.get("ended") is True

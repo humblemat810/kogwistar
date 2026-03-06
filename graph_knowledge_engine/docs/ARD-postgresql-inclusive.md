@@ -1,14 +1,17 @@
-# Architecture Requirements Document (ARD)
+﻿# Architecture Requirements Document (ARD)
 ## Transactional storage + vector backends (Chroma and Postgres/pgvector)
 
-**Status:** Draft  
+**Status:** Accepted (Implemented; code-derived)  
 **Scope:** `GraphKnowledgeEngine` storage layer + `WorkflowRuntime` persistence boundary + LangGraph conversion compatibility.
 
----
+## Document History
+- 2026-03-05: Status changed from Draft to Accepted (Implemented; code-derived from runtime/backend behavior and tests).
+- 2026-03-05: Added explicit concurrent UoW semantics (thread/task isolation, rollback scope, backend-specific consequences).
 
+---
 ## 1. Context
 
-The system has multiple “engines” backed by local persistence:
+The system has multiple â€œenginesâ€ backed by local persistence:
 
 - **workflow_engine** stores workflow design nodes/edges and can persist the workflow graph.
 - **conversation_engine** stores run-time execution artifacts (run anchor, step exec nodes, checkpoint nodes, edges).
@@ -25,7 +28,7 @@ ChromaDB mode uses multiple collections (e.g., `nodes`, `edges`, `documents`, et
 1. **Support Postgres + pgvector** as an alternative backend with strong transactional semantics.
 2. **Preserve existing Chroma mode** (non-transactional vector store) without pretending it can participate in SQL transactions.
 3. Ensure **all local SQL writes that must be consistent** (conversation, workflow, KG metadata) can be grouped into a single transaction *when the backend allows*.
-4. Provide a **clear, deterministic persistence boundary** in `WorkflowRuntime` (per-step “commit point”).
+4. Provide a **clear, deterministic persistence boundary** in `WorkflowRuntime` (per-step â€œcommit pointâ€).
 5. Keep **step resolver contract unchanged**:
    - resolvers read/modify `state` and return `RunResult(state_update=...)`
    - no resolver code should care whether the backend is Chroma or pgvector.
@@ -66,7 +69,7 @@ There is a converter path used by integration tests that asserts parallel fanout
 
 ## 5. Target architecture
 
-### 5.1 Split responsibilities into explicit “stores”
+### 5.1 Split responsibilities into explicit â€œstoresâ€
 Introduce three conceptual stores behind `GraphKnowledgeEngine`:
 
 1. **MetaStore (relational truth)**  
@@ -77,7 +80,7 @@ Introduce three conceptual stores behind `GraphKnowledgeEngine`:
    - **pgvector implementation:** Postgres table(s) with vector columns.
 
 3. **Outbox (transactional bridge for projections)**  
-   Stored in MetaStore database. Represents “side effects to apply” (vector updates, external CDC publish, etc.).
+   Stored in MetaStore database. Represents â€œside effects to applyâ€ (vector updates, external CDC publish, etc.).
 
 ### 5.2 Unit of Work (UoW)
 Add `engine.uow()` as the only supported way to group writes. The UoW decides whether vector writes are performed:
@@ -91,7 +94,7 @@ Add `engine.uow()` as the only supported way to group writes. The UoW decides wh
 
 ## 6. Backend profiles and transaction model
 
-### 6.1 Profile A — Postgres + pgvector (transactional)
+### 6.1 Profile A â€” Postgres + pgvector (transactional)
 - MetaStore + VectorIndex in the same Postgres database.
 - `engine.uow()` uses a Postgres transaction:
   - write nodes/edges/exec artifacts
@@ -104,7 +107,7 @@ Add `engine.uow()` as the only supported way to group writes. The UoW decides wh
 - `node_embeddings`, `edge_embeddings`, `document_embeddings` (or one table with `collection_key`)
 - `outbox`
 
-### 6.2 Profile B — SQLite + Chroma (eventual consistency with replay)
+### 6.2 Profile B â€” SQLite + Chroma (eventual consistency with replay)
 - MetaStore in SQLite remains transactional.
 - VectorIndex is Chroma collections (non-transactional).
 - `engine.uow()` uses SQLite transaction:
@@ -117,21 +120,35 @@ Add `engine.uow()` as the only supported way to group writes. The UoW decides wh
 
 **Invariant:** SQL is the source of truth; Chroma is a projection.
 
+### 6.3 Concurrent UoW semantics (threads/tasks)
+`engine.uow()` context is isolated per execution context (thread/task). Concurrent callers do not share the same UoW unless they explicitly reuse the same active context.
+
+Behavioral contract:
+- Concurrent `with engine.uow()` calls are independent transaction scopes.
+- If one scope raises/cancels, only that scope is rolled back.
+- A rollback in one thread must not roll back another thread's committed UoW.
+- Nested `uow()` in the same thread/context joins the outer UoW; only outermost scope commits or rolls back.
+
+Backend-specific consequences:
+- Postgres + pgvector: rollback is atomic for entity rows, vectors, event log rows, and index jobs in that UoW.
+- SQLite + Chroma: SQLite MetaStore portion rolls back atomically; Chroma writes are non-transactional and may already be visible if failure occurs after projection write.
+- SQLite writer contention: `BEGIN IMMEDIATE` serializes writers; other writers wait, then continue after commit/rollback.
+
 ---
 
-## 7. Collections / “where” support across node/edge/doc types
+## 7. Collections / â€œwhereâ€ support across node/edge/doc types
 
-Chroma mode already uses separable collections and `where` filtering. To ensure all “collections” are catered for (including `node_doc`, `edge_doc`-like semantics), the architecture standardizes a **collection key**:
+Chroma mode already uses separable collections and `where` filtering. To ensure all â€œcollectionsâ€ are catered for (including `node_doc`, `edge_doc`-like semantics), the architecture standardizes a **collection key**:
 
 - `collection_key` is a logical namespace (e.g. `node`, `edge`, `document`, `node_index`, `edge_endpoints`).
 - Backends map `collection_key` to:
   - Chroma collection name, or
   - Postgres table/partition, or
-  - “not indexed” (if disabled by config).
+  - â€œnot indexedâ€ (if disabled by config).
 
 **Outbox vector operations MUST include `collection_key`** so replay does not lose routing.
 
-> Note: `node_doc` / `edge_doc` content can remain as Chroma “documents” stored in the same `nodes`/`edges` collections, as currently implemented. The key requirement is that all vector/index updates for every logical collection are routable and replayable.
+> Note: `node_doc` / `edge_doc` content can remain as Chroma â€œdocumentsâ€ stored in the same `nodes`/`edges` collections, as currently implemented. The key requirement is that all vector/index updates for every logical collection are routable and replayable.
 
 ---
 
@@ -153,7 +170,7 @@ Checkpoints must reflect a coherent join frontier / pending tokens state. Theref
 
 ## 9. Shared state merge semantics (Runtime + LangGraph)
 
-Define a single shared “state merge” module used by:
+Define a single shared â€œstate mergeâ€ module used by:
 - `WorkflowRuntime.apply_state_update(...)`
 - `langgraph_converter` reducers
 
@@ -194,7 +211,7 @@ All vector operations must be safe to repeat:
 3. Refactor `WorkflowRuntime` persistence helpers to use `with conversation_engine.uow(): ...` per completed step.
 4. Extract merge semantics into a shared module, update runtime and converter to use it.
 5. Add Postgres MetaStore implementation + migrations; keep API identical.
-6. Add pgvector implementation and enable “inline vector writes inside transaction” profile.
+6. Add pgvector implementation and enable â€œinline vector writes inside transactionâ€ profile.
 7. Add backfill/rebuild commands:
    - `rebuild_vector_index(collection_key=...)`
    - `reconcile_outbox()` / `repair_failed_ops()`
@@ -225,7 +242,7 @@ All vector operations must be safe to repeat:
 ## 13. Risks / trade-offs
 
 - **Chroma mode is eventual consistency:** mitigated with outbox + replay + idempotency.
-- **Operational complexity:** outbox drain loop must be reliable; consider a lightweight “drain-on-write” plus periodic reconciliation.
+- **Operational complexity:** outbox drain loop must be reliable; consider a lightweight â€œdrain-on-writeâ€ plus periodic reconciliation.
 - **Schema divergence:** keep logical `collection_key` mapping consistent across backends to avoid migration pain.
 
 ---
@@ -294,3 +311,7 @@ In addition to Section 14, the following must hold:
 3. **Checkpoint completeness**
    - A checkpoint restored into the native runtime MUST contain sufficient information
      to resume execution equivalently to a LangGraph semantics-mode run at the same boundary.
+
+
+
+

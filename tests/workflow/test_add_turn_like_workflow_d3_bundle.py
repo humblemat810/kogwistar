@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 
 from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
-from engine_core.models import (
+from graph_knowledge_engine.engine_core.models import (
     Grounding,
     Span,
     MentionVerification,
@@ -11,8 +11,8 @@ from typing import TYPE_CHECKING
 
 from graph_knowledge_engine.runtime.runtime import State
 from graph_knowledge_engine.runtime.models import StepRunResult
-from runtime.models import RunSuccess
-from runtime.models import RunFailure, WorkflowEdge, WorkflowNode
+from graph_knowledge_engine.runtime.models import RunSuccess
+from graph_knowledge_engine.runtime.models import RunFailure, WorkflowEdge, WorkflowNode
 
 if TYPE_CHECKING:
     from graph_knowledge_engine.runtime.runtime import StepContext

@@ -38,7 +38,7 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 
 from .models import WorkflowEdge
 if TYPE_CHECKING:
-    from ..engine import GraphKnowledgeEngine
+    from ..engine_core.engine import GraphKnowledgeEngine
 
 Json = Any
 State = Dict[str, Json]
@@ -60,14 +60,14 @@ class WorkflowNodeInfo:
     terminal: bool
     fanout: bool
 
-from ..engine_core.models import Edge
+from ..engine_core.models import Node, Edge
 @dataclass(frozen=True)
 class WorkflowEdgeInfo:
     name: str
     edge_id: str
     src: str
     dst: str
-    predicate: Optional[str]
+    predicate: None | str
     priority: int
     is_default: bool
     multiplicity: str  # "one" | "many"
@@ -118,8 +118,8 @@ def build_workflow_from_engine(*, engine: GraphKnowledgeEngine, workflow_id: str
     return WorkflowSpec(workflow_id=workflow_id, start_node_id=start)
 
 
-def _iter_wf_nodes(*, engine: GraphKnowledgeEngine, workflow_id: str) -> List[Edge]:
-    return engine.get_nodes(where={"$and": [{"entity_type": "workflow_edge"}, {"workflow_id": workflow_id}]}, limit=2000)
+def _iter_wf_nodes(*, engine: GraphKnowledgeEngine, workflow_id: str) -> List[Node]:
+    return engine.get_nodes(where={"$and": [{"entity_type": "workflow_node"}, {"workflow_id": workflow_id}]}, limit=2000)
 
 
 def _iter_wf_edges(*, engine: GraphKnowledgeEngine, workflow_id: str) -> List[Edge]:

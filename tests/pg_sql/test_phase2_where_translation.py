@@ -3,7 +3,7 @@ from __future__ import annotations
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
-from graph_knowledge_engine.postgres_backend import where_jsonb
+from graph_knowledge_engine.engine_core.postgres_backend import where_jsonb
 
 
 def _compile(clause: sa.ClauseElement) -> str:

@@ -3,9 +3,9 @@ from __future__ import annotations
 from typing import Any, Optional, Callable, TypedDict, cast
 from pydantic import BaseModel, ConfigDict, Field
 
-from conversation.models import MetaFromLastSummary
-from conversation.models import RetrievalResult
-from .models import Span
+from .models import MetaFromLastSummary
+from .models import RetrievalResult
+from ..engine_core.models import Span
 Json = Any
 
 class PrevTurnMetaSummaryModel(BaseModel):

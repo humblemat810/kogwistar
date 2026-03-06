@@ -1,5 +1,5 @@
 # tests/test_embeddings_optional.py
-from graph_knowledge_engine.models import Node,Span, Grounding
+from graph_knowledge_engine.engine_core.models import Node,Span, Grounding
 
 def test_embeddings_optional_insert(engine):
     doc_id = 'test-did'

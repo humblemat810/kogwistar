@@ -1,9 +1,9 @@
 import pytest
 
-from graph_knowledge_engine.engine import GraphKnowledgeEngine
+from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
 
 try:
-    from graph_knowledge_engine.postgres_backend import PgVectorBackend, PostgresUnitOfWork
+    from graph_knowledge_engine.engine_core.postgres_backend import PgVectorBackend, PostgresUnitOfWork
 except Exception:  # pragma: no cover
     PgVectorBackend = None  # type: ignore
     PostgresUnitOfWork = None  # type: ignore

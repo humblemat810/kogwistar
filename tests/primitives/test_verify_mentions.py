@@ -1,7 +1,7 @@
 import json
 import pytest
-from graph_knowledge_engine.engine import GraphKnowledgeEngine
-from graph_knowledge_engine.models import Document, Node, Span, MentionVerification
+from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
+from graph_knowledge_engine.engine_core.models import Document, Node, Span, MentionVerification
 
 @pytest.fixture
 def engine_tmp(tmp_path):

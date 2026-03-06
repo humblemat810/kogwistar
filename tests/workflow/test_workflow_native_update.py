@@ -6,7 +6,7 @@ from typing import Any, Dict, List
 from graph_knowledge_engine.runtime.runtime import WorkflowRuntime
 from graph_knowledge_engine.runtime.resolvers import MappingStepResolver
 from graph_knowledge_engine.runtime.contract import BasePredicate
-from runtime.models import RunSuccess
+from graph_knowledge_engine.runtime.models import RunSuccess
 
 
 # --- Minimum fake shapes (aligned with test_workflow_join.py) ---

@@ -7,7 +7,7 @@ from langchain_core.prompts import ChatPromptTemplate
 
 from .types import EngineLike, IAdjudicator
 
-from ..models import (
+from ..engine_core.models import (
     LLMMergeAdjudication,
     AdjudicationQuestionCode,
     AdjudicationTarget,

@@ -3,17 +3,17 @@ import pytest
 from graph_knowledge_engine.runtime.design import build_workflow_from_engine
 
 # Adjust this import to your actual engine location:
-# e.g. from graph_knowledge_engine.engine import GraphKnowledgeEngine
+# e.g. from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
 
-from graph_knowledge_engine.engine import GraphKnowledgeEngine
-from graph_knowledge_engine.postgres_backend import PgVectorBackend
+from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
+from graph_knowledge_engine.engine_core.postgres_backend import PgVectorBackend
 
-from engine_core.models import (
+from graph_knowledge_engine.engine_core.models import (
     Grounding,
     Span,
     MentionVerification,
 )
-from runtime.models import WorkflowEdge, WorkflowNode
+from graph_knowledge_engine.runtime.models import WorkflowEdge, WorkflowNode
 
 def _span():
     return Span(
@@ -31,7 +31,10 @@ def _span():
         source_cluster_id=None,
         verification=MentionVerification(method="human", is_verified=True, score=1.0, notes="test"),
     )
-
+def _fake_ef_dim(dim: int):
+    def _ef(texts):
+        return [[0.01] * dim for _ in texts]
+    return _ef
 @pytest.mark.parametrize("backend_kind", ["chroma", "pg"])
 def test_workflow_design_creation_and_persistence(tmp_path, backend_kind, sa_engine, pg_schema):
     """

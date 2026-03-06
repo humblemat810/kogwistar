@@ -82,8 +82,8 @@
 #     assert isinstance(data["layers"], list)
     
     
-from graph_knowledge_engine.engine import GraphKnowledgeEngine
-from graph_knowledge_engine.models import PureChromaNode, PureChromaEdge, PureGraph
+from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
+from graph_knowledge_engine.engine_core.models import PureChromaNode, PureChromaEdge, PureGraph
 
 def test_puregraph_persist(tmp_path):
     eng = GraphKnowledgeEngine(persist_directory=str(tmp_path))

@@ -4,7 +4,7 @@ from __future__ import annotations
 from typing import Protocol, runtime_checkable, List, Tuple, Any, Dict, Optional, Iterable
 from pydantic import BaseModel
 from .types import EngineLike
-from ..models import (
+from ..engine_core.models import (
     Node,
     Edge,
     AdjudicationVerdict,

@@ -1,4 +1,4 @@
-from graph_knowledge_engine.models import (
+from graph_knowledge_engine.engine_core.models import (
     Node,
     Edge,
     Document)

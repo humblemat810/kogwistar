@@ -4,7 +4,9 @@ Use lazy imports to avoid package-init circular imports during migration.
 """
 from typing import TYPE_CHECKING
 
+
 if TYPE_CHECKING:
+    from graph_knowledge_engine.conversation.designer import ConversationWorkflowDesigner, AgenticAnsweringWorkflowDesigner
     from graph_knowledge_engine.conversation.agentic_answering import AgenticAnsweringAgent
     from graph_knowledge_engine.conversation.conversation_context import ConversationContextBuilder, ContextSources, PromptContext
     from graph_knowledge_engine.conversation.conversation_orchestrator import ConversationOrchestrator
@@ -17,6 +19,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "AgenticAnsweringAgent",
+    "ConversationWorkflowDesigner", "AgenticAnsweringWorkflowDesigner",
     "ConversationContextBuilder",
     "ContextSources",
     "PromptContext",

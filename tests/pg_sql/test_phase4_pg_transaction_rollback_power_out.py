@@ -4,7 +4,7 @@ import uuid
 import pytest
 import sqlalchemy as sa
 
-from graph_knowledge_engine.postgres_backend import PgVectorBackend, PostgresUnitOfWork
+from graph_knowledge_engine.engine_core.postgres_backend import PgVectorBackend, PostgresUnitOfWork
 
 
 def _pg_dsn() -> str | None:

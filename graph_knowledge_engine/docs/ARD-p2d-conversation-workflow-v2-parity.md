@@ -1,4 +1,4 @@
-# ARD-2D: Conversation Workflow v2 Parity, State-First Execution, and Resolver Governance
+﻿# ARD-P2D: Conversation Workflow v2 Parity, State-First Execution, and Resolver Governance
 
 **Status:** Draft (Living Document)\
 **Scope:** Conversation orchestrator v1 vs workflow-driven v2; workflow
@@ -18,7 +18,7 @@ This system implements:
 
 Key architectural truth:
 
-> **Workflow Design Graph ≠ Conversation Graph.**\
+> **Workflow Design Graph â‰  Conversation Graph.**\
 > The design graph expresses intent. The conversation graph is the
 > domain artifact produced by executing that intent.
 
@@ -194,11 +194,11 @@ When adding a feature:
 
 ### Step 1: Classify
 
-**General reusable?** → Default resolver pack.
+**General reusable?** â†’ Default resolver pack.
 
-**Conversation-specific?** → Conversation resolver pack.
+**Conversation-specific?** â†’ Conversation resolver pack.
 
-**Changes meaning or invariants?** → Shared ops layer.
+**Changes meaning or invariants?** â†’ Shared ops layer.
 
 ### Step 2: Maintain Step Semantics Stability
 
@@ -269,15 +269,15 @@ evolution.**
 
 This appendix is maintained as a separate file:
 
-- **ARD-2D-Appendix-A-state-retries-ordering.md**
+- **ARD-p2d-appendix-a-state-retries-ordering.md**
 
 (See downloadable artifact.)
 
 ------------------------------------------------------------------------
 
-# ARD-2D Appendix A: State, Effects, Retries, Ordering, and Chain Semantics
+# ARD-P2D Appendix A: State, Effects, Retries, Ordering, and Chain Semantics
 
-**Purpose:** This appendix pins down the “hard rules” for WorkflowState, branching, retries, ordering, and how the *main conversation chain* remains linear while still allowing fanout/sidecars and multiple in-chain events per user turn.
+**Purpose:** This appendix pins down the â€œhard rulesâ€ for WorkflowState, branching, retries, ordering, and how the *main conversation chain* remains linear while still allowing fanout/sidecars and multiple in-chain events per user turn.
 
 This appendix is designed to prevent future drift between:
 - v1 linear orchestrator execution
@@ -297,7 +297,7 @@ The dynamic execution trace (tokens, step execs, checkpoints).
 ### Conversation Graph (Domain Artifact)
 The persisted domain graph: conversation turns, summaries, pins, snapshots, tool artifacts, errors.
 
-> **Reminder:** Design workflow graph ≠ Conversation graph.
+> **Reminder:** Design workflow graph â‰  Conversation graph.
 
 ---
 
@@ -306,11 +306,11 @@ The persisted domain graph: conversation turns, summaries, pins, snapshots, tool
 WorkflowState must contain **all meaningful intermediate results** and **all intended side-effects** in a replayable form.
 
 ### A2.1 Reserved top-level keys (convention)
-- `state["turn"]` — canonical identifiers and anchoring context for the *current user input epoch*.
-- `state["artifacts"]` — jsonable outputs (retrievals, answer payloads, pins, snapshots, etc.).
-- `state["effects"]` — append-only effect descriptors (what was/will be applied to the conversation graph).
-- `state["errors"]` — structured errors (also append-only).
-- `state["_deps"]` — dependency injection (non-checkpointed).
+- `state["turn"]` â€” canonical identifiers and anchoring context for the *current user input epoch*.
+- `state["artifacts"]` â€” jsonable outputs (retrievals, answer payloads, pins, snapshots, etc.).
+- `state["effects"]` â€” append-only effect descriptors (what was/will be applied to the conversation graph).
+- `state["errors"]` â€” structured errors (also append-only).
+- `state["_deps"]` â€” dependency injection (non-checkpointed).
 
 ### A2.2 Branch-safe namespaces
 Fanout branches MUST NOT clobber each other. Use namespaces:
@@ -320,7 +320,7 @@ Fanout branches MUST NOT clobber each other. Use namespaces:
 
 ---
 
-## A3. Main Chain Semantics: “Epoch” and Multiple In-Chain Events
+## A3. Main Chain Semantics: â€œEpochâ€ and Multiple In-Chain Events
 
 ### A3.1 Epoch definition
 An **epoch** is the period after a user input is accepted and before control is yielded back to a new user input (or the run terminates).
@@ -328,7 +328,7 @@ An **epoch** is the period after a user input is accepted and before control is 
 Within one epoch, the system may emit multiple **in-chain events**, e.g.:
 - assistant answer turn
 - summarization turn/node
-- “thinking/progress so far” events (future)
+- â€œthinking/progress so farâ€ events (future)
 - policy interrupt / halt event (future)
 
 ### A3.2 Linearity rule
@@ -341,7 +341,7 @@ The **main conversation chain is always linear** within an epoch:
 - **In-chain**: `in_conversation_chain=True` (and often `in_ui_chain=True`) and must participate in the linear `next_turn` chain.
 - **Non-in-chain**: sidecar artifacts, tool details, prefetches, internal notes, etc. They may form their own subgraphs/chains but are **not** part of the main `next_turn` chain.
 
-### A3.4 “Merging” sidecars into main chain
+### A3.4 â€œMergingâ€ sidecars into main chain
 Sidecars MUST NOT implicitly become in-chain.
 They may influence the main chain only via explicit bridging steps, e.g.:
 - `receive_sidecar_message`
@@ -352,7 +352,7 @@ They may influence the main chain only via explicit bridging steps, e.g.:
 
 ## A4. Backbone Contract: `turn_backbone` step
 
-`turn_backbone` is a workflow step (not “outside leaked logic”). It establishes the canonical anchor for the epoch.
+`turn_backbone` is a workflow step (not â€œoutside leaked logicâ€). It establishes the canonical anchor for the epoch.
 
 ### A4.1 Required writes (write-once per epoch unless tombstoned)
 `state["turn"]` MUST include:
@@ -362,7 +362,7 @@ They may influence the main chain only via explicit bridging steps, e.g.:
 - `user_turn_index` (or equivalent)
 - `prev_chain_turn_id` (tail in main chain)
 - `user_turn_node_id` (deterministic)
-- `user_turn_next_edge_id` (deterministic edge id from prev → user turn, if prev exists)
+- `user_turn_next_edge_id` (deterministic edge id from prev â†’ user turn, if prev exists)
 
 ### A4.2 Allowed subsequent in-chain emissions
 Other steps MAY append additional in-chain events (assistant, summary, progress) **but must not rewrite** the backbone identifiers above.
@@ -376,7 +376,7 @@ If `turn_backbone` is (re)executed:
 
 ## A5. Deterministic Ordering (Design-defined, Configurable)
 
-Concurrency means “finish order” is nondeterministic. Therefore all attachments and merges use a **design-defined order key**.
+Concurrency means â€œfinish orderâ€ is nondeterministic. Therefore all attachments and merges use a **design-defined order key**.
 
 ### A5.1 Default order key (recommended)
 Order by the tuple:
@@ -385,18 +385,18 @@ Order by the tuple:
 3. `step_id` (stable string id)
 4. `token_path` (stable fanout path, e.g. `[0,1,0]`)
 
-This yields deterministic “DFS-like” behavior even under parallel execution.
+This yields deterministic â€œDFS-likeâ€ behavior even under parallel execution.
 
 ### A5.2 Configurability
 Conversation compiler may override ordering by setting:
 - `wf_priority`
-- or explicit “attachment policy” metadata
+- or explicit â€œattachment policyâ€ metadata
 
 Default runtime/resolvers remain general; conversation design specializes ordering.
 
 ---
 
-## A6. Retries and “retry” Relationship Artifacts
+## A6. Retries and â€œretryâ€ Relationship Artifacts
 
 ### A6.1 Retrieval retries are first-class conversation records
 If `memory_retrieve` runs multiple times in an epoch:
@@ -422,7 +422,7 @@ Same pattern applies to `kg_retrieve`.
 
 ---
 
-## A7. Error Propagation and “Abort vs Continue” Policies
+## A7. Error Propagation and â€œAbort vs Continueâ€ Policies
 
 ### A7.1 Result model (Go/Rust-style)
 Steps should record outcomes as:
@@ -431,7 +431,7 @@ Steps should record outcomes as:
 in state, not only via raised exceptions.
 
 ### A7.2 Runtime default
-Current runtime behavior is typically “raise = abort run”.
+Current runtime behavior is typically â€œraise = abort runâ€.
 
 ### A7.3 Configurable policy
 Make abort/continue behavior configurable per step and/or per workflow:
@@ -442,13 +442,13 @@ Make abort/continue behavior configurable per step and/or per workflow:
   - enforce timeout
   - halt main chain via explicit interrupt
 
-This preserves general runtime behavior while enabling conversation-specific “stuckable unless timeout” semantics.
+This preserves general runtime behavior while enabling conversation-specific â€œstuckable unless timeoutâ€ semantics.
 
 ---
 
 ## A8. Chain-visible Mutations and Tombstones
 
-The conversation system is append-first; “mutations” are modeled as explicit tombstone/replace effects.
+The conversation system is append-first; â€œmutationsâ€ are modeled as explicit tombstone/replace effects.
 
 ### A8.1 What is chain-visible?
 Chain-visible elements include (non-exhaustive):
@@ -466,7 +466,7 @@ Instead of mutating existing chain-visible artifacts, produce:
 All tombstones and replacements must be recorded in `state["effects"]`.
 
 ### A8.3 Multiple in-chain events are allowed
-This rule does NOT mean “only one in-chain node per epoch”. It means:
+This rule does NOT mean â€œonly one in-chain node per epochâ€. It means:
 - backbone identifiers are stable for the epoch
 - additional in-chain events append linearly and deterministically
 - replacements use tombstones, never silent mutation
@@ -486,11 +486,11 @@ When branches merge (join or terminal aggregation), reduce state deterministical
   - `state["artifacts"]["sidecars"]`
 
 ### A9.2 Recommendation
-Make the reducer explicit and test it. Do not rely on Python dict “last write wins” semantics for cross-branch merges.
+Make the reducer explicit and test it. Do not rely on Python dict â€œlast write winsâ€ semantics for cross-branch merges.
 
 ---
 
-## A10. Design-time “Conversation Lint” (Non-blocking for general runtime)
+## A10. Design-time â€œConversation Lintâ€ (Non-blocking for general runtime)
 
 Conversation compiler SHOULD validate the compiled design with additional rules:
 - exactly one `turn_backbone` per epoch path
@@ -517,7 +517,7 @@ Therefore, strict graph equality between v1 and v2 is not a universal requiremen
 Instead, we define **tiered parity** between executions.
 
 ### Tier 0: Hard invariants (must match exactly)
-These invariants define “conversation correctness” and must hold across v1 and v2:
+These invariants define â€œconversation correctnessâ€ and must hold across v1 and v2:
 - Main chain remains **linear** within an epoch.
 - At most one outgoing `next_turn` per main-chain turn.
 - The main-chain turn sequence (or equivalently the `next_turn` chain) is consistent and deterministic for linear runs.
@@ -547,4 +547,5 @@ These additions are allowed provided Tier 0 invariants hold and Tier 1 canonical
 - Default parity tests should assert **Tier 0 + Tier 1**.
 - Dedicated tests may assert Tier 2 behaviors (e.g., retries produce `retry` edges).
 - Linear sample parity should run with `max_workers=1` and a conversation design that avoids gating side branches.
+
 

@@ -7,10 +7,10 @@ from chromadb.utils.embedding_functions import EmbeddingFunction
 from chromadb.api.types import Embeddings
 from langchain_core.language_models import BaseChatModel
 from langchain_core.prompts import ChatPromptTemplate
-from conversation.models import ConversationNode, FilteringResult, MetaFromLastSummary
+from graph_knowledge_engine.conversation.models import ConversationNode, FilteringResult, MetaFromLastSummary
 from graph_knowledge_engine.cdc.oplog import OplogWriter
-from graph_knowledge_engine.engine import GraphKnowledgeEngine
-from engine_core.models import Node, Span, Grounding, MentionVerification
+from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
+from graph_knowledge_engine.engine_core.models import Node, Span, Grounding, MentionVerification
 from langchain_core.messages import AIMessage
 from pydantic import BaseModel, Field
 
@@ -19,7 +19,7 @@ from joblib import Memory
 
 from graph_knowledge_engine.id_provider import stable_id
 
-from graph_knowledge_engine.postgres_backend import PgVectorBackend
+from graph_knowledge_engine.engine_core.postgres_backend import PgVectorBackend
 
 # def _fake_ef_dim(dim: int):
 #     def _ef(texts):
@@ -176,7 +176,7 @@ def test_conversation_flow(backend_kind: str, tmp_path, sa_engine, pg_schema):
     memory = Memory(location = '.joblib')
     
     # Monkey patch with typed cacheing
-    from graph_knowledge_engine.engine import candiate_filtering_callback
+    from graph_knowledge_engine.engine_core.engine import candiate_filtering_callback
     candiate_filtering_callback_cached = cached(memory, candiate_filtering_callback)
     from functools import partial
     cached_deco = partial(cached, memory)

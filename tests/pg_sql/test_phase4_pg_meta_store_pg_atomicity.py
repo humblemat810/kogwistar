@@ -1,11 +1,11 @@
 import pytest
 import sqlalchemy as sa
 
-from graph_knowledge_engine.engine import GraphKnowledgeEngine
-from graph_knowledge_engine.postgres_backend import PgVectorBackend
+from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
+from graph_knowledge_engine.engine_core.postgres_backend import PgVectorBackend
 
 # New meta-store introduced by the patch
-from graph_knowledge_engine.engine_postgres_meta import EnginePostgresMetaStore
+from graph_knowledge_engine.engine_core.engine_postgres_meta import EnginePostgresMetaStore
 
 
 def _fake_ef(texts):

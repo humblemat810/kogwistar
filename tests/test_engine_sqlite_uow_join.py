@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from graph_knowledge_engine.engine_sqlite import EngineSQLite
+from graph_knowledge_engine.engine_core.engine_sqlite import EngineSQLite
 
 
 def test_sqlite_transaction_joins_active_conn_no_extra_connect(tmp_path: Path):

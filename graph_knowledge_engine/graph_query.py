@@ -4,11 +4,11 @@ from collections import deque
 from typing import Dict, Set, List, Optional, Tuple, Iterable
 import json
 
-from .models import Node, Edge
+from .engine_core.models import Node, Edge
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .engine import GraphKnowledgeEngine
+    from .engine_core.engine import GraphKnowledgeEngine
 
 
 class GraphQuery:

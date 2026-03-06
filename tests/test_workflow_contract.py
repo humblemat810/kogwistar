@@ -4,6 +4,8 @@ from graph_knowledge_engine.runtime.contract import WorkflowSpec, validate_workf
 
 
 class _FakeNode:
+    def safe_get_id(self):
+        return self.id
     def __init__(self, id, metadata):
         self.id = id
         self.metadata = metadata
@@ -11,11 +13,14 @@ class _FakeNode:
 
 
 class _FakeEdge:
+    def safe_get_id(self):
+        return self.id
     def __init__(self, id, src, dst, metadata):
         self.id = id
         self.source_ids = [src]
         self.target_ids = [dst]
         self.metadata = metadata
+        self.label = metadata.get('label') or f'{id}:fake_edge_label'
 
 
 class FakeEngine:
@@ -27,8 +32,14 @@ class FakeEngine:
         if where is None:
             return list(self._nodes)
         out = []
+        if where.get("$and"):
+            where_inner = {}
+            for d in where.get("$and"):
+                where_inner.update(d)
+        else:
+            where_inner = where
         for n in self._nodes:
-            if all((n.metadata or {}).get(k) == v for k, v in where.items()):
+            if all((n.metadata or {}).get(k) == v for k, v in where_inner.items()):
                 out.append(n)
         return out
 
@@ -36,8 +47,14 @@ class FakeEngine:
         if where is None:
             return list(self._edges)
         out = []
+        if where.get("$and"):
+            where_inner = {}
+            for d in where.get("$and"):
+                    where_inner.update(d)
+        else:
+                where_inner = where
         for e in self._edges:
-            if all((e.metadata or {}).get(k) == v for k, v in where.items()):
+            if all((e.metadata or {}).get(k) == v for k, v in where_inner.items()):
                 out.append(e)
         return out
 

@@ -5,14 +5,14 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 import pytest
 
-from graph_knowledge_engine.engine import GraphKnowledgeEngine
-from engine_core.models import Span, Grounding
-from runtime.models import RunSuccess
+from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
+from graph_knowledge_engine.engine_core.models import Span, Grounding
+from graph_knowledge_engine.runtime.models import RunSuccess
 from graph_knowledge_engine.runtime.runtime import WorkflowRuntime, StepContext
 from graph_knowledge_engine.runtime.resolvers import MappingStepResolver
 import logging
 # Reuse your canonical engine factory (already parametrized in other tests)
-from runtime.models import WorkflowEdge, WorkflowNode
+from graph_knowledge_engine.runtime.models import WorkflowEdge, WorkflowNode
 from tests.conftest import _make_engine_pair, FakeEmbeddingFunction
 import os
 os.environ["ANONYMIZED_TELEMETRY"] = "FALSE"
@@ -154,6 +154,7 @@ def test_trace_sink_parallel_and_nested_minimal_sync(
         use_fake=True
     )
     workflow_engine = GraphKnowledgeEngine(
+        backend=backend_kind,
         persist_directory=str(tmp_path / "wf"),
         kg_graph_type="workflow",
         embedding_function=FakeEmbeddingFunction(dim=8),

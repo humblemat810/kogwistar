@@ -1,6 +1,6 @@
 import uuid
-from graph_knowledge_engine.engine import GraphKnowledgeEngine, uuid_to_base62, base62_to_uuid, AliasBook
-from graph_knowledge_engine.models import Node, Edge, Document, Span, MentionVerification, Grounding
+from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine, uuid_to_base62, base62_to_uuid, AliasBook
+from graph_knowledge_engine.engine_core.models import Node, Edge, Document, Span, MentionVerification, Grounding
 import json
 def _span_for(doc_id: str, start_page = 1, end_page = 1, start_char = 0, end_char = 1, collection_page_url = None, document_page_url = None) -> Span:
     if collection_page_url is None:
@@ -62,7 +62,7 @@ def test_de_alias_ids_in_result_session_alias(monkeypatch):
     book.assign_for_sets([n1.id, n2.id], [e.id])
 
     # fake an LLMGraphExtraction-shaped thing with aliases
-    from graph_knowledge_engine.models import LLMGraphExtraction, LLMNode, LLMEdge, MentionVerification
+    from graph_knowledge_engine.engine_core.models import LLMGraphExtraction, LLMNode, LLMEdge, MentionVerification
     # immitate llm slice return from llm
     dumped = LLMGraphExtraction['llm'](
         nodes=[LLMNode['llm'](id=book.real_to_alias[n1.id], label="A", type="entity", summary="a",  domain_id=None, canonical_entity_id=None, properties=None, local_id = "nn:1",
@@ -97,7 +97,7 @@ def test_commit_merge_creates_same_as_and_endpoints():
              domain_id=None, canonical_entity_id=None, properties=None, embedding=None, doc_id=None, metadata = {})
     eng.add_node(a, doc_id=doc.id)
     eng.add_node(b, doc_id=doc.id)
-    from graph_knowledge_engine.models import AdjudicationVerdict
+    from graph_knowledge_engine.engine_core.models import AdjudicationVerdict
     # minimal verdict-like object
     adj_verd = AdjudicationVerdict.model_validate(dict(same_entity=True,
         confidence=0.9,

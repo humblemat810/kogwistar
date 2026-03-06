@@ -1,6 +1,6 @@
 import json
-from graph_knowledge_engine.engine import GraphKnowledgeEngine
-from graph_knowledge_engine.models import Document, Node, Span
+from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
+from graph_knowledge_engine.engine_core.models import Document, Node, Span
 
 def _ref(doc_id, start=0, end=20):
     return Span(
@@ -35,8 +35,8 @@ def test_default_sentence_transformer_embedder(tmp_path):
     assert "coverage" in detail
     
 def test_default_embedder_autoruns(tmp_path):
-    from graph_knowledge_engine.engine import GraphKnowledgeEngine
-    from graph_knowledge_engine.models import Document, Node, Span
+    from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
+    from graph_knowledge_engine.engine_core.models import Document, Node, Span
 
     eng = GraphKnowledgeEngine(persist_directory=str(tmp_path / "chroma"))
     doc = Document(content="Chlorophyll absorbs light.", type="text", metadata = {"source": "test_default_embedder_autoruns"}, domain_id = None, processed = False)

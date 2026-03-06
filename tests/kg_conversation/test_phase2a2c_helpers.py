@@ -3,7 +3,7 @@ import math
 import pytest
 
 # These imports assume you replaced the module file in your repo with the patched version.
-from graph_knowledge_engine.conversation_orchestrator import (
+from graph_knowledge_engine.conversation.conversation_orchestrator import (
     ExecClock,
     _estimate_tokens_from_chars,
     _stamp_meta,

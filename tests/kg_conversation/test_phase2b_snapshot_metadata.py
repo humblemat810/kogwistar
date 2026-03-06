@@ -1,6 +1,6 @@
 
-from conversation.models import ContextSnapshotMetadata
-from engine_core.models import ContextCost
+from graph_knowledge_engine.conversation.models import ContextSnapshotMetadata
+from graph_knowledge_engine.engine_core.models import ContextCost
 
 def test_context_snapshot_metadata_flattens_cost():
     meta = ContextSnapshotMetadata(

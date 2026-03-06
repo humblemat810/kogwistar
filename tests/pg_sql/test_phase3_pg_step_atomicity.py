@@ -3,9 +3,9 @@ import os
 import pytest
 
 # NOTE: this test uses the v2 patched engine/backend copies living in /mnt/data.
-from graph_knowledge_engine.engine_postgres import PgVectorBackend
-from graph_knowledge_engine.engine import GraphKnowledgeEngine
-from graph_knowledge_engine.postgres_backend import PgVectorConfig, build_postgres_backend
+from graph_knowledge_engine.engine_core.engine_postgres import PgVectorBackend
+from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
+from graph_knowledge_engine.engine_core.postgres_backend import PgVectorConfig, build_postgres_backend
 
 @pytest.mark.integration
 def test_pg_uow_rolls_back_backend_writes(sa_engine, pg_schema):

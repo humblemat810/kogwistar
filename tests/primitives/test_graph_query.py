@@ -72,7 +72,7 @@ def _match_where(meta, where):
     return True
 
 # Minimal Node/Edge JSON helpers (import models from package under test)
-from graph_knowledge_engine.models import Node, Edge, Span
+from graph_knowledge_engine.engine_core.models import Node, Edge, Span
 from graph_knowledge_engine.graph_query import GraphQuery
 
 class FakeEngine:

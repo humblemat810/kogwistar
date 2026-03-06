@@ -3,10 +3,6 @@ import logging
 import os
 from dataclasses import dataclass
 
-from runtime.models import RunFailure
-from runtime.models import RunSuccess
-
-
 if True:
     logger = logging.getLogger(__name__)
     logger.addHandler(logging.NullHandler())
@@ -26,15 +22,7 @@ from pydantic_extension.model_slicing import (ModeSlicingMixin, NotMode, Fronten
                 use_mode)
 from pydantic_extension.model_slicing.mixin import ExcludeMode, DtoField
 JsonPrimitive = Union[str, int, float, bool, None]
-# JSON: TypeAlias = (
-#     dict[str, "JSON"]
-#     | list["JSON"]
-#     | str
-#     | int
-#     | float
-#     | bool
-#     | None
-# )
+
 class AdjudicationQuestionCode(IntEnum):
     SAME_ENTITY = 1
     SAME_EVENT = 2
@@ -63,7 +51,7 @@ QUESTION_DESC = {
 from ..id_provider import new_event_id, stable_id
 from pydantic import BaseModel, Field
 from typing import Optional, ClassVar, Literal
-
+Role :TypeAlias = Literal["user", "assistant", "system", "tool"]
 class IdPolicyMixin(BaseModel):
     id: Optional[str] = Field(default=None)
     id_policy: ClassVar[Literal["event","canonical"]] = "event"
@@ -394,6 +382,10 @@ class GraphEntityRefBase(GraphEntityBase):
     mentions: Annotated[List[Grounding], FrontendField(),BackendField(),DtoField(),LLMField()] = Field(
         ..., min_items=1, description="Mentioning of the idea across possibly multiple paragraphs/ data sources"
     )
+    def iter_span(self):
+        for g in self.mentions:
+            for sp in g.spans:
+                yield sp
     #NEED-FIX
     @field_validator("mentions")
     @classmethod

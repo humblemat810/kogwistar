@@ -5,18 +5,18 @@ import time
 import uuid
 import queue
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, List, Optional, Tuple, cast
+from typing import Any, Callable, Dict, List, Optional, Tuple, cast
 from concurrent.futures import ThreadPoolExecutor
 import pathlib
 import logging
 from contextlib import nullcontext
 
-from conversation.models import ConversationEdge, WorkflowCheckpointNode, WorkflowRunNode, WorkflowStepExecNode
+from ..conversation.models import ConversationEdge, WorkflowCheckpointNode, WorkflowRunNode, WorkflowStepExecNode
 from graph_knowledge_engine.id_provider import stable_id
 from graph_knowledge_engine.utils.log import bind_log_context
-from runtime.models import StateUpdate
-from engine_core.models import MentionVerification
-from runtime.models import RunFailure, RunSuccess, WorkflowEdge, WorkflowNode
+from graph_knowledge_engine.runtime.models import StateUpdate
+from graph_knowledge_engine.engine_core.models import MentionVerification
+from graph_knowledge_engine.runtime.models import RunFailure, RunSuccess, WorkflowEdge, WorkflowNode
 
 from .design import validate_workflow_design, Predicate
 from .serialize import try_serialize_with_ref
@@ -207,7 +207,7 @@ from .contract import WorkflowEdgeInfo
 from dataclasses import dataclass
 
 
-from engine_core.models import Grounding, Span
+from graph_knowledge_engine.engine_core.models import Grounding, Span
     
 from .models import StepRunResult
 
@@ -400,7 +400,7 @@ class WorkflowRuntime:
         events: EventEmitter | None = None,
         sink: SQLiteEventSink | None = None,
     ) -> None:
-        from graph_knowledge_engine.engine import GraphKnowledgeEngine
+        from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
         self.workflow_engine: GraphKnowledgeEngine = workflow_engine
         self.conversation_engine: GraphKnowledgeEngine = conversation_engine
         self.step_resolver: Callable[[str], Callable[..., StepRunResult]] = step_resolver
@@ -410,7 +410,7 @@ class WorkflowRuntime:
         # Transaction policy: default to per-step transactions when conversation_engine is Postgres-backed.
         if transaction_mode is None:
             try:
-                from graph_knowledge_engine.postgres_backend import PgVectorBackend
+                from graph_knowledge_engine.engine_core.postgres_backend import PgVectorBackend
 
                 self.transaction_mode = "step" if isinstance(getattr(conversation_engine, "backend", None), PgVectorBackend) else "none"
             except Exception:
@@ -478,9 +478,14 @@ class WorkflowRuntime:
         except Exception:
             return True
         return True
-    def apply_state_update(self, mute_state: WorkflowState, state_update: list[tuple[str, dict[str, Any]]] | list[StateUpdate]):
+    def apply_state_update(self, mute_state: WorkflowState, 
+                           state_update: list[tuple[str, dict[str, Any]]] | list[StateUpdate], 
+                           update: dict|None = None):
         # inplace update state
-        for update_item in state_update:
+        if update and state_update:
+            raise Exception("Either update or state_update can be used")
+        
+        for update_item in state_update: # CR style state api
             update_item: tuple[str, dict[str, Any]] | StateUpdate
             if update_item[0] == 'a': # append
                 append_dict: dict = update_item[1]
@@ -494,7 +499,19 @@ class WorkflowRuntime:
                 update_dict: dict = update_item[1]
                 for k, v in update_dict.items():
                     mute_state.setdefault(k, []).extend(v)
-            
+        if update: # legacy api
+            state_schema = getattr(self.step_resolver, "_state_schema", None)
+            if state_schema is None:
+                state_schema = {} # will make everything default to just update
+            for k, v in update.items():
+                if op:= state_schema.get(k):
+                    pass
+                else:
+                    op = 'u'
+                if op == 'a':
+                    mute_state.setdefault(k, []).extend(v)
+                else: # u
+                    mute_state[k]=v
     def run(
         self,
         *,
@@ -512,7 +529,15 @@ class WorkflowRuntime:
         """
         with bind_log_context(conversation_id = conversation_id, 
                                       workflow_run_id = f"{workflow_id}--{run_id}"):
-        
+            # repair fields auto set by default schema
+            state_schema = getattr(self.step_resolver,"_state_schema", None)
+            if state_schema and isinstance(state_schema, dict):
+                for k,v in state_schema.items():
+                    if v == 'u':
+                        initial_state[k] = None
+                    if v == "a":
+                        initial_state[k] = []
+                    
             validate_initial_state(initial_state)
             
             run_id = run_id or f"run|{uuid.uuid4()}"
@@ -739,6 +764,8 @@ class WorkflowRuntime:
                                 raise Exception(err_message)
                         
                         done_q.put((node_id, res, max(0, t1 - t0), token_id, parent_token_id, status, mask))
+                except Exception as _e:
+                    raise
                 finally:
                     t.name = old_name
             inflight: Dict[tuple[str, int, str], Any] = {}
@@ -869,7 +896,7 @@ class WorkflowRuntime:
                     run_state_lock: Lock = self.state_lock[str(run_id)]
                     with self._maybe_step_uow():
                         with run_state_lock:
-                            self.apply_state_update(mute_state=state, state_update=run_result.state_update)
+                            self.apply_state_update(mute_state=state, state_update=run_result.state_update, update=getattr(run_result, 'update', None))
                         
                     inflight.pop((node_id, mask, str(token_id)), None)
                     inflight_tokens.discard((str(node_id), int(mask), str(token_id), parent_token_id))
@@ -1183,13 +1210,13 @@ class WorkflowRuntime:
             # Record unconditional evaluations too (use a synthetic name)
             decision.evaluated.append((f"{_edge_id(e)}:<base>", ok))
             if ok:
-                matched.append(tgt)
+                matched.append((e, tgt))
                 decision.selected.append((_edge_id(e), tgt, "base"))
                 if _stop_on_first(e):
-                    return matched[0:1], decision
+                    return [i[1] for i in matched[0:1]], decision
 
         if matched:
-            return (matched if fanout else matched[0:1]), decision
+            return ([i[1] for i in (matched if fanout else matched[0:1])]), decision
 
         # (3) default edge
         for e in edges:
@@ -1218,7 +1245,7 @@ class WorkflowRuntime:
     ) -> bool: # return success failure result
         # current engine always persist on edit, no batch persist mode needed
         from . import serialize  # keep runtime import-light
-        from engine_core.models import Grounding, Span  # adjust import path to your package layout
+        from graph_knowledge_engine.engine_core.models import Grounding, Span  # adjust import path to your package layout
 
         excerpt = f"workflow_run {workflow_id} {run_id} status={status}"
         span = Span(**_make_trace_span(conversation_id=conversation_id, excerpt=excerpt, doc_id=f"conv:{conversation_id}"))
@@ -1437,7 +1464,7 @@ class WorkflowRuntime:
         state: WorkflowState,
         last_exec_node: WorkflowStepExecNode
     ) -> None:
-        from engine_core.models import Grounding, Span  # adjust import path
+        from graph_knowledge_engine.engine_core.models import Grounding, Span  # adjust import path
         
         state_copy = {k:v for k, v in state.items() if k != '_deps'}
         state_json = try_serialize_with_ref(state_copy)

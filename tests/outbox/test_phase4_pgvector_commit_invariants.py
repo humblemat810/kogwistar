@@ -3,9 +3,9 @@ import uuid
 
 import pytest
 
-from graph_knowledge_engine.engine_postgres import PgVectorBackend
-from graph_knowledge_engine.engine_postgres_meta import EnginePostgresMetaStore
-from graph_knowledge_engine.postgres_backend import PostgresUnitOfWork
+from graph_knowledge_engine.engine_core.engine_postgres import PgVectorBackend
+from graph_knowledge_engine.engine_core.engine_postgres_meta import EnginePostgresMetaStore
+from graph_knowledge_engine.engine_core.postgres_backend import PostgresUnitOfWork
 
 
 @pytest.mark.integration

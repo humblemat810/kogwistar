@@ -4,8 +4,8 @@ import shutil
 import uuid
 import pytest
 
-from graph_knowledge_engine.engine import GraphKnowledgeEngine
-from graph_knowledge_engine.models import (
+from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
+from graph_knowledge_engine.engine_core.models import (
     Node,
     LLMMergeAdjudication,
     AdjudicationVerdict,
@@ -69,8 +69,8 @@ import json
 import uuid
 import pytest
 
-from graph_knowledge_engine.engine import GraphKnowledgeEngine
-from graph_knowledge_engine.models import (
+from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
+from graph_knowledge_engine.engine_core.models import (
     Node,
     Edge,
     Document,

@@ -1,6 +1,6 @@
 # tests/test_ingest_document_with_llm_cache.py
 import json
-from graph_knowledge_engine.models import Document
+from graph_knowledge_engine.engine_core.models import Document
 from joblib import Memory
 import os, pathlib
 

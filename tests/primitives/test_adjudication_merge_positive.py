@@ -1,54 +1,57 @@
-# tests/test_adjudication_merge_positive.py
-import os
-import json
-import uuid
-import shutil
-import pytest
 import ast
+import json
 from typing import List
+
+import pytest
 from pydantic import BaseModel
-from langchain_core.runnables import Runnable
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage
 from langchain_core.prompt_values import ChatPromptValue
-from graph_knowledge_engine.engine import GraphKnowledgeEngine
-from graph_knowledge_engine.models import (
-    Document,
-    Node,
-    Span,
-    AdjudicationVerdict,
-    LLMMergeAdjudication,
+from langchain_core.runnables import Runnable
+
+from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
+from graph_knowledge_engine.engine_core.models import (
     AdjudicationQuestionCode,
+    AdjudicationVerdict,
+    Document,
+    Grounding,
+    LLMMergeAdjudication,
     MentionVerification,
+    Node,
     QUESTION_KEY,
+    Span,
 )
 
-def _ref_for(doc_id: str) -> Span:
-    return _span_for(doc_id)
+
 def _span_for(doc_id: str) -> Span:
     return Span(
         collection_page_url="c",
         document_page_url=f"document/{doc_id}",
-        start_page=1, end_page=1, start_char=0, end_char=1,
-        verification=MentionVerification(method="heuristic", is_verified=False, notes = None, score = 0.9), 
+        page_number=1,
+        start_char=0,
+        end_char=1,
+        verification=MentionVerification(method="heuristic", is_verified=False, notes=None, score=0.9),
         insertion_method="pytest-manual",
-        doc_id = doc_id,
-        source_cluster_id = None,
-        excerpt = None
+        doc_id=doc_id,
+        source_cluster_id=None,
+        chunk_id=None,
+        excerpt="d",
+        context_before="",
+        context_after="ummy",
     )
-# A deterministic, Runnable-compatible fake that mimics:
-# llm.with_structured_output(BatchAdjudications).invoke(...)
+
+
 class BatchAdjudications(BaseModel):
     items: List[LLMMergeAdjudication]
 
+
 class _DeterministicBatchLLM(Runnable):
     """Runnable fake that supports prompt|llm composition and dict inputs."""
+
     def with_structured_output(self, schema, **_):
-        # Keep parity with LangChain’s API; we’ll just remember the schema.
         self._schema = schema
         return self
 
     def _extract_pairs_from_prompt(self, cpv: ChatPromptValue):
-        # Find the last HumanMessage and parse the JSON (or Python-literal) after "Pairs:\n"
         msgs = cpv.to_messages()
         human = next((m for m in msgs[::-1] if isinstance(m, HumanMessage)), None)
         if not human:
@@ -59,7 +62,6 @@ class _DeterministicBatchLLM(Runnable):
         if i < 0:
             raise ValueError("Could not find 'Pairs:' in the HumanMessage")
         payload = text[i + len(marker):].strip()
-        # Be robust to models that emit Python-ish literals
         try:
             pairs = json.loads(payload)
         except Exception:
@@ -76,8 +78,8 @@ class _DeterministicBatchLLM(Runnable):
 
         items = []
         for item in pairs:
-            left = item["left"]; right = item["right"]
-            # Simple deterministic rule: first token of labels equal => same
+            left = item["left"]
+            right = item["right"]
             ltok = (left.get("label") or "").split()[:1]
             rtok = (right.get("label") or "").split()[:1]
             same = bool(ltok and rtok and ltok[0].lower() == rtok[0].lower())
@@ -89,72 +91,78 @@ class _DeterministicBatchLLM(Runnable):
             )
             items.append(LLMMergeAdjudication(verdict=ver))
 
-        # Return the Pydantic wrapper the test expects
         return BatchAdjudications(items=items)
+
 
 @pytest.fixture(scope="function")
 def engine(tmp_path):
-    # fresh Chroma dir per test
     return GraphKnowledgeEngine(persist_directory=str(tmp_path / "chroma"))
 
+
 def test_deterministic_batch_merge(engine, monkeypatch):
-    # Create a document so nodes carry doc_id & refs
-    doc = Document(content="dummy", type="text",  metadata = {"source":"test_deterministic_batch_merge"}, domain_id = None, processed = False)
+    doc = Document(
+        id="doc-deterministic-batch-merge",
+        content="dummy",
+        type="text",
+        metadata={"source": "test_deterministic_batch_merge"},
+        domain_id=None,
+        processed=False,
+        embeddings=None,
+        source_map=None,
+    )
     engine.add_document(doc)
 
-    ref = _ref_for(doc.id)
-    a = Node(label="Chlorophyll a", type="entity", summary="Pigment in plants", mentions=[ref])
-    b = Node(label="Chlorophyll b", type="entity", summary="Another chlorophyll pigment", mentions=[ref])
-    c = Node(label="Hemoglobin",   type="entity", summary="Protein in red blood cells", mentions=[ref])
+    ref = _span_for(doc.id)
+    a = Node(label="Chlorophyll a", type="entity", summary="Pigment in plants", mentions=[Grounding(spans=[ref])])
+    b = Node(label="Chlorophyll b", type="entity", summary="Another chlorophyll pigment", mentions=[Grounding(spans=[ref])])
+    c = Node(label="Hemoglobin", type="entity", summary="Protein in red blood cells", mentions=[Grounding(spans=[ref])])
 
     engine.add_node(a, doc_id=doc.id)
     engine.add_node(b, doc_id=doc.id)
     engine.add_node(c, doc_id=doc.id)
 
-    # Prepare payload like your cached test (pure JSON)
-    pairs = [(a, b), (a, c)]
     pairs_payload = [
         {"left": a.model_dump(), "right": b.model_dump(), "question_code": int(AdjudicationQuestionCode.SAME_ENTITY)},
         {"left": a.model_dump(), "right": c.model_dump(), "question_code": int(AdjudicationQuestionCode.SAME_ENTITY)},
     ]
     mapping_table = [{"code": int(code), "key": QUESTION_KEY[code]} for code in AdjudicationQuestionCode]
 
-    # Define the schema that wraps a list of LLMMergeAdjudication
-    from pydantic import BaseModel
-    class BatchAdjudications(BaseModel):
-        items: List[LLMMergeAdjudication]
-
-    # Patch engine.llm to our deterministic batch adjudicator
-    engine.llm = _DeterministicBatchLLM()
-
-    # Build the prompt chain like your real test does
     from langchain_core.prompts import ChatPromptTemplate
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", "You adjudicate candidate pairs. Use the mapping table to interpret question_code. "
-                   "Return only the structured JSON per schema."),
-        ("human", "Mapping table:\n{mapping}\n\nPairs:\n{pairs}"),
-    ])
-    chain = prompt | engine.llm.with_structured_output(BatchAdjudications)
-    results: BatchAdjudications = chain.invoke({"mapping": mapping_table, "pairs": pairs_payload})
 
-    # We deterministically expect two items
+    engine.llm = _DeterministicBatchLLM()
+    prompt = ChatPromptTemplate.from_messages(
+        [
+            (
+                "system",
+                "You adjudicate candidate pairs. Use the mapping table to interpret question_code. "
+                "Return only the structured JSON per schema.",
+            ),
+            ("human", "Mapping table:\n{mapping}\n\nPairs:\n{pairs}"),
+        ]
+    )
+    chain = prompt | engine.llm.with_structured_output(BatchAdjudications)
+    # for embeddings to jsonable
+    for i in pairs_payload:
+        if type(i['left']['embedding']) is not list:
+            i['left']['embedding'] = i['left']['embedding'].tolist()
+        if type(i['right']['embedding']) is not list:
+            i['right']['embedding'] = i['right']['embedding'].tolist()
+    results: BatchAdjudications = chain.invoke({"mapping": json.dumps(mapping_table), "pairs": json.dumps(pairs_payload)})
+
     assert len(results.items) == 2
     v1, v2 = results.items[0].verdict, results.items[1].verdict
     assert v1.same_entity is True and v1.confidence > 0.5
     assert v2.same_entity is False and v2.confidence <= 0.5
 
-    # Commit the positive merge (a, b) and verify
-    canonical = engine.commit_merge(a, b, v1)
+    canonical = engine.commit_merge(a, b, v1, method='llm')
     assert canonical
 
-    # Verify canonical_entity_id persisted on a & b
-    a_got = engine.node_collection.get(ids=[a.id])
-    b_got = engine.node_collection.get(ids=[b.id])
+    a_got = engine.backend.node_get(ids=[a.id], include=["documents"])
+    b_got = engine.backend.node_get(ids=[b.id], include=["documents"])
     a_doc = json.loads(a_got["documents"][0])
     b_doc = json.loads(b_got["documents"][0])
     assert a_doc.get("canonical_entity_id") == canonical
     assert b_doc.get("canonical_entity_id") == canonical
 
-    # Verify a same_as edge exists
-    edges = engine.edge_collection.get(include=["metadatas"])
+    edges = engine.backend.edge_get(include=["metadatas"])
     assert any((m or {}).get("relation") == "same_as" for m in edges.get("metadatas") or [])

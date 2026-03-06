@@ -37,15 +37,17 @@ from typing import TYPE_CHECKING
 
 from .models import ContextSnapshotMetadata, ConversationEdge, ConversationNode, MetaFromLastSummary
 if TYPE_CHECKING:
-    from ..runtime import WorkflowEdgeInfo, WorkflowState
+    from ..runtime import WorkflowEdgeInfo
+
+from .conversation_state_contracts import WorkflowState
 
 from ..engine_core.models import (
     Grounding,
     Span,
     Node,
     ContextCost,
-    StepRunResult,
 )
+from ..runtime.models import StepRunResult
 BaseM = TypeVar("BaseM", bound=BaseModel)
 
 def _stable_json(obj: Any) -> str:
@@ -165,7 +167,7 @@ class AgentConfig:
     # Budget knobs for materialization (kept simple; your resolvers can interpret these)
     max_chars_per_item: int = 900
     max_total_chars: int = 12000
-from ..engine import GraphKnowledgeEngine
+from ..engine_core.engine import GraphKnowledgeEngine
 
 class AgenticAnsweringAgent:
     """Agent that answers within a conversation canvas using a separate knowledge engine."""
@@ -564,7 +566,7 @@ class AgenticAnsweringAgent:
         workflow_engine = workflow_engine or self.conversation_engine
 
         # Ensure design exists.
-        from ..runtime import AgenticAnsweringWorkflowDesigner
+        from ..conversation.designer import AgenticAnsweringWorkflowDesigner
         def predicate_always(workflow_info: WorkflowEdgeInfo, state: WorkflowState, last_result: StepRunResult):
             return True
         

@@ -161,7 +161,7 @@ _install_gke_models_stub()
 from langchain_google_genai import ChatGoogleGenerativeAI
 import pytest
 
-from conversation.agentic_answering import (
+from graph_knowledge_engine.conversation.agentic_answering import (
     AgenticAnsweringAgent,
     AnswerWithCitations,
     AnswerEvaluation,
@@ -171,7 +171,7 @@ from conversation.agentic_answering import (
     snapshot_hash,
     EvidenceSelection,
 )
-from engine_core.models import Span
+from graph_knowledge_engine.engine_core.models import Span
 
 
 class FakeCollection:
@@ -436,7 +436,7 @@ def test_agent_answer_creates_run_anchor_projects_used_evidence(monkeypatch, eng
     )
     monkeypatch.setattr(conv, "get_conversation_view", fake_get_conversation_view)
     monkeypatch.setattr(agent, "_select_used_evidence", fake_select)
-    from conversation.models import MetaFromLastSummary
+    from graph_knowledge_engine.conversation.models import MetaFromLastSummary
     
     out = agent.answer(conversation_id=conversation_id, prev_turn_meta_summary = MetaFromLastSummary(0,0))
 
@@ -456,7 +456,7 @@ def test_agent_answer_creates_run_anchor_projects_used_evidence(monkeypatch, eng
 
 def test_projection_is_idempotent(engines):
     conv, kg, conversation_id = engines
-    from conversation.models import MetaFromLastSummary
+    from graph_knowledge_engine.conversation.models import MetaFromLastSummary
     agent = AgenticAnsweringAgent(
         conversation_engine=conv,
         knowledge_engine=kg,
@@ -487,7 +487,7 @@ def test_projection_is_idempotent(engines):
     
 @pytest.mark.integration
 def test_agent_with_real_llm_cached(monkeypatch, engine, conversation_engine):
-    from graph_knowledge_engine.engine import GraphKnowledgeEngine
+    from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
     engine: GraphKnowledgeEngine
     conversation_engine: GraphKnowledgeEngine
     # If no real model configured, skip (keeps CI clean)
@@ -559,8 +559,8 @@ def test_agent_with_real_llm_cached(monkeypatch, engine, conversation_engine):
         return cached_invoke(payload)
 
     # Patch agent internals to use cached real-LLM boundaries
-    from conversation.agentic_answering import AgenticAnsweringAgent
-    from conversation.models import MetaFromLastSummary
+    from graph_knowledge_engine.conversation.agentic_answering import AgenticAnsweringAgent
+    from graph_knowledge_engine.conversation.models import MetaFromLastSummary
     prev_turn_meta_summary = MetaFromLastSummary(0,0,0)
 
     agent = AgenticAnsweringAgent(conversation_engine=conversation_engine, 

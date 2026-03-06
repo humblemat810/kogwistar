@@ -2,8 +2,8 @@
 import uuid
 import pytest
 
-from graph_knowledge_engine.engine import GraphKnowledgeEngine
-from graph_knowledge_engine import models
+from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
+from graph_knowledge_engine.engine_core import models
 
 EMBEDDING_DIM = 3
 

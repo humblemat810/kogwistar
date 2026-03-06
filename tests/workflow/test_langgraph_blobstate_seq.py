@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Optional
 
 from graph_knowledge_engine.runtime.langgraph_converter import LGConverterOptions, to_langgraph
 from graph_knowledge_engine.runtime.contract import BasePredicate
-from runtime.models import RunSuccess
+from graph_knowledge_engine.runtime.models import RunSuccess
 
 
 # ---- Minimum fake shapes (match tests/workflow/test_workflow_join.py) ----
@@ -68,7 +68,7 @@ def _e(
     workflow_id: str,
     src: str,
     dst: str,
-    predicate: Optional[str] = None,
+    predicate: None | str = None,
     priority: int = 100,
     is_default: bool = False,
     multiplicity: str = "one",

@@ -1,13 +1,10 @@
 from __future__ import annotations
 import functools
 
-from conversation.models import ConversationEdge, KnowledgeRetrievalResult, MemoryRetrievalResult
-from ..conversation.models import MetaFromLastSummary
 from graph_knowledge_engine.utils.log import bind_log_context
-from .models import StateUpdate
+
 from typing import TYPE_CHECKING
-if TYPE_CHECKING:
-    from .models import StateUpdate
+
 """Workflow step resolvers.
 
 This module provides a registry-based step resolver that can be used by
@@ -47,12 +44,12 @@ if TYPE_CHECKING:
     from .runtime import StepContext
     RawStepFn = Callable[[StepContext], Union[Json, StepRunResult]]
 
-from runtime.models import RunSuccess
+from graph_knowledge_engine.runtime.models import RunSuccess
 
-# Import your real RunResult types from runtime/models
+# Import your real RunResult types from graph_knowledge_engine.runtime/models
 
 
-from engine_core.models import Span
+from graph_knowledge_engine.engine_core.models import Span
 
 
 class BaseResolver:
@@ -96,20 +93,27 @@ class MappingStepResolver(BaseResolver):
 
     def resolve(self, op: str) -> Callable[[StepContext], StepRunResult]:
         raw = self.handlers.get(op) or self.default
-        from runtime.models import RunFailure
+        from graph_knowledge_engine.runtime.models import RunFailure
         if raw is None:
             raise KeyError(f"No step handler registered for op={op!r}")
 
         def _wrapped(ctx: StepContext) -> StepRunResult:
             try:
                 out = raw(ctx)
+                if getattr(out, 'update') is not None:
+                    import warnings
+                    warnings.simplefilter("once")
+                    warnings.warn("legacy update detected, use state_update if you need to append list state multiple times")
                 if isinstance(out, (RunSuccess, RunFailure)):
                     return out
                 else:
                     raise TypeError("Resolver must return StepRunResult")
                 # return out  # field name might be `data`/`payload` in your codebase
             except Exception as e:
-                return RunFailure(conversation_node_id=ctx.state_view.get('workflow_node_id') , state_update = [('a', {'op_log': str(e)})], errors=[str(e)])  # match your RunFailure fields
+                import traceback
+                return RunFailure(conversation_node_id=ctx.state_view.get('workflow_node_id') , 
+                                  state_update = [('a', {'op_log': str(e)})], 
+                                  errors=[str(e), traceback.format_exc()])  # match your RunFailure fields
         return _wrapped
 
 

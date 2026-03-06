@@ -5,12 +5,12 @@ from types import SimpleNamespace
 from typing import Any, Type, TypeVar
 from pydantic import BaseModel
 
-from conversation.models import ConversationNode, MetaFromLastSummary
+from graph_knowledge_engine.conversation.models import ConversationNode, MetaFromLastSummary
 from graph_knowledge_engine.id_provider import stable_id
 BaseM = TypeVar("BaseM", bound=BaseModel)
-from engine_core.models import Span, Grounding
+from graph_knowledge_engine.engine_core.models import Span, Grounding
 from graph_knowledge_engine.conversation.conversation_orchestrator import ConversationOrchestrator, get_id_for_conversation_turn, _estimate_tokens_from_chars
-from conversation.agentic_answering import AgentConfig, AgenticAnsweringAgent, AnswerWithCitations, AnswerEvaluation
+from graph_knowledge_engine.conversation.agentic_answering import AgentConfig, AgenticAnsweringAgent, AnswerWithCitations, AnswerEvaluation
 
 from tests.conftest import _make_engine_pair
 
