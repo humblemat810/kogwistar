@@ -197,6 +197,8 @@ def validate_workflow_design(
     if resolver_ops is not None:
         if unknown_ops := (set([i.op for i in nodes.values()]) - set(resolver_ops)):
             raise Exception(f"workflow_contains unregistered ops {unknown_ops}")
+    else:
+        raise Exception("resolver should have a list of available ops.")
     # predicate resolution
     for edges in adj.values():
         for e in edges:

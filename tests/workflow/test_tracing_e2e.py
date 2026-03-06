@@ -232,7 +232,7 @@ def test_tracing_routing_decision_end_to_end(tmp_path: Path):
                 return RunSuccess(conversation_node_id=None, state_update=[("u", {"result.end": {"value": "v_end"}})])
             return RunSuccess(conversation_node_id=None, state_update=[])
         return _fn
-
+    resolve_step.ops=['a', 'end', 'b', 'gate']
     rt = WorkflowRuntime(
         workflow_engine=GraphKnowledgeEngine(persist_directory=str(wf_dir), kg_graph_type="workflow"),
         conversation_engine=conversation_engine,
@@ -339,14 +339,14 @@ def test_tracing_join_events_end_to_end(tmp_path: Path):
         def _fn(ctx):
             return RunSuccess(conversation_node_id=None, state_update=[("u", {f"result.{op}": {"value": f"v_{op}"}})])
         return _fn
-
+    resolve_step.ops=['start', 'end', 'a', 'b', 'join', 'fork']
     rt = WorkflowRuntime(
         workflow_engine=GraphKnowledgeEngine(persist_directory=str(wf_dir), kg_graph_type="workflow"),
         conversation_engine=conversation_engine,
         step_resolver=resolve_step,
         predicate_registry=predicate_registry,
         checkpoint_every_n_steps=9999,
-        max_workers=2,
+        max_workers=6,
     )
 
     run_result = rt.run(

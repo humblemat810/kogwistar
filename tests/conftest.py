@@ -32,6 +32,7 @@ def stable_uuid(*parts: object) -> str:
 from pathlib import Path
 
 import logging
+logging.captureWarnings(True)
 from pathlib import Path
 from graph_knowledge_engine.utils.log import EngineLogManager, EngineLogConfig
 

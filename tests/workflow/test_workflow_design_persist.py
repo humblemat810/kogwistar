@@ -31,7 +31,10 @@ def _span():
         source_cluster_id=None,
         verification=MentionVerification(method="human", is_verified=True, score=1.0, notes="test"),
     )
-
+def _fake_ef_dim(dim: int):
+    def _ef(texts):
+        return [[0.01] * dim for _ in texts]
+    return _ef
 @pytest.mark.parametrize("backend_kind", ["chroma", "pg"])
 def test_workflow_design_creation_and_persistence(tmp_path, backend_kind, sa_engine, pg_schema):
     """

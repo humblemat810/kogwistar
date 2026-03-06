@@ -1,11 +1,20 @@
 
+import pytest
+
 from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine, candiate_filtering_callback
 from graph_knowledge_engine.conversation.conversation_orchestrator import ConversationOrchestrator
 from graph_knowledge_engine.conversation.models import MetaFromLastSummary
 from graph_knowledge_engine.runtime import MappingStepResolver
 from graph_knowledge_engine.runtime.models import WorkflowEdge, WorkflowNode
 
+pytestmark = [
+    pytest.mark.workflow,
+    pytest.mark.integration,
+]
 
+
+@pytest.mark.ci_full
+@pytest.mark.e2e
 def test_workflow_runtime_uses_default_resolver(tmp_path):
     """Smoke: a persisted workflow design can be executed using the package default resolver.
 
@@ -226,6 +235,7 @@ def test_workflow_runtime_uses_default_resolver(tmp_path):
     orchestrator = ConversationOrchestrator(workflow_engine=workflow_engine, 
                                             ref_knowledge_engine=ref_knowledge_engine,
                                             conversation_engine=conversation_engine,
+                                            tool_call_id_factory=stable_id
                                             )
     prev_turn_meta_summary = MetaFromLastSummary(0,0,0)
     deps= {
@@ -251,7 +261,7 @@ def test_workflow_runtime_uses_default_resolver(tmp_path):
     # init_state = {}
     mem_id = "mem-001"
     role = "user"
-    from graph_knowledge_engine.conversation_state_contracts import PrevTurnMetaSummaryModel
+    from graph_knowledge_engine.conversation.conversation_state_contracts import PrevTurnMetaSummaryModel
     init_state: WorkflowState = WorkflowStateModel(
         conversation_id=conversation_id,
         user_id="new-test-user",
@@ -267,6 +277,7 @@ def test_workflow_runtime_uses_default_resolver(tmp_path):
             prev_node_distance_from_last_summary=prev_turn_meta_summary.prev_node_distance_from_last_summary,
             tail_turn_index = prev_turn_meta_summary.tail_turn_index
         ),
+        _deps={},
     ).dump_state()
     init_state["_deps"] = deps
     
@@ -291,17 +302,19 @@ def test_workflow_runtime_uses_default_resolver(tmp_path):
     assert "answer" in final_state
 
 
+@pytest.mark.ci
+@pytest.mark.unit
 def test_orchestrator_has_v2(tmp_path):
     conv = GraphKnowledgeEngine(persist_directory=str(tmp_path / "conv"), kg_graph_type="conversation")
     kg = GraphKnowledgeEngine(persist_directory=str(tmp_path / "kg"), kg_graph_type="knowledge")
     wf = GraphKnowledgeEngine(persist_directory=str(tmp_path / "wf"), kg_graph_type="workflow")
-
+    from graph_knowledge_engine.id_provider import stable_id
     # NOTE: adapt args to your orchestrator's real __init__ signature
     orch = ConversationOrchestrator(
         conversation_engine=conv,
         ref_knowledge_engine=kg,
         workflow_engine=wf,
-        llm = wf.llm,
+        llm = wf.llm, tool_call_id_factory = stable_id
         # llm=..., tool_runner=..., etc.
     )
 

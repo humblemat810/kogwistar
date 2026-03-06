@@ -57,6 +57,8 @@ def _wf_node(*, workflow_id: str, node_id: str, op: str, start=False, terminal=F
         },
         domain_id=None,
         canonical_entity_id=None,
+        level_from_root = 0,
+        embedding=None
     )
 
 

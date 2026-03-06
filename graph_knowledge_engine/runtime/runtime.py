@@ -478,9 +478,14 @@ class WorkflowRuntime:
         except Exception:
             return True
         return True
-    def apply_state_update(self, mute_state: WorkflowState, state_update: list[tuple[str, dict[str, Any]]] | list[StateUpdate]):
+    def apply_state_update(self, mute_state: WorkflowState, 
+                           state_update: list[tuple[str, dict[str, Any]]] | list[StateUpdate], 
+                           update: dict|None = None):
         # inplace update state
-        for update_item in state_update:
+        if update and state_update:
+            raise Exception("Either update or state_update can be used")
+        
+        for update_item in state_update: # CR style state api
             update_item: tuple[str, dict[str, Any]] | StateUpdate
             if update_item[0] == 'a': # append
                 append_dict: dict = update_item[1]
@@ -494,7 +499,19 @@ class WorkflowRuntime:
                 update_dict: dict = update_item[1]
                 for k, v in update_dict.items():
                     mute_state.setdefault(k, []).extend(v)
-            
+        if update: # legacy api
+            state_schema = getattr(self.step_resolver, "_state_schema", None)
+            if state_schema is None:
+                state_schema = {} # will make everything default to just update
+            for k, v in update.items():
+                if op:= state_schema.get(k):
+                    pass
+                else:
+                    op = 'u'
+                if op == 'a':
+                    mute_state.setdefault(k, []).extend(v)
+                else: # u
+                    mute_state[k]=v
     def run(
         self,
         *,
@@ -512,7 +529,15 @@ class WorkflowRuntime:
         """
         with bind_log_context(conversation_id = conversation_id, 
                                       workflow_run_id = f"{workflow_id}--{run_id}"):
-        
+            # repair fields auto set by default schema
+            state_schema = getattr(self.step_resolver,"_state_schema", None)
+            if state_schema and isinstance(state_schema, dict):
+                for k,v in state_schema.items():
+                    if v == 'u':
+                        initial_state[k] = None
+                    if v == "a":
+                        initial_state[k] = []
+                    
             validate_initial_state(initial_state)
             
             run_id = run_id or f"run|{uuid.uuid4()}"
@@ -871,7 +896,7 @@ class WorkflowRuntime:
                     run_state_lock: Lock = self.state_lock[str(run_id)]
                     with self._maybe_step_uow():
                         with run_state_lock:
-                            self.apply_state_update(mute_state=state, state_update=run_result.state_update)
+                            self.apply_state_update(mute_state=state, state_update=run_result.state_update, update=getattr(run_result, 'update', None))
                         
                     inflight.pop((node_id, mask, str(token_id)), None)
                     inflight_tokens.discard((str(node_id), int(mask), str(token_id), parent_token_id))
@@ -1185,13 +1210,13 @@ class WorkflowRuntime:
             # Record unconditional evaluations too (use a synthetic name)
             decision.evaluated.append((f"{_edge_id(e)}:<base>", ok))
             if ok:
-                matched.append(tgt)
+                matched.append((e, tgt))
                 decision.selected.append((_edge_id(e), tgt, "base"))
                 if _stop_on_first(e):
-                    return matched[0:1], decision
+                    return [i[1] for i in matched[0:1]], decision
 
         if matched:
-            return (matched if fanout else matched[0:1]), decision
+            return ([i[1] for i in (matched if fanout else matched[0:1])]), decision
 
         # (3) default edge
         for e in edges:

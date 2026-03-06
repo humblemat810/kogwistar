@@ -100,6 +100,10 @@ class MappingStepResolver(BaseResolver):
         def _wrapped(ctx: StepContext) -> StepRunResult:
             try:
                 out = raw(ctx)
+                if getattr(out, 'update') is not None:
+                    import warnings
+                    warnings.simplefilter("once")
+                    warnings.warn("legacy update detected, use state_update if you need to append list state multiple times")
                 if isinstance(out, (RunSuccess, RunFailure)):
                     return out
                 else:
