@@ -284,11 +284,11 @@ class Span(ModeSlicingMixin, BaseModel):
         #     raise ValueError("end_page must be >= start_page")
         if (self.end_char <= self.start_char) and not self.end_char == -1:
             raise ValueError("end_char must be > start_char")
-        from .engine import _default_verification
+        from .utils.refs import default_verification
         if (not hasattr(self, 'verification') and self.__class__.__name__.endswith("LlmSlice")):
             pass # ok LLM ok to have no such field
         elif hasattr(self, 'verification') and self.verification is None: # ok
-            self.verification = _default_verification("no explicit verification from LLM")
+            self.verification = default_verification("no explicit verification from LLM")
         else:
             pass # already has verification filled in
         return self
@@ -460,23 +460,6 @@ class BaseNodeMetadata(BaseModel):
     """
     model_config = ConfigDict(extra="allow")
 
-# --- Phase 1: Conversation edge intent classification (causality) ---
-
-CONVERSATION_EDGE_CAUSAL_TYPE_BY_RELATION: dict[str, str] = {
-    # Canonical chain
-    "next_turn": "chain",
-
-    # Tool / retrieval wiring (non-causal references)
-    "tool_call_entry_point": "reference",
-    "run_result": "reference",
-    "has_memory_context": "reference",
-    "has_knowledge_context": "reference",
-
-    # Summaries describe past, but do not causally "create" the past
-    "summarizes": "summary",
-
-    # Default catch-all for conversation edges
-}
 
 class ChromaMixin(BaseModel):
     id: Optional[str] = Field(default = None, description="Unique identifier")
@@ -2263,30 +2246,3 @@ class SplitPage(OCRClusterResponseBc):
             c_return['printed_page_number'] = self.printed_page_number
             c_return['text'] = texts
             return c_return
-
-# -------------------------
-# Workflow traces: run/step/checkpoint (persist in conversation_engine)
-# -------------------------
-
-# deserialize form db
-# EntitiyTypeToNodeTypeMapping = {
-#     "workflow_checkpoint" : WorkflowCheckpointNode,
-#     "workflow_step_exec": WorkflowStepExecNode,
-#     "workflow_run" : WorkflowRunNode,
-#     "workflow_node": WorkflowNode,
-#     "node" : Node,
-#     "conversation_node": ConversationNode,
-#     "conversation_start": ConversationNode,
-#     "conversation_turn": ConversationNode,
-#     "conversation_summary": ConversationNode,
-#     "tool_result" : ConversationNode,
-#     "agent_run"   : ConversationNode,
-#     "knowledge_reference": ConversationNode,
-# }
-
-# EntitiyTypeToEdgeTypeMapping = {
-    
-#     "workflow_edge" : WorkflowEdge,
-#     "edge" : Edge,
-#     "conversation_edge": ConversationEdge,
-# }

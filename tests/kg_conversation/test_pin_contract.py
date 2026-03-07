@@ -1,4 +1,5 @@
 from graph_knowledge_engine.conversation.models import ConversationNode
+from graph_knowledge_engine.conversation.service import ConversationService
 from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
 from graph_knowledge_engine.engine_core.models import Grounding, Span, MentionVerification
 
@@ -14,7 +15,11 @@ def test_conversation_pin_knowledge_reference_is_noop(tmp_path):
     conversation_id = "conv:test_conversation_pin_knowledge_reference_is_noop"
     user_id = "u1"
 
-    eng.create_conversation(user_id=user_id, conv_id=conversation_id, node_id="start")
+    svc = ConversationService.from_engine(
+        eng,
+        knowledge_engine=eng,
+    )
+    svc.create_conversation(user_id=user_id, conv_id=conversation_id, node_id="start")
 
     span = Span(
         collection_page_url=f"conversation/{conversation_id}",

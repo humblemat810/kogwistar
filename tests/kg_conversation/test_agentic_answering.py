@@ -240,6 +240,7 @@ class FakeConversationEngine:
     def __init__(self, conversation_id: str, messages):
         self._conversation_id = conversation_id
         self._messages = messages
+        self.llm = None
         self.node_collection = FakeCollection()
         self.edge_collection = FakeCollection()
         self._iterative_defensive_emb = self.iterative_defensive_emb
@@ -572,9 +573,18 @@ def test_agent_with_real_llm_cached(monkeypatch, engine, conversation_engine):
 
     # Now run your end-to-end agent call
     user_id = "test_agent_with_llm_cached"
-    conv_id, start_node_id = conversation_engine.create_conversation(user_id)
-    conversation_engine.add_conversation_turn(user_id, conv_id, role = 'user', turn_id = "user_turn1", 
-                                              mem_id = "mem1", content = "what is an LLM ?", ref_knowledge_engine = engine)
+    from graph_knowledge_engine.conversation.models import FilteringResult
+    from graph_knowledge_engine.conversation.service import ConversationService
+
+    conv_svc = ConversationService.from_engine(
+        conversation_engine,
+        knowledge_engine=engine,
+    )
+    conv_id, start_node_id = conv_svc.create_conversation(user_id)
+    conv_svc.add_conversation_turn(user_id, conv_id, role='user', turn_id="user_turn1",
+                                   mem_id="mem1", content="what is an LLM ?", ref_knowledge_engine=engine,
+                                   filtering_callback=lambda *_a, **_k: (FilteringResult(node_ids=[], edge_ids=[]), "noop"),
+                                   add_turn_only=True)
     # out = agent.answer(conversation_id=conv_id, 
                        
     #                    prev_turn_meta_summary=prev_turn_meta_summary)

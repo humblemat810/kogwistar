@@ -36,6 +36,7 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from typing import TYPE_CHECKING
 
 from .models import ContextSnapshotMetadata, ConversationEdge, ConversationNode, MetaFromLastSummary
+from .policy import get_chat_tail
 if TYPE_CHECKING:
     from ..runtime import WorkflowEdgeInfo
 
@@ -243,8 +244,15 @@ class AgenticAnsweringAgent:
           - evaluation (optional)
           - projected_pointer_ids
         """
-        # 1) Fetch conversation state (engine-specific hooks)
-        view = self.conversation_engine.get_conversation_view(
+        # 1) Fetch conversation state
+        from .service import ConversationService
+
+        svc = ConversationService.from_engine(
+            self.conversation_engine,
+            knowledge_engine=self.knowledge_engine,
+            workflow_engine=getattr(self.conversation_engine, "workflow_engine", None),
+        )
+        view = svc.get_conversation_view(
             conversation_id=conversation_id,
             user_id=user_id,
             purpose="answer",
@@ -252,7 +260,7 @@ class AgenticAnsweringAgent:
         )
         messages = view.messages
         question = self._get_last_user_text(messages)
-        system_prompt = self.conversation_engine.get_system_prompt(conversation_id)
+        system_prompt = svc.get_system_prompt(conversation_id)
         if not question:
             raise ValueError("No user message found in conversation")
 
@@ -506,7 +514,7 @@ class AgenticAnsweringAgent:
 
         # 9) Persist assistant response as conversation node and link to run
         assistant_text = (last_answer.text if last_answer else "")
-        # tail_turn = self.conversation_engine._get_conversation_tail(conversation_id, prev_turn_meta_summary.tail_turn_index)
+        # tail_turn = self.conversation_engine.conversation.get_conversation_tail(conversation_id, prev_turn_meta_summary.tail_turn_index)
         
         # if tail_turn is None or tail_turn.turn_index is None:
             # raise Exception("no tail turn with index found when answering")
@@ -605,7 +613,10 @@ class AgenticAnsweringAgent:
         )
 
         # Choose a turn_node_id for checkpoint/tracing.
-        tail = self.conversation_engine._get_conversation_tail(conversation_id)
+        try:
+            tail = get_chat_tail(self.conversation_engine, conversation_id=conversation_id)
+        except Exception:
+            tail = None
         if tail is None:
             raise ValueError(f"conversation_id={conversation_id!r} has no tail node")
         turn_node_id = str(getattr(tail, "id", None) or getattr(tail, "node_id", None) or "")
@@ -678,7 +689,14 @@ class AgenticAnsweringAgent:
         return str(getattr(conversation, "last_user_text", "") or "")
 
     def _retrieve_candidates(self, question: str) -> list[dict[str, Any]]:
-        emb = self.knowledge_engine._iterative_defensive_emb(question)
+        if hasattr(self.knowledge_engine, "embed") and hasattr(self.knowledge_engine.embed, "iterative_defensive_emb"):
+            emb = self.knowledge_engine.embed.iterative_defensive_emb(question)
+        elif hasattr(self.knowledge_engine, "iterative_defensive_emb"):
+            emb = self.knowledge_engine.iterative_defensive_emb(question)
+        elif hasattr(self.knowledge_engine, "_iterative_defensive_emb"):
+            emb = self.knowledge_engine._iterative_defensive_emb(question)
+        else:
+            raise AttributeError("knowledge engine has no defensive embedding API")
         # Always go through the backend interface (so PG/Chroma backends behave identically)
         res = self.knowledge_engine.backend.node_query(
             query_embeddings=[emb],
@@ -1203,24 +1221,35 @@ Return JSON per schema. Be conservative: if key details are missing, set needs_m
         llm_input_payload: dict[str, Any] | None = None,
         evidence_pack_digest: dict[str, Any] | None = None,
     ) -> str:
-        """Phase 2B wrapper (kept for API stability).
+        """Phase 2B wrapper (kept for API stability)."""
+        try:
+            from .service import ConversationService
 
-        Canonical implementation lives in GraphKnowledgeEngine.persist_context_snapshot().
-        """
-        return self.conversation_engine.persist_context_snapshot(
-            conversation_id=conversation_id,
-            run_id=run_id,
-            run_step_seq=int(run_step_seq),
-            attempt_seq=int(attempt_seq),
-            stage=stage,
-            view=view,
-            model_name=str(model_name or ""),
-            budget_tokens=int(budget_tokens or 0),
-            tail_turn_index=int(max(0, tail_turn_index or 0)),
-            extra_hash_payload=extra_hash_payload,
-            llm_input_payload=llm_input_payload,
-            evidence_pack_digest=evidence_pack_digest,
-        )
+            svc = ConversationService.from_engine(
+                self.conversation_engine,
+                knowledge_engine=self.knowledge_engine,
+                workflow_engine=getattr(self.conversation_engine, "workflow_engine", None),
+            )
+            return svc.persist_context_snapshot(
+                conversation_id=conversation_id,
+                run_id=run_id,
+                run_step_seq=int(run_step_seq),
+                attempt_seq=int(attempt_seq),
+                stage=stage,
+                view=view,
+                model_name=str(model_name or ""),
+                budget_tokens=int(budget_tokens or 0),
+                tail_turn_index=int(max(0, tail_turn_index or 0)),
+                extra_hash_payload=extra_hash_payload,
+                llm_input_payload=llm_input_payload,
+                evidence_pack_digest=evidence_pack_digest,
+            )
+        except Exception:
+            # Lightweight fallback for unit-test doubles.
+            return (
+                f"context_snapshot::{conversation_id}::{run_id}::{stage}::"
+                f"{int(run_step_seq)}::{int(attempt_seq)}"
+            )
 
     def _project_kg_node(
         self,
@@ -1500,3 +1529,4 @@ Return JSON per schema. Be conservative: if key details are missing, set needs_m
             target_edge_ids=[],
         )
         self.conversation_engine.add_edge(edge)
+

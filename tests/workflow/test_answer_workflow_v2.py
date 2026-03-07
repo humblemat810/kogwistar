@@ -3,7 +3,8 @@ import pytest
 
 from graph_knowledge_engine.conversation.agentic_answering import AgenticAnsweringAgent, AgentConfig, AnswerEvaluation, AnswerWithCitations, EvidenceSelection
 from graph_knowledge_engine.id_provider import stable_id
-from graph_knowledge_engine.conversation.models import MetaFromLastSummary
+from graph_knowledge_engine.conversation.models import FilteringResult, MetaFromLastSummary
+from graph_knowledge_engine.conversation.service import ConversationService
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.runnables import Runnable
 
@@ -69,7 +70,11 @@ def _ensure_user_turn(conversation_engine, *, user_id: str, conversation_id: str
     turn_id = "turn_0"
     mem_id = "mem_0"
     mts = MetaFromLastSummary(0, 0)
-    conversation_engine.add_conversation_turn(
+    svc = ConversationService.from_engine(
+        conversation_engine,
+        knowledge_engine=conversation_engine,
+    )
+    svc.add_conversation_turn(
         user_id=user_id,
         conversation_id=conversation_id,
         turn_id=turn_id,
@@ -77,6 +82,7 @@ def _ensure_user_turn(conversation_engine, *, user_id: str, conversation_id: str
         role="user",
         content=text,
         ref_knowledge_engine=conversation_engine,  # not used if add_turn_only=True
+        filtering_callback=lambda *_a, **_k: (FilteringResult(node_ids=[], edge_ids=[]), "noop"),
         prev_turn_meta_summary=mts,
         add_turn_only=True,
     )
@@ -90,7 +96,12 @@ def test_answer_workflow_v2_runs_end_to_end(workflow_engine, conversation_engine
     workflow_engine.tool_call_id_factory=stable_id
     user_id = "u_test"
     import time
-    conversation_id, _start_id = conversation_engine.create_conversation(user_id=user_id)
+    conv_svc = ConversationService.from_engine(
+        conversation_engine,
+        knowledge_engine=engine,
+        workflow_engine=workflow_engine,
+    )
+    conversation_id, _start_id = conv_svc.create_conversation(user_id=user_id)
     time.sleep(0.5)
     _ensure_user_turn(conversation_engine, user_id=user_id, conversation_id=conversation_id, text=question)
     time.sleep(0.5)

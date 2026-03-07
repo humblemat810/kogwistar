@@ -222,8 +222,8 @@ class Adjudicator(IAdjudicator):
                             "right": right.model_dump()})
     def adjudicate_merge(self, left_node: Node | Edge, right_node: Node | Edge) -> Dict[Any, Any] | BaseModel:
         # Back-compat wrapper if you still call with concrete models
-        left = self.e._target_from_node(left_node) if isinstance(left_node, Node) else self.e._target_from_edge(left_node)
-        right = self.e._target_from_node(right_node) if isinstance(right_node, Node) else self.e._target_from_edge(right_node)
+        left = self.e.adjudicate.target_from_node(left_node) if isinstance(left_node, Node) else self.e.adjudicate.target_from_edge(left_node)
+        right = self.e.adjudicate.target_from_node(right_node) if isinstance(right_node, Node) else self.e.adjudicate.target_from_edge(right_node)
         question = "same_entity" if left.kind == "node" else "same_relation"
         return self.adjudicate_pair(left, right, question=question)
     def batch_adjudicate_merges(
