@@ -10,3 +10,15 @@ small_graph
 *.bin
 *.pickle
 .shortids
+*.egg-info/
+build/
+dist/
+.cache/
+.logs/
+.tmp_*
+.tmp_build/
+.cdc_debug/
+.chroma-mcp*/
+.embedding_cache/
+.joblib/
+.kg_cache/

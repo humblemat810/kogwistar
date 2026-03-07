@@ -5,7 +5,7 @@ import os
 import sitecustomize
 os.environ["ANONYMIZED_TELEMETRY"] = "FALSE"
 import sqlalchemy as sa
-from testcontainers.postgres import PostgresContainer
+
 
 import os
 import sys
@@ -20,7 +20,10 @@ from graph_knowledge_engine.engine_core.models import (
     MentionVerification
 )
 from graph_knowledge_engine.engine_core.postgres_backend import PgVectorBackend
-from typing import Any, List, Optional, Sequence, Iterator
+from typing import Any, List, Optional, Sequence, Iterator, TYPE_CHECKING
+from testcontainers.postgres import PostgresContainer
+if TYPE_CHECKING:
+    from testcontainers.postgres import PostgresContainer
 from langchain_core.runnables import Runnable
 from graph_knowledge_engine.engine_core.models import LLMMergeAdjudication, AdjudicationVerdict
 
@@ -318,8 +321,10 @@ def pg_container() -> Iterator[PostgresContainer]:
       - Docker daemon running (Docker Desktop on Windows/macOS)
       - Python deps: testcontainers[postgresql], psycopg[binary], sqlalchemy
     """
+    
     image = os.getenv("GKE_TEST_PG_IMAGE", "postgres:16")
     os.environ['TESTCONTAINERS_RYUK_DISABLED'] = "true"
+    from testcontainers.postgres import PostgresContainer
     with PostgresContainer(image) as pg:
         yield pg
 
