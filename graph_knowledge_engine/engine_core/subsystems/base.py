@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable
 
 
 class NamespaceProxy:
@@ -16,10 +16,16 @@ class NamespaceProxy:
         self._e = engine
         self._aliases = aliases or {}
 
-    def __getattr__(self, name: str):
+    def _resolve(self, name: str) -> Callable[..., Any]:
         target_name = self._aliases.get(name, name)
         impl_name = f"_impl_{target_name}"
         impl = getattr(self._e, impl_name, None)
         if impl is not None:
             return impl
         return getattr(self._e, target_name)
+
+    def _call(self, name: str, *args, **kwargs):
+        return self._resolve(name)(*args, **kwargs)
+
+    def __getattr__(self, name: str):
+        return self._resolve(name)

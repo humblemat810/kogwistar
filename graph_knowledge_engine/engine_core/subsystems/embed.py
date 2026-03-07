@@ -11,3 +11,9 @@ class EmbedSubsystem(NamespaceProxy):
                 "iterative_defensive_emb_internal": "_iterative_defensive_emb",
             },
         )
+
+    def iterative_defensive_emb(self, emb_text0):
+        return self._call("iterative_defensive_emb", emb_text0)
+
+    def iterative_defensive_emb_internal(self, emb_text0):
+        return self._call("iterative_defensive_emb_internal", emb_text0)

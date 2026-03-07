@@ -20,3 +20,33 @@ class ExtractSubsystem(NamespaceProxy):
                 "fetch_document_text": "_fetch_document_text",
             },
         )
+
+    def resolve_extraction_schema_mode(self, *args, **kwargs):
+        return self._call("resolve_extraction_schema_mode", *args, **kwargs)
+
+    def schema_prompt_rules(self, *args, **kwargs):
+        return self._call("schema_prompt_rules", *args, **kwargs)
+
+    def build_structured_output_for_mode(self, *args, **kwargs):
+        return self._call("build_structured_output_for_mode", *args, **kwargs)
+
+    def to_canonical_extraction_for_mode(self, *args, **kwargs):
+        return self._call("to_canonical_extraction_for_mode", *args, **kwargs)
+
+    def extract_graph_with_llm_aliases(self, *args, **kwargs):
+        return self._call("extract_graph_with_llm_aliases", *args, **kwargs)
+
+    def de_alias_ids_in_result(self, *args, **kwargs):
+        return self._call("de_alias_ids_in_result", *args, **kwargs)
+
+    def aliasify_for_prompt(self, *args, **kwargs):
+        return self._call("aliasify_for_prompt", *args, **kwargs)
+
+    def repair_lean_offsets_for_mode(self, *args, **kwargs):
+        return self._call("repair_lean_offsets_for_mode", *args, **kwargs)
+
+    def coerce_pages(self, *args, **kwargs):
+        return self._call("coerce_pages", *args, **kwargs)
+
+    def fetch_document_text(self, document_id: str) -> str:
+        return self._call("fetch_document_text", document_id)

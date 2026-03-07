@@ -160,8 +160,7 @@ def _add_user_turn(ctx: "StepContext") -> "StepRunResult":
     if type(sv.get("turn_index")) is int:
         turn_index = sv.get("turn_index")
     else:
-        turn_index = int(getattr(mts, "tail_turn_index", 0) or 0)
-    turn_index += 1
+        turn_index = int(getattr(mts, "tail_turn_index", 0) or 0) + 1
     # doc_id for the turn (keep external caller's turn_id if provided)
     turn_doc_id = str(sv.get("turn_id") or sv.get("turn_node_id") or f"turn_{turn_index}")
 

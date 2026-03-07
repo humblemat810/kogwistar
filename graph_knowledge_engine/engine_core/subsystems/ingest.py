@@ -12,3 +12,15 @@ class IngestSubsystem(NamespaceProxy):
                 "extract_graph_with_llm_internal": "_extract_graph_with_llm",
             },
         )
+
+    def ingest_document_with_llm(self, *args, **kwargs):
+        return self._call("ingest_document_with_llm", *args, **kwargs)
+
+    def ingest_text_with_llm(self, *args, **kwargs):
+        return self._call("ingest_text_with_llm", *args, **kwargs)
+
+    def extract_graph_with_llm_internal(self, *args, **kwargs):
+        return self._call("extract_graph_with_llm_internal", *args, **kwargs)
+
+    def add_page(self, *args, **kwargs):
+        return self._call("add_page", *args, **kwargs)

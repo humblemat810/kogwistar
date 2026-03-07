@@ -101,12 +101,12 @@ def test_resolve_schema_mode_override_takes_precedence(engine):
     assert resolved == "flattened_full"
 
 
-def test_resolve_schema_mode_auto_maps_gemini_to_flattened_lean(engine):
+def test_resolve_schema_mode_auto_maps_gemini_to_lean(engine):
     engine.extraction_schema_mode = "auto"
 
     resolved = engine._resolve_extraction_schema_mode()
 
-    assert resolved == "flattened_lean"
+    assert resolved == "lean"
 
 
 def test_resolve_schema_mode_auto_maps_non_gemini_to_full(engine):

@@ -15,3 +15,33 @@ class ReadSubsystem(NamespaceProxy):
                 "edge_ids_by_doc_index": "_edge_ids_by_doc",
             },
         )
+
+    # Canonical read API
+    def get_nodes(self, *args, **kwargs):
+        return self._call("get_nodes", *args, **kwargs)
+
+    def get_edges(self, *args, **kwargs):
+        return self._call("get_edges", *args, **kwargs)
+
+    def query_nodes(self, *args, **kwargs):
+        return self._call("query_nodes", *args, **kwargs)
+
+    def query_edges(self, *args, **kwargs):
+        return self._call("query_edges", *args, **kwargs)
+
+    def where_update_from_resolve_mode(self, *args, **kwargs):
+        return self._call("where_update_from_resolve_mode", *args, **kwargs)
+
+    # Doc-index helpers
+    def node_ids_by_doc(self, doc_id: str, insertion_method: str | None = None) -> list[str]:
+        return self._call("node_ids_by_doc", doc_id, insertion_method=insertion_method)
+
+    def edge_ids_by_doc(self, doc_id: str, insertion_method: str | None = None) -> list[str]:
+        return self._call("edge_ids_by_doc", doc_id, insertion_method=insertion_method)
+
+    # Legacy names retained during migration
+    def nodes_by_doc_index(self, doc_id: str, insertion_method: str | None = None) -> list[str]:
+        return self._call("nodes_by_doc_index", doc_id, insertion_method=insertion_method)
+
+    def edge_ids_by_doc_index(self, doc_id: str, insertion_method: str | None = None) -> list[str]:
+        return self._call("edge_ids_by_doc_index", doc_id, insertion_method=insertion_method)
