@@ -1168,197 +1168,56 @@ class GraphKnowledgeEngine:
         limit : None | int = 200,
         resolve_mode: Literal["active_only", "redirect", "include_tombstones"] = "active_only",
     ) -> List[Node]:
-        if include is None:
-            include = ["documents", "embeddings", "metadatas"] 
-        from ..conversation.models import (ConversationEdge, 
-                                   ConversationNode)
-        if not node_type:
-            node_type = ConversationNode if self.kg_graph_type == "conversation" else Node
-        
-        # IMPORTANT: ID fetch must NOT filter out tombstones, or redirect cannot start.
-        got = self.backend.node_get(
+        return self.read.get_nodes(
             ids=ids,
+            node_type=node_type,
             include=include,
             where=where,
-            limit=limit
-        )
-        nodes = self.nodes_from_single_or_id_query_result(got, node_type=node_type)
-
-        # Follow redirects (may require fetching tombstoned targets too)
-        nodes = self._resolve_redirect_chain(
-            initial_items=nodes,
+            limit=limit,
             resolve_mode=resolve_mode,
-            fetch_by_ids=lambda redirect_ids: self.get_nodes(
-                redirect_ids,
-                node_type=node_type,
-                resolve_mode=resolve_mode,  # allow chain traversal
-            ),
         )
-
-        # Apply final mode filter (active_only/redirect hide tombstones)
-        nodes = self._filter_items_by_resolve_mode(nodes, resolve_mode)
-
-        return nodes
     
     def query_nodes(self,*args, query = None, 
             query_embeddings = None,  
             include=["documents", "embeddings", "metadatas"],
             node_type: Type[Node] = Node, **kwargs):
-        if query_embeddings is not None:
-            if query is not None:
-                raise Exception("either query or query embedding but not both specified.")
-        else:
-            if query is not None:
-                query_embeddings = self._iterative_defensive_emb(query)
-            else:
-                raise ValueError("either query or query embeddings must be specified")
-        
-        got = self.backend.node_query(query_embeddings=query_embeddings, *args, 
-                                        include=include, **kwargs)
-        
-        return self.nodes_from_query_result(got, node_type = node_type)
+        return self.read.query_nodes(
+            *args,
+            query=query,
+            query_embeddings=query_embeddings,
+            include=include,
+            node_type=node_type,
+            **kwargs,
+        )
     def query_edges(self,*args, query = None, query_embeddings = None, 
                     include=["documents", "embeddings", "metadatas"],
                     edge_type: Type[Edge] = Edge, **kwargs):
-        if query_embeddings is not None:
-            pass
-        else:
-            if query is not None:
-                query_embeddings = self._iterative_defensive_emb(query)
-            else:
-                raise ValueError("either query or query embeddings must be specified")
-        
-        got = self.backend.edge_query(query_embeddings=query_embeddings, *args, 
-                                        include=include, **kwargs)
-        
-        return self.edges_from_query_result(got, edge_type=edge_type)
+        return self.read.query_edges(
+            *args,
+            query=query,
+            query_embeddings=query_embeddings,
+            include=include,
+            edge_type=edge_type,
+            **kwargs,
+        )
     def nodes_from_single_or_id_query_result(
             self,
             got,
             node_type: Type[TNode] = Node,
         ) -> list[TNode]:
-        docs: list[str] = cast(list[str], got.get("documents"))
-        
-        if docs is None:
-            raise Exception("Missing docs")
-        
-        embs = got.get("embeddings")
-        if embs is None:
-            raise Exception("Missing Embeddings")
-
-        embs = cast(list[list[float]], embs)
-        metadatas = cast(list[dict[str, Any]], got.get("metadatas"))
-        if metadatas is None:
-            raise Exception("Missing Metadatas")
-        
-        res = []
-        from . import models as core_models
-        from ..conversation import models as conversation_models
-        from ..runtime import models as runtime_models
-        for d, emb, metadata in zip(docs, embs, metadatas):
-            if type(emb) is list:
-                pass
-            elif type(emb) is np.ndarray:
-                emb = emb.tolist()
-            json_d = json.loads(d)
-            entity_type = metadata.get('entity_type')
-            override_node_type = None
-            _class_name = metadata.get("_class_name")
-            if _class_name:
-                node_cls = (getattr(core_models, _class_name, None) 
-                            or getattr(conversation_models, _class_name, None) 
-                            or getattr(runtime_models, _class_name, None))
-                if node_cls:
-                    override_node_type = node_cls
-            if not override_node_type:
-                if entity_type == "workflow_checkpoint":
-                    if self.kg_graph_type == "workflow":
-                        from ..conversation.models import WorkflowCheckpointNode
-                        override_node_type = WorkflowCheckpointNode
-            
-                
-            json_d.update({"embedding": emb, "metadata": metadata})
-            res.append((override_node_type or node_type).model_validate(json_d))
-        return res
+        return self.read.nodes_from_single_or_id_query_result(got, node_type=node_type)
     def edges_from_single_or_id_query_result(self, got, edge_type: Type[Edge] = Edge, include = None):
-        if include is None:
-            include = ['documents', 'metadatas', 'embeddings']
-        docs: list[str] = cast(list[str], got.get("documents"))
-        ids = got['ids']
-        if docs is None:
-            if "documents" in include:
-                raise Exception("Missing docs")
-        
-        embs = got.get("embeddings")
-        if embs is None:
-            raise Exception("Missing Embeddings")
-
-        embs = cast(list[list[float]], embs)
-        metadatas = cast(list[dict[str, Any]], got.get("metadatas"))
-        if metadatas is None:
-            raise Exception("Missing Metadatas")
-        from . import models as core_models
-        from ..conversation import models as conversation_models
-        from ..runtime import models as runtime_models
-        res = []
-        import numpy as np
-        for d, emb, metadata in zip(docs, embs, metadatas):
-            if type(emb) is list:
-                pass
-            elif type(emb) is np.ndarray:
-                emb = emb.tolist()
-            json_d = json.loads(d)
-            json_d.update({"embedding": emb, "metadata": metadata})
-            entity_type = metadata.get('entity_type')
-            override_edge_type = None
-            _class_name = metadata.get("_class_name")
-            if _class_name:
-                edge_cls = (getattr(core_models, _class_name, None) 
-                            or getattr(conversation_models, _class_name, None) 
-                            or getattr(runtime_models, _class_name, None))
-                if edge_cls:
-                    override_edge_type = edge_cls
-   
-            res.append((override_edge_type or edge_type).model_validate(json_d))
-        return res
+        return self.read.edges_from_single_or_id_query_result(
+            got,
+            edge_type=edge_type,
+            include=include,
+        )
     def nodes_from_query_result(self, gots, node_type: Type[Node] = Node):
-        res = []
-        for i_q in range(len(gots['ids'])):
-            n_doc = len(gots["ids"][i_q])
-            for ids, docs, embs, metadatas in zip(
-                                             gots.get("ids"),
-                                             gots.get("documents") if gots.get("documents") is not None else  [[]]*n_doc, 
-                                             gots.get("embeddings") if gots.get("embeddings") is not None else [[]]*n_doc, 
-                                             gots.get("metadatas") if gots.get("metadatas") is not None else [[]]*n_doc):
-                docs: list[str] = cast(list[str], docs)
-                got = {"documents": docs, "embeddings": embs, "metadatas": metadatas}
-                single_res = self.nodes_from_single_or_id_query_result(got, node_type = node_type)
-                res.append(single_res)
-        return res
+        return self.read.nodes_from_query_result(gots, node_type=node_type)
     def edges_from_query_result(self, gots, edge_type: Type[Edge] = Edge):
-        res = []
-        for i_q in range(len(gots['ids'])):
-            n_doc = len(gots["ids"][i_q])
-            for ids, docs, embs, metadatas in zip(gots.get("ids"), 
-                                             gots.get("documents") if gots.get("documents") is not None else  [[]]*n_doc, 
-                                             gots.get("embeddings") if gots.get("embeddings") is not None else [[]]*n_doc, 
-                                             gots.get("metadatas") if gots.get("metadatas") is not None else [[]]*n_doc):
-                docs: list[str] = cast(list[str], docs)
-                got = {"ids": ids, "documents": docs, "embeddings": embs, "metadatas": metadatas}
-                single_res = self.edges_from_single_or_id_query_result(got, edge_type = edge_type)
-                res.append(single_res)
-        return res
+        return self.read.edges_from_query_result(gots, edge_type=edge_type)
     def _where_update_from_resolve_mode(self, resolve_mode : Literal["active_only" , "redirect", "include_tombstones"]):
-        if  resolve_mode=="active_only":
-            return {"lifecycle_status":"active"}
-        else:
-            return {}
-            # case "active_only":
-                # return {"lifecycle_status":"active"}
-            # case "redirect":
-                # return {}
-            # case "include_tombstones":
-                # return {}
+        return self.read.where_update_from_resolve_mode(resolve_mode)
         
 
     def get_edges(
@@ -1370,37 +1229,14 @@ class GraphKnowledgeEngine:
         include: None | list[str] = None,
         resolve_mode: Literal["active_only", "redirect", "include_tombstones"] = "active_only",
     ) -> List[Edge]:
-        if include is None:
-            include = ["documents", "embeddings", "metadatas"]
-        from ..conversation.models import (ConversationEdge, 
-                                   ConversationNode)
-        if not edge_type:
-            edge_type = ConversationEdge if self.kg_graph_type == "conversation" else Edge
-
-        # IMPORTANT: ID fetch must NOT filter out tombstones, or redirect cannot start.
-        got = self.backend.edge_get(
+        return self.read.get_edges(
             ids=ids,
+            edge_type=edge_type,
+            where=where,
+            limit=limit,
             include=include,
-            where = where,
-            limit = limit
-        )
-        edges = self.edges_from_single_or_id_query_result(got, edge_type=edge_type, include = include)
-
-        # Follow redirects (may require fetching tombstoned targets too)
-        edges = self._resolve_redirect_chain(
-            initial_items=edges,
             resolve_mode=resolve_mode,
-            fetch_by_ids=lambda redirect_ids: self.get_edges(
-                redirect_ids,
-                edge_type=edge_type,
-                resolve_mode=resolve_mode,  # allow chain traversal
-            ),
         )
-
-        # Apply final mode filter (active_only/redirect hide tombstones)
-        edges = self._filter_items_by_resolve_mode(edges, resolve_mode)
-
-        return edges
 
     def all_nodes_for_doc(self, doc_id: str) -> List[Node]:
         return self.get_nodes(self._nodes_by_doc(doc_id))
@@ -1527,34 +1363,15 @@ class GraphKnowledgeEngine:
     def _json_or_none(obj: Any) -> Optional[str]:
         return json.dumps(obj) if obj is not None else None
     def _exists_node(self, rid: str) -> bool:
-        g = self.backend.node_get(ids=[rid])
-        return (g.get("ids") or [None])[0] == rid
+        return self.persist.exists_node(rid)
 
     def _exists_edge(self, rid: str) -> bool:
-        g = self.backend.edge_get(ids=[rid])
-        return (g.get("ids") or [None])[0] == rid
+        return self.persist.exists_edge(rid)
 
     def _exists_any(self, rid: str) -> bool:
-        return self._exists_node(rid) or self._exists_edge(rid)
+        return self.persist.exists_any(rid)
     def _select_doc_context(self, doc_id: str, max_nodes: int = 200, max_edges: int = 400):
-        nodes = self.backend.node_get(where={"doc_id": doc_id}, include=["documents"])
-        edges = self.backend.edge_get(where={"doc_id": doc_id}, include=["documents"])
-
-        node_items = []
-        for i, (nid, ndoc) in enumerate(zip(nodes.get("ids", []) or [], nodes.get("documents", []) or [])):
-            if i >= max_nodes:
-                break
-            n = Node.model_validate_json(ndoc)
-            node_items.append({"id": nid, "label": n.label, "type": n.type, "summary": n.summary})
-
-        edge_items = []
-        for i, (eid, edoc) in enumerate(zip(edges.get("ids", []) or [], edges.get("documents", []) or [])):
-            if i >= max_edges:
-                break
-            e = Edge.model_validate_json(edoc)
-            edge_items.append({"id": eid, "relation": e.relation, "source_ids": e.source_ids or [], "target_ids": e.target_ids or []})
-
-        return node_items, edge_items
+        return self.persist.select_doc_context(doc_id, max_nodes=max_nodes, max_edges=max_edges)
 
     def _preflight_validate(self, parsed: LLMGraphExtraction|PureGraph|GraphExtractionWithIDs, alias_key: str, alias_book: AliasBook | None = None):
         """Ensure every endpoint refers to a real id (in-batch or already in DB)."""
@@ -2842,19 +2659,10 @@ class GraphKnowledgeEngine:
     
     
     def _target_from_node(self, n: "Node") -> "AdjudicationTarget":
-        return AdjudicationTarget(
-            kind="node", id=n.id, label=n.label, type=n.type, summary=n.summary,
-            domain_id=n.domain_id, canonical_entity_id=n.canonical_entity_id, properties=n.properties
-        )
+        return self.adjudicate.target_from_node(n)
 
     def _target_from_edge(self, e: "Edge") -> "AdjudicationTarget":
-        return AdjudicationTarget(
-            kind="edge", id=e.id, label=e.label, type=e.type, summary=e.summary,
-            relation=e.relation,
-            source_ids=e.source_ids or [], target_ids=e.target_ids or [],
-            source_edge_ids=e.source_edge_ids or [], target_edge_ids=e.target_edge_ids or [],
-            domain_id=e.domain_id, canonical_entity_id=e.canonical_entity_id, properties=e.properties
-        )
+        return self.adjudicate.target_from_edge(e)
     
     def check_document_exist(self, document_id : str | list[str]):
         doc_ids = [document_id] if type(document_id) is str else document_id
@@ -2981,153 +2789,13 @@ class GraphKnowledgeEngine:
 
     @engine_context
     def add_node(self, node: Node, doc_id: Optional[str] = None):
-        if doc_id is not None:
-            node.doc_id = doc_id  # may use engine.extract_reference_contexts
-        if self.kg_graph_type == "conversation":
-            from ..conversation.models import (ConversationEdge, 
-                                   ConversationNode)
-            node_conv: ConversationNode = cast(ConversationNode, node)
-            try:
-                conv_id = node_conv.conversation_id
-            except Exception as _e:
-                conv_id = node_conv.metadata["conversation_id"]
-            
-            if conv_id is None:
-                raise Exception('conv id required')
-            self._get_last_seq_node(conv_id)
-            seq = self.meta_sqlite.next_user_seq(conv_id)
-            node.metadata['seq'] = seq
-        doc, meta = _node_doc_and_meta(node)
-        if node.embedding is None:
-            node.embedding = self._iterative_defensive_emb(doc)
-        meta['_class_name'] = type(node).__name__
-        
-        # lock, col = self.get_collection_lock('node')
-        # with lock:
-        
-        self.backend.node_add(
-            ids=[node.safe_get_id()],
-            documents=[doc],
-            embeddings=[node.embedding] if node.embedding is not None else [self._iterative_defensive_emb(str(doc))],
-            metadatas=[meta],
-        )
-
-
-        # Phase 2b: append immutable event log (best-effort)
-        try:
-            # node.mentions[0].spans[0].model_dump(field_mode='backend')
-            payload = node.model_dump(field_mode='backend', exclude = ['embedding'])
-            self._append_event_for_entity(
-                namespace=getattr(self, "namespace", "default"),
-                entity_kind="node",
-                entity_id=node.safe_get_id(),
-                op="ADD",
-                payload=payload if isinstance(payload, dict) else {},
-            )
-        except Exception:
-            pass
-
-        # Phase 1: enqueue derived index work; fast path drains immediately.
-        if self._phase1_enable_index_jobs:
-            self.enqueue_index_jobs_for_node(node.safe_get_id(), op="UPSERT")
-            self.reconcile_indexes(max_jobs=50)
-        else:
-            # legacy direct indexing
-            self._index_node_docs(node)
-            self._maybe_reindex_node_refs(node)
-        self._emit_change(
-            op="node.upsert",
-            entity=EntityRefModel(kind="node", id=node.safe_get_id(), 
-                    kg_graph_type=self.kg_graph_type,
-                    url=self.persist_directory),
-            payload=node.to_jsonable() if hasattr(node, "to_jsonable") else node.model_dump(exclude=["embedding"]),
-        )
+        return self.write._add_node_impl(node, doc_id=doc_id)
     def _entity_is_conversation(self, node: Node | Edge):
         from ..conversation.models import (ConversationEdge, 
                                    ConversationNode)
         return type(node) in [ConversationEdge, ConversationNode]
     def _fanout_endpoints_rows(self, edge: Edge, doc_id: str | None):
-        """Convert a multi endpoint to multiple rows
-        
-        Self-edge to endpoint node one
-        
-        Self-edge to endpoint node two
-        
-        Self-edge to endpoint node other edge one etc.
-        
-        """
-        def _maybe_doc_for_edge(eid: str) -> str | None:
-            if doc_id is not None:
-                return doc_id
-            meta = self.backend.edge_get(ids=[eid], include=["metadatas"])
-            metadata= meta.get("metadatas")
-            if metadata and metadata[0]:
-                if type(metadata[0].get("doc_id")) is str:
-                    return str(metadata[0].get("doc_id"))
-                else:
-                    if self._entity_is_conversation(edge):
-                        pass
-                    else:
-                        raise Exception("doc_id is not string")
-                    # now have to allow conversation to have no prove
-                    
-            return None
-
-        rows = []
-
-        def _per_node_doc(nid: str) -> str | None:
-            if doc_id is not None:
-                return doc_id
-            meta = self.backend.node_get(ids=[nid], include=["metadatas"])
-            metadata= meta.get("metadatas")
-            if metadata and metadata[0]:
-                if type(metadata[0].get("doc_id")) is str:
-                    return str(metadata[0].get("doc_id"))
-                else:
-                    if self._entity_is_conversation(edge):
-                        pass
-                    else:
-                        raise Exception("doc_id is not string")
-                    # now have to allow conversation to have no prove
-            return None
-
-        rows = []
-        # node endpoints
-        for role, node_ids in (("src", edge.source_ids or []), ("tgt", edge.target_ids or [])):
-            for nid in node_ids:
-                r = {
-                    "id": f"{edge.id}::{role}::node::{nid}",
-                    "edge_id": edge.id,
-                    "endpoint_id": nid,
-                    "endpoint_type": "node",
-                    "role": role,
-                    "causal_type": edge.metadata and edge.metadata.get('causal_type'),
-                    "relation": edge.relation,
-                }
-                did = _per_node_doc(nid)
-                if did is not None:
-                    r["doc_id"] = did
-                rows.append({k: v for k, v in r.items() if v is not None})
-        # edge endpoints (meta)
-        for role, eids in (("src", getattr(edge, "source_edge_ids", []) or []),
-                        ("tgt", getattr(edge, "target_edge_ids", []) or [])):
-            for mid in eids:
-                r = {
-                    "id": f"{edge.id}::{role}::edge::{mid}",
-                    "edge_id": edge.id,
-                    "endpoint_id": mid,
-                    "endpoint_type": "edge",
-                    "role": role,
-                    "causal_type": edge.metadata and edge.metadata.get('causal_type'),
-                    "relation": edge.relation,
-                }
-                did = _maybe_doc_for_edge(mid)
-                if did is not None:
-                    r["doc_id"] = did
-                rows.append({k: v for k, v in r.items() if v is not None})
-
-        # strip Nones just in case
-        return [{k: v for k, v in r.items() if v is not None} for r in rows]
+        return self.write.fanout_endpoints_rows(edge, doc_id)
 
     # -----------------------------
     # Phase 1: Conversation invariants (endpoint-indexed)
@@ -3269,149 +2937,16 @@ class GraphKnowledgeEngine:
         return base_metadata
     @engine_context
     def add_edge(self, edge: Edge, doc_id: Optional[str] = None):
-
-        # may use engine.extract_reference_contexts
-        if doc_id is not None:
-            edge.doc_id = doc_id
-        s_nodes, s_edges, t_nodes, t_edges = self._split_endpoints(edge.source_ids, edge.target_ids)
-        edge.source_ids = s_nodes
-        edge.source_edge_ids = getattr(edge, "source_edge_ids", []) or [] + s_edges
-        edge.target_ids = t_nodes
-        edge.target_edge_ids = getattr(edge, "target_edge_ids", []) or [] + t_edges
-        # single-call safety for ad-hoc usage
-        self._assert_endpoints_exist(edge)
-        # Phase 1: conversation invariants + idempotent next_turn
-        from ..conversation.models import (ConversationEdge, 
-                                   ConversationNode)
-        if isinstance(edge, ConversationEdge):
-            # Idempotent duplicate next_turn should be a NOOP.
-            if self._is_duplicate_next_turn_noop(edge):
-                return
-            self._validate_conversation_edge_add(edge)
-
-        # receptive range counts
-        
-        doc = edge.model_dump_json(field_mode='backend', exclude = ['embedding'])
-        if edge.embedding is None:
-            edge.embedding = self._iterative_defensive_emb(str(doc))
-        # main edge row
-        # from chromadb.base_types import Metadata
-        doc = edge.model_dump_json(field_mode='backend', exclude = ['embedding'])
-        base_metadata = [self.enrich_edge_meta(edge)]
-        self.backend.edge_add(
-            ids=[edge.safe_get_id()],
-            documents=[str(doc)],
-            embeddings=[edge.embedding] if edge.embedding is not None else [self._iterative_defensive_emb(str(doc))],
-            metadatas=base_metadata,
-        )
-
-
-        # Phase 2b: append immutable event log (best-effort)
-        try:
-            payload = edge.model_dump(field_mode='backend', exclude = ['embedding'])
-            self._append_event_for_entity(
-                namespace=getattr(self, "namespace", "default"),
-                entity_kind="edge",
-                entity_id=edge.safe_get_id(),
-                op="ADD",
-                payload=payload if isinstance(payload, dict) else {},
-            )
-        except Exception:
-            pass
-
-        # Phase 1: enqueue derived index work; fast path drains immediately.
-        if self._phase1_enable_index_jobs:
-            self.enqueue_index_jobs_for_edge(edge.safe_get_id(), op="UPSERT")
-            _applied = self.reconcile_indexes(max_jobs=50)
-        else:
-            self._maybe_reindex_edge_refs(edge)
-            # endpoints fan-out
-            rows = self._fanout_endpoints_rows(edge, doc_id)
-            if rows:
-                ep_ids   = [r["id"] for r in rows]
-                ep_docs  = [json.dumps(r) for r in rows]
-                ep_metas: list[dict] = rows  # already sanitized (no None)
-                self.backend.edge_endpoints_add(
-                    ids=ep_ids,
-                    documents=ep_docs,
-                    metadatas=ep_metas,
-                    embeddings=[self._iterative_defensive_emb(str(d)) for d in ep_docs]
-                )
-        
-        self._emit_change(
-            op="edge.upsert",
-            entity=EntityRefModel(kind="edge", id=edge.safe_get_id(), 
-                    kg_graph_type=self.kg_graph_type,
-                    url=self.persist_directory),
-            payload=edge.to_jsonable() if hasattr(edge, "to_jsonable") else edge.model_dump(exclude=["embedding"]),
-        )
+        return self.write._add_edge_impl(edge, doc_id=doc_id)
     @engine_context
     def add_document(self, document: Document):
-        if document.embeddings is None:
-            document.embeddings = self._iterative_defensive_emb(str(document.content))
-        self.backend.document_add(
-            ids=[document.id],
-            documents=[str(document.content)],
-            embeddings = [cast(Sequence[float], document.embeddings)] if document.embeddings is not None else [self._iterative_defensive_emb(str(document.content))],
-            metadatas=[_strip_none({
-                "doc_id": document.id,  # <— critical
-                "type": document.type,
-                "metadata": _json_or_none(document.metadata),
-                "domain_id": document.domain_id,
-                "processed": document.processed,
-            })],
-        )
-        
-        self._emit_change(
-            op="doc.upsert",
-            entity=EntityRefModel(kind="doc_node", id=document.id, 
-                    kg_graph_type=self.kg_graph_type,
-                    url=self.persist_directory),
-            payload=document.to_jsonable() if hasattr(document, "to_jsonable") else document.model_dump(exclude=['embeddings']),
-        )
+        return self.write.add_document(document)
 
     def add_domain(self, domain: Domain):
-        self.backend.domain_add(
-            ids=[domain.id],
-            documents=[domain.model_dump_json()],
-            metadatas=[
-                self.chroma_sanitize_metadata(
-                    {
-                        "name": domain.name,
-                        "description": domain.description,
-                    }
-                )
-            ],
-            embeddings=[self._iterative_defensive_emb(str(domain.model_dump_json()))]
-        )
+        return self.write.add_domain(domain)
+
     def _index_node_docs(self, node: Node) -> list[str]:
-        """Rebuild (node_id, doc_id) rows for this node and denormalize doc_ids on node metadata."""
-        doc_ids = _extract_doc_ids_from_refs(node.mentions)
-
-        # 1) Rebuild the (node_id, doc_id) index rows
-        self.backend.node_docs_delete(where={"node_id": node.id})
-        if doc_ids:
-            ids, docs, metas = [], [], []
-            for did in doc_ids:
-                rid = f"{node.id}::{did}"
-                row = {"id": rid, "node_id": node.id, "doc_id": did, "mention_count": 1}
-                ids.append(rid)
-                docs.append(json.dumps(row))
-                metas.append(row)
-            self.backend.node_docs_add(ids=ids, documents=docs, metadatas=metas, embeddings = [self._iterative_defensive_emb(d) for d in docs])
-
-        # 2) Denormalize onto node metadata (convenience only)
-        #    Fetch current to avoid writing the same value repeatedly.
-        current = self.backend.node_get(ids=[node.id], include=["metadatas"])
-        cur_meta = (current.get("metadatas") or [None])[0] or {}
-        new_doc_ids_json = json.dumps(doc_ids)
-        if cur_meta.get("doc_ids") != new_doc_ids_json:
-            self.backend.node_update(
-                ids=[node.id],
-                metadatas=[{"doc_ids": new_doc_ids_json}]
-            )
-
-        return doc_ids
+        return self.write.index_node_docs(node)
 
     def _nodes_by_doc(self, doc_id: str, insertion_method: Optional[str] = None) -> list[str]:
         return self.read.node_ids_by_doc(doc_id, insertion_method=insertion_method)
@@ -3551,32 +3086,9 @@ class GraphKnowledgeEngine:
     def vector_search_edges(self, embedding: List[float], top_k: int = 5):
         return self.backend.edge_query(query_embeddings=[embedding], n_results=top_k)
     def _choose_anchor(self, node_ids: list[str]) -> str:
-        """Pick a stable anchor for same_as rebalancing: prefer a node with a canonical id; else min UUID."""
-        if not node_ids:
-            raise ValueError("No nodes to anchor")
-        nodes = self.backend.node_get(ids=node_ids, include=["documents"])
-        for nid, ndoc in zip(nodes.get("ids") or [], nodes.get("documents") or []):
-            n = Node.model_validate_json(ndoc)
-            if n.canonical_entity_id:
-                return nid
-        return min(node_ids)  # stable fallback
+        return self.adjudicate.choose_anchor(node_ids)
     def _rebalance_same_as_edge(self, e: Edge, removed_node_id: str) -> tuple[bool, Edge | None]:
-        """
-        Remove removed_node_id from a same_as edge. If >=2 nodes remain, normalize to star form.
-        Returns (deleted, updated_edge_or_None).
-        """
-        S = [x for x in (e.source_ids or []) + (e.target_ids or []) if x != removed_node_id]
-        # dedupe while preserving order
-        S = list(dict.fromkeys(S))
-        if len(S) < 2:
-            return True, None  # nothing meaningful left
-        anchor = self._choose_anchor(S)
-        rest = [x for x in S if x != anchor]
-        e.source_ids = [anchor]
-        e.target_ids = rest
-        if not e.summary:
-            e.summary = "Normalized same_as"
-        return False, e
+        return self.adjudicate.rebalance_same_as_edge(e, removed_node_id)
 
     def persist_graph(self,
         *,
@@ -4148,54 +3660,17 @@ class GraphKnowledgeEngine:
                                  extraction_schema_mode: ExtractionSchemaMode | None = None,
                                  offset_mismatch_policy: OffsetMismatchPolicy = "exact_fuzzy",
                                  offset_repair_scorer: OffsetRepairScorer | None = None):
-        """Convenience: extract + persist. Still returns concrete ids written."""
-        if raw_with_parsed is None:
-            raw_with_parsed = {}
-        # add doc row now so fallback refs have URLs
-        self.add_document(document)
-
-        # build context & aliases as you already do, then:
-        extracted = self.extract_graph_with_llm(content=str(document.content),
-                                doc_type=document.type,
-                                instruction_for_node_edge_contents_parsing_inclusion=instruction_for_node_edge_contents_parsing_inclusion,
-                                last_iteration_result=raw_with_parsed,
-                                extraction_schema_mode=extraction_schema_mode,
-                                offset_mismatch_policy=offset_mismatch_policy,
-                                offset_repair_scorer=offset_repair_scorer)
-        parsed = extracted["parsed"]
-
-        # de-alias against this doc scope & validate
-        self._preflight_validate(parsed, document.id)
-
-        return self.persist_graph_extraction(
-            document=document,
-            parsed=parsed,
+        return self.ingest.ingest_document_with_llm(
+            document,
             mode=mode,
+            instruction_for_node_edge_contents_parsing_inclusion=instruction_for_node_edge_contents_parsing_inclusion,
+            raw_with_parsed=raw_with_parsed,
+            extraction_schema_mode=extraction_schema_mode,
+            offset_mismatch_policy=offset_mismatch_policy,
+            offset_repair_scorer=offset_repair_scorer,
         )
     def _extract_graph_with_llm(self, content: str, doc: Document) -> Tuple[Any, Optional[LLMGraphExtraction], Optional[str]]:
-        """Call LLM for structured extractio without alias. Returns (raw, parsed, parsing_error)."""
-
-        prompt = ChatPromptTemplate.from_messages([
-            ("system",
-            "You are an expert knowledge graph extractor. "
-            "Given a document, extract entities and relationships as nodes and edges in a hypergraph.\n"
-            "For each node/edge include: label, type ('entity' or 'relationship'), and a concise 'summary'.\n"
-            "Each node/edge MUST include at least one ReferenceSession with start_page, end_page, start_char, end_char."
-            "IMPORTANT:\n"
-            "- Do NOT invent real UUIDs or external URLs.\n"
-            "Each node/edge MUST include at least one ReferenceSession with spans."),
-            ("human",
-            "Document:\n{document}\n\n"
-            "Document ID {document_id}\n\n"
-            "Return only the structured JSON for the schema.")
-        ])
-        chain = prompt | self.llm.with_structured_output(LLMGraphExtraction, include_raw=True)
-        result = chain.invoke({"doc_alias_note": self._alias_doc_in_prompt(), "document": content, "document_id": str(doc.id)})
-        # result is a dict when include_raw=True
-        raw = result.get("raw") if isinstance(result, dict) else None
-        parsed: LLMGraphExtraction = result.get("parsed") if isinstance(result, dict) else result # type: ignore
-        err = result.get("parsing_error") if isinstance(result, dict) else None
-        return raw, parsed, err
+        return self.ingest.extract_graph_with_llm_internal(content, doc)
 
     def _ingest_text_with_llm(
         self,
@@ -4207,276 +3682,29 @@ class GraphKnowledgeEngine:
         offset_mismatch_policy: OffsetMismatchPolicy = "exact_fuzzy",
         offset_repair_scorer: OffsetRepairScorer | None = None,
     ):
-        """_summary_
-
-        Args:
-            doc_id (str): document id
-            content (str): doc content
-            auto_adjudicate (bool, optional): _description_. Defaults to False. Experimental 
-
-        Raises:
-            ValueError: LLM parsing error
-
-        Returns:
-            _type_: _description_
-        """
-        # context
-        ctx_nodes, ctx_edges = self._select_doc_context(doc_id)
-        aliased_nodes, aliased_edges, alias_nodes_str, alias_edges_str = self._aliasify_for_prompt(doc_id, ctx_nodes, ctx_edges)
-
-        # extract
-        raw, parsed, error = self._extract_graph_with_llm_aliases(
-            content,
-            alias_nodes_str,
-            alias_edges_str,
+        return self.ingest.ingest_text_with_llm(
+            doc_id=doc_id,
+            content=content,
+            auto_adjudicate=auto_adjudicate,
             extraction_schema_mode=extraction_schema_mode,
             offset_mismatch_policy=offset_mismatch_policy,
             offset_repair_scorer=offset_repair_scorer,
         )
-        if error:
-            raise ValueError(f"LLM parsing error: {error}")
-        if not isinstance(parsed, LLMGraphExtraction):
-            parsed = LLMGraphExtraction.model_validate(parsed)
-
-        # de-alias
-        parsed = self._de_alias_ids_in_result(doc_id, parsed)
-        self._preflight_validate(parsed, doc_id)
-        
-        res = self.ingest_with_toposort( parsed, doc_id=doc_id)
-        res['raw'] = raw
-
-        # optional within-doc with experimental adjudication
-        if auto_adjudicate:
-            # naive label+type buckets; you can plug your candidate generator here
-            data = self.backend.node_get(where={"doc_id": doc_id}, include=["documents"])
-            buckets = {}
-            for ndoc in (data.get("documents") or []):
-                n = Node.model_validate_json(ndoc)
-                buckets.setdefault((n.type, n.label.strip().lower()), []).append(n)
-            pairs = []
-            for _, bucket in buckets.items():
-                if len(bucket) > 1:
-                    for i in range(len(bucket)):
-                        for j in range(i+1, len(bucket)):
-                            pairs.append((bucket[i], bucket[j]))
-            if pairs:
-                verdicts, _ = self.batch_adjudicate_merges(pairs) # type: ignore verdict never falsy if pairs is truey
-                verdicts: list[AdjudicationVerdict]
-                for (left, right), out in zip(pairs, verdicts):
-                    verdict: AdjudicationVerdict = getattr(out, "verdict", out)
-                    if verdict.same_entity:
-                        self.commit_merge(left, right, verdict)
-
-        return res
 
 
     def prune_node_from_edges(self, node_id: str):
-        """
-        Remove a node from all edges that reference it.
-        - For normal edges: delete if one side becomes empty; else update endpoints.
-        - For same_as hyperedges: if >=2 nodes remain, rebalance into star; else delete.
-        Returns sets of edge IDs: {'deleted_edges': set, 'updated_edges': set}
-        """
-        eps = self.backend.edge_endpoints_get(
-            where={"$and": [{"endpoint_id": node_id}, {"endpoint_type" : "node"}]}, include=["documents"]
-            )
-        if not eps["ids"]:
-            return {"deleted_edges": set(), "updated_edges": set()}
-        if eps_doc:= eps["documents"]:
-            pass
-        else:
-            raise Exception("Document loss")
-        edge_ids = list({json.loads(doc)["edge_id"] for doc in eps_doc})
-        edges = self.backend.edge_get(ids=edge_ids, include=[ "documents", "metadatas"])
-
-        removed_edge_ids: set[str] = set()
-        updated_edge_ids: set[str] = set()
-
-        for eid, edoc, meta in zip(edges.get("ids") or [], edges.get("documents") or [], edges.get("metadatas") or []):
-            e = Edge.model_validate_json(edoc)
-            relation = (meta or {}).get("relation") or e.relation  # be resilient to missing meta
-
-            if relation == "same_as":
-                # Special rebalancing for equality hyperedges
-                new_edge: Edge | None
-                edge_deleted, new_edge = self._rebalance_same_as_edge(e, removed_node_id=node_id)
-                if edge_deleted or (new_edge is None):
-                    self.backend.edge_delete(ids=[eid])
-                    self.backend.edge_endpoints_delete(where={"edge_id": eid})
-                    removed_edge_ids.add(eid)
-                else:
-                    # Update the edge
-                     # help pylance
-                    self.backend.edge_update(
-                        ids=[eid],
-                        documents=[new_edge.model_dump_json(field_mode='backend')],
-                        metadatas=[_strip_none({
-                            "doc_id": (meta or {}).get("doc_id"),
-                            "relation": new_edge.relation,
-                            "source_ids": _json_or_none(new_edge.source_ids),
-                            "target_ids": _json_or_none(new_edge.target_ids),
-                            "type": new_edge.type,
-                            "summary": new_edge.summary,
-                            "domain_id": new_edge.domain_id,
-                            "canonical_entity_id": new_edge.canonical_entity_id,
-                            "properties": _json_or_none(new_edge.properties),
-                            "references": _json_or_none([ref.model_dump(field_mode = 'backend') for ref in (new_edge.mentions or [])]),
-                        })],
-                    )
-                    self._index_edge_refs(new_edge)
-                    # Rebuild endpoints from scratch to match new star form
-                    self.backend.edge_endpoints_delete(where={"edge_id": eid})
-                    ep_ids, ep_docs, ep_metas = [], [], []
-                    for role, node_ids in (("src", new_edge.source_ids or []), ("tgt", new_edge.target_ids or [])):
-                        for nid in node_ids:
-                            ep_id = f"{eid}::{role}::{nid}"
-                            # derive per-endpoint doc_id from node JSON if available
-                            node_doc = self.backend.node_get(ids=[nid], include=["documents"])
-                            if node_doc is None:
-                                raise Exception(f"node_doc for {nid} is lost")
-                            per_doc_id = None
-                            if node_doc_doc:= node_doc.get("documents"):
-                                try:
-                                    n = Node.model_validate_json(node_doc_doc[0])
-                                    per_doc_id = getattr(n, "doc_id", None)
-                                except Exception:
-                                    per_doc_id = None
-                            meta_ep = _strip_none({
-                                "id": ep_id,
-                                "edge_id": eid,
-                                "node_id": nid,
-                                "role": role,
-                                "relation": new_edge.relation,
-                                "doc_id": per_doc_id,
-                            })
-                            ep_ids.append(ep_id)
-                            ep_docs.append(json.dumps(meta_ep))
-                            ep_metas.append(meta_ep)
-                    if ep_ids:
-                        self.backend.edge_endpoints_add(ids=ep_ids, documents=ep_docs, metadatas=ep_metas, 
-                                                           embeddings=[self._iterative_defensive_emb(d) for d in ep_docs])
-                    updated_edge_ids.add(eid)
-                continue
-
-            # ---- Normal (non-same_as) edges ----
-            new_src = [x for x in (e.source_ids or []) if x != node_id]
-            new_tgt = [x for x in (e.target_ids or []) if x != node_id]
-
-            if not new_src or not new_tgt:
-                # delete the whole edge + its endpoint rows
-                self.backend.edge_delete(ids=[eid])
-                self.backend.edge_endpoints_delete(where={"edge_id": eid})
-                removed_edge_ids.add(eid)
-            else:
-                e.source_ids, e.target_ids = new_src, new_tgt
-                self.backend.edge_update(
-                    ids=[eid],
-                    documents=[e.model_dump_json(field_mode='backend')],
-                    metadatas=[_strip_none({
-                        "doc_id": (meta or {}).get("doc_id"),
-                        "relation": e.relation,
-                        "source_ids": _json_or_none(e.source_ids),
-                        "target_ids": _json_or_none(e.target_ids),
-                        "type": e.type,
-                        "summary": e.summary,
-                        "domain_id": e.domain_id,
-                        "canonical_entity_id": e.canonical_entity_id,
-                        "properties": _json_or_none(e.properties),
-                        "references": _json_or_none([ref.model_dump(field_mode = 'backend') for ref in (e.mentions or [])]),
-                    })],
-                )
-                # remove only the touched endpoint rows
-                self.backend.edge_endpoints_delete(where={"$and": [{"edge_id": eid}, {"node_id": node_id}]})
-                updated_edge_ids.add(eid)
-                self._index_edge_refs(e)
-
-        return {
-            "deleted_edges": removed_edge_ids,
-            "updated_edges": updated_edge_ids - removed_edge_ids,  # in case something was updated then later deleted
-        }
+        return self.rollback.prune_node_from_edges(node_id)
 
     def rollback_document(self, document_id: str):
-        # 1) nodes by flat doc_id
-
-        node_ids = self._nodes_by_doc(document_id)
-
-        # 2) prune each node from edges
-        deleted_edges = set()
-        updated_edges = set()
-        deleted_edges_cnt = updated_edges_cnt = 0
-        for nid in node_ids:
-            res = self.prune_node_from_edges(nid)
-            deleted_edges_cnt += len(res["deleted_edges"])
-            updated_edges_cnt += len(res["updated_edges"])
-            deleted_edges.update(res["deleted_edges"])
-            updated_edges.update(res["updated_edges"])
-        
-        # 3) delete edges explicitly created by this document via endpoints table
-        eps = self.backend.edge_endpoints_get(where={"doc_id": document_id})
-        eps_doc = eps.get("documents", [])
-        if eps_doc is None:
-            raise Exception(f"edge endpoint collection lost for document id {document_id}")
-        edge_ids = list({json.loads(doc)["edge_id"] for doc in eps_doc})
-        if edge_ids:
-            self.backend.edge_delete(ids=edge_ids)
-            self.backend.edge_endpoints_delete(where={"doc_id": document_id})
-            self.backend.edge_refs_delete(where={"node_id": {"$in": edge_ids}})
-            deleted_edges.update(edge_ids)
-        updated_edges = updated_edges - deleted_edges
-        # 4) delete nodes and the document
-        deleted_node_ids = []
-        for nid in node_ids:
-            # remove only refs for this doc
-            self._prune_node_refs_for_doc(nid, document_id)
-            # if node has no refs left, delete it
-            got = self.backend.node_get(ids=[nid], include=["documents"])
-            if docs := got.get("documents"):
-                if docs[0]:
-                # n = Node.model_validate_json(got["documents"][0])
-                    if not json.loads(docs[0]).get('references') : # none or empty list
-                        self.backend.node_delete(ids=[nid])
-                        deleted_node_ids.append(nid)
-                    self.backend.node_refs_delete(where=cast(dict[str, Any], {"node_id": {"$in": node_ids}}))
-        doc_ids = set(self.backend.document_get(where={"doc_id": document_id})['ids'])
-        self.backend.document_delete(where={"doc_id": document_id})
-        doc_ids_after = set(self.backend.document_get(where={"doc_id": document_id})['ids'])
-        return {
-            "roll"
-            "rolled_back_doc_id": doc_ids - doc_ids_after,
-            "updated_edge_ids": list(updated_edges),
-            "deleted_edge_ids": list(deleted_edges),
-            "deleted_docs": len(doc_ids - doc_ids_after),
-            "deleted_node_ids": deleted_node_ids,
-            "deleted_nodes": len(node_ids),
-            "deleted_edges": len(deleted_edges),
-            "updated_edges": len(updated_edges),
-        }
+        return self.rollback.rollback_document(document_id)
 
     def rollback_many_documents(self, document_ids: list[str]):
-        totals = {"deleted_nodes": 0, "deleted_edges": 0, "updated_edges": 0, "deleted_docs": 0}
-        for did in document_ids:
-            res = self.rollback_document(did)
-            totals["deleted_docs"] += 1
-            totals["deleted_nodes"] += len(res["deleted_node_ids"])
-            totals["deleted_edges"] += len(res["deleted_edge_ids"])
-            totals["updated_edges"] += res["updated_edges"]
-        return totals
+        return self.rollback.rollback_many_documents(document_ids)
     # ----------------------------
     # Adjudication (LLM-assisted merge decision)
     # ----------------------------
     def _fetch_target(self, t: AdjudicationTarget) -> Node | Edge:
-        if t.kind == "node":
-            got = self.backend.node_get(ids=[t.id], include=["documents"])
-            if docs := got.get("documents"): 
-                return Node.model_validate_json(docs[0])
-            else:
-                raise ValueError(f"Node {t.id} not found")
-        else: # edge
-            got = self.backend.edge_get(ids=[t.id], include=["documents"])
-            if docs:=got.get("documents"): 
-                return Edge.model_validate_json(docs[0])
-            else:
-                raise ValueError(f"Edge {t.id} not found")
+        return self.adjudicate.fetch_target(t)
             
 
     def commit_merge_target(self, left: AdjudicationTarget, right: AdjudicationTarget, verdict: AdjudicationVerdict) -> str:
@@ -4531,21 +3759,9 @@ class GraphKnowledgeEngine:
                 embeddings=[self._iterative_defensive_emb(d) for d in ep_docs]
             )
     def _classify_endpoint_id(self, rid: str) -> str:
-        """Return 'node' or 'edge' by checking collections; raise if not found."""
-        hit = self.backend.node_get(ids=[rid])
-        if (hit.get("ids") or [None])[0] == rid:
-            return "node"
-        hit = self.backend.edge_get(ids=[rid])
-        if (hit.get("ids") or [None])[0] == rid:
-            return "edge"
-        raise ValueError(f"Unknown endpoint id {rid!r} (not a node or edge)")
+        return self.adjudicate.classify_endpoint_id(rid)
     def _split_endpoints(self, src_ids: list[str] | None, tgt_ids: list[str] | None)-> tuple[list[Any], list[Any], list[Any], list[Any]]:# -> tuple[list[Any], list[Any], list[Any], list[Any]]:
-        s_nodes, s_edges, t_nodes, t_edges = [], [], [], []
-        for rid in (src_ids or []):
-            (s_nodes if self._classify_endpoint_id(rid) == "node" else s_edges).append(rid)
-        for rid in (tgt_ids or []):
-            (t_nodes if self._classify_endpoint_id(rid) == "node" else t_edges).append(rid)
-        return s_nodes, s_edges, t_nodes, t_edges
+        return self.adjudicate.split_endpoints(src_ids, tgt_ids)
     def commit_merge(self, left: Node, right: Node, verdict: AdjudicationVerdict, method : str) -> str:
         canonical_id = self.merge_policy.commit_merge(left, right, verdict, method)
         return canonical_id
@@ -4664,44 +3880,15 @@ class GraphKnowledgeEngine:
         offset_mismatch_policy: OffsetMismatchPolicy = "exact_fuzzy",
         offset_repair_scorer: OffsetRepairScorer | None = None,
     ):
-        """
-        An experimental API use for single document id and incremental ingest and join graph (adjudicate) page by page
-        
-        Ingest a single page of an existing document.
-        - Reuses doc-scoped context with aliases (cheap tokens)
-        - Stores nodes/edges tagged with doc_id
-        - Auto-adjudicates within the document by default
-        """
-    
-        pages = _coerce_pages(
-            {"pages": [{"page_number": page_number, "text": page_text}]}
-            if isinstance(page_text, str)
-            else page_text  # already a list/dict form
+        return self.ingest.add_page(
+            document_id=document_id,
+            page_text=page_text,
+            page_number=page_number,
+            auto_adjudicate=auto_adjudicate,
+            extraction_schema_mode=extraction_schema_mode,
+            offset_mismatch_policy=offset_mismatch_policy,
+            offset_repair_scorer=offset_repair_scorer,
         )
-        if not pages:
-            return {"document_id": document_id, "nodes_added": 0, "edges_added": 0}
-
-        total_nodes = total_edges = 0
-        raw_by_page = []
-        for pg in pages:
-            res = self._ingest_text_with_llm(
-                doc_id=document_id,
-                content=pg["text"],
-                auto_adjudicate=auto_adjudicate,
-                extraction_schema_mode=extraction_schema_mode,
-                offset_mismatch_policy=offset_mismatch_policy,
-                offset_repair_scorer=offset_repair_scorer,
-            )
-            total_nodes += res["nodes_added"]
-            total_edges += res["edges_added"]
-            raw_by_page.append({"page": pg["page_number"], "raw": res.get("raw")})
-
-        return {
-            "document_id": document_id,
-            "nodes_added": total_nodes,
-            "edges_added": total_edges,
-            "raw_by_page": raw_by_page,
-        }
     
     def verify_mentions_for_doc(
         self,
@@ -4869,10 +4056,10 @@ class GraphKnowledgeEngine:
 
     @conversation_only
     def max_node_seq_present(self, conversation_id):
-        return self._get_conversation_service().max_node_seq_present(conversation_id)
+        return self.conversation.max_node_seq_present(conversation_id)
     @conversation_only
     def get_last_seq_node(self, conversation_id, buffer = 5):
-        return self._get_conversation_service().get_last_seq_node(conversation_id, buffer=buffer)    
+        return self.conversation.get_last_seq_node(conversation_id, buffer=buffer)
     @conversation_only
     def _normalize_conversation_edge_metadata(self, edge: ConversationEdge) -> None:
         from ..conversation.models import (ConversationEdge, 
@@ -4889,12 +4076,7 @@ class GraphKnowledgeEngine:
 
     @conversation_only
     def create_conversation(self, user_id, conv_id = None, node_id: str | None | uuid.UUID = None) -> tuple[str, str]:
-        """Compatibility shim: route conversation creation through service façade."""
-        out = self._get_conversation_service().create_conversation(user_id, conv_id, node_id)
-        if not isinstance(out, tuple) or len(out) != 2:
-            raise TypeError("ConversationService.create_conversation must return (conversation_id, node_id)")
-        conv_out, node_out = out
-        return str(conv_out), str(node_out)
+        return self.conversation.create_conversation(user_id, conv_id, node_id)
     
     @conversation_only
     def _get_last_seq_node(self, conversation_id, min_seq = None):
@@ -4919,36 +4101,61 @@ class GraphKnowledgeEngine:
                             max_retrieval_level: int = 2, summary_char_threshold = 12000,
                             prev_turn_meta_summary : MetaFromLastSummary | None = None, 
                             add_turn_only = None) -> AddTurnResult:
-        """Stable facade: delegate to the KGE-native conversation orchestrator.
-
-        The orchestration policy (retrieve/filter/pin/answer/summarize) lives outside engine.py.
-        The engine keeps storage/mutation primitives and a stable public API.
-        """
-        svc = self._get_conversation_service(knowledge_engine=ref_knowledge_engine)
-        return svc.add_conversation_turn(
+        return self.conversation.add_conversation_turn(
             user_id=user_id,
             conversation_id=conversation_id,
-            ref_knowledge_engine=svc.knowledge_engine,
             turn_id=turn_id,
             mem_id=mem_id,
             role=role,
             content=content,
+            ref_knowledge_engine=ref_knowledge_engine,
             filtering_callback=filtering_callback,
             max_retrieval_level=max_retrieval_level,
             summary_char_threshold=summary_char_threshold,
             prev_turn_meta_summary=prev_turn_meta_summary,
             add_turn_only = add_turn_only
         )
+    @conversation_only
+    def respond_to_utterance(
+        self,
+        *,
+        user_id: str,
+        conversation_id: str,
+        content: str,
+        ref_knowledge_engine: GraphKnowledgeEngine,
+        role: str = "user",
+        turn_id: str | None = None,
+        mem_id: str | None = None,
+        filtering_callback: Callable[..., tuple[FilteringResult | RetrievalResult, str]] | None = None,
+        max_retrieval_level: int = 2,
+        summary_char_threshold: int = 12000,
+        prev_turn_meta_summary: MetaFromLastSummary | None = None,
+        add_turn_only = None,
+    ) -> AddTurnResult:
+        return self.conversation.respond_to_utterance(
+            user_id=user_id,
+            conversation_id=conversation_id,
+            content=content,
+            ref_knowledge_engine=ref_knowledge_engine,
+            role=role,
+            turn_id=turn_id,
+            mem_id=mem_id,
+            filtering_callback=filtering_callback,
+            max_retrieval_level=max_retrieval_level,
+            summary_char_threshold=summary_char_threshold,
+            prev_turn_meta_summary=prev_turn_meta_summary,
+            add_turn_only=add_turn_only,
+        )
     
     @conversation_only    
     def get_conversation(self, conversation_id):
-        return self._get_conversation_service().get_conversation(conversation_id)
+        return self.conversation.get_conversation(conversation_id)
     @conversation_only
     def get_system_prompt(self, conversation_id: str) -> str:
-        return self._get_conversation_service().get_system_prompt(conversation_id)
+        return self.conversation.get_system_prompt(conversation_id)
     @conversation_only    
     def get_response_model(self, conversation_id) -> Type[BaseModel]:
-        return self._get_conversation_service().get_response_model(conversation_id)
+        return self.conversation.get_response_model(conversation_id)
     
 
     @conversation_only
@@ -4965,7 +4172,7 @@ class GraphKnowledgeEngine:
         include_pinned_kg_refs: bool = True,
         ordering_strategy: str | None = None,
     ):
-        return self._get_conversation_service().get_conversation_view(
+        return self.conversation.get_conversation_view(
             conversation_id=conversation_id,
             user_id=user_id,
             purpose=purpose,
@@ -4983,7 +4190,7 @@ class GraphKnowledgeEngine:
     
     @conversation_only
     def make_conversation_span(self, conversation_id):
-        return self._get_conversation_service().make_conversation_span(conversation_id)
+        return self.conversation.make_conversation_span(conversation_id)
         
     @conversation_only
     def persist_context_snapshot(
@@ -5002,7 +4209,7 @@ class GraphKnowledgeEngine:
         llm_input_payload: dict[str, Any] | None = None,
         evidence_pack_digest: dict[str, Any] | None = None,
     ) -> str:
-        return self._get_conversation_service().persist_context_snapshot(
+        return self.conversation.persist_context_snapshot(
             conversation_id=conversation_id,
             run_id=run_id,
             run_step_seq=run_step_seq,
@@ -5025,7 +4232,7 @@ class GraphKnowledgeEngine:
         run_id: str | None = None,
         stage: str | None = None,
     ) -> ConversationNode | None:
-        return self._get_conversation_service().latest_context_snapshot_node(
+        return self.conversation.latest_context_snapshot_node(
             conversation_id=conversation_id,
             run_id=run_id,
             stage=stage,
@@ -5037,7 +4244,7 @@ class GraphKnowledgeEngine:
         *,
         snapshot_node_id: str,
     ) -> dict[str, Any]:
-        return self._get_conversation_service().get_context_snapshot_payload(snapshot_node_id=snapshot_node_id)
+        return self.conversation.get_context_snapshot_payload(snapshot_node_id=snapshot_node_id)
     @conversation_only
     def latest_context_snapshot_cost(
         self,
@@ -5045,14 +4252,13 @@ class GraphKnowledgeEngine:
         conversation_id: str,
         stage: str | None = None,
     ) -> ContextCost | None:
-        return self._get_conversation_service().latest_context_snapshot_cost(
+        return self.conversation.latest_context_snapshot_cost(
             conversation_id=conversation_id,
             stage=stage,
         )
     @conversation_only
     def get_ai_conversation_response(self, conversation_id, ref_knowledge_engine, model_names = None)->ConversationAIResponse:
-        svc = self._get_conversation_service(knowledge_engine=ref_knowledge_engine)
-        return svc.get_ai_conversation_response(
+        return self.conversation.get_ai_conversation_response(
             conversation_id=conversation_id,
             ref_knowledge_engine=ref_knowledge_engine,
             model_names=model_names,
