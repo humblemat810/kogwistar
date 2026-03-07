@@ -5,7 +5,7 @@ import difflib
 import importlib
 import json
 import math
-from typing import Any, List, Type, cast
+from typing import Any, List, Literal, Type, cast
 
 from ...id_provider import stable_id
 from ...extraction import BaseDocValidator
@@ -701,6 +701,32 @@ class ExtractSubsystem(NamespaceProxy):
                 return docs[0] or ""
             raise Exception("document lost")
         return ""
+
+    def get_span_validator_of_doc_type(
+        self,
+        *,
+        doc_id: str | None = None,
+        doc_type: Literal["text", "ocr_document"] | str | None = None,
+        document: Document | None = None,
+    ) -> BaseDocValidator:
+        if (doc_id is not None) + (doc_type is not None) + (document is not None) != 1:
+            raise ValueError("Must only specify one of doc_id, doc_type or document")
+
+        from graph_knowledge_engine.extraction import OcrDocSpanValidator, PlainTextDocSpanValidator
+
+        if doc_type is None:
+            if doc_id is not None:
+                document = self._e.read.get_document(doc_id)
+            if document:
+                doc_type = document.type
+            else:
+                raise ValueError("Unreachable")
+
+        if doc_type == "text":
+            return PlainTextDocSpanValidator()
+        if doc_type == "ocr_document":
+            return OcrDocSpanValidator()
+        raise ValueError(f"No validator associated with document type {doc_type}")
 
     def extract_graph_with_llm(
         self,

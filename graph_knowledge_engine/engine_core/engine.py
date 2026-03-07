@@ -495,7 +495,7 @@ def _extract_doc_ids_from_refs(refs: list[Span] | list[Grounding]) -> list[str]:
             if did:
                 out.append(did)
         else:
-            raise ValueError(f"ref type of type {type(r) is unsupported}")
+            raise ValueError(f"ref type of type {type(r)} is unsupported")
     # unique + stable order
     return sorted(dict.fromkeys(out))
 def _node_doc_and_meta(n: Union["Node", "PureChromaNode"]) -> tuple[str, dict]:
@@ -937,110 +937,12 @@ class GraphKnowledgeEngine:
         max_contexts: Optional[int] = None,
         prefer_label_fallback: bool = True,
     ) -> List[Dict[str, Any]]:
-        """
-        Build adjudication-ready reference excerpts for a Node (or Edge).
-        Strategy:
-        - Prefer the stored ReferenceSession.excerpt (cheap, already localized).
-        - If document text is available, try to locate the excerpt (or node label) in full text
-            and expand with Â±window_chars for richer context.
-        - Always return provenance + verification info (doc_id, page spans, urls, etc.).
-        """
-        # 1) Materialize the object
-        from .models import GraphEntityRefBase
-        if isinstance(node_or_id, GraphEntityRefBase):
-            obj = node_or_id
-        else:
-            # try node first, then edge
-            got = self.backend.node_get(ids=[node_or_id], include=["documents"])
-            doc_list = got.get("documents") or []
-            if doc_list:
-                obj = Node.model_validate_json(doc_list[0])
-            else:
-                got = self.backend.edge_get(ids=[node_or_id], include=["documents"])
-                edoc_list = got.get("documents") or []
-                if not edoc_list:
-                    raise ValueError(f"Unknown node/edge id: {node_or_id}")
-                obj = Edge.model_validate_json(edoc_list[0])
-
-        label = getattr(obj, "label", None)
-        refs = getattr(obj, "references", None) or []
-        out: List[Dict[str, Any]] = []
-        doc_cache = {}
-        
-        def _coerce_to_referencable_text(text_or_ast_str):
-            
-            try:
-                return ('\n'.join((i['text'] for i in ast.literal_eval(text_or_ast_str)['OCR_text_clusters'])))
-            except Exception as _e :
-                return text_or_ast_str
-        # ne['mentions'] = [{"spans": refs}]
-        mentions = getattr(obj, "mentions", None) or []
-        for mention in mentions:
-            for span in mention.spans:
-                span : Span
-                doc_id = self._infer_doc_id_from_ref(span)
-                
-                pages = doc_cache.get(doc_id)
-                full_doc = None
-                if not pages:
-                    full_doc = self._fetch_document_text(doc_id) if doc_id else None
-                    pages = self._coerce_pages(full_doc)
-                    doc_cache[doc_id] = pages
-                excerpt = getattr(span, "excerpt", None)
-                ctx_text = excerpt or (label or "")
-                span_start = None
-                span_end = None
-
-                if full_doc: # has doc in db
-                    page_relevant = {p[0]: p[1] for p in pages if (p[0] >= span.page_number and  p[0] <= span.page_number )}
-                    if span.page_number and span.page_number:
-                        if span.page_number == span.page_number:
-                            ctx_text = ""
-                            if span.start_char and span.end_char:
-                                try:
-                                    page_split_page = _coerce_to_referencable_text(page_relevant[span.page_number])
-                                except:
-                                    raise
-                                ctx_text = _coerce_to_referencable_text(page_relevant[span.page_number])[max(span.start_char-window_chars, 0): span.end_char+window_chars]
-
-                    if ctx_text is None:
-                        # Try exact excerpt first (best anchor)
-                        idx = full_doc.find(excerpt) if excerpt else -1
-                        # Fallback to label if allowed
-                        if idx < 0 and label and prefer_label_fallback:
-                            idx = full_doc.find(label)
-
-                        if idx >= 0:
-                            # If we matched on excerpt, use its length; else label length
-                            length = len(excerpt) if excerpt else (len(label) if label else 0)
-                            span_start = idx
-                            span_end = idx + length
-                            left = max(0, span_start - window_chars)
-                            right = min(len(full_doc), span_end + window_chars)
-                            ctx_text = full_doc[left:right]
-                out.append({
-                    "doc_id": doc_id,
-                    "collection_page_url": getattr(span, "collection_page_url", None),
-                    "document_page_url": getattr(span, "document_page_url", None),
-                    "start_page": getattr(span, "start_page", None),
-                    "end_page": getattr(span, "end_page", None),
-                    "start_char": getattr(span, "start_char", None),
-                    "end_char": getattr(span, "end_char", None),
-                    "insertion_method": getattr(span, "insertion_method", None),
-                    "verification": (span.verification.model_dump() if getattr(span, "verification", None) else None),
-                    "context": ctx_text,             # expanded context or stored excerpt
-                    "mention": mention,              # what to highlight / quote in a prompt
-                    "loc_found": (span_start is not None),
-                    "loc_span": [span_start, span_end] if span_start is not None else None,
-                    # Always include the raw ref in case you need exact fields later
-                    "ref": span.model_dump(field_mode = 'backend'),
-                })
-
-                if max_contexts and len(out) >= max_contexts:
-                    break                            
-        
-
-        return out
+        return self.read.extract_reference_contexts(
+            node_or_id=node_or_id,
+            window_chars=window_chars,
+            max_contexts=max_contexts,
+            prefer_label_fallback=prefer_label_fallback,
+        )
 
 
     def replay_namespace(
@@ -1052,92 +954,13 @@ class GraphKnowledgeEngine:
         apply_indexes: bool = False,
         repair_backend: bool = False,
     ) -> int:
-        """
-        Replay entity events into the current engine (projection rebuild).
-
-        IMPORTANT (event sourcing):
-        - Replay MUST NOT emit new entity_events. We enforce this via self._disable_event_log.
-        - The event log is the source of truth; backends (Chroma/pgvector) are projections.
-
-        Semantics:
-        - repair_backend=False (default): "normal replay"
-            Applies events through normal add/tombstone code paths.
-            For Chroma, writes may be create-only (collection.add), so replay is sufficient to
-            rebuild missing rows, but may NOTtityoverwrite tampered-but-present rows.
-
-        - repair_backend=True: "repair replay"
-            Best-effort forces overwrite of backend projection state to match the event stream.
-            Intended for Chroma drift/tampering scenarios where ids already exist but content is wrong.
-            Must still not emit new entity_events.
-        """
-        iter_events = getattr(self.meta_sqlite, "iter_entity_events", None)
-        if iter_events is None:
-            return 0
-
-        last_seq = 0
-        prev_log = getattr(self, "_disable_event_log", False)
-        prev_idx = getattr(self, "_phase1_enable_index_jobs", False)
-
-        self._disable_event_log = True
-        if not apply_indexes:
-            self._phase1_enable_index_jobs = False
-
-        try:
-            for seq, ek, eid, op, payload_json in iter_events(
-                namespace=namespace,
-                from_seq=int(from_seq),
-                to_seq=(int(to_seq) if to_seq is not None else None),
-            ):
-                payload = {}
-                try:
-                    payload = json.loads(payload_json)
-                except Exception:
-                    payload = {}
-
-                # Repair mode: force overwrite semantics for backends that don't upsert on add.
-                if repair_backend and op in ("ADD", "REPLACE"):
-                    try:
-                        if ek == "node":
-                            self.backend.node_delete(ids=[str(eid)])
-                        elif ek == "edge":
-                            self.backend.edge_delete(ids=[str(eid)])
-                    except Exception:
-                        # Best-effort: missing rows / unsupported delete should not stop replay.
-                        pass
-
-                if ek == "node":
-                    if op in ("ADD", "REPLACE"):
-                        try:
-                            node = models.Node.model_validate(payload)
-                        except Exception:
-                            # tolerate older shapes
-                            node = models.Node.model_validate_json(json.dumps(payload))
-                        self.add_node(node)
-                    elif op in ("TOMBSTONE", "DELETE"):
-                        self.tombstone_node(str(eid))
-
-                elif ek == "edge":
-                    if op in ("ADD", "REPLACE"):
-                        try:
-                            edge = models.Edge.model_validate(payload)
-                        except Exception:
-                            edge = models.Edge.model_validate_json(json.dumps(payload))
-                        self.add_edge(edge)
-                    elif op in ("TOMBSTONE", "DELETE"):
-                        self.tombstone_edge(str(eid))
-
-                last_seq = int(seq)
-        finally:
-            self._disable_event_log = prev_log
-            self._phase1_enable_index_jobs = prev_idx
-
-        if apply_indexes and getattr(self, "_phase1_enable_index_jobs", False):
-            try:
-                self.reconcile_indexes(max_jobs=200)
-            except Exception:
-                pass
-
-        return last_seq
+        return self.persist.replay_namespace(
+            namespace=namespace,
+            from_seq=from_seq,
+            to_seq=to_seq,
+            apply_indexes=apply_indexes,
+            repair_backend=repair_backend,
+        )
 
     def replay_repair_namespace(
         self,
@@ -1147,13 +970,11 @@ class GraphKnowledgeEngine:
         to_seq: int | None = None,
         apply_indexes: bool = False,
     ) -> int:
-        """Convenience wrapper: replay with backend repair semantics enabled."""
-        return self.replay_namespace(
+        return self.persist.replay_repair_namespace(
             namespace=namespace,
             from_seq=from_seq,
             to_seq=to_seq,
             apply_indexes=apply_indexes,
-            repair_backend=True,
         )
 
     
@@ -2012,47 +1833,7 @@ class GraphKnowledgeEngine:
         same_tgt_edges = (obj.get("target_edge_ids") or []) == (getattr(edge, "target_edge_ids", []) or [])
         return bool(same_src and same_tgt and same_src_edges and same_tgt_edges)
     def enrich_edge_meta(self, edge):
-        node_endpoint_count = len(edge.source_ids or []) + len(edge.target_ids or [])
-        edge_endpoint_count = len(getattr(edge, "source_edge_ids", []) or []) + len(getattr(edge, "target_edge_ids", []) or [])
-        total_endpoint_count = node_endpoint_count + edge_endpoint_count
-        base_metadata : dict[str,Any]= _strip_none({
-                "doc_id":  edge.doc_id,
-                "relation": edge.relation,
-                "source_ids": _json_or_none(edge.source_ids),
-                "target_ids": _json_or_none(edge.target_ids),
-                "source_edge_ids": _json_or_none(getattr(edge, "source_edge_ids", None)),
-                "target_edge_ids": _json_or_none(getattr(edge, "target_edge_ids", None)),
-                "type": edge.type,
-                "summary": edge.summary,
-                "domain_id": edge.domain_id,
-                "canonical_entity_id": edge.canonical_entity_id,
-                "properties": _json_or_none(edge.properties),
-                "references": _json_or_none(
-                    [r.model_dump(field_mode="backend") for r in (getattr(edge, "mentions", None) or [])]
-                ),
-                "node_endpoint_count": node_endpoint_count,   # receptive range
-                "edge_endpoint_count": edge_endpoint_count,
-                "total_endpoint_count": total_endpoint_count,
-            })
-        if self.kg_graph_type == "conversation":
-            base_metadata.update(_strip_none({
-                'char_distance_from_last_summary': edge.metadata.get("char_distance_from_last_summary"), 
-                'turn_distance_from_last_summary': edge.metadata.get("turn_distance_from_last_summary"),
-                 **({"causal_type": edge.metadata.get("causal_type")} if edge.metadata.get("causal_type") else{})
-                }))
-        if self.kg_graph_type == "workflow":
-            from ..runtime.models import WorkflowEdge
-            edge = cast(WorkflowEdge, edge)
-            edge_metadata = edge.metadata
-            base_metadata.update(_strip_none({
-                            "entity_type": edge_metadata.get("entity_type"),
-                            "workflow_id": edge_metadata.get("workflow_id"),
-                            "wf_priority": edge_metadata.get("wf_priority") or edge_metadata.get("priority"),
-                            "wf_is_default": edge_metadata.get("wf_is_default") or edge_metadata.get("is_default"),
-                            "wf_predicate": edge_metadata.get("wf_predicate") or edge_metadata.get("predicate"),
-                            "wf_multiplicity": edge_metadata.get("wf_multiplicity") or edge_metadata.get("multiplicity"),
-                }))
-        return base_metadata
+        return self.write.enrich_edge_meta(edge)
     @engine_context
     def add_edge(self, edge: Edge, doc_id: Optional[str] = None):
         return self.write._add_edge_impl(edge, doc_id=doc_id)
@@ -2170,56 +1951,17 @@ class GraphKnowledgeEngine:
         )
 
     def get_document(self, doc_id: str):
-
-        doc_get_result = self.backend.document_get(ids = [doc_id])
-        if len(doc_get_result['ids']) == 0:
-            raise ValueError(f"no document found for doc id = {doc_id}")
-        metadatas = doc_get_result["metadatas"]
-        
-        
-        docs = doc_get_result["documents"]
-        
-        if docs is None or metadatas is None:
-            raise ValueError('Invalid documnet metadata')
-        metadata : dict= cast(dict, metadatas[0])
-        
-        
-        doc = Document(id = doc_get_result['ids'][0],
-                       content = docs[0],
-                       metadata = metadata,
-                       domain_id = _str_or_none(metadata.get('domain_id')),
-                       type = metadata['type'],
-                       processed = metadata['processed'],
-                       embeddings = None,
-                       source_map = None
-                       )
-        return doc
-    from typing import overload, Literal, Any
+        return self.read.get_document(doc_id)
 
 
     def get_span_validator_of_doc_type(self, *, doc_id: str| None= None, 
                                        doc_type: Literal["text","ocr_document"]| str | None = None, 
                                        document: Document| None=None) -> BaseDocValidator:
-        """infer doc type from either doc_id, type_type or document and return corresponding span validator"""
-        if (doc_id is not None) + (doc_type is not  None) + (document is not None) == 1:
-            pass
-        else:
-            raise ValueError("Must only specify one of doc_id, doc_type or document")
-        from graph_knowledge_engine.extraction import PlainTextDocSpanValidator, OcrDocSpanValidator
-        if doc_type is None:
-            if doc_id is not None:
-                document = self.get_document(doc_id)
-            if document:
-                doc_type = document.type
-            else:
-                raise ValueError("Unreachable")
-                
-        
-        if doc_type == 'text':
-            return PlainTextDocSpanValidator()
-        if doc_type == "ocr_document":
-            return OcrDocSpanValidator()
-        raise ValueError(f"No validator associated with document type {doc_type}")
+        return self.extract.get_span_validator_of_doc_type(
+            doc_id=doc_id,
+            doc_type=doc_type,
+            document=document,
+        )
     def persist_document_graph_extraction(
         self,
         *,
@@ -2238,201 +1980,7 @@ class GraphKnowledgeEngine:
         doc_id: str,
         extraction_method: Literal['llm_graph_extraction', 'document_ingestion'],
     ) -> dict:
-        """
-        Remove all references contributed by (doc_id, extraction_method).
-        - Keeps entities that still have refs from other docs/methods; re-saves them.
-        - Deletes entities that lose all refs.
-        - Cleans (node_id, doc_id) rows and edge_endpoints rows for this doc.
-        - Does NOT try to infer cascading deletes beyond the entity itself.
-
-        Returns summary counts.
-        """
-        from .models import Node, Edge, Span  # adjust import if needed
-        import json
-
-        summary = {
-            "doc_id": doc_id,
-            "method": extraction_method,
-            "updated_nodes": 0,
-            "updated_edges": 0,
-            "deleted_nodes": 0,
-            "deleted_edges": 0,
-            "deleted_node_refs": 0,
-            "deleted_edge_refs": 0,
-            "deleted_node_doc_rows": 0,
-            "deleted_edge_endpoints": 0,
-        }
-
-        # ---- helpers -------------------------------------------------------------
-        def _load_many(kind: str, ids):
-            if not ids:
-                return {}
-            get_fn = getattr(self.backend, f"{kind}_get");
-            got = get_fn(ids=list(ids), include=["documents"])
-            docs = got.get("documents") or []
-            ids_out = got.get("ids") or []
-            out = {}
-            for i, mj in enumerate(docs):
-                try:
-                    d = json.loads(mj)
-                except Exception:
-                    try:
-                        d = (Node if kind == "node" else Edge).model_validate_json(mj).model_dump(field_mode = 'backend')
-                    except Exception:
-                        d = None
-                if d is not None and i < len(ids_out):
-                    out[ids_out[i]] = d
-            return out
-
-        def _save_node(d: dict):
-            # keep existing metadata (doc_id, etc.) and update document JSON
-            nid = d["id"]
-            prior = self.backend.node_get(ids=[nid], include=["metadatas"])
-            meta = (prior.get("metadatas") or [None])[0] or {}
-            meta = dict(meta)  # shallow copy
-            # write
-            self.backend.node_update(
-                ids=[nid],
-                documents=[json.dumps(d, ensure_ascii=False)],
-                metadatas=[meta],
-            )
-            # re-index node_docs for this node
-            try:
-                self._index_node_docs(Node.model_validate(d))
-            except Exception:
-                pass
-
-        def _save_edge(d: dict):
-            eid = d["id"]
-            prior = self.backend.edge_get(ids=[eid], include=["metadatas"])
-            meta = (prior.get("metadatas") or [None])[0] or {}
-            meta = dict(meta)
-            self.backend.edge_update(
-                ids=[eid],
-                documents=[json.dumps(d, ensure_ascii=False)],
-                metadatas=[meta],
-            )
-
-        # ---- 1) candidate ids for this doc --------------------------------------
-        # nodes (prefer node_docs index; fallback to scanning metadatas)
-        node_ids = set()
-        try:
-            # node_docs rows have {"node_id": ..., "doc_id": ...}
-            nd = self.backend.node_docs_get(where={"doc_id": doc_id}, include=["metadatas"])
-            for m in (nd.get("metadatas") or []):
-                if m and m.get("node_id"):
-                    node_ids.add(m["node_id"])
-            summary["deleted_node_doc_rows"] = len(nd.get("ids") or [])
-        except Exception:
-            # fallback: query node collection by doc_id metadata if present
-            try:
-                q = self.backend.node_get(where={"doc_id": doc_id})
-                for nid in (q.get("ids") or []):
-                    node_ids.add(nid)
-            except Exception:
-                pass
-
-        # edges: derive by edge_endpoints rows filtered by doc_id
-        edge_ids = set()
-        try:
-            ee = self.backend.edge_endpoints_get(where={"doc_id": doc_id}, include=["metadatas"])
-            for m in (ee.get("metadatas") or []):
-                if m and m.get("edge_id"):
-                    edge_ids.add(m["edge_id"])
-            summary["deleted_edge_endpoints"] = len(ee.get("ids") or [])
-        except Exception:
-            # fallback: direct edge_collection metadata
-            try:
-                q = self.backend.edge_get(where={"doc_id": doc_id})
-                for eid in (q.get("ids") or []):
-                    edge_ids.add(eid)
-            except Exception:
-                pass
-
-        # ---- 2) load, filter references, and persist or delete -------------------
-        # Nodes
-        nodes_map = _load_many("node", node_ids)
-        for nid, d in nodes_map.items():
-            refs = d.get("references") or []
-            keep = []
-            removed = 0
-            for r in refs:
-                if r and (r.get("doc_id") == doc_id) and (r.get("insertion_method") == extraction_method):
-                    removed += 1
-                else:
-                    keep.append(r)
-            if removed:
-                summary["deleted_node_refs"] += removed
-                if keep:
-                    d["references"] = keep
-                    _save_node(d)
-                    summary["updated_nodes"] += 1
-                else:
-                    # no refs left â†’ delete node, node_docs rows, and (optionally) any edgesâ€™ endpoints for this doc if tied
-                    try:
-                        self.backend.node_delete(ids=[nid])
-                    except Exception:
-                        pass
-                    try:
-                        self.backend.node_docs_delete(where={"node_id": nid, "doc_id": doc_id})
-                    except Exception:
-                        pass
-                    summary["deleted_nodes"] += 1
-            else:
-                # Still remove node_docs rows for this doc (this documentâ€™s contribution) if present
-                try:
-                    self.backend.node_docs_delete(where={"node_id": nid, "doc_id": doc_id})
-                except Exception:
-                    pass
-
-        # Edges
-        edges_map = _load_many("edge", edge_ids)
-        for eid, d in edges_map.items():
-            refs = d.get("references") or []
-            keep = []
-            removed = 0
-            for r in refs:
-                if r and (r.get("doc_id") == doc_id) and (r.get("insertion_method") == extraction_method):
-                    removed += 1
-                else:
-                    keep.append(r)
-
-            # Always drop this docâ€™s endpoints rows; they are doc-scoped fanout rows
-            try:
-                self.backend.edge_endpoints_delete(where={"edge_id": eid, "doc_id": doc_id})
-            except Exception:
-                pass
-
-            if removed:
-                summary["deleted_edge_refs"] += removed
-                if keep:
-                    d["references"] = keep
-                    _save_edge(d)
-                    summary["updated_edges"] += 1
-                else:
-                    # No refs remain â†’ delete edge entirely (and any leftover endpoints just in case)
-                    try:
-                        self.backend.edge_delete(ids=[eid])
-                    except Exception:
-                        pass
-                    try:
-                        self.backend.edge_endpoints_delete(where={"edge_id": eid})
-                    except Exception:
-                        pass
-                    summary["deleted_edges"] += 1
-
-        # ---- 3) final: delete node_docs and endpoints rows for this doc ----------
-        # (Safe to repeat; collections ignore missing)
-        try:
-            self.backend.node_docs_delete(where={"doc_id": doc_id})
-        except Exception:
-            pass
-        try:
-            self.backend.edge_endpoints_delete(where={"doc_id": doc_id})
-        except Exception:
-            pass
-
-        return summary         
+        return self.rollback.rollback_document_extraction(doc_id, extraction_method)
     def ingest_document_with_llm(self, document: Document, *, mode: str="append",
                                  instruction_for_node_edge_contents_parsing_inclusion=None,
                                  raw_with_parsed = None,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import uuid
 from graphlib import TopologicalSorter
 from typing import Any, cast
@@ -552,3 +553,96 @@ class PersistSubsystem(NamespaceProxy):
             "nodes_added": len(node_ids_added),
             "edges_added": len(edge_ids_added),
         }
+
+    def replay_namespace(
+        self,
+        *,
+        namespace: str = "default",
+        from_seq: int = 1,
+        to_seq: int | None = None,
+        apply_indexes: bool = False,
+        repair_backend: bool = False,
+    ) -> int:
+        iter_events = getattr(self._e.meta_sqlite, "iter_entity_events", None)
+        if iter_events is None:
+            return 0
+
+        from .. import models
+
+        last_seq = 0
+        prev_log = getattr(self._e, "_disable_event_log", False)
+        prev_idx = getattr(self._e, "_phase1_enable_index_jobs", False)
+
+        self._e._disable_event_log = True
+        if not apply_indexes:
+            self._e._phase1_enable_index_jobs = False
+
+        try:
+            for seq, ek, eid, op, payload_json in iter_events(
+                namespace=namespace,
+                from_seq=int(from_seq),
+                to_seq=(int(to_seq) if to_seq is not None else None),
+            ):
+                payload = {}
+                try:
+                    payload = json.loads(payload_json)
+                except Exception:
+                    payload = {}
+
+                if repair_backend and op in ("ADD", "REPLACE"):
+                    try:
+                        if ek == "node":
+                            self._e.backend.node_delete(ids=[str(eid)])
+                        elif ek == "edge":
+                            self._e.backend.edge_delete(ids=[str(eid)])
+                    except Exception:
+                        pass
+
+                if ek == "node":
+                    if op in ("ADD", "REPLACE"):
+                        try:
+                            node = models.Node.model_validate(payload)
+                        except Exception:
+                            node = models.Node.model_validate_json(json.dumps(payload))
+                        self._e.write.add_node(node)
+                    elif op in ("TOMBSTONE", "DELETE"):
+                        self._e.lifecycle.tombstone_node(str(eid))
+
+                elif ek == "edge":
+                    if op in ("ADD", "REPLACE"):
+                        try:
+                            edge = models.Edge.model_validate(payload)
+                        except Exception:
+                            edge = models.Edge.model_validate_json(json.dumps(payload))
+                        self._e.write.add_edge(edge)
+                    elif op in ("TOMBSTONE", "DELETE"):
+                        self._e.lifecycle.tombstone_edge(str(eid))
+
+                last_seq = int(seq)
+        finally:
+            self._e._disable_event_log = prev_log
+            self._e._phase1_enable_index_jobs = prev_idx
+
+        if apply_indexes and getattr(self._e, "_phase1_enable_index_jobs", False):
+            try:
+                self._e.reconcile_indexes(max_jobs=200)
+            except Exception:
+                pass
+
+        return last_seq
+
+    def replay_repair_namespace(
+        self,
+        *,
+        namespace: str = "default",
+        from_seq: int = 1,
+        to_seq: int | None = None,
+        apply_indexes: bool = False,
+    ) -> int:
+        return self.replay_namespace(
+            namespace=namespace,
+            from_seq=from_seq,
+            to_seq=to_seq,
+            apply_indexes=apply_indexes,
+            repair_backend=True,
+        )

@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import ast
 import json
-from typing import Any, Literal, Sequence, Type, TypeVar, cast
+from typing import Any, Dict, List, Literal, Optional, Sequence, Type, TypeVar, Union, cast
 
 import numpy as np
 
-from ..models import Edge, Node
+from ..models import Document, Edge, Node
 from .base import NamespaceProxy
 
 TNode = TypeVar("TNode", bound=Node)
@@ -83,6 +84,29 @@ class ReadSubsystem(NamespaceProxy):
             ),
         )
         return self._e._filter_items_by_resolve_mode(edges, resolve_mode)
+
+    def get_document(self, doc_id: str) -> Document:
+        doc_get_result = self._e.backend.document_get(ids=[doc_id])
+        if len(doc_get_result["ids"]) == 0:
+            raise ValueError(f"no document found for doc id = {doc_id}")
+        metadatas = doc_get_result["metadatas"]
+        docs = doc_get_result["documents"]
+
+        if docs is None or metadatas is None:
+            raise ValueError("Invalid documnet metadata")
+        metadata: dict = cast(dict, metadatas[0])
+
+        doc = Document(
+            id=doc_get_result["ids"][0],
+            content=docs[0],
+            metadata=metadata,
+            domain_id=(None if metadata.get("domain_id") is None else str(metadata.get("domain_id"))),
+            type=metadata["type"],
+            processed=metadata["processed"],
+            embeddings=None,
+            source_map=None,
+        )
+        return doc
 
     def query_nodes(
         self,
@@ -259,6 +283,117 @@ class ReadSubsystem(NamespaceProxy):
         if resolve_mode == "active_only":
             return {"lifecycle_status": "active"}
         return {}
+
+    def _infer_doc_id_from_ref(self, ref) -> Optional[str]:
+        did = getattr(ref, "doc_id", None)
+        if did:
+            return did
+        url = getattr(ref, "document_page_url", None) or ""
+        try:
+            tail = url.strip("/").split("/")[-1]
+            return tail or None
+        except Exception:
+            return None
+
+    def extract_reference_contexts(
+        self,
+        node_or_id: Union[Node | Edge, str],
+        *,
+        window_chars: int = 120,
+        max_contexts: Optional[int] = None,
+        prefer_label_fallback: bool = True,
+    ) -> List[Dict[str, Any]]:
+        from ..models import GraphEntityRefBase
+
+        if isinstance(node_or_id, GraphEntityRefBase):
+            obj = node_or_id
+        else:
+            got = self._e.backend.node_get(ids=[node_or_id], include=["documents"])
+            doc_list = got.get("documents") or []
+            if doc_list:
+                obj = Node.model_validate_json(doc_list[0])
+            else:
+                got = self._e.backend.edge_get(ids=[node_or_id], include=["documents"])
+                edoc_list = got.get("documents") or []
+                if not edoc_list:
+                    raise ValueError(f"Unknown node/edge id: {node_or_id}")
+                obj = Edge.model_validate_json(edoc_list[0])
+
+        label = getattr(obj, "label", None)
+        out: List[Dict[str, Any]] = []
+        doc_cache = {}
+
+        def _coerce_to_referencable_text(text_or_ast_str):
+            try:
+                return "\n".join((i["text"] for i in ast.literal_eval(text_or_ast_str)["OCR_text_clusters"]))
+            except Exception:
+                return text_or_ast_str
+
+        mentions = getattr(obj, "mentions", None) or []
+        for mention in mentions:
+            for span in mention.spans:
+                doc_id = self._infer_doc_id_from_ref(span)
+
+                pages = doc_cache.get(doc_id)
+                full_doc = None
+                if not pages:
+                    full_doc = self._e.extract.fetch_document_text(doc_id) if doc_id else None
+                    pages = self._e.extract.coerce_pages(full_doc)
+                    doc_cache[doc_id] = pages
+                excerpt = getattr(span, "excerpt", None)
+                ctx_text = excerpt or (label or "")
+                span_start = None
+                span_end = None
+
+                if full_doc:
+                    page_relevant = {p[0]: p[1] for p in pages if (p[0] >= span.page_number and p[0] <= span.page_number)}
+                    if span.page_number and span.page_number:
+                        if span.page_number == span.page_number:
+                            ctx_text = ""
+                            if span.start_char and span.end_char:
+                                try:
+                                    _coerce_to_referencable_text(page_relevant[span.page_number])
+                                except Exception:
+                                    raise
+                                ctx_text = _coerce_to_referencable_text(page_relevant[span.page_number])[
+                                    max(span.start_char - window_chars, 0) : span.end_char + window_chars
+                                ]
+
+                    if ctx_text is None:
+                        idx = full_doc.find(excerpt) if excerpt else -1
+                        if idx < 0 and label and prefer_label_fallback:
+                            idx = full_doc.find(label)
+
+                        if idx >= 0:
+                            length = len(excerpt) if excerpt else (len(label) if label else 0)
+                            span_start = idx
+                            span_end = idx + length
+                            left = max(0, span_start - window_chars)
+                            right = min(len(full_doc), span_end + window_chars)
+                            ctx_text = full_doc[left:right]
+                out.append(
+                    {
+                        "doc_id": doc_id,
+                        "collection_page_url": getattr(span, "collection_page_url", None),
+                        "document_page_url": getattr(span, "document_page_url", None),
+                        "start_page": getattr(span, "start_page", None),
+                        "end_page": getattr(span, "end_page", None),
+                        "start_char": getattr(span, "start_char", None),
+                        "end_char": getattr(span, "end_char", None),
+                        "insertion_method": getattr(span, "insertion_method", None),
+                        "verification": (span.verification.model_dump() if getattr(span, "verification", None) else None),
+                        "context": ctx_text,
+                        "mention": mention,
+                        "loc_found": (span_start is not None),
+                        "loc_span": [span_start, span_end] if span_start is not None else None,
+                        "ref": span.model_dump(field_mode="backend"),
+                    }
+                )
+
+                if max_contexts and len(out) >= max_contexts:
+                    break
+
+        return out
 
     # Doc-index helpers
     def node_ids_by_doc(self, doc_id: str, insertion_method: str | None = None) -> list[str]:

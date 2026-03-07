@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from typing import Sequence, cast
+from typing import Any, Sequence, cast
 
 from ...cdc.change_event import EntityRefModel
 from ..models import Document, Domain, Edge, Node, PureChromaEdge, PureChromaNode
@@ -44,6 +44,66 @@ class WriteSubsystem(NamespaceProxy):
 
     def add_edge(self, *args, **kwargs):
         return self._add_edge_impl(*args, **kwargs)
+
+    def enrich_edge_meta(self, edge: Edge):
+        node_endpoint_count = len(edge.source_ids or []) + len(edge.target_ids or [])
+        edge_endpoint_count = len(getattr(edge, "source_edge_ids", []) or []) + len(
+            getattr(edge, "target_edge_ids", []) or []
+        )
+        total_endpoint_count = node_endpoint_count + edge_endpoint_count
+        base_metadata: dict[str, Any] = strip_none(
+            {
+                "doc_id": edge.doc_id,
+                "relation": edge.relation,
+                "source_ids": json_or_none(edge.source_ids),
+                "target_ids": json_or_none(edge.target_ids),
+                "source_edge_ids": json_or_none(getattr(edge, "source_edge_ids", None)),
+                "target_edge_ids": json_or_none(getattr(edge, "target_edge_ids", None)),
+                "type": edge.type,
+                "summary": edge.summary,
+                "domain_id": edge.domain_id,
+                "canonical_entity_id": edge.canonical_entity_id,
+                "properties": json_or_none(edge.properties),
+                "references": json_or_none(
+                    [r.model_dump(field_mode="backend") for r in (getattr(edge, "mentions", None) or [])]
+                ),
+                "node_endpoint_count": node_endpoint_count,
+                "edge_endpoint_count": edge_endpoint_count,
+                "total_endpoint_count": total_endpoint_count,
+            }
+        )
+        if self._e.kg_graph_type == "conversation":
+            base_metadata.update(
+                strip_none(
+                    {
+                        "char_distance_from_last_summary": edge.metadata.get("char_distance_from_last_summary"),
+                        "turn_distance_from_last_summary": edge.metadata.get("turn_distance_from_last_summary"),
+                        **(
+                            {"causal_type": edge.metadata.get("causal_type")}
+                            if edge.metadata.get("causal_type")
+                            else {}
+                        ),
+                    }
+                )
+            )
+        if self._e.kg_graph_type == "workflow":
+            from ...runtime.models import WorkflowEdge
+
+            edge = cast(WorkflowEdge, edge)
+            edge_metadata = edge.metadata
+            base_metadata.update(
+                strip_none(
+                    {
+                        "entity_type": edge_metadata.get("entity_type"),
+                        "workflow_id": edge_metadata.get("workflow_id"),
+                        "wf_priority": edge_metadata.get("wf_priority") or edge_metadata.get("priority"),
+                        "wf_is_default": edge_metadata.get("wf_is_default") or edge_metadata.get("is_default"),
+                        "wf_predicate": edge_metadata.get("wf_predicate") or edge_metadata.get("predicate"),
+                        "wf_multiplicity": edge_metadata.get("wf_multiplicity") or edge_metadata.get("multiplicity"),
+                    }
+                )
+            )
+        return base_metadata
 
     def _add_node_impl(self, node: Node, doc_id: str | None = None):
         if doc_id is not None:
@@ -130,7 +190,7 @@ class WriteSubsystem(NamespaceProxy):
             edge.embedding = self._e.embed.iterative_defensive_emb(str(doc))
 
         doc = edge.model_dump_json(field_mode="backend", exclude=["embedding"])
-        base_metadata = [self._e.enrich_edge_meta(edge)]
+        base_metadata = [self.enrich_edge_meta(edge)]
         self._e.backend.edge_add(
             ids=[edge.safe_get_id()],
             documents=[str(doc)],
@@ -212,7 +272,7 @@ class WriteSubsystem(NamespaceProxy):
             self._e._validate_conversation_edge_add(edge)
 
         doc = edge.model_dump_json(field_mode="backend", exclude=["embedding"])
-        base_metadata = [self._e.enrich_edge_meta(edge)]
+        base_metadata = [self.enrich_edge_meta(edge)]
         self._e.backend.edge_add(
             ids=[edge.id],
             documents=[str(doc)],

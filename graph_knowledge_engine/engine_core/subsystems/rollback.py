@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 from ..models import Edge, Node
 from ..utils.metadata import json_or_none, strip_none
@@ -60,6 +60,174 @@ class RollbackSubsystem(NamespaceProxy):
             "deleted_edges": len(deleted_edges),
             "updated_edges": len(updated_edges),
         }
+
+    def rollback_document_extraction(
+        self,
+        doc_id: str,
+        extraction_method: Literal["llm_graph_extraction", "document_ingestion"],
+    ) -> dict:
+        summary = {
+            "doc_id": doc_id,
+            "method": extraction_method,
+            "updated_nodes": 0,
+            "updated_edges": 0,
+            "deleted_nodes": 0,
+            "deleted_edges": 0,
+            "deleted_node_refs": 0,
+            "deleted_edge_refs": 0,
+            "deleted_node_doc_rows": 0,
+            "deleted_edge_endpoints": 0,
+        }
+
+        def _load_many(kind: str, ids):
+            if not ids:
+                return {}
+            get_fn = getattr(self._e.backend, f"{kind}_get")
+            got = get_fn(ids=list(ids), include=["documents"])
+            docs = got.get("documents") or []
+            ids_out = got.get("ids") or []
+            out = {}
+            for i, mj in enumerate(docs):
+                try:
+                    d = json.loads(mj)
+                except Exception:
+                    try:
+                        d = (Node if kind == "node" else Edge).model_validate_json(mj).model_dump(field_mode="backend")
+                    except Exception:
+                        d = None
+                if d is not None and i < len(ids_out):
+                    out[ids_out[i]] = d
+            return out
+
+        def _save_node(d: dict):
+            nid = d["id"]
+            prior = self._e.backend.node_get(ids=[nid], include=["metadatas"])
+            meta = (prior.get("metadatas") or [None])[0] or {}
+            self._e.backend.node_update(
+                ids=[nid],
+                documents=[json.dumps(d, ensure_ascii=False)],
+                metadatas=[dict(meta)],
+            )
+            try:
+                self._e.write.index_node_docs(Node.model_validate(d))
+            except Exception:
+                pass
+
+        def _save_edge(d: dict):
+            eid = d["id"]
+            prior = self._e.backend.edge_get(ids=[eid], include=["metadatas"])
+            meta = (prior.get("metadatas") or [None])[0] or {}
+            self._e.backend.edge_update(
+                ids=[eid],
+                documents=[json.dumps(d, ensure_ascii=False)],
+                metadatas=[dict(meta)],
+            )
+
+        node_ids = set()
+        try:
+            nd = self._e.backend.node_docs_get(where={"doc_id": doc_id}, include=["metadatas"])
+            for m in (nd.get("metadatas") or []):
+                if m and m.get("node_id"):
+                    node_ids.add(m["node_id"])
+            summary["deleted_node_doc_rows"] = len(nd.get("ids") or [])
+        except Exception:
+            try:
+                q = self._e.backend.node_get(where={"doc_id": doc_id})
+                for nid in (q.get("ids") or []):
+                    node_ids.add(nid)
+            except Exception:
+                pass
+
+        edge_ids = set()
+        try:
+            ee = self._e.backend.edge_endpoints_get(where={"doc_id": doc_id}, include=["metadatas"])
+            for m in (ee.get("metadatas") or []):
+                if m and m.get("edge_id"):
+                    edge_ids.add(m["edge_id"])
+            summary["deleted_edge_endpoints"] = len(ee.get("ids") or [])
+        except Exception:
+            try:
+                q = self._e.backend.edge_get(where={"doc_id": doc_id})
+                for eid in (q.get("ids") or []):
+                    edge_ids.add(eid)
+            except Exception:
+                pass
+
+        nodes_map = _load_many("node", node_ids)
+        for nid, d in nodes_map.items():
+            refs = d.get("references") or []
+            keep = []
+            removed = 0
+            for r in refs:
+                if r and (r.get("doc_id") == doc_id) and (r.get("insertion_method") == extraction_method):
+                    removed += 1
+                else:
+                    keep.append(r)
+            if removed:
+                summary["deleted_node_refs"] += removed
+                if keep:
+                    d["references"] = keep
+                    _save_node(d)
+                    summary["updated_nodes"] += 1
+                else:
+                    try:
+                        self._e.backend.node_delete(ids=[nid])
+                    except Exception:
+                        pass
+                    try:
+                        self._e.backend.node_docs_delete(where={"node_id": nid, "doc_id": doc_id})
+                    except Exception:
+                        pass
+                    summary["deleted_nodes"] += 1
+            else:
+                try:
+                    self._e.backend.node_docs_delete(where={"node_id": nid, "doc_id": doc_id})
+                except Exception:
+                    pass
+
+        edges_map = _load_many("edge", edge_ids)
+        for eid, d in edges_map.items():
+            refs = d.get("references") or []
+            keep = []
+            removed = 0
+            for r in refs:
+                if r and (r.get("doc_id") == doc_id) and (r.get("insertion_method") == extraction_method):
+                    removed += 1
+                else:
+                    keep.append(r)
+
+            try:
+                self._e.backend.edge_endpoints_delete(where={"edge_id": eid, "doc_id": doc_id})
+            except Exception:
+                pass
+
+            if removed:
+                summary["deleted_edge_refs"] += removed
+                if keep:
+                    d["references"] = keep
+                    _save_edge(d)
+                    summary["updated_edges"] += 1
+                else:
+                    try:
+                        self._e.backend.edge_delete(ids=[eid])
+                    except Exception:
+                        pass
+                    try:
+                        self._e.backend.edge_endpoints_delete(where={"edge_id": eid})
+                    except Exception:
+                        pass
+                    summary["deleted_edges"] += 1
+
+        try:
+            self._e.backend.node_docs_delete(where={"doc_id": doc_id})
+        except Exception:
+            pass
+        try:
+            self._e.backend.edge_endpoints_delete(where={"doc_id": doc_id})
+        except Exception:
+            pass
+
+        return summary
 
     def prune_node_from_edges(self, node_id: str):
         eps = self._e.backend.edge_endpoints_get(
