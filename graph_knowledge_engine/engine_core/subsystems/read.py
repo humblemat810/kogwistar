@@ -13,6 +13,8 @@ class ReadSubsystem(NamespaceProxy):
                 "where_update_from_resolve_mode": "_where_update_from_resolve_mode",
                 "nodes_by_doc_index": "_nodes_by_doc",
                 "edge_ids_by_doc_index": "_edge_ids_by_doc",
+                "load_node_map": "_load_node_map",
+                "load_edge_map": "_load_edge_map",
             },
         )
 
@@ -45,3 +47,9 @@ class ReadSubsystem(NamespaceProxy):
 
     def edge_ids_by_doc_index(self, doc_id: str, insertion_method: str | None = None) -> list[str]:
         return self._call("edge_ids_by_doc_index", doc_id, insertion_method=insertion_method)
+
+    def load_node_map(self, *args, **kwargs):
+        return self._call("load_node_map", *args, **kwargs)
+
+    def load_edge_map(self, *args, **kwargs):
+        return self._call("load_edge_map", *args, **kwargs)

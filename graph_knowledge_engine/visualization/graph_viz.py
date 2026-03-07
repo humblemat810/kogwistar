@@ -32,8 +32,7 @@ def _load_node_map(engine: GraphKnowledgeEngine, ids: List[str], node_type: Type
     if not ids:
         return {}
     try:
-        # Prefer engine helper if available
-        return engine._load_node_map(ids, node_type = node_type)
+        return engine.read.load_node_map(ids, node_type=node_type)
     except Exception:
         nodes = engine.read.get_nodes(ids=ids, node_type = node_type, include= include)
         out = {n.id: n for n in nodes}
@@ -61,7 +60,7 @@ def _load_edge_map(engine: GraphKnowledgeEngine, ids: List[str], edge_type: Type
     if not ids:
         return {}
     try:
-        return engine._load_edge_map(ids)
+        return engine.read.load_edge_map(ids, edge_type=edge_type)
     except Exception:
         edges = engine.read.get_edges(ids=ids, edge_type = edge_type, include = include)
         out = {n.id: n for n in edges}

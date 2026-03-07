@@ -12,3 +12,12 @@ class RollbackSubsystem(NamespaceProxy):
                 "prune_node_refs_for_doc": "_prune_node_refs_for_doc",
             },
         )
+
+    def rollback_document(self, *args, **kwargs):
+        return self._call("rollback_document", *args, **kwargs)
+
+    def delete_edges_by_ids(self, *args, **kwargs):
+        return self._call("delete_edges_by_ids", *args, **kwargs)
+
+    def prune_node_refs_for_doc(self, *args, **kwargs):
+        return self._call("prune_node_refs_for_doc", *args, **kwargs)

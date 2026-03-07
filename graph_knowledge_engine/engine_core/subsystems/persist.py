@@ -49,3 +49,6 @@ class PersistSubsystem(NamespaceProxy):
 
     def persist_graph_extraction(self, *args, **kwargs):
         return self._call("persist_graph_extraction", *args, **kwargs)
+
+    def persist_document_graph_extraction(self, *args, **kwargs):
+        return self._call("persist_document_graph_extraction", *args, **kwargs)

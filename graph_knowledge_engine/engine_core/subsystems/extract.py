@@ -18,6 +18,7 @@ class ExtractSubsystem(NamespaceProxy):
                 "repair_lean_offsets_for_mode": "_repair_lean_offsets_for_mode",
                 "coerce_pages": "_coerce_pages",
                 "fetch_document_text": "_fetch_document_text",
+                "cached_extract_graph_with_llm": "_cached_extract_graph_with_llm",
             },
         )
 
@@ -50,3 +51,6 @@ class ExtractSubsystem(NamespaceProxy):
 
     def fetch_document_text(self, document_id: str) -> str:
         return self._call("fetch_document_text", document_id)
+
+    def cached_extract_graph_with_llm(self, *args, **kwargs):
+        return self._call("cached_extract_graph_with_llm", *args, **kwargs)
