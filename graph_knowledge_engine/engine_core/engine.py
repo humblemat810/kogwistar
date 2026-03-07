@@ -1245,17 +1245,10 @@ class GraphKnowledgeEngine:
         return self.get_edges(self._edge_ids_by_doc(doc_id))
     
     def _delete_edge_ref_rows(self, edge_id: str) -> None:
-        # Deleting by where sometimes misses rows on some backends; prefer id list
-        got = self.backend.edge_refs_get(where={"edge_id": edge_id}, include=[])
-        ids = got.get("ids") or []
-        if ids:
-            self.backend.edge_refs_delete(ids=ids)
+        return self.write.delete_edge_ref_rows(edge_id)
 
     def _delete_node_ref_rows(self, node_id: str) -> None:
-        got = self.backend.node_refs_get(where={"node_id": node_id}, include=[])
-        ids = got.get("ids") or []
-        if ids:
-            self.backend.node_refs_delete(ids=ids)
+        return self.write.delete_node_ref_rows(node_id)
 
     # ----------------------------
     # Phase 1: durable index jobs + reconciler
@@ -1374,86 +1367,11 @@ class GraphKnowledgeEngine:
         return self.persist.select_doc_context(doc_id, max_nodes=max_nodes, max_edges=max_edges)
 
     def _preflight_validate(self, parsed: LLMGraphExtraction|PureGraph|GraphExtractionWithIDs, alias_key: str, alias_book: AliasBook | None = None):
-        """Ensure every endpoint refers to a real id (in-batch or already in DB)."""
-        self._resolve_llm_ids(alias_key, parsed, alias_book = alias_book)  # allocate/resolve first
-
-        batch_node_ids = {n.id for n in parsed.nodes}
-        batch_edge_ids = {e.id for e in parsed.edges}
-
-        need_nodes, need_edges = set(), set()
-        for e in parsed.edges:
-            need_nodes.update(e.source_ids or [])
-            need_nodes.update(e.target_ids or [])
-            if getattr(e, "source_edge_ids", None):
-                need_edges.update(e.source_edge_ids or [])
-            if getattr(e, "target_edge_ids", None):
-                need_edges.update(e.target_edge_ids or [])
-
-        # Remove the ones we are about to write
-        need_nodes -= batch_node_ids
-        need_edges -= batch_edge_ids
-
-        missing_nodes, missing_edges = set(), set()
-        if need_nodes:
-            got = set(self.backend.node_get(ids=list(need_nodes)).get("ids") or [])
-            missing_nodes = need_nodes - got
-        if need_edges:
-            got = set(self.backend.edge_get(ids=list(need_edges)).get("ids") or [])
-            missing_edges = need_edges - got
-
-        if missing_nodes or missing_edges:
-            raise ValueError(f"Dangling references: nodes={sorted(missing_nodes)}, edges={sorted(missing_edges)}")
-
-        return batch_node_ids, batch_edge_ids
+        return self.persist.preflight_validate(parsed, alias_key, alias_book=alias_book)
     def _assert_endpoints_exist(self, edge: Edge | PureChromaEdge):
-        need_nodes = set((edge.source_ids or []) + (edge.target_ids or []))
-        if need_nodes:
-            got = set(self.backend.node_get(ids=list(need_nodes)).get("ids") or [])
-            if got != need_nodes:
-                raise ValueError(f"Missing node endpoints: {sorted(need_nodes - got)}")
-
-        for attr in ("source_edge_ids", "target_edge_ids"):
-            ids = getattr(edge, attr, None) or []
-            if ids:
-                got = set(self.backend.edge_get(ids=ids).get("ids") or [])
-                if got != set(ids):
-                    raise ValueError(f"Missing edge endpoints in {attr}: {sorted(set(ids)-got)}")
+        return self.persist.assert_endpoints_exist(edge)
     def _build_deps(self, parsed):
-        """Dependencies only among *new* objects. Existing ids create no deps."""
-        ts = TopologicalSorter()
-        id2kind, id2obj = {}, {}
-
-        # register new nodes
-        for n in parsed.nodes or []:
-            rid = n.id or str(uuid.uuid4())
-            id2kind[rid], id2obj[rid] = "node", n
-            # if it already exists, no need to sort it; but we keep it to merge refs if provided
-            ts.add(rid)
-
-        # index for quick membership
-        new_ids = set(id2obj.keys())
-
-        # register edges with deps on *new* endpoints present in this batch
-        def deps_for_edge(e):
-            deps = set()
-            for x in (e.source_ids or []) + (e.target_ids or []):
-                if x in new_ids and not self._exists_any(x):
-                    deps.add(x)
-            for x in getattr(e, "source_edge_ids", []) or []:
-                if x in new_ids and not self._exists_any(x):
-                    deps.add(x)
-            for x in getattr(e, "target_edge_ids", []) or []:
-                if x in new_ids and not self._exists_any(x):
-                    deps.add(x)
-            return deps
-
-        for e in parsed.edges or []:
-            rid = e.id or str(uuid.uuid4())
-            id2kind[rid], id2obj[rid] = "edge", e
-            ts.add(rid, *deps_for_edge(e))
-
-        order = list(ts.static_order())  # raises if cycle
-        return order, id2kind, id2obj
+        return self.persist.build_deps(parsed)
     
     def ingest_with_toposort(self, parsed, *, doc_id: str):
         """
@@ -1554,100 +1472,7 @@ class GraphKnowledgeEngine:
         }
         # return {"nodes_added": nodes_added, "edges_added": edges_added}
     def _resolve_llm_ids(self, doc_id: str, parsed: LLMGraphExtraction | PureGraph | GraphExtractionWithIDs, alias_book: AliasBook | None = None) -> None:
-            """
-            In-place:
-            - allocate UUIDs for all new nodes (nn:*) and new edges (ne:*),
-            - de-alias existing N*/E* to UUIDs,
-            - resolve edge endpoints (node + edge).
-            the id can either be, a real id, token indicating a new node that require new id, or a short id that need dealiasing
-            """
-            # alias book → real ids
-            if alias_book is None:
-                # create a book if no book provided
-                book = self._alias_book(doc_id)
-            else:
-                book = alias_book
-            alias_to_real = book.alias_to_real
-
-            def de_alias(x: str) -> str:
-                if not x:
-                    return x
-                if _is_uuid(x):
-                    return x
-                return alias_to_real.get(x, x)
-
-            # First pass: nodes → IDs
-            nn2uuid: dict[str, str] = {}
-            for n in parsed.nodes:
-                # Pull a token in a way that keeps the type `str | None`
-                token = n.id or cast(str | None, getattr(n, "local_id", None))
-
-                if token is None:
-                    n.id = str(uuid.uuid4())
-                    continue
-
-                if token == "":
-                    n.id = str(uuid.uuid4())
-                    continue
-
-                if _is_new_node(token):
-                    rid = nn2uuid.get(token)
-                    if rid is None:
-                        rid = str(uuid.uuid4())
-                        nn2uuid[token] = rid
-                    n.id = rid
-                else:
-                    n.id = de_alias(token)
-            # Second pass: edges → IDs
-            ne2uuid: dict[str, str] = {}
-            for e in parsed.edges:
-                tok = getattr(e, 'local_id', None) or e.id
-                if (not tok) or _is_new_edge(tok) or _is_new_edge(getattr(e, 'local_id', None)):
-                    rid = ne2uuid.get(tok or "") or str(uuid.uuid4())
-                    if tok:
-                        ne2uuid[tok] = rid
-                    e.id = rid
-                else:
-                    e.id = de_alias(tok)
-
-            # Third pass: endpoints
-            def _res(xs: list[str] | None, kind: str) -> list[str] | None:
-                if not xs:
-                    return None
-                out: list[str] = []
-                for x in xs:
-                    if kind == "node":
-                        if _is_new_node(x):
-                            rid = nn2uuid.get(x)
-                            if not rid:
-                                raise ValueError(f"Unknown temp node id: {x}")
-                            out.append(rid)
-                        elif _is_alias(x) or _is_uuid(x):
-                            out.append(de_alias(x))
-                        else:
-                            # last-resort: label match within this parsed batch
-                            key = (x or "").strip().lower()
-                            rid = next((n.id for n in parsed.nodes if (n.label or "").strip().lower() == key), None)
-                            if not rid:
-                                raise ValueError(f"Unresolvable node endpoint token: {x}")
-                            out.append(rid)
-                    else:  # kind == "edge"
-                        if _is_new_edge(x):
-                            rid = ne2uuid.get(x)
-                            if not rid:
-                                raise ValueError(f"Unknown temp edge id: {x}")
-                            out.append(rid)
-                        elif _is_alias(x) or _is_uuid(x):
-                            out.append(de_alias(x))
-                        else:
-                            raise ValueError(f"Unresolvable edge endpoint token: {x}")
-                return out
-
-            for e in parsed.edges:
-                e.source_ids       = _res(e.source_ids, kind="node") or []
-                e.target_ids       = _res(e.target_ids, kind="node") or []
-                e.source_edge_ids  = _res(getattr(e, "source_edge_ids", None), kind="edge")
-                e.target_edge_ids  = _res(getattr(e, "target_edge_ids", None), kind="edge")
+        return self.persist.resolve_llm_ids(doc_id, parsed, alias_book=alias_book)
     def _aliasify_for_prompt(self, doc_id: str, ctx_nodes: list[dict], ctx_edges: list[dict]):
         """Return aliased nodes/edges + prompt strings, using configured ID_STRATEGY."""
         if ID_STRATEGY == "base62":
@@ -2522,101 +2347,14 @@ class GraphKnowledgeEngine:
     def _edge_doc_and_meta(e: "Edge") -> tuple[str, dict]:
         return _edge_doc_and_meta(e)
     def _maybe_reindex_edge_refs(self, edge: Edge, *, force: bool = False) -> None:
-        
-        new_fp = _refs_fingerprint(edge.mentions or [])
-        meta = self.backend.edge_get(ids=[edge.safe_get_id()], include=["metadatas"])
-        old_fp = None
-        metadatas = meta.get("metadatas")
-        if metadatas and metadatas[0]:
-            old_fp = metadatas[0].get("edge_refs_fp")
-
-        # Secondary guards: row-count & doc_id set must match
-        got = self.backend.edge_refs_get(where={"edge_id": edge.id}, include=["documents"])
-        current_rows = got.get("documents") or []
-        current_doc_ids = {json.loads(d).get("doc_id") for d in current_rows}
-        expect_doc_ids = {getattr(r, "doc_id", None) for r in (edge.mentions or [])}
-        count_ok = (len(current_rows) == len(edge.mentions or []))
-        docset_ok = (current_doc_ids == expect_doc_ids)
-
-        if force or (new_fp != old_fp) or (not count_ok) or (not docset_ok):
-            self.backend.edge_update(ids=[edge.safe_get_id()], metadatas=[{"edge_refs_fp": new_fp}])
-            self._index_edge_refs(edge)
+        return self.write.maybe_reindex_edge_refs(edge, force=force)
 
     def _maybe_reindex_node_refs(self, node: Node, *, force: bool = False) -> None:
-        new_fp = _refs_fingerprint(node.mentions or [])
-        meta = self.backend.node_get(ids=[node.id], include=["metadatas"])
-        old_fp = None
-        metadatas = meta.get("metadatas")
-        if metadatas and metadatas[0]:
-            old_fp = metadatas[0].get("node_refs_fp")
-
-        got = self.backend.node_refs_get(where={"node_id": node.id}, include=["documents"])
-        current_rows = got.get("documents") or []
-        current_doc_ids = {json.loads(d).get("doc_id") for d in current_rows}
-        expect_doc_ids = {getattr(r, "doc_id", None) for r in (node.mentions or [])}
-        count_ok = (len(current_rows) == len(node.mentions or []))
-        docset_ok = (current_doc_ids == expect_doc_ids)
-
-        if force or (new_fp != old_fp) or (not count_ok) or (not docset_ok):
-            self.backend.node_update(ids=[node.id], metadatas=[{"node_refs_fp": new_fp}])
-            self._index_node_refs(node)
+        return self.write.maybe_reindex_node_refs(node, force=force)
     def _index_edge_refs(self, edge: Edge) -> list[str]:
-        self._delete_edge_ref_rows(edge.id)
-
-        ids, docs, metas = [], [], []
-        for i, ref in enumerate(edge.mentions or []):
-            rid = f"{edge.id}::ref::{i}"
-            did = getattr(ref, "doc_id", None) or edge.doc_id
-            ver = getattr(ref, "verification", None)
-            row = _strip_none({
-                "id": rid,
-                "edge_id": edge.id,
-                "doc_id": did,
-                "insertion_method" : getattr(ref, "insertion_method", None),
-                "verification_method": getattr(ver, "method", None),
-                "is_verified": getattr(ver, "is_verified", None),
-                "verificication_score": getattr(ver, "score", None),
-                "start_page": getattr(ref, "start_page", None),
-                "end_page": getattr(ref, "end_page", None),
-                "start_char": getattr(ref, "start_char", None),
-                "end_char": getattr(ref, "end_char", None),
-            })
-            ids.append(rid); docs.append(json.dumps(row)); metas.append(row)
-
-        if ids:
-            self.backend.edge_refs_add(ids=ids, documents=docs, metadatas=metas, embeddings=[self._iterative_defensive_emb(str(d)) for d in docs])
-        return ids
+        return self.write.index_edge_refs(edge)
     def _index_node_refs(self, node: Node)-> list[str]:
-        """
-            create index for records, may flatten json into plain
-        """
-        self._delete_node_ref_rows(node.id)
-
-        ids, docs, metas = [], [], []
-        for i, mention in enumerate(node.mentions or []):
-            for j, span in enumerate(mention.spans):
-                rid = f"{node.id}::mention::{i}::span::{j}"
-                did = getattr(span, "doc_id", None) or node.doc_id
-                ver = getattr(span, "verification", None)
-                row = _strip_none({
-                    "id": rid,
-                    "node_id": node.id,
-                    "doc_id": did,
-                    "insertion_method" : getattr(span, "insertion_method", None),
-                    "verification_method": getattr(ver, "method", None),
-                    "is_verified": getattr(ver, "is_verified", None),
-                    "verificication_score": getattr(ver, "score", None),
-                    "page_number": getattr(span, "start_page", None),
-                    "excerpt": getattr(span, "excerpt", None),
-                    "start_char": getattr(span, "start_char", None),
-                    "end_char": getattr(span, "end_char", None),
-                })
-                ids.append(rid); docs.append(json.dumps(row))
-                metas.append(row)
-
-        if ids:
-            self.backend.node_refs_add(ids=ids, documents=docs, metadatas=metas, embeddings=[self._iterative_defensive_emb(str(d)) for d in docs])
-        return ids
+        return self.write.index_node_refs(node)
     def _alias_doc_in_prompt(self) -> str:
         # A tiny legend we show to the LLM so it knows the alias to use
         return f"Use '{_DOC_ALIAS}' whenever you need to reference the current document in ReferenceSession fields."
@@ -2700,7 +2438,7 @@ class GraphKnowledgeEngine:
 
 
     # ----------------------------
-    # Chroma adders
+    # Chroma-style api adders
     # ----------------------------
     def add_pure_node(self, node: PureChromaNode):
         # node.doc_id = doc_id
@@ -3168,95 +2906,12 @@ class GraphKnowledgeEngine:
         mode: str = "append",   # "replace" | "append" | "skip-if-exists"
         assign_real_id_in_place = True
     ) -> dict:
-        """
-        the external user use case is to send the whole extraction via mcp as a copy and therefore
-        by default no deep copy is made.
-        Write nodes/edges/endpoints for `document.id`.
-        Returns concrete ids written for idempotent tests.
-        node that side effect parsed is modified in place for efficiency 
-        if assign_real_id_in_place is False, a parsed deep copy is made
-        """
-        doc_id = document.id
-        if not assign_real_id_in_place:
-            parsed = parsed.model_copy(deep=True)
-        # if replace, rollback prior doc content first
-        if mode == "replace":
-            self.rollback_document(doc_id)
-
-        # ensure doc row exists (idempotent)
-        self.add_document(document)
-        # now validate (ensures no dangling refs to *other* docs)
-        self._preflight_validate(parsed, doc_id)
-        # self.ingest_with_toposort(parsed, doc_id = doc_id)
-
-        # diagnose code: set([j for i in parsed.edges for j in i.target_ids]).union(set([j for i in parsed.edges for j in i.source_ids])) <= set([i.id for i in parsed.edges]).union(set([i.id for i in parsed.nodes]))
-
-        # persist and collect ids
-        node_ids, edge_ids = [], []
-        # fallback_snip = (document.content[:160] + "…") if document.content else None
-        # _alloc_real_ids duplicated logic in Self::_resolve_llm_ids        
-        _ = _alloc_real_ids(parsed)  # rewrite in place
-        order, id2kind, id2obj = self._build_deps(parsed)
-        span_validator: BaseDocValidator = self.get_span_validator_of_doc_type(document = document)
-        nodes_added = edges_added = 0
-        nl = '\n'
-        try:
-            for rid in order:
-                kind, obj = id2kind[rid], id2obj[rid]
-                # for ln in parsed.nodes:
-                if kind == 'node':
-                    ln: Node = Node.model_validate(obj.model_dump(field_mode='llm'), context={'insertion_method': 'llm_graph_extraction'})
-                    ln.mentions = self._dealias_span(ln.mentions, document.id)
-                    # skip-if-exists mode
-                    if mode == "skip-if-exists":
-                        got = self.backend.node_get(ids=[ln.id])
-                        if got.get("ids"):  # already there
-                            node_ids.append(ln.id)
-                            continue
-
-                    for i_g, g in enumerate(ln.mentions):
-                        for i_sp, sp in enumerate(g.spans):
-                            result = span_validator.validate_span(doc_id = doc_id, span = sp, engine = self, doc=document 
-                                                                    if document.id == sp.doc_id else self.get_document(sp.doc_id))
-                            if result['correctness'] != True:
-                                raise Exception(f"Incorrect span occur in grounding {str(g)} span {str(sp)}")
-                    n = ln.model_copy(deep=True)
-                    emb_text = f"{n.label}: {n.summary} : {nl.join(i['context'] for i in self.extract_reference_contexts(ln)[:1])}"
-                    if emb_text is None:
-                        emb_text = f"{n.label}: {n.summary} : {nl.join(i['context'] for i in self.extract_reference_contexts(ln)[:1])}"
-                    n.embedding = self._ef([emb_text])[0]
-                    self.add_node(n, doc_id=doc_id)
-                    node_ids.append(n.id)
-                elif kind == 'edge':
-                # for le in parsed.edges:
-                    le: Edge = Edge.model_validate(obj.model_dump(field_mode='llm'), context={'insertion_method': 'llm_graph_extraction'})
-                    le.mentions = self._dealias_span(le.mentions, document.id)
-                    if mode == "skip-if-exists":
-                        got = self.backend.edge_get(ids=[le.id])
-                        if got.get("ids"):
-                            edge_ids.append(le.id)
-                            continue
-                    # refs = [Span.model_validate(i.model_dump(field_mode = 'backend'), context={'insertion_method': i.insertion_method or 'llm_graph_extraction'}) for i in le.mentions]
-                    
-                    for g in le.mentions:
-                        for sp in g.spans:
-                            result = span_validator.validate_span(doc_id = doc_id, span = sp, engine = self, doc=document
-                                                                if document.id == sp.doc_id else self.get_document(sp.doc_id))
-                            if result['correctness'] != True:
-                                raise Exception(f"Incorrect span occur in grounding {str(g)} span {str(sp)}")
-                    e = le.model_copy(deep=True)
-                    e.embedding = self._ef([f"{le.label}: {le.summary} : {nl.join(i['context'] for i in self.extract_reference_contexts(le)[:1])}"])[0]
-                    self.add_edge(e, doc_id=doc_id)
-                    edge_ids.append(e.id)
-        except Exception as _e:
-            raise
-        return {
-            "document_id": doc_id,
-            "node_ids": node_ids,
-            "edge_ids": edge_ids,
-            "nodes_added": len(node_ids),
-            "edges_added": len(edge_ids),
-        }        
+        return self.persist.persist_graph_extraction(
+            document=document,
+            parsed=parsed,
+            mode=mode,
+            assign_real_id_in_place=assign_real_id_in_place,
+        )
     def extract_graph_with_llm(self, *, content: str, doc_type: str, alias_nodes_str = "[Empty]" , alias_edges_str = "[Empty]", with_parsed = True, 
                                instruction_for_node_edge_contents_parsing_inclusion: None| str = None, validate = True, autofix : bool | str= True,
                                last_iteration_result = None,
@@ -3386,73 +3041,11 @@ class GraphKnowledgeEngine:
         parsed: GraphExtractionWithIDs|LLMGraphExtraction,
         mode: str = "append",   # "replace" | "append" | "skip-if-exists"
     ) -> dict:
-        """
-        Write nodes/edges/endpoints for `document.id`.
-        Returns concrete ids written for idempotent tests.
-        """
-
-        # now validate (ensures no dangling refs to *other* docs)
-        self._preflight_validate(parsed, doc_id)
-        # self.ingest_with_toposort(parsed, doc_id = doc_id)
-
-        # persist and collect ids
-        node_ids, edge_ids = [], []
-        _ = _alloc_real_ids(parsed)  # rewrite in place
-        order, id2kind, id2obj = self._build_deps(parsed)
-        
-        span_validator: BaseDocValidator = self.get_span_validator_of_doc_type(doc_id=doc_id)
-        nodes_added = edges_added = 0
-        nl = '\n'
-        for rid in order:
-            kind, obj = id2kind[rid], id2obj[rid]
-            # for ln in parsed.nodes:
-            if kind == 'node':
-                ln: Node = obj
-                ln.mentions = self._dealias_span(ln.mentions, doc_id)
-                # skip-if-exists mode
-                for g in ln.mentions:
-                    for sp in g.spans:
-                        span_validator.validate_span(doc_id = doc_id, span = sp)
-                if mode == "skip-if-exists":
-                    got = self.backend.node_get(ids=[ln.id])
-                    if got.get("ids"):  # already there
-                        node_ids.append(ln.id)
-                        continue
-                
-                        
-                n = ln
-
-                emb_text = f"{n.label}: {n.summary} : {nl.join(i['context'] for i in self.extract_reference_contexts(ln)[:1])}"
-                n.embedding = self._ef([emb_text])[0]
-                self.add_node(n, doc_id=doc_id)
-                node_ids.append(n.id)
-            elif kind == 'edge':
-            # for le in parsed.edges:
-                le: Edge = obj
-                le.mentions = self._dealias_span(le.mentions, doc_id)
-                for g in le.mentions:
-                    for sp in g.spans:
-                        span_validator.validate_span(doc_id = doc_id, span = sp)
-                if mode == "skip-if-exists":
-                    got = self.backend.edge_get(ids=[le.id])
-                    if got.get("ids"):
-                        edge_ids.append(le.id)
-                        continue
-                
-                e = le
-
-                emb_text = f"{le.label}: {le.summary} : {nl.join(i['context'] for i in self.extract_reference_contexts(le)[:1])}"
-                e.embedding = self._ef([emb_text])[0]
-                self.add_edge(e, doc_id=doc_id)
-                edge_ids.append(e.id)
-
-        return {
-            "document_id": doc_id,
-            "node_ids": node_ids,
-            "edge_ids": edge_ids,
-            "nodes_added": len(node_ids),
-            "edges_added": len(edge_ids),
-        }
+        return self.persist.persist_document_graph_extraction(
+            doc_id=doc_id,
+            parsed=parsed,
+            mode=mode,
+        )
 
     def rollback_document_extraction(
         self,
@@ -4337,4 +3930,3 @@ def _install_non_conversation_shims() -> None:
 
 
 _install_non_conversation_shims()
-

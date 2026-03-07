@@ -1,13 +1,37 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from typing import Sequence, cast
 
 from ...cdc.change_event import EntityRefModel
 from ..models import Document, Domain, Edge, Node
 from ..utils.metadata import json_or_none, strip_none
-from ..utils.refs import extract_doc_ids_from_refs
+from ..utils.refs import (
+    edge_doc_and_meta as edge_doc_and_meta_util,
+    extract_doc_ids_from_refs,
+    node_doc_and_meta as node_doc_and_meta_util,
+)
 from .base import NamespaceProxy
+
+
+def _refs_fingerprint(refs) -> str:
+    payload = [
+        {
+            "doc_id": getattr(r, "doc_id", None),
+            "method": getattr(getattr(r, "verification", None), "method", None),
+            "is_verified": getattr(getattr(r, "verification", None), "is_verified", None),
+            "score": getattr(getattr(r, "verification", None), "score", None),
+            "sp": getattr(r, "start_page", None),
+            "ep": getattr(r, "end_page", None),
+            "sc": getattr(r, "start_char", None),
+            "ec": getattr(r, "end_char", None),
+            "snip": (getattr(r, "excerpt", None) or "")[:64],
+        }
+        for r in (refs or [])
+    ]
+    blob = json.dumps(payload, sort_keys=False, separators=(",", ":")).encode("utf-8")
+    return hashlib.blake2b(blob, digest_size=16).hexdigest()
 
 
 class WriteSubsystem(NamespaceProxy):
@@ -70,7 +94,7 @@ class WriteSubsystem(NamespaceProxy):
             self._e.reconcile_indexes(max_jobs=50)
         else:
             self.index_node_docs(node)
-            self._e._maybe_reindex_node_refs(node)
+            self.maybe_reindex_node_refs(node)
         self._e._emit_change(
             op="node.upsert",
             entity=EntityRefModel(
@@ -87,12 +111,12 @@ class WriteSubsystem(NamespaceProxy):
     def _add_edge_impl(self, edge: Edge, doc_id: str | None = None):
         if doc_id is not None:
             edge.doc_id = doc_id
-        s_nodes, s_edges, t_nodes, t_edges = self._e._split_endpoints(edge.source_ids, edge.target_ids)
+        s_nodes, s_edges, t_nodes, t_edges = self._e.adjudicate.split_endpoints(edge.source_ids, edge.target_ids)
         edge.source_ids = s_nodes
         edge.source_edge_ids = (getattr(edge, "source_edge_ids", []) or []) + s_edges
         edge.target_ids = t_nodes
         edge.target_edge_ids = (getattr(edge, "target_edge_ids", []) or []) + t_edges
-        self._e._assert_endpoints_exist(edge)
+        self._e.persist.assert_endpoints_exist(edge)
 
         from ...conversation.models import ConversationEdge
 
@@ -132,7 +156,7 @@ class WriteSubsystem(NamespaceProxy):
             self._e.enqueue_index_jobs_for_edge(edge.safe_get_id(), op="UPSERT")
             self._e.reconcile_indexes(max_jobs=50)
         else:
-            self._e._maybe_reindex_edge_refs(edge)
+            self.maybe_reindex_edge_refs(edge)
             rows = self.fanout_endpoints_rows(edge, doc_id)
             if rows:
                 ep_ids = [r["id"] for r in rows]
@@ -241,10 +265,79 @@ class WriteSubsystem(NamespaceProxy):
         return doc_ids
 
     def index_node_refs(self, *args, **kwargs):
-        return self._e._index_node_refs(*args, **kwargs)
+        node = args[0] if args else kwargs["node"]
+        self.delete_node_ref_rows(node.id)
+
+        ids, docs, metas = [], [], []
+        for i, mention in enumerate(node.mentions or []):
+            for j, span in enumerate(mention.spans):
+                rid = f"{node.id}::mention::{i}::span::{j}"
+                did = getattr(span, "doc_id", None) or node.doc_id
+                ver = getattr(span, "verification", None)
+                row = strip_none(
+                    {
+                        "id": rid,
+                        "node_id": node.id,
+                        "doc_id": did,
+                        "insertion_method": getattr(span, "insertion_method", None),
+                        "verification_method": getattr(ver, "method", None),
+                        "is_verified": getattr(ver, "is_verified", None),
+                        "verificication_score": getattr(ver, "score", None),
+                        "page_number": getattr(span, "start_page", None),
+                        "excerpt": getattr(span, "excerpt", None),
+                        "start_char": getattr(span, "start_char", None),
+                        "end_char": getattr(span, "end_char", None),
+                    }
+                )
+                ids.append(rid)
+                docs.append(json.dumps(row))
+                metas.append(row)
+
+        if ids:
+            self._e.backend.node_refs_add(
+                ids=ids,
+                documents=docs,
+                metadatas=metas,
+                embeddings=[self._e._iterative_defensive_emb(str(d)) for d in docs],
+            )
+        return ids
 
     def index_edge_refs(self, *args, **kwargs):
-        return self._e._index_edge_refs(*args, **kwargs)
+        edge = args[0] if args else kwargs["edge"]
+        self.delete_edge_ref_rows(edge.id)
+
+        ids, docs, metas = [], [], []
+        for i, ref in enumerate(edge.mentions or []):
+            rid = f"{edge.id}::ref::{i}"
+            did = getattr(ref, "doc_id", None) or edge.doc_id
+            ver = getattr(ref, "verification", None)
+            row = strip_none(
+                {
+                    "id": rid,
+                    "edge_id": edge.id,
+                    "doc_id": did,
+                    "insertion_method": getattr(ref, "insertion_method", None),
+                    "verification_method": getattr(ver, "method", None),
+                    "is_verified": getattr(ver, "is_verified", None),
+                    "verificication_score": getattr(ver, "score", None),
+                    "start_page": getattr(ref, "start_page", None),
+                    "end_page": getattr(ref, "end_page", None),
+                    "start_char": getattr(ref, "start_char", None),
+                    "end_char": getattr(ref, "end_char", None),
+                }
+            )
+            ids.append(rid)
+            docs.append(json.dumps(row))
+            metas.append(row)
+
+        if ids:
+            self._e.backend.edge_refs_add(
+                ids=ids,
+                documents=docs,
+                metadatas=metas,
+                embeddings=[self._e._iterative_defensive_emb(str(d)) for d in docs],
+            )
+        return ids
 
     def fanout_endpoints_rows(self, edge: Edge, doc_id: str | None):
         def _maybe_doc_for_edge(eid: str) -> str | None:
@@ -310,19 +403,67 @@ class WriteSubsystem(NamespaceProxy):
         return [{k: v for k, v in r.items() if v is not None} for r in rows]
 
     def node_doc_and_meta(self, *args, **kwargs):
-        return self._e._node_doc_and_meta(*args, **kwargs)
+        return node_doc_and_meta_util(*args, **kwargs)
 
     def edge_doc_and_meta(self, *args, **kwargs):
-        return self._e._edge_doc_and_meta(*args, **kwargs)
+        return edge_doc_and_meta_util(*args, **kwargs)
 
     def strip_none(self, *args, **kwargs):
-        return self._e._strip_none(*args, **kwargs)
+        return strip_none(*args, **kwargs)
 
     def json_or_none(self, *args, **kwargs):
-        return self._e._json_or_none(*args, **kwargs)
+        return json_or_none(*args, **kwargs)
 
     def delete_edge_ref_rows(self, *args, **kwargs):
-        return self._e._delete_edge_ref_rows(*args, **kwargs)
+        edge_id = args[0] if args else kwargs["edge_id"]
+        got = self._e.backend.edge_refs_get(where={"edge_id": edge_id}, include=[])
+        ids = got.get("ids") or []
+        if ids:
+            self._e.backend.edge_refs_delete(ids=ids)
+        return None
 
     def delete_node_ref_rows(self, *args, **kwargs):
-        return self._e._delete_node_ref_rows(*args, **kwargs)
+        node_id = args[0] if args else kwargs["node_id"]
+        got = self._e.backend.node_refs_get(where={"node_id": node_id}, include=[])
+        ids = got.get("ids") or []
+        if ids:
+            self._e.backend.node_refs_delete(ids=ids)
+        return None
+
+    def maybe_reindex_edge_refs(self, edge: Edge, *, force: bool = False) -> None:
+        new_fp = _refs_fingerprint(edge.mentions or [])
+        meta = self._e.backend.edge_get(ids=[edge.safe_get_id()], include=["metadatas"])
+        old_fp = None
+        metadatas = meta.get("metadatas")
+        if metadatas and metadatas[0]:
+            old_fp = metadatas[0].get("edge_refs_fp")
+
+        got = self._e.backend.edge_refs_get(where={"edge_id": edge.id}, include=["documents"])
+        current_rows = got.get("documents") or []
+        current_doc_ids = {json.loads(d).get("doc_id") for d in current_rows}
+        expect_doc_ids = {getattr(r, "doc_id", None) for r in (edge.mentions or [])}
+        count_ok = len(current_rows) == len(edge.mentions or [])
+        docset_ok = current_doc_ids == expect_doc_ids
+
+        if force or (new_fp != old_fp) or (not count_ok) or (not docset_ok):
+            self._e.backend.edge_update(ids=[edge.safe_get_id()], metadatas=[{"edge_refs_fp": new_fp}])
+            self.index_edge_refs(edge)
+
+    def maybe_reindex_node_refs(self, node: Node, *, force: bool = False) -> None:
+        new_fp = _refs_fingerprint(node.mentions or [])
+        meta = self._e.backend.node_get(ids=[node.id], include=["metadatas"])
+        old_fp = None
+        metadatas = meta.get("metadatas")
+        if metadatas and metadatas[0]:
+            old_fp = metadatas[0].get("node_refs_fp")
+
+        got = self._e.backend.node_refs_get(where={"node_id": node.id}, include=["documents"])
+        current_rows = got.get("documents") or []
+        current_doc_ids = {json.loads(d).get("doc_id") for d in current_rows}
+        expect_doc_ids = {getattr(r, "doc_id", None) for r in (node.mentions or [])}
+        count_ok = len(current_rows) == len(node.mentions or [])
+        docset_ok = current_doc_ids == expect_doc_ids
+
+        if force or (new_fp != old_fp) or (not count_ok) or (not docset_ok):
+            self._e.backend.node_update(ids=[node.id], metadatas=[{"node_refs_fp": new_fp}])
+            self.index_node_refs(node)
