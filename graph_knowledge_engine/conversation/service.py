@@ -28,7 +28,14 @@ from graph_knowledge_engine.conversation.models import (
     FilteringResult,
     MetaFromLastSummary,
     RetrievalResult,
-    infer_conversation_edge_causal_type,
+)
+from graph_knowledge_engine.conversation.policy import (
+    get_chat_tail,
+    get_last_seq_node,
+    install_engine_hooks,
+    last_summary_of_node,
+    normalize_edge_metadata,
+    validate_edge_add,
 )
 from graph_knowledge_engine.engine_core.models import ContextCost, Grounding, Span
 from graph_knowledge_engine.id_provider import stable_id
@@ -60,6 +67,7 @@ class ConversationService:
         self.workflow_engine = workflow_engine
         self.llm = llm or conversation_engine.llm
         self.runtime_cls = runtime_cls
+        install_engine_hooks(conversation_engine)
 
         self.orchestrator = ConversationOrchestrator(
             conversation_engine=conversation_engine,
@@ -120,70 +128,10 @@ class ConversationService:
         return self._get_last_seq_node(conversation_id)
 
     def _normalize_conversation_edge_metadata(self, edge: ConversationEdge) -> None:
-        md = dict(edge.metadata or {})
-        if md.get("causal_type") is None:
-            md["causal_type"] = infer_conversation_edge_causal_type(edge.relation)
-        edge.metadata = md
+        normalize_edge_metadata(edge)
 
     def _validate_conversation_edge_add(self, edge: ConversationEdge) -> None:
-        eng = self.conversation_engine
-        if eng.kg_graph_type != "conversation":
-            return
-
-        self._normalize_conversation_edge_metadata(edge)
-        md = edge.metadata or {}
-        causal_type = md.get("causal_type") or infer_conversation_edge_causal_type(edge.relation)
-        doc_id = eng._conversation_doc_id_for_edge(edge)
-
-        src = (edge.source_ids or [None])[0]
-        tgt = (edge.target_ids or [None])[0]
-
-        if edge.relation == "next_turn" or causal_type == "chain":
-            if src is None or tgt is None:
-                raise ValueError("next_turn requires single source_id and single target_id")
-            if (getattr(edge, "source_edge_ids", []) or []) or (getattr(edge, "target_edge_ids", []) or []):
-                raise ValueError("next_turn must be node-to-node only (no edge endpoints)")
-
-            w_out = eng._where_and(
-                {"relation": "next_turn"},
-                {"role": "src"},
-                {"endpoint_type": "node"},
-                {"endpoint_id": src},
-                ({"doc_id": doc_id} if doc_id else {}),
-            )
-            if eng._edge_endpoints_exists(where=w_out):
-                raise ValueError(f"next_turn outgoing already exists for source_id={src}")
-
-            w_in = eng._where_and(
-                {"relation": "next_turn"},
-                {"role": "tgt"},
-                {"endpoint_type": "node"},
-                {"endpoint_id": tgt},
-                ({"doc_id": doc_id} if doc_id else {}),
-            )
-            if eng._edge_endpoints_exists(where=w_in):
-                raise ValueError(f"next_turn incoming already exists for target_id={tgt}")
-
-        if causal_type == "dependency":
-            if tgt is None:
-                raise ValueError("dependency edge requires single target_id")
-
-            w_used_chain = eng._where_and(
-                {"role": "src"},
-                {"endpoint_type": "node"},
-                {"endpoint_id": tgt},
-                {"causal_type": "chain"},
-                ({"doc_id": doc_id} if doc_id else {}),
-            )
-            w_used_dep = eng._where_and(
-                {"role": "src"},
-                {"endpoint_type": "node"},
-                {"endpoint_id": tgt},
-                {"causal_type": "dependency"},
-                ({"doc_id": doc_id} if doc_id else {}),
-            )
-            if eng._edge_endpoints_exists(where=w_used_chain) or eng._edge_endpoints_exists(where=w_used_dep):
-                raise ValueError(f"Cannot add dependency incoming edge into already-used node {tgt}")
+        validate_edge_add(self.conversation_engine, edge)
 
     def _create_conversation_primitive(
         self,
@@ -234,7 +182,15 @@ class ConversationService:
         )
         dummy_span = Span.from_dummy_for_conversation()
         start_node.mentions = [Grounding(spans=[dummy_span])]
-        eng.add_node(start_node)
+        writer = getattr(eng, "write", None)
+        add_node = getattr(writer, "add_node", None) if writer is not None else None
+        if callable(add_node):
+            add_node(start_node)
+        else:
+            try:
+                eng.add_node(start_node, None)
+            except TypeError:
+                eng.add_node(start_node)
         return conv_id, str(node_id)
 
     def create_conversation(self, user_id, conv_id=None, node_id: str | None | uuid.UUID = None) -> tuple[str, str]:
@@ -242,25 +198,7 @@ class ConversationService:
         return str(conv_out), str(node_out)
 
     def _get_last_seq_node(self, conversation_id, min_seq=None):
-        eng = self.conversation_engine
-        if min_seq is None:
-            min_seq = self.max_node_seq_present(conversation_id)
-        if eng.kg_graph_type != "conversation":
-            raise Exception("conversation only allowed to be on canva engine")
-        got = eng.backend.node_get(
-            where={
-                "$and": [
-                    {"conversation_id": conversation_id},
-                ]
-                + [{"seq": {"$gte": min_seq or 0}}]
-            },
-            include=["documents", "metadatas", "embeddings"],
-        )
-        if not got["ids"]:
-            return None
-        nodes: list[ConversationNode] = eng.nodes_from_single_or_id_query_result(got, node_type=ConversationNode)
-        nodes.sort(key=lambda n: n.metadata.get("seq") or -1)
-        return nodes[-1]
+        return get_last_seq_node(self.conversation_engine, conversation_id, min_seq=min_seq)
 
     def _get_conversation_tail(
         self,
@@ -268,45 +206,28 @@ class ConversationService:
         min_turn_index: int | None = None,
         tail_search_includes: list[str] = ["conversation_start", "conversation_turn", "conversation_summary", "assistant_turn"],
     ) -> Optional[ConversationNode]:
-        eng = self.conversation_engine
-        if eng.kg_graph_type != "conversation":
-            raise Exception("conversation only allowed to be on canva engine")
-        got = eng.backend.node_get(
-            where={
-                "$and": [{"conversation_id": conversation_id}, {"in_conversation_chain": True}]
-                + ([{"turn_index": {"$gte": min_turn_index}}] if min_turn_index is not None else [])
-            },
-            include=["documents", "metadatas", "embeddings"],
+        return get_chat_tail(
+            self.conversation_engine,
+            conversation_id=conversation_id,
+            min_turn_index=min_turn_index,
+            tail_search_includes=tail_search_includes,
         )
-        if not got["ids"]:
-            return None
-        nodes: list[ConversationNode] = eng.nodes_from_single_or_id_query_result(got, node_type=ConversationNode)
-        nodes2 = [x for x in nodes if x.metadata.get("entity_type") in tail_search_includes]
-        if not nodes2:
-            return None
-        nodes2.sort(key=lambda n: n.turn_index or -1)
-        return nodes2[-1]
 
     def last_summary_of_node(self, node: ConversationNode):
-        eng = self.conversation_engine
-        summaries = eng.get_nodes(
-            where=eng._where_and(
-                {"conversation_id": node.conversation_id},
-                {"entity_type": "conversation_summary"},
-            ),
-            node_type=ConversationNode,
-            limit=20000,
+        return last_summary_of_node(self.conversation_engine, node)
+
+    def get_conversation_tail(
+        self,
+        conversation_id: str,
+        min_turn_index: int | None = None,
+        tail_search_includes: list[str] | None = None,
+    ) -> Optional[ConversationNode]:
+        return self._get_conversation_tail(
+            conversation_id=conversation_id,
+            min_turn_index=min_turn_index,
+            tail_search_includes=tail_search_includes
+            or ["conversation_start", "conversation_turn", "conversation_summary", "assistant_turn"],
         )
-        best = None
-        best_idx = -1
-        for s in summaries or []:
-            ti = getattr(s, "turn_index", None)
-            if ti is None:
-                continue
-            if node.turn_index is not None and ti <= node.turn_index and ti > best_idx:
-                best = s
-                best_idx = ti
-        return [best] if best is not None else []
 
     def add_turn(self, *args, **kwargs):
         return self.orchestrator.add_conversation_turn(*args, **kwargs)
@@ -631,7 +552,7 @@ class ConversationService:
                 domain_id=None,
                 canonical_entity_id=None,
             )
-            eng.add_node(node)
+            eng.write.add_node(node)
 
         scope = f"conv:{conversation_id}"
         for ordinal, nid in enumerate(used_node_ids):

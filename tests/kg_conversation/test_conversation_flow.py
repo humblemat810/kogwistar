@@ -7,7 +7,9 @@ from chromadb.utils.embedding_functions import EmbeddingFunction
 from chromadb.api.types import Embeddings
 from langchain_core.language_models import BaseChatModel
 from langchain_core.prompts import ChatPromptTemplate
+from graph_knowledge_engine.conversation.filtering import candiate_filtering_callback
 from graph_knowledge_engine.conversation.models import ConversationNode, FilteringResult, MetaFromLastSummary
+from graph_knowledge_engine.conversation.service import ConversationService
 from graph_knowledge_engine.cdc.oplog import OplogWriter
 from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
 from graph_knowledge_engine.engine_core.models import Node, Span, Grounding, MentionVerification
@@ -104,7 +106,11 @@ def test_conversation_flow(backend_kind: str, tmp_path, sa_engine, pg_schema):
     # my_factory = tool_id_factory()
     my_factory = stable_id
     conversation_engine.tool_call_id_factory = my_factory
-    orc=conversation_engine._get_orchestrator(ref_knowledge_engine=engine)
+    svc = ConversationService.from_engine(
+        conversation_engine,
+        knowledge_engine=engine,
+    )
+    orc = svc.orchestrator
     orc.tool_runner.tool_call_id_factory = my_factory
     # 1. Pre-populate Knowledge Graph
     # We need a node "N1" for the filter to find/return.
@@ -163,7 +169,7 @@ def test_conversation_flow(backend_kind: str, tmp_path, sa_engine, pg_schema):
     # 2. Create Conversation
     conv_id = "conv_test_001"
     start_node_id = "start_con_node_001"
-    conv_id, start_node_id_returned = conversation_engine.create_conversation(user_id, conv_id, start_node_id)
+    conv_id, start_node_id_returned = svc.create_conversation(user_id, conv_id, start_node_id)
     assert conv_id
     assert start_node_id_returned == start_node_id
     # Check start node
@@ -176,7 +182,6 @@ def test_conversation_flow(backend_kind: str, tmp_path, sa_engine, pg_schema):
     memory = Memory(location = '.joblib')
     
     # Monkey patch with typed cacheing
-    from graph_knowledge_engine.engine_core.engine import candiate_filtering_callback
     candiate_filtering_callback_cached = cached(memory, candiate_filtering_callback)
     from functools import partial
     cached_deco = partial(cached, memory)
@@ -207,10 +212,10 @@ def test_conversation_flow(backend_kind: str, tmp_path, sa_engine, pg_schema):
         return FilteringResult.model_validate(dumped), reasoning
     # 3. Add Turn 1
     turn_id = "turn_cached_id_1"
-    res = conversation_engine.add_conversation_turn(user_id, conv_id, turn_id, "mem0", 
-                                                    role="user", content="Hello computer", 
-                                                    ref_knowledge_engine=engine,
-                                                    filtering_callback = candiate_filtering_callback_cached)
+    res = svc.add_conversation_turn(user_id, conv_id, turn_id, "mem0",
+                                    role="user", content="Hello computer",
+                                    ref_knowledge_engine=engine,
+                                    filtering_callback=candiate_filtering_callback_cached)
     prev_turn_meta_summary : MetaFromLastSummary = res.prev_turn_meta_summary
     assert res.turn_index == 2
     turn_id = res.user_turn_node_id
@@ -265,15 +270,15 @@ def test_conversation_flow(backend_kind: str, tmp_path, sa_engine, pg_schema):
     # Add 5 more turns to guarantee reach index 5.
     
     #hard code index below
-    conversation_orchestrator = conversation_engine._get_orchestrator(ref_knowledge_engine=engine)
-    last_turn_node = conversation_engine._get_conversation_tail(conv_id)
+    conversation_orchestrator = svc.orchestrator
+    last_turn_node = svc.get_conversation_tail(conv_id)
     user_conv_chain_length = conversation_orchestrator.get_chain_length(user_id=user_id, conversation_id=conv_id)
     i_start = user_conv_chain_length
     if i_start is None:
         i_start = (last_turn_node.turn_index or 0) if last_turn_node is not None else 0
     i_end = i_start + 5
     last_node_ids = []
-    last_node_ids.append(conversation_engine._get_conversation_tail(conv_id))
+    last_node_ids.append(svc.get_conversation_tail(conv_id))
     for i in range(i_start, i_end):
         assert i == conversation_orchestrator.get_chain_length(user_id=user_id, conversation_id=conv_id)
         res = conversation_orchestrator.add_conversation_turn(
@@ -288,7 +293,7 @@ def test_conversation_flow(backend_kind: str, tmp_path, sa_engine, pg_schema):
             prev_turn_meta_summary=prev_turn_meta_summary,
             add_turn_only= not (i==(i_end -1)),
         )
-        last_node_ids.append(conversation_engine._get_conversation_tail(conv_id))
+        last_node_ids.append(svc.get_conversation_tail(conv_id))
         prev_turn_meta_summary : MetaFromLastSummary = res.prev_turn_meta_summary
         template_html = Path("graph_knowledge_engine/templates/d3.html").read_text(encoding="utf-8")
         out_dir = Path(".") / "bundle" / f"turn {res.turn_index}-{i}"
@@ -300,10 +305,6 @@ def test_conversation_flow(backend_kind: str, tmp_path, sa_engine, pg_schema):
             out_dir=out_dir,
         )        
     # # Now add index 5 -> Ensure Trigger
-    # res_5 = conversation_engine.add_conversation_turn(user_id, conv_id, "assistant", "trigger summary",
-    #                                                   role="system", content="turn dummy filler", 
-    #                                               ref_knowledge_engine=engine,
-    #                                              filtering_callback = candiate_filtering_callback_cached)
     assert res.turn_index >= 5
     
     # Check Summary Node

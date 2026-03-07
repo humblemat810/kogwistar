@@ -106,7 +106,7 @@ class DefaultVerifier(Verifier):
             return None
         return float(num / den)
     def _embed_one(self, text: str):
-        vecs = self.e._ef([text])  # DefaultEmbeddingFunction is callable(texts: List[str]) -> List[List[float]]
+        vecs = self.e.embedding_function([text])  # DefaultEmbeddingFunction is callable(texts: List[str]) -> List[List[float]]
         return vecs[0] if vecs else None
     def __init__(self, engine: EngineLike, config: Optional[VerifierConfig] = None):
         self.e: EngineLike = engine
@@ -177,7 +177,7 @@ class DefaultVerifier(Verifier):
         Verify all references in nodes (and edges if update_edges=True) for a doc.
         Returns counts of updated items.
         """
-        full_text = source_text if source_text is not None else self.e._fetch_document_text(document_id)
+        full_text = source_text if source_text is not None else self.e.extract.fetch_document_text(document_id)
         upd_nodes = upd_edges = 0
 
         # Nodes
@@ -192,9 +192,9 @@ class DefaultVerifier(Verifier):
             new_refs = [self._verify_one_reference(extracted, full_text, r, min_ngram=min_ngram, weights=weights, threshold=threshold)
                         for r in n.mentions]
             n.mentions = new_refs
-            doc, meta = self.e._node_doc_and_meta(n)
+            doc, meta = self.e.write.node_doc_and_meta(n)
             self.e.node_collection.update(ids=[nid], documents=[doc], metadatas=[meta])
-            self.e._index_node_docs(n)
+            self.e.write.index_node_docs(n)
             upd_nodes += 1
 
         if update_edges:
@@ -209,7 +209,7 @@ class DefaultVerifier(Verifier):
                 new_refs = [self._verify_one_reference(extracted, full_text, r, min_ngram=min_ngram, weights=weights, threshold=threshold)
                             for r in e.mentions]
                 e.mentions = new_refs
-                doc, meta = self.e._edge_doc_and_meta(e)
+                doc, meta = self.e.write.edge_doc_and_meta(e)
                 self.e.edge_collection.update(ids=[eid], documents=[doc], metadatas=[meta])
                 upd_edges += 1
 
@@ -237,15 +237,15 @@ class DefaultVerifier(Verifier):
                     continue
                 n = Node.model_validate_json(got["documents"][0])
                 doc_id = (got["metadatas"][0] or {}).get("doc_id")
-                full_text = (source_text_by_doc or {}).get(doc_id) or self.e._fetch_document_text(doc_id) if doc_id else ""
+                full_text = (source_text_by_doc or {}).get(doc_id) or self.e.extract.fetch_document_text(doc_id) if doc_id else ""
                 extracted = n.summary or n.label or ""
                 if not (n.mentions and extracted):
                     continue
                 n.mentions = [self._verify_one_reference(extracted, full_text, r, min_ngram=min_ngram, weights=weights, threshold=threshold)
                                 for r in n.mentions]
-                doc, meta = self.e._node_doc_and_meta(n)
+                doc, meta = self.e.write.node_doc_and_meta(n)
                 self.e.node_collection.update(ids=[rid], documents=[doc], metadatas=[meta])
-                self.e._index_node_docs(n)
+                self.e.write.index_node_docs(n)
                 upd_nodes += 1
             elif kind == "edge":
                 got = self.e.edge_collection.get(ids=[rid], include=["documents", "metadatas"])
@@ -253,13 +253,13 @@ class DefaultVerifier(Verifier):
                     continue
                 e = Edge.model_validate_json(got["documents"][0])
                 doc_id = (got["metadatas"][0] or {}).get("doc_id")
-                full_text = (source_text_by_doc or {}).get(doc_id) or self.e._fetch_document_text(doc_id) if doc_id else ""
+                full_text = (source_text_by_doc or {}).get(doc_id) or self.e.extract.fetch_document_text(doc_id) if doc_id else ""
                 extracted = e.summary or e.label or e.relation or ""
                 if not (e.mentions and extracted):
                     continue
                 e.mentions = [self._verify_one_reference(extracted, full_text, r, min_ngram=min_ngram, weights=weights, threshold=threshold)
                                 for r in e.mentions]
-                doc, meta = self.e._edge_doc_and_meta(e)
+                doc, meta = self.e.write.edge_doc_and_meta(e)
                 self.e.edge_collection.update(ids=[rid], documents=[doc], metadatas=[meta])
                 upd_edges += 1
         to_return = {"updated_nodes": upd_nodes, "updated_edges": upd_edges}

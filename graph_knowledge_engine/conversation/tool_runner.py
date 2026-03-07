@@ -23,6 +23,7 @@ from .models import ConversationEdge
 
 from .models import BaseToolResult, ConversationNode
 from ..engine_core.models import Grounding, MentionVerification, Span
+from .policy import get_chat_tail
 if TYPE_CHECKING:
     from .models import MetaFromLastSummary
     from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
@@ -67,7 +68,10 @@ class ToolRunner:
         orchestrator: ConversationOrchestrator | None = None
     ) -> Tuple[T, str]:
         """Execute a tool handler and record tool_call/tool_result nodes."""
-        last_node = self.engine._get_conversation_tail(conversation_id)
+        try:
+            last_node = get_chat_tail(self.engine, conversation_id=conversation_id)
+        except Exception:
+            last_node = None
         if last_node is None:
             raise Exception('unreachable')
         # Tool call node (assistant role)
@@ -168,7 +172,7 @@ class ToolRunner:
             self.engine.add_edge(e)
         # Tool result node (tool role)
         # res_id = str(self.tool_call_id_factory())
-        # last_node = self.engine._get_conversation_tail(conversation_id)
+        # last_node = self.engine.conversation.get_conversation_tail(conversation_id)
         if last_node is None:
             raise Exception('unreachable')
         res_id = str(self.tool_call_id_factory(user_id, conversation_id, call_node.safe_get_id(), "tool_result"))
@@ -269,3 +273,4 @@ class ToolRunner:
                                  )
         self.engine.add_edge(e)
         return result, call_node.safe_get_id()
+

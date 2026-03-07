@@ -15,7 +15,9 @@ from langchain_core.messages import AIMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.runnables import Runnable, RunnableConfig
 
+from graph_knowledge_engine.conversation.filtering import candiate_filtering_callback
 from graph_knowledge_engine.conversation.models import FilteringResult, MetaFromLastSummary
+from graph_knowledge_engine.conversation.service import ConversationService
 from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
 from graph_knowledge_engine.id_provider import stable_id
 from graph_knowledge_engine.engine_core.postgres_backend import PgVectorBackend
@@ -25,8 +27,6 @@ from graph_knowledge_engine.engine_core.models import (
     Grounding,
     MentionVerification,
 )
-from graph_knowledge_engine.conversation.conversation_orchestrator import ConversationOrchestrator
-
 pytestmark = [
     pytest.mark.conversation,
     pytest.mark.workflow,
@@ -207,7 +207,7 @@ class DeterministicLLM(BaseChatModel):
         schema_name = getattr(schema, "__name__", str(schema))
         text = self._flatten_prompt_text(input)
 
-        # Filtering callback path from engine.candiate_filtering_callback
+        # Filtering callback path from conversation.filtering.candiate_filtering_callback
         if "FilteringResponse" in schema_name:
             node_ids, edge_ids = self._heuristic_pick(text)
             return schema.model_validate(
@@ -562,12 +562,13 @@ def test_conversation_flow_v2_param_e2e(
     # Deterministic LLM: used only in "real" filtering mode and any summarization decisions.
     llm = DeterministicLLM(content="['K:apple']" if knowledge_key == "apple" else "['K:banana']")
 
-    orc = ConversationOrchestrator(
-        conversation_engine=conv,
-        ref_knowledge_engine=kg,
+    conv.llm = llm
+    svc = ConversationService.from_engine(
+        conv,
+        knowledge_engine=kg,
         workflow_engine=wf,
-        llm=llm,
     )
+    orc = svc.orchestrator
 
     # cache folder: per-test temp to avoid cross-test pollution
     memory = Memory(location=str(tmp_path / ".joblib"), verbose=0)
@@ -581,7 +582,6 @@ def test_conversation_flow_v2_param_e2e(
             return FilteringResult.model_validate(dumped), "cached deterministic filter"
     else:
         # Use the project's canonical prompting-based filter, but cache it (ignore llm).
-        from graph_knowledge_engine.engine_core.engine import candiate_filtering_callback
         def cached_inner(llm: BaseChatModel, conversation_content, cand_node_list_str, cand_edge_list_str, candidates_node_ids, candidate_edge_ids, context_text):
             fr, reason = candiate_filtering_callback(llm, conversation_content, cand_node_list_str, cand_edge_list_str, candidates_node_ids, candidate_edge_ids, context_text)
             return fr.model_dump(), reason
@@ -620,7 +620,7 @@ def test_conversation_flow_v2_param_e2e(
     turn_id = f"turn_v2_{backend_kind}_{llm_mode}_{knowledge_key}"
     run_id = f"run_v2_{backend_kind}_{llm_mode}_{knowledge_key}"
 
-    conv.create_conversation(user_id, conv_id, "start_node_v2")
+    svc.create_conversation(user_id, conv_id, "start_node_v2")
 
     res = orc.add_conversation_turn_workflow_v2(
         run_id=run_id,

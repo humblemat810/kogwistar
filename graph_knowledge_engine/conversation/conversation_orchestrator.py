@@ -31,6 +31,7 @@ from .models import (
 from .tool_runner import ToolRunner
 from .memory_retriever import MemoryRetriever, MemoryPinResult, MemoryRetrievalResult
 from .knowledge_retriever import KnowledgeRetriever
+from .policy import get_chat_tail, last_summary_of_node
 
 
 @dataclass
@@ -84,7 +85,7 @@ class ExecClock:
 def _infer_prev_run_step_seq(conversation_engine: GraphKnowledgeEngine, conversation_id: str) -> int:
     """Best-effort: derive last run_step_seq from conversation tail node metadata."""
     try:
-        tail = conversation_engine._get_conversation_tail(conversation_id)
+        tail = _get_conversation_tail_compat(conversation_engine, conversation_id)
     except Exception:
         tail = None
     if tail is None:
@@ -124,6 +125,24 @@ def _estimate_tokens_from_chars(char_count: int, token_estimator: Callable[[str]
     if sample_tokens <= 0:
         return max(1, (char_count + 3) // 4)
     return max(1, int(round(sample_tokens * (char_count / sample_n))))
+
+
+def _get_conversation_tail_compat(conversation_engine: Any, conversation_id: str):
+    try:
+        return get_chat_tail(conversation_engine, conversation_id=conversation_id)
+    except Exception:
+        return None
+
+
+def _iterative_emb_compat(engine: Any, text: str):
+    embed_ns = getattr(engine, "embed", None)
+    if embed_ns is not None and hasattr(embed_ns, "iterative_defensive_emb"):
+        return embed_ns.iterative_defensive_emb(text)
+    if hasattr(engine, "iterative_defensive_emb"):
+        return engine.iterative_defensive_emb(text)
+    if hasattr(engine, "_iterative_defensive_emb"):
+        return engine._iterative_defensive_emb(text)
+    raise AttributeError("conversation engine has no defensive embedding API")
 
 from .models import RetrievalResult
 
@@ -168,13 +187,20 @@ class ConversationOrchestrator:
     or use a knowledge router that has same api but delegate to get knowledge from network of
     knowledge bases
     
-    Minimal, surgical refactor:
-    - engine.add_conversation_turn(...) stays stable
+    Service-first boundary:
+    - ConversationService is the public entry point
     - orchestration steps live here
     - tool-call/tool-result events are recorded in the conversation graph
     """
     def create_conversation(self, *args, **kwargs):
-        self.conversation_engine.create_conversation(*args, **kwargs)
+        from .service import ConversationService
+
+        svc = ConversationService.from_engine(
+            self.conversation_engine,
+            knowledge_engine=self.ref_knowledge_engine,
+            workflow_engine=self.workflow_engine,
+        )
+        return svc.create_conversation(*args, **kwargs)
     # ----------------------------
     # Workflow-v2: design + step resolver
     # ----------------------------
@@ -243,7 +269,7 @@ class ConversationOrchestrator:
                 max_workers: int = 4,
             ) -> AddTurnResult:
 
-            prev_node = self.conversation_engine._get_conversation_tail(conversation_id) if in_conv else None
+            prev_node = _get_conversation_tail_compat(self.conversation_engine, conversation_id) if in_conv else None
             prev_turn_meta_summary, new_index = self.ensure_prev_turn_meta_summary_new_index(prev_node, prev_turn_meta_summary)
 
             from .designer import ConversationWorkflowDesigner
@@ -255,7 +281,7 @@ class ConversationOrchestrator:
             designer.ensure_backbone(workflow_id=backbone_wid)
 
             # Create the user turn node + next_turn link (same as v1) before running the skeleton workflow.
-            prev_node = self.conversation_engine._get_conversation_tail(conversation_id) if in_conv else None
+            prev_node = _get_conversation_tail_compat(self.conversation_engine, conversation_id) if in_conv else None
             if prev_node is not None:
                 new_index = (prev_node.turn_index + 1) if prev_node.turn_index is not None else 0
             else:
@@ -274,7 +300,7 @@ class ConversationOrchestrator:
             self_span = Span.from_dummy_for_conversation()
             self_span.doc_id = turn_node_id
             self_span.page_number = 1
-            embedding = self.conversation_engine._iterative_defensive_emb(content)
+            embedding = _iterative_emb_compat(self.conversation_engine, content)
 
             # Phase F: do not persist the user turn node or chain edge here.
 
@@ -415,7 +441,7 @@ class ConversationOrchestrator:
         # 0b) add_turn_only: only create the user turn backbone and run a minimal workflow skeleton.
         # ----------------------------
         
-        prev_node = self.conversation_engine._get_conversation_tail(conversation_id) if in_conv else None
+        prev_node = _get_conversation_tail_compat(self.conversation_engine, conversation_id) if in_conv else None
         prev_turn_meta_summary, new_index = self.ensure_prev_turn_meta_summary_new_index(prev_node, prev_turn_meta_summary)
         if add_turn_only:
             return self.add_turn_only_workflow(
@@ -444,7 +470,7 @@ class ConversationOrchestrator:
         # Phase F: orchestrator does not mutate the conversation graph.
         # Node/edge creation happens inside workflow ops: add_user_turn + link_prev_turn.
         emb_text0 = f"{role}: {content}"
-        embedding = self.conversation_engine._iterative_defensive_emb(emb_text0)
+        embedding = _iterative_emb_compat(self.conversation_engine, emb_text0)
         if embedding is None:
             raise RuntimeError("uncalculatable embeddings")
 
@@ -723,7 +749,7 @@ class ConversationOrchestrator:
             prev_turn_meta_summary = MetaFromLastSummary(0,0)
         _prev_step = _infer_prev_run_step_seq(self.conversation_engine, conversation_id)
         clock = ExecClock(run_id=conversation_id, run_step_seq=_prev_step).bump_step()
-        prev_node = self.conversation_engine._get_conversation_tail(conversation_id)
+        prev_node = _get_conversation_tail_compat(self.conversation_engine, conversation_id)
         if prev_node is not None:
             new_index = (prev_node.turn_index + 1) if prev_node.turn_index is not None else 0
             # prev_turn_meta_summary.prev_node_char_distance_from_last_summary = prev_node.metadata.get("char_distance_from_last_summary") or 0
@@ -803,7 +829,7 @@ class ConversationOrchestrator:
         prev_turn_meta_summary.tail_turn_index = new_index
         new_index += 1
         emb_text0 = f"{role}: {content}"
-        embedding = self.conversation_engine._iterative_defensive_emb(emb_text0)
+        embedding = _iterative_emb_compat(self.conversation_engine, emb_text0)
         if embedding is None:
             raise Exception("uncalculatable embeddings")
         turn_node.embedding = embedding
@@ -1077,7 +1103,7 @@ class ConversationOrchestrator:
         if not in_conv:
             current_index -=1
         if in_conv:
-            prev_node = self.conversation_engine._get_conversation_tail(conversation_id)
+            prev_node = _get_conversation_tail_compat(self.conversation_engine, conversation_id)
         else:
             prev_node = None
         """Summarize the last N turns into a Summary/ Memory Node."""
@@ -1098,7 +1124,7 @@ class ConversationOrchestrator:
         
         nodes: list[ConversationNode] = all_nodes
         
-        last_summary_node: list[ConversationNode] = self.conversation_engine.last_summary_of_node(prev_node)
+        last_summary_node: list[ConversationNode] = last_summary_of_node(self.conversation_engine, prev_node)
         if last_summary_node:
             batch_ids.append(last_summary_node[-1].safe_get_id())
             batch_text.append(last_summary_node[-1].summary)
@@ -1152,7 +1178,14 @@ class ConversationOrchestrator:
             tokens_used=_estimate_tokens_from_chars(char_count),
         )
         clock = ExecClock(run_id=f"summary|{conversation_id}", run_step_seq=int(current_index), attempt_seq=0)
-        self.conversation_engine.persist_context_snapshot(
+        from .service import ConversationService
+
+        svc = ConversationService.from_engine(
+            self.conversation_engine,
+            knowledge_engine=self.ref_knowledge_engine,
+            workflow_engine=self.workflow_engine,
+        )
+        svc.persist_context_snapshot(
             conversation_id=conversation_id,
             run_id=clock.run_id,
             run_step_seq=clock.run_step_seq,
@@ -1335,3 +1368,4 @@ class ConversationOrchestrator:
                 last_err = e
                 continue
         raise Exception(f"tried all models; last error: {last_err}")
+

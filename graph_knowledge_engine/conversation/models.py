@@ -1,10 +1,27 @@
 from dataclasses import dataclass, field
 
-from graph_knowledge_engine.engine_core.models import CONVERSATION_EDGE_CAUSAL_TYPE_BY_RELATION, BaseNodeMetadata, ContextCost, Edge, Node
+from graph_knowledge_engine.engine_core.models import BaseNodeMetadata, ContextCost, Edge, Node
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 from typing import Any, ClassVar, Dict, List, Literal, Self, Tuple
 
+# --- Phase 1: chat-edge intent classification (causality) ---
+
+CONVERSATION_EDGE_CAUSAL_TYPE_BY_RELATION: dict[str, str] = {
+    # Canonical chain
+    "next_turn": "chain",
+
+    # Tool / retrieval wiring (non-causal references)
+    "tool_call_entry_point": "reference",
+    "run_result": "reference",
+    "has_memory_context": "reference",
+    "has_knowledge_context": "reference",
+
+    # Summaries describe past, but do not causally "create" the past
+    "summarizes": "summary",
+
+    # Default catch-all for chat edges
+}
 
 @dataclass
 class MetaFromLastSummary:
@@ -187,8 +204,6 @@ class ConversationEdgeMetadata(BaseNodeMetadata):
     model_config = ConfigDict(extra="allow")
 
 
-def infer_conversation_edge_causal_type(relation: str) -> str:
-    return CONVERSATION_EDGE_CAUSAL_TYPE_BY_RELATION.get(relation, "reference")
 
 
 class ConversationRoleMixin(BaseModel):

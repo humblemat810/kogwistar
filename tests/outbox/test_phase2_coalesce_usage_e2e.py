@@ -5,7 +5,7 @@ import re
 import pytest
 import sqlalchemy as sa
 
-from graph_knowledge_engine.engine_core.storage_backend import ChromaBackend
+from graph_knowledge_engine.engine_core.chroma_backend import ChromaBackend
 from graph_knowledge_engine.engine_core.postgres_backend import PgVectorBackend
 from graph_knowledge_engine.engine_core.engine_postgres_meta import EnginePostgresMetaStore
 from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine

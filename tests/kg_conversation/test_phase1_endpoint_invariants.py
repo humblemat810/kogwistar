@@ -4,6 +4,7 @@ from __future__ import annotations
 import pytest
 
 from graph_knowledge_engine.conversation.models import ConversationEdge, MetaFromLastSummary
+from graph_knowledge_engine.conversation.service import ConversationService
 from graph_knowledge_engine.engine_core.models import Span, Grounding
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
@@ -40,6 +41,11 @@ def _mk_edge(*, src: str, tgt: str, relation: str, causal_type: str, doc_id: str
         embedding=None,
     )
 
+def _noop_filtering_callback(*_args, **_kwargs):
+    from graph_knowledge_engine.conversation.models import FilteringResult
+
+    return FilteringResult(node_ids=[], edge_ids=[]), "noop"
+
 
 def _mk_three_turns(conversation_engine: GraphKnowledgeEngine, kg_engine: GraphKnowledgeEngine, *, user_id: str, conv_id: str,
                     #causal_type: str="chain"
@@ -53,10 +59,14 @@ def _mk_three_turns(conversation_engine: GraphKnowledgeEngine, kg_engine: GraphK
     ConversationNode shape requirements and to ensure any automatic next_turn edge
     creation happens as in production.
     """
-    conv_id, _start_id = conversation_engine.create_conversation(user_id, conv_id)
+    svc = ConversationService.from_engine(
+        conversation_engine,
+        knowledge_engine=kg_engine,
+    )
+    conv_id, _start_id = svc.create_conversation(user_id, conv_id)
 
     # Turn 1 (user)
-    r1 = conversation_engine.add_conversation_turn(
+    r1 = svc.add_conversation_turn(
         user_id,
         conv_id,
         turn_id="turn_1_user",
@@ -64,11 +74,12 @@ def _mk_three_turns(conversation_engine: GraphKnowledgeEngine, kg_engine: GraphK
         role="user",
         content="u1",
         ref_knowledge_engine=kg_engine,
+        filtering_callback=_noop_filtering_callback,
         add_turn_only=True,
     )
 
     # Turn 2 (assistant/system)
-    r2 = conversation_engine.add_conversation_turn(
+    r2 = svc.add_conversation_turn(
         user_id,
         conv_id,
         turn_id="turn_2_assistant",
@@ -76,12 +87,13 @@ def _mk_three_turns(conversation_engine: GraphKnowledgeEngine, kg_engine: GraphK
         role="assistant",
         content="a1",
         ref_knowledge_engine=kg_engine,
+        filtering_callback=_noop_filtering_callback,
         add_turn_only=True,
         prev_turn_meta_summary=r1.prev_turn_meta_summary,
     )
 
     # Turn 3 (user)
-    r3 = conversation_engine.add_conversation_turn(
+    r3 = svc.add_conversation_turn(
         user_id,
         conv_id,
         turn_id="turn_3_user",
@@ -89,6 +101,7 @@ def _mk_three_turns(conversation_engine: GraphKnowledgeEngine, kg_engine: GraphK
         role="user",
         content="u2",
         ref_knowledge_engine=kg_engine,
+        filtering_callback=_noop_filtering_callback,
         add_turn_only=True,
         prev_turn_meta_summary=r2.prev_turn_meta_summary,
     )

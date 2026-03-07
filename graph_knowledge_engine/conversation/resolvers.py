@@ -71,6 +71,15 @@ def _deps(ctx: StepContext) -> Dict[str, Any]:
     return deps
 
 
+def _chat_service(deps: Dict[str, Any]):
+    from .service import ConversationService
+
+    ce = deps["conversation_engine"]
+    ke = deps.get("knowledge_engine") or deps.get("ref_knowledge_engine") or ce
+    we = deps.get("workflow_engine") or getattr(ce, "workflow_engine", None)
+    return ConversationService.from_engine(ce, knowledge_engine=ke, workflow_engine=we)
+
+
 def _aa_agent(ctx: StepContext):
     deps = _deps(ctx)
     agent: AgenticAnsweringAgent | None = deps.get("agent")
@@ -160,8 +169,7 @@ def _add_user_turn(ctx: "StepContext") -> "StepRunResult":
     if type(sv.get("turn_index")) is int:
         turn_index = sv.get("turn_index")
     else:
-        turn_index = int(getattr(mts, "tail_turn_index", 0) or 0)
-    turn_index += 1
+        turn_index = int(getattr(mts, "tail_turn_index", 0) or 0) + 1
     # doc_id for the turn (keep external caller's turn_id if provided)
     turn_doc_id = str(sv.get("turn_id") or sv.get("turn_node_id") or f"turn_{turn_index}")
 
@@ -185,9 +193,14 @@ def _add_user_turn(ctx: "StepContext") -> "StepRunResult":
 
     # embedding: prefer provided, else compute defensively if engine supports it
     embedding = sv.get("embedding")
-    if embedding is None and hasattr(ce, "_iterative_defensive_emb"):
+    if embedding is None:
         emb_text0 = f"{role}: {user_text}"
-        embedding = ce._iterative_defensive_emb(emb_text0)
+        if hasattr(ce, "embed") and hasattr(ce.embed, "iterative_defensive_emb"):
+            embedding = ce.embed.iterative_defensive_emb(emb_text0)
+        elif hasattr(ce, "iterative_defensive_emb"):
+            embedding = ce.iterative_defensive_emb(emb_text0)
+        elif hasattr(ce, "_iterative_defensive_emb"):
+            embedding = ce._iterative_defensive_emb(emb_text0)
     span = Span(
         collection_page_url=f"conversation/{conversation_id}",
         document_page_url=f"conversation/{conversation_id}#{turn_doc_id}",
@@ -335,7 +348,6 @@ def _link_assistant_turn(ctx: "StepContext") -> "StepRunResult":
     conversation_id = str(sv["conversation_id"])
     user_id = str(sv["user_id"])
     turn_index = int(sv.get("turn_index") or 0)
-    turn_index += 1
     span = sv.get("self_span")
     mts = _get_prev_turn_meta_summary_from_state_or_deps(ctx)
 
@@ -385,6 +397,7 @@ def _context_snapshot(ctx: StepContext) -> StepRunResult:
     """
     deps = _deps(ctx)
     ce = deps["conversation_engine"]
+    svc = _chat_service(deps)
     llm = deps.get("llm")
     sv = ctx.state_view
 
@@ -395,8 +408,8 @@ def _context_snapshot(ctx: StepContext) -> StepRunResult:
     stage = str(sv.get("stage") or deps.get("stage") or "answer")
 
     # Build the prompt context (debug/telemetry artifact).
-    view = ce.get_conversation_view(conversation_id=conversation_id, purpose="answer")
-    snap_id = ce.persist_context_snapshot(
+    view = svc.get_conversation_view(conversation_id=conversation_id, purpose="answer")
+    snap_id = svc.persist_context_snapshot(
         conversation_id=conversation_id,
         run_id=run_id,
         run_step_seq=run_step_seq,
@@ -407,7 +420,7 @@ def _context_snapshot(ctx: StepContext) -> StepRunResult:
         budget_tokens=int(getattr(view, "token_budget", 0) or 0),
         tail_turn_index=int(getattr(deps.get("prev_turn_meta_summary"), "tail_turn_index", 0) or 0),
         llm_input_payload={
-            "system_prompt": ce.get_system_prompt(conversation_id),
+            "system_prompt": svc.get_system_prompt(conversation_id),
             "user_text": sv.get("user_text"),
         },
         evidence_pack_digest=sv.get("evidence_pack_digest"),
@@ -883,9 +896,10 @@ def _aa_get_view_and_question(ctx: StepContext) -> StepRunResult:
     sv = ctx.state_view
     conversation_id = str(sv["conversation_id"])
     user_id = sv.get("user_id")
+    svc = _chat_service(deps)
 
     # Fetch conversation state.
-    view = deps["conversation_engine"].get_conversation_view(
+    view = svc.get_conversation_view(
         conversation_id=conversation_id,
         user_id=user_id,
         purpose="answer",
@@ -893,7 +907,7 @@ def _aa_get_view_and_question(ctx: StepContext) -> StepRunResult:
     )
     messages = getattr(view, "messages", None)
     question = agent._get_last_user_text(messages)
-    system_prompt = deps["conversation_engine"].get_system_prompt(conversation_id)
+    system_prompt = svc.get_system_prompt(conversation_id)
     if not question:
         from graph_knowledge_engine.runtime.models import RunFailure
         return RunFailure(conversation_node_id=None, state_update=[('a', {"op_log": "aa_get_view_and_question: no user message"})], errors=["No user message found in conversation"])
@@ -928,6 +942,7 @@ def _aa_retrieve_candidates(ctx: StepContext) -> StepRunResult:
 def _aa_select_used_evidence(ctx: StepContext) -> StepRunResult:
     agent = _aa_agent(ctx)
     deps = _deps(ctx)
+    svc = _chat_service(deps)
     sv = ctx.state_view
 
     conversation_id = str(sv["conversation_id"])
@@ -942,7 +957,7 @@ def _aa_select_used_evidence(ctx: StepContext) -> StepRunResult:
     # Pull view for snapshots.
     view = (sv.get("_rt") or {}).get("view")
     if view is None:
-        view = deps["conversation_engine"].get_conversation_view(conversation_id=conversation_id, purpose="answer")
+        view = svc.get_conversation_view(conversation_id=conversation_id, purpose="answer")
         with ctx.state_write as state:
             state.setdefault("_rt", {})["view"] = view
 
@@ -1044,6 +1059,7 @@ def _aa_materialize_evidence_pack(ctx: StepContext) -> StepRunResult:
 def _aa_generate_answer_with_citations(ctx: StepContext) -> StepRunResult:
     agent = _aa_agent(ctx)
     deps = _deps(ctx)
+    svc = _chat_service(deps)
     sv = ctx.state_view
 
     conversation_id = str(sv["conversation_id"])
@@ -1066,7 +1082,7 @@ def _aa_generate_answer_with_citations(ctx: StepContext) -> StepRunResult:
     # Pull view for snapshots.
     view = (sv.get("_rt") or {}).get("view")
     if view is None:
-        view = deps["conversation_engine"].get_conversation_view(conversation_id=conversation_id, purpose="answer")
+        view = svc.get_conversation_view(conversation_id=conversation_id, purpose="answer")
         with ctx.state_write as state:
             state.setdefault("_rt", {})["view"] = view
 
@@ -1126,6 +1142,7 @@ def _aa_generate_answer_with_citations(ctx: StepContext) -> StepRunResult:
 def _aa_validate_or_repair_citations(ctx: StepContext) -> StepRunResult:
     agent = _aa_agent(ctx)
     deps = _deps(ctx)
+    svc = _chat_service(deps)
     sv = ctx.state_view
 
     conversation_id = str(sv["conversation_id"])
@@ -1148,7 +1165,7 @@ def _aa_validate_or_repair_citations(ctx: StepContext) -> StepRunResult:
 
     view = (sv.get("_rt") or {}).get("view")
     if view is None:
-        view = deps["conversation_engine"].get_conversation_view(conversation_id=conversation_id, purpose="answer")
+        view = svc.get_conversation_view(conversation_id=conversation_id, purpose="answer")
         with ctx.state_write as state:
             state.setdefault("_rt", {})["view"] = view
 
@@ -1209,6 +1226,7 @@ def _aa_validate_or_repair_citations(ctx: StepContext) -> StepRunResult:
 def _aa_evaluate_answer(ctx: StepContext) -> StepRunResult:
     agent = _aa_agent(ctx)
     deps = _deps(ctx)
+    svc = _chat_service(deps)
     sv = ctx.state_view
 
     conversation_id = str(sv["conversation_id"])
@@ -1231,7 +1249,7 @@ def _aa_evaluate_answer(ctx: StepContext) -> StepRunResult:
 
     view = (sv.get("_rt") or {}).get("view")
     if view is None:
-        view = deps["conversation_engine"].get_conversation_view(conversation_id=conversation_id, purpose="answer")
+        view = svc.get_conversation_view(conversation_id=conversation_id, purpose="answer")
         with ctx.state_write as state:
             state.setdefault("_rt", {})["view"] = view
 
@@ -1395,3 +1413,4 @@ def _aa_persist_response(ctx: StepContext) -> StepRunResult:
         ('a', {"op_log": "aa_persist_response"}),
     ]
     return RunSuccess(conversation_node_id=assistant_turn_node_id, state_update=state_update)
+

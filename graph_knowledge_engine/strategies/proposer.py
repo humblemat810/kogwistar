@@ -381,13 +381,13 @@ class VectorProposer(MergeCandidateProposer):
 
         def _node_ids(doc_id: str) -> List[str]:
             try:
-                return engine._nodes_by_doc(doc_id)
+                return engine.read.node_ids_by_doc(doc_id)
             except Exception:
                 return []
 
         def _edge_ids(doc_id: str) -> List[str]:
             try:
-                return engine._edge_ids_by_doc(doc_id)
+                return engine.read.edge_ids_by_doc(doc_id)
             except Exception:
                 return []
 
@@ -569,3 +569,4 @@ class CompositeProposer(MergeCandidateProposer):
 
     def cross_kind_in_doc(self, engine: EngineLike, doc_id: str) -> List[Tuple[Any, Any]]:
         return self.base(engine).cross_kind_in_doc(engine=engine, doc_id=doc_id)
+
