@@ -108,6 +108,115 @@ def pytest_configure(config):
             enable_jsonl=True
         # )
     )
+
+
+def _pick_free_port() -> int:
+    import socket
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
+@pytest.fixture(scope="function")
+def mcp_admin_server(tmp_path: Path) -> Iterator[dict[str, Any]]:
+    """Start server_mcp_with_admin with isolated per-test data directories."""
+    import subprocess
+    import threading
+    import time
+    from collections import deque
+
+    import requests
+
+    host = "127.0.0.1"
+    port = _pick_free_port()
+    base_http = f"http://{host}:{port}"
+    base_mcp = f"{base_http}/mcp"
+
+    data_root = tmp_path / "mcp_data"
+    data_root.mkdir(parents=True, exist_ok=True)
+    env = os.environ.copy()
+    env["MCP_CHROMA_DIR"] = str(data_root / "docs")
+    env["MCP_CHROMA_DIR_CONVERSATION"] = str(data_root / "conversation")
+    env["MCP_CHROMA_DIR_WISDOM"] = str(data_root / "wisdom")
+    env.setdefault("JWT_SECRET", "dev-secret")
+    env.setdefault("JWT_ALG", "HS256")
+
+    cmd = [
+        sys.executable,
+        "-m",
+        "uvicorn",
+        "graph_knowledge_engine.server_mcp_with_admin:app",
+        "--host",
+        host,
+        "--port",
+        str(port),
+        "--log-level",
+        "warning",
+    ]
+
+    log_buf: deque[str] = deque(maxlen=400)
+    proc = subprocess.Popen(
+        cmd,
+        cwd=str(Path(__file__).resolve().parents[1]),
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+
+    def _reader() -> None:
+        if proc.stdout is None:
+            return
+        for line in proc.stdout:
+            log_buf.append(line.rstrip())
+
+    t = threading.Thread(target=_reader, daemon=True)
+    t.start()
+
+    deadline = time.time() + 90.0
+    last_err: Exception | None = None
+    while time.time() < deadline:
+        if proc.poll() is not None:
+            joined = "\n".join(log_buf)
+            raise RuntimeError(
+                f"MCP server exited before becoming healthy (exit={proc.returncode}).\n{joined}"
+            )
+        try:
+            health = requests.get(f"{base_http}/health", timeout=1.5)
+            if health.ok:
+                break
+        except Exception as exc:  # noqa: BLE001
+            last_err = exc
+        time.sleep(0.2)
+    else:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except Exception:  # noqa: BLE001
+            proc.kill()
+            proc.wait(timeout=5)
+        joined = "\n".join(log_buf)
+        raise RuntimeError(
+            f"MCP server did not become healthy at {base_http}: {last_err}\n{joined}"
+        )
+
+    try:
+        yield {
+            "base_http": base_http,
+            "base_mcp": base_mcp,
+            "port": port,
+            "data_root": str(data_root),
+        }
+    finally:
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except Exception:  # noqa: BLE001
+                proc.kill()
+                proc.wait(timeout=5)
+
 from chromadb.utils.embedding_functions import EmbeddingFunction
 from chromadb.api.types import Embeddings
 class FakeEmbeddingFunction(EmbeddingFunction):
