@@ -3,7 +3,7 @@ requires = ["setuptools>=69", "wheel", "setuptools-scm[toml]>=8"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "Kogwita"
+name = "kogwistar"
 dynamic = ["version"]
 description = "Knowledge engine + MCP server for graph & document querying"
 readme = "README.md"
@@ -27,33 +27,18 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "pytest-asyncio>=1.1.0", "ruff>=0.5", "mypy>=1.8", "build", "twine"]
+dev = ["pytest>=8", "pytest-asyncio>=1.1.0", "pytest-dotenv>=0.5.2", "ruff>=0.5", "mypy>=1.8", "build", "twine"]
 mcp-adapter = ["langchain-mcp-adapters>=0.0.8"]
 viz = ["pygraphviz>=1.14"]
 
 [project.scripts]
-knowledge-mcp = "server_mcp_with_admin:app"
+knowledge-mcp = "graph_knowledge_engine.server_mcp_with_admin:main"
 
 
 [tool.setuptools]
 package-dir = {"" = "."}
 
 [tool.setuptools.packages.find]
-where = ["src"]
+where = ["."]
 include = ["graph_knowledge_engine*"]
 exclude = ["*.tests*", "*.test*", "tests*", "examples*", "diagnostic*"]
-
-[tool.pytest.ini_options]
-markers = [
-  "ci: required on pull-request CI",
-  "ci_full: required on full CI (post-merge / broader matrix)",
-  "nightly: nightly-only coverage",
-  "core: engine/core graph capabilities",
-  "workflow: workflow runtime and orchestration",
-  "conversation: conversation orchestration and resolvers",
-  "unit: no external systems, deterministic fast tests",
-  "integration: multi-component integration tests",
-  "e2e: end-to-end behavior tests across major components",
-  "llm_real: tests requiring non-fake LLM behavior or external LLM credentials",
-  "manual: manually triggered tests only",
-]
