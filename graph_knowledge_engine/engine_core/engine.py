@@ -1374,103 +1374,7 @@ class GraphKnowledgeEngine:
         return self.persist.build_deps(parsed)
     
     def ingest_with_toposort(self, parsed, *, doc_id: str):
-        """
-        Single entrypoint:
-        1) map nn:/ne: → UUIDs
-        2) topologically sort by deps among new items
-        3) apply per-kind rules:
-            - existing node: merge refs
-            - new node: add
-            - existing edge: merge refs / (optional) update endpoints
-            - new edge: add
-        """
-        _ = _alloc_real_ids(parsed)  # rewrite in place
-        order, id2kind, id2obj = self._build_deps(parsed)
-        node_ids_added = set()
-        edge_ids_added = set()
-        nodes_added = edges_added = 0
-        span_validator: BaseDocValidator = self.get_span_validator_of_doc_type(doc_id=doc_id)
-        for rid in order:
-            kind, obj = id2kind[rid], id2obj[rid]
-
-            if kind == "node":
-                ln: Node = obj
-                # existing?
-                if self._exists_node(rid):
-                    # merge refs only if present
-                    if ln.mentions:
-                        prior = self.backend.node_get(ids=[rid], include=["documents", "metadatas"])
-                        prior_meta = (prior.get("metadatas") or [None])[0] or {}
-                        prior_mentions = cast(str, prior_meta.get("mentions"))
-                        merged_list, merged_json = _merge_refs(prior_mentions, ln.mentions)
-                        # update JSON & metadata refs
-                        doc = prior["documents"]
-                        if not doc:
-                            raise Exception("missing documents")
-                        n = Node.model_validate_json(doc[0])
-                        mentions = Grounding(spans = [Span.model_validate(r) for r in merged_list])
-                        for sp in mentions.spans:
-                            span_validator.validate_span(span = sp)
-                        n.mentions = [mentions]
-                        self.backend.node_update(
-                            ids=[rid],
-                            documents=[n.model_dump_json(field_mode='backend')],
-                            metadatas=[{
-                                **{k:v for k,v in prior_meta.items() if v is not None},
-                                "references": merged_json
-                            }]
-                        )
-                        # sync node_docs index
-                        self._index_node_docs(n)
-                    continue
-
-                # new node
-                ln.mentions = self._dealias_span(ln.mentions, doc_id)
-                node = ln
-                self.add_node(node, doc_id=doc_id)
-                nodes_added += 1
-                node_ids_added.add(node.id)
-            else:  # edge
-                le: Edge = obj
-                if self._exists_edge(rid):
-                    # merge refs; optionally reconcile endpoints if you permit LLM to edit them
-                    if le.mentions:
-                        prior = self.backend.edge_get(ids=[rid], include=["documents", "metadatas"])
-                        prior_meta = (prior.get("metadatas") or [None])[0] or {}
-                        prior_mentions = cast(str, prior_meta.get("mentions"))
-                        merged_list, merged_json = _merge_refs(prior_mentions, le.mentions)
-                        doc = prior["documents"]
-                        if not doc:
-                            raise Exception("missing documents")
-                        e = Edge.model_validate_json(doc[0])
-                        mentions = Grounding(spans = [Span.model_validate(r) for r in merged_list])
-                        for sp in mentions.spans:
-                            span_validator.validate_span(span = sp)
-                        e.mentions = [mentions]
-                        self.backend.edge_update(
-                            ids=[rid],
-                            documents=[e.model_dump_json(field_mode='backend')],
-                            metadatas=[{
-                                **{k:v for k,v in prior_meta.items() if v is not None},
-                                "references": merged_json
-                            }]
-                        )
-                        self._maybe_reindex_edge_refs(e)
-                    continue
-
-                # new edge
-                edge = le
-                self.add_edge(edge, doc_id=doc_id)
-                edge_ids_added.add(edge.id)
-                edges_added += 1
-        return {
-            "document_id": doc_id,
-            "node_ids": nodes_added,
-            "edge_ids": edges_added,
-            "nodes_added": len(node_ids_added),
-            "edges_added": len(edge_ids_added),
-        }
-        # return {"nodes_added": nodes_added, "edges_added": edges_added}
+        return self.persist.ingest_with_toposort(parsed, doc_id=doc_id)
     def _resolve_llm_ids(self, doc_id: str, parsed: LLMGraphExtraction | PureGraph | GraphExtractionWithIDs, alias_book: AliasBook | None = None) -> None:
         return self.persist.resolve_llm_ids(doc_id, parsed, alias_book=alias_book)
     def _aliasify_for_prompt(self, doc_id: str, ctx_nodes: list[dict], ctx_edges: list[dict]):
@@ -2441,43 +2345,10 @@ class GraphKnowledgeEngine:
     # Chroma-style api adders
     # ----------------------------
     def add_pure_node(self, node: PureChromaNode):
-        # node.doc_id = doc_id
-        doc, meta = _node_doc_and_meta(node)
-        if meta.get("doc_id"):
-            meta.pop('doc_id') 
-        self.backend.node_add(
-            ids=[node.id],
-            documents=[doc],
-            embeddings=[node.embedding] if node.embedding is not None else [self._iterative_defensive_emb(str(doc))],
-            metadatas=[meta],
-        )
-    def add_pure_edge(self, edge: PureChromaEdge):
-        """low level api, do not fanout and add endpoint, no duplicate checking
-        just add "edge" object in db. no id assigned, 
-        rely on backend db auto allocation if provided or raise error"""
-        s_nodes, s_edges, t_nodes, t_edges = self._split_endpoints(edge.source_ids, edge.target_ids)
-        edge.source_ids = s_nodes
-        edge.source_edge_ids = getattr(edge, "source_edge_ids", []) or [] + s_edges
-        edge.target_ids = t_nodes
-        edge.target_edge_ids = getattr(edge, "target_edge_ids", []) or [] + t_edges
-        # edge.doc_id = doc_id
-        # single-call safety for ad-hoc usage
-        self._assert_endpoints_exist(edge)
-        # Phase 1: conversation invariants + idempotent next_turn
-        from ..conversation.models import (ConversationEdge, 
-                                   ConversationNode)
-        if isinstance(edge, ConversationEdge):
-            self._validate_conversation_edge_add(edge)
+        return self.write.add_pure_node(node)
 
-        
-        doc = edge.model_dump_json(field_mode='backend', exclude = ['embedding'])
-        base_metadata = [self.enrich_edge_meta(edge)]
-        self.backend.edge_add(
-            ids=[edge.id],
-            documents=[str(doc)],
-            embeddings=[edge.embedding] if edge.embedding is not None else [self._iterative_defensive_emb(str(doc))],
-            metadatas=base_metadata,
-        )
+    def add_pure_edge(self, edge: PureChromaEdge):
+        return self.write.add_pure_edge(edge)
         
 
     # ---- Unit of Work (meta-store transaction boundary) ----
@@ -2649,7 +2520,9 @@ class GraphKnowledgeEngine:
                 "domain_id": edge.domain_id,
                 "canonical_entity_id": edge.canonical_entity_id,
                 "properties": _json_or_none(edge.properties),
-                "references": _json_or_none([r.model_dump(field_mode = 'backend') for r in (edge.mentions or [])]),
+                "references": _json_or_none(
+                    [r.model_dump(field_mode="backend") for r in (getattr(edge, "mentions", None) or [])]
+                ),
                 "node_endpoint_count": node_endpoint_count,   # receptive range
                 "edge_endpoint_count": edge_endpoint_count,
                 "total_endpoint_count": total_endpoint_count,
@@ -2693,128 +2566,43 @@ class GraphKnowledgeEngine:
         return self.read.edge_ids_by_doc(doc_id, insertion_method=insertion_method)
 
     def _prune_node_refs_for_doc(self, node_id: str, doc_id: str) -> bool:
-        """Remove references to doc_id from node; delete node_docs link; refresh denormalized meta."""
-        got = self.backend.node_get(ids=[node_id], include=["documents", 'metadatas'])
-        docs = got.get("documents")
-        if not (docs and docs[0]):
-            return False
-        node = Node.model_validate_json(docs[0])
-        before = len(node.mentions or [])
-        # node.mentions = [r for r in (node.mentions or []) if r.doc_id != doc_id 
-        #                    or   (bool(getattr(r, "document_page_url", None) 
-        #                          and (getattr(r, "document_page_url").rsplit('/',1)[-1] != doc_id)))]
-        for groundings in node.mentions:
-            filtered_spans: list[Span] = [span for span in groundings.spans if span.doc_id != doc_id]
-            groundings.spans = filtered_spans
-            
-                
-        changed = len(node.mentions or []) != before
-        if changed:
-            # Update node JSON
-            self.backend.node_update(ids=[node_id], documents=[node.model_dump_json(field_mode='backend')])
-            # Drop (node,doc) link
-            self.backend.node_docs_delete(where={"$and": [{"node_id": node_id}, {"doc_id": doc_id}]})
-            # Refresh denormalized doc_ids meta
-            self._index_node_docs(node)
-        return changed
+        return self.write.prune_node_refs_for_doc(node_id, doc_id)
+
     def rebuild_edge_refs_for_doc(self, doc_id: str) -> int:
-        # Prefer endpoints index to discover edges touching the doc quickly
-        eps = self.backend.edge_endpoints_get(where={"doc_id": doc_id}, include=["documents"])
-        edge_ids = list({json.loads(d)["edge_id"] for d in (eps.get("documents") or [])})
-        if not edge_ids:
-            return 0
-        got = self.backend.edge_get(ids=edge_ids, include=["documents"])
-        cnt = 0
-        for js in (got.get("documents") or []):
-            e = Edge.model_validate_json(js)
-            self._index_edge_refs(e)
-            cnt += 1
-        return cnt
+        return self.write.rebuild_edge_refs_for_doc(doc_id)
 
     def rebuild_all_edge_refs(self) -> int:
-        got = self.backend.edge_get()
-        total = 0
-        for eid in (got.get("ids") or []):
-            edges = self.backend.edge_get(ids=[eid], include=["documents"])
-            if edge_docs:=edges.get("documents"):
-                e = Edge.model_validate_json(edge_docs[0])
-                self._index_edge_refs(e)
-                total += 1
-        return total
+        return self.write.rebuild_all_edge_refs()
+
     def edges_by_doc(self, doc_id: str, where: Optional[dict] = None) -> list[str]:
-        where = {"doc_id": doc_id} if not where else {
-            "$and": [{"doc_id": doc_id}] + [{k:v} for k,v in where.items()]
-        }
-        rows = self.backend.edge_refs_get(where=where, include=["documents"])
-        return list({json.loads(d)["edge_id"] for d in (rows.get("documents") or [])})
+        return self.read.edges_by_doc(doc_id, where=where)
 
     def list_edges_with_ref_filter(self, doc_id: str, where: dict | None = None) -> list[Edge]:
-        ids = self.edges_by_doc(doc_id, where)
-        if not ids:
-            return []
-        got = self.backend.edge_get(ids=ids, include=["documents"])
-        return [Edge.model_validate_json(js) for js in (got.get("documents") or [])]
+        return self.read.list_edges_with_ref_filter(doc_id, where=where)
+
     def nodes_by_ids(self, node_ids):
         return self.backend.node_get(ids = node_ids)
+
     def edges_by_ids(self, edge_ids):
         return self.backend.edge_get(ids = edge_ids)
+
     def nodes_by_doc(self, doc_id: str, *, where : Optional[dict] = None) -> list[str]:
-        where = {"doc_id": doc_id} if not where else {
-            "$and": [{"doc_id": doc_id}] + [{k:v} for k,v in where.items()]
-        }
-        rows = self.backend.node_refs_get(where=where, include=["documents"])
-        return list({json.loads(d)["node_id"] for d in (rows.get("documents") or [])})
+        return self.read.nodes_by_doc(doc_id, where=where)
 
     def list_nodes_with_ref_filter(self, doc_id: str, *, where : Optional[dict] = None) -> list[Node]:
-        ids = self.nodes_by_doc(doc_id, where = where)
-        if not ids:
-            return []
-        got = self.backend.node_get(ids=ids, include=["documents"])
-        return [Node.model_validate_json(js) for js in (got.get("documents") or [])]
+        return self.read.list_nodes_with_ref_filter(doc_id, where=where)
     
     def rebuild_node_refs_for_doc(self, doc_id: str) -> int:
-        # Use node_docs index if you have it; else fall back to where on nodes
-        node_ids = []
-        if hasattr(self, "node_docs_collection"):
-            rows = self.backend.node_docs_get(where={"doc_id": doc_id}, include=["documents"])
-            node_ids = list({json.loads(d)["node_id"] for d in (rows.get("documents") or [])})
-        else:
-            got = self.backend.node_get(where={"doc_id": doc_id}, include=["documents"])
-            node_ids = list(got.get("ids") or [])
-
-        if not node_ids:
-            return 0
-
-        got = self.backend.node_get(ids=node_ids, include=["documents"])
-        cnt = 0
-        for js in (got.get("documents") or []):
-            n = Node.model_validate_json(js)
-            self._index_node_refs(n)
-            cnt += 1
-        return cnt
+        return self.write.rebuild_node_refs_for_doc(doc_id)
 
     def rebuild_all_node_refs(self) -> int:
-        got = self.backend.node_get()
-        total = 0
-        for nid in (got.get("ids") or []):
-            doc = self.backend.node_get(ids=[nid], include=["documents"])
-            if nod_docs := doc.get("documents"):
-                n = Node.model_validate_json(nod_docs[0])
-                self._index_node_refs(n)
-                total += 1
-        return total
+        return self.write.rebuild_all_node_refs()
     # ----------------------------
     # helpers for rollback
     # ----------------------------
 
     def _delete_edges_by_ids(self, edge_ids: list[str]):
-        if not edge_ids:
-            return
-        self.backend.edge_delete(ids=edge_ids)
-        # also delete their endpoint rows
-        # endpoints ids start with f"{edge_id}::"
-        # we can delete via where on edge_id for simplicity:
-        self.backend.edge_endpoints_delete(where=cast(dict[str, Any], {"edge_id": {"$in": edge_ids}}))
+        return self.write.delete_edges_by_ids(edge_ids)
     # ----------------------------
     # Vector queries
     # ----------------------------
@@ -2833,70 +2621,11 @@ class GraphKnowledgeEngine:
         parsed: PureGraph, 
         session_id: str,
         mode = None):
-        self._preflight_validate(parsed, alias_key=session_id)
-        node_ids, edge_ids = [], []
-        _ = _alloc_real_ids(parsed)
-        order, id2kind, id2obj = self._build_deps(parsed)
-        nl = '\n'
-        for rid in order:
-            kind, obj = id2kind[rid], id2obj[rid]
-            # for ln in parsed.nodes:
-            if kind == 'node':
-                ln: Node = obj
-                
-                # skip-if-exists mode
-                if mode == "skip-if-exists":
-                    got = self.backend.node_get(ids=[ln.id])
-                    if got.get("ids"):  # already there
-                        node_ids.append(ln.id)
-                        continue
-                
-                n = PureChromaNode(
-                    id=ln.id, label=ln.label, type=ln.type, summary=ln.summary,
-                    domain_id=ln.domain_id, canonical_entity_id=ln.canonical_entity_id,
-                    properties=ln.properties,
-                    doc_id = None,
-                    embedding = None,
-                    metadata = {}
-                )
-                emb_text = f"{n.label}: {n.summary}"
-                if emb_text is None:
-                    emb_text = f"{n.label}: {n.summary}"
-                n.embedding = self._ef([emb_text])[0]
-                self.add_pure_node(n)
-                node_ids.append(n.id)
-            elif kind == 'edge':
-            # for le in parsed.edges:
-                le: Edge = obj
-                
-                if mode == "skip-if-exists":
-                    got = self.backend.edge_get(ids=[le.id])
-                    if got.get("ids"):
-                        edge_ids.append(le.id)
-                        continue
-                e = PureChromaEdge(
-                    id=le.id, label=le.label, type=le.type, summary=le.summary,
-                    domain_id=le.domain_id, canonical_entity_id=le.canonical_entity_id,
-                    properties=le.properties,
-                    relation=le.relation,
-                    source_ids=le.source_ids, target_ids=le.target_ids,
-                    source_edge_ids=getattr(le, "source_edge_ids", None),
-                    target_edge_ids=getattr(le, "target_edge_ids", None),
-                    doc_id=None,
-                    embedding = None,
-                    metadata = {},
-                    # embedding=self._ef([f"{le.label}: {le.summary}"])[0]
-                )
-                e.embedding = self._ef([f"{le.label}: {le.summary}"])[0]
-                self.add_pure_edge(e)
-                edge_ids.append(e.id)
-
-        return {
-            "node_ids": node_ids,
-            "edge_ids": edge_ids,
-            "nodes_added": len(node_ids),
-            "edges_added": len(edge_ids),
-        }
+        return self.persist.persist_graph(
+            parsed=parsed,
+            session_id=session_id,
+            mode=mode,
+        )
 
     def persist_graph_extraction(
         self,
@@ -3930,3 +3659,4 @@ def _install_non_conversation_shims() -> None:
 
 
 _install_non_conversation_shims()
+

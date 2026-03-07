@@ -292,6 +292,38 @@ class ReadSubsystem(NamespaceProxy):
                 result.add(m.get("edge_id"))
         return sorted(result)
 
+    def edges_by_doc(self, doc_id: str, where: dict | None = None) -> list[str]:
+        where = (
+            {"doc_id": doc_id}
+            if not where
+            else {"$and": [{"doc_id": doc_id}] + [{k: v} for k, v in where.items()]}
+        )
+        rows = self._e.backend.edge_refs_get(where=where, include=["documents"])
+        return list({json.loads(d)["edge_id"] for d in (rows.get("documents") or [])})
+
+    def list_edges_with_ref_filter(self, doc_id: str, where: dict | None = None) -> list[Edge]:
+        ids = self.edges_by_doc(doc_id, where)
+        if not ids:
+            return []
+        got = self._e.backend.edge_get(ids=ids, include=["documents"])
+        return [Edge.model_validate_json(js) for js in (got.get("documents") or [])]
+
+    def nodes_by_doc(self, doc_id: str, *, where: dict | None = None) -> list[str]:
+        where = (
+            {"doc_id": doc_id}
+            if not where
+            else {"$and": [{"doc_id": doc_id}] + [{k: v} for k, v in where.items()]}
+        )
+        rows = self._e.backend.node_refs_get(where=where, include=["documents"])
+        return list({json.loads(d)["node_id"] for d in (rows.get("documents") or [])})
+
+    def list_nodes_with_ref_filter(self, doc_id: str, *, where: dict | None = None) -> list[Node]:
+        ids = self.nodes_by_doc(doc_id, where=where)
+        if not ids:
+            return []
+        got = self._e.backend.node_get(ids=ids, include=["documents"])
+        return [Node.model_validate_json(js) for js in (got.get("documents") or [])]
+
     # Legacy names retained during migration
     def nodes_by_doc_index(self, doc_id: str, insertion_method: str | None = None) -> list[str]:
         return self.node_ids_by_doc(doc_id, insertion_method=insertion_method)

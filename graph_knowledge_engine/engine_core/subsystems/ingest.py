@@ -82,7 +82,7 @@ class IngestSubsystem(NamespaceProxy):
 
         parsed = self._e.extract.de_alias_ids_in_result(doc_id, parsed)
         self._e.persist.preflight_validate(parsed, doc_id)
-        res = self._e.ingest_with_toposort(parsed, doc_id=doc_id)
+        res = self._e.persist.ingest_with_toposort(parsed, doc_id=doc_id)
         res["raw"] = raw
 
         if auto_adjudicate:

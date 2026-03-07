@@ -217,7 +217,7 @@ class RollbackSubsystem(NamespaceProxy):
         return totals
 
     def delete_edges_by_ids(self, *args, **kwargs):
-        return self._e._delete_edges_by_ids(*args, **kwargs)
+        return self._e.write.delete_edges_by_ids(*args, **kwargs)
 
     def prune_node_refs_for_doc(self, *args, **kwargs):
-        return self._e._prune_node_refs_for_doc(*args, **kwargs)
+        return self._e.write.prune_node_refs_for_doc(*args, **kwargs)

@@ -5,7 +5,7 @@ import json
 from typing import Sequence, cast
 
 from ...cdc.change_event import EntityRefModel
-from ..models import Document, Domain, Edge, Node
+from ..models import Document, Domain, Edge, Node, PureChromaEdge, PureChromaNode
 from ..utils.metadata import json_or_none, strip_none
 from ..utils.refs import (
     edge_doc_and_meta as edge_doc_and_meta_util,
@@ -40,10 +40,10 @@ class WriteSubsystem(NamespaceProxy):
 
     # Canonical write API
     def add_node(self, *args, **kwargs):
-        return self._e._impl_add_node(*args, **kwargs)
+        return self._add_node_impl(*args, **kwargs)
 
     def add_edge(self, *args, **kwargs):
-        return self._e._impl_add_edge(*args, **kwargs)
+        return self._add_edge_impl(*args, **kwargs)
 
     def _add_node_impl(self, node: Node, doc_id: str | None = None):
         if doc_id is not None:
@@ -180,6 +180,46 @@ class WriteSubsystem(NamespaceProxy):
             payload=edge.to_jsonable()
             if hasattr(edge, "to_jsonable")
             else edge.model_dump(exclude=["embedding"]),
+        )
+
+    def add_pure_node(self, node: PureChromaNode):
+        doc, meta = node_doc_and_meta_util(node)
+        if meta.get("doc_id"):
+            meta.pop("doc_id")
+        self._e.backend.node_add(
+            ids=[node.id],
+            documents=[doc],
+            embeddings=[node.embedding]
+            if node.embedding is not None
+            else [self._e.embed.iterative_defensive_emb(str(doc))],
+            metadatas=[meta],
+        )
+
+    def add_pure_edge(self, edge: PureChromaEdge):
+        """Low-level edge add without endpoint fanout or duplicate checks."""
+        s_nodes, s_edges, t_nodes, t_edges = self._e.adjudicate.split_endpoints(
+            edge.source_ids,
+            edge.target_ids,
+        )
+        edge.source_ids = s_nodes
+        edge.source_edge_ids = (getattr(edge, "source_edge_ids", []) or []) + s_edges
+        edge.target_ids = t_nodes
+        edge.target_edge_ids = (getattr(edge, "target_edge_ids", []) or []) + t_edges
+        self._e.persist.assert_endpoints_exist(edge)
+        from ...conversation.models import ConversationEdge
+
+        if isinstance(edge, ConversationEdge):
+            self._e._validate_conversation_edge_add(edge)
+
+        doc = edge.model_dump_json(field_mode="backend", exclude=["embedding"])
+        base_metadata = [self._e.enrich_edge_meta(edge)]
+        self._e.backend.edge_add(
+            ids=[edge.id],
+            documents=[str(doc)],
+            embeddings=[edge.embedding]
+            if edge.embedding is not None
+            else [self._e.embed.iterative_defensive_emb(str(doc))],
+            metadatas=base_metadata,
         )
 
     def add_document(self, document: Document):
@@ -467,3 +507,83 @@ class WriteSubsystem(NamespaceProxy):
         if force or (new_fp != old_fp) or (not count_ok) or (not docset_ok):
             self._e.backend.node_update(ids=[node.id], metadatas=[{"node_refs_fp": new_fp}])
             self.index_node_refs(node)
+
+    def prune_node_refs_for_doc(self, node_id: str, doc_id: str) -> bool:
+        """Remove references to doc_id from node; delete node_docs link; refresh denormalized meta."""
+        got = self._e.backend.node_get(ids=[node_id], include=["documents", "metadatas"])
+        docs = got.get("documents")
+        if not (docs and docs[0]):
+            return False
+        node = Node.model_validate_json(docs[0])
+        before = len(node.mentions or [])
+        for groundings in node.mentions:
+            filtered_spans = [span for span in groundings.spans if span.doc_id != doc_id]
+            groundings.spans = filtered_spans
+
+        changed = len(node.mentions or []) != before
+        if changed:
+            self._e.backend.node_update(ids=[node_id], documents=[node.model_dump_json(field_mode="backend")])
+            self._e.backend.node_docs_delete(where={"$and": [{"node_id": node_id}, {"doc_id": doc_id}]})
+            self.index_node_docs(node)
+        return changed
+
+    def rebuild_edge_refs_for_doc(self, doc_id: str) -> int:
+        eps = self._e.backend.edge_endpoints_get(where={"doc_id": doc_id}, include=["documents"])
+        edge_ids = list({json.loads(d)["edge_id"] for d in (eps.get("documents") or [])})
+        if not edge_ids:
+            return 0
+        got = self._e.backend.edge_get(ids=edge_ids, include=["documents"])
+        cnt = 0
+        for js in (got.get("documents") or []):
+            e = Edge.model_validate_json(js)
+            self.index_edge_refs(e)
+            cnt += 1
+        return cnt
+
+    def rebuild_all_edge_refs(self) -> int:
+        got = self._e.backend.edge_get()
+        total = 0
+        for eid in (got.get("ids") or []):
+            edges = self._e.backend.edge_get(ids=[eid], include=["documents"])
+            if edge_docs := edges.get("documents"):
+                e = Edge.model_validate_json(edge_docs[0])
+                self.index_edge_refs(e)
+                total += 1
+        return total
+
+    def rebuild_node_refs_for_doc(self, doc_id: str) -> int:
+        node_ids = []
+        if hasattr(self._e, "node_docs_collection"):
+            rows = self._e.backend.node_docs_get(where={"doc_id": doc_id}, include=["documents"])
+            node_ids = list({json.loads(d)["node_id"] for d in (rows.get("documents") or [])})
+        else:
+            got = self._e.backend.node_get(where={"doc_id": doc_id}, include=["documents"])
+            node_ids = list(got.get("ids") or [])
+
+        if not node_ids:
+            return 0
+
+        got = self._e.backend.node_get(ids=node_ids, include=["documents"])
+        cnt = 0
+        for js in (got.get("documents") or []):
+            n = Node.model_validate_json(js)
+            self.index_node_refs(n)
+            cnt += 1
+        return cnt
+
+    def rebuild_all_node_refs(self) -> int:
+        got = self._e.backend.node_get()
+        total = 0
+        for nid in (got.get("ids") or []):
+            doc = self._e.backend.node_get(ids=[nid], include=["documents"])
+            if nod_docs := doc.get("documents"):
+                n = Node.model_validate_json(nod_docs[0])
+                self.index_node_refs(n)
+                total += 1
+        return total
+
+    def delete_edges_by_ids(self, edge_ids: list[str]):
+        if not edge_ids:
+            return
+        self._e.backend.edge_delete(ids=edge_ids)
+        self._e.backend.edge_endpoints_delete(where=cast(dict[str, object], {"edge_id": {"$in": edge_ids}}))

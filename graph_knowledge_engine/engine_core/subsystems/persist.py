@@ -8,12 +8,16 @@ from ..models import (
     Document,
     Edge,
     GraphExtractionWithIDs,
+    Grounding,
     LLMGraphExtraction,
     Node,
     PureChromaEdge,
+    PureChromaNode,
     PureGraph,
+    Span,
 )
 from ..utils.aliasing import _is_alias, _is_new_edge, _is_new_node, _is_uuid
+from ..utils.refs import merge_refs
 from .base import NamespaceProxy
 
 
@@ -258,6 +262,78 @@ class PersistSubsystem(NamespaceProxy):
 
         return node_items, edge_items
 
+    def persist_graph(
+        self,
+        *,
+        parsed: PureGraph,
+        session_id: str,
+        mode=None,
+    ):
+        self.preflight_validate(parsed, alias_key=session_id)
+        node_ids, edge_ids = [], []
+        self._alloc_real_ids(parsed)
+        order, id2kind, id2obj = self.build_deps(parsed)
+        for rid in order:
+            kind, obj = id2kind[rid], id2obj[rid]
+            if kind == "node":
+                ln: Node = obj
+                if mode == "skip-if-exists":
+                    got = self._e.backend.node_get(ids=[ln.id])
+                    if got.get("ids"):
+                        node_ids.append(ln.id)
+                        continue
+
+                n = PureChromaNode(
+                    id=ln.id,
+                    label=ln.label,
+                    type=ln.type,
+                    summary=ln.summary,
+                    domain_id=ln.domain_id,
+                    canonical_entity_id=ln.canonical_entity_id,
+                    properties=ln.properties,
+                    doc_id=None,
+                    embedding=None,
+                    metadata={},
+                )
+                emb_text = f"{n.label}: {n.summary}"
+                n.embedding = self._e._ef([emb_text])[0]
+                self._e.write.add_pure_node(n)
+                node_ids.append(n.id)
+            elif kind == "edge":
+                le: Edge = obj
+                if mode == "skip-if-exists":
+                    got = self._e.backend.edge_get(ids=[le.id])
+                    if got.get("ids"):
+                        edge_ids.append(le.id)
+                        continue
+                e = PureChromaEdge(
+                    id=le.id,
+                    label=le.label,
+                    type=le.type,
+                    summary=le.summary,
+                    domain_id=le.domain_id,
+                    canonical_entity_id=le.canonical_entity_id,
+                    properties=le.properties,
+                    relation=le.relation,
+                    source_ids=le.source_ids,
+                    target_ids=le.target_ids,
+                    source_edge_ids=getattr(le, "source_edge_ids", None),
+                    target_edge_ids=getattr(le, "target_edge_ids", None),
+                    doc_id=None,
+                    embedding=None,
+                    metadata={},
+                )
+                e.embedding = self._e._ef([f"{le.label}: {le.summary}"])[0]
+                self._e.write.add_pure_edge(e)
+                edge_ids.append(e.id)
+
+        return {
+            "node_ids": node_ids,
+            "edge_ids": edge_ids,
+            "nodes_added": len(node_ids),
+            "edges_added": len(edge_ids),
+        }
+
     def persist_graph_extraction(
         self,
         *,
@@ -400,4 +476,79 @@ class PersistSubsystem(NamespaceProxy):
             "edge_ids": edge_ids,
             "nodes_added": len(node_ids),
             "edges_added": len(edge_ids),
+        }
+
+    def ingest_with_toposort(self, parsed, *, doc_id: str):
+        self._alloc_real_ids(parsed)
+        order, id2kind, id2obj = self.build_deps(parsed)
+        node_ids_added = set()
+        edge_ids_added = set()
+        nodes_added = edges_added = 0
+        span_validator = self._e.get_span_validator_of_doc_type(doc_id=doc_id)
+        for rid in order:
+            kind, obj = id2kind[rid], id2obj[rid]
+
+            if kind == "node":
+                ln: Node = obj
+                if self.exists_node(rid):
+                    if ln.mentions:
+                        prior = self._e.backend.node_get(ids=[rid], include=["documents", "metadatas"])
+                        prior_meta = (prior.get("metadatas") or [None])[0] or {}
+                        prior_mentions = cast(str, prior_meta.get("mentions"))
+                        merged_list, merged_json = merge_refs(prior_mentions, ln.mentions)
+                        doc = prior["documents"]
+                        if not doc:
+                            raise Exception("missing documents")
+                        n = Node.model_validate_json(doc[0])
+                        mentions = Grounding(spans=[Span.model_validate(r) for r in merged_list])
+                        for sp in mentions.spans:
+                            span_validator.validate_span(span=sp)
+                        n.mentions = [mentions]
+                        self._e.backend.node_update(
+                            ids=[rid],
+                            documents=[n.model_dump_json(field_mode="backend")],
+                            metadatas=[{**{k: v for k, v in prior_meta.items() if v is not None}, "references": merged_json}],
+                        )
+                        self._e.write.index_node_docs(n)
+                    continue
+
+                ln.mentions = self.dealias_span(ln.mentions, doc_id)
+                node = ln
+                self._e.write.add_node(node, doc_id=doc_id)
+                nodes_added += 1
+                node_ids_added.add(node.id)
+            else:
+                le: Edge = obj
+                if self.exists_edge(rid):
+                    if le.mentions:
+                        prior = self._e.backend.edge_get(ids=[rid], include=["documents", "metadatas"])
+                        prior_meta = (prior.get("metadatas") or [None])[0] or {}
+                        prior_mentions = cast(str, prior_meta.get("mentions"))
+                        merged_list, merged_json = merge_refs(prior_mentions, le.mentions)
+                        doc = prior["documents"]
+                        if not doc:
+                            raise Exception("missing documents")
+                        e = Edge.model_validate_json(doc[0])
+                        mentions = Grounding(spans=[Span.model_validate(r) for r in merged_list])
+                        for sp in mentions.spans:
+                            span_validator.validate_span(span=sp)
+                        e.mentions = [mentions]
+                        self._e.backend.edge_update(
+                            ids=[rid],
+                            documents=[e.model_dump_json(field_mode="backend")],
+                            metadatas=[{**{k: v for k, v in prior_meta.items() if v is not None}, "references": merged_json}],
+                        )
+                        self._e.write.maybe_reindex_edge_refs(e)
+                    continue
+
+                edge = le
+                self._e.write.add_edge(edge, doc_id=doc_id)
+                edge_ids_added.add(edge.id)
+                edges_added += 1
+        return {
+            "document_id": doc_id,
+            "node_ids": nodes_added,
+            "edge_ids": edges_added,
+            "nodes_added": len(node_ids_added),
+            "edges_added": len(edge_ids_added),
         }

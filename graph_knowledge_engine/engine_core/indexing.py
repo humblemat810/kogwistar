@@ -157,7 +157,7 @@ class IndexingSubsystem:
         namespace: str | None = None,
     ):
         # local import to avoid subsystem importing workers at module import time if you want
-        from .workers.index_job_worker import IndexJobWorker
+        from ..workers.index_job_worker import IndexJobWorker
 
         return IndexJobWorker(
             engine=self.engine,
