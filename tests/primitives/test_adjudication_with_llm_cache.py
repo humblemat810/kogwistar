@@ -65,13 +65,13 @@ def test_batch_adjudication_with_llm_cache(engine):
 
     ref = _ref_for(doc.id)
     a = Node(label="Chlorophyll a", type="entity", summary="Pigment in plants",
-             mentions = [Grounding([_ref_for(doc.id)])], metadata = {"source": "test_commit_cross_kind_creates_reifies"}, 
+             mentions = [Grounding(spans = [_ref_for(doc.id)])], metadata = {"source": "test_commit_cross_kind_creates_reifies"}, 
                domain_id=None, canonical_entity_id=None, properties=None, embedding=None, doc_id=None)
     b = Node(label="Chlorophyll b", type="entity", summary="Another chlorophyll pigment", 
-             mentions = [Grounding([_ref_for(doc.id)])], metadata = {"source": "test_commit_cross_kind_creates_reifies"}, 
+             mentions = [Grounding(spans = [_ref_for(doc.id)])], metadata = {"source": "test_commit_cross_kind_creates_reifies"}, 
                domain_id=None, canonical_entity_id=None, properties=None, embedding=None, doc_id=None)
     c = Node(label="Hemoglobin",   type="entity", summary="Protein in red blood cells", 
-             mentions = [Grounding([_ref_for(doc.id)])], metadata = {"source": "test_commit_cross_kind_creates_reifies"}, 
+             mentions = [Grounding(spans = [_ref_for(doc.id)])], metadata = {"source": "test_commit_cross_kind_creates_reifies"}, 
                domain_id=None, canonical_entity_id=None, properties=None, embedding=None, doc_id=None)
 
     engine.add_node(a, doc_id=doc.id)

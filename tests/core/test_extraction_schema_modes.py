@@ -13,18 +13,40 @@ from graph_knowledge_engine.engine_core.models import (
     Document,
     LLMGraphExtraction,
 )
+from graph_knowledge_engine.llm_tasks import (
+    AdjudicateBatchTaskResult,
+    AdjudicatePairTaskResult,
+    AnswerWithCitationsTaskResult,
+    ExtractGraphTaskResult,
+    FilterCandidatesTaskResult,
+    LLMTaskProviderHints,
+    LLMTaskSet,
+    RepairCitationsTaskResult,
+    SummarizeContextTaskResult,
+)
 
 
-class _SchemaCaptureLLM:
-    def __init__(self, *, reject_method: bool = False):
-        self.calls: list[tuple[Any, dict[str, Any]]] = []
-        self.reject_method = reject_method
+def _fake_task_set(*, provider: str) -> LLMTaskSet:
+    hints = LLMTaskProviderHints(
+        extract_graph_provider=provider,  # type: ignore[arg-type]
+        adjudicate_pair_provider=provider,  # type: ignore[arg-type]
+        adjudicate_batch_provider=provider,  # type: ignore[arg-type]
+        filter_candidates_provider=provider,  # type: ignore[arg-type]
+        summarize_context_provider=provider,  # type: ignore[arg-type]
+        answer_with_citations_provider=provider,  # type: ignore[arg-type]
+        repair_citations_provider=provider,  # type: ignore[arg-type]
+    )
 
-    def with_structured_output(self, schema, **kwargs):
-        self.calls.append((schema, dict(kwargs)))
-        if self.reject_method and "method" in kwargs:
-            raise TypeError("method unsupported")
-        return self
+    return LLMTaskSet(
+        extract_graph=lambda _req: ExtractGraphTaskResult(raw=None, parsed_payload={"nodes": [], "edges": []}, parsing_error=None),
+        adjudicate_pair=lambda _req: AdjudicatePairTaskResult(verdict_payload={"same_entity": False}, raw=None, parsing_error=None),
+        adjudicate_batch=lambda _req: AdjudicateBatchTaskResult(verdict_payloads=(), raw=None, parsing_error=None),
+        filter_candidates=lambda _req: FilterCandidatesTaskResult(node_ids=(), edge_ids=(), reasoning="", raw=None, parsing_error=None),
+        summarize_context=lambda _req: SummarizeContextTaskResult(text=""),
+        answer_with_citations=lambda _req: AnswerWithCitationsTaskResult(answer_payload={"text": "", "reasoning": "", "claims": []}, raw=None, parsing_error=None),
+        repair_citations=lambda _req: RepairCitationsTaskResult(answer_payload={"text": "", "reasoning": "", "claims": []}, raw=None, parsing_error=None),
+        provider_hints=hints,
+    )
 
 
 @pytest.fixture
@@ -37,6 +59,7 @@ def engine():
     eng = GraphKnowledgeEngine(
         persist_directory=str(persist_dir),
         embedding_cache_path=str(persist_dir / "emb_cache"),
+        llm_tasks=_fake_task_set(provider="gemini"),
     )
     try:
         yield eng
@@ -53,71 +76,41 @@ def engine():
         ("flattened_full", AssocFlattenedLLMGraphExtraction["llm"], True),
     ],
 )
-def test_build_structured_output_uses_expected_schema(engine, mode, expected_schema, expects_json_schema_method):
-    capture = _SchemaCaptureLLM()
-    engine.llm = capture
-
-    _ = engine._build_structured_output_for_mode(mode)
-
-    schema, kwargs = capture.calls[-1]
+def test_structured_schema_for_mode(engine, mode, expected_schema, expects_json_schema_method):
+    schema, prefer_json_schema = engine._structured_schema_for_mode(mode)
     assert schema is expected_schema
-    assert kwargs.get("include_raw") is True
-    if expects_json_schema_method:
-        assert kwargs.get("method") == "json_schema"
-    else:
-        assert "method" not in kwargs
+    assert prefer_json_schema is expects_json_schema_method
 
 
-def test_build_structured_output_falls_back_when_method_kw_not_supported(engine):
-    capture = _SchemaCaptureLLM(reject_method=True)
-    engine.llm = capture
-
-    _ = engine._build_structured_output_for_mode("flattened_lean")
-
-    assert len(capture.calls) == 2
-    first_schema, first_kwargs = capture.calls[0]
-    second_schema, second_kwargs = capture.calls[1]
-    assert first_schema is AssocFlattenedLLMGraphExtraction["llm_in"]
-    assert first_kwargs.get("method") == "json_schema"
-    assert first_kwargs.get("include_raw") is True
-    assert second_schema is AssocFlattenedLLMGraphExtraction["llm_in"]
-    assert second_kwargs.get("include_raw") is True
-    assert "method" not in second_kwargs
+def test_build_structured_output_for_mode_is_back_compat_schema_tuple(engine):
+    schema, prefer_json_schema = engine._build_structured_output_for_mode("flattened_lean")
+    assert schema is AssocFlattenedLLMGraphExtraction["llm_in"]
+    assert prefer_json_schema is True
 
 
 def test_resolve_schema_mode_uses_engine_default_when_no_override(engine):
     engine.extraction_schema_mode = "flattened_full"
-
     resolved = engine._resolve_extraction_schema_mode()
-
     assert resolved == "flattened_full"
 
 
 def test_resolve_schema_mode_override_takes_precedence(engine):
     engine.extraction_schema_mode = "lean"
-
     resolved = engine._resolve_extraction_schema_mode("flattened_full")
-
     assert resolved == "flattened_full"
 
 
 def test_resolve_schema_mode_auto_maps_gemini_to_lean(engine):
     engine.extraction_schema_mode = "auto"
-
+    engine.llm_tasks = _fake_task_set(provider="gemini")
     resolved = engine._resolve_extraction_schema_mode()
-
     assert resolved == "lean"
 
 
 def test_resolve_schema_mode_auto_maps_non_gemini_to_full(engine):
-    class _NonGeminiLLM:
-        pass
-
     engine.extraction_schema_mode = "auto"
-    engine.llm = _NonGeminiLLM()
-
+    engine.llm_tasks = _fake_task_set(provider="openai")
     resolved = engine._resolve_extraction_schema_mode()
-
     assert resolved == "full"
 
 

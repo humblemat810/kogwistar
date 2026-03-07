@@ -154,7 +154,6 @@ def test_trace_sink_parallel_and_nested_minimal_sync(
         use_fake=True
     )
     workflow_engine = GraphKnowledgeEngine(
-        backend=backend_kind,
         persist_directory=str(tmp_path / "wf"),
         kg_graph_type="workflow",
         embedding_function=FakeEmbeddingFunction(dim=8),
@@ -169,19 +168,6 @@ def test_trace_sink_parallel_and_nested_minimal_sync(
     sync_by_run: dict[str, dict[str, Any]] = {}
     sync_lock = threading.Lock()
 
-    def get_sync(run_id: str) -> dict[str, Any]:
-        with sync_lock:
-            sync = sync_by_run.get(run_id)
-            if sync is None:
-                sync = {
-                    "barrier": threading.Barrier(2),
-                    "release": threading.Event(),
-                    "started": 0,
-                    "started_lock": threading.Lock(),
-                }
-                sync_by_run[run_id] = sync
-            return sync
-
     def wait_branches_started_then_release(run_id: str, timeout: float = 5.0) -> None:
         sync = get_sync(run_id)
         deadline = time.time() + timeout
@@ -194,6 +180,8 @@ def test_trace_sink_parallel_and_nested_minimal_sync(
                 sync["release"].set()
                 logging.info('release is set')
                 return
+            if sync["run_done"].is_set():
+                raise AssertionError(f"{run_id}: run finished before both branches started")
             time.sleep(0.01)
         logging.info(f'release is not set. {a_is_set=} {b_is_set=}')
         raise AssertionError(f"{run_id}: branches did not both start")
@@ -207,6 +195,7 @@ def test_trace_sink_parallel_and_nested_minimal_sync(
                     "started_a": threading.Event(),
                     "started_b": threading.Event(),
                     "release": threading.Event(),
+                    "run_done": threading.Event(),
                 }
                 sync_by_run[run_id] = sync
             return sync
@@ -342,9 +331,7 @@ def test_trace_sink_parallel_and_nested_minimal_sync(
                 with errors_lock:
                     errors.append(e)
             finally:
-                # cleanup sync
-                with sync_lock:
-                    sync_by_run.pop(run_id, None)
+                get_sync(run_id)["run_done"].set()
 
         with ThreadPoolExecutor(max_workers=len(outer_tags)*4) as ex:
             futs = []
@@ -359,6 +346,9 @@ def test_trace_sink_parallel_and_nested_minimal_sync(
 
             for f in futs:
                 f.result()
+        with sync_lock:
+            for rid in run_ids:
+                sync_by_run.pop(rid, None)
 
         assert not errors, f"iter={it} errors (likely sqlite sink contention or deadlock): {errors!r}"
 

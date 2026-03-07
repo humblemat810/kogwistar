@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Optional, Tuple
 
-from langchain_core.prompts import ChatPromptTemplate
+from ...llm_tasks import ExtractGraphTaskRequest
 
 from ..models import (
     AdjudicationVerdict,
@@ -111,38 +111,26 @@ class IngestSubsystem(NamespaceProxy):
         content: str,
         doc: Document,
     ) -> Tuple[Any, Optional[LLMGraphExtraction], Optional[str]]:
-        prompt = ChatPromptTemplate.from_messages(
-            [
-                (
-                    "system",
-                    "You are an expert knowledge graph extractor. "
-                    "Given a document, extract entities and relationships as nodes and edges in a hypergraph.\n"
-                    "For each node/edge include: label, type ('entity' or 'relationship'), and a concise 'summary'.\n"
-                    "Each node/edge MUST include at least one ReferenceSession with start_page, end_page, start_char, end_char."
-                    "IMPORTANT:\n"
-                    "- Do NOT invent real UUIDs or external URLs.\n"
-                    "Each node/edge MUST include at least one ReferenceSession with spans.",
+        result = self._e.llm_tasks.extract_graph(
+            ExtractGraphTaskRequest(
+                content=content,
+                alias_nodes="[Empty]",
+                alias_edges="[Empty]",
+                doc_alias=str(doc.id),
+                instruction="Extract entities and relationships as nodes and edges in a hypergraph.",
+                prompt_rules=(
+                    "Rules:\n"
+                    "1) Each node/edge must include at least one grounding span.\n"
+                    "2) Do not invent UUIDs or external URLs.\n"
                 ),
-                (
-                    "human",
-                    "Document:\n{document}\n\n"
-                    "Document ID {document_id}\n\n"
-                    "Return only the structured JSON for the schema.",
-                ),
-            ]
+                schema_mode="full",
+            )
         )
-        chain = prompt | self._e.llm.with_structured_output(LLMGraphExtraction, include_raw=True)
-        result = chain.invoke(
-            {
-                "doc_alias_note": self._e.extract.alias_doc_in_prompt(),
-                "document": content,
-                "document_id": str(doc.id),
-            }
-        )
-        raw = result.get("raw") if isinstance(result, dict) else None
-        parsed: LLMGraphExtraction = result.get("parsed") if isinstance(result, dict) else result  # type: ignore
-        err = result.get("parsing_error") if isinstance(result, dict) else None
-        return raw, parsed, err
+        parsed_payload = result.parsed_payload
+        parsed = None
+        if parsed_payload is not None:
+            parsed = LLMGraphExtraction.model_validate(parsed_payload)
+        return result.raw, parsed, result.parsing_error
 
     def add_page(
         self,

@@ -1,17 +1,9 @@
-"""Engine-core compatibility entrypoints.
+"""Engine-core compatibility entrypoints with safe optional imports."""
 
-This package provides explicit, wildcard-free imports that point to current
-legacy modules while we migrate implementation files incrementally.
-"""
-
-from graph_knowledge_engine.engine_core.chroma_backend import ChromaBackend
 from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
-from graph_knowledge_engine.engine_core.engine_postgres import EnginePostgresConfig, build_postgres_backend
-from graph_knowledge_engine.engine_core.engine_postgres_meta import EnginePostgresMetaStore, IndexJob
 from graph_knowledge_engine.engine_core.engine_sqlite import EngineSQLite, IndexJobRow
 from graph_knowledge_engine.engine_core.indexing import IndexingSubsystem
 from graph_knowledge_engine.engine_core.lifecycle import LifecycleSubsystem
-from graph_knowledge_engine.engine_core.postgres_backend import PgVectorBackend, PgVectorConfig, PostgresUnitOfWork
 from graph_knowledge_engine.engine_core.subsystems import (
     AdjudicateSubsystem,
     EmbedSubsystem,
@@ -62,3 +54,46 @@ __all__ = [
     "IngestSubsystem",
     "EmbedSubsystem",
 ]
+
+
+def __getattr__(name: str):
+    if name == "ChromaBackend":
+        from graph_knowledge_engine.engine_core.chroma_backend import ChromaBackend
+
+        return ChromaBackend
+
+    if name in {"EnginePostgresConfig", "build_postgres_backend"}:
+        try:
+            from graph_knowledge_engine.engine_core.engine_postgres import EnginePostgresConfig, build_postgres_backend
+        except Exception as e:  # pragma: no cover - optional dependency path
+            raise RuntimeError(
+                "Postgres backend support requires optional dependencies. "
+                "Install with: pip install 'kogwistar[pgvector]'"
+            ) from e
+        return {"EnginePostgresConfig": EnginePostgresConfig, "build_postgres_backend": build_postgres_backend}[name]
+
+    if name in {"EnginePostgresMetaStore", "IndexJob"}:
+        try:
+            from graph_knowledge_engine.engine_core.engine_postgres_meta import EnginePostgresMetaStore, IndexJob
+        except Exception as e:  # pragma: no cover - optional dependency path
+            raise RuntimeError(
+                "Postgres meta store requires optional dependencies. "
+                "Install with: pip install 'kogwistar[pgvector]'"
+            ) from e
+        return {"EnginePostgresMetaStore": EnginePostgresMetaStore, "IndexJob": IndexJob}[name]
+
+    if name in {"PgVectorBackend", "PgVectorConfig", "PostgresUnitOfWork"}:
+        try:
+            from graph_knowledge_engine.engine_core.postgres_backend import PgVectorBackend, PgVectorConfig, PostgresUnitOfWork
+        except Exception as e:  # pragma: no cover - optional dependency path
+            raise RuntimeError(
+                "PgVector backend requires optional dependencies. "
+                "Install with: pip install 'kogwistar[pgvector]'"
+            ) from e
+        return {
+            "PgVectorBackend": PgVectorBackend,
+            "PgVectorConfig": PgVectorConfig,
+            "PostgresUnitOfWork": PostgresUnitOfWork,
+        }[name]
+
+    raise AttributeError(name)

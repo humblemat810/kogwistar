@@ -5,59 +5,31 @@ from graph_knowledge_engine.conversation.agentic_answering import AgenticAnsweri
 from graph_knowledge_engine.id_provider import stable_id
 from graph_knowledge_engine.conversation.models import FilteringResult, MetaFromLastSummary
 from graph_knowledge_engine.conversation.service import ConversationService
-from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.runnables import Runnable
+from graph_knowledge_engine.llm_tasks import (
+    AdjudicateBatchTaskResult,
+    AdjudicatePairTaskResult,
+    AnswerWithCitationsTaskResult,
+    ExtractGraphTaskResult,
+    FilterCandidatesTaskResult,
+    LLMTaskProviderHints,
+    LLMTaskSet,
+    RepairCitationsTaskResult,
+    SummarizeContextTaskResult,
+)
 
 
-class _FixedStructuredRunnable(Runnable):
-    """Return a fixed structured-output payload in LangChain include_raw format."""
-
-    def __init__(self, parsed):
-        self._parsed = parsed
-
-    def invoke(self, input, config=None, **kwargs):
-        return {"raw": None, "parsed": self._parsed, "parsing_error": None}
-
-    async def ainvoke(self, input, config=None, **kwargs):
-        return self.invoke(input, config=config, **kwargs)
-
-
-class _FixedLLM(BaseChatModel):
-    """Minimal BaseChatModel stub for agentic-answering tests.
-
-    It only needs `.with_structured_output(..., include_raw=True)` for the agentic pipeline.
-    """
-
-    model_name: str = "fixed-llm"
-
-    def __init__(self, *, selection, answer, evaluation: AnswerEvaluation):
-        super().__init__()
-        self._selection = selection
-        self._answer = answer
-        self._evaluation = evaluation
-
-    @property
-    def _llm_type(self) -> str:
-        return "fixed"
-
-    def with_structured_output(self, schema, include_raw=False, **kwargs):
-        # Route based on schema class name to keep this test robust to import path differences.
-        name = getattr(schema, "__name__", str(schema))
-        if "EvidenceSelection" in name:
-            return _FixedStructuredRunnable(self._selection)
-        if "AnswerWithCitations" in name:
-            return _FixedStructuredRunnable(self._answer)
-        if "AnswerEvaluation" in name:
-            return _FixedStructuredRunnable(self._evaluation)
-        # Fallback: empty dict
-        return _FixedStructuredRunnable({})
-
-    # BaseChatModel abstract methods (not used in this test)
-    def _generate(self, messages, stop=None, run_manager=None, **kwargs):  # pragma: no cover
-        raise NotImplementedError("_generate not used; this stub is structured-output only")
-
-    async def _agenerate(self, messages, stop=None, run_manager=None, **kwargs):  # pragma: no cover
-        raise NotImplementedError("_agenerate not used; this stub is structured-output only")
+def _fixed_llm_tasks(answer: AnswerWithCitations) -> LLMTaskSet:
+    payload = answer.model_dump(mode="python")
+    return LLMTaskSet(
+        extract_graph=lambda _req: ExtractGraphTaskResult(raw=None, parsed_payload=None, parsing_error="unused"),
+        adjudicate_pair=lambda _req: AdjudicatePairTaskResult(verdict_payload=None, raw=None, parsing_error="unused"),
+        adjudicate_batch=lambda _req: AdjudicateBatchTaskResult(verdict_payloads=(), raw=None, parsing_error="unused"),
+        filter_candidates=lambda _req: FilterCandidatesTaskResult(node_ids=(), edge_ids=(), reasoning="", raw=None, parsing_error=None),
+        summarize_context=lambda req: SummarizeContextTaskResult(text=req.full_text),
+        answer_with_citations=lambda _req: AnswerWithCitationsTaskResult(answer_payload=payload, raw=None, parsing_error=None),
+        repair_citations=lambda _req: RepairCitationsTaskResult(answer_payload=payload, raw=None, parsing_error=None),
+        provider_hints=LLMTaskProviderHints(answer_with_citations_provider="custom"),
+    )
 
 
 def _ensure_user_turn(conversation_engine, *, user_id: str, conversation_id: str, text: str):
@@ -112,12 +84,12 @@ def test_answer_workflow_v2_runs_end_to_end(workflow_engine, conversation_engine
                          missing_aspects = [], 
                          notes = 'this test example is simple and good.')
 
-    llm = _FixedLLM(selection=selection, answer=answer, evaluation=evaluation)
+    llm_tasks = _fixed_llm_tasks(answer)
 
     agent = AgenticAnsweringAgent(
         conversation_engine=conversation_engine,
         knowledge_engine=engine,
-        llm=llm,
+        llm_tasks=llm_tasks,
         config=AgentConfig(max_iter=1, max_candidates=5),
     )
 

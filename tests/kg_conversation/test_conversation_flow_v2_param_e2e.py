@@ -7,6 +7,8 @@ from typing import Callable, Sequence, Any, TypeVar, ParamSpec, cast
 import pytest
 from joblib import Memory
 
+pytest.importorskip("chromadb")
+pytest.importorskip("langchain_core")
 from chromadb.utils.embedding_functions import EmbeddingFunction
 from chromadb.api.types import Embeddings
 
@@ -19,6 +21,18 @@ from graph_knowledge_engine.conversation.filtering import candiate_filtering_cal
 from graph_knowledge_engine.conversation.models import FilteringResult, MetaFromLastSummary
 from graph_knowledge_engine.conversation.service import ConversationService
 from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
+from graph_knowledge_engine.llm_tasks import (
+    AdjudicateBatchTaskResult,
+    AdjudicatePairTaskResult,
+    AnswerWithCitationsTaskResult,
+    ExtractGraphTaskResult,
+    FilterCandidatesTaskRequest,
+    FilterCandidatesTaskResult,
+    LLMTaskProviderHints,
+    LLMTaskSet,
+    RepairCitationsTaskResult,
+    SummarizeContextTaskResult,
+)
 from graph_knowledge_engine.id_provider import stable_id
 from graph_knowledge_engine.engine_core.postgres_backend import PgVectorBackend
 from graph_knowledge_engine.engine_core.models import (
@@ -517,6 +531,29 @@ def _deterministic_answer_impl(*, question: str, knowledge_key: str) -> dict[str
     return {"content": "I don't know.", "need_summary": False}
 
 
+def _deterministic_llm_tasks(*, knowledge_key: str) -> LLMTaskSet:
+    def _filter(req: FilterCandidatesTaskRequest) -> FilterCandidatesTaskResult:
+        picked = _deterministic_filter_impl(question=req.conversation_content, knowledge_key=knowledge_key)
+        return FilterCandidatesTaskResult(
+            node_ids=tuple(picked.get("node_ids", [])),
+            edge_ids=tuple(picked.get("edge_ids", [])),
+            reasoning="deterministic",
+            raw=None,
+            parsing_error=None,
+        )
+
+    return LLMTaskSet(
+        extract_graph=lambda _req: ExtractGraphTaskResult(raw=None, parsed_payload=None, parsing_error="unused"),
+        adjudicate_pair=lambda _req: AdjudicatePairTaskResult(verdict_payload=None, raw=None, parsing_error="unused"),
+        adjudicate_batch=lambda _req: AdjudicateBatchTaskResult(verdict_payloads=(), raw=None, parsing_error="unused"),
+        filter_candidates=_filter,
+        summarize_context=lambda req: SummarizeContextTaskResult(text=req.full_text),
+        answer_with_citations=lambda _req: AnswerWithCitationsTaskResult(answer_payload=None, raw=None, parsing_error="unused"),
+        repair_citations=lambda _req: RepairCitationsTaskResult(answer_payload=None, raw=None, parsing_error="unused"),
+        provider_hints=LLMTaskProviderHints(filter_candidates_provider="custom"),
+    )
+
+
 @pytest.mark.parametrize(
     "backend_kind,llm_mode",
     [
@@ -559,10 +596,7 @@ def test_conversation_flow_v2_param_e2e(
     meta = knowledge_builder(kg, dim=dim)
     question = meta["question"]
 
-    # Deterministic LLM: used only in "real" filtering mode and any summarization decisions.
-    llm = DeterministicLLM(content="['K:apple']" if knowledge_key == "apple" else "['K:banana']")
-
-    conv.llm = llm
+    conv.llm_tasks = _deterministic_llm_tasks(knowledge_key=knowledge_key)
     svc = ConversationService.from_engine(
         conv,
         knowledge_engine=kg,
@@ -577,17 +611,17 @@ def test_conversation_flow_v2_param_e2e(
 
     # Filtering callback
     if llm_mode == "fake":
-        def filtering_callback(_llm, conversation_content, cand_node_list_str, cand_edge_list_str, candidates_node_ids, candidate_edge_ids, context_text):
+        def filtering_callback(_llm_tasks, conversation_content, cand_node_list_str, cand_edge_list_str, candidates_node_ids, candidate_edge_ids, context_text):
             dumped = cached_filter(question=conversation_content, knowledge_key=knowledge_key)
             return FilteringResult.model_validate(dumped), "cached deterministic filter"
     else:
         # Use the project's canonical prompting-based filter, but cache it (ignore llm).
-        def cached_inner(llm: BaseChatModel, conversation_content, cand_node_list_str, cand_edge_list_str, candidates_node_ids, candidate_edge_ids, context_text):
-            fr, reason = candiate_filtering_callback(llm, conversation_content, cand_node_list_str, cand_edge_list_str, candidates_node_ids, candidate_edge_ids, context_text)
+        def cached_inner(llm_tasks: LLMTaskSet, conversation_content, cand_node_list_str, cand_edge_list_str, candidates_node_ids, candidate_edge_ids, context_text):
+            fr, reason = candiate_filtering_callback(llm_tasks, conversation_content, cand_node_list_str, cand_edge_list_str, candidates_node_ids, candidate_edge_ids, context_text)
             return fr.model_dump(), reason
-        cached_fn = cached(memory, cached_inner, ignore=["llm"])
-        def filtering_callback(llm: BaseChatModel, conversation_content, cand_node_list_str, cand_edge_list_str, candidates_node_ids, candidate_edge_ids, context_text):
-            dumped, reason = cached_fn(llm, conversation_content, cand_node_list_str, cand_edge_list_str, candidates_node_ids, candidate_edge_ids, context_text)
+        cached_fn = cached(memory, cached_inner, ignore=["llm_tasks"])
+        def filtering_callback(llm_tasks: LLMTaskSet, conversation_content, cand_node_list_str, cand_edge_list_str, candidates_node_ids, candidate_edge_ids, context_text):
+            dumped, reason = cached_fn(llm_tasks, conversation_content, cand_node_list_str, cand_edge_list_str, candidates_node_ids, candidate_edge_ids, context_text)
             return FilteringResult.model_validate(dumped), reason
 
     # Answer harness (cached, serializable-only inner)

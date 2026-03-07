@@ -14,7 +14,6 @@ from ..engine_core.models import (
 
 
 from ..typing_interfaces import (
-    ChatModelLike,
     NodeLike,
     EdgeLike,
 )

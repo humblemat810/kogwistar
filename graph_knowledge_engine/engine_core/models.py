@@ -8,7 +8,11 @@ if True:
     logger.addHandler(logging.NullHandler())
     logger.debug("loading models")
 from ..id_provider import new_id_str, new_event_id, stable_id
-from typing import List, Literal, Optional, Dict, Any, Type, TypeAlias, TypedDict, Union, Annotated, ClassVar, Tuple, Self, cast
+from typing import List, Literal, Optional, Dict, Any, Type, TypedDict, Union, Annotated, ClassVar, Tuple, cast
+try:
+    from typing import Self, TypeAlias
+except ImportError:  # pragma: no cover - py<3.11 compatibility
+    from typing_extensions import Self, TypeAlias
 from pydantic import BaseModel, Field, model_validator, field_validator, ValidationInfo, ConfigDict
 import uuid
 from enum import IntEnum

@@ -172,6 +172,30 @@ from graph_knowledge_engine.conversation.agentic_answering import (
     EvidenceSelection,
 )
 from graph_knowledge_engine.engine_core.models import Span
+from graph_knowledge_engine.llm_tasks import (
+    AdjudicateBatchTaskResult,
+    AdjudicatePairTaskResult,
+    AnswerWithCitationsTaskResult,
+    ExtractGraphTaskResult,
+    FilterCandidatesTaskResult,
+    LLMTaskProviderHints,
+    LLMTaskSet,
+    RepairCitationsTaskResult,
+    SummarizeContextTaskResult,
+)
+
+
+def _noop_task_set() -> LLMTaskSet:
+    return LLMTaskSet(
+        extract_graph=lambda _req: ExtractGraphTaskResult(raw=None, parsed_payload=None, parsing_error="unused"),
+        adjudicate_pair=lambda _req: AdjudicatePairTaskResult(verdict_payload=None, raw=None, parsing_error="unused"),
+        adjudicate_batch=lambda _req: AdjudicateBatchTaskResult(verdict_payloads=(), raw=None, parsing_error="unused"),
+        filter_candidates=lambda _req: FilterCandidatesTaskResult(node_ids=(), edge_ids=(), reasoning="", raw=None, parsing_error=None),
+        summarize_context=lambda req: SummarizeContextTaskResult(text=req.full_text),
+        answer_with_citations=lambda _req: AnswerWithCitationsTaskResult(answer_payload=None, raw=None, parsing_error="unused"),
+        repair_citations=lambda _req: RepairCitationsTaskResult(answer_payload=None, raw=None, parsing_error="unused"),
+        provider_hints=LLMTaskProviderHints(),
+    )
 
 
 class FakeCollection:
@@ -240,7 +264,7 @@ class FakeConversationEngine:
     def __init__(self, conversation_id: str, messages):
         self._conversation_id = conversation_id
         self._messages = messages
-        self.llm = None
+        self.llm_tasks = _noop_task_set()
         self.node_collection = FakeCollection()
         self.edge_collection = FakeCollection()
         self._iterative_defensive_emb = self.iterative_defensive_emb
@@ -358,7 +382,7 @@ def test_agent_answer_creates_run_anchor_projects_used_evidence(monkeypatch, eng
     agent = AgenticAnsweringAgent(
         conversation_engine=conv,
         knowledge_engine=kg,
-        llm=NullLLM(), 
+        llm_tasks=conv.llm_tasks,
         config=AgentConfig(max_candidates=5, max_used=2),
     )
 
@@ -461,7 +485,7 @@ def test_projection_is_idempotent(engines):
     agent = AgenticAnsweringAgent(
         conversation_engine=conv,
         knowledge_engine=kg,
-        llm=NullLLM(),
+        llm_tasks=conv.llm_tasks,
         config=AgentConfig(max_candidates=5, max_used=2),
     )
 
@@ -566,7 +590,7 @@ def test_agent_with_real_llm_cached(monkeypatch, engine, conversation_engine):
 
     agent = AgenticAnsweringAgent(conversation_engine=conversation_engine, 
                                   knowledge_engine=engine,
-                                  llm=llm)
+                                  llm_tasks=conversation_engine.llm_tasks)
 
     monkeypatch.setattr(agent, "_select_used_evidence", select_used_evidence_cached)
     monkeypatch.setattr(agent, "_generate_answer_with_citations", generate_answer_with_citations_cached)

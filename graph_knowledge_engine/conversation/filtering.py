@@ -1,16 +1,12 @@
 from __future__ import annotations
 
-from typing import Any
+from graph_knowledge_engine.llm_tasks import FilterCandidatesTaskRequest, LLMTaskSet
 
-from langchain_core.language_models import BaseChatModel
-from langchain_core.prompts import ChatPromptTemplate
-from pydantic import BaseModel
-
-from .models import FilteringResponse, FilteringResult
+from .models import FilteringResult
 
 
 def candiate_filtering_callback(
-    llm: BaseChatModel,
+    llm_tasks: LLMTaskSet,
     conversation_content,
     cand_node_list_str,
     cand_edge_list_str,
@@ -19,45 +15,33 @@ def candiate_filtering_callback(
     context_text,
 ):
     max_retry = 3
-    err_messages: list[tuple[str, str]] = []
+    err_messages: list[str] = []
     for _retry in range(max_retry):
-        filter_prompt = ChatPromptTemplate.from_messages(
-            [
-                ("system", "You are a helpful assistant filtering knowledge graph nodes."),
-                (
-                    "human",
-                    f"User Input: {conversation_content}\n\n"
-                    + (f"Context: {context_text}\n\n" if context_text else "")
-                    + f"Candidate Nodes:\n{cand_node_list_str}\n\n"
-                    + f"Candidate Edges:\n{cand_edge_list_str}\n\n"
-                    + "Return a JSON list of IDs for nodes and edges that are RELEVANT to the user input. ",
-                ),
-            ]
-            + err_messages
+        resp = llm_tasks.filter_candidates(
+            FilterCandidatesTaskRequest(
+                conversation_content=str(conversation_content or ""),
+                context_text=str(context_text or ""),
+                candidate_nodes_text=str(cand_node_list_str or ""),
+                candidate_edges_text=str(cand_edge_list_str or ""),
+                candidate_node_ids=tuple(candidate_node_ids),
+                candidate_edge_ids=tuple(candidate_edge_ids),
+                retry_error_messages=tuple(err_messages),
+            )
         )
-        chain = filter_prompt | llm.with_structured_output(FilteringResponse, include_raw=True)
-        resp: dict[str, Any] | BaseModel = chain.invoke({})
-        if isinstance(resp, BaseModel):
-            raise RuntimeError("unreachable response shape")
-
-        if err := resp.get("parsing_error"):
-            err_messages.append(("system", f"error: {str(err)}"))
+        if resp.parsing_error:
+            err_messages.append(str(resp.parsing_error))
             continue
 
-        parsed: BaseModel | None = resp.get("parsed")
-        if parsed is None:
-            raise RuntimeError("unreachable response shape")
-        parsed2 = FilteringResponse.model_validate(parsed)
-        not_node_candidate = set(parsed2.relevant_ids.node_ids).difference(set(candidate_node_ids))
-        not_edge_candidate = set(parsed2.relevant_ids.edge_ids).difference(set(candidate_edge_ids))
+        not_node_candidate = set(resp.node_ids).difference(set(candidate_node_ids))
+        not_edge_candidate = set(resp.edge_ids).difference(set(candidate_edge_ids))
         if not_node_candidate or not_edge_candidate:
             if not_node_candidate:
-                err_messages.append(("system", str(Exception(f"Non candidates ids returned {not_node_candidate}"))))
+                err_messages.append(f"Non candidates node ids returned: {sorted(not_node_candidate)}")
             if not_edge_candidate:
-                err_messages.append(("system", str(Exception(f"Non candidates ids returned {not_edge_candidate}"))))
+                err_messages.append(f"Non candidates edge ids returned: {sorted(not_edge_candidate)}")
             continue
         return (
-            FilteringResult(node_ids=parsed2.relevant_ids.node_ids, edge_ids=parsed2.relevant_ids.edge_ids),
-            parsed2.reasoning,
+            FilteringResult(node_ids=list(resp.node_ids), edge_ids=list(resp.edge_ids)),
+            str(resp.reasoning or ""),
         )
     raise RuntimeError("Exhausted all models")

@@ -15,6 +15,27 @@ Knowledge engine plus MCP server for graph and document querying.
 2. Install dependencies for local work.
 3. Start the app with `uvicorn graph_knowledge_engine.server_mcp_with_admin:app --port 8765`.
 
+## Install Options
+
+- Base/core only:
+  - `pip install -e .`
+- Chroma backend:
+  - `pip install -e ".[chroma]"`
+- PostgreSQL + pgvector backend:
+  - `pip install -e ".[pgvector]"`
+- LLM provider (OpenAI):
+  - `pip install -e ".[openai]"`
+- LLM provider (Gemini):
+  - `pip install -e ".[gemini]"`
+- Ingestion with OpenAI:
+  - `pip install -e ".[ingestion-openai]"`
+- Ingestion with Gemini:
+  - `pip install -e ".[ingestion-gemini]"`
+- LangGraph converter:
+  - `pip install -e ".[langgraph]"`
+- Everything:
+  - `pip install -e ".[full]"`
+
 ## License
 
 MIT. See [LICENSE](LICENSE).

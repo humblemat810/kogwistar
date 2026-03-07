@@ -1,31 +1,66 @@
 # tests/conftest.py
+from __future__ import annotations
 import shutil, uuid, json
 import os
-
-import sitecustomize
+from typing import cast
+try:
+    import sitecustomize  # type: ignore  # pragma: no cover
+except Exception:  # pragma: no cover - local env may not provide it
+    sitecustomize = None  # type: ignore
 os.environ["ANONYMIZED_TELEMETRY"] = "FALSE"
-import sqlalchemy as sa
+try:
+    import sqlalchemy as sa
+    has_sa = True
+except Exception:  # pragma: no cover - optional for non-pg test subsets
+    has_sa = False
 
 
 import os
 import sys
 import pathlib
-sys.path.insert(0, str(pathlib.Path(__file__).parent.parents))
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 import pytest
+from typing import Any, List, Optional, Sequence, Iterator, TYPE_CHECKING
+try:
+    from testcontainers.postgres import PostgresContainer
+except Exception:  # pragma: no cover - optional for pg integration tests
+    PostgresContainer = None  # type: ignore
+if TYPE_CHECKING:
+    import sqlalchemy as sa
+    from testcontainers.postgres import PostgresContainer
+try:
+    from langchain_core.runnables import Runnable
+except Exception:  # pragma: no cover - optional for langchain-dependent tests
+    class Runnable:  # type: ignore
+        pass
+
 from graph_knowledge_engine.conversation.models import ConversationEdge, ConversationNode
 from graph_knowledge_engine.conversation.service import ConversationService
 from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
+
 from graph_knowledge_engine.engine_core.models import (
     Edge, LLMGraphExtraction, LLMNode, LLMEdge,
     LLMMergeAdjudication, AdjudicationVerdict, Node, Span, Grounding,
     MentionVerification
-)
-from graph_knowledge_engine.engine_core.postgres_backend import PgVectorBackend
-from typing import Any, List, Optional, Sequence, Iterator, TYPE_CHECKING
-from testcontainers.postgres import PostgresContainer
-if TYPE_CHECKING:
-    from testcontainers.postgres import PostgresContainer
-from langchain_core.runnables import Runnable
+    )
+try:        
+    from graph_knowledge_engine.engine_core.postgres_backend import PgVectorBackend
+except Exception:  # pragma: no cover - allow lightweight test subsets on limited envs
+    # ConversationEdge = Any  # type: ignore
+    # ConversationNode = Any  # type: ignore
+    # ConversationService = Any  # type: ignore
+    # GraphKnowledgeEngine = Any  # type: ignore
+    # Edge = Any  # type: ignore
+    # LLMGraphExtraction = Any  # type: ignore
+    # LLMNode = Any  # type: ignore
+    # LLMEdge = Any  # type: ignore
+    # LLMMergeAdjudication = Any  # type: ignore
+    # AdjudicationVerdict = Any  # type: ignore
+    # Node = Any  # type: ignore
+    # Span = Any  # type: ignore
+    # Grounding = Any  # type: ignore
+    # MentionVerification = Any  # type: ignore
+    PgVectorBackend = Any  # type: ignore
 
 _TEST_NS = uuid.UUID("00000000-0000-0000-0000-000000000000")
 @pytest.fixture(scope="session")
@@ -219,8 +254,16 @@ def mcp_admin_server(tmp_path: Path) -> Iterator[dict[str, Any]]:
                 proc.kill()
                 proc.wait(timeout=5)
 
-from chromadb.utils.embedding_functions import EmbeddingFunction
-from chromadb.api.types import Embeddings
+try:
+    from chromadb.utils.embedding_functions import EmbeddingFunction
+    from chromadb.api.types import Embeddings
+except Exception:  # pragma: no cover - optional for chroma-dependent tests
+    class EmbeddingFunction:  # type: ignore
+        @staticmethod
+        def name() -> str:
+            return "default"
+
+    Embeddings = list[list[float]]  # type: ignore
 class FakeEmbeddingFunction(EmbeddingFunction):
     @staticmethod
     def name() -> str:
@@ -310,9 +353,8 @@ class FakeStructuredRunnable(Runnable):
     async def abatch(self, inputs: List[Any], config: Optional[dict] = None, **kwargs: Any) -> List[Any]:
         return [self.invoke(i, config=config, **kwargs) for i in inputs]
 
-
 @pytest.fixture(scope="session")
-def pg_container() -> Iterator[PostgresContainer]:
+def pg_container() -> Iterator[Optional[PostgresContainer]]:
     """
     Spin up a disposable Postgres for the whole test session.
 
@@ -321,18 +363,26 @@ def pg_container() -> Iterator[PostgresContainer]:
       - Python deps: testcontainers[postgresql], psycopg[binary], sqlalchemy
     """
     
+    if PostgresContainer is None:
+        yield None
+        return
     image = os.getenv("GKE_TEST_PG_IMAGE", "postgres:16")
     os.environ['TESTCONTAINERS_RYUK_DISABLED'] = "true"
-    from testcontainers.postgres import PostgresContainer
-    with PostgresContainer(image) as pg:
-        yield pg
+    try:
+        with PostgresContainer(image) as pg:
+            yield pg
+            return
+    except Exception:  # pragma: no cover - environment-dependent (docker availability)
+        yield None
 
 
 @pytest.fixture(scope="session")
-def pg_dsn(pg_container: PostgresContainer) -> str:
+def pg_dsn(pg_container: Optional[PostgresContainer]) -> Optional[str]:
     """
     SQLAlchemy DSN for the running test container.
     """
+    if pg_container is None:
+        return None
     url = pg_container.get_connection_url()
     # Normalize to psycopg (optional). Comment out if you rely on psycopg2.
     url = url.replace("postgresql://", "postgresql+psycopg://")
@@ -340,17 +390,22 @@ def pg_dsn(pg_container: PostgresContainer) -> str:
 
 
 @pytest.fixture(scope="session")
-def sa_engine(pg_dsn: str) -> sa.Engine:
+def sa_engine(pg_dsn: Optional[str]):
+    if (not has_sa) or pg_dsn is None:
+        return None
     return sa.create_engine(pg_dsn, future=True)
 
 
 @pytest.fixture()
-def pg_schema(sa_engine: sa.Engine) -> Iterator[str]:
+def pg_schema(sa_engine) -> Iterator[Optional[str]]:
     """
     Unique schema per test, dropped afterwards.
 
     Tests should pass this schema into PgVectorBackend(schema=...).
     """
+    if sa_engine is None:
+        yield None
+        return
     schema = f"gke_test_{uuid.uuid4().hex}"
     with sa_engine.begin() as conn:
         conn.execute(sa.text(f'CREATE SCHEMA IF NOT EXISTS "{schema}"'))
@@ -365,13 +420,15 @@ class FakeLLMForAdjudication:
     Test double for your LLM. Mimics `.with_structured_output(...)` by returning
     a Runnable that yields a fixed LLMMergeAdjudication.
     """
-    def __init__(self, verdict: AdjudicationVerdict, include_raw: bool = False):
-        self._verdict = verdict
+    def __init__(self, verdict, include_raw: bool = False):
+        from graph_knowledge_engine.engine_core.models import AdjudicationVerdict as AV
+        self._verdict: AV = cast(AV, verdict)
         self._include_raw = include_raw
 
     def with_structured_output(self, schema, include_raw: bool = False, many: bool = False):
         # Build a deterministic structured reply; ignore schema/many in this simple fake
-        parsed = LLMMergeAdjudication(verdict=self._verdict)
+        from graph_knowledge_engine.engine_core.models import LLMMergeAdjudication as LLMMA
+        parsed = LLMMA(verdict=self._verdict)
         return FakeStructuredRunnable(parsed, include_raw=include_raw or self._include_raw)
 class _FakeLLMForExtraction:
     """Mocks .with_structured_output(..., include_raw=True) → .invoke(...) for extraction."""
@@ -383,19 +440,22 @@ class _FakeLLMForExtraction:
 
     def invoke(self, variables):
         # Deterministic graph from any document
-        parsed = LLMGraphExtraction(
+        from graph_knowledge_engine.engine_core.models import LLMGraphExtraction as LLMGE
+        from graph_knowledge_engine.engine_core.models import LLMNode as LLMN, LLMEdge as LLME
+        parsed = LLMGE(
             nodes=[
-                LLMNode(label="Photosynthesis", type="entity", summary="Process converting light to chemical energy"),
-                LLMNode(label="Chlorophyll", type="entity", summary="Molecule absorbing sunlight"),
+                LLMN(label="Photosynthesis", type="entity", summary="Process converting light to chemical energy"),
+                LLMN(label="Chlorophyll", type="entity", summary="Molecule absorbing sunlight"),
             ],
             edges=[
-                LLMEdge(
+                LLME(
                     label="causes",
                     type="relationship",
                     summary="Chlorophyll absorption enables photosynthesis",
                     source_ids=["Chlorophyll"],  # will be mapped later in your pipeline
                     target_ids=["Photosynthesis"],
-                    relation="enables"
+                    relation="enables",
+                    mentions=Grounding(spans=[Span.from_dummy_for_document()])
                 )
             ],
         )

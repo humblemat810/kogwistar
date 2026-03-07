@@ -1,31 +1,29 @@
 # graph_knowledge_engine/strategies/adjudicators.py
 # -*- coding: utf-8 -*-
 from __future__ import annotations
+
 from typing import Any, Dict, List, Tuple
+
 from pydantic import BaseModel
-from langchain_core.prompts import ChatPromptTemplate
 
 from .types import EngineLike, IAdjudicator
-
 from ..engine_core.models import (
-    LLMMergeAdjudication,
     AdjudicationQuestionCode,
     AdjudicationTarget,
     BatchAdjudications,
-    Node, Edge,
-    QUESTION_KEY,
+    Edge,
+    LLMMergeAdjudication,
+    Node,
     QUESTION_DESC,
+    QUESTION_KEY,
 )
+from ..llm_tasks import AdjudicateBatchTaskRequest, AdjudicatePairTaskRequest
 
 
 class LLMPairAdjudicatorImpl:
-    """
-    Inline pair adjudicator: builds its own prompt and calls engine.llm directly.
-    No callbacks into engine logic.
-    """
+    """Inline pair adjudicator using typed llm task contracts."""
 
     def __init__(self, engine: EngineLike):
-        # Needs access to engine.llm only (and maybe engine-side config later)
         self.e = engine
 
     def adjudicate_pair(
@@ -35,44 +33,28 @@ class LLMPairAdjudicatorImpl:
         *,
         question: str = "same_entity",
     ) -> LLMMergeAdjudication:
-        prompt = ChatPromptTemplate.from_messages(
-            [
-                (
-                    "system",
-                    "You adjudicate whether two objects refer to the SAME real-world thing. "
-                    "Be conservative and return a structured JSON verdict only."
-                ),
-                (
-                    "human",
-                    "Question: {question}\n\n"
-                    "Left:\n{left}\n\nRight:\n{right}\n\n"
-                    "Return only the structured JSON for the schema."
-                ),
-            ]
-        )
-        # Keep payload small: rely on model_dump() from Pydantic objects
         payload_left = getattr(left, "model_dump", lambda: left)()
         payload_right = getattr(right, "model_dump", lambda: right)()
-
-        chain = prompt | self.e.llm.with_structured_output(LLMMergeAdjudication)
-        return chain.invoke({"question": question, "left": payload_left, "right": payload_right})
+        result = self.e.llm_tasks.adjudicate_pair(
+            AdjudicatePairTaskRequest(
+                question=question,
+                left=payload_left if isinstance(payload_left, dict) else {"value": payload_left},
+                right=payload_right if isinstance(payload_right, dict) else {"value": payload_right},
+            )
+        )
+        if result.verdict_payload is None:
+            raise ValueError(f"Pair adjudication failed: {result.parsing_error or 'missing verdict payload'}")
+        return LLMMergeAdjudication.model_validate(result.verdict_payload)
 
 
 class LLMBatchAdjudicatorImpl:
-    """
-    Inline batch adjudicator (cross-kind aware).
-    - Aliases objects to short ids to shrink prompts.
-    - Accepts ANY pair types (node↔node, edge↔edge, cross‑type).
-    - Returns (list[LLMMergeAdjudication], qkey).
-    """
+    """Inline batch adjudicator (cross-kind aware)."""
 
     def __init__(self, engine: EngineLike):
         self.e = engine
 
-    # -------- helpers --------
     @staticmethod
     def _kind(x: Any) -> str:
-        # prefer 'type' if present, else class
         return getattr(x, "type", None) or getattr(x, "__class__", type("X", (), {})).__name__
 
     @staticmethod
@@ -90,8 +72,7 @@ class LLMBatchAdjudicatorImpl:
             "name": d.get("label") or d.get("name") or d.get("title"),
             "summary": d.get("summary"),
         }
-        # small whitelist of attributes frequently useful
-        attrs = {}
+        attrs: Dict[str, Any] = {}
         for k in ("relation", "date", "country", "ticker", "role"):
             if d.get(k) is not None:
                 attrs[k] = d[k]
@@ -101,7 +82,6 @@ class LLMBatchAdjudicatorImpl:
         sig = props.get("signature_text")
         if sig:
             out["signature"] = str(sig)
-        # signature of hyperedge endpoints if present (kept short)
         for field in ("source_ids", "target_ids", "source_edge_ids", "target_edge_ids"):
             if d.get(field):
                 out[field] = d[field]
@@ -113,29 +93,27 @@ class LLMBatchAdjudicatorImpl:
         *,
         question_code: int,
     ) -> Tuple[List[LLMMergeAdjudication], str]:
-
         if not pairs:
             return [], QUESTION_KEY[AdjudicationQuestionCode(question_code)]
 
         qcode = AdjudicationQuestionCode(question_code)
         qkey = QUESTION_KEY[qcode]
 
-        # 1) Collect unique objects to alias
-        uniq: List[Tuple[str, str, Any]] = []  # (kind, id, obj)
+        uniq: List[Tuple[str, str, Any]] = []
         seen = set()
         for l, r in pairs:
             for x in (l, r):
                 k = self._kind(x)
                 i = self._id(x)
                 t = (k, i)
-                if t not in seen:
-                    seen.add(t)
-                    uniq.append((k, i, x))
+                if t in seen:
+                    continue
+                seen.add(t)
+                uniq.append((k, i, x))
 
         alias_for: Dict[Tuple[str, str], str] = {(k, i): f"n{idx}" for idx, (k, i, _) in enumerate(uniq)}
         inv_alias: Dict[str, Tuple[str, str]] = {v: k for k, v in alias_for.items()}
 
-        # 2) Build compact items with aliased ids
         mapping_table = [
             {"code": int(code), "key": QUESTION_KEY[code], "description": QUESTION_DESC[code]}
             for code in AdjudicationQuestionCode
@@ -148,8 +126,7 @@ class LLMBatchAdjudicatorImpl:
             item["id"] = aid
             compact[aid] = item
 
-        # 3) Build pair list for LLM
-        pair_payload = []
+        pair_payload: list[dict[str, Any]] = []
         for l, r in pairs:
             la = alias_for[(self._kind(l), self._id(l))]
             ra = alias_for[(self._kind(r), self._id(r))]
@@ -162,32 +139,17 @@ class LLMBatchAdjudicatorImpl:
                 }
             )
 
-        # 4) Prompt & call
-        prompt = ChatPromptTemplate.from_messages(
-            [
-                (
-                    "system",
-                    "You adjudicate candidate pairs (entity↔entity, relation↔relation, and cross-type). "
-                    "Use the mapping table to interpret question_code. "
-                    "Return only the structured JSON per schema. Use the short ids exactly.",
-                ),
-                (
-                    "human",
-                    "Mapping table:\n{mapping}\n\nPairs:\n{pairs}",
-                ),
-            ]
+        result = self.e.llm_tasks.adjudicate_batch(
+            AdjudicateBatchTaskRequest(mapping=mapping_table, pairs=pair_payload)
         )
-        chain = prompt | self.e.llm.with_structured_output(BatchAdjudications)
-        out: BatchAdjudications = chain.invoke({"mapping": mapping_table, "pairs": pair_payload})
+        out_items = [LLMMergeAdjudication.model_validate(item) for item in result.verdict_payloads]
 
-        # 5) De-alias ids (left_id/right_id) if present in model
         result_items: List[LLMMergeAdjudication] = []
-        for item in out.items:
+        for item in out_items:
             md = item.model_dump()
             la = md.get("left_id")
             ra = md.get("right_id")
             if la and la in inv_alias:
-                # replace alias with original id string
                 _, real_l = inv_alias[la]
                 md["left_id"] = real_l
             if ra and ra in inv_alias:
@@ -197,52 +159,54 @@ class LLMBatchAdjudicatorImpl:
 
         return result_items, qkey
 
+
 class Adjudicator(IAdjudicator):
     def __init__(self, engine: EngineLike):
         self.e = engine
-    def adjudicate_pair(self, left: AdjudicationTarget, right: AdjudicationTarget, question: str)-> Dict[Any, Any] | BaseModel:
+
+    def adjudicate_pair(
+        self,
+        left: AdjudicationTarget,
+        right: AdjudicationTarget,
+        question: str,
+    ) -> Dict[Any, Any] | BaseModel:
         if (left.kind != right.kind) and question != "node_edge_equivalence":
             raise ValueError("Cross-kind only allowed for 'node_edge_equivalence'")
         if not self.e.allow_cross_kind_adjudication and question == "node_edge_equivalence":
             raise ValueError("Cross-kind adjudication disabled")
 
-        prompt = ChatPromptTemplate.from_messages([
-            ("system",
-            "You are a careful adjudicator. Decide if LEFT and RIGHT correspond as the question specifies.\n"
-            "- If question == 'same_entity': same real-world entity (node↔node).\n"
-            "- If question == 'same_relation': same logical relation instance (edge↔edge) including endpoints.\n"
-            "- If question == 'node_edge_equivalence': determine if the NODE is a named reification/denotation "
-            "  of the EDGE (i.e., the node represents that specific relation instance). "
-            "Be conservative; return JSON verdict."),
-            ("human", "Question: {question}\nLeft:\n{left}\nRight:\n{right}")
-        ])
-        chain = prompt | self.e.llm.with_structured_output(LLMMergeAdjudication)
-        return chain.invoke({"question": question,
-                            "left": left.model_dump(),
-                            "right": right.model_dump()})
+        result = self.e.llm_tasks.adjudicate_pair(
+            AdjudicatePairTaskRequest(
+                question=question,
+                left=left.model_dump(),
+                right=right.model_dump(),
+            )
+        )
+        if result.verdict_payload is None:
+            raise ValueError(f"Pair adjudication failed: {result.parsing_error or 'missing verdict payload'}")
+        return LLMMergeAdjudication.model_validate(result.verdict_payload)
+
     def adjudicate_merge(self, left_node: Node | Edge, right_node: Node | Edge) -> Dict[Any, Any] | BaseModel:
-        # Back-compat wrapper if you still call with concrete models
         left = self.e.adjudicate.target_from_node(left_node) if isinstance(left_node, Node) else self.e.adjudicate.target_from_edge(left_node)
         right = self.e.adjudicate.target_from_node(right_node) if isinstance(right_node, Node) else self.e.adjudicate.target_from_edge(right_node)
         question = "same_entity" if left.kind == "node" else "same_relation"
         return self.adjudicate_pair(left, right, question=question)
+
     def batch_adjudicate_merges(
         self,
         pairs: List[Tuple["Node", "Node"]],
         question_code: "AdjudicationQuestionCode" = AdjudicationQuestionCode.SAME_ENTITY,
-    ):# -> list[Any] | tuple[list[Any], str] | tuple[list[None], str]:
+    ):
         if not pairs:
             return []
 
         qcode = AdjudicationQuestionCode(question_code)
         qkey = QUESTION_KEY[qcode]
 
-        # --- helpers -------------------------------------------------------------
         def node_id(n: Node):
             return getattr(n, "id", None) or n.model_dump().get("id")
 
         def node_kind(n: Node):
-            # prefer an explicit 'kind' (e.g., 'entity'|'relation') then fallback to type/classname
             return (
                 getattr(n, "kind", None)
                 or n.model_dump().get("kind")
@@ -252,127 +216,109 @@ class Adjudicator(IAdjudicator):
             )
 
         def normalized_signature(left, right):
-            """Normalized cache key for cross-type pairs, including qkey so different questions don't collide."""
             lid, rid = node_id(left), node_id(right)
             lkind, rkind = node_kind(left), node_kind(right)
             a, b = (lkind, str(lid)), (rkind, str(rid))
             key_pair = (a, b) if a <= b else (b, a)
-            return key_pair + (qkey,)  # ((kind,id),(kind,id), qkey)
+            return key_pair + (qkey,)
 
-        # compact copy of node for LLM (keep it tiny but informative)
         def compact_payload(n: Node):
             d = n.model_dump()
-            out = {}
-            # always include these:
+            out: Dict[str, Any] = {}
             out["kind"] = node_kind(n)
-            out["type"] = d.get("type")  # coarse class if present
+            out["type"] = d.get("type")
             out["name"] = d.get("name") or d.get("label") or d.get("title")
-            # optional small attrs whitelist if present
-            attrs = {}
+            attrs: Dict[str, Any] = {}
             for k in ("dob", "country", "ticker", "date", "role", "source"):
                 if k in d and d[k] is not None:
                     attrs[k] = d[k]
             if attrs:
                 out["attrs"] = attrs
-            # relation/hyperedge signature if present
             if "signature" in d and d["signature"]:
-                # expect [{"role": "...", "id": "...", ...}, ...]
                 out["signature"] = d["signature"]
             return out
 
-        # --- 1) pre-pass: cache lookup & collect unknowns -----------------------
-        cache = {}  # key: ((kind,id),(kind,id), qkey) -> LLMMergeAdjudication
-        known_by_index = {}
-        unknown_indices = []
-        unknown_pairs = []
+        cache: dict[tuple[Any, ...], LLMMergeAdjudication] = {}
+        known_by_index: dict[int, LLMMergeAdjudication] = {}
+        unknown_indices: list[int] = []
+        unknown_pairs: list[tuple[Node, Node, tuple[Any, ...]]] = []
 
         for idx, (left, right) in enumerate(pairs):
             k = normalized_signature(left, right)
             if k in cache:
                 known_by_index[idx] = cache[k]
-            else:
-                unknown_indices.append(idx)
-                unknown_pairs.append((left, right, k))
+                continue
+            unknown_indices.append(idx)
+            unknown_pairs.append((left, right, k))
 
         if not unknown_pairs:
             ordered = [known_by_index[i] for i in range(len(pairs))]
             return ordered, qkey
 
-        # --- 2) short-id aliasing over unique (kind,id) objects -----------------
-        # collect unique objects by (kind,id)
-        uniq_objs = []
+        uniq_objs: list[tuple[str, str]] = []
         seen = set()
         for left, right, _ in unknown_pairs:
             for n in (left, right):
                 tup = (node_kind(n), str(node_id(n)))
-                if tup not in seen:
-                    seen.add(tup)
-                    uniq_objs.append(tup)
+                if tup in seen:
+                    continue
+                seen.add(tup)
+                uniq_objs.append(tup)
 
-        alias_map = {obj: f"n{i}" for i, obj in enumerate(uniq_objs)}  # (kind,id) -> "nX"
-        inv_alias = {v: obj for obj, v in alias_map.items()}           # "nX" -> (kind,id)
+        alias_map = {obj: f"n{i}" for i, obj in enumerate(uniq_objs)}
+        inv_alias = {v: obj for obj, v in alias_map.items()}
 
-        # --- 3) build tiny LLM inputs (aliased ids + compact fields) ------------
         mapping_table = [
             {"code": int(code), "key": QUESTION_KEY[code], "description": QUESTION_DESC[code]}
             for code in AdjudicationQuestionCode
         ]
-        def _fmt(ctx):
-            meta = f"[doc={ctx['doc_id']} p{ctx.get('start_page')}–{ctx.get('end_page')}]" if ctx.get('doc_id') else ""
-            return f"{meta} …{(ctx['context'] or ctx['mention'] or '')}…"
 
-        
-        adjudication_inputs = []
+        def _fmt(ctx):
+            meta = f"[doc={ctx['doc_id']} p{ctx.get('start_page')}-{ctx.get('end_page')}]" if ctx.get("doc_id") else ""
+            return f"{meta} ...{(ctx['context'] or ctx['mention'] or '')}..."
+
+        adjudication_inputs: list[dict[str, Any]] = []
         for left, right, _ in unknown_pairs:
             l_key = (node_kind(left), str(node_id(left)))
             r_key = (node_kind(right), str(node_id(right)))
-            left_ctxs  = self.e.extract_reference_contexts(left,  window_chars=260, max_contexts=2)
+            left_ctxs = self.e.extract_reference_contexts(left, window_chars=260, max_contexts=2)
             right_ctxs = self.e.extract_reference_contexts(right, window_chars=260, max_contexts=2)
-            left_blurbs  = "\n".join(_fmt(c) for c in left_ctxs)
+            left_blurbs = "\n".join(_fmt(c) for c in left_ctxs)
             right_blurbs = "\n".join(_fmt(c) for c in right_ctxs)
-            adjudication_inputs.append({
-                "left":  {"id": alias_map[l_key],  **compact_payload(left)},
-                "left_context": left_blurbs,
-                "right": {"id": alias_map[r_key], **compact_payload(right)},
-                "right_context": right_blurbs,
-                "cross_type": node_kind(left) != node_kind(right),
-                "question_code": int(qcode),
-            })
+            adjudication_inputs.append(
+                {
+                    "left": {"id": alias_map[l_key], **compact_payload(left)},
+                    "left_context": left_blurbs,
+                    "right": {"id": alias_map[r_key], **compact_payload(right)},
+                    "right_context": right_blurbs,
+                    "cross_type": node_kind(left) != node_kind(right),
+                    "question_code": int(qcode),
+                }
+            )
 
-        prompt = ChatPromptTemplate.from_messages([
-            ("system",
-            "You adjudicate candidate pairs, including cross-type pairs (entity↔relation, etc.). "
-            "Use the mapping table to interpret question_code. "
-            "This is for hypergraph application, equalize if a node is representing a relationship indicated by an edge. "
-            "Return only the structured JSON per schema. Use the short ids exactly."),
-            ("human", "Mapping table:\n{mapping}\n\nPairs:\n{pairs}")
-        ])
-        
-        chain = prompt | self.e.llm.with_structured_output(BatchAdjudications, include_raw= True)
-        llm_results= chain.invoke({"mapping": mapping_table, "pairs": adjudication_inputs})
-        raw = llm_results.get("raw") if isinstance(llm_results, dict) else None
-        parsed: BatchAdjudications  = llm_results.get("parsed") if isinstance(llm_results, dict) else llm_results
-        err = llm_results.get("parsing_error") if isinstance(llm_results, dict) else None
-        # --- 4) de-alias result ids and cache by normalized key -----------------
-        fixed_results = []
-        for (left, right, key_sig), res in zip(unknown_pairs, parsed.merge_adjudications):
-            # map "nX" back to (kind,id)
+        result = self.e.llm_tasks.adjudicate_batch(
+            AdjudicateBatchTaskRequest(mapping=mapping_table, pairs=adjudication_inputs)
+        )
+        parsed_items = [LLMMergeAdjudication.model_validate(item) for item in result.verdict_payloads]
+
+        fixed_results: list[LLMMergeAdjudication] = []
+        for (left, right, key_sig), res in zip(unknown_pairs, parsed_items):
             left_alias = getattr(res, "left_id", None) or res.model_dump().get("left_id")
             right_alias = getattr(res, "right_id", None) or res.model_dump().get("right_id")
             l_kind, l_id = inv_alias.get(left_alias, (node_kind(left), str(node_id(left))))
             r_kind, r_id = inv_alias.get(right_alias, (node_kind(right), str(node_id(right))))
 
-            # rebuild or mutate to set original ids
             if hasattr(res, "model_copy"):
                 res = res.model_copy(update={"left_id": l_id, "right_id": r_id, "left_kind": l_kind, "right_kind": r_kind})
             else:
-                setattr(res, "left_id", l_id); setattr(res, "right_id", r_id)
-                setattr(res, "left_kind", l_kind); setattr(res, "right_kind", r_kind)
+                setattr(res, "left_id", l_id)
+                setattr(res, "right_id", r_id)
+                setattr(res, "left_kind", l_kind)
+                setattr(res, "right_kind", r_kind)
 
             cache[key_sig] = res
             fixed_results.append(res)
 
-        # --- 5) stitch results back to original order ---------------------------
         ordered = [None] * len(pairs)
         for i, r in known_by_index.items():
             ordered[i] = r

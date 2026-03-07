@@ -248,7 +248,7 @@ def test_workflow_runtime_uses_default_resolver(tmp_path):
     deps= {
             "conversation_engine": conversation_engine,
             "ref_knowledge_engine": ref_knowledge_engine,
-            "llm": conversation_engine.llm,
+            "llm_tasks": conversation_engine.llm_tasks,
             "filtering_callback": cached_fn,
             "tool_runner": tool_runner,
             "max_retrieval_level": 1,
@@ -321,7 +321,8 @@ def test_orchestrator_has_v2(tmp_path):
         conversation_engine=conv,
         ref_knowledge_engine=kg,
         workflow_engine=wf,
-        llm = wf.llm, tool_call_id_factory = stable_id
+        llm_tasks=wf.llm_tasks,
+        tool_call_id_factory=stable_id,
         # llm=..., tool_runner=..., etc.
     )
 

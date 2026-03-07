@@ -57,10 +57,19 @@ def test_sidecar_ingester_on_long_document(tmp_path: pathlib.Path):
     os.makedirs(persist_dir, exist_ok= True)
     engine = GraphKnowledgeEngine(persist_directory=str(persist_dir))
 
-    # 3) Side-car ingester uses your LLM (joblib caching is inside ingester)
-    #    We rely on your ingester to accept any LangChain LLM already wired in engine or passed separately.
-    #    Here we pass engine.llm to keep configs consistent with your environment.
-    ingester = PagewiseSummaryIngestor(engine=engine, llm=engine.llm, cache_dir=str(os.path.join(".",".llm_cache")))
+    # 3) Side-car ingester uses its own explicit model instance.
+    from langchain_openai import AzureChatOpenAI
+
+    ingester_llm = AzureChatOpenAI(
+        deployment_name=os.getenv("OPENAI_DEPLOYMENT_NAME_GPT4_1"),
+        model_name=os.getenv("OPENAI_MODEL_NAME_GPT4_1"),
+        azure_endpoint=os.getenv("OPENAI_DEPLOYMENT_ENDPOINT_GPT4_1"),
+        openai_api_key=os.getenv("OPENAI_API_KEY_GPT4_1"),
+        api_version="2024-08-01-preview",
+        openai_api_type="azure",
+        temperature=0.1,
+    )
+    ingester = PagewiseSummaryIngestor(engine=engine, llm=ingester_llm, cache_dir=str(os.path.join(".",".llm_cache")))
     partial_doc = full_text[:50000]
     # 4) Create the document row
     doc_id = f"doc-test_sidecar"

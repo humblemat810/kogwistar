@@ -384,7 +384,7 @@ def _context_snapshot(ctx: StepContext) -> StepRunResult:
 
     Expected dependencies (best-effort):
       - deps['conversation_engine'] : GraphKnowledgeEngine (conversation)
-      - deps['llm']                : model (for model_name)
+      - deps['llm_tasks']           : task set (for provider label)
 
     Expected state (best-effort):
       - conversation_id
@@ -398,7 +398,7 @@ def _context_snapshot(ctx: StepContext) -> StepRunResult:
     deps = _deps(ctx)
     ce = deps["conversation_engine"]
     svc = _chat_service(deps)
-    llm = deps.get("llm")
+    llm_tasks = deps.get("llm_tasks")
     sv = ctx.state_view
 
     conversation_id = str(sv["conversation_id"])
@@ -416,7 +416,7 @@ def _context_snapshot(ctx: StepContext) -> StepRunResult:
         attempt_seq=attempt_seq,
         stage=stage,
         view=view,
-        model_name=str(getattr(llm, "model_name", "") or ""),
+        model_name=str(getattr(getattr(llm_tasks, "provider_hints", None), "answer_with_citations_provider", "") or ""),
         budget_tokens=int(getattr(view, "token_budget", 0) or 0),
         tail_turn_index=int(getattr(deps.get("prev_turn_meta_summary"), "tail_turn_index", 0) or 0),
         llm_input_payload={
@@ -447,7 +447,7 @@ def _memory_retrieve(ctx: StepContext) -> StepRunResult:
 
     mem_retriever = MemoryRetriever(
         conversation_engine=deps["conversation_engine"],
-        llm=deps["llm"],
+        llm_tasks=deps["llm_tasks"],
         filtering_callback=deps["filtering_callback"],
     )
     tool_runner: ToolRunner | None = deps.get("tool_runner")
@@ -506,7 +506,7 @@ def _kg_retrieve(ctx: StepContext) -> StepRunResult:
     kg_retriever = KnowledgeRetriever(
         conversation_engine=deps["conversation_engine"],
         ref_knowledge_engine=deps["ref_knowledge_engine"],
-        llm=deps["llm"],
+        llm_tasks=deps["llm_tasks"],
         filtering_callback=deps["filtering_callback"],
         max_retrieval_level=max_retrieval_level,
     )
@@ -565,7 +565,7 @@ def _memory_pin(ctx: StepContext) -> StepRunResult:
     mem_rehydrated = MemoryRetrievalResult(**state.get("memory"))
     mem_retriever = MemoryRetriever(
         conversation_engine=deps["conversation_engine"],
-        llm=deps["llm"],
+        llm_tasks=deps["llm_tasks"],
         filtering_callback=deps["filtering_callback"],
     )
 
@@ -614,7 +614,7 @@ def _kg_pin(ctx: StepContext) -> StepRunResult:
     kg_retriever = KnowledgeRetriever(
         conversation_engine=deps["conversation_engine"],
         ref_knowledge_engine=deps["ref_knowledge_engine"],
-        llm=deps["llm"],
+        llm_tasks=deps["llm_tasks"],
         filtering_callback=deps["filtering_callback"],
         max_retrieval_level=max_retrieval_level,
     )
@@ -661,6 +661,7 @@ def _answer(ctx: StepContext) -> StepRunResult:
 
     response_node_id: str | None = None
     llm_decision_need_summary: bool = False
+    assistant_text: str = ""
 
     # 1) Agentic answering via workflow (preferred)
     agent: AgenticAnsweringAgent = deps.get("agent")
@@ -696,11 +697,106 @@ def _answer(ctx: StepContext) -> StepRunResult:
             resp = ConversationAIResponse.model_validate(res_raw)
             response_node_id = getattr(resp, "response_node_id", None)
             llm_decision_need_summary = bool(getattr(resp, "llm_decision_need_summary", False))
+            assistant_text = str(getattr(resp, "text", "") or "")
         except Exception:
             # best-effort: accept dict-like
             if isinstance(res_raw, dict):
                 response_node_id = res_raw.get("response_node_id") or res_raw.get("assistant_turn_node_id")
                 llm_decision_need_summary = bool(res_raw.get("llm_decision_need_summary", False))
+                assistant_text = str(
+                    res_raw.get("text")
+                    or res_raw.get("assistant_text")
+                    or res_raw.get("content")
+                    or ""
+                )
+
+    # 3) Backward-compatible fallback:
+    # if answer payload has text but no persisted response node, materialize an assistant turn.
+    if assistant_text:
+        ce = deps.get("conversation_engine")
+        if ce is not None:
+            try:
+                from .models import ConversationNode
+                from .conversation_orchestrator import get_id_for_conversation_turn
+                from graph_knowledge_engine.engine_core.models import Grounding, MentionVerification, Span
+
+                conversation_id = str(state["conversation_id"])
+                user_id = str(state.get("user_id") or "")
+                role = "assistant"
+                in_conv = bool(state.get("in_conv", True))
+                assistant_turn_index = int(state.get("turn_index") or 0) + 1
+
+                if response_node_id is None:
+                    response_node_id = get_id_for_conversation_turn(
+                        ConversationNode.id_kind,
+                        user_id,
+                        conversation_id,
+                        assistant_text,
+                        str(assistant_turn_index),
+                        role,
+                        "conversation_turn",
+                        str(in_conv),
+                    )
+                response_node_id = str(response_node_id)
+
+                got = ce.backend.node_get(ids=[response_node_id], include=[])
+                if not (got.get("ids") or []):
+                    span = Span(
+                        collection_page_url=f"conversation/{conversation_id}",
+                        document_page_url=f"conversation/{conversation_id}#{response_node_id}",
+                        doc_id=f"conv:{conversation_id}",
+                        insertion_method="assistant_turn",
+                        page_number=1,
+                        start_char=0,
+                        end_char=len(assistant_text),
+                        excerpt=assistant_text,
+                        context_before="",
+                        context_after="",
+                        chunk_id=None,
+                        source_cluster_id=None,
+                        verification=MentionVerification(
+                            method="system",
+                            is_verified=True,
+                            score=1.0,
+                            notes="resolver:answer fallback",
+                        ),
+                    )
+                    node = ConversationNode(
+                        id=response_node_id,
+                        user_id=user_id,
+                        label=f"Turn {assistant_turn_index} ({role})",
+                        type="entity",
+                        doc_id=response_node_id,
+                        summary=assistant_text,
+                        role=role,  # type: ignore[arg-type]
+                        turn_index=assistant_turn_index,
+                        conversation_id=conversation_id,
+                        mentions=[Grounding(spans=[span])],
+                        properties={},
+                        metadata={
+                            "entity_type": "conversation_turn",
+                            "level_from_root": 0,
+                            "in_conversation_chain": in_conv,
+                            "in_ui_chain": True,
+                        },
+                        domain_id=None,
+                        canonical_entity_id=None,
+                    )
+
+                    emb_text0 = f"{role}: {assistant_text}"
+                    embedding = None
+                    if hasattr(ce, "embed") and hasattr(ce.embed, "iterative_defensive_emb"):
+                        embedding = ce.embed.iterative_defensive_emb(emb_text0)
+                    elif hasattr(ce, "iterative_defensive_emb"):
+                        embedding = ce.iterative_defensive_emb(emb_text0)
+                    elif hasattr(ce, "_iterative_defensive_emb"):
+                        embedding = ce._iterative_defensive_emb(emb_text0)
+                    if embedding is not None:
+                        node.embedding = embedding
+                    ce.add_node(node)
+            except Exception:
+                # Keep previous behavior if fallback materialization fails for any reason.
+                pass
 
     outj = {
         "response_node_id": response_node_id,
@@ -973,7 +1069,7 @@ def _aa_select_used_evidence(ctx: StepContext) -> StepRunResult:
             attempt_seq=attempt_seq,
             stage="select_used_evidence",
             view=view,
-            model_name=str(getattr(deps.get("llm"), "model_name", "") or ""),
+            model_name=str(getattr(getattr(deps.get("llm_tasks"), "provider_hints", None), "filter_candidates_provider", "") or ""),
             budget_tokens=int(getattr(view, "token_budget", 0) or 0),
             tail_turn_index=int(getattr(prev_turn_meta_summary, "tail_turn_index", 0) or 0),
             extra_hash_payload={
@@ -1104,7 +1200,7 @@ def _aa_generate_answer_with_citations(ctx: StepContext) -> StepRunResult:
         attempt_seq=attempt_seq,
         stage="generate_answer_with_citations",
         view=view,
-        model_name=str(getattr(deps.get("llm"), "model_name", "") or ""),
+        model_name=str(getattr(getattr(deps.get("llm_tasks"), "provider_hints", None), "answer_with_citations_provider", "") or ""),
         budget_tokens=int(getattr(view, "token_budget", 0) or 0),
         tail_turn_index=int(getattr(prev_turn_meta_summary, "tail_turn_index", 0) or 0),
         extra_hash_payload={
@@ -1187,7 +1283,7 @@ def _aa_validate_or_repair_citations(ctx: StepContext) -> StepRunResult:
         attempt_seq=attempt_seq,
         stage="validate_or_repair_citations",
         view=view,
-        model_name=str(getattr(deps.get("llm"), "model_name", "") or ""),
+        model_name=str(getattr(getattr(deps.get("llm_tasks"), "provider_hints", None), "repair_citations_provider", "") or ""),
         budget_tokens=int(getattr(view, "token_budget", 0) or 0),
         tail_turn_index=int(getattr(prev_turn_meta_summary, "tail_turn_index", 0) or 0),
         extra_hash_payload={
@@ -1261,7 +1357,7 @@ def _aa_evaluate_answer(ctx: StepContext) -> StepRunResult:
         attempt_seq=attempt_seq,
         stage="evaluate_answer",
         view=view,
-        model_name=str(getattr(deps.get("llm"), "model_name", "") or ""),
+        model_name=str(getattr(getattr(deps.get("llm_tasks"), "provider_hints", None), "answer_with_citations_provider", "") or ""),
         budget_tokens=int(getattr(view, "token_budget", 0) or 0),
         tail_turn_index=int(getattr(prev_turn_meta_summary, "tail_turn_index", 0) or 0),
         extra_hash_payload={

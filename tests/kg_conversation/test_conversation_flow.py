@@ -2,7 +2,8 @@ import json
 from pathlib import Path
 
 import pytest
-import functools
+pytest.importorskip("chromadb")
+pytest.importorskip("langchain_core")
 from chromadb.utils.embedding_functions import EmbeddingFunction
 from chromadb.api.types import Embeddings
 from langchain_core.language_models import BaseChatModel
@@ -13,8 +14,7 @@ from graph_knowledge_engine.conversation.service import ConversationService
 from graph_knowledge_engine.cdc.oplog import OplogWriter
 from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
 from graph_knowledge_engine.engine_core.models import Node, Span, Grounding, MentionVerification
-from langchain_core.messages import AIMessage
-from pydantic import BaseModel, Field
+
 
 from typing import Callable, TypeVar, ParamSpec, cast, Sequence, Any
 from joblib import Memory
@@ -182,7 +182,7 @@ def test_conversation_flow(backend_kind: str, tmp_path, sa_engine, pg_schema):
     memory = Memory(location = '.joblib')
     
     # Monkey patch with typed cacheing
-    candiate_filtering_callback_cached = cached(memory, candiate_filtering_callback)
+    candiate_filtering_callback_cached = cached(memory, candiate_filtering_callback, ignore=['llm_tasks'])
     from functools import partial
     cached_deco = partial(cached, memory)
     # haha = 0
@@ -204,8 +204,7 @@ def test_conversation_flow(backend_kind: str, tmp_path, sa_engine, pg_schema):
     def wrapped_cached_callback(llm: BaseChatModel, conversation_content, 
                                 cand_node_list_str, cand_edge_list_str, 
                                 candidates_node_ids: list[str], candidate_edge_ids: list[str], context_text):
-        
-        
+
         dumped, reasoning = cached_fn(llm, conversation_content, 
                                 cand_node_list_str, cand_edge_list_str, 
                                 candidates_node_ids, candidate_edge_ids, context_text)

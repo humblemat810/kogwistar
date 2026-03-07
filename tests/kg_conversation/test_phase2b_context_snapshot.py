@@ -1,7 +1,5 @@
 
-from langchain_core.language_models import BaseChatModel
 import pytest
-from types import SimpleNamespace
 from typing import Any, Type, TypeVar
 from pydantic import BaseModel
 
@@ -14,18 +12,6 @@ from graph_knowledge_engine.conversation.agentic_answering import AgentConfig, A
 
 from tests.conftest import _make_engine_pair
 
-
-from langchain_core.runnables import Runnable
-
-
-class DummyLLM(Runnable):
-    model_name = "dummy-llm"
-
-    def invoke(self, input, config):
-        return SimpleNamespace(content="dummy summary")
-
-from typing import cast
-dummy_llm = cast(BaseChatModel, DummyLLM())
 def _mk_span(doc_id: str) -> Span:
     sp = Span.from_dummy_for_conversation()
     sp.doc_id = doc_id
@@ -34,7 +20,7 @@ def _mk_span(doc_id: str) -> Span:
 def test_summary_creates_context_snapshot_before_llm_call(backend_kind, tmp_path, sa_engine, pg_schema, monkeypatch):
     kg, conv = _make_engine_pair(backend_kind=backend_kind, tmp_path=tmp_path, sa_engine=sa_engine, pg_schema=pg_schema, dim=3, use_fake = True)
     conv.tool_call_id_factory = stable_id
-    orch = ConversationOrchestrator(conversation_engine=conv, ref_knowledge_engine=kg, llm=dummy_llm, tool_call_id_factory=stable_id)
+    orch = ConversationOrchestrator(conversation_engine=conv, ref_knowledge_engine=kg, tool_call_id_factory=stable_id)
 
     conversation_id = "c1"
     user_id = "u1"
@@ -111,7 +97,7 @@ def test_answer_flow_creates_context_snapshots_and_edges(backend_kind, tmp_path,
         evidence_selector="bm25",  # avoid LLM call for selection; we still snapshot for answer/eval stages
         max_used=0,
     )
-    agent = AgenticAnsweringAgent(conversation_engine=conv, knowledge_engine=kg, llm=dummy_llm, config=cfg)
+    agent = AgenticAnsweringAgent(conversation_engine=conv, knowledge_engine=kg, llm_tasks=conv.llm_tasks, config=cfg)
 
     # Avoid touching KG retrieval/materialization
     def _retrieve_candidates_stub(q: str):
