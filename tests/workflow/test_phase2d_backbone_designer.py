@@ -5,6 +5,7 @@ from graph_knowledge_engine.runtime.design import load_workflow_design
 import pytest
 from typing import Sequence
 
+pytest.importorskip("chromadb")
 from chromadb.utils.embedding_functions import EmbeddingFunction
 from chromadb.api.types import Embeddings
 class FakeEmbeddingFunction(EmbeddingFunction):

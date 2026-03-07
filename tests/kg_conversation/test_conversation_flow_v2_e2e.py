@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 
+pytest.importorskip("chromadb")
 from chromadb.utils.embedding_functions import EmbeddingFunction
 from chromadb.api.types import Embeddings
 
@@ -73,6 +74,27 @@ def _make_engine_pair(*, backend_kind: str, tmp_path, sa_engine, pg_schema, dim:
         )
         return kg_engine, conv_engine
 
+    raise ValueError(f"unknown backend_kind: {backend_kind!r}")
+
+
+def _make_workflow_engine(*, backend_kind: str, tmp_path, sa_engine, pg_schema, dim: int = 384) -> GraphKnowledgeEngine:
+    if backend_kind == "chroma":
+        return GraphKnowledgeEngine(
+            persist_directory=str(tmp_path / "wf"),
+            kg_graph_type="workflow",
+            embedding_function=FakeEmbeddingFunction(dim=dim),
+        )
+    if backend_kind == "pg":
+        if sa_engine is None or pg_schema is None:
+            pytest.skip("pg backend requested but sa_engine/pg_schema fixtures not available")
+        wf_schema = f"{pg_schema}_wf"
+        wf_backend = PgVectorBackend(engine=sa_engine, embedding_dim=dim, schema=wf_schema)
+        return GraphKnowledgeEngine(
+            persist_directory=str(tmp_path / "wf_meta"),
+            kg_graph_type="workflow",
+            embedding_function=FakeEmbeddingFunction(dim=dim),
+            backend=wf_backend,
+        )
     raise ValueError(f"unknown backend_kind: {backend_kind!r}")
 
 
@@ -298,6 +320,13 @@ def test_conversation_flow_v2_end_to_end_cached_llm(backend_kind: str, tmp_path,
         pg_schema=pg_schema,
         dim=384,
     )
+    workflow_engine = _make_workflow_engine(
+        backend_kind=backend_kind,
+        tmp_path=tmp_path,
+        sa_engine=sa_engine,
+        pg_schema=pg_schema,
+        dim=384,
+    )
 
     # Wire oplogs so CDC/harness tooling can observe changes if enabled.
     bundle_dir = Path(tmp_path) / "bundle"
@@ -313,6 +342,7 @@ def test_conversation_flow_v2_end_to_end_cached_llm(backend_kind: str, tmp_path,
     svc = ConversationService.from_engine(
         conversation_engine,
         knowledge_engine=kg_engine,
+        workflow_engine=workflow_engine,
     )
     orc = svc.orchestrator
     orc.tool_runner.tool_call_id_factory = stable_id

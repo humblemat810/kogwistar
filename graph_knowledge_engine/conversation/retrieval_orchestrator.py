@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable, List, Optional, Tuple
 
-from langchain_core.language_models import BaseChatModel
+from graph_knowledge_engine.llm_tasks import LLMTaskSet
 
 from .models import KnowledgeRetrievalResult
 
@@ -46,25 +46,25 @@ class RetrievalOrchestrator:
         *,
         conversation_engine,
         ref_knowledge_engine,
-        llm: BaseChatModel,
+        llm_tasks: LLMTaskSet,
         memory_filtering_callback: Callable[..., Tuple[List[str], str]],
         knowledge_filtering_callback: Callable[..., Tuple[List[str], str]],
         max_retrieval_level: int = 2,
     ) -> None:
         self.conversation_engine = conversation_engine
         self.ref_knowledge_engine = ref_knowledge_engine
-        self.llm = llm
+        self.llm_tasks = llm_tasks
         self.max_retrieval_level = max_retrieval_level
 
         self.memory_retriever = MemoryRetriever(
             conversation_engine=conversation_engine,
-            llm=llm,
+            llm_tasks=llm_tasks,
             filtering_callback=memory_filtering_callback,
         )
         self.knowledge_retriever = KnowledgeRetriever(
             conversation_engine=conversation_engine,
             ref_knowledge_engine=ref_knowledge_engine,
-            llm=llm,
+            llm_tasks=llm_tasks,
             filtering_callback=knowledge_filtering_callback,
             max_retrieval_level=max_retrieval_level,
         )

@@ -494,7 +494,21 @@ def doc_parse(inp: DocParseIn) -> DocParseOut:
     """Parse a document into leaf and relationships between chunks with summaries from low to high abstraction levels."""
     require_role("rw")
     doc = Document(id=inp.id, content=inp.content, type=inp.type)
-    ingester = PagewiseSummaryIngestor(engine=engine, llm=engine.llm, 
+    try:
+        from langchain_google_genai import ChatGoogleGenerativeAI
+    except Exception as e:
+        raise RuntimeError(
+            "doc_parse requires optional dependency group 'gemini'. "
+            "Install with: pip install 'kogwistar[gemini]'"
+        ) from e
+    ingester_llm = ChatGoogleGenerativeAI(
+        model=os.getenv("GEMINI_MODEL_NAME", "gemini-2.5-pro"),
+        temperature=0.1,
+        max_tokens=None,
+        timeout=None,
+        max_retries=2,
+    )
+    ingester = PagewiseSummaryIngestor(engine=engine, llm=ingester_llm, 
                                        cache_dir=str(os.path.join(".",".llm_cache"))
                                        )
     res: dict = ingester.ingest_document(document = doc)

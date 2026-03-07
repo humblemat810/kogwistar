@@ -4,7 +4,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Callable, List, Optional, Tuple, cast
 
-from langchain_core.language_models import BaseChatModel
+from graph_knowledge_engine.llm_tasks import LLMTaskSet
 
 from .models import ConversationEdge
 from .models import RetrievalResult
@@ -93,13 +93,13 @@ class MemoryRetriever:
         self,
         *,
         conversation_engine,
-        llm: BaseChatModel,
+        llm_tasks: LLMTaskSet,
         filtering_callback: Callable[..., tuple[FilteringResult|RetrievalResult, str]] ,
         summarize_callback: Optional[Callable[..., str]] = None, # can be a callback with context closured
         prefer_types: Optional[List[str]] = None,
     ) -> None:
         self.conversation_engine: GraphKnowledgeEngine = conversation_engine
-        self.llm = llm
+        self.llm_tasks = llm_tasks
         self.filtering_callback = filtering_callback
         self.summarize_callback = summarize_callback
         self.prefer_types = prefer_types or ["conversation_summary", "conversation_turn", "reference_pointer"]
@@ -156,7 +156,7 @@ class MemoryRetriever:
             cand_edge_list_str = "\n".join(
                 [f"-Edge ID: {edge.id} | Label: {edge.metadata.get('label')} | Summary: {edge.metadata.get('summary')}" for edge in candidates.edges]
             )
-            filtered, reasoning = self.filtering_callback(self.llm, user_text, cand_node_list_str, cand_edge_list_str, 
+            filtered, reasoning = self.filtering_callback(self.llm_tasks, user_text, cand_node_list_str, cand_edge_list_str, 
                                                           [i.id for i in candidates.nodes], 
                                                           [i.id for i in candidates.edges],
                                                           context_text)
@@ -211,7 +211,7 @@ class MemoryRetriever:
         # for ref nodes and ref edges only
         if selected:
             if self.summarize_callback is not None:
-                memory_context_text = self.summarize_callback(self.llm, user_text, selected)
+                memory_context_text = self.summarize_callback(self.llm_tasks, user_text, selected)
             else:
                 # Fallback: concatenate short snippets from metadata/documents
                 # Keep it bounded: use first 5 items

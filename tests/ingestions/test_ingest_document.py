@@ -3,18 +3,22 @@ import pytest
 import json
 from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
 from graph_knowledge_engine.engine_core.models import Document, Span, LLMGraphExtraction
+from graph_knowledge_engine.llm_tasks import DefaultTaskProviderConfig
 from typing import cast
 import sys, pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 @pytest.fixture(scope="module")
 def engine() -> GraphKnowledgeEngine:
-    return GraphKnowledgeEngine()
+    return GraphKnowledgeEngine(
+        default_task_provider_config=DefaultTaskProviderConfig(
+            gemini_model_name="models/gemini-2.5-flash",
+        )
+    )
 
 def test_ingest_documentS_with_llm(engine:GraphKnowledgeEngine)-> None: 
     """Result can almost only pass validation with pro models, but the test workflow here is to provide basic workflow to make sure
     the generated data schema can be insertable to graphdb. The validity invariant need separte pro ingestor.
     """
-    engine.llm.model = "models/gemini-2.5-flash"
     doc_content_list = [
         "1. Science & Facts"
         "The Pacific Ocean is the largest and deepest body of water on Earth, covering more than 60 million square miles. It contains countless ecosystems, from vibrant coral reefs to mysterious deep-sea trenches. Scientists continue to discover new species in its depths each year."
@@ -83,8 +87,6 @@ def test_ingest_documentS_with_llm(engine:GraphKnowledgeEngine)-> None:
     outcome
     pass
 def test_ingest_long_text_file_with_chunking(engine: GraphKnowledgeEngine) -> None:
-    engine.llm.model = "models/gemini-2.5-flash"
-
     path = pathlib.Path(__file__).parent / "fixtures" / "long_mixed_text.txt"
     if not path.exists():
         pytest.skip("long text fixture not present")

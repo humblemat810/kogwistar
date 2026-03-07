@@ -37,6 +37,7 @@ from graph_knowledge_engine.conversation.policy import (
     normalize_edge_metadata,
     validate_edge_add,
 )
+from graph_knowledge_engine.llm_tasks import LLMTaskSet
 from graph_knowledge_engine.engine_core.models import ContextCost, Grounding, Span
 from graph_knowledge_engine.id_provider import stable_id
 from graph_knowledge_engine.runtime import WorkflowRuntime
@@ -59,13 +60,13 @@ class ConversationService:
         conversation_engine: "GraphKnowledgeEngine",
         knowledge_engine: "GraphKnowledgeEngine",
         workflow_engine: Optional["GraphKnowledgeEngine"] = None,
-        llm: Any | None = None,
+        llm_tasks: LLMTaskSet | None = None,
         runtime_cls: type[WorkflowRuntime] = WorkflowRuntime,
     ) -> None:
         self.conversation_engine = conversation_engine
         self.knowledge_engine = knowledge_engine
         self.workflow_engine = workflow_engine
-        self.llm = llm or conversation_engine.llm
+        self.llm_tasks = llm_tasks or conversation_engine.llm_tasks
         self.runtime_cls = runtime_cls
         install_engine_hooks(conversation_engine)
 
@@ -73,7 +74,7 @@ class ConversationService:
             conversation_engine=conversation_engine,
             ref_knowledge_engine=knowledge_engine,
             workflow_engine=workflow_engine,
-            llm=self.llm,
+            llm_tasks=self.llm_tasks,
             tool_call_id_factory=stable_id
         )
 
@@ -92,7 +93,7 @@ class ConversationService:
 
         ke = knowledge_engine or conversation_engine
         we = workflow_engine
-        key = (id(ke), id(we), id(conversation_engine.llm))
+        key = (id(ke), id(we), id(conversation_engine.llm_tasks))
         svc = cache.get(key)
         if svc is not None:
             return svc
@@ -101,7 +102,7 @@ class ConversationService:
             conversation_engine=conversation_engine,
             knowledge_engine=ke,
             workflow_engine=we,
-            llm=conversation_engine.llm,
+            llm_tasks=conversation_engine.llm_tasks,
         )
         cache[key] = svc
         return svc
@@ -253,7 +254,7 @@ class ConversationService:
                 conversation_engine=self.conversation_engine,
                 ref_knowledge_engine=ref_knowledge_engine,
                 workflow_engine=self.workflow_engine,
-                llm=self.llm,
+                llm_tasks=self.llm_tasks,
             )
         return self.orchestrator.add_conversation_turn(
             user_id=user_id,
@@ -666,6 +667,6 @@ class ConversationService:
                 conversation_engine=self.conversation_engine,
                 ref_knowledge_engine=ref_knowledge_engine,
                 workflow_engine=self.workflow_engine,
-                llm=self.llm,
+                llm_tasks=self.llm_tasks,
             )
         return self.answer_only(conversation_id=conversation_id, model_names=model_names)

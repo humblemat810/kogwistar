@@ -2,12 +2,9 @@
 from __future__ import annotations
 
 import pytest
-from types import SimpleNamespace
-from typing import Any, Type, TypeVar, cast
+from typing import Any, Type, TypeVar
 
 from pydantic import BaseModel
-from langchain_core.language_models import BaseChatModel
-from langchain_core.runnables import Runnable
 
 from graph_knowledge_engine.conversation.models import ConversationNode, MetaFromLastSummary, RetrievalResult
 from graph_knowledge_engine.id_provider import stable_id
@@ -21,16 +18,6 @@ from tests._helpers.conv_view import extract_conv_view, assert_views_equivalent
 from tests._helpers.runners import run_v1_scenario, run_v2_scenario
 
 BaseM = TypeVar("BaseM", bound=BaseModel)
-
-
-class DummyLLM(Runnable):
-    model_name = "dummy-llm"
-
-    def invoke(self, input, config=None):
-        return SimpleNamespace(content="dummy summary")
-
-
-dummy_llm = cast(BaseChatModel, DummyLLM())
 
 
 def _mk_span(doc_id: str) -> Span:
@@ -106,7 +93,7 @@ def _evaluate_answer_stub(
 def scenario_summary_snapshot(*, backend_kind: str, tmp_path, sa_engine, pg_schema, monkeypatch) -> tuple[Any, str]:
     kg, conv = _make_engine_pair(backend_kind=backend_kind, tmp_path=tmp_path, sa_engine=sa_engine, pg_schema=pg_schema, dim=3, use_fake=True)
     conv.tool_call_id_factory = stable_id
-    orch = ConversationOrchestrator(conversation_engine=conv, ref_knowledge_engine=kg, llm=dummy_llm, tool_call_id_factory=stable_id)
+    orch = ConversationOrchestrator(conversation_engine=conv, ref_knowledge_engine=kg, tool_call_id_factory=stable_id)
 
     conversation_id = "phase2d_c1"
     user_id = "u1"
@@ -179,7 +166,7 @@ def scenario_answer_flow_snapshots(*, backend_kind: str, tmp_path, sa_engine, pg
     )
 
     cfg = AgentConfig(max_iter=1, evidence_selector="bm25", max_used=0)
-    agent = AgenticAnsweringAgent(conversation_engine=conv, knowledge_engine=kg, llm=dummy_llm, config=cfg)
+    agent = AgenticAnsweringAgent(conversation_engine=conv, knowledge_engine=kg, llm_tasks=conv.llm_tasks, config=cfg)
 
     # Stubs to avoid KG retrieval/materialization
     monkeypatch.setattr(agent, "_retrieve_candidates", _retrieve_candidates_stub)
@@ -223,7 +210,6 @@ def scenario_backbone_only(*, mode: str, backend_kind: str, tmp_path, sa_engine,
         conversation_engine=conv,
         ref_knowledge_engine=kg,
         workflow_engine=conv,  # exercise v2 workflow path without needing a separate engine in harness
-        llm=dummy_llm,
         tool_call_id_factory=stable_id,
     )
 
@@ -255,7 +241,7 @@ def scenario_backbone_only(*, mode: str, backend_kind: str, tmp_path, sa_engine,
         )
         return conv, "v2"
 
-
+@pytest.mark.parametrize("backend_kind", ["chroma", "pg"])
 def test_phase2d_parity_harness_backbone_only(backend_kind, tmp_path, sa_engine, pg_schema, monkeypatch):
     conv_v1, _ = run_v1_scenario(
         scenario_backbone_only,

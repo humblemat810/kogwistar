@@ -9,8 +9,7 @@ from typing import Any, List, Literal, Type, cast
 
 from ...id_provider import stable_id
 from ...extraction import BaseDocValidator
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_google_genai import ChatGoogleGenerativeAI
+from ...llm_tasks import ExtractGraphTaskRequest
 from pydantic import BaseModel
 from ..models import (
     AssocFlattenedLLMGraphExtraction,
@@ -65,7 +64,8 @@ class ExtractSubsystem(NamespaceProxy):
                 f"Expected one of {sorted(allowed)}"
             )
         if requested == "auto":
-            if isinstance(self._e.llm, ChatGoogleGenerativeAI):
+            provider = getattr(self._e.llm_tasks.provider_hints, "extract_graph_provider", "unknown")
+            if provider == "gemini":
                 return "lean"
             return "full"
         return cast(ResolvedExtractionSchemaMode, requested)
@@ -105,19 +105,6 @@ class ExtractSubsystem(NamespaceProxy):
         if mode == "flattened_full":
             return AssocFlattenedLLMGraphExtraction["llm"], True
         raise ValueError(f"Unsupported resolved extraction schema mode: {mode!r}")
-
-    def build_structured_output_for_mode(self, mode: ResolvedExtractionSchemaMode):
-        schema, prefer_json_schema = self.structured_schema_for_mode(mode)
-        if prefer_json_schema:
-            try:
-                return self._e.llm.with_structured_output(
-                    schema,
-                    method="json_schema",
-                    include_raw=True,
-                )
-            except TypeError:
-                pass
-        return self._e.llm.with_structured_output(schema, include_raw=True)
 
     @staticmethod
     def _offset_repair_threshold(excerpt_len: int) -> float:
@@ -367,75 +354,41 @@ class ExtractSubsystem(NamespaceProxy):
                 "Nodes should include at least: Parties, Obligations, Rights, Deliverables, Payment Terms, Termination Conditions, Confidentiality Clauses, Governing Law, Dates, and Penalties.  "
                 "Edges should capture: (Party -> Obligation), (Obligation -> Condition), (Party -> Right), (Obligation -> Deliverable), (Clause -> Governing Law).  "
             )
-        template_messages = [
-            (
-                "system",
-                "You are an expert knowledge graph extractor. "
-                "You are an information extraction system that converts legal contracts into a knowledge graph.  "
-                "Your task: extract ALL entities (nodes) and relationships (edges) from the text. "
-                f"{instruction_for_node_edge_contents_parsing_inclusion}"
-                "Allow multiple edge between the same nodes. Allow hypergraph. Allow edge pointing to other edge. "
-                "Allow same label but different content. "
-                "Breakdown A is obligated to do work for B as A -> B : relation = do work for 100 dollar. You can create another edge. "
-                "Build relationship triplets of SVO. "
-                "Also pay attention to monetary terms, numbers. Be aware if they are definite, indefitite. Once off or recurrent. Keep a sharp eye one numbers. "
-                "For any signatories with blank to sign, or signed. They are equally important to note."
-                "Extract all nodes and edges from the following contract section.  "
-                "Be exhaustive and granular:"
-                "- Every obligation, right, condition, exception, penalty, deadline, and reference must become a separate node.  "
-                "- Each clause and sub-clause should yield at least one node.  "
-                "- Do not merge or summarize multiple obligations.  "
-                "- Aim for at least 20 nodes per section, if possible."
-                "- Important!: Span.excerpt MUST agree with corresponding zero-indexed start to end index. Direct identical text and no paraphrased is allowed. "
-                "e.g. if snippet world from 'hello world!', word is 6 to 11 index. content[6:11] => 'world' in python indexing sense"
-                "Extract entities and terms as nodes, relationships edges in a hypergraph.\n\n"
-                f"{prompt_rules}",
-            ),
-            (
-                "human",
-                "Aliases (delta for this turn):\n{alias_nodes}\n\n{alias_edges}\n\n"
-                "Document:\n```{document}```\n\n"
-                "Return only the structured JSON for the schema.",
-            ),
-        ]
+        last_parsed_payload: dict[str, object] | None = None
+        last_error: str | None = None
         if last_iteration_result and last_iteration_result.get("error"):
-            last_parsed: BaseModel = last_iteration_result.get("parsed")  # type: ignore
-            last_error: str = str(last_iteration_result.get("error"))
-            template_messages.append(
-                (
-                    "system",
-                    f"last answer has error \n\n Last attempt: ```{last_parsed.model_dump()}```\n\n"
-                    f"error from last attempt: ```{last_error}```",
-                )
-            )
-        prompt = ChatPromptTemplate.from_messages(template_messages)
-        try:
-            structured = self.build_structured_output_for_mode(resolved_mode)
-            chain = prompt | structured
-            from langchain_core.runnables import Runnable
+            last_error = str(last_iteration_result.get("error"))
+            last_parsed = last_iteration_result.get("parsed")
+            if isinstance(last_parsed, BaseModel):
+                last_parsed_payload = cast(dict[str, object], last_parsed.model_dump(mode="python"))
+            elif isinstance(last_parsed, dict):
+                last_parsed_payload = cast(dict[str, object], last_parsed)
 
-            steps: list[Runnable] = chain.steps  # type: ignore
-            realised_prompt = steps[0].invoke(
-                {
-                    "alias_nodes": alias_nodes_str,
-                    "alias_edges": alias_edges_str,
-                    "document": content,
-                    "_DOC_ALIAS": doc_alias,
-                }
+        result = self._e.llm_tasks.extract_graph(
+            ExtractGraphTaskRequest(
+                content=content,
+                alias_nodes=alias_nodes_str,
+                alias_edges=alias_edges_str,
+                doc_alias=doc_alias,
+                instruction=instruction_for_node_edge_contents_parsing_inclusion,
+                prompt_rules=prompt_rules,
+                schema_mode=cast(Literal["full", "lean", "flattened_lean", "flattened_full"], resolved_mode),
+                last_parsed=last_parsed_payload,
+                last_error=last_error,
             )
-            llm_raw = steps[1].invoke(realised_prompt)
-            result = steps[2].invoke(llm_raw)
-            if isinstance(result, dict) and result.get("parsed") is not None:
-                result["parsed"] = self.to_canonical_extraction_for_mode(
-                    mode=resolved_mode,
-                    parsed=result["parsed"],
-                    content=content,
-                    offset_mismatch_policy=offset_mismatch_policy,
-                    offset_repair_scorer=offset_repair_scorer,
-                )
-        except Exception as e:
-            raise e
-        return result.get("raw"), result.get("parsed"), result.get("parsing_error")
+        )
+
+        parsed_payload = result.parsed_payload
+        parsed_canonical = None
+        if parsed_payload is not None:
+            parsed_canonical = self.to_canonical_extraction_for_mode(
+                mode=resolved_mode,
+                parsed=parsed_payload,
+                content=content,
+                offset_mismatch_policy=offset_mismatch_policy,
+                offset_repair_scorer=offset_repair_scorer,
+            )
+        return result.raw, parsed_canonical, result.parsing_error
 
     def de_alias_ids_in_result(self, doc_id: str, parsed: LLMGraphExtraction) -> LLMGraphExtraction:
         if self._id_strategy() == "base62":

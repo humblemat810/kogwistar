@@ -31,8 +31,11 @@ import base64
 from typing import Any, Callable, Iterable, Optional, Self, Sequence, Type, TypeVar
 
 from pydantic import BaseModel, Field
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.language_models.chat_models import BaseChatModel
+from graph_knowledge_engine.llm_tasks import (
+    AnswerWithCitationsTaskRequest,
+    LLMTaskSet,
+    RepairCitationsTaskRequest,
+)
 from typing import TYPE_CHECKING
 
 from .models import ContextSnapshotMetadata, ConversationEdge, ConversationNode, MetaFromLastSummary
@@ -217,16 +220,19 @@ class AgenticAnsweringAgent:
         *,
         conversation_engine: GraphKnowledgeEngine,
         knowledge_engine: GraphKnowledgeEngine,
-        llm: BaseChatModel,
+        llm_tasks: LLMTaskSet,
         config: Optional[AgentConfig] = None,
         cache_dir: str | None = str((pathlib.Path()/ ".joblib" / "agentic_answering").absolute())
     ):
         self.conversation_engine = conversation_engine
         self.knowledge_engine = knowledge_engine
-        self.llm = llm
+        self.llm_tasks = llm_tasks
         self.config = config or AgentConfig()
         self.cache_dir = cache_dir
         self.max_retry = 3
+
+    def _provider_label(self, task_name: str) -> str:
+        return str(getattr(self.llm_tasks.provider_hints, f"{task_name}_provider", "") or "")
     # ----------------------------
     # Public entrypoint
     # ----------------------------
@@ -297,7 +303,7 @@ class AgenticAnsweringAgent:
                     attempt_seq=attempt_seq,
                     stage="select_used_evidence",
                     view=view,
-                    model_name=str(getattr(self.llm, "model_name", "") or ""),
+                    model_name=self._provider_label("filter_candidates"),
                     budget_tokens=int(getattr(view, "token_budget", 0) or 0),
                     tail_turn_index=int(prev_turn_meta_summary.tail_turn_index or 0),
                     extra_hash_payload={
@@ -380,7 +386,7 @@ class AgenticAnsweringAgent:
                 attempt_seq=attempt_seq,
                 stage="generate_answer_with_citations",
                 view=view,
-                model_name=str(getattr(self.llm, "model_name", "") or ""),
+                model_name=self._provider_label("answer_with_citations"),
                 budget_tokens=int(getattr(view, "token_budget", 0) or 0),
                 tail_turn_index=int(prev_turn_meta_summary.tail_turn_index or 0),
                 extra_hash_payload={
@@ -420,7 +426,7 @@ class AgenticAnsweringAgent:
                 attempt_seq=attempt_seq,
                 stage="validate_or_repair_citations",
                 view=view,
-                model_name=str(getattr(self.llm, "model_name", "") or ""),
+                model_name=self._provider_label("repair_citations"),
                 budget_tokens=int(getattr(view, "token_budget", 0) or 0),
                 tail_turn_index=int(prev_turn_meta_summary.tail_turn_index or 0),
                 extra_hash_payload={
@@ -464,7 +470,7 @@ class AgenticAnsweringAgent:
                 attempt_seq=attempt_seq,
                 stage="evaluate_answer",
                 view=view,
-                model_name=str(getattr(self.llm, "model_name", "") or ""),
+                model_name=self._provider_label("answer_with_citations"),
                 budget_tokens=int(getattr(view, "token_budget", 0) or 0),
                 tail_turn_index=int(prev_turn_meta_summary.tail_turn_index or 0),
                 extra_hash_payload={
@@ -638,7 +644,7 @@ class AgenticAnsweringAgent:
                 "agent": self,
                 "conversation_engine": self.conversation_engine,
                 "knowledge_engine": self.knowledge_engine,
-                "llm": self.llm,
+                "llm_tasks": self.llm_tasks,
                 "prev_turn_meta_summary": prev_turn_meta_summary,
             },
         }
@@ -720,36 +726,8 @@ class AgenticAnsweringAgent:
         return out
 
     def _select_used_evidence(self, *, system_prompt: str, question: str, candidates: Sequence[dict[str, Any]]) -> dict:
-        # Compact candidate representation
-        cand_lines = []
-        for c in candidates:
-            cand_lines.append(f"- {c['id']}: {c.get('label','')} | {c.get('summary','')}")
-        cand_text = "\n".join(cand_lines)
-
-        prompt = ChatPromptTemplate.from_messages(
-            [
-                ("system", system_prompt or "You are a helpful assistant."),
-                (
-                    "human",
-                    """You are selecting which knowledge items are actually USED to answer the user.
-
-User question:
-{question}
-
-Candidate knowledge nodes (id | label | summary):
-{candidates}
-
-Return JSON with keys: used_node_ids (list of ids), used_edge_ids (optional), reasoning (short).
-Select at most {max_used} node ids.
-""",
-                ),
-            ]
-        )
-        chain = prompt | self.llm.with_structured_output(EvidenceSelection)
-        sel: EvidenceSelection = chain.invoke({"question": question, "candidates": cand_text, "max_used": self.config.max_used})
-        # Defensive: ensure subset
-        cand_ids = {c["id"] for c in candidates}
-        sel.used_node_ids = [i for i in sel.used_node_ids if i in cand_ids][: self.config.max_used]
+        _ = system_prompt
+        sel = self._select_used_evidence_bm25(question=question, candidates=candidates)
         return sel.model_dump()
 
 
@@ -946,46 +924,25 @@ Select at most {max_used} node ids.
                 summ = summ[:240]
             lines.append(f"EDGE {eid} | {rel}: {summ}")
         evidence_text = "\n".join(lines)
-        def get_prompt():
-            prompt = ChatPromptTemplate.from_messages(
-            [
-                ("system", system_prompt or "You are a helpful assistant."),
-                (
-                    "human",
-                    """Answer the user using ONLY the provided evidence when making factual claims.
-
-User question:
-{question}
-
-Evidence pack (cite using SpanRef: source_node_id + mention_index + span_index):
-{evidence}
-
-Requirements:
-- Provide a helpful answer in `text`.
-- Provide `claims` as a list of key factual claims (bullet-sized).
-- For each claim, include 1-3 citations pointing to specific spans (M index + S index) from the evidence pack.
-- If the evidence is insufficient, write the best possible answer and make claims conservative.
-
-Return JSON that matches the provided schema.
-""",
-                    ),
-                ]
+        last_err: Exception | None = None
+        for _ in range(int(getattr(agent, "max_retry", 3) or 3)):
+            res = agent.llm_tasks.answer_with_citations(
+                AnswerWithCitationsTaskRequest(
+                    system_prompt=system_prompt,
+                    question=question,
+                    evidence=evidence_text,
+                    response_model=out_model,
+                )
             )
-            return prompt
-        # model_list: list[str] = agent.model_list
-        # for i_model in model_list:
-        prompt = get_prompt()
-        for i_retry in range(agent.max_retry):
-            chain = prompt | agent.llm.with_structured_output(out_model, include_raw = True)
-            res:dict =chain.invoke({"question": question, "evidence": evidence_text})
-            if res['parsing_error']:
-                if i_retry+1 >= agent.max_retry:
-                    raise Exception(f"retry too many errors parsing: {res['parsing_error']}")
-                e = res['parsing_error']
-                str_e = str(e)
-                prompt.append(("system", str_e[:1000] + '...' + str_e[-1000] if len(str_e) > 2000 else str_e))
-            parsed : BaseM = res['parsed']
+            if res.parsing_error:
+                last_err = Exception(str(res.parsing_error))
+                continue
+            if res.answer_payload is None:
+                last_err = Exception("Missing parsed output from answer_with_citations task")
+                continue
+            parsed: BaseM = out_model.model_validate(res.answer_payload)
             return parsed.model_dump()
+        raise Exception(f"retry too many errors parsing: {last_err}")
                 
                 
 
@@ -1065,41 +1022,21 @@ Return JSON that matches the provided schema.
 
         evidence_text = "\n".join(lines)
 
-        repair_prompt = ChatPromptTemplate.from_messages(
-            [
-                ("system", system_prompt or "You are a helpful assistant."),
-                (
-                    "human",
-                    """Your previous citations contained invalid references.
-
-User question:
-{question}
-
-Evidence pack:
-{evidence}
-
-Previous answer text:
-{answer_text}
-
-Please return a corrected AnswerWithCitations JSON.
-Rules:
-- Keep `text` as close as possible.
-- Fix `claims[].citations` so every SpanRef points to an existing NODE + M index + S index shown above.
-- Each claim should have at least 1 valid citation if possible; otherwise leave citations empty for that claim.
-""",
-                ),
-            ]
-        )
-
-        chain = repair_prompt | agent.llm.with_structured_output(AnswerWithCitations, include_raw=True)
         last_err: Exception | None = None
         for _ in range(int(getattr(agent, "max_retry", 3) or 3)):
-            res = chain.invoke({"question": question, "evidence": evidence_text, "answer_text": answer_validated.text})
-            pe = res.get("parsing_error")
-            if pe:
-                last_err = pe if isinstance(pe, Exception) else Exception(str(pe))
+            res = agent.llm_tasks.repair_citations(
+                RepairCitationsTaskRequest(
+                    system_prompt=system_prompt,
+                    question=question,
+                    evidence=evidence_text,
+                    answer_text=answer_validated.text,
+                    response_model=AnswerWithCitations,
+                )
+            )
+            if res.parsing_error:
+                last_err = Exception(str(res.parsing_error))
                 continue
-            parsed = res.get("parsed")
+            parsed = res.answer_payload
             if parsed is None:
                 last_err = Exception("Missing parsed output from structured_output")
                 continue
@@ -1131,51 +1068,24 @@ Rules:
         ev_lines: list[str] = []
         for n in evidence_pack.get("nodes", []) or []:
             ev_lines.append(f"- {n.get('node_id')}: {n.get('label','')} | {n.get('summary','')}")
-        ev_text = "\n".join(ev_lines)
+        _ = (system_prompt, question, out_model_schema)
+        has_answer = bool(str(answer_text or "").strip())
+        has_evidence = bool(used_node_ids) and bool(ev_lines)
+        is_sufficient = bool(has_answer and has_evidence)
+        needs_more_info = not is_sufficient
+        missing_aspects: list[str] = []
+        if not has_evidence:
+            missing_aspects.append("insufficient_evidence")
+        if not has_answer:
+            missing_aspects.append("empty_answer")
 
-        prompt = ChatPromptTemplate.from_messages(
-            [
-                ("system", system_prompt or "You are a careful evaluator."),
-                (
-                    "human",
-                    """Decide whether the provided evidence is sufficient to answer the user question.
-
-User question:
-{question}
-
-Answer:
-{answer}
-
-Used node ids:
-{used_ids}
-
-Evidence summaries:
-{evidence}
-
-Return JSON per schema. Be conservative: if key details are missing, set needs_more_info=true.
-""",
-                ),
-            ]
-        )
-
-        chain = prompt | agent.llm.with_structured_output(out_model, include_raw=True)
-        last_err: Exception | None = None
-        for _ in range(int(getattr(agent, "max_retry", 3) or 3)):
-            res = chain.invoke(
-                {"question": question, "answer": answer_text, "used_ids": ", ".join(used_node_ids), "evidence": ev_text}
-            )
-            pe = res.get("parsing_error")
-            if pe:
-                last_err = pe if isinstance(pe, Exception) else Exception(str(pe))
-                continue
-            parsed = res.get("parsed")
-            if parsed is None:
-                last_err = Exception("Missing parsed output from structured_output")
-                continue
-            return cast(BaseM, parsed).model_dump()
-
-        # fallback: pessimistic
-        return {"is_sufficient": False, "needs_more_info": True, "missing_aspects": [], "notes": f"eval_parse_failed:{last_err}"}
+        payload = {
+            "is_sufficient": is_sufficient,
+            "needs_more_info": needs_more_info,
+            "missing_aspects": missing_aspects,
+            "notes": "heuristic_evaluation",
+        }
+        return out_model.model_validate(payload).model_dump()
 
     def _ensure_run_anchor(self, *, conversation_id: str, run_id: str) -> str:
         scope = f"conv:{conversation_id}"

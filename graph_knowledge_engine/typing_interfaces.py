@@ -1,7 +1,11 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, List, Mapping, Optional, Protocol, TypedDict, TypeAlias, TypeVar, Sequence, Union, runtime_checkable
+from typing import Any, Callable, Dict, List, Mapping, Optional, Protocol, TypedDict, TypeVar, Sequence, Union, runtime_checkable, TYPE_CHECKING
+try:
+    from typing import TypeAlias
+except ImportError:  # pragma: no cover - py<3.10 compatibility
+    from typing_extensions import TypeAlias
 from .engine_core.models import AdjudicationVerdict, Document as EngineDoc
 # -------------------------
 # Collection / Vector store
@@ -21,18 +25,25 @@ from .engine_core.models import AdjudicationVerdict, Document as EngineDoc
 #     metadatas: List[List[Dict[str, Any]]]
 #     distances: List[List[float]]
 
-from chromadb.api.types import Embedding, PyEmbedding, Document as ChromaDocument, Image, URI, ID, Include, QueryResult
-from chromadb.base_types import Where, WhereDocument
-from typing import Protocol
-from chromadb.api.types import (
-    IDs,
- 
-    OneOrMany,
-    GetResult,
-    Metadata,
- 
- 
-)
+try:
+    from chromadb.api.types import Embedding, PyEmbedding, Document as ChromaDocument, Image, URI, ID, Include, QueryResult
+    from chromadb.base_types import Where, WhereDocument
+    from chromadb.api.types import IDs, OneOrMany, GetResult, Metadata
+except Exception:  # pragma: no cover - optional dependency
+    Embedding = Any  # type: ignore
+    PyEmbedding = Any  # type: ignore
+    ChromaDocument = str  # type: ignore
+    Image = Any  # type: ignore
+    URI = str  # type: ignore
+    ID = str  # type: ignore
+    Include = list[str]  # type: ignore
+    QueryResult = Dict[str, Any]  # type: ignore
+    Where = Dict[str, Any]  # type: ignore
+    WhereDocument = Dict[str, Any]  # type: ignore
+    IDs = List[str]  # type: ignore
+    OneOrMany = Any  # type: ignore
+    GetResult = Dict[str, Any]  # type: ignore
+    Metadata = Dict[str, Any]  # type: ignore
 
 class CollectionLike(Protocol):
     def add(
@@ -84,23 +95,8 @@ class CollectionLike(Protocol):
         where_document: WhereDocument | None = None,
         include: Include = ["metadatas", "documents", "distances"],
     ) -> QueryResult: ...
-# -------------------------
-# LangChain LLM surface
-# -------------------------
-
-class RunnableLike(Protocol):
-    def invoke(self, input: Any, **kwargs: Any) -> Any: ...
-
-@runtime_checkable
-class ChatModelLike(Protocol):
-    """Just the piece we call: llm.with_structured_output(...)."""
-    def with_structured_output(
-        self,
-        schema: Any,
-        *,
-        include_raw: bool = ...,
-        strict: Optional[bool] = ...,
-    ) -> RunnableLike: ...
+if TYPE_CHECKING:
+    from .llm_tasks import LLMTaskSet
 
 # -------------------------
 # Graph objects (structural)
@@ -162,8 +158,8 @@ class EngineLike(Protocol):
     def chroma_sanitize_metadata(self, metadata: Dict[str, Any]) -> Dict[str, Any]: ...
     def _json_or_none(self, obj: Any) -> Optional[str]: ...
     
-    # llm runner
-    llm: ChatModelLike
+    # llm task runner
+    llm_tasks: "LLMTaskSet"
 
     # -------------------------
     # adjudication / commit hooks

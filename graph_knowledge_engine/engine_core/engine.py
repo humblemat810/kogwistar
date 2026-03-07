@@ -2,7 +2,6 @@
 from contextlib import contextmanager
 import contextvars
 
-from langchain_core.language_models import BaseChatModel
 import pathlib
 import uuid
 
@@ -13,9 +12,7 @@ from .chroma_backend import ChromaBackend
 
 
 from .engine_sqlite import EngineSQLite
-from .engine_postgres_meta import EnginePostgresMetaStore
 from .storage_backend import NoopUnitOfWork
-from .postgres_backend import PgVectorBackend
 from ..workers.index_job_worker import IndexJobWorker
 from ..utils.log import bind_log_context
 from .indexing import IndexingSubsystem
@@ -67,12 +64,14 @@ if True:
     """
 import numpy as np
 import ast
-from typing import TYPE_CHECKING, Iterator, List, Optional, Dict, Any, Self, Tuple, TypeAlias, cast
+from typing import TYPE_CHECKING, Iterator, List, Optional, Dict, Any, Tuple, cast
+try:
+    from typing import Self, TypeAlias
+except ImportError:  # pragma: no cover - py<3.11 compatibility
+    from typing_extensions import Self, TypeAlias
 from ..typing_interfaces import CollectionLike, EmbeddingFunctionLike
 from dataclasses import dataclass, field
 from ..graph_query import GraphQuery
-from chromadb import Client
-from chromadb.config import Settings
 from graph_knowledge_engine.extraction import BaseDocValidator
 from .models import (
     Node,
@@ -98,8 +97,13 @@ from .models import (
     AssocFlattenedLLMGraphExtraction,
 )
 from ..cdc.change_event import EntityRef, Op, EntityRefModel
-from langchain_openai import AzureChatOpenAI
-from langchain_core.prompts import ChatPromptTemplate
+from ..llm_tasks import (
+    DefaultTaskProviderConfig,
+    LLMTaskSet,
+    build_default_llm_tasks,
+    validate_llm_task_set,
+)
+from ..integrations.openai_embeddings import build_azure_embedding_fn_from_env
 import json
 import os
 from dotenv import load_dotenv
@@ -130,17 +134,12 @@ try:
 except Exception:
     _HAS_RAPIDFUZZ = False
 
-# Optional: Azure embeddings (only if you set env for embeddings)
-from langchain_google_genai import ChatGoogleGenerativeAI
-try:
-    from langchain_openai import AzureOpenAIEmbeddings
-    _HAS_AZURE_EMB = True
-except Exception:
-    _HAS_AZURE_EMB = False
 PageLike = Union[str, Dict[str, Any]]
 NodeOrEdge: TypeAlias =  Node | Edge
 
 if TYPE_CHECKING:
+    from .engine_postgres_meta import EnginePostgresMetaStore
+    from .postgres_backend import PgVectorBackend
     from ..runtime.models import WorkflowNode
     T = TypeVar("T", Node, Edge)
     # TT= TypeVar("TT", Type[Node], Type[Edge])
@@ -155,6 +154,47 @@ P = ParamSpec("P")
 R = TypeVar("R")    
 def cached(memory: Memory, fn: Callable[P, R], *args, **kwargs) -> Callable[P, R]:
     return cast(Callable[P, R], memory.cache(fn, *args, **kwargs))
+
+
+def _optional_dependency_error(*, extra: str, detail: str) -> RuntimeError:
+    return RuntimeError(
+        f"{detail}. Install optional dependency group '{extra}' with: pip install 'kogwistar[{extra}]'"
+    )
+
+
+def _import_chroma_client():
+    try:
+        from chromadb import Client  # type: ignore
+        from chromadb.config import Settings  # type: ignore
+    except Exception as e:  # pragma: no cover - import errors depend on env
+        raise _optional_dependency_error(
+            extra="chroma",
+            detail="Chroma backend requires the 'chromadb' package",
+        ) from e
+    return Client, Settings
+
+
+def _is_pgvector_backend_instance(backend: object) -> bool:
+    try:
+        from .postgres_backend import PgVectorBackend  # type: ignore
+    except Exception:
+        return False
+    return isinstance(backend, PgVectorBackend)
+
+
+def _build_postgres_uow_if_needed(backend: object):
+    if not _is_pgvector_backend_instance(backend):
+        return NoopUnitOfWork()
+    try:
+        from graph_knowledge_engine.engine_core.postgres_backend import PostgresUnitOfWork  # type: ignore
+    except Exception as e:  # pragma: no cover - import errors depend on env
+        raise _optional_dependency_error(
+            extra="pgvector",
+            detail="PgVector backend requires optional PostgreSQL dependencies",
+        ) from e
+    return PostgresUnitOfWork(engine=backend.engine)
+
+
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -709,7 +749,15 @@ class AliasBook:
 ID_STRATEGY = "session_alias"  # or "base62"
 _DOC_ALIAS = "::DOC::"  # short, token-friendly
 
-from chromadb.api.types import EmbeddingFunction, Documents, Embeddings
+try:
+    from chromadb.api.types import EmbeddingFunction, Embeddings  # type: ignore
+except Exception:
+    class EmbeddingFunction:  # pragma: no cover - only used when chromadb is absent
+        @staticmethod
+        def name() -> str:
+            return "default"
+
+    Embeddings = list[list[float]]  # type: ignore
 import ollama
 # ollama.embeddings(model='all-minilm:l6-v2', prompt='The sky is blue because of Rayleigh scattering')
 import functools
@@ -1138,7 +1186,8 @@ class GraphKnowledgeEngine:
         return self.extract.structured_schema_for_mode(mode)
 
     def _build_structured_output_for_mode(self, mode: ResolvedExtractionSchemaMode):
-        return self.extract.build_structured_output_for_mode(mode)
+        # Back-compat shim: structured-output construction moved into llm task providers.
+        return self.extract.structured_schema_for_mode(mode)
 
     @staticmethod
     def _offset_repair_threshold(excerpt_len: int) -> float:
@@ -1309,10 +1358,12 @@ class GraphKnowledgeEngine:
         verifier=None,               # callable(extracted, full_text, ref, **kw) -> ReferenceSession
         kg_graph_type : EngineType = 'knowledge',
         debug_dir: pathlib.Path | None = None,
-        backend : str | PgVectorBackend | None = None,
+        backend : str | "PgVectorBackend" | None = None,
         namespace: str = "default",
         extraction_schema_mode: ExtractionSchemaMode = "auto",
         offset_repair_scorer: OffsetRepairScorer | None = None,
+        llm_tasks: LLMTaskSet | None = None,
+        default_task_provider_config: DefaultTaskProviderConfig | None = None,
     ):
         """
         embedding_function: callable(texts: List[str]) -> List[List[float]].
@@ -1382,8 +1433,9 @@ class GraphKnowledgeEngine:
         self._embed_one = _embed_one
         if backend is None or (type(backend) is str and backend == 'chroma'):
             # 2) Chroma client + collections; inject embedder on vectorized collections
-            self.chroma_client = Client(
-                Settings(
+            ChromaClient, ChromaSettings = _import_chroma_client()
+            self.chroma_client = ChromaClient(
+                ChromaSettings(
                     is_persistent=True,
                     persist_directory=persist_directory or "./chroma_db",
                     anonymized_telemetry=False,
@@ -1426,79 +1478,40 @@ class GraphKnowledgeEngine:
             )
             self.meta_sqlite = EngineSQLite(pathlib.Path(persist_directory or "./chroma_db"), 'meta.sqlite')
             self.meta_sqlite.ensure_initialized()
-        elif type(backend) is PgVectorBackend:
+        elif _is_pgvector_backend_instance(backend):
+            from .engine_postgres_meta import EnginePostgresMetaStore
             self.backend = backend
             meta_postgre = EnginePostgresMetaStore(engine=self.backend.engine, schema=self.backend.schema)
             meta_postgre.ensure_initialized()
             self.meta_sqlite = meta_postgre
         else:
-            raise ValueError("Unrecognised argument for backend")
+            if isinstance(backend, str):
+                raise ValueError(
+                    f"Unsupported backend string {backend!r}. "
+                    "Use backend='chroma' (or None), or pass a PgVectorBackend instance for Postgres."
+                )
+            raise ValueError(
+                "Unrecognised argument for backend. "
+                "Expected None/'chroma' or a PgVectorBackend instance."
+            )
         # Backend UoW: in Postgres mode this becomes a real SQL transaction.
-        if isinstance(getattr(self, "backend", None), PgVectorBackend):
-            from graph_knowledge_engine.engine_core.postgres_backend import PostgresUnitOfWork
-
-            self._backend_uow = PostgresUnitOfWork(engine=self.backend.engine)
-        else:
-            self._backend_uow = NoopUnitOfWork()
+        self._backend_uow = _build_postgres_uow_if_needed(getattr(self, "backend", None))
 
 
         from .lifecycle import LifecycleSubsystem
         self._backend_update_record_lifecycle = _backend_update_record_lifecycle
         self.lifecycle = LifecycleSubsystem(self)
 
-        # self.llm = AzureChatOpenAI(
-        #     deployment_name=os.getenv("OPENAI_DEPLOYMENT_NAME_GPT4_1"),
-        #     model_name=os.getenv("OPENAI_MODEL_NAME_GPT4_1"),
-        #     azure_endpoint=os.getenv("OPENAI_DEPLOYMENT_ENDPOINT_GPT4_1"),
-        #     cache=None,
-        #     openai_api_key=os.getenv("OPENAI_API_KEY_GPT4_1"),
-        #     api_version="2024-08-01-preview",
-        #     model_version=os.getenv("OPENAI_DEPLOYMENT_VERSION_GPT4_1"),
-        #     temperature=0.1,
-        #     max_tokens=30000,
-        #     openai_api_type="azure",
-        # )
-        self.llm = ChatGoogleGenerativeAI(
-                        #model = "gemini-2.5-pro-preview-05-06",
-                        model = "gemini-2.5-pro",
-                        # model = "gemini-3-flash-preview",
-                        # model = "gemini-3-flash-preview",
-                        # model = model_name,
-                        #model="gemini-1.5-pro",
-                        #model="gemini-2.0-pro",
-                        #model="gemini-2.5-pro-preview-03-25",
-                        temperature=0.1,
-                        max_tokens=None,
-                        timeout=None,
-                        max_retries=2,
-                        
-                        # other params...
-                        )
+        provider_cfg = default_task_provider_config or DefaultTaskProviderConfig()
+        self.llm_tasks: LLMTaskSet = validate_llm_task_set(
+            llm_tasks or build_default_llm_tasks(provider_cfg)
+        )
 
         # Phase 1 resilience: derived "join indexes" (node_docs/node_refs/edge_refs/edge_endpoints)
         # are converged via a durable outbox-style index job queue (EngineSQLite or EnginePostgresMetaStore).
         # Fast path may attempt to apply immediately; correctness relies on reconciliation.
         self._phase1_enable_index_jobs: bool = True
-        self.embeddings: Optional[Callable[[str], Optional[List[float]]]] = None
-        if _HAS_AZURE_EMB:
-            emb_deployment = os.getenv("OPENAI_EMBED_DEPLOYMENT")
-            emb_endpoint   = os.getenv("OPENAI_EMBED_ENDPOINT")
-            emb_api_key    = os.getenv("OPENAI_API_KEY_GPT4_1") or os.getenv("OPENAI_API_KEY")
-            emb_api_ver    = os.getenv("OPENAI_EMBED_API_VERSION", "2024-08-01-preview")
-            if emb_deployment and emb_endpoint and emb_api_key:
-                _emb = AzureOpenAIEmbeddings( # type: ignore
-                    azure_deployment=emb_deployment,
-                    openai_api_key=emb_api_key, # type: ignore
-                    azure_endpoint=emb_endpoint,
-                    openai_api_version=emb_api_ver, # type: ignore
-                )
-                def _embed_fn(text: str) -> Optional[List[float]]:
-                    try:
-                        v = _emb.embed_query(text)
-                        return v
-                    except Exception:
-                        return None
-                self.embeddings = _embed_fn
+        self.embeddings: Optional[Callable[[str], Optional[List[float]]]] = build_azure_embedding_fn_from_env()
         
         self.memory = Memory(location = os.path.join('.', '.kg_cache'))
         self._cached_extract_graph_with_llm = self.memory.cache(self.extract_graph_with_llm, ignore = ["self"])
@@ -2159,9 +2172,6 @@ class GraphKnowledgeEngine:
 
     def _iterative_defensive_emb(self, emb_text0):
         return self.embed.iterative_defensive_emb_internal(emb_text0)
-    def get_llm(self, model_name = None) -> BaseChatModel:
-        # will implement other model names later
-        return self.llm
         
 class ApproxTokenizer:
     def count_tokens(self, text: str) -> int:

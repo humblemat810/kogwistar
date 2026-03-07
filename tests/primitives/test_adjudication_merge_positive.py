@@ -1,12 +1,7 @@
-import ast
 import json
-from typing import List
+from typing import Mapping
 
 import pytest
-from pydantic import BaseModel
-from langchain_core.messages import HumanMessage
-from langchain_core.prompt_values import ChatPromptValue
-from langchain_core.runnables import Runnable
 
 from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
 from graph_knowledge_engine.engine_core.models import (
@@ -14,11 +9,22 @@ from graph_knowledge_engine.engine_core.models import (
     AdjudicationVerdict,
     Document,
     Grounding,
-    LLMMergeAdjudication,
     MentionVerification,
     Node,
     QUESTION_KEY,
     Span,
+)
+from graph_knowledge_engine.llm_tasks import (
+    AdjudicateBatchTaskRequest,
+    AdjudicateBatchTaskResult,
+    AdjudicatePairTaskResult,
+    AnswerWithCitationsTaskResult,
+    ExtractGraphTaskResult,
+    FilterCandidatesTaskResult,
+    LLMTaskProviderHints,
+    LLMTaskSet,
+    RepairCitationsTaskResult,
+    SummarizeContextTaskResult,
 )
 
 
@@ -40,48 +46,16 @@ def _span_for(doc_id: str) -> Span:
     )
 
 
-class BatchAdjudications(BaseModel):
-    items: List[LLMMergeAdjudication]
-
-
-class _DeterministicBatchLLM(Runnable):
-    """Runnable fake that supports prompt|llm composition and dict inputs."""
-
-    def with_structured_output(self, schema, **_):
-        self._schema = schema
-        return self
-
-    def _extract_pairs_from_prompt(self, cpv: ChatPromptValue):
-        msgs = cpv.to_messages()
-        human = next((m for m in msgs[::-1] if isinstance(m, HumanMessage)), None)
-        if not human:
-            raise ValueError("No HumanMessage found in ChatPromptValue")
-        text = human.content
-        marker = "Pairs:\n"
-        i = text.find(marker)
-        if i < 0:
-            raise ValueError("Could not find 'Pairs:' in the HumanMessage")
-        payload = text[i + len(marker):].strip()
-        try:
-            pairs = json.loads(payload)
-        except Exception:
-            pairs = ast.literal_eval(payload)
-        return pairs
-
-    def invoke(self, input, config=None, **kwargs):
-        if isinstance(input, ChatPromptValue):
-            pairs = self._extract_pairs_from_prompt(input)
-        elif isinstance(input, dict):
-            pairs = input["pairs"]
-        else:
-            raise TypeError(f"Unsupported input type: {type(input)}")
-
-        items = []
-        for item in pairs:
-            left = item["left"]
-            right = item["right"]
-            ltok = (left.get("label") or "").split()[:1]
-            rtok = (right.get("label") or "").split()[:1]
+def _first_token_batch_task_set() -> LLMTaskSet:
+    def _adjudicate_batch(request: AdjudicateBatchTaskRequest) -> AdjudicateBatchTaskResult:
+        items: list[Mapping[str, object]] = []
+        for item in request.pairs:
+            left = item.get("left") if isinstance(item, Mapping) else {}
+            right = item.get("right") if isinstance(item, Mapping) else {}
+            left_name = left.get("name") if isinstance(left, Mapping) else ""
+            right_name = right.get("name") if isinstance(right, Mapping) else ""
+            ltok = str(left_name or "").split()[:1]
+            rtok = str(right_name or "").split()[:1]
             same = bool(ltok and rtok and ltok[0].lower() == rtok[0].lower())
             ver = AdjudicationVerdict(
                 same_entity=same,
@@ -89,9 +63,19 @@ class _DeterministicBatchLLM(Runnable):
                 reason="first-token match" if same else "first-token differs",
                 canonical_entity_id=None,
             )
-            items.append(LLMMergeAdjudication(verdict=ver))
+            items.append({"verdict": ver.model_dump(mode="python")})
+        return AdjudicateBatchTaskResult(verdict_payloads=items, raw=None, parsing_error=None)
 
-        return BatchAdjudications(items=items)
+    return LLMTaskSet(
+        extract_graph=lambda _req: ExtractGraphTaskResult(raw=None, parsed_payload=None, parsing_error="unused"),
+        adjudicate_pair=lambda _req: AdjudicatePairTaskResult(verdict_payload=None, raw=None, parsing_error="unused"),
+        adjudicate_batch=_adjudicate_batch,
+        filter_candidates=lambda _req: FilterCandidatesTaskResult(node_ids=(), edge_ids=(), reasoning="", raw=None, parsing_error=None),
+        summarize_context=lambda req: SummarizeContextTaskResult(text=req.full_text),
+        answer_with_citations=lambda _req: AnswerWithCitationsTaskResult(answer_payload=None, raw=None, parsing_error="unused"),
+        repair_citations=lambda _req: RepairCitationsTaskResult(answer_payload=None, raw=None, parsing_error="unused"),
+        provider_hints=LLMTaskProviderHints(adjudicate_batch_provider="custom"),
+    )
 
 
 @pytest.fixture(scope="function")
@@ -126,31 +110,16 @@ def test_deterministic_batch_merge(engine, monkeypatch):
         {"left": a.model_dump(), "right": c.model_dump(), "question_code": int(AdjudicationQuestionCode.SAME_ENTITY)},
     ]
     mapping_table = [{"code": int(code), "key": QUESTION_KEY[code]} for code in AdjudicationQuestionCode]
+    _ = (pairs_payload, mapping_table)
+    engine.llm_tasks = _first_token_batch_task_set()
 
-    from langchain_core.prompts import ChatPromptTemplate
-
-    engine.llm = _DeterministicBatchLLM()
-    prompt = ChatPromptTemplate.from_messages(
-        [
-            (
-                "system",
-                "You adjudicate candidate pairs. Use the mapping table to interpret question_code. "
-                "Return only the structured JSON per schema.",
-            ),
-            ("human", "Mapping table:\n{mapping}\n\nPairs:\n{pairs}"),
-        ]
+    results, _qkey = engine.batch_adjudicate_merges(
+        [(a, b), (a, c)],
+        question_code=AdjudicationQuestionCode.SAME_ENTITY,
     )
-    chain = prompt | engine.llm.with_structured_output(BatchAdjudications)
-    # for embeddings to jsonable
-    for i in pairs_payload:
-        if type(i['left']['embedding']) is not list:
-            i['left']['embedding'] = i['left']['embedding'].tolist()
-        if type(i['right']['embedding']) is not list:
-            i['right']['embedding'] = i['right']['embedding'].tolist()
-    results: BatchAdjudications = chain.invoke({"mapping": json.dumps(mapping_table), "pairs": json.dumps(pairs_payload)})
 
-    assert len(results.items) == 2
-    v1, v2 = results.items[0].verdict, results.items[1].verdict
+    assert len(results) == 2
+    v1, v2 = results[0].verdict, results[1].verdict
     assert v1.same_entity is True and v1.confidence > 0.5
     assert v2.same_entity is False and v2.confidence <= 0.5
 

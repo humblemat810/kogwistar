@@ -1,4 +1,4 @@
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 
 from graph_knowledge_engine.engine_core.models import BaseNodeMetadata, ContextCost, Edge, Node
 
@@ -33,6 +33,10 @@ class MetaFromLastSummary:
     # Do not rely on the two to make strict decisions
 
     tail_turn_index: int=0  # works more like a node seq number
+
+    # Back-compat shim: parts of the workflow/test stack treat this like a Pydantic model.
+    def model_dump(self, *_args, **_kwargs) -> dict[str, int]:
+        return asdict(self)
 
 
 class ContextSnapshotMetadata(BaseModel):

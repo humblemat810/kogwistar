@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from typing import Callable, List, Optional, Tuple, cast
 
-from langchain_core.language_models import BaseChatModel
+from graph_knowledge_engine.llm_tasks import LLMTaskSet
 
 from .models import RetrievalResult
 
@@ -33,7 +33,7 @@ class KnowledgeRetriever:
         *,
         conversation_engine,
         ref_knowledge_engine,
-        llm: BaseChatModel,
+        llm_tasks: LLMTaskSet,
         filtering_callback: Callable[..., tuple[FilteringResult| RetrievalResult, str]] ,
         max_retrieval_level: int = 2,
         shallow_n_results: int = 20,
@@ -42,7 +42,7 @@ class KnowledgeRetriever:
     ) -> None:
         self.conversation_engine : GraphKnowledgeEngine= conversation_engine
         self.ref_knowledge_engine: GraphKnowledgeEngine = ref_knowledge_engine
-        self.llm = llm
+        self.llm_tasks = llm_tasks
         self.filtering_callback = filtering_callback
         self.max_retrieval_level = max_retrieval_level
         self.shallow_n_results = shallow_n_results
@@ -117,7 +117,7 @@ class KnowledgeRetriever:
             cand_edge_list_str = "\n".join(
                 [f"-Edge ID: {edge.id} | Label: {edge.metadata.get('label')} | Summary: {edge.metadata.get('summary')}" for edge in candidates.edges]
             )
-            selected, reasoning = self.filtering_callback(self.llm, user_text, cand_node_list_str, cand_edge_list_str, 
+            selected, reasoning = self.filtering_callback(self.llm_tasks, user_text, cand_node_list_str, cand_edge_list_str, 
                                                           [i.id for i in candidates.nodes],
                                                           [i.id for i in candidates.edges], context_text)
             return KnowledgeRetrievalResult(node_id_entry=None, candidate=candidates, selected=selected, reasoning=reasoning)

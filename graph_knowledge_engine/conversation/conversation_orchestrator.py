@@ -13,7 +13,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from typing import Any, Callable, List, Optional, cast
 
-from langchain_core.language_models import BaseChatModel
+from graph_knowledge_engine.llm_tasks import LLMTaskSet, SummarizeContextTaskRequest
 
 from .models import ConversationEdge, MetaFromLastSummary
 from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
@@ -309,7 +309,7 @@ class ConversationOrchestrator:
 
 
             # Run minimal workflow skeleton (for trace/state plumbing) - no retrieval/answer steps.
-            from .runtime.runtime import WorkflowRuntime
+            from ..runtime.runtime import WorkflowRuntime
 
             runtime = WorkflowRuntime(
                 workflow_engine=self.workflow_engine,
@@ -338,7 +338,7 @@ class ConversationOrchestrator:
                 _deps= {
                     "conversation_engine": self.conversation_engine,
                     "ref_knowledge_engine": self.ref_knowledge_engine,
-                    "llm": self.llm,
+                    "llm_tasks": self.llm_tasks,
                     "filtering_callback": filtering_callback,
                 }
             ).model_dump())            
@@ -548,7 +548,7 @@ class ConversationOrchestrator:
         deps= {
                 "conversation_engine": self.conversation_engine,
                 "ref_knowledge_engine": self.ref_knowledge_engine,
-                "llm": self.llm,
+                "llm_tasks": self.llm_tasks,
                 "filtering_callback": filtering_callback,
                 "tool_runner": self.tool_runner,
                 "max_retrieval_level": max_retrieval_level,
@@ -645,7 +645,7 @@ class ConversationOrchestrator:
         ref_knowledge_engine: GraphKnowledgeEngine,
         workflow_engine: GraphKnowledgeEngine | None = None,
         tool_call_id_factory: Callable | None = None,
-        llm: BaseChatModel | None = None,
+        llm_tasks: LLMTaskSet | None = None,
     ) -> None:
         tool_call_id_factory = tool_call_id_factory or conversation_engine.tool_call_id_factory
         if tool_call_id_factory is None:
@@ -653,7 +653,7 @@ class ConversationOrchestrator:
         self.conversation_engine: GraphKnowledgeEngine = conversation_engine
         self.ref_knowledge_engine: GraphKnowledgeEngine = ref_knowledge_engine
         self.workflow_engine: GraphKnowledgeEngine | None = workflow_engine
-        self.llm = llm or conversation_engine.llm
+        self.llm_tasks: LLMTaskSet = llm_tasks or conversation_engine.llm_tasks
         self.tool_runner = ToolRunner(conversation_engine=conversation_engine,
                                       tool_call_id_factory=tool_call_id_factory)
 
@@ -663,7 +663,7 @@ class ConversationOrchestrator:
             self.agentic_answering_agent = AgenticAnsweringAgent(
                 conversation_engine=self.conversation_engine,
                 knowledge_engine=self.ref_knowledge_engine,
-                llm=self.llm,
+                llm_tasks=self.llm_tasks,
             )
         except Exception:
             self.agentic_answering_agent = None
@@ -934,14 +934,14 @@ class ConversationOrchestrator:
         # 3) Retrieval + pinning (recorded as tool events)
                 mem_retriever = MemoryRetriever(
                     conversation_engine=self.conversation_engine,
-                    llm=self.llm,
+                    llm_tasks=self.llm_tasks,
                     filtering_callback=filtering_callback,
                 )
                 
                 kg_retriever = KnowledgeRetriever(
                     conversation_engine=self.conversation_engine,
                     ref_knowledge_engine=self.ref_knowledge_engine,
-                    llm=self.llm,
+                    llm_tasks=self.llm_tasks,
                     filtering_callback=filtering_callback,
                     max_retrieval_level=max_retrieval_level,
                 )
@@ -951,7 +951,7 @@ class ConversationOrchestrator:
                         query_embedding=embedding,
                         user_text=content,
                         context_text="",
-                        n_resultss=12,
+                        n_results=12,
                     )
                 # memory retrieve tool
                 mem: MemoryRetrievalResult 
@@ -1156,15 +1156,10 @@ class ConversationOrchestrator:
         # LLM Summarize
         @self.conversation_engine.memory.cache
         def get_summary(full_text):
-            from langchain_core.prompts import ChatPromptTemplate
-            summary_prompt = ChatPromptTemplate.from_messages([
-                ("system", "Summarize this conversation segment into a concise memory."),
-                ("human", full_text)
-            ])
-
-            summary_res = (summary_prompt | self.llm).invoke({"full_text": full_text})
-            summary_content = summary_res.content
-            return summary_content
+            summary_res = self.llm_tasks.summarize_context(
+                SummarizeContextTaskRequest(full_text=str(full_text or ""))
+            )
+            return summary_res.text
 
         # Phase 2B: persist context snapshot BEFORE the LLM call (summary stage).
         from types import SimpleNamespace
@@ -1192,7 +1187,7 @@ class ConversationOrchestrator:
             attempt_seq=clock.attempt_seq,
             stage="summary",
             view=view,
-            model_name=getattr(self.llm, "model_name", "") or "",
+            model_name=str(getattr(self.llm_tasks.provider_hints, "summarize_context_provider", "")),
             budget_tokens=0,
             tail_turn_index=int(prev_turn_meta_summary.tail_turn_index if prev_turn_meta_summary else 0),
         )
@@ -1333,39 +1328,26 @@ class ConversationOrchestrator:
 
         from .agentic_answering import AgenticAnsweringAgent, AgentConfig
 
-        model_names = model_names or [
-            "gemini-3-flash-preview",
-            "gemini-2.5-flash",
-            "gemini-2.5-pro",
-            "gemini-2.5-flash-lite",
-        ]
+        model_names = model_names or [str(getattr(self.llm_tasks.provider_hints, "answer_with_citations_provider", "default"))]
 
-        last_err: Exception | None = None
-        for model_name in model_names:
-            try:
-                llm = self.conversation_engine.get_llm(model_name) or self.llm
-                agent = AgenticAnsweringAgent(
-                    conversation_engine=self.conversation_engine,
-                    knowledge_engine=self.ref_knowledge_engine,
-                    llm=llm,
-                    config=AgentConfig(),
-                )
-                out = agent.answer(conversation_id=conversation_id, prev_turn_meta_summary=prev_turn_meta_summary)
+        agent = AgenticAnsweringAgent(
+            conversation_engine=self.conversation_engine,
+            knowledge_engine=self.ref_knowledge_engine,
+            llm_tasks=self.llm_tasks,
+            config=AgentConfig(),
+        )
+        out = agent.answer(conversation_id=conversation_id, prev_turn_meta_summary=prev_turn_meta_summary)
 
-                if isinstance(out, ConversationAIResponse):
-                    return out
-                if isinstance(out, dict):
-                    return ConversationAIResponse(
-                        text=str(out.get("assistant_text") or out.get("text") or ""),
-                        llm_decision_need_summary=bool(out.get("llm_decision_need_summary", False)),
-                        used_kg_node_ids=list(out.get("used_kg_node_ids") or out.get("used_node_ids") or []),
-                        projected_conversation_node_ids=list(out.get("projected_node_ids") or out.get("projected_pointer_ids") or []),
-                        meta={"raw": out, "model_name": model_name},
-                        response_node_id = out.get("assistant_turn_node_id")
-                    )
-                return ConversationAIResponse(text=str(out))
-            except Exception as e:
-                last_err = e
-                continue
-        raise Exception(f"tried all models; last error: {last_err}")
+        if isinstance(out, ConversationAIResponse):
+            return out
+        if isinstance(out, dict):
+            return ConversationAIResponse(
+                text=str(out.get("assistant_text") or out.get("text") or ""),
+                llm_decision_need_summary=bool(out.get("llm_decision_need_summary", False)),
+                used_kg_node_ids=list(out.get("used_kg_node_ids") or out.get("used_node_ids") or []),
+                projected_conversation_node_ids=list(out.get("projected_node_ids") or out.get("projected_pointer_ids") or []),
+                meta={"raw": out, "model_name": model_names[0]},
+                response_node_id=out.get("assistant_turn_node_id"),
+            )
+        return ConversationAIResponse(text=str(out))
 

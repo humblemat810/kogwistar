@@ -1,5 +1,6 @@
 
 import pytest
+pytest.importorskip("chromadb")
 
 from graph_knowledge_engine.conversation.conversation_orchestrator import ConversationOrchestrator, _estimate_tokens_from_chars
 from graph_knowledge_engine.conversation.models import FilteringResult
@@ -8,7 +9,7 @@ from tests.conftest import _make_engine_pair
 class FakeConversationEngine:
     def __init__(self):
         self.kg_graph_type = "conversation"
-        self.llm = None
+        self.llm_tasks = None
         self.added_nodes = []
         self.added_edges = []
         self._tail = None
@@ -80,10 +81,10 @@ class FakeEmbeddingFunction(EmbeddingFunction):
 
 #     raise ValueError(f"unknown backend_kind: {backend_kind!r}")
 
-def _noop_filtering_callback(llm, conversation_content, 
+def _noop_filtering_callback(llm_tasks, conversation_content, 
                                 cand_node_list_str, cand_edge_list_str, 
                                 candidate_node_ids: list[str], candidate_edge_ids: list[str], context_text):
-    
+    _ = llm_tasks
     return FilteringResult(node_ids=candidate_node_ids, edge_ids=candidate_edge_ids), 'this is a noop testing pass through fake filtering'
 
 
@@ -102,7 +103,6 @@ def test_summary_trigger_can_use_token_threshold(monkeypatch, backend_kind: str,
         conversation_engine=eng,
         ref_knowledge_engine=kg,
         tool_call_id_factory=lambda *a, **k: "tool_call_id",
-        llm=None,
     )
 
     called = {"n": 0}
