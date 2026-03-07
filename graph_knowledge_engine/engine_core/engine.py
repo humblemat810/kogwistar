@@ -2694,10 +2694,7 @@ class GraphKnowledgeEngine:
             self._oplog.append(ev)
 
     def iterative_defensive_emb(self, emb_text0):
-        if self.cached_embed:
-            return self.cached_embed(emb_text0)
-        else:
-            return self._iterative_defensive_emb(emb_text0)
+        return self.embed.iterative_defensive_emb(emb_text0)
         
         
     # ... existing methods ...
@@ -3417,31 +3414,10 @@ class GraphKnowledgeEngine:
         return doc_ids
 
     def _nodes_by_doc(self, doc_id: str, insertion_method: Optional[str] = None) -> list[str]:
-        if insertion_method:
-            return self.ids_with_insertion_method(kind="node", insertion_method=insertion_method, doc_id=doc_id)
-        # original behavior (fast if you have node_docs table; else scan)
-        if hasattr(self, "node_docs_collection"):
-            rows = self.backend.node_docs_get(where={"doc_id": doc_id}, include=["metadatas"])
-            result = set()
-            for m in (rows.get("metadatas") or []):
-                if m and m.get("node_id"):
-                    result.add(m.get("node_id"))
-            return sorted(result)
-        # slow fallback:
-        got = self.backend.node_get(where={"doc_id": doc_id})
-        return got.get("ids") or []
+        return self.read.node_ids_by_doc(doc_id, insertion_method=insertion_method)
 
     def _edge_ids_by_doc(self, doc_id: str, insertion_method: Optional[str] = None) -> list[str]:
-        if insertion_method:
-            return self.ids_with_insertion_method(kind="edge", insertion_method=insertion_method, doc_id=doc_id)
-        # original behavior via endpoints table:
-        eps = self.backend.edge_endpoints_get(where={"doc_id": doc_id}, include=["metadatas"])
-        result = set()
-        for m in (eps.get("metadatas") or []):
-            if m and m.get("edge_id"):
-                result.add(m.get("edge_id"))
-        return sorted(result)
-        # return sorted({m.get("edge_id") for m in (eps.get("metadatas") or []) if m and m.get("edge_id")})
+        return self.read.edge_ids_by_doc(doc_id, insertion_method=insertion_method)
 
     def _prune_node_refs_for_doc(self, node_id: str, doc_id: str) -> bool:
         """Remove references to doc_id from node; delete node_docs link; refresh denormalized meta."""
@@ -4843,37 +4819,7 @@ class GraphKnowledgeEngine:
 
 
     def _iterative_defensive_emb(self, emb_text0):
-        success = False
-        
-        idx = self.embedding_length_limit
-        embedding = None
-        cnt = 0
-        while not success:
-            cnt += 1
-            if cnt >= 10:
-                break
-            emb_text = emb_text0[:idx] + ("..." if idx < len(emb_text0)-1 else "")
-            try:
-                embedding = self._ef([emb_text])[0]
-                success = True
-                break
-            except:
-                idx //= 2
-        while success:
-            cnt += 1
-            if cnt >= 13:
-                break
-            emb_text = emb_text0[:idx] + ("..." if idx < len(emb_text0)-1 else "")
-            try:
-                embedding = self._ef([emb_text])[0]
-                if idx >= len(emb_text0):
-                    break
-                idx = int(idx * 1.6)
-            except:
-                success = False
-        if embedding is None:
-            raise Exception("cannot get embedding after most defensive embedding strategy.")
-        return embedding
+        return self.embed.iterative_defensive_emb_internal(emb_text0)
 
     # ----------------------------
     # Conversation Abstraction
