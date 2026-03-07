@@ -9,7 +9,7 @@ import uuid
 
 import time
 
-from .ChromaBackend import ChromaBackend
+from .chroma_backend import ChromaBackend
 
 
 from .engine_sqlite import EngineSQLite
