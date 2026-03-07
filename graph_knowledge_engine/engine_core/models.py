@@ -142,26 +142,26 @@ class MentionVerification(BaseModel):
 class Span(ModeSlicingMixin, BaseModel):
     """A single span"""
     default_include_modes: ClassVar[set[str]] = {"frontend", "backend", "dto", "llm"}
-    include_unmarked_for_modes: ClassVar[set[str]] = {"frontend", "backend", "dto", "llm"}
+    include_unmarked_for_modes: ClassVar[set[str]] = {"frontend", "backend", "dto", "llm", "llm_in"}
     """Locatable evidence for a node/edge mention within a specific document."""
-    collection_page_url: str = Field(..., description="Link to the collection page")
-    document_page_url: str = Field(..., description="Link to the document page")
-    doc_id : str  = Field(..., description="document id")
-    insertion_method : Annotated[str, BackendField(), ExcludeMode("llm")]  = Field(..., description="insertion_method")
+    collection_page_url: Annotated[str, ExcludeMode("llm_in")] = Field(..., description="Link to the collection page")
+    document_page_url: Annotated[str, ExcludeMode("llm_in")] = Field(..., description="Link to the document page")
+    doc_id : Annotated[str, ExcludeMode("llm_in")] = Field(..., description="document id")
+    insertion_method : Annotated[str, BackendField(), ExcludeMode("llm", "llm_in")]  = Field(..., description="insertion_method")
     # Required locators 
     page_number: int = Field(..., ge=1, description="1-indexed page number where the mentioned")
     # end_page: int = Field(..., ge=1, description="1-based page index where the mention ends (>= start_page)")
     start_char: int = Field(..., ge=0, description="Character offset within start_page, zero indexed, first char in source document is index 0 with 0 offset")
     end_char: int = Field(..., ge=1, description="Character offset within end_page, zero indexed")
     excerpt: str = Field(..., description="the direct excerpt from source doc from start char to end char. Must be identical from extracted using start_char and end_char")
-    context_before: str = Field(..., description='words before the exceprt for uniqueness excerpt identification, empty string "" if excerpt is start of text')
-    context_after: str  = Field(..., description="words after the exceprt for uniqueness excerpt identification, empty string "" if excerpt is end of text")
+    context_before: Annotated[str, ExcludeMode("llm_in")] = Field(..., description='words before the exceprt for uniqueness excerpt identification, empty string "" if excerpt is start of text')
+    context_after: Annotated[str, ExcludeMode("llm_in")] = Field(..., description="words after the exceprt for uniqueness excerpt identification, empty string "" if excerpt is end of text")
     # Optional extras
     # only for chunked text document
-    chunk_id: Optional[Annotated[str, LLMField(), ExcludeMode("frontend", "backend", "dto")] ] = Field(None, description = 'source text chunk id for chunked text')
-    source_cluster_id: Optional[str] = Field(None, description = 'source text cluster id')
+    chunk_id: Optional[Annotated[str, LLMField(), ExcludeMode("frontend", "backend", "dto", "llm_in")] ] = Field(None, description = 'source text chunk id for chunked text')
+    source_cluster_id: Annotated[Optional[str], ExcludeMode("llm_in")] = Field(None, description = 'source text cluster id')
     
-    verification: Annotated[Optional[MentionVerification], BackendField(), ExcludeMode("llm")] = Field(
+    verification: Annotated[Optional[MentionVerification], BackendField(), ExcludeMode("llm", "llm_in")] = Field(
                                         None, description="Result of validating the mention correctness"
                                     )
     
@@ -319,11 +319,14 @@ class GraphEntityBase(ModeSlicingMixin, BaseModel):
     label: str = Field(..., description="Human-readable label for the node or edge")
     type: Literal['entity', 'relationship', 'reference_pointer'] = Field(..., description="Type of entity")
     summary: str = Field(..., description="Summary of the node/relationship")
-    domain_id: Optional[str] = Field(None, description="Domain ID this entity belongs to")
-    canonical_entity_id: Optional[str] = Field(
+    domain_id: Annotated[Optional[str], ExcludeMode("llm_in")] = Field(None, description="Domain ID this entity belongs to")
+    canonical_entity_id: Annotated[Optional[str], ExcludeMode("llm_in")] = Field(
         None, description="Canonical ID to link equivalents (e.g., Wikidata QID or internal UUID)"
     )
-    properties: Optional[Mapping[str, JsonPrimitive| list[JsonPrimitive] | Mapping[str, JsonPrimitive] ]] = Field(
+    properties: Annotated[
+        Optional[Mapping[str, JsonPrimitive | list[JsonPrimitive] | Mapping[str, JsonPrimitive]]],
+        ExcludeMode("llm_in"),
+    ] = Field(
         None, description="Optional flat properties (JSON primitives only)"
     )
 
@@ -439,8 +442,8 @@ class EdgeMixin(ModeSlicingMixin, BaseModel):
     source_ids: List[str] = Field(..., description="List of source node IDs")
     target_ids: List[str] = Field(..., description="List of target node IDs")
     relation: str = Field(..., description="Type of relationship between source and target nodes")
-    source_edge_ids: Optional[List[str]] = Field(..., description="List of source edge IDs")
-    target_edge_ids: Optional[List[str]] = Field(..., description="List of target edge IDs")
+    source_edge_ids: Annotated[Optional[List[str]], ExcludeMode("llm_in")] = Field(..., description="List of source edge IDs")
+    target_edge_ids: Annotated[Optional[List[str]], ExcludeMode("llm_in")] = Field(..., description="List of target edge IDs")
 # -------------------------
 # Storage-facing mixin (embedding OPTIONAL)
 # -------------------------
@@ -493,7 +496,7 @@ class ChromaMixin(BaseModel):
 # -------------------------
 class LLMMixin(ModeSlicingMixin, BaseModel):
     default_include_modes: ClassVar[set[str]] = {"llm"}
-    include_unmarked_for_modes: ClassVar[set[str]] = {"llm"}
+    include_unmarked_for_modes: ClassVar[set[str]] = {"llm", "llm_in"}
     id: Optional[str] = Field(default = None, description="None for new object; use existing IDs to upsert")
     # No embedding in LLM schema to avoid bloating the output
     local_id: Optional[str] = Field(
@@ -697,6 +700,77 @@ def _span_identity_key(span: Span) -> tuple:
         span.context_after,
         span.chunk_id,
         span.source_cluster_id,
+    )
+
+
+def _validate_excerpt_match(*, content: str, start_char: int, end_char: int, excerpt: str) -> None:
+    if start_char < 0:
+        raise ValueError(f"start_char must be >= 0, got {start_char}")
+    if end_char <= start_char:
+        raise ValueError(f"end_char must be > start_char, got start={start_char}, end={end_char}")
+    if end_char > len(content):
+        raise ValueError(
+            f"end_char out of bounds: end_char={end_char}, content_len={len(content)}"
+        )
+    expected_excerpt = content[start_char:end_char]
+    if expected_excerpt != excerpt:
+        raise ValueError(
+            "excerpt mismatch with content slice at offsets: "
+            f"content[{start_char}:{end_char}] != excerpt"
+        )
+
+
+def _rehydrate_context_window(
+    *,
+    content: str,
+    start_char: int,
+    end_char: int,
+    window_chars: int,
+) -> tuple[str, str]:
+    before_start = max(0, start_char - max(0, window_chars))
+    after_end = min(len(content), end_char + max(0, window_chars))
+    return content[before_start:start_char], content[end_char:after_end]
+
+
+def _rehydrate_lean_span_as_canonical(
+    *,
+    page_number: int,
+    start_char: int,
+    end_char: int,
+    excerpt: str,
+    doc_id: str,
+    content: str,
+    insertion_method: str,
+    context_window_chars: int = 80,
+) -> Span:
+    _validate_excerpt_match(
+        content=content,
+        start_char=start_char,
+        end_char=end_char,
+        excerpt=excerpt,
+    )
+    context_before, context_after = _rehydrate_context_window(
+        content=content,
+        start_char=start_char,
+        end_char=end_char,
+        window_chars=context_window_chars,
+    )
+    return Span.model_validate(
+        {
+            "collection_page_url": f"document_collection/{doc_id}",
+            "document_page_url": f"document/{doc_id}",
+            "doc_id": doc_id,
+            "insertion_method": insertion_method,
+            "page_number": page_number,
+            "start_char": start_char,
+            "end_char": end_char,
+            "excerpt": excerpt,
+            "context_before": context_before,
+            "context_after": context_after,
+            "chunk_id": None,
+            "source_cluster_id": None,
+        },
+        context={"insertion_method": insertion_method},
     )
 
 
@@ -1231,6 +1305,123 @@ class AssocFlattenedLLMGraphExtraction(ModeSlicingMixin, BaseModel):
             ],
         )
 
+    @staticmethod
+    def _normalize_llm_in_payload_dict(payload: dict) -> dict:
+        normalized = dict(payload)
+        alias_map = {
+            "grounding_rows": "groundings",
+            "node_grounding_links": "node_groundings",
+            "edge_grounding_links": "edge_groundings",
+            "grounding_span_links": "grounding_spans",
+        }
+        for alias_key, canonical_key in alias_map.items():
+            if canonical_key not in normalized and alias_key in normalized:
+                normalized[canonical_key] = normalized[alias_key]
+        return normalized
+
+    @classmethod
+    def from_llm_in_payload(
+        cls,
+        sliced: "Union[AssocFlattenedLLMGraphExtraction['llm_in'], dict, BaseModel]",
+        *,
+        doc_id: Optional[str],
+        content: Optional[str],
+        insertion_method: Optional[str] = None,
+        context_window_chars: int = 80,
+    ) -> "AssocFlattenedLLMGraphExtraction":
+        if content is None:
+            raise ValueError("content is required to rehydrate lean assoc spans")
+
+        resolved_doc_id = doc_id or "_DOC_ALIAS"
+        resolved_insertion_method = insertion_method or "llm"
+
+        if isinstance(sliced, BaseModel):
+            dumped = sliced.model_dump()
+        elif type(sliced) is dict:
+            dumped = sliced
+        else:
+            raise ValueError("Unsupported type for 'sliced'")
+
+        normalized = cls._normalize_llm_in_payload_dict(dumped)
+        llm_in_model = cls["llm_in"].model_validate(normalized)
+        llm_in_payload = llm_in_model.model_dump()
+
+        full_spans: list[dict[str, Any]] = []
+        for span_row in llm_in_payload.get("spans") or []:
+            span = _rehydrate_lean_span_as_canonical(
+                page_number=span_row["page_number"],
+                start_char=span_row["start_char"],
+                end_char=span_row["end_char"],
+                excerpt=span_row["excerpt"],
+                doc_id=resolved_doc_id,
+                content=content,
+                insertion_method=resolved_insertion_method,
+                context_window_chars=context_window_chars,
+            )
+            full_span_payload = span.model_dump()
+            full_span_payload["id"] = span_row["id"]
+            full_spans.append(full_span_payload)
+
+        full_payload = {
+            "spans": full_spans,
+            "nodes": [
+                {
+                    "id": node.get("id"),
+                    "local_id": node.get("local_id"),
+                    "label": node["label"],
+                    "type": node["type"],
+                    "summary": node["summary"],
+                    "domain_id": None,
+                    "canonical_entity_id": None,
+                    "properties": None,
+                }
+                for node in (llm_in_payload.get("nodes") or [])
+            ],
+            "edges": [
+                {
+                    "id": edge.get("id"),
+                    "local_id": edge.get("local_id"),
+                    "label": edge["label"],
+                    "type": edge["type"],
+                    "summary": edge["summary"],
+                    "domain_id": None,
+                    "canonical_entity_id": None,
+                    "properties": None,
+                    "source_ids": edge["source_ids"],
+                    "target_ids": edge["target_ids"],
+                    "relation": edge["relation"],
+                    "source_edge_ids": edge.get("source_edge_ids") or [],
+                    "target_edge_ids": edge.get("target_edge_ids") or [],
+                }
+                for edge in (llm_in_payload.get("edges") or [])
+            ],
+            "groundings": llm_in_payload.get("groundings") or [],
+            "node_groundings": llm_in_payload.get("node_groundings") or [],
+            "edge_groundings": llm_in_payload.get("edge_groundings") or [],
+            "grounding_spans": llm_in_payload.get("grounding_spans") or [],
+        }
+        return cls.model_validate(full_payload, context={"insertion_method": resolved_insertion_method})
+
+    @classmethod
+    def to_canonical_from_llm_in_payload(
+        cls,
+        sliced: "Union[AssocFlattenedLLMGraphExtraction['llm_in'], dict, BaseModel]",
+        *,
+        doc_id: Optional[str],
+        content: Optional[str],
+        insertion_method: Optional[str] = None,
+        context_window_chars: int = 80,
+    ) -> "LLMGraphExtraction":
+        resolved_insertion_method = insertion_method or "llm"
+        full_assoc = cls.from_llm_in_payload(
+            sliced,
+            doc_id=doc_id,
+            content=content,
+            insertion_method=resolved_insertion_method,
+            context_window_chars=context_window_chars,
+        )
+        return full_assoc.to_canonical(insertion_method=resolved_insertion_method)
+
 class GraphExtractionWithIDs(ModeSlicingMixin, BaseModel):
     """represent a graph extracted by external tool and all ids are imported
 
@@ -1266,11 +1457,127 @@ class LLMGraphExtraction(ModeSlicingMixin, BaseModel):
     def to_assoc_flattened(self, *, insertion_method: Optional[str] = None) -> "AssocFlattenedLLMGraphExtraction":
         return AssocFlattenedLLMGraphExtraction.from_canonical(self, insertion_method=insertion_method)
 
+    def to_lean(self) -> "LLMGraphExtraction['llm_in']":
+        payload = self.model_dump(field_mode="llm_in")
+        return self.__class__["llm_in"].model_validate(payload)
+
+    def to_lean_assoc_flattened(self, *, insertion_method: Optional[str] = None) -> "AssocFlattenedLLMGraphExtraction['llm_in']":
+        full_assoc = AssocFlattenedLLMGraphExtraction.from_canonical(self, insertion_method=insertion_method)
+        payload = full_assoc.model_dump(field_mode="llm_in")
+        return AssocFlattenedLLMGraphExtraction["llm_in"].model_validate(payload)
+
+    @classmethod
+    def from_llm_in_payload(
+        cls,
+        sliced: "Union[LLMGraphExtraction['llm_in'], dict, BaseModel]",
+        insertion_method,
+        *,
+        doc_id: Optional[str] = None,
+        content: Optional[str] = None,
+        context_window_chars: int = 80,
+    ) -> "LLMGraphExtraction":
+        if content is None:
+            raise ValueError("content is required to rehydrate lean spans")
+
+        resolved_doc_id = doc_id or "_DOC_ALIAS"
+        resolved_insertion_method = insertion_method or "llm"
+
+        if isinstance(sliced, BaseModel):
+            dumped = sliced.model_dump()
+        elif type(sliced) is dict:
+            dumped = sliced
+        else:
+            raise ValueError("Unsupported type for 'sliced'")
+
+        normalized = cls._normalize_flattened_payload_dict(dumped)
+        llm_in_model = cls["llm_in"].model_validate(
+            normalized,
+            context={"insertion_method": resolved_insertion_method},
+        )
+        llm_in_payload = llm_in_model.model_dump()
+
+        return cls.model_validate(
+            {
+                "nodes": [
+                    {
+                        "id": node.get("id"),
+                        "local_id": node.get("local_id"),
+                        "label": node["label"],
+                        "type": node["type"],
+                        "summary": node["summary"],
+                        "domain_id": None,
+                        "canonical_entity_id": None,
+                        "properties": None,
+                        "mentions": [
+                            {
+                                "spans": [
+                                    _rehydrate_lean_span_as_canonical(
+                                        page_number=span["page_number"],
+                                        start_char=span["start_char"],
+                                        end_char=span["end_char"],
+                                        excerpt=span["excerpt"],
+                                        doc_id=resolved_doc_id,
+                                        content=content,
+                                        insertion_method=resolved_insertion_method,
+                                        context_window_chars=context_window_chars,
+                                    ).model_dump()
+                                    for span in (grounding.get("spans") or [])
+                                ]
+                            }
+                            for grounding in (node.get("mentions") or [])
+                        ],
+                    }
+                    for node in (llm_in_payload.get("nodes") or [])
+                ],
+                "edges": [
+                    {
+                        "id": edge.get("id"),
+                        "local_id": edge.get("local_id"),
+                        "label": edge["label"],
+                        "type": edge["type"],
+                        "summary": edge["summary"],
+                        "domain_id": None,
+                        "canonical_entity_id": None,
+                        "properties": None,
+                        "source_ids": edge["source_ids"],
+                        "target_ids": edge["target_ids"],
+                        "relation": edge["relation"],
+                        "source_edge_ids": edge.get("source_edge_ids") or [],
+                        "target_edge_ids": edge.get("target_edge_ids") or [],
+                        "mentions": [
+                            {
+                                "spans": [
+                                    _rehydrate_lean_span_as_canonical(
+                                        page_number=span["page_number"],
+                                        start_char=span["start_char"],
+                                        end_char=span["end_char"],
+                                        excerpt=span["excerpt"],
+                                        doc_id=resolved_doc_id,
+                                        content=content,
+                                        insertion_method=resolved_insertion_method,
+                                        context_window_chars=context_window_chars,
+                                    ).model_dump()
+                                    for span in (grounding.get("spans") or [])
+                                ]
+                            }
+                            for grounding in (edge.get("mentions") or [])
+                        ],
+                    }
+                    for edge in (llm_in_payload.get("edges") or [])
+                ],
+            },
+            context={"insertion_method": resolved_insertion_method},
+        )
+
     @classmethod
     def from_normal_llm(
         cls,
-        sliced: "Union[LLMGraphExtraction['llm'], dict, BaseModel]",
+        sliced: "Union[LLMGraphExtraction['llm'], LLMGraphExtraction['llm_in'], dict, BaseModel]",
         insertion_method,
+        *,
+        doc_id: Optional[str] = None,
+        content: Optional[str] = None,
+        context_window_chars: int = 80,
     ) -> "LLMGraphExtraction":
         if isinstance(sliced, BaseModel):
             dumped = sliced.model_dump()
@@ -1278,6 +1585,15 @@ class LLMGraphExtraction(ModeSlicingMixin, BaseModel):
             dumped = sliced
         else:
             raise ValueError("Unsupported type for 'sliced'")
+
+        if cls._looks_like_lean_non_flat_payload(dumped):
+            return cls.from_llm_in_payload(
+                dumped,
+                insertion_method,
+                doc_id=doc_id,
+                content=content,
+                context_window_chars=context_window_chars,
+            )
 
         for ne in (dumped.get('nodes') or []) + (dumped.get('edges') or []):
             if 'mentions' not in ne and 'references' in ne and ne.get('references') is not None:
@@ -1301,8 +1617,12 @@ class LLMGraphExtraction(ModeSlicingMixin, BaseModel):
     @classmethod
     def from_flattened_llm(
         cls,
-        sliced: "Union[FlattenedLLMGraphExtraction, AssocFlattenedLLMGraphExtraction, dict, BaseModel]",
+        sliced: "Union[FlattenedLLMGraphExtraction, AssocFlattenedLLMGraphExtraction, AssocFlattenedLLMGraphExtraction['llm_in'], dict, BaseModel]",
         insertion_method,
+        *,
+        doc_id: Optional[str] = None,
+        content: Optional[str] = None,
+        context_window_chars: int = 80,
     ) -> "LLMGraphExtraction":
         if isinstance(sliced, AssocFlattenedLLMGraphExtraction):
             return sliced.to_canonical(insertion_method=insertion_method)
@@ -1318,6 +1638,14 @@ class LLMGraphExtraction(ModeSlicingMixin, BaseModel):
 
         if cls._looks_like_assoc_flattened_payload(dumped):
             assoc_dumped = cls._normalize_assoc_flattened_payload_dict(dumped)
+            if cls._looks_like_lean_assoc_flattened_payload(assoc_dumped):
+                return AssocFlattenedLLMGraphExtraction.to_canonical_from_llm_in_payload(
+                    assoc_dumped,
+                    doc_id=doc_id,
+                    content=content,
+                    insertion_method=insertion_method,
+                    context_window_chars=context_window_chars,
+                )
             assoc = AssocFlattenedLLMGraphExtraction.model_validate(
                 assoc_dumped,
                 context={"insertion_method": insertion_method},
@@ -1374,6 +1702,78 @@ class LLMGraphExtraction(ModeSlicingMixin, BaseModel):
         return has_node_link_table or has_edge_link_table
 
     @staticmethod
+    def _looks_like_lean_assoc_flattened_payload(payload: dict) -> bool:
+        if not LLMGraphExtraction._looks_like_assoc_flattened_payload(payload):
+            return False
+        spans = payload.get("spans") or []
+        if not isinstance(spans, list):
+            return False
+        lean_span_count = 0
+        full_span_count = 0
+        for span in spans:
+            if not isinstance(span, dict):
+                continue
+            has_core = {"id", "page_number", "start_char", "end_char", "excerpt"}.issubset(span.keys())
+            if not has_core:
+                continue
+            has_full_identity_fields = (
+                ("collection_page_url" in span)
+                and ("document_page_url" in span)
+                and ("doc_id" in span)
+            )
+            if has_full_identity_fields:
+                full_span_count += 1
+            else:
+                lean_span_count += 1
+        return lean_span_count > 0 and full_span_count == 0
+
+    @staticmethod
+    def _looks_like_lean_non_flat_payload(payload: dict) -> bool:
+        if LLMGraphExtraction._looks_like_assoc_flattened_payload(payload):
+            return False
+        if "spans" in payload:
+            return False
+        nodes = payload.get("nodes") or []
+        edges = payload.get("edges") or []
+        if not isinstance(nodes, list) or not isinstance(edges, list):
+            return False
+        entries = nodes + edges
+        if not entries:
+            return False
+        lean_span_count = 0
+        full_span_count = 0
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            mentions = entry.get("mentions")
+            if mentions is None:
+                mentions = entry.get("groundings")
+            if not isinstance(mentions, list):
+                continue
+            for grounding in mentions:
+                if not isinstance(grounding, dict):
+                    continue
+                spans = grounding.get("spans")
+                if not isinstance(spans, list):
+                    continue
+                for span in spans:
+                    if not isinstance(span, dict):
+                        continue
+                    has_core = {"page_number", "start_char", "end_char", "excerpt"}.issubset(span.keys())
+                    if not has_core:
+                        continue
+                    has_full_identity_fields = (
+                        ("collection_page_url" in span)
+                        and ("document_page_url" in span)
+                        and ("doc_id" in span)
+                    )
+                    if has_full_identity_fields:
+                        full_span_count += 1
+                    else:
+                        lean_span_count += 1
+        return lean_span_count > 0 and full_span_count == 0
+
+    @staticmethod
     def _looks_like_flattened_payload(payload: dict) -> bool:
         if LLMGraphExtraction._looks_like_assoc_flattened_payload(payload):
             return True
@@ -1395,15 +1795,86 @@ class LLMGraphExtraction(ModeSlicingMixin, BaseModel):
         return False
 
     @classmethod
-    def FromLLMSlice(cls, sliced: "Union[LLMGraphExtraction['llm'], FlattenedLLMGraphExtraction, dict, BaseModel]", insertion_method) -> "LLMGraphExtraction":
+    def FromLLMSlice(
+        cls,
+        sliced: "Union[LLMGraphExtraction['llm'], LLMGraphExtraction['llm_in'], FlattenedLLMGraphExtraction, AssocFlattenedLLMGraphExtraction['llm_in'], dict, BaseModel]",
+        insertion_method,
+        *,
+        doc_id: Optional[str] = None,
+        content: Optional[str] = None,
+        context_window_chars: int = 80,
+    ) -> "LLMGraphExtraction":
         if isinstance(sliced, FlattenedLLMGraphExtraction):
-            return cls.from_flattened_llm(sliced, insertion_method)
+            return cls.from_flattened_llm(
+                sliced,
+                insertion_method,
+                doc_id=doc_id,
+                content=content,
+                context_window_chars=context_window_chars,
+            )
 
         if type(sliced) is dict:
             if cls._looks_like_flattened_payload(sliced):
-                return cls.from_flattened_llm(sliced, insertion_method)
+                return cls.from_flattened_llm(
+                    sliced,
+                    insertion_method,
+                    doc_id=doc_id,
+                    content=content,
+                    context_window_chars=context_window_chars,
+                )
+            if cls._looks_like_lean_non_flat_payload(sliced):
+                return cls.from_normal_llm(
+                    sliced,
+                    insertion_method,
+                    doc_id=doc_id,
+                    content=content,
+                    context_window_chars=context_window_chars,
+                )
 
-        return cls.from_normal_llm(sliced, insertion_method)
+        return cls.from_normal_llm(
+            sliced,
+            insertion_method,
+            doc_id=doc_id,
+            content=content,
+            context_window_chars=context_window_chars,
+        )
+
+
+def _enable_llm_in_mode(cls: type[ModeSlicingMixin]) -> None:
+    llm_marker = cls._mode_markers.get("llm")
+    if llm_marker is not None and "llm_in" not in cls._mode_markers:
+        cls.register_mode("llm_in", llm_marker)
+    include_unmarked = set(getattr(cls, "include_unmarked_for_modes", set()))
+    if "llm" in include_unmarked and "llm_in" not in include_unmarked:
+        cls.include_unmarked_for_modes = include_unmarked | {"llm_in"}  # type: ignore[assignment]
+
+
+for _llm_in_cls in [
+    Span,
+    Grounding,
+    LLMNode,
+    LLMEdge,
+    LLMGraphExtraction,
+    FlattenedSpan,
+    FlattenedGrounding,
+    FlattenedLLMNode,
+    FlattenedLLMEdge,
+    FlattenedLLMGraphExtraction,
+    AssocFlattenedGroundingRow,
+    AssocNodeGroundingLink,
+    AssocEdgeGroundingLink,
+    AssocGroundingSpanLink,
+    AssocFlattenedLLMNode,
+    AssocFlattenedLLMEdge,
+    AssocFlattenedLLMGraphExtraction,
+]:
+    _enable_llm_in_mode(_llm_in_cls)
+
+# Backward-compatibility aliases. Prefer canonical helpers:
+# - LLMGraphExtraction.from_llm_in_payload(...)
+# - AssocFlattenedLLMGraphExtraction.to_canonical_from_llm_in_payload(...)
+LeanLLMGraphExtraction = LLMGraphExtraction["llm_in"]
+LeanAssocFlattenedLLMGraphExtraction = AssocFlattenedLLMGraphExtraction["llm_in"]
 
 
 # -------------------------

@@ -2,6 +2,8 @@ from __future__ import annotations
 from types import MethodType
 from contextlib import contextmanager
 import contextvars
+from copy import deepcopy
+import difflib
 
 from langchain_core.language_models import BaseChatModel
 import pathlib
@@ -77,7 +79,8 @@ from .models import (
     QUESTION_DESC,
     AdjudicationVerdict,
     LLMMergeAdjudication,
-    ContextCost
+    ContextCost,
+    AssocFlattenedLLMGraphExtraction,
 )
 if TYPE_CHECKING:
     from ..conversation.models import (AddTurnResult, ContextSnapshotMetadata, 
@@ -128,6 +131,10 @@ except Exception:
     _HAS_AZURE_EMB = False
 PageLike = Union[str, Dict[str, Any]]
 EngineType = Literal ['knowledge', 'conversation', 'workflow']
+ExtractionSchemaMode = Literal["auto", "full", "lean", "flattened_lean", "flattened_full"]
+ResolvedExtractionSchemaMode = Literal["full", "lean", "flattened_lean", "flattened_full"]
+OffsetMismatchPolicy = Literal["strict", "exact", "exact_fuzzy"]
+OffsetRepairScorer = Callable[[str, str], float]
 NodeOrEdge: TypeAlias =  Node | Edge
 
 if TYPE_CHECKING:
@@ -1328,13 +1335,16 @@ class GraphKnowledgeEngine:
                 res.append(single_res)
         return res
     def _where_update_from_resolve_mode(self, resolve_mode : Literal["active_only" , "redirect", "include_tombstones"]):
-        match resolve_mode:
-            case "active_only":
-                return {"lifecycle_status":"active"}
-            case "redirect":
-                return {}
-            case "include_tombstones":
-                return {}
+        if  resolve_mode=="active_only":
+            return {"lifecycle_status":"active"}
+        else:
+            return {}
+            # case "active_only":
+                # return {"lifecycle_status":"active"}
+            # case "redirect":
+                # return {}
+            # case "include_tombstones":
+                # return {}
         
 
     def get_edges(
@@ -1859,8 +1869,394 @@ class GraphKnowledgeEngine:
             edges_str = "New edge aliases: (none)"
 
         return aliased_nodes, aliased_edges, nodes_str, edges_str
-    def _extract_graph_with_llm_aliases(self, content: str, alias_nodes_str: str, alias_edges_str: str, instruction_for_node_edge_contents_parsing_inclusion:  None | str = None,
-                                        last_iteration_result : dict | None = None):
+
+    def _resolve_extraction_schema_mode(
+        self,
+        extraction_schema_mode: ExtractionSchemaMode | None = None,
+    ) -> ResolvedExtractionSchemaMode:
+        requested = extraction_schema_mode or self.extraction_schema_mode
+        allowed: set[str] = {"auto", "full", "lean", "flattened_lean", "flattened_full"}
+        if requested not in allowed:
+            raise ValueError(
+                f"Unsupported extraction_schema_mode={requested!r}. "
+                f"Expected one of {sorted(allowed)}"
+            )
+        if requested == "auto":
+            if isinstance(self.llm, ChatGoogleGenerativeAI):
+                return "lean"
+            return "full"
+        return cast(ResolvedExtractionSchemaMode, requested)
+
+    def _schema_prompt_rules(self, mode: ResolvedExtractionSchemaMode) -> str:
+        common = (
+            "Rules:\n"
+            "1) When referring to existing items, use ONLY the given aliases.\n"
+            "2) If creating new items, omit their id.\n"
+            "3) Do not invent aliases; use the provided ones only.\n"
+            "4) Do NOT invent real UUIDs.\n"
+        )
+        if mode in {"lean", "flattened_lean"}:
+            return (
+                common
+                + "5) Each node/edge MUST include at least one grounding span.\n"
+                + "6) Every span MUST include page_number, start_char, end_char, and excerpt.\n"
+                + "7) excerpt MUST exactly equal document[start_char:end_char].\n"
+            )
+        return (
+            common
+            + "5) Each node/edge MUST include at least one grounding span.\n"
+            + "6) Every span MUST include collection_page_url, document_page_url, doc_id, page_number, start_char, end_char, excerpt, context_before, context_after.\n"
+            + f"7) Use '{_DOC_ALIAS}' as doc_id in output spans.\n"
+            + f"8) Use document_page_url='document/{_DOC_ALIAS}' and collection_page_url='document_collection/{_DOC_ALIAS}'.\n"
+            + "9) excerpt MUST exactly equal document[start_char:end_char].\n"
+        )
+
+    def _structured_schema_for_mode(self, mode: ResolvedExtractionSchemaMode):
+        if mode == "full":
+            return LLMGraphExtraction["llm"], False
+        if mode == "lean":
+            return LLMGraphExtraction["llm_in"], False
+        if mode == "flattened_lean":
+            return AssocFlattenedLLMGraphExtraction["llm_in"], True
+        if mode == "flattened_full":
+            return AssocFlattenedLLMGraphExtraction["llm"], True
+        raise ValueError(f"Unsupported resolved extraction schema mode: {mode!r}")
+
+    def _build_structured_output_for_mode(self, mode: ResolvedExtractionSchemaMode):
+        schema, prefer_json_schema = self._structured_schema_for_mode(mode)
+        if prefer_json_schema:
+            try:
+                return self.llm.with_structured_output(
+                    schema,
+                    method="json_schema",
+                    include_raw=True,
+                )
+            except TypeError:
+                pass
+        return self.llm.with_structured_output(schema, include_raw=True)
+
+    @staticmethod
+    def _offset_repair_threshold(excerpt_len: int) -> float:
+        if excerpt_len <= 8:
+            return 95.0
+        if excerpt_len <= 20:
+            return 92.0
+        if excerpt_len <= 60:
+            return 88.0
+        if excerpt_len <= 120:
+            return 85.0
+        return 82.0
+
+    @staticmethod
+    def _clip_offset_excerpt(text: str, *, max_chars: int = 80) -> str:
+        if len(text) <= max_chars:
+            return text
+        head = text[: max_chars // 2]
+        tail = text[-(max_chars // 2) :]
+        return f"{head}...{tail}"
+
+    @staticmethod
+    def _find_all_exact_occurrences(content: str, excerpt: str) -> list[int]:
+        if not excerpt:
+            return []
+        out: list[int] = []
+        idx = content.find(excerpt)
+        while idx != -1:
+            out.append(idx)
+            idx = content.find(excerpt, idx + 1)
+        return out
+
+    @staticmethod
+    def _coerce_offset_score(raw_score: Any) -> float:
+        if not isinstance(raw_score, (int, float)):
+            return 0.0
+        score = float(raw_score)
+        if not math.isfinite(score):
+            return 0.0
+        if 0.0 <= score <= 1.0:
+            score = score * 100.0
+        return max(0.0, score)
+
+    def _default_offset_repair_scorer(self, candidate: str, excerpt: str) -> float:
+        if not excerpt:
+            return 0.0
+        if _HAS_RAPIDFUZZ:
+            return float(fuzz.partial_ratio(candidate, excerpt))
+        return float(difflib.SequenceMatcher(None, candidate, excerpt).ratio() * 100.0)
+
+    def _resolve_offset_repair_scorer(
+        self,
+        override: OffsetRepairScorer | None,
+    ) -> OffsetRepairScorer:
+        if override is not None:
+            return override
+        if self.offset_repair_scorer is not None:
+            return self.offset_repair_scorer
+        return self._default_offset_repair_scorer
+
+    def _iter_lean_spans_for_mode(
+        self,
+        *,
+        mode: ResolvedExtractionSchemaMode,
+        payload: dict[str, Any],
+    ) -> list[tuple[str, dict[str, Any]]]:
+        rows: list[tuple[str, dict[str, Any]]] = []
+        if mode == "flattened_lean":
+            for i_sp, span_row in enumerate(payload.get("spans") or []):
+                if isinstance(span_row, dict):
+                    rows.append((f"spans[{i_sp}]", span_row))
+            return rows
+
+        if mode != "lean":
+            return rows
+
+        for section in ("nodes", "edges"):
+            for i_entry, entry in enumerate(payload.get(section) or []):
+                if not isinstance(entry, dict):
+                    continue
+                mentions = entry.get("mentions")
+                if mentions is None:
+                    mentions = entry.get("groundings")
+                if not isinstance(mentions, list):
+                    continue
+                for i_g, grounding in enumerate(mentions):
+                    if not isinstance(grounding, dict):
+                        continue
+                    spans = grounding.get("spans")
+                    if not isinstance(spans, list):
+                        continue
+                    for i_sp, span_row in enumerate(spans):
+                        if isinstance(span_row, dict):
+                            rows.append((f"{section}[{i_entry}].mentions[{i_g}].spans[{i_sp}]", span_row))
+        return rows
+
+    def _build_offset_failure_detail(
+        self,
+        *,
+        path: str,
+        content: str,
+        excerpt: str,
+        start_char: int,
+        end_char: int,
+        exact_hits: int,
+        best_fuzzy_score: float | None,
+    ) -> str:
+        hinted_slice = "<out-of-bounds>"
+        if 0 <= start_char < end_char <= len(content):
+            hinted_slice = content[start_char:end_char]
+        fuzzy_text = "n/a" if best_fuzzy_score is None else f"{best_fuzzy_score:.2f}"
+        return (
+            f"{path}: start={start_char}, end={end_char}, "
+            f"excerpt='{self._clip_offset_excerpt(excerpt)}', "
+            f"hinted_slice='{self._clip_offset_excerpt(hinted_slice)}', "
+            f"exact_hits={exact_hits}, best_fuzzy={fuzzy_text}"
+        )
+
+    def _find_best_fuzzy_span(
+        self,
+        *,
+        content: str,
+        excerpt: str,
+        origin_start: int,
+        scorer: OffsetRepairScorer,
+    ) -> tuple[int, int, float] | None:
+        if not excerpt:
+            return None
+        excerpt_len = len(excerpt)
+        if excerpt_len == 0:
+            return None
+
+        scan_band = max(2000, excerpt_len * 50)
+        lo = max(0, origin_start - scan_band)
+        hi = min(len(content), origin_start + scan_band)
+        region = content[lo:hi]
+        if not region:
+            return None
+
+        deltas = [0]
+        if excerpt_len >= 20:
+            delta_5 = max(1, excerpt_len // 20)
+            deltas.extend([delta_5, -delta_5])
+        if excerpt_len >= 60:
+            delta_10 = max(2, excerpt_len // 10)
+            deltas.extend([delta_10, -delta_10])
+
+        step = 1 if excerpt_len <= 40 else max(2, excerpt_len // 25)
+        threshold = self._offset_repair_threshold(excerpt_len)
+        best: tuple[int, int, float] | None = None
+
+        for delta in deltas:
+            width = excerpt_len + delta
+            if width <= 0 or width > len(region):
+                continue
+            max_i = len(region) - width
+            for i in range(0, max_i + 1, step):
+                cand = region[i:i + width]
+                score = self._coerce_offset_score(scorer(cand, excerpt))
+                if score < threshold:
+                    continue
+                start = lo + i
+                end = start + width
+                if best is None:
+                    best = (start, end, score)
+                    continue
+                prev_start, prev_end, prev_score = best
+                prev_dist = abs(prev_start - origin_start)
+                cur_dist = abs(start - origin_start)
+                prev_len = prev_end - prev_start
+                cur_len = end - start
+                if (score > prev_score) or (
+                    score == prev_score
+                    and (cur_dist < prev_dist or (cur_dist == prev_dist and cur_len < prev_len))
+                ):
+                    best = (start, end, score)
+        return best
+
+    def _repair_lean_offsets_for_mode(
+        self,
+        *,
+        mode: ResolvedExtractionSchemaMode,
+        payload: dict[str, Any],
+        content: str,
+        policy: OffsetMismatchPolicy,
+        offset_repair_scorer: OffsetRepairScorer | None,
+    ) -> dict[str, Any]:
+        if policy not in {"strict", "exact", "exact_fuzzy"}:
+            raise ValueError(
+                f"Unsupported offset_mismatch_policy={policy!r}. "
+                "Expected one of ['strict', 'exact', 'exact_fuzzy']"
+            )
+        if mode not in {"lean", "flattened_lean"}:
+            return payload
+
+        spans = self._iter_lean_spans_for_mode(mode=mode, payload=payload)
+        if not spans:
+            return payload
+
+        scorer = self._resolve_offset_repair_scorer(offset_repair_scorer)
+        failures: list[str] = []
+
+        for path, span_row in spans:
+            excerpt = str(span_row.get("excerpt") or "")
+            start_char = span_row.get("start_char")
+            end_char = span_row.get("end_char")
+            if not isinstance(start_char, int) or not isinstance(end_char, int):
+                failures.append(
+                    f"{path}: start_char/end_char must be integers, got "
+                    f"{type(start_char).__name__}/{type(end_char).__name__}"
+                )
+                continue
+
+            if 0 <= start_char < end_char <= len(content) and content[start_char:end_char] == excerpt:
+                continue
+
+            exact_matches = self._find_all_exact_occurrences(content, excerpt)
+            if policy in {"exact", "exact_fuzzy"} and exact_matches:
+                best_start = min(exact_matches, key=lambda s: (abs(s - start_char), s))
+                span_row["start_char"] = best_start
+                span_row["end_char"] = best_start + len(excerpt)
+                continue
+
+            best_fuzzy: tuple[int, int, float] | None = None
+            if policy == "exact_fuzzy":
+                best_fuzzy = self._find_best_fuzzy_span(
+                    content=content,
+                    excerpt=excerpt,
+                    origin_start=max(0, start_char),
+                    scorer=scorer,
+                )
+                if best_fuzzy is not None:
+                    best_start, best_end, _score = best_fuzzy
+                    span_row["start_char"] = best_start
+                    span_row["end_char"] = best_end
+                    span_row["excerpt"] = content[best_start:best_end]
+                    continue
+
+            failures.append(
+                self._build_offset_failure_detail(
+                    path=path,
+                    content=content,
+                    excerpt=excerpt,
+                    start_char=start_char,
+                    end_char=end_char,
+                    exact_hits=len(exact_matches),
+                    best_fuzzy_score=best_fuzzy[2] if best_fuzzy is not None else None,
+                )
+            )
+
+        if failures:
+            sample = " | ".join(failures[:3])
+            raise ValueError(
+                f"Offset repair failed mode={mode} policy={policy} "
+                f"failed_spans={len(failures)} total_spans={len(spans)} :: {sample}"
+            )
+        return payload
+
+    def _to_canonical_extraction_for_mode(
+        self,
+        *,
+        mode: ResolvedExtractionSchemaMode,
+        parsed: Any,
+        content: str,
+        offset_mismatch_policy: OffsetMismatchPolicy = "exact_fuzzy",
+        offset_repair_scorer: OffsetRepairScorer | None = None,
+    ) -> LLMGraphExtraction:
+        if mode in {"lean", "flattened_lean"}:
+            payload = parsed.model_dump() if isinstance(parsed, BaseModel) else deepcopy(parsed)
+            if not isinstance(payload, dict):
+                raise ValueError(
+                    f"Expected parsed payload as dict/BaseModel for mode={mode}, got {type(payload).__name__}"
+                )
+            parsed = self._repair_lean_offsets_for_mode(
+                mode=mode,
+                payload=payload,
+                content=content,
+                policy=offset_mismatch_policy,
+                offset_repair_scorer=offset_repair_scorer,
+            )
+        if mode == "full":
+            return LLMGraphExtraction.from_normal_llm(
+                parsed,
+                insertion_method="llm",
+                doc_id=_DOC_ALIAS,
+                content=content,
+            )
+        if mode == "lean":
+            return LLMGraphExtraction.from_llm_in_payload(
+                parsed,
+                insertion_method="llm",
+                doc_id=_DOC_ALIAS,
+                content=content,
+            )
+        if mode == "flattened_lean":
+            return AssocFlattenedLLMGraphExtraction.to_canonical_from_llm_in_payload(
+                parsed,
+                doc_id=_DOC_ALIAS,
+                content=content,
+                insertion_method="llm",
+            )
+        if mode == "flattened_full":
+            assoc_payload = parsed.model_dump() if isinstance(parsed, BaseModel) else parsed
+            assoc = AssocFlattenedLLMGraphExtraction.model_validate(
+                assoc_payload,
+                context={"insertion_method": "llm"},
+            )
+            return assoc.to_canonical(insertion_method="llm")
+        raise ValueError(f"Unsupported resolved extraction schema mode: {mode!r}")
+
+    def _extract_graph_with_llm_aliases(
+        self,
+        content: str,
+        alias_nodes_str: str,
+        alias_edges_str: str,
+        instruction_for_node_edge_contents_parsing_inclusion: None | str = None,
+        last_iteration_result: dict | None = None,
+        extraction_schema_mode: ExtractionSchemaMode | None = None,
+        offset_mismatch_policy: OffsetMismatchPolicy = "exact_fuzzy",
+        offset_repair_scorer: OffsetRepairScorer | None = None,
+    ):
+        resolved_mode = self._resolve_extraction_schema_mode(extraction_schema_mode)
+        prompt_rules = self._schema_prompt_rules(resolved_mode)
         if instruction_for_node_edge_contents_parsing_inclusion is None:
             instruction_for_node_edge_contents_parsing_inclusion = ("Nodes should include at least: Parties, Obligations, Rights, Deliverables, Payment Terms, Termination Conditions, Confidentiality Clauses, Governing Law, Dates, and Penalties.  "
             "Edges should capture: (Party → Obligation), (Obligation → Condition), (Party → Right), (Obligation → Deliverable), (Clause → Governing Law).  ")
@@ -1885,23 +2281,13 @@ class GraphKnowledgeEngine:
             "- Important!: Span.excerpt MUST agree with corresponding zero-indexed start to end index. Direct identical text and no paraphrased is allowed. "
             "e.g. if snippet world from 'hello world!', word is 6 to 11 index. content[6:11] => 'world' in python indexing sense"
             "Extract entities and terms as nodes, relationships edges in a hypergraph.\n\n"
-            "Rules:\n"
-            "1) When referring to existing items, use ONLY the given aliases.\n"
-            "2) If creating new items, omit their id.\n"
-            "3) Each node/edge MUST include at least one ReferenceSession with spans.\n"
-            "4) Do not invent aliases; use the provided ones only."
-            "5) Do NOT invent real UUIDs or external URLs.\n"
-            "6) Each node/edge MUST include at least one ReferenceSession with spans."
-            "- Always use the token '{_DOC_ALIAS}' to refer to the current document in every ReferenceSession.\n"
-            "- For example: document_page_url='document/{_DOC_ALIAS}', "
-            "collection_page_url='document_collection/{_DOC_ALIAS}'.\n"),
+            f"{prompt_rules}"),
             ("human",
             "Aliases (delta for this turn):\n{alias_nodes}\n\n{alias_edges}\n\n"
             "Document:\n```{document}```\n\n"
             "Return only the structured JSON for the schema.")
         ]
         to_append = []
-        from pydantic import BaseModel
         if last_iteration_result and last_iteration_result.get("error"):
             last_parsed: BaseModel = last_iteration_result.get('parsed') # type: ignore
             last_error :str = str(last_iteration_result.get("error"))
@@ -1914,20 +2300,7 @@ class GraphKnowledgeEngine:
             template_messages.extend(to_append)
         prompt = ChatPromptTemplate.from_messages(template_messages)
         try:
-            use_flattened_schema=False
-            if isinstance(self.llm, ChatGoogleGenerativeAI):
-                use_flattened_schema = True
-                from .models import AssocFlattenedLLMGraphExtraction
-                structured = self.llm.with_structured_output(
-                    AssocFlattenedLLMGraphExtraction['llm'],
-                    method="json_schema",
-                    include_raw=True,
-                )
-            else:
-                structured = self.llm.with_structured_output(
-                    LLMGraphExtraction["llm"],
-                    include_raw=True,
-                )
+            structured = self._build_structured_output_for_mode(resolved_mode)
             chain = prompt | structured
             #self.llm.with_structured_output(LLMGraphExtraction['llm'], 
             #                                                include_raw=True)
@@ -1936,9 +2309,14 @@ class GraphKnowledgeEngine:
             realised_prmopt = steps[0].invoke({"alias_nodes": alias_nodes_str, "alias_edges": alias_edges_str, "document": content, "_DOC_ALIAS" : _DOC_ALIAS})
             llm_raw = steps[1].invoke(realised_prmopt)
             result = steps[2].invoke(llm_raw)
-            if use_flattened_schema:
-                flattened_parsed:AssocFlattenedLLMGraphExtraction = result['parsed']
-                result['parsed'] = flattened_parsed.to_canonical(insertion_method="llm")
+            if isinstance(result, dict) and result.get("parsed") is not None:
+                result["parsed"] = self._to_canonical_extraction_for_mode(
+                    mode=resolved_mode,
+                    parsed=result["parsed"],
+                    content=content,
+                    offset_mismatch_policy=offset_mismatch_policy,
+                    offset_repair_scorer=offset_repair_scorer,
+                )
         except Exception as e:
             raise e
         return result.get("raw"), result.get("parsed"), result.get("parsing_error")
@@ -2075,7 +2453,9 @@ class GraphKnowledgeEngine:
         kg_graph_type : EngineType = 'knowledge',
         debug_dir: pathlib.Path | None = None,
         backend : str | PgVectorBackend | None = None,
-        namespace: str = "default"
+        namespace: str = "default",
+        extraction_schema_mode: ExtractionSchemaMode = "auto",
+        offset_repair_scorer: OffsetRepairScorer | None = None,
     ):
         """
         embedding_function: callable(texts: List[str]) -> List[List[float]].
@@ -2088,6 +2468,8 @@ class GraphKnowledgeEngine:
         self.kg_graph_type = kg_graph_type
         self.persist_directory = persist_directory
         self.namespace = namespace
+        self.extraction_schema_mode: ExtractionSchemaMode = extraction_schema_mode
+        self.offset_repair_scorer: OffsetRepairScorer | None = offset_repair_scorer
         
         
         self.indexing = IndexingSubsystem(self)
@@ -2217,8 +2599,8 @@ class GraphKnowledgeEngine:
         # )
         self.llm = ChatGoogleGenerativeAI(
                         #model = "gemini-2.5-pro-preview-05-06",
-                        # model = "gemini-2.5-pro",
-                        model = "gemini-3-flash-preview",
+                        model = "gemini-2.5-pro",
+                        # model = "gemini-3-flash-preview",
                         # model = "gemini-3-flash-preview",
                         # model = model_name,
                         #model="gemini-1.5-pro",
@@ -3364,7 +3746,10 @@ class GraphKnowledgeEngine:
         }        
     def extract_graph_with_llm(self, *, content: str, doc_type: str, alias_nodes_str = "[Empty]" , alias_edges_str = "[Empty]", with_parsed = True, 
                                instruction_for_node_edge_contents_parsing_inclusion: None| str = None, validate = True, autofix : bool | str= True,
-                               last_iteration_result = None):
+                               last_iteration_result = None,
+                               extraction_schema_mode: ExtractionSchemaMode | None = None,
+                               offset_mismatch_policy: OffsetMismatchPolicy = "exact_fuzzy",
+                               offset_repair_scorer: OffsetRepairScorer | None = None):
         """Pure: run LLM + parse + alias resolution. No writes.
         last_iteration_result dict with 3 fields of 'raw' 'parsed' and 'error'. Falsy on initialization
         """
@@ -3372,8 +3757,13 @@ class GraphKnowledgeEngine:
         raw, parsed, error = self._extract_graph_with_llm_aliases(
             content, alias_nodes_str=alias_nodes_str, alias_edges_str=alias_edges_str,
             instruction_for_node_edge_contents_parsing_inclusion = instruction_for_node_edge_contents_parsing_inclusion,
-            last_iteration_result = last_iteration_result
+            last_iteration_result = last_iteration_result,
+            extraction_schema_mode=extraction_schema_mode,
+            offset_mismatch_policy=offset_mismatch_policy,
+            offset_repair_scorer=offset_repair_scorer,
         )
+        if parsed is None:
+            raise ValueError("parsed is None")
         if error:
             raise ValueError(error)
         validation_error_group = []
@@ -3395,7 +3785,8 @@ class GraphKnowledgeEngine:
                     set([i.id for i in parsed_copy.nodes]))):
                 raise Exception("LLM error, new uuid hallucinated")
             span_validator: BaseDocValidator = self.get_span_validator_of_doc_type(doc_type = doc_type)
-            dummy_doc = Document(content=content,
+            
+            dummy_doc = Document(content=content, id = str(stable_id(f"doc::{doc_type}", content)), 
                    type=doc_type, metadata={}, domain_id = None, processed = False, embeddings = None, source_map = None)
             # validation_error_group = []
             pre_parse_nodes_or_edges: list [Node | Edge] = parsed.nodes + parsed.edges
@@ -3752,7 +4143,10 @@ class GraphKnowledgeEngine:
         return summary         
     def ingest_document_with_llm(self, document: Document, *, mode: str="append",
                                  instruction_for_node_edge_contents_parsing_inclusion=None,
-                                 raw_with_parsed = None):
+                                 raw_with_parsed = None,
+                                 extraction_schema_mode: ExtractionSchemaMode | None = None,
+                                 offset_mismatch_policy: OffsetMismatchPolicy = "exact_fuzzy",
+                                 offset_repair_scorer: OffsetRepairScorer | None = None):
         """Convenience: extract + persist. Still returns concrete ids written."""
         if raw_with_parsed is None:
             raw_with_parsed = {}
@@ -3763,7 +4157,10 @@ class GraphKnowledgeEngine:
         extracted = self.extract_graph_with_llm(content=str(document.content),
                                 doc_type=document.type,
                                 instruction_for_node_edge_contents_parsing_inclusion=instruction_for_node_edge_contents_parsing_inclusion,
-                                last_iteration_result=raw_with_parsed)
+                                last_iteration_result=raw_with_parsed,
+                                extraction_schema_mode=extraction_schema_mode,
+                                offset_mismatch_policy=offset_mismatch_policy,
+                                offset_repair_scorer=offset_repair_scorer)
         parsed = extracted["parsed"]
 
         # de-alias against this doc scope & validate
@@ -3799,7 +4196,16 @@ class GraphKnowledgeEngine:
         err = result.get("parsing_error") if isinstance(result, dict) else None
         return raw, parsed, err
 
-    def _ingest_text_with_llm(self, *, doc_id: str, content: str, auto_adjudicate: bool = False):
+    def _ingest_text_with_llm(
+        self,
+        *,
+        doc_id: str,
+        content: str,
+        auto_adjudicate: bool = False,
+        extraction_schema_mode: ExtractionSchemaMode | None = None,
+        offset_mismatch_policy: OffsetMismatchPolicy = "exact_fuzzy",
+        offset_repair_scorer: OffsetRepairScorer | None = None,
+    ):
         """_summary_
 
         Args:
@@ -3818,7 +4224,14 @@ class GraphKnowledgeEngine:
         aliased_nodes, aliased_edges, alias_nodes_str, alias_edges_str = self._aliasify_for_prompt(doc_id, ctx_nodes, ctx_edges)
 
         # extract
-        raw, parsed, error = self._extract_graph_with_llm_aliases(content, alias_nodes_str, alias_edges_str)
+        raw, parsed, error = self._extract_graph_with_llm_aliases(
+            content,
+            alias_nodes_str,
+            alias_edges_str,
+            extraction_schema_mode=extraction_schema_mode,
+            offset_mismatch_policy=offset_mismatch_policy,
+            offset_repair_scorer=offset_repair_scorer,
+        )
         if error:
             raise ValueError(f"LLM parsing error: {error}")
         if not isinstance(parsed, LLMGraphExtraction):
@@ -4239,7 +4652,17 @@ class GraphKnowledgeEngine:
         return self.adjudicator.batch_adjudicate_merges(pairs, question_code)
         
 
-    def add_page(self, *, document_id: str, page_text: str | List[str] | Dict[str, Any], page_number: int | None = None, auto_adjudicate: bool = True):
+    def add_page(
+        self,
+        *,
+        document_id: str,
+        page_text: str | List[str] | Dict[str, Any],
+        page_number: int | None = None,
+        auto_adjudicate: bool = True,
+        extraction_schema_mode: ExtractionSchemaMode | None = None,
+        offset_mismatch_policy: OffsetMismatchPolicy = "exact_fuzzy",
+        offset_repair_scorer: OffsetRepairScorer | None = None,
+    ):
         """
         An experimental API use for single document id and incremental ingest and join graph (adjudicate) page by page
         
@@ -4264,6 +4687,9 @@ class GraphKnowledgeEngine:
                 doc_id=document_id,
                 content=pg["text"],
                 auto_adjudicate=auto_adjudicate,
+                extraction_schema_mode=extraction_schema_mode,
+                offset_mismatch_policy=offset_mismatch_policy,
+                offset_repair_scorer=offset_repair_scorer,
             )
             total_nodes += res["nodes_added"]
             total_edges += res["edges_added"]

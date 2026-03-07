@@ -78,6 +78,14 @@ def make_edge(*mentions: Grounding) -> LLMEdge:
     )
 
 
+def make_content_for_offsets(*, excerpt: str, start_char: int, end_char: int, total_len: int = 256) -> str:
+    assert end_char - start_char == len(excerpt)
+    prefix = "x" * start_char
+    suffix_len = max(0, total_len - end_char)
+    suffix = "y" * suffix_len
+    return prefix + excerpt + suffix
+
+
 def assert_span_equal(a: Span, b: Span) -> None:
     assert a.collection_page_url == b.collection_page_url
     assert a.document_page_url == b.document_page_url
@@ -648,3 +656,636 @@ def test_assoc_flattened_validation_rejects_invalid_node_index():
 
     with pytest.raises(ValueError, match="invalid node_index"):
         AssocFlattenedLLMGraphExtraction.model_validate(payload, context={"insertion_method": "llm"})
+
+
+def _lean_assoc_payload_one_node_one_grounding(
+    *,
+    excerpt: str = "Proof step one",
+    page_number: int = 1,
+    start_char: int = 10,
+    end_char: int = 24,
+) -> dict:
+    return {
+        "spans": [
+            {
+                "id": "sp:1",
+                "page_number": page_number,
+                "start_char": start_char,
+                "end_char": end_char,
+                "excerpt": excerpt,
+            }
+        ],
+        "nodes": [
+            {
+                "local_id": "nn:pythagorean_theorem",
+                "label": "Pythagorean theorem",
+                "type": "entity",
+                "summary": "A theorem relating sides of a right triangle.",
+            }
+        ],
+        "edges": [],
+        "groundings": [{"id": "gr:1"}],
+        "node_groundings": [{"node_index": 0, "grounding_id": "gr:1"}],
+        "edge_groundings": [],
+        "grounding_spans": [{"grounding_id": "gr:1", "span_id": "sp:1"}],
+    }
+
+
+def test_lean_assoc_roundtrip_canonical_to_flattened_to_canonical():
+    excerpt = "Proof step one"
+    start_char = 10
+    end_char = 24
+    content = make_content_for_offsets(excerpt=excerpt, start_char=start_char, end_char=end_char, total_len=96)
+
+    span = Span.model_validate(
+        {
+            "collection_page_url": "document_collection/doc:lean",
+            "document_page_url": "document/doc:lean",
+            "doc_id": "doc:lean",
+            "insertion_method": "llm",
+            "page_number": 1,
+            "start_char": start_char,
+            "end_char": end_char,
+            "excerpt": excerpt,
+            "context_before": content[max(0, start_char - 20):start_char],
+            "context_after": content[end_char:end_char + 20],
+            "chunk_id": None,
+            "source_cluster_id": None,
+        },
+        context={"insertion_method": "llm"},
+    )
+    mention = make_mention(span)
+    node = make_node(mention)
+    edge = make_edge(mention)
+    graph = LLMGraphExtraction.model_validate({"nodes": [node], "edges": [edge]})
+
+    lean_assoc = graph.to_lean_assoc_flattened(insertion_method="llm")
+    roundtrip = LLMGraphExtraction.from_flattened_llm(
+        lean_assoc,
+        insertion_method="llm",
+        doc_id="doc:lean",
+        content=content,
+    )
+
+    assert len(lean_assoc.spans) == 1
+    assert len(lean_assoc.groundings) == 2
+    assert len(roundtrip.nodes) == 1
+    assert len(roundtrip.edges) == 1
+    assert roundtrip.nodes[0].domain_id is None
+    assert roundtrip.nodes[0].canonical_entity_id is None
+    assert roundtrip.nodes[0].properties is None
+
+    span_rt = roundtrip.nodes[0].mentions[0].spans[0]
+    assert span_rt.doc_id == "doc:lean"
+    assert span_rt.collection_page_url == "document_collection/doc:lean"
+    assert span_rt.document_page_url == "document/doc:lean"
+    assert span_rt.excerpt == excerpt
+    assert content[span_rt.start_char:span_rt.end_char] == span_rt.excerpt
+
+
+def test_from_flattened_llm_accepts_lean_assoc_shape_with_rehydration():
+    excerpt = "Proof step one"
+    payload = _lean_assoc_payload_one_node_one_grounding(
+        excerpt=excerpt,
+        start_char=10,
+        end_char=24,
+    )
+    content = make_content_for_offsets(excerpt=excerpt, start_char=10, end_char=24, total_len=80)
+
+    graph = LLMGraphExtraction.from_flattened_llm(
+        payload,
+        insertion_method="llm",
+        doc_id="doc:lean",
+        content=content,
+    )
+
+    assert len(graph.nodes) == 1
+    assert len(graph.nodes[0].mentions) == 1
+    span = graph.nodes[0].mentions[0].spans[0]
+    assert span.doc_id == "doc:lean"
+    assert span.collection_page_url == "document_collection/doc:lean"
+    assert span.document_page_url == "document/doc:lean"
+
+
+def test_dispatcher_from_llm_slice_detects_lean_assoc():
+    payload = _lean_assoc_payload_one_node_one_grounding(
+        excerpt="Proof step one",
+        start_char=10,
+        end_char=24,
+    )
+    content = make_content_for_offsets(excerpt="Proof step one", start_char=10, end_char=24, total_len=80)
+
+    graph = LLMGraphExtraction.FromLLMSlice(
+        payload,
+        insertion_method="llm",
+        doc_id="doc:lean",
+        content=content,
+    )
+
+    assert len(graph.nodes) == 1
+    assert graph.nodes[0].label == "Pythagorean theorem"
+
+
+def test_lean_assoc_edge_defaults_source_and_target_edge_ids_to_empty_lists():
+    excerpt = "Proof step one"
+    content = make_content_for_offsets(excerpt=excerpt, start_char=10, end_char=24, total_len=96)
+    payload = {
+        "spans": [
+            {"id": "sp:1", "page_number": 1, "start_char": 10, "end_char": 24, "excerpt": excerpt},
+        ],
+        "nodes": [
+            {
+                "local_id": "nn:source",
+                "label": "Source",
+                "type": "entity",
+                "summary": "Source node",
+            },
+            {
+                "local_id": "nn:target",
+                "label": "Target",
+                "type": "entity",
+                "summary": "Target node",
+            },
+        ],
+        "edges": [
+            {
+                "local_id": "ne:r",
+                "label": "rel",
+                "type": "relationship",
+                "summary": "hyperedge-compatible relation",
+                "source_ids": ["nn:source"],
+                "target_ids": ["nn:target"],
+                "relation": "relates",
+            }
+        ],
+        "groundings": [{"id": "gr:1"}, {"id": "gr:2"}, {"id": "gr:3"}],
+        "node_groundings": [
+            {"node_index": 0, "grounding_id": "gr:1"},
+            {"node_index": 1, "grounding_id": "gr:2"},
+        ],
+        "edge_groundings": [{"edge_index": 0, "grounding_id": "gr:3"}],
+        "grounding_spans": [
+            {"grounding_id": "gr:1", "span_id": "sp:1"},
+            {"grounding_id": "gr:2", "span_id": "sp:1"},
+            {"grounding_id": "gr:3", "span_id": "sp:1"},
+        ],
+    }
+
+    graph = LLMGraphExtraction.from_flattened_llm(
+        payload,
+        insertion_method="llm",
+        doc_id="doc:lean",
+        content=content,
+    )
+    assert len(graph.edges) == 1
+    assert graph.edges[0].source_edge_ids == []
+    assert graph.edges[0].target_edge_ids == []
+
+
+def test_lean_assoc_rehydrates_context_before_and_after():
+    payload = _lean_assoc_payload_one_node_one_grounding(
+        excerpt="Proof step one",
+        start_char=10,
+        end_char=24,
+    )
+    content = "0123456789Proof step oneABCDEFGHIJ"
+
+    graph = LLMGraphExtraction.from_flattened_llm(
+        payload,
+        insertion_method="llm",
+        doc_id="doc:ctx",
+        content=content,
+        context_window_chars=4,
+    )
+    span = graph.nodes[0].mentions[0].spans[0]
+    assert span.context_before == "6789"
+    assert span.context_after == "ABCD"
+
+
+def test_lean_assoc_rehydration_fails_when_excerpt_does_not_match_offsets():
+    payload = _lean_assoc_payload_one_node_one_grounding(
+        excerpt="Proof step one",
+        start_char=10,
+        end_char=24,
+    )
+    # Force mismatch at the expected offsets.
+    content = "x" * 10 + "WRONG EXCERPT!" + "y" * 50
+
+    with pytest.raises(ValueError, match="excerpt mismatch"):
+        LLMGraphExtraction.from_flattened_llm(
+            payload,
+            insertion_method="llm",
+            doc_id="doc:bad",
+            content=content,
+        )
+
+
+def test_lean_assoc_requires_content_for_rehydration():
+    payload = _lean_assoc_payload_one_node_one_grounding(
+        excerpt="Proof step one",
+        start_char=10,
+        end_char=24,
+    )
+    with pytest.raises(ValueError, match="content is required"):
+        LLMGraphExtraction.from_flattened_llm(
+            payload,
+            insertion_method="llm",
+            doc_id="doc:no-content",
+            content=None,
+        )
+
+
+def _lean_non_flat_payload_one_node_one_grounding(
+    *,
+    excerpt: str = "Proof step one",
+    page_number: int = 1,
+    start_char: int = 10,
+    end_char: int = 24,
+) -> dict:
+    return {
+        "nodes": [
+            {
+                "local_id": "nn:pythagorean_theorem",
+                "label": "Pythagorean theorem",
+                "type": "entity",
+                "summary": "A theorem relating sides of a right triangle.",
+                "mentions": [
+                    {
+                        "spans": [
+                            {
+                                "page_number": page_number,
+                                "start_char": start_char,
+                                "end_char": end_char,
+                                "excerpt": excerpt,
+                            }
+                        ]
+                    }
+                ],
+            }
+        ],
+        "edges": [],
+    }
+
+
+def test_lean_non_flat_roundtrip_canonical_to_lean_to_canonical():
+    excerpt = "Proof step one"
+    start_char = 10
+    end_char = 24
+    content = make_content_for_offsets(excerpt=excerpt, start_char=start_char, end_char=end_char, total_len=96)
+
+    span = Span.model_validate(
+        {
+            "collection_page_url": "document_collection/doc:lean",
+            "document_page_url": "document/doc:lean",
+            "doc_id": "doc:lean",
+            "insertion_method": "llm",
+            "page_number": 1,
+            "start_char": start_char,
+            "end_char": end_char,
+            "excerpt": excerpt,
+            "context_before": content[max(0, start_char - 20):start_char],
+            "context_after": content[end_char:end_char + 20],
+            "chunk_id": None,
+            "source_cluster_id": None,
+        },
+        context={"insertion_method": "llm"},
+    )
+    mention = make_mention(span)
+    node = make_node(mention)
+    edge = make_edge(mention)
+    graph = LLMGraphExtraction.model_validate({"nodes": [node], "edges": [edge]})
+
+    lean = graph.to_lean()
+    roundtrip = LLMGraphExtraction.from_llm_in_payload(
+        lean,
+        insertion_method="llm",
+        doc_id="doc:lean",
+        content=content,
+    )
+
+    assert len(roundtrip.nodes) == 1
+    assert len(roundtrip.edges) == 1
+    assert roundtrip.nodes[0].domain_id is None
+    assert roundtrip.nodes[0].canonical_entity_id is None
+    assert roundtrip.nodes[0].properties is None
+    span_rt = roundtrip.nodes[0].mentions[0].spans[0]
+    assert span_rt.doc_id == "doc:lean"
+    assert span_rt.collection_page_url == "document_collection/doc:lean"
+    assert span_rt.document_page_url == "document/doc:lean"
+    assert content[span_rt.start_char:span_rt.end_char] == span_rt.excerpt
+
+
+def test_from_normal_llm_accepts_lean_non_flat_shape_with_rehydration():
+    excerpt = "Proof step one"
+    payload = _lean_non_flat_payload_one_node_one_grounding(
+        excerpt=excerpt,
+        start_char=10,
+        end_char=24,
+    )
+    content = make_content_for_offsets(excerpt=excerpt, start_char=10, end_char=24, total_len=80)
+
+    graph = LLMGraphExtraction.from_normal_llm(
+        payload,
+        insertion_method="llm",
+        doc_id="doc:lean",
+        content=content,
+    )
+
+    assert len(graph.nodes) == 1
+    span = graph.nodes[0].mentions[0].spans[0]
+    assert span.doc_id == "doc:lean"
+    assert span.collection_page_url == "document_collection/doc:lean"
+    assert span.document_page_url == "document/doc:lean"
+
+
+def test_dispatcher_from_llm_slice_detects_lean_non_flat():
+    excerpt = "Proof step one"
+    payload = _lean_non_flat_payload_one_node_one_grounding(
+        excerpt=excerpt,
+        start_char=10,
+        end_char=24,
+    )
+    content = make_content_for_offsets(excerpt=excerpt, start_char=10, end_char=24, total_len=80)
+
+    graph = LLMGraphExtraction.FromLLMSlice(
+        payload,
+        insertion_method="llm",
+        doc_id="doc:lean",
+        content=content,
+    )
+
+    assert len(graph.nodes) == 1
+    assert graph.nodes[0].label == "Pythagorean theorem"
+
+
+def test_lean_non_flat_edge_defaults_source_and_target_edge_ids_to_empty_lists():
+    excerpt = "Proof step one"
+    content = make_content_for_offsets(excerpt=excerpt, start_char=10, end_char=24, total_len=96)
+    payload = {
+        "nodes": [
+            {
+                "local_id": "nn:source",
+                "label": "Source",
+                "type": "entity",
+                "summary": "Source node",
+                "mentions": [{"spans": [{"page_number": 1, "start_char": 10, "end_char": 24, "excerpt": excerpt}]}],
+            },
+            {
+                "local_id": "nn:target",
+                "label": "Target",
+                "type": "entity",
+                "summary": "Target node",
+                "mentions": [{"spans": [{"page_number": 1, "start_char": 10, "end_char": 24, "excerpt": excerpt}]}],
+            },
+        ],
+        "edges": [
+            {
+                "local_id": "ne:r",
+                "label": "rel",
+                "type": "relationship",
+                "summary": "hyperedge-compatible relation",
+                "source_ids": ["nn:source"],
+                "target_ids": ["nn:target"],
+                "relation": "relates",
+                "mentions": [{"spans": [{"page_number": 1, "start_char": 10, "end_char": 24, "excerpt": excerpt}]}],
+            }
+        ],
+    }
+
+    graph = LLMGraphExtraction.from_normal_llm(
+        payload,
+        insertion_method="llm",
+        doc_id="doc:lean",
+        content=content,
+    )
+    assert len(graph.edges) == 1
+    assert graph.edges[0].source_edge_ids == []
+    assert graph.edges[0].target_edge_ids == []
+
+
+def test_lean_non_flat_rehydrates_context_before_and_after():
+    payload = _lean_non_flat_payload_one_node_one_grounding(
+        excerpt="Proof step one",
+        start_char=10,
+        end_char=24,
+    )
+    content = "0123456789Proof step oneABCDEFGHIJ"
+
+    graph = LLMGraphExtraction.from_normal_llm(
+        payload,
+        insertion_method="llm",
+        doc_id="doc:ctx",
+        content=content,
+        context_window_chars=4,
+    )
+    span = graph.nodes[0].mentions[0].spans[0]
+    assert span.context_before == "6789"
+    assert span.context_after == "ABCD"
+
+
+def test_lean_non_flat_rehydration_fails_when_excerpt_does_not_match_offsets():
+    payload = _lean_non_flat_payload_one_node_one_grounding(
+        excerpt="Proof step one",
+        start_char=10,
+        end_char=24,
+    )
+    content = "x" * 10 + "WRONG EXCERPT!" + "y" * 50
+
+    with pytest.raises(ValueError, match="excerpt mismatch"):
+        LLMGraphExtraction.from_normal_llm(
+            payload,
+            insertion_method="llm",
+            doc_id="doc:bad",
+            content=content,
+        )
+
+
+def test_lean_non_flat_requires_content_for_rehydration():
+    payload = _lean_non_flat_payload_one_node_one_grounding(
+        excerpt="Proof step one",
+        start_char=10,
+        end_char=24,
+    )
+    with pytest.raises(ValueError, match="content is required"):
+        LLMGraphExtraction.from_normal_llm(
+            payload,
+            insertion_method="llm",
+            doc_id="doc:no-content",
+            content=None,
+        )
+
+
+def test_llm_in_slice_for_non_flat_shape_excludes_full_only_fields():
+    excerpt = "Proof step one"
+    start_char = 10
+    end_char = 24
+    content = make_content_for_offsets(excerpt=excerpt, start_char=start_char, end_char=end_char, total_len=96)
+    span = Span.model_validate(
+        {
+            "collection_page_url": "document_collection/doc:lean",
+            "document_page_url": "document/doc:lean",
+            "doc_id": "doc:lean",
+            "insertion_method": "llm",
+            "page_number": 1,
+            "start_char": start_char,
+            "end_char": end_char,
+            "excerpt": excerpt,
+            "context_before": content[max(0, start_char - 20):start_char],
+            "context_after": content[end_char:end_char + 20],
+            "chunk_id": None,
+            "source_cluster_id": None,
+        },
+        context={"insertion_method": "llm"},
+    )
+    mention = make_mention(span)
+    node = make_node(mention)
+    edge = make_edge(mention)
+    graph = LLMGraphExtraction.model_validate({"nodes": [node], "edges": [edge]})
+
+    llm_in_payload = graph.model_dump(field_mode="llm_in")
+    span_payload = llm_in_payload["nodes"][0]["mentions"][0]["spans"][0]
+    edge_payload = llm_in_payload["edges"][0]
+    node_payload = llm_in_payload["nodes"][0]
+
+    assert set(span_payload.keys()) == {"page_number", "start_char", "end_char", "excerpt"}
+    assert "domain_id" not in node_payload
+    assert "canonical_entity_id" not in node_payload
+    assert "properties" not in node_payload
+    assert "source_edge_ids" not in edge_payload
+    assert "target_edge_ids" not in edge_payload
+    assert "domain_id" not in edge_payload
+    assert "canonical_entity_id" not in edge_payload
+    assert "properties" not in edge_payload
+
+
+def test_llm_in_slice_for_assoc_flat_shape_excludes_full_only_fields():
+    excerpt = "Proof step one"
+    start_char = 10
+    end_char = 24
+    content = make_content_for_offsets(excerpt=excerpt, start_char=start_char, end_char=end_char, total_len=96)
+    span = Span.model_validate(
+        {
+            "collection_page_url": "document_collection/doc:lean",
+            "document_page_url": "document/doc:lean",
+            "doc_id": "doc:lean",
+            "insertion_method": "llm",
+            "page_number": 1,
+            "start_char": start_char,
+            "end_char": end_char,
+            "excerpt": excerpt,
+            "context_before": content[max(0, start_char - 20):start_char],
+            "context_after": content[end_char:end_char + 20],
+            "chunk_id": None,
+            "source_cluster_id": None,
+        },
+        context={"insertion_method": "llm"},
+    )
+    mention = make_mention(span)
+    node = make_node(mention)
+    edge = make_edge(mention)
+    assoc = LLMGraphExtraction.model_validate({"nodes": [node], "edges": [edge]}).to_assoc_flattened(
+        insertion_method="llm"
+    )
+
+    llm_in_payload = assoc.model_dump(field_mode="llm_in")
+    span_payload = llm_in_payload["spans"][0]
+    edge_payload = llm_in_payload["edges"][0]
+    node_payload = llm_in_payload["nodes"][0]
+
+    assert set(span_payload.keys()) == {"id", "page_number", "start_char", "end_char", "excerpt"}
+    assert "domain_id" not in node_payload
+    assert "canonical_entity_id" not in node_payload
+    assert "properties" not in node_payload
+    assert "source_edge_ids" not in edge_payload
+    assert "target_edge_ids" not in edge_payload
+    assert "domain_id" not in edge_payload
+    assert "canonical_entity_id" not in edge_payload
+    assert "properties" not in edge_payload
+
+
+def test_non_flat_roundtrip_via_llm_in_payload():
+    excerpt = "Proof step one"
+    start_char = 10
+    end_char = 24
+    content = make_content_for_offsets(excerpt=excerpt, start_char=start_char, end_char=end_char, total_len=96)
+    span = Span.model_validate(
+        {
+            "collection_page_url": "document_collection/doc:lean",
+            "document_page_url": "document/doc:lean",
+            "doc_id": "doc:lean",
+            "insertion_method": "llm",
+            "page_number": 1,
+            "start_char": start_char,
+            "end_char": end_char,
+            "excerpt": excerpt,
+            "context_before": content[max(0, start_char - 20):start_char],
+            "context_after": content[end_char:end_char + 20],
+            "chunk_id": None,
+            "source_cluster_id": None,
+        },
+        context={"insertion_method": "llm"},
+    )
+    mention = make_mention(span)
+    graph = LLMGraphExtraction.model_validate({"nodes": [make_node(mention)], "edges": [make_edge(mention)]})
+
+    llm_in_payload = graph.model_dump(field_mode="llm_in")
+    roundtrip = LLMGraphExtraction.from_llm_in_payload(
+        llm_in_payload,
+        insertion_method="llm",
+        doc_id="doc:lean",
+        content=content,
+    )
+
+    assert len(roundtrip.nodes) == 1
+    assert len(roundtrip.edges) == 1
+    assert roundtrip.edges[0].source_edge_ids == []
+    assert roundtrip.edges[0].target_edge_ids == []
+    span_rt = roundtrip.nodes[0].mentions[0].spans[0]
+    assert span_rt.doc_id == "doc:lean"
+    assert span_rt.collection_page_url == "document_collection/doc:lean"
+    assert span_rt.document_page_url == "document/doc:lean"
+
+
+def test_flattened_roundtrip_via_llm_in_payload():
+    excerpt = "Proof step one"
+    start_char = 10
+    end_char = 24
+    content = make_content_for_offsets(excerpt=excerpt, start_char=start_char, end_char=end_char, total_len=96)
+    span = Span.model_validate(
+        {
+            "collection_page_url": "document_collection/doc:lean",
+            "document_page_url": "document/doc:lean",
+            "doc_id": "doc:lean",
+            "insertion_method": "llm",
+            "page_number": 1,
+            "start_char": start_char,
+            "end_char": end_char,
+            "excerpt": excerpt,
+            "context_before": content[max(0, start_char - 20):start_char],
+            "context_after": content[end_char:end_char + 20],
+            "chunk_id": None,
+            "source_cluster_id": None,
+        },
+        context={"insertion_method": "llm"},
+    )
+    mention = make_mention(span)
+    assoc = LLMGraphExtraction.model_validate({"nodes": [make_node(mention)], "edges": [make_edge(mention)]}).to_assoc_flattened(
+        insertion_method="llm"
+    )
+
+    llm_in_payload = assoc.model_dump(field_mode="llm_in")
+    roundtrip = AssocFlattenedLLMGraphExtraction.to_canonical_from_llm_in_payload(
+        llm_in_payload,
+        doc_id="doc:lean",
+        content=content,
+        insertion_method="llm",
+    )
+
+    assert len(roundtrip.nodes) == 1
+    assert len(roundtrip.edges) == 1
+    assert roundtrip.edges[0].source_edge_ids == []
+    assert roundtrip.edges[0].target_edge_ids == []
+    span_rt = roundtrip.nodes[0].mentions[0].spans[0]
+    assert span_rt.doc_id == "doc:lean"
+    assert span_rt.collection_page_url == "document_collection/doc:lean"
+    assert span_rt.document_page_url == "document/doc:lean"
