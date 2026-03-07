@@ -229,7 +229,7 @@ class PersistSubsystem(NamespaceProxy):
         return self.exists_node(rid) or self.exists_edge(rid)
 
     def dealias_span(self, *args, **kwargs):
-        return self._e._dealias_span(*args, **kwargs)
+        return self._e.extract.dealias_span(*args, **kwargs)
 
     def select_doc_context(self, doc_id: str, max_nodes: int = 200, max_edges: int = 400):
         nodes = self._e.backend.node_get(where={"doc_id": doc_id}, include=["documents"])

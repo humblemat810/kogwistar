@@ -134,7 +134,7 @@ class IngestSubsystem(NamespaceProxy):
         chain = prompt | self._e.llm.with_structured_output(LLMGraphExtraction, include_raw=True)
         result = chain.invoke(
             {
-                "doc_alias_note": self._e._alias_doc_in_prompt(),
+                "doc_alias_note": self._e.extract.alias_doc_in_prompt(),
                 "document": content,
                 "document_id": str(doc.id),
             }

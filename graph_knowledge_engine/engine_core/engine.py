@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 from types import MethodType
 from contextlib import contextmanager
 import contextvars
@@ -10,7 +10,6 @@ import pathlib
 import uuid
 
 
-from ..id_provider import stable_id
 import time
 from . import models
 
@@ -233,7 +232,7 @@ def _safe_excerpt(s: str | None, max_len: int = 200) -> str | None:
         return None
     s = s.strip()
     if len(s) > max_len:
-        return s[: max_len - 1] + "…"
+        return s[: max_len - 1] + "â€¦"
     return s
 
 def _ref_doc_id(ref) -> str | None:
@@ -276,7 +275,7 @@ def _merge_refs(old_refs_json: str | None, new_refs):
     merged = list(seen.values())
     return merged, json.dumps(merged)
 def _alloc_real_ids(parsed):
-    """Map explicit nn:/ne: → fresh UUIDs; rewrite in-place."""
+    """Map explicit nn:/ne: â†’ fresh UUIDs; rewrite in-place."""
     nn2id, ne2id = {}, {}
     def map_id(x: str) -> str:
         if _is_nn(x): nn2id.setdefault(x, str(uuid.uuid4())); return nn2id[x]
@@ -356,7 +355,7 @@ def _coerce_pages(content_or_pages: Any, *, default_page_start: int = 1) -> List
     Normalize many shapes to a list of {'page_number': int, 'text': str}.
 
     Accepts:
-      - raw string (split by \f or headers → pages)
+      - raw string (split by \f or headers â†’ pages)
       - list[str] (each element is page text)
       - list[dict] with keys {'page'|'page_number', 'text'|'content'}
       - dict with a 'pages' field (any of the above inside)
@@ -423,7 +422,7 @@ def _coerce_pages(content_or_pages: Any, *, default_page_start: int = 1) -> List
                 out.append(row)
         return out
 
-    # unknown shape → empty (caller decides fallback)
+    # unknown shape â†’ empty (caller decides fallback)
     return []
 
 def _normalize_chroma_result(objs: Dict[str, Any]) -> Tuple[List[str], List[str], List[Dict[str, Any]]]:
@@ -943,7 +942,7 @@ class GraphKnowledgeEngine:
         Strategy:
         - Prefer the stored ReferenceSession.excerpt (cheap, already localized).
         - If document text is available, try to locate the excerpt (or node label) in full text
-            and expand with ±window_chars for richer context.
+            and expand with Â±window_chars for richer context.
         - Always return provenance + verification info (doc_id, page spans, urls, etc.).
         """
         # 1) Materialize the object
@@ -1378,181 +1377,47 @@ class GraphKnowledgeEngine:
     def _resolve_llm_ids(self, doc_id: str, parsed: LLMGraphExtraction | PureGraph | GraphExtractionWithIDs, alias_book: AliasBook | None = None) -> None:
         return self.persist.resolve_llm_ids(doc_id, parsed, alias_book=alias_book)
     def _aliasify_for_prompt(self, doc_id: str, ctx_nodes: list[dict], ctx_edges: list[dict]):
-        """Return aliased nodes/edges + prompt strings, using configured ID_STRATEGY."""
-        if ID_STRATEGY == "base62":
-            # Deterministic short IDs, no legend needed
-            aliased_nodes = []
-            for n in ctx_nodes:
-                aliased_nodes.append({
-                    "id": f"N~{uuid_to_base62(n['id'])}",
-                    "label": n["label"], "type": n["type"], "summary": n.get("summary", "")
-                })
-            aliased_edges = []
-            for e in ctx_edges:
-                aliased_edges.append({
-                    "id": f"E~{uuid_to_base62(e['id'])}",
-                    "relation": e["relation"],
-                    "source_ids": [f"N~{uuid_to_base62(s)}" for s in e.get("source_ids", [])],
-                    "target_ids": [f"N~{uuid_to_base62(t)}" for t in e.get("target_ids", [])],
-                })
-            return aliased_nodes, aliased_edges, "Node aliases: (implicit base62)", "Edge aliases: (implicit base62)"
-
-        # session_alias (cache-friendly with delta legend)
-        book = self._alias_book(doc_id)
-        node_ids = [n["id"] for n in ctx_nodes]
-        edge_ids = [e["id"] for e in ctx_edges]
-        # Only list *new* aliases to keep prompts stable
-        new_nodes, new_edges = book.legend_delta(node_ids, edge_ids)
-
-        def a_node(x): return book.real_to_alias[x]
-        def a_edge(x): return book.real_to_alias[x]
-
-        aliased_nodes = [{"id": a_node(n["id"]), "label": n["label"], "type": n["type"], "summary": n.get("summary", "")} for n in ctx_nodes]
-        aliased_edges = [{"id": a_edge(e["id"]), "relation": e["relation"],
-                        "source_ids": [a_node(s) for s in e.get("source_ids", [])],
-                        "target_ids": [a_node(t) for t in e.get("target_ids", [])]} for e in ctx_edges]
-
-        # Build tiny delta legend strings (only new aliases)
-        if new_nodes:
-            lines = [f"- {book.real_to_alias[rid]}: {next(n for n in ctx_nodes if n['id']==rid)['label']}" for rid, _ in new_nodes]
-            nodes_str = "New node aliases:\n" + "\n".join(lines)
-        else:
-            nodes_str = "New node aliases: (none)"
-
-        if new_edges:
-            lines = []
-            for rid, _ in new_edges:
-                e = next(e for e in ctx_edges if e["id"] == rid)
-                lines.append(f"- {book.real_to_alias[rid]}: {e['relation']}")
-            edges_str = "New edge aliases:\n" + "\n".join(lines)
-        else:
-            edges_str = "New edge aliases: (none)"
-
-        return aliased_nodes, aliased_edges, nodes_str, edges_str
+        return self.extract.aliasify_for_prompt(doc_id, ctx_nodes, ctx_edges)
 
     def _resolve_extraction_schema_mode(
         self,
         extraction_schema_mode: ExtractionSchemaMode | None = None,
     ) -> ResolvedExtractionSchemaMode:
-        requested = extraction_schema_mode or self.extraction_schema_mode
-        allowed: set[str] = {"auto", "full", "lean", "flattened_lean", "flattened_full"}
-        if requested not in allowed:
-            raise ValueError(
-                f"Unsupported extraction_schema_mode={requested!r}. "
-                f"Expected one of {sorted(allowed)}"
-            )
-        if requested == "auto":
-            if isinstance(self.llm, ChatGoogleGenerativeAI):
-                return "lean"
-            return "full"
-        return cast(ResolvedExtractionSchemaMode, requested)
+        return self.extract.resolve_extraction_schema_mode(extraction_schema_mode)
 
     def _schema_prompt_rules(self, mode: ResolvedExtractionSchemaMode) -> str:
-        common = (
-            "Rules:\n"
-            "1) When referring to existing items, use ONLY the given aliases.\n"
-            "2) If creating new items, omit their id.\n"
-            "3) Do not invent aliases; use the provided ones only.\n"
-            "4) Do NOT invent real UUIDs.\n"
-        )
-        if mode in {"lean", "flattened_lean"}:
-            return (
-                common
-                + "5) Each node/edge MUST include at least one grounding span.\n"
-                + "6) Every span MUST include page_number, start_char, end_char, and excerpt.\n"
-                + "7) excerpt MUST exactly equal document[start_char:end_char].\n"
-            )
-        return (
-            common
-            + "5) Each node/edge MUST include at least one grounding span.\n"
-            + "6) Every span MUST include collection_page_url, document_page_url, doc_id, page_number, start_char, end_char, excerpt, context_before, context_after.\n"
-            + f"7) Use '{_DOC_ALIAS}' as doc_id in output spans.\n"
-            + f"8) Use document_page_url='document/{_DOC_ALIAS}' and collection_page_url='document_collection/{_DOC_ALIAS}'.\n"
-            + "9) excerpt MUST exactly equal document[start_char:end_char].\n"
-        )
+        return self.extract.schema_prompt_rules(mode)
 
     def _structured_schema_for_mode(self, mode: ResolvedExtractionSchemaMode):
-        if mode == "full":
-            return LLMGraphExtraction["llm"], False
-        if mode == "lean":
-            return LLMGraphExtraction["llm_in"], False
-        if mode == "flattened_lean":
-            return AssocFlattenedLLMGraphExtraction["llm_in"], True
-        if mode == "flattened_full":
-            return AssocFlattenedLLMGraphExtraction["llm"], True
-        raise ValueError(f"Unsupported resolved extraction schema mode: {mode!r}")
+        return self.extract.structured_schema_for_mode(mode)
 
     def _build_structured_output_for_mode(self, mode: ResolvedExtractionSchemaMode):
-        schema, prefer_json_schema = self._structured_schema_for_mode(mode)
-        if prefer_json_schema:
-            try:
-                return self.llm.with_structured_output(
-                    schema,
-                    method="json_schema",
-                    include_raw=True,
-                )
-            except TypeError:
-                pass
-        return self.llm.with_structured_output(schema, include_raw=True)
+        return self.extract.build_structured_output_for_mode(mode)
 
     @staticmethod
     def _offset_repair_threshold(excerpt_len: int) -> float:
-        if excerpt_len <= 8:
-            return 95.0
-        if excerpt_len <= 20:
-            return 92.0
-        if excerpt_len <= 60:
-            return 88.0
-        if excerpt_len <= 120:
-            return 85.0
-        return 82.0
+        return ExtractSubsystem._offset_repair_threshold(excerpt_len)
 
     @staticmethod
     def _clip_offset_excerpt(text: str, *, max_chars: int = 80) -> str:
-        if len(text) <= max_chars:
-            return text
-        head = text[: max_chars // 2]
-        tail = text[-(max_chars // 2) :]
-        return f"{head}...{tail}"
+        return ExtractSubsystem._clip_offset_excerpt(text, max_chars=max_chars)
 
     @staticmethod
     def _find_all_exact_occurrences(content: str, excerpt: str) -> list[int]:
-        if not excerpt:
-            return []
-        out: list[int] = []
-        idx = content.find(excerpt)
-        while idx != -1:
-            out.append(idx)
-            idx = content.find(excerpt, idx + 1)
-        return out
+        return ExtractSubsystem._find_all_exact_occurrences(content, excerpt)
 
     @staticmethod
     def _coerce_offset_score(raw_score: Any) -> float:
-        if not isinstance(raw_score, (int, float)):
-            return 0.0
-        score = float(raw_score)
-        if not math.isfinite(score):
-            return 0.0
-        if 0.0 <= score <= 1.0:
-            score = score * 100.0
-        return max(0.0, score)
+        return ExtractSubsystem._coerce_offset_score(raw_score)
 
     def _default_offset_repair_scorer(self, candidate: str, excerpt: str) -> float:
-        if not excerpt:
-            return 0.0
-        if _HAS_RAPIDFUZZ:
-            return float(fuzz.partial_ratio(candidate, excerpt))
-        return float(difflib.SequenceMatcher(None, candidate, excerpt).ratio() * 100.0)
+        return self.extract.default_offset_repair_scorer(candidate, excerpt)
 
     def _resolve_offset_repair_scorer(
         self,
         override: OffsetRepairScorer | None,
     ) -> OffsetRepairScorer:
-        if override is not None:
-            return override
-        if self.offset_repair_scorer is not None:
-            return self.offset_repair_scorer
-        return self._default_offset_repair_scorer
+        return self.extract.resolve_offset_repair_scorer(override)
 
     def _iter_lean_spans_for_mode(
         self,
@@ -1560,35 +1425,7 @@ class GraphKnowledgeEngine:
         mode: ResolvedExtractionSchemaMode,
         payload: dict[str, Any],
     ) -> list[tuple[str, dict[str, Any]]]:
-        rows: list[tuple[str, dict[str, Any]]] = []
-        if mode == "flattened_lean":
-            for i_sp, span_row in enumerate(payload.get("spans") or []):
-                if isinstance(span_row, dict):
-                    rows.append((f"spans[{i_sp}]", span_row))
-            return rows
-
-        if mode != "lean":
-            return rows
-
-        for section in ("nodes", "edges"):
-            for i_entry, entry in enumerate(payload.get(section) or []):
-                if not isinstance(entry, dict):
-                    continue
-                mentions = entry.get("mentions")
-                if mentions is None:
-                    mentions = entry.get("groundings")
-                if not isinstance(mentions, list):
-                    continue
-                for i_g, grounding in enumerate(mentions):
-                    if not isinstance(grounding, dict):
-                        continue
-                    spans = grounding.get("spans")
-                    if not isinstance(spans, list):
-                        continue
-                    for i_sp, span_row in enumerate(spans):
-                        if isinstance(span_row, dict):
-                            rows.append((f"{section}[{i_entry}].mentions[{i_g}].spans[{i_sp}]", span_row))
-        return rows
+        return self.extract._iter_lean_spans_for_mode(mode=mode, payload=payload)
 
     def _build_offset_failure_detail(
         self,
@@ -1601,15 +1438,14 @@ class GraphKnowledgeEngine:
         exact_hits: int,
         best_fuzzy_score: float | None,
     ) -> str:
-        hinted_slice = "<out-of-bounds>"
-        if 0 <= start_char < end_char <= len(content):
-            hinted_slice = content[start_char:end_char]
-        fuzzy_text = "n/a" if best_fuzzy_score is None else f"{best_fuzzy_score:.2f}"
-        return (
-            f"{path}: start={start_char}, end={end_char}, "
-            f"excerpt='{self._clip_offset_excerpt(excerpt)}', "
-            f"hinted_slice='{self._clip_offset_excerpt(hinted_slice)}', "
-            f"exact_hits={exact_hits}, best_fuzzy={fuzzy_text}"
+        return self.extract._build_offset_failure_detail(
+            path=path,
+            content=content,
+            excerpt=excerpt,
+            start_char=start_char,
+            end_char=end_char,
+            exact_hits=exact_hits,
+            best_fuzzy_score=best_fuzzy_score,
         )
 
     def _find_best_fuzzy_span(
@@ -1620,57 +1456,12 @@ class GraphKnowledgeEngine:
         origin_start: int,
         scorer: OffsetRepairScorer,
     ) -> tuple[int, int, float] | None:
-        if not excerpt:
-            return None
-        excerpt_len = len(excerpt)
-        if excerpt_len == 0:
-            return None
-
-        scan_band = max(2000, excerpt_len * 50)
-        lo = max(0, origin_start - scan_band)
-        hi = min(len(content), origin_start + scan_band)
-        region = content[lo:hi]
-        if not region:
-            return None
-
-        deltas = [0]
-        if excerpt_len >= 20:
-            delta_5 = max(1, excerpt_len // 20)
-            deltas.extend([delta_5, -delta_5])
-        if excerpt_len >= 60:
-            delta_10 = max(2, excerpt_len // 10)
-            deltas.extend([delta_10, -delta_10])
-
-        step = 1 if excerpt_len <= 40 else max(2, excerpt_len // 25)
-        threshold = self._offset_repair_threshold(excerpt_len)
-        best: tuple[int, int, float] | None = None
-
-        for delta in deltas:
-            width = excerpt_len + delta
-            if width <= 0 or width > len(region):
-                continue
-            max_i = len(region) - width
-            for i in range(0, max_i + 1, step):
-                cand = region[i:i + width]
-                score = self._coerce_offset_score(scorer(cand, excerpt))
-                if score < threshold:
-                    continue
-                start = lo + i
-                end = start + width
-                if best is None:
-                    best = (start, end, score)
-                    continue
-                prev_start, prev_end, prev_score = best
-                prev_dist = abs(prev_start - origin_start)
-                cur_dist = abs(start - origin_start)
-                prev_len = prev_end - prev_start
-                cur_len = end - start
-                if (score > prev_score) or (
-                    score == prev_score
-                    and (cur_dist < prev_dist or (cur_dist == prev_dist and cur_len < prev_len))
-                ):
-                    best = (start, end, score)
-        return best
+        return self.extract._find_best_fuzzy_span(
+            content=content,
+            excerpt=excerpt,
+            origin_start=origin_start,
+            scorer=scorer,
+        )
 
     def _repair_lean_offsets_for_mode(
         self,
@@ -1681,76 +1472,13 @@ class GraphKnowledgeEngine:
         policy: OffsetMismatchPolicy,
         offset_repair_scorer: OffsetRepairScorer | None,
     ) -> dict[str, Any]:
-        if policy not in {"strict", "exact", "exact_fuzzy"}:
-            raise ValueError(
-                f"Unsupported offset_mismatch_policy={policy!r}. "
-                "Expected one of ['strict', 'exact', 'exact_fuzzy']"
-            )
-        if mode not in {"lean", "flattened_lean"}:
-            return payload
-
-        spans = self._iter_lean_spans_for_mode(mode=mode, payload=payload)
-        if not spans:
-            return payload
-
-        scorer = self._resolve_offset_repair_scorer(offset_repair_scorer)
-        failures: list[str] = []
-
-        for path, span_row in spans:
-            excerpt = str(span_row.get("excerpt") or "")
-            start_char = span_row.get("start_char")
-            end_char = span_row.get("end_char")
-            if not isinstance(start_char, int) or not isinstance(end_char, int):
-                failures.append(
-                    f"{path}: start_char/end_char must be integers, got "
-                    f"{type(start_char).__name__}/{type(end_char).__name__}"
-                )
-                continue
-
-            if 0 <= start_char < end_char <= len(content) and content[start_char:end_char] == excerpt:
-                continue
-
-            exact_matches = self._find_all_exact_occurrences(content, excerpt)
-            if policy in {"exact", "exact_fuzzy"} and exact_matches:
-                best_start = min(exact_matches, key=lambda s: (abs(s - start_char), s))
-                span_row["start_char"] = best_start
-                span_row["end_char"] = best_start + len(excerpt)
-                continue
-
-            best_fuzzy: tuple[int, int, float] | None = None
-            if policy == "exact_fuzzy":
-                best_fuzzy = self._find_best_fuzzy_span(
-                    content=content,
-                    excerpt=excerpt,
-                    origin_start=max(0, start_char),
-                    scorer=scorer,
-                )
-                if best_fuzzy is not None:
-                    best_start, best_end, _score = best_fuzzy
-                    span_row["start_char"] = best_start
-                    span_row["end_char"] = best_end
-                    span_row["excerpt"] = content[best_start:best_end]
-                    continue
-
-            failures.append(
-                self._build_offset_failure_detail(
-                    path=path,
-                    content=content,
-                    excerpt=excerpt,
-                    start_char=start_char,
-                    end_char=end_char,
-                    exact_hits=len(exact_matches),
-                    best_fuzzy_score=best_fuzzy[2] if best_fuzzy is not None else None,
-                )
-            )
-
-        if failures:
-            sample = " | ".join(failures[:3])
-            raise ValueError(
-                f"Offset repair failed mode={mode} policy={policy} "
-                f"failed_spans={len(failures)} total_spans={len(spans)} :: {sample}"
-            )
-        return payload
+        return self.extract.repair_lean_offsets_for_mode(
+            mode=mode,
+            payload=payload,
+            content=content,
+            policy=policy,
+            offset_repair_scorer=offset_repair_scorer,
+        )
 
     def _to_canonical_extraction_for_mode(
         self,
@@ -1761,48 +1489,13 @@ class GraphKnowledgeEngine:
         offset_mismatch_policy: OffsetMismatchPolicy = "exact_fuzzy",
         offset_repair_scorer: OffsetRepairScorer | None = None,
     ) -> LLMGraphExtraction:
-        if mode in {"lean", "flattened_lean"}:
-            payload = parsed.model_dump() if isinstance(parsed, BaseModel) else deepcopy(parsed)
-            if not isinstance(payload, dict):
-                raise ValueError(
-                    f"Expected parsed payload as dict/BaseModel for mode={mode}, got {type(payload).__name__}"
-                )
-            parsed = self._repair_lean_offsets_for_mode(
-                mode=mode,
-                payload=payload,
-                content=content,
-                policy=offset_mismatch_policy,
-                offset_repair_scorer=offset_repair_scorer,
-            )
-        if mode == "full":
-            return LLMGraphExtraction.from_normal_llm(
-                parsed,
-                insertion_method="llm",
-                doc_id=_DOC_ALIAS,
-                content=content,
-            )
-        if mode == "lean":
-            return LLMGraphExtraction.from_llm_in_payload(
-                parsed,
-                insertion_method="llm",
-                doc_id=_DOC_ALIAS,
-                content=content,
-            )
-        if mode == "flattened_lean":
-            return AssocFlattenedLLMGraphExtraction.to_canonical_from_llm_in_payload(
-                parsed,
-                doc_id=_DOC_ALIAS,
-                content=content,
-                insertion_method="llm",
-            )
-        if mode == "flattened_full":
-            assoc_payload = parsed.model_dump() if isinstance(parsed, BaseModel) else parsed
-            assoc = AssocFlattenedLLMGraphExtraction.model_validate(
-                assoc_payload,
-                context={"insertion_method": "llm"},
-            )
-            return assoc.to_canonical(insertion_method="llm")
-        raise ValueError(f"Unsupported resolved extraction schema mode: {mode!r}")
+        return self.extract.to_canonical_extraction_for_mode(
+            mode=mode,
+            parsed=parsed,
+            content=content,
+            offset_mismatch_policy=offset_mismatch_policy,
+            offset_repair_scorer=offset_repair_scorer,
+        )
 
     def _extract_graph_with_llm_aliases(
         self,
@@ -1815,106 +1508,24 @@ class GraphKnowledgeEngine:
         offset_mismatch_policy: OffsetMismatchPolicy = "exact_fuzzy",
         offset_repair_scorer: OffsetRepairScorer | None = None,
     ):
-        resolved_mode = self._resolve_extraction_schema_mode(extraction_schema_mode)
-        prompt_rules = self._schema_prompt_rules(resolved_mode)
-        if instruction_for_node_edge_contents_parsing_inclusion is None:
-            instruction_for_node_edge_contents_parsing_inclusion = ("Nodes should include at least: Parties, Obligations, Rights, Deliverables, Payment Terms, Termination Conditions, Confidentiality Clauses, Governing Law, Dates, and Penalties.  "
-            "Edges should capture: (Party → Obligation), (Obligation → Condition), (Party → Right), (Obligation → Deliverable), (Clause → Governing Law).  ")
-        template_messages = [
-            ("system",
-            "You are an expert knowledge graph extractor. "
-            "You are an information extraction system that converts legal contracts into a knowledge graph.  "
-            "Your task: extract ALL entities (nodes) and relationships (edges) from the text. "
-            f"{instruction_for_node_edge_contents_parsing_inclusion}"
-            "Allow multiple edge between the same nodes. Allow hypergraph. Allow edge pointing to other edge. "
-            "Allow same label but different content. "
-            "Breakdown A is obligated to do work for B as A -> B : relation = do work for 100 dollar. You can create another edge. "
-            "Build relationship triplets of SVO. "
-            "Also pay attention to monetary terms, numbers. Be aware if they are definite, indefitite. Once off or recurrent. Keep a sharp eye one numbers. "
-            "For any signatories with blank to sign, or signed. They are equally important to note."
-            "Extract all nodes and edges from the following contract section.  "
-            "Be exhaustive and granular:"
-            "- Every obligation, right, condition, exception, penalty, deadline, and reference must become a separate node.  "
-            "- Each clause and sub-clause should yield at least one node.  "
-            "- Do not merge or summarize multiple obligations.  "
-            "- Aim for at least 20 nodes per section, if possible."
-            "- Important!: Span.excerpt MUST agree with corresponding zero-indexed start to end index. Direct identical text and no paraphrased is allowed. "
-            "e.g. if snippet world from 'hello world!', word is 6 to 11 index. content[6:11] => 'world' in python indexing sense"
-            "Extract entities and terms as nodes, relationships edges in a hypergraph.\n\n"
-            f"{prompt_rules}"),
-            ("human",
-            "Aliases (delta for this turn):\n{alias_nodes}\n\n{alias_edges}\n\n"
-            "Document:\n```{document}```\n\n"
-            "Return only the structured JSON for the schema.")
-        ]
-        to_append = []
-        if last_iteration_result and last_iteration_result.get("error"):
-            last_parsed: BaseModel = last_iteration_result.get('parsed') # type: ignore
-            last_error :str = str(last_iteration_result.get("error"))
-            to_append.append(
-                ("system", 
-                    f"last answer has error \n\n Last attempt: ```{last_parsed.model_dump()}```\n\n"
-                    f"error from last attempt: ```{last_error}```"
-                 )
-            )
-            template_messages.extend(to_append)
-        prompt = ChatPromptTemplate.from_messages(template_messages)
-        try:
-            structured = self._build_structured_output_for_mode(resolved_mode)
-            chain = prompt | structured
-            #self.llm.with_structured_output(LLMGraphExtraction['llm'], 
-            #                                                include_raw=True)
-            from langchain_core.runnables import Runnable
-            steps : list[Runnable] = chain.steps # type: ignore   langchain internal step is not exposed
-            realised_prmopt = steps[0].invoke({"alias_nodes": alias_nodes_str, "alias_edges": alias_edges_str, "document": content, "_DOC_ALIAS" : _DOC_ALIAS})
-            llm_raw = steps[1].invoke(realised_prmopt)
-            result = steps[2].invoke(llm_raw)
-            if isinstance(result, dict) and result.get("parsed") is not None:
-                result["parsed"] = self._to_canonical_extraction_for_mode(
-                    mode=resolved_mode,
-                    parsed=result["parsed"],
-                    content=content,
-                    offset_mismatch_policy=offset_mismatch_policy,
-                    offset_repair_scorer=offset_repair_scorer,
-                )
-        except Exception as e:
-            raise e
-        return result.get("raw"), result.get("parsed"), result.get("parsing_error")
-    def _de_alias_ids_in_result(self, doc_id: str, parsed: LLMGraphExtraction) -> LLMGraphExtraction:
-        """Map aliases back to real UUIDs according to strategy."""
-        if ID_STRATEGY == "base62":
-            def r(s: str): # type: ignore
-                if not s:
-                    raise ValueError("s cannot be None or Falsy")
-                    return s
-                if s.startswith("N~"):
-                    return base62_to_uuid(s[2:])
-                if s.startswith("E~"):
-                    return base62_to_uuid(s[2:])
-                return s
-        else:
-            book = self._alias_book(doc_id)
-            def r(s: str):
-                if not s:
-                    raise ValueError("s cannot be None or Falsy")
-                    return s
-                return book.alias_to_real.get(s, s)
+        return self.extract.extract_graph_with_llm_aliases(
+            content=content,
+            alias_nodes_str=alias_nodes_str,
+            alias_edges_str=alias_edges_str,
+            instruction_for_node_edge_contents_parsing_inclusion=instruction_for_node_edge_contents_parsing_inclusion,
+            last_iteration_result=last_iteration_result,
+            extraction_schema_mode=extraction_schema_mode,
+            offset_mismatch_policy=offset_mismatch_policy,
+            offset_repair_scorer=offset_repair_scorer,
+        )
 
-        # mutate copy
-        for n in parsed.nodes:
-            if n.id: 
-                n.id = r(n.id)
-        for e in parsed.edges:
-            if e.id: 
-                e.id = r(e.id)
-            e.source_ids = [r(x) for x in e.source_ids]
-            e.target_ids = [r(x) for x in e.target_ids]
-        return parsed
+    def _de_alias_ids_in_result(self, doc_id: str, parsed: LLMGraphExtraction) -> LLMGraphExtraction:
+        return self.extract.de_alias_ids_in_result(doc_id, parsed)
 
     def _alias_legend_strings(self, aliased_nodes, aliased_edges):
         """Tiny text blocks for the prompt, to guide the model to use aliases only."""
         if aliased_nodes:
-            node_lines = [f"- {n['id']}: {n['label']} [{n['type']}] — {n.get('summary','')}" for n in aliased_nodes]
+            node_lines = [f"- {n['id']}: {n['label']} [{n['type']}] â€” {n.get('summary','')}" for n in aliased_nodes]
             nodes_str = "Node aliases:\n" + "\n".join(node_lines)
         else:
             nodes_str = "Node aliases: (none)"
@@ -1922,7 +1533,7 @@ class GraphKnowledgeEngine:
         if aliased_edges:
             def fmt_ids(xs): return ", ".join(xs)
             edge_lines = [
-                f"- {e['id']}: {e['relation']} — src[{fmt_ids(e.get('source_ids', []))}] → tgt[{fmt_ids(e.get('target_ids', []))}]"
+                f"- {e['id']}: {e['relation']} â€” src[{fmt_ids(e.get('source_ids', []))}] â†’ tgt[{fmt_ids(e.get('target_ids', []))}]"
                 for e in aliased_edges
             ]
             edges_str = "Edge aliases:\n" + "\n".join(edge_lines)
@@ -1935,68 +1546,8 @@ class GraphKnowledgeEngine:
             self._alias_books[key] = AliasBook()
         return self._alias_books[key]
     
-    @classmethod
-    def _coerce_pages(cls, content_or_pages):# -> list[tuple[int, str]] | list[Any] | Any:
-        """
-        Normalize many shapes into a list[(page_no:int, text:str)].
-
-        Accepts:
-        - str (raw text)                      ->  [(1, text)] or split on \f if present
-        - str (JSON)                          ->  tries json.loads:
-                * ["page text", ...]
-                * [{"page": 3, "text": "..."}, ...]
-                * {"1": "text", "2": "text"} (mapping of page->text)
-        - list[str]                           ->  [(1, item1), (2, item2), ...]
-        - list[tuple[int, str]] or list[list] ->  as-is (page, text)
-        - dict[int|str, str]                  ->  sorted by page key
-        """
-        import json, re
-
-        # (A) Python containers first
-        if isinstance(content_or_pages, dict):
-            items = sorted(((int(k), v) for k, v in content_or_pages.items()), key=lambda x: x[0])
-            return [(p, str(t or "")) for p, t in items]
-
-        if isinstance(content_or_pages, (list, tuple)):
-            if not content_or_pages:
-                return []
-            first: list = content_or_pages[0]
-            # list of (page, text)
-            if isinstance(first, (list, tuple)) and len(first) == 2:
-                return [(int(p), str(t or "")) for p, t in content_or_pages]
-            # list of dicts with page/text
-            if isinstance(first, dict) and "text" in first:
-                out = []
-                for i, item in enumerate(content_or_pages, start=1):
-                    p = int(item.get("page", i))
-                    out.append((p, str(item.get("text", '\n'.join(i['text'] for i in item.get("OCR_text_clusters", ""))) or "")))
-                return out
-            # list of dict of plain page texts
-            if 'pdf_page_num' in first[0]:
-                try:
-                    return [(t['pdf_page_num'], str(t or "")) for t in content_or_pages]
-                except KeyError:
-                    raise Exception("Value inconsistency, each page is a dict, some have 'pdf_page_num' but some do not")
-            # fallback, each page simply a tuple of page number with stringified iter item if it is other iterables
-            return [(i, str(t or "")) for i, t in enumerate(content_or_pages, start=1)]
-
-        # (B) Strings: try JSON first
-        if isinstance(content_or_pages, str):
-            s = content_or_pages.strip()
-            if s.startswith("{") or s.startswith("["):
-                try:
-                    loaded = json.loads(s)
-                    return cls._coerce_pages(loaded)
-                except Exception:
-                    pass
-            # raw text with optional form-feed page breaks
-            if "\f" in s:
-                parts = s.split("\f")
-                return [(i, p) for i, p in enumerate(parts, start=1)]
-            return [(1, s)]
-
-        # fallback: one page
-        return [(1, str(content_or_pages))]
+    def _coerce_pages(self, content_or_pages):# -> list[tuple[int, str]] | list[Any] | Any:
+        return self.extract.coerce_pages(content_or_pages)
     # ----------------------------
     # Init
     # ----------------------------
@@ -2260,44 +1811,15 @@ class GraphKnowledgeEngine:
     def _index_node_refs(self, node: Node)-> list[str]:
         return self.write.index_node_refs(node)
     def _alias_doc_in_prompt(self) -> str:
-        # A tiny legend we show to the LLM so it knows the alias to use
-        return f"Use '{_DOC_ALIAS}' whenever you need to reference the current document in ReferenceSession fields."
+        return self.extract.alias_doc_in_prompt()
     def _delias_one_span(self, span: Span, real_doc_id: str) -> Span:
-        span = span.model_copy(deep=True)
-        # swap token in URLs
-        if span.document_page_url and _DOC_ALIAS in span.document_page_url:
-            span.document_page_url = span.document_page_url.replace(_DOC_ALIAS, real_doc_id)
-        if span.collection_page_url and _DOC_ALIAS in span.collection_page_url:
-            span.collection_page_url = span.collection_page_url.replace(_DOC_ALIAS, real_doc_id)
-        # align explicit doc_id if model carries it
-        if getattr(span, "doc_id", None) == _DOC_ALIAS or getattr(span, "doc_id", None) is None:
-            span.doc_id = real_doc_id
-        # basic span normalization (keeps your existing behavior)
-        if getattr(span, "page", None) is not None:
-            # if you split start/end page fields, keep your existing normalization here
-            pass
-        if span.start_char is not None and span.end_char is not None and span.end_char < span.start_char:
-            span.end_char = span.start_char
-        return span
+        return self.extract.delias_one_span(span, real_doc_id)
     def _dealias_one_grounding(self, grounding: Grounding, real_doc_id: str) -> Grounding:
-        out : list[Span]= []
-        for span in grounding.spans:
-            out.append(self._delias_one_span(span, real_doc_id ))
-        GroundingOrGroundingSlice: Type = type(grounding) # more readable local variable for readability
-        return GroundingOrGroundingSlice.model_validate({"spans": out})
+        return self.extract.dealias_one_grounding(grounding, real_doc_id)
 
     def _dealias_span(self, mentions: List[Grounding] | None, real_doc_id: str
                       ):
-        if not mentions or len(mentions) == 0:
-            # produce a default reference using the real doc id
-            raise ValueError("No reference to dealias")
-            # return [Span(
-            #     collection_page_url=f"document_collection/{real_doc_id}",
-            #     document_page_url=f"document/{real_doc_id}",
-            #     excerpt=fallback_snip or None,
-            #     doc_id=real_doc_id,
-            # )]
-        return [self._dealias_one_grounding(r, real_doc_id) for r in mentions]
+        return self.extract.dealias_span(mentions, real_doc_id)
     
     
     def _target_from_node(self, n: "Node") -> "AdjudicationTarget":
@@ -2312,22 +1834,7 @@ class GraphKnowledgeEngine:
         return set(got['ids']).union(set(document_id))
         
     def _fetch_document_text(self, document_id: str) -> str:
-        got = self.backend.document_get(ids=[document_id], include=["documents"])
-        if got and got.get("documents"):
-            docs = got.get("documents")
-            if docs:
-                return docs[0] or ""
-            else:
-                raise Exception("document lost")
-        # fallback: try lookup by where
-        got = self.backend.document_get(where={"doc_id": document_id}, include=["documents"])
-        if got and got.get("documents"):
-            docs = got.get("documents")
-            if docs:
-                return docs[0] or ""
-            else:
-                raise Exception("document lost")
-        return ""
+        return self.extract.fetch_document_text(document_id)
 
     @staticmethod
     def _cosine(u: List[float], v: List[float]) -> Optional[float]:
@@ -2641,77 +2148,27 @@ class GraphKnowledgeEngine:
             mode=mode,
             assign_real_id_in_place=assign_real_id_in_place,
         )
-    def extract_graph_with_llm(self, *, content: str, doc_type: str, alias_nodes_str = "[Empty]" , alias_edges_str = "[Empty]", with_parsed = True, 
+    def extract_graph_with_llm(self, *, content: str, doc_type: str, alias_nodes_str = "[Empty]" , alias_edges_str = "[Empty]", with_parsed = True,
                                instruction_for_node_edge_contents_parsing_inclusion: None| str = None, validate = True, autofix : bool | str= True,
                                last_iteration_result = None,
                                extraction_schema_mode: ExtractionSchemaMode | None = None,
                                offset_mismatch_policy: OffsetMismatchPolicy = "exact_fuzzy",
                                offset_repair_scorer: OffsetRepairScorer | None = None):
-        """Pure: run LLM + parse + alias resolution. No writes.
-        last_iteration_result dict with 3 fields of 'raw' 'parsed' and 'error'. Falsy on initialization
-        """
-        # (reuse your existing prompt + alias path)
-        raw, parsed, error = self._extract_graph_with_llm_aliases(
-            content, alias_nodes_str=alias_nodes_str, alias_edges_str=alias_edges_str,
-            instruction_for_node_edge_contents_parsing_inclusion = instruction_for_node_edge_contents_parsing_inclusion,
-            last_iteration_result = last_iteration_result,
+        return self.extract.extract_graph_with_llm(
+            content=content,
+            doc_type=doc_type,
+            alias_nodes_str=alias_nodes_str,
+            alias_edges_str=alias_edges_str,
+            with_parsed=with_parsed,
+            instruction_for_node_edge_contents_parsing_inclusion=instruction_for_node_edge_contents_parsing_inclusion,
+            validate=validate,
+            autofix=autofix,
+            last_iteration_result=last_iteration_result,
             extraction_schema_mode=extraction_schema_mode,
             offset_mismatch_policy=offset_mismatch_policy,
             offset_repair_scorer=offset_repair_scorer,
         )
-        if parsed is None:
-            raise ValueError("parsed is None")
-        if error:
-            raise ValueError(error)
-        validation_error_group = []
-        if validate:
-            # prevent the case LLM hallucinated real UUID in the response that is not any existing node, internal structure intact invariant
-            
-            temp_alias_book = AliasBook()
-            parsed_copy = parsed.model_copy(deep= True)
-            # with open (os.path.join("manual_cache", "temp.json"), 'w') as f:
-            #     f.write(parsed_copy.model_dump_json())
-            # with open (os.path.join("manual_cache", "temp.json"), 'r') as f:
-            #     import json
-            #     data = json.load(f)
-            #     parsed_copy.model_validate(data)
-            self._preflight_validate(parsed_copy, "", alias_book = temp_alias_book)
-            
-            if not (set([j for i in parsed_copy.edges for j in i.target_ids]).union(
-                set([j for i in parsed_copy.edges for j in i.source_ids])) <= set([i.id for i in parsed_copy.edges]).union(
-                    set([i.id for i in parsed_copy.nodes]))):
-                raise Exception("LLM error, new uuid hallucinated")
-            span_validator: BaseDocValidator = self.get_span_validator_of_doc_type(doc_type = doc_type)
-            
-            dummy_doc = Document(content=content, id = str(stable_id(f"doc::{doc_type}", content)), 
-                   type=doc_type, metadata={}, domain_id = None, processed = False, embeddings = None, source_map = None)
-            # validation_error_group = []
-            pre_parse_nodes_or_edges: list [Node | Edge] = parsed.nodes + parsed.edges
-            for i, node_or_edge in enumerate(parsed_copy.nodes + parsed_copy.edges):
-                node_or_edge : Node | Edge
-                for g in node_or_edge.mentions:
-                    for sp in g.spans:
-                        result = span_validator.validate_span(doc = dummy_doc, span = sp )
-                        if result['correctness'] == True:
-                            pass
-                        else:
-                            if autofix:
-                                if autofix == True:
-                                    fix_result = span_validator.fix_span(doc = dummy_doc, span = sp, nodes_edges = parsed_copy.nodes + parsed_copy.edges)
-                                    result = fix_result
-                                else:
-                                    raise NotImplementedError("string method options not iplemented")
-                            if result['correctness'] == False:
-                                pre_parsed_node_or_edge: Node | Edge = pre_parse_nodes_or_edges[i]
-                                validation_error_group.append(f"Error found for {pre_parsed_node_or_edge.model_dump(field_mode = 'backend')}: {str(result)}")
-                            
-        # resolve nn:/ne:/aliases -> UUIDs here
-        # and run self._preflight_validate(parsed, doc_id) LATER (we don’t know doc_id yet)
-        if with_parsed:
-            return {"raw": raw, "parsed": parsed, "error": validation_error_group or None}
-        else:
-            return {"raw": raw, "error": validation_error_group or None}
-        
+
     def get_document(self, doc_id: str):
 
         doc_get_result = self.backend.document_get(ids = [doc_id])
@@ -2911,7 +2368,7 @@ class GraphKnowledgeEngine:
                     _save_node(d)
                     summary["updated_nodes"] += 1
                 else:
-                    # no refs left → delete node, node_docs rows, and (optionally) any edges’ endpoints for this doc if tied
+                    # no refs left â†’ delete node, node_docs rows, and (optionally) any edgesâ€™ endpoints for this doc if tied
                     try:
                         self.backend.node_delete(ids=[nid])
                     except Exception:
@@ -2922,7 +2379,7 @@ class GraphKnowledgeEngine:
                         pass
                     summary["deleted_nodes"] += 1
             else:
-                # Still remove node_docs rows for this doc (this document’s contribution) if present
+                # Still remove node_docs rows for this doc (this documentâ€™s contribution) if present
                 try:
                     self.backend.node_docs_delete(where={"node_id": nid, "doc_id": doc_id})
                 except Exception:
@@ -2940,7 +2397,7 @@ class GraphKnowledgeEngine:
                 else:
                     keep.append(r)
 
-            # Always drop this doc’s endpoints rows; they are doc-scoped fanout rows
+            # Always drop this docâ€™s endpoints rows; they are doc-scoped fanout rows
             try:
                 self.backend.edge_endpoints_delete(where={"edge_id": eid, "doc_id": doc_id})
             except Exception:
@@ -2953,7 +2410,7 @@ class GraphKnowledgeEngine:
                     _save_edge(d)
                     summary["updated_edges"] += 1
                 else:
-                    # No refs remain → delete edge entirely (and any leftover endpoints just in case)
+                    # No refs remain â†’ delete edge entirely (and any leftover endpoints just in case)
                     try:
                         self.backend.edge_delete(ids=[eid])
                     except Exception:
@@ -3138,7 +2595,7 @@ class GraphKnowledgeEngine:
         """
         Back-compat:
         - Without new knobs and with scope_doc_id set, behave as before (same-doc only).
-        - Otherwise use unified proposer in node↔edge mode.
+        - Otherwise use unified proposer in nodeâ†”edge mode.
         """
         if (allowed_docs is None and anchor_doc_id is None and not cross_doc_only and scope_doc_id):
             return self.proposer.cross_kind_in_doc(engine=self, doc_id=scope_doc_id, limit_per_bucket=limit_per_bucket)
@@ -3269,7 +2726,7 @@ class GraphKnowledgeEngine:
             return sorted(picked)
 
         # ---------- Fallback: scan primary JSON ----------
-        # (only used if you didn’t create the index collection)
+        # (only used if you didnâ€™t create the index collection)
         if ids:
             get_primary = self.backend.node_get if kind == "node" else self.backend.edge_get
             got = get_primary(ids=list(ids), include=["documents"])
@@ -3659,4 +3116,5 @@ def _install_non_conversation_shims() -> None:
 
 
 _install_non_conversation_shims()
+
 
