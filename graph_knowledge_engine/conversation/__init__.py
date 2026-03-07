@@ -3,6 +3,9 @@ TO-DO: Move the real file to the location if they are in other modules
 Use lazy imports to avoid package-init circular imports during migration.
 """
 from typing import TYPE_CHECKING
+from graph_knowledge_engine.conversation.span_compat import install_span_compat_aliases
+
+install_span_compat_aliases()
 
 
 if TYPE_CHECKING:

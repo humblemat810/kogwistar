@@ -1,9 +1,6 @@
 ﻿from __future__ import annotations
-from types import MethodType
 from contextlib import contextmanager
 import contextvars
-from copy import deepcopy
-import difflib
 
 from langchain_core.language_models import BaseChatModel
 import pathlib
@@ -11,19 +8,19 @@ import uuid
 
 
 import time
-from . import models
+
+from .ChromaBackend import ChromaBackend
 
 
 from .engine_sqlite import EngineSQLite
 from .engine_postgres_meta import EnginePostgresMetaStore
-from .storage_backend import ChromaBackend, NoopUnitOfWork
+from .storage_backend import NoopUnitOfWork
 from .postgres_backend import PgVectorBackend
 from ..workers.index_job_worker import IndexJobWorker
 from ..utils.log import bind_log_context
 from .indexing import IndexingSubsystem
 from .subsystems import (
     AdjudicateSubsystem,
-    ConversationSubsystem,
     EmbedSubsystem,
     ExtractSubsystem,
     IngestSubsystem,
@@ -39,6 +36,7 @@ from .types import (
     OffsetRepairScorer,
     ResolvedExtractionSchemaMode,
 )
+from ..graph_kinds import normalize_graph_kind
 
 if True:
     """_summary_
@@ -99,14 +97,6 @@ from .models import (
     ContextCost,
     AssocFlattenedLLMGraphExtraction,
 )
-if TYPE_CHECKING:
-    from ..conversation.models import (AddTurnResult, ContextSnapshotMetadata, 
-                                   ConversationAIResponse,  ConversationNodeMetadata, 
-                                   ConversationEdge, 
-                                   ConversationNode,
-                                   FilteringResponse, FilteringResult, 
-                                   MetaFromLastSummary, RetrievalResult, WorkflowStepExecNode)
-    from ..conversation.conversation_context import PromptContext
 from ..cdc.change_event import EntityRef, Op, EntityRefModel
 from langchain_openai import AzureChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
@@ -156,8 +146,6 @@ if TYPE_CHECKING:
     # TT= TypeVar("TT", Type[Node], Type[Edge])
     TNode = TypeVar("TNode", bound=Node)
     TEdge = TypeVar("TEdge", bound=Edge)
-    AnyNode = Union[Node, ConversationNode, WorkflowNode, WorkflowStepExecNode]
-    TAnyNode = TypeVar("TAnyNode", bound=AnyNode)
 
     
 from typing import Callable, TypeVar, ParamSpec, cast
@@ -216,17 +204,6 @@ def _refs_fingerprint(refs) -> str:
 
 
 F = TypeVar("F", bound=Callable[..., Any])
-
-def conversation_only(fn: F) -> F:
-    @wraps(fn)
-    def wrapper(self, *args, **kwargs):
-        if getattr(self, "kg_graph_type", None) != "conversation":
-            raise RuntimeError(
-                f"{fn.__qualname__} requires a conversation engine "
-                f"(got {getattr(self, 'kg_graph_type', None)!r})"
-            )
-        return fn(self, *args, **kwargs)
-    return wrapper  # type: ignore
 def _safe_excerpt(s: str | None, max_len: int = 200) -> str | None:
     if not s:
         return None
@@ -681,60 +658,6 @@ def base62_to_uuid(s: str) -> str:
         n = n * 62 + ALPHABET.index(ch)
     hex128 = f"{n:032x}"
     return f"{hex128[0:8]}-{hex128[8:12]}-{hex128[12:16]}-{hex128[16:20]}-{hex128[20:]}"
-
-
-
-def candiate_filtering_callback(llm: BaseChatModel, conversation_content, 
-                                cand_node_list_str, cand_edge_list_str, 
-                                candidate_node_ids: list[str], candidate_edge_ids: list[str], context_text):
-    from ..conversation.models import FilteringResponse, FilteringResult
-    # candidate_node_ids = [i.id for i in candidates.nodes]
-    # candidate_edge_ids = [i.id for i in candidates.edges]
-    max_retry = 3
-    err_messages = []
-    for _retry in range(max_retry):
-        
-        filter_prompt = ChatPromptTemplate.from_messages([
-            ("system", "You are a helpful assistant filtering knowledge graph nodes."),
-            ("human", f"User Input: {conversation_content}\n\n" + 
-                        (f"Context: {context_text}\n\n" if context_text else "") +
-                        f"Candidate Nodes:\n{cand_node_list_str}\n\n"
-                        f"Candidate Edges:\n{cand_edge_list_str}\n\n"
-                        "Return a JSON list of IDs for nodes and edges that are RELEVANT to the user input. "
-                        # "Example: ['id1', 'id2']. Return empty list if none."
-                        )
-        ]+ err_messages)
-    # Simple invocation (can optimize with structured output)
-        chain = filter_prompt | llm.with_structured_output(FilteringResponse, include_raw = True)
-        resp: dict | BaseModel = chain.invoke({})
-        if isinstance(resp, BaseModel):
-            raise Exception("Unreachable")
-        
-        if err := resp.get("parsing_error"):
-            err_messages.append( ("system", f"error: {str(err)}"))
-            continue
-        else:
-            resp2: dict = resp
-        from typing import cast
-        parsed: BaseModel | None
-        if parsed := resp2.get("parsed"):
-            parsed2: FilteringResponse = cast(FilteringResponse, parsed)
-            not_node_candidate = set(parsed2.relevant_ids.node_ids).difference(set(candidate_node_ids))
-            not_edge_candidate = set(parsed2.relevant_ids.edge_ids).difference(set(candidate_edge_ids))
-            # set(parsed2.relevant_ids).issubset(set(candidate_ids ))
-            if not_node_candidate or not_edge_candidate:
-                if not_node_candidate:
-                    err_messages.append(("system", str(Exception(f"Non candidates ids returned {not_node_candidate}"))))
-                if not_edge_candidate:
-                    err_messages.append(("system", str(Exception(f"Non candidates ids returned {not_node_candidate}"))))
-                continue
-                # raise Exception(f"Non candidates ids returned {not_candidate}")
-            else:
-                
-                return FilteringResult(node_ids = parsed2.relevant_ids.node_ids, edge_ids = parsed2.relevant_ids.edge_ids), parsed2.reasoning
-        else:
-            raise Exception("Unreachable")
-    raise Exception("Exhaused all models")
 @dataclass
 class AliasBook:
     """Stable per-session alias book. Append-only for cache friendliness."""
@@ -837,19 +760,21 @@ def engine_context(fn):
     Assumes `self` has:
         - self.engine_id (optional)
     And that method may accept:
-        - conversation_id
+        - conversation_id / conv_id
         - workflow_run_id / run_id
         - step_id
     """
     @wraps(fn)
     def wrapper(self, *args, **kwargs):
-        with bind_log_context(
-            engine_type=getattr(self, "kg_graph_type", None),
-            engine_id=getattr(self, "engine_id", None),
-            conversation_id=kwargs.get("conversation_id") or kwargs.get("conv_id"),
-            workflow_run_id=kwargs.get("workflow_run_id") or kwargs.get("run_id"),
-            step_id=kwargs.get("step_id"),
-        ):
+        ctx_kwargs = {
+            "engine_type": getattr(self, "kg_graph_type", None),
+            "engine_id": getattr(self, "engine_id", None),
+            "workflow_run_id": kwargs.get("workflow_run_id") or kwargs.get("run_id"),
+            "step_id": kwargs.get("step_id"),
+            "conversation_id": kwargs.get("conv_id")
+        }
+        
+        with bind_log_context(**ctx_kwargs):
             return fn(self, *args, **kwargs)
     return wrapper
 
@@ -864,7 +789,7 @@ class GraphKnowledgeEngine:
 
     Key responsibilities:
     - Persisting nodes and edges with full provenance.
-    - Managing extensions like `ConversationNode` and `WorkflowNode` (via subclasses).
+    - Managing extensions like chat/workflow node variants.
     - Providing low-level to high-level APIs for extraction, storage, and adjudication.
 
     Methods are generally arranged from low-level generic helpers to task-specific calls.
@@ -1397,7 +1322,7 @@ class GraphKnowledgeEngine:
           - "all-MiniLM-L6-v2".
         """
         load_dotenv()
-        self.kg_graph_type = kg_graph_type
+        self.kg_graph_type = normalize_graph_kind(kg_graph_type)
         self.persist_directory = persist_directory
         self.namespace = namespace
         self.extraction_schema_mode: ExtractionSchemaMode = extraction_schema_mode
@@ -1442,6 +1367,10 @@ class GraphKnowledgeEngine:
         
 
         self._alias_books: dict[str, AliasBook] = {}
+        self.pre_add_node_hooks: list[Callable[[Node], None]] = []
+        self.pre_add_edge_hooks: list[Callable[[Edge], bool]] = []
+        self.pre_add_pure_edge_hooks: list[Callable[[Edge], bool]] = []
+        self.allow_missing_doc_id_on_endpoint_rows_hooks: list[Callable[[Edge], bool]] = []
         ef = embedding_function or CustomEmbeddingFunction()
         self.embedding_length_limit = 512
         self._ef : EmbeddingFunctionLike = ef#embedding_function or ef #embedding_functions.DefaultEmbeddingFunction()
@@ -1595,7 +1524,6 @@ class GraphKnowledgeEngine:
         self.adjudicate = AdjudicateSubsystem(self)
         self.ingest = IngestSubsystem(self)
         self.embed = EmbedSubsystem(self)
-        self.conversation = ConversationSubsystem(self)
     def _emit_change(self, *, op: Op, entity: EntityRefModel, payload: object, run_id: str | None = None, step_id: str | None = None) -> None:
         seq = self.changes.next_seq()
         ev = ChangeEvent(
@@ -1727,111 +1655,8 @@ class GraphKnowledgeEngine:
     @engine_context
     def add_node(self, node: Node, doc_id: Optional[str] = None):
         return self.write._add_node_impl(node, doc_id=doc_id)
-    def _entity_is_conversation(self, node: Node | Edge):
-        from ..conversation.models import (ConversationEdge, 
-                                   ConversationNode)
-        return type(node) in [ConversationEdge, ConversationNode]
     def _fanout_endpoints_rows(self, edge: Edge, doc_id: str | None):
         return self.write.fanout_endpoints_rows(edge, doc_id)
-
-    # -----------------------------
-    # Phase 1: Conversation invariants (endpoint-indexed)
-    # -----------------------------
-    #
-    # IMPORTANT REMINDER:
-    # `edge_endpoints` rows are the *persisted incidence index* for hypergraph edges.
-    # Conversation structural invariants MUST be validated using edge_endpoints_get(where=...)
-    # (NOT by scanning all edges). The endpoints schema is defined in `_fanout_endpoints_rows`.
-    #
-    def _where_and(self, *clauses: dict) -> dict:
-        """Combine multiple where clauses with explicit AND (Chroma-style)."""
-        flat = [c for c in clauses if c]
-        if not flat:
-            return {}
-        if len(flat) == 1:
-            return flat[0]
-        return {"$and": flat}
-
-    def _edge_endpoints_exists(self, *, where: dict) -> bool:
-        """Return True if any edge_endpoints row matches `where`."""
-        res = self.backend.edge_endpoints_get(where=where, include=["metadatas"], limit=1)
-        mds = res.get("metadatas") or []
-        return bool(mds and mds[0])
-
-    def _edge_endpoints_first_edge_id(self, *, where: dict) -> str | None:
-        """Return the first matching edge_id from edge_endpoints rows."""
-        res = self.backend.edge_endpoints_get(where=where, include=["metadatas"], limit=1)
-        mds = res.get("metadatas") or []
-        if not mds or not mds[0]:
-            return None
-        md = mds[0]
-        eid = md.get("edge_id")
-        if isinstance(eid, str) and eid:
-            return eid
-        # fallback: parse from endpoint row id "<edge_id>::..." if present
-        rid = md.get("id")
-        if isinstance(rid, str) and "::" in rid:
-            return rid.split("::", 1)[0]
-        return None
-
-    def _conversation_doc_id_for_edge(self, edge: ConversationEdge) -> str | None:
-        doc_id = getattr(edge, "doc_id", None)
-        if isinstance(doc_id, str) and doc_id:
-            return doc_id
-        md = edge.metadata or {}
-        conv_id = md.get("conversation_id") or md.get("conv_id") or getattr(edge, "conversation_id", None)
-        if isinstance(conv_id, str) and conv_id:
-            return f"conv:{conv_id}"
-        return None
-
-    def _is_duplicate_next_turn_noop(self, edge: ConversationEdge) -> bool:
-        """True iff this is an *exact duplicate* next_turn (same conv, same src/tgt).
-
-        Implemented via endpoint index + single edge fetch (no scans).
-        """
-        if self.kg_graph_type != "conversation":
-            return False
-        if edge.relation != "next_turn":
-            return False
-
-        src = (edge.source_ids or [None])[0]
-        tgt = (edge.target_ids or [None])[0]
-        if not src or not tgt:
-            return False
-
-        doc_id = self._conversation_doc_id_for_edge(edge)
-
-        # Find the existing outgoing next_turn edge_id for src (if any).
-        w_out = self._where_and(
-            {"relation": "next_turn"},
-            {"role": "src"},
-            {"endpoint_type": "node"},
-            {"endpoint_id": src},
-            ({"doc_id": doc_id} if doc_id else {}),
-        )
-        existing_eid = self._edge_endpoints_first_edge_id(where=w_out)
-        if not existing_eid:
-            return False
-        
-        got = self.backend.edge_get(ids=[existing_eid], include=["documents"])
-        docs = got.get("documents") or []
-        if not docs:
-            return False
-        try:
-            obj = json.loads(docs[0])
-        except Exception:
-            return False
-
-        if obj.get("relation") != "next_turn":
-            return False
-        if obj.get("doc_id") != doc_id and doc_id is not None:
-            return False
-
-        same_src = obj.get("source_ids") == [src]
-        same_tgt = obj.get("target_ids") == [tgt]
-        same_src_edges = (obj.get("source_edge_ids") or []) == (getattr(edge, "source_edge_ids", []) or [])
-        same_tgt_edges = (obj.get("target_edge_ids") or []) == (getattr(edge, "target_edge_ids", []) or [])
-        return bool(same_src and same_tgt and same_src_edges and same_tgt_edges)
     def enrich_edge_meta(self, edge):
         return self.write.enrich_edge_meta(edge)
     @engine_context
@@ -2334,262 +2159,6 @@ class GraphKnowledgeEngine:
 
     def _iterative_defensive_emb(self, emb_text0):
         return self.embed.iterative_defensive_emb_internal(emb_text0)
-
-    # ----------------------------
-    # Conversation Abstraction
-    # ----------------------------
-    @conversation_only
-    def _get_conversation_service(
-        self,
-        *,
-        knowledge_engine: "GraphKnowledgeEngine | None" = None,
-        workflow_engine: "GraphKnowledgeEngine | None" = None,
-    ):
-        from graph_knowledge_engine.conversation import ConversationService
-        return ConversationService.from_engine(
-            cast(Any, self),
-            knowledge_engine=cast(Any, knowledge_engine),
-            workflow_engine=cast(Any, workflow_engine),
-        )        
-        
-    # -----------------
-    # Orchestrator hook
-    # -----------------
-    @conversation_only
-    def _get_orchestrator(self, *, ref_knowledge_engine: "GraphKnowledgeEngine"):
-        """Lazily construct an orchestrator.
-
-        NOTE: we key the cache by (id(ref_knowledge_engine), id(self.llm)) so callers can swap
-        knowledge engines or LLMs in tests without global side effects.
-        """
-        key = (id(ref_knowledge_engine), id(self.llm))
-        cache = getattr(self, "_orch_cache", None)
-        if cache is None:
-            cache = {}
-            setattr(self, "_orch_cache", cache)
-        if key in cache:
-            return cache[key]
-
-        from ..conversation.conversation_orchestrator import ConversationOrchestrator
-
-        orch = ConversationOrchestrator(
-            conversation_engine=cast(Any, self),
-            ref_knowledge_engine=cast(Any, ref_knowledge_engine),
-            llm=self.llm,
-            tool_call_id_factory=self.tool_call_id_factory
-        )
-        cache[key] = orch
-        return orch
-
-    @conversation_only
-    def max_node_seq_present(self, conversation_id):
-        return self.conversation.max_node_seq_present(conversation_id)
-    @conversation_only
-    def get_last_seq_node(self, conversation_id, buffer = 5):
-        return self.conversation.get_last_seq_node(conversation_id, buffer=buffer)
-    @conversation_only
-    def _normalize_conversation_edge_metadata(self, edge: ConversationEdge) -> None:
-        from ..conversation.models import (ConversationEdge, 
-                                   ConversationNode)
-        self._get_conversation_service()._normalize_conversation_edge_metadata(cast(ConversationEdge, edge))
-    @conversation_only
-    def _validate_conversation_edge_add(self, edge: ConversationEdge) -> None:
-        from ..conversation.models import (ConversationEdge, 
-                                   ConversationNode)
-        self._get_conversation_service()._validate_conversation_edge_add(cast(ConversationEdge, edge))    
-    @conversation_only
-    def _create_conversation_primitive(self, user_id, conv_id=None, node_id: str | None | uuid.UUID = None) -> tuple[str, str]:
-        return self._get_conversation_service()._create_conversation_primitive(user_id, conv_id, node_id)
-
-    @conversation_only
-    def create_conversation(self, user_id, conv_id = None, node_id: str | None | uuid.UUID = None) -> tuple[str, str]:
-        return self.conversation.create_conversation(user_id, conv_id, node_id)
-    
-    @conversation_only
-    def _get_last_seq_node(self, conversation_id, min_seq = None):
-        return self._get_conversation_service()._get_last_seq_node(conversation_id, min_seq=min_seq)
-    @conversation_only
-    def _get_conversation_tail(self, conversation_id: str, 
-                               min_turn_index : int | None = None,
-                               tail_search_includes: list[str] = ["conversation_start", "conversation_turn","conversation_summary", "assistant_turn"]) -> Optional[ConversationNode]:
-        return self._get_conversation_service()._get_conversation_tail(
-            conversation_id=conversation_id,
-            min_turn_index=min_turn_index,
-            tail_search_includes=tail_search_includes,
-        )    
-    @conversation_only
-    def last_summary_of_node(engine, node: ConversationNode):
-        return engine._get_conversation_service().last_summary_of_node(node)
-    @conversation_only
-    def add_conversation_turn(self, user_id: str, conversation_id: str, turn_id: str, mem_id: 
-                            str, role: str, content: str, 
-                            ref_knowledge_engine: GraphKnowledgeEngine, 
-                            filtering_callback: Callable[..., tuple[FilteringResult | RetrievalResult, str]] = candiate_filtering_callback,
-                            max_retrieval_level: int = 2, summary_char_threshold = 12000,
-                            prev_turn_meta_summary : MetaFromLastSummary | None = None, 
-                            add_turn_only = None) -> AddTurnResult:
-        return self.conversation.add_conversation_turn(
-            user_id=user_id,
-            conversation_id=conversation_id,
-            turn_id=turn_id,
-            mem_id=mem_id,
-            role=role,
-            content=content,
-            ref_knowledge_engine=ref_knowledge_engine,
-            filtering_callback=filtering_callback,
-            max_retrieval_level=max_retrieval_level,
-            summary_char_threshold=summary_char_threshold,
-            prev_turn_meta_summary=prev_turn_meta_summary,
-            add_turn_only = add_turn_only
-        )
-    @conversation_only
-    def respond_to_utterance(
-        self,
-        *,
-        user_id: str,
-        conversation_id: str,
-        content: str,
-        ref_knowledge_engine: GraphKnowledgeEngine,
-        role: str = "user",
-        turn_id: str | None = None,
-        mem_id: str | None = None,
-        filtering_callback: Callable[..., tuple[FilteringResult | RetrievalResult, str]] | None = None,
-        max_retrieval_level: int = 2,
-        summary_char_threshold: int = 12000,
-        prev_turn_meta_summary: MetaFromLastSummary | None = None,
-        add_turn_only = None,
-    ) -> AddTurnResult:
-        return self.conversation.respond_to_utterance(
-            user_id=user_id,
-            conversation_id=conversation_id,
-            content=content,
-            ref_knowledge_engine=ref_knowledge_engine,
-            role=role,
-            turn_id=turn_id,
-            mem_id=mem_id,
-            filtering_callback=filtering_callback,
-            max_retrieval_level=max_retrieval_level,
-            summary_char_threshold=summary_char_threshold,
-            prev_turn_meta_summary=prev_turn_meta_summary,
-            add_turn_only=add_turn_only,
-        )
-    
-    @conversation_only    
-    def get_conversation(self, conversation_id):
-        return self.conversation.get_conversation(conversation_id)
-    @conversation_only
-    def get_system_prompt(self, conversation_id: str) -> str:
-        return self.conversation.get_system_prompt(conversation_id)
-    @conversation_only    
-    def get_response_model(self, conversation_id) -> Type[BaseModel]:
-        return self.conversation.get_response_model(conversation_id)
-    
-
-    @conversation_only
-    def get_conversation_view(
-        self,
-        *,
-        conversation_id: str,
-        user_id: str | None = None,
-        purpose: str = "answer",
-        budget_tokens: int = 6000,
-        tail_turns: int = 8,
-        include_summaries: bool = True,
-        include_memory_context: bool = True,
-        include_pinned_kg_refs: bool = True,
-        ordering_strategy: str | None = None,
-    ):
-        return self.conversation.get_conversation_view(
-            conversation_id=conversation_id,
-            user_id=user_id,
-            purpose=purpose,
-            budget_tokens=budget_tokens,
-            tail_turns=tail_turns,
-            include_summaries=include_summaries,
-            include_memory_context=include_memory_context,
-            include_pinned_kg_refs=include_pinned_kg_refs,
-            ordering_strategy=ordering_strategy,
-        )
-
-    # ----------------------------
-    # Phase 2B: Context Snapshot Nodes
-    # ----------------------------
-    
-    @conversation_only
-    def make_conversation_span(self, conversation_id):
-        return self.conversation.make_conversation_span(conversation_id)
-        
-    @conversation_only
-    def persist_context_snapshot(
-        self,
-        *,
-        conversation_id: str,
-        run_id: str,
-        run_step_seq: int,
-        attempt_seq: int = 0,
-        stage: str,
-        view: PromptContext,
-        model_name: str = "",
-        budget_tokens: int = 0,
-        tail_turn_index: int = 0,
-        extra_hash_payload = None,
-        llm_input_payload: dict[str, Any] | None = None,
-        evidence_pack_digest: dict[str, Any] | None = None,
-    ) -> str:
-        return self.conversation.persist_context_snapshot(
-            conversation_id=conversation_id,
-            run_id=run_id,
-            run_step_seq=run_step_seq,
-            attempt_seq=attempt_seq,
-            stage=stage,
-            view=view,
-            model_name=model_name,
-            budget_tokens=budget_tokens,
-            tail_turn_index=tail_turn_index,
-            extra_hash_payload=extra_hash_payload,
-            llm_input_payload=llm_input_payload,
-            evidence_pack_digest=evidence_pack_digest,
-        )
-
-    @conversation_only
-    def latest_context_snapshot_node(
-        self,
-        *,
-        conversation_id: str,
-        run_id: str | None = None,
-        stage: str | None = None,
-    ) -> ConversationNode | None:
-        return self.conversation.latest_context_snapshot_node(
-            conversation_id=conversation_id,
-            run_id=run_id,
-            stage=stage,
-        )
-
-    @conversation_only
-    def get_context_snapshot_payload(
-        self,
-        *,
-        snapshot_node_id: str,
-    ) -> dict[str, Any]:
-        return self.conversation.get_context_snapshot_payload(snapshot_node_id=snapshot_node_id)
-    @conversation_only
-    def latest_context_snapshot_cost(
-        self,
-        *,
-        conversation_id: str,
-        stage: str | None = None,
-    ) -> ContextCost | None:
-        return self.conversation.latest_context_snapshot_cost(
-            conversation_id=conversation_id,
-            stage=stage,
-        )
-    @conversation_only
-    def get_ai_conversation_response(self, conversation_id, ref_knowledge_engine, model_names = None)->ConversationAIResponse:
-        return self.conversation.get_ai_conversation_response(
-            conversation_id=conversation_id,
-            ref_knowledge_engine=ref_knowledge_engine,
-            model_names=model_names,
-        )
     def get_llm(self, model_name = None) -> BaseChatModel:
         # will implement other model names later
         return self.llm
@@ -2623,7 +2192,7 @@ _SHIM_METHOD_MAP: dict[str, tuple[str, str]] = {
 }
 
 
-def _install_non_conversation_shims() -> None:
+def _install_legacy_shims() -> None:
     for method_name, (namespace_name, namespace_method) in _SHIM_METHOD_MAP.items():
         original = getattr(GraphKnowledgeEngine, method_name, None)
         if original is None:
@@ -2663,6 +2232,6 @@ def _install_non_conversation_shims() -> None:
         setattr(GraphKnowledgeEngine, method_name, shim)
 
 
-_install_non_conversation_shims()
+_install_legacy_shims()
 
 

@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any, Callable, Literal, Sequence, TypeVar
-
+from typing import Any, Callable, Literal, Sequence, TypeVar, TYPE_CHECKING
+from .subsystems.base import NamespaceProxy
+if TYPE_CHECKING:
+    # Avoid runtime import cycles; we only need this for typing.
+    from .engine import GraphKnowledgeEngine
 T = TypeVar("T")  # Node/Edge-like
 
 
-class LifecycleSubsystem:
+class LifecycleSubsystem(NamespaceProxy):
     """Lifecycle policy for Nodes/Edges.
 
     Owns:
@@ -18,7 +21,7 @@ class LifecycleSubsystem:
     - Keeps side-effects best-effort to match existing engine behavior.
     """
 
-    def __init__(self, engine: Any) -> None:
+    def __init__(self, engine: GraphKnowledgeEngine) -> None:
         self._e = engine
 
     def _utc_now_iso(self) -> str:

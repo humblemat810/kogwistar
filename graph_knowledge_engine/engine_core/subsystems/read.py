@@ -6,6 +6,12 @@ from typing import Any, Dict, List, Literal, Optional, Sequence, Type, TypeVar, 
 
 import numpy as np
 
+from ...entity_registry import (
+    default_edge_type_for_graph_kind,
+    default_node_type_for_graph_kind,
+    pick_edge_type,
+    pick_node_type,
+)
 from ..models import Document, Edge, Node
 from .base import NamespaceProxy
 
@@ -29,9 +35,7 @@ class ReadSubsystem(NamespaceProxy):
         if include is None:
             include = ["documents", "embeddings", "metadatas"]
         if not node_type:
-            from ...conversation.models import ConversationNode
-
-            node_type = ConversationNode if self._e.kg_graph_type == "conversation" else Node
+            node_type = default_node_type_for_graph_kind(self._e.kg_graph_type)
 
         got = self._e.backend.node_get(
             ids=ids,
@@ -63,9 +67,7 @@ class ReadSubsystem(NamespaceProxy):
         if include is None:
             include = ["documents", "embeddings", "metadatas"]
         if not edge_type:
-            from ...conversation.models import ConversationEdge
-
-            edge_type = ConversationEdge if self._e.kg_graph_type == "conversation" else Edge
+            edge_type = default_edge_type_for_graph_kind(self._e.kg_graph_type)
 
         got = self._e.backend.edge_get(
             ids=ids,
@@ -175,36 +177,18 @@ class ReadSubsystem(NamespaceProxy):
         if metadatas is None:
             raise Exception("Missing Metadatas")
 
-        from .. import models as core_models
-        from ...conversation import models as conversation_models
-        from ...runtime import models as runtime_models
-
         res: list[TNode] = []
         for d, emb, metadata in zip(docs, embs, metadatas):
             if isinstance(emb, np.ndarray):
                 emb = emb.tolist()
             json_d = json.loads(d)
-            override_node_type = None
-
-            class_name = metadata.get("_class_name")
-            if class_name:
-                node_cls = (
-                    getattr(core_models, class_name, None)
-                    or getattr(conversation_models, class_name, None)
-                    or getattr(runtime_models, class_name, None)
-                )
-                if node_cls:
-                    override_node_type = node_cls
-
-            if not override_node_type:
-                entity_type = metadata.get("entity_type")
-                if entity_type == "workflow_checkpoint" and self._e.kg_graph_type == "workflow":
-                    from ...conversation.models import WorkflowCheckpointNode
-
-                    override_node_type = WorkflowCheckpointNode
-
             json_d.update({"embedding": emb, "metadata": metadata})
-            res.append((override_node_type or node_type).model_validate(json_d))
+            selected_type = pick_node_type(
+                graph_kind=self._e.kg_graph_type,
+                metadata=metadata,
+                fallback=node_type,
+            )
+            res.append(selected_type.model_validate(json_d))
         return res
 
     def edges_from_single_or_id_query_result(self, got, edge_type: Type[Edge] = Edge, include=None):
@@ -223,27 +207,14 @@ class ReadSubsystem(NamespaceProxy):
         if metadatas is None:
             raise Exception("Missing Metadatas")
 
-        from .. import models as core_models
-        from ...conversation import models as conversation_models
-        from ...runtime import models as runtime_models
-
         res = []
         for d, emb, metadata in zip(docs, embs, metadatas):
             if isinstance(emb, np.ndarray):
                 emb = emb.tolist()
             json_d = json.loads(d)
             json_d.update({"embedding": emb, "metadata": metadata})
-            override_edge_type = None
-            class_name = metadata.get("_class_name")
-            if class_name:
-                edge_cls = (
-                    getattr(core_models, class_name, None)
-                    or getattr(conversation_models, class_name, None)
-                    or getattr(runtime_models, class_name, None)
-                )
-                if edge_cls:
-                    override_edge_type = edge_cls
-            res.append((override_edge_type or edge_type).model_validate(json_d))
+            selected_type = pick_edge_type(metadata=metadata, fallback=edge_type)
+            res.append(selected_type.model_validate(json_d))
         return res
 
     def nodes_from_query_result(self, gots, node_type: Type[Node] = Node):

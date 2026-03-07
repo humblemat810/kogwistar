@@ -13,6 +13,7 @@ import pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parents))
 import pytest
 from graph_knowledge_engine.conversation.models import ConversationEdge, ConversationNode
+from graph_knowledge_engine.conversation.service import ConversationService
 from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
 from graph_knowledge_engine.engine_core.models import (
     Edge, LLMGraphExtraction, LLMNode, LLMEdge,
@@ -22,8 +23,6 @@ from graph_knowledge_engine.engine_core.models import (
 from graph_knowledge_engine.engine_core.postgres_backend import PgVectorBackend
 from typing import Any, List, Optional, Sequence, Iterator
 from langchain_core.runnables import Runnable
-from graph_knowledge_engine.engine_core.models import LLMMergeAdjudication, AdjudicationVerdict
-
 
 _TEST_NS = uuid.UUID("00000000-0000-0000-0000-000000000000")
 @pytest.fixture(scope="session")
@@ -1026,8 +1025,12 @@ def seed_conversation_graph(
       - summary node
       - kg_ref node referencing kg_seed[n1/e1]
     """
-    # Create conversation (your engine already builds the start node)
-    conv_id, start_id = conversation_engine.create_conversation(
+    # Create conversation start through the service facade.
+    conv_svc = ConversationService.from_engine(
+        conversation_engine,
+        knowledge_engine=conversation_engine,
+    )
+    conv_id, start_id = conv_svc.create_conversation(
         user_id,
         conversation_id,
         start_node_id,

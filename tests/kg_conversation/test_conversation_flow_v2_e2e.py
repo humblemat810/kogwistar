@@ -10,6 +10,7 @@ from joblib import Memory
 from typing import Callable, Sequence, Any, ParamSpec, TypeVar, cast
 
 from graph_knowledge_engine.conversation.models import ConversationAIResponse, FilteringResult, MetaFromLastSummary
+from graph_knowledge_engine.conversation.service import ConversationService
 from graph_knowledge_engine.cdc.oplog import OplogWriter
 from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
 from graph_knowledge_engine.engine_core.models import (
@@ -307,9 +308,13 @@ def test_conversation_flow_v2_end_to_end_cached_llm(backend_kind: str, tmp_path,
     # Deterministic factories.
     conversation_engine.tool_call_id_factory = stable_id
 
-    # Build orchestrator.
+    # Build service and orchestrator.
     user_id = "test_conversation_flow_v2::user"
-    orc = conversation_engine._get_orchestrator(ref_knowledge_engine=kg_engine)
+    svc = ConversationService.from_engine(
+        conversation_engine,
+        knowledge_engine=kg_engine,
+    )
+    orc = svc.orchestrator
     orc.tool_runner.tool_call_id_factory = stable_id
 
     # Add apple knowledge.
@@ -318,7 +323,7 @@ def test_conversation_flow_v2_end_to_end_cached_llm(backend_kind: str, tmp_path,
     # Create conversation.
     conv_id = "conv_v2_test_001"
     start_node_id = "start_con_node_v2"
-    conversation_engine.create_conversation(user_id, conv_id, start_node_id)
+    svc.create_conversation(user_id, conv_id, start_node_id)
 
     # Cache layer (joblib) like your existing test style.
     memory = Memory(location=str(tmp_path / ".joblib"))

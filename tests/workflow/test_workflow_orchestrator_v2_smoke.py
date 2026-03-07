@@ -1,7 +1,9 @@
 
 import pytest
 
-from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine, candiate_filtering_callback
+from graph_knowledge_engine.conversation.filtering import candiate_filtering_callback
+from graph_knowledge_engine.conversation.service import ConversationService
+from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
 from graph_knowledge_engine.conversation.conversation_orchestrator import ConversationOrchestrator
 from graph_knowledge_engine.conversation.models import MetaFromLastSummary
 from graph_knowledge_engine.runtime import MappingStepResolver
@@ -171,7 +173,12 @@ def test_workflow_runtime_uses_default_resolver(tmp_path):
     turn_id="test-turn-id-123"
     conv_id = conversation_id
     start_node_id = "test-start-turn-id-123"
-    conv_id, start_node_id_returned = conversation_engine.create_conversation(user_id, conv_id, start_node_id)
+    conv_svc = ConversationService.from_engine(
+        conversation_engine,
+        knowledge_engine=ref_knowledge_engine,
+        workflow_engine=workflow_engine,
+    )
+    conv_id, start_node_id_returned = conv_svc.create_conversation(user_id, conv_id, start_node_id)
     from graph_knowledge_engine.conversation.models import FilteringResult
     from langchain_core.language_models import BaseChatModel
     # def wrapped_cached_callback(llm: BaseChatModel, conversation_content, 
@@ -200,10 +207,10 @@ def test_workflow_runtime_uses_default_resolver(tmp_path):
       
     cached_fn = cached_deco(ignore = ["llm"], fn=cached_inner)     
     # 3. Add Turn 1
-    res = conversation_engine.add_conversation_turn(user_id, conv_id, turn_id, "mem0", 
-                                                    role="user", content="Hello computer", 
-                                                    ref_knowledge_engine=ref_knowledge_engine,
-                                                    filtering_callback = cached_fn, add_turn_only = True)    
+    res = conv_svc.add_conversation_turn(user_id, conv_id, turn_id, "mem0",
+                                         role="user", content="Hello computer",
+                                         ref_knowledge_engine=ref_knowledge_engine,
+                                         filtering_callback=cached_fn, add_turn_only=True)
     # 'c7b0883aefc651a69a69425fb018e5be'
     # -----------------------------
     # 2) Re-open workflow engine to prove “saved graph is runnable”

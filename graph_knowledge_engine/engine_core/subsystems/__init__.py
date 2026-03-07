@@ -1,5 +1,4 @@
 from .adjudicate import AdjudicateSubsystem
-from .conversation import ConversationSubsystem
 from .embed import EmbedSubsystem
 from .extract import ExtractSubsystem
 from .ingest import IngestSubsystem
@@ -10,7 +9,6 @@ from .write import WriteSubsystem
 
 __all__ = [
     "AdjudicateSubsystem",
-    "ConversationSubsystem",
     "EmbedSubsystem",
     "ExtractSubsystem",
     "IngestSubsystem",

@@ -10,3 +10,4 @@ small_graph
 *.bin
 *.pickle
 .shortids
+.tmp_pytest_schema_modes

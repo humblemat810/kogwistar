@@ -23,6 +23,7 @@ from .models import ConversationEdge
 
 from .models import BaseToolResult, ConversationNode
 from ..engine_core.models import Grounding, MentionVerification, Span
+from .policy import get_chat_tail
 if TYPE_CHECKING:
     from .models import MetaFromLastSummary
     from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
@@ -67,11 +68,9 @@ class ToolRunner:
         orchestrator: ConversationOrchestrator | None = None
     ) -> Tuple[T, str]:
         """Execute a tool handler and record tool_call/tool_result nodes."""
-        if hasattr(self.engine, "conversation") and hasattr(self.engine.conversation, "get_conversation_tail"):
-            last_node = self.engine.conversation.get_conversation_tail(conversation_id)
-        elif hasattr(self.engine, "_get_conversation_tail"):
-            last_node = self.engine._get_conversation_tail(conversation_id)
-        else:
+        try:
+            last_node = get_chat_tail(self.engine, conversation_id=conversation_id)
+        except Exception:
             last_node = None
         if last_node is None:
             raise Exception('unreachable')

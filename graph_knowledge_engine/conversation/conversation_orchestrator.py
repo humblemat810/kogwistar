@@ -31,6 +31,7 @@ from .models import (
 from .tool_runner import ToolRunner
 from .memory_retriever import MemoryRetriever, MemoryPinResult, MemoryRetrievalResult
 from .knowledge_retriever import KnowledgeRetriever
+from .policy import get_chat_tail, last_summary_of_node
 
 
 @dataclass
@@ -127,12 +128,10 @@ def _estimate_tokens_from_chars(char_count: int, token_estimator: Callable[[str]
 
 
 def _get_conversation_tail_compat(conversation_engine: Any, conversation_id: str):
-    conv_ns = getattr(conversation_engine, "conversation", None)
-    if conv_ns is not None and hasattr(conv_ns, "get_conversation_tail"):
-        return conv_ns.get_conversation_tail(conversation_id)
-    if hasattr(conversation_engine, "_get_conversation_tail"):
-        return conversation_engine._get_conversation_tail(conversation_id)
-    return None
+    try:
+        return get_chat_tail(conversation_engine, conversation_id=conversation_id)
+    except Exception:
+        return None
 
 
 def _iterative_emb_compat(engine: Any, text: str):
@@ -188,13 +187,20 @@ class ConversationOrchestrator:
     or use a knowledge router that has same api but delegate to get knowledge from network of
     knowledge bases
     
-    Minimal, surgical refactor:
-    - engine.add_conversation_turn(...) stays stable
+    Service-first boundary:
+    - ConversationService is the public entry point
     - orchestration steps live here
     - tool-call/tool-result events are recorded in the conversation graph
     """
     def create_conversation(self, *args, **kwargs):
-        self.conversation_engine.create_conversation(*args, **kwargs)
+        from .service import ConversationService
+
+        svc = ConversationService.from_engine(
+            self.conversation_engine,
+            knowledge_engine=self.ref_knowledge_engine,
+            workflow_engine=self.workflow_engine,
+        )
+        return svc.create_conversation(*args, **kwargs)
     # ----------------------------
     # Workflow-v2: design + step resolver
     # ----------------------------
@@ -1118,7 +1124,7 @@ class ConversationOrchestrator:
         
         nodes: list[ConversationNode] = all_nodes
         
-        last_summary_node: list[ConversationNode] = self.conversation_engine.last_summary_of_node(prev_node)
+        last_summary_node: list[ConversationNode] = last_summary_of_node(self.conversation_engine, prev_node)
         if last_summary_node:
             batch_ids.append(last_summary_node[-1].safe_get_id())
             batch_text.append(last_summary_node[-1].summary)
@@ -1172,7 +1178,14 @@ class ConversationOrchestrator:
             tokens_used=_estimate_tokens_from_chars(char_count),
         )
         clock = ExecClock(run_id=f"summary|{conversation_id}", run_step_seq=int(current_index), attempt_seq=0)
-        self.conversation_engine.persist_context_snapshot(
+        from .service import ConversationService
+
+        svc = ConversationService.from_engine(
+            self.conversation_engine,
+            knowledge_engine=self.ref_knowledge_engine,
+            workflow_engine=self.workflow_engine,
+        )
+        svc.persist_context_snapshot(
             conversation_id=conversation_id,
             run_id=clock.run_id,
             run_step_seq=clock.run_step_seq,

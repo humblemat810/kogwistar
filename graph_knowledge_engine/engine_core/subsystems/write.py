@@ -45,6 +45,23 @@ class WriteSubsystem(NamespaceProxy):
     def add_edge(self, *args, **kwargs):
         return self._add_edge_impl(*args, **kwargs)
 
+    def _run_pre_add_node_hooks(self, node: Node) -> None:
+        for hook in list(getattr(self._e, "pre_add_node_hooks", []) or []):
+            hook(node)
+
+    def _run_pre_add_edge_hooks(self, edge: Edge, *, pure: bool) -> bool:
+        hook_name = "pre_add_pure_edge_hooks" if pure else "pre_add_edge_hooks"
+        for hook in list(getattr(self._e, hook_name, []) or []):
+            if bool(hook(edge)):
+                return True
+        return False
+
+    def _allow_missing_doc_id(self, edge: Edge) -> bool:
+        for hook in list(getattr(self._e, "allow_missing_doc_id_on_endpoint_rows_hooks", []) or []):
+            if bool(hook(edge)):
+                return True
+        return False
+
     def enrich_edge_meta(self, edge: Edge):
         node_endpoint_count = len(edge.source_ids or []) + len(edge.target_ids or [])
         edge_endpoint_count = len(getattr(edge, "source_edge_ids", []) or []) + len(
@@ -72,20 +89,16 @@ class WriteSubsystem(NamespaceProxy):
                 "total_endpoint_count": total_endpoint_count,
             }
         )
-        if self._e.kg_graph_type == "conversation":
-            base_metadata.update(
-                strip_none(
-                    {
-                        "char_distance_from_last_summary": edge.metadata.get("char_distance_from_last_summary"),
-                        "turn_distance_from_last_summary": edge.metadata.get("turn_distance_from_last_summary"),
-                        **(
-                            {"causal_type": edge.metadata.get("causal_type")}
-                            if edge.metadata.get("causal_type")
-                            else {}
-                        ),
-                    }
-                )
+        md = getattr(edge, "metadata", {}) or {}
+        base_metadata.update(
+            strip_none(
+                {
+                    "char_distance_from_last_summary": md.get("char_distance_from_last_summary"),
+                    "turn_distance_from_last_summary": md.get("turn_distance_from_last_summary"),
+                    **({"causal_type": md.get("causal_type")} if md.get("causal_type") else {}),
+                }
             )
+        )
         if self._e.kg_graph_type == "workflow":
             from ...runtime.models import WorkflowEdge
 
@@ -108,20 +121,7 @@ class WriteSubsystem(NamespaceProxy):
     def _add_node_impl(self, node: Node, doc_id: str | None = None):
         if doc_id is not None:
             node.doc_id = doc_id
-        if self._e.kg_graph_type == "conversation":
-            from ...conversation.models import ConversationNode
-
-            node_conv: ConversationNode = cast(ConversationNode, node)
-            try:
-                conv_id = node_conv.conversation_id
-            except Exception:
-                conv_id = node_conv.metadata["conversation_id"]
-
-            if conv_id is None:
-                raise Exception("conv id required")
-            self._e._get_last_seq_node(conv_id)
-            seq = self._e.meta_sqlite.next_user_seq(conv_id)
-            node.metadata["seq"] = seq
+        self._run_pre_add_node_hooks(node)
 
         doc, meta = self.node_doc_and_meta(node)
         if node.embedding is None:
@@ -177,13 +177,8 @@ class WriteSubsystem(NamespaceProxy):
         edge.target_ids = t_nodes
         edge.target_edge_ids = (getattr(edge, "target_edge_ids", []) or []) + t_edges
         self._e.persist.assert_endpoints_exist(edge)
-
-        from ...conversation.models import ConversationEdge
-
-        if isinstance(edge, ConversationEdge):
-            if self._e._is_duplicate_next_turn_noop(edge):
-                return
-            self._e._validate_conversation_edge_add(edge)
+        if self._run_pre_add_edge_hooks(edge, pure=False):
+            return
 
         doc = edge.model_dump_json(field_mode="backend", exclude=["embedding"])
         if edge.embedding is None:
@@ -266,10 +261,8 @@ class WriteSubsystem(NamespaceProxy):
         edge.target_ids = t_nodes
         edge.target_edge_ids = (getattr(edge, "target_edge_ids", []) or []) + t_edges
         self._e.persist.assert_endpoints_exist(edge)
-        from ...conversation.models import ConversationEdge
-
-        if isinstance(edge, ConversationEdge):
-            self._e._validate_conversation_edge_add(edge)
+        if self._run_pre_add_edge_hooks(edge, pure=True):
+            return
 
         doc = edge.model_dump_json(field_mode="backend", exclude=["embedding"])
         base_metadata = [self.enrich_edge_meta(edge)]
@@ -448,7 +441,7 @@ class WriteSubsystem(NamespaceProxy):
             if metadata and metadata[0]:
                 if isinstance(metadata[0].get("doc_id"), str):
                     return str(metadata[0].get("doc_id"))
-                if not self._e._entity_is_conversation(edge):
+                if not self._allow_missing_doc_id(edge):
                     raise Exception("doc_id is not string")
             return None
 
@@ -460,7 +453,7 @@ class WriteSubsystem(NamespaceProxy):
             if metadata and metadata[0]:
                 if isinstance(metadata[0].get("doc_id"), str):
                     return str(metadata[0].get("doc_id"))
-                if not self._e._entity_is_conversation(edge):
+                if not self._allow_missing_doc_id(edge):
                     raise Exception("doc_id is not string")
             return None
 

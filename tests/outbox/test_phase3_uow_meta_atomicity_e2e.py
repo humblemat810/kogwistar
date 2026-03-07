@@ -3,7 +3,6 @@ import threading
 import pytest
 
 from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
-from graph_knowledge_engine.engine_core.storage_backend import ChromaBackend
 from graph_knowledge_engine.engine_core.postgres_backend import PgVectorBackend
 
 EMBEDDING_DIM = 3
