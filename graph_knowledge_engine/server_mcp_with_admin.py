@@ -550,7 +550,7 @@ def store_document(inp: DocParseIn):
 def kg_extract(inp: KGExtractIn) -> KGExtractOut:
     """From documents extract knowledge and relationships as a hypergraph between entities, ideas, concepts with each other."""
     require_role("rw")
-    content = engine._fetch_document_text(inp.id)
+    content = engine.extract.fetch_document_text(inp.id)
     if not content:
         raise ValueError(f"Document '{inp.id}' not found; run store_document first.")
     from .engine_core.models import LLMGraphExtraction
@@ -576,7 +576,7 @@ def kg_extract(inp: KGExtractIn) -> KGExtractOut:
         # ctx = {"insertion_method": "graph_extractor"}
         # dumped = parsed_LLM.model_dump()
         parsed = LLMGraphExtraction.FromLLMSlice(parsed_LLM, insertion_method = "llm_graph_extraction")
-        batch_node_ids, batch_edge_ids = engine._preflight_validate(parsed, inp.id)
+        batch_node_ids, batch_edge_ids = engine.persist.preflight_validate(parsed, inp.id)
         return parsed
     parsed = get_reparsed_extraction(content)
     
@@ -657,8 +657,8 @@ def admin_delete_doc(doc_id: str):
     require_role("rw")
     # Collect counts before deletion
     try:
-        node_ids = engine._nodes_by_doc(doc_id)
-        edge_ids = engine._edge_ids_by_doc(doc_id)
+        node_ids = engine.read.node_ids_by_doc(doc_id)
+        edge_ids = engine.read.edge_ids_by_doc(doc_id)
     except Exception:
         node_ids, edge_ids = [], []
 
@@ -880,7 +880,7 @@ def api_graph_upsert_llm(inp: GraphUpsertLLMIn):
         )
     else:
         # create a placeholder if completely missing so refs can anchor to doc_id
-        if not engine._fetch_document_text(inp.doc_id):
+        if not engine.extract.fetch_document_text(inp.doc_id):
             engine.add_document(
                 Document(
                     id=inp.doc_id,
@@ -913,7 +913,7 @@ def api_graph_upsert_llm(inp: GraphUpsertLLMIn):
 
     # 4) Persist using your first-class persistence path (allocates nn:/ne:, topo-sorts, enforces endpoints)
     persisted = engine.persist_graph_extraction(
-        document=Document(id=inp.doc_id, content=inp.content or engine._fetch_document_text(inp.doc_id) or "", type=inp.doc_type, 
+        document=Document(id=inp.doc_id, content=inp.content or engine.extract.fetch_document_text(inp.doc_id) or "", type=inp.doc_type, 
                           embeddings = None, source_map = None, metadata=None, domain_id=None, processed=None),
         parsed=parsed,
         mode="append",
@@ -2021,3 +2021,15 @@ app.mount("/", mcp_app)
 
 # Run with:
 #   uvicorn server_mcp_with_admin:app --port 8765
+def main() -> None:
+    """Console entrypoint for `knowledge-mcp`."""
+    import os
+    import uvicorn
+
+    host = os.getenv("HOST", "127.0.0.1")
+    port = int(os.getenv("PORT", "8765"))
+    uvicorn.run("graph_knowledge_engine.server_mcp_with_admin:app", host=host, port=port)
+
+
+if __name__ == "__main__":
+    main()
