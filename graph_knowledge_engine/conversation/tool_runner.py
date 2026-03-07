@@ -67,7 +67,12 @@ class ToolRunner:
         orchestrator: ConversationOrchestrator | None = None
     ) -> Tuple[T, str]:
         """Execute a tool handler and record tool_call/tool_result nodes."""
-        last_node = self.engine._get_conversation_tail(conversation_id)
+        if hasattr(self.engine, "conversation") and hasattr(self.engine.conversation, "get_conversation_tail"):
+            last_node = self.engine.conversation.get_conversation_tail(conversation_id)
+        elif hasattr(self.engine, "_get_conversation_tail"):
+            last_node = self.engine._get_conversation_tail(conversation_id)
+        else:
+            last_node = None
         if last_node is None:
             raise Exception('unreachable')
         # Tool call node (assistant role)
@@ -168,7 +173,7 @@ class ToolRunner:
             self.engine.add_edge(e)
         # Tool result node (tool role)
         # res_id = str(self.tool_call_id_factory())
-        # last_node = self.engine._get_conversation_tail(conversation_id)
+        # last_node = self.engine.conversation.get_conversation_tail(conversation_id)
         if last_node is None:
             raise Exception('unreachable')
         res_id = str(self.tool_call_id_factory(user_id, conversation_id, call_node.safe_get_id(), "tool_result"))
@@ -269,3 +274,4 @@ class ToolRunner:
                                  )
         self.engine.add_edge(e)
         return result, call_node.safe_get_id()
+

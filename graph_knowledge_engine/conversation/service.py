@@ -133,7 +133,7 @@ class ConversationService:
         self._normalize_conversation_edge_metadata(edge)
         md = edge.metadata or {}
         causal_type = md.get("causal_type") or infer_conversation_edge_causal_type(edge.relation)
-        doc_id = eng._conversation_doc_id_for_edge(edge)
+        doc_id = eng.conversation.conversation_doc_id_for_edge(edge)
 
         src = (edge.source_ids or [None])[0]
         tgt = (edge.target_ids or [None])[0]
@@ -144,45 +144,45 @@ class ConversationService:
             if (getattr(edge, "source_edge_ids", []) or []) or (getattr(edge, "target_edge_ids", []) or []):
                 raise ValueError("next_turn must be node-to-node only (no edge endpoints)")
 
-            w_out = eng._where_and(
+            w_out = eng.conversation.where_and(
                 {"relation": "next_turn"},
                 {"role": "src"},
                 {"endpoint_type": "node"},
                 {"endpoint_id": src},
                 ({"doc_id": doc_id} if doc_id else {}),
             )
-            if eng._edge_endpoints_exists(where=w_out):
+            if eng.conversation.edge_endpoints_exists(where=w_out):
                 raise ValueError(f"next_turn outgoing already exists for source_id={src}")
 
-            w_in = eng._where_and(
+            w_in = eng.conversation.where_and(
                 {"relation": "next_turn"},
                 {"role": "tgt"},
                 {"endpoint_type": "node"},
                 {"endpoint_id": tgt},
                 ({"doc_id": doc_id} if doc_id else {}),
             )
-            if eng._edge_endpoints_exists(where=w_in):
+            if eng.conversation.edge_endpoints_exists(where=w_in):
                 raise ValueError(f"next_turn incoming already exists for target_id={tgt}")
 
         if causal_type == "dependency":
             if tgt is None:
                 raise ValueError("dependency edge requires single target_id")
 
-            w_used_chain = eng._where_and(
+            w_used_chain = eng.conversation.where_and(
                 {"role": "src"},
                 {"endpoint_type": "node"},
                 {"endpoint_id": tgt},
                 {"causal_type": "chain"},
                 ({"doc_id": doc_id} if doc_id else {}),
             )
-            w_used_dep = eng._where_and(
+            w_used_dep = eng.conversation.where_and(
                 {"role": "src"},
                 {"endpoint_type": "node"},
                 {"endpoint_id": tgt},
                 {"causal_type": "dependency"},
                 ({"doc_id": doc_id} if doc_id else {}),
             )
-            if eng._edge_endpoints_exists(where=w_used_chain) or eng._edge_endpoints_exists(where=w_used_dep):
+            if eng.conversation.edge_endpoints_exists(where=w_used_chain) or eng.conversation.edge_endpoints_exists(where=w_used_dep):
                 raise ValueError(f"Cannot add dependency incoming edge into already-used node {tgt}")
 
     def _create_conversation_primitive(
@@ -234,7 +234,7 @@ class ConversationService:
         )
         dummy_span = Span.from_dummy_for_conversation()
         start_node.mentions = [Grounding(spans=[dummy_span])]
-        eng.add_node(start_node)
+        eng.write.add_node(start_node)
         return conv_id, str(node_id)
 
     def create_conversation(self, user_id, conv_id=None, node_id: str | None | uuid.UUID = None) -> tuple[str, str]:
@@ -289,8 +289,8 @@ class ConversationService:
 
     def last_summary_of_node(self, node: ConversationNode):
         eng = self.conversation_engine
-        summaries = eng.get_nodes(
-            where=eng._where_and(
+        summaries = eng.read.get_nodes(
+            where=eng.conversation.where_and(
                 {"conversation_id": node.conversation_id},
                 {"entity_type": "conversation_summary"},
             ),
@@ -631,7 +631,7 @@ class ConversationService:
                 domain_id=None,
                 canonical_entity_id=None,
             )
-            eng.add_node(node)
+            eng.write.add_node(node)
 
         scope = f"conv:{conversation_id}"
         for ordinal, nid in enumerate(used_node_ids):

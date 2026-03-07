@@ -185,9 +185,14 @@ def _add_user_turn(ctx: "StepContext") -> "StepRunResult":
 
     # embedding: prefer provided, else compute defensively if engine supports it
     embedding = sv.get("embedding")
-    if embedding is None and hasattr(ce, "_iterative_defensive_emb"):
+    if embedding is None:
         emb_text0 = f"{role}: {user_text}"
-        embedding = ce._iterative_defensive_emb(emb_text0)
+        if hasattr(ce, "embed") and hasattr(ce.embed, "iterative_defensive_emb"):
+            embedding = ce.embed.iterative_defensive_emb(emb_text0)
+        elif hasattr(ce, "iterative_defensive_emb"):
+            embedding = ce.iterative_defensive_emb(emb_text0)
+        elif hasattr(ce, "_iterative_defensive_emb"):
+            embedding = ce._iterative_defensive_emb(emb_text0)
     span = Span(
         collection_page_url=f"conversation/{conversation_id}",
         document_page_url=f"conversation/{conversation_id}#{turn_doc_id}",
@@ -335,7 +340,6 @@ def _link_assistant_turn(ctx: "StepContext") -> "StepRunResult":
     conversation_id = str(sv["conversation_id"])
     user_id = str(sv["user_id"])
     turn_index = int(sv.get("turn_index") or 0)
-    turn_index += 1
     span = sv.get("self_span")
     mts = _get_prev_turn_meta_summary_from_state_or_deps(ctx)
 
@@ -1395,3 +1399,4 @@ def _aa_persist_response(ctx: StepContext) -> StepRunResult:
         ('a', {"op_log": "aa_persist_response"}),
     ]
     return RunSuccess(conversation_node_id=assistant_turn_node_id, state_update=state_update)
+

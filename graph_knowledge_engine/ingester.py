@@ -241,7 +241,7 @@ class BaseDocumentGraphIngestor:
         }
     def _ensure_document_node(self, doc_id: str, *, title: str | None = None, leaves) -> str:
         node_id = f"docnode:{doc_id}"
-        if not self.engine._exists_node(node_id):
+        if not self.engine.persist.exists_node(node_id):
             from graph_knowledge_engine.engine_core.models import Node, Span
             embeddings = self.engine.backend.document_get(doc_id, include = ['embeddings'])['embeddings'][0]
             ref = self._ref(doc_id = doc_id,excerpt = None, span = Span(start_page=1, end_page=len(leaves), start_char=0, end_char=len(leaves[-1].text)))
@@ -543,7 +543,7 @@ class BaseDocumentGraphIngestor:
                 },
                 embedding = embedding_vector.tolist()
             )
-            if not self.engine._exists_node(n.id):
+            if not self.engine.persist.exists_node(n.id):
                 self.engine.add_node(n, doc_id=doc_id)
             nodes.append(n)
         return nodes
@@ -564,7 +564,7 @@ class BaseDocumentGraphIngestor:
 
     def _ensure_node(self, doc_id: str, ch: SummaryChunk) -> str:
         nid = ch.id #f"node:{ch.id}"
-        if not self.engine._exists_node(nid):
+        if not self.engine.persist.exists_node(nid):
             self.engine.add_node(self._as_node(doc_id, ch), doc_id=doc_id)
         return nid
 
@@ -579,7 +579,7 @@ class BaseDocumentGraphIngestor:
                 self._ensure_node(doc_id, p)
                 parent_ids.append(self._as_node(doc_id, p).id)
             else:  # Node
-                if not self.engine._exists_node(p.id):
+                if not self.engine.persist.exists_node(p.id):
                     self.engine.add_node(p, doc_id=doc_id)
                 parent_ids.append(p.id)
 
@@ -623,7 +623,7 @@ class BaseDocumentGraphIngestor:
             )
 
             # Idempotent add (don’t recreate if present)
-            if not self.engine._exists_node(n.id):
+            if not self.engine.persist.exists_node(n.id):
                 self.engine.add_node(n, doc_id=doc_id)
 
             node_ids.append(n.id)
@@ -665,9 +665,9 @@ class BaseDocumentGraphIngestor:
             mentions=[self._ref(doc_id, GroundingSpan(start_page=1, end_page=1, start_char=0, end_char=1), excerpt=None)],
             doc_id=doc_id,
         )
-        if not self.engine._exists_edge(e1.id):
+        if not self.engine.persist.exists_edge(e1.id):
             self.engine.add_edge(e1, doc_id=doc_id)
-        if not self.engine._exists_edge(e2.id):
+        if not self.engine.persist.exists_edge(e2.id):
             self.engine.add_edge(e2, doc_id=doc_id)
 
     def _ref(self, doc_id: str, span: GroundingSpan, *, excerpt: Optional[str]) -> GroundingSpan:
@@ -705,3 +705,4 @@ class PagewiseSummaryIngestor(BaseDocumentGraphIngestor):
 
     # Fully implemented in the base; left here for future extension hooks.
     pass
+

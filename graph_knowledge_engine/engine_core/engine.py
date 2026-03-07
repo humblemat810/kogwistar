@@ -22,6 +22,24 @@ from .postgres_backend import PgVectorBackend
 from ..workers.index_job_worker import IndexJobWorker
 from ..utils.log import bind_log_context
 from .indexing import IndexingSubsystem
+from .subsystems import (
+    AdjudicateSubsystem,
+    ConversationSubsystem,
+    EmbedSubsystem,
+    ExtractSubsystem,
+    IngestSubsystem,
+    PersistSubsystem,
+    ReadSubsystem,
+    RollbackSubsystem,
+    WriteSubsystem,
+)
+from .types import (
+    EngineType,
+    ExtractionSchemaMode,
+    OffsetMismatchPolicy,
+    OffsetRepairScorer,
+    ResolvedExtractionSchemaMode,
+)
 
 if True:
     """_summary_
@@ -100,6 +118,7 @@ import uuid
 from joblib import Memory
 import re
 from functools import wraps
+import warnings
 from .models import Span, MentionVerification, LLMGraphExtraction, LLMNode, LLMEdge, Node, Edge, Document, GraphExtractionWithIDs
 from typing import (Callable, Optional, Tuple, Any, Dict, Iterable, Sequence, Literal,
                     List, Type, TypeVar, Union)
@@ -130,11 +149,6 @@ try:
 except Exception:
     _HAS_AZURE_EMB = False
 PageLike = Union[str, Dict[str, Any]]
-EngineType = Literal ['knowledge', 'conversation', 'workflow']
-ExtractionSchemaMode = Literal["auto", "full", "lean", "flattened_lean", "flattened_full"]
-ResolvedExtractionSchemaMode = Literal["full", "lean", "flattened_lean", "flattened_full"]
-OffsetMismatchPolicy = Literal["strict", "exact", "exact_fuzzy"]
-OffsetRepairScorer = Callable[[str, str], float]
 NodeOrEdge: TypeAlias =  Node | Edge
 
 if TYPE_CHECKING:
@@ -2653,6 +2667,17 @@ class GraphKnowledgeEngine:
             # MethodType
             # a.foo = MethodType(foo, a)
             self.cached_embed = cast(Callable[[str], Iterable[float]], cached_embed)
+
+        # Namespaced subsystem APIs (new source-of-truth surface).
+        self.read = ReadSubsystem(self)
+        self.write = WriteSubsystem(self)
+        self.extract = ExtractSubsystem(self)
+        self.persist = PersistSubsystem(self)
+        self.rollback = RollbackSubsystem(self)
+        self.adjudicate = AdjudicateSubsystem(self)
+        self.ingest = IngestSubsystem(self)
+        self.embed = EmbedSubsystem(self)
+        self.conversation = ConversationSubsystem(self)
     def _emit_change(self, *, op: Op, entity: EntityRefModel, payload: object, run_id: str | None = None, step_id: str | None = None) -> None:
         seq = self.changes.next_seq()
         ev = ChangeEvent(
@@ -5095,4 +5120,69 @@ class ApproxTokenizer:
         # very cheap approximation; stable for budget enforcement
         return max(1, len(text) // 4)
     
+
+_SHIM_METHOD_MAP: dict[str, tuple[str, str]] = {
+    # write
+    "add_node": ("write", "add_node"),
+    "add_edge": ("write", "add_edge"),
+    "add_document": ("write", "add_document"),
+    "add_domain": ("write", "add_domain"),
+    # read
+    "get_nodes": ("read", "get_nodes"),
+    "get_edges": ("read", "get_edges"),
+    "query_nodes": ("read", "query_nodes"),
+    "query_edges": ("read", "query_edges"),
+    # lifecycle
+    "tombstone_node": ("lifecycle", "tombstone_node"),
+    "redirect_node": ("lifecycle", "redirect_node"),
+    "tombstone_edge": ("lifecycle", "tombstone_edge"),
+    "redirect_edge": ("lifecycle", "redirect_edge"),
+    # persist / ingest / rollback
+    "persist_graph_extraction": ("persist", "persist_graph_extraction"),
+    "ingest_document_with_llm": ("ingest", "ingest_document_with_llm"),
+    "rollback_document": ("rollback", "rollback_document"),
+}
+
+
+def _install_non_conversation_shims() -> None:
+    for method_name, (namespace_name, namespace_method) in _SHIM_METHOD_MAP.items():
+        original = getattr(GraphKnowledgeEngine, method_name, None)
+        if original is None:
+            continue
+        impl_name = f"_impl_{method_name}"
+        if not hasattr(GraphKnowledgeEngine, impl_name):
+            setattr(GraphKnowledgeEngine, impl_name, original)
+
+        def _make_shim(
+            *,
+            original_method: Callable[..., Any],
+            old_name: str,
+            ns_name: str,
+            ns_method: str,
+        ):
+            @wraps(original_method)
+            def _shim(self, *args, **kwargs):
+                warnings.warn(
+                    (
+                        f"GraphKnowledgeEngine.{old_name} is deprecated; "
+                        f"use engine.{ns_name}.{ns_method} instead."
+                    ),
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
+                namespace_obj = getattr(self, ns_name)
+                return getattr(namespace_obj, ns_method)(*args, **kwargs)
+
+            return _shim
+
+        shim = _make_shim(
+            original_method=original,
+            old_name=method_name,
+            ns_name=namespace_name,
+            ns_method=namespace_method,
+        )
+        setattr(GraphKnowledgeEngine, method_name, shim)
+
+
+_install_non_conversation_shims()
 

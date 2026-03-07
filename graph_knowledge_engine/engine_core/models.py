@@ -284,11 +284,11 @@ class Span(ModeSlicingMixin, BaseModel):
         #     raise ValueError("end_page must be >= start_page")
         if (self.end_char <= self.start_char) and not self.end_char == -1:
             raise ValueError("end_char must be > start_char")
-        from .engine import _default_verification
+        from .utils.refs import default_verification
         if (not hasattr(self, 'verification') and self.__class__.__name__.endswith("LlmSlice")):
             pass # ok LLM ok to have no such field
         elif hasattr(self, 'verification') and self.verification is None: # ok
-            self.verification = _default_verification("no explicit verification from LLM")
+            self.verification = default_verification("no explicit verification from LLM")
         else:
             pass # already has verification filled in
         return self

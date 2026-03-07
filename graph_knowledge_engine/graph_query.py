@@ -47,12 +47,12 @@ class GraphQuery:
 
     # ---- doc scoping ----
     def nodes_in_doc(self, doc_id: str) -> List[Node]:
-        ids = self.e._nodes_by_doc(doc_id)
+        ids = self.e.read.node_ids_by_doc(doc_id)
         got = self.e.backend.node_get(ids=ids, include=["documents"]) if ids else {"documents": []}
         return [Node.model_validate_json(d) for d in (got.get("documents") or []) if d]
 
     def edges_in_doc(self, doc_id: str) -> List[Edge]:
-        ids = self.e._edge_ids_by_doc(doc_id)
+        ids = self.e.read.edge_ids_by_doc(doc_id)
         got = self.e.backend.edge_get(ids=ids, include=["documents"]) if ids else {"documents": []}
         return [Edge.model_validate_json(d) for d in (got.get("documents") or []) if d]
 
@@ -63,7 +63,7 @@ class GraphQuery:
         if center_ids:
             seeds = list(center_ids)
         else:
-            seeds = self.e._nodes_by_doc(doc_id)
+            seeds = self.e.read.node_ids_by_doc(doc_id)
         layers = self.k_hop(seeds, k=max(0, hops), doc_id=doc_id)
         # Flatten and dedupe
         node_ids: Set[str] = set(seeds)
@@ -71,8 +71,8 @@ class GraphQuery:
         for L in layers:
             node_ids |= set(L["nodes"])  # discovered opposite endpoints
             edge_ids |= set(L["edges"])  # incident edges
-        nodes = self.e.get_nodes(list(node_ids))
-        edges = self.e.get_edges(list(edge_ids))
+        nodes = self.e.read.get_nodes(list(node_ids))
+        edges = self.e.read.get_edges(list(edge_ids))
         return {"seed_ids": seeds, "nodes": nodes, "edges": edges, "layers": layers}
 
     # ---- document summary helpers ----

@@ -250,14 +250,14 @@ class IndexingSubsystem:
                     if _actual_fp() == desired_fp:
                         return
 
-                self.engine._index_node_docs(n)
+                self.engine.write.index_node_docs(n)
                 if callable(set_applied):
                     set_applied(namespace=namespace, coalesce_key=coalesce_key, applied_fingerprint=desired_fp, last_job_id=job_id)
                 return
 
             if index_kind == "node_refs":
                 if op == "DELETE":
-                    self.engine._delete_node_ref_rows(entity_id)
+                    self.engine.write.delete_node_ref_rows(entity_id)
                     if callable(set_applied):
                         set_applied(namespace=namespace, coalesce_key=coalesce_key, applied_fingerprint=None, last_job_id=job_id)
                     return
@@ -270,7 +270,7 @@ class IndexingSubsystem:
 
                 meta0 = (got.get("metadatas") or [None])[0] or {}
                 if _is_tombstoned(meta0):
-                    self.engine._delete_node_ref_rows(entity_id)
+                    self.engine.write.delete_node_ref_rows(entity_id)
                     if callable(set_applied):
                         set_applied(namespace=namespace, coalesce_key=coalesce_key, applied_fingerprint=None, last_job_id=job_id)
                     return
@@ -297,7 +297,7 @@ class IndexingSubsystem:
                     if _actual_fp() == desired_fp:
                         return
 
-                self.engine._index_node_refs(n)
+                self.engine.write.index_node_refs(n)
                 if callable(set_applied):
                     set_applied(namespace=namespace, coalesce_key=coalesce_key, applied_fingerprint=desired_fp, last_job_id=job_id)
                 return
@@ -307,7 +307,7 @@ class IndexingSubsystem:
         if entity_kind == "edge":
             if index_kind == "edge_refs":
                 if op == "DELETE":
-                    self.engine._delete_edge_ref_rows(entity_id)
+                    self.engine.write.delete_edge_ref_rows(entity_id)
                     if callable(set_applied):
                         set_applied(namespace=namespace, coalesce_key=coalesce_key, applied_fingerprint=None, last_job_id=job_id)
                     return
@@ -320,7 +320,7 @@ class IndexingSubsystem:
 
                 meta0 = (got.get("metadatas") or [None])[0] or {}
                 if _is_tombstoned(meta0):
-                    self.engine._delete_edge_ref_rows(entity_id)
+                    self.engine.write.delete_edge_ref_rows(entity_id)
                     if callable(set_applied):
                         set_applied(namespace=namespace, coalesce_key=coalesce_key, applied_fingerprint=None, last_job_id=job_id)
                     return
@@ -347,7 +347,7 @@ class IndexingSubsystem:
                     if _actual_fp() == desired_fp:
                         return
 
-                self.engine._index_edge_refs(e)
+                self.engine.write.index_edge_refs(e)
                 if callable(set_applied):
                     set_applied(namespace=namespace, coalesce_key=coalesce_key, applied_fingerprint=desired_fp, last_job_id=job_id)
                 return
@@ -377,7 +377,7 @@ class IndexingSubsystem:
                 if ex_ids:
                     self.engine.backend.edge_endpoints_delete(ids=ex_ids)
 
-                rows = self.engine._fanout_endpoints_rows(e, doc_id)
+                rows = self.engine.write.fanout_endpoints_rows(e, doc_id)
                 if not rows:
                     raise Exception("endpoints not found")
                 desired_fp = _fp(sorted(rows, key=lambda r: r.get("id") or ""))
@@ -403,7 +403,7 @@ class IndexingSubsystem:
                     ids=ep_ids,
                     documents=ep_docs,
                     metadatas=ep_metas,
-                    embeddings=[self.engine._iterative_defensive_emb(str(d)) for d in ep_docs],
+                    embeddings=[self.engine.embed.iterative_defensive_emb(str(d)) for d in ep_docs],
                 )
                 if callable(set_applied):
                     set_applied(namespace=namespace, coalesce_key=coalesce_key, applied_fingerprint=desired_fp, last_job_id=job_id)

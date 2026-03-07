@@ -35,7 +35,7 @@ def _load_node_map(engine: GraphKnowledgeEngine, ids: List[str], node_type: Type
         # Prefer engine helper if available
         return engine._load_node_map(ids, node_type = node_type)
     except Exception:
-        nodes = engine.get_nodes(ids=ids, node_type = node_type, include= include)
+        nodes = engine.read.get_nodes(ids=ids, node_type = node_type, include= include)
         out = {n.id: n for n in nodes}
         # for rid, doc in zip(got.get("ids") or [], got.get("documents") or []):
         #     try:
@@ -63,7 +63,7 @@ def _load_edge_map(engine: GraphKnowledgeEngine, ids: List[str], edge_type: Type
     try:
         return engine._load_edge_map(ids)
     except Exception:
-        edges = engine.get_edges(ids=ids, edge_type = edge_type, include = include)
+        edges = engine.read.get_edges(ids=ids, edge_type = edge_type, include = include)
         out = {n.id: n for n in edges}
         return out
 
@@ -77,7 +77,7 @@ def _ids_by_doc(engine, doc_id: Optional[str]) -> Tuple[List[str], List[str]]:
         return (n.get("ids") or []), (e.get("ids") or [])
     # Prefer engine helpers if present
     try:
-        node_ids = engine._nodes_by_doc(doc_id)
+        node_ids = engine.read.node_ids_by_doc(doc_id)
     except Exception:
         # fallback: query node_docs table if present
         try:
@@ -86,7 +86,7 @@ def _ids_by_doc(engine, doc_id: Optional[str]) -> Tuple[List[str], List[str]]:
         except Exception:
             node_ids = []
     try:
-        edge_ids = engine._edge_ids_by_doc(doc_id)
+        edge_ids = engine.read.edge_ids_by_doc(doc_id)
     except Exception:
         # fallback: query endpoints table if present
         try:

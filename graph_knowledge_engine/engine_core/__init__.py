@@ -11,7 +11,25 @@ from graph_knowledge_engine.engine_core.engine_sqlite import EngineSQLite, Index
 from graph_knowledge_engine.engine_core.indexing import IndexingSubsystem
 from graph_knowledge_engine.engine_core.lifecycle import LifecycleSubsystem
 from graph_knowledge_engine.engine_core.postgres_backend import PgVectorBackend, PgVectorConfig, PostgresUnitOfWork
+from graph_knowledge_engine.engine_core.subsystems import (
+    AdjudicateSubsystem,
+    ConversationSubsystem,
+    EmbedSubsystem,
+    ExtractSubsystem,
+    IngestSubsystem,
+    PersistSubsystem,
+    ReadSubsystem,
+    RollbackSubsystem,
+    WriteSubsystem,
+)
 from graph_knowledge_engine.engine_core.storage_backend import ChromaBackend, NoopUnitOfWork, StorageBackend, UnitOfWork
+from graph_knowledge_engine.engine_core.types import (
+    EngineType,
+    ExtractionSchemaMode,
+    OffsetMismatchPolicy,
+    OffsetRepairScorer,
+    ResolvedExtractionSchemaMode,
+)
 
 __all__ = [
     "GraphKnowledgeEngine",
@@ -30,4 +48,18 @@ __all__ = [
     "NoopUnitOfWork",
     "StorageBackend",
     "UnitOfWork",
+    "EngineType",
+    "ExtractionSchemaMode",
+    "ResolvedExtractionSchemaMode",
+    "OffsetMismatchPolicy",
+    "OffsetRepairScorer",
+    "ReadSubsystem",
+    "WriteSubsystem",
+    "ExtractSubsystem",
+    "PersistSubsystem",
+    "RollbackSubsystem",
+    "AdjudicateSubsystem",
+    "IngestSubsystem",
+    "EmbedSubsystem",
+    "ConversationSubsystem",
 ]

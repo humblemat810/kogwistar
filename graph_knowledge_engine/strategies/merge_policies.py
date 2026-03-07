@@ -62,16 +62,16 @@ class PreferExistingCanonical(MergePolicy):
             if prior.get("metadatas") and prior["metadatas"][0]:
                 doc_id = prior["metadatas"][0].get("doc_id")
             # Update document JSON
-            doc, meta = self.e._node_doc_and_meta(n)
-            emb = self.e._iterative_defensive_emb(doc)
+            doc, meta = self.e.write.node_doc_and_meta(n)
+            emb = self.e.embed.iterative_defensive_emb(doc)
             self.e.node_collection.update(
                 ids=[n.id],
                 embeddings=[emb],
                 documents=[doc],
                 metadatas=[meta],
             )
-            self.e._index_node_docs(n)
-            self.e._index_node_refs(n)
+            self.e.write.index_node_docs(n)
+            self.e.write.index_node_refs(n)
             # also mirror back onto the object for future calls
             n.doc_id = doc_id
 
@@ -102,7 +102,7 @@ class PreferExistingCanonical(MergePolicy):
 
         # left_ref = _best_ref(left)
         # right_ref = _best_ref(right)
-        s_nodes, s_edges, t_nodes, t_edges = self.e._split_endpoints([left.id], [right.id])
+        s_nodes, s_edges, t_nodes, t_edges = self.e.adjudicate.split_endpoints([left.id], [right.id])
 
         same_as = Edge(
             id=str(new_id_str()),
@@ -125,17 +125,17 @@ class PreferExistingCanonical(MergePolicy):
         # self.e.edge_collection.add(
         #     ids=[same_as.id],
         #     documents=[same_as.model_dump_json()],
-        #     metadatas=[self.e._strip_none({
+        #     metadatas=[self.e.write.strip_none({
         #         "doc_id": getattr(same_as, "doc_id", None),
         #         "relation": same_as.relation,
-        #         "source_ids": self.e._json_or_none(same_as.source_ids),
-        #         "target_ids": self.e._json_or_none(same_as.target_ids),
+        #         "source_ids": self.e.write.json_or_none(same_as.source_ids),
+        #         "target_ids": self.e.write.json_or_none(same_as.target_ids),
         #         "type": same_as.type,
         #         "summary": same_as.summary,
         #         "domain_id": same_as.domain_id,
         #         "canonical_entity_id": same_as.canonical_entity_id,
-        #         "properties": self.e._json_or_none(same_as.properties),
-        #         "references": self.e._json_or_none([ref.model_dump() for ref in (same_as.references or [])]),
+        #         "properties": self.e.write.json_or_none(same_as.properties),
+        #         "references": self.e.write.json_or_none([ref.model_dump() for ref in (same_as.references or [])]),
         #     })],
         # )
 
@@ -148,7 +148,7 @@ class PreferExistingCanonical(MergePolicy):
                 per_doc = None
                 if n_meta.get("metadatas") and n_meta["metadatas"][0]:
                     per_doc = n_meta["metadatas"][0].get("doc_id")
-                m = self.e._strip_none({
+                m = self.e.write.strip_none({
                     "id": ep_id,
                     "edge_id": same_as.id,
                     "node_id": nid,
@@ -173,8 +173,8 @@ class PreferExistingCanonical(MergePolicy):
 
         relation_name = "reifies" if self.e.cross_kind_strategy == "reifies" else "equivalent_node_edge"
 
-        l = self.e._fetch_target(node_or_edge_l)   # Node or edge
-        r = self.e._fetch_target(node_or_edge_r)   # node or Edge
+        l = self.e.adjudicate.fetch_target(node_or_edge_l)   # Node or edge
+        r = self.e.adjudicate.fetch_target(node_or_edge_r)   # node or Edge
 
         # evidence: copy best ref from both sides
         left_ref = self.e._best_ref(l)
@@ -207,40 +207,40 @@ class PreferExistingCanonical(MergePolicy):
         canonical_id = verdict.canonical_entity_id
         if not canonical_id:
             # prefer any existing canonical; else new
-            l = self.e._fetch_target(left)
-            r = self.e._fetch_target(right)
+            l = self.e.adjudicate.fetch_target(left)
+            r = self.e.adjudicate.fetch_target(right)
             canonical_id = getattr(l, "canonical_entity_id", None) or getattr(r, "canonical_entity_id", None) or str(uuid.uuid4())
 
         if left.kind == "node":
             # --- Node merge: as you already do ---
-            l:Node = self.e._fetch_target(left)
-            r:Node = self.e._fetch_target(right)
+            l:Node = self.e.adjudicate.fetch_target(left)
+            r:Node = self.e.adjudicate.fetch_target(right)
             l.canonical_entity_id = r.canonical_entity_id = canonical_id
             # persist
             self.e.node_collection.update(
                 ids=[l.id],
                 documents=[l.model_dump_json()],
-                metadatas=[self.e._strip_none({
+                metadatas=[self.e.write.strip_none({
                     "doc_id": getattr(l, "doc_id", None),
                     "label": l.label, "type": l.type, "summary": l.summary,
                     "domain_id": l.domain_id, "canonical_entity_id": l.canonical_entity_id,
-                    "properties": self.e._json_or_none(l.properties),
-                    "references": self.e._json_or_none([ref.model_dump() for ref in (l.mentions or [])]),
+                    "properties": self.e.write.json_or_none(l.properties),
+                    "references": self.e.write.json_or_none([ref.model_dump() for ref in (l.mentions or [])]),
                 })],
             )
-            self.e._index_node_docs(l)
+            self.e.write.index_node_docs(l)
             self.e.node_collection.update(
                 ids=[r.id],
                 documents=[r.model_dump_json()],
-                metadatas=[self.e._strip_none({
+                metadatas=[self.e.write.strip_none({
                     "doc_id": getattr(r, "doc_id", None),
                     "label": r.label, "type": r.type, "summary": r.summary,
                     "domain_id": r.domain_id, "canonical_entity_id": r.canonical_entity_id,
-                    "properties": self.e._json_or_none(r.properties),
-                    "references": self.e._json_or_none([ref.model_dump() for ref in (r.mentions or [])]),
+                    "properties": self.e.write.json_or_none(r.properties),
+                    "references": self.e.write.json_or_none([ref.model_dump() for ref in (r.mentions or [])]),
                 })],
             )
-            self.e._index_node_docs(r)
+            self.e.write.index_node_docs(r)
             # record same_as (node↔node)
             left_ref = self.e._best_ref(l)
             right_ref = self.e._best_ref(r)
@@ -258,40 +258,40 @@ class PreferExistingCanonical(MergePolicy):
             return canonical_id
 
         # --- Edge merge: mirror the same pattern, but meta-edge same_as(edge, edge) ---
-        le: Edge = self.e._fetch_target(left)
-        re: Edge = self.e._fetch_target(right)
+        le: Edge = self.e.adjudicate.fetch_target(left)
+        re: Edge = self.e.adjudicate.fetch_target(right)
         le.canonical_entity_id = re.canonical_entity_id = canonical_id
         # persist edge updates
         self.e.edge_collection.update(
             ids=[le.id],
             documents=[le.model_dump_json()],
-            metadatas=[self.e._strip_none({
+            metadatas=[self.e.write.strip_none({
                 "doc_id": getattr(le, "doc_id", None),
                 "relation": le.relation,
-                "source_ids": self.e._json_or_none(le.source_ids),
-                "target_ids": self.e._json_or_none(le.target_ids),
+                "source_ids": self.e.write.json_or_none(le.source_ids),
+                "target_ids": self.e.write.json_or_none(le.target_ids),
                 "type": le.type, "summary": le.summary,
                 "domain_id": le.domain_id, "canonical_entity_id": le.canonical_entity_id,
-                "properties": self.e._json_or_none(le.properties),
-                "references": self.e._json_or_none([ref.model_dump() for ref in (le.mentions or [])]),
+                "properties": self.e.write.json_or_none(le.properties),
+                "references": self.e.write.json_or_none([ref.model_dump() for ref in (le.mentions or [])]),
             })],
         )
         self.e.edge_collection.update(
             ids=[re.id],
             documents=[re.model_dump_json()],
-            metadatas=[self.e._strip_none({
+            metadatas=[self.e.write.strip_none({
                 "doc_id": getattr(re, "doc_id", None),
                 "relation": re.relation,
-                "source_ids": self.e._json_or_none(re.source_ids),
-                "target_ids": self.e._json_or_none(re.target_ids),
+                "source_ids": self.e.write.json_or_none(re.source_ids),
+                "target_ids": self.e.write.json_or_none(re.target_ids),
                 "type": re.type, "summary": re.summary,
                 "domain_id": re.domain_id, "canonical_entity_id": re.canonical_entity_id,
-                "properties": self.e._json_or_none(re.properties),
-                "references": self.e._json_or_none([ref.model_dump() for ref in (re.mentions or [])]),
+                "properties": self.e.write.json_or_none(re.properties),
+                "references": self.e.write.json_or_none([ref.model_dump() for ref in (re.mentions or [])]),
             })],
         )
-        self.e._index_edge_refs(le)
-        self.e._index_edge_refs(re)
+        self.e.write.index_edge_refs(le)
+        self.e.write.index_edge_refs(re)
         # meta same_as: edge↔edge (use edge-endpoint lists)
         same_as_meta = Edge(
             id=str(uuid.uuid4()),
@@ -306,7 +306,7 @@ class PreferExistingCanonical(MergePolicy):
             doc_id="__adjudication__",
         )
         self.e.add_edge(same_as_meta, doc_id=same_as_meta.doc_id)
-        self.e._index_edge_refs(same_as_meta)
+        self.e.write.index_edge_refs(same_as_meta)
         return canonical_id
     def merge(self, left, right, verdict: AdjudicationVerdict) -> str:
         # node↔node, edge↔edge, cross-kind is handled inside engine methods you already wrote
@@ -318,6 +318,6 @@ class PreferExistingCanonical(MergePolicy):
         # Back-compat: raw Node/Edge
         if left.__class__.__name__ == right.__class__.__name__:
             return self.e.commit_merge(left, right, verdict)
-        return self.e.commit_merge_target(self.e._target_from_node(left) if left.__class__.__name__=="Node" else self.e._target_from_edge(left),
-                                      self.e._target_from_node(right) if right.__class__.__name__=="Node" else self.e._target_from_edge(right),
+        return self.e.commit_merge_target(self.e.adjudicate.target_from_node(left) if left.__class__.__name__=="Node" else self.e.adjudicate.target_from_edge(left),
+                                      self.e.adjudicate.target_from_node(right) if right.__class__.__name__=="Node" else self.e.adjudicate.target_from_edge(right),
                                       verdict)
