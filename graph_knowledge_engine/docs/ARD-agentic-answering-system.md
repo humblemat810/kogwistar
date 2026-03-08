@@ -1,6 +1,10 @@
 # Architectural Requirements Document (ARD)
 ## Agentic Answering System with Provenance, Orchestration, and Wisdom
 
+**Status:** Accepted as target architecture; core execution and provenance pieces are implemented, broader wisdom/control-plane split remains partial
+**Date:** 2026-03-08
+**Owner:** Maintainers
+
 ---
 
 ## 1. Purpose & Scope
@@ -16,6 +20,41 @@ The system must:
 - Remain backend-agnostic (Chroma today, SQL/other later)
 
 This document **does not define UI**, nor does it prescribe a single execution strategy. It defines invariants and interfaces.
+
+### 1.1 Current Implementation Note (2026-03-08)
+
+The repo now implements substantial portions of this document, but the
+full control-plane / trace-plane / wisdom-layer split is still only
+partially realized.
+
+- `graph_knowledge_engine/conversation/agentic_answering.py` already
+  routes answer generation and citation repair through `LLMTaskSet`
+  rather than through concrete provider SDK classes.
+- `graph_knowledge_engine/conversation/designer.py` now defines
+  `AgenticAnsweringWorkflowDesigner`, and
+  `graph_knowledge_engine/conversation/resolvers.py` implements
+  workflow ops such as `aa_prepare`, `aa_get_view_and_question`,
+  `aa_retrieve_candidates`, `aa_select_used_evidence`,
+  `aa_materialize_evidence_pack`, `aa_generate_answer_with_citations`,
+  `aa_validate_or_repair_citations`, `aa_evaluate_answer`,
+  `aa_project_pointers`, `aa_maybe_iterate`, and `aa_persist_response`.
+- Projection and pointer materialization already exist in
+  `graph_knowledge_engine/conversation/knowledge_retriever.py`,
+  `graph_knowledge_engine/conversation/memory_retriever.py`,
+  `graph_knowledge_engine/conversation/retrieval_orchestrator.py`,
+  `graph_knowledge_engine/conversation/conversation_orchestrator.py`,
+  and `graph_knowledge_engine/conversation/resolvers.py`.
+- Current projected nodes are deterministic `reference_pointer`
+  conversation nodes linked with `references` edges.
+- The implementation still carries some backend hints in pointer
+  properties such as `refers_to_collection`, so the logical-reference
+  model in this document remains the intended boundary rather than a
+  fully completed repo-wide fact.
+- The current implementation still stores orchestration semantics inside
+  the existing workflow engine / conversation engine surfaces rather
+  than a separately materialized agent control-plane graph family.
+- See `ARD-0013-core-vendor-neutrality-and-sidecar-optionality.md` for
+  the current vendor-neutrality and backend-surface status.
 
 ---
 

@@ -1,12 +1,13 @@
 from __future__ import annotations
-
+"""TO-DO  ingestor responsibility to verify that empty excerpt is only allowed if that source there is really empty only."""
 import uuid
 from dataclasses import dataclass
-from typing import Iterable, List, Optional, Sequence, Tuple
+from typing import Iterable, List, Optional, Sequence, Tuple, TYPE_CHECKING
 
 from joblib import Memory
 from pydantic import BaseModel, Field
-from langchain_core.language_models import BaseChatModel
+if TYPE_CHECKING:
+    from langchain_core.language_models import BaseChatModel
 import json
 from .engine_core.engine import GraphKnowledgeEngine
 from .engine_core.models import (
@@ -164,13 +165,13 @@ class BaseDocumentGraphIngestor:
         pages: Optional[Sequence[str]] = None,
     ) -> dict:
         """
-        Full side-car pipeline:
-        1) split doc -> leaf chunks
-        2) summarize each leaf into micro-chunks
-        3) group micro-chunks into larger chunks
-        4) persist nodes/edges for summaries and adjacency (bidirectional)
-        5) iterate 2-3 with the newly created larger chunks until 1 node or max_levels
-        6) if still >1 after `force_concat_after_levels`, force-concatenate to final node
+        Run the hierarchical side-car ingestion pipeline for one document.
+
+        The pipeline persists the raw document, splits it into leaf chunks,
+        materializes leaf nodes plus adjacency, summarizes leaves into micro-chunks,
+        and repeatedly groups higher layers until one final summary node remains.
+        Parent-child links are persisted at each layer so the chunk graph can be
+        traversed or rebuilt independently of the temporary in-memory chunk objects.
         """
         try:
             # Ensure the raw document row exists (this does not trigger any LLM extraction)
@@ -405,14 +406,13 @@ class BaseDocumentGraphIngestor:
                         relation=REL_SUMMARIZES, reverse_relation=REL_DETAILS)
         return final_chunk
     def _summarize_layer(self, doc_id: str, leaves: Sequence[LeafChunk], *, level: int) -> List[SummaryChunk]:
-        """_summary_
+        """Summarize each leaf into micro-chunks and persist that local layer.
 
-        branch out
-        
-        Returns:
-            List[SummaryChunk]: _description_
+        Each leaf is summarized independently, producing one or more SummaryChunk
+        records with leaf-relative provenance spans. The resulting nodes and sibling
+        adjacency are persisted immediately so later grouping steps work against
+        committed graph entities, not only transient chunk objects.
         """
-        
         out: List[SummaryChunk] = []
         counts_per_leaf: List[int] = []
 
@@ -461,7 +461,13 @@ class BaseDocumentGraphIngestor:
         return out
 
     def _group_layer(self, doc_id: str, current: Sequence[SummaryChunk], *, level: int) -> List[SummaryChunk]:
-        """Group consecutive chunks into higher-level chunks, using LLM grouping with caching."""
+        """Group adjacent summary chunks into a higher-level layer.
+
+        Grouping is LLM-assisted but keyed for deterministic cache reuse. Each child
+        chunk inherits the span covering its selected members, is persisted as a node
+        immediately, and carries parent_ids so the caller can wire summarization
+        edges between layers after grouping.
+        """
         # Prepare the grouping text
         items_text = "\n".join(f"[{i}] {c.title}: {c.summary}" for i, c in enumerate(current))
         max_groups = max(1, (len(current) + 1) // 2)  # heuristic: halve the count

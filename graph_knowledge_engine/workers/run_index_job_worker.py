@@ -19,22 +19,33 @@ from graph_knowledge_engine.engine_core.postgres_backend import PgVectorBackend
 from .index_job_worker import IndexJobWorker, run_forever
 
 
+def _normalize_backend_name(raw_backend: str) -> str:
+    backend = raw_backend.lower()
+    aliases = {
+        "sqlite": "chroma",
+        "pgvector": "pg",
+        "postgres": "pg",
+    }
+    return aliases.get(backend, backend)
+
+
 def _build_engine(args: argparse.Namespace) -> GraphKnowledgeEngine:
-    backend = (args.backend or os.getenv("GKE_BACKEND") or "chroma").lower()
+    raw_backend = args.backend or os.getenv("GKE_BACKEND") or "chroma"
+    backend = _normalize_backend_name(raw_backend)
     namespace = args.namespace or os.getenv("GKE_NAMESPACE") or "default"
 
-    if backend in {"chroma", "sqlite"}:
+    if backend == "chroma":
         persist = args.persist_directory or os.getenv("GKE_PERSIST_DIRECTORY") or "./chroma_db"
         eng = GraphKnowledgeEngine(persist_directory=str(persist))
         eng.namespace = namespace  # type: ignore[attr-defined]
         return eng
 
-    if backend in {"pgvector", "postgres"}:
+    if backend == "pg":
         import sqlalchemy as sa
 
         dsn = args.pg_url or os.getenv("GKE_PG_URL")
         if not dsn:
-            raise SystemExit("pgvector backend requires --pg-url or GKE_PG_URL")
+            raise SystemExit("pg backend requires --pg-url or GKE_PG_URL")
         schema = args.pg_schema or os.getenv("GKE_PG_SCHEMA") or "public"
         embedding_dim = int(args.embedding_dim or os.getenv("GKE_EMBEDDING_DIM") or 1536)
 
@@ -44,7 +55,10 @@ def _build_engine(args: argparse.Namespace) -> GraphKnowledgeEngine:
         eng.namespace = namespace  # type: ignore[attr-defined]
         return eng
 
-    raise SystemExit(f"Unknown backend: {backend!r} (expected chroma/sqlite or pgvector/postgres)")
+    raise SystemExit(
+        f"Unknown backend: {raw_backend!r} "
+        "(expected chroma/pg; accepted aliases: sqlite, pgvector, postgres)"
+    )
 
 
 def build_worker(eng: GraphKnowledgeEngine, args: argparse.Namespace) -> IndexJobWorker:
@@ -59,7 +73,11 @@ def build_worker(eng: GraphKnowledgeEngine, args: argparse.Namespace) -> IndexJo
 
 def main(argv: Optional[list[str]] = None) -> int:
     ap = argparse.ArgumentParser(description="Run the GKE index_jobs worker")
-    ap.add_argument("--backend", default=None, help="chroma/sqlite or pgvector/postgres (or env GKE_BACKEND)")
+    ap.add_argument(
+        "--backend",
+        default=None,
+        help="chroma/pg (accepted aliases: sqlite, pgvector, postgres; or env GKE_BACKEND)",
+    )
     ap.add_argument("--namespace", default=None, help="namespace to process (or env GKE_NAMESPACE)")
 
     ap.add_argument("--persist-directory", default=None, help="chroma persist dir (or env GKE_PERSIST_DIRECTORY)")

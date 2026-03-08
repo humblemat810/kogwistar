@@ -1,92 +1,329 @@
-# tests/test_generate_cross_kind_candidates.py
-import pytest
-from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
-from graph_knowledge_engine.engine_core.models import Document, Node, Edge, Span,MentionVerification
+import json
+import os
+import shutil
+import tempfile
+from pathlib import Path
 
-def _ref_for(doc_id: str) -> Span:
-    return _span_for(doc_id)
-def _span_for(doc_id: str) -> Span:
-    return Span(
-        collection_page_url="c",
-        document_page_url=f"document/{doc_id}",
-        start_page=1, end_page=1, start_char=0, end_char=1,
-        verification=MentionVerification(method="heuristic", is_verified=False, notes = None, score = 0.9), 
-        insertion_method="pytest-manual",
-        doc_id = doc_id,
-        source_cluster_id = None,
-        excerpt = None
+import pytest
+
+from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
+from graph_knowledge_engine.engine_core.models import (
+    AdjudicationCandidate,
+    AdjudicationVerdict,
+    Document,
+    Edge,
+    Grounding,
+    MentionVerification,
+    Node,
+    Span,
+)
+from graph_knowledge_engine.llm_tasks import (
+    AdjudicateBatchTaskResult,
+    AdjudicatePairTaskResult,
+    AnswerWithCitationsTaskResult,
+    ExtractGraphTaskResult,
+    FilterCandidatesTaskResult,
+    LLMTaskProviderHints,
+    LLMTaskSet,
+    RepairCitationsTaskResult,
+    SummarizeContextTaskResult,
+)
+
+
+_required_env = (
+    "OPENAI_DEPLOYMENT_NAME_GPT4_1",
+    "OPENAI_MODEL_NAME_GPT4_1",
+    "OPENAI_DEPLOYMENT_ENDPOINT_GPT4_1",
+    "OPENAI_API_KEY_GPT4_1",
+)
+_skip_real_llm = not all(os.getenv(key) for key in _required_env)
+
+
+def _doc(*, doc_id: str, content: str, source: str) -> Document:
+    return Document(
+        id=doc_id,
+        content=content,
+        type="text",
+        metadata={"source": source},
+        domain_id=None,
+        processed=False,
+        embeddings=None,
+        source_map=None,
     )
+
+
+def _grounding_for(doc_id: str) -> Grounding:
+    return Grounding(
+        spans=[
+            Span(
+                collection_page_url="c",
+                document_page_url=f"document/{doc_id}",
+                doc_id=doc_id,
+                insertion_method="pytest-manual",
+                page_number=1,
+                start_char=0,
+                end_char=1,
+                excerpt="x",
+                context_before="",
+                context_after="",
+                chunk_id=None,
+                source_cluster_id=None,
+                verification=MentionVerification(
+                    method="heuristic",
+                    is_verified=False,
+                    notes=None,
+                    score=0.9,
+                ),
+            )
+        ]
+    )
+
+
+def _task_set_for_verdict(verdict: AdjudicationVerdict) -> LLMTaskSet:
+    payload = {"verdict": verdict.model_dump(mode="python")}
+    return LLMTaskSet(
+        extract_graph=lambda _req: ExtractGraphTaskResult(raw=None, parsed_payload=None, parsing_error="unused"),
+        adjudicate_pair=lambda _req: AdjudicatePairTaskResult(
+            verdict_payload=payload,
+            raw={"provider": "pytest-stub", "reason": verdict.reason},
+            parsing_error=None,
+        ),
+        adjudicate_batch=lambda _req: AdjudicateBatchTaskResult(verdict_payloads=(), raw=None, parsing_error="unused"),
+        filter_candidates=lambda _req: FilterCandidatesTaskResult(node_ids=(), edge_ids=(), reasoning="", raw=None, parsing_error=None),
+        summarize_context=lambda req: SummarizeContextTaskResult(text=req.full_text),
+        answer_with_citations=lambda _req: AnswerWithCitationsTaskResult(answer_payload=None, raw=None, parsing_error="unused"),
+        repair_citations=lambda _req: RepairCitationsTaskResult(answer_payload=None, raw=None, parsing_error="unused"),
+        provider_hints=LLMTaskProviderHints(adjudicate_pair_provider="custom"),
+    )
+
+
+def _candidate_dump(candidates: list[AdjudicationCandidate]) -> str:
+    return json.dumps(
+        [
+            {
+                "left_kind": candidate.left.kind,
+                "left_id": candidate.left.id,
+                "left_label": candidate.left.label,
+                "right_kind": candidate.right.kind,
+                "right_id": candidate.right.id,
+                "right_label": candidate.right.label,
+                "question": candidate.question,
+            }
+            for candidate in candidates
+        ],
+        indent=2,
+        sort_keys=True,
+    )
+
+
+def _trace_failure(candidate: AdjudicationCandidate, trace) -> str:
+    verdict = trace.adjudication.verdict if trace.adjudication is not None else None
+    return "\n".join(
+        [
+            "Cross-kind adjudication did not return a positive equivalence verdict.",
+            f"question={candidate.question}",
+            f"left={json.dumps(candidate.left.model_dump(mode='python'), sort_keys=True)}",
+            f"right={json.dumps(candidate.right.model_dump(mode='python'), sort_keys=True)}",
+            f"same_entity={None if verdict is None else verdict.same_entity}",
+            f"confidence={None if verdict is None else verdict.confidence}",
+            f"reason={None if verdict is None else verdict.reason}",
+            f"parsing_error={trace.parsing_error}",
+            f"raw={trace.raw}",
+        ]
+    )
+
+
+def _assert_positive_trace(candidate: AdjudicationCandidate, trace) -> None:
+    if trace.adjudication is None:
+        pytest.fail(_trace_failure(candidate, trace))
+    verdict = trace.adjudication.verdict
+    if verdict.same_entity is not True:
+        pytest.fail(_trace_failure(candidate, trace))
+
+
+def _seed_reified_relation_fixture(
+    engine: GraphKnowledgeEngine,
+    *,
+    doc_id: str,
+    source: str,
+) -> tuple[Document, Node, Edge]:
+    doc = _doc(
+        doc_id=doc_id,
+        content=(
+            "Photosynthesis includes a named light-to-chemical-energy conversion step. "
+            "This document describes that relation instance explicitly."
+        ),
+        source=source,
+    )
+    engine.write.add_document(doc)
+    ref = _grounding_for(doc.id)
+
+    source_node = Node(
+        label="Light energy",
+        type="entity",
+        summary="Energy captured from sunlight.",
+        mentions=[ref],
+    )
+    target_node = Node(
+        label="Chemical energy",
+        type="entity",
+        summary="Energy stored in glucose and related molecules.",
+        mentions=[ref],
+    )
+    engine.write.add_node(source_node, doc_id=doc.id)
+    engine.write.add_node(target_node, doc_id=doc.id)
+
+    signature_text = "photosynthesis converts light energy into chemical energy"
+    relation_node = Node(
+        label="Photosynthesis light-to-chemical-energy conversion",
+        type="entity",
+        summary="Named relation instance for the photosynthesis step that converts light energy into chemical energy.",
+        mentions=[ref],
+        properties={"signature_text": signature_text},
+    )
+    engine.write.add_node(relation_node, doc_id=doc.id)
+
+    relation_edge = Edge(
+        label="Photosynthesis light-to-chemical-energy conversion",
+        type="relationship",
+        summary="Specific relation instance where photosynthesis converts light energy into chemical energy.",
+        relation="converts_to",
+        source_ids=[source_node.id],
+        target_ids=[target_node.id],
+        source_edge_ids=[],
+        target_edge_ids=[],
+        mentions=[ref],
+        properties={"signature_text": signature_text},
+    )
+    engine.write.add_edge(relation_edge, doc_id=doc.id)
+    return doc, relation_node, relation_edge
+
+
+def _find_relation_candidate(
+    candidates: list[AdjudicationCandidate],
+    *,
+    node_id: str,
+    edge_id: str,
+) -> AdjudicationCandidate | None:
+    for candidate in candidates:
+        if (
+            candidate.left.kind == "node"
+            and candidate.left.id == node_id
+            and candidate.right.kind == "edge"
+            and candidate.right.id == edge_id
+            and candidate.question == "node_edge_equivalence"
+        ):
+            return candidate
+    return None
+
 
 @pytest.fixture(scope="function")
-def engine(tmp_path):
-    return GraphKnowledgeEngine(persist_directory=str(tmp_path / "chroma"))
+def engine():
+    root = Path.cwd() / ".tmp_pytest"
+    root.mkdir(exist_ok=True)
+    persist_root = Path(tempfile.mkdtemp(prefix="test_cross_kind_", dir=root))
+    try:
+        eng = GraphKnowledgeEngine(persist_directory=str(persist_root / "chroma"))
+        eng._test_cache_dir = persist_root / "llm_cache"  # type: ignore[attr-defined]
+        yield eng
+    finally:
+        shutil.rmtree(persist_root, ignore_errors=True)
+
 
 def test_generate_cross_kind_candidates_happy_path(engine: GraphKnowledgeEngine):
-    # One doc with both a node and an edge that share a salient token
-    doc = Document(content="Photosynthesis basics", type="text",metadata = {"source": "test_generate_cross_kind_candidates_happy_path"}, domain_id = None, processed = False)
-    engine.add_document(doc)
-    ref = _ref_for(doc.id)
-
-    n = Node(label="Photosynthesis", type="entity", summary="Process in plants", mentions=[ref])
-    engine.add_node(n, doc_id=doc.id)
-
-    # Edge summary/label includes the same token "Photosynthesis"
-    e = Edge(label="Photosynthesis relation", type="relationship", summary="Photosynthesis converts light",
-             relation="converts", source_ids=[n.id], target_ids=[], source_edge_ids=[] , target_edge_ids= [], 
-             mentions=[ref])
-    engine.add_edge(e, doc_id=doc.id)
-
-    engine.allow_cross_kind_adjudication = True
-    pairs = engine.generate_cross_kind_candidates(scope_doc_id=doc.id)
-
-    # At least one node↔edge candidate with the correct question
-    assert any(
-        p.left.kind == "node"
-        and p.right.kind == "edge"
-        and p.question == "same_entity"
-        for p in pairs
+    doc, relation_node, relation_edge = _seed_reified_relation_fixture(
+        engine,
+        doc_id="doc::test_generate_cross_kind_candidates_happy_path",
+        source="test_generate_cross_kind_candidates_happy_path",
     )
 
+    engine.allow_cross_kind_adjudication = True
+    candidates = engine.generate_cross_kind_candidates(scope_doc_id=doc.id)
+
+    candidate = _find_relation_candidate(
+        candidates,
+        node_id=relation_node.id,
+        edge_id=relation_edge.id,
+    )
+    assert candidate is not None, (
+        "Expected a node_edge_equivalence candidate for the reified relation.\n"
+        f"candidates={_candidate_dump(candidates)}"
+    )
+    assert isinstance(candidate, AdjudicationCandidate)
+
+    engine.llm_tasks = _task_set_for_verdict(
+        AdjudicationVerdict(
+            same_entity=True,
+            confidence=0.97,
+            reason="The node is an explicit reification of the same conversion relation instance as the edge.",
+            canonical_entity_id=None,
+        )
+    )
+    trace = engine.adjudicate_pair_trace(
+        candidate.left,
+        candidate.right,
+        candidate.question,
+        cache_dir=getattr(engine, "_test_cache_dir"),
+    )
+    _assert_positive_trace(candidate, trace)
+
+
 def test_generate_cross_kind_candidates_disabled_scoped_and_limit(engine: GraphKnowledgeEngine):
-    # Two docs; only one should be considered with scope
-    doc1 = Document(content="Causation doc", type="text",metadata = {"source": "test_generate_cross_kind_candidates_disabled_scoped_and_limit"}, domain_id = None, processed = False)
-    doc2 = Document(content="Unrelated doc", type="text",metadata = {"source": "test_generate_cross_kind_candidates_disabled_scoped_and_limit"}, domain_id = None, processed = False)
-    engine.add_document(doc1)
-    engine.add_document(doc2)
-    ref1 = _ref_for(doc1.id)
-    ref2 = _ref_for(doc2.id)
+    doc1, _, _ = _seed_reified_relation_fixture(
+        engine,
+        doc_id="doc::test_generate_cross_kind_candidates_disabled_scoped_and_limit::1",
+        source="test_generate_cross_kind_candidates_disabled_scoped_and_limit",
+    )
+    _seed_reified_relation_fixture(
+        engine,
+        doc_id="doc::test_generate_cross_kind_candidates_disabled_scoped_and_limit::2",
+        source="test_generate_cross_kind_candidates_disabled_scoped_and_limit",
+    )
 
-    # In doc1: matching tokens ("causation")
-    n1 = Node(label="Causation", type="entity", summary="Cause and effect", mentions=[ref1])
-    engine.add_node(n1, doc_id=doc1.id)
-    e1 = Edge(label="Causation relation", type="relationship", summary="Causation between X and Y",
-              relation="causation", source_ids=[n1.id], target_ids=[], source_edge_ids=[] , target_edge_ids= [], mentions=[ref1])
-    engine.add_edge(e1, doc_id=doc1.id)
-
-    # In doc2: no overlap
-    n2 = Node(label="Gravity", type="entity", summary="Force", mentions=[ref2])
-    engine.add_node(n2, doc_id=doc2.id)
-    e2 = Edge(label="Electromagnetism", type="relationship", summary="Different force",
-              relation="interacts", source_ids=[n2.id], target_ids=[], source_edge_ids=[] , target_edge_ids= [], mentions=[ref2])
-    engine.add_edge(e2, doc_id=doc2.id)
-
-    # (a) Disabled → no candidates
     engine.allow_cross_kind_adjudication = False
     with pytest.raises(ValueError, match="Configuration disallow cross kind adjudication."):
         engine.generate_cross_kind_candidates(scope_doc_id=doc1.id)
 
-    # (b) Enable and scope to doc1 → should find candidates only from doc1
     engine.allow_cross_kind_adjudication = True
-    pairs_scoped = engine.generate_cross_kind_candidates(scope_doc_id=doc1.id)
-    assert pairs_scoped, "Expected at least one candidate in scoped doc"
+    candidates_scoped = engine.generate_cross_kind_candidates(scope_doc_id=doc1.id)
+    assert candidates_scoped, "Expected at least one candidate in scoped doc"
     assert all(
-        # sanity: involved IDs should come from doc1’s items
-        (p.left.kind in ("node","edge") and p.right.kind in ("node","edge"))
-        for p in pairs_scoped
+        isinstance(candidate, AdjudicationCandidate)
+        and candidate.left.kind == "node"
+        and candidate.right.kind == "edge"
+        and candidate.question == "node_edge_equivalence"
+        for candidate in candidates_scoped
     )
 
-    # (c) Limit enforcement
-    pairs_limited = engine.generate_cross_kind_candidates(scope_doc_id=doc1.id, limit_per_bucket=1)
-    # there is at least one; and not more than the limit per bucket
-    assert len(pairs_limited) >= 1
-    assert len(pairs_limited) <= len(pairs_scoped)
+    candidates_limited = engine.generate_cross_kind_candidates(scope_doc_id=doc1.id, limit_per_bucket=1)
+    assert len(candidates_limited) >= 1
+    assert len(candidates_limited) <= len(candidates_scoped)
+
+
+@pytest.mark.skipif(_skip_real_llm, reason="Azure OpenAI env not set for real LLM adjudication")
+def test_generate_cross_kind_candidates_happy_path_real_llm_reason(engine: GraphKnowledgeEngine):
+    doc, relation_node, relation_edge = _seed_reified_relation_fixture(
+        engine,
+        doc_id="doc::test_generate_cross_kind_candidates_happy_path_real_llm_reason",
+        source="test_generate_cross_kind_candidates_happy_path_real_llm_reason",
+    )
+
+    engine.allow_cross_kind_adjudication = True
+    candidates = engine.generate_cross_kind_candidates(scope_doc_id=doc.id)
+    candidate = _find_relation_candidate(
+        candidates,
+        node_id=relation_node.id,
+        edge_id=relation_edge.id,
+    )
+    assert candidate is not None, (
+        "Expected a node_edge_equivalence candidate for the reified relation.\n"
+        f"candidates={_candidate_dump(candidates)}"
+    )
+
+    trace = engine.adjudicate_pair_trace(
+        candidate.left,
+        candidate.right,
+        candidate.question,
+        cache_dir=getattr(engine, "_test_cache_dir") / "real_provider",
+    )
+    _assert_positive_trace(candidate, trace)

@@ -1,5 +1,9 @@
+import argparse
 import uuid
 
+import pytest
+
+import graph_knowledge_engine.workers.run_index_job_worker as worker_runner
 from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
 from graph_knowledge_engine.workers.run_index_job_worker import main
 
@@ -34,3 +38,40 @@ def test_phase5_worker_runner_once_smoke(tmp_path, capsys):
     assert rc == 0
     out = capsys.readouterr().out
     assert "claimed=" in out
+
+
+@pytest.mark.parametrize("backend_alias", ["pg", "pgvector", "postgres"])
+def test_phase5_worker_runner_pg_aliases_build_pg_backend(monkeypatch, backend_alias: str):
+    sqlalchemy = pytest.importorskip("sqlalchemy")
+
+    class FakePgVectorBackend:
+        def __init__(self, *, engine, embedding_dim, schema):
+            self.engine = engine
+            self.embedding_dim = embedding_dim
+            self.schema = schema
+
+    class FakeGraphKnowledgeEngine:
+        def __init__(self, persist_directory=None, backend=None):
+            self.persist_directory = persist_directory
+            self.backend = backend
+            self.namespace = None
+
+    monkeypatch.setattr(worker_runner, "PgVectorBackend", FakePgVectorBackend)
+    monkeypatch.setattr(worker_runner, "GraphKnowledgeEngine", FakeGraphKnowledgeEngine)
+    monkeypatch.setattr(sqlalchemy, "create_engine", lambda dsn: f"sa:{dsn}")
+
+    args = argparse.Namespace(
+        backend=backend_alias,
+        namespace="ns_alias",
+        persist_directory=None,
+        pg_url="postgresql://example/test",
+        pg_schema="test_schema",
+        embedding_dim="8",
+    )
+
+    eng = worker_runner._build_engine(args)
+    assert isinstance(eng.backend, FakePgVectorBackend)
+    assert eng.namespace == "ns_alias"
+    assert eng.backend.engine == "sa:postgresql://example/test"
+    assert eng.backend.embedding_dim == 8
+    assert eng.backend.schema == "test_schema"

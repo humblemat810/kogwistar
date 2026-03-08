@@ -12,7 +12,7 @@ from .chroma_backend import ChromaBackend
 
 
 from .engine_sqlite import EngineSQLite
-from .storage_backend import NoopUnitOfWork
+from .storage_backend import NoopUnitOfWork, StorageBackend
 from ..workers.index_job_worker import IndexJobWorker
 from ..utils.log import bind_log_context
 from .indexing import IndexingSubsystem
@@ -1358,7 +1358,7 @@ class GraphKnowledgeEngine:
         verifier=None,               # callable(extracted, full_text, ref, **kw) -> ReferenceSession
         kg_graph_type : EngineType = 'knowledge',
         debug_dir: pathlib.Path | None = None,
-        backend : str | "PgVectorBackend" | None = None,
+        backend : str | StorageBackend | None = None,
         namespace: str = "default",
         extraction_schema_mode: ExtractionSchemaMode = "auto",
         offset_repair_scorer: OffsetRepairScorer | None = None,
@@ -1465,7 +1465,7 @@ class GraphKnowledgeEngine:
             self.node_refs_collection = self.chroma_client.get_or_create_collection("node_refs")
             self.edge_refs_collection = self.chroma_client.get_or_create_collection("edge_refs")
             # Backend adapter (Phase 1: Chroma)
-            self.backend = ChromaBackend(
+            self.backend:StorageBackend = ChromaBackend(
                 node_index_collection=self.node_index_collection,
                 node_collection=self.node_collection,
                 edge_collection=self.edge_collection,
@@ -1480,8 +1480,13 @@ class GraphKnowledgeEngine:
             self.meta_sqlite.ensure_initialized()
         elif _is_pgvector_backend_instance(backend):
             from .engine_postgres_meta import EnginePostgresMetaStore
-            self.backend = backend
-            meta_postgre = EnginePostgresMetaStore(engine=self.backend.engine, schema=self.backend.schema)
+            if type(backend) is str:
+                raise Exception("unreacheable")
+            else:
+                backend2: PgVectorBackend = backend # let static checker happy
+                meta_postgre = EnginePostgresMetaStore(engine=backend2.engine, schema=backend2.schema)
+            self.backend:StorageBackend = backend
+            
             meta_postgre.ensure_initialized()
             self.meta_sqlite = meta_postgre
         else:
@@ -1927,7 +1932,13 @@ class GraphKnowledgeEngine:
         return self.adjudicate.classify_endpoint_id(rid)
     def _split_endpoints(self, src_ids: list[str] | None, tgt_ids: list[str] | None)-> tuple[list[Any], list[Any], list[Any], list[Any]]:# -> tuple[list[Any], list[Any], list[Any], list[Any]]:
         return self.adjudicate.split_endpoints(src_ids, tgt_ids)
-    def commit_merge(self, left: Node, right: Node, verdict: AdjudicationVerdict, method : str) -> str:
+    def commit_merge(
+        self,
+        left: Node,
+        right: Node,
+        verdict: AdjudicationVerdict,
+        method: str = "unspecified",
+    ) -> str:
         canonical_id = self.merge_policy.commit_merge(left, right, verdict, method)
         return canonical_id
     def commit_any_kind(self, node_or_edge_l: AdjudicationTarget, node_or_edge_r: AdjudicationTarget,
@@ -1977,24 +1988,36 @@ class GraphKnowledgeEngine:
         anchor_doc_id: Optional[str] = None,
         cross_doc_only: bool = False,
         anchor_only: bool = True,
-    ):
+    ) -> List[AdjudicationCandidate]:
         """
         Back-compat:
         - Without new knobs and with scope_doc_id set, behave as before (same-doc only).
         - Otherwise use unified proposer in nodeâ†”edge mode.
         """
-        if (allowed_docs is None and anchor_doc_id is None and not cross_doc_only and scope_doc_id):
-            return self.proposer.cross_kind_in_doc(engine=self, doc_id=scope_doc_id, limit_per_bucket=limit_per_bucket)
+        if not self.allow_cross_kind_adjudication:
+            raise ValueError("Configuration disallow cross kind adjudication.")
 
-        return self.proposer.propose_any_kind_any_doc(
-            engine=self,
-            pair_kind="node_edge",
-            allowed_docs=allowed_docs,
-            anchor_doc_id=anchor_doc_id,
-            cross_doc_only=cross_doc_only,
-            anchor_only=anchor_only,
-            limit_per_bucket=limit_per_bucket,
-        )
+        if (allowed_docs is None and anchor_doc_id is None and not cross_doc_only and scope_doc_id):
+            pairs = self.proposer.cross_kind_in_doc(engine=self, doc_id=scope_doc_id, limit_per_bucket=limit_per_bucket)
+        else:
+            pairs = self.proposer.propose_any_kind_any_doc(
+                engine=self,
+                pair_kind="node_edge",
+                allowed_docs=allowed_docs,
+                anchor_doc_id=anchor_doc_id,
+                cross_doc_only=cross_doc_only,
+                anchor_only=anchor_only,
+                limit_per_bucket=limit_per_bucket,
+            )
+
+        return [
+            AdjudicationCandidate(
+                left=self.adjudicate.target_from_node(left),
+                right=self.adjudicate.target_from_edge(right),
+                question="node_edge_equivalence",
+            )
+            for left, right in pairs
+        ]
 
 
     def generate_merge_candidates(
@@ -2020,6 +2043,9 @@ class GraphKnowledgeEngine:
     def adjudicate_pair(self, left: AdjudicationTarget, right: AdjudicationTarget, question: str):
         """deligate to adjudicator to decide if any nodes/ edges meaning the same"""
         return self.adjudicator.adjudicate_pair(left, right, question)
+    def adjudicate_pair_trace(self, left: AdjudicationTarget, right: AdjudicationTarget, question: str, *, cache_dir=None):
+        """Return the validated adjudication result plus raw/parsing diagnostics."""
+        return self.adjudicator.adjudicate_pair_trace(left, right, question, cache_dir=cache_dir)
     def adjudicate_merge(self, left_node: Node | Edge, right_node: Node | Edge) -> Dict[Any, Any] | BaseModel:
         """deligate to adjudicator to commit merge if any nodes/ edges was (supposedly) earlier decided meaning the same.
         The api only join them with reconsidering."""

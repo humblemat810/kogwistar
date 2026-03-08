@@ -301,6 +301,14 @@ class ConversationService:
         include_pinned_kg_refs: bool = True,
         ordering_strategy: str | None = None,
     ):
+        """Assemble a token-budgeted prompt view from conversation context sources.
+
+        The view is built from summaries, memory context, pinned KG references, and
+        tail turns, then packed under an approximate token budget with optional
+        compression for items that advertise max_tokens. ordering_strategy can change
+        packing order, but system-prompt injection and final tail-turn ordering stay
+        deterministic.
+        """
         _ = user_id
         tokenizer = _ApproxTokenizer()
         eng = self.conversation_engine
@@ -464,6 +472,13 @@ class ConversationService:
         llm_input_payload: dict[str, Any] | None = None,
         evidence_pack_digest: dict[str, Any] | None = None,
     ) -> str:
+        """Persist a stable snapshot node plus depends_on edges for one model step.
+
+        The snapshot id is content-addressed by conversation, run, stage, step, and
+        attempt, so repeated calls for the same rendered context reuse the same node.
+        Stored metadata captures the prompt hash, sequencing fields, token cost, and
+        every referenced node id so later audits can reconstruct what the model saw.
+        """
         eng = self.conversation_engine
 
         def _stable_json(obj: Any) -> str:

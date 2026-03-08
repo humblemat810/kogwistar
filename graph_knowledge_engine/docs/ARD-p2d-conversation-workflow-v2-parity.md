@@ -1,9 +1,9 @@
 ﻿# ARD-P2D: Conversation Workflow v2 Parity, State-First Execution, and Resolver Governance
 
-**Status:** Draft (Living Document)\
+**Status:** Accepted (living guardrail; v2 workflow is implemented, parity work remains ongoing)\
 **Scope:** Conversation orchestrator v1 vs workflow-driven v2; workflow
 runtime; resolver packs; state/effects recording; fanout/side-flows\
-**Last Updated:** 2026-02-25
+**Last Updated:** 2026-03-08
 
 ------------------------------------------------------------------------
 
@@ -32,6 +32,27 @@ After Phase 1 & 2: - Conversation invariants evolved (deterministic IDs,
 idempotency, pin semantics, summary policy). - Default resolvers
 diverged from orchestrator behavior. - v2 must now become canonical
 while preserving parity with v1 for linear runs.
+
+### Current Implementation Note (2026-03-08)
+
+This is no longer purely a proposal:
+
+- `graph_knowledge_engine/conversation/designer.py` defines
+  `ConversationWorkflowDesigner.ensure_add_turn_flow(...)`.
+- `graph_knowledge_engine/conversation/resolvers.py` contains the step
+  implementations for backbone, retrieval, pinning, answering, and
+  context snapshotting.
+- The current add-turn chart marks `answer` as `wf_join=True`, so the
+  workflow already uses explicit join/barrier semantics rather than only
+  tolerating duplicate downstream execution.
+- Relevant tests now exist in:
+  - `tests/kg_conversation/test_phaseB1_backbone_ops.py`
+  - `tests/workflow/test_workflow_orchestrator_v2_smoke.py`
+  - `tests/kg_conversation/test_phase2d_parity_harness.py`
+  - `tests/kg_conversation/test_phaseCDEF_workflow.py`
+
+This document therefore functions as a governance/guardrail record for
+an active implementation, not only a future plan.
 
 ------------------------------------------------------------------------
 

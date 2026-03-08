@@ -26,34 +26,26 @@ async def _wait(url: str, timeout=15):
 # --- Preseed helper (same models/engine your server uses) ---
 def _preseed_chroma_dir(persist_dir: str):
     from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
-    from graph_knowledge_engine.engine_core.models import Document, Node, Edge, Span
+    from graph_knowledge_engine.engine_core.models import Edge, Node
 
-    def ref(doc_id: str, excerpt: str = ""):
-        return Span(
-            collection_page_url=f"document_collection/{doc_id}",
-            document_page_url=f"document/{doc_id}",
-            doc_id=doc_id,
-            insertion_method="pytest-manual",
-            start_page=1, end_page=1, start_char=0, end_char=max(0, len(excerpt)),
-            excerpt=excerpt or None,
-        )
+    from tests._kg_factories import kg_document, kg_grounding
 
     eng = GraphKnowledgeEngine(persist_directory=persist_dir)
-    doc = Document(id="D1", content="Smoking causes lung cancer.", type="text")
-    eng.add_document(doc)
+    doc = kg_document(doc_id="D1", content="Smoking causes lung cancer.", source="test_streamable_http_e2e")
+    eng.write.add_document(doc)
 
-    n_smoke = Node(label="Smoking", type="entity", summary="habit", mentions=[ref(doc.id,"Smoking")], doc_id=doc.id)
-    n_cancer = Node(label="Lung cancer", type="entity", summary="disease", mentions=[ref(doc.id,"lung cancer")], doc_id=doc.id)
-    eng.add_node(n_smoke, doc_id=doc.id)
-    eng.add_node(n_cancer, doc_id=doc.id)
+    n_smoke = Node(label="Smoking", type="entity", summary="habit", mentions=[kg_grounding(doc.id, excerpt="Smoking", end_char=7)], doc_id=doc.id)
+    n_cancer = Node(label="Lung cancer", type="entity", summary="disease", mentions=[kg_grounding(doc.id, excerpt="lung cancer", end_char=11)], doc_id=doc.id)
+    eng.write.add_node(n_smoke, doc_id=doc.id)
+    eng.write.add_node(n_cancer, doc_id=doc.id)
 
     e_causes = Edge(
         label="Smoking→Cancer", type="relationship", relation="causes",
         source_ids=[n_smoke.id], target_ids=[n_cancer.id], summary="causal claim",
         source_edge_ids = [], target_edge_ids = [],
-        mentions=[ref(doc.id,"causes")], doc_id=doc.id,
+        mentions=[kg_grounding(doc.id, excerpt="causes", end_char=6)], doc_id=doc.id,
     )
-    eng.add_edge(e_causes, doc_id=doc.id)
+    eng.write.add_edge(e_causes, doc_id=doc.id)
 
 @pytest.mark.asyncio
 async def test_streamable_http_e2e(tmp_path):

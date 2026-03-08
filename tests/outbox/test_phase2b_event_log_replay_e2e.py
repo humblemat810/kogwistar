@@ -54,7 +54,7 @@ def _mk_edge(edge_id: str, src: str, tgt: str, doc_id: str) -> Edge:
 def _emb(*arg, **kwarg):
     return [0.1] * EMBEDDING_DIM
 
-@pytest.fixture(params=["chroma", "pgvector"], ids=["chroma", "pgvector"])
+@pytest.fixture(params=["chroma", "pg"], ids=["chroma", "pg"])
 def e2e_engine(
     request: pytest.FixtureRequest,
     tmp_path: pathlib.Path,
@@ -64,8 +64,8 @@ def e2e_engine(
     """Run the same Phase-2 E2E usage tests against both backends.
 
     Mirrors the Phase-1 E2E style: identical test code must pass for:
-      - Chroma backend
-      - PgVector backend
+      - `chroma`
+      - `pg` (PgVectorBackend)
 
     Kept local to this module so Phase-1 tests stay unchanged.
     """

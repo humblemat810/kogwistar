@@ -262,7 +262,13 @@ class EnginePostgresMetaStore:
         payload_json: Optional[str] = None,
         max_retries: int = 10,
     ) -> str:
-        """Enqueue a job, coalescing repeated PENDING work by (namespace, coalesce_key)."""
+        """Enqueue durable derived-index work in the Postgres metastore.
+
+        This queue is DB-backed, not an in-memory deque. Pending jobs coalesce by
+        (namespace, coalesce_key), so repeated UPSERTs reuse one row while DELETE
+        wins over UPSERT. The returned job_id may therefore be an existing pending
+        row rather than the caller-provided id.
+        """
         ij = (
             f"{self.schema}.{self.index_jobs_table}"
             if self.index_jobs_table == "index_jobs"
@@ -334,6 +340,13 @@ class EnginePostgresMetaStore:
             lease_seconds: int = 60,
             namespace: Optional[str] = "default",
         ) -> List[IndexJob]:
+        """Lease runnable jobs from the Postgres-backed queue.
+
+        Eligibility is decided in SQL: pending jobs whose delay has elapsed plus
+        doing jobs whose lease expired. Ordering is created_at ASC, namespace
+        scoping happens at claim time, and FOR UPDATE SKIP LOCKED prevents workers
+        from claiming the same row concurrently. FAILED rows are terminal.
+        """
         if limit <= 0:
             return []
         ij = (
@@ -431,9 +444,12 @@ class EnginePostgresMetaStore:
             )
 
     def bump_retry_and_requeue(self, job_id: str, error: str, *, next_run_at_seconds: int) -> None:
-        """Increment retry_count and requeue as PENDING with a delay.
+        """Advance retry state after a failed apply attempt.
 
-        Jobs exceeding max_retries are moved to terminal FAILED automatically.
+        The row stays in the durable queue: retry_count increments, last_error is
+        updated, status returns to PENDING with next_run_at in the future, and rows
+        that exhaust max_retries are promoted to terminal FAILED. The caller chooses
+        the delay and backoff policy.
         """
         ij = (
             f"{self.schema}.{self.index_jobs_table}"

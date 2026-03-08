@@ -1,12 +1,13 @@
 ﻿# Architecture Requirements Document (ARD)
 ## Transactional storage + vector backends (Chroma and Postgres/pgvector)
 
-**Status:** Accepted (Implemented; code-derived)  
+**Status:** Accepted (storage/runtime boundary implemented; upper-layer backend neutrality still partial)  
 **Scope:** `GraphKnowledgeEngine` storage layer + `WorkflowRuntime` persistence boundary + LangGraph conversion compatibility.
 
 ## Document History
 - 2026-03-05: Status changed from Draft to Accepted (Implemented; code-derived from runtime/backend behavior and tests).
 - 2026-03-05: Added explicit concurrent UoW semantics (thread/task isolation, rollback scope, backend-specific consequences).
+- 2026-03-08: Clarified that accepted status applies to storage/runtime boundaries and backend adapters, not to every upper-layer module in the repo.
 
 ---
 ## 1. Context
@@ -20,6 +21,20 @@ The system has multiple â€œenginesâ€ backed by local persistence:
 A **WorkflowRuntime** executes a workflow graph with fan-out/join semantics. Workers compute results and return `RunResult(state_update=...)`. The scheduler loop applies state updates and persists execution artifacts into `conversation_engine`. The system may also convert a workflow into a LangGraph runnable graph via a `langgraph_converter` (not included here), which must preserve the same state merge semantics as native runtime.
 
 ChromaDB mode uses multiple collections (e.g., `nodes`, `edges`, `documents`, etc.) and already supports `where` filtering and storing documents/metadata (e.g., node/edge JSON as documents).
+
+## 1A. Scope Clarification (2026-03-08)
+
+This ARD is accepted for the storage/runtime persistence boundary only.
+It does not claim that every upper-layer module is already backend
+neutral.
+
+In particular, the following areas still expose Chroma-shaped collection
+surfaces and remain outside the "implemented" claim for this document:
+
+- `graph_knowledge_engine/strategies/*`
+- `graph_knowledge_engine/visualization/*`
+- `graph_knowledge_engine/graph_query.py`
+- engine-facing typing protocols that still expose raw collections
 
 ---
 
@@ -120,6 +135,30 @@ Add `engine.uow()` as the only supported way to group writes. The UoW decides wh
 
 **Invariant:** SQL is the source of truth; Chroma is a projection.
 
+### 6.2.1 Structural ingest contract
+The eventual-consistency model in Profile B applies to **derived projections** and replayable side effects. It does **not**
+mean that structurally invalid base writes are accepted and repaired later.
+
+Current contract:
+- Base node/edge records remain the source of truth.
+- Derived projections (`node_docs`, `node_refs`, `edge_refs`, `edge_endpoints`) are rebuilt via durable jobs and replay.
+- `add_edge(...)` requires all referenced endpoints to already exist at ingest time; missing endpoints are rejected as an
+  invalid base write rather than staged for later repair.
+
+Operational consequence:
+- Retry/backoff covers **derived index convergence after a base entity already exists**.
+- Retry/backoff does **not** turn out-of-order base ingest into a safe eventual-consistency flow.
+- External producers must therefore provide dependency-safe ordering, either:
+  - ordered single events (`node` before dependent `edge`)
+  - topologically sorted batches
+  - or an explicit staging/inbox layer that buffers unresolved edges until endpoints exist
+
+Non-goal of current Profile B:
+- accepting unordered concurrent node/edge events as committed base truth and resolving structural dependencies later
+
+If a producer delivers a dependent `edge` before its endpoint `node`, the edge write may fail and must be retried by the
+producer or absorbed by a staging layer. This is distinct from replay/repair of already-committed base rows.
+
 ### 6.3 Concurrent UoW semantics (threads/tasks)
 `engine.uow()` context is isolated per execution context (thread/task). Concurrent callers do not share the same UoW unless they explicitly reuse the same active context.
 
@@ -202,6 +241,16 @@ All vector operations must be safe to repeat:
 - pgvector: `ON CONFLICT DO UPDATE`
 - delete: delete-if-exists
 
+### 10.3 Reconciliation scope
+Reconciliation is intended to be near-real-time queue draining, not a once-per-day batch snapshot pass.
+
+Typical trigger paths:
+- drain-on-write (`enqueue` + immediate best-effort `reconcile`)
+- long-running worker loop over pending jobs
+- replay/repair commands for explicit backfill or corruption recovery
+
+Replay/repair is a secondary convergence mechanism. It is not the primary contract for ordinary unordered structural ingest.
+
 ---
 
 ## 11. Migration plan (incremental)
@@ -243,6 +292,8 @@ All vector operations must be safe to repeat:
 
 - **Chroma mode is eventual consistency:** mitigated with outbox + replay + idempotency.
 - **Operational complexity:** outbox drain loop must be reliable; consider a lightweight â€œdrain-on-writeâ€ plus periodic reconciliation.
+- **Structural ingest is stricter than projection repair:** callers may incorrectly assume edge-before-node delivery is safe because
+  derived index jobs retry. It is not safe without producer ordering, batching, or a staging layer.
 - **Schema divergence:** keep logical `collection_key` mapping consistent across backends to avoid migration pain.
 
 ---

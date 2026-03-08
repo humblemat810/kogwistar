@@ -2,10 +2,11 @@ import os
 import pytest
 import json
 from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
-from graph_knowledge_engine.engine_core.models import Document, Span, LLMGraphExtraction
+from graph_knowledge_engine.engine_core.models import LLMGraphExtraction
 from graph_knowledge_engine.llm_tasks import DefaultTaskProviderConfig
 from typing import cast
 import sys, pathlib
+from tests._kg_factories import kg_document
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 @pytest.fixture(scope="module")
 def engine() -> GraphKnowledgeEngine:
@@ -52,15 +53,18 @@ def test_ingest_documentS_with_llm(engine:GraphKnowledgeEngine)-> None:
     os.makedirs(location, exist_ok = True)
     memory_extract_only = Memory(location=location, verbose=0)
     outcome = []
-    for doc_content in doc_content_list:
+    for idx, doc_content in enumerate(doc_content_list):
         @memory_embeddings.cache
         def get_ef(doc_content) -> list[list[float]]:# -> Any | list[list[float]]:
             res : list[list[float]]= engine._ef(doc_content) # type: ignore
             return res
-        doc = Document(content=doc_content,
-                   type="text", metadata={"source":"test"}, domain_id = None, processed = False, 
-                   embeddings = cast(list[list[float]], get_ef(doc_content))[0], 
-                   source_map = None)
+        doc = kg_document(
+            doc_id=f"doc::test_ingest_documentS_with_llm::{idx}",
+            content=doc_content,
+            source="test",
+            embeddings=cast(list[list[float]], get_ef(doc_content))[0],
+            source_map=None,
+        )
            # cache ONLY the pure extraction on the doc content
         
         @memory_extract_only.cache
@@ -95,15 +99,12 @@ def test_ingest_long_text_file_with_chunking(engine: GraphKnowledgeEngine) -> No
     content = path.read_text(encoding="utf-8")
     assert len(content) > 20_000  # sanity: must actually be long
 
-    doc = Document(
+    doc = kg_document(
+        doc_id="doc::test_ingest_long_text_file_with_chunking",
         content=content,
-        type="text",
-        metadata={"source": "fixture"},
-        domain_id=None,
-        processed=False,
-        embeddings = None,
-        # embeddings=engine._ef([content])[0],  # cache if you want
-        source_map = None
+        source="fixture",
+        embeddings=None,
+        source_map=None,
     )
     
     parsed = engine.extract_graph_with_llm(
@@ -129,14 +130,14 @@ def test_ingest_document_with_llm(engine):
         "Chlorophyll is the molecule that absorbs sunlight. "
         "Plants perform photosynthesis in their leaves."
     )
-    document = Document(
+    document = kg_document(
+        doc_id="doc::test_ingest_document_with_llm",
         content=doc_content,
-        type="ocr",
-        metadata={"source": "test"},
+        source="test",
+        doc_type="ocr",
         processed=False,
-        domain_id = None,
-        embeddings = None,
-        source_map = None,
+        embeddings=None,
+        source_map=None,
     )
 
     # The .env file must be configured with Azure OpenAI credentials

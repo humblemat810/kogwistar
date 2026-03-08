@@ -54,6 +54,60 @@ print("ok")
     assert proc.returncode == 0, proc.stderr
 
 
+def test_optional_modules_import_safely_without_optional_dependencies() -> None:
+    code = _script_with_blocked_imports(
+        blocked_roots=(
+            "chromadb",
+            "sqlalchemy",
+            "pgvector",
+            "langchain_core",
+            "langchain_openai",
+            "langchain_google_genai",
+            "langgraph",
+        ),
+        body="""
+import graph_knowledge_engine.ingester as ingester
+import graph_knowledge_engine.ocr as ocr
+import graph_knowledge_engine.runtime as runtime_pkg
+import graph_knowledge_engine.runtime.langgraph_converter as langgraph_converter
+import graph_knowledge_engine.utils.langchain as langchain_utils
+
+assert hasattr(ingester, "PagewiseSummaryIngestor")
+assert hasattr(ocr, "RawOCRResponse")
+assert hasattr(runtime_pkg, "WorkflowRuntime")
+assert hasattr(langgraph_converter, "to_langgraph")
+assert hasattr(langchain_utils, "GeminiCostCallbackHandler")
+print("ok")
+""",
+    )
+    proc = _run_python(code)
+    assert proc.returncode == 0, proc.stderr
+
+
+def test_server_entrypoint_import_is_safe_without_optional_dependencies() -> None:
+    code = _script_with_blocked_imports(
+        blocked_roots=(
+            "chromadb",
+            "sqlalchemy",
+            "pgvector",
+            "langchain_core",
+            "langchain_openai",
+            "langchain_google_genai",
+            "langgraph",
+        ),
+        body="""
+import graph_knowledge_engine.server_mcp_with_admin as server
+
+assert "lazy" in repr(server.engine)
+assert "lazy" in repr(server.conversation_engine)
+assert "lazy" in repr(server.wisdom_engine)
+print("ok")
+""",
+    )
+    proc = _run_python(code)
+    assert proc.returncode == 0, proc.stderr
+
+
 def test_missing_chroma_dependency_error_is_actionable() -> None:
     code = _script_with_blocked_imports(
         blocked_roots=("chromadb",),
@@ -67,6 +121,31 @@ except RuntimeError as e:
     print("ok")
 else:
     raise AssertionError("expected missing chroma dependency error")
+""",
+    )
+    proc = _run_python(code)
+    assert proc.returncode == 0, proc.stderr
+
+
+def test_missing_langgraph_dependency_error_is_actionable() -> None:
+    code = _script_with_blocked_imports(
+        blocked_roots=("langgraph",),
+        body="""
+from graph_knowledge_engine.runtime.langgraph_converter import to_langgraph
+
+try:
+    to_langgraph(
+        workflow_engine=None,
+        workflow_id="wf",
+        step_resolver=None,
+        predicate_registry={},
+    )
+except RuntimeError as e:
+    msg = str(e)
+    assert "kogwistar[langgraph]" in msg
+    print("ok")
+else:
+    raise AssertionError("expected missing langgraph dependency error")
 """,
     )
     proc = _run_python(code)
@@ -94,6 +173,26 @@ except Exception as e:
     print("ok")
 else:
     raise AssertionError("expected missing gemini dependency error")
+""",
+    )
+    proc = _run_python(code)
+    assert proc.returncode == 0, proc.stderr
+
+
+def test_missing_ocr_dependency_error_is_actionable() -> None:
+    code = _script_with_blocked_imports(
+        blocked_roots=("langchain_core", "langchain_google_genai"),
+        body="""
+import graph_knowledge_engine.ocr as ocr
+
+try:
+    ocr.SystemMessage("hello")
+except RuntimeError as e:
+    msg = str(e)
+    assert "kogwistar[ingestion-gemini]" in msg
+    print("ok")
+else:
+    raise AssertionError("expected missing OCR dependency error")
 """,
     )
     proc = _run_python(code)

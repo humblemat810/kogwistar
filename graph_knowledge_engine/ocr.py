@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import logging
 import os
 retry_failed_refine = False
@@ -7,7 +9,7 @@ ocr_json_version = "0.1"
 import time
 import base64
 from graph_knowledge_engine.engine_core.models import NonText_box_2d, OCRClusterResponse, SplitPage, SplitPageMeta, NonTextCluster, TextCluster
-from typing import Any, cast, Callable, Optional,  Literal, TypeAlias, Union
+from typing import TYPE_CHECKING, Any, cast, Callable, Optional,  Literal, TypeAlias, Union
 import json
 from pydantic_extension.model_slicing import (ModeSlicingMixin, NotMode, FrontendField, BackendField, LLMField,
                 DtoType,
@@ -17,9 +19,36 @@ from pydantic_extension.model_slicing import (ModeSlicingMixin, NotMode, Fronten
                 use_mode)
 from pydantic_extension.model_slicing.mixin import ExcludeMode, DtoField
 from pydantic import BaseModel, Field, model_validator, field_validator, field_serializer
-from langchain_core.messages import SystemMessage, BaseMessage, HumanMessage
-from langchain_core.language_models import BaseChatModel
-from langchain_google_genai import ChatGoogleGenerativeAI
+if TYPE_CHECKING:
+    from langchain_core.language_models import BaseChatModel
+    from langchain_core.messages import BaseMessage
+
+_OCR_OPTIONAL_DEPENDENCY_MESSAGE = (
+    "OCR helpers require optional dependency group 'ingestion-gemini'. "
+    "Install with: pip install 'kogwistar[ingestion-gemini]'"
+)
+
+
+def _raise_ocr_dependency_error() -> None:
+    raise RuntimeError(_OCR_OPTIONAL_DEPENDENCY_MESSAGE)
+
+
+class _MissingOCRDependency:
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        _ = (args, kwargs)
+        _raise_ocr_dependency_error()
+
+
+try:
+    from langchain_core.messages import HumanMessage, SystemMessage
+except Exception:  # pragma: no cover - depends on optional env
+    HumanMessage = _MissingOCRDependency  # type: ignore[assignment]
+    SystemMessage = _MissingOCRDependency  # type: ignore[assignment]
+
+try:
+    from langchain_google_genai import ChatGoogleGenerativeAI
+except Exception:  # pragma: no cover - depends on optional env
+    ChatGoogleGenerativeAI = _MissingOCRDependency  # type: ignore[assignment]
 PastCompatibleSplitPage: TypeAlias = SplitPage
 def get_page_json(folder_path, page_num):
     with open(os.path.join(folder_path, 'page_'+str(page_num)+'.json'), 'r') as f:

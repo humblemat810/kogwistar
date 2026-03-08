@@ -49,10 +49,12 @@ class LifecycleSubsystem(NamespaceProxy):
         fetch_by_ids: Callable[[Sequence[str]], list[T]],
         resolve_mode: Literal["active_only", "redirect", "include_tombstones"],
     ) -> list[T]:
-        """Resolve redirect chains.
+        """Resolve redirected items until an active terminal target is found.
 
-        Fix: do not enqueue str(None) into the frontier when tombstoned items have
-        no redirect target.
+        Only resolve_mode='redirect' follows redirect_to_id chains; other modes
+        leave the initial items unchanged. Tombstoned items without redirect targets
+        are terminal and dropped, cycles are avoided with visited tracking, and the
+        final result is filtered through the lifecycle-mode helper.
         """
         if resolve_mode != "redirect":
             return initial_items

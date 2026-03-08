@@ -1,9 +1,24 @@
 from logging import Logger
-from langchain_core.callbacks.base import BaseCallbackHandler
-from langchain_core.outputs.chat_generation import ChatGeneration
-from langchain_core.outputs.llm_result import LLMResult
 
 from typing import Any
+
+try:
+    from langchain_core.callbacks.base import BaseCallbackHandler
+    from langchain_core.outputs.chat_generation import ChatGeneration
+    from langchain_core.outputs.llm_result import LLMResult
+except ModuleNotFoundError:  # pragma: no cover - optional dependency
+    class BaseCallbackHandler:
+        def on_llm_start(self, *args: Any, **kwargs: Any) -> None:
+            _ = (args, kwargs)
+
+        def on_llm_end(self, *args: Any, **kwargs: Any) -> None:
+            _ = (args, kwargs)
+
+    class ChatGeneration:
+        pass
+
+    class LLMResult:
+        generations: list[list[Any]]
 
 GEMINI_PRO_INPUT_COST_PER_1K_TOKENS = 0.0001
 GEMINI_PRO_OUTPUT_COST_PER_1K_TOKENS = 0.0004

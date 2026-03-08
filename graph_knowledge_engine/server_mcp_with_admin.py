@@ -23,6 +23,7 @@ import pathlib
 from pydantic import BaseModel, Field
 from starlette.middleware.base import BaseHTTPMiddleware
 import time
+from threading import Lock
 from typing import Callable, List, Optional
 from typing import Any, Dict, Set
 import uuid
@@ -96,21 +97,71 @@ else:
     raise Exception("MCP_CHROMA_DIR undefined")
 pathparts.insert(-1, 'index')
 index_dir = os.path.join(*pathparts) or "./index/chroma-mcp"
-os.makedirs(index_dir, exist_ok = True)
 index_db_path = os.path.join(*(pathparts + ['index.db']))
 
-engine = GraphKnowledgeEngine(persist_directory=persist_directory)
 conversation_persist_directory = os.environ.get("MCP_CHROMA_DIR_CONVERSATION") or (persist_directory + "-conversation")
-conversation_engine = GraphKnowledgeEngine(
-    persist_directory=conversation_persist_directory,
-    kg_graph_type="conversation",
-)
-conversation_gq = GraphQuery(conversation_engine)
-gq = GraphQuery(engine)
 # ---- Wisdom + MCP ----
 wisdom_persist_directory = os.environ.get("MCP_CHROMA_DIR_WISDOM") or (persist_directory + "-wisdom")
-wisdom_engine = GraphKnowledgeEngine(persist_directory=wisdom_persist_directory)
-wisdom_gq = GraphQuery(wisdom_engine)
+
+
+class _LazyResource:
+    def __init__(self, factory: Callable[[], object], name: str) -> None:
+        object.__setattr__(self, "_factory", factory)
+        object.__setattr__(self, "_name", name)
+        object.__setattr__(self, "_value", None)
+        object.__setattr__(self, "_lock", Lock())
+
+    def get(self) -> object:
+        value = object.__getattribute__(self, "_value")
+        if value is None:
+            lock = object.__getattribute__(self, "_lock")
+            with lock:
+                value = object.__getattribute__(self, "_value")
+                if value is None:
+                    value = object.__getattribute__(self, "_factory")()
+                    object.__setattr__(self, "_value", value)
+        return value
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self.get(), name)
+
+    def __setattr__(self, name: str, value: object) -> None:
+        if name in {"_factory", "_name", "_value", "_lock"}:
+            object.__setattr__(self, name, value)
+            return
+        setattr(self.get(), name, value)
+
+    def __repr__(self) -> str:
+        value = object.__getattribute__(self, "_value")
+        state = "initialized" if value is not None else "lazy"
+        return f"<_LazyResource {object.__getattribute__(self, '_name')} ({state})>"
+
+
+def _ensure_index_storage() -> None:
+    os.makedirs(index_dir, exist_ok=True)
+
+
+def _build_engine() -> GraphKnowledgeEngine:
+    return GraphKnowledgeEngine(persist_directory=persist_directory)
+
+
+def _build_conversation_engine() -> GraphKnowledgeEngine:
+    return GraphKnowledgeEngine(
+        persist_directory=conversation_persist_directory,
+        kg_graph_type="conversation",
+    )
+
+
+def _build_wisdom_engine() -> GraphKnowledgeEngine:
+    return GraphKnowledgeEngine(persist_directory=wisdom_persist_directory)
+
+
+engine: GraphKnowledgeEngine = _LazyResource(_build_engine, "knowledge_engine")
+conversation_engine = _LazyResource(_build_conversation_engine, "conversation_engine")
+wisdom_engine = _LazyResource(_build_wisdom_engine, "wisdom_engine")
+gq = _LazyResource(lambda: GraphQuery(engine.get()), "knowledge_graph_query")
+conversation_gq = _LazyResource(lambda: GraphQuery(conversation_engine.get()), "conversation_graph_query")
+wisdom_gq = _LazyResource(lambda: GraphQuery(wisdom_engine.get()), "wisdom_graph_query")
 templates = Jinja2Templates(directory=os.path.join(str(pathlib.Path(__file__).parent),"templates"))
 
 # Fastapi
@@ -1221,6 +1272,15 @@ def ensure_index_tables(conn: sqlite3.Connection):
     cur.execute("CREATE INDEX IF NOT EXISTS idx_semantic_index_alias_alias ON semantic_index_alias(alias);")
 
     conn.commit()
+
+
+def _ensure_index_tables_initialized() -> None:
+    _ensure_index_storage()
+    conn = sqlite3.connect(index_db_path)
+    try:
+        ensure_index_tables(conn)
+    finally:
+        conn.close()
 def _safe_upsert_fts(cur, idx_id, item):
     kw = " ".join(item.keywords) if item.keywords else ""
     al = " ".join(item.aliases) if item.aliases else ""
@@ -1240,6 +1300,7 @@ def _safe_upsert_fts(cur, idx_id, item):
 @app.post("/api/add_index_entries")
 def add_index_entries(payload: AddIndexEntriesInput):
     import sqlite3
+    _ensure_index_tables_initialized()
     conn = sqlite3.connect(index_db_path)
     conn.execute("PRAGMA foreign_keys = ON;")
     cur = conn.cursor()
@@ -1279,17 +1340,10 @@ def add_index_entries(payload: AddIndexEntriesInput):
         conn.close()
 
     return {"ok": True}
-conn = sqlite3.connect(index_db_path)
-cur = conn.cursor()
-cur.execute("PRAGMA integrity_check;")
-print(cur.fetchall())
-
-
-ensure_index_tables(conn)
-conn.close()
 from numpy import interp
 @app.get("/api/search_index_hybrid")
 def search_index_hybrid(q: str, limit: int = 10, resolve_node = False) -> Dict[str, Any]:
+    _ensure_index_tables_initialized()
     conn = sqlite3.connect(index_db_path)
     conn.row_factory = sqlite3.Row
     cur = conn.cursor()

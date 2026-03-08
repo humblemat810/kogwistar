@@ -1,15 +1,19 @@
 # tests/test_ingest_document_with_llm_cache.py
 import json
-from graph_knowledge_engine.engine_core.models import Document
 from joblib import Memory
 import os, pathlib
 
+from tests._kg_factories import kg_document
+
 def test_ingest_document_with_llm_cache(engine):
     content = "Plants convert light energy. Chlorophyll absorbs sunlight."
-    doc = Document(content=content,
-                   type="text", metadata={"source":"test"}, domain_id = None, processed = False, 
-                   id = "doc::test_ingest_document_with_llm_cache", source_map = None,
-                   embeddings = engine.embed.iterative_defensive_emb(content))
+    doc = kg_document(
+        doc_id="doc::test_ingest_document_with_llm_cache",
+        content=content,
+        source="test",
+        embeddings=engine.embed.iterative_defensive_emb(content),
+        source_map=None,
+    )
 
     # cache ONLY the pure extraction on the doc content
     cache_dir = os.path.join(".cache","test",pathlib.Path(__file__).name,"extract")

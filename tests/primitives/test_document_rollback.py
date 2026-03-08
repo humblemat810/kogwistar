@@ -6,16 +6,17 @@ from joblib import Memory
 import os
 import pathlib
 
+from tests._kg_factories import kg_document
+
 def test_document_rollback(engine):
     # Create and ingest a dummy document
     
-    doc = Document(
+    doc = kg_document(
+        doc_id="a882ec6b-75e1-11f0-87ad-0456e5e49702",
         content="The moon orbits the Earth.",
-        type="test",
-        metadata={"source": "rollback_test"},
-        domain_id = None, processed = False
+        source="rollback_test",
+        doc_type="text",
     )
-    doc.id = 'a882ec6b-75e1-11f0-87ad-0456e5e49702'
     engine.node_collection.delete(where={"doc_id": doc.id})
     location = os.path.join(".cache", "test", pathlib.Path(__file__).parts[-1], "test_document_rollback")
     os.makedirs(location, exist_ok=True)
@@ -34,8 +35,8 @@ def test_document_rollback(engine):
     engine.rollback_document(doc.id)
 
     # Ensure all related data is gone
-    nodes_after = engine.node_collection.get(where={"doc_id": doc.id})
-    edges_after = engine.edge_collection.get(where={"doc_id": doc.id})
+    nodes_after = engine.backend.node_get(where={"$and": [{"doc_id": doc.id}, {"lifecycle_status": "active"}]})
+    edges_after = engine.backend.edge_get(where={"$and": [{"doc_id": doc.id}, {"lifecycle_status": "active"}]})
     docs_after = engine.document_collection.get(where={"doc_id": doc.id})
 
     assert len(nodes_after["ids"]) == 0
@@ -44,8 +45,12 @@ def test_document_rollback(engine):
     
 def test_batch_document_rollback(engine):
     docs = [
-        Document(content=f"title test Document {i}, Content : test content {i}, this is first sentence of test doc{i}", type="test",
-                 metadata = {"source": "test_batch_document_rollback"}, domain_id = None, processed = False)
+        kg_document(
+            doc_id=f"doc::test_batch_document_rollback::{i}",
+            content=f"title test Document {i}, Content : test content {i}, this is first sentence of test doc{i}",
+            source="test_batch_document_rollback",
+            doc_type="text",
+        )
         for i in range(3)
     ]
     inserted = []
@@ -62,6 +67,10 @@ def test_batch_document_rollback(engine):
 
     # Verify deletion
     for doc in docs:
-        assert not engine.node_collection.get(where={"doc_id": doc.id})["ids"]
-        assert not engine.edge_collection.get(where={"doc_id": doc.id})["ids"]
+        assert not engine.backend.node_get(
+            where={"$and": [{"doc_id": doc.id}, {"lifecycle_status": "active"}]}
+        )["ids"]
+        assert not engine.backend.edge_get(
+            where={"$and": [{"doc_id": doc.id}, {"lifecycle_status": "active"}]}
+        )["ids"]
         assert not engine.document_collection.get(where={"doc_id": doc.id})["ids"]

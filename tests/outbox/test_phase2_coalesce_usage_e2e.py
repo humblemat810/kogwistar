@@ -42,7 +42,7 @@ def _ids(coll_get: dict) -> list[str]:
     return list(coll_get.get("ids") or [])
 
 
-@pytest.fixture(params=["chroma", "pgvector"], ids=["chroma", "pgvector"])
+@pytest.fixture(params=["chroma", "pg"], ids=["chroma", "pg"])
 def e2e_engine(
     request: pytest.FixtureRequest,
     tmp_path: pathlib.Path,
@@ -52,8 +52,8 @@ def e2e_engine(
     """Run the same Phase-2 E2E usage tests against both backends.
 
     Mirrors the Phase-1 E2E style: identical test code must pass for:
-      - Chroma backend
-      - PgVector backend
+      - `chroma`
+      - `pg` (PgVectorBackend)
 
     Kept local to this module so Phase-1 tests stay unchanged.
     """
@@ -72,7 +72,7 @@ def e2e_engine(
 
 def _assert_backend_kind(eng: GraphKnowledgeEngine) -> None:
     kind = getattr(eng, "_test_backend_kind", None)
-    if kind == "pgvector":
+    if kind == "pg":
         assert isinstance(eng.backend, PgVectorBackend)
     else:
         assert isinstance(eng.backend, ChromaBackend)

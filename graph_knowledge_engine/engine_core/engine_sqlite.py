@@ -391,9 +391,12 @@ class EngineSQLite:
         max_retries: int = 10,
         namespace: str = 'default',
     ) -> str:
-        """Enqueue a job, coalescing repeated PENDING work by (entity_kind, entity_id, index_kind).
+        """Enqueue durable derived-index work in the SQLite metastore.
 
-        Returns the job_id that should be used by the caller (may be an existing pending job).
+        This queue is DB-backed, not an in-memory deque. Pending jobs coalesce by
+        (namespace, coalesce_key), so repeated UPSERTs reuse one row while DELETE
+        wins over UPSERT. The returned job_id may therefore identify an existing
+        pending job instead of the caller-provided id.
         """
         now = self._now_epoch()
         coalesce_key = f"{entity_kind}:{entity_id}:{index_kind}"
@@ -444,15 +447,12 @@ class EngineSQLite:
         lease_seconds: int = 60,
         namespace: Optional[str] = "default",
     ) -> List[IndexJobRow]:
-        """Claim up to `limit` jobs with an expiring lease.
+        """Lease runnable jobs from the SQLite-backed queue.
 
-        Eligibility:
-        - PENDING jobs whose next_run_at <= now (or NULL)
-        - DOING jobs whose lease has expired (lease stealing)
-
-        FAILED is terminal (DLQ) and is never reclaimed.
-
-        If namespace is None, claims across all namespaces. Otherwise claims only that namespace.
+        Eligibility is decided in SQL: pending jobs whose delay has elapsed plus
+        doing jobs whose lease expired. Ordering is created_at ASC, namespace
+        filtering happens at claim time, and FAILED rows are terminal. Claiming
+        flips rows to DOING so concurrent workers do not process the same job.
         """
         if limit <= 0:
             return []
@@ -539,9 +539,12 @@ class EngineSQLite:
             )
 
     def bump_retry_and_requeue(self, job_id: str, error: str, *, next_run_at_seconds: int) -> None:
-        """Increment retry_count and requeue as PENDING with a delay.
+        """Advance retry state after a failed apply attempt.
 
-        Jobs exceeding max_retries are moved to terminal FAILED automatically.
+        The row stays in the durable queue: retry_count increments, last_error is
+        updated, status returns to PENDING with next_run_at in the future, and rows
+        that exhaust max_retries are promoted to terminal FAILED. The caller chooses
+        the delay and backoff policy.
         """
         now = self._now_epoch()
         delay = max(0, int(next_run_at_seconds))

@@ -1,11 +1,32 @@
 ﻿# ARD-P2D Appendix A: State, Effects, Retries, Ordering, and Chain Semantics
 
+**Status:** Accepted as workflow/conversation governance appendix  
+**Last Updated:** 2026-03-08  
+
 **Purpose:** This appendix pins down the â€œhard rulesâ€ for WorkflowState, branching, retries, ordering, and how the *main conversation chain* remains linear while still allowing fanout/sidecars and multiple in-chain events per user turn.
 
 This appendix is designed to prevent future drift between:
 - v1 linear orchestrator execution
 - v2 workflow execution (including fanout)
 - future transpiled runtimes (e.g., LangGraph)
+
+## Current Implementation Note (2026-03-08)
+
+The runtime and conversation stack already implement parts of this
+appendix:
+
+- `graph_knowledge_engine/runtime/runtime.py` reserves `_deps` and
+  `_rt_join` and applies state updates via explicit `'u'`, `'a'`, and
+  `'e'` operations.
+- `graph_knowledge_engine/conversation/resolvers.py` uses structured
+  state keys such as `memory`, `kg`, `memory_pin`, `kg_pin`, and
+  `answer`.
+- `graph_knowledge_engine/conversation/designer.py` marks the current
+  conversation workflow with explicit `wf_join` metadata where join
+  semantics are intended.
+
+This appendix remains normative. Not every rule here is enforced
+generically by the runtime yet.
 
 ---
 

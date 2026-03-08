@@ -39,11 +39,11 @@ def _first_doc_id(engine: EngineLike, obj_id: str, kind: Literal["node", "edge"]
     """Infer a primary doc_id for an entity id using your existing indices."""
     try:
         if kind == "node":
-            rows = engine.node_docs_collection.get(where={"node_id": obj_id}, include=["metadatas"])
+            rows = engine.backend.node_docs_get(where={"node_id": obj_id}, include=["metadatas"])
             metas = rows.get("metadatas") or []
             if metas and metas[0] and metas[0].get("doc_id"):
                 return metas[0]["doc_id"]
-            rec = engine.node_collection.get(ids=[obj_id], include=["metadatas"])
+            rec = engine.backend.node_get(ids=[obj_id], include=["metadatas"])
             md = (rec.get("metadatas") or [None])[0] or {}
             if md.get("doc_id"):
                 return md["doc_id"]
@@ -52,11 +52,11 @@ def _first_doc_id(engine: EngineLike, obj_id: str, kind: Literal["node", "edge"]
                 return doc_ids[0]
             return None
         else:
-            rows = engine.edge_endpoints_collection.get(where={"edge_id": obj_id}, include=["metadatas"])
+            rows = engine.backend.edge_endpoints_get(where={"edge_id": obj_id}, include=["metadatas"])
             metas = rows.get("metadatas") or []
             if metas and metas[0] and metas[0].get("doc_id"):
                 return metas[0]["doc_id"]
-            rec = engine.edge_collection.get(ids=[obj_id], include=["metadatas"])
+            rec = engine.backend.edge_get(ids=[obj_id], include=["metadatas"])
             md = (rec.get("metadatas") or [None])[0] or {}
             return md.get("doc_id")
     except Exception:
@@ -65,7 +65,7 @@ def _first_doc_id(engine: EngineLike, obj_id: str, kind: Literal["node", "edge"]
 def _load_nodes(engine: EngineLike, ids: Sequence[str]) -> List[Node]:
     if not ids:
         return []
-    got = engine.node_collection.get(ids=list(ids), include=["documents"])
+    got = engine.backend.node_get(ids=list(ids), include=["documents"])
     docs = got.get("documents") or []
     out: List[Node] = []
     for d in docs:
@@ -78,7 +78,7 @@ def _load_nodes(engine: EngineLike, ids: Sequence[str]) -> List[Node]:
 def _load_edges(engine: EngineLike, ids: Sequence[str]) -> List[Edge]:
     if not ids:
         return []
-    got = engine.edge_collection.get(ids=list(ids), include=["documents"])
+    got = engine.backend.edge_get(ids=list(ids), include=["documents"])
     docs = got.get("documents") or []
     out: List[Edge] = []
     for d in docs:
@@ -105,9 +105,9 @@ def _coerce_query_nodes(engine: EngineLike, spec: Union[Node, str, Sequence[Unio
 
     if need_fetch_ids:
         if is_edge:
-            got = engine.node_collection.get(ids=need_fetch_ids, include=["documents"])
+            got = engine.backend.edge_get(ids=need_fetch_ids, include=["documents"])
         else:
-            got = engine.edge_collection.get(ids=need_fetch_ids, include=["documents"])
+            got = engine.backend.node_get(ids=need_fetch_ids, include=["documents"])
         for dj in (got.get("documents") or []):
             try:
                 nodes.append(Node.model_validate_json(dj))
@@ -159,19 +159,19 @@ class VectorProposer(MergeCandidateProposer):
         # ---- seed query IDs when caller didn't specify --------------------------------
         if new_node is None:
             if anchor_doc_id:
-                new_node = engine.node_ids_by_doc(anchor_doc_id)
+                new_node = engine.read.node_ids_by_doc(anchor_doc_id)
             elif allowed_docs:
-                new_node = [nid for d in allowed_docs for nid in engine.node_ids_by_doc(d)]
+                new_node = [nid for d in allowed_docs for nid in engine.read.node_ids_by_doc(d)]
             else:
-                new_node = (engine.node_collection.get() or {}).get("ids", [])  # all nodes
+                new_node = (engine.backend.node_get() or {}).get("ids", [])  # all nodes
 
         if new_edge is None:
             if anchor_doc_id:
-                new_edge = engine.edge_ids_by_doc(anchor_doc_id)  # <-- fixed (was node_ids_by_doc)
+                new_edge = engine.read.edge_ids_by_doc(anchor_doc_id)  # <-- fixed (was node_ids_by_doc)
             elif allowed_docs:
-                new_edge = [eid for d in allowed_docs for eid in engine.edge_ids_by_doc(d)]
+                new_edge = [eid for d in allowed_docs for eid in engine.read.edge_ids_by_doc(d)]
             else:
-                new_edge = (engine.edge_collection.get() or {}).get("ids", [])  # all edges
+                new_edge = (engine.backend.edge_get() or {}).get("ids", [])  # all edges
         if not (new_node or new_edge):
             return []
         # ---- tiny local coercers (ids -> objects) -------------------------------------
@@ -185,7 +185,7 @@ class VectorProposer(MergeCandidateProposer):
                 if isinstance(item, Node):
                     out.append(item)
                 else:
-                    got = e.node_collection.get(ids=[item], include=["documents", "embeddings"])
+                    got = e.backend.node_get(ids=[item], include=["documents", "embeddings"])
                     dj = (got.get("documents") or [None])[0]
                     if dj:
                         try:
@@ -209,7 +209,7 @@ class VectorProposer(MergeCandidateProposer):
                 if isinstance(item, Edge):
                     out.append(item)
                 else:
-                    got = e.edge_collection.get(ids=[item], include=["documents", "embeddings"])
+                    got = e.backend.edge_get(ids=[item], include=["documents", "embeddings"])
                     dj = (got.get("documents") or [None])[0]
                     if dj:
                         try:
@@ -258,7 +258,7 @@ class VectorProposer(MergeCandidateProposer):
             
             node_ref_result = engine.backend.node_refs_get(where=cand_where)
             ok_node_ids = set((i['node_id']) for i in node_ref_result['metadatas']) 
-            node_results = engine.node_collection.query(
+            node_results = engine.backend.node_query(
                 query_embeddings=q_embs,
                 n_results=top_k,
                 ids = list(ok_node_ids),
@@ -273,7 +273,7 @@ class VectorProposer(MergeCandidateProposer):
         if include_edges:
             edge_ref_result = engine.backend.edge_refs_get(where=cand_where)
             ok_edge_ids = set((i['edge_id']) for i in edge_ref_result['metadatas']) 
-            edge_results = engine.edge_collection.query(
+            edge_results = engine.backend.edge_query(
                 query_embeddings=q_embs,
                 n_results=top_k,
                 ids = list(ok_edge_ids),
@@ -363,6 +363,13 @@ class VectorProposer(MergeCandidateProposer):
         anchor_only: bool = True,
         limit_per_bucket: Optional[int] = None,
     ) -> List[Tuple[Any, Any]]:
+        """Enumerate raw adjudication pairs across one document universe.
+
+        The proposer builds per-document pools, applies anchor and cross-doc bucketing
+        before pair generation, caps candidates per bucket, and deduplicates
+        symmetric results at the end. It intentionally returns raw entity pairs; the
+        engine-level wrapper decides question semantics and public candidate shape.
+        """
         engine = self.e or engine
 
         # 0) doc universe
@@ -370,7 +377,7 @@ class VectorProposer(MergeCandidateProposer):
             doc_universe = list(dict.fromkeys(allowed_docs))
         else:
             try:
-                rows = engine.document_collection.get(include=["metadatas"])
+                rows = engine.backend.document_get(include=["metadatas"])
                 metas = rows.get("metadatas") or []
                 doc_universe = [m["doc_id"] for m in metas if m and m.get("doc_id")]
             except Exception:
@@ -442,7 +449,7 @@ class VectorProposer(MergeCandidateProposer):
             # rights = {ne.id: ne for ne in rights}
             for i, L in enumerate(lefts):
                 for j, R in enumerate(rights):
-                    if (doc_a == doc_b and j <= i) or L.id == R.id: # dif doc ids can refer to same nodes, already adjudicated nodes potentially
+                    if (doc_a == doc_b and left_kind == right_kind and j <= i) or L.id == R.id: # dif doc ids can refer to same nodes, already adjudicated nodes potentially
                         continue
                     # if _passes_doc_rules(L.id, left_kind, R.id, right_kind):
                     out.append(_Pair(L, R))

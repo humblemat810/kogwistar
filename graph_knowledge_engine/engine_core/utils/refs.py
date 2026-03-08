@@ -91,6 +91,55 @@ def extract_doc_ids_from_refs(refs: list[Span] | list[Grounding]) -> list[str]:
     return sorted(dict.fromkeys(out))
 
 
+def select_best_grounding(entity: "Node | Edge") -> Grounding:
+    mentions = list(getattr(entity, "mentions", None) or [])
+    if mentions:
+        def _sort_key(grounding: Grounding) -> tuple[int, int]:
+            span = grounding.spans[0] if grounding.spans else None
+            page = getattr(span, "page_number", None)
+            if page is None:
+                page = getattr(span, "start_page", None)
+            start_char = getattr(span, "start_char", None) if span is not None else None
+            return (
+                int(page) if page is not None else 10**9,
+                int(start_char) if start_char is not None else 10**9,
+            )
+
+        selected = min(mentions, key=_sort_key).model_copy(deep=True)
+        for span in selected.spans:
+            if span.verification is None:
+                span.verification = MentionVerification(
+                    method="heuristic",
+                    is_verified=True,
+                    score=0.5,
+                    notes="adjudication evidence",
+                )
+                continue
+            note = span.verification.notes or ""
+            if "adjudication evidence" not in note:
+                span.verification.notes = f"{note} | adjudication evidence" if note else "adjudication evidence"
+        return selected
+
+    doc_id = getattr(entity, "doc_id", None) or "unknown"
+    excerpt = safe_excerpt(getattr(entity, "summary", None) or getattr(entity, "label", None) or "") or ""
+    span = Span(
+        collection_page_url=f"document_collection/{doc_id}",
+        document_page_url=_DOC_URL.format(doc_id=doc_id),
+        doc_id=doc_id,
+        insertion_method="heuristic",
+        page_number=1,
+        start_char=0,
+        end_char=len(excerpt),
+        excerpt=excerpt,
+        context_before="",
+        context_after="",
+        chunk_id=None,
+        source_cluster_id=None,
+        verification=default_verification("adjudication evidence fallback"),
+    )
+    return Grounding(spans=[span])
+
+
 def node_doc_and_meta(n: "Node | PureChromaNode") -> tuple[str, dict]:
     doc = n.model_dump_json(field_mode="backend", exclude=["embedding", "metadata"])
     meta = n.metadata

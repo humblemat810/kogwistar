@@ -119,6 +119,14 @@ class WriteSubsystem(NamespaceProxy):
         return base_metadata
 
     def _add_node_impl(self, node: Node, doc_id: str | None = None):
+        """Persist the base node, then converge derived indexes around it.
+
+        The backend node row is the source of truth. This method best-effort appends
+        an entity event and then either enqueues index jobs plus an immediate drain
+        attempt or updates join indexes inline when phase1 jobs are disabled.
+        Callers should not assume derived rows are atomically present with the base
+        node write.
+        """
         if doc_id is not None:
             node.doc_id = doc_id
         self._run_pre_add_node_hooks(node)
@@ -169,6 +177,14 @@ class WriteSubsystem(NamespaceProxy):
         )
 
     def _add_edge_impl(self, edge: Edge, doc_id: str | None = None):
+        """Persist an edge only after all referenced endpoints already exist.
+
+        Edge ingest is structurally strict: missing node or edge endpoints are
+        rejected before the base edge row is written. After persistence, the method
+        follows the same fast-path-versus-index-job split as nodes for refs and
+        edge_endpoints fanout, so derived projections may converge after the base
+        edge is durable.
+        """
         if doc_id is not None:
             edge.doc_id = doc_id
         s_nodes, s_edges, t_nodes, t_edges = self._e.adjudicate.split_endpoints(edge.source_ids, edge.target_ids)
@@ -433,6 +449,13 @@ class WriteSubsystem(NamespaceProxy):
         return ids
 
     def fanout_endpoints_rows(self, edge: Edge, doc_id: str | None):
+        """Build derived edge_endpoints rows from the current edge payload.
+
+        Rows inherit doc_id from the explicit argument when available; otherwise the
+        helper reads doc_id from the referenced node or edge metadata. Missing
+        doc_ids are allowed only when _allow_missing_doc_id permits them. These rows
+        are rebuildable projections and are safe to regenerate from the base edge.
+        """
         def _maybe_doc_for_edge(eid: str) -> str | None:
             if doc_id is not None:
                 return doc_id
@@ -466,7 +489,7 @@ class WriteSubsystem(NamespaceProxy):
                     "endpoint_id": nid,
                     "endpoint_type": "node",
                     "role": role,
-                    "causal_type": edge.metadata and edge.metadata.get("causal_type"),
+                    "causal_type": (edge.metadata or {}).get("causal_type"),
                     "relation": edge.relation,
                 }
                 did = _per_node_doc(nid)
@@ -485,7 +508,7 @@ class WriteSubsystem(NamespaceProxy):
                     "endpoint_id": mid,
                     "endpoint_type": "edge",
                     "role": role,
-                    "causal_type": edge.metadata and edge.metadata.get("causal_type"),
+                    "causal_type": (edge.metadata or {}).get("causal_type"),
                     "relation": edge.relation,
                 }
                 did = _maybe_doc_for_edge(mid)
@@ -524,6 +547,13 @@ class WriteSubsystem(NamespaceProxy):
         return None
 
     def maybe_reindex_edge_refs(self, edge: Edge, *, force: bool = False) -> None:
+        """Repair edge_refs when mention fingerprints or observed rows drift.
+
+        The fingerprint is stored on the base edge metadata, but the method also
+        checks row count and doc_id membership so partial deletes or stale rows are
+        repaired even when the stored fingerprint still matches. force=True bypasses
+        the drift short-circuit.
+        """
         new_fp = _refs_fingerprint(edge.mentions or [])
         meta = self._e.backend.edge_get(ids=[edge.safe_get_id()], include=["metadatas"])
         old_fp = None
@@ -543,6 +573,13 @@ class WriteSubsystem(NamespaceProxy):
             self.index_edge_refs(edge)
 
     def maybe_reindex_node_refs(self, node: Node, *, force: bool = False) -> None:
+        """Repair node_refs when mention fingerprints or observed rows drift.
+
+        The base node metadata stores the last reference fingerprint, but count and
+        doc_id-set checks are also used so derived rows are rebuilt after partial
+        corruption or manual deletes. force=True skips the fingerprint equality
+        optimization and always reindexes.
+        """
         new_fp = _refs_fingerprint(node.mentions or [])
         meta = self._e.backend.node_get(ids=[node.id], include=["metadatas"])
         old_fp = None

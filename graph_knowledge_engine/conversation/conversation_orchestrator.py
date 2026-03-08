@@ -931,6 +931,14 @@ class ConversationOrchestrator:
                                    summary_token_threshold: int | None = None,
                                    token_estimator: Callable[[str], int] | None = None,
                                    ):
+                """Run retrieval, pinning, answer generation, and optional summarization for one turn.
+
+                The user turn is assumed to already exist. This method orchestrates
+                memory retrieval, KG retrieval, pinning side effects, answer
+                persistence, next-turn edge creation, and summary triggering in one
+                stateful pass. prev_turn_meta_summary remains the sequencing source of
+                truth for chain edges and summary thresholds.
+                """
         # 3) Retrieval + pinning (recorded as tool events)
                 mem_retriever = MemoryRetriever(
                     conversation_engine=self.conversation_engine,
@@ -1099,6 +1107,14 @@ class ConversationOrchestrator:
     def _summarize_conversation_batch(self, conversation_id: str, current_index: int, 
                                       batch_size: int = 5, in_conv=True , user_id: str = None, 
                                       prev_turn_meta_summary : MetaFromLastSummary= None):
+        """Summarize a recent conversation window into a summary turn plus provenance edges.
+
+        The batch may prepend the prior summary node, persists a context snapshot
+        before the LLM summarize call, and then writes a summary turn plus
+        summarization links back into the conversation graph. current_index tracks
+        visible turn order, and prev_turn_meta_summary is mutated to reset summary
+        distance counters after the batch is materialized.
+        """
         #in_conversation  = False if side car
         if not in_conv:
             current_index -=1
@@ -1106,7 +1122,6 @@ class ConversationOrchestrator:
             prev_node = _get_conversation_tail_compat(self.conversation_engine, conversation_id)
         else:
             prev_node = None
-        """Summarize the last N turns into a Summary/ Memory Node."""
         if self.conversation_engine.kg_graph_type != "conversation":
             raise Exception("conversation only allowed to be on canva engine")
         start_index = max(0, current_index - batch_size + 1)

@@ -33,14 +33,14 @@ def _mk_node(node_id: str, *, doc_id: str) -> Node:
     )
 
 
-@pytest.fixture(params=["chroma", "pgvector"], ids=["chroma", "pgvector"])
+@pytest.fixture(params=["chroma", "pg"], ids=["chroma", "pg"])
 def e2e_engine(
     request: pytest.FixtureRequest,
     tmp_path: pathlib.Path,
     sa_engine,  # provided by tests/conftest.py
     pg_schema,  # provided by tests/conftest.py
 ) -> GraphKnowledgeEngine:
-    """Run the same tests against both backends (Chroma+SQLite meta and PGVector+PG meta)."""
+    """Run the same tests against both selectors; `pg` uses PgVectorBackend + PG meta."""
 
     if request.param == "chroma":
         persist_dir = tmp_path / "chroma"
