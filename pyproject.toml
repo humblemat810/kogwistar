@@ -17,7 +17,7 @@ dependencies = [
   "fastapi>=0.111",
   "uvicorn[standard]>=0.30",
   "mcp>=1.2",
-  "fastmcp==2.11.3",
+  "fastmcp==3.0.0",
   "httpx>=0.28.1",
   "RapidFuzz>=3.13.0",
   "ollama>=0.5.3",

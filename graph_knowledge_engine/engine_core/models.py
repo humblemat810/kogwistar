@@ -2048,7 +2048,7 @@ class Document(ModeSlicingMixin, BaseModel):
 
     def update_source_map(self):
         source_map: Dict[str, Any] = {}
-        from splitter import split_doc_deterministic
+        from ..splitter import split_doc_deterministic
         chunks = split_doc_deterministic(content = str(self.content), doc_id = self.id)
         for i, chunk in enumerate(chunks):
             chunk_id = f"chunk_{i}"
