@@ -571,6 +571,7 @@ class AgenticAnsweringAgent:
         # quick-fix for nested runs: reuse outer trace emitter when available
         events: Any | None = None,
         trace: bool = True,
+        cancel_requested: Callable[[str], bool] | None = None,
     ) -> dict[str, Any]:
         """Run agentic answering using the workflow runtime.
 
@@ -616,6 +617,7 @@ class AgenticAnsweringAgent:
             # nested-safety: share outer emitter when provided, and/or disable trace sink creation
             events=events,
             trace=trace,
+            cancel_requested=cancel_requested,
         )
 
         # Choose a turn_node_id for checkpoint/tracing.
@@ -671,6 +673,7 @@ class AgenticAnsweringAgent:
         out = final_state.get("agentic_answering_result") or {}
         out["workflow_run_id"] = rid
         out["workflow_id"] = workflow_id
+        out["workflow_status"] = getattr(run_result, "status", "succeeded")
         return out
 
     def _get_last_user_text(self, conversation: Any) -> str:

@@ -38,7 +38,7 @@ from graph_knowledge_engine.conversation.policy import (
     validate_edge_add,
 )
 from graph_knowledge_engine.llm_tasks import LLMTaskSet
-from graph_knowledge_engine.engine_core.models import ContextCost, Grounding, Span
+from graph_knowledge_engine.engine_core.models import ContextCost, Grounding, MentionVerification, Span
 from graph_knowledge_engine.id_provider import stable_id
 from graph_knowledge_engine.runtime import WorkflowRuntime
 
@@ -122,7 +122,242 @@ class ConversationService:
         return svc.orchestrator
 
     def max_node_seq_present(self, conversation_id):
-        return self.conversation_engine.meta_sqlite.next_user_seq(conversation_id)
+        return self.conversation_engine.meta_sqlite.current_user_seq(conversation_id)
+
+    def persist_workflow_cancel_request(
+        self,
+        *,
+        conversation_id: str,
+        run_id: str,
+        workflow_id: str = "",
+        requested_by: str = "user",
+        reason: str = "cancel_requested",
+    ) -> str:
+        eng = self.conversation_engine
+        node_id = f"wf_cancel_req|{run_id}"
+        got = eng.backend.node_get(ids=[node_id], include=[])
+        if got.get("ids"):
+            return node_id
+
+        node = ConversationNode(
+            id=node_id,
+            label="Workflow cancel request",
+            type="entity",
+            summary=f"workflow cancel requested for run_id={run_id}",
+            conversation_id=conversation_id,
+            role="system",
+            turn_index=None,
+            level_from_root=0,
+            properties={"entity_type": "workflow_cancel_request"},
+            mentions=[Grounding(spans=[Span.from_dummy_for_conversation()])],
+            metadata={
+                "entity_type": "workflow_cancel_request",
+                "run_id": run_id,
+                "workflow_id": workflow_id,
+                "conversation_id": conversation_id,
+                "requested_by": requested_by,
+                "reason": reason,
+                "level_from_root": 0,
+                "in_conversation_chain": False,
+                "in_ui_chain": False,
+            },
+            domain_id=None,
+            canonical_entity_id=None,
+            embedding=None,
+        )
+        eng.write.add_node(node)
+
+        run_node_id = f"wf_run|{run_id}"
+        run_got = eng.backend.node_get(ids=[run_node_id], include=[])
+        if run_got.get("ids"):
+            content = f"{run_node_id} cancel_requested {node_id}"
+            span = Span(
+                collection_page_url=f"conversation/{conversation_id}",
+                document_page_url=f"conversation/{conversation_id}#{node_id}",
+                doc_id=f"conv:{conversation_id}",
+                insertion_method="workflow_cancel_request",
+                page_number=1,
+                start_char=0,
+                end_char=len(content),
+                excerpt=content,
+                context_before="",
+                context_after="",
+                chunk_id=None,
+                source_cluster_id=None,
+                verification=MentionVerification(
+                    method="system",
+                    is_verified=True,
+                    score=1.0,
+                    notes="cancel request edge",
+                ),
+            )
+            edge_id = str(stable_id("workflow.edge", "cancel_request", run_node_id, node_id))
+            existing_edge = eng.backend.edge_get(ids=[edge_id], include=[])
+            if not existing_edge.get("ids"):
+                edge = ConversationEdge(
+                    id=edge_id,
+                    source_ids=[run_node_id],
+                    target_ids=[node_id],
+                    relation="wf_cancel_request",
+                    label="wf_cancel_request",
+                    type="relationship",
+                    summary="workflow cancel request",
+                    doc_id=f"wf_cancel_request|{run_id}",
+                    mentions=[Grounding(spans=[span])],
+                    domain_id=None,
+                    canonical_entity_id=None,
+                    properties={"entity_type": "conversation_edge"},
+                    embedding=None,
+                    metadata={
+                        "entity_type": "conversation_edge",
+                        "run_id": run_id,
+                        "conversation_id": conversation_id,
+                        "causal_type": "reference",
+                    },
+                    source_edge_ids=[],
+                    target_edge_ids=[],
+                )
+                eng.write.add_edge(edge)
+        return node_id
+
+    def persist_workflow_cancelled_event(
+        self,
+        *,
+        conversation_id: str,
+        run_id: str,
+        workflow_id: str = "",
+        accepted_step_seq: int = -1,
+        cancel_request_node_id: str | None = None,
+        cancel_request_seq: int | None = None,
+        accepted_watermark: int | None = None,
+        last_processed_node_id: str | None = None,
+    ) -> str:
+        eng = self.conversation_engine
+        node_id = f"wf_cancelled|{run_id}"
+        got = eng.backend.node_get(ids=[node_id], include=[])
+        if got.get("ids"):
+            return node_id
+
+        node = ConversationNode(
+            id=node_id,
+            label="Workflow cancelled",
+            type="entity",
+            summary=f"workflow cancelled run_id={run_id}",
+            conversation_id=conversation_id,
+            role="system",
+            turn_index=None,
+            level_from_root=0,
+            properties={"entity_type": "workflow_cancelled"},
+            mentions=[Grounding(spans=[Span.from_dummy_for_conversation()])],
+            metadata={
+                "entity_type": "workflow_cancelled",
+                "run_id": run_id,
+                "workflow_id": workflow_id,
+                "conversation_id": conversation_id,
+                "accepted_step_seq": int(accepted_step_seq),
+                "cancel_request_node_id": cancel_request_node_id,
+                "cancel_request_seq": cancel_request_seq,
+                "accepted_watermark": accepted_watermark,
+                "last_processed_node_id": (str(last_processed_node_id) if last_processed_node_id else None),
+                "level_from_root": 0,
+                "in_conversation_chain": False,
+                "in_ui_chain": False,
+            },
+            domain_id=None,
+            canonical_entity_id=None,
+            embedding=None,
+        )
+        eng.write.add_node(node)
+
+        run_node_id = f"wf_run|{run_id}"
+        run_got = eng.backend.node_get(ids=[run_node_id], include=[])
+        if run_got.get("ids"):
+            edge_id = str(stable_id("workflow.edge", "cancelled", run_node_id, node_id))
+            existing_edge = eng.backend.edge_get(ids=[edge_id], include=[])
+            if not existing_edge.get("ids"):
+                edge = ConversationEdge(
+                    id=edge_id,
+                    source_ids=[run_node_id],
+                    target_ids=[node_id],
+                    relation="wf_cancelled",
+                    label="wf_cancelled",
+                    type="relationship",
+                    summary="workflow cancelled",
+                    doc_id=f"wf_cancelled|{run_id}",
+                    mentions=[Grounding(spans=[Span.from_dummy_for_conversation()])],
+                    domain_id=None,
+                    canonical_entity_id=None,
+                    properties={"entity_type": "conversation_edge"},
+                    embedding=None,
+                    metadata={
+                        "entity_type": "conversation_edge",
+                        "run_id": run_id,
+                        "conversation_id": conversation_id,
+                        "causal_type": "reference",
+                    },
+                    source_edge_ids=[],
+                    target_edge_ids=[],
+                )
+                eng.write.add_edge(edge)
+
+        if cancel_request_node_id:
+            edge_id = str(stable_id("workflow.edge", "cancel_reconciled", cancel_request_node_id, node_id))
+            existing_edge = eng.backend.edge_get(ids=[edge_id], include=[])
+            if not existing_edge.get("ids"):
+                edge = ConversationEdge(
+                    id=edge_id,
+                    source_ids=[cancel_request_node_id],
+                    target_ids=[node_id],
+                    relation="wf_cancel_reconciled",
+                    label="wf_cancel_reconciled",
+                    type="relationship",
+                    summary="cancel request reconciled",
+                    doc_id=f"wf_cancelled|{run_id}",
+                    mentions=[Grounding(spans=[Span.from_dummy_for_conversation()])],
+                    domain_id=None,
+                    canonical_entity_id=None,
+                    properties={"entity_type": "conversation_edge"},
+                    embedding=None,
+                    metadata={
+                        "entity_type": "conversation_edge",
+                        "run_id": run_id,
+                        "conversation_id": conversation_id,
+                        "causal_type": "reference",
+                    },
+                    source_edge_ids=[],
+                    target_edge_ids=[],
+                )
+                eng.write.add_edge(edge)
+
+        if last_processed_node_id:
+            edge_id = str(stable_id("workflow.edge", "cancelled_at", node_id, str(last_processed_node_id)))
+            existing_edge = eng.backend.edge_get(ids=[edge_id], include=[])
+            if not existing_edge.get("ids"):
+                edge = ConversationEdge(
+                    id=edge_id,
+                    source_ids=[node_id],
+                    target_ids=[str(last_processed_node_id)],
+                    relation="wf_cancelled_at",
+                    label="wf_cancelled_at",
+                    type="relationship",
+                    summary="workflow cancelled at node",
+                    doc_id=f"wf_cancelled|{run_id}",
+                    mentions=[Grounding(spans=[Span.from_dummy_for_conversation()])],
+                    domain_id=None,
+                    canonical_entity_id=None,
+                    properties={"entity_type": "conversation_edge"},
+                    embedding=None,
+                    metadata={
+                        "entity_type": "conversation_edge",
+                        "run_id": run_id,
+                        "conversation_id": conversation_id,
+                        "causal_type": "reference",
+                    },
+                    source_edge_ids=[],
+                    target_edge_ids=[],
+                )
+                eng.write.add_edge(edge)
+        return node_id
 
     def get_last_seq_node(self, conversation_id, buffer=5):
         _ = buffer
@@ -614,12 +849,19 @@ class ConversationService:
         run_id: str | None = None,
         stage: str | None = None,
     ) -> ConversationNode | None:
-        where: dict[str, str] = {"entity_type": "context_snapshot"}
+        where: dict[str, str] = {
+            "entity_type": "context_snapshot",
+        }
         if run_id is not None:
             where["run_id"] = run_id
         if stage is not None:
             where["stage"] = stage
-        snaps = self.conversation_engine.query_nodes(where=where)
+        snaps = self.conversation_engine.get_nodes(
+            where=where,
+            node_type=ConversationNode,
+            limit=10_000,
+        )
+        snaps = [n for n in snaps if str(getattr(n, "conversation_id", "") or "") == conversation_id]
         if not snaps:
             return None
 

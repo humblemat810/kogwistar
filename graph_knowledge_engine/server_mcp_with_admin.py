@@ -30,6 +30,10 @@ import uuid
 from graph_knowledge_engine.shortids import run_id_ctx, run_id_scope
 from graph_knowledge_engine import shortids
 from graph_knowledge_engine.id_provider import new_id_str, stable_id
+from graph_knowledge_engine.server.chat_api import create_chat_router
+from graph_knowledge_engine.server.chat_mcp import build_conversation_mcp, build_workflow_mcp
+from graph_knowledge_engine.server.chat_service import ChatRunService
+from graph_knowledge_engine.server.run_registry import RunRegistry
 # --- JWT config (env-driven) ---
 JWT_ALG = os.getenv("JWT_ALG", "HS256")          # HS256 (shared secret) or RS256 (public key)
 JWT_SECRET = os.getenv("JWT_SECRET", "dev-secret-change-me")  # HS256 secret OR RS256 public key
@@ -47,6 +51,8 @@ class Role(str, Enum):
     RW = "rw"
 class NameSpace(str, Enum):
     DOCS = "docs"
+    CONVERSATION = "conversation"
+    WORKFLOW = "workflow"
     WISDOM = "wisdom"
 # tool name -> allowed roles
 TOOL_ROLES: dict[str, set[str]] = {}
@@ -100,6 +106,7 @@ index_dir = os.path.join(*pathparts) or "./index/chroma-mcp"
 index_db_path = os.path.join(*(pathparts + ['index.db']))
 
 conversation_persist_directory = os.environ.get("MCP_CHROMA_DIR_CONVERSATION") or (persist_directory + "-conversation")
+workflow_persist_directory = os.environ.get("MCP_CHROMA_DIR_WORKFLOW") or (persist_directory + "-workflow")
 # ---- Wisdom + MCP ----
 wisdom_persist_directory = os.environ.get("MCP_CHROMA_DIR_WISDOM") or (persist_directory + "-wisdom")
 
@@ -146,9 +153,21 @@ def _build_engine() -> GraphKnowledgeEngine:
 
 
 def _build_conversation_engine() -> GraphKnowledgeEngine:
-    return GraphKnowledgeEngine(
+    eng = GraphKnowledgeEngine(
         persist_directory=conversation_persist_directory,
         kg_graph_type="conversation",
+    )
+    try:
+        eng.workflow_engine = workflow_engine.get()
+    except Exception:
+        pass
+    return eng
+
+
+def _build_workflow_engine() -> GraphKnowledgeEngine:
+    return GraphKnowledgeEngine(
+        persist_directory=workflow_persist_directory,
+        kg_graph_type="workflow",
     )
 
 
@@ -158,10 +177,24 @@ def _build_wisdom_engine() -> GraphKnowledgeEngine:
 
 engine: GraphKnowledgeEngine = _LazyResource(_build_engine, "knowledge_engine")
 conversation_engine = _LazyResource(_build_conversation_engine, "conversation_engine")
+workflow_engine = _LazyResource(_build_workflow_engine, "workflow_engine")
 wisdom_engine = _LazyResource(_build_wisdom_engine, "wisdom_engine")
 gq = _LazyResource(lambda: GraphQuery(engine.get()), "knowledge_graph_query")
 conversation_gq = _LazyResource(lambda: GraphQuery(conversation_engine.get()), "conversation_graph_query")
 wisdom_gq = _LazyResource(lambda: GraphQuery(wisdom_engine.get()), "wisdom_graph_query")
+run_registry = _LazyResource(
+    lambda: RunRegistry(pathlib.Path(workflow_persist_directory) / "server_runs.sqlite"),
+    "chat_run_registry",
+)
+chat_service = _LazyResource(
+    lambda: ChatRunService(
+        get_knowledge_engine=lambda: engine.get(),
+        get_conversation_engine=lambda: conversation_engine.get(),
+        get_workflow_engine=lambda: workflow_engine.get(),
+        run_registry=run_registry.get(),
+    ),
+    "chat_run_service",
+)
 templates = Jinja2Templates(directory=os.path.join(str(pathlib.Path(__file__).parent),"templates"))
 
 # Fastapi
@@ -261,7 +294,20 @@ class MCPRoleMiddleware:
             await self.app(scope, receive, _send)
         finally:
             current_role.reset(token)
-from fastmcp.tools.tool import FunctionTool
+from fastmcp.tools.function_tool import FunctionTool
+def _tool_name_candidates(name: str) -> list[str]:
+    base = str(name or "")
+    out = [base]
+    if "." in base:
+        out.append(base.replace(".", "_"))
+    if "_" in base:
+        out.append(base.replace("_", "."))
+    seen = []
+    for item in out:
+        if item and item not in seen:
+            seen.append(item)
+    return seen
+
 def _filter_tool_list(lst: list[dict]) -> list[dict]:
     role = current_role.get()
     namespace = get_current_namespace()
@@ -270,8 +316,11 @@ def _filter_tool_list(lst: list[dict]) -> list[dict]:
         name = getattr(item, 'name', None) if type(item) is FunctionTool else None or item.get("name") or item.get("tool") or ""
         # accept either exact name or any recorded alias
         if name:
-            tool_roles = TOOL_ROLES.get(name, {Role.RO.value})
-            tool_namespace = TOOL_NAMESPACE.get(name, {NameSpace.DOCS.value})
+            tool_roles = {Role.RO.value}
+            tool_namespace = {NameSpace.DOCS.value}
+            for candidate in _tool_name_candidates(str(name)):
+                tool_roles = TOOL_ROLES.get(candidate, tool_roles)
+                tool_namespace = TOOL_NAMESPACE.get(candidate, tool_namespace)
             if role in tool_roles and namespace in tool_namespace:
                 out.append(item)
         else:
@@ -298,8 +347,11 @@ except Exception:  # pragma: no cover
 
 
 def _tool_allowed(tool_name: str, *, role: str, namespace: str) -> bool:
-    allowed_roles = TOOL_ROLES.get(tool_name, {Role.RO.value})
-    allowed_namespaces = TOOL_NAMESPACE.get(tool_name, {NameSpace.DOCS.value})
+    allowed_roles = {Role.RO.value}
+    allowed_namespaces = {NameSpace.DOCS.value}
+    for candidate in _tool_name_candidates(str(tool_name)):
+        allowed_roles = TOOL_ROLES.get(candidate, allowed_roles)
+        allowed_namespaces = TOOL_NAMESPACE.get(candidate, allowed_namespaces)
     return (role in allowed_roles) and (namespace in allowed_namespaces)
 
 
@@ -396,27 +448,43 @@ current_role: ContextVar[str] = ContextVar("current_role", default=Role.RO.value
 # Simple two-role lattice
 ROLE_ORDER = {"ro": 0, "rw": 1}  # read-only < read-write
 DEFAULT_ROLE = "ro"
+DEFAULT_NAMESPACE = NameSpace.DOCS.value
 
 
 def get_current_namespace() -> str:
     claims = claims_ctx.get() or {}
-    ns = (claims.get("ns") or "docs").lower()
-    return "wisdom" if ns == "wisdom" else "docs"
+    ns = str(claims.get("ns") or DEFAULT_NAMESPACE).lower()
+    allowed = {item.value for item in NameSpace}
+    return ns if ns in allowed else DEFAULT_NAMESPACE
+
+def _normalize_namespaces(expected: set[NameSpace] | NameSpace | set[str] | str) -> set[str]:
+    if isinstance(expected, set):
+        raw_items = list(expected)
+    else:
+        raw_items = [expected]
+    if not raw_items:
+        raise ValueError("At least 1 namespace has to be specified")
+    allowed = set()
+    valid = {item.value for item in NameSpace}
+    for item in raw_items:
+        value = str(item.value if isinstance(item, NameSpace) else item).lower()
+        if value not in valid:
+            raise ValueError(f"Unknown namespace: {item!r}")
+        allowed.add(value)
+    return allowed
+
+def require_namespace(expected: set[NameSpace] | NameSpace | set[str] | str):
+    allowed = _normalize_namespaces(expected)
+    actual = get_current_namespace()
+    if actual not in allowed:
+        raise HTTPException(status_code=403, detail=f"Forbidden: namespace '{actual}' is not permitted")
+    return actual
+
 from fastmcp.tools import FunctionTool
 def require_ns(expected: set[NameSpace] | NameSpace):
-    # only wrap fast mcp function tool
-    if type(expected) is Set:
-        if len(expected) == 0:
-            raise ValueError("At least 1 name space has to be specified")
-        if not all( i in NameSpace for i in expected):
-            raise ValueError("expected not in NameSpace")
-        expected2 = expected
-    if expected in NameSpace or type(expected) is str:
-        expected2 = {expected}
+    allowed = _normalize_namespaces(expected)
     
     def deco(fn: Callable):
-        # allowed : set[NameSpace | str] = expected2
-        allowed = expected2
         name = getattr(fn, "name", None) or getattr(fn, "__name__", None)
         if name is None:
             raise Exception('name not found')
@@ -426,7 +494,7 @@ def require_ns(expected: set[NameSpace] | NameSpace):
         @functools.wraps(fn)
         def wrapper(*args, **kwargs):
             actual = get_current_namespace()
-            if actual != expected:
+            if actual not in allowed:
                 # MCP tools throw regular exceptions; FastMCP wraps as tool error
                 raise HTTPException(status_code=403, detail=f"Forbidden: namespace '{actual}' cannot call this tool")
                 
@@ -682,17 +750,45 @@ def kg_viz_d3_json(doc_id: Optional[str] = None, mode: str = "reify") -> D3Out:
 
 
 
+conversation_mcp = build_conversation_mcp(
+    get_service=lambda: chat_service.get(),
+    tool_roles=tool_roles,
+    require_ns=require_ns,
+    role_ro=Role.RO,
+    role_rw=Role.RW,
+    ns_conversation=NameSpace.CONVERSATION,
+)
+workflow_mcp = build_workflow_mcp(
+    get_service=lambda: chat_service.get(),
+    tool_roles=tool_roles,
+    require_ns=require_ns,
+    role_ro=Role.RO,
+    role_rw=Role.RW,
+    ns_workflow=NameSpace.WORKFLOW,
+)
+mcp.mount(conversation_mcp)
+mcp.mount(workflow_mcp)
+
 # ---- Build a unified FastAPI app: /mcp + /admin ----
 mcp_app = mcp.http_app(path='/mcp')
 app = FastAPI(title="KnowledgeEngine + MCP + Admin", lifespan=mcp_app.lifespan)
 app.add_middleware(MCPRoleMiddleware)
 app.add_middleware(JWTProtectMiddleware)
+app.include_router(
+    create_chat_router(
+        get_service=lambda: chat_service.get(),
+        require_role=require_role,
+        require_namespace=require_namespace,
+        conversation_namespace=NameSpace.CONVERSATION.value,
+        workflow_namespaces={NameSpace.CONVERSATION.value, NameSpace.WORKFLOW.value},
+    )
+)
 from datetime import datetime, timedelta, timezone
 
 class DevTokenInp(BaseModel):
     username: str = "dev"
     role: str = "ro"
-    ns : Literal["docs", "wisdom"]= "docs"
+    ns : Literal["docs", "conversation", "workflow", "wisdom"]= "docs"
 @app.post("/auth/dev-token")
 async def dev_token(request: Request):
     inp = DevTokenInp.model_validate((await request.json()))
@@ -714,7 +810,12 @@ async def dev_token(request: Request):
 # health
 @app.get("/health")
 def health():
-    return {"ok": True, "persist_directory": persist_directory}
+    return {
+        "ok": True,
+        "persist_directory": persist_directory,
+        "conversation_persist_directory": conversation_persist_directory,
+        "workflow_persist_directory": workflow_persist_directory,
+    }
 
 # DELETE /admin/doc/{doc_id}  (non-MCP utility)
 @app.delete("/admin/doc/{doc_id}")
@@ -774,8 +875,18 @@ def api_viz_cytoscape(
     doc_id: Optional[str] = None,
     mode: str = "reify",
     insertion_method: Optional[str] = None,   # NEW
+    graph_type: str = "knowledge",
 ):
-    payload = to_cytoscape(engine, doc_id=doc_id, mode=mode, insertion_method=insertion_method)
+    gt = (graph_type or "knowledge").lower()
+    if gt == "conversation":
+        use_engine = conversation_engine
+    elif gt == "workflow":
+        use_engine = workflow_engine
+    elif gt == "wisdom":
+        use_engine = wisdom_engine
+    else:
+        use_engine = engine
+    payload = to_cytoscape(use_engine, doc_id=doc_id, mode=mode, insertion_method=insertion_method)
     return JSONResponse(payload)
 
 @app.get("/viz/d3.bundle", response_class=HTMLResponse)
@@ -784,11 +895,13 @@ def viz_d3_bundle(
     doc_id: Optional[str] = None,
     mode: str = "reify",
     insertion_method: Optional[str] = None,
-    graph_type: str = "knowledge",  # knowledge|conversation|wisdom
+    graph_type: str = "knowledge",  # knowledge|conversation|workflow|wisdom
 ):
     gt = (graph_type or "knowledge").lower()
     if gt == "conversation":
         use_engine = conversation_engine
+    elif gt == "workflow":
+        use_engine = workflow_engine
     elif gt == "wisdom":
         use_engine = wisdom_engine
     else:
@@ -821,11 +934,13 @@ def api_viz_d3(
     doc_id: Optional[str] = None,
     mode: str = "reify",
     insertion_method: Optional[str] = None,
-    graph_type: Optional[str] = None,   # NEW: knowledge|conversation|wisdom
+    graph_type: Optional[str] = None,   # NEW: knowledge|conversation|workflow|wisdom
 ):
     graph_type = (graph_type or "knowledge").lower()
     if graph_type == "conversation":
         use_engine = conversation_engine
+    elif graph_type == "workflow":
+        use_engine = workflow_engine
     elif graph_type == "wisdom":
         use_engine = wisdom_engine
     else:

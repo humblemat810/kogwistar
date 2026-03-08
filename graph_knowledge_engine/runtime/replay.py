@@ -54,6 +54,20 @@ def replay_to(*, conversation_engine: Any, run_id: str, target_step_seq: int) ->
       - finding the nearest checkpoint <= target_step_seq
       - applying persisted step exec state_updates after that checkpoint up to target_step_seq
     """
+    effective_target = int(target_step_seq)
+    cancelled = conversation_engine.get_nodes(
+        where={"$and": [{"entity_type": "workflow_cancelled"}, {"run_id": run_id}]},
+        limit=10_000,
+    )
+    if cancelled:
+        accepted = [
+            int((n.metadata or {}).get("accepted_step_seq", -1))
+            for n in cancelled
+            if int((n.metadata or {}).get("accepted_step_seq", -1)) >= 0
+        ]
+        if accepted:
+            effective_target = min(effective_target, min(accepted))
+
     ckpts = conversation_engine.get_nodes(
         where={"$and": [{"entity_type": "workflow_checkpoint"}, {"run_id": run_id}]},
         limit=10000,
@@ -63,11 +77,11 @@ def replay_to(*, conversation_engine: Any, run_id: str, target_step_seq: int) ->
     best_seq = -1
     for n in ckpts:
         seq = int((n.metadata or {}).get("step_seq", -1))
-        if seq <= target_step_seq and seq > best_seq:
+        if seq <= effective_target and seq > best_seq:
             best = n
             best_seq = seq
     if best is None:
-        raise ValueError(f"No checkpoint <= {target_step_seq} for run_id={run_id}")
+        raise ValueError(f"No checkpoint <= {effective_target} for run_id={run_id}")
 
     state: State = json.loads((best.metadata or {})["state_json"])
 
@@ -81,7 +95,7 @@ def replay_to(*, conversation_engine: Any, run_id: str, target_step_seq: int) ->
         seq = int((n.metadata or {}).get("step_seq", 0))
         if seq <= best_seq:
             continue
-        if seq > target_step_seq:
+        if seq > effective_target:
             break
 
         md = n.metadata or {}

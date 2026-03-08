@@ -174,8 +174,14 @@ def maybe_assign_seq(engine: "GraphKnowledgeEngine", node: Any) -> None:
         conv_id = (getattr(node, "metadata", {}) or {}).get("conversation_id")
     if conv_id is None:
         return
-    seq = engine.meta_sqlite.next_user_seq(str(conv_id))
     md = dict(getattr(node, "metadata", {}) or {})
+    try:
+        existing_seq = md.get("seq")
+        if existing_seq is not None and int(existing_seq) > 0:
+            return
+    except Exception:
+        pass
+    seq = engine.meta_sqlite.next_user_seq(str(conv_id))
     md["seq"] = seq
     node.metadata = md
 
