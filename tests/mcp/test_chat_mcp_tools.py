@@ -13,7 +13,12 @@ import graph_knowledge_engine.server_mcp_with_admin as server
 from graph_knowledge_engine.conversation.models import ConversationNode, WorkflowCheckpointNode
 from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
 from graph_knowledge_engine.engine_core.models import Grounding, Span
-from graph_knowledge_engine.server.chat_service import AnswerRunRequest, ChatRunService, RunCancelledError
+from graph_knowledge_engine.server.chat_service import (
+    AnswerRunRequest,
+    ChatRunService,
+    RunCancelledError,
+    RuntimeRunRequest,
+)
 from graph_knowledge_engine.server.run_registry import RunRegistry
 
 
@@ -56,7 +61,7 @@ def engine_triplet():
         shutil.rmtree(root, ignore_errors=True)
 
 
-def _configure_server(monkeypatch, engine, conversation_engine, workflow_engine, answer_runner):
+def _configure_server(monkeypatch, engine, conversation_engine, workflow_engine, answer_runner, runtime_runner=None):
     registry = RunRegistry(Path(workflow_engine.persist_directory) / "server_runs.sqlite")
     service = ChatRunService(
         get_knowledge_engine=lambda: engine,
@@ -64,6 +69,7 @@ def _configure_server(monkeypatch, engine, conversation_engine, workflow_engine,
         get_workflow_engine=lambda: workflow_engine,
         run_registry=registry,
         answer_runner=answer_runner,
+        runtime_runner=runtime_runner,
     )
     monkeypatch.setattr(server, "engine", _FixedResource(engine), raising=False)
     monkeypatch.setattr(server, "conversation_engine", _FixedResource(conversation_engine), raising=False)
@@ -139,6 +145,26 @@ def _cancel_runner(req: AnswerRunRequest) -> dict:
     raise AssertionError("Expected the run to be cancelled")
 
 
+def _runtime_success_runner(req: RuntimeRunRequest) -> dict:
+    req.publish("run.stage", {"stage": "execute"})
+    req.publish("reasoning.summary", {"stage": "execute", "summary": "Executing workflow runtime."})
+    if req.is_cancel_requested():
+        raise RunCancelledError()
+    return {
+        "workflow_status": "succeeded",
+        "final_state": {"workflow_id": req.workflow_id},
+    }
+
+
+def _runtime_cancel_runner(req: RuntimeRunRequest) -> dict:
+    deadline = time.time() + 5.0
+    while time.time() < deadline:
+        if req.is_cancel_requested():
+            raise RunCancelledError()
+        time.sleep(0.02)
+    raise AssertionError("Expected runtime workflow to be cancelled")
+
+
 @pytest.mark.asyncio
 async def test_mcp_chat_tool_visibility_by_namespace(monkeypatch, engine_triplet):
     engine, conversation_engine, workflow_engine = engine_triplet
@@ -156,6 +182,9 @@ async def test_mcp_chat_tool_visibility_by_namespace(monkeypatch, engine_triplet
     with _claims("ro", "workflow"):
         tools = await server.mcp.list_tools()
         names = {tool.name for tool in tools}
+        assert "workflow.run_status" in names
+        assert "workflow.run_events" in names
+        assert "workflow.run_submit" not in names
         assert "workflow.run_checkpoint_get" in names
         assert "workflow.run_replay" in names
         assert "conversation.ask" not in names
@@ -228,3 +257,55 @@ async def test_mcp_chat_submit_cancel_and_workflow_diagnostics(monkeypatch, engi
         # replay_to needs at least one checkpoint and no subsequent steps for target=0
         replay = _structured(await server.mcp.call_tool("workflow.run_replay", {"run_id": "diag-run", "target_step_seq": 0}))
         assert replay["state"]["answer"] == "draft"
+
+
+@pytest.mark.asyncio
+async def test_mcp_workflow_runtime_submit_cancel(monkeypatch, engine_triplet):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _configure_server(
+        monkeypatch,
+        engine,
+        conversation_engine,
+        workflow_engine,
+        _success_runner,
+        runtime_runner=_runtime_cancel_runner,
+    )
+
+    with _claims("rw", "conversation"):
+        created = _structured(await server.mcp.call_tool("conversation.create", {"user_id": "u-wf-mcp"}))
+        conversation_id = created["conversation_id"]
+
+    with _claims("rw", "workflow"):
+        submitted = _structured(
+            await server.mcp.call_tool(
+                "workflow.run_submit",
+                {
+                    "workflow_id": "wf.runtime.mcp.cancel",
+                    "conversation_id": conversation_id,
+                    "initial_state": {"counter": 1},
+                },
+            )
+        )
+        run_id = submitted["run_id"]
+        cancelling = _structured(await server.mcp.call_tool("workflow.run_cancel", {"run_id": run_id}))
+        assert cancelling["status"] == "cancelling"
+
+        deadline = time.time() + 10.0
+        while time.time() < deadline:
+            status = _structured(await server.mcp.call_tool("workflow.run_status", {"run_id": run_id}))
+            if status["status"] == "cancelled":
+                break
+            time.sleep(0.05)
+        else:
+            raise AssertionError("Workflow run did not reach cancelled status")
+
+        events = _structured(await server.mcp.call_tool("workflow.run_events", {"run_id": run_id}))
+        names = [str(evt.get("event_type") or "") for evt in events.get("events", [])]
+        assert "run.cancelling" in names
+        assert "run.cancelled" in names
+
+        cancel_nodes = conversation_engine.get_nodes(
+            where={"$and": [{"entity_type": "workflow_cancel_request"}, {"run_id": run_id}]},
+            limit=10,
+        )
+        assert len(cancel_nodes) == 1

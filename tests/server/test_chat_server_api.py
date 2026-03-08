@@ -17,7 +17,12 @@ from graph_knowledge_engine.conversation.models import ConversationNode, Workflo
 from graph_knowledge_engine.conversation.service import ConversationService
 from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
 from graph_knowledge_engine.engine_core.models import Grounding, Span
-from graph_knowledge_engine.server.chat_service import AnswerRunRequest, ChatRunService, RunCancelledError
+from graph_knowledge_engine.server.chat_service import (
+    AnswerRunRequest,
+    ChatRunService,
+    RunCancelledError,
+    RuntimeRunRequest,
+)
 from graph_knowledge_engine.server.run_registry import RunRegistry
 
 
@@ -60,7 +65,7 @@ def engine_triplet():
         shutil.rmtree(root, ignore_errors=True)
 
 
-def _configure_server(monkeypatch, engine, conversation_engine, workflow_engine, answer_runner):
+def _configure_server(monkeypatch, engine, conversation_engine, workflow_engine, answer_runner, runtime_runner=None):
     registry = RunRegistry(Path(workflow_engine.persist_directory) / "server_runs.sqlite")
     service = ChatRunService(
         get_knowledge_engine=lambda: engine,
@@ -68,6 +73,7 @@ def _configure_server(monkeypatch, engine, conversation_engine, workflow_engine,
         get_workflow_engine=lambda: workflow_engine,
         run_registry=registry,
         answer_runner=answer_runner,
+        runtime_runner=runtime_runner,
     )
     monkeypatch.setattr(server, "engine", _FixedResource(engine), raising=False)
     monkeypatch.setattr(server, "conversation_engine", _FixedResource(conversation_engine), raising=False)
@@ -91,10 +97,17 @@ def _token_header(client: TestClient, *, role: str, ns: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
-def _wait_for_status(client: TestClient, run_id: str, headers: dict[str, str], expected: set[str]) -> dict:
+def _wait_for_status(
+    client: TestClient,
+    run_id: str,
+    headers: dict[str, str],
+    expected: set[str],
+    *,
+    path_template: str = "/api/runs/{run_id}",
+) -> dict:
     deadline = time.time() + 10.0
     while time.time() < deadline:
-        resp = client.get(f"/api/runs/{run_id}", headers=headers)
+        resp = client.get(path_template.format(run_id=run_id), headers=headers)
         resp.raise_for_status()
         payload = resp.json()
         if payload["status"] in expected:
@@ -103,8 +116,14 @@ def _wait_for_status(client: TestClient, run_id: str, headers: dict[str, str], e
     raise AssertionError(f"Run {run_id} did not reach one of {sorted(expected)}")
 
 
-def _collect_sse_events(client: TestClient, run_id: str, headers: dict[str, str]) -> list[tuple[str, dict]]:
-    with client.stream("GET", f"/api/runs/{run_id}/events", headers=headers) as resp:
+def _collect_sse_events(
+    client: TestClient,
+    run_id: str,
+    headers: dict[str, str],
+    *,
+    path_template: str = "/api/runs/{run_id}/events",
+) -> list[tuple[str, dict]]:
+    with client.stream("GET", path_template.format(run_id=run_id), headers=headers) as resp:
         resp.raise_for_status()
         body = "".join(resp.iter_text())
     events: list[tuple[str, dict]] = []
@@ -161,6 +180,29 @@ def _cancel_runner(req: AnswerRunRequest) -> dict:
             raise RunCancelledError()
         time.sleep(0.02)
     raise AssertionError("Expected the run to be cancelled")
+
+
+def _runtime_success_runner(req: RuntimeRunRequest) -> dict:
+    req.publish("run.stage", {"stage": "execute"})
+    req.publish("reasoning.summary", {"stage": "execute", "summary": "Executing workflow runtime."})
+    if req.is_cancel_requested():
+        raise RunCancelledError()
+    return {
+        "workflow_status": "succeeded",
+        "final_state": {
+            "workflow_id": req.workflow_id,
+            "echo_state": dict(req.initial_state),
+        },
+    }
+
+
+def _runtime_cancel_runner(req: RuntimeRunRequest) -> dict:
+    deadline = time.time() + 5.0
+    while time.time() < deadline:
+        if req.is_cancel_requested():
+            raise RunCancelledError()
+        time.sleep(0.02)
+    raise AssertionError("Expected runtime workflow to be cancelled")
 
 
 def _seed_step(conversation_engine, *, run_id: str, workflow_id: str, step_seq: int, op: str, state_update: list):
@@ -376,3 +418,118 @@ def test_chat_debug_endpoints_namespace_and_workflow_viz(monkeypatch, engine_tri
         payload = viz.json()
         assert "nodes" in payload
         assert "links" in payload
+
+
+def test_runtime_rest_submit_and_sse(monkeypatch, engine_triplet):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _configure_server(
+        monkeypatch,
+        engine,
+        conversation_engine,
+        workflow_engine,
+        _success_runner,
+        runtime_runner=_runtime_success_runner,
+    )
+    with TestClient(server.app) as client:
+        conv_rw = _token_header(client, role="rw", ns="conversation")
+        wf_rw = _token_header(client, role="rw", ns="workflow")
+        wf_ro = _token_header(client, role="ro", ns="workflow")
+
+        created = client.post("/api/conversations", json={"user_id": "u-runtime"}, headers=conv_rw)
+        created.raise_for_status()
+        conversation_id = created.json()["conversation_id"]
+
+        submit = client.post(
+            "/api/workflow/runs",
+            json={
+                "workflow_id": "wf.runtime.simple",
+                "conversation_id": conversation_id,
+                "initial_state": {"counter": 1},
+            },
+            headers=wf_rw,
+        )
+        assert submit.status_code == 202
+        run_id = submit.json()["run_id"]
+
+        final_run = _wait_for_status(
+            client,
+            run_id,
+            wf_ro,
+            {"succeeded"},
+            path_template="/api/workflow/runs/{run_id}",
+        )
+        assert final_run["workflow_id"] == "wf.runtime.simple"
+        assert final_run["result"]["workflow_status"] == "succeeded"
+
+        events = _collect_sse_events(
+            client,
+            run_id,
+            wf_ro,
+            path_template="/api/workflow/runs/{run_id}/events",
+        )
+        names = [name for name, _payload in events]
+        assert "run.created" in names
+        assert "run.started" in names
+        assert "run.stage" in names
+        assert "reasoning.summary" in names
+        assert names[-1] == "run.completed"
+
+
+def test_runtime_rest_cancel(monkeypatch, engine_triplet):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _configure_server(
+        monkeypatch,
+        engine,
+        conversation_engine,
+        workflow_engine,
+        _success_runner,
+        runtime_runner=_runtime_cancel_runner,
+    )
+    with TestClient(server.app) as client:
+        conv_rw = _token_header(client, role="rw", ns="conversation")
+        wf_rw = _token_header(client, role="rw", ns="workflow")
+        wf_ro = _token_header(client, role="ro", ns="workflow")
+
+        created = client.post("/api/conversations", json={"user_id": "u-runtime-cancel"}, headers=conv_rw)
+        created.raise_for_status()
+        conversation_id = created.json()["conversation_id"]
+
+        submit = client.post(
+            "/api/workflow/runs",
+            json={
+                "workflow_id": "wf.runtime.cancel",
+                "conversation_id": conversation_id,
+                "initial_state": {"counter": 1},
+            },
+            headers=wf_rw,
+        )
+        assert submit.status_code == 202
+        run_id = submit.json()["run_id"]
+
+        cancel = client.post(f"/api/workflow/runs/{run_id}/cancel", headers=wf_rw)
+        assert cancel.status_code == 202
+
+        final_run = _wait_for_status(
+            client,
+            run_id,
+            wf_ro,
+            {"cancelled"},
+            path_template="/api/workflow/runs/{run_id}",
+        )
+        assert final_run["status"] == "cancelled"
+
+        cancel_nodes = conversation_engine.get_nodes(
+            where={"$and": [{"entity_type": "workflow_cancel_request"}, {"run_id": run_id}]},
+            limit=10,
+        )
+        assert len(cancel_nodes) == 1
+
+        events = _collect_sse_events(
+            client,
+            run_id,
+            wf_ro,
+            path_template="/api/workflow/runs/{run_id}/events",
+        )
+        names = [name for name, _payload in events]
+        assert "run.cancelling" in names
+        assert names[-1] == "run.cancelled"

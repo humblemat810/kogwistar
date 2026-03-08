@@ -43,6 +43,22 @@ class AnswerRunRequest:
     is_cancel_requested: Callable[[], bool]
 
 
+@dataclass(frozen=True)
+class RuntimeRunRequest:
+    run_id: str
+    workflow_id: str
+    conversation_id: str
+    turn_node_id: str
+    user_id: str | None
+    initial_state: dict[str, Any]
+    knowledge_engine: Any
+    conversation_engine: Any
+    workflow_engine: Any
+    registry: RunRegistry
+    publish: Callable[[str, dict[str, Any] | None], dict[str, Any]]
+    is_cancel_requested: Callable[[], bool]
+
+
 class ChatRunService:
     def __init__(
         self,
@@ -52,12 +68,14 @@ class ChatRunService:
         get_workflow_engine: Callable[[], Any],
         run_registry: RunRegistry,
         answer_runner: Callable[[AnswerRunRequest], dict[str, Any]] | None = None,
+        runtime_runner: Callable[[RuntimeRunRequest], dict[str, Any]] | None = None,
     ) -> None:
         self._get_knowledge_engine = get_knowledge_engine
         self._get_conversation_engine = get_conversation_engine
         self._get_workflow_engine = get_workflow_engine
         self.run_registry = run_registry
         self.answer_runner = answer_runner or self._default_answer_runner
+        self.runtime_runner = runtime_runner or self._default_runtime_runner
 
     def _knowledge_engine(self) -> Any:
         return self._get_knowledge_engine()
@@ -77,6 +95,10 @@ class ChatRunService:
 
     def _publish(self, run_id: str, event_type: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         return self.run_registry.append_event(run_id, event_type, payload)
+
+    @staticmethod
+    def _json_safe(value: Any) -> Any:
+        return json.loads(json.dumps(value, ensure_ascii=False, default=str))
 
     def create_conversation(
         self,
@@ -338,6 +360,160 @@ class ChatRunService:
             trace=True,
             cancel_requested=lambda rid: req.is_cancel_requested(),
         )
+
+    def submit_workflow_run(
+        self,
+        *,
+        workflow_id: str,
+        conversation_id: str,
+        initial_state: dict[str, Any] | None = None,
+        turn_node_id: str | None = None,
+        user_id: str | None = None,
+    ) -> dict[str, Any]:
+        workflow_id = str(workflow_id or "").strip()
+        if not workflow_id:
+            raise ValueError("workflow_id is required")
+        conversation_id = str(conversation_id or "").strip()
+        if not conversation_id:
+            raise ValueError("conversation_id is required")
+
+        # Validate conversation existence early.
+        self._conversation_nodes(conversation_id)
+
+        resolved_turn_node_id = str(turn_node_id or "").strip()
+        if not resolved_turn_node_id:
+            tail = self._conversation_service().get_conversation_tail(conversation_id=conversation_id)
+            resolved_turn_node_id = str(getattr(tail, "id", None) or "").strip()
+        if not resolved_turn_node_id:
+            resolved_turn_node_id = f"wf_turn|{new_id_str()}"
+
+        run_id = str(new_id_str())
+        self.run_registry.create_run(
+            run_id=run_id,
+            conversation_id=conversation_id,
+            workflow_id=workflow_id,
+            user_id=(str(user_id) if user_id is not None else None),
+            user_turn_node_id=resolved_turn_node_id,
+            status="queued",
+        )
+        self._publish(
+            run_id,
+            "run.created",
+            {
+                "run_id": run_id,
+                "run_kind": "workflow_runtime",
+                "conversation_id": conversation_id,
+                "workflow_id": workflow_id,
+                "status": "queued",
+                "turn_node_id": resolved_turn_node_id,
+            },
+        )
+
+        req = RuntimeRunRequest(
+            run_id=run_id,
+            workflow_id=workflow_id,
+            conversation_id=conversation_id,
+            turn_node_id=resolved_turn_node_id,
+            user_id=(str(user_id) if user_id is not None else None),
+            initial_state=dict(initial_state or {}),
+            knowledge_engine=self._knowledge_engine(),
+            conversation_engine=self._conversation_engine(),
+            workflow_engine=self._workflow_engine(),
+            registry=self.run_registry,
+            publish=lambda event_type, payload=None: self._publish(run_id, event_type, payload),
+            is_cancel_requested=lambda: self.run_registry.is_cancel_requested(run_id),
+        )
+        thread = threading.Thread(
+            target=self._run_workflow,
+            args=(req,),
+            daemon=True,
+            name=f"workflow-run-{run_id}",
+        )
+        thread.start()
+        return {
+            "run_id": run_id,
+            "conversation_id": conversation_id,
+            "workflow_id": workflow_id,
+            "turn_node_id": resolved_turn_node_id,
+            "status": "queued",
+        }
+
+    def _run_workflow(self, req: RuntimeRunRequest) -> None:
+        self._publish(
+            req.run_id,
+            "run.started",
+            {
+                "run_id": req.run_id,
+                "run_kind": "workflow_runtime",
+                "status": "running",
+            },
+        )
+        self.run_registry.update_status(req.run_id, status="running", started=True)
+        try:
+            out = self._json_safe(self.runtime_runner(req) or {})
+            workflow_status = str(out.get("workflow_status") or out.get("status") or "succeeded")
+            if workflow_status == "cancelled":
+                self._publish(req.run_id, "run.cancelled", {"run_id": req.run_id, "status": "cancelled"})
+                self.run_registry.update_status(req.run_id, status="cancelled", result=out, finished=True)
+                return
+            if workflow_status in {"failed", "error"}:
+                err = out.get("error")
+                if not isinstance(err, dict):
+                    err = {"message": f"Workflow runtime failed: status={workflow_status}"}
+                self._publish(req.run_id, "run.failed", {"run_id": req.run_id, "status": "failed", "error": err})
+                self.run_registry.update_status(req.run_id, status="failed", result=out, error=err, finished=True)
+                return
+            self._publish(req.run_id, "run.completed", {"run_id": req.run_id, "status": "succeeded"})
+            self.run_registry.update_status(req.run_id, status="succeeded", result=out, finished=True)
+        except RunCancelledError:
+            self._publish(req.run_id, "run.cancelled", {"run_id": req.run_id, "status": "cancelled"})
+            self.run_registry.update_status(req.run_id, status="cancelled", finished=True)
+        except Exception as exc:
+            err = {"message": str(exc)}
+            logging.getLogger(__name__).exception("workflow run failed: run_id=%s", req.run_id)
+            self._publish(req.run_id, "run.failed", {"run_id": req.run_id, "status": "failed", "error": err})
+            self.run_registry.update_status(req.run_id, status="failed", error=err, finished=True)
+
+    def _default_runtime_runner(self, req: RuntimeRunRequest) -> dict[str, Any]:
+        from graph_knowledge_engine.conversation.resolvers import default_resolver
+        from graph_knowledge_engine.runtime.runtime import WorkflowRuntime
+
+        def predicate_always(_workflow_info, _state, _last_result):
+            return True
+
+        initial_state = dict(req.initial_state or {})
+        deps = initial_state.get("_deps")
+        if not isinstance(deps, dict):
+            deps = {}
+        deps.setdefault("conversation_engine", req.conversation_engine)
+        deps.setdefault("knowledge_engine", req.knowledge_engine)
+        deps.setdefault("ref_knowledge_engine", req.knowledge_engine)
+        deps.setdefault("workflow_engine", req.workflow_engine)
+        deps.setdefault("agentic_workflow_engine", req.workflow_engine)
+        initial_state["_deps"] = deps
+
+        runtime = WorkflowRuntime(
+            workflow_engine=req.workflow_engine,
+            conversation_engine=req.conversation_engine,
+            step_resolver=default_resolver,
+            predicate_registry={"always": predicate_always},
+            checkpoint_every_n_steps=1,
+            max_workers=1,
+            cancel_requested=lambda _rid: req.is_cancel_requested(),
+        )
+        run_result = runtime.run(
+            workflow_id=req.workflow_id,
+            conversation_id=req.conversation_id,
+            turn_node_id=req.turn_node_id,
+            initial_state=initial_state,
+            run_id=req.run_id,
+        )
+        final_state = self._json_safe(dict(getattr(run_result, "final_state", {}) or {}))
+        final_state.pop("_deps", None)
+        return {
+            "workflow_status": str(getattr(run_result, "status", "succeeded") or "succeeded"),
+            "final_state": final_state,
+        }
 
     def get_run(self, run_id: str) -> dict[str, Any]:
         run = self.run_registry.get_run(run_id)

@@ -31,6 +31,7 @@ from graph_knowledge_engine.shortids import run_id_ctx, run_id_scope
 from graph_knowledge_engine import shortids
 from graph_knowledge_engine.id_provider import new_id_str, stable_id
 from graph_knowledge_engine.server.chat_api import create_chat_router
+from graph_knowledge_engine.server.runtime_api import create_runtime_router
 from graph_knowledge_engine.server.chat_mcp import build_conversation_mcp, build_workflow_mcp
 from graph_knowledge_engine.server.chat_service import ChatRunService
 from graph_knowledge_engine.server.run_registry import RunRegistry
@@ -781,6 +782,14 @@ app.include_router(
         require_namespace=require_namespace,
         conversation_namespace=NameSpace.CONVERSATION.value,
         workflow_namespaces={NameSpace.CONVERSATION.value, NameSpace.WORKFLOW.value},
+    )
+)
+app.include_router(
+    create_runtime_router(
+        get_service=lambda: chat_service.get(),
+        require_role=require_role,
+        require_namespace=require_namespace,
+        runtime_namespaces={NameSpace.WORKFLOW.value},
     )
 )
 from datetime import datetime, timedelta, timezone

@@ -77,6 +77,48 @@ def build_workflow_mcp(
 ):
     mcp = FastMCP("Workflow Diagnostics MCP")
 
+    @tool_roles({role_rw})
+    @require_ns({ns_workflow})
+    @mcp.tool(name="workflow.run_submit")
+    def workflow_run_submit(
+        workflow_id: str,
+        conversation_id: str,
+        initial_state: dict[str, Any] | None = None,
+        turn_node_id: str | None = None,
+        user_id: str | None = None,
+    ) -> dict[str, Any]:
+        return get_service().submit_workflow_run(
+            workflow_id=workflow_id,
+            conversation_id=conversation_id,
+            initial_state=initial_state or {},
+            turn_node_id=turn_node_id,
+            user_id=user_id,
+        )
+
+    @tool_roles({role_ro, role_rw})
+    @require_ns({ns_workflow})
+    @mcp.tool(name="workflow.run_status")
+    def workflow_run_status(run_id: str) -> dict[str, Any]:
+        return get_service().get_run(run_id)
+
+    @tool_roles({role_rw})
+    @require_ns({ns_workflow})
+    @mcp.tool(name="workflow.run_cancel")
+    def workflow_run_cancel(run_id: str) -> dict[str, Any]:
+        return get_service().cancel_run(run_id)
+
+    @tool_roles({role_ro, role_rw})
+    @require_ns({ns_workflow})
+    @mcp.tool(name="workflow.run_events")
+    def workflow_run_events(run_id: str, after_seq: int = 0, limit: int = 200) -> dict[str, Any]:
+        events = get_service().list_run_events(run_id, after_seq=after_seq)
+        if limit > 0:
+            events = events[: int(limit)]
+        return {
+            "run_id": run_id,
+            "events": events,
+        }
+
     @tool_roles({role_ro, role_rw})
     @require_ns({ns_workflow})
     @mcp.tool(name="workflow.run_checkpoint_get")
