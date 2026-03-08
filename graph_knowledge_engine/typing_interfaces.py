@@ -1,29 +1,25 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, List, Mapping, Optional, Protocol, TypedDict, TypeVar, Sequence, Union, runtime_checkable, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, Protocol, Sequence, Union, runtime_checkable, TYPE_CHECKING
+
 try:
     from typing import TypeAlias
 except ImportError:  # pragma: no cover - py<3.10 compatibility
     from typing_extensions import TypeAlias
-from .engine_core.models import AdjudicationVerdict, Document as EngineDoc
+
+from .engine_core.models import (
+    AdjudicationTarget as GraphAdjudicationTarget,
+    AdjudicationVerdict,
+    Document as EngineDoc,
+    Edge as GraphEdge,
+    Node as GraphNode,
+)
+from .engine_core.storage_backend import StorageBackend
+
 # -------------------------
 # Collection / Vector store
 # -------------------------
-
-# class GetResult(TypedDict, total=False):
-#     ids: List[str]
-#     documents: List[str]
-#     metadatas: List[Dict[str, Any]]
-#     embeddings: List[List[float]]
-#     distances: List[List[float]]
-#     uris: List[str]
-#     data: Any  # some backends return extra buckets
-# class QueryResult(TypedDict, total=False):
-#     ids: List[List[str]]
-#     documents: List[List[str]]
-#     metadatas: List[List[Dict[str, Any]]]
-#     distances: List[List[float]]
 
 try:
     from chromadb.api.types import Embedding, PyEmbedding, Document as ChromaDocument, Image, URI, ID, Include, QueryResult
@@ -44,6 +40,7 @@ except Exception:  # pragma: no cover - optional dependency
     OneOrMany = Any  # type: ignore
     GetResult = Dict[str, Any]  # type: ignore
     Metadata = Dict[str, Any]  # type: ignore
+
 
 class CollectionLike(Protocol):
     def add(
@@ -95,6 +92,8 @@ class CollectionLike(Protocol):
         where_document: WhereDocument | None = None,
         include: Include = ["metadatas", "documents", "distances"],
     ) -> QueryResult: ...
+
+
 if TYPE_CHECKING:
     from .llm_tasks import LLMTaskSet
 
@@ -102,82 +101,135 @@ if TYPE_CHECKING:
 # Graph objects (structural)
 # -------------------------
 
+
 @runtime_checkable
 class NodeLike(Protocol):
     id: str
     label: str
-    type: str  # "entity" or "relationship" (when you treat Edge-as-Node)
+    type: str
     summary: str
     domain_id: Optional[str]
     canonical_entity_id: Optional[str]
     properties: Optional[Dict[str, Any]]
-    mentions: Optional[List[Any]]  # ReferenceSession, but keep it loose here
+    mentions: Optional[List[Any]]
     embedding: Optional[List[float]]
     doc_id: Optional[str]
 
-    # pydantic convenience (your models expose these)
     def model_dump(self) -> Dict[str, Any]: ...
     def model_dump_json(self) -> str: ...
 
+
 @runtime_checkable
 class EdgeLike(NodeLike, Protocol):
-    # Hyperedge endpoints
     relation: str
     source_ids: Optional[List[str]]
     target_ids: Optional[List[str]]
     source_edge_ids: Optional[List[str]]
     target_edge_ids: Optional[List[str]]
 
-# Union the adjudication target
-AdjudicationTarget = Union[NodeLike, EdgeLike]
+
+AdjudicationTarget: TypeAlias = Union[NodeLike, EdgeLike]
 
 # -------------------------
-# Engine surface used by strategies
+# Shared engine surface
 # -------------------------
+
+
 class EmbeddingFunctionLike(Protocol):
     def __call__(self, documents_or_texts: list[str]) -> Any: ...
-class EngineLike(Protocol):
-    """
-    The minimal 'engine' surface strategies depend on.
-    Keep this lean so Pylance/mypy can reason about it without importing
-    heavy backends.
-    """
-    # vector-store collections
-    node_collection: CollectionLike
-    edge_collection: CollectionLike
-    edge_endpoints_collection: CollectionLike
-    document_collection: CollectionLike
-    # _ef : EmbeddingFunctionLike
-    
-    _ef: EmbeddingFunctionLike
-    # optional indexes
-    node_docs_collection: CollectionLike
 
+
+class ReadLike(Protocol):
     def get_document(self, doc_id: str) -> EngineDoc: ...
-    # helpers the strategies call
-    def chroma_sanitize_metadata(self, metadata: Dict[str, Any]) -> Dict[str, Any]: ...
-    def _json_or_none(self, obj: Any) -> Optional[str]: ...
-    
-    # llm task runner
-    llm_tasks: "LLMTaskSet"
 
-    # -------------------------
-    # adjudication / commit hooks
-    # -------------------------
-    
-    """
-    Merge-or-link two objects of the same *kind* (node↔node or edge↔edge).
-    Returns a canonical id (or link edge id) used/created.
-    """
+    def node_ids_by_doc(
+        self,
+        doc_id: str,
+        insertion_method: str | None = None,
+    ) -> list[str]: ...
+
+    def edge_ids_by_doc(
+        self,
+        doc_id: str,
+        insertion_method: str | None = None,
+    ) -> list[str]: ...
+
+    def extract_reference_contexts(
+        self,
+        node_or_id: GraphNode | GraphEdge | str,
+        *,
+        window_chars: int = 120,
+        max_contexts: int | None = None,
+        prefer_label_fallback: bool = True,
+    ) -> list[dict[str, Any]]: ...
+
+
+class WriteLike(Protocol):
+    def add_node(self, node: GraphNode, doc_id: str | None = None) -> Any: ...
+    def add_edge(self, edge: GraphEdge, doc_id: str | None = None) -> Any: ...
+
+    def node_doc_and_meta(self, node: GraphNode) -> tuple[str, dict[str, Any]]: ...
+    def edge_doc_and_meta(self, edge: GraphEdge) -> tuple[str, dict[str, Any]]: ...
+
+    def strip_none(self, data: dict[str, Any]) -> dict[str, Any]: ...
+    def json_or_none(self, value: Any) -> str | None: ...
+
+    def index_node_docs(self, node: GraphNode) -> list[str]: ...
+    def index_node_refs(self, node: GraphNode) -> list[str]: ...
+    def index_edge_refs(self, edge: GraphEdge) -> list[str]: ...
+
+
+class ExtractLike(Protocol):
+    def fetch_document_text(self, document_id: str) -> str: ...
+
+
+class EmbedLike(Protocol):
+    def iterative_defensive_emb(self, emb_text0: str) -> Any: ...
+
+
+class AdjudicateLike(Protocol):
+    def target_from_node(self, n: GraphNode) -> GraphAdjudicationTarget: ...
+    def target_from_edge(self, e: GraphEdge) -> GraphAdjudicationTarget: ...
+    def fetch_target(self, t: GraphAdjudicationTarget) -> GraphNode | GraphEdge: ...
+
+    def split_endpoints(
+        self,
+        src_ids: list[str] | None,
+        tgt_ids: list[str] | None,
+    ) -> tuple[list[Any], list[Any], list[Any], list[Any]]: ...
+
+
+class EngineLike(Protocol):
+    """Public read-oriented engine contract used by lightweight helpers."""
+
+    backend: StorageBackend
+    read: ReadLike
+
+
+class StrategyEngineLike(EngineLike, Protocol):
+    """Public engine contract used by strategy modules."""
+
+    read: ReadLike
+    write: WriteLike
+    extract: ExtractLike
+    embed: EmbedLike
+    adjudicate: AdjudicateLike
+
+    llm_tasks: "LLMTaskSet"
+    allow_cross_kind_adjudication: bool
+    cross_kind_strategy: str
+
+    def commit_merge(
+        self,
+        left: GraphNode,
+        right: GraphNode,
+        verdict: AdjudicationVerdict,
+        method: str = "unspecified",
+    ) -> str: ...
 
     def commit_merge_target(
         self,
-        left: AdjudicationTarget,
-        right: AdjudicationTarget,
-        verdict: AdjudicationVerdict,  # AdjudicationVerdict
+        left: GraphAdjudicationTarget,
+        right: GraphAdjudicationTarget,
+        verdict: AdjudicationVerdict,
     ) -> str: ...
-    """
-    Cross-kind linker (node↔edge or edge↔node). Should create a meta-edge
-    like 'reifies' / 'equivalent_node_edge' based on engine policy.
-    Returns the id of the linking edge created.
-    """

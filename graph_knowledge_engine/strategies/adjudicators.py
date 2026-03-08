@@ -2,8 +2,12 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
-from typing import Any, Dict, List, Tuple
+import json
+from dataclasses import dataclass
+from os import PathLike
+from typing import Any, Dict, List, Optional, Tuple
 
+from joblib import Memory
 from pydantic import BaseModel
 
 from .types import EngineLike, IAdjudicator
@@ -18,6 +22,47 @@ from ..engine_core.models import (
     QUESTION_KEY,
 )
 from ..llm_tasks import AdjudicateBatchTaskRequest, AdjudicatePairTaskRequest
+
+
+@dataclass(frozen=True)
+class PairAdjudicationTrace:
+    adjudication: LLMMergeAdjudication | None
+    raw: object | None
+    parsing_error: str | None
+
+
+def _normalize_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    return json.loads(json.dumps(payload, sort_keys=True, default=str))
+
+
+def _cacheable_raw(raw: object | None) -> object | None:
+    if raw is None or isinstance(raw, (str, int, float, bool)):
+        return raw
+    if isinstance(raw, (list, dict)):
+        return raw
+    return repr(raw)
+
+
+def _invoke_adjudicate_pair_task(
+    pair_task,
+    *,
+    question: str,
+    left: Dict[str, Any],
+    right: Dict[str, Any],
+) -> Dict[str, Any]:
+    result = pair_task(
+        AdjudicatePairTaskRequest(
+            question=question,
+            left=left,
+            right=right,
+        )
+    )
+    verdict_payload = result.verdict_payload
+    return {
+        "verdict_payload": dict(verdict_payload) if verdict_payload is not None else None,
+        "raw": _cacheable_raw(result.raw),
+        "parsing_error": result.parsing_error,
+    }
 
 
 class LLMPairAdjudicatorImpl:
@@ -164,27 +209,66 @@ class Adjudicator(IAdjudicator):
     def __init__(self, engine: EngineLike):
         self.e = engine
 
+    def adjudicate_pair_trace(
+        self,
+        left: AdjudicationTarget,
+        right: AdjudicationTarget,
+        question: str,
+        *,
+        cache_dir: str | PathLike[str] | None = None,
+    ) -> PairAdjudicationTrace:
+        if (left.kind != right.kind) and question != "node_edge_equivalence":
+            raise ValueError("Cross-kind only allowed for 'node_edge_equivalence'")
+        if not self.e.allow_cross_kind_adjudication and question == "node_edge_equivalence":
+            raise ValueError("Cross-kind adjudication disabled")
+
+        left_payload = _normalize_payload(left.model_dump())
+        right_payload = _normalize_payload(right.model_dump())
+        pair_task = self.e.llm_tasks.adjudicate_pair
+
+        if cache_dir is not None:
+            memory = Memory(location=str(cache_dir), verbose=0)
+            payload = memory.cache(_invoke_adjudicate_pair_task, ignore=["pair_task"])(
+                pair_task=pair_task,
+                question=question,
+                left=left_payload,
+                right=right_payload,
+            )
+        else:
+            payload = _invoke_adjudicate_pair_task(
+                pair_task,
+                question=question,
+                left=left_payload,
+                right=right_payload,
+            )
+
+        verdict_payload = payload.get("verdict_payload")
+        adjudication: Optional[LLMMergeAdjudication]
+        parsing_error = payload.get("parsing_error")
+        if verdict_payload is None:
+            adjudication = None
+        else:
+            try:
+                adjudication = LLMMergeAdjudication.model_validate(verdict_payload)
+            except Exception as exc:
+                adjudication = None
+                parsing_error = f"{parsing_error or 'invalid verdict payload'} | validation_error: {exc}"
+        return PairAdjudicationTrace(
+            adjudication=adjudication,
+            raw=payload.get("raw"),
+            parsing_error=parsing_error,
+        )
+
     def adjudicate_pair(
         self,
         left: AdjudicationTarget,
         right: AdjudicationTarget,
         question: str,
     ) -> Dict[Any, Any] | BaseModel:
-        if (left.kind != right.kind) and question != "node_edge_equivalence":
-            raise ValueError("Cross-kind only allowed for 'node_edge_equivalence'")
-        if not self.e.allow_cross_kind_adjudication and question == "node_edge_equivalence":
-            raise ValueError("Cross-kind adjudication disabled")
-
-        result = self.e.llm_tasks.adjudicate_pair(
-            AdjudicatePairTaskRequest(
-                question=question,
-                left=left.model_dump(),
-                right=right.model_dump(),
-            )
-        )
-        if result.verdict_payload is None:
-            raise ValueError(f"Pair adjudication failed: {result.parsing_error or 'missing verdict payload'}")
-        return LLMMergeAdjudication.model_validate(result.verdict_payload)
+        trace = self.adjudicate_pair_trace(left, right, question)
+        if trace.adjudication is None:
+            raise ValueError(f"Pair adjudication failed: {trace.parsing_error or 'missing verdict payload'}")
+        return trace.adjudication
 
     def adjudicate_merge(self, left_node: Node | Edge, right_node: Node | Edge) -> Dict[Any, Any] | BaseModel:
         left = self.e.adjudicate.target_from_node(left_node) if isinstance(left_node, Node) else self.e.adjudicate.target_from_edge(left_node)
@@ -281,8 +365,8 @@ class Adjudicator(IAdjudicator):
         for left, right, _ in unknown_pairs:
             l_key = (node_kind(left), str(node_id(left)))
             r_key = (node_kind(right), str(node_id(right)))
-            left_ctxs = self.e.extract_reference_contexts(left, window_chars=260, max_contexts=2)
-            right_ctxs = self.e.extract_reference_contexts(right, window_chars=260, max_contexts=2)
+            left_ctxs = self.e.read.extract_reference_contexts(left, window_chars=260, max_contexts=2)
+            right_ctxs = self.e.read.extract_reference_contexts(right, window_chars=260, max_contexts=2)
             left_blurbs = "\n".join(_fmt(c) for c in left_ctxs)
             right_blurbs = "\n".join(_fmt(c) for c in right_ctxs)
             adjudication_inputs.append(

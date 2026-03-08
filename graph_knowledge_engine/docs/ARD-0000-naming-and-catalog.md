@@ -36,6 +36,17 @@ Normalized numbering and phase-series naming:
 - `ARD-2D-Appendix-A-state-retries-ordering.md` -> `ARD-p2d-appendix-a-state-retries-ordering.md`
 - Updated corresponding document headers and cross-file appendix reference.
 
+## Follow-up Performed (2026-03-08)
+- Added `ARD-0013-core-vendor-neutrality-and-sidecar-optionality.md` to the catalog.
+- Updated cross-cutting ARDs to clarify current implementation status versus target architecture, especially for:
+  - layered package boundaries
+  - backend neutrality scope
+  - retrieval / projection implementation status
+- Updated conversation/workflow ARDs to reflect:
+  - explicit `wf_join=True` join behavior at `answer`
+  - implemented context snapshot persistence and current coverage limits
+  - v2 workflow/resolver parity documents now acting as governance for live code rather than pure design intent
+
 ## Current ARD/ADR Catalog
 
 ### ADR
@@ -45,6 +56,7 @@ Normalized numbering and phase-series naming:
 - `ARD-0000-naming-and-catalog.md`
 - `ARD-0006-conversation.md`
 - `ARD-0012-repo-restructure-core-workflow-conversation.md`
+- `ARD-0013-core-vendor-neutrality-and-sidecar-optionality.md`
 
 ### ARD (topic + phase series)
 - `ARD-p2d-conversation-workflow-v2-parity.md`

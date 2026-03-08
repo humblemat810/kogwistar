@@ -27,10 +27,10 @@ def _enqueue_jobs(meta, *, ns: str, n: int) -> list[str]:
     return ids
 
 
-@pytest.fixture(params=["sqlite_chroma", "pgvector"], ids=["sqlite+chroma", "pg+pgvector"])
+@pytest.fixture(params=["chroma", "pg"], ids=["chroma", "pg"])
 def eng(request, tmp_path, sa_engine, pg_schema) -> GraphKnowledgeEngine:
     """Backend-parametrized engine fixture for Phase 5 worker semantics."""
-    if request.param == "sqlite_chroma":
+    if request.param == "chroma":
         persist_dir = tmp_path / "chroma"
         persist_dir.mkdir(parents=True, exist_ok=True)
         e = GraphKnowledgeEngine(persist_directory=str(persist_dir))

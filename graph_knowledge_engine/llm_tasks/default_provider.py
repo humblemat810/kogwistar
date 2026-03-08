@@ -276,12 +276,28 @@ def _build_task_set_from_runner_getter(*, get_runner_for_task, provider_hints: L
     def _adjudicate_pair(request: AdjudicatePairTaskRequest) -> AdjudicatePairTaskResult:
         from graph_knowledge_engine.engine_core.models import LLMMergeAdjudication
 
+        if request.question == "node_edge_equivalence":
+            guidance = (
+                "Interpret 'node_edge_equivalence' as: determine whether the NODE names, reifies, or denotes "
+                "the specific EDGE relation instance. A positive verdict is allowed even though one side is a "
+                "node and the other side is an edge, but only when the meaning and relation instance align."
+            )
+        elif request.question == "same_relation":
+            guidance = (
+                "Interpret 'same_relation' as: determine whether two EDGEs represent the same logical relation "
+                "instance, including compatible endpoints and direction."
+            )
+        else:
+            guidance = (
+                "Interpret 'same_entity' as: determine whether two NODEs refer to the same real-world entity."
+            )
+
         raw, parsed, parsing_error = get_runner_for_task("adjudicate_pair").invoke_structured(
             messages=[
                 (
                     "system",
-                    "You adjudicate whether two objects refer to the SAME real-world thing. "
-                    "Be conservative and return a structured JSON verdict only.",
+                    "You adjudicate whether two objects satisfy the requested relationship. "
+                    f"{guidance} Be conservative and return a structured JSON verdict only.",
                 ),
                 (
                     "human",
@@ -486,4 +502,3 @@ def build_default_llm_tasks(config: DefaultTaskProviderConfig | None = None) -> 
         get_runner_for_task=_get_runner_for_task,
         provider_hints=hints,
     )
-

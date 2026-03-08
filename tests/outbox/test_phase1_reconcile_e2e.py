@@ -62,21 +62,21 @@ def _mk_edge(edge_id: str, *, src: str, tgt: str, doc_id: str) -> Edge:
     )
 
 
-@pytest.fixture(params=["chroma", "pgvector"], ids=["chroma", "pgvector"])
+@pytest.fixture(params=["chroma", "pg"], ids=["chroma", "pg"])
 def e2e_engine(
     request: pytest.FixtureRequest,
     tmp_path: pathlib.Path,
     sa_engine,  # provided by tests/conftest.py
     pg_schema,  # provided by tests/conftest.py
 ) -> GraphKnowledgeEngine:
-    """Run the same E2E outbox/reconcile tests against both backends."""
+    """Run the same E2E outbox/reconcile tests against both selectors."""
 
     if request.param == "chroma":
         persist_dir = tmp_path / "chroma"
         persist_dir.mkdir(parents=True, exist_ok=True)
         eng = GraphKnowledgeEngine(persist_directory=str(persist_dir))
     else:
-        # Skip cleanly if pgvector isn't available in this environment.
+        # Skip cleanly if the pgvector dependency isn't available in this environment.
         pytest.importorskip("pgvector")
         backend = PgVectorBackend(engine=sa_engine, embedding_dim=3, schema=pg_schema)
         eng = GraphKnowledgeEngine(backend=backend)
@@ -92,10 +92,40 @@ def _ids(coll_get: dict) -> list[str]:
 
 def _assert_backend_kind(eng: GraphKnowledgeEngine) -> None:
     kind = getattr(eng, "_test_backend_kind", None)
-    if kind == "pgvector":
+    if kind == "pg":
         assert isinstance(eng.backend, PgVectorBackend)
     else:
         assert isinstance(eng.backend, ChromaBackend)
+
+
+def _job_by_id(eng: GraphKnowledgeEngine, job_id: str):
+    for job in eng.meta_sqlite.list_index_jobs(limit=1000):
+        if job.job_id == job_id:
+            return job
+    raise AssertionError(f"missing job_id={job_id}")
+
+
+def _make_job_runnable_now(eng: GraphKnowledgeEngine, job_id: str) -> None:
+    if hasattr(eng.meta_sqlite, "transaction"):
+        with eng.meta_sqlite.transaction() as conn:
+            if isinstance(eng.meta_sqlite, EnginePostgresMetaStore):
+                schema = eng.meta_sqlite.schema
+                table = getattr(eng.meta_sqlite, "index_jobs_table", "index_jobs")
+                ij = f"{schema}.{table}"
+                conn.execute(
+                    sa.text(
+                        f"UPDATE {ij} "
+                        "SET status='PENDING', lease_until=NULL, next_run_at=NOW(), updated_at=NOW() "
+                        "WHERE job_id=:job_id"
+                    ),
+                    {"job_id": job_id},
+                )
+            else:
+                now = eng.meta_sqlite._now_epoch()
+                conn.execute(
+                    "UPDATE index_jobs SET status='PENDING', lease_until=NULL, next_run_at=?, updated_at=? WHERE job_id=?",
+                    (now, now, job_id),
+                )
 
 
 def test_reconcile_builds_all_joins_from_raw_entities(e2e_engine: GraphKnowledgeEngine):
@@ -143,24 +173,42 @@ def test_reconcile_builds_all_joins_from_raw_entities(e2e_engine: GraphKnowledge
 
 
 def test_race_job_before_entity_exists_recovers_on_later_insert(e2e_engine: GraphKnowledgeEngine):
-    """If reconcile runs while a job references an entity not yet present, it should fail + retry later."""
+    """If reconcile runs before the entity exists, the job should requeue, then recover on a later insert."""
     eng = e2e_engine
     _assert_backend_kind(eng)
 
     jid = eng.enqueue_index_job(entity_kind="node", entity_id="n_race", index_kind="node_docs", op="UPSERT")
     eng.reconcile_indexes(max_jobs=10)
 
-    failed = {j.job_id: j for j in eng.meta_sqlite.list_index_jobs(status="FAILED")}
-    assert jid in failed
+    first = _job_by_id(eng, jid)
+    assert first.status == "PENDING"
+    assert first.retry_count == 1
+    assert first.next_run_at is not None
+    assert first.last_error is not None
+    assert "document not found" in first.last_error
+
+    failed_ids = {j.job_id for j in eng.meta_sqlite.list_index_jobs(status="FAILED")}
+    assert jid not in failed_ids
 
     # Later the base entity arrives
     new_node = _mk_node("n_race", doc_id="d1")
-    eng.add_node(new_node)
+    eng.write.add_node(new_node)
 
-    eng.reconcile_indexes(max_jobs=10)
+    node_docs_jobs = eng.meta_sqlite.list_index_jobs(
+        entity_kind="node",
+        entity_id="n_race",
+        index_kind="node_docs",
+        limit=20,
+    )
+    assert {j.job_id for j in node_docs_jobs} == {jid}
 
-    done_ids = {j.job_id for j in eng.meta_sqlite.list_index_jobs(status="DONE")}
-    assert jid in done_ids
+    current = _job_by_id(eng, jid)
+    if current.status != "DONE":
+        _make_job_runnable_now(eng, jid)
+        eng.reconcile_indexes(max_jobs=10)
+
+    final = _job_by_id(eng, jid)
+    assert final.status == "DONE"
 
     got = eng.backend.node_docs_get(where={"node_id": "n_race"})
     assert len(_ids(got)) >= 1

@@ -1,7 +1,10 @@
 # ARD: ContextSnapshot and PromptContext
 
 ## Status
-Accepted (implementation in this patch set).
+Accepted (implemented; coverage still expanding).
+
+## Last Updated
+2026-03-08
 
 ## Context
 We currently have multiple overlapping notions of "context":
@@ -11,6 +14,26 @@ We currently have multiple overlapping notions of "context":
 - **ContextSnapshot**: intended to be a persisted snapshot of what actually went into the LLM prompt window for a specific step.
 
 The previous implementation of ContextSnapshot only hashed `view.messages` and stored minimal metadata. It did not persist the *actual LLM inputs* (system prompt, question, evidence-pack parameters), and did not provide a rehydratable description of the evidence pack.
+
+## Current Implementation Note (2026-03-08)
+
+The current repo implements the main elements in this ARD:
+
+- `graph_knowledge_engine/conversation/conversation_context.py`
+  defines `PromptContext` and keeps `ConversationContextView` as a
+  backwards-compatible alias.
+- `graph_knowledge_engine/conversation/service.py` persists context
+  snapshots with deterministic IDs, prompt messages,
+  `llm_input_payload`, `evidence_pack_digest`, and `depends_on` edges.
+- `graph_knowledge_engine/conversation/resolvers.py` exposes a
+  `context_snapshot` workflow op.
+- `graph_knowledge_engine/conversation/agentic_answering.py` persists
+  snapshots around multiple agentic answering stages and supports
+  evidence-pack rehydration.
+
+What is still expanding is coverage consistency across all legacy answer
+paths; snapshotting is implemented, but not every older call path is
+guaranteed to snapshot automatically. Old code path serve as an introductory usage and snapshot complicates the flow to first time users.
 
 ## Decision
 1. Rename **ConversationContextView → PromptContext** and document it explicitly as an LLM-facing debug/telemetry artifact.

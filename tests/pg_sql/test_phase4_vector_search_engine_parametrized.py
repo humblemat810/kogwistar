@@ -22,7 +22,7 @@ def _insert_three(backend) -> None:
     )
 
 
-@pytest.mark.parametrize("backend_kind", ["chroma", "pgvector"])
+@pytest.mark.parametrize("backend_kind", ["chroma", "pg"])
 def test_engine_vector_search_nodes_orders_neighbors(backend_kind: str, tmp_path, sa_engine, pg_schema):
     """Engine-level smoke: add 3 nodes with known embeddings, vector search returns correct order.
 
@@ -43,7 +43,7 @@ def test_engine_vector_search_nodes_orders_neighbors(backend_kind: str, tmp_path
     assert got["ids"][0] == ["A", "B", "C"]
 
 
-@pytest.mark.parametrize("backend_kind", ["chroma", "pgvector"])
+@pytest.mark.parametrize("backend_kind", ["chroma", "pg"])
 def test_engine_uow_power_out_rollback(backend_kind: str, tmp_path, sa_engine, pg_schema):
     """Transaction atomicity: crash-before-commit rolls back all writes (pgvector only).
 

@@ -67,7 +67,7 @@ def _get_doc(doc_id: str | None = None, doc: Document | None = None, engine: Eng
                 if engine is None:
                     raise ValueError("Engine is requried to resolve doc_id")
                 else:
-                    doc = engine.get_document(doc_id)
+                    doc = engine.read.get_document(doc_id)
         return doc
 
 
@@ -326,7 +326,7 @@ class PlainTextDocSpanValidator(BaseDocValidator):
                 if engine is None:
                     raise ValueError("Engine is requried to resolve doc_id")
                 else:
-                    doc = engine.get_document(doc_id)
+                    doc = engine.read.get_document(doc_id)
         if not doc:
             raise RuntimeError("fail to resolve document")
         

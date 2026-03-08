@@ -52,7 +52,7 @@ class FakeEmbeddingFunction(EmbeddingFunction):
 from tests.conftest import _make_engine_pair
 # def _make_engine_pair(*, backend_kind: str, tmp_path, sa_engine, pg_schema, dim: int = 3):
 #     """
-#     Build (kg_engine, conv_engine) for either chroma or pgvector.
+#     Build (kg_engine, conv_engine) for either chroma or the pg-backed path.
 #     """
 #     # ef = _fake_ef_dim(dim)
 

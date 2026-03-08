@@ -153,13 +153,13 @@ class Span(ModeSlicingMixin, BaseModel):
     doc_id : Annotated[str, ExcludeMode("llm_in")] = Field(..., description="document id")
     insertion_method : Annotated[str, BackendField(), ExcludeMode("llm", "llm_in")]  = Field(..., description="insertion_method")
     # Required locators 
-    page_number: int = Field(..., ge=1, description="1-indexed page number where the mentioned")
+    page_number: int = Field(1, ge=1, description="1-indexed page number where the mentioned")
     # end_page: int = Field(..., ge=1, description="1-based page index where the mention ends (>= start_page)")
     start_char: int = Field(..., ge=0, description="Character offset within start_page, zero indexed, first char in source document is index 0 with 0 offset")
     end_char: int = Field(..., ge=1, description="Character offset within end_page, zero indexed")
-    excerpt: str = Field(..., description="the direct excerpt from source doc from start char to end char. Must be identical from extracted using start_char and end_char")
-    context_before: Annotated[str, ExcludeMode("llm_in")] = Field(..., description='words before the exceprt for uniqueness excerpt identification, empty string "" if excerpt is start of text')
-    context_after: Annotated[str, ExcludeMode("llm_in")] = Field(..., description="words after the exceprt for uniqueness excerpt identification, empty string "" if excerpt is end of text")
+    excerpt: str = Field("", description="the direct excerpt from source doc from start char to end char. Must be identical from extracted using start_char and end_char")
+    context_before: Annotated[str, ExcludeMode("llm_in")] = Field("", description='words before the exceprt for uniqueness excerpt identification, empty string "" if excerpt is start of text')
+    context_after: Annotated[str, ExcludeMode("llm_in")] = Field("", description="words after the exceprt for uniqueness excerpt identification, empty string "" if excerpt is end of text")
     # Optional extras
     # only for chunked text document
     chunk_id: Optional[Annotated[str, LLMField(), ExcludeMode("frontend", "backend", "dto", "llm_in")] ] = Field(None, description = 'source text chunk id for chunked text')
@@ -168,6 +168,12 @@ class Span(ModeSlicingMixin, BaseModel):
     verification: Annotated[Optional[MentionVerification], BackendField(), ExcludeMode("llm", "llm_in")] = Field(
                                         None, description="Result of validating the mention correctness"
                                     )
+    @field_validator("excerpt", "context_before", "context_after", mode="before")
+    @classmethod
+    def _none_text_to_empty(cls, value):
+        if value is None:
+            return ""
+        return value
     
     @staticmethod
     def from_dummy_for_workflow(doc_id = "_wf:_dummy"):
@@ -340,6 +346,10 @@ class Grounding(ModeSlicingMixin, BaseModel):
     spans: Annotated[List[Span], FrontendField(),BackendField(),DtoField(),LLMField()] = Field(
         ..., min_items=1, description="One or more locatable span across chunks/text-clusters supporting this entity"
     )
+    def __init__(self, spans=None, /, **data):
+        if spans is not None and "spans" not in data:
+            data["spans"] = spans
+        super().__init__(**data)
     def validate_span(self, span:Span):
         
         pass
@@ -355,12 +365,41 @@ class Grounding(ModeSlicingMixin, BaseModel):
             self.validate_span(sp)
         pass
 
+
+def _coerce_mentions_payload(mentions):
+    if isinstance(mentions, str):
+        return mentions
+    if isinstance(mentions, (Grounding, Span, dict)):
+        mentions = [mentions]
+    if not isinstance(mentions, list):
+        return mentions
+
+    normalized = []
+    for mention in mentions:
+        if isinstance(mention, Grounding):
+            normalized.append(mention)
+            continue
+        if isinstance(mention, Span):
+            normalized.append(Grounding(spans=[mention]))
+            continue
+        if isinstance(mention, dict) and "spans" not in mention and (
+            "document_page_url" in mention or "doc_id" in mention
+        ):
+            normalized.append({"spans": [mention]})
+            continue
+        normalized.append(mention)
+    return normalized
+
 class GraphEntityExtractionBase(GraphEntityBase):
     # the groundings wrap grouped supporting spans
     
     mentions: Annotated[List[Grounding], FrontendField(),BackendField(),DtoField(),LLMField()] = Field(
         ..., min_items=1, description="Mentioning of the idea across possibly multiple paragraphs"
     )
+    @field_validator("mentions", mode="before")
+    @classmethod
+    def _coerce_mentions(cls, mentions):
+        return _coerce_mentions_payload(mentions)
     #NEED-FIX
     @field_validator("mentions")
     @classmethod
@@ -389,6 +428,10 @@ class GraphEntityRefBase(GraphEntityBase):
     mentions: Annotated[List[Grounding], FrontendField(),BackendField(),DtoField(),LLMField()] = Field(
         ..., min_items=1, description="Mentioning of the idea across possibly multiple paragraphs/ data sources"
     )
+    @field_validator("mentions", mode="before")
+    @classmethod
+    def _coerce_mentions(cls, mentions):
+        return _coerce_mentions_payload(mentions)
     def iter_span(self):
         for g in self.mentions:
             for sp in g.spans:
@@ -419,6 +462,7 @@ class GraphEntityRefBase(GraphEntityBase):
                                 span["end_char"] += len(span["excerpt"])
         try:
             mentions:list[Grounding]
+            data["mentions"] = _coerce_mentions_payload(data.get("mentions"))
             if type(data['mentions']) is str:
                 mentions = [Grounding.model_validate(i) for i in json.loads(data['mentions'])]
             else:
@@ -553,7 +597,9 @@ class TombstoneMixin(BaseModel):
         if "lifecycle_status" not in v:
             v["lifecycle_status"] = "active"
         else:
-            assert v["lifecycle_status"] in ['active', 'deleted']
+            if v["lifecycle_status"] == "deleted":
+                v["lifecycle_status"] = "tombstoned"
+            assert v["lifecycle_status"] in ['active', 'tombstoned']
         if "redirect_to_id" not in v:
             v["redirect_to_id"] = None        
         return v
@@ -1507,7 +1553,7 @@ class LLMGraphExtraction(ModeSlicingMixin, BaseModel):
                                         content=content,
                                         insertion_method=resolved_insertion_method,
                                         context_window_chars=context_window_chars,
-                                    ).model_dump()
+                                    ).model_dump(field_mode="backend")
                                     for span in (grounding.get("spans") or [])
                                 ]
                             }
@@ -1543,7 +1589,7 @@ class LLMGraphExtraction(ModeSlicingMixin, BaseModel):
                                         content=content,
                                         insertion_method=resolved_insertion_method,
                                         context_window_chars=context_window_chars,
-                                    ).model_dump()
+                                    ).model_dump(field_mode="backend")
                                     for span in (grounding.get("spans") or [])
                                 ]
                             }
@@ -1930,15 +1976,24 @@ class Chunk:
 # -------------------------
 from typing import Tuple
 class Document(ModeSlicingMixin, BaseModel):
-    id: BackendType[str] = Field(..., description="Unique document identifier")
+    id: BackendType[str] = Field(
+        default_factory=lambda: str(new_id_str()),
+        description="Unique document identifier",
+    )
     content: BackendType[DtoType[str | dict]] = Field(..., description="Text content or OCR dict content of the document")
     # "text_chunked" is temp type for view as chunks and validate chunked results
     type: BackendType[DtoType[Literal["text", "ocr_document", "text_chunked"] | str]] = Field(..., description="Type of document, e.g., 'ocr', 'pdf'")
     metadata: BackendType[DtoType[Optional[Dict[str, Any]]]] = Field(None, description="Additional metadata for the document")
     domain_id: BackendType[Optional[str]] = Field(None, description="Optional domain this document belongs to")
     processed: BackendType[bool] = Field(False, description="Whether the document has been processed, source map is produced, set true only you are migrating from server or is directly from trusted ingestor")
-    embeddings: BackendType[Optional[Any]] = Field(..., description="embedding for collection")
-    source_map: BackendType[Optional[Dict[str, Any]]] = Field(..., description="source_map for chunk boundary, not for LLM ingestion, chunk id to character index range")
+    embeddings: BackendType[Optional[Any]] = Field(
+        None,
+        description="embedding for collection",
+    )
+    source_map: BackendType[Optional[Dict[str, Any]]] = Field(
+        None,
+        description="source_map for chunk boundary, not for LLM ingestion, chunk id to character index range",
+    )
     @staticmethod
     def from_text(text: str, **kwarg):
         return Document(content = text, type = "text", metadata = {}, **kwarg)

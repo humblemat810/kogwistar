@@ -27,6 +27,19 @@ class PersistSubsystem(NamespaceProxy):
         super().__init__(engine)
 
     @staticmethod
+    def _promote_llm_entity_payload(obj, *, insertion_method: str) -> dict[str, Any]:
+        payload = obj.model_dump(field_mode="llm")
+        payload["mentions"] = [
+            grounding.model_dump(field_mode="backend")
+            for grounding in (getattr(obj, "mentions", None) or [])
+        ]
+        for grounding in payload.get("mentions") or []:
+            for span in grounding.get("spans") or []:
+                if span.get("insertion_method") is None:
+                    span["insertion_method"] = insertion_method
+        return payload
+
+    @staticmethod
     def _alloc_real_ids(parsed):
         nn2id, ne2id = {}, {}
 
@@ -361,7 +374,10 @@ class PersistSubsystem(NamespaceProxy):
             kind, obj = id2kind[rid], id2obj[rid]
             if kind == "node":
                 ln: Node = Node.model_validate(
-                    obj.model_dump(field_mode="llm"),
+                    self._promote_llm_entity_payload(
+                        obj,
+                        insertion_method="llm_graph_extraction",
+                    ),
                     context={"insertion_method": "llm_graph_extraction"},
                 )
                 ln.mentions = self.dealias_span(ln.mentions, document.id)
@@ -388,7 +404,10 @@ class PersistSubsystem(NamespaceProxy):
                 node_ids.append(n.id)
             elif kind == "edge":
                 le: Edge = Edge.model_validate(
-                    obj.model_dump(field_mode="llm"),
+                    self._promote_llm_entity_payload(
+                        obj,
+                        insertion_method="llm_graph_extraction",
+                    ),
                     context={"insertion_method": "llm_graph_extraction"},
                 )
                 le.mentions = self.dealias_span(le.mentions, document.id)

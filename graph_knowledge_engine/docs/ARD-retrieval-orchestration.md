@@ -1,9 +1,34 @@
 # ARD — Agentic Retrieval Orchestration
 ## Memory + Knowledge Graph Exploration with Budgeted Iterative Control
 
-**Status:** Draft (retrieval subsystem)  
+**Status:** Draft (one-round retrieval and pinning implemented; multi-round deep controller still draft)  
 **Scope:** Retrieval orchestration + retrieval agents + projection contract  
 **Out of scope:** Full answering/synthesis, UI, full temporal KG, tool-specific integrations beyond “graph query tools”.
+
+---
+
+## 0. Current Implementation Note (2026-03-08)
+
+The current repo already implements a narrower version of this design:
+
+- `graph_knowledge_engine/conversation/retrieval_orchestrator.py`
+  coordinates one memory retrieval pass and one KG retrieval pass for a
+  turn.
+- `graph_knowledge_engine/conversation/memory_retriever.py` retrieves
+  cross-conversation memory, extracts KG seeds from selected
+  `reference_pointer` nodes, and materializes `memory_context`.
+- `graph_knowledge_engine/conversation/knowledge_retriever.py`
+  combines shallow retrieval with seeded graph expansion and pins
+  deterministic `reference_pointer` nodes plus `references` edges into
+  the conversation canvas.
+
+The following parts of this ARD remain target-state rather than fully
+landed behavior:
+
+- generic frontier-state objects
+- explicit multi-round iterative control
+- first-class budget objects beyond current ad hoc limits
+- a standalone projector/pinner abstraction separate from retrievers
 
 ---
 
@@ -93,6 +118,11 @@ Deterministic, bounded tools used by agents:
 - Idempotently materialize pointer nodes and linking edges into the **conversation canvas**
 - Deduplicate projections
 - Apply projection budgets
+
+Current implementation note:
+- pinning currently lives in `MemoryRetriever.pin_selected(...)` and
+  `KnowledgeRetriever.pin_selected(...)` rather than in a separate
+  projector service.
 
 ---
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import json
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any, Dict, Iterator, List
@@ -8,6 +9,16 @@ from typing import Any, Dict, Iterator, List
 import pytest
 
 from graph_knowledge_engine.engine_core.models import Span
+from graph_knowledge_engine.llm_tasks import (
+    AdjudicateBatchTaskResult,
+    AdjudicatePairTaskResult,
+    AnswerWithCitationsTaskResult,
+    ExtractGraphTaskResult,
+    FilterCandidatesTaskResult,
+    LLMTaskSet,
+    RepairCitationsTaskResult,
+    SummarizeContextTaskResult,
+)
 from graph_knowledge_engine.runtime.models import RunFailure
 from graph_knowledge_engine.conversation.resolvers import default_resolver
 from graph_knowledge_engine.runtime.models import RunSuccess
@@ -38,18 +49,103 @@ class _FakeStepContext:
         return _cm()
 
 
+def _noop_task_set() -> LLMTaskSet:
+    return LLMTaskSet(
+        extract_graph=lambda request: ExtractGraphTaskResult(raw=None, parsed_payload={}, parsing_error=None),
+        adjudicate_pair=lambda request: AdjudicatePairTaskResult(verdict_payload={}, raw=None, parsing_error=None),
+        adjudicate_batch=lambda request: AdjudicateBatchTaskResult(verdict_payloads=[], raw=None, parsing_error=None),
+        filter_candidates=lambda request: FilterCandidatesTaskResult(node_ids=[], edge_ids=[], reasoning=""),
+        summarize_context=lambda request: SummarizeContextTaskResult(text=""),
+        answer_with_citations=lambda request: AnswerWithCitationsTaskResult(answer_payload={}, raw=None, parsing_error=None),
+        repair_citations=lambda request: RepairCitationsTaskResult(answer_payload={}, raw=None, parsing_error=None),
+    )
+
+
+class _StubBackend:
+    def __init__(self, *, last_user_text: str) -> None:
+        span = Span.from_dummy_for_conversation("c1")
+        metadata = {
+            "entity_type": "conversation_turn",
+            "level_from_root": 0,
+            "in_conversation_chain": True,
+            "conversation_id": "c1",
+            "user_id": "u1",
+            "role": "user",
+            "turn_index": 0,
+            "lifecycle_status": "active",
+            "redirect_to_id": None,
+        }
+        self._node_doc = json.dumps(
+            {
+                "id": "turn:c1:0",
+                "label": "user turn",
+                "type": "entity",
+                "summary": last_user_text,
+                "domain_id": None,
+                "canonical_entity_id": None,
+                "properties": {},
+                "mentions": [
+                    {
+                        "spans": [
+                            {
+                                "collection_page_url": span.collection_page_url,
+                                "document_page_url": span.document_page_url,
+                                "doc_id": span.doc_id,
+                                "insertion_method": span.insertion_method,
+                                "page_number": span.page_number,
+                                "start_char": span.start_char,
+                                "end_char": span.end_char,
+                                "excerpt": span.excerpt,
+                                "context_before": span.context_before,
+                                "context_after": span.context_after,
+                                "chunk_id": span.chunk_id,
+                                "source_cluster_id": span.source_cluster_id,
+                                "verification": (
+                                    None
+                                    if span.verification is None
+                                    else {
+                                        "method": span.verification.method,
+                                        "is_verified": span.verification.is_verified,
+                                        "score": span.verification.score,
+                                        "notes": span.verification.notes,
+                                    }
+                                ),
+                            }
+                        ]
+                    }
+                ],
+                "embedding": None,
+                "doc_id": "conv:c1",
+                "metadata": metadata,
+                "level_from_root": 0,
+                "role": "user",
+                "turn_index": 0,
+                "conversation_id": "c1",
+                "user_id": "u1",
+            }
+        )
+        self._node_meta = dict(metadata)
+
+    def node_get(self, **kwargs):
+        where = kwargs.get("where") or {}
+        if where.get("conversation_id") == "c1":
+            return {"ids": ["turn:c1:0"], "documents": [self._node_doc], "metadatas": [self._node_meta]}
+        return {"ids": [], "documents": [], "metadatas": []}
+
+    def edge_get(self, **kwargs):
+        return {"ids": [], "metadatas": []}
+
+
 class _StubConversationEngine:
     def __init__(self, *, last_user_text: str = "hello") -> None:
-        self._last_user_text = last_user_text
-
-    def get_conversation_view(self, *, conversation_id: str, user_id=None, purpose: str, budget_tokens: int = 0):
-        return SimpleNamespace(
-            token_budget=budget_tokens,
-            messages=[SimpleNamespace(role="user", content=self._last_user_text)],
-        )
-
-    def get_system_prompt(self, conversation_id: str) -> str:
-        return "SYSTEM"
+        self.kg_graph_type = "conversation"
+        self.backend = _StubBackend(last_user_text=last_user_text)
+        self.llm_tasks = _noop_task_set()
+        self.tool_call_id_factory = lambda *args, **kwargs: "tool-call-id"
+        self.pre_add_node_hooks: List[Any] = []
+        self.pre_add_edge_hooks: List[Any] = []
+        self.pre_add_pure_edge_hooks: List[Any] = []
+        self.allow_missing_doc_id_on_endpoint_rows_hooks: List[Any] = []
 
 
 class _StubAgentConfig:
@@ -197,7 +293,7 @@ def test_aa_get_view_and_question_populates_question_and_system_prompt():
     _run_op("aa_prepare", state)
     res = _run_op("aa_get_view_and_question", state)
     assert isinstance(res, RunSuccess)
-    assert state["system_prompt"] == "SYSTEM"
+    assert state["system_prompt"] == "You are a helpful assistant. Answer the user using the conversation and any provided evidence."
     assert state["question"] == "What is X?"
 
 

@@ -1,48 +1,67 @@
 # tests/test_node_docs_rollback.py
-import json
-from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
-from graph_knowledge_engine.engine_core.models import Document, Node, Span, MentionVerification
+import pytest
 
-def _ref_for(doc_id: str) -> Span:
-    return _span_for(doc_id)
-def _span_for(doc_id: str) -> Span:
-    return Span(
-        collection_page_url="c",
-        document_page_url=f"document/{doc_id}",
-        start_page=1, end_page=1, start_char=0, end_char=1,
-        verification=MentionVerification(method="heuristic", is_verified=False, notes = None, score = 0.9), 
-        insertion_method="pytest-manual",
-        doc_id = doc_id,
-        source_cluster_id = None,
-        excerpt = None
+from graph_knowledge_engine.engine_core.models import Node
+
+from tests._kg_factories import kg_document, kg_grounding
+from tests.conftest import _make_engine_pair
+
+
+@pytest.mark.parametrize("backend_kind", ["chroma", "pg"])
+def test_node_docs_partial_then_full_rollback(backend_kind: str, tmp_path, sa_engine, pg_schema):
+    eng, _ = _make_engine_pair(
+        backend_kind=backend_kind,
+        tmp_path=tmp_path,
+        sa_engine=sa_engine,
+        pg_schema=pg_schema,
+        dim=3,
+        use_fake=True,
     )
-
-def test_node_docs_partial_then_full_rollback(tmp_path):
-    eng = GraphKnowledgeEngine(persist_directory=str(tmp_path / "chroma"))
-    d1 = Document(content="D1", type="text"); eng.add_document(d1)
-    d2 = Document(content="D2", type="text"); eng.add_document(d2)
+    d1 = kg_document(doc_id="doc::test_node_docs_partial_then_full_rollback::1", content="D1", source="test_node_docs_partial_then_full_rollback")
+    d2 = kg_document(doc_id="doc::test_node_docs_partial_then_full_rollback::2", content="D2", source="test_node_docs_partial_then_full_rollback")
+    eng.write.add_document(d1)
+    eng.write.add_document(d2)
 
     # One node with evidence in *both* documents (no single doc_id in node meta)
     n = Node(label="Shared", type="entity", summary="x",
-             mentions=[_ref_for(d1.id), _ref_for(d2.id)])
-    eng.add_node(n)  # no doc_id passed; relies on references + node_docs
+             mentions=[kg_grounding(d1.id), kg_grounding(d2.id)])
+    eng.write.add_node(n)  # no doc_id passed; relies on references + node_docs
 
     # Sanity: node_docs has two rows
-    rows = eng.node_docs_collection.get(where={"node_id": n.id}, include=["metadatas"])
+    rows = eng.backend.node_docs_get(where={"node_id": n.id}, include=["metadatas"])
     assert {m["doc_id"] for m in rows.get("metadatas") or []} == {d1.id, d2.id}
 
-    # Rollback d1 only: node remains, but loses d1 reference; node_docs loses (n,d1)
+    # Rollback d1 only: old node is tombstoned and redirected to a new active node with only d2 evidence.
     res1 = eng.rollback_document(d1.id)
     assert isinstance(res1, dict)
-    rows_after = eng.node_docs_collection.get(where={"node_id": n.id}, include=["metadatas"])
+    replacement_id = res1["node_redirects"][n.id]
+
+    old_node = eng.backend.node_get(ids=[n.id], include=["metadatas"])
+    assert old_node["ids"] == [n.id]
+    assert old_node["metadatas"][0]["lifecycle_status"] == "tombstoned"
+    assert old_node["metadatas"][0]["redirect_to_id"] == replacement_id
+    redirected = eng.get_nodes(ids=[n.id], resolve_mode="redirect")
+    assert [item.id for item in redirected] == [replacement_id]
+
+    old_rows = eng.backend.node_docs_get(where={"node_id": n.id}, include=["metadatas"])
+    assert not (old_rows.get("ids") or [])
+
+    rows_after = eng.backend.node_docs_get(where={"node_id": replacement_id}, include=["metadatas"])
     assert {m["doc_id"] for m in rows_after.get("metadatas") or []} == {d2.id}
 
-    n_got = eng.node_collection.get(ids=[n.id], include=["documents"])
+    n_got = eng.backend.node_get(ids=[replacement_id], include=["documents"])
     node_json = n_got["documents"][0]
     node = Node.model_validate_json(node_json)
-    assert all(getattr(r, "doc_id", None) != d1.id for r in node.mentions or [])
+    assert all(sp.doc_id != d1.id for mention in node.mentions for sp in mention.spans)
 
-    # Rollback d2: now the node has no references and is deleted
+    # Rollback d2: replacement node is tombstoned without a further replacement.
     res2 = eng.rollback_document(d2.id)
-    n_gone = eng.node_collection.get(ids=[n.id])
-    assert not (n_gone.get("ids") and n_gone["ids"][0] == n.id)
+    assert isinstance(res2, dict)
+
+    replacement_node = eng.backend.node_get(ids=[replacement_id], include=["metadatas"])
+    assert replacement_node["ids"] == [replacement_id]
+    assert replacement_node["metadatas"][0]["lifecycle_status"] == "tombstoned"
+    assert replacement_node["metadatas"][0].get("redirect_to_id") is None
+
+    final_rows = eng.backend.node_docs_get(where={"node_id": replacement_id}, include=["metadatas"])
+    assert not (final_rows.get("ids") or [])

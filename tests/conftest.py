@@ -277,7 +277,7 @@ class FakeEmbeddingFunction(EmbeddingFunction):
     
 def _make_engine_pair(*, backend_kind: str, tmp_path, sa_engine, pg_schema, dim: int = 3, use_fake = False):
     """
-    Build (kg_engine, conv_engine) for either chroma or pgvector.
+    Build (kg_engine, conv_engine) for either chroma or the pg-backed path.
     """
     # ef = _fake_ef_dim(dim)
     _ef = None
@@ -528,11 +528,39 @@ def real_small_graph():
     doc_id = "D1"
     # nodes
     def add_node(nid, label):
-        n = Node(id=nid, label=label, type="entity", summary=label, mentions=[Span(
-            collection_page_url=f"document_collection/{doc_id}", document_page_url=f"document/{doc_id}", doc_id=doc_id,
-            insertion_method = 'pytest-conftext-fixture',
-            start_page=1, end_page=1, start_char=0, end_char=1
-        )], doc_id=doc_id)
+        n = Node(
+            id=nid,
+            label=label,
+            type="entity",
+            summary=label,
+            mentions=[
+                Grounding(
+                    spans=[
+                        Span(
+                            collection_page_url=f"document_collection/{doc_id}",
+                            document_page_url=f"document/{doc_id}",
+                            doc_id=doc_id,
+                            insertion_method="pytest-conftext-fixture",
+                            page_number=1,
+                            start_char=0,
+                            end_char=1,
+                            excerpt="x",
+                            context_before="",
+                            context_after="",
+                            chunk_id=None,
+                            source_cluster_id=None,
+                            verification=MentionVerification(
+                                method="heuristic",
+                                is_verified=False,
+                                notes="fixture",
+                                score=0.9,
+                            ),
+                        )
+                    ]
+                )
+            ],
+            doc_id=doc_id,
+        )
         e.node_collection.add(ids=[nid], documents=[n.model_dump_json(field_mode = 'backend')], metadatas=[{"doc_id": doc_id, "label": n.label, "type": n.type}])
         # node_docs link
         ndid = f"{nid}::{doc_id}"

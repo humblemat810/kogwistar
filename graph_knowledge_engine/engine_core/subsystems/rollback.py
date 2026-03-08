@@ -5,6 +5,7 @@ from typing import Any, Literal, cast
 
 from ..models import Edge, Node
 from ..utils.metadata import json_or_none, strip_none
+from ..utils.refs import extract_doc_ids_from_refs
 from .base import NamespaceProxy
 
 
@@ -12,53 +13,278 @@ class RollbackSubsystem(NamespaceProxy):
     def __init__(self, engine) -> None:
         super().__init__(engine)
 
+    def _filter_mentions_for_document(self, mentions, document_id: str):
+        kept = []
+        changed = False
+        for grounding in mentions or []:
+            copied = grounding.model_copy(deep=True)
+            spans = []
+            for span in copied.spans:
+                span_doc_id = self._e._infer_doc_id_from_ref(span)
+                if span_doc_id == document_id:
+                    changed = True
+                    continue
+                spans.append(span)
+            if spans:
+                copied.spans = spans
+                kept.append(copied)
+            elif copied.spans:
+                changed = True
+        return kept, changed
+
+    def _replacement_doc_id(self, mentions) -> str | None:
+        doc_ids = extract_doc_ids_from_refs(mentions or [])
+        if len(doc_ids) == 1:
+            return doc_ids[0]
+        return None
+
+    def _clean_metadata_for_replacement(self, metadata: dict[str, Any] | None) -> dict[str, Any]:
+        cleaned = dict(metadata or {})
+        for key in (
+            "lifecycle_status",
+            "redirect_to_id",
+            "deleted_at",
+            "delete_reason",
+            "deleted_by",
+        ):
+            cleaned.pop(key, None)
+        return cleaned
+
+    def _delete_node_derived_rows(self, node_id: str) -> None:
+        self._e.backend.node_docs_delete(where={"node_id": node_id})
+        self._e.backend.node_refs_delete(where={"node_id": node_id})
+
+    def _delete_edge_derived_rows(self, edge_id: str) -> None:
+        self._e.backend.edge_endpoints_delete(where={"edge_id": edge_id})
+        self._e.backend.edge_refs_delete(where={"edge_id": edge_id})
+
+    def _replacement_node(self, node: Node, mentions) -> Node:
+        payload = node.model_dump(field_mode="backend", exclude={"id", "embedding"})
+        payload["mentions"] = list(mentions)
+        payload["doc_id"] = self._replacement_doc_id(mentions)
+        payload["metadata"] = self._clean_metadata_for_replacement(node.metadata)
+        replacement = Node.model_validate(payload)
+        replacement.embedding = None
+        return replacement
+
+    def _replacement_edge(
+        self,
+        edge: Edge,
+        *,
+        mentions,
+        source_ids: list[str],
+        target_ids: list[str],
+        source_edge_ids: list[str],
+        target_edge_ids: list[str],
+    ) -> Edge:
+        payload = edge.model_dump(field_mode="backend", exclude={"id", "embedding"})
+        payload["mentions"] = list(mentions)
+        payload["source_ids"] = list(source_ids)
+        payload["target_ids"] = list(target_ids)
+        payload["source_edge_ids"] = list(source_edge_ids)
+        payload["target_edge_ids"] = list(target_edge_ids)
+        payload["doc_id"] = self._replacement_doc_id(mentions)
+        payload["metadata"] = self._clean_metadata_for_replacement(edge.metadata)
+        replacement = Edge.model_validate(payload)
+        replacement.embedding = None
+        return replacement
+
+    def _load_nodes(self, node_ids: list[str]) -> list[Node]:
+        if not node_ids:
+            return []
+        got = self._e.backend.node_get(ids=node_ids, include=["documents"])
+        out: list[Node] = []
+        for doc in got.get("documents") or []:
+            if doc:
+                out.append(Node.model_validate_json(doc))
+        return out
+
+    def _load_edge(self, edge_id: str) -> Edge | None:
+        got = self._e.backend.edge_get(ids=[edge_id], include=["documents"])
+        docs = got.get("documents") or []
+        if not docs or not docs[0]:
+            return None
+        return Edge.model_validate_json(docs[0])
+
+    def _edge_ids_for_endpoint(self, endpoint_id: str, endpoint_type: Literal["node", "edge"]) -> set[str]:
+        rows = self._e.backend.edge_endpoints_get(
+            where={"$and": [{"endpoint_id": endpoint_id}, {"endpoint_type": endpoint_type}]},
+            include=["metadatas"],
+        )
+        edge_ids: set[str] = set()
+        for metadata in rows.get("metadatas") or []:
+            if metadata and metadata.get("edge_id"):
+                edge_ids.add(str(metadata["edge_id"]))
+        return edge_ids
+
     def rollback_document(self, document_id: str):
-        node_ids = self._e.read.node_ids_by_doc(document_id)
+        node_rows = self._e.backend.node_docs_get(where={"doc_id": document_id}, include=["metadatas"])
+        affected_node_ids = sorted(
+            {
+                str(metadata["node_id"])
+                for metadata in (node_rows.get("metadatas") or [])
+                if metadata and metadata.get("node_id")
+            }
+        )
 
-        deleted_edges: set[str] = set()
-        updated_edges: set[str] = set()
-        for nid in node_ids:
-            res = self.prune_node_from_edges(nid)
-            deleted_edges.update(res["deleted_edges"])
-            updated_edges.update(res["updated_edges"])
+        tombstoned_node_ids: list[str] = []
+        deleted_node_ids: list[str] = []
+        updated_node_ids: list[str] = []
+        node_redirects: dict[str, str] = {}
+        removed_node_ids: set[str] = set()
 
-        eps = self._e.backend.edge_endpoints_get(where={"doc_id": document_id})
-        eps_doc = eps.get("documents", [])
-        if eps_doc is None:
-            raise Exception(f"edge endpoint collection lost for document id {document_id}")
-        edge_ids = list({json.loads(doc)["edge_id"] for doc in eps_doc})
-        if edge_ids:
-            self._e.backend.edge_delete(ids=edge_ids)
-            self._e.backend.edge_endpoints_delete(where={"doc_id": document_id})
-            self._e.backend.edge_refs_delete(where={"node_id": {"$in": edge_ids}})
-            deleted_edges.update(edge_ids)
-        updated_edges = updated_edges - deleted_edges
+        for node in self._load_nodes(affected_node_ids):
+            surviving_mentions, changed = self._filter_mentions_for_document(node.mentions, document_id)
+            if not changed:
+                continue
+            if surviving_mentions:
+                replacement = self._replacement_node(node, surviving_mentions)
+                self._e.write.add_node(replacement)
+                self._e.redirect_node(
+                    node.safe_get_id(),
+                    replacement.safe_get_id(),
+                    reason=f"rollback_document:{document_id}",
+                )
+                node_redirects[node.safe_get_id()] = replacement.safe_get_id()
+                updated_node_ids.append(replacement.safe_get_id())
+            else:
+                self._e.tombstone_node(node.safe_get_id(), reason=f"rollback_document:{document_id}")
+                removed_node_ids.add(node.safe_get_id())
+                deleted_node_ids.append(node.safe_get_id())
+            self._delete_node_derived_rows(node.safe_get_id())
+            tombstoned_node_ids.append(node.safe_get_id())
 
-        deleted_node_ids = []
-        for nid in node_ids:
-            self.prune_node_refs_for_doc(nid, document_id)
-            got = self._e.backend.node_get(ids=[nid], include=["documents"])
-            if docs := got.get("documents"):
-                if docs[0]:
-                    if not json.loads(docs[0]).get("references"):
-                        self._e.backend.node_delete(ids=[nid])
-                        deleted_node_ids.append(nid)
-                    self._e.backend.node_refs_delete(
-                        where=cast(dict[str, Any], {"node_id": {"$in": node_ids}})
-                    )
+        edge_ids_from_refs = set(self._e.read.edges_by_doc(document_id))
+        edge_ids_touching_nodes: set[str] = set()
+        for node_id in affected_node_ids:
+            edge_ids_touching_nodes.update(self._edge_ids_for_endpoint(node_id, "node"))
+
+        edge_queue = list(sorted(edge_ids_from_refs | edge_ids_touching_nodes))
+        processed_edge_revisions: dict[str, int] = {}
+        edge_revision = 0
+
+        deleted_edge_ids: list[str] = []
+        updated_edge_ids: list[str] = []
+        tombstoned_edge_ids: list[str] = []
+        edge_redirects: dict[str, str] = {}
+        removed_edge_ids: set[str] = set()
+
+        while edge_queue:
+            edge_id = edge_queue.pop(0)
+            if processed_edge_revisions.get(edge_id) == edge_revision:
+                continue
+            processed_edge_revisions[edge_id] = edge_revision
+
+            edge = self._load_edge(edge_id)
+            if edge is None:
+                continue
+
+            surviving_mentions, mentions_changed = self._filter_mentions_for_document(
+                edge.mentions,
+                document_id,
+            )
+
+            mapped_source_ids = [
+                node_redirects.get(endpoint_id, endpoint_id)
+                for endpoint_id in (edge.source_ids or [])
+                if endpoint_id not in removed_node_ids
+            ]
+            mapped_target_ids = [
+                node_redirects.get(endpoint_id, endpoint_id)
+                for endpoint_id in (edge.target_ids or [])
+                if endpoint_id not in removed_node_ids
+            ]
+            mapped_source_edge_ids = [
+                edge_redirects.get(endpoint_id, endpoint_id)
+                for endpoint_id in (getattr(edge, "source_edge_ids", []) or [])
+                if endpoint_id not in removed_edge_ids
+            ]
+            mapped_target_edge_ids = [
+                edge_redirects.get(endpoint_id, endpoint_id)
+                for endpoint_id in (getattr(edge, "target_edge_ids", []) or [])
+                if endpoint_id not in removed_edge_ids
+            ]
+
+            endpoints_changed = (
+                mapped_source_ids != (edge.source_ids or [])
+                or mapped_target_ids != (edge.target_ids or [])
+                or mapped_source_edge_ids != (getattr(edge, "source_edge_ids", []) or [])
+                or mapped_target_edge_ids != (getattr(edge, "target_edge_ids", []) or [])
+            )
+
+            if edge.relation == "same_as" and (
+                mapped_source_ids != (edge.source_ids or []) or mapped_target_ids != (edge.target_ids or [])
+            ):
+                remain = list(dict.fromkeys(mapped_source_ids + mapped_target_ids))
+                if len(remain) >= 2:
+                    anchor = self._e.adjudicate.choose_anchor(remain)
+                    mapped_source_ids = [anchor]
+                    mapped_target_ids = [nid for nid in remain if nid != anchor]
+                else:
+                    mapped_source_ids = remain[:1]
+                    mapped_target_ids = remain[1:]
+
+            has_source_endpoints = bool(mapped_source_ids or mapped_source_edge_ids)
+            has_target_endpoints = bool(mapped_target_ids or mapped_target_edge_ids)
+
+            if not surviving_mentions or not has_source_endpoints or not has_target_endpoints:
+                self._e.tombstone_edge(edge.safe_get_id(), reason=f"rollback_document:{document_id}")
+                self._delete_edge_derived_rows(edge.safe_get_id())
+                tombstoned_edge_ids.append(edge.safe_get_id())
+                deleted_edge_ids.append(edge.safe_get_id())
+                removed_edge_ids.add(edge.safe_get_id())
+                downstream = self._edge_ids_for_endpoint(edge.safe_get_id(), "edge")
+                if downstream:
+                    edge_revision += 1
+                    edge_queue.extend(sorted(downstream))
+                continue
+
+            if not mentions_changed and not endpoints_changed:
+                continue
+
+            replacement_edge = self._replacement_edge(
+                edge,
+                mentions=surviving_mentions,
+                source_ids=mapped_source_ids,
+                target_ids=mapped_target_ids,
+                source_edge_ids=mapped_source_edge_ids,
+                target_edge_ids=mapped_target_edge_ids,
+            )
+            self._e.write.add_edge(replacement_edge)
+            self._e.redirect_edge(
+                edge.safe_get_id(),
+                replacement_edge.safe_get_id(),
+                reason=f"rollback_document:{document_id}",
+            )
+            self._delete_edge_derived_rows(edge.safe_get_id())
+            tombstoned_edge_ids.append(edge.safe_get_id())
+            updated_edge_ids.append(replacement_edge.safe_get_id())
+            edge_redirects[edge.safe_get_id()] = replacement_edge.safe_get_id()
+
+            downstream = self._edge_ids_for_endpoint(edge.safe_get_id(), "edge")
+            if downstream:
+                edge_revision += 1
+                edge_queue.extend(sorted(downstream))
 
         doc_ids = set(self._e.backend.document_get(where={"doc_id": document_id})["ids"])
         self._e.backend.document_delete(where={"doc_id": document_id})
         doc_ids_after = set(self._e.backend.document_get(where={"doc_id": document_id})["ids"])
         return {
-            "rollrolled_back_doc_id": doc_ids - doc_ids_after,
-            "updated_edge_ids": list(updated_edges),
-            "deleted_edge_ids": list(deleted_edges),
-            "deleted_docs": len(doc_ids - doc_ids_after),
+            "rolled_back_doc_id": document_id,
+            "rolled_back_doc_ids": list(doc_ids - doc_ids_after),
+            "node_redirects": node_redirects,
+            "edge_redirects": edge_redirects,
+            "tombstoned_node_ids": tombstoned_node_ids,
+            "updated_node_ids": updated_node_ids,
             "deleted_node_ids": deleted_node_ids,
-            "deleted_nodes": len(node_ids),
-            "deleted_edges": len(deleted_edges),
-            "updated_edges": len(updated_edges),
+            "tombstoned_edge_ids": tombstoned_edge_ids,
+            "updated_edge_ids": updated_edge_ids,
+            "deleted_edge_ids": deleted_edge_ids,
+            "deleted_docs": len(doc_ids - doc_ids_after),
+            "updated_nodes": len(updated_node_ids),
+            "deleted_nodes": len(deleted_node_ids),
+            "deleted_edges": len(deleted_edge_ids),
+            "updated_edges": len(updated_edge_ids),
         }
 
     def rollback_document_extraction(

@@ -1,8 +1,8 @@
 ﻿# ARD-0006: Conversation Engine Architecture Record
 
-**Status:** Active Refactor  
+**Status:** Active Refactor (core conversation invariants implemented; snapshot/replay coverage still expanding)  
 **Scope:** Conversation chain, summary gating, context building, replay determinism  
-**Last Updated:** 2026-02  
+**Last Updated:** 2026-03-08  
 
 ---
 
@@ -24,6 +24,19 @@ Long-term goal:
 > Deterministic, replayable, audit-safe conversational execution with full provenance.
 
 Historically, summary gating and context building evolved incrementally and now require formalization to prevent semantic drift.
+
+## 1.1 Current Implementation Note (2026-03-08)
+
+The current repo already implements a substantial portion of this ARD:
+
+- `graph_knowledge_engine/conversation/designer.py` defines the v2 add-turn workflow.
+- `graph_knowledge_engine/conversation/resolvers.py` implements backbone and sidecar workflow ops such as `add_user_turn`, `link_prev_turn`, `link_assistant_turn`, `memory_retrieve`, `kg_retrieve`, `memory_pin`, `kg_pin`, `answer`, and optional `context_snapshot`.
+- The current pointer node type is `reference_pointer`, not `kg_pointer`.
+- `graph_knowledge_engine/conversation/service.py` implements `persist_context_snapshot(...)`, and `graph_knowledge_engine/conversation/agentic_answering.py` persists snapshots around agentic answering calls.
+
+
+Legacy conversation path is not guaranteed to snapshot
+every model invocation automatically.
 
 ---
 
@@ -56,7 +69,7 @@ Sidecar nodes represent auxiliary operations:
 - `tool_call`
 - `tool_result`
 - `memory_context`
-- `kg_pointer`
+- `reference_pointer`
 - etc.
 
 ### Edges
@@ -89,15 +102,18 @@ Distance fields currently exist on both chain and side nodes, creating ambiguity
 
 ## 2.4 Context Building (Current)
 
-Context is built dynamically in memory:
+Context is still built dynamically in memory first:
 
 - Node selection
 - Token counting
 - Budget packing
 
-No context snapshot is persisted.
+Persisted context snapshots now exist for explicit snapshot paths and
+agentic answering calls, but coverage is not yet universal across all
+legacy answer paths.
 
-This is architecturally inconsistent with event-sourcing principles.
+This remains an area where implementation is ahead of the original
+document, but not yet fully complete.
 
 ---
 
@@ -108,7 +124,9 @@ This is architecturally inconsistent with event-sourcing principles.
 3. Tool nodes reuse parent `turn_index`.
 4. Tool binding is represented via explicit edges.
 5. Summary nodes are UI-visible turns.
-6. Context building is runtime-only (not persisted).
+6. Prompt context is runtime-generated; persisted snapshots exist for
+   explicit snapshot and agentic-answering paths, but snapshot coverage
+   is not yet universal.
 7. Conversation graph is append-only.
 
 ---
@@ -257,7 +275,7 @@ Tasks:
 
 ---
 
-## Phase 4 â€” Persist Context Snapshot
+## Phase 4 â€” Expand Context Snapshot Coverage
 
 Files:
 - `conversation_orchestrator.py`
@@ -265,8 +283,8 @@ Files:
 - `engine.py`
 
 Tasks:
-- Introduce `context_snapshot`
-- Persist before every model call
+- Keep `context_snapshot` as the canonical persisted artifact
+- Extend snapshot coverage toward every model call
 - Add `includes` edges
 - Enforce budget invariant
 - Add replay tests

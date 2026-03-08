@@ -466,7 +466,7 @@ class WriteSubsystem(NamespaceProxy):
                     "endpoint_id": nid,
                     "endpoint_type": "node",
                     "role": role,
-                    "causal_type": edge.metadata and edge.metadata.get("causal_type"),
+                    "causal_type": (edge.metadata or {}).get("causal_type"),
                     "relation": edge.relation,
                 }
                 did = _per_node_doc(nid)
@@ -485,7 +485,7 @@ class WriteSubsystem(NamespaceProxy):
                     "endpoint_id": mid,
                     "endpoint_type": "edge",
                     "role": role,
-                    "causal_type": edge.metadata and edge.metadata.get("causal_type"),
+                    "causal_type": (edge.metadata or {}).get("causal_type"),
                     "relation": edge.relation,
                 }
                 did = _maybe_doc_for_edge(mid)

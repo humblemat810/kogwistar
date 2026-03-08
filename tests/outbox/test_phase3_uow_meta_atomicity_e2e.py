@@ -10,7 +10,7 @@ EMBEDDING_DIM = 3
 def _emb(*args, **kwargs):
     return [0.1] * EMBEDDING_DIM
 
-@pytest.fixture(params=["chroma", "pgvector"], ids=["chroma", "pgvector"])
+@pytest.fixture(params=["chroma", "pg"], ids=["chroma", "pg"])
 def e2e_engine(request, tmp_path, sa_engine, pg_schema) -> GraphKnowledgeEngine:
     if request.param == "chroma":
         persist_dir = tmp_path / "chroma"

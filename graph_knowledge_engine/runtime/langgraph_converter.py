@@ -1,14 +1,42 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Sequence, Tuple, Annotated, Mapping, Literal, cast
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, Tuple, Annotated, Mapping, Literal, NamedTuple, cast
 from typing_extensions import TypedDict
-
-from langgraph.graph import StateGraph, START, END
-from langgraph.types import Command, Send
 
 from graph_knowledge_engine.runtime import design as wf_design
 from graph_knowledge_engine.runtime.contract import BasePredicate, WorkflowEdgeInfo
+
+if TYPE_CHECKING:
+    from langgraph.graph import StateGraph as LangGraphStateGraph
+    from langgraph.types import Command as LangGraphCommand
+    from langgraph.types import Send as LangGraphSend
+
+
+class _LangGraphImports(NamedTuple):
+    state_graph: type["LangGraphStateGraph"]
+    start: str
+    end: str
+    command: type["LangGraphCommand"]
+    send: type["LangGraphSend"]
+
+
+def _import_langgraph() -> _LangGraphImports:
+    try:
+        from langgraph.graph import END, START, StateGraph
+        from langgraph.types import Command, Send
+    except Exception as e:  # pragma: no cover - depends on optional env
+        raise RuntimeError(
+            "LangGraph converter requires optional dependency group 'langgraph'. "
+            "Install with: pip install 'kogwistar[langgraph]'"
+        ) from e
+    return _LangGraphImports(
+        state_graph=StateGraph,
+        start=START,
+        end=END,
+        command=Command,
+        send=Send,
+    )
 
 
 StateUpdate = Tuple[str, Dict[str, Any]]  # ('u'|'a'|'e', {k: v})
@@ -232,6 +260,12 @@ def to_langgraph(
     options: Optional[LGConverterOptions] = None,
 ):
     opt = options or LGConverterOptions()
+    langgraph = _import_langgraph()
+    StateGraph = langgraph.state_graph
+    START = langgraph.start
+    END = langgraph.end
+    Command = langgraph.command
+    Send = langgraph.send
 
     start, nodes, adj, rev_adj = _resolve_start_nodes_and_adj(workflow_engine=workflow_engine, workflow_id=workflow_id)
     schema = step_resolver.describe_state() if hasattr(step_resolver, "describe_state") else {}

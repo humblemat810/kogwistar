@@ -1,12 +1,13 @@
 from __future__ import annotations
-
+"""TO-DO  ingestor responsibility to verify that empty excerpt is only allowed if that source there is really empty only."""
 import uuid
 from dataclasses import dataclass
-from typing import Iterable, List, Optional, Sequence, Tuple
+from typing import Iterable, List, Optional, Sequence, Tuple, TYPE_CHECKING
 
 from joblib import Memory
 from pydantic import BaseModel, Field
-from langchain_core.language_models import BaseChatModel
+if TYPE_CHECKING:
+    from langchain_core.language_models import BaseChatModel
 import json
 from .engine_core.engine import GraphKnowledgeEngine
 from .engine_core.models import (

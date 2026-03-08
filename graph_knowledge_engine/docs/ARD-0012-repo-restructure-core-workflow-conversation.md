@@ -1,24 +1,35 @@
 ﻿# ARD-0012: Repository Restructuring --- Core, Workflow, Conversation (and Future Wisdom)
 
-**Status:** Proposed (intended for incremental adoption)\
+**Status:** Accepted (conceptual layer split adopted; physical package layout remains compatibility-first)\
 **Date:** 2026-03-04\
 **Owner:** Maintainers
+
+## Document History
+
+- 2026-03-08: Clarified that `core`, `workflow`, and `conversation` are architectural layer names currently mapped to `graph_knowledge_engine/engine_core/`, `graph_knowledge_engine/runtime/`, and `graph_knowledge_engine/conversation/`. Updated stale path examples and migration wording.
 
 ------------------------------------------------------------------------
 
 # 1. Summary
 
 This document defines the architectural restructuring of the repository
-into layered modules:
+into layered conceptual modules:
 
--   `core/` --- graph substrate, storage, UoW, stable IDs
--   `workflow/` --- generic workflow runtime and resolver mechanism
--   `conversation/` --- conversation domain workflows and step
-    implementations
--   `wisdom/` --- future learning/evaluation loops (not implemented yet)
+-   `core` (currently `graph_knowledge_engine/engine_core/`) --- graph
+    substrate, storage, UoW, stable IDs
+-   `workflow` (currently `graph_knowledge_engine/runtime/`) ---
+    generic workflow runtime and resolver mechanism
+-   `conversation` (currently `graph_knowledge_engine/conversation/`)
+    --- conversation domain workflows and step implementations
+-   `wisdom` (future layer; no dedicated package yet) --- future
+    learning/evaluation loops
 
 The goal is to **separate infrastructure from domain logic** while
 keeping the workflow runtime reusable for multiple domains.
+
+The layer names in this document are architectural names, not a
+requirement that the repository contain literal top-level `core/` or
+`workflow/` directories.
 
 ------------------------------------------------------------------------
 
@@ -63,9 +74,9 @@ Rules:
 
 ## 4.1 Core Layer
 
-Location:
+Current implementation location:
 
-core/
+`graph_knowledge_engine/engine_core/`
 
 Responsibilities:
 
@@ -79,11 +90,11 @@ Responsibilities:
 
 Examples:
 
-core/engine.py\
-core/models.py\
-core/ids.py\
-core/ports.py\
-core/storage/
+graph_knowledge_engine/engine_core/engine.py\
+graph_knowledge_engine/engine_core/models.py\
+graph_knowledge_engine/engine_core/storage_backend.py\
+graph_knowledge_engine/engine_core/chroma_backend.py\
+graph_knowledge_engine/engine_core/postgres_backend.py
 
 Core must **not contain domain logic**.
 
@@ -93,9 +104,9 @@ Conversation-specific APIs should eventually be moved out of core.
 
 ## 4.2 Workflow Layer
 
-Location:
+Current implementation location:
 
-workflow/
+`graph_knowledge_engine/runtime/`
 
 Responsibilities:
 
@@ -109,11 +120,11 @@ Responsibilities:
 
 Examples:
 
-workflow/runtime.py\
-workflow/contract.py\
-workflow/design.py\
-workflow/registry.py\
-workflow/state_merge.py
+graph_knowledge_engine/runtime/runtime.py\
+graph_knowledge_engine/runtime/contract.py\
+graph_knowledge_engine/runtime/design.py\
+graph_knowledge_engine/runtime/resolvers.py\
+graph_knowledge_engine/runtime/langgraph_converter.py
 
 Workflow runtime must remain **domain agnostic**.
 
@@ -123,9 +134,9 @@ It must **never import conversation modules**.
 
 ## 4.3 Conversation Layer
 
-Location:
+Current implementation location:
 
-conversation/
+`graph_knowledge_engine/conversation/`
 
 Responsibilities:
 
@@ -138,12 +149,11 @@ Responsibilities:
 
 Examples:
 
-conversation/orchestrator.py\
-conversation/api.py\
-conversation/schema.py
-
-conversation/steps/\
-conversation/steps/agentic/
+graph_knowledge_engine/conversation/conversation_orchestrator.py\
+graph_knowledge_engine/conversation/service.py\
+graph_knowledge_engine/conversation/designer.py\
+graph_knowledge_engine/conversation/resolvers.py\
+graph_knowledge_engine/conversation/agentic_answering.py
 
 Conversation registers its operations into the workflow runtime.
 
@@ -151,9 +161,9 @@ Conversation registers its operations into the workflow runtime.
 
 ## 4.4 Wisdom Layer (Future)
 
-Location:
+Current implementation location:
 
-wisdom/
+No dedicated package yet.
 
 Responsibilities:
 
@@ -201,7 +211,12 @@ aa_persist_response
 
 These operations must **not exist inside workflow modules**.
 
-They are implemented in `conversation/steps`.
+Today they are implemented primarily through
+`graph_knowledge_engine/conversation/resolvers.py`,
+`graph_knowledge_engine/conversation/designer.py`, and related
+conversation modules. The invariant is logical placement in the
+conversation layer, not a required literal `conversation/steps/`
+directory.
 
 ------------------------------------------------------------------------
 
@@ -281,7 +296,7 @@ Conversation APIs must eventually move into a conversation facade.
 
 Example:
 
-conversation/api.py
+graph_knowledge_engine/conversation/service.py
 
 Core may temporarily keep **compatibility shims** that forward to
 conversation APIs.
@@ -290,11 +305,12 @@ conversation APIs.
 
 # 11. Migration Plan
 
-Phase 1 --- Create module directories:
+Phase 1 --- Establish and preserve the conceptual split in the current
+package layout:
 
-core/\
-workflow/\
-conversation/
+graph_knowledge_engine/engine_core/\
+graph_knowledge_engine/runtime/\
+graph_knowledge_engine/conversation/
 
 Phase 2 --- Remove workflow imports of conversation modules.
 
@@ -345,5 +361,5 @@ Then executing workflows against them.
 
 ------------------------------------------------------------------------
 
-# End of ARD-0001
+# End of ARD-0012
 
