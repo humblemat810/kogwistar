@@ -363,6 +363,13 @@ class VectorProposer(MergeCandidateProposer):
         anchor_only: bool = True,
         limit_per_bucket: Optional[int] = None,
     ) -> List[Tuple[Any, Any]]:
+        """Enumerate raw adjudication pairs across one document universe.
+
+        The proposer builds per-document pools, applies anchor and cross-doc bucketing
+        before pair generation, caps candidates per bucket, and deduplicates
+        symmetric results at the end. It intentionally returns raw entity pairs; the
+        engine-level wrapper decides question semantics and public candidate shape.
+        """
         engine = self.e or engine
 
         # 0) doc universe

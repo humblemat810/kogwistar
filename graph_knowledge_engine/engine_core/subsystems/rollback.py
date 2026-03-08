@@ -118,6 +118,14 @@ class RollbackSubsystem(NamespaceProxy):
         return edge_ids
 
     def rollback_document(self, document_id: str):
+        """Remove one document's contribution while preserving surviving evidence.
+
+        Nodes and edges that still have mentions or valid endpoints are rewritten as
+        replacement records and the originals are redirected. Entities with no
+        surviving support are tombstoned and their derived rows are deleted. Edge
+        repairs cascade through downstream edge endpoints so rollback converges the
+        graph instead of leaving broken references behind.
+        """
         node_rows = self._e.backend.node_docs_get(where={"doc_id": document_id}, include=["metadatas"])
         affected_node_ids = sorted(
             {
@@ -292,6 +300,13 @@ class RollbackSubsystem(NamespaceProxy):
         doc_id: str,
         extraction_method: Literal["llm_graph_extraction", "document_ingestion"],
     ) -> dict:
+        """Undo one extraction method's refs without deleting the whole document.
+
+        This pass edits raw node and edge reference payloads plus join indexes in
+        place rather than building redirect chains. Matching refs are removed for the
+        requested extraction method, surviving entities are updated in place, and
+        entities are deleted only when no references remain after cleanup.
+        """
         summary = {
             "doc_id": doc_id,
             "method": extraction_method,

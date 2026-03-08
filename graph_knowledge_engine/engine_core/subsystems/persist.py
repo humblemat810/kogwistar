@@ -218,6 +218,13 @@ class PersistSubsystem(NamespaceProxy):
         return order, id2kind, id2obj
 
     def assert_endpoints_exist(self, edge: Edge | PureChromaEdge):
+        """Enforce the structural ingest contract for edge writes.
+
+        All referenced node and edge endpoints must already exist in the backend
+        before the base edge row is accepted. Derived-index retries do not rescue
+        edge-before-node ingest ordering, so callers that receive out-of-order
+        events must retry or stage those edges outside this write path.
+        """
         need_nodes = set((edge.source_ids or []) + (edge.target_ids or []))
         if need_nodes:
             got = set(self._e.backend.node_get(ids=list(need_nodes)).get("ids") or [])
@@ -582,6 +589,13 @@ class PersistSubsystem(NamespaceProxy):
         apply_indexes: bool = False,
         repair_backend: bool = False,
     ) -> int:
+        """Replay entity events back into one namespace's backend state.
+
+        Replay suppresses event re-append to avoid recursive logging and can disable
+        index-job enqueueing so base entities are restored first. If apply_indexes is
+        enabled, a reconcile pass runs after replay; repair_backend additionally
+        deletes current backend rows before reapplying ADD/REPLACE events.
+        """
         iter_events = getattr(self._e.meta_sqlite, "iter_entity_events", None)
         if iter_events is None:
             return 0
@@ -658,6 +672,12 @@ class PersistSubsystem(NamespaceProxy):
         to_seq: int | None = None,
         apply_indexes: bool = False,
     ) -> int:
+        """Replay a namespace in overwrite-first repair mode.
+
+        This is the destructive variant of replay_namespace: current backend rows for
+        replayed ADD/REPLACE events are cleared first so the event log can repair
+        backend drift instead of layering on top of possibly corrupt state.
+        """
         return self.replay_namespace(
             namespace=namespace,
             from_seq=from_seq,

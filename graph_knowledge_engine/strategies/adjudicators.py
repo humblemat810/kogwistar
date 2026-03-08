@@ -217,6 +217,13 @@ class Adjudicator(IAdjudicator):
         *,
         cache_dir: str | PathLike[str] | None = None,
     ) -> PairAdjudicationTrace:
+        """Run one pair adjudication and return both verdict and debug trace.
+
+        The cache key is derived from normalized question, left payload, and right
+        payload so engine instance state and callable identity do not affect reuse.
+        Cross-kind adjudication is restricted to node_edge_equivalence, and parse or
+        validation failures are surfaced in the trace instead of silently coerced.
+        """
         if (left.kind != right.kind) and question != "node_edge_equivalence":
             raise ValueError("Cross-kind only allowed for 'node_edge_equivalence'")
         if not self.e.allow_cross_kind_adjudication and question == "node_edge_equivalence":
@@ -281,6 +288,13 @@ class Adjudicator(IAdjudicator):
         pairs: List[Tuple["Node", "Node"]],
         question_code: "AdjudicationQuestionCode" = AdjudicationQuestionCode.SAME_ENTITY,
     ):
+        """Batch same-kind merge adjudications with local signature deduplication.
+
+        Pairs that share the same normalized node signature and question reuse one
+        verdict within the batch, but the returned list preserves caller order. This
+        helper is for node-node merge questions; cross-kind tracing lives in
+        adjudicate_pair_trace.
+        """
         if not pairs:
             return []
 

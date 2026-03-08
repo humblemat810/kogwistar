@@ -46,6 +46,13 @@ class IndexJobWorker:
         self.namespace = namespace
 
     def tick(self) -> WorkerTickMetrics:
+        """Drain at most one worker tick of index jobs for a namespace.
+
+        Each tick claims leased batches from the metastore, applies them through the
+        shared indexing logic, marks successes DONE, and requeues failures with
+        delayed retry until max_retries is exhausted. Queue ordering and lease
+        semantics remain owned by the metastore implementation.
+        """
         metrics = WorkerTickMetrics()
         meta = getattr(self.engine, "meta_sqlite", None)
         if meta is None:

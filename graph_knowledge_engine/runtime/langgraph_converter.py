@@ -1,3 +1,11 @@
+"""LangGraph conversion helpers for workflow graphs.
+
+This module maps the engine's workflow model onto LangGraph in two modes. "visual"
+optimizes for readable diagrams and intentionally drops some token and join fidelity,
+while "semantics" preserves more of the runtime's fanout and join behavior via
+Send/Command plus blob-state bookkeeping.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -259,6 +267,14 @@ def to_langgraph(
     predicate_registry: Dict[str, BasePredicate],
     options: Optional[LGConverterOptions] = None,
 ):
+    """Compile one workflow into LangGraph using a diagram-first or semantics-first mapping.
+
+    visual/blob_state favors a clean graph and best-effort routing, intentionally
+    degrading token propagation and join barriers. semantics/blob_state models
+    fanout, join arrivals, and child token ids more faithfully with Send/Command.
+    apply_node is kept for legacy compatibility and routes updates through a
+    singleton apply step.
+    """
     opt = options or LGConverterOptions()
     langgraph = _import_langgraph()
     StateGraph = langgraph.state_graph

@@ -94,6 +94,14 @@ class IndexingSubsystem:
         lease_seconds: int = 60,
         namespace: str | None = None,
     ) -> int:
+        """Claim runnable index jobs, apply them, and record terminal state.
+
+        Successful jobs are marked DONE after apply_index_job returns. Failures are
+        delayed and requeued through bump_retry_and_requeue until max_retries is
+        exhausted; only then do rows become terminal FAILED. This reconciler repairs
+        derived indexes after base entities exist and does not make invalid ingest
+        ordering succeed on its own.
+        """
         if not getattr(self.engine, "_phase1_enable_index_jobs", False):
             return 0
         claim = getattr(self.engine.meta_sqlite, "claim_index_jobs", None)
@@ -179,12 +187,13 @@ class IndexingSubsystem:
         namespace: str,
     ) -> None:
         """
-        Moved from engine.indexing.apply_index_job, but still uses engine's lower-level primitives:
-        - engine.backend.* join index collections
-        - engine._index_* implementations
-        - engine._fanout_endpoints_rows
-        - engine._iterative_defensive_emb
-        - engine._delete_*_ref_rows
+        Bring one derived index projection into sync with the authoritative entity.
+
+        Jobs operate only on phase1 join indexes and are idempotent: applied-state
+        fingerprints plus actual-row fingerprints let the method skip already-synced
+        work. DELETE removes derived rows, tombstoned entities clear their
+        projections, and missing base rows raise so the caller can retry with
+        backoff instead of synthesizing state for entities that do not exist yet.
         """
         if index_kind not in self._PHASE1_JOIN_INDEX_KINDS:
             return
