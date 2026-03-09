@@ -17,6 +17,7 @@ from graph_knowledge_engine.conversation.models import ConversationNode, Workflo
 from graph_knowledge_engine.conversation.service import ConversationService
 from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
 from graph_knowledge_engine.engine_core.models import Grounding, Span
+from graph_knowledge_engine.runtime.design import load_workflow_design
 from graph_knowledge_engine.server.chat_service import (
     AnswerRunRequest,
     ChatRunService,
@@ -66,7 +67,7 @@ def engine_triplet():
 
 
 def _configure_server(monkeypatch, engine, conversation_engine, workflow_engine, answer_runner, runtime_runner=None):
-    registry = RunRegistry(Path(workflow_engine.persist_directory) / "server_runs.sqlite")
+    registry = RunRegistry(workflow_engine.meta_sqlite)
     service = ChatRunService(
         get_knowledge_engine=lambda: engine,
         get_conversation_engine=lambda: conversation_engine,
@@ -134,6 +135,12 @@ def _collect_sse_events(
         elif line.startswith("data: ") and current_event is not None:
             events.append((current_event, json.loads(line.split(": ", 1)[1])))
     return events
+
+
+def _visible_workflow_design_ids(workflow_engine, *, workflow_id: str) -> tuple[str, set[str], set[str]]:
+    start, nodes, adj, _rev_adj = load_workflow_design(workflow_engine=workflow_engine, workflow_id=workflow_id)
+    edge_ids = {str(edge.id) for edges in adj.values() for edge in edges}
+    return str(start.id), {str(node_id) for node_id in nodes.keys()}, edge_ids
 
 
 def _success_runner(req: AnswerRunRequest) -> dict:
@@ -285,7 +292,7 @@ def test_chat_rest_submit_and_sse(monkeypatch, engine_triplet):
 
         final_run = _wait_for_status(client, run_id, ro_headers, {"succeeded"})
         assert final_run["assistant_turn_node_id"]
-        assert Path(workflow_engine.persist_directory, "server_runs.sqlite").exists()
+        assert not Path(workflow_engine.persist_directory, "server_runs.sqlite").exists()
 
         turns = client.get(f"/api/conversations/{conversation_id}/turns", headers=ro_headers)
         turns.raise_for_status()
@@ -626,6 +633,277 @@ def test_runtime_design_rest_undo_redo(monkeypatch, engine_triplet):
         assert "REDO_APPLIED" in timeline_ops
 
 
+def test_runtime_design_delete_node_undo_redo_uses_delta_and_preserves_ids(monkeypatch, engine_triplet):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service, _registry = _configure_server(monkeypatch, engine, conversation_engine, workflow_engine, _success_runner)
+    workflow_id = "wf.design.rest.delete_node_delta"
+    start_id = f"wf|{workflow_id}|start"
+    end_id = f"wf|{workflow_id}|end"
+    edge_id = f"wf|{workflow_id}|e|start_end"
+    with TestClient(server.app) as client:
+        wf_rw = _token_header(client, role="rw", ns="workflow")
+        wf_ro = _token_header(client, role="ro", ns="workflow")
+        designer_id = "tester"
+
+        client.post(
+            f"/api/workflow/design/{workflow_id}/nodes",
+            json={"designer_id": designer_id, "node_id": start_id, "label": "Start", "op": "start", "start": True},
+            headers=wf_rw,
+        ).raise_for_status()
+        client.post(
+            f"/api/workflow/design/{workflow_id}/nodes",
+            json={"designer_id": designer_id, "node_id": end_id, "label": "End", "op": "end", "terminal": True},
+            headers=wf_rw,
+        ).raise_for_status()
+        client.post(
+            f"/api/workflow/design/{workflow_id}/edges",
+            json={
+                "designer_id": designer_id,
+                "edge_id": edge_id,
+                "src": start_id,
+                "dst": end_id,
+                "relation": "wf_next",
+                "is_default": True,
+            },
+            headers=wf_rw,
+        ).raise_for_status()
+
+        deleted = client.request(
+            "DELETE",
+            f"/api/workflow/design/{workflow_id}/nodes/{end_id}",
+            json={"designer_id": designer_id},
+            headers=wf_rw,
+        )
+        deleted.raise_for_status()
+        assert deleted.json()["deleted"] is True
+        assert _visible_workflow_design_ids(workflow_engine, workflow_id=workflow_id) == (start_id, {start_id}, set())
+
+        delta = workflow_engine.meta_sqlite.get_workflow_design_delta(
+            workflow_id=workflow_id,
+            version=4,
+            schema_version=service._DELTA_SCHEMA_VERSION,
+        )
+        assert delta is not None
+        forward = json.loads(str(delta["forward_json"]))
+        inverse = json.loads(str(delta["inverse_json"]))
+        assert forward["delete_node_ids"] == [end_id]
+        assert forward["delete_edge_ids"] == [edge_id]
+        assert [str(item["id"]) for item in inverse["upsert_nodes"]] == [end_id]
+        assert [str(item["id"]) for item in inverse["upsert_edges"]] == [edge_id]
+
+        def _unexpected_rebuild(*, workflow_id: str, state: dict[str, object]) -> None:
+            raise AssertionError(f"unexpected rebuild for {workflow_id}: {state.get('current_version')}")
+
+        monkeypatch.setattr(service, "_workflow_rebuild_namespace_for_state", _unexpected_rebuild)
+
+        undone = client.post(
+            f"/api/workflow/design/{workflow_id}/undo",
+            json={"designer_id": designer_id},
+            headers=wf_rw,
+        )
+        undone.raise_for_status()
+        assert undone.json()["status"] == "ok"
+        assert _visible_workflow_design_ids(workflow_engine, workflow_id=workflow_id) == (
+            start_id,
+            {start_id, end_id},
+            {edge_id},
+        )
+
+        hist = client.get(f"/api/workflow/design/{workflow_id}/history", headers=wf_ro)
+        hist.raise_for_status()
+        assert hist.json()["current_version"] == 3
+        assert hist.json()["can_redo"] is True
+
+        redone = client.post(
+            f"/api/workflow/design/{workflow_id}/redo",
+            json={"designer_id": designer_id},
+            headers=wf_rw,
+        )
+        redone.raise_for_status()
+        assert redone.json()["status"] == "ok"
+        assert _visible_workflow_design_ids(workflow_engine, workflow_id=workflow_id) == (start_id, {start_id}, set())
+
+        deleted_again = client.request(
+            "DELETE",
+            f"/api/workflow/design/{workflow_id}/nodes/{end_id}",
+            json={"designer_id": designer_id},
+            headers=wf_rw,
+        )
+        assert deleted_again.status_code == 404
+
+
+def test_runtime_design_delete_edge_undo_redo_uses_delta_and_preserves_ids(monkeypatch, engine_triplet):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service, _registry = _configure_server(monkeypatch, engine, conversation_engine, workflow_engine, _success_runner)
+    workflow_id = "wf.design.rest.delete_edge_delta"
+    start_id = f"wf|{workflow_id}|start"
+    end_id = f"wf|{workflow_id}|end"
+    edge_id = f"wf|{workflow_id}|e|start_end"
+    with TestClient(server.app) as client:
+        wf_rw = _token_header(client, role="rw", ns="workflow")
+        wf_ro = _token_header(client, role="ro", ns="workflow")
+        designer_id = "tester"
+
+        client.post(
+            f"/api/workflow/design/{workflow_id}/nodes",
+            json={"designer_id": designer_id, "node_id": start_id, "label": "Start", "op": "start", "start": True},
+            headers=wf_rw,
+        ).raise_for_status()
+        client.post(
+            f"/api/workflow/design/{workflow_id}/nodes",
+            json={"designer_id": designer_id, "node_id": end_id, "label": "End", "op": "end", "terminal": True},
+            headers=wf_rw,
+        ).raise_for_status()
+        client.post(
+            f"/api/workflow/design/{workflow_id}/edges",
+            json={
+                "designer_id": designer_id,
+                "edge_id": edge_id,
+                "src": start_id,
+                "dst": end_id,
+                "relation": "wf_next",
+                "is_default": True,
+            },
+            headers=wf_rw,
+        ).raise_for_status()
+
+        deleted = client.request(
+            "DELETE",
+            f"/api/workflow/design/{workflow_id}/edges/{edge_id}",
+            json={"designer_id": designer_id},
+            headers=wf_rw,
+        )
+        deleted.raise_for_status()
+        assert deleted.json()["deleted"] is True
+        assert _visible_workflow_design_ids(workflow_engine, workflow_id=workflow_id) == (
+            start_id,
+            {start_id, end_id},
+            set(),
+        )
+
+        delta = workflow_engine.meta_sqlite.get_workflow_design_delta(
+            workflow_id=workflow_id,
+            version=4,
+            schema_version=service._DELTA_SCHEMA_VERSION,
+        )
+        assert delta is not None
+        forward = json.loads(str(delta["forward_json"]))
+        inverse = json.loads(str(delta["inverse_json"]))
+        assert forward["delete_node_ids"] == []
+        assert forward["delete_edge_ids"] == [edge_id]
+        assert inverse["upsert_nodes"] == []
+        assert [str(item["id"]) for item in inverse["upsert_edges"]] == [edge_id]
+
+        def _unexpected_rebuild(*, workflow_id: str, state: dict[str, object]) -> None:
+            raise AssertionError(f"unexpected rebuild for {workflow_id}: {state.get('current_version')}")
+
+        monkeypatch.setattr(service, "_workflow_rebuild_namespace_for_state", _unexpected_rebuild)
+
+        undone = client.post(
+            f"/api/workflow/design/{workflow_id}/undo",
+            json={"designer_id": designer_id},
+            headers=wf_rw,
+        )
+        undone.raise_for_status()
+        assert undone.json()["status"] == "ok"
+        assert _visible_workflow_design_ids(workflow_engine, workflow_id=workflow_id) == (
+            start_id,
+            {start_id, end_id},
+            {edge_id},
+        )
+
+        hist = client.get(f"/api/workflow/design/{workflow_id}/history", headers=wf_ro)
+        hist.raise_for_status()
+        assert hist.json()["current_version"] == 3
+        assert hist.json()["can_redo"] is True
+
+        redone = client.post(
+            f"/api/workflow/design/{workflow_id}/redo",
+            json={"designer_id": designer_id},
+            headers=wf_rw,
+        )
+        redone.raise_for_status()
+        assert redone.json()["status"] == "ok"
+        assert _visible_workflow_design_ids(workflow_engine, workflow_id=workflow_id) == (
+            start_id,
+            {start_id, end_id},
+            set(),
+        )
+
+        deleted_again = client.request(
+            "DELETE",
+            f"/api/workflow/design/{workflow_id}/edges/{edge_id}",
+            json={"designer_id": designer_id},
+            headers=wf_rw,
+        )
+        assert deleted_again.status_code == 404
+
+
+def test_runtime_design_missing_delta_falls_back_to_rebuild(monkeypatch, engine_triplet):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service, _registry = _configure_server(monkeypatch, engine, conversation_engine, workflow_engine, _success_runner)
+    workflow_id = "wf.design.rest.delta_fallback"
+    start_id = f"wf|{workflow_id}|start"
+    end_id = f"wf|{workflow_id}|end"
+    edge_id = f"wf|{workflow_id}|e|start_end"
+    with TestClient(server.app) as client:
+        wf_rw = _token_header(client, role="rw", ns="workflow")
+        designer_id = "tester"
+
+        client.post(
+            f"/api/workflow/design/{workflow_id}/nodes",
+            json={"designer_id": designer_id, "node_id": start_id, "label": "Start", "op": "start", "start": True},
+            headers=wf_rw,
+        ).raise_for_status()
+        client.post(
+            f"/api/workflow/design/{workflow_id}/nodes",
+            json={"designer_id": designer_id, "node_id": end_id, "label": "End", "op": "end", "terminal": True},
+            headers=wf_rw,
+        ).raise_for_status()
+        client.post(
+            f"/api/workflow/design/{workflow_id}/edges",
+            json={
+                "designer_id": designer_id,
+                "edge_id": edge_id,
+                "src": start_id,
+                "dst": end_id,
+                "relation": "wf_next",
+                "is_default": True,
+            },
+            headers=wf_rw,
+        ).raise_for_status()
+        client.request(
+            "DELETE",
+            f"/api/workflow/design/{workflow_id}/edges/{edge_id}",
+            json={"designer_id": designer_id},
+            headers=wf_rw,
+        ).raise_for_status()
+
+        workflow_engine.meta_sqlite.clear_workflow_design_deltas(workflow_id=workflow_id)
+        rebuild_calls: list[int] = []
+        original_rebuild = service._workflow_rebuild_namespace_for_state
+
+        def _wrapped_rebuild(*, workflow_id: str, state: dict[str, object]) -> None:
+            rebuild_calls.append(int(state.get("current_version") or -1))
+            original_rebuild(workflow_id=workflow_id, state=state)
+
+        monkeypatch.setattr(service, "_workflow_rebuild_namespace_for_state", _wrapped_rebuild)
+
+        undone = client.post(
+            f"/api/workflow/design/{workflow_id}/undo",
+            json={"designer_id": designer_id},
+            headers=wf_rw,
+        )
+        undone.raise_for_status()
+        assert undone.json()["status"] == "ok"
+        assert rebuild_calls == [3]
+        assert _visible_workflow_design_ids(workflow_engine, workflow_id=workflow_id) == (
+            start_id,
+            {start_id, end_id},
+            {edge_id},
+        )
+
+
 def test_runtime_design_undo_then_append_does_not_restore_discarded_branch(monkeypatch, engine_triplet):
     engine, conversation_engine, workflow_engine = engine_triplet
     _configure_server(monkeypatch, engine, conversation_engine, workflow_engine, _success_runner)
@@ -748,29 +1026,398 @@ def test_runtime_design_requires_designer_id_and_enforces_subject(monkeypatch, e
         assert mismatch.status_code == 403
 
 
-def test_runtime_design_history_backfill_emits_control_event(monkeypatch, engine_triplet):
+def test_runtime_design_refresh_rebuilds_event_projection_and_uses_no_sidecars(monkeypatch, engine_triplet):
     engine, conversation_engine, workflow_engine = engine_triplet
     service, _registry = _configure_server(monkeypatch, engine, conversation_engine, workflow_engine, _success_runner)
-    workflow_id = "wf.design.rest.backfill.history"
-    now_ms = int(time.time() * 1000)
-    with service._workflow_history_lock, service._history_connect() as conn:  # noqa: SLF001 - intentional migration seed
-        conn.execute(
-            "INSERT OR REPLACE INTO workflow_design_history(workflow_id, version, seq, created_at_ms) VALUES (?, ?, ?, ?)",
-            (workflow_id, 0, 0, now_ms),
-        )
-        conn.execute(
-            "INSERT OR REPLACE INTO workflow_design_history(workflow_id, version, seq, created_at_ms) VALUES (?, ?, ?, ?)",
-            (workflow_id, 1, 7, now_ms + 1),
-        )
-        conn.execute(
-            "INSERT OR REPLACE INTO workflow_design_pointer(workflow_id, current_version, updated_at_ms) VALUES (?, ?, ?)",
-            (workflow_id, 1, now_ms + 1),
-        )
+    workflow_id = "wf.design.rest.refresh"
     with TestClient(server.app) as client:
+        wf_rw = _token_header(client, role="rw", ns="workflow")
         wf_ro = _token_header(client, role="ro", ns="workflow")
+        designer_id = "tester"
+        client.post(
+            f"/api/workflow/design/{workflow_id}/nodes",
+            json={"designer_id": designer_id, "node_id": f"wf|{workflow_id}|start", "label": "Start", "op": "start", "start": True},
+            headers=wf_rw,
+        ).raise_for_status()
+        client.post(
+            f"/api/workflow/design/{workflow_id}/nodes",
+            json={"designer_id": designer_id, "node_id": f"wf|{workflow_id}|mid", "label": "Mid", "op": "noop"},
+            headers=wf_rw,
+        ).raise_for_status()
+        client.post(
+            f"/api/workflow/design/{workflow_id}/undo",
+            json={"designer_id": designer_id},
+            headers=wf_rw,
+        ).raise_for_status()
+        client.post(
+            f"/api/workflow/design/{workflow_id}/nodes",
+            json={"designer_id": designer_id, "node_id": f"wf|{workflow_id}|alt", "label": "Alt", "op": "noop"},
+            headers=wf_rw,
+        ).raise_for_status()
+
+        refreshed = service.refresh_workflow_design_projection(workflow_id=workflow_id)
+        assert refreshed["status"] == "ok"
         hist = client.get(f"/api/workflow/design/{workflow_id}/history", headers=wf_ro)
         hist.raise_for_status()
-        timeline = hist.json().get("timeline", [])
-        backfill = [evt for evt in timeline if evt.get("op") == "HISTORY_BACKFILL"]
-        assert backfill
-        assert str(backfill[-1].get("designer_id") or "") == "__migration__"
+        payload = hist.json()
+        assert [int(item["version"]) for item in payload["versions"]] == [0, 1, 3]
+        assert "BRANCH_DROPPED" in [str(item.get("op") or "") for item in payload.get("timeline", [])]
+        assert not Path(workflow_engine.persist_directory, "workflow_design_history.sqlite").exists()
+        assert not Path(workflow_engine.persist_directory, "server_runs.sqlite").exists()
+
+
+def test_runtime_design_history_recreates_projection_and_tracks_field_semantics(monkeypatch, engine_triplet):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service, _registry = _configure_server(monkeypatch, engine, conversation_engine, workflow_engine, _success_runner)
+    workflow_id = "wf.design.rest.history_fields"
+    start_id = f"wf|{workflow_id}|start"
+    old_id = f"wf|{workflow_id}|old"
+    alt_id = f"wf|{workflow_id}|alt"
+    edge_old_id = f"wf|{workflow_id}|e|start_old"
+    with TestClient(server.app) as client:
+        wf_rw = _token_header(client, role="rw", ns="workflow")
+        wf_ro = _token_header(client, role="ro", ns="workflow")
+        designer_id = "tester"
+
+        client.post(
+            f"/api/workflow/design/{workflow_id}/nodes",
+            json={"designer_id": designer_id, "node_id": start_id, "label": "Start", "op": "start", "start": True},
+            headers=wf_rw,
+        ).raise_for_status()
+        client.post(
+            f"/api/workflow/design/{workflow_id}/nodes",
+            json={"designer_id": designer_id, "node_id": old_id, "label": "Old", "op": "end", "terminal": True},
+            headers=wf_rw,
+        ).raise_for_status()
+        client.post(
+            f"/api/workflow/design/{workflow_id}/edges",
+            json={
+                "designer_id": designer_id,
+                "edge_id": edge_old_id,
+                "src": start_id,
+                "dst": old_id,
+                "relation": "wf_next",
+                "is_default": True,
+            },
+            headers=wf_rw,
+        ).raise_for_status()
+
+        initial = client.get(f"/api/workflow/design/{workflow_id}/history", headers=wf_ro)
+        initial.raise_for_status()
+        payload = initial.json()
+        assert payload["current_version"] == 3
+        assert payload["active_tip_version"] == 3
+        assert payload["max_version"] == 3
+        assert [int(item["version"]) for item in payload["versions"]] == [0, 1, 2, 3]
+
+        client.post(
+            f"/api/workflow/design/{workflow_id}/undo",
+            json={"designer_id": designer_id},
+            headers=wf_rw,
+        ).raise_for_status()
+
+        undone = client.get(f"/api/workflow/design/{workflow_id}/history", headers=wf_ro)
+        undone.raise_for_status()
+        undone_payload = undone.json()
+        assert undone_payload["current_version"] == 2
+        assert undone_payload["active_tip_version"] == 3
+        assert undone_payload["max_version"] == 3
+        assert undone_payload["can_undo"] is True
+        assert undone_payload["can_redo"] is True
+        assert [int(item["version"]) for item in undone_payload["versions"]] == [0, 1, 2, 3]
+        assert [int(item["version"]) for item in undone_payload["selected_versions"]] == [0, 1, 2]
+
+        meta = workflow_engine.meta_sqlite
+        meta.clear_workflow_design_projection(workflow_id=workflow_id)
+        assert meta.get_workflow_design_projection(workflow_id=workflow_id) is None
+
+        recreated = service.workflow_design_history(workflow_id=workflow_id)
+        recreated_projection = meta.get_workflow_design_projection(workflow_id=workflow_id)
+        assert recreated["current_version"] == 2
+        assert recreated["active_tip_version"] == 3
+        assert recreated_projection is not None
+        assert recreated_projection["current_version"] == 2
+        assert recreated_projection["active_tip_version"] == 3
+
+        client.post(
+            f"/api/workflow/design/{workflow_id}/nodes",
+            json={"designer_id": designer_id, "node_id": alt_id, "label": "Alt", "op": "end", "terminal": True},
+            headers=wf_rw,
+        ).raise_for_status()
+
+        branched = client.get(f"/api/workflow/design/{workflow_id}/history", headers=wf_ro)
+        branched.raise_for_status()
+        branched_payload = branched.json()
+        assert branched_payload["current_version"] == 4
+        assert branched_payload["active_tip_version"] == 4
+        assert branched_payload["max_version"] == 4
+        assert branched_payload["can_redo"] is False
+        assert [int(item["version"]) for item in branched_payload["versions"]] == [0, 1, 2, 4]
+        version_four = next(item for item in branched_payload["selected_versions"] if int(item["version"]) == 4)
+        assert int(version_four["prev_version"]) == 2
+
+
+def test_runtime_design_projection_divergence_rows_are_replaced_from_history(monkeypatch, engine_triplet):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service, _registry = _configure_server(monkeypatch, engine, conversation_engine, workflow_engine, _success_runner)
+    workflow_id = "wf.design.rest.projection_divergence"
+    start_id = f"wf|{workflow_id}|start"
+    end_id = f"wf|{workflow_id}|end"
+    edge_id = f"wf|{workflow_id}|e|start_end"
+    with TestClient(server.app) as client:
+        wf_rw = _token_header(client, role="rw", ns="workflow")
+        designer_id = "tester"
+
+        client.post(
+            f"/api/workflow/design/{workflow_id}/nodes",
+            json={"designer_id": designer_id, "node_id": start_id, "label": "Start", "op": "start", "start": True},
+            headers=wf_rw,
+        ).raise_for_status()
+        client.post(
+            f"/api/workflow/design/{workflow_id}/nodes",
+            json={"designer_id": designer_id, "node_id": end_id, "label": "End", "op": "end", "terminal": True},
+            headers=wf_rw,
+        ).raise_for_status()
+        client.post(
+            f"/api/workflow/design/{workflow_id}/edges",
+            json={
+                "designer_id": designer_id,
+                "edge_id": edge_id,
+                "src": start_id,
+                "dst": end_id,
+                "relation": "wf_next",
+                "is_default": True,
+            },
+            headers=wf_rw,
+        ).raise_for_status()
+
+    state = service.workflow_design_history(workflow_id=workflow_id)
+    meta = workflow_engine.meta_sqlite
+    meta.replace_workflow_design_projection(
+        workflow_id=workflow_id,
+        head={
+            "current_version": 999,
+            "active_tip_version": 999,
+            "last_authoritative_seq": int(state["latest_seq"]),
+            "last_materialized_seq": 999,
+            "projection_schema_version": service._PROJECTION_SCHEMA_VERSION,
+            "snapshot_schema_version": service._SNAPSHOT_SCHEMA_VERSION,
+            "materialization_status": "ready",
+            "updated_at_ms": int(time.time() * 1000),
+        },
+        versions=[{"version": 999, "prev_version": 998, "target_seq": 999, "created_at_ms": 1}],
+        dropped_ranges=[{"start_seq": 700, "end_seq": 701, "start_version": 998, "end_version": 999}],
+    )
+
+    repaired = service.workflow_design_history(workflow_id=workflow_id)
+    projection = meta.get_workflow_design_projection(workflow_id=workflow_id)
+    assert repaired["current_version"] == state["current_version"]
+    assert repaired["active_tip_version"] == state["active_tip_version"]
+    assert projection is not None
+    assert projection["current_version"] == state["current_version"]
+    assert projection["active_tip_version"] == state["active_tip_version"]
+    assert 999 not in [int(item["version"]) for item in projection["versions"]]
+    assert projection["dropped_ranges"] == []
+
+
+def test_runtime_design_rebuilding_projection_blocks_mutations_and_runtime_submit(monkeypatch, engine_triplet):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _configure_server(
+        monkeypatch,
+        engine,
+        conversation_engine,
+        workflow_engine,
+        _success_runner,
+        runtime_runner=_runtime_success_runner,
+    )
+    workflow_id = "wf.design.rest.rebuilding"
+    workflow_engine.meta_sqlite.replace_workflow_design_projection(
+        workflow_id=workflow_id,
+        head={
+            "current_version": 0,
+            "active_tip_version": 0,
+            "last_authoritative_seq": 0,
+            "last_materialized_seq": 0,
+            "projection_schema_version": 1,
+            "snapshot_schema_version": 1,
+            "materialization_status": "rebuilding",
+            "updated_at_ms": int(time.time() * 1000),
+        },
+        versions=[],
+        dropped_ranges=[],
+    )
+
+    with TestClient(server.app) as client:
+        conv_rw = _token_header(client, role="rw", ns="conversation")
+        wf_rw = _token_header(client, role="rw", ns="workflow")
+
+        blocked_node = client.post(
+            f"/api/workflow/design/{workflow_id}/nodes",
+            json={"designer_id": "tester", "node_id": "n1", "label": "Node", "op": "noop"},
+            headers=wf_rw,
+        )
+        assert blocked_node.status_code == 409
+        assert "rebuilding" in blocked_node.json()["detail"]
+
+        created = client.post("/api/conversations", json={"user_id": "u-runtime-lock"}, headers=conv_rw)
+        created.raise_for_status()
+        conversation_id = created.json()["conversation_id"]
+
+        blocked_run = client.post(
+            "/api/workflow/runs",
+            json={"workflow_id": workflow_id, "conversation_id": conversation_id, "initial_state": {}},
+            headers=wf_rw,
+        )
+        assert blocked_run.status_code == 409
+        assert "rebuilding" in blocked_run.json()["detail"]
+
+
+def test_runtime_loader_uses_only_active_branch_nodes_and_edges(monkeypatch, engine_triplet):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service, _registry = _configure_server(monkeypatch, engine, conversation_engine, workflow_engine, _success_runner)
+    workflow_id = "wf.design.rest.active_projection"
+    start_id = f"wf|{workflow_id}|start"
+    old_id = f"wf|{workflow_id}|old"
+    alt_id = f"wf|{workflow_id}|alt"
+    edge_old_id = f"wf|{workflow_id}|e|start_old"
+    edge_alt_id = f"wf|{workflow_id}|e|start_alt"
+    with TestClient(server.app) as client:
+        wf_rw = _token_header(client, role="rw", ns="workflow")
+        designer_id = "tester"
+
+        client.post(
+            f"/api/workflow/design/{workflow_id}/nodes",
+            json={"designer_id": designer_id, "node_id": start_id, "label": "Start", "op": "start", "start": True},
+            headers=wf_rw,
+        ).raise_for_status()
+        client.post(
+            f"/api/workflow/design/{workflow_id}/nodes",
+            json={"designer_id": designer_id, "node_id": old_id, "label": "Old", "op": "end", "terminal": True},
+            headers=wf_rw,
+        ).raise_for_status()
+        client.post(
+            f"/api/workflow/design/{workflow_id}/edges",
+            json={
+                "designer_id": designer_id,
+                "edge_id": edge_old_id,
+                "src": start_id,
+                "dst": old_id,
+                "relation": "wf_next",
+                "is_default": True,
+            },
+            headers=wf_rw,
+        ).raise_for_status()
+        client.post(
+            f"/api/workflow/design/{workflow_id}/undo",
+            json={"designer_id": designer_id},
+            headers=wf_rw,
+        ).raise_for_status()
+        client.post(
+            f"/api/workflow/design/{workflow_id}/undo",
+            json={"designer_id": designer_id},
+            headers=wf_rw,
+        ).raise_for_status()
+        client.post(
+            f"/api/workflow/design/{workflow_id}/nodes",
+            json={"designer_id": designer_id, "node_id": alt_id, "label": "Alt", "op": "end", "terminal": True},
+            headers=wf_rw,
+        ).raise_for_status()
+        client.post(
+            f"/api/workflow/design/{workflow_id}/edges",
+            json={
+                "designer_id": designer_id,
+                "edge_id": edge_alt_id,
+                "src": start_id,
+                "dst": alt_id,
+                "relation": "wf_next",
+                "is_default": True,
+            },
+            headers=wf_rw,
+        ).raise_for_status()
+
+    service.refresh_workflow_design_projection(workflow_id=workflow_id)
+    start_seen, node_ids, edge_ids = _visible_workflow_design_ids(workflow_engine, workflow_id=workflow_id)
+    assert start_seen == start_id
+    assert node_ids == {start_id, alt_id}
+    assert old_id not in node_ids
+    assert edge_ids == {edge_alt_id}
+    assert edge_old_id not in edge_ids
+
+
+def test_runtime_design_snapshot_restore_matches_full_replay(monkeypatch, engine_triplet):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service, _registry = _configure_server(monkeypatch, engine, conversation_engine, workflow_engine, _success_runner)
+    monkeypatch.setattr(service, "_SNAPSHOT_INTERVAL", 2, raising=False)
+    workflow_id = "wf.design.rest.snapshot_restore"
+    start_id = f"wf|{workflow_id}|start"
+    end_id = f"wf|{workflow_id}|end"
+    edge_id = f"wf|{workflow_id}|e|start_end"
+    with TestClient(server.app) as client:
+        wf_rw = _token_header(client, role="rw", ns="workflow")
+        designer_id = "tester"
+
+        client.post(
+            f"/api/workflow/design/{workflow_id}/nodes",
+            json={"designer_id": designer_id, "node_id": start_id, "label": "Start", "op": "start", "start": True},
+            headers=wf_rw,
+        ).raise_for_status()
+        client.post(
+            f"/api/workflow/design/{workflow_id}/nodes",
+            json={"designer_id": designer_id, "node_id": end_id, "label": "End", "op": "end", "terminal": True},
+            headers=wf_rw,
+        ).raise_for_status()
+
+        snapshot = workflow_engine.meta_sqlite.get_workflow_design_snapshot(
+            workflow_id=workflow_id,
+            max_version=2,
+            schema_version=service._SNAPSHOT_SCHEMA_VERSION,
+        )
+        assert snapshot is not None
+        assert int(snapshot["version"]) == 2
+
+        client.post(
+            f"/api/workflow/design/{workflow_id}/edges",
+            json={
+                "designer_id": designer_id,
+                "edge_id": edge_id,
+                "src": start_id,
+                "dst": end_id,
+                "relation": "wf_next",
+                "is_default": True,
+            },
+            headers=wf_rw,
+        ).raise_for_status()
+        workflow_engine.meta_sqlite.clear_workflow_design_deltas(workflow_id=workflow_id)
+
+        snapshot_requested = {"called": False}
+        original_get_snapshot = workflow_engine.meta_sqlite.get_workflow_design_snapshot
+
+        def _wrapped_get_snapshot(*, workflow_id, max_version, schema_version):
+            snapshot_requested["called"] = True
+            return original_get_snapshot(
+                workflow_id=workflow_id,
+                max_version=max_version,
+                schema_version=schema_version,
+            )
+
+        monkeypatch.setattr(
+            workflow_engine.meta_sqlite,
+            "get_workflow_design_snapshot",
+            _wrapped_get_snapshot,
+            raising=False,
+        )
+
+        client.post(
+            f"/api/workflow/design/{workflow_id}/undo",
+            json={"designer_id": designer_id},
+            headers=wf_rw,
+        ).raise_for_status()
+
+    assert snapshot_requested["called"] is True
+    snapshot_shape = _visible_workflow_design_ids(workflow_engine, workflow_id=workflow_id)
+    assert snapshot_shape[1] == {start_id, end_id}
+    assert snapshot_shape[2] == set()
+
+    refreshed = service.refresh_workflow_design_projection(workflow_id=workflow_id)
+    assert refreshed["status"] == "ok"
+    assert _visible_workflow_design_ids(workflow_engine, workflow_id=workflow_id) == snapshot_shape

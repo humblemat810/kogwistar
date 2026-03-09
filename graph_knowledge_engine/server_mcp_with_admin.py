@@ -184,7 +184,7 @@ gq = _LazyResource(lambda: GraphQuery(engine.get()), "knowledge_graph_query")
 conversation_gq = _LazyResource(lambda: GraphQuery(conversation_engine.get()), "conversation_graph_query")
 wisdom_gq = _LazyResource(lambda: GraphQuery(wisdom_engine.get()), "wisdom_graph_query")
 run_registry = _LazyResource(
-    lambda: RunRegistry(pathlib.Path(workflow_persist_directory) / "server_runs.sqlite"),
+    lambda: RunRegistry(workflow_engine.get().meta_sqlite),
     "chat_run_registry",
 )
 chat_service = _LazyResource(

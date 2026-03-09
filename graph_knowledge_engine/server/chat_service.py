@@ -4,7 +4,6 @@ import contextlib
 import json
 import logging
 import pathlib
-import sqlite3
 import threading
 import time
 import uuid
@@ -32,6 +31,10 @@ from .run_registry import RunRegistry, RunRegistryTraceBridge
 
 class RunCancelledError(RuntimeError):
     """Raised when a submitted chat run is cancelled cooperatively."""
+
+
+class WorkflowProjectionRebuildingError(RuntimeError):
+    """Raised when a workflow design projection is being rebuilt."""
 
 
 @dataclass(frozen=True)
@@ -69,11 +72,14 @@ class RuntimeRunRequest:
 
 class ChatRunService:
     _DESIGN_CONTROL_KIND = "design_control"
-    _CTRL_HISTORY_BACKFILL = "HISTORY_BACKFILL"
     _CTRL_UNDO_APPLIED = "UNDO_APPLIED"
     _CTRL_REDO_APPLIED = "REDO_APPLIED"
     _CTRL_BRANCH_DROPPED = "BRANCH_DROPPED"
     _CTRL_MUTATION_COMMITTED = "MUTATION_COMMITTED"
+    _PROJECTION_SCHEMA_VERSION = 1
+    _SNAPSHOT_SCHEMA_VERSION = 1
+    _DELTA_SCHEMA_VERSION = 1
+    _SNAPSHOT_INTERVAL = 50
 
     def __init__(
         self,
@@ -124,34 +130,6 @@ class ChatRunService:
     def _workflow_namespace(workflow_id: str) -> str:
         return f"wf_design:{str(workflow_id)}"
 
-    def _workflow_history_db_path(self) -> pathlib.Path:
-        root = pathlib.Path(str(getattr(self._workflow_engine(), "persist_directory", ".") or "."))
-        root.mkdir(parents=True, exist_ok=True)
-        return root / "workflow_design_history.sqlite"
-
-    def _history_connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(str(self._workflow_history_db_path()), timeout=30, check_same_thread=False)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL;")
-        conn.execute("PRAGMA synchronous=NORMAL;")
-        conn.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS workflow_design_history (
-                workflow_id TEXT NOT NULL,
-                version INTEGER NOT NULL,
-                seq INTEGER NOT NULL,
-                created_at_ms INTEGER NOT NULL,
-                PRIMARY KEY (workflow_id, version)
-            );
-            CREATE TABLE IF NOT EXISTS workflow_design_pointer (
-                workflow_id TEXT PRIMARY KEY,
-                current_version INTEGER NOT NULL,
-                updated_at_ms INTEGER NOT NULL
-            );
-            """
-        )
-        return conn
-
     @contextlib.contextmanager
     def _workflow_namespace_scope(self, workflow_id: str):
         eng = self._workflow_engine()
@@ -162,68 +140,6 @@ class ChatRunService:
             yield eng
         finally:
             eng.namespace = prev_ns
-
-    def _history_ensure_initialized(self, conn: sqlite3.Connection, workflow_id: str) -> None:
-        now = self._now_ms()
-        conn.execute(
-            """
-            INSERT OR IGNORE INTO workflow_design_history(workflow_id, version, seq, created_at_ms)
-            VALUES (?, 0, 0, ?)
-            """,
-            (workflow_id, now),
-        )
-        conn.execute(
-            """
-            INSERT OR IGNORE INTO workflow_design_pointer(workflow_id, current_version, updated_at_ms)
-            VALUES (?, 0, ?)
-            """,
-            (workflow_id, now),
-        )
-
-    def _history_state_locked(self, conn: sqlite3.Connection, workflow_id: str) -> dict[str, Any]:
-        self._history_ensure_initialized(conn, workflow_id)
-        ptr = conn.execute(
-            "SELECT current_version FROM workflow_design_pointer WHERE workflow_id = ?",
-            (workflow_id,),
-        ).fetchone()
-        current_version = int(ptr["current_version"]) if ptr is not None else 0
-        max_row = conn.execute(
-            "SELECT COALESCE(MAX(version), 0) AS max_version FROM workflow_design_history WHERE workflow_id = ?",
-            (workflow_id,),
-        ).fetchone()
-        max_version = int(max_row["max_version"]) if max_row is not None else 0
-        seq_row = conn.execute(
-            "SELECT seq FROM workflow_design_history WHERE workflow_id = ? AND version = ?",
-            (workflow_id, current_version),
-        ).fetchone()
-        current_seq = int(seq_row["seq"]) if seq_row is not None else 0
-        versions_rows = conn.execute(
-            """
-            SELECT version, seq, created_at_ms
-            FROM workflow_design_history
-            WHERE workflow_id = ?
-            ORDER BY version ASC
-            """,
-            (workflow_id,),
-        ).fetchall()
-        versions = [
-            {
-                "version": int(row["version"]),
-                "seq": int(row["seq"]),
-                "created_at_ms": int(row["created_at_ms"]),
-            }
-            for row in versions_rows
-        ]
-        return {
-            "workflow_id": workflow_id,
-            "namespace": self._workflow_namespace(workflow_id),
-            "current_version": current_version,
-            "max_version": max_version,
-            "current_seq": current_seq,
-            "can_undo": current_version > 0,
-            "can_redo": current_version < max_version,
-            "versions": versions,
-        }
 
     def _assert_designer_identity(self, *, designer_id: str, actor_sub: str | None) -> str:
         resolved_designer = str(designer_id or "").strip()
@@ -296,6 +212,137 @@ class ChatRunService:
             )
         )
 
+    def _append_workflow_entity_event(
+        self,
+        *,
+        workflow_id: str,
+        entity_kind: str,
+        entity_id: str,
+        op: str,
+        payload: dict[str, Any] | None = None,
+    ) -> int:
+        append = getattr(self._workflow_engine().meta_sqlite, "append_entity_event", None)
+        if not callable(append):
+            return 0
+        return int(
+            append(
+                namespace=self._workflow_namespace(workflow_id),
+                event_id=str(uuid.uuid4()),
+                entity_kind=str(entity_kind),
+                entity_id=str(entity_id),
+                op=str(op),
+                payload_json=json.dumps(dict(payload or {}), sort_keys=True, separators=(",", ":")),
+            )
+        )
+
+    def _workflow_meta_store(self) -> Any:
+        return self._workflow_engine().meta_sqlite
+
+    def _workflow_projection(self, *, workflow_id: str) -> dict[str, Any] | None:
+        getter = getattr(self._workflow_meta_store(), "get_workflow_design_projection", None)
+        if not callable(getter):
+            return None
+        return getter(workflow_id=str(workflow_id))
+
+    @staticmethod
+    def _workflow_empty_delta() -> dict[str, Any]:
+        return {
+            "upsert_nodes": [],
+            "delete_node_ids": [],
+            "upsert_edges": [],
+            "delete_edge_ids": [],
+        }
+
+    @staticmethod
+    def _workflow_compute_visible_delta(*, before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
+        before_nodes = {str(item.get("id") or ""): item for item in list(before.get("nodes") or []) if str(item.get("id") or "")}
+        after_nodes = {str(item.get("id") or ""): item for item in list(after.get("nodes") or []) if str(item.get("id") or "")}
+        before_edges = {str(item.get("id") or ""): item for item in list(before.get("edges") or []) if str(item.get("id") or "")}
+        after_edges = {str(item.get("id") or ""): item for item in list(after.get("edges") or []) if str(item.get("id") or "")}
+        return {
+            "upsert_nodes": [
+                after_nodes[node_id]
+                for node_id in sorted(after_nodes.keys())
+                if before_nodes.get(node_id) != after_nodes[node_id]
+            ],
+            "delete_node_ids": sorted(node_id for node_id in before_nodes.keys() if node_id not in after_nodes),
+            "upsert_edges": [
+                after_edges[edge_id]
+                for edge_id in sorted(after_edges.keys())
+                if before_edges.get(edge_id) != after_edges[edge_id]
+            ],
+            "delete_edge_ids": sorted(edge_id for edge_id in before_edges.keys() if edge_id not in after_edges),
+        }
+
+    def _workflow_store_version_delta(
+        self,
+        *,
+        workflow_id: str,
+        version: int,
+        prev_version: int,
+        target_seq: int,
+        forward: dict[str, Any],
+        inverse: dict[str, Any],
+    ) -> None:
+        putter = getattr(self._workflow_meta_store(), "put_workflow_design_delta", None)
+        if not callable(putter):
+            return
+        putter(
+            workflow_id=workflow_id,
+            version=int(version),
+            prev_version=int(prev_version),
+            target_seq=int(target_seq),
+            forward_json=json.dumps(dict(forward or self._workflow_empty_delta()), sort_keys=True, separators=(",", ":")),
+            inverse_json=json.dumps(dict(inverse or self._workflow_empty_delta()), sort_keys=True, separators=(",", ":")),
+            schema_version=self._DELTA_SCHEMA_VERSION,
+        )
+
+    def _workflow_version_delta(self, *, workflow_id: str, version: int) -> dict[str, Any] | None:
+        getter = getattr(self._workflow_meta_store(), "get_workflow_design_delta", None)
+        if not callable(getter):
+            return None
+        row = getter(
+            workflow_id=str(workflow_id),
+            version=int(version),
+            schema_version=self._DELTA_SCHEMA_VERSION,
+        )
+        if row is None:
+            return None
+        return {
+            "workflow_id": str(row.get("workflow_id") or workflow_id),
+            "version": int(row.get("version") or version),
+            "prev_version": int(row.get("prev_version") or 0),
+            "target_seq": int(row.get("target_seq") or 0),
+            "forward": self._parse_event_payload(str(row.get("forward_json") or "{}")),
+            "inverse": self._parse_event_payload(str(row.get("inverse_json") or "{}")),
+            "schema_version": int(row.get("schema_version") or self._DELTA_SCHEMA_VERSION),
+            "created_at_ms": int(row.get("created_at_ms") or 0),
+        }
+
+    def _workflow_apply_visible_delta(self, *, workflow_id: str, delta: dict[str, Any] | None) -> None:
+        payload = dict(delta or self._workflow_empty_delta())
+        eng = self._workflow_engine()
+        prev_log = getattr(eng, "_disable_event_log", False)
+        prev_idx = getattr(eng, "_phase1_enable_index_jobs", False)
+        eng._disable_event_log = True
+        eng._phase1_enable_index_jobs = False
+        try:
+            with eng.uow():
+                edge_delete_ids = sorted({str(item) for item in list(payload.get("delete_edge_ids") or []) if str(item)})
+                node_delete_ids = sorted({str(item) for item in list(payload.get("delete_node_ids") or []) if str(item)})
+                if edge_delete_ids:
+                    eng.backend.edge_delete(ids=edge_delete_ids)
+                if node_delete_ids:
+                    eng.backend.node_delete(ids=node_delete_ids)
+                for raw in list(payload.get("upsert_nodes") or []):
+                    eng.write.add_node(WorkflowNode.model_validate(raw))
+                for raw in list(payload.get("upsert_edges") or []):
+                    eng.write.add_edge(WorkflowEdge.model_validate(raw))
+                self._workflow_remove_orphan_edges(workflow_id=workflow_id)
+        finally:
+            eng._disable_event_log = prev_log
+            eng._phase1_enable_index_jobs = prev_idx
+
     def _workflow_control_timeline(self, *, namespace: str, limit: int = 500) -> list[dict[str, Any]]:
         keep = max(1, int(limit))
         out: deque[dict[str, Any]] = deque(maxlen=keep)
@@ -319,131 +366,230 @@ class ChatRunService:
             out.append(item)
         return list(out)
 
-    def _workflow_has_control_events(self, *, namespace: str) -> bool:
-        for _seq, entity_kind, _entity_id, _op, _payload_raw in self._iter_entity_events(
-            namespace=namespace,
-            from_seq=1,
-        ):
-            if str(entity_kind) == self._DESIGN_CONTROL_KIND:
-                return True
+    def _workflow_lineage_path(
+        self,
+        *,
+        commits: dict[int, dict[str, Any]],
+        version: int,
+    ) -> list[dict[str, Any]]:
+        if int(version) <= 0:
+            return [{"version": 0, "prev_version": 0, "target_seq": 0, "created_at_ms": 0}]
+        path: list[dict[str, Any]] = []
+        seen: set[int] = set()
+        current = int(version)
+        while current > 0:
+            if current in seen:
+                raise RuntimeError(f"Workflow design lineage loop detected at version={current}")
+            seen.add(current)
+            commit = commits.get(current)
+            if commit is None:
+                raise RuntimeError(f"Workflow design history missing committed version={current}")
+            path.append(commit)
+            current = int(commit.get("prev_version") or 0)
+        path.reverse()
+        return [{"version": 0, "prev_version": 0, "target_seq": 0, "created_at_ms": 0}] + path
+
+    def _workflow_fold_history(self, *, workflow_id: str) -> dict[str, Any]:
+        namespace = self._workflow_namespace(workflow_id)
+        commits: dict[int, dict[str, Any]] = {}
+        dropped_ranges: list[dict[str, Any]] = []
+        current_version = 0
+        active_tip_version = 0
+        allocated_max_version = 0
+        latest_seq = 0
+
+        for seq, entity_kind, _entity_id, op, payload_raw in self._iter_entity_events(namespace=namespace, from_seq=1):
+            latest_seq = max(latest_seq, int(seq))
+            if str(entity_kind) != self._DESIGN_CONTROL_KIND:
+                continue
+            payload = self._parse_event_payload(payload_raw)
+            op_s = str(op or "")
+            if op_s == self._CTRL_MUTATION_COMMITTED:
+                version = int(payload.get("version") or 0)
+                prev_version = int(payload.get("prev_version") or 0)
+                target_seq = int(payload.get("target_seq") or payload.get("seq") or 0)
+                commit = {
+                    "version": version,
+                    "prev_version": prev_version,
+                    "target_seq": target_seq,
+                    "created_at_ms": int(payload.get("ts_ms") or 0),
+                    "entity_id": str(payload.get("entity_id") or ""),
+                    "action": str(payload.get("action") or ""),
+                }
+                commits[version] = commit
+                allocated_max_version = max(allocated_max_version, version)
+                current_version = version
+                active_tip_version = version
+            elif op_s == self._CTRL_UNDO_APPLIED:
+                current_version = int(payload.get("to_version") or current_version)
+            elif op_s == self._CTRL_REDO_APPLIED:
+                current_version = int(payload.get("to_version") or current_version)
+            elif op_s == self._CTRL_BRANCH_DROPPED:
+                start_version = int(payload.get("drop_from_version") or 0)
+                end_version = int(payload.get("drop_to_version") or -1)
+                start_seq = int(payload.get("drop_from_seq") or 0)
+                end_seq = int(payload.get("drop_to_seq") or -1)
+                if end_version >= start_version >= 0 and end_seq >= start_seq >= 0:
+                    dropped_ranges.append(
+                        {
+                            "start_version": start_version,
+                            "end_version": end_version,
+                            "start_seq": start_seq,
+                            "end_seq": end_seq,
+                        }
+                    )
+                    if start_version <= active_tip_version <= end_version:
+                        active_tip_version = current_version
+
+        active_lineage = self._workflow_lineage_path(commits=commits, version=active_tip_version)
+        selected_lineage = self._workflow_lineage_path(commits=commits, version=current_version)
+        active_versions = [
+            {
+                "version": int(item.get("version") or 0),
+                "seq": int(item.get("target_seq") or 0),
+                "created_at_ms": int(item.get("created_at_ms") or 0),
+            }
+            for item in active_lineage
+        ]
+        selected_versions = [
+            {
+                "version": int(item.get("version") or 0),
+                "seq": int(item.get("target_seq") or 0),
+                "created_at_ms": int(item.get("created_at_ms") or 0),
+                "prev_version": int(item.get("prev_version") or 0),
+                "target_seq": int(item.get("target_seq") or 0),
+            }
+            for item in selected_lineage
+        ]
+        active_ids = [int(item.get("version") or 0) for item in active_lineage]
+        current_seq = 0
+        if current_version > 0:
+            current_seq = int(commits.get(current_version, {}).get("target_seq") or 0)
+        return {
+            "workflow_id": workflow_id,
+            "namespace": namespace,
+            "current_version": int(current_version),
+            "active_tip_version": int(active_tip_version),
+            "max_version": int(active_tip_version),
+            "allocated_max_version": int(allocated_max_version),
+            "current_seq": int(current_seq),
+            "can_undo": int(current_version) > 0,
+            "can_redo": int(current_version) in active_ids and active_ids.index(int(current_version)) < len(active_ids) - 1,
+            "versions": active_versions,
+            "selected_versions": selected_versions,
+            "dropped_ranges": dropped_ranges,
+            "latest_seq": int(latest_seq),
+            "timeline": self._workflow_control_timeline(namespace=namespace, limit=500),
+            "commits": commits,
+        }
+
+    def _workflow_projection_stale(self, *, state: dict[str, Any], projection: dict[str, Any] | None) -> bool:
+        if projection is None:
+            return True
+        if int(projection.get("projection_schema_version") or 0) != self._PROJECTION_SCHEMA_VERSION:
+            return True
+        if int(projection.get("snapshot_schema_version") or 0) != self._SNAPSHOT_SCHEMA_VERSION:
+            return True
+        if int(projection.get("last_authoritative_seq") or 0) < int(state.get("latest_seq") or 0):
+            return True
+        if str(projection.get("materialization_status") or "") != "ready":
+            return True
         return False
 
-    def _ensure_control_backfill_locked(self, *, workflow_id: str, state: dict[str, Any]) -> None:
-        namespace = self._workflow_namespace(workflow_id)
-        if self._workflow_has_control_events(namespace=namespace):
+    def _workflow_projection_head(self, *, state: dict[str, Any], materialization_status: str = "ready") -> dict[str, Any]:
+        return {
+            "current_version": int(state.get("current_version") or 0),
+            "active_tip_version": int(state.get("active_tip_version") or 0),
+            "last_authoritative_seq": int(state.get("latest_seq") or 0),
+            "last_materialized_seq": int(state.get("current_seq") or 0),
+            "projection_schema_version": self._PROJECTION_SCHEMA_VERSION,
+            "snapshot_schema_version": self._SNAPSHOT_SCHEMA_VERSION,
+            "materialization_status": str(materialization_status),
+            "updated_at_ms": self._now_ms(),
+        }
+
+    def _store_workflow_projection(self, *, workflow_id: str, state: dict[str, Any], materialization_status: str = "ready") -> None:
+        replace = getattr(self._workflow_meta_store(), "replace_workflow_design_projection", None)
+        if not callable(replace):
             return
-        self._append_design_control_event(
+        replace(
             workflow_id=workflow_id,
-            op=self._CTRL_HISTORY_BACKFILL,
-            designer_id="__migration__",
-            source="migration",
-            payload={
-                "current_version": int(state.get("current_version", 0)),
-                "current_seq": int(state.get("current_seq", 0)),
-                "versions": list(state.get("versions") or []),
-            },
+            head=self._workflow_projection_head(state=state, materialization_status=materialization_status),
+            versions=[
+                {
+                    "version": int(item.get("version") or 0),
+                    "prev_version": int(item.get("prev_version") or 0),
+                    "target_seq": int(item.get("target_seq") or 0),
+                    "created_at_ms": int(item.get("created_at_ms") or 0),
+                }
+                for item in state.get("selected_versions") or []
+            ]
+            + [
+                {
+                    "version": int(item.get("version") or 0),
+                    "prev_version": int((state.get("commits") or {}).get(int(item.get("version") or 0), {}).get("prev_version") or 0),
+                    "target_seq": int(item.get("seq") or 0),
+                    "created_at_ms": int(item.get("created_at_ms") or 0),
+                }
+                for item in (state.get("versions") or [])
+                if int(item.get("version") or 0) not in {int(v.get("version") or 0) for v in (state.get("selected_versions") or [])}
+            ],
+            dropped_ranges=list(state.get("dropped_ranges") or []),
         )
 
-    def _history_record_seq(
-        self,
-        workflow_id: str,
-        seq: int,
-        *,
-        designer_id: str,
-        source: str,
-    ) -> dict[str, Any]:
-        with self._workflow_history_lock, self._history_connect() as conn:
-            state = self._history_state_locked(conn, workflow_id)
-            self._ensure_control_backfill_locked(workflow_id=workflow_id, state=state)
-            state = self._history_state_locked(conn, workflow_id)
-            current_version = int(state["current_version"])
-            current_seq = int(state["current_seq"])
-            max_version = int(state["max_version"])
-            seq = int(seq)
-            if seq <= current_seq:
-                return state
-            if current_version < max_version:
-                dropped_versions = [v for v in state.get("versions", []) if int(v.get("version", -1)) > current_version]
-                if dropped_versions:
-                    drop_from_seq = min(int(v.get("seq", 0)) for v in dropped_versions)
-                    drop_to_seq = max(int(v.get("seq", 0)) for v in dropped_versions)
-                    drop_evt_seq = self._append_design_control_event(
-                        workflow_id=workflow_id,
-                        op=self._CTRL_BRANCH_DROPPED,
-                        designer_id=designer_id,
-                        source=source,
-                        payload={
-                            "drop_from_seq": int(drop_from_seq),
-                            "drop_to_seq": int(drop_to_seq),
-                            "reason": "new_edit_after_undo",
-                        },
-                    )
-                    seq = max(seq, int(drop_evt_seq))
-                conn.execute(
-                    "DELETE FROM workflow_design_history WHERE workflow_id = ? AND version > ?",
-                    (workflow_id, current_version),
-                )
-            new_version = current_version + 1
-            now = self._now_ms()
-            conn.execute(
-                """
-                INSERT INTO workflow_design_history(workflow_id, version, seq, created_at_ms)
-                VALUES (?, ?, ?, ?)
-                """,
-                (workflow_id, new_version, seq, now),
-            )
-            conn.execute(
-                """
-                UPDATE workflow_design_pointer
-                SET current_version = ?, updated_at_ms = ?
-                WHERE workflow_id = ?
-                """,
-                (new_version, now, workflow_id),
-            )
-            return self._history_state_locked(conn, workflow_id)
+    def _workflow_projection_status(self, *, workflow_id: str) -> str | None:
+        projection = self._workflow_projection(workflow_id=workflow_id)
+        if projection is None:
+            return None
+        return str(projection.get("materialization_status") or "")
+
+    def _assert_workflow_projection_not_rebuilding(self, *, workflow_id: str) -> None:
+        if self._workflow_projection_status(workflow_id=workflow_id) == "rebuilding":
+            raise WorkflowProjectionRebuildingError(f"workflow_id={workflow_id!r} is rebuilding; retry later")
 
     def _workflow_latest_seq(self, *, namespace: str, from_seq: int = 1) -> int:
+        getter = getattr(self._workflow_meta_store(), "get_latest_entity_event_seq", None)
+        if callable(getter) and int(from_seq) <= 1:
+            return int(getter(namespace=namespace))
         last = 0
-        for seq, _ek, _eid, _op, _payload in self._iter_entity_events(
-            namespace=namespace,
-            from_seq=max(1, int(from_seq)),
-        ):
+        for seq, _ek, _eid, _op, _payload in self._iter_entity_events(namespace=namespace, from_seq=max(1, int(from_seq))):
             last = int(seq)
         return last
 
-    def _workflow_collect_entity_ids(self, *, namespace: str) -> tuple[set[str], set[str]]:
-        node_ids: set[str] = set()
-        edge_ids: set[str] = set()
-        for _seq, entity_kind, entity_id, _op, _payload in self._iter_entity_events(namespace=namespace, from_seq=1):
-            if str(entity_kind) == "node":
-                node_ids.add(str(entity_id))
-            elif str(entity_kind) == "edge":
-                edge_ids.add(str(entity_id))
-        return node_ids, edge_ids
+    def _workflow_collect_visible_entity_ids(self, *, workflow_id: str) -> tuple[set[str], set[str]]:
+        nodes = self._workflow_engine().get_nodes(
+            where={"$and": [{"entity_type": "workflow_node"}, {"workflow_id": workflow_id}]},
+            limit=5000,
+            node_type=WorkflowNode,
+        )
+        edges = self._workflow_engine().get_edges(
+            where={"$and": [{"entity_type": "workflow_edge"}, {"workflow_id": workflow_id}]},
+            limit=20_000,
+            edge_type=WorkflowEdge,
+        )
+        return (
+            {str(node.id) for node in nodes},
+            {str(edge.id) for edge in edges},
+        )
 
     @staticmethod
-    def _seq_in_dropped_ranges(seq: int, ranges: list[tuple[int, int]]) -> bool:
-        for start, end in ranges:
-            if start <= seq <= end:
+    def _workflow_seq_in_dropped_ranges(seq: int, dropped_ranges: list[dict[str, Any]]) -> bool:
+        for item in dropped_ranges:
+            start_seq = int(item.get("start_seq") or 0)
+            end_seq = int(item.get("end_seq") or -1)
+            if start_seq <= seq <= end_seq:
                 return True
         return False
 
-    def _workflow_replay_masked_to_seq(self, *, namespace: str, to_seq: int) -> None:
+    def _workflow_replay_entity_range(
+        self,
+        *,
+        namespace: str,
+        from_seq: int,
+        to_seq: int,
+        dropped_ranges: list[dict[str, Any]] | None = None,
+    ) -> None:
         eng = self._workflow_engine()
-        dropped_ranges: list[tuple[int, int]] = []
-        for _seq, entity_kind, _entity_id, op, payload_raw in self._iter_entity_events(
-            namespace=namespace,
-            from_seq=1,
-            to_seq=int(to_seq),
-        ):
-            if str(entity_kind) != self._DESIGN_CONTROL_KIND or str(op) != self._CTRL_BRANCH_DROPPED:
-                continue
-            payload = self._parse_event_payload(payload_raw)
-            start = int(payload.get("drop_from_seq", -1))
-            end = int(payload.get("drop_to_seq", -1))
-            if start >= 0 and end >= start:
-                dropped_ranges.append((start, end))
-
         prev_log = getattr(eng, "_disable_event_log", False)
         prev_idx = getattr(eng, "_phase1_enable_index_jobs", False)
         eng._disable_event_log = True
@@ -451,11 +597,10 @@ class ChatRunService:
         try:
             for seq, entity_kind, entity_id, op, payload_raw in self._iter_entity_events(
                 namespace=namespace,
-                from_seq=1,
+                from_seq=max(1, int(from_seq)),
                 to_seq=int(to_seq),
             ):
-                seq_i = int(seq)
-                if self._seq_in_dropped_ranges(seq_i, dropped_ranges):
+                if self._workflow_seq_in_dropped_ranges(int(seq), list(dropped_ranges or [])):
                     continue
                 entity_kind_s = str(entity_kind)
                 if entity_kind_s == self._DESIGN_CONTROL_KIND:
@@ -470,10 +615,7 @@ class ChatRunService:
                             node = CoreNode.model_validate_json(json.dumps(payload))
                         eng.write.add_node(node)
                     elif op_s in {"TOMBSTONE", "DELETE"}:
-                        try:
-                            eng.lifecycle.tombstone_node(str(entity_id))
-                        except Exception:
-                            pass
+                        eng.backend.node_delete(ids=[str(entity_id)])
                 elif entity_kind_s == "edge":
                     if op_s in {"ADD", "REPLACE"}:
                         try:
@@ -482,17 +624,87 @@ class ChatRunService:
                             edge = CoreEdge.model_validate_json(json.dumps(payload))
                         eng.write.add_edge(edge)
                     elif op_s in {"TOMBSTONE", "DELETE"}:
-                        try:
-                            eng.lifecycle.tombstone_edge(str(entity_id))
-                        except Exception:
-                            pass
+                        eng.backend.edge_delete(ids=[str(entity_id)])
         finally:
             eng._disable_event_log = prev_log
             eng._phase1_enable_index_jobs = prev_idx
 
-    def _workflow_rebuild_namespace_to_seq(self, *, namespace: str, to_seq: int) -> None:
+    def _workflow_capture_visible_snapshot(self, *, workflow_id: str) -> dict[str, Any]:
+        nodes = self._workflow_engine().get_nodes(
+            where={"$and": [{"entity_type": "workflow_node"}, {"workflow_id": workflow_id}]},
+            limit=5000,
+            node_type=WorkflowNode,
+        )
+        edges = self._workflow_engine().get_edges(
+            where={"$and": [{"entity_type": "workflow_edge"}, {"workflow_id": workflow_id}]},
+            limit=20_000,
+            edge_type=WorkflowEdge,
+        )
+        return {
+            "nodes": [node.model_dump(field_mode="backend", exclude={"embedding"}) for node in nodes],
+            "edges": [edge.model_dump(field_mode="backend", exclude={"embedding"}) for edge in edges],
+        }
+
+    def _workflow_restore_snapshot(self, *, snapshot_payload: dict[str, Any]) -> None:
         eng = self._workflow_engine()
-        node_ids, edge_ids = self._workflow_collect_entity_ids(namespace=namespace)
+        prev_log = getattr(eng, "_disable_event_log", False)
+        prev_idx = getattr(eng, "_phase1_enable_index_jobs", False)
+        eng._disable_event_log = True
+        eng._phase1_enable_index_jobs = False
+        try:
+            for raw in list(snapshot_payload.get("nodes") or []):
+                node = WorkflowNode.model_validate(raw)
+                eng.write.add_node(node)
+            for raw in list(snapshot_payload.get("edges") or []):
+                edge = WorkflowEdge.model_validate(raw)
+                eng.write.add_edge(edge)
+        finally:
+            eng._disable_event_log = prev_log
+            eng._phase1_enable_index_jobs = prev_idx
+
+    def _workflow_remove_orphan_edges(self, *, workflow_id: str) -> None:
+        nodes = self._workflow_engine().get_nodes(
+            where={"$and": [{"entity_type": "workflow_node"}, {"workflow_id": workflow_id}]},
+            limit=5000,
+            node_type=WorkflowNode,
+        )
+        node_ids = {str(node.id) for node in nodes}
+        edges = self._workflow_engine().get_edges(
+            where={"$and": [{"entity_type": "workflow_edge"}, {"workflow_id": workflow_id}]},
+            limit=20_000,
+            edge_type=WorkflowEdge,
+        )
+        orphan_ids = [
+            str(edge.id)
+            for edge in edges
+            if not getattr(edge, "source_ids", None)
+            or not getattr(edge, "target_ids", None)
+            or str(edge.source_ids[0]) not in node_ids
+            or str(edge.target_ids[0]) not in node_ids
+        ]
+        if orphan_ids:
+            self._workflow_engine().backend.edge_delete(ids=sorted(orphan_ids))
+
+    def _workflow_store_snapshot_if_needed(self, *, workflow_id: str, state: dict[str, Any]) -> None:
+        current_version = int(state.get("current_version") or 0)
+        if current_version <= 0 or current_version % self._SNAPSHOT_INTERVAL != 0:
+            return
+        put_snapshot = getattr(self._workflow_meta_store(), "put_workflow_design_snapshot", None)
+        if not callable(put_snapshot):
+            return
+        payload = self._workflow_capture_visible_snapshot(workflow_id=workflow_id)
+        put_snapshot(
+            workflow_id=workflow_id,
+            version=current_version,
+            seq=int(state.get("current_seq") or 0),
+            payload_json=json.dumps(payload, sort_keys=True, separators=(",", ":")),
+            schema_version=self._SNAPSHOT_SCHEMA_VERSION,
+        )
+
+    def _workflow_rebuild_namespace_for_state(self, *, workflow_id: str, state: dict[str, Any]) -> None:
+        namespace = self._workflow_namespace(workflow_id)
+        eng = self._workflow_engine()
+        node_ids, edge_ids = self._workflow_collect_visible_entity_ids(workflow_id=workflow_id)
         if edge_ids:
             try:
                 eng.backend.edge_delete(ids=sorted(edge_ids))
@@ -503,21 +715,112 @@ class ChatRunService:
                 eng.backend.node_delete(ids=sorted(node_ids))
             except Exception:
                 logging.getLogger(__name__).exception("failed clearing workflow nodes during rebuild: namespace=%s", namespace)
-        if int(to_seq) > 0:
-            self._workflow_replay_masked_to_seq(namespace=namespace, to_seq=int(to_seq))
+        snapshot_get = getattr(self._workflow_meta_store(), "get_workflow_design_snapshot", None)
+        selected_versions = list(state.get("selected_versions") or [])
+        selected_by_version = {int(item.get("version") or 0): item for item in selected_versions}
+        restored_version = 0
+        if callable(snapshot_get) and int(state.get("current_version") or 0) > 0:
+            snapshot = snapshot_get(
+                workflow_id=workflow_id,
+                max_version=int(state.get("current_version") or 0),
+                schema_version=self._SNAPSHOT_SCHEMA_VERSION,
+            )
+            if snapshot is not None and int(snapshot.get("version") or 0) in selected_by_version:
+                try:
+                    payload = self._parse_event_payload(str(snapshot.get("payload_json") or "{}"))
+                    self._workflow_restore_snapshot(snapshot_payload=payload)
+                    restored_version = int(snapshot.get("version") or 0)
+                except Exception:
+                    logging.getLogger(__name__).exception("failed restoring workflow snapshot: workflow_id=%s", workflow_id)
+                    restored_version = 0
+        for item in selected_versions:
+            version = int(item.get("version") or 0)
+            if version <= 0 or version <= restored_version:
+                continue
+            lower = int(item.get("prev_version") or 0)
+            lower_seq = 0
+            if lower > 0:
+                lower_seq = int(selected_by_version.get(lower, {}).get("target_seq") or 0)
+            upper_seq = int(item.get("target_seq") or 0)
+            if upper_seq > lower_seq:
+                self._workflow_replay_entity_range(
+                    namespace=namespace,
+                    from_seq=lower_seq + 1,
+                    to_seq=upper_seq,
+                    dropped_ranges=list(state.get("dropped_ranges") or []),
+                )
+        self._workflow_remove_orphan_edges(workflow_id=workflow_id)
+
+    def _workflow_sync_projection_locked(
+        self,
+        *,
+        workflow_id: str,
+        force_rebuild: bool = False,
+        materialize: bool = True,
+    ) -> dict[str, Any]:
+        state = self._workflow_fold_history(workflow_id=workflow_id)
+        projection = self._workflow_projection(workflow_id=workflow_id)
+        if force_rebuild or materialize and self._workflow_projection_stale(state=state, projection=projection):
+            self._workflow_rebuild_namespace_for_state(workflow_id=workflow_id, state=state)
+            self._workflow_store_snapshot_if_needed(workflow_id=workflow_id, state=state)
+        self._store_workflow_projection(workflow_id=workflow_id, state=state, materialization_status="ready")
+        return state
 
     def workflow_design_history(self, *, workflow_id: str) -> dict[str, Any]:
         workflow_id = str(workflow_id or "").strip()
         if not workflow_id:
             raise ValueError("workflow_id is required")
-        with self._workflow_history_lock, self._history_connect() as conn:
-            state = self._history_state_locked(conn, workflow_id)
-            self._ensure_control_backfill_locked(workflow_id=workflow_id, state=state)
-            state = self._history_state_locked(conn, workflow_id)
-        namespace = self._workflow_namespace(workflow_id)
-        state["latest_seq"] = self._workflow_latest_seq(namespace=namespace, from_seq=1)
-        state["timeline"] = self._workflow_control_timeline(namespace=namespace, limit=500)
+        with self._workflow_history_lock:
+            return self._workflow_sync_projection_locked(workflow_id=workflow_id, materialize=False)
+
+    def _workflow_append_branch_drop_if_needed_locked(
+        self,
+        *,
+        workflow_id: str,
+        state: dict[str, Any],
+        designer_id: str,
+        source: str,
+    ) -> bool:
+        current_version = int(state.get("current_version") or 0)
+        dropped_versions = [item for item in (state.get("versions") or []) if int(item.get("version") or 0) > current_version]
+        if not dropped_versions:
+            return False
+        self._append_design_control_event(
+            workflow_id=workflow_id,
+            op=self._CTRL_BRANCH_DROPPED,
+            designer_id=designer_id,
+            source=source,
+            payload={
+                "drop_from_version": int(dropped_versions[0].get("version") or 0),
+                "drop_to_version": int(dropped_versions[-1].get("version") or 0),
+                "drop_from_seq": int(dropped_versions[0].get("seq") or 0),
+                "drop_to_seq": int(dropped_versions[-1].get("seq") or 0),
+                "reason": "new_edit_after_undo",
+            },
+        )
+        return True
+
+    def _workflow_finalize_design_state_locked(self, *, workflow_id: str, rebuild: bool) -> dict[str, Any]:
+        state = self._workflow_fold_history(workflow_id=workflow_id)
+        if rebuild:
+            self._workflow_rebuild_namespace_for_state(workflow_id=workflow_id, state=state)
+        self._store_workflow_projection(workflow_id=workflow_id, state=state, materialization_status="ready")
+        self._workflow_store_snapshot_if_needed(workflow_id=workflow_id, state=state)
         return state
+
+    def refresh_workflow_design_projection(self, *, workflow_id: str) -> dict[str, Any]:
+        workflow_id = str(workflow_id or "").strip()
+        if not workflow_id:
+            raise ValueError("workflow_id is required")
+        clear_snapshots = getattr(self._workflow_meta_store(), "clear_workflow_design_snapshots", None)
+        with self._workflow_history_lock:
+            state = self._workflow_fold_history(workflow_id=workflow_id)
+            self._store_workflow_projection(workflow_id=workflow_id, state=state, materialization_status="rebuilding")
+            if callable(clear_snapshots):
+                clear_snapshots(workflow_id=workflow_id)
+            out = self._workflow_finalize_design_state_locked(workflow_id=workflow_id, rebuild=True)
+            out["status"] = "ok"
+            return out
 
     def workflow_design_upsert_node(
         self,
@@ -538,6 +841,7 @@ class ChatRunService:
         if not workflow_id:
             raise ValueError("workflow_id is required")
         resolved_designer_id = self._assert_designer_identity(designer_id=designer_id, actor_sub=actor_sub)
+        self._assert_workflow_projection_not_rebuilding(workflow_id=workflow_id)
         resolved_node_id = str(node_id or "").strip() or f"wf|{workflow_id}|n|{new_id_str()}"
         resolved_label = str(label or "").strip()
         if not resolved_label:
@@ -570,27 +874,45 @@ class ChatRunService:
             embedding=None,
         )
         namespace = self._workflow_namespace(workflow_id)
-        with self._workflow_namespace_scope(workflow_id) as eng:
-            eng.write.add_node(n)
-        latest_seq = self._workflow_latest_seq(namespace=namespace, from_seq=1)
-        history = self._history_record_seq(
-            workflow_id,
-            latest_seq,
-            designer_id=resolved_designer_id,
-            source=source,
-        )
-        self._append_design_control_event(
-            workflow_id=workflow_id,
-            op=self._CTRL_MUTATION_COMMITTED,
-            designer_id=resolved_designer_id,
-            source=source,
-            payload={
-                "action": "node_upsert",
-                "entity_id": resolved_node_id,
-                "seq": int(history["current_seq"]),
-                "version": int(history["current_version"]),
-            },
-        )
+        with self._workflow_history_lock:
+            state_before = self._workflow_sync_projection_locked(workflow_id=workflow_id, materialize=True)
+            before_visible = self._workflow_capture_visible_snapshot(workflow_id=workflow_id)
+            known_node_ids = {str(item.get("id") or "") for item in list(before_visible.get("nodes") or [])}
+            current_version = int(state_before.get("current_version") or 0)
+            new_version = int(state_before.get("allocated_max_version") or 0) + 1
+            branch_dropped = False
+            with self._workflow_namespace_scope(workflow_id) as eng, eng.uow():
+                branch_dropped = self._workflow_append_branch_drop_if_needed_locked(
+                    workflow_id=workflow_id,
+                    state=state_before,
+                    designer_id=resolved_designer_id,
+                    source=source,
+                )
+                eng.write.add_node(n)
+                latest_seq = self._workflow_latest_seq(namespace=namespace, from_seq=1)
+                self._append_design_control_event(
+                    workflow_id=workflow_id,
+                    op=self._CTRL_MUTATION_COMMITTED,
+                    designer_id=resolved_designer_id,
+                    source=source,
+                    payload={
+                        "action": "node_upsert",
+                        "entity_id": resolved_node_id,
+                        "version": new_version,
+                        "prev_version": current_version,
+                        "target_seq": int(latest_seq),
+                    },
+                )
+            after_visible = self._workflow_capture_visible_snapshot(workflow_id=workflow_id)
+            self._workflow_store_version_delta(
+                workflow_id=workflow_id,
+                version=new_version,
+                prev_version=current_version,
+                target_seq=int(latest_seq),
+                forward=self._workflow_compute_visible_delta(before=before_visible, after=after_visible),
+                inverse=self._workflow_compute_visible_delta(before=after_visible, after=before_visible),
+            )
+            history = self._workflow_finalize_design_state_locked(workflow_id=workflow_id, rebuild=branch_dropped)
         return {
             "workflow_id": workflow_id,
             "namespace": namespace,
@@ -623,6 +945,7 @@ class ChatRunService:
         if not workflow_id:
             raise ValueError("workflow_id is required")
         resolved_designer_id = self._assert_designer_identity(designer_id=designer_id, actor_sub=actor_sub)
+        self._assert_workflow_projection_not_rebuilding(workflow_id=workflow_id)
         src = str(src or "").strip()
         dst = str(dst or "").strip()
         if not src or not dst:
@@ -659,27 +982,45 @@ class ChatRunService:
             embedding=None,
         )
         namespace = self._workflow_namespace(workflow_id)
-        with self._workflow_namespace_scope(workflow_id) as eng:
-            eng.write.add_edge(e)
-        latest_seq = self._workflow_latest_seq(namespace=namespace, from_seq=1)
-        history = self._history_record_seq(
-            workflow_id,
-            latest_seq,
-            designer_id=resolved_designer_id,
-            source=source,
-        )
-        self._append_design_control_event(
-            workflow_id=workflow_id,
-            op=self._CTRL_MUTATION_COMMITTED,
-            designer_id=resolved_designer_id,
-            source=source,
-            payload={
-                "action": "edge_upsert",
-                "entity_id": resolved_edge_id,
-                "seq": int(history["current_seq"]),
-                "version": int(history["current_version"]),
-            },
-        )
+        with self._workflow_history_lock:
+            state_before = self._workflow_sync_projection_locked(workflow_id=workflow_id, materialize=True)
+            before_visible = self._workflow_capture_visible_snapshot(workflow_id=workflow_id)
+            known_node_ids = {str(item.get("id") or "") for item in list(before_visible.get("nodes") or [])}
+            current_version = int(state_before.get("current_version") or 0)
+            new_version = int(state_before.get("allocated_max_version") or 0) + 1
+            branch_dropped = False
+            with self._workflow_namespace_scope(workflow_id) as eng, eng.uow():
+                branch_dropped = self._workflow_append_branch_drop_if_needed_locked(
+                    workflow_id=workflow_id,
+                    state=state_before,
+                    designer_id=resolved_designer_id,
+                    source=source,
+                )
+                eng.write.add_edge(e)
+                latest_seq = self._workflow_latest_seq(namespace=namespace, from_seq=1)
+                self._append_design_control_event(
+                    workflow_id=workflow_id,
+                    op=self._CTRL_MUTATION_COMMITTED,
+                    designer_id=resolved_designer_id,
+                    source=source,
+                    payload={
+                        "action": "edge_upsert",
+                        "entity_id": resolved_edge_id,
+                        "version": new_version,
+                        "prev_version": current_version,
+                        "target_seq": int(latest_seq),
+                    },
+                )
+            after_visible = self._workflow_capture_visible_snapshot(workflow_id=workflow_id)
+            self._workflow_store_version_delta(
+                workflow_id=workflow_id,
+                version=new_version,
+                prev_version=current_version,
+                target_seq=int(latest_seq),
+                forward=self._workflow_compute_visible_delta(before=before_visible, after=after_visible),
+                inverse=self._workflow_compute_visible_delta(before=after_visible, after=before_visible),
+            )
+            history = self._workflow_finalize_design_state_locked(workflow_id=workflow_id, rebuild=branch_dropped)
         return {
             "workflow_id": workflow_id,
             "namespace": namespace,
@@ -707,30 +1048,61 @@ class ChatRunService:
         if not node_id:
             raise ValueError("node_id is required")
         resolved_designer_id = self._assert_designer_identity(designer_id=designer_id, actor_sub=actor_sub)
+        self._assert_workflow_projection_not_rebuilding(workflow_id=workflow_id)
         namespace = self._workflow_namespace(workflow_id)
-        with self._workflow_namespace_scope(workflow_id) as eng:
-            ok = bool(eng.tombstone_node(node_id, reason="workflow_design_delete", deleted_by=resolved_designer_id))
-        if not ok:
-            raise KeyError(f"Unknown node_id: {node_id}")
-        latest_seq = self._workflow_latest_seq(namespace=namespace, from_seq=1)
-        history = self._history_record_seq(
-            workflow_id,
-            latest_seq,
-            designer_id=resolved_designer_id,
-            source=source,
-        )
-        self._append_design_control_event(
-            workflow_id=workflow_id,
-            op=self._CTRL_MUTATION_COMMITTED,
-            designer_id=resolved_designer_id,
-            source=source,
-            payload={
-                "action": "node_delete",
-                "entity_id": node_id,
-                "seq": int(history["current_seq"]),
-                "version": int(history["current_version"]),
-            },
-        )
+        with self._workflow_history_lock:
+            state_before = self._workflow_sync_projection_locked(workflow_id=workflow_id, materialize=True)
+            before_visible = self._workflow_capture_visible_snapshot(workflow_id=workflow_id)
+            known_node_ids = {str(item.get("id") or "") for item in list(before_visible.get("nodes") or [])}
+            current_version = int(state_before.get("current_version") or 0)
+            new_version = int(state_before.get("allocated_max_version") or 0) + 1
+            branch_dropped = False
+            with self._workflow_namespace_scope(workflow_id) as eng, eng.uow():
+                branch_dropped = self._workflow_append_branch_drop_if_needed_locked(
+                    workflow_id=workflow_id,
+                    state=state_before,
+                    designer_id=resolved_designer_id,
+                    source=source,
+                )
+                if node_id not in known_node_ids:
+                    raise KeyError(f"Unknown node_id: {node_id}")
+                self._append_workflow_entity_event(
+                    workflow_id=workflow_id,
+                    entity_kind="node",
+                    entity_id=node_id,
+                    op="TOMBSTONE",
+                    payload={
+                        "entity_id": node_id,
+                        "reason": "workflow_design_delete",
+                        "deleted_by": resolved_designer_id,
+                    },
+                )
+                eng.backend.node_delete(ids=[node_id])
+                self._workflow_remove_orphan_edges(workflow_id=workflow_id)
+                latest_seq = self._workflow_latest_seq(namespace=namespace, from_seq=1)
+                self._append_design_control_event(
+                    workflow_id=workflow_id,
+                    op=self._CTRL_MUTATION_COMMITTED,
+                    designer_id=resolved_designer_id,
+                    source=source,
+                    payload={
+                        "action": "node_delete",
+                        "entity_id": node_id,
+                        "version": new_version,
+                        "prev_version": current_version,
+                        "target_seq": int(latest_seq),
+                    },
+                )
+            after_visible = self._workflow_capture_visible_snapshot(workflow_id=workflow_id)
+            self._workflow_store_version_delta(
+                workflow_id=workflow_id,
+                version=new_version,
+                prev_version=current_version,
+                target_seq=int(latest_seq),
+                forward=self._workflow_compute_visible_delta(before=before_visible, after=after_visible),
+                inverse=self._workflow_compute_visible_delta(before=after_visible, after=before_visible),
+            )
+            history = self._workflow_finalize_design_state_locked(workflow_id=workflow_id, rebuild=branch_dropped)
         return {
             "workflow_id": workflow_id,
             "namespace": namespace,
@@ -759,30 +1131,60 @@ class ChatRunService:
         if not edge_id:
             raise ValueError("edge_id is required")
         resolved_designer_id = self._assert_designer_identity(designer_id=designer_id, actor_sub=actor_sub)
+        self._assert_workflow_projection_not_rebuilding(workflow_id=workflow_id)
         namespace = self._workflow_namespace(workflow_id)
-        with self._workflow_namespace_scope(workflow_id) as eng:
-            ok = bool(eng.tombstone_edge(edge_id, reason="workflow_design_delete", deleted_by=resolved_designer_id))
-        if not ok:
-            raise KeyError(f"Unknown edge_id: {edge_id}")
-        latest_seq = self._workflow_latest_seq(namespace=namespace, from_seq=1)
-        history = self._history_record_seq(
-            workflow_id,
-            latest_seq,
-            designer_id=resolved_designer_id,
-            source=source,
-        )
-        self._append_design_control_event(
-            workflow_id=workflow_id,
-            op=self._CTRL_MUTATION_COMMITTED,
-            designer_id=resolved_designer_id,
-            source=source,
-            payload={
-                "action": "edge_delete",
-                "entity_id": edge_id,
-                "seq": int(history["current_seq"]),
-                "version": int(history["current_version"]),
-            },
-        )
+        with self._workflow_history_lock:
+            state_before = self._workflow_sync_projection_locked(workflow_id=workflow_id, materialize=True)
+            before_visible = self._workflow_capture_visible_snapshot(workflow_id=workflow_id)
+            known_edge_ids = {str(item.get("id") or "") for item in list(before_visible.get("edges") or [])}
+            current_version = int(state_before.get("current_version") or 0)
+            new_version = int(state_before.get("allocated_max_version") or 0) + 1
+            branch_dropped = False
+            with self._workflow_namespace_scope(workflow_id) as eng, eng.uow():
+                branch_dropped = self._workflow_append_branch_drop_if_needed_locked(
+                    workflow_id=workflow_id,
+                    state=state_before,
+                    designer_id=resolved_designer_id,
+                    source=source,
+                )
+                if edge_id not in known_edge_ids:
+                    raise KeyError(f"Unknown edge_id: {edge_id}")
+                self._append_workflow_entity_event(
+                    workflow_id=workflow_id,
+                    entity_kind="edge",
+                    entity_id=edge_id,
+                    op="TOMBSTONE",
+                    payload={
+                        "entity_id": edge_id,
+                        "reason": "workflow_design_delete",
+                        "deleted_by": resolved_designer_id,
+                    },
+                )
+                eng.backend.edge_delete(ids=[edge_id])
+                latest_seq = self._workflow_latest_seq(namespace=namespace, from_seq=1)
+                self._append_design_control_event(
+                    workflow_id=workflow_id,
+                    op=self._CTRL_MUTATION_COMMITTED,
+                    designer_id=resolved_designer_id,
+                    source=source,
+                    payload={
+                        "action": "edge_delete",
+                        "entity_id": edge_id,
+                        "version": new_version,
+                        "prev_version": current_version,
+                        "target_seq": int(latest_seq),
+                    },
+                )
+            after_visible = self._workflow_capture_visible_snapshot(workflow_id=workflow_id)
+            self._workflow_store_version_delta(
+                workflow_id=workflow_id,
+                version=new_version,
+                prev_version=current_version,
+                target_seq=int(latest_seq),
+                forward=self._workflow_compute_visible_delta(before=before_visible, after=after_visible),
+                inverse=self._workflow_compute_visible_delta(before=after_visible, after=before_visible),
+            )
+            history = self._workflow_finalize_design_state_locked(workflow_id=workflow_id, rebuild=branch_dropped)
         return {
             "workflow_id": workflow_id,
             "namespace": namespace,
@@ -807,49 +1209,58 @@ class ChatRunService:
         if not workflow_id:
             raise ValueError("workflow_id is required")
         resolved_designer_id = self._assert_designer_identity(designer_id=designer_id, actor_sub=actor_sub)
-        namespace = self._workflow_namespace(workflow_id)
-        with self._workflow_history_lock, self._history_connect() as conn:
-            state = self._history_state_locked(conn, workflow_id)
-            self._ensure_control_backfill_locked(workflow_id=workflow_id, state=state)
-            state = self._history_state_locked(conn, workflow_id)
-            current_version = int(state["current_version"])
+        self._assert_workflow_projection_not_rebuilding(workflow_id=workflow_id)
+        with self._workflow_history_lock:
+            state = self._workflow_sync_projection_locked(workflow_id=workflow_id, materialize=True)
+            current_version = int(state.get("current_version") or 0)
             if current_version <= 0:
                 state["status"] = "noop"
-                state["timeline"] = self._workflow_control_timeline(namespace=namespace, limit=500)
-                state["latest_seq"] = self._workflow_latest_seq(namespace=namespace, from_seq=1)
+                self._store_workflow_projection(workflow_id=workflow_id, state=state, materialization_status="ready")
                 return state
-            target_version = current_version - 1
-            row = conn.execute(
-                "SELECT seq FROM workflow_design_history WHERE workflow_id = ? AND version = ?",
-                (workflow_id, target_version),
-            ).fetchone()
-            if row is None:
-                raise RuntimeError(f"History version missing for workflow_id={workflow_id!r} version={target_version}")
-            target_seq = int(row["seq"])
-            self._workflow_rebuild_namespace_to_seq(namespace=namespace, to_seq=target_seq)
-            conn.execute(
-                """
-                UPDATE workflow_design_pointer
-                SET current_version = ?, updated_at_ms = ?
-                WHERE workflow_id = ?
-                """,
-                (target_version, self._now_ms(), workflow_id),
-            )
-            self._append_design_control_event(
-                workflow_id=workflow_id,
-                op=self._CTRL_UNDO_APPLIED,
-                designer_id=resolved_designer_id,
-                source=source,
-                payload={
-                    "from_version": current_version,
-                    "to_version": target_version,
-                    "target_seq": target_seq,
-                },
-            )
-            out = self._history_state_locked(conn, workflow_id)
+            selected_versions = list(state.get("selected_versions") or [])
+            current_entry = next((item for item in selected_versions if int(item.get("version") or 0) == current_version), None)
+            if current_entry is None:
+                raise RuntimeError(f"Current workflow version missing from selected lineage: {current_version}")
+            target_version = int(current_entry.get("prev_version") or 0)
+            target_seq = 0
+            if target_version > 0:
+                target_entry = next(
+                    (item for item in selected_versions if int(item.get("version") or 0) == target_version),
+                    None,
+                )
+                if target_entry is None:
+                    raise RuntimeError(f"Undo target missing from selected lineage: {target_version}")
+                target_seq = int(target_entry.get("target_seq") or 0)
+            with self._workflow_engine().uow():
+                self._append_design_control_event(
+                    workflow_id=workflow_id,
+                    op=self._CTRL_UNDO_APPLIED,
+                    designer_id=resolved_designer_id,
+                    source=source,
+                    payload={
+                        "from_version": current_version,
+                        "to_version": target_version,
+                        "target_seq": int(target_seq),
+                    },
+                )
+            out = self._workflow_fold_history(workflow_id=workflow_id)
+            applied_delta = False
+            delta = self._workflow_version_delta(workflow_id=workflow_id, version=current_version)
+            if delta is not None:
+                try:
+                    self._workflow_apply_visible_delta(workflow_id=workflow_id, delta=dict(delta.get("inverse") or {}))
+                    applied_delta = True
+                except Exception:
+                    logging.getLogger(__name__).exception(
+                        "failed applying workflow inverse delta; falling back to rebuild: workflow_id=%s version=%s",
+                        workflow_id,
+                        current_version,
+                    )
+            if not applied_delta:
+                self._workflow_rebuild_namespace_for_state(workflow_id=workflow_id, state=out)
+            self._store_workflow_projection(workflow_id=workflow_id, state=out, materialization_status="ready")
+            self._workflow_store_snapshot_if_needed(workflow_id=workflow_id, state=out)
             out["status"] = "ok"
-            out["timeline"] = self._workflow_control_timeline(namespace=namespace, limit=500)
-            out["latest_seq"] = self._workflow_latest_seq(namespace=namespace, from_seq=1)
             return out
 
     def workflow_design_redo(
@@ -864,50 +1275,52 @@ class ChatRunService:
         if not workflow_id:
             raise ValueError("workflow_id is required")
         resolved_designer_id = self._assert_designer_identity(designer_id=designer_id, actor_sub=actor_sub)
-        namespace = self._workflow_namespace(workflow_id)
-        with self._workflow_history_lock, self._history_connect() as conn:
-            state = self._history_state_locked(conn, workflow_id)
-            self._ensure_control_backfill_locked(workflow_id=workflow_id, state=state)
-            state = self._history_state_locked(conn, workflow_id)
-            current_version = int(state["current_version"])
-            max_version = int(state["max_version"])
-            if current_version >= max_version:
+        self._assert_workflow_projection_not_rebuilding(workflow_id=workflow_id)
+        with self._workflow_history_lock:
+            state = self._workflow_sync_projection_locked(workflow_id=workflow_id, materialize=True)
+            current_version = int(state.get("current_version") or 0)
+            active_versions = list(state.get("versions") or [])
+            active_ids = [int(item.get("version") or 0) for item in active_versions]
+            if current_version not in active_ids:
+                raise RuntimeError(f"Current workflow version missing from active lineage: {current_version}")
+            current_index = active_ids.index(current_version)
+            if current_index >= len(active_ids) - 1:
                 state["status"] = "noop"
-                state["timeline"] = self._workflow_control_timeline(namespace=namespace, limit=500)
-                state["latest_seq"] = self._workflow_latest_seq(namespace=namespace, from_seq=1)
+                self._store_workflow_projection(workflow_id=workflow_id, state=state, materialization_status="ready")
                 return state
-            target_version = current_version + 1
-            row = conn.execute(
-                "SELECT seq FROM workflow_design_history WHERE workflow_id = ? AND version = ?",
-                (workflow_id, target_version),
-            ).fetchone()
-            if row is None:
-                raise RuntimeError(f"History version missing for workflow_id={workflow_id!r} version={target_version}")
-            target_seq = int(row["seq"])
-            self._workflow_rebuild_namespace_to_seq(namespace=namespace, to_seq=target_seq)
-            conn.execute(
-                """
-                UPDATE workflow_design_pointer
-                SET current_version = ?, updated_at_ms = ?
-                WHERE workflow_id = ?
-                """,
-                (target_version, self._now_ms(), workflow_id),
-            )
-            self._append_design_control_event(
-                workflow_id=workflow_id,
-                op=self._CTRL_REDO_APPLIED,
-                designer_id=resolved_designer_id,
-                source=source,
-                payload={
-                    "from_version": current_version,
-                    "to_version": target_version,
-                    "target_seq": target_seq,
-                },
-            )
-            out = self._history_state_locked(conn, workflow_id)
+            target_entry = active_versions[current_index + 1]
+            target_version = int(target_entry.get("version") or 0)
+            target_seq = int(target_entry.get("seq") or 0)
+            with self._workflow_engine().uow():
+                self._append_design_control_event(
+                    workflow_id=workflow_id,
+                    op=self._CTRL_REDO_APPLIED,
+                    designer_id=resolved_designer_id,
+                    source=source,
+                    payload={
+                        "from_version": current_version,
+                        "to_version": target_version,
+                        "target_seq": int(target_seq),
+                    },
+                )
+            out = self._workflow_fold_history(workflow_id=workflow_id)
+            applied_delta = False
+            delta = self._workflow_version_delta(workflow_id=workflow_id, version=target_version)
+            if delta is not None:
+                try:
+                    self._workflow_apply_visible_delta(workflow_id=workflow_id, delta=dict(delta.get("forward") or {}))
+                    applied_delta = True
+                except Exception:
+                    logging.getLogger(__name__).exception(
+                        "failed applying workflow forward delta; falling back to rebuild: workflow_id=%s version=%s",
+                        workflow_id,
+                        target_version,
+                    )
+            if not applied_delta:
+                self._workflow_rebuild_namespace_for_state(workflow_id=workflow_id, state=out)
+            self._store_workflow_projection(workflow_id=workflow_id, state=out, materialization_status="ready")
+            self._workflow_store_snapshot_if_needed(workflow_id=workflow_id, state=out)
             out["status"] = "ok"
-            out["timeline"] = self._workflow_control_timeline(namespace=namespace, limit=500)
-            out["latest_seq"] = self._workflow_latest_seq(namespace=namespace, from_seq=1)
             return out
 
     def create_conversation(
@@ -1183,6 +1596,7 @@ class ChatRunService:
         workflow_id = str(workflow_id or "").strip()
         if not workflow_id:
             raise ValueError("workflow_id is required")
+        self._assert_workflow_projection_not_rebuilding(workflow_id=workflow_id)
         conversation_id = str(conversation_id or "").strip()
         if not conversation_id:
             raise ValueError("conversation_id is required")

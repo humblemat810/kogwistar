@@ -62,7 +62,7 @@ def engine_triplet():
 
 
 def _configure_server(monkeypatch, engine, conversation_engine, workflow_engine, answer_runner, runtime_runner=None):
-    registry = RunRegistry(Path(workflow_engine.persist_directory) / "server_runs.sqlite")
+    registry = RunRegistry(workflow_engine.meta_sqlite)
     service = ChatRunService(
         get_knowledge_engine=lambda: engine,
         get_conversation_engine=lambda: conversation_engine,

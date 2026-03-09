@@ -8,6 +8,8 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
+from .chat_service import WorkflowProjectionRebuildingError
+
 
 class SubmitWorkflowRunIn(BaseModel):
     workflow_id: str = Field(min_length=1)
@@ -52,6 +54,8 @@ def _as_http_error(exc: Exception) -> HTTPException:
         return HTTPException(status_code=400, detail=str(exc))
     if isinstance(exc, PermissionError):
         return HTTPException(status_code=403, detail=str(exc))
+    if isinstance(exc, WorkflowProjectionRebuildingError):
+        return HTTPException(status_code=409, detail=str(exc))
     if isinstance(exc, HTTPException):
         return exc
     return HTTPException(status_code=500, detail=str(exc))
