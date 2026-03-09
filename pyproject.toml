@@ -12,18 +12,23 @@ requires-python = ">=3.10"
 authors = [{ name = "Peter Chan", email = "humblemat@gmail.com" }]
 
 dependencies = [
+  "pydantic-extension",
   "pydantic>=2.6",
   "anyio>=4.0",
   "fastapi>=0.111",
+  "Jinja2>=3.1",
   "uvicorn[standard]>=0.30",
   "mcp>=1.2",
   "fastmcp==3.0.0",
   "httpx>=0.28.1",
+  "python-jose[cryptography]>=3.3",
+  "PyJWT>=2.8",
   "RapidFuzz>=3.13.0",
   "ollama>=0.5.3",
   "numpy>=1.26",
   "joblib>=1.3",
   "python-dotenv>=1.0.1",
+  "requests>=2.32",
   "typing-extensions>=4.8"
 ]
 
@@ -61,3 +66,6 @@ package-dir = {"" = "."}
 where = ["."]
 include = ["graph_knowledge_engine*"]
 exclude = ["*.tests*", "*.test*", "tests*", "examples*", "diagnostic*"]
+
+[tool.setuptools.package-data]
+graph_knowledge_engine = ["templates/*.html"]

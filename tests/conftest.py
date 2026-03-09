@@ -18,7 +18,11 @@ except Exception:  # pragma: no cover - optional for non-pg test subsets
 import os
 import sys
 import pathlib
+from dotenv import load_dotenv
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+_TEST_ROOT = pathlib.Path(__file__).resolve().parents[1]
+for _env_name in (".env", ".env.test"):
+    load_dotenv(_TEST_ROOT / _env_name, override=False)
 import pytest
 from typing import Any, List, Optional, Sequence, Iterator, TYPE_CHECKING
 try:

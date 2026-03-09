@@ -3,7 +3,6 @@ from __future__ import annotations
 import contextvars
 import functools
 from contextvars import ContextVar
-from regex import P
 from starlette.types import Scope, Receive, Send
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse, HTMLResponse
@@ -33,6 +32,11 @@ from graph_knowledge_engine.id_provider import new_id_str, stable_id
 from graph_knowledge_engine.server.chat_api import create_chat_router
 from graph_knowledge_engine.server.runtime_api import create_runtime_router
 from graph_knowledge_engine.server.chat_mcp import build_conversation_mcp, build_workflow_mcp
+from graph_knowledge_engine.server.bootstrap import (
+    build_graph_engine,
+    build_sqlalchemy_engine,
+    load_server_storage_settings,
+)
 from graph_knowledge_engine.server.chat_service import ChatRunService
 from graph_knowledge_engine.server.run_registry import RunRegistry
 # --- JWT config (env-driven) ---
@@ -97,19 +101,13 @@ def _decode_role_from_headers(scope: Scope) -> str:
     except Exception:
         return Role.RO.value
 # ---- Engine + MCP ----
-persist_directory = os.environ.get("MCP_CHROMA_DIR") or "./.chroma-mcp"
-if MCP_CHROMA_DIR := (os.environ.get("MCP_CHROMA_DIR") or "./.chroma-mcp"):
-    pathparts = list(pathlib.Path(MCP_CHROMA_DIR).parts)
-else:
-    raise Exception("MCP_CHROMA_DIR undefined")
-pathparts.insert(-1, 'index')
-index_dir = os.path.join(*pathparts) or "./index/chroma-mcp"
-index_db_path = os.path.join(*(pathparts + ['index.db']))
-
-conversation_persist_directory = os.environ.get("MCP_CHROMA_DIR_CONVERSATION") or (persist_directory + "-conversation")
-workflow_persist_directory = os.environ.get("MCP_CHROMA_DIR_WORKFLOW") or (persist_directory + "-workflow")
-# ---- Wisdom + MCP ----
-wisdom_persist_directory = os.environ.get("MCP_CHROMA_DIR_WISDOM") or (persist_directory + "-wisdom")
+storage_settings = load_server_storage_settings()
+persist_directory = storage_settings.knowledge_dir
+conversation_persist_directory = storage_settings.conversation_dir
+workflow_persist_directory = storage_settings.workflow_dir
+wisdom_persist_directory = storage_settings.wisdom_dir
+index_dir = storage_settings.index_dir
+index_db_path = os.path.join(index_dir, "index.db")
 
 
 class _LazyResource:
@@ -149,14 +147,29 @@ def _ensure_index_storage() -> None:
     os.makedirs(index_dir, exist_ok=True)
 
 
+def _build_pg_sqlalchemy_engine():
+    return build_sqlalchemy_engine(storage_settings)
+
+
+def _shared_sqlalchemy_engine():
+    if storage_settings.backend != "pg":
+        return None
+    return pg_sqlalchemy_engine.get()
+
+
 def _build_engine() -> GraphKnowledgeEngine:
-    return GraphKnowledgeEngine(persist_directory=persist_directory)
+    return build_graph_engine(
+        settings=storage_settings,
+        graph_type="knowledge",
+        sa_engine=_shared_sqlalchemy_engine(),
+    )
 
 
 def _build_conversation_engine() -> GraphKnowledgeEngine:
-    eng = GraphKnowledgeEngine(
-        persist_directory=conversation_persist_directory,
-        kg_graph_type="conversation",
+    eng = build_graph_engine(
+        settings=storage_settings,
+        graph_type="conversation",
+        sa_engine=_shared_sqlalchemy_engine(),
     )
     try:
         eng.workflow_engine = workflow_engine.get()
@@ -166,16 +179,22 @@ def _build_conversation_engine() -> GraphKnowledgeEngine:
 
 
 def _build_workflow_engine() -> GraphKnowledgeEngine:
-    return GraphKnowledgeEngine(
-        persist_directory=workflow_persist_directory,
-        kg_graph_type="workflow",
+    return build_graph_engine(
+        settings=storage_settings,
+        graph_type="workflow",
+        sa_engine=_shared_sqlalchemy_engine(),
     )
 
 
 def _build_wisdom_engine() -> GraphKnowledgeEngine:
-    return GraphKnowledgeEngine(persist_directory=wisdom_persist_directory)
+    return build_graph_engine(
+        settings=storage_settings,
+        graph_type="wisdom",
+        sa_engine=_shared_sqlalchemy_engine(),
+    )
 
 
+pg_sqlalchemy_engine = _LazyResource(_build_pg_sqlalchemy_engine, "pg_sqlalchemy_engine")
 engine: GraphKnowledgeEngine = _LazyResource(_build_engine, "knowledge_engine")
 conversation_engine = _LazyResource(_build_conversation_engine, "conversation_engine")
 workflow_engine = _LazyResource(_build_workflow_engine, "workflow_engine")
@@ -829,9 +848,13 @@ async def dev_token(request: Request):
 def health():
     return {
         "ok": True,
+        "backend": storage_settings.backend,
         "persist_directory": persist_directory,
         "conversation_persist_directory": conversation_persist_directory,
         "workflow_persist_directory": workflow_persist_directory,
+        "wisdom_persist_directory": wisdom_persist_directory,
+        "index_dir": index_dir,
+        "pg_schema_base": storage_settings.pg_schema_base if storage_settings.backend == "pg" else None,
     }
 
 # DELETE /admin/doc/{doc_id}  (non-MCP utility)
