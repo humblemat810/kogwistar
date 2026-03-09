@@ -80,8 +80,11 @@ def _configure_server(monkeypatch, engine, conversation_engine, workflow_engine,
 
 
 @contextmanager
-def _claims(role: str, ns: str):
-    token = server.claims_ctx.set({"role": role, "ns": ns})
+def _claims(role: str, ns: str, sub: str | None = None):
+    claims = {"role": role, "ns": ns}
+    if sub is not None:
+        claims["sub"] = sub
+    token = server.claims_ctx.set(claims)
     try:
         yield
     finally:
@@ -185,6 +188,8 @@ async def test_mcp_chat_tool_visibility_by_namespace(monkeypatch, engine_triplet
         assert "workflow.run_status" in names
         assert "workflow.run_events" in names
         assert "workflow.run_submit" not in names
+        assert "workflow.design_history" in names
+        assert "workflow.design_undo" not in names
         assert "workflow.run_checkpoint_get" in names
         assert "workflow.run_replay" in names
         assert "conversation.ask" not in names
@@ -309,3 +314,120 @@ async def test_mcp_workflow_runtime_submit_cancel(monkeypatch, engine_triplet):
             limit=10,
         )
         assert len(cancel_nodes) == 1
+
+
+@pytest.mark.asyncio
+async def test_mcp_workflow_design_undo_redo(monkeypatch, engine_triplet):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _configure_server(monkeypatch, engine, conversation_engine, workflow_engine, _success_runner)
+
+    workflow_id = "wf.design.mcp.undo_redo"
+    designer_id = "designer-mcp"
+    with _claims("rw", "workflow", sub=designer_id):
+        n1 = _structured(
+            await server.mcp.call_tool(
+                "workflow.design_node_upsert",
+                {
+                    "workflow_id": workflow_id,
+                    "designer_id": designer_id,
+                    "node_id": f"wf|{workflow_id}|start",
+                    "label": "Start",
+                    "op": "start",
+                    "start": True,
+                },
+            )
+        )
+        assert n1["node_id"] == f"wf|{workflow_id}|start"
+        n2 = _structured(
+            await server.mcp.call_tool(
+                "workflow.design_node_upsert",
+                {
+                    "workflow_id": workflow_id,
+                    "designer_id": designer_id,
+                    "node_id": f"wf|{workflow_id}|end",
+                    "label": "End",
+                    "op": "end",
+                    "terminal": True,
+                },
+            )
+        )
+        assert n2["node_id"] == f"wf|{workflow_id}|end"
+        e1 = _structured(
+            await server.mcp.call_tool(
+                "workflow.design_edge_upsert",
+                {
+                    "workflow_id": workflow_id,
+                    "designer_id": designer_id,
+                    "edge_id": f"wf|{workflow_id}|e|start_end",
+                    "src": f"wf|{workflow_id}|start",
+                    "dst": f"wf|{workflow_id}|end",
+                    "relation": "wf_next",
+                    "is_default": True,
+                },
+            )
+        )
+        assert e1["edge_id"] == f"wf|{workflow_id}|e|start_end"
+
+        hist_before = _structured(await server.mcp.call_tool("workflow.design_history", {"workflow_id": workflow_id}))
+        assert int(hist_before["current_version"]) >= 3
+        assert bool(hist_before["can_undo"]) is True
+
+        undone = _structured(
+            await server.mcp.call_tool(
+                "workflow.design_undo",
+                {"workflow_id": workflow_id, "designer_id": designer_id},
+            )
+        )
+        assert undone["status"] in {"ok", "noop"}
+
+        with pytest.raises(Exception):
+            await server.mcp.call_tool(
+                "workflow.design_edge_delete",
+                {
+                    "workflow_id": workflow_id,
+                    "edge_id": f"wf|{workflow_id}|e|start_end",
+                    "designer_id": designer_id,
+                },
+            )
+
+        redone = _structured(
+            await server.mcp.call_tool(
+                "workflow.design_redo",
+                {"workflow_id": workflow_id, "designer_id": designer_id},
+            )
+        )
+        assert redone["status"] in {"ok", "noop"}
+
+        deleted_after_redo = _structured(
+            await server.mcp.call_tool(
+                "workflow.design_edge_delete",
+                {
+                    "workflow_id": workflow_id,
+                    "edge_id": f"wf|{workflow_id}|e|start_end",
+                    "designer_id": designer_id,
+                },
+            )
+        )
+        assert bool(deleted_after_redo.get("deleted")) is True
+        hist_after = _structured(await server.mcp.call_tool("workflow.design_history", {"workflow_id": workflow_id}))
+        timeline_ops = [str(item.get("op") or "") for item in hist_after.get("timeline", [])]
+        assert "UNDO_APPLIED" in timeline_ops
+        assert "REDO_APPLIED" in timeline_ops
+
+
+@pytest.mark.asyncio
+async def test_mcp_workflow_design_requires_designer_id_and_enforces_subject(monkeypatch, engine_triplet):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _configure_server(monkeypatch, engine, conversation_engine, workflow_engine, _success_runner)
+
+    with _claims("rw", "workflow", sub="alice"):
+        with pytest.raises(Exception):
+            await server.mcp.call_tool(
+                "workflow.design_undo",
+                {"workflow_id": "wf.design.mcp.missing_designer"},
+            )
+        with pytest.raises(Exception):
+            await server.mcp.call_tool(
+                "workflow.design_undo",
+                {"workflow_id": "wf.design.mcp.mismatch", "designer_id": "bob"},
+            )

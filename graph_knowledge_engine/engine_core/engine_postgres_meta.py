@@ -676,6 +676,20 @@ class EnginePostgresMetaStore:
                 )
             yield from rows
 
+    def prune_entity_events_after(self, *, namespace: str = "default", to_seq: int) -> int:
+        schema = self.schema
+        with self.transaction() as conn:
+            res = conn.execute(
+                sa.text(
+                    f"""
+                    DELETE FROM {schema}.entity_events
+                    WHERE namespace=:ns AND seq > :to_seq
+                    """
+                ),
+                {"ns": namespace, "to_seq": int(to_seq)},
+            )
+            return int(res.rowcount or 0)
+
 
     def cursor_get(self, *, namespace: str, consumer: str) -> int:
         schema = self.schema

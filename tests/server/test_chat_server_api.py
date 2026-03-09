@@ -87,10 +87,10 @@ def _configure_server(monkeypatch, engine, conversation_engine, workflow_engine,
     return service, registry
 
 
-def _token_header(client: TestClient, *, role: str, ns: str) -> dict[str, str]:
+def _token_header(client: TestClient, *, role: str, ns: str, username: str = "tester") -> dict[str, str]:
     resp = client.post(
         "/auth/dev-token",
-        json={"username": "tester", "role": role, "ns": ns},
+        json={"username": username, "role": role, "ns": ns},
     )
     resp.raise_for_status()
     token = resp.json()["token"]
@@ -533,3 +533,244 @@ def test_runtime_rest_cancel(monkeypatch, engine_triplet):
         names = [name for name, _payload in events]
         assert "run.cancelling" in names
         assert names[-1] == "run.cancelled"
+
+
+def test_runtime_design_rest_undo_redo(monkeypatch, engine_triplet):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _configure_server(monkeypatch, engine, conversation_engine, workflow_engine, _success_runner)
+    with TestClient(server.app) as client:
+        wf_rw = _token_header(client, role="rw", ns="workflow")
+        wf_ro = _token_header(client, role="ro", ns="workflow")
+        workflow_id = "wf.design.rest.undo_redo"
+        designer_id = "tester"
+
+        n1 = client.post(
+            f"/api/workflow/design/{workflow_id}/nodes",
+            json={
+                "designer_id": designer_id,
+                "node_id": f"wf|{workflow_id}|start",
+                "label": "Start",
+                "op": "start",
+                "start": True,
+            },
+            headers=wf_rw,
+        )
+        n1.raise_for_status()
+        n2 = client.post(
+            f"/api/workflow/design/{workflow_id}/nodes",
+            json={
+                "designer_id": designer_id,
+                "node_id": f"wf|{workflow_id}|end",
+                "label": "End",
+                "op": "end",
+                "terminal": True,
+            },
+            headers=wf_rw,
+        )
+        n2.raise_for_status()
+        e1 = client.post(
+            f"/api/workflow/design/{workflow_id}/edges",
+            json={
+                "designer_id": designer_id,
+                "edge_id": f"wf|{workflow_id}|e|start_end",
+                "src": f"wf|{workflow_id}|start",
+                "dst": f"wf|{workflow_id}|end",
+                "relation": "wf_next",
+                "is_default": True,
+            },
+            headers=wf_rw,
+        )
+        e1.raise_for_status()
+
+        hist = client.get(f"/api/workflow/design/{workflow_id}/history", headers=wf_ro)
+        hist.raise_for_status()
+        h = hist.json()
+        assert h["current_version"] >= 3
+        assert h["can_undo"] is True
+
+        undone = client.post(
+            f"/api/workflow/design/{workflow_id}/undo",
+            json={"designer_id": designer_id},
+            headers=wf_rw,
+        )
+        undone.raise_for_status()
+        assert undone.json()["status"] in {"ok", "noop"}
+
+        deleted_after_undo = client.request(
+            "DELETE",
+            f"/api/workflow/design/{workflow_id}/edges/wf|{workflow_id}|e|start_end",
+            json={"designer_id": designer_id},
+            headers=wf_rw,
+        )
+        assert deleted_after_undo.status_code == 404
+
+        redone = client.post(
+            f"/api/workflow/design/{workflow_id}/redo",
+            json={"designer_id": designer_id},
+            headers=wf_rw,
+        )
+        redone.raise_for_status()
+        assert redone.json()["status"] in {"ok", "noop"}
+
+        deleted_after_redo = client.request(
+            "DELETE",
+            f"/api/workflow/design/{workflow_id}/edges/wf|{workflow_id}|e|start_end",
+            json={"designer_id": designer_id},
+            headers=wf_rw,
+        )
+        assert deleted_after_redo.status_code == 200
+        hist_after = client.get(f"/api/workflow/design/{workflow_id}/history", headers=wf_ro)
+        hist_after.raise_for_status()
+        timeline_ops = [str(item.get("op") or "") for item in hist_after.json().get("timeline", [])]
+        assert "UNDO_APPLIED" in timeline_ops
+        assert "REDO_APPLIED" in timeline_ops
+
+
+def test_runtime_design_undo_then_append_does_not_restore_discarded_branch(monkeypatch, engine_triplet):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _configure_server(monkeypatch, engine, conversation_engine, workflow_engine, _success_runner)
+    with TestClient(server.app) as client:
+        wf_rw = _token_header(client, role="rw", ns="workflow")
+        wf_ro = _token_header(client, role="ro", ns="workflow")
+        workflow_id = "wf.design.rest.undo_append_branch"
+        designer_id = "tester"
+        start_id = f"wf|{workflow_id}|start"
+        end_id = f"wf|{workflow_id}|end"
+        alt_id = f"wf|{workflow_id}|alt"
+        edge_start_end = f"wf|{workflow_id}|e|start_end"
+
+        client.post(
+            f"/api/workflow/design/{workflow_id}/nodes",
+            json={
+                "designer_id": designer_id,
+                "node_id": start_id,
+                "label": "Start",
+                "op": "start",
+                "start": True,
+            },
+            headers=wf_rw,
+        ).raise_for_status()
+        client.post(
+            f"/api/workflow/design/{workflow_id}/nodes",
+            json={
+                "designer_id": designer_id,
+                "node_id": end_id,
+                "label": "End",
+                "op": "end",
+                "terminal": True,
+            },
+            headers=wf_rw,
+        ).raise_for_status()
+        client.post(
+            f"/api/workflow/design/{workflow_id}/edges",
+            json={
+                "designer_id": designer_id,
+                "edge_id": edge_start_end,
+                "src": start_id,
+                "dst": end_id,
+                "relation": "wf_next",
+                "is_default": True,
+            },
+            headers=wf_rw,
+        ).raise_for_status()
+
+        client.post(
+            f"/api/workflow/design/{workflow_id}/undo",
+            json={"designer_id": designer_id},
+            headers=wf_rw,
+        ).raise_for_status()
+
+        # New edit after undo must truncate redo branch.
+        client.post(
+            f"/api/workflow/design/{workflow_id}/nodes",
+            json={"designer_id": designer_id, "node_id": alt_id, "label": "Alt", "op": "noop"},
+            headers=wf_rw,
+        ).raise_for_status()
+
+        hist = client.get(f"/api/workflow/design/{workflow_id}/history", headers=wf_ro)
+        hist.raise_for_status()
+        h = hist.json()
+        assert h["can_redo"] is False
+        timeline_ops = [str(item.get("op") or "") for item in h.get("timeline", [])]
+        assert "BRANCH_DROPPED" in timeline_ops
+
+        # Move back then forward on the surviving branch.
+        client.post(
+            f"/api/workflow/design/{workflow_id}/undo",
+            json={"designer_id": designer_id},
+            headers=wf_rw,
+        ).raise_for_status()
+        client.post(
+            f"/api/workflow/design/{workflow_id}/redo",
+            json={"designer_id": designer_id},
+            headers=wf_rw,
+        ).raise_for_status()
+
+        # Discarded-branch edge must not reappear after redo on the new branch.
+        delete_discarded = client.request(
+            "DELETE",
+            f"/api/workflow/design/{workflow_id}/edges/{edge_start_end}",
+            json={"designer_id": designer_id},
+            headers=wf_rw,
+        )
+        assert delete_discarded.status_code == 404
+
+        # New-branch node is present and deletable.
+        delete_alt = client.request(
+            "DELETE",
+            f"/api/workflow/design/{workflow_id}/nodes/{alt_id}",
+            json={"designer_id": designer_id},
+            headers=wf_rw,
+        )
+        assert delete_alt.status_code == 200
+
+
+def test_runtime_design_requires_designer_id_and_enforces_subject(monkeypatch, engine_triplet):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _configure_server(monkeypatch, engine, conversation_engine, workflow_engine, _success_runner)
+    with TestClient(server.app) as client:
+        wf_rw = _token_header(client, role="rw", ns="workflow")
+        workflow_id = "wf.design.rest.actor_validation"
+
+        missing = client.post(
+            f"/api/workflow/design/{workflow_id}/nodes",
+            json={"node_id": "n1", "label": "Node", "op": "noop"},
+            headers=wf_rw,
+        )
+        assert missing.status_code == 422
+
+        wf_rw_alice = _token_header(client, role="rw", ns="workflow", username="alice")
+        mismatch = client.post(
+            f"/api/workflow/design/{workflow_id}/nodes",
+            json={"designer_id": "bob", "node_id": "n1", "label": "Node", "op": "noop"},
+            headers=wf_rw_alice,
+        )
+        assert mismatch.status_code == 403
+
+
+def test_runtime_design_history_backfill_emits_control_event(monkeypatch, engine_triplet):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service, _registry = _configure_server(monkeypatch, engine, conversation_engine, workflow_engine, _success_runner)
+    workflow_id = "wf.design.rest.backfill.history"
+    now_ms = int(time.time() * 1000)
+    with service._workflow_history_lock, service._history_connect() as conn:  # noqa: SLF001 - intentional migration seed
+        conn.execute(
+            "INSERT OR REPLACE INTO workflow_design_history(workflow_id, version, seq, created_at_ms) VALUES (?, ?, ?, ?)",
+            (workflow_id, 0, 0, now_ms),
+        )
+        conn.execute(
+            "INSERT OR REPLACE INTO workflow_design_history(workflow_id, version, seq, created_at_ms) VALUES (?, ?, ?, ?)",
+            (workflow_id, 1, 7, now_ms + 1),
+        )
+        conn.execute(
+            "INSERT OR REPLACE INTO workflow_design_pointer(workflow_id, current_version, updated_at_ms) VALUES (?, ?, ?)",
+            (workflow_id, 1, now_ms + 1),
+        )
+    with TestClient(server.app) as client:
+        wf_ro = _token_header(client, role="ro", ns="workflow")
+        hist = client.get(f"/api/workflow/design/{workflow_id}/history", headers=wf_ro)
+        hist.raise_for_status()
+        timeline = hist.json().get("timeline", [])
+        backfill = [evt for evt in timeline if evt.get("op") == "HISTORY_BACKFILL"]
+        assert backfill
+        assert str(backfill[-1].get("designer_id") or "") == "__migration__"

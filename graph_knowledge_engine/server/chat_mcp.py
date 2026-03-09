@@ -74,8 +74,14 @@ def build_workflow_mcp(
     role_ro: Any,
     role_rw: Any,
     ns_workflow: Any,
+    get_subject: Callable[[], str | None] | None = None,
 ):
     mcp = FastMCP("Workflow Diagnostics MCP")
+
+    def _actor_sub() -> str | None:
+        if not callable(get_subject):
+            return None
+        return get_subject()
 
     @tool_roles({role_rw})
     @require_ns({ns_workflow})
@@ -118,6 +124,118 @@ def build_workflow_mcp(
             "run_id": run_id,
             "events": events,
         }
+
+    @tool_roles({role_rw})
+    @require_ns({ns_workflow})
+    @mcp.tool(name="workflow.design_node_upsert")
+    def workflow_design_node_upsert(
+        workflow_id: str,
+        designer_id: str,
+        label: str,
+        node_id: str | None = None,
+        op: str | None = None,
+        start: bool = False,
+        terminal: bool = False,
+        fanout: bool = False,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return get_service().workflow_design_upsert_node(
+            workflow_id=workflow_id,
+            designer_id=designer_id,
+            node_id=node_id,
+            label=label,
+            op=op,
+            start=start,
+            terminal=terminal,
+            fanout=fanout,
+            metadata=metadata or {},
+            actor_sub=_actor_sub(),
+            source="mcp",
+        )
+
+    @tool_roles({role_rw})
+    @require_ns({ns_workflow})
+    @mcp.tool(name="workflow.design_edge_upsert")
+    def workflow_design_edge_upsert(
+        workflow_id: str,
+        designer_id: str,
+        src: str,
+        dst: str,
+        edge_id: str | None = None,
+        relation: str = "wf_next",
+        predicate: str | None = None,
+        priority: int = 100,
+        is_default: bool = False,
+        multiplicity: str = "one",
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return get_service().workflow_design_upsert_edge(
+            workflow_id=workflow_id,
+            designer_id=designer_id,
+            edge_id=edge_id,
+            src=src,
+            dst=dst,
+            relation=relation,
+            predicate=predicate,
+            priority=priority,
+            is_default=is_default,
+            multiplicity=multiplicity,
+            metadata=metadata or {},
+            actor_sub=_actor_sub(),
+            source="mcp",
+        )
+
+    @tool_roles({role_rw})
+    @require_ns({ns_workflow})
+    @mcp.tool(name="workflow.design_node_delete")
+    def workflow_design_node_delete(workflow_id: str, node_id: str, designer_id: str) -> dict[str, Any]:
+        return get_service().workflow_design_delete_node(
+            workflow_id=workflow_id,
+            node_id=node_id,
+            designer_id=designer_id,
+            actor_sub=_actor_sub(),
+            source="mcp",
+        )
+
+    @tool_roles({role_rw})
+    @require_ns({ns_workflow})
+    @mcp.tool(name="workflow.design_edge_delete")
+    def workflow_design_edge_delete(workflow_id: str, edge_id: str, designer_id: str) -> dict[str, Any]:
+        return get_service().workflow_design_delete_edge(
+            workflow_id=workflow_id,
+            edge_id=edge_id,
+            designer_id=designer_id,
+            actor_sub=_actor_sub(),
+            source="mcp",
+        )
+
+    @tool_roles({role_ro, role_rw})
+    @require_ns({ns_workflow})
+    @mcp.tool(name="workflow.design_history")
+    def workflow_design_history(workflow_id: str) -> dict[str, Any]:
+        return get_service().workflow_design_history(workflow_id=workflow_id)
+
+    @tool_roles({role_rw})
+    @require_ns({ns_workflow})
+    @mcp.tool(name="workflow.design_undo")
+    def workflow_design_undo(workflow_id: str, designer_id: str) -> dict[str, Any]:
+        return get_service().workflow_design_undo(
+            workflow_id=workflow_id,
+            designer_id=designer_id,
+            actor_sub=_actor_sub(),
+            source="mcp",
+        )
+
+    @tool_roles({role_rw})
+    @require_ns({ns_workflow})
+    @mcp.tool(name="workflow.design_redo")
+    def workflow_design_redo(workflow_id: str, designer_id: str) -> dict[str, Any]:
+        return get_service().workflow_design_redo(
+            workflow_id=workflow_id,
+            designer_id=designer_id,
+            actor_sub=_actor_sub(),
+            source="mcp",
+        )
 
     @tool_roles({role_ro, role_rw})
     @require_ns({ns_workflow})

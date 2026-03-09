@@ -803,6 +803,18 @@ class EngineSQLite:
             # advance cursor: next batch starts after the last seq we just yielded
             next_seq = int(rows[-1][0]) + 1
 
+    def prune_entity_events_after(self, *, namespace: str = "default", to_seq: int) -> int:
+        """Delete namespace events with seq > to_seq.
+
+        Used by workflow-design history branching to discard superseded redo events.
+        """
+        with self.transaction() as conn:
+            cur = conn.execute(
+                "DELETE FROM entity_events WHERE namespace = ? AND seq > ?",
+                (namespace, int(to_seq)),
+            )
+            return int(cur.rowcount or 0)
+
     # def iter_entity_events(
     #     self,
     #     *,

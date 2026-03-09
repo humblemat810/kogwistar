@@ -458,6 +458,12 @@ def get_current_namespace() -> str:
     allowed = {item.value for item in NameSpace}
     return ns if ns in allowed else DEFAULT_NAMESPACE
 
+
+def get_current_subject() -> str | None:
+    claims = claims_ctx.get() or {}
+    sub = str(claims.get("sub") or "").strip()
+    return sub or None
+
 def _normalize_namespaces(expected: set[NameSpace] | NameSpace | set[str] | str) -> set[str]:
     if isinstance(expected, set):
         raw_items = list(expected)
@@ -766,6 +772,7 @@ workflow_mcp = build_workflow_mcp(
     role_ro=Role.RO,
     role_rw=Role.RW,
     ns_workflow=NameSpace.WORKFLOW,
+    get_subject=get_current_subject,
 )
 mcp.mount(conversation_mcp)
 mcp.mount(workflow_mcp)
@@ -790,6 +797,7 @@ app.include_router(
         require_role=require_role,
         require_namespace=require_namespace,
         runtime_namespaces={NameSpace.WORKFLOW.value},
+        get_subject=get_current_subject,
     )
 )
 from datetime import datetime, timedelta, timezone
