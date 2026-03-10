@@ -4,6 +4,8 @@ import json
 import sqlite3
 from typing import Any
 
+from ...cdc.change_event import EntityRefModel
+from ..subsystems.base import NamespaceProxy
 from .models import (
     IndexingItem,
     build_embedding_text,
@@ -13,10 +15,11 @@ from .models import (
 from .storage_sqlite import ensure_index_tables
 
 
-class SearchIndexService:
-    def __init__(self, *, engine: Any, index_db_path: str) -> None:
-        self.engine = engine
+class SearchIndexService(NamespaceProxy):
+    def __init__(self, engine: Any, index_db_path: str) -> None:
+        super().__init__(engine)
         self.index_db_path = index_db_path
+        self.ensure_initialized()
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.index_db_path)
@@ -32,7 +35,7 @@ class SearchIndexService:
             conn.close()
 
     def upsert_entries(self, items: list[IndexingItem]) -> None:
-        self.ensure_initialized()
+        
         conn = self._connect()
         try:
             cur = conn.cursor()
@@ -66,7 +69,7 @@ class SearchIndexService:
                     ),
                 )
 
-                self.engine.backend.node_index_upsert(
+                self._e.backend.node_index_upsert(
                     ids=[f"idx:{index_key}"],
                     metadatas=[
                         {
@@ -82,12 +85,38 @@ class SearchIndexService:
                     documents=[build_embedding_text(item)],
                 )
 
+                payload = {
+                    "node_id": item.node_id,
+                    "canonical_title": item.canonical_title,
+                    "keywords": item.keywords,
+                    "aliases": item.aliases,
+                    "provision": item.provision,
+                    "doc_id": item.doc_id,
+                }
+                self._e._append_event_for_entity(
+                    namespace=self._e.namespace,
+                    entity_kind="search_index",
+                    entity_id=index_key,
+                    op="search_index.upsert",
+                    payload=payload,
+                )
+                self._e._emit_change(
+                    op="search_index.upsert",
+                    entity=EntityRefModel(
+                        kind="search_index",
+                        id=index_key,
+                        kg_graph_type=self._e.kg_graph_type,
+                        url=None,
+                    ),
+                    payload=payload,
+                )
+
             conn.commit()
         finally:
             conn.close()
 
     def search_hybrid(self, q: str, limit: int = 10, resolve_node: bool = False) -> dict[str, Any]:
-        self.ensure_initialized()
+        
         conn = self._connect()
         try:
             cur = conn.cursor()
@@ -112,7 +141,7 @@ class SearchIndexService:
             )
             fts_rows = cur.fetchall()
 
-            vector_results = self.engine.backend.node_index_query(
+            vector_results = self._e.backend.node_index_query(
                 query_texts=[q],
                 n_results=limit,
             ) or {}
@@ -243,7 +272,7 @@ class SearchIndexService:
                 seen.add(nid)
                 unique_node_ids.append(nid)
 
-        res = self.engine.backend.node_get(
+        res = self._e.backend.node_get(
             ids=unique_node_ids,
             include=["documents", "metadatas"],
         ) or {}

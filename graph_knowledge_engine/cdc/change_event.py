@@ -15,6 +15,7 @@ Op = Literal[
     "doc.remove", # never delete in practise so far
     "edge.upsert", # tombstoning = delete, updating
     "edge.remove", # never delete in practise so far
+    "search_index.upsert", # search index entries updated
     "checkpoint", # unused
     "snapshot",   # unused
 ]
@@ -23,13 +24,13 @@ Op = Literal[
 # ---- Entity reference -------------------------------------------------
 
 class EntityRef(TypedDict, total=False):
-    kind: Literal["node", "edge", "doc_node"]
+    kind: Literal["node", "edge", "doc_node", "search_index"]
     id: str
     kg_graph_type: str
     url: str
 
 class EntityRefModel(BaseModel):
-    kind: Literal["node", "edge", "doc_node"]
+    kind: Literal["node", "edge", "doc_node", "search_index"]
     id: str
     kg_graph_type: str
     url: str | None

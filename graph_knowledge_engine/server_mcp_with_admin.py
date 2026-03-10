@@ -41,8 +41,6 @@ from graph_knowledge_engine.server.bootstrap import (
 from graph_knowledge_engine.server.chat_service import ChatRunService
 from graph_knowledge_engine.server.run_registry import RunRegistry
 from graph_knowledge_engine.engine_core.search_index.models import AddIndexEntriesInput
-from graph_knowledge_engine.engine_core.search_index.service import SearchIndexService
-
 # --- JWT config (env-driven) ---
 JWT_ALG = os.getenv("JWT_ALG", "HS256")          # HS256 (shared secret) or RS256 (public key)
 JWT_SECRET = os.getenv("JWT_SECRET", "dev-secret-change-me")  # HS256 secret OR RS256 public key
@@ -110,8 +108,6 @@ persist_directory = storage_settings.knowledge_dir
 conversation_persist_directory = storage_settings.conversation_dir
 workflow_persist_directory = storage_settings.workflow_dir
 wisdom_persist_directory = storage_settings.wisdom_dir
-index_dir = storage_settings.index_dir
-index_db_path = os.path.join(index_dir, "index.db")
 
 
 class _LazyResource:
@@ -145,10 +141,6 @@ class _LazyResource:
         value = object.__getattribute__(self, "_value")
         state = "initialized" if value is not None else "lazy"
         return f"<_LazyResource {object.__getattribute__(self, '_name')} ({state})>"
-
-
-def _ensure_index_storage() -> None:
-    os.makedirs(index_dir, exist_ok=True)
 
 
 def _build_pg_sqlalchemy_engine():
@@ -214,13 +206,6 @@ chat_service = _LazyResource(
         run_registry=run_registry.get(),
     ),
     "chat_run_service",
-)
-search_index_service = _LazyResource(
-    lambda: SearchIndexService(
-        engine=engine,
-        index_db_path=index_db_path,
-    ),
-    "search_index_service",
 )
 templates = Jinja2Templates(directory=os.path.join(str(pathlib.Path(__file__).parent),"templates"))
 
@@ -860,7 +845,6 @@ def health():
         "conversation_persist_directory": conversation_persist_directory,
         "workflow_persist_directory": workflow_persist_directory,
         "wisdom_persist_directory": wisdom_persist_directory,
-        "index_dir": index_dir,
         "pg_schema_base": storage_settings.pg_schema_base if storage_settings.backend == "pg" else None,
     }
 
@@ -1343,14 +1327,12 @@ def _safe_upsert_fts(cur, idx_id, item):
 
 @app.post("/api/add_index_entries")
 def add_index_entries(payload: AddIndexEntriesInput):
-    search_index_service2 = cast(SearchIndexService, search_index_service )
-    search_index_service2.upsert_entries(payload.index)
+    engine.search_index.upsert_entries(payload.index)
     return {"ok": True}
 
 @app.get("/api/search_index_hybrid")
 def search_index_hybrid(q: str, limit: int = 10, resolve_node: bool = False):
-    search_index_service2 = cast(SearchIndexService, search_index_service )
-    return search_index_service2.search_hybrid(
+    return engine.search_index.search_hybrid(
         q=q,
         limit=limit,
         resolve_node=resolve_node,
