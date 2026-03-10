@@ -51,8 +51,10 @@ class FakeConversationEngine:
     def add_edge(self, e):
         self.edges.append(e)
         return e
-
-
+    def get_nodes(self, *arg, **kwargs):
+        return self.nodes
+    def get_edges(self, *arg, **kwargs):
+        return self.edges
 class FakeWorkflowEngine:
     def __init__(self, nodes: List[FakeNode], edges: List[FakeEdge]) -> None:
         self._nodes = nodes
