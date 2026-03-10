@@ -1844,3 +1844,41 @@ class ChatRunService:
             "target_step_seq": int(target_step_seq),
             "state": state,
         }
+
+    def workflow_design_graph(self, workflow_id: str, refresh: bool = False) -> dict[str, object]:
+        """Thin public wrapper around the existing internal projection + visible snapshot flow."""
+        if refresh:
+            self.refresh_workflow_design_projection(workflow_id=workflow_id)
+        snapshot = self._workflow_capture_visible_snapshot(workflow_id=workflow_id)
+        history = self.workflow_design_history(workflow_id=workflow_id)
+        return {
+            "workflow_id": workflow_id,
+            "current_version": history.get("current_version", 0),
+            "active_tip_version": history.get("active_tip_version", 0),
+            "can_undo": history.get("can_undo", False),
+            "can_redo": history.get("can_redo", False),
+            "materialization_status": history.get("materialization_status", "unknown"),
+            "nodes": snapshot.get("nodes", []),
+            "edges": snapshot.get("edges", []),
+        }
+
+
+    def workflow_catalog_ops(self) -> list[dict[str, object]]:
+        return [
+            {
+                "op": "start",
+                "label": "Start",
+                "description": "Entry point for workflow execution.",
+                "input_schema": {},
+                "output_schema": {"type": "object"},
+                "config_schema": {"type": "object"},
+            },
+            {
+                "op": "llm_call",
+                "label": "LLM Call",
+                "description": "Calls an LLM and returns structured output.",
+                "input_schema": {"type": "object", "properties": {"prompt": {"type": "string"}}, "required": ["prompt"]},
+                "output_schema": {"type": "object", "properties": {"answer": {"type": "string"}}, "required": ["answer"]},
+                "config_schema": {"type": "object", "properties": {"model": {"type": "string"}, "temperature": {"type": "number"}}},
+            },
+        ]

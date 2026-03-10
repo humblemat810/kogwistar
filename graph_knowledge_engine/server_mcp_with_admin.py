@@ -21,10 +21,11 @@ import os
 import pathlib
 from pydantic import BaseModel, Field
 from starlette.middleware.base import BaseHTTPMiddleware
+import sqlite3
 import time
 from threading import Lock
 from typing import Callable, List, Optional
-from typing import Any, Dict, Set
+from typing import Any, cast, Dict, Set
 import uuid
 from graph_knowledge_engine.shortids import run_id_ctx, run_id_scope
 from graph_knowledge_engine import shortids
@@ -39,6 +40,9 @@ from graph_knowledge_engine.server.bootstrap import (
 )
 from graph_knowledge_engine.server.chat_service import ChatRunService
 from graph_knowledge_engine.server.run_registry import RunRegistry
+from graph_knowledge_engine.engine_core.search_index.models import AddIndexEntriesInput
+from graph_knowledge_engine.engine_core.search_index.service import SearchIndexService
+
 # --- JWT config (env-driven) ---
 JWT_ALG = os.getenv("JWT_ALG", "HS256")          # HS256 (shared secret) or RS256 (public key)
 JWT_SECRET = os.getenv("JWT_SECRET", "dev-secret-change-me")  # HS256 secret OR RS256 public key
@@ -171,10 +175,6 @@ def _build_conversation_engine() -> GraphKnowledgeEngine:
         graph_type="conversation",
         sa_engine=_shared_sqlalchemy_engine(),
     )
-    try:
-        eng.workflow_engine = workflow_engine.get()
-    except Exception:
-        pass
     return eng
 
 
@@ -214,6 +214,13 @@ chat_service = _LazyResource(
         run_registry=run_registry.get(),
     ),
     "chat_run_service",
+)
+search_index_service = _LazyResource(
+    lambda: SearchIndexService(
+        engine=engine,
+        index_db_path=index_db_path,
+    ),
+    "search_index_service",
 )
 templates = Jinja2Templates(directory=os.path.join(str(pathlib.Path(__file__).parent),"templates"))
 
@@ -1317,125 +1324,6 @@ class IndexingItem(BaseModel):
     provision: str
     doc_id: Optional[str]
 
-class AddIndexEntriesInput(BaseModel):
-    index: List[IndexingItem]
-
-import sqlite3
-def maybe_index_vector(item: IndexingItem):
-    engine.backend.node_index_upsert(
-        # collection_name="semantic_index",
-        ids=[f"idx:{item.node_id}"],
-        metadatas=[{
-            "target_node_id": item.node_id,
-            "canonical_title": item.canonical_title,
-            "provision": item.provision,
-            "keywords": json.dumps(item.keywords),
-            "aliases": json.dumps(item.aliases),
-        }],
-        documents=[str(item.model_dump())],
-    )
-def ensure_index_tables(conn: sqlite3.Connection):
-    cur = conn.cursor()
-
-    # 1) base table
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS semantic_index (
-        id              INTEGER PRIMARY KEY AUTOINCREMENT,
-        node_id         TEXT    NOT NULL,
-        canonical_title TEXT    NOT NULL,
-        keywords        TEXT    NOT NULL DEFAULT '',
-        aliases         TEXT    NOT NULL DEFAULT '',
-        provision       TEXT    NOT NULL,
-        document_id     TEXT,
-        created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
-        updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
-        UNIQUE (node_id, canonical_title, provision)
-    );
-    """)
-
-    # 2) FTS5 table (no DROP here!)
-    cur.execute("""
-    CREATE VIRTUAL TABLE IF NOT EXISTS semantic_index_fts
-    USING fts5(
-        canonical_title,
-        provision,
-        keywords,
-        aliases,
-        content='semantic_index',
-        content_rowid='id'
-    );
-    """)
-
-    # 3) triggers to keep FTS in sync
-    # we write *all* 4 fields, not just title+provision
-    cur.executescript("""
-    CREATE TRIGGER IF NOT EXISTS semantic_index_ai
-    AFTER INSERT ON semantic_index
-    BEGIN
-        INSERT INTO semantic_index_fts(
-            rowid,
-            canonical_title,
-            provision,
-            keywords,
-            aliases
-        )
-        VALUES (
-            new.id,
-            new.canonical_title,
-            new.provision,
-            new.keywords,
-            new.aliases
-        );
-    END;
-
-    CREATE TRIGGER IF NOT EXISTS semantic_index_ad
-    AFTER DELETE ON semantic_index
-    BEGIN
-        DELETE FROM semantic_index_fts WHERE rowid = old.id;
-    END;
-
-    CREATE TRIGGER IF NOT EXISTS semantic_index_au
-    AFTER UPDATE ON semantic_index
-    BEGIN
-        UPDATE semantic_index_fts
-        SET
-            canonical_title = new.canonical_title,
-            provision       = new.provision,
-            keywords        = new.keywords,
-            aliases         = new.aliases
-        WHERE rowid = new.id;
-    END;
-    """)
-
-    # 4) extra helper tables (optional)
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS semantic_index_keyword (
-        id       INTEGER PRIMARY KEY AUTOINCREMENT,
-        index_id INTEGER NOT NULL REFERENCES semantic_index(id) ON DELETE CASCADE,
-        keyword  TEXT NOT NULL
-    );
-    """)
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_semantic_index_keyword_kw ON semantic_index_keyword(keyword);")
-
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS semantic_index_alias (
-        id       INTEGER PRIMARY KEY AUTOINCREMENT,
-        index_id INTEGER NOT NULL REFERENCES semantic_index(id) ON DELETE CASCADE,
-        alias    TEXT NOT NULL
-    );
-    """)
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_semantic_index_alias_alias ON semantic_index_alias(alias);")
-
-    conn.commit()
-
-
-def _ensure_index_tables_initialized() -> None:
-    _ensure_index_storage()
-    conn = sqlite3.connect(index_db_path)
-    try:
-        ensure_index_tables(conn)
-    finally:
-        conn.close()
 def _safe_upsert_fts(cur, idx_id, item):
     kw = " ".join(item.keywords) if item.keywords else ""
     al = " ".join(item.aliases) if item.aliases else ""
@@ -1452,141 +1340,21 @@ def _safe_upsert_fts(cur, idx_id, item):
         # mark to rebuild later, but don't kill the whole request
         print("WARNING: FTS table bad / missing, need rebuild:", e)
         # you could set a flag in another table, or just skip    
+
 @app.post("/api/add_index_entries")
 def add_index_entries(payload: AddIndexEntriesInput):
-    import sqlite3
-    _ensure_index_tables_initialized()
-    conn = sqlite3.connect(index_db_path)
-    conn.execute("PRAGMA foreign_keys = ON;")
-    cur = conn.cursor()
-    # upsert sqlite db with payload metadata,
-    # then upsert vectordb (chroma) with nodes and edges
-    try:
-        for item in payload.index:
-            kw = " ".join(item.keywords) if item.keywords else ""
-            al = " ".join(item.aliases) if item.aliases else ""
-
-            # upsert base table ONLY
-            cur.execute(
-                """
-                INSERT INTO semantic_index
-                    (node_id, canonical_title, keywords, aliases, provision, document_id)
-                VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT(node_id, canonical_title, provision) DO UPDATE SET
-                    canonical_title = excluded.canonical_title,
-                    keywords        = excluded.keywords,
-                    aliases         = excluded.aliases,
-                    provision       = excluded.provision,
-                    document_id     = excluded.document_id,
-                    updated_at      = CURRENT_TIMESTAMP
-                """,
-                (
-                    item.node_id,
-                    item.canonical_title,
-                    kw,
-                    al,
-                    item.provision,
-                    item.doc_id,
-                ),
-            )
-            maybe_index_vector(item)
-        conn.commit()
-    finally:
-        conn.close()
-
+    search_index_service2 = cast(SearchIndexService, search_index_service )
+    search_index_service2.upsert_entries(payload.index)
     return {"ok": True}
-from numpy import interp
+
 @app.get("/api/search_index_hybrid")
-def search_index_hybrid(q: str, limit: int = 10, resolve_node = False) -> Dict[str, Any]:
-    _ensure_index_tables_initialized()
-    conn = sqlite3.connect(index_db_path)
-    conn.row_factory = sqlite3.Row
-    cur = conn.cursor()
-
-    # 1. Lexical (FTS5)
-    cur.execute(
-        """
-        SELECT
-            s.id,
-            s.node_id,
-            s.canonical_title,
-            s.provision,
-            bm25(semantic_index_fts) AS fts_score
-        FROM semantic_index AS s
-        JOIN semantic_index_fts
-        ON semantic_index_fts.rowid = s.id
-        WHERE semantic_index_fts MATCH ?
-        ORDER BY fts_score
-        LIMIT ?;
-        """,
-        (q, limit),
+def search_index_hybrid(q: str, limit: int = 10, resolve_node: bool = False):
+    search_index_service2 = cast(SearchIndexService, search_index_service )
+    return search_index_service2.search_hybrid(
+        q=q,
+        limit=limit,
+        resolve_node=resolve_node,
     )
-    fts_rows = cur.fetchall()
-
-    # 2. Semantic (vector)
-    vector_results = engine.backend.node_index_query(
-        # collection_name="semantic_index",
-        query_texts=[q],
-        n_results=limit
-    )
-
-    # 3. Merge and normalize
-    combined = {}
-    # normalize scores to 0–1
-    fts_scores = [r["fts_score"] for r in fts_rows]
-    if fts_scores:
-        min_f, max_f = min(fts_scores), max(fts_scores)
-    else:
-        min_f, max_f = 0, 1
-    for r in fts_rows:
-        sid = r["id"]
-        combined[sid] = {
-            "node_id": r["node_id"],
-            "canonical_title": r["canonical_title"],
-            "provision": r["provision"],
-            "fts_score": interp(r["fts_score"], [max_f, min_f], [1.0, 0.0]),  # lower bm25 = better
-            "vec_score": 0.0,
-        }
-
-    for idx, id_ in enumerate(vector_results["ids"][0]):
-        vec_score = vector_results["distances"][0][idx]
-        if id_ not in combined:
-            combined[id_] = {
-                "node_id": vector_results["metadatas"][0][idx]["target_node_id"],
-                "canonical_title": vector_results["metadatas"][0][idx]["canonical_title"],
-                "provision": vector_results["metadatas"][0][idx]["provision"],
-                "fts_score": 0.0,
-                "vec_score": vec_score,
-            }
-        else:
-            combined[id_]["vec_score"] = vec_score
-
-    # 4. Combine ranks
-    ranked = sorted(combined.values(), key=lambda x: 0.6*x["fts_score"] + 0.4*x["vec_score"], reverse=True)
-    if resolve_node:
-        ids = {}
-        for i in ranked:
-            if i["node_id"] in ids:
-                pass
-            else:
-                ids[i["node_id"]] = i
-        res = engine.backend.node_get(ids=list(ids.keys()), include=["documents", "metadatas"]) 
-        rows: dict[str, dict] = {}
-        res_ids = res.get("ids") or []
-        res_docs = res.get("documents") or []
-        res_metas = res.get("metadatas") or []
-        for i, nid in enumerate(res_ids):
-            if not nid:
-                continue
-            rows[str(nid)] = {
-                "documents": res_docs[i] if i < len(res_docs) else None,
-                "metadatas": res_metas[i] if i < len(res_metas) else None,
-            }
-        to_return = ranked[:limit]
-        for i in to_return:
-            i.update(rows[i['node_id']])
-        return {"query": q, "results": to_return}
-    return {"query": q, "results": ranked[:limit]}
 #=====================
 # Adjundicate persisted nodes
 #=====================
@@ -2239,6 +2007,8 @@ def adjudicate_pairs(inp: AdjPairsIn) -> CrossDocAdjOut:
         committed_ids=committed,
         results=results,
     )
+    
+    
 # Mount the MCP server
 app.mount("/", mcp_app)
 

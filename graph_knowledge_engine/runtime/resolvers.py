@@ -39,9 +39,9 @@ import inspect
 
 Json = Any
 if TYPE_CHECKING:
-    
     from .models import StepRunResult
     from .runtime import StepContext
+    from .sandbox import Sandbox
     RawStepFn = Callable[[StepContext], Union[Json, StepRunResult]]
 
 from graph_knowledge_engine.runtime.models import RunSuccess
@@ -70,14 +70,18 @@ class MappingStepResolver(BaseResolver):
         # Ops that are allowed to execute nested workflows (i.e., may call back into
         # WorkflowRuntime). Runtime may use this to avoid holding a step-UoW open.
         self.nested_ops: set[str] = set()
+        # Ops that should run in a sandbox
+        self.sandboxed_ops: set[str] = set()
         # Preferred merge mode per state key: 'u' overwrite, 'a' append, 'e' extend
         self._state_schema: dict[str, str] = {}
+        # The sandbox to use
+        self._sandbox: Optional["Sandbox"] = None
 
-    def register(self, op: str, *, is_nested: bool = False) -> Callable[[RawStepFn], RawStepFn]:
-        
+    def set_sandbox(self, sandbox: "Sandbox"):
+        self._sandbox = sandbox
+
+    def register(self, op: str, *, is_nested: bool = False, is_sandboxed: bool = False) -> Callable[[RawStepFn], RawStepFn]:
         def _decorator(fn: RawStepFn) -> RawStepFn:
-            
-            
             @functools.wraps(fn)
             def wrapped_fun (*arg, **kwarg):
                 ctx: StepContext = arg[0]
@@ -88,6 +92,8 @@ class MappingStepResolver(BaseResolver):
             self.handlers[op] = fn #wrapped_fun        
             if is_nested:
                 self.nested_ops.add(str(op))
+            if is_sandboxed:
+                self.sandboxed_ops.add(str(op))
             return wrapped_fun
         return _decorator
 
@@ -98,9 +104,15 @@ class MappingStepResolver(BaseResolver):
             raise KeyError(f"No step handler registered for op={op!r}")
 
         def _wrapped(ctx: StepContext) -> StepRunResult:
+            if op in self.sandboxed_ops and self._sandbox:
+                # Specialized sandboxed execution logic could go here.
+                # For now, we still execute the local handler, which might then
+                # decide to call sandbox.run() if it wants to execute code.
+                pass
+
             try:
                 out = raw(ctx)
-                if getattr(out, 'update') is not None:
+                if getattr(out, 'update', None) is not None:
                     import warnings
                     warnings.simplefilter("once")
                     warnings.warn("legacy update detected, use state_update if you need to append list state multiple times")
@@ -108,12 +120,11 @@ class MappingStepResolver(BaseResolver):
                     return out
                 else:
                     raise TypeError("Resolver must return StepRunResult")
-                # return out  # field name might be `data`/`payload` in your codebase
             except Exception as e:
                 import traceback
                 return RunFailure(conversation_node_id=ctx.state_view.get('workflow_node_id') , 
                                   state_update = [('a', {'op_log': str(e)})], 
-                                  errors=[str(e), traceback.format_exc()])  # match your RunFailure fields
+                                  errors=[str(e), traceback.format_exc()])
         return _wrapped
 
 
@@ -205,4 +216,3 @@ def _deps(ctx: StepContext) -> Dict[str, Any]:
     if not isinstance(deps, dict):
         raise RuntimeError("StepContext.state['_deps'] must be a dict of injected dependencies")
     return deps
-

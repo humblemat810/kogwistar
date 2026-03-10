@@ -2,13 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Any, Callable
+from typing import Any, cast, Callable
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
-
-from .chat_service import WorkflowProjectionRebuildingError
+from .chat_service import WorkflowProjectionRebuildingError, ChatRunService
 
 
 class SubmitWorkflowRunIn(BaseModel):
@@ -74,13 +73,13 @@ def create_runtime_router(
     get_subject: Callable[[], str | None] | None = None,
 ):
     router = APIRouter(prefix="/api/workflow", tags=["runtime"])
-
+    get_service_r = cast(Callable[[], ChatRunService], get_service)
     @router.post("/runs")
     def submit_workflow_run(inp: SubmitWorkflowRunIn):
         require_role("rw")
         require_namespace(runtime_namespaces)
         try:
-            payload = get_service().submit_workflow_run(
+            payload = get_service_r().submit_workflow_run(
                 workflow_id=inp.workflow_id,
                 conversation_id=inp.conversation_id,
                 turn_node_id=inp.turn_node_id,
@@ -96,7 +95,7 @@ def create_runtime_router(
         require_role("ro")
         require_namespace(runtime_namespaces)
         try:
-            return get_service().get_run(run_id)
+            return get_service_r().get_run(run_id)
         except Exception as exc:  # noqa: BLE001
             raise _as_http_error(exc)
 
@@ -105,14 +104,14 @@ def create_runtime_router(
         require_role("ro")
         require_namespace(runtime_namespaces)
         try:
-            get_service().get_run(run_id)
+            get_service_r().get_run(run_id)
         except Exception as exc:  # noqa: BLE001
             raise _as_http_error(exc)
 
         async def event_stream():
             last_seq = int(after_seq or 0)
             while True:
-                service = get_service()
+                service = get_service_r()
                 events = service.list_run_events(run_id, after_seq=last_seq)
                 for evt in events:
                     last_seq = int(evt["seq"])
@@ -140,7 +139,7 @@ def create_runtime_router(
         require_role("rw")
         require_namespace(runtime_namespaces)
         try:
-            payload = get_service().cancel_run(run_id)
+            payload = get_service_r().cancel_run(run_id)
             return JSONResponse(status_code=202, content=payload)
         except Exception as exc:  # noqa: BLE001
             raise _as_http_error(exc)
@@ -152,7 +151,7 @@ def create_runtime_router(
         try:
             return {
                 "run_id": run_id,
-                "steps": get_service().list_steps(run_id),
+                "steps": get_service_r().list_steps(run_id),
             }
         except Exception as exc:  # noqa: BLE001
             raise _as_http_error(exc)
@@ -164,7 +163,7 @@ def create_runtime_router(
         try:
             return {
                 "run_id": run_id,
-                "checkpoints": get_service().list_checkpoints(run_id),
+                "checkpoints": get_service_r().list_checkpoints(run_id),
             }
         except Exception as exc:  # noqa: BLE001
             raise _as_http_error(exc)
@@ -174,7 +173,7 @@ def create_runtime_router(
         require_role("ro")
         require_namespace(runtime_namespaces)
         try:
-            return get_service().get_checkpoint(run_id, step_seq)
+            return get_service_r().get_checkpoint(run_id, step_seq)
         except Exception as exc:  # noqa: BLE001
             raise _as_http_error(exc)
 
@@ -183,7 +182,7 @@ def create_runtime_router(
         require_role("ro")
         require_namespace(runtime_namespaces)
         try:
-            return get_service().replay_run(run_id, target_step_seq)
+            return get_service_r().replay_run(run_id, target_step_seq)
         except Exception as exc:  # noqa: BLE001
             raise _as_http_error(exc)
 
@@ -193,7 +192,7 @@ def create_runtime_router(
         require_namespace(runtime_namespaces)
         try:
             actor_sub = get_subject() if callable(get_subject) else None
-            return get_service().workflow_design_upsert_node(
+            return get_service_r().workflow_design_upsert_node(
                 workflow_id=workflow_id,
                 designer_id=inp.designer_id,
                 node_id=inp.node_id,
@@ -215,7 +214,7 @@ def create_runtime_router(
         require_namespace(runtime_namespaces)
         try:
             actor_sub = get_subject() if callable(get_subject) else None
-            return get_service().workflow_design_upsert_edge(
+            return get_service_r().workflow_design_upsert_edge(
                 workflow_id=workflow_id,
                 designer_id=inp.designer_id,
                 edge_id=inp.edge_id,
@@ -239,7 +238,7 @@ def create_runtime_router(
         require_namespace(runtime_namespaces)
         try:
             actor_sub = get_subject() if callable(get_subject) else None
-            return get_service().workflow_design_delete_node(
+            return get_service_r().workflow_design_delete_node(
                 workflow_id=workflow_id,
                 node_id=node_id,
                 designer_id=inp.designer_id,
@@ -255,7 +254,7 @@ def create_runtime_router(
         require_namespace(runtime_namespaces)
         try:
             actor_sub = get_subject() if callable(get_subject) else None
-            return get_service().workflow_design_delete_edge(
+            return get_service_r().workflow_design_delete_edge(
                 workflow_id=workflow_id,
                 edge_id=edge_id,
                 designer_id=inp.designer_id,
@@ -270,7 +269,7 @@ def create_runtime_router(
         require_role("ro")
         require_namespace(runtime_namespaces)
         try:
-            return get_service().workflow_design_history(workflow_id=workflow_id)
+            return get_service_r().workflow_design_history(workflow_id=workflow_id)
         except Exception as exc:  # noqa: BLE001
             raise _as_http_error(exc)
 
@@ -280,7 +279,7 @@ def create_runtime_router(
         require_namespace(runtime_namespaces)
         try:
             actor_sub = get_subject() if callable(get_subject) else None
-            return get_service().workflow_design_undo(
+            return get_service_r().workflow_design_undo(
                 workflow_id=workflow_id,
                 designer_id=inp.designer_id,
                 actor_sub=actor_sub,
@@ -295,7 +294,7 @@ def create_runtime_router(
         require_namespace(runtime_namespaces)
         try:
             actor_sub = get_subject() if callable(get_subject) else None
-            return get_service().workflow_design_redo(
+            return get_service_r().workflow_design_redo(
                 workflow_id=workflow_id,
                 designer_id=inp.designer_id,
                 actor_sub=actor_sub,
@@ -303,5 +302,15 @@ def create_runtime_router(
             )
         except Exception as exc:  # noqa: BLE001
             raise _as_http_error(exc)
+        
+    @router.get("/api/workflow/design/{workflow_id}/graph")
+    def workflow_design_graph(workflow_id: str, refresh: bool = False):
+        chat_service = get_service_r()
+        return chat_service.workflow_design_graph(workflow_id=workflow_id, refresh=refresh)
+
+    @router.get("/api/workflow/catalog/ops")
+    def workflow_catalog_ops():
+        chat_service = get_service_r()
+        return chat_service.workflow_catalog_ops()
 
     return router
