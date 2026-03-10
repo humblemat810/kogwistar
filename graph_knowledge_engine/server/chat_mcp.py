@@ -101,11 +101,11 @@ def build_workflow_mcp(
             user_id=user_id,
         )
 
-    @tool_roles({role_ro, role_rw})
-    @require_ns({ns_workflow})
-    @mcp.tool(name="workflow.run_status")
-    def workflow_run_status(run_id: str) -> dict[str, Any]:
-        return get_service().get_run(run_id)
+    # @tool_roles({role_ro, role_rw}) # deleted, violate CR event source in conversation graph
+    # @require_ns({ns_workflow})
+    # @mcp.tool(name="workflow.run_status")
+    # def workflow_run_status(run_id: str) -> dict[str, Any]:
+    #     return get_service().get_run(run_id)
 
     @tool_roles({role_rw})
     @require_ns({ns_workflow})

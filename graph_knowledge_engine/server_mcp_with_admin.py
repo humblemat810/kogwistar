@@ -32,6 +32,7 @@ from graph_knowledge_engine import shortids
 from graph_knowledge_engine.id_provider import new_id_str, stable_id
 from graph_knowledge_engine.server.chat_api import create_chat_router
 from graph_knowledge_engine.server.runtime_api import create_runtime_router
+from graph_knowledge_engine.runtime.models import WorkflowNodeMetadata, WorkflowEdgeMetadata
 from graph_knowledge_engine.server.chat_mcp import build_conversation_mcp, build_workflow_mcp
 from graph_knowledge_engine.server.bootstrap import (
     build_graph_engine,
@@ -836,6 +837,162 @@ async def dev_token(request: Request):
     return {"token": token}
 
 # health
+
+
+def _designer_resolver_candidates(service: Any) -> list[Any]:
+    candidates: list[Any] = []
+    seen: set[int] = set()
+
+    def _add(value: Any) -> None:
+        if value is None:
+            return
+        ident = id(value)
+        if ident in seen:
+            return
+        seen.add(ident)
+        candidates.append(value)
+
+    for attr in (
+        "resolver",
+        "step_resolver",
+        "workflow_resolver",
+        "runtime_resolver",
+        "workflow_step_resolver",
+    ):
+        try:
+            _add(getattr(service, attr, None))
+        except Exception:
+            pass
+
+    for attr in (
+        "get_resolver",
+        "get_step_resolver",
+        "get_workflow_resolver",
+        "get_runtime_resolver",
+    ):
+        fn = getattr(service, attr, None)
+        if callable(fn):
+            try:
+                _add(fn())
+            except TypeError:
+                pass
+            except Exception:
+                pass
+
+    return candidates
+
+
+def _designer_runtime_capabilities() -> dict[str, Any]:
+    builtin_ops: set[str] = set()
+    sandboxed_ops: set[str] = set()
+    nested_ops: set[str] = set()
+    state_schema: dict[str, str] = {}
+    sandbox_runtime_configured = False
+    sandbox_support = False
+    resolver_found = False
+
+    try:
+        service = chat_service.get()
+    except Exception:
+        service = None
+
+    for resolver in _designer_resolver_candidates(service):
+        resolver_found = True
+        try:
+            ops = getattr(resolver, "ops", None)
+            if ops is not None:
+                builtin_ops.update(str(op) for op in ops)
+        except Exception:
+            pass
+        try:
+            nested_ops.update(str(op) for op in (getattr(resolver, "nested_ops", set()) or set()))
+        except Exception:
+            pass
+        try:
+            sandboxed = getattr(resolver, "sandboxed_ops", None)
+            if sandboxed is not None:
+                sandbox_support = True
+                sandboxed_ops.update(str(op) for op in sandboxed)
+        except Exception:
+            pass
+        try:
+            describe_state = getattr(resolver, "describe_state", None)
+            if callable(describe_state):
+                state_schema.update({str(k): str(v) for k, v in (describe_state() or {}).items()})
+        except Exception:
+            pass
+        try:
+            if getattr(resolver, "_sandbox", None) is not None:
+                sandbox_runtime_configured = True
+                sandbox_support = True
+        except Exception:
+            pass
+
+    return {
+        "resolver_found": resolver_found,
+        "builtin_ops": sorted(builtin_ops),
+        "nested_ops": sorted(nested_ops),
+        "sandboxed_ops": sorted(sandboxed_ops),
+        "sandbox": {
+            "supports_sandboxed_ops": sandbox_support,
+            "runtime_configured": sandbox_runtime_configured,
+        },
+        "state_schema": dict(sorted(state_schema.items())),
+    }
+
+
+@app.get("/designer/capabilities")
+def designer_capabilities():
+    require_role("ro")
+    require_namespace({NameSpace.WORKFLOW})
+
+    node_schema = WorkflowNodeMetadata.model_json_schema()
+    edge_schema = WorkflowEdgeMetadata.model_json_schema()
+    runtime_caps = _designer_runtime_capabilities()
+
+    return {
+        "schema_version": "workflow-designer-capabilities/v1",
+        "projection_schema": "workflow_design_v1",
+        "design_features": {
+            "undo_redo": True,
+            "delta_history": True,
+            "snapshot_restore": True,
+            "dry_run_validation": False,
+        },
+        "custom_ops": {
+            "allow_unregistered_ops_in_design": True,
+            "allow_execution_of_unregistered_ops": False,
+            "binding_statuses": ["resolved", "unresolved", "sandboxed", "plugin"],
+        },
+        "node_types": [
+            {
+                "type": "workflow_node",
+                "display_name": "Workflow Node",
+                "metadata_schema": node_schema,
+                "flags": {
+                    "supports_start": True,
+                    "supports_terminal": True,
+                    "supports_fanout": True,
+                    "supports_join": True,
+                },
+            }
+        ],
+        "edge_types": [
+            {
+                "type": "workflow_edge",
+                "display_name": "Workflow Edge",
+                "metadata_schema": edge_schema,
+                "flags": {
+                    "supports_predicate": True,
+                    "supports_priority": True,
+                    "supports_default": True,
+                    "supports_multiplicity": True,
+                },
+            }
+        ],
+        "runtime": runtime_caps,
+    }
+
 @app.get("/health")
 def health():
     return {

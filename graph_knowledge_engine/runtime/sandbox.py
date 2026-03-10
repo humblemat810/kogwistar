@@ -7,7 +7,7 @@ import multiprocessing
 import sys
 from typing import Any, Dict, Optional, Protocol, Type, Union
 
-from graph_knowledge_engine.runtime.models import StepRunResult, RunSuccess, RunFailure
+from graph_knowledge_engine.runtime.models import StepRunResult, RunSuccess, RunFailure, RunSuspended
 
 logger = logging.getLogger("workflow.sandbox")
 
@@ -157,11 +157,30 @@ class CloudFunctionSandbox(Sandbox):
         except Exception as e:
             return RunFailure(conversation_node_id=None, state_update=[], errors=[f"GCP Sandbox error: {str(e)}"])
 
+class ClientSideSandbox(Sandbox):
+    """
+    A sandbox that doesn't execute code directly but suspends the run,
+    yielding a payload that can be sent to a client-side execution environment.
+    """
+    def run(self, code: str, state: Dict[str, Any], context: Dict[str, Any]) -> StepRunResult:
+        return RunSuspended(
+            conversation_node_id=None,
+            state_update=[],
+            resume_payload={
+                "type": "client_sandbox_task",
+                "code": code,
+                "state": state,
+                "context": context
+            }
+        )
+
 class SandboxFactory:
     @staticmethod
     def create(sandbox_type: str, config: Dict[str, Any]) -> Sandbox:
         if sandbox_type == "local":
             return SimplePythonSandbox()
+        elif sandbox_type == "client":
+            return ClientSideSandbox()
         elif sandbox_type == "azure":
             return AzureFunctionSandbox(endpoint=config["endpoint"], key=config.get("key"))
         elif sandbox_type == "aws":

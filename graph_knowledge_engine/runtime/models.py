@@ -140,6 +140,15 @@ class RunFailure(BaseModel):
     status: Literal["failure"] = "failure"
 
 
+class RunSuspended(BaseModel):
+    conversation_node_id: Optional[str] = None
+    state_update: list[StateUpdate] = Field(default_factory=list)
+    update: dict[str, Any] | None = None
+    next_step_names: list[str] = Field(default_factory=list)
+    status: Literal["suspended"] = "suspended"
+    resume_payload: dict[str, Any] = Field(default_factory=dict)
+
+
 class RunSuccess(BaseModel):
     conversation_node_id: str|None  # node id of the 'entry point' of the node cluster created in a resolver step, 
     #step can create multiple node edges but at least should expose a node to connect to the main node net
@@ -151,4 +160,4 @@ class RunSuccess(BaseModel):
     next_step_names: list[str] = []  # empty will by default fan out all
     status: Literal["success"] = "success"
 
-StepRunResult: TypeAlias = RunSuccess | RunFailure
+StepRunResult: TypeAlias = RunSuccess | RunFailure | RunSuspended

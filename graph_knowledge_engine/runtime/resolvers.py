@@ -44,7 +44,7 @@ if TYPE_CHECKING:
     from .sandbox import Sandbox
     RawStepFn = Callable[[StepContext], Union[Json, StepRunResult]]
 
-from graph_knowledge_engine.runtime.models import RunSuccess
+from graph_knowledge_engine.runtime.models import RunSuccess, RunFailure, RunSuspended
 
 # Import your real RunResult types from graph_knowledge_engine.runtime/models
 
@@ -116,7 +116,7 @@ class MappingStepResolver(BaseResolver):
                     import warnings
                     warnings.simplefilter("once")
                     warnings.warn("legacy update detected, use state_update if you need to append list state multiple times")
-                if isinstance(out, (RunSuccess, RunFailure)):
+                if isinstance(out, (RunSuccess, RunFailure, RunSuspended)):
                     return out
                 else:
                     raise TypeError("Resolver must return StepRunResult")

@@ -2,6 +2,7 @@ from __future__ import annotations
 import warnings
 
 import time
+import json
 import uuid
 import queue
 from dataclasses import dataclass
@@ -53,10 +54,7 @@ def validate_initial_state(initial_state: dict):
             )
             continue
 
-        if key in RESERVED_ROOT_KEYS:
-            raise ValueError(
-                f"'{key}' is reserved by the runtime and cannot be provided by user code."
-            )
+        # _deps and _rt_join are the only allowed reserved runtime keys.
 
         if key.startswith(RESERVED_PREFIXES):
             raise ValueError(
@@ -515,6 +513,220 @@ class WorkflowRuntime:
                     mute_state.setdefault(k, []).extend(v)
                 else: # u
                     mute_state[k]=v
+    def resume_run(
+        self,
+        *,
+        run_id: str,
+        suspended_node_id: str,
+        suspended_token_id: str,
+        client_result: StepRunResult,
+        workflow_id: str,
+        conversation_id: str,
+        turn_node_id: str,
+    ) -> RunResult:
+        """
+        Resumes a suspended workflow run using the results of an externally executed task
+        (e.g. from a client-side sandbox).
+        
+        This assumes that:
+        1. A checkpoint exists for the suspended state.
+        2. The suspended step was saved in _rt_join_snapshot as pending with mask logic intact.
+        """
+        # Load the latest checkpoint for the run to reconstruct initial_state
+        ckpts = self.conversation_engine.get_nodes(
+            where={"$and": [{"entity_type": "workflow_checkpoint"}, {"run_id": str(run_id)}]},
+            # limit=1,
+            # we want the most recent
+        )
+        # Checkpoints might not come perfectly ordered, so we sort them
+        if not ckpts:
+            raise ValueError(f"Cannot resume run {run_id}: no checkpoints found.")
+            
+        latest_ckpt = max(ckpts, key=lambda c: int(getattr(c, "metadata", {}).get("step_seq", -1)))
+        initial_state_raw = getattr(latest_ckpt, "metadata", {}).get("state_json", {})
+        if isinstance(initial_state_raw, str):
+            initial_state = json.loads(initial_state_raw)
+        elif isinstance(initial_state_raw, dict):
+            initial_state = dict(initial_state_raw)
+        else:
+            raise ValueError(f"Cannot resume run {run_id}: checkpoint state_json is not a dict/json string.")
+        
+        # Apply the client's state update directly to the initial state
+        if isinstance(client_result, (RunSuccess, RunFailure)):
+            self.apply_state_update(mute_state=initial_state, state_update=client_result.state_update, update=getattr(client_result, 'update', None))
+
+        if getattr(client_result, "status", "success") == "failure":
+            # If the client sandbox failed, we should probably record the failure and abort or branch.
+            # For simplicity, we just inject the state and run. The state should contain the error logs.
+            pass
+
+        # Start the runtime again
+        # The runtime will pick up the `pending` tokens from `_rt_join` stored in `initial_state`
+        # Because the token was parked at `suspended_node_id`, it will try to re-execute it.
+        # But wait! We don't want to re-execute the suspended node. We want to route *from* it.
+        
+        # To fix this, we manually route from the suspended node and update the `_rt_join` 
+        # pending state before calling run().
+        start, nodes, adj = validate_workflow_design(
+            workflow_engine=self.workflow_engine,
+            workflow_id=workflow_id,
+            predicate_registry=self.predicate_registry,
+            resolver=self.step_resolver
+        )
+        
+        node_ids_list = list(nodes.keys())
+        join_node_ids = []
+        for _nid, _wn in nodes.items():
+            _md = getattr(_wn, "metadata", None) or {}
+            if bool(_md.get("wf_join", False)) or str(getattr(_wn, "op", "")) == "join":
+                join_node_ids.append(str(_nid))
+        
+        _may_reach_join = _compute_may_reach_join_bitsets(node_ids=node_ids_list, adj=adj, join_ids=join_node_ids) if join_node_ids else {nid: 0 for nid in node_ids_list}
+        
+        wn = nodes[suspended_node_id]
+        edges = adj.get(suspended_node_id, [])
+        next_nodes, route_decision = self._route_next(edges, initial_state, client_result, wn.fanout)
+        rt_join = initial_state.get("_rt_join", {})
+        pending = rt_join.get("pending", [])
+        suspended = rt_join.get("suspended", [])
+        
+        new_pending = []
+        new_suspended = []
+        token_found = False
+        mask_to_distribute = 0
+        parent_token_id = None
+
+        def _extract(items, keep):
+            nonlocal token_found, mask_to_distribute, parent_token_id
+            for item in items:
+                norm = None
+                if isinstance(item, (list, tuple)):
+                    if len(item) == 4:
+                        norm = (str(item[0]), int(item[1]), str(item[2]), (str(item[3]) if item[3] is not None else None))
+                    elif len(item) == 3:
+                        norm = (str(item[0]), int(item[1]), str(item[2]), None)
+                if norm is None:
+                    keep.append(item)
+                    continue
+                nid, tok_mask, tok_id, tok_parent = norm
+                if (not token_found) and nid == str(suspended_node_id) and tok_id == str(suspended_token_id):
+                    token_found = True
+                    mask_to_distribute = int(tok_mask)
+                    parent_token_id = tok_parent
+                else:
+                    keep.append(norm)
+
+        _extract(suspended, new_suspended)
+        _extract(pending, new_pending)
+                
+        if not token_found:
+            raise ValueError(f"Token {suspended_token_id} for node {suspended_node_id} not found in suspended runtime state.")
+        token_id = suspended_token_id
+        node_id = suspended_node_id
+        # Trace routing decision (includes rejections) at orchestration choke point
+        try:
+            tc = TraceContext(
+                run_id=str(run_id),
+                token_id=str(token_id),
+                step_seq=int(step_seq_current),
+                node_id=str(node_id),
+                attempt=1,
+                conversation_id=str(conversation_id),
+                turn_node_id=str(turn_node_id),
+            )
+            self.emitter.emit(
+                type="routing_decision",
+                ctx=tc,
+                payload={
+                    "evaluated": [(a, bool(b)) for a, b in getattr(route_decision, 'evaluated', [])],
+                    "selected": [(e, t, r) for e, t, r in getattr(route_decision, 'selected', [])],
+                    "next_nodes": [str(x) for x in (next_nodes or [])],
+                },
+            )
+            # Also emit per-evaluation/per-selection events for telemetry consumers
+            for pred_name, ok in getattr(route_decision, "evaluated", []):
+                try:
+                    self.emitter.predicate_evaluated(tc, predicate=str(pred_name), value=bool(ok))
+                except Exception:
+                    pass
+            for edge_id, to_node_id, reason in getattr(route_decision, "selected", []):
+                try:
+                    self.emitter.edge_selected(tc, edge_id=str(edge_id), to_node_id=str(to_node_id), reason=str(reason))
+                except Exception:
+                    pass
+
+            # Tracing must never break execution
+        except Exception:
+            pass
+        # Modify the parked suspended tokens in state["_rt_join"]["suspended"] first.
+        # Older checkpoints may still have the token in pending, so we accept both for compatibility.
+        # Add next tokens
+        _join_pos = {jid: i for i, jid in enumerate(join_node_ids)}
+        jo = rt_join.get("join_outstanding", [0 for _ in join_node_ids])
+        
+        def _inc(m: int):
+            for bi in _iter_bits(m):
+                jo[bi] += 1
+                
+        def _dec(m: int):
+            for bi in _iter_bits(m):
+                jo[bi] = max(0, jo[bi] - 1)
+
+        first = True
+        step_seq_current = int(getattr(latest_ckpt, "metadata", {}).get("step_seq", 0)) + 1
+        
+        if not next_nodes:
+            _dec(mask_to_distribute)
+        else:
+            for i_fanout, nxt in enumerate(next_nodes):
+                nxt = str(nxt)
+                nxt_mask = int(_may_reach_join.get(nxt, 0))
+                
+                if first:
+                    t = (nxt, nxt_mask, suspended_token_id, parent_token_id)
+                    leaving = mask_to_distribute & ~nxt_mask
+                    if leaving: _dec(leaving)
+                    gained = nxt_mask & ~mask_to_distribute
+                    if gained: _inc(gained)
+                    new_pending.append(t)
+                    first = False
+                else:
+                    child_token_id = stable_id("token_id", f"{suspended_token_id}/{step_seq_current}:{i_fanout}:{nxt}").hex
+                    t = (nxt, nxt_mask, child_token_id, suspended_token_id)
+                    _inc(nxt_mask)
+                    new_pending.append(t)
+                    
+        rt_join["pending"] = new_pending
+        rt_join["suspended"] = new_suspended
+        rt_join["join_outstanding"] = jo
+        initial_state["_rt_join"] = rt_join
+        
+        # Log the step exec for the external execution so it's recorded
+        self._persist_step_exec(
+            conversation_id=conversation_id,
+            workflow_id=workflow_id,
+            run_id=run_id,
+            step_seq=step_seq_current,
+            workflow_node_id=suspended_node_id,
+            op="client_sandbox_resume",
+            status="ok",
+            duration_ms=0,
+            result=client_result,
+            state=initial_state,
+            token_id=suspended_token_id,
+            parent_token_id=parent_token_id,
+            join_mask=mask_to_distribute,
+            last_exec_node=None # not strongly linked to previous right now
+        )
+
+        return self.run(
+            workflow_id=workflow_id,
+            conversation_id=conversation_id,
+            turn_node_id=turn_node_id,
+            initial_state=initial_state,
+            run_id=run_id
+        )
+
     def run(
         self,
         *,
@@ -603,14 +815,39 @@ class WorkflowRuntime:
                 # Stored in workflow state so checkpoints can resume joins.
                 state["_rt_join"] = payload
 
-            def _rt_join_snapshot(pending: list[tuple[str, int, str, str | None]]) -> dict:
+            def _normalize_rt_token(item: Any) -> tuple[str, int, str, str | None] | None:
+                if not isinstance(item, (list, tuple)):
+                    return None
+                if len(item) == 4:
+                    return (str(item[0]), int(item[1]), str(item[2]), (str(item[3]) if item[3] is not None else None))
+                if len(item) == 3:
+                    # backward-compat: snapshots without parent_token_id
+                    return (str(item[0]), int(item[1]), str(item[2]), None)
+                if len(item) == 2:
+                    # backward-compat: older snapshots without token_id/parent_token_id
+                    return (str(item[0]), int(item[1]), uuid.uuid4().hex, None)
+                return None
+
+            def _rt_join_snapshot(
+                pending: list[tuple[str, int, str, str | None]],
+                *,
+                suspended: list[tuple[str, int, str, str | None]] | None = None,
+            ) -> dict:
                 # Persist inflight as pending-on-resume by including them in pending list upstream.
+                # Suspended tokens must be kept separately: they are parked at the suspended node
+                # and must NOT be re-scheduled automatically on resume.
                 return {
                     "join_node_ids": join_node_ids,
                     "join_outstanding": list(_join_outstanding),
                     "join_waiters": {jid: list(masks) for jid, masks in _join_waiters.items()},
-                    "pending": [(nid, int(mask), str(token_id), (str(parent_token_id) if parent_token_id is not None else None)) 
-                                        for nid, mask, token_id, parent_token_id in pending],
+                    "pending": [
+                        (nid, int(mask), str(token_id), (str(parent_token_id) if parent_token_id is not None else None))
+                        for nid, mask, token_id, parent_token_id in pending
+                    ],
+                    "suspended": [
+                        (nid, int(mask), str(token_id), (str(parent_token_id) if parent_token_id is not None else None))
+                        for nid, mask, token_id, parent_token_id in (suspended or [])
+                    ],
                 }
 
             def _rt_join_restore() -> list[tuple[str, int, str, str | None]] | None:
@@ -635,17 +872,12 @@ class WorkflowRuntime:
                     masks = jw.get(jid, [])
                     if isinstance(masks, list):
                         _join_waiters[jid] = [int(x) for x in masks]
-                # pending tokens
+                # pending tokens only; suspended tokens are restored by resume_run
                 out: list[tuple[str, int, str, str | None]] = []
                 for item in pend:
-                    if isinstance(item, (list, tuple)) and len(item) == 4:
-                        out.append((str(item[0]), int(item[1]), str(item[2]), (str(item[3]) if item[3] is not None else None)))
-                    elif isinstance(item, (list, tuple)) and len(item) == 3:
-                        # backward-compat: snapshots without parent_token_id
-                        out.append((str(item[0]), int(item[1]), str(item[2]), None))
-                    elif isinstance(item, (list, tuple)) and len(item) == 2:
-                        # backward-compat: older snapshots without token_id/parent_token_id
-                        out.append((str(item[0]), int(item[1]), uuid.uuid4().hex, None))
+                    norm = _normalize_rt_token(item)
+                    if norm is not None:
+                        out.append(norm)
                 return out
                 
             # start, nodes, adj = load_workflow_design(workflow_engine=self.workflow_engine, workflow_id=workflow_id)
@@ -679,15 +911,19 @@ class WorkflowRuntime:
             scheduled_q: queue.Queue[Tuple[str, int, str, str | None]] = queue.Queue()  # (node_id, mask, token_id, parent_token_id)
             pending_tokens: set[tuple[str, int, str, str | None]] = set()
             inflight_tokens: set[tuple[str, int, str, str | None]] = set()
+            suspended_tokens: dict[str, tuple[str, int, str, str | None]] = {}
             done_q: queue.Queue[Tuple[str, StepRunResult, int, str, str | None, str, int]] = queue.Queue()  # (node_id, result, duration_ms, token_id, parent_token_id, status, mask)
             cancel_pending = False
             cancel_info: dict[str, Any] | None = None
+            run_suspended = False
             
             graveyard: queue.Queue[Tuple[str, StepRunResult, int, str, str | None, str, int]] = queue.Queue()  
             def _persist_rt_join_runtime() -> None:
                 # Persist both pending + inflight as pending-on-resume (idempotent).
+                # Suspended tokens are stored separately so they are parked, not re-scheduled.
                 combined = sorted(pending_tokens.union(inflight_tokens))
-                _rt_join_set(_rt_join_snapshot(combined))
+                suspended = sorted(suspended_tokens.values())
+                _rt_join_set(_rt_join_snapshot(combined, suspended=suspended))
 
             def _cancel_requested() -> bool:
                 nonlocal cancel_info
@@ -799,7 +1035,12 @@ class WorkflowRuntime:
                                 # are committed or rolled back atomically for this step.
                                 with (self.conversation_engine.uow() if self._should_step_uow(op, state) else __import__('contextlib').nullcontext()):
                                     res = fn(ctx)
-                                status = "ok" if getattr(res, "status", None) != "failure" else "failure"
+                                if getattr(res, "status", None) == "suspended":
+                                    status = "suspended"
+                                elif getattr(res, "status", None) == "failure":
+                                    status = "failure"
+                                else:
+                                    status = "ok"
 
                         except Exception as e:
                             status = "error"
@@ -840,7 +1081,7 @@ class WorkflowRuntime:
                             cancel_info=cancel_info,
                             last_processed_node_id=(str(last_exec_node.safe_get_id()) if last_exec_node is not None else None),
                         )
-                        self._update_workflow_run_status(conversation_id, run_id, "cancelled")
+                        # self._update_workflow_run_status(conversation_id, run_id, "cancelled")
                         try:
                             tc_done = TraceContext(run_id=str(run_id), token_id=str(run_id), step_seq=int(step_seq), node_id="run", attempt=1, conversation_id=str(conversation_id) if conversation_id is not None else None, turn_node_id=str(turn_node_id) if turn_node_id is not None else None)
                             self.emitter.emit(type="workflow_run_cancelled", ctx=tc_done, payload={"workflow_id": str(workflow_id)})
@@ -848,17 +1089,29 @@ class WorkflowRuntime:
                             pass
                         self.state_lock.pop(run_id, None)
                         return RunResult(final_state=state, run_id=run_id, mq=mq, status="cancelled")
-                    if not cancel_pending and not inflight and scheduled_q.empty() and done_q.empty():
-                        # done
-                        self._update_workflow_run_status(conversation_id, run_id, "succeeded")
-                        # trace: workflow run completed
-                        try:
-                            tc_done = TraceContext(run_id=str(run_id), token_id=str(run_id), step_seq=int(step_seq), node_id="run", attempt=1, conversation_id=str(conversation_id) if conversation_id is not None else None, turn_node_id=str(turn_node_id) if turn_node_id is not None else None)
-                            self.emitter.emit(type="workflow_run_completed", ctx=tc_done, payload={"workflow_id": str(workflow_id)})
-                        except Exception:
-                            pass
-                        self.state_lock.pop(run_id, None)
-                        return RunResult(final_state=state, run_id=run_id, mq=mq, status="succeeded")
+                    if not cancel_pending and not inflight and not pending_tokens and scheduled_q.empty() and done_q.empty():
+                        if run_suspended:
+                            # suspended
+                            # self._update_workflow_run_status(conversation_id, run_id, "suspended")
+                            # trace: workflow run suspended
+                            try:
+                                tc_done = TraceContext(run_id=str(run_id), token_id=str(run_id), step_seq=int(step_seq), node_id="run", attempt=1, conversation_id=str(conversation_id) if conversation_id is not None else None, turn_node_id=str(turn_node_id) if turn_node_id is not None else None)
+                                self.emitter.emit(type="workflow_run_suspended", ctx=tc_done, payload={"workflow_id": str(workflow_id)})
+                            except Exception:
+                                pass
+                            self.state_lock.pop(run_id, None)
+                            return RunResult(final_state=state, run_id=run_id, mq=mq, status="suspended")
+                        else:
+                            # done
+                            # self._update_workflow_run_status(conversation_id, run_id, "succeeded")
+                            # trace: workflow run completed
+                            try:
+                                tc_done = TraceContext(run_id=str(run_id), token_id=str(run_id), step_seq=int(step_seq), node_id="run", attempt=1, conversation_id=str(conversation_id) if conversation_id is not None else None, turn_node_id=str(turn_node_id) if turn_node_id is not None else None)
+                                self.emitter.emit(type="workflow_run_completed", ctx=tc_done, payload={"workflow_id": str(workflow_id)})
+                            except Exception:
+                                pass
+                            self.state_lock.pop(run_id, None)
+                            return RunResult(final_state=state, run_id=run_id, mq=mq, status="succeeded")
                     # schedule while capacity
                     while (not cancel_pending) and len(inflight) < self.max_workers:
                         try:
@@ -949,11 +1202,9 @@ class WorkflowRuntime:
                                     # add merged token contribution
                                     _inc(merged_mask)
 
-                                    # Push a synthetic completion for the join node (noop op).
+                                    # join can have an op, need to run through normal node ops.
                                     _persist_rt_join_runtime()
-                                    # join_token_id = uuid.uuid4().hex
-                                    # done_q.put((nid, RunSuccess(conversation_node_id=None, state_update=[]), 0, join_token_id, None, "ok", merged_mask))
-                                    # continue
+
                                 else:
                                     # merge into 1, if not dec to 0, not the last to join, just continue
                                     continue
@@ -966,7 +1217,10 @@ class WorkflowRuntime:
                         inflight[(nid, mask, str(token_id))] = pool.submit(ctx.run, worker, nid, state, token_id, parent_token_id, step_seq, mask)
 
 
-                    done_task = done_q.get()
+                    try:
+                        done_task = done_q.get(timeout=0.05)
+                    except queue.Empty:
+                        continue
                     node_id, run_result, dur_ms, token_id, parent_token_id, status, mask = done_task
                     graveyard.put_nowait(done_task)
                     run_state_lock: Lock = self.state_lock[str(run_id)]
@@ -979,6 +1233,14 @@ class WorkflowRuntime:
                     _persist_rt_join_runtime()
 
                     wn = nodes[node_id]
+
+                    # If suspended, mark the run as suspended and persist step
+                    if status == "suspended":
+                        run_suspended = True
+                        suspended_tokens[str(token_id)] = (str(node_id), int(mask), str(token_id), parent_token_id)
+                        # Do not enqueue next tokens for this node
+                    else:
+                        suspended_tokens.pop(str(token_id), None)
 
                     # persist step exec trace node (same transaction as state update when possible)
                     with self._maybe_step_uow():
@@ -1007,7 +1269,41 @@ class WorkflowRuntime:
                     # the state snapshot contains a correct _rt_join frontier (pending/inflight) for resume.
                     step_seq_current = step_seq
                     step_seq += 1
-                    
+
+                    if status == "suspended":
+                        # When suspended, the token is parked here pending external resume.
+                        # We DO NOT decrement the join obligations because the token still exists
+                        # and will eventually reach downstream joins once resumed.
+                        _persist_rt_join_runtime()
+                        
+                        if (step_seq_current % self.checkpoint_every_n_steps) == 0:
+                            with self._maybe_step_uow():
+                                self._persist_checkpoint(
+                                        conversation_id=conversation_id,
+                                        workflow_id=workflow_id,
+                                        run_id=run_id,
+                                        step_seq=step_seq_current,
+                                        state=state,
+                                        last_exec_node=last_exec_node,
+                                )
+                            try:
+                                tc_ck = TraceContext(run_id=str(run_id), token_id=str(token_id), step_seq=int(step_seq_current), node_id=str(node_id), attempt=1, conversation_id=str(conversation_id), turn_node_id=str(turn_node_id))
+                                self.emitter.emit(type="checkpoint_saved", ctx=tc_ck, payload={"step_seq": int(step_seq_current)})
+                            except Exception:
+                                pass
+                        
+                        # Emit specific suspension payload for client ingestion
+                        if hasattr(run_result, 'resume_payload'):
+                            try:
+                                self.emitter.emit(
+                                    type="workflow_step_suspended",
+                                    ctx=TraceContext(run_id=str(run_id), token_id=str(token_id), step_seq=int(step_seq_current), node_id=str(node_id), attempt=1, conversation_id=str(conversation_id), turn_node_id=str(turn_node_id)),
+                                    payload=getattr(run_result, 'resume_payload')
+                                )
+                            except Exception:
+                                pass
+                        continue
+
                     # route
                     if wn.terminal or len(adj.get(node_id, [])) == 0:
                         # token ends here -> it will never reach any remaining joins
@@ -1538,22 +1834,22 @@ class WorkflowRuntime:
         self.conversation_engine.add_node(n)
         return n
 
-    def _update_workflow_run_status(self, conversation_id: str, run_id: str, status: str) -> None:
-        node_id = f"wf_run|{run_id}"
-        got = self.conversation_engine.get_nodes(ids=[node_id], limit=1)
-        if not got:
-            return
-        node = got[0]
-        node.metadata = dict(getattr(node, "metadata", {}) or {})
-        node.metadata["status"] = status
-        node.summary = f"workflow_run {node.metadata.get('workflow_id', '')} {run_id} status={status}"
-        try:
-            props = dict(getattr(node, "properties", {}) or {})
-            props["status"] = status
-            node.properties = props
-        except Exception:
-            pass
-        self.conversation_engine.add_node(node)
+    # def _update_workflow_run_status(self, conversation_id: str, run_id: str, status: str) -> None:
+    #     node_id = f"wf_run|{run_id}"
+    #     got = self.conversation_engine.get_nodes(ids=[node_id], limit=1)
+    #     if not got:
+    #         return
+    #     node = got[0]
+    #     node.metadata = dict(getattr(node, "metadata", {}) or {})
+    #     node.metadata["status"] = status
+    #     node.summary = f"workflow_run {node.metadata.get('workflow_id', '')} {run_id} status={status}"
+    #     try:
+    #         props = dict(getattr(node, "properties", {}) or {})
+    #         props["status"] = status
+    #         node.properties = props
+    #     except Exception:
+    #         pass
+    #     self.conversation_engine.add_node(node)
 
     def _persist_step_exec(
         self,

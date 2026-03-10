@@ -1421,3 +1421,62 @@ def test_runtime_design_snapshot_restore_matches_full_replay(monkeypatch, engine
     refreshed = service.refresh_workflow_design_projection(workflow_id=workflow_id)
     assert refreshed["status"] == "ok"
     assert _visible_workflow_design_ids(workflow_engine, workflow_id=workflow_id) == snapshot_shape
+
+
+
+def test_designer_capabilities_endpoint(monkeypatch, engine_triplet):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service, _registry = _configure_server(monkeypatch, engine, conversation_engine, workflow_engine, _success_runner)
+
+    class _StubResolver:
+        def __init__(self):
+            self.handlers = {"start": lambda ctx: None, "answer": lambda ctx: None}
+            self.nested_ops = {"answer"}
+            self.sandboxed_ops = {"python_exec"}
+            self._sandbox = object()
+
+        @property
+        def ops(self):
+            return set(self.handlers)
+
+        def describe_state(self):
+            return {"messages": "a", "selected_node_id": "u"}
+
+    service.resolver = _StubResolver()
+
+    with TestClient(server.app) as client:
+        docs_ro = _token_header(client, role="ro", ns="docs")
+        wf_ro = _token_header(client, role="ro", ns="workflow")
+
+        forbidden = client.get("/designer/capabilities", headers=docs_ro)
+        assert forbidden.status_code == 403
+
+        resp = client.get("/designer/capabilities", headers=wf_ro)
+        resp.raise_for_status()
+        payload = resp.json()
+
+        assert payload["schema_version"] == "workflow-designer-capabilities/v1"
+        assert payload["projection_schema"] == "workflow_design_v1"
+        assert payload["design_features"]["undo_redo"] is True
+        assert payload["custom_ops"]["allow_unregistered_ops_in_design"] is True
+        assert payload["custom_ops"]["allow_execution_of_unregistered_ops"] is False
+
+        runtime = payload["runtime"]
+        assert runtime["resolver_found"] is True
+        assert runtime["builtin_ops"] == ["answer", "start"]
+        assert runtime["nested_ops"] == ["answer"]
+        assert runtime["sandboxed_ops"] == ["python_exec"]
+        assert runtime["sandbox"]["supports_sandboxed_ops"] is True
+        assert runtime["sandbox"]["runtime_configured"] is True
+        assert runtime["state_schema"] == {"messages": "a", "selected_node_id": "u"}
+
+        node_types = payload["node_types"]
+        edge_types = payload["edge_types"]
+        assert node_types[0]["type"] == "workflow_node"
+        assert edge_types[0]["type"] == "workflow_edge"
+        node_props = node_types[0]["metadata_schema"]["properties"]
+        edge_props = edge_types[0]["metadata_schema"]["properties"]
+        assert "wf_op" in node_props
+        assert "wf_join" in node_props
+        assert "wf_predicate" in edge_props
+        assert "wf_multiplicity" in edge_props
