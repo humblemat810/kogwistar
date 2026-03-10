@@ -11,7 +11,7 @@ import pathlib
 import logging
 from contextlib import nullcontext
 
-from ..conversation.models import ConversationEdge, WorkflowCheckpointNode, WorkflowRunNode, WorkflowStepExecNode
+from ..conversation.models import ConversationEdge, ConversationNode, WorkflowCheckpointNode, WorkflowRunNode, WorkflowStepExecNode
 from graph_knowledge_engine.id_provider import stable_id
 from graph_knowledge_engine.utils.log import bind_log_context
 from graph_knowledge_engine.runtime.models import StateUpdate
@@ -225,6 +225,7 @@ class RunResult():
     run_id: str
     final_state: WorkflowState
     mq: queue.Queue[Dict[str, Json]]
+    status: str = "succeeded"
 
 class _StateWriteTxn:
     def __init__(self, ctx: "StepContext"):
@@ -399,6 +400,7 @@ class WorkflowRuntime:
         trace: bool = True,
         events: EventEmitter | None = None,
         sink: SQLiteEventSink | None = None,
+        cancel_requested: Callable[[str], bool] | None = None,
     ) -> None:
         from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
         self.workflow_engine: GraphKnowledgeEngine = workflow_engine
@@ -407,6 +409,7 @@ class WorkflowRuntime:
         self.predicate_registry = predicate_registry
         self.checkpoint_every_n_steps = max(1, int(checkpoint_every_n_steps))
         self.max_workers = max_workers
+        self.cancel_requested = cancel_requested
         # Transaction policy: default to per-step transactions when conversation_engine is Postgres-backed.
         if transaction_mode is None:
             try:
@@ -677,12 +680,57 @@ class WorkflowRuntime:
             pending_tokens: set[tuple[str, int, str, str | None]] = set()
             inflight_tokens: set[tuple[str, int, str, str | None]] = set()
             done_q: queue.Queue[Tuple[str, StepRunResult, int, str, str | None, str, int]] = queue.Queue()  # (node_id, result, duration_ms, token_id, parent_token_id, status, mask)
+            cancel_pending = False
+            cancel_info: dict[str, Any] | None = None
             
             graveyard: queue.Queue[Tuple[str, StepRunResult, int, str, str | None, str, int]] = queue.Queue()  
             def _persist_rt_join_runtime() -> None:
                 # Persist both pending + inflight as pending-on-resume (idempotent).
                 combined = sorted(pending_tokens.union(inflight_tokens))
                 _rt_join_set(_rt_join_snapshot(combined))
+
+            def _cancel_requested() -> bool:
+                nonlocal cancel_info
+                if bool(self.cancel_requested and self.cancel_requested(str(run_id))):
+                    if cancel_info is None:
+                        cancel_info = {"source": "callback", "node_id": None, "seq": None, "watermark": None}
+                    return True
+                graph_cancel = self._find_eligible_cancel_request(
+                    conversation_id=str(conversation_id),
+                    run_id=str(run_id),
+                )
+                if graph_cancel is not None:
+                    graph_cancel["source"] = "graph"
+                    cancel_info = graph_cancel
+                    return True
+                return False
+
+            def _enter_cancelling(reason_node_id: str = "run", token_id: str | None = None) -> bool:
+                nonlocal cancel_pending
+                if cancel_pending or not _cancel_requested():
+                    return cancel_pending
+                cancel_pending = True
+                while True:
+                    try:
+                        nid, mask, tok, parent_tok = scheduled_q.get_nowait()
+                        pending_tokens.discard((str(nid), int(mask), str(tok), parent_tok))
+                    except queue.Empty:
+                        break
+                _persist_rt_join_runtime()
+                try:
+                    tc_cancel = TraceContext(
+                        run_id=str(run_id),
+                        token_id=str(token_id or run_id),
+                        step_seq=int(step_seq),
+                        node_id=str(reason_node_id),
+                        attempt=1,
+                        conversation_id=str(conversation_id) if conversation_id is not None else None,
+                        turn_node_id=str(turn_node_id) if turn_node_id is not None else None,
+                    )
+                    self.emitter.emit(type="workflow_run_cancelling", ctx=tc_cancel, payload={"workflow_id": str(workflow_id)})
+                except Exception:
+                    pass
+                return True
             start_id = start.safe_get_id()
 
             # Resume-safe join runtime: if a checkpoint restored pending tokens + join counters,
@@ -718,7 +766,6 @@ class WorkflowRuntime:
                     status = "ok"
                     with bind_log_context(step_id= f"{step_seq}-{node_id}", op = op):
                         try:
-                            fn: Callable[..., StepRunResult] = self.step_resolver(op)
                             ctx = StepContext(
                                 run_id=str(run_id),
                                 workflow_id=str(workflow_id),
@@ -736,12 +783,23 @@ class WorkflowRuntime:
                             # step attempt start
                             self.emitter.step_started(ctx.trace_ctx)
 
-                            # Transaction boundary (best-effort): resolver is expected to call
-                            # engine methods; when backed by Postgres this ensures those writes
-                            # are committed or rolled back atomically for this step.
-                            with (self.conversation_engine.uow() if self._should_step_uow(op, state) else __import__('contextlib').nullcontext()):
-                                res: StepRunResult = fn(ctx)
-                            status = "ok" if getattr(res, "status", None) != "failure" else "failure"
+                            if _cancel_requested():
+                                status = "cancelled"
+                                res = RunFailure(
+                                    conversation_node_id=None,
+                                    status="failure",
+                                    errors=["Run cancelled"],
+                                    state_update=[],
+                                )
+                            else:
+                                fn: Callable[..., StepRunResult] = self.step_resolver(op)
+
+                                # Transaction boundary (best-effort): resolver is expected to call
+                                # engine methods; when backed by Postgres this ensures those writes
+                                # are committed or rolled back atomically for this step.
+                                with (self.conversation_engine.uow() if self._should_step_uow(op, state) else __import__('contextlib').nullcontext()):
+                                    res = fn(ctx)
+                                status = "ok" if getattr(res, "status", None) != "failure" else "failure"
 
                         except Exception as e:
                             status = "error"
@@ -772,19 +830,37 @@ class WorkflowRuntime:
             last_exec_node = wf_run_root_node
             with ThreadPoolExecutor(max_workers=self.max_workers, thread_name_prefix=f"rt-wf-{workflow_id}") as pool:
                 while True:
-                    if not inflight and scheduled_q.empty() and done_q.empty():
+                    _enter_cancelling()
+                    if cancel_pending and not inflight and scheduled_q.empty() and done_q.empty():
+                        self._persist_cancelled_terminal(
+                            conversation_id=str(conversation_id),
+                            workflow_id=str(workflow_id),
+                            run_id=str(run_id),
+                            accepted_step_seq=max(-1, int(step_seq) - 1),
+                            cancel_info=cancel_info,
+                            last_processed_node_id=(str(last_exec_node.safe_get_id()) if last_exec_node is not None else None),
+                        )
+                        self._update_workflow_run_status(conversation_id, run_id, "cancelled")
+                        try:
+                            tc_done = TraceContext(run_id=str(run_id), token_id=str(run_id), step_seq=int(step_seq), node_id="run", attempt=1, conversation_id=str(conversation_id) if conversation_id is not None else None, turn_node_id=str(turn_node_id) if turn_node_id is not None else None)
+                            self.emitter.emit(type="workflow_run_cancelled", ctx=tc_done, payload={"workflow_id": str(workflow_id)})
+                        except Exception:
+                            pass
+                        self.state_lock.pop(run_id, None)
+                        return RunResult(final_state=state, run_id=run_id, mq=mq, status="cancelled")
+                    if not cancel_pending and not inflight and scheduled_q.empty() and done_q.empty():
                         # done
-                        self._update_workflow_run_status(conversation_id, run_id, "done")
+                        self._update_workflow_run_status(conversation_id, run_id, "succeeded")
                         # trace: workflow run completed
                         try:
                             tc_done = TraceContext(run_id=str(run_id), token_id=str(run_id), step_seq=int(step_seq), node_id="run", attempt=1, conversation_id=str(conversation_id) if conversation_id is not None else None, turn_node_id=str(turn_node_id) if turn_node_id is not None else None)
                             self.emitter.emit(type="workflow_run_completed", ctx=tc_done, payload={"workflow_id": str(workflow_id)})
                         except Exception:
                             pass
-                        self.state_lock.pop(run_id)
-                        return RunResult(final_state=state, run_id=run_id, mq=mq)
+                        self.state_lock.pop(run_id, None)
+                        return RunResult(final_state=state, run_id=run_id, mq=mq, status="succeeded")
                     # schedule while capacity
-                    while len(inflight) < self.max_workers:
+                    while (not cancel_pending) and len(inflight) < self.max_workers:
                         try:
                             nid, mask, token_id, parent_token_id = scheduled_q.get_nowait()
                             pending_tokens.discard((str(nid), int(mask), str(token_id), parent_token_id))
@@ -957,6 +1033,7 @@ class WorkflowRuntime:
                             except Exception:
 
                                 pass
+                        _enter_cancelling(reason_node_id=str(node_id), token_id=str(token_id))
                         continue
 
                     edges = adj.get(node_id, [])
@@ -1021,6 +1098,7 @@ class WorkflowRuntime:
                             except Exception:
 
                                 pass
+                        _enter_cancelling(reason_node_id=str(node_id), token_id=str(token_id))
                         continue
 
                     # continuation token
@@ -1101,6 +1179,7 @@ class WorkflowRuntime:
                         except Exception:
 
                             pass
+                    _enter_cancelling(reason_node_id=str(node_id), token_id=str(token_id))
             raise Exception('unreacheable')
 
     def _route_next(
@@ -1235,6 +1314,190 @@ class WorkflowRuntime:
     # Persistence helpers (conversation_engine)
     # --------------------
 
+    def _safe_get_conversation_nodes(self, *, where: dict, limit: int = 1000) -> list[Any]:
+        try:
+            return self.conversation_engine.get_nodes(where=where, limit=limit)
+        except Exception as exc:
+            msg = str(exc)
+            if "Nothing found on disk" in msg or "hnsw segment reader" in msg:
+                return []
+            raise
+
+    def _find_eligible_cancel_request(
+        self,
+        *,
+        conversation_id: str,
+        run_id: str,
+    ) -> dict[str, Any] | None:
+        cancelled_nodes = self._safe_get_conversation_nodes(
+            where={"$and": [{"entity_type": "workflow_cancelled"}, {"run_id": run_id}]},
+            limit=1,
+        )
+        if cancelled_nodes:
+            return None
+
+        req_nodes = self._safe_get_conversation_nodes(
+            where={
+                "$and": [
+                    {"entity_type": "workflow_cancel_request"},
+                    {"run_id": run_id},
+                    {"conversation_id": conversation_id},
+                ]
+            },
+            limit=10_000,
+        )
+        if not req_nodes:
+            return None
+
+        try:
+            watermark = int(self.conversation_engine.meta_sqlite.current_user_seq(conversation_id))
+        except Exception:
+            watermark = None
+
+        req_best: dict[str, Any] | None = None
+        for node in req_nodes:
+            md = getattr(node, "metadata", {}) or {}
+            try:
+                seq = int(md.get("seq", -1))
+            except Exception:
+                seq = -1
+            if seq < 0:
+                continue
+            if watermark is not None and seq > watermark:
+                continue
+            if req_best is None or seq < int(req_best["seq"]):
+                req_best = {
+                    "node_id": str(getattr(node, "id", "") or ""),
+                    "seq": seq,
+                    "watermark": watermark,
+                }
+        return req_best
+
+    def _persist_cancelled_terminal(
+        self,
+        *,
+        conversation_id: str,
+        workflow_id: str,
+        run_id: str,
+        accepted_step_seq: int,
+        cancel_info: dict[str, Any] | None,
+        last_processed_node_id: str | None = None,
+    ) -> str:
+        node_id = f"wf_cancelled|{run_id}"
+        existing = self.conversation_engine.backend.node_get(ids=[node_id], include=[])
+        if existing.get("ids"):
+            return node_id
+
+        req_node_id = None if not cancel_info else str(cancel_info.get("node_id") or "")
+        req_seq = None if not cancel_info else cancel_info.get("seq")
+        watermark = None if not cancel_info else cancel_info.get("watermark")
+        excerpt = f"workflow cancelled run_id={run_id} accepted_step_seq={accepted_step_seq}"
+        span = Span(**_make_trace_span(conversation_id=conversation_id, excerpt=excerpt, doc_id=f"conv:{conversation_id}"))
+        node = ConversationNode(
+            id=node_id,
+            label="Workflow cancelled",
+            type="entity",
+            doc_id=node_id,
+            summary=excerpt,
+            mentions=[Grounding(spans=[span])],
+            properties={"entity_type": "workflow_cancelled"},
+            metadata={
+                "entity_type": "workflow_cancelled",
+                "workflow_id": workflow_id,
+                "run_id": run_id,
+                "conversation_id": conversation_id,
+                "accepted_step_seq": int(accepted_step_seq),
+                "cancel_request_node_id": req_node_id or None,
+                "cancel_request_seq": req_seq,
+                "accepted_watermark": watermark,
+                "last_processed_node_id": (str(last_processed_node_id) if last_processed_node_id else None),
+                "level_from_root": 0,
+            },
+            conversation_id=conversation_id,
+            role="system",
+            turn_index=None,
+            level_from_root=0,
+            domain_id=None,
+            canonical_entity_id=None,
+            embedding=None,
+        )
+        self.conversation_engine.add_node(node)
+
+        run_node_id = f"wf_run|{run_id}"
+        run_node = self.conversation_engine.backend.node_get(ids=[run_node_id], include=[])
+        if run_node.get("ids"):
+            edge_id = str(stable_id("workflow.edge", "cancelled", run_node_id, node_id))
+            edge_existing = self.conversation_engine.backend.edge_get(ids=[edge_id], include=[])
+            if not edge_existing.get("ids"):
+                edge = ConversationEdge(
+                    id=edge_id,
+                    source_ids=[run_node_id],
+                    target_ids=[node_id],
+                    relation="wf_cancelled",
+                    label="wf_cancelled",
+                    type="relationship",
+                    summary="workflow cancelled",
+                    doc_id=f"wf_cancelled|{run_id}",
+                    mentions=[Grounding(spans=[Span.from_dummy_for_conversation()])],
+                    domain_id=None,
+                    canonical_entity_id=None,
+                    properties={},
+                    embedding=None,
+                    metadata={"entity_type": "conversation_edge", "run_id": run_id, "conversation_id": conversation_id},
+                    source_edge_ids=[],
+                    target_edge_ids=[],
+                )
+                self.conversation_engine.add_edge(edge)
+
+        if req_node_id:
+            req_edge_id = str(stable_id("workflow.edge", "cancel_reconciled", req_node_id, node_id))
+            req_edge_existing = self.conversation_engine.backend.edge_get(ids=[req_edge_id], include=[])
+            if not req_edge_existing.get("ids"):
+                req_edge = ConversationEdge(
+                    id=req_edge_id,
+                    source_ids=[req_node_id],
+                    target_ids=[node_id],
+                    relation="wf_cancel_reconciled",
+                    label="wf_cancel_reconciled",
+                    type="relationship",
+                    summary="cancel request reconciled",
+                    doc_id=f"wf_cancelled|{run_id}",
+                    mentions=[Grounding(spans=[Span.from_dummy_for_conversation()])],
+                    domain_id=None,
+                    canonical_entity_id=None,
+                    properties={},
+                    embedding=None,
+                    metadata={"entity_type": "conversation_edge", "run_id": run_id, "conversation_id": conversation_id},
+                    source_edge_ids=[],
+                    target_edge_ids=[],
+                )
+                self.conversation_engine.add_edge(req_edge)
+
+        if last_processed_node_id:
+            cancelled_at_edge_id = str(stable_id("workflow.edge", "cancelled_at", node_id, str(last_processed_node_id)))
+            cancelled_at_edge_existing = self.conversation_engine.backend.edge_get(ids=[cancelled_at_edge_id], include=[])
+            if not cancelled_at_edge_existing.get("ids"):
+                cancelled_at_edge = ConversationEdge(
+                    id=cancelled_at_edge_id,
+                    source_ids=[node_id],
+                    target_ids=[str(last_processed_node_id)],
+                    relation="wf_cancelled_at",
+                    label="wf_cancelled_at",
+                    type="relationship",
+                    summary="workflow cancelled at node",
+                    doc_id=f"wf_cancelled|{run_id}",
+                    mentions=[Grounding(spans=[Span.from_dummy_for_conversation()])],
+                    domain_id=None,
+                    canonical_entity_id=None,
+                    properties={},
+                    embedding=None,
+                    metadata={"entity_type": "conversation_edge", "run_id": run_id, "conversation_id": conversation_id},
+                    source_edge_ids=[],
+                    target_edge_ids=[],
+                )
+                self.conversation_engine.add_edge(cancelled_at_edge)
+        return node_id
+
     def _persist_workflow_run(
         self,
         conversation_id: str,
@@ -1276,10 +1539,21 @@ class WorkflowRuntime:
         return n
 
     def _update_workflow_run_status(self, conversation_id: str, run_id: str, status: str) -> None:
-        # minimal approach: add an update node/event rather than mutate-in-place
-        # (your engine likely doesn’t do partial updates easily)
-        # You can later add a redirect/tombstone model update.
-        return
+        node_id = f"wf_run|{run_id}"
+        got = self.conversation_engine.get_nodes(ids=[node_id], limit=1)
+        if not got:
+            return
+        node = got[0]
+        node.metadata = dict(getattr(node, "metadata", {}) or {})
+        node.metadata["status"] = status
+        node.summary = f"workflow_run {node.metadata.get('workflow_id', '')} {run_id} status={status}"
+        try:
+            props = dict(getattr(node, "properties", {}) or {})
+            props["status"] = status
+            node.properties = props
+        except Exception:
+            pass
+        self.conversation_engine.add_node(node)
 
     def _persist_step_exec(
         self,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextvars
+import json
 import sqlite3
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -229,6 +230,111 @@ class EngineSQLite:
                     PRIMARY KEY(namespace, consumer)
                 )
                 """
+            )
+
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS workflow_design_projection_head (
+                    workflow_id TEXT PRIMARY KEY,
+                    current_version INTEGER NOT NULL,
+                    active_tip_version INTEGER NOT NULL,
+                    last_authoritative_seq INTEGER NOT NULL,
+                    last_materialized_seq INTEGER NOT NULL,
+                    projection_schema_version INTEGER NOT NULL,
+                    snapshot_schema_version INTEGER NOT NULL,
+                    materialization_status TEXT NOT NULL,
+                    updated_at_ms INTEGER NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS workflow_design_projection_versions (
+                    workflow_id TEXT NOT NULL,
+                    version INTEGER NOT NULL,
+                    prev_version INTEGER NOT NULL,
+                    target_seq INTEGER NOT NULL,
+                    created_at_ms INTEGER NOT NULL,
+                    PRIMARY KEY (workflow_id, version)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS workflow_design_projection_dropped_ranges (
+                    workflow_id TEXT NOT NULL,
+                    start_seq INTEGER NOT NULL,
+                    end_seq INTEGER NOT NULL,
+                    start_version INTEGER NOT NULL,
+                    end_version INTEGER NOT NULL,
+                    PRIMARY KEY (workflow_id, start_seq, end_seq)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS workflow_design_snapshots (
+                    workflow_id TEXT NOT NULL,
+                    version INTEGER NOT NULL,
+                    seq INTEGER NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    schema_version INTEGER NOT NULL,
+                    created_at_ms INTEGER NOT NULL,
+                    PRIMARY KEY (workflow_id, version)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS workflow_design_version_deltas (
+                    workflow_id TEXT NOT NULL,
+                    version INTEGER NOT NULL,
+                    prev_version INTEGER NOT NULL,
+                    target_seq INTEGER NOT NULL,
+                    forward_json TEXT NOT NULL,
+                    inverse_json TEXT NOT NULL,
+                    schema_version INTEGER NOT NULL,
+                    created_at_ms INTEGER NOT NULL,
+                    PRIMARY KEY (workflow_id, version)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS server_runs (
+                    run_id TEXT PRIMARY KEY,
+                    conversation_id TEXT NOT NULL,
+                    workflow_id TEXT NOT NULL,
+                    user_id TEXT,
+                    user_turn_node_id TEXT,
+                    assistant_turn_node_id TEXT,
+                    status TEXT NOT NULL,
+                    cancel_requested INTEGER NOT NULL DEFAULT 0,
+                    result_json TEXT,
+                    error_json TEXT,
+                    created_at_ms INTEGER NOT NULL,
+                    updated_at_ms INTEGER NOT NULL,
+                    started_at_ms INTEGER,
+                    finished_at_ms INTEGER
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS server_run_events (
+                    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+                    run_id TEXT NOT NULL,
+                    event_type TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    created_at_ms INTEGER NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_server_runs_status ON server_runs(status, updated_at_ms)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_server_run_events_run_seq ON server_run_events(run_id, seq)"
             )
 
 
@@ -803,6 +909,18 @@ class EngineSQLite:
             # advance cursor: next batch starts after the last seq we just yielded
             next_seq = int(rows[-1][0]) + 1
 
+    def prune_entity_events_after(self, *, namespace: str = "default", to_seq: int) -> int:
+        """Delete namespace events with seq > to_seq.
+
+        Used by workflow-design history branching to discard superseded redo events.
+        """
+        with self.transaction() as conn:
+            cur = conn.execute(
+                "DELETE FROM entity_events WHERE namespace = ? AND seq > ?",
+                (namespace, int(to_seq)),
+            )
+            return int(cur.rowcount or 0)
+
     # def iter_entity_events(
     #     self,
     #     *,
@@ -854,4 +972,463 @@ class EngineSQLite:
                 SET last_seq=excluded.last_seq, updated_at=excluded.updated_at
                 """,
                 (namespace, consumer, int(last_seq), now),
+            )
+
+    def get_latest_entity_event_seq(self, *, namespace: str = "default") -> int:
+        with self.transaction() as conn:
+            row = conn.execute(
+                "SELECT COALESCE(MAX(seq), 0) FROM entity_events WHERE namespace = ?",
+                (namespace,),
+            ).fetchone()
+        return int(row[0]) if row else 0
+
+    def get_workflow_design_projection(self, *, workflow_id: str) -> Optional[dict[str, Any]]:
+        with self.connect() as conn:
+            head = conn.execute(
+                """
+                SELECT workflow_id, current_version, active_tip_version,
+                       last_authoritative_seq, last_materialized_seq,
+                       projection_schema_version, snapshot_schema_version,
+                       materialization_status, updated_at_ms
+                FROM workflow_design_projection_head
+                WHERE workflow_id = ?
+                """,
+                (workflow_id,),
+            ).fetchone()
+            if head is None:
+                return None
+            versions = conn.execute(
+                """
+                SELECT version, prev_version, target_seq, created_at_ms
+                FROM workflow_design_projection_versions
+                WHERE workflow_id = ?
+                ORDER BY version ASC
+                """,
+                (workflow_id,),
+            ).fetchall()
+            dropped = conn.execute(
+                """
+                SELECT start_seq, end_seq, start_version, end_version
+                FROM workflow_design_projection_dropped_ranges
+                WHERE workflow_id = ?
+                ORDER BY start_seq ASC, end_seq ASC
+                """,
+                (workflow_id,),
+            ).fetchall()
+        return {
+            "workflow_id": str(head[0]),
+            "current_version": int(head[1]),
+            "active_tip_version": int(head[2]),
+            "last_authoritative_seq": int(head[3]),
+            "last_materialized_seq": int(head[4]),
+            "projection_schema_version": int(head[5]),
+            "snapshot_schema_version": int(head[6]),
+            "materialization_status": str(head[7]),
+            "updated_at_ms": int(head[8]),
+            "versions": [
+                {
+                    "version": int(row[0]),
+                    "prev_version": int(row[1]),
+                    "target_seq": int(row[2]),
+                    "created_at_ms": int(row[3]),
+                }
+                for row in versions
+            ],
+            "dropped_ranges": [
+                {
+                    "start_seq": int(row[0]),
+                    "end_seq": int(row[1]),
+                    "start_version": int(row[2]),
+                    "end_version": int(row[3]),
+                }
+                for row in dropped
+            ],
+        }
+
+    def replace_workflow_design_projection(
+        self,
+        *,
+        workflow_id: str,
+        head: dict[str, Any],
+        versions: list[dict[str, Any]],
+        dropped_ranges: list[dict[str, Any]],
+    ) -> None:
+        updated_at_ms = int(head.get("updated_at_ms") or self._now_epoch() * 1000)
+        with self.transaction() as conn:
+            conn.execute("DELETE FROM workflow_design_projection_versions WHERE workflow_id = ?", (workflow_id,))
+            conn.execute("DELETE FROM workflow_design_projection_dropped_ranges WHERE workflow_id = ?", (workflow_id,))
+            conn.execute(
+                """
+                INSERT INTO workflow_design_projection_head(
+                    workflow_id, current_version, active_tip_version,
+                    last_authoritative_seq, last_materialized_seq,
+                    projection_schema_version, snapshot_schema_version,
+                    materialization_status, updated_at_ms
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(workflow_id) DO UPDATE SET
+                    current_version = excluded.current_version,
+                    active_tip_version = excluded.active_tip_version,
+                    last_authoritative_seq = excluded.last_authoritative_seq,
+                    last_materialized_seq = excluded.last_materialized_seq,
+                    projection_schema_version = excluded.projection_schema_version,
+                    snapshot_schema_version = excluded.snapshot_schema_version,
+                    materialization_status = excluded.materialization_status,
+                    updated_at_ms = excluded.updated_at_ms
+                """,
+                (
+                    workflow_id,
+                    int(head.get("current_version") or 0),
+                    int(head.get("active_tip_version") or 0),
+                    int(head.get("last_authoritative_seq") or 0),
+                    int(head.get("last_materialized_seq") or 0),
+                    int(head.get("projection_schema_version") or 1),
+                    int(head.get("snapshot_schema_version") or 1),
+                    str(head.get("materialization_status") or "ready"),
+                    updated_at_ms,
+                ),
+            )
+            if versions:
+                conn.executemany(
+                    """
+                    INSERT INTO workflow_design_projection_versions(
+                        workflow_id, version, prev_version, target_seq, created_at_ms
+                    ) VALUES (?, ?, ?, ?, ?)
+                    """,
+                    [
+                        (
+                            workflow_id,
+                            int(item.get("version") or 0),
+                            int(item.get("prev_version") or 0),
+                            int(item.get("target_seq") or 0),
+                            int(item.get("created_at_ms") or 0),
+                        )
+                        for item in versions
+                    ],
+                )
+            if dropped_ranges:
+                conn.executemany(
+                    """
+                    INSERT INTO workflow_design_projection_dropped_ranges(
+                        workflow_id, start_seq, end_seq, start_version, end_version
+                    ) VALUES (?, ?, ?, ?, ?)
+                    """,
+                    [
+                        (
+                            workflow_id,
+                            int(item.get("start_seq") or 0),
+                            int(item.get("end_seq") or 0),
+                            int(item.get("start_version") or 0),
+                            int(item.get("end_version") or 0),
+                        )
+                        for item in dropped_ranges
+                    ],
+                )
+
+    def clear_workflow_design_projection(self, *, workflow_id: str) -> None:
+        with self.transaction() as conn:
+            conn.execute("DELETE FROM workflow_design_projection_versions WHERE workflow_id = ?", (workflow_id,))
+            conn.execute("DELETE FROM workflow_design_projection_dropped_ranges WHERE workflow_id = ?", (workflow_id,))
+            conn.execute("DELETE FROM workflow_design_projection_head WHERE workflow_id = ?", (workflow_id,))
+
+    def put_workflow_design_snapshot(
+        self,
+        *,
+        workflow_id: str,
+        version: int,
+        seq: int,
+        payload_json: str,
+        schema_version: int,
+    ) -> None:
+        with self.transaction() as conn:
+            conn.execute(
+                """
+                INSERT INTO workflow_design_snapshots(
+                    workflow_id, version, seq, payload_json, schema_version, created_at_ms
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(workflow_id, version) DO UPDATE SET
+                    seq = excluded.seq,
+                    payload_json = excluded.payload_json,
+                    schema_version = excluded.schema_version,
+                    created_at_ms = excluded.created_at_ms
+                """,
+                (
+                    workflow_id,
+                    int(version),
+                    int(seq),
+                    payload_json,
+                    int(schema_version),
+                    int(self._now_epoch() * 1000),
+                ),
+            )
+
+    def get_workflow_design_snapshot(
+        self,
+        *,
+        workflow_id: str,
+        max_version: int,
+        schema_version: int,
+    ) -> Optional[dict[str, Any]]:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT workflow_id, version, seq, payload_json, schema_version, created_at_ms
+                FROM workflow_design_snapshots
+                WHERE workflow_id = ? AND version <= ? AND schema_version = ?
+                ORDER BY version DESC
+                LIMIT 1
+                """,
+                (workflow_id, int(max_version), int(schema_version)),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "workflow_id": str(row[0]),
+            "version": int(row[1]),
+            "seq": int(row[2]),
+            "payload_json": str(row[3]),
+            "schema_version": int(row[4]),
+            "created_at_ms": int(row[5]),
+        }
+
+    def clear_workflow_design_snapshots(self, *, workflow_id: str) -> None:
+        with self.transaction() as conn:
+            conn.execute("DELETE FROM workflow_design_snapshots WHERE workflow_id = ?", (workflow_id,))
+
+    def put_workflow_design_delta(
+        self,
+        *,
+        workflow_id: str,
+        version: int,
+        prev_version: int,
+        target_seq: int,
+        forward_json: str,
+        inverse_json: str,
+        schema_version: int,
+    ) -> None:
+        with self.transaction() as conn:
+            conn.execute(
+                """
+                INSERT INTO workflow_design_version_deltas(
+                    workflow_id, version, prev_version, target_seq,
+                    forward_json, inverse_json, schema_version, created_at_ms
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(workflow_id, version) DO UPDATE SET
+                    prev_version = excluded.prev_version,
+                    target_seq = excluded.target_seq,
+                    forward_json = excluded.forward_json,
+                    inverse_json = excluded.inverse_json,
+                    schema_version = excluded.schema_version,
+                    created_at_ms = excluded.created_at_ms
+                """,
+                (
+                    workflow_id,
+                    int(version),
+                    int(prev_version),
+                    int(target_seq),
+                    forward_json,
+                    inverse_json,
+                    int(schema_version),
+                    int(self._now_epoch() * 1000),
+                ),
+            )
+
+    def get_workflow_design_delta(
+        self,
+        *,
+        workflow_id: str,
+        version: int,
+        schema_version: int,
+    ) -> Optional[dict[str, Any]]:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT workflow_id, version, prev_version, target_seq,
+                       forward_json, inverse_json, schema_version, created_at_ms
+                FROM workflow_design_version_deltas
+                WHERE workflow_id = ? AND version = ? AND schema_version = ?
+                """,
+                (workflow_id, int(version), int(schema_version)),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "workflow_id": str(row[0]),
+            "version": int(row[1]),
+            "prev_version": int(row[2]),
+            "target_seq": int(row[3]),
+            "forward_json": str(row[4]),
+            "inverse_json": str(row[5]),
+            "schema_version": int(row[6]),
+            "created_at_ms": int(row[7]),
+        }
+
+    def clear_workflow_design_deltas(self, *, workflow_id: str) -> None:
+        with self.transaction() as conn:
+            conn.execute("DELETE FROM workflow_design_version_deltas WHERE workflow_id = ?", (workflow_id,))
+
+    @staticmethod
+    def _decode_run_json(raw: Any) -> Any:
+        if raw in (None, ""):
+            return None
+        return json.loads(str(raw))
+
+    def create_server_run(
+        self,
+        *,
+        run_id: str,
+        conversation_id: str,
+        workflow_id: str,
+        user_id: str | None,
+        user_turn_node_id: str,
+        status: str = "queued",
+    ) -> None:
+        now = int(self._now_epoch() * 1000)
+        with self.transaction() as conn:
+            conn.execute(
+                """
+                INSERT INTO server_runs(
+                    run_id, conversation_id, workflow_id, user_id,
+                    user_turn_node_id, assistant_turn_node_id, status,
+                    cancel_requested, result_json, error_json,
+                    created_at_ms, updated_at_ms, started_at_ms, finished_at_ms
+                ) VALUES (?, ?, ?, ?, ?, NULL, ?, 0, NULL, NULL, ?, ?, NULL, NULL)
+                """,
+                (run_id, conversation_id, workflow_id, user_id, user_turn_node_id, status, now, now),
+            )
+
+    def get_server_run(self, run_id: str) -> Optional[dict[str, Any]]:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT run_id, conversation_id, workflow_id, user_id, user_turn_node_id,
+                       assistant_turn_node_id, status, cancel_requested, result_json,
+                       error_json, created_at_ms, updated_at_ms, started_at_ms, finished_at_ms
+                FROM server_runs
+                WHERE run_id = ?
+                """,
+                (run_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        status = str(row[6])
+        return {
+            "run_id": str(row[0]),
+            "conversation_id": str(row[1]),
+            "workflow_id": str(row[2]),
+            "user_id": None if row[3] is None else str(row[3]),
+            "user_turn_node_id": None if row[4] is None else str(row[4]),
+            "assistant_turn_node_id": None if row[5] is None else str(row[5]),
+            "status": status,
+            "cancel_requested": bool(int(row[7] or 0)),
+            "result": self._decode_run_json(row[8]),
+            "error": self._decode_run_json(row[9]),
+            "created_at_ms": int(row[10]),
+            "updated_at_ms": int(row[11]),
+            "started_at_ms": None if row[12] is None else int(row[12]),
+            "finished_at_ms": None if row[13] is None else int(row[13]),
+            "terminal": status in {"succeeded", "failed", "cancelled"},
+        }
+
+    def list_server_run_events(self, run_id: str, *, after_seq: int = 0, limit: int = 500) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT seq, run_id, event_type, payload_json, created_at_ms
+                FROM server_run_events
+                WHERE run_id = ? AND seq > ?
+                ORDER BY seq ASC
+                LIMIT ?
+                """,
+                (run_id, int(after_seq), int(limit)),
+            ).fetchall()
+        return [
+            {
+                "seq": int(row[0]),
+                "run_id": str(row[1]),
+                "event_type": str(row[2]),
+                "payload": self._decode_run_json(row[3]) or {},
+                "created_at_ms": int(row[4]),
+            }
+            for row in rows
+        ]
+
+    def append_server_run_event(
+        self,
+        run_id: str,
+        event_type: str,
+        payload_json: str,
+    ) -> dict[str, Any]:
+        now = int(self._now_epoch() * 1000)
+        with self.transaction() as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO server_run_events(run_id, event_type, payload_json, created_at_ms)
+                VALUES (?, ?, ?, ?)
+                """,
+                (run_id, event_type, payload_json, now),
+            )
+            seq = int(cur.lastrowid)
+        return {
+            "seq": seq,
+            "run_id": run_id,
+            "event_type": event_type,
+            "payload": self._decode_run_json(payload_json) or {},
+            "created_at_ms": now,
+        }
+
+    def update_server_run(
+        self,
+        *,
+        run_id: str,
+        status: str,
+        assistant_turn_node_id: str | None,
+        result_json: str | None,
+        error_json: str | None,
+        started_at_ms: int | None,
+        finished_at_ms: int | None,
+        cancel_requested: bool | None = None,
+    ) -> None:
+        now = int(self._now_epoch() * 1000)
+        with self.transaction() as conn:
+            conn.execute(
+                """
+                UPDATE server_runs
+                SET status = ?,
+                    assistant_turn_node_id = ?,
+                    result_json = ?,
+                    error_json = ?,
+                    started_at_ms = ?,
+                    finished_at_ms = ?,
+                    cancel_requested = COALESCE(?, cancel_requested),
+                    updated_at_ms = ?
+                WHERE run_id = ?
+                """,
+                (
+                    status,
+                    assistant_turn_node_id,
+                    result_json,
+                    error_json,
+                    started_at_ms,
+                    finished_at_ms,
+                    (None if cancel_requested is None else int(bool(cancel_requested))),
+                    now,
+                    run_id,
+                ),
+            )
+
+    def request_server_run_cancel(self, *, run_id: str) -> None:
+        now = int(self._now_epoch() * 1000)
+        with self.transaction() as conn:
+            conn.execute(
+                """
+                UPDATE server_runs
+                SET cancel_requested = 1,
+                    status = CASE
+                        WHEN status IN ('cancelled', 'failed', 'succeeded') THEN status
+                        ELSE 'cancelling'
+                    END,
+                    updated_at_ms = ?
+                WHERE run_id = ?
+                """,
+                (now, run_id),
             )

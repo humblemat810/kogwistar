@@ -1,0 +1,85 @@
+services:
+  app-chroma:
+    profiles: ["chroma"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: kogwistar:local
+    environment:
+      HOST: 0.0.0.0
+      PORT: 8765
+      GKE_BACKEND: chroma
+      GKE_PERSIST_DIRECTORY: /app/data
+    ports:
+      - "8765:8765"
+    volumes:
+      - gke_chroma_data:/app/data
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import json, urllib.request; data=json.load(urllib.request.urlopen('http://127.0.0.1:8765/health')); assert data['ok']",
+        ]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  postgres:
+    profiles: ["pg"]
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: kogwistar
+      POSTGRES_USER: kogwistar
+      POSTGRES_PASSWORD: kogwistar
+    ports:
+      - "5432:5432"
+    volumes:
+      - gke_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  app-pg:
+    profiles: ["pg"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: kogwistar:local
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      HOST: 0.0.0.0
+      PORT: 8765
+      GKE_BACKEND: pg
+      GKE_PG_URL: postgresql+psycopg://kogwistar:kogwistar@postgres:5432/kogwistar
+      GKE_PG_SCHEMA: gke
+      GKE_EMBEDDING_DIM: 1536
+      GKE_PERSIST_DIRECTORY: /app/data
+    ports:
+      - "8765:8765"
+    volumes:
+      - gke_pg_app_data:/app/data
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import json, urllib.request; data=json.load(urllib.request.urlopen('http://127.0.0.1:8765/health')); assert data['ok'] and data['backend']=='pg'",
+        ]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+volumes:
+  gke_chroma_data:
+  gke_pg_data:
+  gke_pg_app_data:

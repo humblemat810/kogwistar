@@ -3,7 +3,6 @@ from __future__ import annotations
 import contextvars
 import functools
 from contextvars import ContextVar
-from regex import P
 from starlette.types import Scope, Receive, Send
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse, HTMLResponse
@@ -22,14 +21,26 @@ import os
 import pathlib
 from pydantic import BaseModel, Field
 from starlette.middleware.base import BaseHTTPMiddleware
+import sqlite3
 import time
 from threading import Lock
 from typing import Callable, List, Optional
-from typing import Any, Dict, Set
+from typing import Any, cast, Dict, Set
 import uuid
 from graph_knowledge_engine.shortids import run_id_ctx, run_id_scope
 from graph_knowledge_engine import shortids
 from graph_knowledge_engine.id_provider import new_id_str, stable_id
+from graph_knowledge_engine.server.chat_api import create_chat_router
+from graph_knowledge_engine.server.runtime_api import create_runtime_router
+from graph_knowledge_engine.server.chat_mcp import build_conversation_mcp, build_workflow_mcp
+from graph_knowledge_engine.server.bootstrap import (
+    build_graph_engine,
+    build_sqlalchemy_engine,
+    load_server_storage_settings,
+)
+from graph_knowledge_engine.server.chat_service import ChatRunService
+from graph_knowledge_engine.server.run_registry import RunRegistry
+from graph_knowledge_engine.engine_core.search_index.models import AddIndexEntriesInput
 # --- JWT config (env-driven) ---
 JWT_ALG = os.getenv("JWT_ALG", "HS256")          # HS256 (shared secret) or RS256 (public key)
 JWT_SECRET = os.getenv("JWT_SECRET", "dev-secret-change-me")  # HS256 secret OR RS256 public key
@@ -47,6 +58,8 @@ class Role(str, Enum):
     RW = "rw"
 class NameSpace(str, Enum):
     DOCS = "docs"
+    CONVERSATION = "conversation"
+    WORKFLOW = "workflow"
     WISDOM = "wisdom"
 # tool name -> allowed roles
 TOOL_ROLES: dict[str, set[str]] = {}
@@ -90,18 +103,11 @@ def _decode_role_from_headers(scope: Scope) -> str:
     except Exception:
         return Role.RO.value
 # ---- Engine + MCP ----
-persist_directory = os.environ.get("MCP_CHROMA_DIR") or "./.chroma-mcp"
-if MCP_CHROMA_DIR := (os.environ.get("MCP_CHROMA_DIR") or "./.chroma-mcp"):
-    pathparts = list(pathlib.Path(MCP_CHROMA_DIR).parts)
-else:
-    raise Exception("MCP_CHROMA_DIR undefined")
-pathparts.insert(-1, 'index')
-index_dir = os.path.join(*pathparts) or "./index/chroma-mcp"
-index_db_path = os.path.join(*(pathparts + ['index.db']))
-
-conversation_persist_directory = os.environ.get("MCP_CHROMA_DIR_CONVERSATION") or (persist_directory + "-conversation")
-# ---- Wisdom + MCP ----
-wisdom_persist_directory = os.environ.get("MCP_CHROMA_DIR_WISDOM") or (persist_directory + "-wisdom")
+storage_settings = load_server_storage_settings()
+persist_directory = storage_settings.knowledge_dir
+conversation_persist_directory = storage_settings.conversation_dir
+workflow_persist_directory = storage_settings.workflow_dir
+wisdom_persist_directory = storage_settings.wisdom_dir
 
 
 class _LazyResource:
@@ -137,31 +143,70 @@ class _LazyResource:
         return f"<_LazyResource {object.__getattribute__(self, '_name')} ({state})>"
 
 
-def _ensure_index_storage() -> None:
-    os.makedirs(index_dir, exist_ok=True)
+def _build_pg_sqlalchemy_engine():
+    return build_sqlalchemy_engine(storage_settings)
+
+
+def _shared_sqlalchemy_engine():
+    if storage_settings.backend != "pg":
+        return None
+    return pg_sqlalchemy_engine.get()
 
 
 def _build_engine() -> GraphKnowledgeEngine:
-    return GraphKnowledgeEngine(persist_directory=persist_directory)
+    return build_graph_engine(
+        settings=storage_settings,
+        graph_type="knowledge",
+        sa_engine=_shared_sqlalchemy_engine(),
+    )
 
 
 def _build_conversation_engine() -> GraphKnowledgeEngine:
-    return GraphKnowledgeEngine(
-        persist_directory=conversation_persist_directory,
-        kg_graph_type="conversation",
+    eng = build_graph_engine(
+        settings=storage_settings,
+        graph_type="conversation",
+        sa_engine=_shared_sqlalchemy_engine(),
+    )
+    return eng
+
+
+def _build_workflow_engine() -> GraphKnowledgeEngine:
+    return build_graph_engine(
+        settings=storage_settings,
+        graph_type="workflow",
+        sa_engine=_shared_sqlalchemy_engine(),
     )
 
 
 def _build_wisdom_engine() -> GraphKnowledgeEngine:
-    return GraphKnowledgeEngine(persist_directory=wisdom_persist_directory)
+    return build_graph_engine(
+        settings=storage_settings,
+        graph_type="wisdom",
+        sa_engine=_shared_sqlalchemy_engine(),
+    )
 
 
+pg_sqlalchemy_engine = _LazyResource(_build_pg_sqlalchemy_engine, "pg_sqlalchemy_engine")
 engine: GraphKnowledgeEngine = _LazyResource(_build_engine, "knowledge_engine")
 conversation_engine = _LazyResource(_build_conversation_engine, "conversation_engine")
+workflow_engine = _LazyResource(_build_workflow_engine, "workflow_engine")
 wisdom_engine = _LazyResource(_build_wisdom_engine, "wisdom_engine")
 gq = _LazyResource(lambda: GraphQuery(engine.get()), "knowledge_graph_query")
 conversation_gq = _LazyResource(lambda: GraphQuery(conversation_engine.get()), "conversation_graph_query")
 wisdom_gq = _LazyResource(lambda: GraphQuery(wisdom_engine.get()), "wisdom_graph_query")
+run_registry = _LazyResource(
+    lambda: RunRegistry(workflow_engine.get().meta_sqlite),
+    "chat_run_registry",
+)
+chat_service = _LazyResource(
+    lambda: ChatRunService(
+        get_knowledge_engine=lambda: engine.get(),
+        get_conversation_engine=lambda: conversation_engine.get(),
+        get_workflow_engine=lambda: workflow_engine.get(),
+        run_registry=run_registry.get(),
+    ),
+    "chat_run_service",
+)
 templates = Jinja2Templates(directory=os.path.join(str(pathlib.Path(__file__).parent),"templates"))
 
 # Fastapi
@@ -261,7 +306,20 @@ class MCPRoleMiddleware:
             await self.app(scope, receive, _send)
         finally:
             current_role.reset(token)
-from fastmcp.tools.tool import FunctionTool
+from fastmcp.tools.function_tool import FunctionTool
+def _tool_name_candidates(name: str) -> list[str]:
+    base = str(name or "")
+    out = [base]
+    if "." in base:
+        out.append(base.replace(".", "_"))
+    if "_" in base:
+        out.append(base.replace("_", "."))
+    seen = []
+    for item in out:
+        if item and item not in seen:
+            seen.append(item)
+    return seen
+
 def _filter_tool_list(lst: list[dict]) -> list[dict]:
     role = current_role.get()
     namespace = get_current_namespace()
@@ -270,8 +328,11 @@ def _filter_tool_list(lst: list[dict]) -> list[dict]:
         name = getattr(item, 'name', None) if type(item) is FunctionTool else None or item.get("name") or item.get("tool") or ""
         # accept either exact name or any recorded alias
         if name:
-            tool_roles = TOOL_ROLES.get(name, {Role.RO.value})
-            tool_namespace = TOOL_NAMESPACE.get(name, {NameSpace.DOCS.value})
+            tool_roles = {Role.RO.value}
+            tool_namespace = {NameSpace.DOCS.value}
+            for candidate in _tool_name_candidates(str(name)):
+                tool_roles = TOOL_ROLES.get(candidate, tool_roles)
+                tool_namespace = TOOL_NAMESPACE.get(candidate, tool_namespace)
             if role in tool_roles and namespace in tool_namespace:
                 out.append(item)
         else:
@@ -298,8 +359,11 @@ except Exception:  # pragma: no cover
 
 
 def _tool_allowed(tool_name: str, *, role: str, namespace: str) -> bool:
-    allowed_roles = TOOL_ROLES.get(tool_name, {Role.RO.value})
-    allowed_namespaces = TOOL_NAMESPACE.get(tool_name, {NameSpace.DOCS.value})
+    allowed_roles = {Role.RO.value}
+    allowed_namespaces = {NameSpace.DOCS.value}
+    for candidate in _tool_name_candidates(str(tool_name)):
+        allowed_roles = TOOL_ROLES.get(candidate, allowed_roles)
+        allowed_namespaces = TOOL_NAMESPACE.get(candidate, allowed_namespaces)
     return (role in allowed_roles) and (namespace in allowed_namespaces)
 
 
@@ -396,27 +460,49 @@ current_role: ContextVar[str] = ContextVar("current_role", default=Role.RO.value
 # Simple two-role lattice
 ROLE_ORDER = {"ro": 0, "rw": 1}  # read-only < read-write
 DEFAULT_ROLE = "ro"
+DEFAULT_NAMESPACE = NameSpace.DOCS.value
 
 
 def get_current_namespace() -> str:
     claims = claims_ctx.get() or {}
-    ns = (claims.get("ns") or "docs").lower()
-    return "wisdom" if ns == "wisdom" else "docs"
+    ns = str(claims.get("ns") or DEFAULT_NAMESPACE).lower()
+    allowed = {item.value for item in NameSpace}
+    return ns if ns in allowed else DEFAULT_NAMESPACE
+
+
+def get_current_subject() -> str | None:
+    claims = claims_ctx.get() or {}
+    sub = str(claims.get("sub") or "").strip()
+    return sub or None
+
+def _normalize_namespaces(expected: set[NameSpace] | NameSpace | set[str] | str) -> set[str]:
+    if isinstance(expected, set):
+        raw_items = list(expected)
+    else:
+        raw_items = [expected]
+    if not raw_items:
+        raise ValueError("At least 1 namespace has to be specified")
+    allowed = set()
+    valid = {item.value for item in NameSpace}
+    for item in raw_items:
+        value = str(item.value if isinstance(item, NameSpace) else item).lower()
+        if value not in valid:
+            raise ValueError(f"Unknown namespace: {item!r}")
+        allowed.add(value)
+    return allowed
+
+def require_namespace(expected: set[NameSpace] | NameSpace | set[str] | str):
+    allowed = _normalize_namespaces(expected)
+    actual = get_current_namespace()
+    if actual not in allowed:
+        raise HTTPException(status_code=403, detail=f"Forbidden: namespace '{actual}' is not permitted")
+    return actual
+
 from fastmcp.tools import FunctionTool
 def require_ns(expected: set[NameSpace] | NameSpace):
-    # only wrap fast mcp function tool
-    if type(expected) is Set:
-        if len(expected) == 0:
-            raise ValueError("At least 1 name space has to be specified")
-        if not all( i in NameSpace for i in expected):
-            raise ValueError("expected not in NameSpace")
-        expected2 = expected
-    if expected in NameSpace or type(expected) is str:
-        expected2 = {expected}
+    allowed = _normalize_namespaces(expected)
     
     def deco(fn: Callable):
-        # allowed : set[NameSpace | str] = expected2
-        allowed = expected2
         name = getattr(fn, "name", None) or getattr(fn, "__name__", None)
         if name is None:
             raise Exception('name not found')
@@ -426,7 +512,7 @@ def require_ns(expected: set[NameSpace] | NameSpace):
         @functools.wraps(fn)
         def wrapper(*args, **kwargs):
             actual = get_current_namespace()
-            if actual != expected:
+            if actual not in allowed:
                 # MCP tools throw regular exceptions; FastMCP wraps as tool error
                 raise HTTPException(status_code=403, detail=f"Forbidden: namespace '{actual}' cannot call this tool")
                 
@@ -682,17 +768,55 @@ def kg_viz_d3_json(doc_id: Optional[str] = None, mode: str = "reify") -> D3Out:
 
 
 
+conversation_mcp = build_conversation_mcp(
+    get_service=lambda: chat_service.get(),
+    tool_roles=tool_roles,
+    require_ns=require_ns,
+    role_ro=Role.RO,
+    role_rw=Role.RW,
+    ns_conversation=NameSpace.CONVERSATION,
+)
+workflow_mcp = build_workflow_mcp(
+    get_service=lambda: chat_service.get(),
+    tool_roles=tool_roles,
+    require_ns=require_ns,
+    role_ro=Role.RO,
+    role_rw=Role.RW,
+    ns_workflow=NameSpace.WORKFLOW,
+    get_subject=get_current_subject,
+)
+mcp.mount(conversation_mcp)
+mcp.mount(workflow_mcp)
+
 # ---- Build a unified FastAPI app: /mcp + /admin ----
 mcp_app = mcp.http_app(path='/mcp')
 app = FastAPI(title="KnowledgeEngine + MCP + Admin", lifespan=mcp_app.lifespan)
 app.add_middleware(MCPRoleMiddleware)
 app.add_middleware(JWTProtectMiddleware)
+app.include_router(
+    create_chat_router(
+        get_service=lambda: chat_service.get(),
+        require_role=require_role,
+        require_namespace=require_namespace,
+        conversation_namespace=NameSpace.CONVERSATION.value,
+        workflow_namespaces={NameSpace.CONVERSATION.value, NameSpace.WORKFLOW.value},
+    )
+)
+app.include_router(
+    create_runtime_router(
+        get_service=lambda: chat_service.get(),
+        require_role=require_role,
+        require_namespace=require_namespace,
+        runtime_namespaces={NameSpace.WORKFLOW.value},
+        get_subject=get_current_subject,
+    )
+)
 from datetime import datetime, timedelta, timezone
 
 class DevTokenInp(BaseModel):
     username: str = "dev"
     role: str = "ro"
-    ns : Literal["docs", "wisdom"]= "docs"
+    ns : Literal["docs", "conversation", "workflow", "wisdom"]= "docs"
 @app.post("/auth/dev-token")
 async def dev_token(request: Request):
     inp = DevTokenInp.model_validate((await request.json()))
@@ -714,7 +838,15 @@ async def dev_token(request: Request):
 # health
 @app.get("/health")
 def health():
-    return {"ok": True, "persist_directory": persist_directory}
+    return {
+        "ok": True,
+        "backend": storage_settings.backend,
+        "persist_directory": persist_directory,
+        "conversation_persist_directory": conversation_persist_directory,
+        "workflow_persist_directory": workflow_persist_directory,
+        "wisdom_persist_directory": wisdom_persist_directory,
+        "pg_schema_base": storage_settings.pg_schema_base if storage_settings.backend == "pg" else None,
+    }
 
 # DELETE /admin/doc/{doc_id}  (non-MCP utility)
 @app.delete("/admin/doc/{doc_id}")
@@ -774,8 +906,18 @@ def api_viz_cytoscape(
     doc_id: Optional[str] = None,
     mode: str = "reify",
     insertion_method: Optional[str] = None,   # NEW
+    graph_type: str = "knowledge",
 ):
-    payload = to_cytoscape(engine, doc_id=doc_id, mode=mode, insertion_method=insertion_method)
+    gt = (graph_type or "knowledge").lower()
+    if gt == "conversation":
+        use_engine = conversation_engine
+    elif gt == "workflow":
+        use_engine = workflow_engine
+    elif gt == "wisdom":
+        use_engine = wisdom_engine
+    else:
+        use_engine = engine
+    payload = to_cytoscape(use_engine, doc_id=doc_id, mode=mode, insertion_method=insertion_method)
     return JSONResponse(payload)
 
 @app.get("/viz/d3.bundle", response_class=HTMLResponse)
@@ -784,11 +926,13 @@ def viz_d3_bundle(
     doc_id: Optional[str] = None,
     mode: str = "reify",
     insertion_method: Optional[str] = None,
-    graph_type: str = "knowledge",  # knowledge|conversation|wisdom
+    graph_type: str = "knowledge",  # knowledge|conversation|workflow|wisdom
 ):
     gt = (graph_type or "knowledge").lower()
     if gt == "conversation":
         use_engine = conversation_engine
+    elif gt == "workflow":
+        use_engine = workflow_engine
     elif gt == "wisdom":
         use_engine = wisdom_engine
     else:
@@ -821,11 +965,13 @@ def api_viz_d3(
     doc_id: Optional[str] = None,
     mode: str = "reify",
     insertion_method: Optional[str] = None,
-    graph_type: Optional[str] = None,   # NEW: knowledge|conversation|wisdom
+    graph_type: Optional[str] = None,   # NEW: knowledge|conversation|workflow|wisdom
 ):
     graph_type = (graph_type or "knowledge").lower()
     if graph_type == "conversation":
         use_engine = conversation_engine
+    elif graph_type == "workflow":
+        use_engine = workflow_engine
     elif graph_type == "wisdom":
         use_engine = wisdom_engine
     else:
@@ -1162,125 +1308,6 @@ class IndexingItem(BaseModel):
     provision: str
     doc_id: Optional[str]
 
-class AddIndexEntriesInput(BaseModel):
-    index: List[IndexingItem]
-
-import sqlite3
-def maybe_index_vector(item: IndexingItem):
-    engine.backend.node_index_upsert(
-        # collection_name="semantic_index",
-        ids=[f"idx:{item.node_id}"],
-        metadatas=[{
-            "target_node_id": item.node_id,
-            "canonical_title": item.canonical_title,
-            "provision": item.provision,
-            "keywords": json.dumps(item.keywords),
-            "aliases": json.dumps(item.aliases),
-        }],
-        documents=[str(item.model_dump())],
-    )
-def ensure_index_tables(conn: sqlite3.Connection):
-    cur = conn.cursor()
-
-    # 1) base table
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS semantic_index (
-        id              INTEGER PRIMARY KEY AUTOINCREMENT,
-        node_id         TEXT    NOT NULL,
-        canonical_title TEXT    NOT NULL,
-        keywords        TEXT    NOT NULL DEFAULT '',
-        aliases         TEXT    NOT NULL DEFAULT '',
-        provision       TEXT    NOT NULL,
-        document_id     TEXT,
-        created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
-        updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
-        UNIQUE (node_id, canonical_title, provision)
-    );
-    """)
-
-    # 2) FTS5 table (no DROP here!)
-    cur.execute("""
-    CREATE VIRTUAL TABLE IF NOT EXISTS semantic_index_fts
-    USING fts5(
-        canonical_title,
-        provision,
-        keywords,
-        aliases,
-        content='semantic_index',
-        content_rowid='id'
-    );
-    """)
-
-    # 3) triggers to keep FTS in sync
-    # we write *all* 4 fields, not just title+provision
-    cur.executescript("""
-    CREATE TRIGGER IF NOT EXISTS semantic_index_ai
-    AFTER INSERT ON semantic_index
-    BEGIN
-        INSERT INTO semantic_index_fts(
-            rowid,
-            canonical_title,
-            provision,
-            keywords,
-            aliases
-        )
-        VALUES (
-            new.id,
-            new.canonical_title,
-            new.provision,
-            new.keywords,
-            new.aliases
-        );
-    END;
-
-    CREATE TRIGGER IF NOT EXISTS semantic_index_ad
-    AFTER DELETE ON semantic_index
-    BEGIN
-        DELETE FROM semantic_index_fts WHERE rowid = old.id;
-    END;
-
-    CREATE TRIGGER IF NOT EXISTS semantic_index_au
-    AFTER UPDATE ON semantic_index
-    BEGIN
-        UPDATE semantic_index_fts
-        SET
-            canonical_title = new.canonical_title,
-            provision       = new.provision,
-            keywords        = new.keywords,
-            aliases         = new.aliases
-        WHERE rowid = new.id;
-    END;
-    """)
-
-    # 4) extra helper tables (optional)
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS semantic_index_keyword (
-        id       INTEGER PRIMARY KEY AUTOINCREMENT,
-        index_id INTEGER NOT NULL REFERENCES semantic_index(id) ON DELETE CASCADE,
-        keyword  TEXT NOT NULL
-    );
-    """)
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_semantic_index_keyword_kw ON semantic_index_keyword(keyword);")
-
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS semantic_index_alias (
-        id       INTEGER PRIMARY KEY AUTOINCREMENT,
-        index_id INTEGER NOT NULL REFERENCES semantic_index(id) ON DELETE CASCADE,
-        alias    TEXT NOT NULL
-    );
-    """)
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_semantic_index_alias_alias ON semantic_index_alias(alias);")
-
-    conn.commit()
-
-
-def _ensure_index_tables_initialized() -> None:
-    _ensure_index_storage()
-    conn = sqlite3.connect(index_db_path)
-    try:
-        ensure_index_tables(conn)
-    finally:
-        conn.close()
 def _safe_upsert_fts(cur, idx_id, item):
     kw = " ".join(item.keywords) if item.keywords else ""
     al = " ".join(item.aliases) if item.aliases else ""
@@ -1297,141 +1324,19 @@ def _safe_upsert_fts(cur, idx_id, item):
         # mark to rebuild later, but don't kill the whole request
         print("WARNING: FTS table bad / missing, need rebuild:", e)
         # you could set a flag in another table, or just skip    
+
 @app.post("/api/add_index_entries")
 def add_index_entries(payload: AddIndexEntriesInput):
-    import sqlite3
-    _ensure_index_tables_initialized()
-    conn = sqlite3.connect(index_db_path)
-    conn.execute("PRAGMA foreign_keys = ON;")
-    cur = conn.cursor()
-    # upsert sqlite db with payload metadata,
-    # then upsert vectordb (chroma) with nodes and edges
-    try:
-        for item in payload.index:
-            kw = " ".join(item.keywords) if item.keywords else ""
-            al = " ".join(item.aliases) if item.aliases else ""
-
-            # upsert base table ONLY
-            cur.execute(
-                """
-                INSERT INTO semantic_index
-                    (node_id, canonical_title, keywords, aliases, provision, document_id)
-                VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT(node_id, canonical_title, provision) DO UPDATE SET
-                    canonical_title = excluded.canonical_title,
-                    keywords        = excluded.keywords,
-                    aliases         = excluded.aliases,
-                    provision       = excluded.provision,
-                    document_id     = excluded.document_id,
-                    updated_at      = CURRENT_TIMESTAMP
-                """,
-                (
-                    item.node_id,
-                    item.canonical_title,
-                    kw,
-                    al,
-                    item.provision,
-                    item.doc_id,
-                ),
-            )
-            maybe_index_vector(item)
-        conn.commit()
-    finally:
-        conn.close()
-
+    engine.search_index.upsert_entries(payload.index)
     return {"ok": True}
-from numpy import interp
+
 @app.get("/api/search_index_hybrid")
-def search_index_hybrid(q: str, limit: int = 10, resolve_node = False) -> Dict[str, Any]:
-    _ensure_index_tables_initialized()
-    conn = sqlite3.connect(index_db_path)
-    conn.row_factory = sqlite3.Row
-    cur = conn.cursor()
-
-    # 1. Lexical (FTS5)
-    cur.execute(
-        """
-        SELECT
-            s.id,
-            s.node_id,
-            s.canonical_title,
-            s.provision,
-            bm25(semantic_index_fts) AS fts_score
-        FROM semantic_index AS s
-        JOIN semantic_index_fts
-        ON semantic_index_fts.rowid = s.id
-        WHERE semantic_index_fts MATCH ?
-        ORDER BY fts_score
-        LIMIT ?;
-        """,
-        (q, limit),
+def search_index_hybrid(q: str, limit: int = 10, resolve_node: bool = False):
+    return engine.search_index.search_hybrid(
+        q=q,
+        limit=limit,
+        resolve_node=resolve_node,
     )
-    fts_rows = cur.fetchall()
-
-    # 2. Semantic (vector)
-    vector_results = engine.backend.node_index_query(
-        # collection_name="semantic_index",
-        query_texts=[q],
-        n_results=limit
-    )
-
-    # 3. Merge and normalize
-    combined = {}
-    # normalize scores to 0–1
-    fts_scores = [r["fts_score"] for r in fts_rows]
-    if fts_scores:
-        min_f, max_f = min(fts_scores), max(fts_scores)
-    else:
-        min_f, max_f = 0, 1
-    for r in fts_rows:
-        sid = r["id"]
-        combined[sid] = {
-            "node_id": r["node_id"],
-            "canonical_title": r["canonical_title"],
-            "provision": r["provision"],
-            "fts_score": interp(r["fts_score"], [max_f, min_f], [1.0, 0.0]),  # lower bm25 = better
-            "vec_score": 0.0,
-        }
-
-    for idx, id_ in enumerate(vector_results["ids"][0]):
-        vec_score = vector_results["distances"][0][idx]
-        if id_ not in combined:
-            combined[id_] = {
-                "node_id": vector_results["metadatas"][0][idx]["target_node_id"],
-                "canonical_title": vector_results["metadatas"][0][idx]["canonical_title"],
-                "provision": vector_results["metadatas"][0][idx]["provision"],
-                "fts_score": 0.0,
-                "vec_score": vec_score,
-            }
-        else:
-            combined[id_]["vec_score"] = vec_score
-
-    # 4. Combine ranks
-    ranked = sorted(combined.values(), key=lambda x: 0.6*x["fts_score"] + 0.4*x["vec_score"], reverse=True)
-    if resolve_node:
-        ids = {}
-        for i in ranked:
-            if i["node_id"] in ids:
-                pass
-            else:
-                ids[i["node_id"]] = i
-        res = engine.backend.node_get(ids=list(ids.keys()), include=["documents", "metadatas"]) 
-        rows: dict[str, dict] = {}
-        res_ids = res.get("ids") or []
-        res_docs = res.get("documents") or []
-        res_metas = res.get("metadatas") or []
-        for i, nid in enumerate(res_ids):
-            if not nid:
-                continue
-            rows[str(nid)] = {
-                "documents": res_docs[i] if i < len(res_docs) else None,
-                "metadatas": res_metas[i] if i < len(res_metas) else None,
-            }
-        to_return = ranked[:limit]
-        for i in to_return:
-            i.update(rows[i['node_id']])
-        return {"query": q, "results": to_return}
-    return {"query": q, "results": ranked[:limit]}
 #=====================
 # Adjundicate persisted nodes
 #=====================
@@ -2084,6 +1989,8 @@ def adjudicate_pairs(inp: AdjPairsIn) -> CrossDocAdjOut:
         committed_ids=committed,
         results=results,
     )
+    
+    
 # Mount the MCP server
 app.mount("/", mcp_app)
 

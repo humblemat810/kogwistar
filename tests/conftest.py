@@ -18,7 +18,11 @@ except Exception:  # pragma: no cover - optional for non-pg test subsets
 import os
 import sys
 import pathlib
+from dotenv import load_dotenv
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+_TEST_ROOT = pathlib.Path(__file__).resolve().parents[1]
+for _env_name in (".env", ".env.test"):
+    load_dotenv(_TEST_ROOT / _env_name, override=False)
 import pytest
 from typing import Any, List, Optional, Sequence, Iterator, TYPE_CHECKING
 try:
@@ -175,6 +179,7 @@ def mcp_admin_server(tmp_path: Path) -> Iterator[dict[str, Any]]:
     env = os.environ.copy()
     env["MCP_CHROMA_DIR"] = str(data_root / "docs")
     env["MCP_CHROMA_DIR_CONVERSATION"] = str(data_root / "conversation")
+    env["MCP_CHROMA_DIR_WORKFLOW"] = str(data_root / "workflow")
     env["MCP_CHROMA_DIR_WISDOM"] = str(data_root / "wisdom")
     env.setdefault("JWT_SECRET", "dev-secret")
     env.setdefault("JWT_ALG", "HS256")

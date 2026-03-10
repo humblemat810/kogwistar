@@ -207,25 +207,86 @@ class IndexingSubsystem:
             blob = json.dumps(obj, sort_keys=True, separators=(",", ":")).encode("utf-8")
             return hashlib.blake2b(blob, digest_size=16).hexdigest()
 
-        def _actual_fp() -> str:
+        def _stable_sort_dicts(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            return sorted(rows, key=lambda row: json.dumps(row, sort_keys=True, separators=(",", ":")))
+
+        def _as_dict(meta: Any) -> dict[str, Any]:
+            return meta if isinstance(meta, dict) else {}
+
+        def _drop_none_values(row: dict[str, Any]) -> dict[str, Any]:
+            return {k: v for k, v in row.items() if v is not None}
+
+        def _actual_payload() -> list[Any]:
             if entity_kind == "node":
                 if index_kind == "node_docs":
-                    got = self.engine.backend.node_docs_get(where={"node_id": entity_id})
-                elif index_kind == "node_refs":
-                    got = self.engine.backend.node_refs_get(where={"node_id": entity_id})
-                else:
-                    got = {"ids": []}
+                    got = self.engine.backend.node_docs_get(where={"node_id": entity_id}, include=["metadatas"])
+                    doc_ids = [
+                        str(md.get("doc_id"))
+                        for md in (got.get("metadatas") or [])
+                        if isinstance(md, dict) and md.get("doc_id") is not None
+                    ]
+                    return sorted(doc_ids)
+                if index_kind == "node_refs":
+                    got = self.engine.backend.node_refs_get(where={"node_id": entity_id}, include=["metadatas"])
+                    payload = []
+                    for md in (got.get("metadatas") or []):
+                        meta = _as_dict(md)
+                        payload.append(
+                            {
+                                "doc_id": meta.get("doc_id"),
+                                "insertion_method": meta.get("insertion_method"),
+                                "page": meta.get("page_number"),
+                                "sc": meta.get("start_char"),
+                                "ec": meta.get("end_char"),
+                                "method": meta.get("verification_method"),
+                                "is_verified": meta.get("is_verified"),
+                                "score": meta.get("verificication_score"),
+                            }
+                        )
+                    return _stable_sort_dicts(payload)
             elif entity_kind == "edge":
                 if index_kind == "edge_refs":
-                    got = self.engine.backend.edge_refs_get(where={"edge_id": entity_id})
-                elif index_kind == "edge_endpoints":
-                    got = self.engine.backend.edge_endpoints_get(where={"edge_id": entity_id})
-                else:
-                    got = {"ids": []}
-            else:
-                got = {"ids": []}
-            ids = sorted(list(got.get("ids") or []))
-            return _fp(ids)
+                    got = self.engine.backend.edge_refs_get(where={"edge_id": entity_id}, include=["metadatas"])
+                    payload = []
+                    for md in (got.get("metadatas") or []):
+                        meta = _as_dict(md)
+                        payload.append(
+                            {
+                                "doc_id": meta.get("doc_id"),
+                                "insertion_method": meta.get("insertion_method"),
+                                "page": meta.get("page_number"),
+                                "sc": meta.get("start_char"),
+                                "ec": meta.get("end_char"),
+                                "method": meta.get("verification_method"),
+                                "is_verified": meta.get("is_verified"),
+                                "score": meta.get("verificication_score"),
+                            }
+                        )
+                    return _stable_sort_dicts(payload)
+                if index_kind == "edge_endpoints":
+                    got = self.engine.backend.edge_endpoints_get(where={"edge_id": entity_id}, include=["metadatas"])
+                    payload = []
+                    for md in (got.get("metadatas") or []):
+                        meta = _as_dict(md)
+                        payload.append(
+                            _drop_none_values(
+                                {
+                                "id": meta.get("id"),
+                                "edge_id": meta.get("edge_id"),
+                                "endpoint_id": meta.get("endpoint_id"),
+                                "endpoint_type": meta.get("endpoint_type"),
+                                "role": meta.get("role"),
+                                "causal_type": meta.get("causal_type"),
+                                "relation": meta.get("relation"),
+                                "doc_id": meta.get("doc_id"),
+                                }
+                            )
+                        )
+                    return _stable_sort_dicts(payload)
+            return []
+
+        def _actual_fp() -> str:
+            return _fp(_actual_payload())
 
         applied_fp = (
             self.engine.meta_sqlite.get_index_applied_fingerprint(namespace=namespace, coalesce_key=coalesce_key)
@@ -301,6 +362,7 @@ class IndexingSubsystem:
                             }
                         )
 
+                spans_payload = _stable_sort_dicts(spans_payload)
                 desired_fp = _fp(spans_payload)
                 if op != "DELETE" and applied_fp is not None and applied_fp == desired_fp:
                     if _actual_fp() == desired_fp:
@@ -351,6 +413,7 @@ class IndexingSubsystem:
                             }
                         )
 
+                spans_payload = _stable_sort_dicts(spans_payload)
                 desired_fp = _fp(spans_payload)
                 if op != "DELETE" and applied_fp is not None and applied_fp == desired_fp:
                     if _actual_fp() == desired_fp:
@@ -380,17 +443,6 @@ class IndexingSubsystem:
                 meta = (got.get("metadatas") or [None])[0] or {}
                 doc_id = meta.get("doc_id") if isinstance(meta, dict) else None
 
-                # delete existing
-                existing = self.engine.backend.edge_endpoints_get(where={"edge_id": entity_id}, include=[])
-                ex_ids = existing.get("ids") or []
-                if ex_ids:
-                    self.engine.backend.edge_endpoints_delete(ids=ex_ids)
-
-                rows = self.engine.write.fanout_endpoints_rows(e, doc_id)
-                if not rows:
-                    raise Exception("endpoints not found")
-                desired_fp = _fp(sorted(rows, key=lambda r: r.get("id") or ""))
-
                 meta0 = (got.get("metadatas") or [None])[0] or {}
                 if _is_tombstoned(meta0):
                     got2 = self.engine.backend.edge_endpoints_get(where={"edge_id": entity_id}, include=[])
@@ -401,14 +453,27 @@ class IndexingSubsystem:
                         set_applied(namespace=namespace, coalesce_key=coalesce_key, applied_fingerprint=None, last_job_id=job_id)
                     return
 
+                rows = self.engine.write.fanout_endpoints_rows(e, doc_id)
+                if not rows:
+                    raise Exception("endpoints not found")
+                rows = _stable_sort_dicts(rows)
+                desired_fp = _fp(rows)
+
                 if op != "DELETE" and applied_fp is not None and applied_fp == desired_fp:
                     if _actual_fp() == desired_fp:
                         return
 
+                existing = self.engine.backend.edge_endpoints_get(where={"edge_id": entity_id}, include=["metadatas"])
+                existing_ids = {str(i) for i in (existing.get("ids") or []) if i is not None}
+                desired_ids = {str(r["id"]) for r in rows}
+                stale_ids = sorted(existing_ids - desired_ids)
+                if stale_ids:
+                    self.engine.backend.edge_endpoints_delete(ids=stale_ids)
+
                 ep_ids = [r["id"] for r in rows]
                 ep_docs = [json.dumps(r) for r in rows]
                 ep_metas = rows
-                self.engine.backend.edge_endpoints_add(
+                self.engine.backend.edge_endpoints_upsert(
                     ids=ep_ids,
                     documents=ep_docs,
                     metadatas=ep_metas,

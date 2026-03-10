@@ -283,3 +283,56 @@ def test_stuck_doing_job_is_stealable_after_lease_expiry(e2e_engine: GraphKnowle
     done_ids = {j.job_id for j in eng.meta_sqlite.list_index_jobs(status="DONE")}
     assert jid in done_ids
     assert len(_ids(eng.backend.node_docs_get(where={"node_id": "n_stuck"}))) >= 1
+
+
+def test_reconcile_edge_endpoints_is_noop_when_projection_already_synced(
+    e2e_engine: GraphKnowledgeEngine,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    eng = e2e_engine
+    _assert_backend_kind(eng)
+
+    n1 = _mk_node("n_sync_1", doc_id="d_sync")
+    n2 = _mk_node("n_sync_2", doc_id="d_sync")
+    eng.add_node(n1)
+    eng.add_node(n2)
+
+    e1 = _mk_edge("e_sync", src=n1.safe_get_id(), tgt=n2.safe_get_id(), doc_id="d_sync")
+    eng.add_edge(e1)
+
+    delete_calls: list[dict] = []
+    add_calls: list[dict] = []
+    upsert_calls: list[dict] = []
+
+    orig_delete = eng.backend.edge_endpoints_delete
+    orig_add = eng.backend.edge_endpoints_add
+    orig_upsert = eng.backend.edge_endpoints_upsert
+
+    def _spy_delete(*args, **kwargs):
+        delete_calls.append({"args": args, "kwargs": kwargs})
+        return orig_delete(*args, **kwargs)
+
+    def _spy_add(*args, **kwargs):
+        add_calls.append({"args": args, "kwargs": kwargs})
+        return orig_add(*args, **kwargs)
+
+    def _spy_upsert(*args, **kwargs):
+        upsert_calls.append({"args": args, "kwargs": kwargs})
+        return orig_upsert(*args, **kwargs)
+
+    monkeypatch.setattr(eng.backend, "edge_endpoints_delete", _spy_delete)
+    monkeypatch.setattr(eng.backend, "edge_endpoints_add", _spy_add)
+    monkeypatch.setattr(eng.backend, "edge_endpoints_upsert", _spy_upsert)
+
+    eng.enqueue_index_job(
+        entity_kind="edge",
+        entity_id=e1.safe_get_id(),
+        index_kind="edge_endpoints",
+        op="UPSERT",
+    )
+    processed = eng.reconcile_indexes(max_jobs=10)
+
+    assert processed == 1
+    assert delete_calls == []
+    assert add_calls == []
+    assert upsert_calls == []

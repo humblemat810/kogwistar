@@ -23,3 +23,12 @@ dist/
 .joblib/
 .kg_cache/
 .tmp_pytest_schema_modes
+.pytest*/
+pytest_tmp*/
+tmp_pytest*/
+.codex_tmp*/
+manual_tmp*/
+tmp_manual*/
+tmp_verify*/
+tests/_artifacts/
+bundle/

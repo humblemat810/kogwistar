@@ -26,6 +26,7 @@ from .subsystems import (
     RollbackSubsystem,
     WriteSubsystem,
 )
+from .search_index.service import SearchIndexService
 from .types import (
     EngineType,
     ExtractionSchemaMode,
@@ -1542,6 +1543,19 @@ class GraphKnowledgeEngine:
         self.adjudicate = AdjudicateSubsystem(self)
         self.ingest = IngestSubsystem(self)
         self.embed = EmbedSubsystem(self)
+        
+        # Initialize the search index subsystem if persistence directory is set. 
+        # For pure in-memory or alternative setups you might handle pathing differently, 
+        # but defaulting to persist_directory/index.db
+        idx_db_path = ":memory:"
+        if persist_directory:
+            idx_db_path = str(pathlib.Path(persist_directory) / "index.db")
+        elif hasattr(self, "meta_sqlite") and hasattr(self.meta_sqlite, "conn_str") and self.meta_sqlite.conn_str != ":memory:":
+            # PG setup might not have persist_directory in kwargs but might store sqlite locally
+            pass # fall back to memory or consider handling PG specifically if index.db isn't used there
+            
+        self.search_index = SearchIndexService(self, index_db_path=idx_db_path)
+        
     def _emit_change(self, *, op: Op, entity: EntityRefModel, payload: object, run_id: str | None = None, step_id: str | None = None) -> None:
         seq = self.changes.next_seq()
         ev = ChangeEvent(

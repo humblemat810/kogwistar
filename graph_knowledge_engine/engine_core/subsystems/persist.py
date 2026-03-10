@@ -651,6 +651,16 @@ class PersistSubsystem(NamespaceProxy):
                     elif op in ("TOMBSTONE", "DELETE"):
                         self._e.lifecycle.tombstone_edge(str(eid))
 
+                elif ek == "search_index":
+                    if op == "search_index.upsert":
+                        from ..search_index.models import IndexingItem
+                        try:
+                            item = IndexingItem.model_validate(payload)
+                        except Exception:
+                            item = IndexingItem.model_validate_json(json.dumps(payload))
+                        if hasattr(self._e, "search_index"):
+                            self._e.search_index.upsert_entries([item])
+
                 last_seq = int(seq)
         finally:
             self._e._disable_event_log = prev_log
