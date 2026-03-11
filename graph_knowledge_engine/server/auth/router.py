@@ -40,12 +40,21 @@ def _mint_dev_token(auth_service: AuthService) -> str:
 
 @router.get("/login")
 async def login(
-    request: Request
+    request: Request,
+    redirect_uri: str | None = None,
 ):
     auth_mode = _get_auth_mode(request)
+
+    # redirect_uri override is a dev-only convenience — reject it in prod
+    if redirect_uri and auth_mode != "dev":
+        raise HTTPException(
+            status_code=400,
+            detail="redirect_uri override is only allowed when AUTH_MODE=dev",
+        )
+
     if auth_mode == "dev":
         auth_service = get_auth_service(request)
-        ui_url = os.getenv("UI_URL", "/")
+        ui_url = redirect_uri or os.getenv("UI_URL", "/")
         token = _mint_dev_token(auth_service)
         return RedirectResponse(f"{ui_url}?token={token}")
 

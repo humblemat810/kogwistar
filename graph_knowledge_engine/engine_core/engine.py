@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 from contextlib import contextmanager
 import contextvars
 
@@ -759,10 +759,6 @@ except Exception:
             return "default"
 
     Embeddings = list[list[float]]  # type: ignore
-import ollama
-# ollama.embeddings(model='all-minilm:l6-v2', prompt='The sky is blue because of Rayleigh scattering')
-import functools
-
 
 import functools
 from typing import Any, Callable, cast, Sequence
@@ -770,37 +766,13 @@ from typing import Any, Callable, cast, Sequence
 import numpy as np
 from numpy.typing import NDArray
 
-class CustomEmbeddingFunction(EmbeddingFunction):
-    @staticmethod
-    def name() -> str:
-        return "default"
-
-    def __init__(self, model_name: str = "all-minilm:l6-v2"):
-        import ollama
-
-        _raw = functools.partial(ollama.embeddings, model=model_name)
-
-        def ef(prompts: Sequence[str]) -> Embeddings:
-            res: Embeddings = []
-            for p in prompts:
-                # Boundary: ollama types are weak -> cast once.
-                out = ollama.embeddings(model=model_name,prompt=p)
-
-                vec_any = cast(Any, out).embedding  # "embedding" is usually list[float] or ndarray
-                # Normalize to ndarray[float] for math
-                r = np.asarray(vec_any, dtype=float)
-
-                norm_val = float(np.linalg.norm(r))
-                if norm_val == 0.0:
-                    res.append(r.tolist())
-                else:
-                    res.append((r / norm_val).tolist())
-            return res
-
-        self._emb: Callable[[Sequence[str]], Embeddings] = ef
-
-    def __call__(self, documents_or_texts: Sequence[str]) -> Embeddings:
-        return self._emb(documents_or_texts)
+# ---------------------------------------------------------------------------
+# Embedding providers — now in embedding_factory.py
+# ---------------------------------------------------------------------------
+from graph_knowledge_engine.engine_core.embedding_factory import (
+    get_embedding_function,
+    CustomEmbeddingFunction,  # backwards compat alias → OllamaEmbeddingFunction
+)
 
 def engine_context(fn):
     """
@@ -1423,7 +1395,7 @@ class GraphKnowledgeEngine:
         self.pre_add_edge_hooks: list[Callable[[Edge], bool]] = []
         self.pre_add_pure_edge_hooks: list[Callable[[Edge], bool]] = []
         self.allow_missing_doc_id_on_endpoint_rows_hooks: list[Callable[[Edge], bool]] = []
-        ef = embedding_function or CustomEmbeddingFunction()
+        ef = embedding_function or get_embedding_function()
         self.embedding_length_limit = 512
         self._ef : EmbeddingFunctionLike = ef#embedding_function or ef #embedding_functions.DefaultEmbeddingFunction()
         # Keep a 1-string convenience to reuse in cosine checks
