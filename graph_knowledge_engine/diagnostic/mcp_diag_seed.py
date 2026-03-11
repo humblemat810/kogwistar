@@ -3,11 +3,11 @@
 # Uses the SAME session pattern as your agent (MultiServerMCPClient + manual __aenter__/__aexit__).
 #
 # Example:
-#   python mcp_diag_seed.py --url http://127.0.0.1:8765/mcp --doc-id D1 \
+#   python mcp_diag_seed.py --url http://127.0.0.1:28110/mcp --doc-id D1 \
 #       --text "Smoking causes lung cancer." --relation causes --mode replace
 #
 # Optional admin cleanup (non-MCP endpoint mounted next to /mcp):
-#   python mcp_diag_seed.py --url http://127.0.0.1:8765/mcp --doc-id D1 --delete
+#   python mcp_diag_seed.py --url http://127.0.0.1:28110/mcp --doc-id D1 --delete
 
 from __future__ import annotations
 import argparse, asyncio, json, re
@@ -51,7 +51,7 @@ async def _call_tool_json(session, name: str, args: dict) -> dict:
 
 async def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--url", required=True, help="MCP Streamable HTTP endpoint (e.g., http://127.0.0.1:8765/mcp)")
+    ap.add_argument("--url", required=True, help="MCP Streamable HTTP endpoint (e.g., http://127.0.0.1:28110/mcp)")
     ap.add_argument("--doc-id", required=True)
     ap.add_argument("--text", default="Smoking causes lung cancer.")
     ap.add_argument("--type", default="text")

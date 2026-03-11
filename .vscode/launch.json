@@ -107,6 +107,57 @@
             "justMyCode": false
         },
         {
+            "name": "server mcp with admin (keycloak oidc)",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "uvicorn",
+            "args": [
+                "graph_knowledge_engine.server_mcp_with_admin:app",
+                // "--reload",
+                "--port",
+                "28110",
+                "--log-level",
+                "debug",
+            ],
+            // Assumes Keycloak is running at http://127.0.0.1:8081 (compose profile: auth)
+            "env": {
+                "AUTH_MODE": "oidc",
+                "OIDC_DISCOVERY_URL": "http://127.0.0.1:8081/realms/kge/.well-known/openid-configuration",
+                "OIDC_CLIENT_ID": "kge-local",
+                "OIDC_CLIENT_SECRET": "",
+                "OIDC_REDIRECT_URI": "http://127.0.0.1:28110/api/auth/callback",
+                "UI_URL": "http://127.0.0.1:5173/"
+            },
+            "jinja": true,
+            "justMyCode": false
+        },
+        {
+            "name": "server mcp with admin (dev auth)",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "uvicorn",
+            "args": [
+                "graph_knowledge_engine.server_mcp_with_admin:app",
+                // "--reload",
+                "--port",
+                "28110",
+                "--log-level",
+                "debug",
+            ],
+            // Bypasses OIDC and issues a dev JWT on /api/auth/login
+            "env": {
+                "AUTH_MODE": "dev",
+                "DEV_AUTH_EMAIL": "dev@example.com",
+                "DEV_AUTH_SUBJECT": "dev",
+                "DEV_AUTH_NAME": "Dev User",
+                "DEV_AUTH_ROLE": "rw",
+                "DEV_AUTH_NS": "docs",
+                "UI_URL": "http://127.0.0.1:5173/"
+            },
+            "jinja": true,
+            "justMyCode": false
+        },
+        {
             "name": "Diagnostic, insert and check relationship exist",
             "type": "debugpy",
             "request": "launch",
@@ -114,7 +165,7 @@
             "console": "integratedTerminal",
             "args": [
                 "--url",
-                "http://127.0.0.1:8765/mcp/",
+                "http://127.0.0.1:28110/mcp/",
                 "--doc-id",
                 "D1",
                 "--text",
@@ -131,7 +182,7 @@
             "console": "integratedTerminal",
             "args": [
                 "--url",
-                "http://127.0.0.1:8765/mcp/",
+                "http://127.0.0.1:28110/mcp/",
                 "--doc-id",
                 "D1",
                 "--delete"
@@ -147,7 +198,7 @@
                 "--reload",
                 "--factory",
                 "--port",
-                "8765"
+                "28110"
             ],
             "jinja": true
         },

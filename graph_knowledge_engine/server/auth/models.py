@@ -14,6 +14,8 @@ class User(Base):
     email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
     display_name: Mapped[Optional[str]] = mapped_column(String(255))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    global_role: Mapped[Optional[str]] = mapped_column(String(32)) # e.g. 'ro', 'rw'
+    global_ns: Mapped[Optional[str]] = mapped_column(String(255))   # comma-separated or wildcard
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     last_login_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
 

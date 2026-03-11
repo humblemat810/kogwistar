@@ -27,7 +27,9 @@ class AuthService:
         issuer: str,
         subject: str,
         email: str,
-        display_name: Optional[str] = None
+        display_name: Optional[str] = None,
+        default_role: str = "ro",
+        default_ns: str = "docs"
     ) -> str:
         # 1. Check if identity exists
         identity = self.repo.get_external_identity(issuer, subject)
@@ -40,7 +42,13 @@ class AuthService:
         if not user:
             # 3. Create new user
             user_id = str(uuid.uuid4())
-            user = self.repo.create_user(user_id, email, display_name)
+            user = self.repo.upsert_user(
+                user_id, 
+                email, 
+                display_name,
+                global_role=default_role,
+                global_ns=default_ns
+            )
         
         # 4. Link identity
         self.repo.link_external_identity(user.user_id, issuer, subject, email)
@@ -52,11 +60,19 @@ class AuthService:
         if not user:
             raise ValueError(f"User {user_id} not found")
 
+        # Prioritize global permissions from DB if they exist
+        final_role = user.global_role or role
+        final_ns = user.global_ns or ns
+        
+        # Handle string list in global_ns (e.g. "docs,workflow")
+        if isinstance(final_ns, str) and "," in final_ns:
+            final_ns = [x.strip() for x in final_ns.split(",")]
+
         payload = {
             "sub": user.email,
             "user_id": user.user_id,
-            "role": role,
-            "ns": ns,
+            "role": final_role,
+            "ns": final_ns,
             "iat": int(time.time()),
             "exp": int((datetime.now(timezone.utc) + timedelta(hours=4)).timestamp()),
             "iss": self.jwt_iss or "local",

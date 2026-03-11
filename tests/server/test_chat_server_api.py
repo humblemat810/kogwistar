@@ -1463,7 +1463,7 @@ def test_designer_capabilities_endpoint(monkeypatch, engine_triplet):
 
         runtime = payload["runtime"]
         assert runtime["resolver_found"] is True
-        assert runtime["builtin_ops"] == ["answer", "start"]
+        assert sorted(runtime["builtin_ops"]) == sorted(["answer", "llm_call", "start"])
         assert runtime["nested_ops"] == ["answer"]
         assert runtime["sandboxed_ops"] == ["python_exec"]
         assert runtime["sandbox"]["supports_sandboxed_ops"] is True
@@ -1480,3 +1480,19 @@ def test_designer_capabilities_endpoint(monkeypatch, engine_triplet):
         assert "wf_join" in node_props
         assert "wf_predicate" in edge_props
         assert "wf_multiplicity" in edge_props
+
+
+def test_designer_capabilities_falls_back_to_default_resolver(monkeypatch, engine_triplet):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _configure_server(monkeypatch, engine, conversation_engine, workflow_engine, _success_runner)
+
+    with TestClient(server.app) as client:
+        wf_ro = _token_header(client, role="ro", ns="workflow")
+
+        resp = client.get("/designer/capabilities", headers=wf_ro)
+        resp.raise_for_status()
+        payload = resp.json()
+
+        runtime = payload["runtime"]
+        assert runtime["resolver_found"] is True
+        assert "start" in runtime["builtin_ops"]

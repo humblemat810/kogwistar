@@ -11,13 +11,45 @@ def get_auth_service(request: Request) -> AuthService:
     return request.app.state.auth_service
 
 def get_oidc_client(request: Request) -> OIDCClient:
-    return request.app.state.oidc_client
+    oidc = getattr(request.app.state, "oidc_client", None)
+    if oidc is None:
+        raise HTTPException(status_code=400, detail="OIDC is disabled (AUTH_MODE=dev)")
+    return oidc
+
+def _get_auth_mode(request: Request) -> str:
+    return (getattr(request.app.state, "auth_mode", None) or "oidc").lower()
+
+def _mint_dev_token(auth_service: AuthService) -> str:
+    email = os.getenv("DEV_AUTH_EMAIL", "dev@example.com")
+    subject = os.getenv("DEV_AUTH_SUBJECT", "dev")
+    display_name = os.getenv("DEV_AUTH_NAME", "Dev User")
+    role = os.getenv("DEV_AUTH_ROLE", "ro")
+    ns_raw = os.getenv("DEV_AUTH_NS")
+    if ns_raw:
+        ns = ns_raw.split(",") if "," in ns_raw else ns_raw
+    else:
+        # Default to all namespaces in dev mode to satisfy all apps/tests
+        ns = ["docs", "conversation", "workflow", "wisdom"]
+    user_id = auth_service.resolve_user_from_external(
+        issuer="dev",
+        subject=subject,
+        email=email,
+        display_name=display_name,
+    )
+    return auth_service.mint_token(user_id, role=role, ns=ns)
 
 @router.get("/login")
 async def login(
-    request: Request,
-    oidc: OIDCClient = Depends(get_oidc_client)
+    request: Request
 ):
+    auth_mode = _get_auth_mode(request)
+    if auth_mode == "dev":
+        auth_service = get_auth_service(request)
+        ui_url = os.getenv("UI_URL", "/")
+        token = _mint_dev_token(auth_service)
+        return RedirectResponse(f"{ui_url}?token={token}")
+
+    oidc = get_oidc_client(request)
     state = OIDCClient.generate_state()
     pkce = OIDCClient.generate_pkce()
     
@@ -32,10 +64,14 @@ async def login(
 async def callback(
     request: Request,
     code: str,
-    state: str,
-    oidc: OIDCClient = Depends(get_oidc_client),
-    auth_service: AuthService = Depends(get_auth_service)
+    state: str
 ):
+    auth_mode = _get_auth_mode(request)
+    if auth_mode == "dev":
+        raise HTTPException(status_code=400, detail="OIDC callback disabled (AUTH_MODE=dev)")
+
+    oidc = get_oidc_client(request)
+    auth_service = get_auth_service(request)
     stored_state = request.cookies.get("auth_state")
     stored_verifier = request.cookies.get("auth_pkce_verifier")
     

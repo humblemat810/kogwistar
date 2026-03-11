@@ -5,6 +5,7 @@ import functools
 from contextvars import ContextVar
 from starlette.types import Scope, Receive, Send
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, HTMLResponse
 # from mcp.server.fastmcp import FastMCP
 from fastmcp import FastMCP
@@ -41,10 +42,14 @@ from graph_knowledge_engine.server.bootstrap import (
 )
 from graph_knowledge_engine.server.auth.db import init_auth_db, get_session
 from graph_knowledge_engine.server.auth.service import AuthService
+from graph_knowledge_engine.server.auth.seeding import seed_auth_data
 from graph_knowledge_engine.server.auth.oidc import OIDCClient
 from graph_knowledge_engine.server.auth.router import router as auth_router
 from sqlalchemy import create_engine
 from contextlib import asynccontextmanager
+from dotenv import load_dotenv
+load_dotenv()
+
 from graph_knowledge_engine.server.chat_service import ChatRunService
 from graph_knowledge_engine.server.run_registry import RunRegistry
 from graph_knowledge_engine.engine_core.search_index.models import AddIndexEntriesInput
@@ -339,7 +344,7 @@ def _tool_name_candidates(name: str) -> list[str]:
 
 def _filter_tool_list(lst: list[dict]) -> list[dict]:
     role = current_role.get()
-    namespace = get_current_namespace()
+    nss = get_current_namespaces()
     out = []
     for item in lst:
         name = getattr(item, 'name', None) if type(item) is FunctionTool else None or item.get("name") or item.get("tool") or ""
@@ -350,7 +355,7 @@ def _filter_tool_list(lst: list[dict]) -> list[dict]:
             for candidate in _tool_name_candidates(str(name)):
                 tool_roles = TOOL_ROLES.get(candidate, tool_roles)
                 tool_namespace = TOOL_NAMESPACE.get(candidate, tool_namespace)
-            if role in tool_roles and namespace in tool_namespace:
+            if role in tool_roles and ("*" in nss or not tool_namespace.isdisjoint(nss)):
                 out.append(item)
         else:
             tool_roles = None
@@ -375,13 +380,22 @@ except Exception:  # pragma: no cover
         pass
 
 
-def _tool_allowed(tool_name: str, *, role: str, namespace: str) -> bool:
+def _tool_allowed(tool_name: str, *, role: str, namespaces: set[str]) -> bool:
     allowed_roles = {Role.RO.value}
     allowed_namespaces = {NameSpace.DOCS.value}
     for candidate in _tool_name_candidates(str(tool_name)):
         allowed_roles = TOOL_ROLES.get(candidate, allowed_roles)
         allowed_namespaces = TOOL_NAMESPACE.get(candidate, allowed_namespaces)
-    return (role in allowed_roles) and (namespace in allowed_namespaces)
+    
+    # Check roles first
+    if role not in allowed_roles:
+        return False
+    
+    # Check namespaces (including wildcard)
+    if "*" in namespaces:
+        return True
+    
+    return not allowed_namespaces.isdisjoint(namespaces)
 
 
 class RbacMiddleware(Middleware):
@@ -398,20 +412,20 @@ class RbacMiddleware(Middleware):
     async def on_list_tools(self, context, call_next):
         tools = await call_next(context)
         role = get_current_role()
-        ns = get_current_namespace()
+        nss = get_current_namespaces()
         out = []
         for t in list(tools):
             name = getattr(t, "name", None) or (t.get("name") if isinstance(t, dict) else None)
             if not name:
                 out.append(t)
                 continue
-            if _tool_allowed(str(name), role=role, namespace=ns):
+            if _tool_allowed(str(name), role=role, namespaces=nss):
                 out.append(t)
         return out
 
     async def on_call_tool(self, context, call_next):
         role = get_current_role()
-        ns = get_current_namespace()
+        nss = get_current_namespaces()
         req = getattr(context, "request", None)
         tool_name = None
         for attr in ("name", "tool_name", "tool"):
@@ -423,8 +437,8 @@ class RbacMiddleware(Middleware):
         if isinstance(tool_name, dict):
             tool_name = tool_name.get("name")
         if tool_name:
-            if not _tool_allowed(str(tool_name), role=role, namespace=ns):
-                raise HTTPException(status_code=403, detail=f"Tool '{tool_name}' not permitted for role '{role}' in namespace '{ns}'")
+            if not _tool_allowed(str(tool_name), role=role, namespaces=nss):
+                raise HTTPException(status_code=403, detail=f"Tool '{tool_name}' not permitted for role '{role}' in namespaces {nss}")
         return await call_next(context)
 class JWTProtectMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
@@ -480,11 +494,17 @@ DEFAULT_ROLE = "ro"
 DEFAULT_NAMESPACE = NameSpace.DOCS.value
 
 
-def get_current_namespace() -> str:
+def get_current_namespaces() -> set[str]:
     claims = claims_ctx.get() or {}
-    ns = str(claims.get("ns") or DEFAULT_NAMESPACE).lower()
-    allowed = {item.value for item in NameSpace}
-    return ns if ns in allowed else DEFAULT_NAMESPACE
+    ns_val = claims.get("ns") or DEFAULT_NAMESPACE
+    
+    if isinstance(ns_val, list):
+        raw_list = [str(x).lower() for x in ns_val]
+    else:
+        raw_list = [str(ns_val).lower()]
+        
+    allowed_values = {item.value for item in NameSpace} | {"*"}
+    return {ns for ns in raw_list if ns in allowed_values}
 
 
 def get_current_subject() -> str | None:
@@ -525,10 +545,16 @@ def _normalize_namespaces(expected: set[NameSpace] | NameSpace | set[str] | str)
 
 def require_namespace(expected: set[NameSpace] | NameSpace | set[str] | str):
     allowed = _normalize_namespaces(expected)
-    actual = get_current_namespace()
-    if actual not in allowed:
-        raise HTTPException(status_code=403, detail=f"Forbidden: namespace '{actual}' is not permitted")
-    return actual
+    actuals = get_current_namespaces()
+    
+    if "*" in actuals:
+        return "*"
+        
+    for a in actuals:
+        if a in allowed:
+            return a
+            
+    raise HTTPException(status_code=403, detail=f"Forbidden: namespaces {actuals} do not permit access to {allowed}")
 
 from fastmcp.tools import FunctionTool
 def require_ns(expected: set[NameSpace] | NameSpace):
@@ -543,10 +569,10 @@ def require_ns(expected: set[NameSpace] | NameSpace):
         original_fn = fn
         @functools.wraps(fn)
         def wrapper(*args, **kwargs):
-            actual = get_current_namespace()
-            if actual not in allowed:
+            actuals = get_current_namespaces()
+            if "*" not in actuals and allowed.isdisjoint(actuals):
                 # MCP tools throw regular exceptions; FastMCP wraps as tool error
-                raise HTTPException(status_code=403, detail=f"Forbidden: namespace '{actual}' cannot call this tool")
+                raise HTTPException(status_code=403, detail=f"Forbidden: namespaces {actuals} cannot call this tool (requires one of {allowed})")
                 
             return original_fn(*args, **kwargs)
         fn = wrapper
@@ -828,7 +854,10 @@ mcp_app = mcp.http_app(path='/mcp')
 @asynccontextmanager
 async def combined_lifespan(app: FastAPI):
     # Initialize auth resources
-    auth_engine_resource.get()
+    auth_engine = auth_engine_resource.get()
+    seed_auth_data(get_session())
+    auth_mode = (os.getenv("AUTH_MODE") or "oidc").strip().lower()
+    app.state.auth_mode = auth_mode
     app.state.auth_service = AuthService(
         session=get_session(),
         jwt_secret=JWT_SECRET,
@@ -836,17 +865,30 @@ async def combined_lifespan(app: FastAPI):
         jwt_iss=JWT_ISS,
         jwt_aud=JWT_AUD
     )
-    app.state.oidc_client = OIDCClient(
-        client_id=os.getenv("OIDC_CLIENT_ID", ""),
-        client_secret=os.getenv("OIDC_CLIENT_SECRET", ""),
-        discovery_url=os.getenv("OIDC_DISCOVERY_URL", ""),
-        redirect_uri=os.getenv("OIDC_REDIRECT_URI", "")
-    )
+    app.state.oidc_client = None
+    if auth_mode != "dev":
+        app.state.oidc_client = OIDCClient(
+            client_id=os.getenv("OIDC_CLIENT_ID", ""),
+            client_secret=os.getenv("OIDC_CLIENT_SECRET", ""),
+            discovery_url=os.getenv("OIDC_DISCOVERY_URL", ""),
+            redirect_uri=os.getenv("OIDC_REDIRECT_URI", "")
+        )
     
     async with mcp_app.lifespan(app):
         yield
 
 app = FastAPI(title="KnowledgeEngine + MCP + Admin", lifespan=combined_lifespan)
+
+# Add CORS middleware for frontend integration
+origins = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173,http://localhost:3000").split(",")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 app.add_middleware(MCPRoleMiddleware)
 app.add_middleware(JWTProtectMiddleware)
 app.include_router(
@@ -956,7 +998,27 @@ def _designer_runtime_capabilities() -> dict[str, Any]:
     except Exception:
         service = None
 
-    for resolver in _designer_resolver_candidates(service):
+    if service and hasattr(service, "workflow_catalog_ops"):
+        try:
+            catalog_ops = service.workflow_catalog_ops()
+            for op_def in catalog_ops:
+                op_name = op_def.get("op")
+                if op_name:
+                    builtin_ops.add(str(op_name))
+        except Exception:
+            pass
+
+    resolver_candidates = _designer_resolver_candidates(service)
+    if not resolver_candidates:
+        # Fallback: use the default conversation resolver so ops are exposed even
+        # when ChatRunService doesn't surface resolver attributes.
+        try:
+            from graph_knowledge_engine.conversation.resolvers import default_resolver
+            resolver_candidates = [default_resolver]
+        except Exception:
+            resolver_candidates = []
+
+    for resolver in resolver_candidates:
         resolver_found = True
         try:
             ops = getattr(resolver, "ops", None)
@@ -2212,14 +2274,14 @@ def adjudicate_pairs(inp: AdjPairsIn) -> CrossDocAdjOut:
 app.mount("/", mcp_app)
 
 # Run with:
-#   uvicorn server_mcp_with_admin:app --port 8765
+#   uvicorn server_mcp_with_admin:app --port 28110
 def main() -> None:
     """Console entrypoint for `knowledge-mcp`."""
     import os
     import uvicorn
 
     host = os.getenv("HOST", "127.0.0.1")
-    port = int(os.getenv("PORT", "8765"))
+    port = int(os.getenv("PORT", "28110"))
     uvicorn.run("graph_knowledge_engine.server_mcp_with_admin:app", host=host, port=port)
 
 

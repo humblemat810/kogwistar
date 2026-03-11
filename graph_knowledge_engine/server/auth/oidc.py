@@ -59,12 +59,13 @@ class OIDCClient:
         assert self._config is not None
         data = {
             "client_id": self.client_id,
-            "client_secret": self.client_secret,
             "grant_type": "authorization_code",
             "code": code,
             "redirect_uri": self.redirect_uri,
             "code_verifier": code_verifier,
         }
+        if self.client_secret:
+            data["client_secret"] = self.client_secret
         async with httpx.AsyncClient() as client:
             resp = await client.post(self._config["token_endpoint"], data=data)
             resp.raise_for_status()

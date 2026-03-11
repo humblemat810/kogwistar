@@ -65,7 +65,7 @@ def _get_doc(doc_id: str | None = None, doc: Document | None = None, engine: Eng
                 raise Exception("Unreacheable")
             else:
                 if engine is None:
-                    raise ValueError("Engine is requried to resolve doc_id")
+                    raise ValueError("Engine is required to resolve doc_id")
                 else:
                     doc = engine.read.get_document(doc_id)
         return doc
@@ -324,7 +324,7 @@ class PlainTextDocSpanValidator(BaseDocValidator):
                 pass
             else:
                 if engine is None:
-                    raise ValueError("Engine is requried to resolve doc_id")
+                    raise ValueError("Engine is required to resolve doc_id")
                 else:
                     doc = engine.read.get_document(doc_id)
         if not doc:

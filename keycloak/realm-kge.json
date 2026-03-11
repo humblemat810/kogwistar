@@ -1,0 +1,47 @@
+{
+  "realm": "kge",
+  "enabled": true,
+  "displayName": "KGE Local",
+  "clients": [
+    {
+      "clientId": "kge-local",
+      "name": "KGE Local",
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "redirectUris": [
+        "http://localhost:8765/*",
+        "http://127.0.0.1:8765/*",
+        "http://localhost:28110/*",
+        "http://localhost:80/*",
+        "http://localhost/*"
+      ],
+      "webOrigins": [
+        "http://localhost:8765",
+        "http://127.0.0.1:8765",
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:28110",
+        "http://localhost:80",
+        "http://localhost"
+      ]
+    }
+  ],
+  "users": [
+    {
+      "username": "dev",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "dev@example.com",
+      "firstName": "Dev",
+      "lastName": "User",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "dev",
+          "temporary": false
+        }
+      ]
+    }
+  ]
+}

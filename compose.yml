@@ -7,11 +7,18 @@ services:
     image: kogwistar:local
     environment:
       HOST: 0.0.0.0
-      PORT: 8765
+      PORT: 28110
+      AUTH_MODE: ${AUTH_MODE:-oidc}
+      OIDC_DISCOVERY_URL: ${OIDC_DISCOVERY_URL:-http://keycloak:8080/realms/kge/.well-known/openid-configuration}
+      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-kge-local}
+      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-}
+      OIDC_REDIRECT_URI: ${OIDC_REDIRECT_URI:-http://localhost:28110/api/auth/callback}
+      UI_URL: ${UI_URL:-http://localhost:5173/}
+      DEV_AUTH_NS: workflow
       GKE_BACKEND: chroma
       GKE_PERSIST_DIRECTORY: /app/data
     ports:
-      - "8765:8765"
+      - "28110:28110"
     volumes:
       - gke_chroma_data:/app/data
     healthcheck:
@@ -20,7 +27,7 @@ services:
           "CMD",
           "python",
           "-c",
-          "import json, urllib.request; data=json.load(urllib.request.urlopen('http://127.0.0.1:8765/health')); assert data['ok']",
+          "import json, urllib.request; data=json.load(urllib.request.urlopen('http://127.0.0.1:28110/health')); assert data['ok']",
         ]
       interval: 20s
       timeout: 5s
@@ -56,14 +63,21 @@ services:
         condition: service_healthy
     environment:
       HOST: 0.0.0.0
-      PORT: 8765
+      PORT: 28110
+      AUTH_MODE: ${AUTH_MODE:-oidc}
+      OIDC_DISCOVERY_URL: ${OIDC_DISCOVERY_URL:-http://keycloak:8080/realms/kge/.well-known/openid-configuration}
+      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-kge-local}
+      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-}
+      OIDC_REDIRECT_URI: ${OIDC_REDIRECT_URI:-http://localhost:28110/api/auth/callback}
+      UI_URL: ${UI_URL:-http://localhost:5173/}
+      DEV_AUTH_NS: workflow
       GKE_BACKEND: pg
       GKE_PG_URL: postgresql+psycopg://kogwistar:kogwistar@postgres:5432/kogwistar
       GKE_PG_SCHEMA: gke
       GKE_EMBEDDING_DIM: 1536
       GKE_PERSIST_DIRECTORY: /app/data
     ports:
-      - "8765:8765"
+      - "28110:28110"
     volumes:
       - gke_pg_app_data:/app/data
     healthcheck:
@@ -72,7 +86,7 @@ services:
           "CMD",
           "python",
           "-c",
-          "import json, urllib.request; data=json.load(urllib.request.urlopen('http://127.0.0.1:8765/health')); assert data['ok'] and data['backend']=='pg'",
+          "import json, urllib.request; data=json.load(urllib.request.urlopen('http://127.0.0.1:28110/health')); assert data['ok'] and data['backend']=='pg'",
         ]
       interval: 20s
       timeout: 5s
@@ -82,12 +96,26 @@ services:
   keycloak:
     profiles: ["auth"]
     image: quay.io/keycloak/keycloak:24.0
-    command: start-dev
+    command: start-dev --import-realm
     environment:
       KC_BOOTSTRAP_ADMIN_USERNAME: admin
       KC_BOOTSTRAP_ADMIN_PASSWORD: admin
     ports:
       - "8081:8080"
+    volumes:
+      - ./keycloak/realm-kge.json:/opt/keycloak/data/import/realm-kge.json:ro
+
+  nginx:
+    profiles: ["proxy"]
+    image: nginx:latest
+    ports:
+      - "80:80"
+    volumes:
+      - ./docker/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - app-pg
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
 volumes:
   gke_chroma_data:

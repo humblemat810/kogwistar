@@ -14,14 +14,33 @@ class AuthRepository:
     def get_user_by_email(self, email: str) -> Optional[User]:
         return self.session.query(User).filter(User.email == email).first()
 
-    def create_user(self, user_id: str, email: str, display_name: Optional[str] = None) -> User:
-        user = User(
-            user_id=user_id,
-            email=email,
-            display_name=display_name,
-            created_at=datetime.utcnow(),
-        )
-        self.session.add(user)
+    def upsert_user(
+        self, 
+        user_id: str, 
+        email: str, 
+        display_name: Optional[str] = None,
+        global_role: Optional[str] = None,
+        global_ns: Optional[str] = None
+    ) -> User:
+        user = self.get_user(user_id)
+        if user:
+            user.email = email
+            if display_name:
+                user.display_name = display_name
+            if global_role:
+                user.global_role = global_role
+            if global_ns:
+                user.global_ns = global_ns
+        else:
+            user = User(
+                user_id=user_id,
+                email=email,
+                display_name=display_name,
+                global_role=global_role,
+                global_ns=global_ns,
+                created_at=datetime.utcnow(),
+            )
+            self.session.add(user)
         self.session.commit()
         return user
 
