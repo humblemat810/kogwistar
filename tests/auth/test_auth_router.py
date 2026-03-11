@@ -9,10 +9,16 @@ import os
 from urllib.parse import urlparse, parse_qs
 from unittest.mock import AsyncMock
 
+from sqlalchemy.pool import StaticPool
+
 @pytest.fixture(scope="module")
 def client():
     # Setup in-memory auth DB for testing
-    engine = create_engine("sqlite:///:memory:")
+    engine = create_engine(
+        "sqlite:///:memory:", 
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool
+    )
     init_auth_db(engine)
     
     # Manually initialize app state for tests

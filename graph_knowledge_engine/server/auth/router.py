@@ -63,12 +63,20 @@ async def login(
 @router.get("/callback")
 async def callback(
     request: Request,
-    code: str,
-    state: str
+    state: str,
+    code: str | None = None,
+    error: str | None = None,
+    error_description: str | None = None,
 ):
     auth_mode = _get_auth_mode(request)
     if auth_mode == "dev":
         raise HTTPException(status_code=400, detail="OIDC callback disabled (AUTH_MODE=dev)")
+
+    if error:
+        raise HTTPException(status_code=400, detail=f"OIDC Error: {error} - {error_description}")
+        
+    if not code:
+        raise HTTPException(status_code=400, detail="Missing authorization code")
 
     oidc = get_oidc_client(request)
     auth_service = get_auth_service(request)
