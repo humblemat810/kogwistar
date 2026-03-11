@@ -1794,6 +1794,75 @@ class WorkflowRuntime:
                 self.conversation_engine.add_edge(cancelled_at_edge)
         return node_id
 
+    def _persist_completed_terminal(
+        self,
+        *,
+        conversation_id: str,
+        workflow_id: str,
+        run_id: str,
+        accepted_step_seq: int,
+        last_processed_node_id: str | None = None,
+    ) -> str:
+        node_id = f"wf_completed|{run_id}"
+        existing = self.conversation_engine.backend.node_get(ids=[node_id], include=[])
+        if existing.get("ids"):
+            return node_id
+
+        excerpt = f"workflow completed run_id={run_id} accepted_step_seq={accepted_step_seq}"
+        span = Span(**_make_trace_span(conversation_id=conversation_id, excerpt=excerpt, doc_id=f"conv:{conversation_id}"))
+        node = ConversationNode(
+            id=node_id,
+            label="Workflow completed",
+            type="entity",
+            doc_id=node_id,
+            summary=excerpt,
+            mentions=[Grounding(spans=[span])],
+            properties={"entity_type": "workflow_completed"},
+            metadata={
+                "entity_type": "workflow_completed",
+                "workflow_id": workflow_id,
+                "run_id": run_id,
+                "conversation_id": conversation_id,
+                "accepted_step_seq": int(accepted_step_seq),
+                "last_processed_node_id": (str(last_processed_node_id) if last_processed_node_id else None),
+                "level_from_root": 0,
+            },
+            conversation_id=conversation_id,
+            role="system",
+            turn_index=None,
+            level_from_root=0,
+            domain_id=None,
+            canonical_entity_id=None,
+            embedding=None,
+        )
+        self.conversation_engine.add_node(node)
+
+        run_node_id = f"wf_run|{run_id}"
+        run_node = self.conversation_engine.backend.node_get(ids=[run_node_id], include=[])
+        if run_node.get("ids"):
+            edge_id = str(stable_id("workflow.edge", "completed", run_node_id, node_id))
+            edge_existing = self.conversation_engine.backend.edge_get(ids=[edge_id], include=[])
+            if not edge_existing.get("ids"):
+                edge = ConversationEdge(
+                    id=edge_id,
+                    source_ids=[run_node_id],
+                    target_ids=[node_id],
+                    relation="wf_completed",
+                    label="wf_completed",
+                    type="relationship",
+                    summary="workflow completed",
+                    doc_id=f"wf_completed|{run_id}",
+                    mentions=[Grounding(spans=[Span.from_dummy_for_conversation()])],
+                    domain_id=None,
+                    canonical_entity_id=None,
+                    properties={},
+                    embedding=None,
+                    metadata={"entity_type": "conversation_edge", "run_id": run_id, "conversation_id": conversation_id},
+                    source_edge_ids=[],
+                    target_edge_ids=[],
+                )
+                self.conversation_engine.add_edge(edge)
+        return node_id
     def _persist_workflow_run(
         self,
         conversation_id: str,
@@ -2032,7 +2101,7 @@ class WorkflowRuntime:
         run_id: str,
         step_seq: int,
         state: WorkflowState,
-        last_exec_node: WorkflowStepExecNode
+        last_exec_node: Optional[WorkflowStepExecNode | WorkflowRunNode] = None
     ) -> None:
         from graph_knowledge_engine.engine_core.models import Grounding, Span  # adjust import path
         
@@ -2099,4 +2168,4 @@ class WorkflowRuntime:
                                         
                                            },
                                  )
-        self.conversation_engine.add_edge(e)
+            self.conversation_engine.add_edge(e)

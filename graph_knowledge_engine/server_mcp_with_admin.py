@@ -39,6 +39,12 @@ from graph_knowledge_engine.server.bootstrap import (
     build_sqlalchemy_engine,
     load_server_storage_settings,
 )
+from graph_knowledge_engine.server.auth.db import init_auth_db, get_session
+from graph_knowledge_engine.server.auth.service import AuthService
+from graph_knowledge_engine.server.auth.oidc import OIDCClient
+from graph_knowledge_engine.server.auth.router import router as auth_router
+from sqlalchemy import create_engine
+from contextlib import asynccontextmanager
 from graph_knowledge_engine.server.chat_service import ChatRunService
 from graph_knowledge_engine.server.run_registry import RunRegistry
 from graph_knowledge_engine.engine_core.search_index.models import AddIndexEntriesInput
@@ -188,6 +194,16 @@ def _build_wisdom_engine() -> GraphKnowledgeEngine:
 
 
 pg_sqlalchemy_engine = _LazyResource(_build_pg_sqlalchemy_engine, "pg_sqlalchemy_engine")
+
+def _init_auth():
+    auth_engine = _shared_sqlalchemy_engine()
+    if auth_engine is None:
+        auth_engine = create_engine("sqlite:///auth.sqlite")
+    init_auth_db(auth_engine)
+    return auth_engine
+
+auth_engine_resource = _LazyResource(_init_auth, "auth_engine")
+
 engine: GraphKnowledgeEngine = _LazyResource(_build_engine, "knowledge_engine")
 conversation_engine = _LazyResource(_build_conversation_engine, "conversation_engine")
 workflow_engine = _LazyResource(_build_workflow_engine, "workflow_engine")
@@ -475,6 +491,21 @@ def get_current_subject() -> str | None:
     claims = claims_ctx.get() or {}
     sub = str(claims.get("sub") or "").strip()
     return sub or None
+
+def get_current_user_id() -> str | None:
+    claims = claims_ctx.get() or {}
+    return claims.get("user_id")
+
+def require_workflow_access(workflow_id: str, required_role: str = "ro"):
+    user_id = get_current_user_id()
+    if not user_id:
+        # For dev-token users, we might want to bypass or have a default
+        return
+    
+    # Injected AuthService
+    auth_service: AuthService = app.state.auth_service
+    if not auth_service.check_workflow_access(workflow_id, user_id, required_role):
+        raise HTTPException(status_code=403, detail=f"Forbidden: user {user_id} does not have {required_role} access to workflow {workflow_id}")
 
 def _normalize_namespaces(expected: set[NameSpace] | NameSpace | set[str] | str) -> set[str]:
     if isinstance(expected, set):
@@ -785,13 +816,37 @@ workflow_mcp = build_workflow_mcp(
     role_rw=Role.RW,
     ns_workflow=NameSpace.WORKFLOW,
     get_subject=get_current_subject,
+    get_user_id=get_current_user_id,
+    require_workflow_access=require_workflow_access,
 )
 mcp.mount(conversation_mcp)
 mcp.mount(workflow_mcp)
 
 # ---- Build a unified FastAPI app: /mcp + /admin ----
 mcp_app = mcp.http_app(path='/mcp')
-app = FastAPI(title="KnowledgeEngine + MCP + Admin", lifespan=mcp_app.lifespan)
+
+@asynccontextmanager
+async def combined_lifespan(app: FastAPI):
+    # Initialize auth resources
+    auth_engine_resource.get()
+    app.state.auth_service = AuthService(
+        session=get_session(),
+        jwt_secret=JWT_SECRET,
+        jwt_alg=JWT_ALG,
+        jwt_iss=JWT_ISS,
+        jwt_aud=JWT_AUD
+    )
+    app.state.oidc_client = OIDCClient(
+        client_id=os.getenv("OIDC_CLIENT_ID", ""),
+        client_secret=os.getenv("OIDC_CLIENT_SECRET", ""),
+        discovery_url=os.getenv("OIDC_DISCOVERY_URL", ""),
+        redirect_uri=os.getenv("OIDC_REDIRECT_URI", "")
+    )
+    
+    async with mcp_app.lifespan(app):
+        yield
+
+app = FastAPI(title="KnowledgeEngine + MCP + Admin", lifespan=combined_lifespan)
 app.add_middleware(MCPRoleMiddleware)
 app.add_middleware(JWTProtectMiddleware)
 app.include_router(
@@ -801,6 +856,7 @@ app.include_router(
         require_namespace=require_namespace,
         conversation_namespace=NameSpace.CONVERSATION.value,
         workflow_namespaces={NameSpace.CONVERSATION.value, NameSpace.WORKFLOW.value},
+        get_user_id=get_current_user_id,
     )
 )
 app.include_router(
@@ -808,10 +864,14 @@ app.include_router(
         get_service=lambda: chat_service.get(),
         require_role=require_role,
         require_namespace=require_namespace,
+        require_workflow_access=require_workflow_access,
         runtime_namespaces={NameSpace.WORKFLOW.value},
         get_subject=get_current_subject,
+        get_user_id=get_current_user_id,
     )
 )
+app.include_router(auth_router)
+
 from datetime import datetime, timedelta, timezone
 
 class DevTokenInp(BaseModel):

@@ -75,6 +75,8 @@ def build_workflow_mcp(
     role_rw: Any,
     ns_workflow: Any,
     get_subject: Callable[[], str | None] | None = None,
+    get_user_id: Callable[[], str | None] | None = None,
+    require_workflow_access: Callable[[str, str], None] | None = None,
 ):
     mcp = FastMCP("Workflow Diagnostics MCP")
 
@@ -93,19 +95,22 @@ def build_workflow_mcp(
         turn_node_id: str | None = None,
         user_id: str | None = None,
     ) -> dict[str, Any]:
+        if require_workflow_access:
+            require_workflow_access(workflow_id, "rw")
+        effective_user_id = (get_user_id() if callable(get_user_id) else None) or user_id
         return get_service().submit_workflow_run(
             workflow_id=workflow_id,
             conversation_id=conversation_id,
             initial_state=initial_state or {},
             turn_node_id=turn_node_id,
-            user_id=user_id,
+            user_id=effective_user_id,
         )
 
-    # @tool_roles({role_ro, role_rw}) # deleted, violate CR event source in conversation graph
-    # @require_ns({ns_workflow})
-    # @mcp.tool(name="workflow.run_status")
-    # def workflow_run_status(run_id: str) -> dict[str, Any]:
-    #     return get_service().get_run(run_id)
+    @tool_roles({role_ro, role_rw})
+    @require_ns({ns_workflow})
+    @mcp.tool(name="workflow.run_status")
+    def workflow_run_status(run_id: str) -> dict[str, Any]:
+        return get_service().get_run(run_id)
 
     @tool_roles({role_rw})
     @require_ns({ns_workflow})

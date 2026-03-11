@@ -42,6 +42,7 @@ def create_chat_router(
     require_namespace: Callable[[Any], None],
     conversation_namespace: Any,
     workflow_namespaces: Any,
+    get_user_id: Callable[[], str | None] | None = None,
 ):
     router = APIRouter(prefix="/api", tags=["chat"])
 
@@ -50,8 +51,9 @@ def create_chat_router(
         require_role("rw")
         require_namespace(conversation_namespace)
         try:
+            effective_user_id = (get_user_id() if callable(get_user_id) else None) or inp.user_id
             return get_service().create_conversation(
-                user_id=inp.user_id,
+                user_id=effective_user_id,
                 conversation_id=inp.conversation_id,
                 start_node_id=inp.start_node_id,
             )
@@ -84,9 +86,10 @@ def create_chat_router(
         require_role("rw")
         require_namespace(conversation_namespace)
         try:
+            effective_user_id = (get_user_id() if callable(get_user_id) else None) or inp.user_id
             payload = get_service().submit_turn_for_answer(
                 conversation_id=conversation_id,
-                user_id=inp.user_id,
+                user_id=effective_user_id,
                 text=inp.text,
                 workflow_id=inp.workflow_id,
             )

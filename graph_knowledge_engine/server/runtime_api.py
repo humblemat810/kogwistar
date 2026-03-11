@@ -71,6 +71,8 @@ def create_runtime_router(
     require_namespace: Callable[[Any], None],
     runtime_namespaces: Any,
     get_subject: Callable[[], str | None] | None = None,
+    get_user_id: Callable[[], str | None] | None = None,
+    require_workflow_access: Callable[[str, str], None] | None = None,
 ):
     router = APIRouter(prefix="/api/workflow", tags=["runtime"])
     get_service_r = cast(Callable[[], ChatRunService], get_service)
@@ -78,12 +80,15 @@ def create_runtime_router(
     def submit_workflow_run(inp: SubmitWorkflowRunIn):
         require_role("rw")
         require_namespace(runtime_namespaces)
+        if require_workflow_access:
+            require_workflow_access(inp.workflow_id, "rw")
         try:
+            effective_user_id = (get_user_id() if callable(get_user_id) else None) or inp.user_id
             payload = get_service_r().submit_workflow_run(
                 workflow_id=inp.workflow_id,
                 conversation_id=inp.conversation_id,
                 turn_node_id=inp.turn_node_id,
-                user_id=inp.user_id,
+                user_id=effective_user_id,
                 initial_state=inp.initial_state,
             )
             return JSONResponse(status_code=202, content=payload)
@@ -95,7 +100,10 @@ def create_runtime_router(
         require_role("ro")
         require_namespace(runtime_namespaces)
         try:
-            return get_service_r().get_run(run_id)
+            run = get_service_r().get_run(run_id)
+            if require_workflow_access:
+                require_workflow_access(run["workflow_id"], "ro")
+            return run
         except Exception as exc:  # noqa: BLE001
             raise _as_http_error(exc)
 
@@ -190,6 +198,8 @@ def create_runtime_router(
     def upsert_workflow_node(workflow_id: str, inp: UpsertWorkflowNodeIn):
         require_role("rw")
         require_namespace(runtime_namespaces)
+        if require_workflow_access:
+            require_workflow_access(workflow_id, "rw")
         try:
             actor_sub = get_subject() if callable(get_subject) else None
             return get_service_r().workflow_design_upsert_node(
@@ -212,6 +222,8 @@ def create_runtime_router(
     def upsert_workflow_edge(workflow_id: str, inp: UpsertWorkflowEdgeIn):
         require_role("rw")
         require_namespace(runtime_namespaces)
+        if require_workflow_access:
+            require_workflow_access(workflow_id, "rw")
         try:
             actor_sub = get_subject() if callable(get_subject) else None
             return get_service_r().workflow_design_upsert_edge(
@@ -236,6 +248,8 @@ def create_runtime_router(
     def delete_workflow_node(workflow_id: str, node_id: str, inp: DesignActorIn):
         require_role("rw")
         require_namespace(runtime_namespaces)
+        if require_workflow_access:
+            require_workflow_access(workflow_id, "rw")
         try:
             actor_sub = get_subject() if callable(get_subject) else None
             return get_service_r().workflow_design_delete_node(
@@ -252,6 +266,8 @@ def create_runtime_router(
     def delete_workflow_edge(workflow_id: str, edge_id: str, inp: DesignActorIn):
         require_role("rw")
         require_namespace(runtime_namespaces)
+        if require_workflow_access:
+            require_workflow_access(workflow_id, "rw")
         try:
             actor_sub = get_subject() if callable(get_subject) else None
             return get_service_r().workflow_design_delete_edge(
@@ -268,6 +284,8 @@ def create_runtime_router(
     def workflow_design_history(workflow_id: str):
         require_role("ro")
         require_namespace(runtime_namespaces)
+        if require_workflow_access:
+            require_workflow_access(workflow_id, "ro")
         try:
             return get_service_r().workflow_design_history(workflow_id=workflow_id)
         except Exception as exc:  # noqa: BLE001
@@ -277,6 +295,8 @@ def create_runtime_router(
     def workflow_design_undo(workflow_id: str, inp: DesignActorIn):
         require_role("rw")
         require_namespace(runtime_namespaces)
+        if require_workflow_access:
+            require_workflow_access(workflow_id, "rw")
         try:
             actor_sub = get_subject() if callable(get_subject) else None
             return get_service_r().workflow_design_undo(
@@ -292,6 +312,8 @@ def create_runtime_router(
     def workflow_design_redo(workflow_id: str, inp: DesignActorIn):
         require_role("rw")
         require_namespace(runtime_namespaces)
+        if require_workflow_access:
+            require_workflow_access(workflow_id, "rw")
         try:
             actor_sub = get_subject() if callable(get_subject) else None
             return get_service_r().workflow_design_redo(

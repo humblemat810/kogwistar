@@ -79,6 +79,16 @@ services:
       retries: 5
       start_period: 20s
 
+  keycloak:
+    profiles: ["auth"]
+    image: quay.io/keycloak/keycloak:24.0
+    command: start-dev
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+    ports:
+      - "8081:8080"
+
 volumes:
   gke_chroma_data:
   gke_pg_data:

@@ -694,7 +694,7 @@ def test_runtime_design_delete_node_undo_redo_uses_delta_and_preserves_ids(monke
         def _unexpected_rebuild(*, workflow_id: str, state: dict[str, object]) -> None:
             raise AssertionError(f"unexpected rebuild for {workflow_id}: {state.get('current_version')}")
 
-        monkeypatch.setattr(service, "_workflow_rebuild_namespace_for_state", _unexpected_rebuild)
+        monkeypatch.setattr(service._workflow_design, "_workflow_rebuild_namespace_for_state", _unexpected_rebuild)
 
         undone = client.post(
             f"/api/workflow/design/{workflow_id}/undo",
@@ -797,7 +797,7 @@ def test_runtime_design_delete_edge_undo_redo_uses_delta_and_preserves_ids(monke
         def _unexpected_rebuild(*, workflow_id: str, state: dict[str, object]) -> None:
             raise AssertionError(f"unexpected rebuild for {workflow_id}: {state.get('current_version')}")
 
-        monkeypatch.setattr(service, "_workflow_rebuild_namespace_for_state", _unexpected_rebuild)
+        monkeypatch.setattr(service._workflow_design, "_workflow_rebuild_namespace_for_state", _unexpected_rebuild)
 
         undone = client.post(
             f"/api/workflow/design/{workflow_id}/undo",
@@ -881,13 +881,13 @@ def test_runtime_design_missing_delta_falls_back_to_rebuild(monkeypatch, engine_
 
         workflow_engine.meta_sqlite.clear_workflow_design_deltas(workflow_id=workflow_id)
         rebuild_calls: list[int] = []
-        original_rebuild = service._workflow_rebuild_namespace_for_state
+        original_rebuild = service._workflow_design._workflow_rebuild_namespace_for_state
 
         def _wrapped_rebuild(*, workflow_id: str, state: dict[str, object]) -> None:
             rebuild_calls.append(int(state.get("current_version") or -1))
             original_rebuild(workflow_id=workflow_id, state=state)
 
-        monkeypatch.setattr(service, "_workflow_rebuild_namespace_for_state", _wrapped_rebuild)
+        monkeypatch.setattr(service._workflow_design, "_workflow_rebuild_namespace_for_state", _wrapped_rebuild)
 
         undone = client.post(
             f"/api/workflow/design/{workflow_id}/undo",
