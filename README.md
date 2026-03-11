@@ -66,12 +66,45 @@ Knowledge engine plus MCP server for graph and document querying.
   - `docker compose --profile chroma up -d`
 - Build and run with PostgreSQL + pgvector:
   - `docker compose --profile pg up -d`
+- Start Keycloak only (OIDC dev realm):
+  - `docker compose --profile auth up -d keycloak`
 - Stop the stack:
   - `docker compose down`
 - Stop and delete named volumes:
   - `docker compose down -v`
 - The `chroma` profile uses an embedded Chroma-backed app container with named volumes.
 - The `pg` profile starts both the app container and a `pgvector` Postgres container.
+
+## Auth Modes
+
+The server supports two auth modes controlled by `AUTH_MODE`:
+
+- `AUTH_MODE=oidc` (default)
+  - Uses OIDC Authorization Code + PKCE.
+  - Compose defaults point to the local Keycloak realm imported from `keycloak/realm-kge.json`.
+  - Default client: `kge-local` (public client).
+  - Default user: `dev` / `dev`.
+  - Required envs when running locally without compose:
+    - `OIDC_DISCOVERY_URL`
+    - `OIDC_CLIENT_ID`
+    - `OIDC_REDIRECT_URI`
+    - `UI_URL`
+
+- `AUTH_MODE=dev`
+  - Skips OIDC and issues an app JWT directly on `GET /api/auth/login`.
+  - Defaults are configurable with:
+    - `DEV_AUTH_EMAIL`, `DEV_AUTH_SUBJECT`, `DEV_AUTH_NAME`
+    - `DEV_AUTH_ROLE`, `DEV_AUTH_NS`
+
+### Windows note (Keycloak realm volume)
+
+`compose.yml` uses a relative bind mount for `keycloak/realm-kge.json`. On Windows with Docker Desktop, this is the most reliable option.
+
+Best practices:
+
+- Keep the realm file inside the repo (relative path).
+- Avoid drive-letter paths in `compose.yml` unless you must.
+- Ensure the file exists before running `docker compose up`, otherwise Keycloak starts without importing.
 
 ## License
 

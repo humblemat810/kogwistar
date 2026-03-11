@@ -694,7 +694,7 @@ def test_runtime_design_delete_node_undo_redo_uses_delta_and_preserves_ids(monke
         def _unexpected_rebuild(*, workflow_id: str, state: dict[str, object]) -> None:
             raise AssertionError(f"unexpected rebuild for {workflow_id}: {state.get('current_version')}")
 
-        monkeypatch.setattr(service, "_workflow_rebuild_namespace_for_state", _unexpected_rebuild)
+        monkeypatch.setattr(service._workflow_design, "_workflow_rebuild_namespace_for_state", _unexpected_rebuild)
 
         undone = client.post(
             f"/api/workflow/design/{workflow_id}/undo",
@@ -797,7 +797,7 @@ def test_runtime_design_delete_edge_undo_redo_uses_delta_and_preserves_ids(monke
         def _unexpected_rebuild(*, workflow_id: str, state: dict[str, object]) -> None:
             raise AssertionError(f"unexpected rebuild for {workflow_id}: {state.get('current_version')}")
 
-        monkeypatch.setattr(service, "_workflow_rebuild_namespace_for_state", _unexpected_rebuild)
+        monkeypatch.setattr(service._workflow_design, "_workflow_rebuild_namespace_for_state", _unexpected_rebuild)
 
         undone = client.post(
             f"/api/workflow/design/{workflow_id}/undo",
@@ -881,13 +881,13 @@ def test_runtime_design_missing_delta_falls_back_to_rebuild(monkeypatch, engine_
 
         workflow_engine.meta_sqlite.clear_workflow_design_deltas(workflow_id=workflow_id)
         rebuild_calls: list[int] = []
-        original_rebuild = service._workflow_rebuild_namespace_for_state
+        original_rebuild = service._workflow_design._workflow_rebuild_namespace_for_state
 
         def _wrapped_rebuild(*, workflow_id: str, state: dict[str, object]) -> None:
             rebuild_calls.append(int(state.get("current_version") or -1))
             original_rebuild(workflow_id=workflow_id, state=state)
 
-        monkeypatch.setattr(service, "_workflow_rebuild_namespace_for_state", _wrapped_rebuild)
+        monkeypatch.setattr(service._workflow_design, "_workflow_rebuild_namespace_for_state", _wrapped_rebuild)
 
         undone = client.post(
             f"/api/workflow/design/{workflow_id}/undo",
@@ -1463,7 +1463,7 @@ def test_designer_capabilities_endpoint(monkeypatch, engine_triplet):
 
         runtime = payload["runtime"]
         assert runtime["resolver_found"] is True
-        assert runtime["builtin_ops"] == ["answer", "start"]
+        assert sorted(runtime["builtin_ops"]) == sorted(["answer", "llm_call", "start"])
         assert runtime["nested_ops"] == ["answer"]
         assert runtime["sandboxed_ops"] == ["python_exec"]
         assert runtime["sandbox"]["supports_sandboxed_ops"] is True
@@ -1480,3 +1480,19 @@ def test_designer_capabilities_endpoint(monkeypatch, engine_triplet):
         assert "wf_join" in node_props
         assert "wf_predicate" in edge_props
         assert "wf_multiplicity" in edge_props
+
+
+def test_designer_capabilities_falls_back_to_default_resolver(monkeypatch, engine_triplet):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _configure_server(monkeypatch, engine, conversation_engine, workflow_engine, _success_runner)
+
+    with TestClient(server.app) as client:
+        wf_ro = _token_header(client, role="ro", ns="workflow")
+
+        resp = client.get("/designer/capabilities", headers=wf_ro)
+        resp.raise_for_status()
+        payload = resp.json()
+
+        runtime = payload["runtime"]
+        assert runtime["resolver_found"] is True
+        assert "start" in runtime["builtin_ops"]

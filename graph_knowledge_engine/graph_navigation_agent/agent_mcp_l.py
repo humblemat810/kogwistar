@@ -34,9 +34,9 @@ from langchain_mcp_adapters.tools import load_mcp_tools
 
 # ---------- REQUIRED: point to YOUR server ----------
 # Streamable HTTP (recommended)
-MCP_URL = os.environ.get("MCP_URL")  # e.g., "http://127.0.0.1:8765/mcp"
+MCP_URL = os.environ.get("MCP_URL")  # e.g., "http://127.0.0.1:28110/mcp"
 if not MCP_URL:
-    raise SystemExit("Set MCP_URL to your MCP server, e.g. MCP_URL=http://127.0.0.1:8765/mcp")
+    raise SystemExit("Set MCP_URL to your MCP server, e.g. MCP_URL=http://127.0.0.1:28110/mcp")
 
 SERVERS = {
         "KnowledgeEngine":{
@@ -146,4 +146,4 @@ if __name__ == "__main__":
     )
     asyncio.run(run_once(q))
     
-# uvicorn server_mcp:mcp.streamable_http_app --factory --port 8765
+# uvicorn server_mcp:mcp.streamable_http_app --factory --port 28110
