@@ -60,6 +60,18 @@ def create_chat_router(
         except Exception as exc:  # noqa: BLE001
             raise _as_http_error(exc)
 
+    @router.get("/conversations")
+    def list_conversations():
+        require_role("ro")
+        require_namespace(conversation_namespace)
+        try:
+            effective_user_id = get_user_id() if callable(get_user_id) else None
+            if not effective_user_id:
+                raise HTTPException(status_code=401, detail="User Identity required")
+            return {"conversations": get_service().list_conversations_for_user(user_id=effective_user_id)}
+        except Exception as exc:  # noqa: BLE001
+            raise _as_http_error(exc)
+
     @router.get("/conversations/{conversation_id}")
     def get_conversation(conversation_id: str):
         require_role("ro")

@@ -4,12 +4,10 @@ import os
 import pytest
 from fastapi.testclient import TestClient
 from unittest.mock import AsyncMock, patch
-from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
 
 import graph_knowledge_engine.server_mcp_with_admin as server
-from graph_knowledge_engine.server.auth.db import init_auth_db, get_session
+from graph_knowledge_engine.server.auth.db import create_auth_engine, init_auth_db, get_session
 from graph_knowledge_engine.server.auth.seeding import seed_auth_data
 from graph_knowledge_engine.server.auth.service import AuthService
 from graph_knowledge_engine.server.auth.models import User, ExternalIdentity
@@ -24,13 +22,8 @@ def db_url(request, tmp_path):
 
 @pytest.fixture
 def auth_engine(db_url):
-    # Use StaticPool to share the in-memory database across connections/threads
-    # connect_args={"check_same_thread": False} allows multi-threaded access (important for FastAPI)
-    engine = create_engine(
-        db_url,
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool if "memory" in db_url else None,
-    )
+    # create_auth_engine handles StaticPool/check_same_thread for in-memory cases in tests
+    engine = create_auth_engine(db_url)
     init_auth_db(engine)
     return engine
 

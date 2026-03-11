@@ -1,12 +1,11 @@
 import pytest
-from sqlalchemy import create_engine
-from graph_knowledge_engine.server.auth.db import init_auth_db, get_session
+from graph_knowledge_engine.server.auth.db import create_auth_engine, init_auth_db, get_session
 from graph_knowledge_engine.server.auth.service import AuthService
 from graph_knowledge_engine.server.auth.models import Base
 
 @pytest.fixture
 def auth_service():
-    engine = create_engine("sqlite:///:memory:")
+    engine = create_auth_engine("sqlite:///:memory:")
     init_auth_db(engine)
     session = get_session()
     service = AuthService(session, jwt_secret="test-secret")

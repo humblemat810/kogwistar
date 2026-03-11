@@ -1,24 +1,18 @@
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
 from graph_knowledge_engine.server_mcp_with_admin import app, JWT_SECRET, JWT_ALG
-from graph_knowledge_engine.server.auth.db import init_auth_db, get_session
+from graph_knowledge_engine.server.auth.db import create_auth_engine, init_auth_db, get_session
 from graph_knowledge_engine.server.auth.service import AuthService
 from jose import jwt
 import os
 from urllib.parse import urlparse, parse_qs
 from unittest.mock import AsyncMock
 
-from sqlalchemy.pool import StaticPool
 
 @pytest.fixture(scope="module")
 def client():
     # Setup in-memory auth DB for testing
-    engine = create_engine(
-        "sqlite:///:memory:", 
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool
-    )
+    engine = create_auth_engine("sqlite:///:memory:")
     init_auth_db(engine)
     
     # Manually initialize app state for tests

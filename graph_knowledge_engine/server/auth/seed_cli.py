@@ -2,8 +2,7 @@ from __future__ import annotations
 import argparse
 import sys
 import os
-from sqlalchemy import create_engine
-from .db import init_auth_db, get_session
+from .db import create_auth_engine, init_auth_db, get_session
 from .seeding import seed_auth_data
 
 def main():
@@ -27,7 +26,7 @@ def main():
     args = parser.parse_args()
 
     # Initialize DB
-    engine = create_engine(args.db_url)
+    engine = create_auth_engine(args.db_url)
     init_auth_db(engine)
     
     seed_json = None

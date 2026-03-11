@@ -1395,6 +1395,32 @@ class _ConversationQueryService(_BaseComponent):
             starts.sort(key=lambda node: int(getattr(node, "turn_index", -1) or -1))
             return str(getattr(starts[0], "user_id", None) or "")
 
+    def list_conversations_for_user(self, user_id: str) -> list[dict[str, Any]]:
+            # Find all start nodes for this user to discover their conversations
+            starts = cast(list[ConversationNode], self._conversation_engine().get_nodes(
+                where={"$and": [{"entity_type": "conversation_start"}, {"user_id": user_id}]},
+                node_type=ConversationNode,
+                limit=10_000,
+            ))
+            
+            # Sort by creation logic (or just return as is if no created_at)
+            # For this simple list API, we'll try to sort descending if possible
+            results = []
+            for start in starts:
+                conv_id = getattr(start, "conversation_id", None)
+                if conv_id:
+                    # we could call get_conversation, but that computes tail and turns 
+                    # which is expensive for a list API. Just return basic info:
+                    results.append({
+                        "id": str(conv_id),
+                        "start_node_id": str(getattr(start, "id", "")),
+                        "status": str((getattr(start, "properties", {}) or {}).get("status") or "active"),
+                        "turn_count": len(self.list_transcript(str(conv_id)))
+                    })
+            # Try to show most recent first roughly based on turn counts as a proxy
+            results.sort(key=lambda x: x["turn_count"], reverse=True)
+            return results
+
     def get_conversation(self, conversation_id: str) -> dict[str, Any]:
             nodes = self._conversation_nodes(conversation_id)
             svc = self._conversation_service()
@@ -1790,40 +1816,47 @@ class _RunExecutionService(_BaseComponent):
             
             # Derive status dynamically from conversation graph (CR invariant)
             eng = self._conversation_engine()
+            ready_for_terminal = bool(
+                run.get("finished_at_ms")
+                or run.get("result") is not None
+                or run.get("error") is not None
+                or run.get("assistant_turn_node_id") is not None
+            )
             
             # Check for terminal nodes in graph
-            cancelled_nodes = eng.get_nodes(
-                where={"$and": [{"entity_type": "workflow_cancelled"}, {"run_id": run_id}]},
-                limit=1,
-            )
-            completed_nodes = eng.get_nodes(
-                where={"$and": [{"entity_type": "workflow_completed"}, {"run_id": run_id}]},
-                limit=1,
-            )
-            
-            if cancelled_nodes:
-                run["status"] = "cancelled"
-                run["terminal"] = True
-            elif completed_nodes:
-                run["status"] = "succeeded"
-                run["terminal"] = True
-            else:
-                # Fallback to events log if nodes aren't found
-                events = self.run_registry.list_events(run_id, limit=500)
-                for evt in reversed(events):
-                    etype = evt.get("event_type")
-                    if etype in {"run.completed", "workflow_run_completed"}:
-                        run["status"] = "succeeded"
-                        run["terminal"] = True
-                        break
-                    elif etype in {"run.failed", "workflow_run_failed"}:
-                        run["status"] = "failed"
-                        run["terminal"] = True
-                        break
-                    elif etype in {"run.cancelled", "workflow_run_cancelled"}:
-                        run["status"] = "cancelled"
-                        run["terminal"] = True
-                        break
+            if ready_for_terminal:
+                cancelled_nodes = eng.get_nodes(
+                    where={"$and": [{"entity_type": "workflow_cancelled"}, {"run_id": run_id}]},
+                    limit=1,
+                )
+                completed_nodes = eng.get_nodes(
+                    where={"$and": [{"entity_type": "workflow_completed"}, {"run_id": run_id}]},
+                    limit=1,
+                )
+                
+                if cancelled_nodes:
+                    run["status"] = "cancelled"
+                    run["terminal"] = True
+                elif completed_nodes:
+                    run["status"] = "succeeded"
+                    run["terminal"] = True
+                else:
+                    # Fallback to events log if nodes aren't found
+                    events = self.run_registry.list_events(run_id, limit=500)
+                    for evt in reversed(events):
+                        etype = evt.get("event_type")
+                        if etype in {"run.completed", "workflow_run_completed"}:
+                            run["status"] = "succeeded"
+                            run["terminal"] = True
+                            break
+                        elif etype in {"run.failed", "workflow_run_failed"}:
+                            run["status"] = "failed"
+                            run["terminal"] = True
+                            break
+                        elif etype in {"run.cancelled", "workflow_run_cancelled"}:
+                            run["status"] = "cancelled"
+                            run["terminal"] = True
+                            break
                         
             steps = self._owner.list_steps(run_id)
             if steps:

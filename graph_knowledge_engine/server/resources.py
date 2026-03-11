@@ -108,13 +108,12 @@ pg_sqlalchemy_engine = _LazyResource(_build_pg_sqlalchemy_engine, "pg_sqlalchemy
 
 
 def _init_auth():
-    from graph_knowledge_engine.server.auth.db import init_auth_db
+    from graph_knowledge_engine.server.auth.db import create_auth_engine, init_auth_db
 
     auth_engine = _shared_sqlalchemy_engine()
     if auth_engine is None:
-        from sqlalchemy import create_engine
-
-        auth_engine = create_engine("sqlite:///auth.sqlite")
+        auth_db_url = os.getenv("AUTH_DB_URL", "sqlite:///auth.sqlite")
+        auth_engine = create_auth_engine(auth_db_url)
     init_auth_db(auth_engine)
     return auth_engine
 
