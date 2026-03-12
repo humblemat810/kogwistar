@@ -13,6 +13,7 @@ from ...entity_registry import (
     pick_node_type,
 )
 from ..models import Document, Edge, Node
+from ..utils.refs import ref_doc_id
 from .base import NamespaceProxy
 
 TNode = TypeVar("TNode", bound=Node)
@@ -369,7 +370,7 @@ class ReadSubsystem(NamespaceProxy):
     # Doc-index helpers
     def node_ids_by_doc(self, doc_id: str, insertion_method: str | None = None) -> list[str]:
         if insertion_method:
-            return self._e.ids_with_insertion_method(
+            return self.ids_with_insertion_method(
                 kind="node",
                 insertion_method=insertion_method,
                 doc_id=doc_id,
@@ -386,7 +387,7 @@ class ReadSubsystem(NamespaceProxy):
 
     def edge_ids_by_doc(self, doc_id: str, insertion_method: str | None = None) -> list[str]:
         if insertion_method:
-            return self._e.ids_with_insertion_method(
+            return self.ids_with_insertion_method(
                 kind="edge",
                 insertion_method=insertion_method,
                 doc_id=doc_id,
@@ -429,6 +430,58 @@ class ReadSubsystem(NamespaceProxy):
             return []
         got = self._e.backend.node_get(ids=ids, include=["documents"])
         return [Node.model_validate_json(js) for js in (got.get("documents") or [])]
+
+    def ids_with_insertion_method(
+        self,
+        *,
+        kind: str,
+        insertion_method: str,
+        ids: Optional[Sequence[str]] = None,
+        doc_id: Optional[str] = None,
+    ) -> list[str]:
+        """
+        Return distinct node_ids/edge_ids that have at least one reference row with the
+        requested insertion_method. Falls back to scanning primary records if needed.
+        """
+        assert kind in ("node", "edge"), f"kind must be 'node' or 'edge', got {kind!r}"
+        if kind == "node":
+            key = "node_id"
+            model_cls = Node
+        else:
+            key = "edge_id"
+            model_cls = Edge
+
+        where: dict[str, Any] = {"insertion_method": insertion_method}
+        if doc_id:
+            where["doc_id"] = doc_id
+        if ids:
+            where[key] = {"$in": list(ids)}
+
+        get_refs = self._e.backend.node_refs_get if kind == "node" else self._e.backend.edge_refs_get
+        rows = get_refs(where=where, include=["metadatas"])
+        picked = {str(m.get(key)) for m in (rows.get("metadatas") or []) if m and m.get(key)}
+        if picked:
+            return sorted(picked)
+
+        get_primary = self._e.backend.node_get if kind == "node" else self._e.backend.edge_get
+        if ids:
+            got = get_primary(ids=list(ids), include=["documents"])
+            documents = got.get("documents") or []
+            entity_ids = got.get("ids") or []
+        else:
+            got = get_primary(include=["documents"])
+            documents = got.get("documents") or []
+            entity_ids = got.get("ids") or []
+
+        keep: set[str] = set()
+        for entity_id, blob in zip(entity_ids, documents):
+            ent = model_cls.model_validate_json(blob)
+            for ref in (ent.mentions or []):
+                im = getattr(ref, "insertion_method", None)
+                if im == insertion_method and (not doc_id or ref_doc_id(ref) == doc_id):
+                    keep.add(entity_id)
+                    break
+        return sorted(keep)
 
     # Legacy names retained during migration
     def nodes_by_doc_index(self, doc_id: str, insertion_method: str | None = None) -> list[str]:

@@ -141,7 +141,9 @@ def _wf_edge(*, workflow_id: str, edge_id: str, src: str, dst: str) -> WorkflowE
         level_from_root = None,
     )
 
-# A simple class emulate major Claw features
+# A simple class emulate major Claw features.
+# Note: "clawbot" is just tutorial skin; the reusable pattern is event-sourced
+# inbox/outbox with explicit status transitions and durable audit rows.
 
 class ClawEventStore:
     """Durable event stream (`in` + `out`) with status transitions."""
@@ -169,10 +171,12 @@ class ClawEventStore:
         return eid
 
     def claim_next_pending(self) -> Optional[Dict[str, Any]]:
+        # "claim" is stateful: pending -> processing in one transaction.
+        # This is different from read-only queue probes like has_pending_user_message.
         with sqlite3.connect(self.db_path) as c:
             c.row_factory = sqlite3.Row
             c.execute("BEGIN IMMEDIATE")
-            r = c.execute("SELECT event_id,conversation_id,event_type,payload_json FROM claw_events WHERE direction='in' AND status='pending' ORDER BY created_at_ms LIMIT 1").fetchone()
+            r = c.execute("SELECT event_id,conversation_id,event_type,payload_json FROM claw_events WHERE direction='in' AND status='pending' ORDER BY created_at_ms, rowid LIMIT 1").fetchone()
             if r is None:
                 c.commit()
                 return None
@@ -200,6 +204,7 @@ class ClawEventStore:
         return oid
 
     def has_pending_user_message(self, *, conversation_id: str, exclude_event_id: str) -> bool:
+        # Read-only probe: does NOT claim or mutate any event.
         with sqlite3.connect(self.db_path) as c:
             r = c.execute(
                 "SELECT 1 FROM claw_events WHERE direction='in' AND status='pending' AND conversation_id=? AND event_type='user.message' AND event_id!=? LIMIT 1",
@@ -238,7 +243,8 @@ def _llm_route(payload: Dict[str, Any], ttl: int) -> Dict[str, Any]:
     system = (
         "You are routing an event-sourced agent. Output strict JSON with keys: "
         "route(self|output), reason, next_event_type, next_payload, output. "
-        "Choose route=self only if work is unfinished and ttl>0. "
+        "Route controls enqueue behavior. If route=output and next_payload exists, it is deferred metadata only. "
+        "If route=self and ttl>0, runtime may enqueue continuation; output can still be emitted in same decision. "
         "Treat ttl as loop-budget, not wall-clock lifetime."
     )
     try:
@@ -411,28 +417,34 @@ class ClawRuntimeApp:
         for n in nodes: self.workflow_engine.add_node(n)
         for e in edges: self.workflow_engine.add_edge(e)
 
-    def ensure_tutorial_workflow(self, workflow_id: str = "wf.tutorial.blocking.v1") -> str:
+    def ensure_tutorial_workflow(self, workflow_id: str = "wf.tutorial.blocking.v2") -> str:
         """Workflow design for beginner tutorial (blocking get_input loop)."""
         if self.workflow_engine.read.get_nodes(where={"$and": [{"entity_type": "workflow_node"}, {"workflow_id": workflow_id}]}, limit=1):
             return workflow_id
-        ids = [f"wf|{workflow_id}|{n}" for n in ("get_input", "decide", "execute", "emit", "end")]
+        # Use readable IDs so the CDC graph is self-explanatory for beginners.
+        # In this repo, workflow topology itself is persisted as graph knowledge.
+        n_get = f"wf|{workflow_id}|get_input"
+        n_decide = f"wf|{workflow_id}|decide"
+        n_execute = f"wf|{workflow_id}|execute"
+        n_emit = f"wf|{workflow_id}|emit_output"
+        n_end = f"wf|{workflow_id}|end"
         nodes = [
-            _wf_node(workflow_id=workflow_id, node_id=ids[0], op="get_input", start=True),
-            _wf_node(workflow_id=workflow_id, node_id=ids[1], op="decide"),
-            _wf_node(workflow_id=workflow_id, node_id=ids[2], op="execute"),
-            _wf_node(workflow_id=workflow_id, node_id=ids[3], op="emit_output"),
-            _wf_node(workflow_id=workflow_id, node_id=ids[4], op="end", terminal=True),
+            _wf_node(workflow_id=workflow_id, node_id=n_get, op="get_input", start=True),
+            _wf_node(workflow_id=workflow_id, node_id=n_decide, op="decide"),
+            _wf_node(workflow_id=workflow_id, node_id=n_execute, op="execute"),
+            _wf_node(workflow_id=workflow_id, node_id=n_emit, op="emit_output"),
+            _wf_node(workflow_id=workflow_id, node_id=n_end, op="end", terminal=True),
         ]
         for n in nodes:
             self.workflow_engine.add_node(n)
         edges = [
-            _wf_edge(workflow_id=workflow_id, edge_id=f"{ids[0]}->1", src=ids[0], dst=ids[1]),
-            _wf_edge(workflow_id=workflow_id, edge_id=f"{ids[1]}->2", src=ids[1], dst=ids[2]),
-            _wf_edge(workflow_id=workflow_id, edge_id=f"{ids[2]}->3", src=ids[2], dst=ids[3]),
+            _wf_edge(workflow_id=workflow_id, edge_id=f"{n_get}__to__{n_decide}", src=n_get, dst=n_decide),
+            _wf_edge(workflow_id=workflow_id, edge_id=f"{n_decide}__to__{n_execute}", src=n_decide, dst=n_execute),
+            _wf_edge(workflow_id=workflow_id, edge_id=f"{n_execute}__to__{n_emit}", src=n_execute, dst=n_emit),
             WorkflowEdge(
-                id=f"{ids[3]}->loop",
-                source_ids=[ids[3]],
-                target_ids=[ids[0]],
+                id=f"{n_emit}__to__{n_get}__continue",
+                source_ids=[n_emit],
+                target_ids=[n_get],
                 relation="wf_next",
                 label="wf_next",
                 type="relationship",
@@ -453,7 +465,7 @@ class ClawRuntimeApp:
                 domain_id=None,
                 canonical_entity_id=None,
             ),
-            _wf_edge(workflow_id=workflow_id, edge_id=f"{ids[3]}->end", src=ids[3], dst=ids[4]),
+            _wf_edge(workflow_id=workflow_id, edge_id=f"{n_emit}__to__{n_end}__default", src=n_emit, dst=n_end),
         ]
         # last edge is default end path
         edges[-1].metadata["wf_is_default"] = True
@@ -1060,7 +1072,10 @@ class TutorialResolver(MappingStepResolver):
     """Tutorial runtime resolver:
     - `get_input` blocks until an input event is available.
     - operations update state dict.
-    - output stage emits to outbox and controls loop predicate.
+    - output stage emits output and may enqueue continuation.
+    - `route` is authoritative for enqueue behavior:
+      route=self => may enqueue continuation; route=output => never auto-enqueue.
+    - `next_payload` under route=output is persisted as deferred metadata only.
     """
 
     def __init__(self, app: ClawRuntimeApp, stop_event: threading.Event) -> None:
@@ -1078,6 +1093,7 @@ class TutorialResolver(MappingStepResolver):
 
     def get_input(self, ctx) -> RunSuccess:
         # Blocking input op: waits for queued event (or stop signal).
+        # No event means no work: this demonstrates event-sourced "idle by default".
         while not self.stop_event.is_set():
             ev = self.app.event_store.claim_next_pending()
             if ev is not None:
@@ -1135,11 +1151,22 @@ class TutorialResolver(MappingStepResolver):
         e = dict(ctx.state_view.get("current_event") or {})
         d = dict(ctx.state_view.get("decision") or {})
         ttl = int(ctx.state_view.get("current_ttl") or 0)
-        loops_done = int(ctx.state_view.get("demo_loops_done") or 0)
+        loops_done = int(ctx.state_view.get("demo_self_requeues_done") or 0)
         max_loops = int(ctx.state_view.get("max_demo_loops") or 2)
+        route = str(d.get("route") or "output")
+        next_payload_raw = d.get("next_payload")
+        has_next_payload = isinstance(next_payload_raw, dict)
+        should_attempt_enqueue = route == "self"
+        budget_ok = loops_done < max_loops and ttl > 0 and str(e.get("event_type")) != "system.stop"
+        did_enqueue = False
+        next_id: Optional[str] = None
 
-        if str(d.get("route")) == "self" and ttl > 0:
-            nxt = dict(d.get("next_payload") or {})
+        # route is authoritative:
+        # - route=self  -> may enqueue continuation
+        # - route=output -> never auto-enqueue (next_payload is deferred metadata)
+        if should_attempt_enqueue and budget_ok:
+            # If LLM chose continue but omitted payload, synthesize minimal continuation input.
+            nxt = dict(next_payload_raw or {"tool": "llm_route", "text": "", "source": "auto-continue-empty-next-payload"})
             nxt["ttl"] = ttl - 1
             nxt["parent_event_id"] = e.get("event_id")
             next_id = self.app.event_store.enqueue_input(
@@ -1147,24 +1174,33 @@ class TutorialResolver(MappingStepResolver):
                 event_type=str(d.get("next_event_type") or "agent.loop"),
                 payload=nxt,
             )
-            out_type = "claw.gate.internal"
-            out_payload = {"route": "self", "next_event_id": next_id, "reason": d.get("reason")}
-        else:
-            out_type = "claw.gate.output"
-            out_payload = {"route": "output", "reason": d.get("reason"), "result": d.get("output")}
+            did_enqueue = True
+
+        out_payload: Dict[str, Any] = {"route": route, "reason": d.get("reason")}
+        if d.get("output") is not None:
+            out_payload["result"] = d.get("output")
+        if next_id is not None:
+            out_payload["next_event_id"] = next_id
+            out_payload["next_event_type"] = str(d.get("next_event_type") or "agent.loop")
+        if route == "output" and has_next_payload:
+            # Persist deferred payload for audit/replay, but do not auto-consume it.
+            out_payload["deferred_next_payload"] = dict(next_payload_raw or {})
+            out_payload["deferred_note"] = "deferred only; requires future external event to be used"
 
         self.app.event_store.append_output(
             conversation_id=str(e.get("conversation_id") or "tutorial"),
-            event_type=out_type,
+            event_type="claw.gate.output",
             payload=out_payload,
             source_event_id=str(e.get("event_id") or "unknown"),
             run_id=ctx.run_id,
         )
 
-        loops_done += 1
-        allow_continue = loops_done < max_loops and str(e.get("event_type")) != "system.stop"
+        # Demo guardrail counts only internal self-requeues, not all processed events.
+        if did_enqueue:
+            loops_done += 1
+        allow_continue = did_enqueue and loops_done < max_loops and str(e.get("event_type")) != "system.stop"
         with ctx.state_write as s: # this example use state_write lock to update state in op level, you can also submit up updates in RunSuccess
-            s["demo_loops_done"] = loops_done
+            s["demo_self_requeues_done"] = loops_done
             s["continue_loop"] = allow_continue
         return RunSuccess(conversation_node_id=None, state_update=[])
 
@@ -1193,7 +1229,7 @@ def build_parser() -> argparse.ArgumentParser:
     pp.add_argument("--doc-id", default="doc:background:hypergraph:001")
     pt = sub.add_parser("tutorial", parents=[common])
     pt.add_argument("--open-browser", action="store_true")
-    pt.add_argument("--max-demo-loops", type=int, default=2, help="Guardrail: max runtime loops before tutorial worker exits.")
+    pt.add_argument("--max-demo-loops", type=int, default=2, help="Guardrail: max internal self-requeues before tutorial worker exits.")
     pt.add_argument("--cdc-host", default="127.0.0.1")
     pt.add_argument("--cdc-port", type=int, default=8787)
     pt.add_argument("--cdc-oplog-file", default=".cdc_debug/data/cdc_oplog.jsonl")
@@ -1285,6 +1321,7 @@ def main() -> None:
         print("[Step 7] Ops=get_input/decide/execute/emit_output, state=dict, resolver=TutorialResolver.")
         print("[Step 7] LLM adapter example uses Azure by default; Gemini section is commented in _llm_route.")
         print("[Step 7] get_input blocks when queue is empty; worker runs in separate thread.")
+        print("[Step 7] Policy: route=self may enqueue continuation; route=output stores next_payload as deferred metadata only.")
 
         # 8) Run worker thread; user can enqueue questions/ticks.
         stop_evt = threading.Event()
@@ -1303,7 +1340,7 @@ def main() -> None:
                 workflow_id=wfid,
                 conversation_id="tutorial-conversation",
                 turn_node_id="tutorial-turn-0",
-                initial_state={"max_demo_loops": int(a.max_demo_loops), "demo_loops_done": 0, "continue_loop": True},
+                initial_state={"max_demo_loops": int(a.max_demo_loops), "demo_self_requeues_done": 0, "continue_loop": True},
                 run_id=f"tutorial|{uuid.uuid4()}",
             )
 
@@ -1316,6 +1353,9 @@ def main() -> None:
         print("[Step 9] Graph may look messy; backbone is expected. Build custom viewer filters as needed.")
 
         # 10) Keep loop running until quit or guardrail exit.
+        # Important tutorial behavior:
+        # this input loop is bound to worker liveness, so it is NOT infinite by default.
+        # If no self-requeue path is taken, worker may finish and CLI loop exits.
         try:
             while t.is_alive():
                 user_text = input("tutorial> ").strip()

@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 from contextlib import contextmanager
 import contextvars
 
@@ -7,6 +7,8 @@ import uuid
 
 
 import time
+
+from engine_core.utils import AliasBook
 
 from .chroma_backend import ChromaBackend
 
@@ -35,6 +37,7 @@ from .types import (
     ResolvedExtractionSchemaMode,
 )
 from ..graph_kinds import normalize_graph_kind
+from .utils.aliasing import AliasBookStore
 
 if True:
     """_summary_
@@ -183,7 +186,7 @@ def _is_pgvector_backend_instance(backend: object) -> bool:
     return isinstance(backend, PgVectorBackend)
 
 
-def _build_postgres_uow_if_needed(backend: object):
+def _build_postgres_uow_if_needed(backend: StorageBackend):
     if not _is_pgvector_backend_instance(backend):
         return NoopUnitOfWork()
     try:
@@ -193,11 +196,9 @@ def _build_postgres_uow_if_needed(backend: object):
             extra="pgvector",
             detail="PgVector backend requires optional PostgreSQL dependencies",
         ) from e
-    return PostgresUnitOfWork(engine=backend.engine)
+    pg_backend = cast(PgVectorBackend, backend)
+    return PostgresUnitOfWork(engine=pg_backend.engine)
 
-
-def _utc_now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
 
 def _safe_json_dict(doc: Any) -> dict:
     if isinstance(doc, dict):
@@ -215,274 +216,9 @@ def _merge_meta(base_meta: dict | None, patch: dict) -> dict:
     # flat merge
     return {**base_meta, **patch}
 
-def _is_tombstoned(meta: dict | None) -> bool:
-    meta = meta or {}
-    return str(meta.get("lifecycle_status") or "active") == "tombstoned"
-def _str_or_none(to_str):
-    if to_str is None:
-        return to_str
-    else:
-        return str(to_str)
-def _refs_fingerprint(refs) -> str:
-    # Normalize minimal fields that affect the index rows, order-sensitive
-    payload = [
-        {
-            "doc_id": getattr(r, "doc_id", None),
-            "method": getattr(getattr(r, "verification", None), "method", None),
-            "is_verified": getattr(getattr(r, "verification", None), "is_verified", None),
-            "score": getattr(getattr(r, "verification", None), "score", None),
-            "sp": getattr(r, "start_page", None),
-            "ep": getattr(r, "end_page", None),
-            "sc": getattr(r, "start_char", None),
-            "ec": getattr(r, "end_char", None),
-            "snip": (getattr(r, "excerpt", None) or "")[:64],  # cap; avoid huge digests
-        }
-        for r in (refs or [])
-    ]
-    blob = json.dumps(payload, sort_keys=False, separators=(",", ":")).encode("utf-8")
-    # 128-bit BLAKE2b: fast + collision resistant enough for cache guards
-    return hashlib.blake2b(blob, digest_size=16).hexdigest()
-
 
 F = TypeVar("F", bound=Callable[..., Any])
-def _safe_excerpt(s: str | None, max_len: int = 200) -> str | None:
-    if not s:
-        return None
-    s = s.strip()
-    if len(s) > max_len:
-        return s[: max_len - 1] + "â€¦"
-    return s
 
-def _ref_doc_id(ref) -> str | None:
-    # Try explicit doc_id on the ReferenceSession if your model has it
-    did = getattr(ref, "doc_id", None)
-    if did:
-        return did
-    # Else try to extract from document_page_url like "document/<uuid>"
-    url = getattr(ref, "document_page_url", None) or ""
-    m = re.search(r"document/([A-Za-z0-9\-]+)", url)
-    return m.group(1) if m else None
-
-def _ref_insertion_method(ref) -> str:
-    # If your ReferenceSession has 'insertion_method', use it
-    m = getattr(ref, "insertion_method", None)
-    if m:
-        return str(m)
-    # Fallbacks (optional): derive from verification.method or unknown
-    ver = getattr(ref, "verification", None)
-    if ver and getattr(ver, "method", None):
-        return str(ver.method)
-    return "unknown"
-def _is_nn(x: str) -> bool: return isinstance(x, str) and x.startswith("nn:")
-def _is_ne(x: str) -> bool: return isinstance(x, str) and x.startswith("ne:")
-def _merge_refs(old_refs_json: str | None, new_refs):
-    old = []
-    if old_refs_json:
-        try: old = json.loads(old_refs_json)
-        except Exception: old = []
-    # de-dup by (document_page_url, start_page, start_char, end_page, end_char)
-    def key(r):
-        return (
-            r.get("document_page_url"),
-            r.get("start_page"), r.get("start_char"),
-            r.get("end_page"), r.get("end_char")
-        )
-    seen = {key(r): r for r in old}
-    for r in (new_refs or []):
-        seen[key(r.model_dump())] = r.model_dump()
-    merged = list(seen.values())
-    return merged, json.dumps(merged)
-def _alloc_real_ids(parsed):
-    """Map explicit nn:/ne: â†’ fresh UUIDs; rewrite in-place."""
-    nn2id, ne2id = {}, {}
-    def map_id(x: str) -> str:
-        if _is_nn(x): nn2id.setdefault(x, str(uuid.uuid4())); return nn2id[x]
-        if _is_ne(x): ne2id.setdefault(x, str(uuid.uuid4())); return ne2id[x]
-        return x
-
-    for n in parsed.nodes or []:
-        if n.id: n.id = map_id(n.id)
-    for e in parsed.edges or []:
-        if e.id: e.id = map_id(e.id)
-        e.source_ids = [map_id(x) for x in (e.source_ids or [])]
-        e.target_ids = [map_id(x) for x in (e.target_ids or [])]
-        if hasattr(e, "source_edge_ids"):
-            e.source_edge_ids = [map_id(x) for x in (e.source_edge_ids or [])]
-        if hasattr(e, "target_edge_ids"):
-            e.target_edge_ids = [map_id(x) for x in (e.target_edge_ids or [])]
-    return nn2id, ne2id
-def chroma_docs_to_pydantic(objs: dict, model_cls: Type[T]) -> List[T]:
-    """
-    Convert Chroma get()/query() results to a list of Pydantic models.
-    
-    `objs` is the dict returned by collection.get()/query(), 
-    `model_cls` is Node or Edge.
-    """
-    docs = objs.get("documents") or []
-    # query() returns [[...]] for documents, so flatten
-    if docs and isinstance(docs[0], list):
-        docs = docs[0]
-    return [model_cls.model_validate_json(doc) for doc in docs]
-
-
-
-def _split_pages_from_text(raw: str) -> List[Dict[str, Any]]:
-    """
-    Heuristics:
-      - Prefer form-feed splits (\f) if present.
-      - Else split on common page headers like 'Page 1', 'Page: 2', etc.
-      - Else treat whole text as page 1.
-    """
-    if not raw:
-        return []
-
-    # 1) Form-feed first (common in OCR / PDFs)
-    if "\f" in raw:
-        parts = raw.split("\f")
-        return [{"page_number": i+1, "text": p.strip()} for i, p in enumerate(parts) if p.strip()]
-
-    # 2) Simple page header detection
-    p = re.split(r"(?:^|\n)\s*Page[:\s]+(\d+)\s*(?:\n|$)", raw, flags=re.IGNORECASE)
-    if len(p) > 1:
-        out, i = [], 0
-        # p looks like [prefix, num1, chunk1, num2, chunk2, ...]
-        while i < len(p):
-            if i == 0 and p[i].strip():
-                out.append({"page_number": 1, "text": p[i].strip()})
-                i += 1
-                continue
-            if i + 2 <= len(p)-1:
-                try:
-                    num = int(p[i+1])
-                except Exception:
-                    num = None
-                txt = p[i+2].strip()
-                if txt:
-                    out.append({"page_number": num or (len(out)+1), "text": txt})
-                i += 3
-            else:
-                break
-        if out:
-            return out
-
-    # 3) Fallback: one page
-    return [{"page_number": 1, "text": raw.strip()}]
-
-def _coerce_pages(content_or_pages: Any, *, default_page_start: int = 1) -> List[Dict[str, Any]]:
-    """
-    Normalize many shapes to a list of {'page_number': int, 'text': str}.
-
-    Accepts:
-      - raw string (split by \f or headers â†’ pages)
-      - list[str] (each element is page text)
-      - list[dict] with keys {'page'|'page_number', 'text'|'content'}
-      - dict with a 'pages' field (any of the above inside)
-      - JSON string of any of the above
-
-    NEVER raises on shape; returns [] if nothing usable.
-    """
-    def as_page_dict(x: PageLike, idx0: int) -> Optional[Dict[str, Any]]:
-        if isinstance(x, str):
-            t = x.strip()
-            if not t:
-                return None
-            return {"page_number": default_page_start + idx0, "text": t}
-        if isinstance(x, dict):
-            # map flexible keys
-            num = x.get("page_number") or x.get("pdf_page_number")
-            if num is None:
-                num = x.get("page")
-            try:
-                num = int(num) if num is not None else (default_page_start + idx0)
-            except Exception:
-                num = default_page_start + idx0
-            txt = x.get("text")
-            if txt is None:
-                txt = x.get("content")
-            if isinstance(txt, str) and txt.strip():
-                return {"page_number": num, "text": txt.strip()}
-            return None
-        return None
-
-    # JSON string wrapper?
-    if isinstance(content_or_pages, str):
-        s = content_or_pages.strip()
-        # if it looks like json pages, try parse; else split text
-        if s and s[:1] in "[{" and s[-1:] in "]}" :
-            try:
-                parsed = json.loads(s)
-                return _coerce_pages(parsed, default_page_start=default_page_start)
-            except Exception:
-                pass
-        # treat as raw document text
-        return _split_pages_from_text(s)
-
-    # dict with 'pages'
-    if isinstance(content_or_pages, dict):
-        if "pages" in content_or_pages:
-            pages = content_or_pages.get("pages") or []
-            out: List[Dict[str, Any]] = []
-            for i, item in enumerate(pages):
-                row = as_page_dict(item, i)
-                if row:
-                    out.append(row)
-            return out
-        # or a single page-like dict
-        row = as_page_dict(content_or_pages, 0)
-        return [row] if row else []
-
-    # list input
-    if isinstance(content_or_pages, list):
-        out: List[Dict[str, Any]] = []
-        for i, item in enumerate(content_or_pages):
-            row = as_page_dict(item, i)
-            if row:
-                out.append(row)
-        return out
-
-    # unknown shape â†’ empty (caller decides fallback)
-    return []
-
-def _normalize_chroma_result(objs: Dict[str, Any]) -> Tuple[List[str], List[str], List[Dict[str, Any]]]:
-    """
-    Normalize Chroma get()/query() outputs into parallel lists:
-    ids: List[str], documents: List[str], metadatas: List[dict]
-    """
-    ids = objs.get("ids") or []
-    docs = objs.get("documents") or []
-    metas = objs.get("metadatas") or []
-
-    # query() returns nested lists; flatten the first level if present
-    if ids and isinstance(ids[0], list):
-        ids = ids[0]
-    if docs and isinstance(docs[0], list):
-        docs = docs[0]
-    if metas and isinstance(metas[0], list):
-        metas = metas[0]
-
-    # Make lengths match (Chroma can omit metadatas if not requested)
-    if not metas:
-        metas = [{} for _ in docs]
-
-    return ids, docs, metas
-
-def chroma_to_models(objs: Dict[str, Any], model_cls: Type[T]) -> List[T]:
-    """
-    Convert Chroma results to a list of Pydantic models (Node/Edge).
-    """
-    _, docs, _ = _normalize_chroma_result(objs)
-    return [model_cls.model_validate_json(doc) for doc in docs]
-
-def chroma_to_models_with_meta(objs: Dict[str, Any], model_cls: Type[T]) -> List[Tuple[str, T, Dict[str, Any]]]:
-    """
-    Convert Chroma results to (id, model, metadata) tuples.
-    """
-    ids, docs, metas = _normalize_chroma_result(objs)
-    out: List[Tuple[str, T, Dict[str, Any]]] = []
-    for rid, doc, meta in zip(ids, docs, metas):
-        out.append((rid, model_cls.model_validate_json(doc), meta or {}))
-    return out
-_DOC_URL = "document/{doc_id}"
 
 def _strip_none(d: dict) -> dict:
     return {k: v for k, v in d.items() if v is not None}
@@ -491,31 +227,6 @@ def _json_or_none(v):
     return None if v is None else json.dumps(v)
 
 
-def _extract_doc_ids_from_refs(refs: list[Span] | list[Grounding]) -> list[str]:
-    out = []
-    for r in refs or []:
-        if type(r) is Grounding:
-            for span in r.spans:
-                did = getattr(span, "doc_id", None)
-                if not did and getattr(span, "document_page_url", None):
-                    m = re.search(r"document/([A-Za-z0-9\-]+)", span.document_page_url)
-                    if m:
-                        did = m.group(1)
-                if did:
-                    out.append(did)
-        elif type(r) is Span:
-            # legacy is grounding    
-            did = getattr(r, "doc_id", None)
-            if not did and getattr(r, "document_page_url", None):
-                m = re.search(r"document/([A-Za-z0-9\-]+)", r.document_page_url)
-                if m:
-                    did = m.group(1)
-            if did:
-                out.append(did)
-        else:
-            raise ValueError(f"ref type of type {type(r)} is unsupported")
-    # unique + stable order
-    return sorted(dict.fromkeys(out))
 def _node_doc_and_meta(n: Union["Node", "PureChromaNode"]) -> tuple[str, dict]:
     """Return (documents_string, metadata_dict) for Chroma. helper when inserting to backend db,"""
     """Extract and flatten certain fields that can be searched via collection """
@@ -565,92 +276,10 @@ def _edge_doc_and_meta(e: Union["Edge", "PureChromaEdge"]) -> tuple[str, dict]:
     meta = _strip_none(meta)
     return doc, meta
 
-def _default_verification(note: str = "fallback span") -> MentionVerification:
-    return MentionVerification(method="heuristic", is_verified=False, score=None, notes=note)
 
-
-def _ensure_ref_span(ref: Span, doc_id: str) -> Span:
-    # Make sure URLs point at this doc and spans are complete
-    r = ref.model_copy(deep=True)
-    if not r.collection_page_url:
-        r.collection_page_url = f"document_collection/{doc_id}"
-    if not r.document_page_url or str(doc_id) not in r.document_page_url:
-        r.document_page_url = _DOC_URL.format(doc_id=doc_id)
-    if r.start_char is None or r.end_char is None:
-        r.start_char, r.end_char = 0, 0
-    # Default verification if absent
-    if (not hasattr(r, 'verification') and r.__class__.__name__.endswith("LlmSlice")):  # llm slice no such field
-        pass
-    elif (hasattr(r, 'verification') and r.verification is None): # ok
-        r.verification = _default_verification("no explicit verification from LLM")
-    else: # ok defined
-        pass
-    return r
-
-def _normalize_mentions(mentions: Optional[List[Span]], doc_id: str) -> List[Span]:
-    if not mentions or len(mentions) == 0:
-        raise Exception("missing mentions")
-    return [_ensure_ref_span(ref, doc_id) for ref in mentions]
-
-_UUID_RE = re.compile(r"^[0-9a-fA-F\-]{36}$")
-
-def _is_uuid(x: str | None) -> bool:
-    return bool(x and _UUID_RE.match(x))
-
-def _is_alias(x: str | None) -> bool:
-    # Accept session aliases N\d+, E\d+ and base62 N~..., E~...
-    return bool(x) and (x.startswith("N") or x.startswith("E"))
-
-def _is_new_node(x: str | None) -> bool:
-    return bool(x) and x.startswith("nn:")
-
-def _is_new_edge(x: str | None) -> bool:
-    return bool(x) and x.startswith("ne:")
-# Simple on-disk cache dir (optional)
-def build_aliases(node_ids, edge_ids):
-    node_aliases = {rid: f"N{i}" for i, rid in enumerate(node_ids, start=1)}
-    edge_aliases = {rid: f"E{i}" for i, rid in enumerate(edge_ids, start=1)}
-    alias_for_real = {**node_aliases, **edge_aliases}
-    real_for_alias = {v: k for k, v in alias_for_real.items()}
-    return alias_for_real, real_for_alias
-
-def aliasify_graph(nodes, edges, alias_for_real):
-    """Return shallow copies with ids replaced by aliases for prompt."""
-    def a(rid): return alias_for_real.get(rid, rid)  # fallback: leave as-is
-    aliased_nodes = [
-        {
-            "id": a(n["id"]),
-            "label": n["label"],
-            "type": n["type"],
-            "summary": n.get("summary",""),
-            # include minimal fields the LLM needs
-        }
-        for n in nodes
-    ]
-    aliased_edges = [
-        {
-            "id": a(e["id"]),
-            "relation": e["relation"],
-            "source_ids": [a(s) for s in e.get("source_ids", [])],
-            "target_ids": [a(t) for t in e.get("target_ids", [])],
-        }
-        for e in edges
-    ]
-    return aliased_nodes, aliased_edges
-
-def de_alias_ids(llm_result, real_for_alias):
-    """Translate LLM aliases back to real UUIDs in-place."""
-    def r(a): return real_for_alias.get(a, a)
-    for n in llm_result.nodes:
-        if n.id: n.id = r(n.id)
-    for e in llm_result.edges:
-        if e.id: e.id = r(e.id)
-        e.source_ids = [r(x) for x in e.source_ids]
-        e.target_ids = [r(x) for x in e.target_ids]
-    return llm_result
 def _backend_update_record_lifecycle(
     *,
-    backend: Any,
+    backend: StorageBackend,
     kind: str,
     record_id: str,
     lifecycle_patch: dict,
@@ -699,50 +328,6 @@ def base62_to_uuid(s: str) -> str:
         n = n * 62 + ALPHABET.index(ch)
     hex128 = f"{n:032x}"
     return f"{hex128[0:8]}-{hex128[8:12]}-{hex128[12:16]}-{hex128[16:20]}-{hex128[20:]}"
-@dataclass
-class AliasBook:
-    """Stable per-session alias book. Append-only for cache friendliness."""
-    next_n: int = 1
-    next_e: int = 1
-    real_to_alias: dict = field(default_factory=dict)  # real_id -> alias "N#"/"E#"
-    alias_to_real: dict = field(default_factory=dict)  # alias -> real_id
-
-    def alias_for_node(self, real_id: str) -> str:
-        a = self.real_to_alias.get(real_id)
-        if a:
-            return a
-        a = f"N{self.next_n}"
-        self.next_n += 1
-        self.real_to_alias[real_id] = a
-        self.alias_to_real[a] = real_id
-        return a
-
-    def alias_for_edge(self, real_id: str) -> str:
-        a = self.real_to_alias.get(real_id)
-        if a:
-            return a
-        a = f"E{self.next_e}"
-        self.next_e += 1
-        self.real_to_alias[real_id] = a
-        self.alias_to_real[a] = real_id
-        return a
-
-    def assign_for_sets(self, node_ids: list[str], edge_ids: list[str]):
-        for rid in node_ids:
-            self.alias_for_node(rid)
-        for rid in edge_ids:
-            self.alias_for_edge(rid)
-
-    def legend_delta(self, node_ids: list[str], edge_ids: list[str]) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
-        """Return only (real_id, alias) pairs that are NEW since last turn."""
-        new_nodes, new_edges = [], []
-        for rid in node_ids:
-            if rid not in self.real_to_alias:
-                new_nodes.append((rid, self.alias_for_node(rid)))
-        for rid in edge_ids:
-            if rid not in self.real_to_alias:
-                new_edges.append((rid, self.alias_for_edge(rid)))
-        return new_nodes, new_edges
 
 # strategy toggle
 # "session_alias" -> N#/E# with session-stable AliasBook (+ delta legend)
@@ -1290,29 +875,8 @@ class GraphKnowledgeEngine:
     def _de_alias_ids_in_result(self, doc_id: str, parsed: LLMGraphExtraction) -> LLMGraphExtraction:
         return self.extract.de_alias_ids_in_result(doc_id, parsed)
 
-    def _alias_legend_strings(self, aliased_nodes, aliased_edges):
-        """Tiny text blocks for the prompt, to guide the model to use aliases only."""
-        if aliased_nodes:
-            node_lines = [f"- {n['id']}: {n['label']} [{n['type']}] â€” {n.get('summary','')}" for n in aliased_nodes]
-            nodes_str = "Node aliases:\n" + "\n".join(node_lines)
-        else:
-            nodes_str = "Node aliases: (none)"
-
-        if aliased_edges:
-            def fmt_ids(xs): return ", ".join(xs)
-            edge_lines = [
-                f"- {e['id']}: {e['relation']} â€” src[{fmt_ids(e.get('source_ids', []))}] â†’ tgt[{fmt_ids(e.get('target_ids', []))}]"
-                for e in aliased_edges
-            ]
-            edges_str = "Edge aliases:\n" + "\n".join(edge_lines)
-        else:
-            edges_str = "Edge aliases: (none)"
-
-        return nodes_str, edges_str
     def _alias_book(self, key: str) -> AliasBook:
-        if key not in self._alias_books:
-            self._alias_books[key] = AliasBook()
-        return self._alias_books[key]
+        return self.alias_books.get(key)
     
     def _coerce_pages(self, content_or_pages):# -> list[tuple[int, str]] | list[Any] | Any:
         return self.extract.coerce_pages(content_or_pages)
@@ -1390,7 +954,7 @@ class GraphKnowledgeEngine:
         self.meta_sqlite : EngineSQLite | EnginePostgresMetaStore
         
 
-        self._alias_books: dict[str, AliasBook] = {}
+        self.alias_books = AliasBookStore()
         self.pre_add_node_hooks: list[Callable[[Node], None]] = []
         self.pre_add_edge_hooks: list[Callable[[Edge], bool]] = []
         self.pre_add_pure_edge_hooks: list[Callable[[Edge], bool]] = []
@@ -2092,58 +1656,12 @@ class GraphKnowledgeEngine:
         ids: Optional[Iterable[str]] = None, # optionally restrict to this set
         doc_id: Optional[str] = None,        # optionally restrict to a document
     ) -> list[str]:
-        """
-        Return distinct node_ids (or edge_ids) that have at least one ReferenceSession
-        with insertion_method == <value> (and optionally within doc_id).
-        Fast path uses the ref index; fallback scans the primary collection.
-        """
-        assert kind in ("node", "edge"), f"kind must be 'node' or 'edge', got {kind!r}"
-        idx: CollectionLike | None
-        # Choose index & key
-        if kind == "node":
-            idx = True  # refs index exists in backend
-            key = "node_id"
-            primary = None
-            model_cls = Node
-        else:
-            idx = True  # refs index exists in backend
-            key = "edge_id"
-            primary = None
-            model_cls = Edge
-
-        # ---------- Fast path: indexed rows ----------
-        if idx is not None:
-            where: dict[str, Any] = {"insertion_method": insertion_method}
-            if doc_id:
-                where["doc_id"] = doc_id
-            if ids:
-                where[key]= {"$in": list(ids)}
-            get_refs = self.backend.node_refs_get if kind == "node" else self.backend.edge_refs_get
-            rows = get_refs(where=where, include=["metadatas"])
-            picked = {str(m.get(key)) for m in (rows.get("metadatas") or []) if m and m.get(key)}
-            return sorted(picked)
-
-        # ---------- Fallback: scan primary JSON ----------
-        # (only used if you didnâ€™t create the index collection)
-        if ids:
-            get_primary = self.backend.node_get if kind == "node" else self.backend.edge_get
-            got = get_primary(ids=list(ids), include=["documents"])
-            documents = got.get("documents") or []
-            entity_ids = got.get("ids") or []
-        else:
-            got = primary.get(include=["documents"])
-            documents = got.get("documents") or []
-            entity_ids = got.get("ids") or []
-
-        keep: set[str] = set()
-        for eid, blob in zip(entity_ids, documents):
-            ent = model_cls.model_validate_json(blob)
-            for ref in (ent.mentions or []):
-                im = getattr(ref, "insertion_method", None)
-                if im == insertion_method and (not doc_id or _ref_doc_id(ref) == doc_id):
-                    keep.add(eid)
-                    break
-        return sorted(keep)
+        return self.read.ids_with_insertion_method(
+            kind=kind,
+            insertion_method=insertion_method,
+            ids=list(ids) if ids is not None else None,
+            doc_id=doc_id,
+        )
     def _verify_one_reference(
         self,
         extracted_text: str,
