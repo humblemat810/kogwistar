@@ -139,3 +139,67 @@ python scripts/claw_runtime_loop.py list-events --data-dir .gke-data/claw-loop -
 
 `direction=in` rows are ingested input events (`pending|processing|done|failed`).
 `direction=out` rows are emitted output events from `ClawResolver.persist_outbox`.
+
+### CDC Bridge + Browser Workflow Page
+
+Start CDC bridge:
+
+```powershell
+python scripts/claw_runtime_loop.py run-cdc-bridge --host 127.0.0.1 --port 8787 --reset-oplog
+```
+
+Initialize runtime with CDC publish endpoint:
+
+```powershell
+python scripts/claw_runtime_loop.py init `
+  --data-dir .gke-data/claw-loop `
+  --cdc-publish-endpoint http://127.0.0.1:8787/ingest
+```
+
+Render CDC-enabled pages (includes `workflow.bundle.html`):
+
+```powershell
+python scripts/claw_runtime_loop.py render-cdc-pages `
+  --data-dir .gke-data/claw-loop `
+  --out-dir .cdc_debug/pages `
+  --cdc-ws-url ws://127.0.0.1:8787/changes/ws
+```
+
+Seed notebook-style background hypergraph data (primitive + edge->edge + node->edge):
+
+```powershell
+python scripts/claw_runtime_loop.py seed-background --data-dir .gke-data/claw-loop
+```
+
+Run provenance/span correction using built-in extraction matching helpers:
+
+```powershell
+python scripts/claw_runtime_loop.py repair-provenance `
+  --data-dir .gke-data/claw-loop `
+  --doc-id doc:background:hypergraph:001
+```
+
+Run full beginner walkthrough (threaded blocking input runtime, max demo loops guardrail = 2):
+
+```powershell
+python scripts/claw_runtime_loop.py tutorial --data-dir .gke-data/claw-loop --open-browser --max-demo-loops 2
+```
+
+### TTL and Clock Events
+
+- Use payload `ttl` to cap self-loop continuation and prevent infinite loops.
+- In this tutorial, `ttl` means loop budget (times to loop), not wall-clock expiry.
+- If you also want time-based expiry, add a separate payload field (for example `expires_at_ms`).
+- Use `clock.tick` to trigger polling behavior:
+
+```powershell
+python scripts/claw_runtime_loop.py enqueue-clock --data-dir .gke-data/claw-loop --conversation-id __clock__ --ttl 1
+```
+
+- Or auto-generate periodic clock events in worker loop:
+
+```powershell
+python scripts/claw_runtime_loop.py run-loop `
+  --data-dir .gke-data/claw-loop `
+  --clock-interval-ms 3000
+```

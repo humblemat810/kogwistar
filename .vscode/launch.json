@@ -5,12 +5,29 @@
     "version": "0.2.0",
     "configurations": [
         {
+            "name": "Python Debugger: Claw Tutorial",
+            "type": "debugpy",
+            "cwd":"${workspaceFolder}",
+            "request": "launch",
+            "program": "scripts/claw_runtime_loop.py",
+            "console": "integratedTerminal",
+            "args": ["tutorial", "--open-browser", "--reset-cdc-oplog"]
+        },
+        {
             "name": "event bridge fastapi",
             "type": "debugpy",
             "request": "launch",
             "module": "uvicorn",
-            "args": ["graph_knowledge_engine.cdc.change_bridge:app", "--host", "127.0.0.1", "--port", "8787",
-                    "--log-level","info","--access-log"],
+            "args": [
+                "graph_knowledge_engine.cdc.change_bridge:app",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                "8787",
+                "--log-level",
+                "info",
+                "--access-log"
+            ],
             "justMyCode": false
         },
         {
@@ -19,7 +36,16 @@
             "request": "launch",
             "program": "graph_knowledge_engine/utils/kge_debug_dump.py",
             "console": "integratedTerminal",
-            "args": ["bundle", "--template", "./graph_knowledge_engine/templates/d3.html", "--out-dir", "./empty_cdc_streamer", "--empty", "--cdc-ws-url", "ws://127.0.0.1:8787/changes/ws"],
+            "args": [
+                "bundle",
+                "--template",
+                "./graph_knowledge_engine/templates/d3.html",
+                "--out-dir",
+                "./empty_cdc_streamer",
+                "--empty",
+                "--cdc-ws-url",
+                "ws://127.0.0.1:8787/changes/ws"
+            ],
             "justMyCode": false
         },
         {
@@ -28,11 +54,19 @@
             "request": "launch",
             "program": "graph_knowledge_engine/utils/kge_debug_dump.py",
             "console": "integratedTerminal",
-            "args": ["one", "--template", "./graph_knowledge_engine/templates/d3.html", 
-            "--out", "C:/Users/chanh/AppData/Local/Temp/pytest-of-chanh/pytest-810/bundle/conv.html", 
-            "--graph-type", "conversation", 
-            "--persist-dir", "C:/Users/chanh/AppData/Local/Temp/pytest-of-chanh/pytest-810/test_workflow_runtime_uses_def0/conv",
-            "--cdc-ws-url", "ws://127.0.0.1:8787/changes/ws"],
+            "args": [
+                "one",
+                "--template",
+                "./graph_knowledge_engine/templates/d3.html",
+                "--out",
+                "C:/Users/chanh/AppData/Local/Temp/pytest-of-chanh/pytest-810/bundle/conv.html",
+                "--graph-type",
+                "conversation",
+                "--persist-dir",
+                "C:/Users/chanh/AppData/Local/Temp/pytest-of-chanh/pytest-810/test_workflow_runtime_uses_def0/conv",
+                "--cdc-ws-url",
+                "ws://127.0.0.1:8787/changes/ws"
+            ],
             "justMyCode": false
         },
         {
@@ -41,11 +75,19 @@
             "request": "launch",
             "program": "graph_knowledge_engine/utils/kge_debug_dump.py",
             "console": "integratedTerminal",
-            "args": ["one", "--template", "./graph_knowledge_engine/templates/d3.html", 
-            "--out", "C:/Users/chanh/AppData/Local/Temp/pytest-of-chanh/pytest-806/bundle/conv.html", 
-            "--graph-type", "conversation", 
-            "--persist-dir", "C:/Users/chanh/AppData/Local/Temp/pytest-of-chanh/pytest-806/test_workflow_runtime_uses_def0/conv",
-            "--cdc-ws-url", "ws://127.0.0.1:8787/changes/ws"],
+            "args": [
+                "one",
+                "--template",
+                "./graph_knowledge_engine/templates/d3.html",
+                "--out",
+                "C:/Users/chanh/AppData/Local/Temp/pytest-of-chanh/pytest-806/bundle/conv.html",
+                "--graph-type",
+                "conversation",
+                "--persist-dir",
+                "C:/Users/chanh/AppData/Local/Temp/pytest-of-chanh/pytest-806/test_workflow_runtime_uses_def0/conv",
+                "--cdc-ws-url",
+                "ws://127.0.0.1:8787/changes/ws"
+            ],
             "justMyCode": false
         },
         {
@@ -66,7 +108,6 @@
             },
             "jinja": true,
             "justMyCode": false
-
         },
         {
             "name": "disposable server mcp with admin",
@@ -217,7 +258,6 @@
             "console": "integratedTerminal",
             "justMyCode": false
         },
-        
         {
             "name": "Python Debugger: Current File at project root",
             "type": "debugpy",

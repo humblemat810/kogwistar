@@ -228,6 +228,21 @@ All evolution must be:
 - new edge
 - or meta-log entry
 
+## 4.9 Hyperedge Reification Invariant
+
+Hyperedge semantics are defined as:
+
+- `hyperedge = bipartite attachment from full source set to one edge node to full target set`.
+
+Operationally in reified form:
+
+- Let `E` be the relation edge-node.
+- For every `s` in `source_ids(E) union source_edge_ids(E)`, attach `s -> E`.
+- For every `t` in `target_ids(E) union target_edge_ids(E)`, attach `E -> t`.
+- The relation meaning is on `E` itself; endpoint attachments are structural, append-only facts.
+
+This invariant applies to knowledge, workflow, and conversation graphs whenever edge-to-edge endpoints are used.
+
 ---
 
 # 5. Phased Refactor Plan

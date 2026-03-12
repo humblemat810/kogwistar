@@ -1185,16 +1185,47 @@ Created: 2026-03-01
             if (MODE === "reify") model.nodesById.delete(e.id);
 
             const rel = e.relation || e.label || "";
-            const srcs = Array.isArray(e.source_ids) ? e.source_ids : [];
-            const tgts = Array.isArray(e.target_ids) ? e.target_ids : [];
+            const uniq = (xs) => [...new Set((xs || []).filter(Boolean))];
+            const srcNodeIds = Array.isArray(e.source_ids) ? e.source_ids : [];
+            const tgtNodeIds = Array.isArray(e.target_ids) ? e.target_ids : [];
+            const srcEdgeIds = Array.isArray(e.source_edge_ids) ? e.source_edge_ids : [];
+            const tgtEdgeIds = Array.isArray(e.target_edge_ids) ? e.target_edge_ids : [];
 
-            // Be defensive: fall back to source_id/target_id when present.
-            const s1 = (!srcs.length && e.source_id) ? [e.source_id] : srcs;
-            const t1 = (!tgts.length && e.target_id) ? [e.target_id] : tgts;
+            // Be defensive: accept singular endpoint fields too.
+            const s1 = uniq([
+              ...srcNodeIds,
+              ...((!srcNodeIds.length && e.source_id) ? [e.source_id] : []),
+            ]);
+            const t1 = uniq([
+              ...tgtNodeIds,
+              ...((!tgtNodeIds.length && e.target_id) ? [e.target_id] : []),
+            ]);
+            const se1 = uniq([
+              ...srcEdgeIds,
+              ...(e.source_edge_id ? [e.source_edge_id] : []),
+            ]);
+            const te1 = uniq([
+              ...tgtEdgeIds,
+              ...(e.target_edge_id ? [e.target_edge_id] : []),
+            ]);
 
             for (const sid of s1) ensureEntityNode(sid);
             for (const tid of t1) ensureEntityNode(tid);
 
+            // In reify mode, referenced edges are also nodes. Create lightweight placeholders
+            // so node→edge, edge→node, and edge→edge hyperlinks render even when events arrive out of order.
+            if (MODE === "reify") {
+              for (const seid of se1) {
+                if (!model.nodesById.has(seid)) {
+                  model.nodesById.set(seid, { id: seid, label: seid, type: "edge-node", summary: "", properties: {}, _placeholder: true });
+                }
+              }
+              for (const teid of te1) {
+                if (!model.nodesById.has(teid)) {
+                  model.nodesById.set(teid, { id: teid, label: teid, type: "edge-node", summary: "", properties: {}, _placeholder: true });
+                }
+              }
+            }
             if (MODE === "reify") {
               // IMPORTANT: spread `e` first, then override fields so `e.type` (often "edge")
               // does not clobber our special rendering type ("edge-node").
@@ -1217,12 +1248,34 @@ Created: 2026-03-01
                   properties: e.properties || e.metadata || {},
                 });
               }
+              for (const seid of se1) {
+                const lid = `${e.id}:se:${seid}`;
+                model.linksById.set(lid, {
+                  id: lid,
+                  source: seid,
+                  target: e.id,
+                  relation: rel,
+                  label: rel,
+                  properties: e.properties || e.metadata || {},
+                });
+              }
               for (const tid of t1) {
                 const lid = `${e.id}:t:${tid}`;
                 model.linksById.set(lid, {
                   id: lid,
                   source: e.id,
                   target: tid,
+                  relation: rel,
+                  label: rel,
+                  properties: e.properties || e.metadata || {},
+                });
+              }
+              for (const teid of te1) {
+                const lid = `${e.id}:te:${teid}`;
+                model.linksById.set(lid, {
+                  id: lid,
+                  source: e.id,
+                  target: teid,
                   relation: rel,
                   label: rel,
                   properties: e.properties || e.metadata || {},
