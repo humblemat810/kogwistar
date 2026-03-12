@@ -7,6 +7,7 @@
 ## Document History
 
 - 2026-03-08: Clarified that `core`, `workflow`, and `conversation` are architectural layer names currently mapped to `graph_knowledge_engine/engine_core/`, `graph_knowledge_engine/runtime/`, and `graph_knowledge_engine/conversation/`. Updated stale path examples and migration wording.
+- 2026-03-12: Re-evaluated against the current codebase. Updated the `GraphKnowledgeEngine` wording to reflect that the most serious god-object pressure has been reduced by namespaced subsystems and compatibility shims; the remaining issue is oversized facade/assembly surface, not a single class owning all core behavior.
 
 ------------------------------------------------------------------------
 
@@ -35,20 +36,26 @@ requirement that the repository contain literal top-level `core/` or
 
 # 2. Problem Statement
 
-Currently the repository mixes:
+Historically the repository mixed:
 
 -   workflow runtime mechanics
 -   conversation domain operations
 -   graph storage primitives
 
-This leads to:
+This led to:
 
 -   circular imports
--   "god object" pressure in `GraphKnowledgeEngine`
+-   serious "god object" pressure in `GraphKnowledgeEngine`
 -   difficulty reusing workflow runtime for non-conversation jobs
 -   domain logic appearing inside infrastructure modules
 
-The repository must be reorganized to enforce clean architectural
+Current status:
+
+-   the runtime/conversation split is now materially better enforced
+-   `GraphKnowledgeEngine` remains large, but much of its public API is now a facade over namespaced subsystems such as `read`, `write`, `extract`, `persist`, `rollback`, `adjudicate`, `ingest`, and `embed`
+-   the main residual risk is compatibility and assembly bloat in `engine.py`, not the earlier state where one class was the primary owner of most core behavior
+
+The repository must continue enforcing clean architectural
 boundaries.
 
 ------------------------------------------------------------------------
@@ -99,6 +106,10 @@ graph_knowledge_engine/engine_core/postgres_backend.py
 Core must **not contain domain logic**.
 
 Conversation-specific APIs should eventually be moved out of core.
+
+`GraphKnowledgeEngine` is still the compatibility entrypoint and composition root,
+but the namespaced subsystem APIs are now the intended source-of-truth surface for
+most core behaviors.
 
 ------------------------------------------------------------------------
 

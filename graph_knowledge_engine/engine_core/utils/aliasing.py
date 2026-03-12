@@ -91,6 +91,18 @@ class AliasBook:
         return new_nodes, new_edges
 
 
+@dataclass
+class AliasBookStore:
+    """Small keyed store for per-session/per-document alias books."""
+
+    books: dict[str, AliasBook] = field(default_factory=dict)
+
+    def get(self, key: str) -> AliasBook:
+        if key not in self.books:
+            self.books[key] = AliasBook()
+        return self.books[key]
+
+
 def build_aliases(node_ids, edge_ids):
     node_aliases = {rid: f"N{i}" for i, rid in enumerate(node_ids, start=1)}
     edge_aliases = {rid: f"E{i}" for i, rid in enumerate(edge_ids, start=1)}

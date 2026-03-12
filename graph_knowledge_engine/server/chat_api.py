@@ -8,6 +8,8 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
+from graph_knowledge_engine.server.chat_service import ChatRunService
+
 
 class CreateConversationIn(BaseModel):
     user_id: str
@@ -37,7 +39,7 @@ def _sse_frame(*, event_type: str, seq: int, payload: dict[str, Any]) -> str:
 
 def create_chat_router(
     *,
-    get_service: Callable[[], Any],
+    get_service: Callable[[], ChatRunService],
     require_role: Callable[[str], None],
     require_namespace: Callable[[Any], None],
     conversation_namespace: Any,
@@ -45,6 +47,22 @@ def create_chat_router(
     get_user_id: Callable[[], str | None] | None = None,
 ):
     router = APIRouter(prefix="/api", tags=["chat"])
+
+    @router.get("/conversations")
+    def list_conversations():
+        require_role("ro")
+        require_namespace(conversation_namespace)
+        try:
+            effective_user_id = get_user_id() if callable(get_user_id) else None
+            if not effective_user_id:
+                raise HTTPException(status_code=401, detail="User Identity required")
+            return {"conversations": 
+                        get_service()
+                        ._conversation_queries
+                        .list_conversations_for_user(
+                                user_id=effective_user_id)}
+        except Exception as exc:  # noqa: BLE001
+            raise _as_http_error(exc)
 
     @router.post("/conversations")
     def create_conversation(inp: CreateConversationIn):
@@ -149,6 +167,19 @@ def create_chat_router(
             "X-Accel-Buffering": "no",
         }
         return StreamingResponse(event_stream(), media_type="text/event-stream", headers=headers)
+
+    @router.get("/runs/{run_id}/events/poll")
+    def get_run_events_poll(run_id: str, after_seq: int = 0, limit: int = 500):
+        require_role("ro")
+        require_namespace(conversation_namespace)
+        try:
+            get_service().get_run(run_id)
+            return {
+                "run_id": run_id,
+                "events": get_service().list_run_events(run_id, after_seq=int(after_seq), limit=int(limit)),
+            }
+        except Exception as exc:  # noqa: BLE001
+            raise _as_http_error(exc)
 
     @router.post("/runs/{run_id}/cancel")
     def cancel_run(run_id: str):

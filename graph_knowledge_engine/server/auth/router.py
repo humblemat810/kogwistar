@@ -40,12 +40,21 @@ def _mint_dev_token(auth_service: AuthService) -> str:
 
 @router.get("/login")
 async def login(
-    request: Request
+    request: Request,
+    redirect_uri: str | None = None,
 ):
     auth_mode = _get_auth_mode(request)
+
+    # redirect_uri override is a dev-only convenience — reject it in prod
+    if redirect_uri and auth_mode != "dev":
+        raise HTTPException(
+            status_code=400,
+            detail="redirect_uri override is only allowed when AUTH_MODE=dev",
+        )
+
     if auth_mode == "dev":
         auth_service = get_auth_service(request)
-        ui_url = os.getenv("UI_URL", "/")
+        ui_url = redirect_uri or os.getenv("UI_URL", "/")
         token = _mint_dev_token(auth_service)
         return RedirectResponse(f"{ui_url}?token={token}")
 
@@ -63,12 +72,20 @@ async def login(
 @router.get("/callback")
 async def callback(
     request: Request,
-    code: str,
-    state: str
+    state: str,
+    code: str | None = None,
+    error: str | None = None,
+    error_description: str | None = None,
 ):
     auth_mode = _get_auth_mode(request)
     if auth_mode == "dev":
         raise HTTPException(status_code=400, detail="OIDC callback disabled (AUTH_MODE=dev)")
+
+    if error:
+        raise HTTPException(status_code=400, detail=f"OIDC Error: {error} - {error_description}")
+        
+    if not code:
+        raise HTTPException(status_code=400, detail="Missing authorization code")
 
     oidc = get_oidc_client(request)
     auth_service = get_auth_service(request)

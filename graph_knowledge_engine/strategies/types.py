@@ -1,6 +1,6 @@
 
 from typing import List, Tuple, Any, Dict, runtime_checkable, Protocol, Sequence, Optional, Callable
-
+from os import PathLike
 from pydantic import BaseModel
 from ..engine_core.models import Node, Edge,AdjudicationQuestionCode, AdjudicationVerdict, AdjudicationTarget, LLMMergeAdjudication, Span
 from ..typing_interfaces import StrategyEngineLike as EngineLike
@@ -35,6 +35,12 @@ class MergeCandidateProposer(Protocol):
 
 # ---------- Adjudicator ----------
 @runtime_checkable
+class IPairAdjudicationTrace(Protocol):
+    def adjudication(self) ->LLMMergeAdjudication | None: ...
+    def raw(self) ->object | None: ...
+    def parsing_error(self) ->str | None: ...
+
+@runtime_checkable
 class IAdjudicator(Protocol):
     def batch_adjudicate_merges(
         self,
@@ -43,6 +49,13 @@ class IAdjudicator(Protocol):
     )-> list[Any] | tuple[list[Any], str] | tuple[list[None], str]: ...# 
     def adjudicate_pair(self, left: AdjudicationTarget, right: AdjudicationTarget, question: str)-> Dict[Any, Any] | BaseModel: ...
     def adjudicate_merge(self, left_node: Node | Edge, right_node: Node | Edge) -> Dict[Any, Any] | BaseModel:...
+    def adjudicate_pair_trace(self,
+        left: AdjudicationTarget,
+        right: AdjudicationTarget,
+        question: str,
+        *,
+        cache_dir: str | PathLike[str] | None = None,
+    ) -> IPairAdjudicationTrace :...
     
 @runtime_checkable
 class PairAdjudicator(Protocol):

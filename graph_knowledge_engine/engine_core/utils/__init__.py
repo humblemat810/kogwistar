@@ -1,5 +1,6 @@
 from .aliasing import (
     AliasBook,
+    AliasBookStore,
     ALPHABET,
     base62_to_uuid,
     build_aliases,
@@ -46,6 +47,7 @@ from .refs import (
 
 __all__ = [
     "AliasBook",
+    "AliasBookStore",
     "ALPHABET",
     "base62_to_uuid",
     "build_aliases",
