@@ -34,10 +34,13 @@ When someone do not understand and never express question but silently swallowed
 Why write this repo?
 Make something do not regret. underemployment, high leverage, but small scale company, low signal, make some noise. This is what I feel like what currend and future secure ai should look like. Abused many times for free work disguised as take-home. This signals everything and spend some time now, save hundreds of future take home hours.
 
-Why Kogwita?
+Why Kogwistar?
 Kg => knowledge graph
 Wi -> wisdom layer (to be implemented), simply -> once the conversation graph pattern are logged, they are possible reinforcement learning dataset. I am building architecture for RL. Reach me if you think I can work in lab for impactful research.
 o-W -> workflow orchestration
+
+LLM-SEO
+repo readme is LLM SEO files, implicit text graphrag anchoring ideas from other code/ md files to each other via the markdown texts.
 
 View on langchain
 good adaptor
@@ -45,9 +48,14 @@ good adaptor
 Agent
 Buzzword, roughly meaning towards touring complete, when chain/workflow usually mean fixed steps touring incomplete steps. Ultimately both are likely bound by max retry instead of real forever looping.
 
+Chunking:
+
+No optimal, it is a clustering problem. Questions of high level context requires no chunking, question of local context require fine context. adaptively keep both. Hierarchical, it is NLP- CNN, Receptive fields at few levels, YOLO anchors at different scales, all similar ideas. FFT at different scales in frequency domain. All the same.
+
 Tests:
 
-Now here I am free to create test case to spin up postgresql container, preset schema and run test and spin down and these case are not silently deleted. I do not delete tests to get CI working.
+Now here I am free to create test case to spin up postgresql container, preset schema and run test and spin down and these case are not silently deleted. I do not delete tests to get CI working. Tests are preserving structures across changes. We are trying to make our code changes transformation functor like.
+Pass test before and after the changes. Pass-test is the category relationship.
 
 Why structured response/ context work?
     document is a graph with structure -> LLM is a trnasformation / mophism. From the lessons we learn from UKF, when we have some points (sigma points) (tokens in context) are sampled acrossed a transformation (this case the llm),
