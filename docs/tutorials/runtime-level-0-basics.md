@@ -20,6 +20,24 @@ Expected output fields:
 - `"trace_db_path"`: SQLite trace sink path, typically `.../workflow/wf_trace.sqlite`
 - `"checkpoint_pass": true`
 
+Example shape:
+
+```json
+{
+  "level": 0,
+  "status": "suspended",
+  "final_state": {
+    "started": true,
+    "fanout_seen": true,
+    "branch_b_done": true
+  },
+  "step_exec_count": 3,
+  "checkpoint_count": 3,
+  "trace_db_path": ".gke-data/runtime-tutorial-ladder/workflow/wf_trace.sqlite",
+  "checkpoint_pass": true
+}
+```
+
 ## What This Level Teaches
 
 - `WorkflowRuntime.run(...)` executes workflow nodes stored in the workflow graph.

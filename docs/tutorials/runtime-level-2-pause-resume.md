@@ -17,6 +17,29 @@ Expected output fields:
 - `"final_state"`: includes `branch_a_result`, `joined`, and `ended`
 - `"checkpoint_pass": true`
 
+Example shape:
+
+```json
+{
+  "level": 2,
+  "initial_status": "suspended",
+  "resumed_status": "succeeded",
+  "suspended_node_id": "rt:branch_a",
+  "suspended_token_id": "tok_...",
+  "resume_payload": {
+    "action": "provide-approval",
+    "node_id": "rt:branch_a",
+    "expected_result_key": "branch_a_result"
+  },
+  "final_state": {
+    "branch_a_result": "approved",
+    "joined": true,
+    "ended": true
+  },
+  "checkpoint_pass": true
+}
+```
+
 ## What This Level Teaches
 
 - `RunSuspended` pauses execution without losing scheduler state.

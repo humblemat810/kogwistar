@@ -1,6 +1,6 @@
 # Runtime Level 3: CDC Viewer and LangGraph Interop
 
-Goal: inspect the runtime’s emitted events, connect them to the bundled CDC viewer, and export the same workflow to LangGraph.
+Goal: inspect the runtime's emitted events, connect them to the bundled CDC viewer, and export the same workflow to LangGraph.
 
 ## Quick Run
 
@@ -16,6 +16,33 @@ Expected output fields:
 - `"runtime_event_endpoint"`: hosted event stream path for a run
 - `"langgraph"`: converter status and output summary
 - `"checkpoint_pass": true`
+
+Example shape:
+
+```json
+{
+  "level": 3,
+  "trace_event_types": [
+    "checkpoint_saved",
+    "edge_selected",
+    "join_waiting",
+    "join_released",
+    "predicate_evaluated",
+    "step_attempt_started",
+    "step_attempt_completed",
+    "workflow_run_completed"
+  ],
+  "cdc_viewer_html": "graph_knowledge_engine/scripts/workflow.bundle.cdc.script.hl3.html",
+  "runtime_event_endpoint": "/api/workflow/runs/<run_id>/events",
+  "saw_suspended_checkpoint": true,
+  "langgraph": {
+    "available": true,
+    "visual_compiled": true,
+    "semantics_compiled": true
+  },
+  "checkpoint_pass": true
+}
+```
 
 ## What This Level Teaches
 

@@ -37,8 +37,15 @@ python scripts/rag_tutorial_ladder.py reset --data-dir .gke-data/tutorial-ladder
 python scripts/rag_tutorial_ladder.py seed --data-dir .gke-data/tutorial-ladder
 ```
 
+## One-Time Setup (Runtime Ladder)
+
+```powershell
+python scripts/runtime_tutorial_ladder.py reset --data-dir .gke-data/runtime-tutorial-ladder
+```
+
 ## Level Docs
 
+- [Runtime Ladder Overview](./runtime-ladder-overview.md)
 - [RAG Level 0 - Simple RAG](./level-0-simple-rag.md)
 - [RAG Level 1 - Retrieval Orchestration](./level-1-retrieval-orchestration.md)
 - [RAG Level 2 - Provenance and Pinning](./level-2-provenance-pinning.md)
