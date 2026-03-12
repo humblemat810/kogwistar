@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import contextvars
 import os
 from contextvars import ContextVar
@@ -96,6 +97,48 @@ def _decode_role_from_headers(scope: Scope) -> str:
         return role if role in (Role.RO.value, Role.RW.value) else Role.RO.value
     except Exception:
         return Role.RO.value
+
+
+
+
+class DevStreamGuardMiddleware:
+    """Dev-only ASGI guard that downgrades expected stream disconnect noise."""
+
+    def __init__(self, app):
+        self.app = app
+        self.enabled = str(os.getenv("DEV_STREAM_GUARD", "1")).strip().lower() in {"1", "true", "yes", "on"}
+        self.auth_mode = str(os.getenv("AUTH_MODE", "")).strip().lower()
+        raw_paths = os.getenv("DEV_STREAM_PATH_PREFIXES", "/api/runs/,/api/workflow/runs/")
+        self.path_prefixes = tuple(p.strip() for p in raw_paths.split(",") if p.strip())
+
+    def _applies(self, scope: Scope) -> bool:
+        if scope.get("type") != "http":
+            return False
+        if not self.enabled:
+            return False
+        if self.auth_mode not in {"", "dev"}:
+            return False
+        path = str(scope.get("path") or "")
+        if "/events" not in path:
+            return False
+        return any(path.startswith(prefix) for prefix in self.path_prefixes)
+
+    @staticmethod
+    def _expected_disconnect(exc: BaseException) -> bool:
+        if isinstance(exc, (asyncio.CancelledError, BrokenPipeError, ConnectionResetError, OSError)):
+            return True
+        return isinstance(exc, RuntimeError) and str(exc) == "No response returned."
+
+    async def __call__(self, scope: Scope, receive, send):
+        if not self._applies(scope):
+            await self.app(scope, receive, send)
+            return
+        try:
+            await self.app(scope, receive, send)
+        except BaseException as exc:  # noqa: BLE001
+            if self._expected_disconnect(exc):
+                return
+            raise
 
 
 class JWTProtectMiddleware(BaseHTTPMiddleware):
@@ -240,6 +283,7 @@ __all__ = [
     "current_role",
     "_decode_role_from_headers",
     "verify_jwt",
+    "DevStreamGuardMiddleware",
     "JWTProtectMiddleware",
     "get_current_role",
     "require_role",

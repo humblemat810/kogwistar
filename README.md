@@ -2,6 +2,10 @@
 
 Knowledge engine plus MCP server for graph and document querying.
 
+## Quickstart
+
+- Standalone setup (no frontend integration): [QUICKSTART.md](QUICKSTART.md)
+
 ## Highlights
 
 - CDC-oriented graph updates and replay workflows.
@@ -13,7 +17,7 @@ Knowledge engine plus MCP server for graph and document querying.
 
 1. Create and activate a Python environment (3.10+).
 2. Install dependencies for local work.
-3. Start the app with `uvicorn graph_knowledge_engine.server_mcp_with_admin:app --port 8765`.
+3. Start the app with `knowledge-mcp` (defaults to port `28110`).
 
 ## Install Options
 

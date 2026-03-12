@@ -40,6 +40,7 @@ from graph_knowledge_engine.server.auth_middleware import (
     JWT_SECRET,
     PROTECTED_PREFIXES,
     ROLE_ORDER,
+    DevStreamGuardMiddleware,
     JWTProtectMiddleware,
     NameSpace,
     Role,
@@ -146,6 +147,7 @@ app.add_middleware(
 )
 app.add_middleware(MCPRoleMiddleware)
 app.add_middleware(JWTProtectMiddleware)
+app.add_middleware(DevStreamGuardMiddleware)
 app.include_router(
     create_chat_router(
         get_service=lambda: chat_service.get(),
