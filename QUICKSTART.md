@@ -179,11 +179,21 @@ python scripts/claw_runtime_loop.py repair-provenance `
   --doc-id doc:background:hypergraph:001
 ```
 
-Run full beginner walkthrough (threaded blocking input runtime, max demo loops guardrail = 2):
+Run full beginner walkthrough (threaded blocking input runtime, max internal self-requeue guardrail = 2):
 
 ```powershell
 python scripts/claw_runtime_loop.py tutorial --data-dir .gke-data/claw-loop --open-browser --max-demo-loops 2
 ```
+
+Tutorial resolver policy (current):
+
+- `route=self` is the only path that may auto-enqueue continuation.
+- `route=output` never auto-enqueues, even if `next_payload` exists.
+- If `route=output` includes `next_payload`, it is stored as `deferred_next_payload` in output metadata for audit/replay.
+- Deferred payload does not auto-wake the loop; a future external event (`user.message`, `clock.tick`, etc.) is required.
+- If `route=self` omits `next_payload`, runtime synthesizes a minimal continuation payload and continues when TTL/budget allow.
+- Internal continuation events are appended to queue tail (FIFO fairness).
+- `--max-demo-loops` counts only internal self-requeues, not all processed events.
 
 ### TTL and Clock Events
 
@@ -203,3 +213,13 @@ python scripts/claw_runtime_loop.py run-loop `
   --data-dir .gke-data/claw-loop `
   --clock-interval-ms 3000
 ```
+
+## 8) RAG Ladder and Runtime Ladder
+
+For staged walkthroughs:
+
+- RAG Ladder (baseline RAG, retrieval orchestration, provenance/pinning, event loop guardrails)
+- Runtime Ladder (WorkflowRuntime resolver/pause-resume/CDC/LangGraph path)
+
+- `docs/tutorials/README.md`
+

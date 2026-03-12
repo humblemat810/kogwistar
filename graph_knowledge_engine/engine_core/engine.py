@@ -8,7 +8,7 @@ import uuid
 
 import time
 
-from engine_core.utils import AliasBook
+from .utils import AliasBook
 
 from .chroma_backend import ChromaBackend
 
