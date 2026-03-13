@@ -21,8 +21,6 @@ from jose import jwt
 from pydantic import BaseModel, Field, ValidationError
 
 from graph_knowledge_engine.engine_core.models import (
-    AdjudicationQuestionCode,
-    AdjudicationVerdict,
     Document,
     Edge,
     GraphExtractionWithIDs,
@@ -385,20 +383,21 @@ def health():
 @app.delete("/admin/doc/{doc_id}")
 def admin_delete_doc(doc_id: str):
     require_role("rw")
+    eng = engine.get()
     # Collect counts before deletion
     try:
-        node_ids = engine.read.node_ids_by_doc(doc_id)
-        edge_ids = engine.read.edge_ids_by_doc(doc_id)
+        node_ids = eng.read.node_ids_by_doc(doc_id)
+        edge_ids = eng.read.edge_ids_by_doc(doc_id)
     except Exception:
         node_ids, edge_ids = [], []
 
     # Delete endpoints and mapping tables first
     try:
-        engine.backend.edge_endpoints_delete(where={"doc_id": doc_id})
+        eng.backend.edge_endpoints_delete(where={"doc_id": doc_id})
     except Exception:
         pass
     try:
-        engine.backend.node_docs_delete(where={"doc_id": doc_id})
+        eng.backend.node_docs_delete(where={"doc_id": doc_id})
     except Exception:
         pass
 
@@ -406,24 +405,24 @@ def admin_delete_doc(doc_id: str):
     
     try:
         if edge_ids:
-            engine.backend.edge_refs_delete(ids=edge_ids)
-            engine.backend.edge_delete(ids=edge_ids)
+            eng.backend.edge_refs_delete(ids=edge_ids)
+            eng.backend.edge_delete(ids=edge_ids)
         else:
-            engine.backend.edge_delete(where={"doc_id": doc_id})
+            eng.backend.edge_delete(where={"doc_id": doc_id})
     except Exception:
         pass
     try:
         if node_ids:
-            engine.backend.node_refs_delete(ids=edge_ids)
-            engine.backend.node_delete(ids=node_ids)
+            eng.backend.node_refs_delete(ids=edge_ids)
+            eng.backend.node_delete(ids=node_ids)
         else:
-            engine.backend.node_delete(where={"doc_id": doc_id})
+            eng.backend.node_delete(where={"doc_id": doc_id})
     except Exception:
         pass
 
     # Optional: document row (if you keep one)
     try:
-        engine.backend.document_delete(where={"doc_id": doc_id})
+        eng.backend.document_delete(where={"doc_id": doc_id})
     except Exception:
         pass
 
@@ -608,9 +607,10 @@ def api_graph_upsert_llm(inp: GraphUpsertLLMIn):
     
     """
     require_role("rw")
+    eng = engine.get()
     # 1) Ensure the document row exists (idempotent) but metadata are all missing if created in this fun
     if inp.content is not None:
-        engine.write.add_document(
+        eng.write.add_document(
             Document(
                 id=inp.doc_id,
                 content=inp.content,
@@ -624,8 +624,8 @@ def api_graph_upsert_llm(inp: GraphUpsertLLMIn):
         )
     else:
         # create a placeholder if completely missing so refs can anchor to doc_id
-        if not engine.extract.fetch_document_text(inp.doc_id):
-            engine.write.add_document(
+        if not eng.extract.fetch_document_text(inp.doc_id):
+            eng.write.add_document(
                 Document(
                     id=inp.doc_id,
                     content=inp.content,
@@ -656,8 +656,8 @@ def api_graph_upsert_llm(inp: GraphUpsertLLMIn):
         parsed = LLMGraphExtraction.FromLLMSlice(llm_like, insertion_method=inp.insertion_method)
 
     # 4) Persist using your first-class persistence path (allocates nn:/ne:, topo-sorts, enforces endpoints)
-    persisted = engine.persist.persist_graph_extraction(
-        document=Document(id=inp.doc_id, content=inp.content or engine.extract.fetch_document_text(inp.doc_id) or "", type=inp.doc_type, 
+    persisted = eng.persist.persist_graph_extraction(
+        document=Document(id=inp.doc_id, content=inp.content or eng.extract.fetch_document_text(inp.doc_id) or "", type=inp.doc_type, 
                           embeddings = None, source_map = None, metadata=None, domain_id=None, processed=None),
         parsed=parsed,
         mode="append",
@@ -692,6 +692,7 @@ class DocumentUpsertResult(BaseModel):
 
 @app.post("/api/document")
 async def document_upsert(inp: DocumentUpsert, response_model=DocumentUpsertResult):
+    eng = engine.get()
     if inp.doc_type == 'text':
         doc =  Document(
                 id=inp.doc_id,
@@ -714,13 +715,13 @@ async def document_upsert(inp: DocumentUpsert, response_model=DocumentUpsertResu
         doc.metadata = {"insertion_method": inp.insertion_method}
     else:
         doc.metadata["insertion_method"] = inp.insertion_method
-    engine.write.add_document(doc)
+    eng.write.add_document(doc)
 @app.post("/api/document.upsert_tree", response_model=DocumentGraphUpsertResult)
 async def document_upsert_tree(payload: DocumentGraphUpsert):
     """Upsert a generic tree with document root, use only when complete control of all backend fields are clearly known."""
-    from .engine_core.models import GraphExtractionWithIDs
+    eng = engine.get()
     try:
-        res = engine.persist.persist_document_graph_extraction(
+        res = eng.persist.persist_document_graph_extraction(
             parsed = GraphExtractionWithIDs(
                 nodes=[Node.model_validate(n.model_dump(field_mode = 'backend')) for n in payload.nodes],
                 edges=[Edge.model_validate(e.model_dump(field_mode = 'backend')) for e in payload.edges]),
@@ -776,27 +777,6 @@ def viz_d3(
         {"request": request, "doc_id": doc_id, "mode": mode, "insertion_method": insertion_method},
     )
 
-# @app.get("/viz/d3.bundle", response_class=HTMLResponse)
-# def viz_d3_bundle(
-#     request: Request,
-#     doc_id: Optional[str] = None,
-#     mode: str = "reify",
-#     insertion_method: Optional[str] = None,
-# ):
-#     # Embed the JSON payload directly into the HTML so it can be opened offline.
-#     import json as _json
-#     payload = to_d3_force(engine, doc_id=doc_id, mode=mode, insertion_method=insertion_method)
-#     return templates.TemplateResponse(
-#         "d3.html",
-#         {
-#             "request": request,
-#             "doc_id": doc_id,
-#             "mode": mode,
-#             "insertion_method": insertion_method,
-#             "embedded_data": _json.dumps(payload),
-#             "is_bundle": True,
-#         },
-#     )
 
 @app.get("/viz/go", response_class=HTMLResponse)
 def viz_go(
@@ -809,11 +789,9 @@ def viz_go(
         "go.html",
         {"request": request, "doc_id": doc_id, "mode": mode, "insertion_method": insertion_method},
     )
-import sqlite3
-from typing import List, Optional
-from pydantic import BaseModel
-import json, uuid
 
+
+from pydantic import BaseModel
 class IndexingItem(BaseModel):
     node_id: str
     canonical_title: str
@@ -841,12 +819,12 @@ def _safe_upsert_fts(cur, idx_id, item):
 
 @app.post("/api/add_index_entries")
 def add_index_entries(payload: AddIndexEntriesInput):
-    engine.search_index.upsert_entries(payload.index)
+    engine.get().search_index.upsert_entries(payload.index)
     return {"ok": True}
 
 @app.get("/api/search_index_hybrid")
 def search_index_hybrid(q: str, limit: int = 10, resolve_node: bool = False):
-    return engine.search_index.search_hybrid(
+    return engine.get().search_index.search_hybrid(
         q=q,
         limit=limit,
         resolve_node=resolve_node,

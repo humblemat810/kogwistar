@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import pathlib
 from threading import Lock
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING, Any, Callable, Generic, TypeVar
 
 from fastapi.templating import Jinja2Templates
 
@@ -20,6 +20,8 @@ from graph_knowledge_engine.server.run_registry import RunRegistry
 if TYPE_CHECKING:
     from sqlalchemy.engine import Engine
 
+T = TypeVar("T")
+
 
 storage_settings = load_server_storage_settings()
 persist_directory = storage_settings.knowledge_dir
@@ -28,14 +30,20 @@ workflow_persist_directory = storage_settings.workflow_dir
 wisdom_persist_directory = storage_settings.wisdom_dir
 
 
-class _LazyResource:
-    def __init__(self, factory: Callable[[], object], name: str) -> None:
+class _LazyResource(Generic[T]):
+    """Thread-safe lazy wrapper.
+
+    `get()` is the typed access path. Attribute proxying remains only for
+    compatibility with older call sites and should not be relied on for typing.
+    """
+
+    def __init__(self, factory: Callable[[], T], name: str) -> None:
         object.__setattr__(self, "_factory", factory)
         object.__setattr__(self, "_name", name)
         object.__setattr__(self, "_value", None)
         object.__setattr__(self, "_lock", Lock())
 
-    def get(self) -> object:
+    def get(self) -> T:
         value = object.__getattribute__(self, "_value")
         if value is None:
             lock = object.__getattribute__(self, "_lock")
@@ -46,7 +54,7 @@ class _LazyResource:
                     object.__setattr__(self, "_value", value)
         return value
 
-    def __getattr__(self, name: str) -> object:
+    def __getattr__(self, name: str) -> Any:
         return getattr(self.get(), name)
 
     def __setattr__(self, name: str, value: object) -> None:
@@ -61,11 +69,11 @@ class _LazyResource:
         return f"<_LazyResource {object.__getattribute__(self, '_name')} ({state})>"
 
 
-def _build_pg_sqlalchemy_engine():
+def _build_pg_sqlalchemy_engine() -> Engine:
     return build_sqlalchemy_engine(storage_settings)
 
 
-def _shared_sqlalchemy_engine():
+def _shared_sqlalchemy_engine() -> Engine | None:
     if storage_settings.backend != "pg":
         return None
     return pg_sqlalchemy_engine.get()
@@ -104,10 +112,10 @@ def _build_wisdom_engine() -> GraphKnowledgeEngine:
     )
 
 
-pg_sqlalchemy_engine = _LazyResource(_build_pg_sqlalchemy_engine, "pg_sqlalchemy_engine")
+pg_sqlalchemy_engine: _LazyResource[Engine] = _LazyResource(_build_pg_sqlalchemy_engine, "pg_sqlalchemy_engine")
 
 
-def _init_auth():
+def _init_auth() -> Engine:
     from graph_knowledge_engine.server.auth.db import create_auth_engine, init_auth_db
 
     auth_engine = _shared_sqlalchemy_engine()
@@ -118,20 +126,20 @@ def _init_auth():
     return auth_engine
 
 
-auth_engine_resource = _LazyResource(_init_auth, "auth_engine")
+auth_engine_resource: _LazyResource[Engine] = _LazyResource(_init_auth, "auth_engine")
 
-engine: GraphKnowledgeEngine = _LazyResource(_build_engine, "knowledge_engine")
-conversation_engine = _LazyResource(_build_conversation_engine, "conversation_engine")
-workflow_engine = _LazyResource(_build_workflow_engine, "workflow_engine")
-wisdom_engine = _LazyResource(_build_wisdom_engine, "wisdom_engine")
-gq = _LazyResource(lambda: GraphQuery(engine.get()), "knowledge_graph_query")
-conversation_gq = _LazyResource(lambda: GraphQuery(conversation_engine.get()), "conversation_graph_query")
-wisdom_gq = _LazyResource(lambda: GraphQuery(wisdom_engine.get()), "wisdom_graph_query")
-run_registry = _LazyResource(
+engine: _LazyResource[GraphKnowledgeEngine] = _LazyResource(_build_engine, "knowledge_engine")
+conversation_engine: _LazyResource[GraphKnowledgeEngine] = _LazyResource(_build_conversation_engine, "conversation_engine")
+workflow_engine: _LazyResource[GraphKnowledgeEngine] = _LazyResource(_build_workflow_engine, "workflow_engine")
+wisdom_engine: _LazyResource[GraphKnowledgeEngine] = _LazyResource(_build_wisdom_engine, "wisdom_engine")
+gq: _LazyResource[GraphQuery] = _LazyResource(lambda: GraphQuery(engine.get()), "knowledge_graph_query")
+conversation_gq: _LazyResource[GraphQuery] = _LazyResource(lambda: GraphQuery(conversation_engine.get()), "conversation_graph_query")
+wisdom_gq: _LazyResource[GraphQuery] = _LazyResource(lambda: GraphQuery(wisdom_engine.get()), "wisdom_graph_query")
+run_registry: _LazyResource[RunRegistry] = _LazyResource(
     lambda: RunRegistry(workflow_engine.get().meta_sqlite),
     "chat_run_registry",
 )
-chat_service = _LazyResource(
+chat_service: _LazyResource[ChatRunService] = _LazyResource(
     lambda: ChatRunService(
         get_knowledge_engine=lambda: engine.get(),
         get_conversation_engine=lambda: conversation_engine.get(),

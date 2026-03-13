@@ -327,12 +327,12 @@ def create_runtime_router(
         
     @router.get("/api/workflow/design/{workflow_id}/graph")
     def workflow_design_graph(workflow_id: str, refresh: bool = False):
-        chat_service = get_service_r()
-        return chat_service.workflow_design_graph(workflow_id=workflow_id, refresh=refresh)
+        service = get_service_r()
+        return service.get().workflow_design_graph(workflow_id=workflow_id, refresh=refresh)
 
     @router.get("/api/workflow/catalog/ops")
     def workflow_catalog_ops():
-        chat_service = get_service_r()
-        return chat_service.workflow_catalog_ops()
+        service = get_service_r()
+        return service.get().workflow_catalog_ops()
 
     return router

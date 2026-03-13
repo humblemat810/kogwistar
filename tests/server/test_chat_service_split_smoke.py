@@ -11,6 +11,7 @@ from graph_knowledge_engine.server.chat_service import (
     WorkflowProjectionRebuildingError,
 )
 from graph_knowledge_engine.server.chat_service_workflow_design import _WorkflowDesignService
+from graph_knowledge_engine.server.resources import _LazyResource
 
 
 class _Owner:
@@ -132,3 +133,36 @@ def test_workflow_design_branch_drop_emits_only_when_redo_branch_exists(monkeypa
         "drop_to_seq": 30,
         "reason": "new_edit_after_undo",
     }
+
+
+def test_lazy_resource_get_initializes_once_and_returns_cached_instance() -> None:
+    calls = 0
+
+    class _Thing:
+        value = 7
+
+    def _factory() -> _Thing:
+        nonlocal calls
+        calls += 1
+        return _Thing()
+
+    resource = _LazyResource(_factory, "thing")
+
+    first = resource.get()
+    second = resource.get()
+
+    assert first is second
+    assert first.value == 7
+    assert calls == 1
+
+
+def test_lazy_resource_keeps_proxy_access_for_compatibility() -> None:
+    class _Thing:
+        def __init__(self) -> None:
+            self.value = 1
+
+    resource = _LazyResource(_Thing, "thing")
+
+    assert resource.value == 1
+    resource.value = 3
+    assert resource.get().value == 3

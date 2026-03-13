@@ -4,7 +4,7 @@ import functools
 import json
 import os
 from itertools import product
-from typing import Any, Callable, ClassVar, Dict, List, Literal, Optional, Set, Tuple
+from typing import Any, Callable, ClassVar, Dict, List, Literal, Optional, ParamSpec, Set, Tuple, TypeVar
 
 from fastapi import HTTPException
 from fastmcp import FastMCP
@@ -44,12 +44,14 @@ from graph_knowledge_engine.visualization.graph_viz import to_cytoscape, to_d3_f
 
 TOOL_ROLES: dict[str, set[str]] = {}
 TOOL_NAMESPACE: dict[str, set[str]] = {}
+P = ParamSpec("P")
+R = TypeVar("R")
 
 
-def tool_roles(roles: set[Role] | Role):
+def tool_roles(roles: set[Role] | Role) -> Callable[[Callable[P, R]], Callable[P, R]]:
     allowed = {roles} if isinstance(roles, Role) else set(roles)
 
-    def deco(fn: Callable):
+    def deco(fn: Callable[P, R]) -> Callable[P, R]:
         name = getattr(fn, "name", None) or getattr(fn, "__name__", None)
         if name is None:
             raise Exception("name not found")
@@ -57,7 +59,7 @@ def tool_roles(roles: set[Role] | Role):
         original_fn = fn
 
         @functools.wraps(fn)
-        def wrapper(*args, **kwargs):
+        def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
             user_role = get_current_role()
             if user_role not in allowed:
                 raise HTTPException(status_code=403, detail=f"Forbidden: role {user_role} not permitted call this tool")
@@ -202,10 +204,10 @@ class RbacMiddleware(Middleware):
         return await call_next(context)
 
 
-def require_ns(expected: set[NameSpace] | NameSpace):
+def require_ns(expected: set[NameSpace] | NameSpace) -> Callable[[Callable[P, R]], Callable[P, R]]:
     allowed = _normalize_namespaces(expected)
 
-    def deco(fn: Callable):
+    def deco(fn: Callable[P, R]) -> Callable[P, R]:
         name = getattr(fn, "name", None) or getattr(fn, "__name__", None)
         if name is None:
             raise Exception("name not found")
@@ -213,7 +215,7 @@ def require_ns(expected: set[NameSpace] | NameSpace):
         original_fn = fn
 
         @functools.wraps(fn)
-        def wrapper(*args, **kwargs):
+        def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
             actuals = get_current_namespaces()
             if "*" not in actuals and allowed.isdisjoint(actuals):
                 raise HTTPException(
@@ -272,7 +274,7 @@ def kg_find_edges(
     tgt_label_contains: Optional[str] = None,
     doc_id: Optional[str] = None,
 ) -> FindEdgesOut:
-    eids = gq.find_edges(
+    eids = gq.get().find_edges(
         relation=relation,
         src_label_contains=src_label_contains,
         tgt_label_contains=tgt_label_contains,
@@ -284,21 +286,21 @@ def kg_find_edges(
 @tool_roles({Role.RO, Role.RW})
 @mcp.tool()
 def kg_neighbors(rid: str, doc_id: Optional[str] = None) -> NeighborsOut:
-    nb = gq.neighbors(rid, doc_id=doc_id)
+    nb = gq.get().neighbors(rid, doc_id=doc_id)
     return NeighborsOut(nodes=sorted(nb["nodes"]), edges=sorted(nb["edges"]))
 
 
 @tool_roles({Role.RO, Role.RW})
 @mcp.tool()
 def kg_k_hop(start_ids: List[str], k: int = 1, doc_id: Optional[str] = None) -> KHopOut:
-    layers = [KHopLayer(nodes=sorted(L["nodes"]), edges=sorted(L["edges"])) for L in gq.k_hop(start_ids, k=k, doc_id=doc_id)]
+    layers = [KHopLayer(nodes=sorted(L["nodes"]), edges=sorted(L["edges"])) for L in gq.get().k_hop(start_ids, k=k, doc_id=doc_id)]
     return KHopOut(layers=layers)
 
 
 @tool_roles({Role.RO, Role.RW})
 @mcp.tool()
 def kg_shortest_path(src_id: str, dst_id: str, doc_id: Optional[str] = None, max_depth: int = 8) -> ShortestPathOut:
-    return ShortestPathOut(path=gq.shortest_path(src_id, dst_id, doc_id=doc_id, max_depth=max_depth))
+    return ShortestPathOut(path=gq.get().shortest_path(src_id, dst_id, doc_id=doc_id, max_depth=max_depth))
 
 
 @tool_roles({Role.RO, Role.RW})
@@ -307,7 +309,7 @@ def kg_semantic_seed_then_expand_text(text: str, top_k: int = 5, hops: int = 1, 
     doc_ids_coerced = None
     if doc_ids:
         doc_ids_coerced = shortids.s2l_id(doc_ids) if type(doc_ids is str) else [shortids.s2l_id(i) for i in doc_ids]
-    out = gq.semantic_seed_then_expand_text(text, top_k=top_k, hops=hops, doc_ids=doc_ids_coerced)
+    out = gq.get().semantic_seed_then_expand_text(text, top_k=top_k, hops=hops, doc_ids=doc_ids_coerced)
     layers = [{"nodes": [shortids.l2s_doc(n) for n in L["nodes"]], "edges": [shortids.l2s_doc(n) for n in L["edges"]]} for L in out["layers"]]
     layers2 = [KHopLayer(nodes=sorted(L["nodes"]), edges=sorted(L["edges"])) for L in layers]
     return SeedExpandOut(seeds=[shortids.l2s_doc(i) for i in out["seeds"]], layers=layers2)
@@ -371,13 +373,14 @@ class DocIdsOut(BaseModel):
 @tool_roles({Role.RO, Role.RW})
 @mcp.tool()
 def document_id_from_file_name(file_name: str):
+    eng = engine.get()
     if type(file_name) is str:
         filenames = [file_name]
     elif type(file_name) is list:
         filenames = file_name
     else:
         filenames = []
-    docs = engine.backend.document_get(ids=filenames)
+    docs = eng.backend.document_get(ids=filenames)
     to_return = [{"file_name": i, "id": shortids.l2s_id(i)} for i in docs["ids"]]
     return DocIdsOut(id_mapping=to_return)
 
@@ -387,8 +390,9 @@ def document_id_from_file_name(file_name: str):
 @mcp.tool()
 def store_document(inp: DocParseIn):
     require_role("rw")
+    eng = engine.get()
     doc = Document(id=inp.id, content=inp.content, type=inp.type)
-    engine.write.add_document(doc)
+    eng.write.add_document(doc)
     return DocStoreOut.model_validate({"success": True})
 
 
@@ -397,7 +401,8 @@ def store_document(inp: DocParseIn):
 @mcp.tool()
 def kg_extract(inp: KGExtractIn) -> KGExtractOut:
     require_role("rw")
-    content = engine.extract.fetch_document_text(inp.id)
+    eng = engine.get()
+    content = eng.extract.fetch_document_text(inp.id)
     if not content:
         raise ValueError(f"Document '{inp.id}' not found; run store_document first.")
     from joblib import Memory
@@ -408,14 +413,14 @@ def kg_extract(inp: KGExtractIn) -> KGExtractOut:
 
     @memory.cache()
     def get_reparsed_extraction(content):
-        extracted = engine.extract.cached_extract_graph_with_llm(content=content)
+        extracted = eng.extract.cached_extract_graph_with_llm(content=content)
         parsed_llm: LLMGraphExtraction["llm"] = extracted["parsed"]
         parsed = LLMGraphExtraction.FromLLMSlice(parsed_llm, insertion_method="llm_graph_extraction")
-        engine.persist.preflight_validate(parsed, inp.id)
+        eng.persist.preflight_validate(parsed, inp.id)
         return parsed
 
     parsed = get_reparsed_extraction(content)
-    persisted = engine.persist.persist_graph_extraction(
+    persisted = eng.persist.persist_graph_extraction(
         document=Document(id=inp.id, content=content, type="text"),
         parsed=parsed,
         mode=inp.mode,
@@ -468,15 +473,16 @@ class LoadPersistedOut(BaseModel):
 
 
 def _load_persisted_graph(doc_ids: List[str], insertion_method: Optional[str] = None) -> LoadPersistedOut:
+    eng = engine.get()
     node_ids: set[str] = set()
     edge_ids: set[str] = set()
     for did in doc_ids:
         if insertion_method:
-            node_ids.update(engine.nodes_by_doc(did, where={"insertion_method": insertion_method}))
-            edge_ids.update(engine.edges_by_doc(did, where={"insertion_method": insertion_method}))
+            node_ids.update(eng.nodes_by_doc(did, where={"insertion_method": insertion_method}))
+            edge_ids.update(eng.edges_by_doc(did, where={"insertion_method": insertion_method}))
         else:
-            node_ids.update(engine.node_ids_by_doc(did))
-            edge_ids.update(engine.edge_ids_by_doc(did))
+            node_ids.update(eng.node_ids_by_doc(did))
+            edge_ids.update(eng.edge_ids_by_doc(did))
     return LoadPersistedOut(node_ids=sorted(node_ids), edge_ids=sorted(edge_ids))
 
 
@@ -523,16 +529,18 @@ class CrossDocAdjOut(BaseModel):
 
 
 def _fetch_nodes(ids: List[str]) -> List[Node]:
-    if hasattr(engine, "get_nodes"):
-        return engine.get_nodes(ids)
-    got = engine.backend.node_get(ids=ids, include=["documents"])
+    eng = engine.get()
+    if hasattr(eng, "get_nodes"):
+        return eng.get_nodes(ids)
+    got = eng.backend.node_get(ids=ids, include=["documents"])
     return [Node.model_validate_json(j) for j in (got.get("documents") or [])]
 
 
 def _fetch_edges(ids: List[str]) -> List[Edge]:
-    if hasattr(engine, "get_edges"):
-        return engine.get_edges(ids)
-    got = engine.backend.edge_get(ids=ids, include=["documents"])
+    eng = engine.get()
+    if hasattr(eng, "get_edges"):
+        return eng.get_edges(ids)
+    got = eng.backend.edge_get(ids=ids, include=["documents"])
     return [Edge.model_validate_json(j) for j in (got.get("documents") or [])]
 
 
@@ -667,7 +675,8 @@ def kg_crossdoc_adjudicate_anykind(inp: CrossDocAdjIn) -> CrossDocAdjOut:
             results=[],
         )
 
-    adjudications, qkey = engine.batch_adjudicate_merges(pairs, question_code=AdjudicationQuestionCode.SAME_ENTITY)
+    eng = engine.get()
+    adjudications, qkey = eng.batch_adjudicate_merges(pairs, question_code=AdjudicationQuestionCode.SAME_ENTITY)
 
     def _kind(o: Any) -> Literal["entity", "relationship"]:
         return "relationship" if isinstance(o, Edge) or getattr(o, "relation", None) else "entity"
@@ -684,9 +693,9 @@ def kg_crossdoc_adjudicate_anykind(inp: CrossDocAdjIn) -> CrossDocAdjOut:
             canonical_id = None
             if inp.commit:
                 if lkind == rkind:
-                    canonical_id = engine.commit_merge(left, right, verdict)
+                    canonical_id = eng.commit_merge(left, right, verdict)
                 else:
-                    canonical_id = engine.commit_any_kind(left, right, verdict)
+                    canonical_id = eng.commit_any_kind(left, right, verdict)
                 if canonical_id:
                     committed.append(str(canonical_id))
             results.append(CrossDocAdjItem(left=left.id, right=right.id, left_kind=lkind, right_kind=rkind, same_entity=True, confidence=verdict.confidence, reason=verdict.reason, canonical_id=canonical_id))
@@ -730,9 +739,10 @@ class ProposeVectorIn(BaseModel):
 @require_ns(NameSpace.DOCS)
 @mcp.tool()
 def propose_vector(inp: ProposeVectorIn) -> ProposeOut:
-    prop = VectorProposer(engine)
+    eng = engine.get()
+    prop = VectorProposer(eng)
     pairs = prop.generate_merge_candidates(
-        engine=engine,
+        engine=eng,
         new_node=inp.new_node_ids,
         new_edge=inp.new_edge_ids,
         top_k=inp.top_k,
@@ -760,12 +770,13 @@ def propose_vector(inp: ProposeVectorIn) -> ProposeOut:
 
 
 def _ids_matching_where(kind: Literal["node", "edge"], where: Dict[str, Any]) -> Set[str]:
+    eng = engine.get()
     if not where:
         return set()
     if kind == "node":
-        res = engine.backend.node_get(where=where)
+        res = eng.backend.node_get(where=where)
     else:
-        res = engine.backend.edge_get(where=where)
+        res = eng.backend.edge_get(where=where)
     return set(res.get("ids") or [])
 
 
@@ -784,9 +795,10 @@ class ProposeBruteForceIn(BaseModel):
 @require_ns(NameSpace.DOCS)
 @mcp.tool()
 def kg_propose_bruteforce(inp: ProposeBruteForceIn) -> ProposeOut:
-    proposer = VectorProposer(engine)
+    eng = engine.get()
+    proposer = VectorProposer(eng)
     raw_pairs = proposer.propose_any_kind_any_doc(
-        engine=engine,
+        engine=eng,
         pair_kind=inp.pair_kind,
         allowed_docs=inp.allowed_docs,
         anchor_doc_id=inp.anchor_doc_id,
@@ -839,16 +851,17 @@ class AdjPairsIn(BaseModel):
 @mcp.tool()
 def commit_merge(inp: CrossDocAdjOut):
     require_role("rw")
+    eng = engine.get()
     committed = []
     for pairs in inp.results:
-        left, right = engine.get_nodes(pairs.left)[0], engine.get_nodes(pairs.right)[0]
+        left, right = eng.get_nodes(pairs.left)[0], eng.get_nodes(pairs.right)[0]
         lkind, rkind, same_entity = pairs.left_kind, pairs.right_kind, pairs.same_entity
         if same_entity:
             verdict = AdjudicationVerdict(same_entity=pairs.same_entity, confidence=pairs.confidence, reason=pairs.reason, canonical_entity_id=None)
             if lkind == rkind == "node":
-                canonical_id = engine.commit_merge(left, right, verdict)
+                canonical_id = eng.commit_merge(left, right, verdict)
             else:
-                canonical_id = engine.commit_any_kind(left, right, verdict)
+                canonical_id = eng.commit_any_kind(left, right, verdict)
             verdict.canonical_entity_id = canonical_id
             if canonical_id:
                 committed.append(str(canonical_id))
@@ -860,6 +873,7 @@ def commit_merge(inp: CrossDocAdjOut):
 def adjudicate_pairs(inp: AdjPairsIn) -> CrossDocAdjOut:
     if inp.commit:
         require_role("rw")
+    eng = engine.get()
     pairs: List[Tuple[Node | Edge, Node | Edge]] = [None] * len(inp.pairs)  # type: ignore
     for i, pair_info in enumerate(inp.pairs):
         def fetch_any(id, kind):
@@ -873,7 +887,7 @@ def adjudicate_pairs(inp: AdjPairsIn) -> CrossDocAdjOut:
         r: Node | Edge = fetch_any(pair_info.right_id, pair_info.right_kind)
         pairs[i] = (l[0], r[0])
 
-    adjudications, qkey = engine.batch_adjudicate_merges(pairs, question_code=AdjudicationQuestionCode.SAME_ENTITY)
+    adjudications, qkey = eng.batch_adjudicate_merges(pairs, question_code=AdjudicationQuestionCode.SAME_ENTITY)
 
     def _kind(o: Any) -> Literal["entity", "relationship"]:
         return "relationship" if isinstance(o, Edge) or getattr(o, "relation", None) else "entity"
@@ -890,9 +904,9 @@ def adjudicate_pairs(inp: AdjPairsIn) -> CrossDocAdjOut:
             canonical_id = None
             if inp.commit:
                 if lkind == rkind:
-                    canonical_id = engine.commit_merge(left, right, verdict)
+                    canonical_id = eng.commit_merge(left, right, verdict)
                 else:
-                    canonical_id = engine.commit_any_kind(left, right, verdict)
+                    canonical_id = eng.commit_any_kind(left, right, verdict)
                 if canonical_id:
                     committed.append(str(canonical_id))
             results.append(CrossDocAdjItem(left=left.id, right=right.id, left_kind=lkind, right_kind=rkind, same_entity=True, confidence=verdict.confidence, reason=verdict.reason, canonical_id=canonical_id))
@@ -927,7 +941,7 @@ def kg_upsert_graph_wisdom(inp: KGUpsertIn) -> GraphUpsertOut:
     inp.insertion_method = inp.insertion_method or "wisdom_runtime"
     pure_graph = PureGraph.model_validate(dict(nodes=inp.nodes, edges=inp.edges))
     return GraphUpsertOut.model_validate(
-        wisdom_engine.persist_graph(
+        wisdom_engine.get().persist_graph(
             parsed=pure_graph,
             session_id="wisdom:" + str(stable_id("wisdom_graph", str(pure_graph.model_dump_json()))),
         )
@@ -938,7 +952,7 @@ def kg_upsert_graph_wisdom(inp: KGUpsertIn) -> GraphUpsertOut:
 @require_ns(NameSpace.WISDOM)
 @mcp.tool(name="wisdom.semantic_seed_then_expand")
 def wisdom_semantic_seed_then_expand(text: str, top_k: int = 10, hops: int = 2):
-    return wisdom_gq.semantic_seed_then_expand_text(text, top_k=top_k, hops=hops)
+    return wisdom_gq.get().semantic_seed_then_expand_text(text, top_k=top_k, hops=hops)
 
 
 conversation_mcp = build_conversation_mcp(
