@@ -69,6 +69,8 @@ class ContextSnapshotMetadata(BaseModel):
         Keeps all extra fields too, but flattens `cost`.
         """
         d = self.model_dump(mode="python", exclude={"cost"})
+        if not d.get("used_node_ids"):
+            d.pop("used_node_ids", None)
         d.update(self.cost.to_flat_metadata(prefix="cost"))
         return d
 

@@ -7,6 +7,8 @@ from pathlib import Path
 
 import pytest
 
+import scripts.runtime_tutorial_ladder as runtime_tutorial_ladder
+from graph_knowledge_engine.runtime.design import validate_workflow_design
 
 pytest.importorskip("chromadb")
 
@@ -123,7 +125,7 @@ def test_level3_claw_command_path_smoke(tmp_path: Path):
     assert ("out|" in out_rows) or ("claw.gate.output" in out_rows)
 
 
-def test_runtime_tutorial_ladder_levels_0_to_3_smoke(tmp_path: Path):
+def test_runtime_tutorial_ladder_levels_0_to_4_smoke(tmp_path: Path):
     data_dir = tmp_path / "runtime-tutorial-ladder"
 
     reset = _extract_last_json(_run(["scripts/runtime_tutorial_ladder.py", "reset", "--data-dir", str(data_dir)]).stdout)
@@ -151,6 +153,50 @@ def test_runtime_tutorial_ladder_levels_0_to_3_smoke(tmp_path: Path):
     assert level3.get("viewer_asset_exists") is True
     assert "workflow_run_completed" in (level3.get("trace_event_types") or [])
     assert "/api/workflow/runs/" in str(level3.get("runtime_event_endpoint"))
+
+    level4 = _extract_last_json(_run(["scripts/runtime_tutorial_ladder.py", "level4", "--data-dir", str(data_dir)]).stdout)
+    assert level4.get("sandbox_type") == "docker"
+    assert "python_exec" in (level4.get("sandboxed_ops") or []) or level4.get("sandbox_available") is False
+    if level4.get("sandbox_available") is False:
+        assert level4.get("sandbox_executed") is False
+        assert level4.get("status") == "sandbox_unavailable"
+    else:
+        assert level4.get("checkpoint_pass") is True
+        assert level4.get("sandbox_executed") is True
+        assert level4.get("sandbox_mode") == "per_op"
+        assert level4.get("sandbox_result") == "HELLO FROM LLM SANDBOX"
+
+
+def test_runtime_tutorial_ladder_keeps_level4_workflow_separate(tmp_path: Path):
+    data_dir = tmp_path / "runtime-tutorial-ladder-separate"
+
+    workflow_engine, _conversation_engine = runtime_tutorial_ladder.ensure_workflow_seed(data_dir)
+    runtime_tutorial_ladder.ensure_sandbox_workflow_seed(data_dir)
+
+    start_a, nodes_a, _adj_a = validate_workflow_design(
+        workflow_engine=workflow_engine,
+        workflow_id=runtime_tutorial_ladder.WORKFLOW_ID,
+        predicate_registry={"always": runtime_tutorial_ladder.PredAlwaysTrue()},
+        resolver=None,
+    )
+    start_b, nodes_b, _adj_b = validate_workflow_design(
+        workflow_engine=workflow_engine,
+        workflow_id=runtime_tutorial_ladder.SANDBOX_WORKFLOW_ID,
+        predicate_registry={},
+        resolver=None,
+    )
+
+    assert start_a.id == runtime_tutorial_ladder.RT_START_NODE_ID
+    assert start_b.id == "sb4:start"
+    assert set(nodes_a) == {
+        runtime_tutorial_ladder.RT_START_NODE_ID,
+        runtime_tutorial_ladder.RT_FORK_NODE_ID,
+        runtime_tutorial_ladder.RT_BRANCH_A_NODE_ID,
+        runtime_tutorial_ladder.RT_BRANCH_B_NODE_ID,
+        runtime_tutorial_ladder.RT_JOIN_NODE_ID,
+        runtime_tutorial_ladder.RT_END_NODE_ID,
+    }
+    assert set(nodes_b) == {"sb4:start", "sb4:python_exec", "sb4:end"}
 
 
 def test_tutorial_section_15_historical_smoke(tmp_path: Path):

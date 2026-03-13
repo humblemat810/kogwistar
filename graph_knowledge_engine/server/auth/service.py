@@ -55,14 +55,14 @@ class AuthService:
         self.repo.update_last_login(user.user_id)
         return user.user_id
 
-    def mint_token(self, user_id: str, role: str = "ro", ns: str = "docs") -> str:
+    def mint_token(self, user_id: str, role: Optional[str] = None, ns: Any = None) -> str:
         user = self.repo.get_user(user_id)
         if not user:
             raise ValueError(f"User {user_id} not found")
 
-        # Prioritize global permissions from DB if they exist
-        final_role = user.global_role or role
-        final_ns = user.global_ns or ns
+        # Explicit token parameters should override persisted defaults.
+        final_role = role if role is not None else (user.global_role or "ro")
+        final_ns = ns if ns is not None else (user.global_ns or "docs")
         
         # Handle string list in global_ns (e.g. "docs,workflow")
         if isinstance(final_ns, str) and "," in final_ns:

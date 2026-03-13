@@ -57,6 +57,7 @@ This ladder keeps one canonical workflow all the way through:
 | Level 1 | Custom resolvers and `_deps` | `scripts/runtime_tutorial_ladder.py level1` | ~5-15s | Resolver registry, injected dependency echo, custom trace events |
 | Level 2 | Pause and continue | `scripts/runtime_tutorial_ladder.py level2` | ~5-20s | Suspended token recovered from checkpoint and resumed to completion |
 | Level 3 | CDC viewer and LangGraph interop | `scripts/runtime_tutorial_ladder.py level3` | ~5-20s | Trace event inventory, viewer asset path, optional LangGraph export |
+| Level 4 | Sandboxed ops and Docker safety | `scripts/runtime_tutorial_ladder.py level4` | ~5-20s | Untrusted generated code is executed in Docker via `SandboxRequest`, not on the host |
 
 ## Prerequisites
 
@@ -92,6 +93,7 @@ These remain supported on purpose. They are not obsolete copies of the numbered 
 - [Runtime Level 1 - Custom Resolvers](./runtime-level-1-resolvers.md)
 - [Runtime Level 2 - Pause and Resume](./runtime-level-2-pause-resume.md)
 - [Runtime Level 3 - CDC Viewer and LangGraph Interop](./runtime-level-3-observability-interop.md)
+- [Runtime Level 4 - Sandboxed Ops With Docker](./runtime-level-4-sandboxed-ops.md)
 
 ## Pattern Matrix
 

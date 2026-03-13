@@ -505,6 +505,17 @@ class WorkflowRuntime:
             return self.conversation_engine.uow()
         return nullcontext()
 
+    def _close_sandbox_run(self, run_id: str) -> None:
+        close_run = getattr(self.step_resolver, "close_sandbox_run", None)
+        if callable(close_run):
+            try:
+                close_run(str(run_id))
+            except Exception:
+                logging.getLogger("workflow.runtime").exception(
+                    "Failed to clean up sandbox resources for run %s",
+                    run_id,
+                )
+
 
 
     def _should_step_uow(self, op: str, state: WorkflowState) -> bool:
@@ -1141,6 +1152,7 @@ class WorkflowRuntime:
                             self.emitter.emit(type="workflow_run_cancelled", ctx=tc_done, payload={"workflow_id": str(workflow_id)})
                         except Exception:
                             pass
+                        self._close_sandbox_run(run_id)
                         self.state_lock.pop(run_id, None)
                         return RunResult(final_state=state, run_id=run_id, mq=mq, status="cancelled")
                     if not cancel_pending and not inflight and not pending_tokens and scheduled_q.empty() and done_q.empty():
@@ -1153,6 +1165,7 @@ class WorkflowRuntime:
                                 self.emitter.emit(type="workflow_run_suspended", ctx=tc_done, payload={"workflow_id": str(workflow_id)})
                             except Exception:
                                 pass
+                            self._close_sandbox_run(run_id)
                             self.state_lock.pop(run_id, None)
                             return RunResult(final_state=state, run_id=run_id, mq=mq, status="suspended")
                         else:
@@ -1171,6 +1184,7 @@ class WorkflowRuntime:
                                 self.emitter.emit(type="workflow_run_completed", ctx=tc_done, payload={"workflow_id": str(workflow_id)})
                             except Exception:
                                 pass
+                            self._close_sandbox_run(run_id)
                             self.state_lock.pop(run_id, None)
                             return RunResult(final_state=state, run_id=run_id, mq=mq, status="succeeded")
                     # schedule while capacity

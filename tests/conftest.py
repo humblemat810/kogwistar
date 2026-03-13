@@ -25,10 +25,6 @@ for _env_name in (".env", ".env.test"):
     load_dotenv(_TEST_ROOT / _env_name, override=False)
 import pytest
 from typing import Any, List, Optional, Sequence, Iterator, TYPE_CHECKING
-try:
-    from testcontainers.postgres import PostgresContainer
-except Exception:  # pragma: no cover - optional for pg integration tests
-    PostgresContainer = None  # type: ignore
 if TYPE_CHECKING:
     import sqlalchemy as sa
     from testcontainers.postgres import PostgresContainer
@@ -76,6 +72,52 @@ import logging
 logging.captureWarnings(True)
 from pathlib import Path
 from graph_knowledge_engine.utils.log import EngineLogManager, EngineLogConfig
+
+logger = logging.getLogger(__name__)
+
+
+def _env_truthy(name: str) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return False
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _configure_testcontainers_ryuk_env() -> bool:
+    """Return whether Ryuk is effectively disabled for pg test containers."""
+    if _env_truthy("GKE_TEST_PG_DISABLE_RYUK"):
+        os.environ["TESTCONTAINERS_RYUK_DISABLED"] = "true"
+        return True
+    return _env_truthy("TESTCONTAINERS_RYUK_DISABLED")
+
+
+def _purge_testcontainers_modules() -> None:
+    for name in list(sys.modules):
+        if name == "testcontainers" or name.startswith("testcontainers."):
+            sys.modules.pop(name, None)
+
+
+def _load_postgres_container_cls():
+    _configure_testcontainers_ryuk_env()
+    try:
+        from testcontainers.postgres import PostgresContainer
+    except Exception:  # pragma: no cover - optional for pg integration tests
+        return None
+    return PostgresContainer
+
+
+def _is_ryuk_port_mapping_failure(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return "port mapping" in text and "8080" in text and "not available" in text
+
+
+def _start_postgres_container(image: str):
+    postgres_container_cls = _load_postgres_container_cls()
+    if postgres_container_cls is None:
+        return None
+    pg = postgres_container_cls(image)
+    pg.start()
+    return pg
 
 def pytest_addoption(parser):
     parser.addoption(
@@ -359,7 +401,7 @@ class FakeStructuredRunnable(Runnable):
         return [self.invoke(i, config=config, **kwargs) for i in inputs]
 
 @pytest.fixture(scope="session")
-def pg_container() -> Iterator[Optional[PostgresContainer]]:
+def pg_container() -> Iterator[Optional["PostgresContainer"]]:
     """
     Spin up a disposable Postgres for the whole test session.
 
@@ -367,18 +409,48 @@ def pg_container() -> Iterator[Optional[PostgresContainer]]:
       - Docker daemon running (Docker Desktop on Windows/macOS)
       - Python deps: testcontainers[postgresql], psycopg[binary], sqlalchemy
     """
-    
-    if PostgresContainer is None:
+
+    image = os.getenv("GKE_TEST_PG_IMAGE", "postgres:16")
+    initial_ryuk_disabled = _configure_testcontainers_ryuk_env()
+    logger.info("Starting pg test container image=%s ryuk_disabled=%s", image, initial_ryuk_disabled)
+
+    pg = None
+    try:
+        pg = _start_postgres_container(image)
+    except Exception as exc:  # pragma: no cover - environment-dependent (docker availability)
+        if (not initial_ryuk_disabled) and _is_ryuk_port_mapping_failure(exc):
+            logger.warning(
+                "Failed to start pg test container with Ryuk enabled; retrying once without Ryuk. image=%s err=%s",
+                image,
+                exc,
+            )
+            os.environ["TESTCONTAINERS_RYUK_DISABLED"] = "true"
+            _purge_testcontainers_modules()
+            try:
+                pg = _start_postgres_container(image)
+            except Exception as retry_exc:  # pragma: no cover - environment-dependent
+                logger.warning("Retry without Ryuk also failed for pg test container image=%s: %s", image, retry_exc)
+                yield None
+                return
+        else:
+            logger.warning("Failed to start pg test container image=%s: %s", image, exc)
+            yield None
+            return
+
+    if pg is None:
         yield None
         return
-    image = os.getenv("GKE_TEST_PG_IMAGE", "postgres:16")
-    os.environ['TESTCONTAINERS_RYUK_DISABLED'] = "true"
+
     try:
-        with PostgresContainer(image) as pg:
-            yield pg
+        yield pg
+    finally:
+        if pg is None:
             return
-    except Exception:  # pragma: no cover - environment-dependent (docker availability)
-        yield None
+        try:
+            logger.info("Stopping pg test container image=%s", image)
+            pg.stop()
+        except Exception:
+            logger.exception("Failed to stop pg test container image=%s", image)
 
 
 @pytest.fixture(scope="session")
@@ -395,10 +467,18 @@ def pg_dsn(pg_container: Optional[PostgresContainer]) -> Optional[str]:
 
 
 @pytest.fixture(scope="session")
-def sa_engine(pg_dsn: Optional[str]):
+def sa_engine(pg_dsn: Optional[str]) -> Iterator[Any]:
     if (not has_sa) or pg_dsn is None:
-        return None
-    return sa.create_engine(pg_dsn, future=True)
+        yield None
+        return
+    engine = sa.create_engine(pg_dsn, future=True)
+    try:
+        yield engine
+    finally:
+        try:
+            engine.dispose()
+        except Exception:
+            logger.exception("Failed to dispose SQLAlchemy engine for pg test fixture")
 
 
 @pytest.fixture()
