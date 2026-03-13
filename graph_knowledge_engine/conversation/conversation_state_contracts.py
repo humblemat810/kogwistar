@@ -1,18 +1,19 @@
 from __future__ import annotations
 
-from typing import Any, Optional, Callable, TypedDict, cast
+from typing import Any, Optional, TypedDict, cast
 from pydantic import BaseModel, ConfigDict, Field
 
-from .models import MetaFromLastSummary
-from .models import RetrievalResult
 from ..engine_core.models import Span
 from graph_knowledge_engine.runtime.models import WorkflowState
+
 Json = Any
+
 
 class PrevTurnMetaSummaryModel(BaseModel):
     prev_node_char_distance_from_last_summary: int
     prev_node_distance_from_last_summary: int
     tail_turn_index: int
+
 
 class SummaryStateModel(BaseModel):
     should_summarize: bool = False
@@ -43,16 +44,20 @@ class WorkflowStateModel(BaseModel):
     kg_pin: Optional[Any] = None
     answer: Optional[Any] = None
     # answer_raw: Optional[Any] = None # not serializable, not used
-    
+
     summary: SummaryStateModel = Field(default_factory=SummaryStateModel)
     prev_turn_meta_summary: PrevTurnMetaSummaryModel
-    _deps : dict[str,Any]
+    _deps: dict[str, Any]
+
     def dump_state(self) -> ConversationWorkflowState:
-        return cast(ConversationWorkflowState, self.model_dump(exclude=set(['_deps'])))
+        return cast(ConversationWorkflowState, self.model_dump(exclude=set(["_deps"])))
+
+
 class ConversationPrevTurnMetaSummaryDict(TypedDict):
     prev_node_char_distance_from_last_summary: int
     prev_node_distance_from_last_summary: int
     tail_turn_index: int
+
 
 class ConversationSummaryStateDict(TypedDict):
     should_summarize: bool
@@ -90,4 +95,3 @@ class ConversationWorkflowState(WorkflowState):
     prev_turn_meta_summary: ConversationPrevTurnMetaSummaryDict
     # _deps:dict
     # _rt_join:dict
-   

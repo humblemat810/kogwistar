@@ -34,7 +34,9 @@ class _FakeMeta:
     def mark_index_job_done(self, job_id: str):
         self.done.add(job_id)
 
-    def bump_retry_and_requeue(self, job_id: str, err: str, next_run_at_seconds: int = 1):
+    def bump_retry_and_requeue(
+        self, job_id: str, err: str, next_run_at_seconds: int = 1
+    ):
         raise AssertionError("not used in backpressure unit tests")
 
     def mark_index_job_failed(self, job_id: str, err: str, final: bool = True):
@@ -45,18 +47,31 @@ class FakeIndexing:
     @property
     def applied(self):
         return self.engine.applied
+
     def __init__(self, engine):
         self.engine = engine
-    def apply_index_job(self, *, job_id: str, entity_kind: str, entity_id: str, index_kind: str, op: str, namespace: str):
+
+    def apply_index_job(
+        self,
+        *,
+        job_id: str,
+        entity_kind: str,
+        entity_id: str,
+        index_kind: str,
+        op: str,
+        namespace: str,
+    ):
         # record that we processed this job
         self.applied.append(job_id)
-    
+
+
 class _FakeEngine:
     def __init__(self, jobs: List[_Job], namespace: str = "default"):
         self.meta_sqlite = _FakeMeta(jobs)
         self.namespace = namespace
         self.indexing = FakeIndexing(self)
         self.applied: list[str] = []
+
 
 @pytest.mark.unit
 @pytest.mark.parametrize(

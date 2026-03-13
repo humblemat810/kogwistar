@@ -20,7 +20,9 @@ def _refs_fingerprint(refs) -> str:
         {
             "doc_id": getattr(r, "doc_id", None),
             "method": getattr(getattr(r, "verification", None), "method", None),
-            "is_verified": getattr(getattr(r, "verification", None), "is_verified", None),
+            "is_verified": getattr(
+                getattr(r, "verification", None), "is_verified", None
+            ),
             "score": getattr(getattr(r, "verification", None), "score", None),
             "sp": getattr(r, "start_page", None),
             "ep": getattr(r, "end_page", None),
@@ -57,7 +59,9 @@ class WriteSubsystem(NamespaceProxy):
         return False
 
     def _allow_missing_doc_id(self, edge: Edge) -> bool:
-        for hook in list(getattr(self._e, "allow_missing_doc_id_on_endpoint_rows_hooks", []) or []):
+        for hook in list(
+            getattr(self._e, "allow_missing_doc_id_on_endpoint_rows_hooks", []) or []
+        ):
             if bool(hook(edge)):
                 return True
         return False
@@ -82,7 +86,10 @@ class WriteSubsystem(NamespaceProxy):
                 "canonical_entity_id": edge.canonical_entity_id,
                 "properties": json_or_none(edge.properties),
                 "references": json_or_none(
-                    [r.model_dump(field_mode="backend") for r in (getattr(edge, "mentions", None) or [])]
+                    [
+                        r.model_dump(field_mode="backend")
+                        for r in (getattr(edge, "mentions", None) or [])
+                    ]
                 ),
                 "node_endpoint_count": node_endpoint_count,
                 "edge_endpoint_count": edge_endpoint_count,
@@ -93,9 +100,17 @@ class WriteSubsystem(NamespaceProxy):
         base_metadata.update(
             strip_none(
                 {
-                    "char_distance_from_last_summary": md.get("char_distance_from_last_summary"),
-                    "turn_distance_from_last_summary": md.get("turn_distance_from_last_summary"),
-                    **({"causal_type": md.get("causal_type")} if md.get("causal_type") else {}),
+                    "char_distance_from_last_summary": md.get(
+                        "char_distance_from_last_summary"
+                    ),
+                    "turn_distance_from_last_summary": md.get(
+                        "turn_distance_from_last_summary"
+                    ),
+                    **(
+                        {"causal_type": md.get("causal_type")}
+                        if md.get("causal_type")
+                        else {}
+                    ),
                 }
             )
         )
@@ -109,10 +124,14 @@ class WriteSubsystem(NamespaceProxy):
                     {
                         "entity_type": edge_metadata.get("entity_type"),
                         "workflow_id": edge_metadata.get("workflow_id"),
-                        "wf_priority": edge_metadata.get("wf_priority") or edge_metadata.get("priority"),
-                        "wf_is_default": edge_metadata.get("wf_is_default") or edge_metadata.get("is_default"),
-                        "wf_predicate": edge_metadata.get("wf_predicate") or edge_metadata.get("predicate"),
-                        "wf_multiplicity": edge_metadata.get("wf_multiplicity") or edge_metadata.get("multiplicity"),
+                        "wf_priority": edge_metadata.get("wf_priority")
+                        or edge_metadata.get("priority"),
+                        "wf_is_default": edge_metadata.get("wf_is_default")
+                        or edge_metadata.get("is_default"),
+                        "wf_predicate": edge_metadata.get("wf_predicate")
+                        or edge_metadata.get("predicate"),
+                        "wf_multiplicity": edge_metadata.get("wf_multiplicity")
+                        or edge_metadata.get("multiplicity"),
                     }
                 )
             )
@@ -187,7 +206,9 @@ class WriteSubsystem(NamespaceProxy):
         """
         if doc_id is not None:
             edge.doc_id = doc_id
-        s_nodes, s_edges, t_nodes, t_edges = self._e.adjudicate.split_endpoints(edge.source_ids, edge.target_ids)
+        s_nodes, s_edges, t_nodes, t_edges = self._e.adjudicate.split_endpoints(
+            edge.source_ids, edge.target_ids
+        )
         edge.source_ids = s_nodes
         edge.source_edge_ids = (getattr(edge, "source_edge_ids", []) or []) + s_edges
         edge.target_ids = t_nodes
@@ -237,7 +258,9 @@ class WriteSubsystem(NamespaceProxy):
                     ids=ep_ids,
                     documents=ep_docs,
                     metadatas=ep_metas,
-                    embeddings=[self._e.embed.iterative_defensive_emb(str(d)) for d in ep_docs],
+                    embeddings=[
+                        self._e.embed.iterative_defensive_emb(str(d)) for d in ep_docs
+                    ],
                 )
 
         self._e._emit_change(
@@ -293,7 +316,9 @@ class WriteSubsystem(NamespaceProxy):
 
     def add_document(self, document: Document):
         if document.embeddings is None:
-            document.embeddings = self._e.embed.iterative_defensive_emb(str(document.content))
+            document.embeddings = self._e.embed.iterative_defensive_emb(
+                str(document.content)
+            )
         self._e.backend.document_add(
             ids=[document.id],
             documents=[str(document.content)],
@@ -337,7 +362,9 @@ class WriteSubsystem(NamespaceProxy):
                     }
                 )
             ],
-            embeddings=[self._e.embed.iterative_defensive_emb(str(domain.model_dump_json()))],
+            embeddings=[
+                self._e.embed.iterative_defensive_emb(str(domain.model_dump_json()))
+            ],
         )
 
     # Index/metadata helpers
@@ -456,6 +483,7 @@ class WriteSubsystem(NamespaceProxy):
         doc_ids are allowed only when _allow_missing_doc_id permits them. These rows
         are rebuildable projections and are safe to regenerate from the base edge.
         """
+
         def _maybe_doc_for_edge(eid: str) -> str | None:
             if doc_id is not None:
                 return doc_id
@@ -481,7 +509,10 @@ class WriteSubsystem(NamespaceProxy):
             return None
 
         rows: list[dict] = []
-        for role, node_ids in (("src", edge.source_ids or []), ("tgt", edge.target_ids or [])):
+        for role, node_ids in (
+            ("src", edge.source_ids or []),
+            ("tgt", edge.target_ids or []),
+        ):
             for nid in node_ids:
                 r = {
                     "id": f"{edge.id}::{role}::node::{nid}",
@@ -561,7 +592,9 @@ class WriteSubsystem(NamespaceProxy):
         if metadatas and metadatas[0]:
             old_fp = metadatas[0].get("edge_refs_fp")
 
-        got = self._e.backend.edge_refs_get(where={"edge_id": edge.id}, include=["documents"])
+        got = self._e.backend.edge_refs_get(
+            where={"edge_id": edge.id}, include=["documents"]
+        )
         current_rows = got.get("documents") or []
         current_doc_ids = {json.loads(d).get("doc_id") for d in current_rows}
         expect_doc_ids = {getattr(r, "doc_id", None) for r in (edge.mentions or [])}
@@ -569,7 +602,9 @@ class WriteSubsystem(NamespaceProxy):
         docset_ok = current_doc_ids == expect_doc_ids
 
         if force or (new_fp != old_fp) or (not count_ok) or (not docset_ok):
-            self._e.backend.edge_update(ids=[edge.safe_get_id()], metadatas=[{"edge_refs_fp": new_fp}])
+            self._e.backend.edge_update(
+                ids=[edge.safe_get_id()], metadatas=[{"edge_refs_fp": new_fp}]
+            )
             self.index_edge_refs(edge)
 
     def maybe_reindex_node_refs(self, node: Node, *, force: bool = False) -> None:
@@ -587,7 +622,9 @@ class WriteSubsystem(NamespaceProxy):
         if metadatas and metadatas[0]:
             old_fp = metadatas[0].get("node_refs_fp")
 
-        got = self._e.backend.node_refs_get(where={"node_id": node.id}, include=["documents"])
+        got = self._e.backend.node_refs_get(
+            where={"node_id": node.id}, include=["documents"]
+        )
         current_rows = got.get("documents") or []
         current_doc_ids = {json.loads(d).get("doc_id") for d in current_rows}
         expect_doc_ids = {getattr(r, "doc_id", None) for r in (node.mentions or [])}
@@ -595,36 +632,50 @@ class WriteSubsystem(NamespaceProxy):
         docset_ok = current_doc_ids == expect_doc_ids
 
         if force or (new_fp != old_fp) or (not count_ok) or (not docset_ok):
-            self._e.backend.node_update(ids=[node.id], metadatas=[{"node_refs_fp": new_fp}])
+            self._e.backend.node_update(
+                ids=[node.id], metadatas=[{"node_refs_fp": new_fp}]
+            )
             self.index_node_refs(node)
 
     def prune_node_refs_for_doc(self, node_id: str, doc_id: str) -> bool:
         """Remove references to doc_id from node; delete node_docs link; refresh denormalized meta."""
-        got = self._e.backend.node_get(ids=[node_id], include=["documents", "metadatas"])
+        got = self._e.backend.node_get(
+            ids=[node_id], include=["documents", "metadatas"]
+        )
         docs = got.get("documents")
         if not (docs and docs[0]):
             return False
         node = Node.model_validate_json(docs[0])
         before = len(node.mentions or [])
         for groundings in node.mentions:
-            filtered_spans = [span for span in groundings.spans if span.doc_id != doc_id]
+            filtered_spans = [
+                span for span in groundings.spans if span.doc_id != doc_id
+            ]
             groundings.spans = filtered_spans
 
         changed = len(node.mentions or []) != before
         if changed:
-            self._e.backend.node_update(ids=[node_id], documents=[node.model_dump_json(field_mode="backend")])
-            self._e.backend.node_docs_delete(where={"$and": [{"node_id": node_id}, {"doc_id": doc_id}]})
+            self._e.backend.node_update(
+                ids=[node_id], documents=[node.model_dump_json(field_mode="backend")]
+            )
+            self._e.backend.node_docs_delete(
+                where={"$and": [{"node_id": node_id}, {"doc_id": doc_id}]}
+            )
             self.index_node_docs(node)
         return changed
 
     def rebuild_edge_refs_for_doc(self, doc_id: str) -> int:
-        eps = self._e.backend.edge_endpoints_get(where={"doc_id": doc_id}, include=["documents"])
-        edge_ids = list({json.loads(d)["edge_id"] for d in (eps.get("documents") or [])})
+        eps = self._e.backend.edge_endpoints_get(
+            where={"doc_id": doc_id}, include=["documents"]
+        )
+        edge_ids = list(
+            {json.loads(d)["edge_id"] for d in (eps.get("documents") or [])}
+        )
         if not edge_ids:
             return 0
         got = self._e.backend.edge_get(ids=edge_ids, include=["documents"])
         cnt = 0
-        for js in (got.get("documents") or []):
+        for js in got.get("documents") or []:
             e = Edge.model_validate_json(js)
             self.index_edge_refs(e)
             cnt += 1
@@ -633,7 +684,7 @@ class WriteSubsystem(NamespaceProxy):
     def rebuild_all_edge_refs(self) -> int:
         got = self._e.backend.edge_get()
         total = 0
-        for eid in (got.get("ids") or []):
+        for eid in got.get("ids") or []:
             edges = self._e.backend.edge_get(ids=[eid], include=["documents"])
             if edge_docs := edges.get("documents"):
                 e = Edge.model_validate_json(edge_docs[0])
@@ -644,10 +695,16 @@ class WriteSubsystem(NamespaceProxy):
     def rebuild_node_refs_for_doc(self, doc_id: str) -> int:
         node_ids = []
         if hasattr(self._e, "node_docs_collection"):
-            rows = self._e.backend.node_docs_get(where={"doc_id": doc_id}, include=["documents"])
-            node_ids = list({json.loads(d)["node_id"] for d in (rows.get("documents") or [])})
+            rows = self._e.backend.node_docs_get(
+                where={"doc_id": doc_id}, include=["documents"]
+            )
+            node_ids = list(
+                {json.loads(d)["node_id"] for d in (rows.get("documents") or [])}
+            )
         else:
-            got = self._e.backend.node_get(where={"doc_id": doc_id}, include=["documents"])
+            got = self._e.backend.node_get(
+                where={"doc_id": doc_id}, include=["documents"]
+            )
             node_ids = list(got.get("ids") or [])
 
         if not node_ids:
@@ -655,7 +712,7 @@ class WriteSubsystem(NamespaceProxy):
 
         got = self._e.backend.node_get(ids=node_ids, include=["documents"])
         cnt = 0
-        for js in (got.get("documents") or []):
+        for js in got.get("documents") or []:
             n = Node.model_validate_json(js)
             self.index_node_refs(n)
             cnt += 1
@@ -664,7 +721,7 @@ class WriteSubsystem(NamespaceProxy):
     def rebuild_all_node_refs(self) -> int:
         got = self._e.backend.node_get()
         total = 0
-        for nid in (got.get("ids") or []):
+        for nid in got.get("ids") or []:
             doc = self._e.backend.node_get(ids=[nid], include=["documents"])
             if nod_docs := doc.get("documents"):
                 n = Node.model_validate_json(nod_docs[0])
@@ -676,4 +733,6 @@ class WriteSubsystem(NamespaceProxy):
         if not edge_ids:
             return
         self._e.backend.edge_delete(ids=edge_ids)
-        self._e.backend.edge_endpoints_delete(where=cast(dict[str, object], {"edge_id": {"$in": edge_ids}}))
+        self._e.backend.edge_endpoints_delete(
+            where=cast(dict[str, object], {"edge_id": {"$in": edge_ids}})
+        )

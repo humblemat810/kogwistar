@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import os
-from typing import Any, Literal, Mapping, Sequence
+from typing import Literal, Mapping, Sequence
 
 from pydantic import BaseModel
 
@@ -108,9 +108,13 @@ class _LangChainRunner(_Runner):
         prompt = ChatPromptTemplate.from_messages(list(messages))
         if prefer_json_schema:
             try:
-                structured = self._model.with_structured_output(schema, method="json_schema", include_raw=True)
+                structured = self._model.with_structured_output(
+                    schema, method="json_schema", include_raw=True
+                )
             except TypeError:
-                structured = self._model.with_structured_output(schema, include_raw=True)
+                structured = self._model.with_structured_output(
+                    schema, include_raw=True
+                )
         else:
             structured = self._model.with_structured_output(schema, include_raw=True)
         result = (prompt | structured).invoke(dict(variables))
@@ -205,7 +209,10 @@ def _err_text(parsing_error: object | None) -> str | None:
 
 
 def _extract_schema_for_mode(schema_mode: str) -> tuple[type[BaseModel], bool]:
-    from graph_knowledge_engine.engine_core.models import AssocFlattenedLLMGraphExtraction, LLMGraphExtraction
+    from graph_knowledge_engine.engine_core.models import (
+        AssocFlattenedLLMGraphExtraction,
+        LLMGraphExtraction,
+    )
 
     if schema_mode == "full":
         return LLMGraphExtraction["llm"], False
@@ -218,7 +225,9 @@ def _extract_schema_for_mode(schema_mode: str) -> tuple[type[BaseModel], bool]:
     raise ValueError(f"Unsupported extract_graph schema mode: {schema_mode!r}")
 
 
-def _build_task_set_from_runner_getter(*, get_runner_for_task, provider_hints: LLMTaskProviderHints) -> LLMTaskSet:
+def _build_task_set_from_runner_getter(
+    *, get_runner_for_task, provider_hints: LLMTaskProviderHints
+) -> LLMTaskSet:
     def _extract_graph(request: ExtractGraphTaskRequest) -> ExtractGraphTaskResult:
         schema, prefer_json_schema = _extract_schema_for_mode(request.schema_mode)
         messages: list[tuple[str, str]] = [
@@ -256,7 +265,9 @@ def _build_task_set_from_runner_getter(*, get_runner_for_task, provider_hints: L
                 )
             )
 
-        raw, parsed, parsing_error = get_runner_for_task("extract_graph").invoke_structured(
+        raw, parsed, parsing_error = get_runner_for_task(
+            "extract_graph"
+        ).invoke_structured(
             messages=messages,
             schema=schema,
             variables={
@@ -273,7 +284,9 @@ def _build_task_set_from_runner_getter(*, get_runner_for_task, provider_hints: L
             parsing_error=_err_text(parsing_error),
         )
 
-    def _adjudicate_pair(request: AdjudicatePairTaskRequest) -> AdjudicatePairTaskResult:
+    def _adjudicate_pair(
+        request: AdjudicatePairTaskRequest,
+    ) -> AdjudicatePairTaskResult:
         from graph_knowledge_engine.engine_core.models import LLMMergeAdjudication
 
         if request.question == "node_edge_equivalence":
@@ -288,11 +301,11 @@ def _build_task_set_from_runner_getter(*, get_runner_for_task, provider_hints: L
                 "instance, including compatible endpoints and direction."
             )
         else:
-            guidance = (
-                "Interpret 'same_entity' as: determine whether two NODEs refer to the same real-world entity."
-            )
+            guidance = "Interpret 'same_entity' as: determine whether two NODEs refer to the same real-world entity."
 
-        raw, parsed, parsing_error = get_runner_for_task("adjudicate_pair").invoke_structured(
+        raw, parsed, parsing_error = get_runner_for_task(
+            "adjudicate_pair"
+        ).invoke_structured(
             messages=[
                 (
                     "system",
@@ -319,10 +332,14 @@ def _build_task_set_from_runner_getter(*, get_runner_for_task, provider_hints: L
             parsing_error=_err_text(parsing_error),
         )
 
-    def _adjudicate_batch(request: AdjudicateBatchTaskRequest) -> AdjudicateBatchTaskResult:
+    def _adjudicate_batch(
+        request: AdjudicateBatchTaskRequest,
+    ) -> AdjudicateBatchTaskResult:
         from graph_knowledge_engine.engine_core.models import BatchAdjudications
 
-        raw, parsed, parsing_error = get_runner_for_task("adjudicate_batch").invoke_structured(
+        raw, parsed, parsing_error = get_runner_for_task(
+            "adjudicate_batch"
+        ).invoke_structured(
             messages=[
                 (
                     "system",
@@ -347,7 +364,9 @@ def _build_task_set_from_runner_getter(*, get_runner_for_task, provider_hints: L
         else:
             merge_items = payload.get("merge_adjudications")
             if isinstance(merge_items, list):
-                verdict_payloads = [dict(x) for x in merge_items if isinstance(x, Mapping)]
+                verdict_payloads = [
+                    dict(x) for x in merge_items if isinstance(x, Mapping)
+                ]
 
         return AdjudicateBatchTaskResult(
             verdict_payloads=verdict_payloads,
@@ -355,17 +374,28 @@ def _build_task_set_from_runner_getter(*, get_runner_for_task, provider_hints: L
             parsing_error=_err_text(parsing_error),
         )
 
-    def _filter_candidates(request: FilterCandidatesTaskRequest) -> FilterCandidatesTaskResult:
+    def _filter_candidates(
+        request: FilterCandidatesTaskRequest,
+    ) -> FilterCandidatesTaskResult:
         from graph_knowledge_engine.conversation.models import FilteringResponse
 
         err_messages = [("system", f"error: {m}") for m in request.retry_error_messages]
-        raw, parsed, parsing_error = get_runner_for_task("filter_candidates").invoke_structured(
+        raw, parsed, parsing_error = get_runner_for_task(
+            "filter_candidates"
+        ).invoke_structured(
             messages=[
-                ("system", "You are a helpful assistant filtering knowledge graph nodes."),
+                (
+                    "system",
+                    "You are a helpful assistant filtering knowledge graph nodes.",
+                ),
                 (
                     "human",
                     f"User Input: {request.conversation_content}\n\n"
-                    + (f"Context: {request.context_text}\n\n" if request.context_text else "")
+                    + (
+                        f"Context: {request.context_text}\n\n"
+                        if request.context_text
+                        else ""
+                    )
                     + f"Candidate Nodes:\n{request.candidate_nodes_text}\n\n"
                     + f"Candidate Edges:\n{request.candidate_edges_text}\n\n"
                     + "Return a JSON list of IDs for nodes and edges that are RELEVANT to the user input. ",
@@ -395,18 +425,27 @@ def _build_task_set_from_runner_getter(*, get_runner_for_task, provider_hints: L
             parsing_error=None,
         )
 
-    def _summarize_context(request: SummarizeContextTaskRequest) -> SummarizeContextTaskResult:
+    def _summarize_context(
+        request: SummarizeContextTaskRequest,
+    ) -> SummarizeContextTaskResult:
         text = get_runner_for_task("summarize_context").invoke_text(
             messages=[
-                ("system", "Summarize this conversation segment into a concise memory."),
+                (
+                    "system",
+                    "Summarize this conversation segment into a concise memory.",
+                ),
                 ("human", "{full_text}"),
             ],
             variables={"full_text": request.full_text},
         )
         return SummarizeContextTaskResult(text=text)
 
-    def _answer_with_citations(request: AnswerWithCitationsTaskRequest) -> AnswerWithCitationsTaskResult:
-        raw, parsed, parsing_error = get_runner_for_task("answer_with_citations").invoke_structured(
+    def _answer_with_citations(
+        request: AnswerWithCitationsTaskRequest,
+    ) -> AnswerWithCitationsTaskResult:
+        raw, parsed, parsing_error = get_runner_for_task(
+            "answer_with_citations"
+        ).invoke_structured(
             messages=[
                 ("system", request.system_prompt or "You are a helpful assistant."),
                 (
@@ -430,8 +469,12 @@ def _build_task_set_from_runner_getter(*, get_runner_for_task, provider_hints: L
             parsing_error=_err_text(parsing_error),
         )
 
-    def _repair_citations(request: RepairCitationsTaskRequest) -> RepairCitationsTaskResult:
-        raw, parsed, parsing_error = get_runner_for_task("repair_citations").invoke_structured(
+    def _repair_citations(
+        request: RepairCitationsTaskRequest,
+    ) -> RepairCitationsTaskResult:
+        raw, parsed, parsing_error = get_runner_for_task(
+            "repair_citations"
+        ).invoke_structured(
             messages=[
                 ("system", request.system_prompt or "You are a helpful assistant."),
                 (
@@ -468,7 +511,9 @@ def _build_task_set_from_runner_getter(*, get_runner_for_task, provider_hints: L
     )
 
 
-def build_default_llm_tasks(config: DefaultTaskProviderConfig | None = None) -> LLMTaskSet:
+def build_default_llm_tasks(
+    config: DefaultTaskProviderConfig | None = None,
+) -> LLMTaskSet:
     cfg = config or DefaultTaskProviderConfig()
     runner_cache: dict[str, _Runner] = {}
     provider_by_task: dict[str, ProviderName] = {

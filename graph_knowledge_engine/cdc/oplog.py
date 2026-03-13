@@ -1,9 +1,11 @@
 # knowledge_graph_engine/changes/oplog.py
 from __future__ import annotations
-import json, os
+import json
+import os
 from pathlib import Path
 from typing import Iterator, Optional
 from .change_event import ChangeEvent
+
 
 class OplogWriter:
     def __init__(self, path: Path, *, fsync: bool = False):
@@ -11,7 +13,10 @@ class OplogWriter:
         self.fsync = fsync
         self.path.parent.mkdir(parents=True, exist_ok=True)
         if not self.path.exists() or self.path.stat().st_size == 0:
-            self.path.write_text(json.dumps({"format": "kge-oplog", "version": 1}) + "\n", encoding="utf-8")
+            self.path.write_text(
+                json.dumps({"format": "kge-oplog", "version": 1}) + "\n",
+                encoding="utf-8",
+            )
 
     def append(self, ev: ChangeEvent) -> None:
         line = json.dumps(ev.to_jsonable(), ensure_ascii=False)
@@ -21,11 +26,14 @@ class OplogWriter:
             if self.fsync:
                 os.fsync(f.fileno())
 
+
 class OplogReader:
     def __init__(self, path: Path):
         self.path = path
 
-    def iter_since(self, *, since_seq: int, limit: Optional[int] = None) -> Iterator[ChangeEvent]:
+    def iter_since(
+        self, *, since_seq: int, limit: Optional[int] = None
+    ) -> Iterator[ChangeEvent]:
         if not self.path.exists():
             return
         n = 0

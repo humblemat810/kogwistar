@@ -10,12 +10,13 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterable, Mapping, Optional
+from typing import Any, Dict, Mapping, Optional
 
 
 # -----------------------------
 # Trace / event schema helpers
 # -----------------------------
+
 
 def _now_ms() -> int:
     return int(time.time() * 1000)
@@ -31,6 +32,7 @@ class TraceContext:
     Minimal correlation IDs that make trace<->logs mapping work.
     This is cheap to pass around (and you already have these in runtime).
     """
+
     run_id: str
     token_id: str
     step_seq: int
@@ -87,6 +89,7 @@ class TraceContext:
 # SQLite sink (async writer)
 # -----------------------------
 
+
 class SQLiteEventSink:
     """
     Durable append-only event store with an async writer thread.
@@ -116,7 +119,9 @@ class SQLiteEventSink:
 
         self._q: "queue.Queue[dict]" = queue.Queue(maxsize=queue_max)
         self._stop = threading.Event()
-        self._thr = threading.Thread(target=self._run, name=f"wf-trace-sqlite-writer-{db_path}", daemon=True)
+        self._thr = threading.Thread(
+            target=self._run, name=f"wf-trace-sqlite-writer-{db_path}", daemon=True
+        )
 
         self._init_db()
         self._thr.start()
@@ -152,9 +157,15 @@ class SQLiteEventSink:
                 );
                 """
             )
-            conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{self.table}_run_seq ON {self.table}(run_id, step_seq);")
-            conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{self.table}_span ON {self.table}(span_id);")
-            conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{self.table}_trace ON {self.table}(trace_id);")
+            conn.execute(
+                f"CREATE INDEX IF NOT EXISTS idx_{self.table}_run_seq ON {self.table}(run_id, step_seq);"
+            )
+            conn.execute(
+                f"CREATE INDEX IF NOT EXISTS idx_{self.table}_span ON {self.table}(span_id);"
+            )
+            conn.execute(
+                f"CREATE INDEX IF NOT EXISTS idx_{self.table}_trace ON {self.table}(trace_id);"
+            )
             conn.commit()
         finally:
             conn.close()
@@ -171,7 +182,10 @@ class SQLiteEventSink:
         except queue.Full:
             if self.drop_when_full:
                 # best-effort: trace may drop in overload, but we still log it
-                self._log.warning("SQLiteEventSink queue full; dropping trace event type=%s", evt.get("type"))
+                self._log.warning(
+                    "SQLiteEventSink queue full; dropping trace event type=%s",
+                    evt.get("type"),
+                )
             else:
                 # backpressure: block until space
                 self._q.put(evt)
@@ -265,6 +279,7 @@ class SQLiteEventSink:
 # Emitter: logging + sqlite sink
 # -----------------------------
 
+
 class EventEmitter:
     """
     Main entry point used by runtime/resolvers.
@@ -284,7 +299,9 @@ class EventEmitter:
         self.log = logger or logging.getLogger("workflow.telemetry")
         self.log_prefix = log_prefix
 
-    def emit(self, *, type: str, ctx: TraceContext, payload: Mapping[str, Any] | None = None) -> str:
+    def emit(
+        self, *, type: str, ctx: TraceContext, payload: Mapping[str, Any] | None = None
+    ) -> str:
         ctx2 = ctx.with_span_defaults()
         event_id = _new_id("evt")
         payload_obj = dict(payload or {})
@@ -294,12 +311,18 @@ class EventEmitter:
             "ts_ms": _now_ms(),
             "type": type,
             **ctx2.as_fields(),
-            "payload_json": json.dumps(payload_obj, ensure_ascii=False, separators=(",", ":")),
+            "payload_json": json.dumps(
+                payload_obj, ensure_ascii=False, separators=(",", ":")
+            ),
         }
 
         # human/ops log mirror (best effort)
         # (Still structured JSON so it can be shipped to ELK/etc later.)
-        self.log.info("%s %s", self.log_prefix, json.dumps({k: v for k, v in evt.items() if k != "payload_json"}))
+        self.log.info(
+            "%s %s",
+            self.log_prefix,
+            json.dumps({k: v for k, v in evt.items() if k != "payload_json"}),
+        )
 
         # durable sink
         if self.sink is not None:
@@ -308,25 +331,49 @@ class EventEmitter:
         return event_id
 
     # convenience helpers used by runtime
-    def step_started(self, ctx: TraceContext, *, extra: Mapping[str, Any] | None = None) -> str:
+    def step_started(
+        self, ctx: TraceContext, *, extra: Mapping[str, Any] | None = None
+    ) -> str:
         return self.emit(type="step_attempt_started", ctx=ctx, payload=extra)
 
-    def step_completed(self, ctx: TraceContext, *, status: str, duration_ms: int, extra: Mapping[str, Any] | None = None) -> str:
+    def step_completed(
+        self,
+        ctx: TraceContext,
+        *,
+        status: str,
+        duration_ms: int,
+        extra: Mapping[str, Any] | None = None,
+    ) -> str:
         payload = {"status": status, "duration_ms": duration_ms, **(extra or {})}
         return self.emit(type="step_attempt_completed", ctx=ctx, payload=payload)
 
-    def predicate_evaluated(self, ctx: TraceContext, *, predicate: str, value: bool, error: str | None = None) -> str:
+    def predicate_evaluated(
+        self,
+        ctx: TraceContext,
+        *,
+        predicate: str,
+        value: bool,
+        error: str | None = None,
+    ) -> str:
         payload = {"predicate": predicate, "value": bool(value)}
         if error:
             payload["error"] = error
         return self.emit(type="predicate_evaluated", ctx=ctx, payload=payload)
 
-    def edge_selected(self, ctx: TraceContext, *, edge_id: str, to_node_id: str, reason: str) -> str:
+    def edge_selected(
+        self, ctx: TraceContext, *, edge_id: str, to_node_id: str, reason: str
+    ) -> str:
         payload = {"edge_id": edge_id, "to_node_id": to_node_id, "reason": reason}
         return self.emit(type="edge_selected", ctx=ctx, payload=payload)
 
-    def join_event(self, ctx: TraceContext, *, join_node_id: str, kind: str, outstanding: int) -> str:
-        payload = {"join_node_id": join_node_id, "kind": kind, "outstanding": int(outstanding)}
+    def join_event(
+        self, ctx: TraceContext, *, join_node_id: str, kind: str, outstanding: int
+    ) -> str:
+        payload = {
+            "join_node_id": join_node_id,
+            "kind": kind,
+            "outstanding": int(outstanding),
+        }
         return self.emit(type=f"join_{kind}", ctx=ctx, payload=payload)
 
 
@@ -334,10 +381,12 @@ class EventEmitter:
 # Bound logger for resolver code
 # -----------------------------
 
+
 class BoundLoggerAdapter(logging.LoggerAdapter):
     """
     Ensures all logs contain correlation fields.
     """
+
     def process(self, msg, kwargs):
         extra = dict(kwargs.get("extra") or {})
         extra.update(self.extra)  # correlation fields win
@@ -351,7 +400,19 @@ def bind_logger(base: logging.Logger, ctx: TraceContext) -> BoundLoggerAdapter:
     """
     fields = ctx.with_span_defaults().as_fields()
     # reduce noise: a few are enough for correlation
-    keep = {k: fields[k] for k in ["run_id", "trace_id", "span_id", "token_id", "step_seq", "node_id", "attempt"] if fields.get(k) is not None}
+    keep = {
+        k: fields[k]
+        for k in [
+            "run_id",
+            "trace_id",
+            "span_id",
+            "token_id",
+            "step_seq",
+            "node_id",
+            "attempt",
+        ]
+        if fields.get(k) is not None
+    }
     if ctx.conversation_id:
         keep["conversation_id"] = ctx.conversation_id
     if ctx.turn_node_id:

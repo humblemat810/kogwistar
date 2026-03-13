@@ -10,13 +10,14 @@ from pathlib import Path
 from typing import Any, Iterator, List, Optional
 
 
-
-_active_sqlite_conn: contextvars.ContextVar[sqlite3.Connection | None] = contextvars.ContextVar(
-    "gke_sqlite_active_conn", default=None
+_active_sqlite_conn: contextvars.ContextVar[sqlite3.Connection | None] = (
+    contextvars.ContextVar("gke_sqlite_active_conn", default=None)
 )
+
 
 def get_active_sqlite_conn() -> sqlite3.Connection | None:
     return _active_sqlite_conn.get()
+
 
 @contextmanager
 def _set_active_sqlite_conn(conn: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
@@ -25,6 +26,7 @@ def _set_active_sqlite_conn(conn: sqlite3.Connection) -> Iterator[sqlite3.Connec
         yield conn
     finally:
         _active_sqlite_conn.reset(token)
+
 
 @dataclass(frozen=True)
 class IndexJobRow:
@@ -91,9 +93,7 @@ class EngineSQLite:
                 )
                 """
             )
-            conn.execute(
-                "INSERT OR IGNORE INTO global_seq(rowid, value) VALUES (1, 0)"
-            )
+            conn.execute("INSERT OR IGNORE INTO global_seq(rowid, value) VALUES (1, 0)")
 
             conn.execute(
                 """
@@ -140,23 +140,36 @@ class EngineSQLite:
 
             # Phase 2: coalescing + fingerprints
             # Ensure legacy DBs have the new column(s).
-            cols = [r[1] for r in conn.execute("PRAGMA table_info(index_jobs)").fetchall()]
+            cols = [
+                r[1] for r in conn.execute("PRAGMA table_info(index_jobs)").fetchall()
+            ]
             if "namespace" not in cols:
-                conn.execute("ALTER TABLE index_jobs ADD COLUMN namespace TEXT NOT NULL DEFAULT 'default'")
+                conn.execute(
+                    "ALTER TABLE index_jobs ADD COLUMN namespace TEXT NOT NULL DEFAULT 'default'"
+                )
             # Phase 2: coalescing + fingerprints
             # Ensure legacy DBs have the new column(s).
-            cols = [r[1] for r in conn.execute("PRAGMA table_info(index_jobs)").fetchall()]
+            cols = [
+                r[1] for r in conn.execute("PRAGMA table_info(index_jobs)").fetchall()
+            ]
             if "coalesce_key" not in cols:
-                conn.execute("ALTER TABLE index_jobs ADD COLUMN coalesce_key TEXT NOT NULL DEFAULT ''")
-
+                conn.execute(
+                    "ALTER TABLE index_jobs ADD COLUMN coalesce_key TEXT NOT NULL DEFAULT ''"
+                )
 
             # Phase 5: scheduling / DLQ controls
-            cols = [r[1] for r in conn.execute("PRAGMA table_info(index_jobs)").fetchall()]
+            cols = [
+                r[1] for r in conn.execute("PRAGMA table_info(index_jobs)").fetchall()
+            ]
             if "next_run_at" not in cols:
                 conn.execute("ALTER TABLE index_jobs ADD COLUMN next_run_at INTEGER")
-            cols = [r[1] for r in conn.execute("PRAGMA table_info(index_jobs)").fetchall()]
+            cols = [
+                r[1] for r in conn.execute("PRAGMA table_info(index_jobs)").fetchall()
+            ]
             if "max_retries" not in cols:
-                conn.execute("ALTER TABLE index_jobs ADD COLUMN max_retries INTEGER NOT NULL DEFAULT 10")
+                conn.execute(
+                    "ALTER TABLE index_jobs ADD COLUMN max_retries INTEGER NOT NULL DEFAULT 10"
+                )
 
             # Unique pending job per (namespace, coalesce_key) (partial unique index)
             conn.execute(
@@ -337,7 +350,6 @@ class EngineSQLite:
                 "CREATE INDEX IF NOT EXISTS idx_server_run_events_run_seq ON server_run_events(run_id, seq)"
             )
 
-
     # ------------------------------------------------------------------
     # Connection / transaction helpers
     # ------------------------------------------------------------------
@@ -412,7 +424,9 @@ class EngineSQLite:
         Return the current global sequence value (last issued).
         """
         with self.connect() as conn:
-            row = conn.execute("SELECT value FROM global_seq WHERE rowid = 1").fetchone()
+            row = conn.execute(
+                "SELECT value FROM global_seq WHERE rowid = 1"
+            ).fetchone()
             return int(row[0]) if row else 0
 
     # ------------------------------------------------------------------
@@ -466,7 +480,9 @@ class EngineSQLite:
         with self.transaction() as conn:
             self.set_user_seq_conn(conn, user_id, value)
 
-    def set_user_seq_conn(self, conn: sqlite3.Connection, user_id: str, value: int) -> None:
+    def set_user_seq_conn(
+        self, conn: sqlite3.Connection, user_id: str, value: int
+    ) -> None:
         conn.execute(
             """
             INSERT INTO user_seq(user_id, value)
@@ -495,7 +511,7 @@ class EngineSQLite:
         op: str,
         payload_json: Optional[str] = None,
         max_retries: int = 10,
-        namespace: str = 'default',
+        namespace: str = "default",
     ) -> str:
         """Enqueue durable derived-index work in the SQLite metastore.
 
@@ -520,7 +536,9 @@ class EngineSQLite:
             if row:
                 existing_job_id = str(row[0])
                 existing_op = str(row[1] or "")
-                next_op = "DELETE" if (op == "DELETE" or existing_op == "DELETE") else op
+                next_op = (
+                    "DELETE" if (op == "DELETE" or existing_op == "DELETE") else op
+                )
                 conn.execute(
                     """
                     UPDATE index_jobs
@@ -532,20 +550,29 @@ class EngineSQLite:
                 return existing_job_id
 
             conn.execute(
-    """
+                """
     INSERT OR IGNORE INTO index_jobs(
         job_id, namespace, entity_kind, entity_id, index_kind, coalesce_key, op,
         status, lease_until, next_run_at, max_retries, retry_count, last_error, payload_json,
         created_at, updated_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDING', NULL, NULL, ?, 0, NULL, ?, ?, ?)
     """,
-    (job_id, namespace, entity_kind, entity_id, index_kind, coalesce_key, op,
-     max_retries, payload_json, now, now),
-)
+                (
+                    job_id,
+                    namespace,
+                    entity_kind,
+                    entity_id,
+                    index_kind,
+                    coalesce_key,
+                    op,
+                    max_retries,
+                    payload_json,
+                    now,
+                    now,
+                ),
+            )
             return job_id
 
-
-    
     def claim_index_jobs(
         self,
         *,
@@ -612,6 +639,7 @@ class EngineSQLite:
                 )
             )
         return out
+
     def mark_index_job_done(self, job_id: str) -> None:
         now = self._now_epoch()
         with self.transaction() as conn:
@@ -624,8 +652,9 @@ class EngineSQLite:
                 (now, job_id),
             )
 
-        
-    def mark_index_job_failed(self, job_id: str, error: str, *, final: bool = True) -> None:
+    def mark_index_job_failed(
+        self, job_id: str, error: str, *, final: bool = True
+    ) -> None:
         """Mark a job failed.
 
         If final=True, job becomes terminal FAILED (DLQ) and will never be reclaimed.
@@ -644,7 +673,9 @@ class EngineSQLite:
                 (1 if final else 0, (error or "")[:2000], now, job_id),
             )
 
-    def bump_retry_and_requeue(self, job_id: str, error: str, *, next_run_at_seconds: int) -> None:
+    def bump_retry_and_requeue(
+        self, job_id: str, error: str, *, next_run_at_seconds: int
+    ) -> None:
         """Advance retry state after a failed apply attempt.
 
         The row stays in the durable queue: retry_count increments, last_error is
@@ -669,6 +700,7 @@ class EngineSQLite:
                 """,
                 ((error or "")[:2000], next_run_at, now, job_id),
             )
+
     def list_index_jobs(
         self,
         *,
@@ -676,7 +708,7 @@ class EngineSQLite:
         entity_kind: Optional[str] = None,
         entity_id: Optional[str] = None,
         index_kind: Optional[str] = None,
-        namespace: Optional[str] = 'default',
+        namespace: Optional[str] = "default",
         limit: int = 1000,
     ) -> List[IndexJobRow]:
         where: List[str] = []
@@ -699,7 +731,7 @@ class EngineSQLite:
         sql = "SELECT job_id, namespace, entity_kind, entity_id, index_kind, coalesce_key, op, status, lease_until, next_run_at, max_retries, retry_count, last_error, payload_json, created_at, updated_at FROM index_jobs"
         if where:
             sql += " WHERE " + " AND ".join(where)
-        sql += " ORDER BY created_at ASC LIMIT ?" 
+        sql += " ORDER BY created_at ASC LIMIT ?"
         params.append(int(limit))
         with self.connect() as conn:
             rows = conn.execute(sql, params).fetchall()
@@ -724,6 +756,7 @@ class EngineSQLite:
             )
             for r in rows
         ]
+
     # ------------------------------------------------------------------
     # Usage examples
     # ------------------------------------------------------------------
@@ -774,12 +807,13 @@ class EngineSQLite:
     db.set_user_seq("alice", 17)
     """
 
-
     # ------------------------------------------------------------------
     # Phase 2: applied fingerprints (derived index status)
     # ------------------------------------------------------------------
 
-    def get_index_applied_fingerprint(self, *, namespace: str = 'default', coalesce_key: str) -> Optional[str]:
+    def get_index_applied_fingerprint(
+        self, *, namespace: str = "default", coalesce_key: str
+    ) -> Optional[str]:
         with self.connect() as conn:
             row = conn.execute(
                 "SELECT applied_fingerprint FROM index_applied_state WHERE namespace = ? AND coalesce_key = ?",
@@ -790,7 +824,7 @@ class EngineSQLite:
     def set_index_applied_fingerprint(
         self,
         *,
-        namespace: str = 'default',
+        namespace: str = "default",
         coalesce_key: str,
         applied_fingerprint: Optional[str],
         last_job_id: Optional[str] = None,
@@ -808,7 +842,6 @@ class EngineSQLite:
                 """,
                 (namespace, coalesce_key, applied_fingerprint, now, last_job_id),
             )
-
 
     # ------------------------------------------------------------------
     # Phase 2b: event log foundation
@@ -835,7 +868,6 @@ class EngineSQLite:
             )
             return 1
 
-
     def append_entity_event(
         self,
         *,
@@ -858,11 +890,20 @@ class EngineSQLite:
                 )
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (namespace, seq, event_id, entity_kind, entity_id, op, payload_json, now),
+                (
+                    namespace,
+                    seq,
+                    event_id,
+                    entity_kind,
+                    entity_id,
+                    op,
+                    payload_json,
+                    now,
+                ),
             )
         return seq
 
-    def iter_entity_events( # mini batched
+    def iter_entity_events(  # mini batched
         self,
         *,
         namespace: str = "default",
@@ -909,7 +950,9 @@ class EngineSQLite:
             # advance cursor: next batch starts after the last seq we just yielded
             next_seq = int(rows[-1][0]) + 1
 
-    def prune_entity_events_after(self, *, namespace: str = "default", to_seq: int) -> int:
+    def prune_entity_events_after(
+        self, *, namespace: str = "default", to_seq: int
+    ) -> int:
         """Delete namespace events with seq > to_seq.
 
         Used by workflow-design history branching to discard superseded redo events.
@@ -951,7 +994,6 @@ class EngineSQLite:
     #             )
     #         yield from rows
 
-
     def cursor_get(self, *, namespace: str, consumer: str) -> int:
         with self.connect() as conn:
             row = conn.execute(
@@ -959,7 +1001,6 @@ class EngineSQLite:
                 (namespace, consumer),
             ).fetchone()
         return int(row[0]) if row else 0
-
 
     def cursor_set(self, *, namespace: str, consumer: str, last_seq: int) -> None:
         now = self._now_epoch()
@@ -982,7 +1023,9 @@ class EngineSQLite:
             ).fetchone()
         return int(row[0]) if row else 0
 
-    def get_workflow_design_projection(self, *, workflow_id: str) -> Optional[dict[str, Any]]:
+    def get_workflow_design_projection(
+        self, *, workflow_id: str
+    ) -> Optional[dict[str, Any]]:
         with self.connect() as conn:
             head = conn.execute(
                 """
@@ -1055,8 +1098,14 @@ class EngineSQLite:
     ) -> None:
         updated_at_ms = int(head.get("updated_at_ms") or self._now_epoch() * 1000)
         with self.transaction() as conn:
-            conn.execute("DELETE FROM workflow_design_projection_versions WHERE workflow_id = ?", (workflow_id,))
-            conn.execute("DELETE FROM workflow_design_projection_dropped_ranges WHERE workflow_id = ?", (workflow_id,))
+            conn.execute(
+                "DELETE FROM workflow_design_projection_versions WHERE workflow_id = ?",
+                (workflow_id,),
+            )
+            conn.execute(
+                "DELETE FROM workflow_design_projection_dropped_ranges WHERE workflow_id = ?",
+                (workflow_id,),
+            )
             conn.execute(
                 """
                 INSERT INTO workflow_design_projection_head(
@@ -1126,9 +1175,18 @@ class EngineSQLite:
 
     def clear_workflow_design_projection(self, *, workflow_id: str) -> None:
         with self.transaction() as conn:
-            conn.execute("DELETE FROM workflow_design_projection_versions WHERE workflow_id = ?", (workflow_id,))
-            conn.execute("DELETE FROM workflow_design_projection_dropped_ranges WHERE workflow_id = ?", (workflow_id,))
-            conn.execute("DELETE FROM workflow_design_projection_head WHERE workflow_id = ?", (workflow_id,))
+            conn.execute(
+                "DELETE FROM workflow_design_projection_versions WHERE workflow_id = ?",
+                (workflow_id,),
+            )
+            conn.execute(
+                "DELETE FROM workflow_design_projection_dropped_ranges WHERE workflow_id = ?",
+                (workflow_id,),
+            )
+            conn.execute(
+                "DELETE FROM workflow_design_projection_head WHERE workflow_id = ?",
+                (workflow_id,),
+            )
 
     def put_workflow_design_snapshot(
         self,
@@ -1192,7 +1250,10 @@ class EngineSQLite:
 
     def clear_workflow_design_snapshots(self, *, workflow_id: str) -> None:
         with self.transaction() as conn:
-            conn.execute("DELETE FROM workflow_design_snapshots WHERE workflow_id = ?", (workflow_id,))
+            conn.execute(
+                "DELETE FROM workflow_design_snapshots WHERE workflow_id = ?",
+                (workflow_id,),
+            )
 
     def put_workflow_design_delta(
         self,
@@ -1264,7 +1325,10 @@ class EngineSQLite:
 
     def clear_workflow_design_deltas(self, *, workflow_id: str) -> None:
         with self.transaction() as conn:
-            conn.execute("DELETE FROM workflow_design_version_deltas WHERE workflow_id = ?", (workflow_id,))
+            conn.execute(
+                "DELETE FROM workflow_design_version_deltas WHERE workflow_id = ?",
+                (workflow_id,),
+            )
 
     @staticmethod
     def _decode_run_json(raw: Any) -> Any:
@@ -1293,7 +1357,16 @@ class EngineSQLite:
                     created_at_ms, updated_at_ms, started_at_ms, finished_at_ms
                 ) VALUES (?, ?, ?, ?, ?, NULL, ?, 0, NULL, NULL, ?, ?, NULL, NULL)
                 """,
-                (run_id, conversation_id, workflow_id, user_id, user_turn_node_id, status, now, now),
+                (
+                    run_id,
+                    conversation_id,
+                    workflow_id,
+                    user_id,
+                    user_turn_node_id,
+                    status,
+                    now,
+                    now,
+                ),
             )
 
     def get_server_run(self, run_id: str) -> Optional[dict[str, Any]]:
@@ -1329,7 +1402,9 @@ class EngineSQLite:
             "terminal": status in {"succeeded", "failed", "cancelled"},
         }
 
-    def list_server_run_events(self, run_id: str, *, after_seq: int = 0, limit: int = 500) -> list[dict[str, Any]]:
+    def list_server_run_events(
+        self, run_id: str, *, after_seq: int = 0, limit: int = 500
+    ) -> list[dict[str, Any]]:
         with self.connect() as conn:
             rows = conn.execute(
                 """

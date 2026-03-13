@@ -5,7 +5,10 @@ from typing import List
 
 from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
 from graph_knowledge_engine.engine_core import models
-from graph_knowledge_engine.engine_core.postgres_backend import PgVectorBackend, PostgresUnitOfWork
+from graph_knowledge_engine.engine_core.postgres_backend import (
+    PgVectorBackend,
+    PostgresUnitOfWork,
+)
 
 
 def _dummy_grounding() -> models.Grounding:
@@ -53,7 +56,9 @@ def _dummy_embed(dim: int):
     return _emb
 
 
-def test_phase3_e2e_engine_edges_by_doc_pg(tmp_path: Path, sa_engine, pg_schema) -> None:
+def test_phase3_e2e_engine_edges_by_doc_pg(
+    tmp_path: Path, sa_engine, pg_schema
+) -> None:
     dim = 8  # small for tests
 
     be = PgVectorBackend(engine=sa_engine, embedding_dim=dim, schema=pg_schema)
@@ -62,7 +67,7 @@ def test_phase3_e2e_engine_edges_by_doc_pg(tmp_path: Path, sa_engine, pg_schema)
     eng = GraphKnowledgeEngine(
         persist_directory=str(tmp_path / "chroma"),
         embedding_function=_dummy_embed(dim),
-        backend = be
+        backend=be,
     )
 
     # Swap to Postgres backend + backend UoW
@@ -75,7 +80,9 @@ def test_phase3_e2e_engine_edges_by_doc_pg(tmp_path: Path, sa_engine, pg_schema)
     eng.add_node(n1)
     eng.add_node(n2)
 
-    e = _make_edge(src=n1.safe_get_id(), tgt=n2.safe_get_id(), relation="links_to", doc_id=doc_id)
+    e = _make_edge(
+        src=n1.safe_get_id(), tgt=n2.safe_get_id(), relation="links_to", doc_id=doc_id
+    )
     eng.add_edge(e)
 
     got = eng.edges_by_doc(doc_id)

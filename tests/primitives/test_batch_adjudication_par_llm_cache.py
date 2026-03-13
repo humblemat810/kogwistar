@@ -45,18 +45,46 @@ def test_batch_adjudication_par_llm_cache_full(engine: GraphKnowledgeEngine, tmp
     engine.write.add_document(doc)
     ref = kg_grounding(doc.id)
 
-    usa = Node(label="United States of America", type="entity", summary="Country", mentions=[ref])
-    usa_alias = Node(label="USA", type="entity", summary="Country (alias)", mentions=[ref])
-    nyc = Node(label="New York City", type="entity", summary="City in USA", mentions=[ref])
-    nyc_alias = Node(label="NYC", type="entity", summary="City in USA (alias)", mentions=[ref])
-    paris = Node(label="Paris", type="entity", summary="Capital of France", mentions=[ref])
-    france = Node(label="France", type="entity", summary="Country in Europe", mentions=[ref])
+    usa = Node(
+        label="United States of America",
+        type="entity",
+        summary="Country",
+        mentions=[ref],
+    )
+    usa_alias = Node(
+        label="USA", type="entity", summary="Country (alias)", mentions=[ref]
+    )
+    nyc = Node(
+        label="New York City", type="entity", summary="City in USA", mentions=[ref]
+    )
+    nyc_alias = Node(
+        label="NYC", type="entity", summary="City in USA (alias)", mentions=[ref]
+    )
+    paris = Node(
+        label="Paris", type="entity", summary="Capital of France", mentions=[ref]
+    )
+    france = Node(
+        label="France", type="entity", summary="Country in Europe", mentions=[ref]
+    )
     alice = Node(label="Alice", type="entity", summary="A person", mentions=[ref])
     acme = Node(label="ACME Corp", type="entity", summary="A company", mentions=[ref])
-    london = Node(label="London", type="entity", summary="Capital of UK", mentions=[ref])
+    london = Node(
+        label="London", type="entity", summary="Capital of UK", mentions=[ref]
+    )
     uk = Node(label="United Kingdom", type="entity", summary="Country", mentions=[ref])
 
-    for node in (usa, usa_alias, nyc, nyc_alias, paris, france, alice, acme, london, uk):
+    for node in (
+        usa,
+        usa_alias,
+        nyc,
+        nyc_alias,
+        paris,
+        france,
+        alice,
+        acme,
+        london,
+        uk,
+    ):
         engine.write.add_node(node, doc_id=doc.id)
 
     node_node_pairs: List[Tuple[Node, Node]] = [
@@ -103,7 +131,11 @@ def test_batch_adjudication_par_llm_cache_full(engine: GraphKnowledgeEngine, tmp
         target_ids=[acme.id],
         source_edge_ids=[],
         target_edge_ids=[],
-        properties={"start_year": 2019, "end_year": 2021, "signature_text": "Employment(Alice, ACME, 2019-2021)"},
+        properties={
+            "start_year": 2019,
+            "end_year": 2021,
+            "signature_text": "Employment(Alice, ACME, 2019-2021)",
+        },
         mentions=[ref],
     )
     engine.write.add_edge(e_emp1, doc_id=doc.id)
@@ -117,7 +149,11 @@ def test_batch_adjudication_par_llm_cache_full(engine: GraphKnowledgeEngine, tmp
         target_ids=[acme.id],
         source_edge_ids=[],
         target_edge_ids=[],
-        properties={"start_year": 2019, "end_year": 2021, "signature_text": "Employment(Alice, ACME, 2019-2021)"},
+        properties={
+            "start_year": 2019,
+            "end_year": 2021,
+            "signature_text": "Employment(Alice, ACME, 2019-2021)",
+        },
         mentions=[ref],
     )
     engine.write.add_edge(e_emp2, doc_id=doc.id)
@@ -194,16 +230,24 @@ def test_batch_adjudication_par_llm_cache_full(engine: GraphKnowledgeEngine, tmp
     pairs_all: List[Tuple[Any, Any]] = node_node_pairs + edge_edge_pairs + cross_pairs
 
     def _wire_entry(obj):
-        return {"kind": "relationship" if isinstance(obj, Edge) else "entity", "id": obj.id}
+        return {
+            "kind": "relationship" if isinstance(obj, Edge) else "entity",
+            "id": obj.id,
+        }
 
-    wire_pairs: List[Dict[str, Any]] = [{"left": _wire_entry(left), "right": _wire_entry(right)} for left, right in pairs_all]
+    wire_pairs: List[Dict[str, Any]] = [
+        {"left": _wire_entry(left), "right": _wire_entry(right)}
+        for left, right in pairs_all
+    ]
 
     cache_dir = tmp_path / ".cache" / "batch_adjudicate_par_cross_type_full"
     cache_dir.mkdir(parents=True, exist_ok=True)
     memory = Memory(location=str(cache_dir), verbose=0)
 
     @memory.cache
-    def _run_adjudication_cached(persist_dir: str, cached_wire_pairs: List[Dict[str, Any]], qcode_int: int):
+    def _run_adjudication_cached(
+        persist_dir: str, cached_wire_pairs: List[Dict[str, Any]], qcode_int: int
+    ):
         eng = GraphKnowledgeEngine(persist_directory=persist_dir)
 
         def _get_node(node_id: str) -> Node:
@@ -216,15 +260,26 @@ def test_batch_adjudication_par_llm_cache_full(engine: GraphKnowledgeEngine, tmp
 
         pairs: List[Tuple[Any, Any]] = []
         for item in cached_wire_pairs:
-            left = _get_edge(item["left"]["id"]) if item["left"]["kind"] == "relationship" else _get_node(item["left"]["id"])
-            right = _get_edge(item["right"]["id"]) if item["right"]["kind"] == "relationship" else _get_node(item["right"]["id"])
+            left = (
+                _get_edge(item["left"]["id"])
+                if item["left"]["kind"] == "relationship"
+                else _get_node(item["left"]["id"])
+            )
+            right = (
+                _get_edge(item["right"]["id"])
+                if item["right"]["kind"] == "relationship"
+                else _get_node(item["right"]["id"])
+            )
             pairs.append((left, right))
 
         results, qkey_ = eng.batch_adjudicate_merges(
             pairs,
             question_code=AdjudicationQuestionCode(qcode_int),
         )
-        dumped = [result.model_dump() if hasattr(result, "model_dump") else result for result in results]
+        dumped = [
+            result.model_dump() if hasattr(result, "model_dump") else result
+            for result in results
+        ]
         return dumped, qkey_
 
     dumped, qkey = _run_adjudication_cached(

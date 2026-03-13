@@ -31,9 +31,13 @@ def _build_non_recursive_nested_schema(depth: int) -> type[BaseModel]:
     return current
 
 
-def _invoke_structured(llm: Any, schema: type[BaseModel], prompt: str) -> tuple[bool, str | None]:
+def _invoke_structured(
+    llm: Any, schema: type[BaseModel], prompt: str
+) -> tuple[bool, str | None]:
     try:
-        runnable = llm.with_structured_output(schema, method="json_schema", include_raw=True)
+        runnable = llm.with_structured_output(
+            schema, method="json_schema", include_raw=True
+        )
     except TypeError:
         # Older langchain-google-genai versions may not expose `method`.
         runnable = llm.with_structured_output(schema, include_raw=True)
@@ -111,7 +115,9 @@ def test_gemini_detect_max_non_recursive_schema_nesting_depth():
     model_name = os.getenv("TEST_GEMINI_MODEL", "gemini-3-flash-preview")
     hard_cap = int(os.getenv("GEMINI_SCHEMA_DEPTH_HARD_CAP", "64"))
     attempts = int(os.getenv("GEMINI_SCHEMA_DEPTH_PROBE_ATTEMPTS", "2"))
-    cache_dir = os.getenv("GEMINI_SCHEMA_DEPTH_CACHE_DIR", ".joblib/gemini_schema_depth_limit")
+    cache_dir = os.getenv(
+        "GEMINI_SCHEMA_DEPTH_CACHE_DIR", ".joblib/gemini_schema_depth_limit"
+    )
     api_key_fingerprint = hashlib.sha256(api_key.encode("utf-8")).hexdigest()[:16]
     memory = Memory(location=cache_dir, verbose=0)
     cached_probe_depth = memory.cache(_probe_depth_live)
@@ -143,7 +149,11 @@ def test_gemini_detect_max_non_recursive_schema_nesting_depth():
 
     highest_supported = low
     first_failing = high if high <= hard_cap else None
-    failure_reason = probe_cache.get(first_failing, (None, None))[1] if first_failing is not None else None
+    failure_reason = (
+        probe_cache.get(first_failing, (None, None))[1]
+        if first_failing is not None
+        else None
+    )
 
     print(
         "Gemini non-recursive schema nesting depth probe: "

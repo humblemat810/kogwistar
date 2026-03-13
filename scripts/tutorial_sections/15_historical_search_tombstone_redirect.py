@@ -14,7 +14,13 @@ from graph_knowledge_engine.conversation.service import ConversationService
 from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
 from graph_knowledge_engine.engine_core.models import Node
 
-from _helpers import LexicalHashEmbeddingFunction, banner, reset_data_dir, show, tutorial_grounding
+from _helpers import (
+    LexicalHashEmbeddingFunction,
+    banner,
+    reset_data_dir,
+    show,
+    tutorial_grounding,
+)
 
 
 def _claim_node(
@@ -31,7 +37,9 @@ def _claim_node(
         type="entity",
         summary=summary,
         doc_id=doc_id,
-        mentions=[tutorial_grounding(doc_id, label, insertion_method="tutorial_historical")],
+        mentions=[
+            tutorial_grounding(doc_id, label, insertion_method="tutorial_historical")
+        ],
         properties={},
         metadata={"effective_from": effective_from, "topic": "historical_audit"},
         domain_id=None,
@@ -53,7 +61,9 @@ conv_engine = GraphKnowledgeEngine(
     embedding_function=LexicalHashEmbeddingFunction(),
 )
 svc = ConversationService.from_engine(conv_engine, knowledge_engine=kg_engine)
-conversation_id, _ = svc.create_conversation("demo-user", "conv-historical", "conv-historical-start")
+conversation_id, _ = svc.create_conversation(
+    "demo-user", "conv-historical", "conv-historical-start"
+)
 banner("Knowledge and conversation engines initialized.")
 
 # %% [markdown]
@@ -93,8 +103,18 @@ egg_new = _claim_node(
 for node in (sugar_old, sugar_new, egg_old, egg_new):
     kg_engine.add_node(node)
 
-kg_engine.redirect_node("N_SUGAR_OLD", "N_SUGAR_NEW", deleted_at="2016-01-01T00:00:00+00:00", reason="historical_revision")
-kg_engine.redirect_node("N_EGG_OLD", "N_EGG_NEW", deleted_at="2015-01-01T00:00:00+00:00", reason="historical_revision")
+kg_engine.redirect_node(
+    "N_SUGAR_OLD",
+    "N_SUGAR_NEW",
+    deleted_at="2016-01-01T00:00:00+00:00",
+    reason="historical_revision",
+)
+kg_engine.redirect_node(
+    "N_EGG_OLD",
+    "N_EGG_NEW",
+    deleted_at="2015-01-01T00:00:00+00:00",
+    reason="historical_revision",
+)
 show(
     "seeded lifecycle",
     {
@@ -116,8 +136,12 @@ query_text = "sugar fat cholesterol eggs dietary claim"
 then_ts = "2010-01-01T00:00:00+00:00"
 now_ts = "2022-01-01T00:00:00+00:00"
 
-hits_then = kg_engine.search_nodes_as_of(query=query_text, as_of_ts=then_ts, n_results=100)
-hits_now = kg_engine.search_nodes_as_of(query=query_text, as_of_ts=now_ts, n_results=100)
+hits_then = kg_engine.search_nodes_as_of(
+    query=query_text, as_of_ts=then_ts, n_results=100
+)
+hits_now = kg_engine.search_nodes_as_of(
+    query=query_text, as_of_ts=now_ts, n_results=100
+)
 then_ids = [n.id for n in hits_then]
 now_ids = [n.id for n in hits_now]
 
@@ -137,9 +161,19 @@ show(
 
 # %%
 mode_demo = {
-    "active_only": [n.id for n in kg_engine.get_nodes(ids=["N_SUGAR_OLD"], resolve_mode="active_only")],
-    "redirect": [n.id for n in kg_engine.get_nodes(ids=["N_SUGAR_OLD"], resolve_mode="redirect")],
-    "include_tombstones": [n.id for n in kg_engine.get_nodes(ids=["N_SUGAR_OLD"], resolve_mode="include_tombstones")],
+    "active_only": [
+        n.id
+        for n in kg_engine.get_nodes(ids=["N_SUGAR_OLD"], resolve_mode="active_only")
+    ],
+    "redirect": [
+        n.id for n in kg_engine.get_nodes(ids=["N_SUGAR_OLD"], resolve_mode="redirect")
+    ],
+    "include_tombstones": [
+        n.id
+        for n in kg_engine.get_nodes(
+            ids=["N_SUGAR_OLD"], resolve_mode="include_tombstones"
+        )
+    ],
 }
 show("resolve mode comparison", mode_demo)
 
@@ -190,8 +224,12 @@ show(
     {
         "snapshot_then": snapshot_then,
         "snapshot_now": snapshot_now,
-        "then_evidence_ids": (payload_then.get("properties", {}).get("llm_input_payload") or "")[:400],
-        "now_evidence_ids": (payload_now.get("properties", {}).get("llm_input_payload") or "")[:400],
+        "then_evidence_ids": (
+            payload_then.get("properties", {}).get("llm_input_payload") or ""
+        )[:400],
+        "now_evidence_ids": (
+            payload_now.get("properties", {}).get("llm_input_payload") or ""
+        )[:400],
     },
 )
 
@@ -201,7 +239,11 @@ show(
 
 # %%
 checkpoint = {
-    "checkpoint_pass": ("N_SUGAR_OLD" in then_ids and "N_SUGAR_NEW" in now_ids and snapshot_then != snapshot_now),
+    "checkpoint_pass": (
+        "N_SUGAR_OLD" in then_ids
+        and "N_SUGAR_NEW" in now_ids
+        and snapshot_then != snapshot_now
+    ),
     "then_ids": then_ids,
     "now_ids": now_ids,
     "snapshot_then": snapshot_then,

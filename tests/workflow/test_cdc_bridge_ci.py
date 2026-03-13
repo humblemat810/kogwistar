@@ -1,4 +1,3 @@
-
 import json
 from pathlib import Path
 
@@ -12,7 +11,9 @@ def _read_template_html() -> str:
     p2 = Path("d3.html")
     if p2.exists():
         return p2.read_text(encoding="utf-8")
-    raise RuntimeError("Cannot find d3.html template at graph_knowledge_engine/templates/d3.html or ./d3.html")
+    raise RuntimeError(
+        "Cannot find d3.html template at graph_knowledge_engine/templates/d3.html or ./d3.html"
+    )
 
 
 def test_dump_d3_bundle_cdc_injection_no_jinja_tokens(tmp_path: Path) -> None:
@@ -51,6 +52,7 @@ def test_cdc_bridge_broadcasts_to_websocket_clients_ci(tmp_path: Path) -> None:
     except Exception:  # pragma: no cover
         from change_bridge import create_app  # type: ignore
     import time
+
     app = create_app(oplog_file=tmp_path / "cdc_oplog.jsonl")
     with TestClient(app) as client:
         with client.websocket_connect("/changes/ws") as ws:
@@ -59,7 +61,7 @@ def test_cdc_bridge_broadcasts_to_websocket_clients_ci(tmp_path: Path) -> None:
                 "op": "node.upsert",
                 "entity": {"kind": "node", "id": "n1", "kg_graph_type": "conversation"},
                 "payload": {"x": 1},
-                "ts_unix_ms":int(time.time() * 1000)
+                "ts_unix_ms": int(time.time() * 1000),
             }
             r = client.post("/ingest", json=ev)
             assert r.status_code == 200

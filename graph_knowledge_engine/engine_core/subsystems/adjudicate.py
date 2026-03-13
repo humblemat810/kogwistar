@@ -65,14 +65,24 @@ class AdjudicateSubsystem(NamespaceProxy):
         tgt_ids: list[str] | None,
     ) -> tuple[list[Any], list[Any], list[Any], list[Any]]:
         s_nodes, s_edges, t_nodes, t_edges = [], [], [], []
-        for rid in (src_ids or []):
-            (s_nodes if self.classify_endpoint_id(rid) == "node" else s_edges).append(rid)
-        for rid in (tgt_ids or []):
-            (t_nodes if self.classify_endpoint_id(rid) == "node" else t_edges).append(rid)
+        for rid in src_ids or []:
+            (s_nodes if self.classify_endpoint_id(rid) == "node" else s_edges).append(
+                rid
+            )
+        for rid in tgt_ids or []:
+            (t_nodes if self.classify_endpoint_id(rid) == "node" else t_edges).append(
+                rid
+            )
         return s_nodes, s_edges, t_nodes, t_edges
 
-    def rebalance_same_as_edge(self, e: Edge, removed_node_id: str) -> tuple[bool, Edge | None]:
-        remain = [x for x in (e.source_ids or []) + (e.target_ids or []) if x != removed_node_id]
+    def rebalance_same_as_edge(
+        self, e: Edge, removed_node_id: str
+    ) -> tuple[bool, Edge | None]:
+        remain = [
+            x
+            for x in (e.source_ids or []) + (e.target_ids or [])
+            if x != removed_node_id
+        ]
         remain = list(dict.fromkeys(remain))
         if len(remain) < 2:
             return True, None

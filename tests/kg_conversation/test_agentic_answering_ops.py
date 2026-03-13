@@ -6,7 +6,6 @@ from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any, Dict, Iterator, List
 
-import pytest
 
 from graph_knowledge_engine.engine_core.models import Span
 from graph_knowledge_engine.llm_tasks import (
@@ -51,13 +50,25 @@ class _FakeStepContext:
 
 def _noop_task_set() -> LLMTaskSet:
     return LLMTaskSet(
-        extract_graph=lambda request: ExtractGraphTaskResult(raw=None, parsed_payload={}, parsing_error=None),
-        adjudicate_pair=lambda request: AdjudicatePairTaskResult(verdict_payload={}, raw=None, parsing_error=None),
-        adjudicate_batch=lambda request: AdjudicateBatchTaskResult(verdict_payloads=[], raw=None, parsing_error=None),
-        filter_candidates=lambda request: FilterCandidatesTaskResult(node_ids=[], edge_ids=[], reasoning=""),
+        extract_graph=lambda request: ExtractGraphTaskResult(
+            raw=None, parsed_payload={}, parsing_error=None
+        ),
+        adjudicate_pair=lambda request: AdjudicatePairTaskResult(
+            verdict_payload={}, raw=None, parsing_error=None
+        ),
+        adjudicate_batch=lambda request: AdjudicateBatchTaskResult(
+            verdict_payloads=[], raw=None, parsing_error=None
+        ),
+        filter_candidates=lambda request: FilterCandidatesTaskResult(
+            node_ids=[], edge_ids=[], reasoning=""
+        ),
         summarize_context=lambda request: SummarizeContextTaskResult(text=""),
-        answer_with_citations=lambda request: AnswerWithCitationsTaskResult(answer_payload={}, raw=None, parsing_error=None),
-        repair_citations=lambda request: RepairCitationsTaskResult(answer_payload={}, raw=None, parsing_error=None),
+        answer_with_citations=lambda request: AnswerWithCitationsTaskResult(
+            answer_payload={}, raw=None, parsing_error=None
+        ),
+        repair_citations=lambda request: RepairCitationsTaskResult(
+            answer_payload={}, raw=None, parsing_error=None
+        ),
     )
 
 
@@ -129,7 +140,11 @@ class _StubBackend:
     def node_get(self, **kwargs):
         where = kwargs.get("where") or {}
         if where.get("conversation_id") == "c1":
-            return {"ids": ["turn:c1:0"], "documents": [self._node_doc], "metadatas": [self._node_meta]}
+            return {
+                "ids": ["turn:c1:0"],
+                "documents": [self._node_doc],
+                "metadatas": [self._node_meta],
+            }
         return {"ids": [], "documents": [], "metadatas": []}
 
     def edge_get(self, **kwargs):
@@ -184,16 +199,40 @@ class _StubAgent:
     def _select_used_evidence_bm25(self, *, question: str, candidates: List[dict]):
         return SimpleNamespace(
             used_node_ids=[candidates[0]["id"], candidates[1]["id"]],
-            model_dump=lambda: {"used_node_ids": ["n1", "n2"], "used_edge_ids": [], "reasoning": "stub"},
+            model_dump=lambda: {
+                "used_node_ids": ["n1", "n2"],
+                "used_edge_ids": [],
+                "reasoning": "stub",
+            },
         )
-    @staticmethod
-    def _materialize_evidence_pack(agent, *, node_ids: List[str], edge_ids: List[str] | None, depth: str, max_chars_per_item: int, max_total_chars: int):
-        return {"nodes": [{"node_id": nid, "mentions": [{"spans": [{"excerpt": f"e:{nid}"}]}]} for nid in node_ids], 
-                "edges": [{"node_id": nid, "mentions": [{"spans": [{"excerpt": f"e:{nid}"}]}]} for nid in edge_ids]}
 
-    def rehydrate_evidence_pack_from_digest(self, *, digest: dict, enforce_hash_match: bool = False):
+    @staticmethod
+    def _materialize_evidence_pack(
+        agent,
+        *,
+        node_ids: List[str],
+        edge_ids: List[str] | None,
+        depth: str,
+        max_chars_per_item: int,
+        max_total_chars: int,
+    ):
         return {
-            "evidence_pack": self._materialize_evidence_pack(self,
+            "nodes": [
+                {"node_id": nid, "mentions": [{"spans": [{"excerpt": f"e:{nid}"}]}]}
+                for nid in node_ids
+            ],
+            "edges": [
+                {"node_id": nid, "mentions": [{"spans": [{"excerpt": f"e:{nid}"}]}]}
+                for nid in edge_ids
+            ],
+        }
+
+    def rehydrate_evidence_pack_from_digest(
+        self, *, digest: dict, enforce_hash_match: bool = False
+    ):
+        return {
+            "evidence_pack": self._materialize_evidence_pack(
+                self,
                 node_ids=list(digest.get("node_ids") or []),
                 edge_ids=list(digest.get("edge_ids") or []),
                 depth=str(digest.get("depth") or "shallow"),
@@ -208,6 +247,7 @@ class _StubAgent:
     def select_used_evidence_cached(self, **kwargs):
         # should not be called in these tests (bm25 path)
         raise AssertionError("select_used_evidence_cached should not be called")
+
     @staticmethod
     def _generate_answer_with_citations(agent, **kwargs):
         return {"text": "ok", "reasoning": "", "claims": []}
@@ -216,24 +256,52 @@ class _StubAgent:
         return {"text": "ok", "reasoning": "", "claims": []}
 
     def _evaluate_answer(self, **kwargs):
-        return {"is_sufficient": True, "needs_more_info": False, "missing_aspects": [], "notes": ""}
+        return {
+            "is_sufficient": True,
+            "needs_more_info": False,
+            "missing_aspects": [],
+            "notes": "",
+        }
 
-    def _project_kg_node(self, *, conversation_id: str, run_node_id: str, kg_node_id: str, provenance_span: Span, prev_turn_meta_summary):
+    def _project_kg_node(
+        self,
+        *,
+        conversation_id: str,
+        run_node_id: str,
+        kg_node_id: str,
+        provenance_span: Span,
+        prev_turn_meta_summary,
+    ):
         pid = f"ptr:{conversation_id}:{kg_node_id}"
         self._project_calls.append(pid)
         return pid
 
-    def _add_assistant_turn(self, *, conversation_id: str, content: str, provenance_span: Span, turn_index: int, prev_turn_meta_summary):
+    def _add_assistant_turn(
+        self,
+        *,
+        conversation_id: str,
+        content: str,
+        provenance_span: Span,
+        turn_index: int,
+        prev_turn_meta_summary,
+    ):
         return (
             f"turn:{conversation_id}:{turn_index}",
-            SimpleNamespace(model_dump=lambda: {"id": f"turn:{conversation_id}:{turn_index}", "content": content}),
+            SimpleNamespace(
+                model_dump=lambda: {
+                    "id": f"turn:{conversation_id}:{turn_index}",
+                    "content": content,
+                }
+            ),
         )
 
     def _link_run_to_response(self, **kwargs):
         return None
 
 
-def _mk_state(*, agent: _StubAgent, conv_engine: _StubConversationEngine) -> Dict[str, Any]:
+def _mk_state(
+    *, agent: _StubAgent, conv_engine: _StubConversationEngine
+) -> Dict[str, Any]:
     return {
         "conversation_id": "c1",
         "user_id": "u1",
@@ -293,7 +361,10 @@ def test_aa_get_view_and_question_populates_question_and_system_prompt():
     _run_op("aa_prepare", state)
     res = _run_op("aa_get_view_and_question", state)
     assert isinstance(res, RunSuccess)
-    assert state["system_prompt"] == "You are a helpful assistant. Answer the user using the conversation and any provided evidence."
+    assert (
+        state["system_prompt"]
+        == "You are a helpful assistant. Answer the user using the conversation and any provided evidence."
+    )
     assert state["question"] == "What is X?"
 
 

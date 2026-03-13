@@ -8,7 +8,9 @@ from tests.conftest import _make_engine_pair
 
 
 @pytest.mark.parametrize("backend_kind", ["chroma", "pg"])
-def test_node_docs_partial_then_full_rollback(backend_kind: str, tmp_path, sa_engine, pg_schema):
+def test_node_docs_partial_then_full_rollback(
+    backend_kind: str, tmp_path, sa_engine, pg_schema
+):
     eng, _ = _make_engine_pair(
         backend_kind=backend_kind,
         tmp_path=tmp_path,
@@ -17,14 +19,26 @@ def test_node_docs_partial_then_full_rollback(backend_kind: str, tmp_path, sa_en
         dim=3,
         use_fake=True,
     )
-    d1 = kg_document(doc_id="doc::test_node_docs_partial_then_full_rollback::1", content="D1", source="test_node_docs_partial_then_full_rollback")
-    d2 = kg_document(doc_id="doc::test_node_docs_partial_then_full_rollback::2", content="D2", source="test_node_docs_partial_then_full_rollback")
+    d1 = kg_document(
+        doc_id="doc::test_node_docs_partial_then_full_rollback::1",
+        content="D1",
+        source="test_node_docs_partial_then_full_rollback",
+    )
+    d2 = kg_document(
+        doc_id="doc::test_node_docs_partial_then_full_rollback::2",
+        content="D2",
+        source="test_node_docs_partial_then_full_rollback",
+    )
     eng.write.add_document(d1)
     eng.write.add_document(d2)
 
     # One node with evidence in *both* documents (no single doc_id in node meta)
-    n = Node(label="Shared", type="entity", summary="x",
-             mentions=[kg_grounding(d1.id), kg_grounding(d2.id)])
+    n = Node(
+        label="Shared",
+        type="entity",
+        summary="x",
+        mentions=[kg_grounding(d1.id), kg_grounding(d2.id)],
+    )
     eng.write.add_node(n)  # no doc_id passed; relies on references + node_docs
 
     # Sanity: node_docs has two rows
@@ -46,7 +60,9 @@ def test_node_docs_partial_then_full_rollback(backend_kind: str, tmp_path, sa_en
     old_rows = eng.backend.node_docs_get(where={"node_id": n.id}, include=["metadatas"])
     assert not (old_rows.get("ids") or [])
 
-    rows_after = eng.backend.node_docs_get(where={"node_id": replacement_id}, include=["metadatas"])
+    rows_after = eng.backend.node_docs_get(
+        where={"node_id": replacement_id}, include=["metadatas"]
+    )
     assert {m["doc_id"] for m in rows_after.get("metadatas") or []} == {d2.id}
 
     n_got = eng.backend.node_get(ids=[replacement_id], include=["documents"])
@@ -63,5 +79,7 @@ def test_node_docs_partial_then_full_rollback(backend_kind: str, tmp_path, sa_en
     assert replacement_node["metadatas"][0]["lifecycle_status"] == "tombstoned"
     assert replacement_node["metadatas"][0].get("redirect_to_id") is None
 
-    final_rows = eng.backend.node_docs_get(where={"node_id": replacement_id}, include=["metadatas"])
+    final_rows = eng.backend.node_docs_get(
+        where={"node_id": replacement_id}, include=["metadatas"]
+    )
     assert not (final_rows.get("ids") or [])

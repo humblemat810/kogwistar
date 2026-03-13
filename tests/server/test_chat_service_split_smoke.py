@@ -10,7 +10,9 @@ from graph_knowledge_engine.server.chat_service import (
     RuntimeRunRequest,
     WorkflowProjectionRebuildingError,
 )
-from graph_knowledge_engine.server.chat_service_workflow_design import _WorkflowDesignService
+from graph_knowledge_engine.server.chat_service_workflow_design import (
+    _WorkflowDesignService,
+)
 from graph_knowledge_engine.server.resources import _LazyResource
 
 
@@ -72,7 +74,10 @@ def test_workflow_design_visible_delta_round_trip() -> None:
 
     delta = service._workflow_compute_visible_delta(before=before, after=after)
 
-    assert delta["upsert_nodes"] == [{"id": "n1", "label": "beta"}, {"id": "n2", "label": "gamma"}]
+    assert delta["upsert_nodes"] == [
+        {"id": "n1", "label": "beta"},
+        {"id": "n2", "label": "gamma"},
+    ]
     assert delta["delete_node_ids"] == []
     assert delta["upsert_edges"] == [{"id": "e2", "label": "new"}]
     assert delta["delete_edge_ids"] == ["e1"]
@@ -87,7 +92,9 @@ def test_workflow_design_projection_head_and_stale_detection() -> None:
         "current_seq": 35,
     }
 
-    head = service._workflow_projection_head(state=state, materialization_status="ready")
+    head = service._workflow_projection_head(
+        state=state, materialization_status="ready"
+    )
 
     assert head["current_version"] == 2
     assert head["active_tip_version"] == 3
@@ -97,10 +104,14 @@ def test_workflow_design_projection_head_and_stale_detection() -> None:
 
     stale_head = dict(head)
     stale_head["last_authoritative_seq"] = 39
-    assert service._workflow_projection_stale(state=state, projection=stale_head) is True
+    assert (
+        service._workflow_projection_stale(state=state, projection=stale_head) is True
+    )
 
 
-def test_workflow_design_branch_drop_emits_only_when_redo_branch_exists(monkeypatch) -> None:
+def test_workflow_design_branch_drop_emits_only_when_redo_branch_exists(
+    monkeypatch,
+) -> None:
     service = _WorkflowDesignService(_Owner())
     recorded: dict[str, object] = {}
 

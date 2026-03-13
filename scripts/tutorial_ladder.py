@@ -51,7 +51,10 @@ class LexicalHashEmbeddingFunction:
             v = [0.0] * self._dim
             tokens = re.findall(r"[a-z0-9_]+", str(text or "").lower())
             for tok in tokens:
-                idx = int(hashlib.sha256(tok.encode("utf-8")).hexdigest()[:8], 16) % self._dim
+                idx = (
+                    int(hashlib.sha256(tok.encode("utf-8")).hexdigest()[:8], 16)
+                    % self._dim
+                )
                 v[idx] += 1.0
             norm = math.sqrt(sum(x * x for x in v)) or 1.0
             vectors.append([x / norm for x in v])
@@ -76,11 +79,15 @@ def _span(doc_id: str, excerpt: str, *, insertion_method: str = "tutorial") -> S
         context_after="",
         chunk_id=None,
         source_cluster_id=None,
-        verification=MentionVerification(method="system", is_verified=True, score=1.0, notes="tutorial"),
+        verification=MentionVerification(
+            method="system", is_verified=True, score=1.0, notes="tutorial"
+        ),
     )
 
 
-def _grounding(doc_id: str, excerpt: str, *, insertion_method: str = "tutorial") -> Grounding:
+def _grounding(
+    doc_id: str, excerpt: str, *, insertion_method: str = "tutorial"
+) -> Grounding:
     return Grounding(spans=[_span(doc_id, excerpt, insertion_method=insertion_method)])
 
 
@@ -175,7 +182,12 @@ def _upsert_knowledge_graph(kg_engine: GraphKnowledgeEngine) -> None:
 
     edge_rows = [
         ("E:arch->rag", "K:architecture", "K:rag_basics", "supports"),
-        ("E:arch->retrieval", "K:architecture", "K:retrieval_orchestration", "supports"),
+        (
+            "E:arch->retrieval",
+            "K:architecture",
+            "K:retrieval_orchestration",
+            "supports",
+        ),
         ("E:retrieval->prov", "K:retrieval_orchestration", "K:provenance", "uses"),
         ("E:arch->hidden", "K:architecture", "K:hidden_guardrail", "enforces"),
         ("E:ttl->hidden", "K:ttl_guardrail", "K:hidden_guardrail", "guards"),
@@ -219,9 +231,19 @@ def _upsert_memory_history(conv_engine: GraphKnowledgeEngine) -> None:
         turn_index=1,
         conversation_id="conv-history",
         user_id="demo-user",
-        mentions=[_grounding("conv:history", "architecture drives retrieval quality", insertion_method="tutorial_memory")],
+        mentions=[
+            _grounding(
+                "conv:history",
+                "architecture drives retrieval quality",
+                insertion_method="tutorial_memory",
+            )
+        ],
         properties={},
-        metadata={"entity_type": "conversation_summary", "level_from_root": 0, "in_conversation_chain": True},
+        metadata={
+            "entity_type": "conversation_summary",
+            "level_from_root": 0,
+            "in_conversation_chain": True,
+        },
         domain_id=None,
         canonical_entity_id=None,
         embedding=None,
@@ -238,14 +260,24 @@ def _upsert_memory_history(conv_engine: GraphKnowledgeEngine) -> None:
         turn_index=2,
         conversation_id="conv-history",
         user_id="demo-user",
-        mentions=[_grounding("conv:history", "reference architecture", insertion_method="tutorial_memory")],
+        mentions=[
+            _grounding(
+                "conv:history",
+                "reference architecture",
+                insertion_method="tutorial_memory",
+            )
+        ],
         properties={
             "target_namespace": "kg",
             "refers_to_collection": "nodes",
             "refers_to_id": "K:architecture",
             "entity_type": "knowledge_reference",
         },
-        metadata={"entity_type": "knowledge_reference", "level_from_root": 0, "in_conversation_chain": False},
+        metadata={
+            "entity_type": "knowledge_reference",
+            "level_from_root": 0,
+            "in_conversation_chain": False,
+        },
         domain_id=None,
         canonical_entity_id=None,
         embedding=None,
@@ -261,7 +293,13 @@ def _upsert_memory_history(conv_engine: GraphKnowledgeEngine) -> None:
             type="relationship",
             summary="History summary references architecture pointer.",
             doc_id="conv-history-ref-edge",
-            mentions=[_grounding("conv:history", "references architecture", insertion_method="tutorial_memory")],
+            mentions=[
+                _grounding(
+                    "conv:history",
+                    "references architecture",
+                    insertion_method="tutorial_memory",
+                )
+            ],
             properties={"entity_type": "conversation_edge"},
             metadata={
                 "entity_type": "conversation_edge",
@@ -394,7 +432,9 @@ def run_level0(data_dir: Path, question: str) -> dict[str, Any]:
     }
 
 
-def run_level1(data_dir: Path, question: str, max_retrieval_level: int) -> dict[str, Any]:
+def run_level1(
+    data_dir: Path, question: str, max_retrieval_level: int
+) -> dict[str, Any]:
     kg_engine, conv_engine = _ensure_seed(data_dir)
 
     q_emb = conv_engine._iterative_defensive_emb(question)
@@ -456,10 +496,14 @@ def run_level1(data_dir: Path, question: str, max_retrieval_level: int) -> dict[
     }
 
 
-def run_level2(data_dir: Path, question: str, max_retrieval_level: int) -> dict[str, Any]:
+def run_level2(
+    data_dir: Path, question: str, max_retrieval_level: int
+) -> dict[str, Any]:
     kg_engine, conv_engine = _ensure_seed(data_dir)
     svc = ConversationService.from_engine(conv_engine, knowledge_engine=kg_engine)
-    conversation_id, _ = svc.create_conversation("demo-user", "conv-demo", "conv-demo-start")
+    conversation_id, _ = svc.create_conversation(
+        "demo-user", "conv-demo", "conv-demo-start"
+    )
 
     add_result = svc.add_conversation_turn(
         user_id="demo-user",
@@ -499,14 +543,20 @@ def run_level2(data_dir: Path, question: str, max_retrieval_level: int) -> dict[
     )
     # Keep level2 deterministic and resilient: use explicit selected evidence ids,
     # then materialize pinning via the same production pinner.
-    selected_nodes = kg_engine.get_nodes(["K:architecture", "K:provenance"], resolve_mode="redirect")
-    selected_edges = kg_engine.get_edges(["E:arch->retrieval", "E:retrieval->prov"], resolve_mode="redirect")
+    selected_nodes = kg_engine.get_nodes(
+        ["K:architecture", "K:provenance"], resolve_mode="redirect"
+    )
+    selected_edges = kg_engine.get_edges(
+        ["E:arch->retrieval", "E:retrieval->prov"], resolve_mode="redirect"
+    )
     selected_filter = FilteringResult(
         node_ids=[n.safe_get_id() for n in selected_nodes],
         edge_ids=[e.id for e in selected_edges],
     )
 
-    self_span = _span(f"conv:{conversation_id}", question, insertion_method="tutorial_level2")
+    self_span = _span(
+        f"conv:{conversation_id}", question, insertion_method="tutorial_level2"
+    )
     memory_context_node_id = None
     if mem.selected and mem.memory_context_text:
         pin = mem_retriever.pin_selected(
@@ -533,11 +583,17 @@ def run_level2(data_dir: Path, question: str, max_retrieval_level: int) -> dict[
             turn_index=add_result.turn_index,
             self_span=self_span,
             selected_knowledge=selected_filter,
-            selected_knowledge_nodes=RetrievalResult(nodes=selected_nodes, edges=selected_edges),
+            selected_knowledge_nodes=RetrievalResult(
+                nodes=selected_nodes, edges=selected_edges
+            ),
             prev_turn_meta_summary=prev_meta,
         )
 
-    node_check = bool(conv_engine.backend.node_get(ids=pinned_ptrs, include=[]).get("ids")) if pinned_ptrs else False
+    node_check = (
+        bool(conv_engine.backend.node_get(ids=pinned_ptrs, include=[]).get("ids"))
+        if pinned_ptrs
+        else False
+    )
     return {
         "level": 2,
         "question": question,
@@ -555,7 +611,7 @@ def level3_command_hints(data_dir: Path) -> dict[str, Any]:
     claw_data_dir = str(data_dir.parent / "claw-loop")
     cmds = [
         f"python scripts/claw_runtime_loop.py init --data-dir {claw_data_dir}",
-        f"python scripts/claw_runtime_loop.py enqueue --data-dir {claw_data_dir} --conversation-id conv-demo --event-type user.message --payload '{{\"text\":\"hello claw\",\"ttl\":2}}'",
+        f'python scripts/claw_runtime_loop.py enqueue --data-dir {claw_data_dir} --conversation-id conv-demo --event-type user.message --payload \'{{"text":"hello claw","ttl":2}}\'',
         f"python scripts/claw_runtime_loop.py run-once --data-dir {claw_data_dir}",
         f"python scripts/claw_runtime_loop.py list-events --data-dir {claw_data_dir} --direction in --limit 10",
         f"python scripts/claw_runtime_loop.py list-events --data-dir {claw_data_dir} --direction out --limit 10",
@@ -564,7 +620,9 @@ def level3_command_hints(data_dir: Path) -> dict[str, Any]:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="RAG ladder helper: simple RAG to reinforced RAG patterns.")
+    parser = argparse.ArgumentParser(
+        description="RAG ladder helper: simple RAG to reinforced RAG patterns."
+    )
     parser.add_argument("--data-dir", default=".gke-data/tutorial-ladder")
     sub = parser.add_subparsers(dest="cmd", required=True)
     common = argparse.ArgumentParser(add_help=False)
@@ -581,15 +639,23 @@ def main() -> None:
     p1.add_argument("--max-retrieval-level", type=int, default=2)
 
     p2 = sub.add_parser("level2", parents=[common])
-    p2.add_argument("--question", default="Show evidence and provenance for retrieval decisions.")
+    p2.add_argument(
+        "--question", default="Show evidence and provenance for retrieval decisions."
+    )
     p2.add_argument("--max-retrieval-level", type=int, default=2)
 
     sub.add_parser("level3-hints", parents=[common])
 
     p_all = sub.add_parser("run-all", parents=[common])
-    p_all.add_argument("--question0", default="How does this repo implement simple RAG?")
-    p_all.add_argument("--question1", default="How does architecture reinforce retrieval?")
-    p_all.add_argument("--question2", default="Show evidence and provenance for retrieval decisions.")
+    p_all.add_argument(
+        "--question0", default="How does this repo implement simple RAG?"
+    )
+    p_all.add_argument(
+        "--question1", default="How does architecture reinforce retrieval?"
+    )
+    p_all.add_argument(
+        "--question2", default="Show evidence and provenance for retrieval decisions."
+    )
     p_all.add_argument("--max-retrieval-level", type=int, default=2)
 
     args = parser.parse_args()

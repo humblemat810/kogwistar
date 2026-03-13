@@ -6,12 +6,20 @@ import threading
 from typing import Any
 
 from graph_knowledge_engine.conversation.agentic_answering import AgenticAnsweringAgent
-from graph_knowledge_engine.conversation.models import FilteringResult, MetaFromLastSummary
+from graph_knowledge_engine.conversation.models import (
+    FilteringResult,
+    MetaFromLastSummary,
+)
 from graph_knowledge_engine.id_provider import new_id_str
 from graph_knowledge_engine.runtime.runtime import _get_shared_sqlite_sink
 from graph_knowledge_engine.runtime.telemetry import EventEmitter
 
-from .chat_service_shared import AnswerRunRequest, RunCancelledError, RuntimeRunRequest, _BaseComponent
+from .chat_service_shared import (
+    AnswerRunRequest,
+    RunCancelledError,
+    RuntimeRunRequest,
+    _BaseComponent,
+)
 from .run_registry import RunRegistryTraceBridge
 
 
@@ -30,7 +38,9 @@ class _RunExecutionService(_BaseComponent):
         if not text:
             raise ValueError("text must be non-empty")
 
-        resolved_user_id = str(user_id or self._conversation_owner(conversation_id) or "")
+        resolved_user_id = str(
+            user_id or self._conversation_owner(conversation_id) or ""
+        )
         if not resolved_user_id:
             raise ValueError("user_id is required for this conversation")
 
@@ -44,7 +54,10 @@ class _RunExecutionService(_BaseComponent):
             role="user",
             content=text,
             ref_knowledge_engine=self._knowledge_engine(),
-            filtering_callback=lambda *args, **kwargs: (FilteringResult(node_ids=[], edge_ids=[]), ""),
+            filtering_callback=lambda *args, **kwargs: (
+                FilteringResult(node_ids=[], edge_ids=[]),
+                "",
+            ),
             prev_turn_meta_summary=prev_turn_meta_summary,
             add_turn_only=True,
         )
@@ -82,7 +95,9 @@ class _RunExecutionService(_BaseComponent):
             workflow_engine=self._workflow_engine(),
             prev_turn_meta_summary=add_turn.prev_turn_meta_summary,
             registry=self.run_registry,
-            publish=lambda event_type, payload=None: self._publish(run_id, event_type, payload),
+            publish=lambda event_type, payload=None: self._publish(
+                run_id, event_type, payload
+            ),
             is_cancel_requested=lambda: self.run_registry.is_cancel_requested(run_id),
         )
 
@@ -108,14 +123,22 @@ class _RunExecutionService(_BaseComponent):
         return [text[i : i + chunk_size] for i in range(0, len(text), chunk_size)]
 
     def _run_answer(self, req: AnswerRunRequest) -> None:
-        self._publish(req.run_id, "run.started", {"run_id": req.run_id, "status": "running"})
+        self._publish(
+            req.run_id, "run.started", {"run_id": req.run_id, "status": "running"}
+        )
         self.run_registry.update_status(req.run_id, status="running", started=True)
         try:
             out = self.answer_runner(req) or {}
             workflow_status = str(out.get("workflow_status") or "succeeded")
             if workflow_status == "cancelled":
-                self._publish(req.run_id, "run.cancelled", {"run_id": req.run_id, "status": "cancelled"})
-                self.run_registry.update_status(req.run_id, status="cancelled", result=out, finished=True)
+                self._publish(
+                    req.run_id,
+                    "run.cancelled",
+                    {"run_id": req.run_id, "status": "cancelled"},
+                )
+                self.run_registry.update_status(
+                    req.run_id, status="cancelled", result=out, finished=True
+                )
                 return
 
             assistant_text = str(out.get("assistant_text") or "")
@@ -135,7 +158,9 @@ class _RunExecutionService(_BaseComponent):
                 {
                     "run_id": req.run_id,
                     "assistant_text": assistant_text,
-                    "assistant_turn_node_id": str(out.get("assistant_turn_node_id") or ""),
+                    "assistant_turn_node_id": str(
+                        out.get("assistant_turn_node_id") or ""
+                    ),
                 },
             )
             self._publish(
@@ -144,29 +169,51 @@ class _RunExecutionService(_BaseComponent):
                 {
                     "run_id": req.run_id,
                     "status": "succeeded",
-                    "assistant_turn_node_id": str(out.get("assistant_turn_node_id") or ""),
+                    "assistant_turn_node_id": str(
+                        out.get("assistant_turn_node_id") or ""
+                    ),
                 },
             )
             self.run_registry.update_status(
                 req.run_id,
                 status="succeeded",
-                assistant_turn_node_id=str(out.get("assistant_turn_node_id") or "") or None,
+                assistant_turn_node_id=str(out.get("assistant_turn_node_id") or "")
+                or None,
                 result=out,
                 finished=True,
             )
         except RunCancelledError:
-            self._publish(req.run_id, "run.cancelled", {"run_id": req.run_id, "status": "cancelled"})
-            self.run_registry.update_status(req.run_id, status="cancelled", finished=True)
+            self._publish(
+                req.run_id,
+                "run.cancelled",
+                {"run_id": req.run_id, "status": "cancelled"},
+            )
+            self.run_registry.update_status(
+                req.run_id, status="cancelled", finished=True
+            )
         except Exception as exc:
             err = {"message": str(exc)}
-            logging.getLogger(__name__).exception("chat run failed: run_id=%s", req.run_id)
-            self._publish(req.run_id, "run.failed", {"run_id": req.run_id, "status": "failed", "error": err})
-            self.run_registry.update_status(req.run_id, status="failed", error=err, finished=True)
+            logging.getLogger(__name__).exception(
+                "chat run failed: run_id=%s", req.run_id
+            )
+            self._publish(
+                req.run_id,
+                "run.failed",
+                {"run_id": req.run_id, "status": "failed", "error": err},
+            )
+            self.run_registry.update_status(
+                req.run_id, status="failed", error=err, finished=True
+            )
 
     def _default_answer_runner(self, req: AnswerRunRequest) -> dict[str, Any]:
-        trace_db_path = pathlib.Path(str(getattr(req.workflow_engine, "persist_directory", "."))) / "wf_trace.sqlite"
+        trace_db_path = (
+            pathlib.Path(str(getattr(req.workflow_engine, "persist_directory", ".")))
+            / "wf_trace.sqlite"
+        )
         shared_sink = _get_shared_sqlite_sink(str(trace_db_path), drop_when_full=True)
-        sink = RunRegistryTraceBridge(registry=req.registry, run_id=req.run_id, delegate=shared_sink)
+        sink = RunRegistryTraceBridge(
+            registry=req.registry, run_id=req.run_id, delegate=shared_sink
+        )
         events = EventEmitter(sink=sink, logger=logging.getLogger("workflow.trace"))
         agent = AgenticAnsweringAgent(
             conversation_engine=req.conversation_engine,
@@ -206,7 +253,9 @@ class _RunExecutionService(_BaseComponent):
 
         resolved_turn_node_id = str(turn_node_id or "").strip()
         if not resolved_turn_node_id:
-            tail = self._conversation_service().get_conversation_tail(conversation_id=conversation_id)
+            tail = self._conversation_service().get_conversation_tail(
+                conversation_id=conversation_id
+            )
             resolved_turn_node_id = str(getattr(tail, "id", None) or "").strip()
         if not resolved_turn_node_id:
             resolved_turn_node_id = f"wf_turn|{new_id_str()}"
@@ -244,7 +293,9 @@ class _RunExecutionService(_BaseComponent):
             conversation_engine=self._conversation_engine(),
             workflow_engine=self._workflow_engine(),
             registry=self.run_registry,
-            publish=lambda event_type, payload=None: self._publish(run_id, event_type, payload),
+            publish=lambda event_type, payload=None: self._publish(
+                run_id, event_type, payload
+            ),
             is_cancel_requested=lambda: self.run_registry.is_cancel_requested(run_id),
         )
         thread = threading.Thread(
@@ -275,28 +326,64 @@ class _RunExecutionService(_BaseComponent):
         self.run_registry.update_status(req.run_id, status="running", started=True)
         try:
             out = self._json_safe(self.runtime_runner(req) or {})
-            workflow_status = str(out.get("workflow_status") or out.get("status") or "succeeded")
+            workflow_status = str(
+                out.get("workflow_status") or out.get("status") or "succeeded"
+            )
             if workflow_status == "cancelled":
-                self._publish(req.run_id, "run.cancelled", {"run_id": req.run_id, "status": "cancelled"})
-                self.run_registry.update_status(req.run_id, status="cancelled", result=out, finished=True)
+                self._publish(
+                    req.run_id,
+                    "run.cancelled",
+                    {"run_id": req.run_id, "status": "cancelled"},
+                )
+                self.run_registry.update_status(
+                    req.run_id, status="cancelled", result=out, finished=True
+                )
                 return
             if workflow_status in {"failed", "error"}:
                 err = out.get("error")
                 if not isinstance(err, dict):
-                    err = {"message": f"Workflow runtime failed: status={workflow_status}"}
-                self._publish(req.run_id, "run.failed", {"run_id": req.run_id, "status": "failed", "error": err})
-                self.run_registry.update_status(req.run_id, status="failed", result=out, error=err, finished=True)
+                    err = {
+                        "message": f"Workflow runtime failed: status={workflow_status}"
+                    }
+                self._publish(
+                    req.run_id,
+                    "run.failed",
+                    {"run_id": req.run_id, "status": "failed", "error": err},
+                )
+                self.run_registry.update_status(
+                    req.run_id, status="failed", result=out, error=err, finished=True
+                )
                 return
-            self._publish(req.run_id, "run.completed", {"run_id": req.run_id, "status": "succeeded"})
-            self.run_registry.update_status(req.run_id, status="succeeded", result=out, finished=True)
+            self._publish(
+                req.run_id,
+                "run.completed",
+                {"run_id": req.run_id, "status": "succeeded"},
+            )
+            self.run_registry.update_status(
+                req.run_id, status="succeeded", result=out, finished=True
+            )
         except RunCancelledError:
-            self._publish(req.run_id, "run.cancelled", {"run_id": req.run_id, "status": "cancelled"})
-            self.run_registry.update_status(req.run_id, status="cancelled", finished=True)
+            self._publish(
+                req.run_id,
+                "run.cancelled",
+                {"run_id": req.run_id, "status": "cancelled"},
+            )
+            self.run_registry.update_status(
+                req.run_id, status="cancelled", finished=True
+            )
         except Exception as exc:
             err = {"message": str(exc)}
-            logging.getLogger(__name__).exception("workflow run failed: run_id=%s", req.run_id)
-            self._publish(req.run_id, "run.failed", {"run_id": req.run_id, "status": "failed", "error": err})
-            self.run_registry.update_status(req.run_id, status="failed", error=err, finished=True)
+            logging.getLogger(__name__).exception(
+                "workflow run failed: run_id=%s", req.run_id
+            )
+            self._publish(
+                req.run_id,
+                "run.failed",
+                {"run_id": req.run_id, "status": "failed", "error": err},
+            )
+            self.run_registry.update_status(
+                req.run_id, status="failed", error=err, finished=True
+            )
 
     def _default_runtime_runner(self, req: RuntimeRunRequest) -> dict[str, Any]:
         from graph_knowledge_engine.conversation.resolvers import default_resolver
@@ -332,10 +419,14 @@ class _RunExecutionService(_BaseComponent):
             initial_state=initial_state,
             run_id=req.run_id,
         )
-        final_state = self._json_safe(dict(getattr(run_result, "final_state", {}) or {}))
+        final_state = self._json_safe(
+            dict(getattr(run_result, "final_state", {}) or {})
+        )
         final_state.pop("_deps", None)
         return {
-            "workflow_status": str(getattr(run_result, "status", "succeeded") or "succeeded"),
+            "workflow_status": str(
+                getattr(run_result, "status", "succeeded") or "succeeded"
+            ),
             "final_state": final_state,
         }
 
@@ -354,11 +445,15 @@ class _RunExecutionService(_BaseComponent):
 
         if ready_for_terminal:
             cancelled_nodes = eng.get_nodes(
-                where={"$and": [{"entity_type": "workflow_cancelled"}, {"run_id": run_id}]},
+                where={
+                    "$and": [{"entity_type": "workflow_cancelled"}, {"run_id": run_id}]
+                },
                 limit=1,
             )
             completed_nodes = eng.get_nodes(
-                where={"$and": [{"entity_type": "workflow_completed"}, {"run_id": run_id}]},
+                where={
+                    "$and": [{"entity_type": "workflow_completed"}, {"run_id": run_id}]
+                },
                 limit=1,
             )
 
@@ -394,7 +489,9 @@ class _RunExecutionService(_BaseComponent):
             run["step_count"] = 0
         return run
 
-    def list_run_events(self, run_id: str, *, after_seq: int = 0) -> list[dict[str, Any]]:
+    def list_run_events(
+        self, run_id: str, *, after_seq: int = 0
+    ) -> list[dict[str, Any]]:
         if self.run_registry.get_run(run_id) is None:
             raise KeyError(f"Unknown run_id: {run_id}")
         return self.run_registry.list_events(run_id, after_seq=after_seq)
@@ -414,6 +511,10 @@ class _RunExecutionService(_BaseComponent):
                 reason="api_cancel",
             )
         except Exception:
-            logging.getLogger(__name__).exception("failed to persist cancel request node: run_id=%s", run_id)
-        self._publish(run_id, "run.cancelling", {"run_id": run_id, "status": "cancelling"})
+            logging.getLogger(__name__).exception(
+                "failed to persist cancel request node: run_id=%s", run_id
+            )
+        self._publish(
+            run_id, "run.cancelling", {"run_id": run_id, "status": "cancelling"}
+        )
         return self.run_registry.request_cancel(run_id)

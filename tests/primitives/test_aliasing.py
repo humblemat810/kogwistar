@@ -57,7 +57,12 @@ def test_de_alias_ids_in_result_session_alias(monkeypatch):
     eng.write.add_document(doc)
 
     n1 = Node(label="A", type="entity", summary="a", mentions=[kg_grounding(doc.id)])
-    n2 = Node(label="B", type="entity", summary="b", mentions=[kg_grounding(doc.id, start_char=1, end_char=2, excerpt="x")])
+    n2 = Node(
+        label="B",
+        type="entity",
+        summary="b",
+        mentions=[kg_grounding(doc.id, start_char=1, end_char=2, excerpt="x")],
+    )
     eng.write.add_node(n1, doc_id=doc.id)
     eng.write.add_node(n2, doc_id=doc.id)
 
@@ -105,7 +110,9 @@ def test_de_alias_ids_in_result_session_alias(monkeypatch):
         },
         context={"insertion_method": "pytest-graph_extractor"},
     )
-    parsed = LLMGraphExtraction.FromLLMSlice(parsed, insertion_method="pytest-graph_extractor")
+    parsed = LLMGraphExtraction.FromLLMSlice(
+        parsed, insertion_method="pytest-graph_extractor"
+    )
 
     out = eng._de_alias_ids_in_result(doc.id, parsed)
     assert out.nodes[0].id == n1.id
@@ -133,7 +140,12 @@ def test_add_page_calls_common_ingest_with_auto_adjudicate(monkeypatch):
 
     monkeypatch.setattr(eng, "_ingest_text_with_llm", fake_ingest)
 
-    res = eng.add_page(document_id=doc.id, page_text="Page 1 content", page_number=1, auto_adjudicate=True)
+    res = eng.add_page(
+        document_id=doc.id,
+        page_text="Page 1 content",
+        page_number=1,
+        auto_adjudicate=True,
+    )
     assert res["nodes_added"] == 1
     assert called["kwargs"]["doc_id"] == doc.id
     assert called["kwargs"]["content"] == "Page 1 content"

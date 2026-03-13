@@ -1,4 +1,3 @@
-import json
 import uuid
 
 from graph_knowledge_engine.engine_core.engine import (

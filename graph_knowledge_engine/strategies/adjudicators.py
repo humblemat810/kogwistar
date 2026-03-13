@@ -14,7 +14,6 @@ from .types import EngineLike, IAdjudicator
 from ..engine_core.models import (
     AdjudicationQuestionCode,
     AdjudicationTarget,
-    BatchAdjudications,
     Edge,
     LLMMergeAdjudication,
     Node,
@@ -59,7 +58,9 @@ def _invoke_adjudicate_pair_task(
     )
     verdict_payload = result.verdict_payload
     return {
-        "verdict_payload": dict(verdict_payload) if verdict_payload is not None else None,
+        "verdict_payload": dict(verdict_payload)
+        if verdict_payload is not None
+        else None,
         "raw": _cacheable_raw(result.raw),
         "parsing_error": result.parsing_error,
     }
@@ -83,12 +84,18 @@ class LLMPairAdjudicatorImpl:
         result = self.e.llm_tasks.adjudicate_pair(
             AdjudicatePairTaskRequest(
                 question=question,
-                left=payload_left if isinstance(payload_left, dict) else {"value": payload_left},
-                right=payload_right if isinstance(payload_right, dict) else {"value": payload_right},
+                left=payload_left
+                if isinstance(payload_left, dict)
+                else {"value": payload_left},
+                right=payload_right
+                if isinstance(payload_right, dict)
+                else {"value": payload_right},
             )
         )
         if result.verdict_payload is None:
-            raise ValueError(f"Pair adjudication failed: {result.parsing_error or 'missing verdict payload'}")
+            raise ValueError(
+                f"Pair adjudication failed: {result.parsing_error or 'missing verdict payload'}"
+            )
         return LLMMergeAdjudication.model_validate(result.verdict_payload)
 
 
@@ -100,11 +107,18 @@ class LLMBatchAdjudicatorImpl:
 
     @staticmethod
     def _kind(x: Any) -> str:
-        return getattr(x, "type", None) or getattr(x, "__class__", type("X", (), {})).__name__
+        return (
+            getattr(x, "type", None)
+            or getattr(x, "__class__", type("X", (), {})).__name__
+        )
 
     @staticmethod
     def _id(x: Any) -> str:
-        return getattr(x, "id", None) or getattr(x, "model_dump", lambda: {})().get("id") or ""
+        return (
+            getattr(x, "id", None)
+            or getattr(x, "model_dump", lambda: {})().get("id")
+            or ""
+        )
 
     @staticmethod
     def _compact(x: Any) -> Dict[str, Any]:
@@ -156,11 +170,17 @@ class LLMBatchAdjudicatorImpl:
                 seen.add(t)
                 uniq.append((k, i, x))
 
-        alias_for: Dict[Tuple[str, str], str] = {(k, i): f"n{idx}" for idx, (k, i, _) in enumerate(uniq)}
+        alias_for: Dict[Tuple[str, str], str] = {
+            (k, i): f"n{idx}" for idx, (k, i, _) in enumerate(uniq)
+        }
         inv_alias: Dict[str, Tuple[str, str]] = {v: k for k, v in alias_for.items()}
 
         mapping_table = [
-            {"code": int(code), "key": QUESTION_KEY[code], "description": QUESTION_DESC[code]}
+            {
+                "code": int(code),
+                "key": QUESTION_KEY[code],
+                "description": QUESTION_DESC[code],
+            }
             for code in AdjudicationQuestionCode
         ]
 
@@ -187,7 +207,10 @@ class LLMBatchAdjudicatorImpl:
         result = self.e.llm_tasks.adjudicate_batch(
             AdjudicateBatchTaskRequest(mapping=mapping_table, pairs=pair_payload)
         )
-        out_items = [LLMMergeAdjudication.model_validate(item) for item in result.verdict_payloads]
+        out_items = [
+            LLMMergeAdjudication.model_validate(item)
+            for item in result.verdict_payloads
+        ]
 
         result_items: List[LLMMergeAdjudication] = []
         for item in out_items:
@@ -226,7 +249,10 @@ class Adjudicator(IAdjudicator):
         """
         if (left.kind != right.kind) and question != "node_edge_equivalence":
             raise ValueError("Cross-kind only allowed for 'node_edge_equivalence'")
-        if not self.e.allow_cross_kind_adjudication and question == "node_edge_equivalence":
+        if (
+            not self.e.allow_cross_kind_adjudication
+            and question == "node_edge_equivalence"
+        ):
             raise ValueError("Cross-kind adjudication disabled")
 
         left_payload = _normalize_payload(left.model_dump())
@@ -274,12 +300,24 @@ class Adjudicator(IAdjudicator):
     ) -> Dict[Any, Any] | BaseModel:
         trace = self.adjudicate_pair_trace(left, right, question)
         if trace.adjudication is None:
-            raise ValueError(f"Pair adjudication failed: {trace.parsing_error or 'missing verdict payload'}")
+            raise ValueError(
+                f"Pair adjudication failed: {trace.parsing_error or 'missing verdict payload'}"
+            )
         return trace.adjudication
 
-    def adjudicate_merge(self, left_node: Node | Edge, right_node: Node | Edge) -> Dict[Any, Any] | BaseModel:
-        left = self.e.adjudicate.target_from_node(left_node) if isinstance(left_node, Node) else self.e.adjudicate.target_from_edge(left_node)
-        right = self.e.adjudicate.target_from_node(right_node) if isinstance(right_node, Node) else self.e.adjudicate.target_from_edge(right_node)
+    def adjudicate_merge(
+        self, left_node: Node | Edge, right_node: Node | Edge
+    ) -> Dict[Any, Any] | BaseModel:
+        left = (
+            self.e.adjudicate.target_from_node(left_node)
+            if isinstance(left_node, Node)
+            else self.e.adjudicate.target_from_edge(left_node)
+        )
+        right = (
+            self.e.adjudicate.target_from_node(right_node)
+            if isinstance(right_node, Node)
+            else self.e.adjudicate.target_from_edge(right_node)
+        )
         question = "same_entity" if left.kind == "node" else "same_relation"
         return self.adjudicate_pair(left, right, question=question)
 
@@ -367,20 +405,32 @@ class Adjudicator(IAdjudicator):
         inv_alias = {v: obj for obj, v in alias_map.items()}
 
         mapping_table = [
-            {"code": int(code), "key": QUESTION_KEY[code], "description": QUESTION_DESC[code]}
+            {
+                "code": int(code),
+                "key": QUESTION_KEY[code],
+                "description": QUESTION_DESC[code],
+            }
             for code in AdjudicationQuestionCode
         ]
 
         def _fmt(ctx):
-            meta = f"[doc={ctx['doc_id']} p{ctx.get('start_page')}-{ctx.get('end_page')}]" if ctx.get("doc_id") else ""
+            meta = (
+                f"[doc={ctx['doc_id']} p{ctx.get('start_page')}-{ctx.get('end_page')}]"
+                if ctx.get("doc_id")
+                else ""
+            )
             return f"{meta} ...{(ctx['context'] or ctx['mention'] or '')}..."
 
         adjudication_inputs: list[dict[str, Any]] = []
         for left, right, _ in unknown_pairs:
             l_key = (node_kind(left), str(node_id(left)))
             r_key = (node_kind(right), str(node_id(right)))
-            left_ctxs = self.e.read.extract_reference_contexts(left, window_chars=260, max_contexts=2)
-            right_ctxs = self.e.read.extract_reference_contexts(right, window_chars=260, max_contexts=2)
+            left_ctxs = self.e.read.extract_reference_contexts(
+                left, window_chars=260, max_contexts=2
+            )
+            right_ctxs = self.e.read.extract_reference_contexts(
+                right, window_chars=260, max_contexts=2
+            )
             left_blurbs = "\n".join(_fmt(c) for c in left_ctxs)
             right_blurbs = "\n".join(_fmt(c) for c in right_ctxs)
             adjudication_inputs.append(
@@ -397,17 +447,35 @@ class Adjudicator(IAdjudicator):
         result = self.e.llm_tasks.adjudicate_batch(
             AdjudicateBatchTaskRequest(mapping=mapping_table, pairs=adjudication_inputs)
         )
-        parsed_items = [LLMMergeAdjudication.model_validate(item) for item in result.verdict_payloads]
+        parsed_items = [
+            LLMMergeAdjudication.model_validate(item)
+            for item in result.verdict_payloads
+        ]
 
         fixed_results: list[LLMMergeAdjudication] = []
         for (left, right, key_sig), res in zip(unknown_pairs, parsed_items):
-            left_alias = getattr(res, "left_id", None) or res.model_dump().get("left_id")
-            right_alias = getattr(res, "right_id", None) or res.model_dump().get("right_id")
-            l_kind, l_id = inv_alias.get(left_alias, (node_kind(left), str(node_id(left))))
-            r_kind, r_id = inv_alias.get(right_alias, (node_kind(right), str(node_id(right))))
+            left_alias = getattr(res, "left_id", None) or res.model_dump().get(
+                "left_id"
+            )
+            right_alias = getattr(res, "right_id", None) or res.model_dump().get(
+                "right_id"
+            )
+            l_kind, l_id = inv_alias.get(
+                left_alias, (node_kind(left), str(node_id(left)))
+            )
+            r_kind, r_id = inv_alias.get(
+                right_alias, (node_kind(right), str(node_id(right)))
+            )
 
             if hasattr(res, "model_copy"):
-                res = res.model_copy(update={"left_id": l_id, "right_id": r_id, "left_kind": l_kind, "right_kind": r_kind})
+                res = res.model_copy(
+                    update={
+                        "left_id": l_id,
+                        "right_id": r_id,
+                        "left_kind": l_kind,
+                        "right_kind": r_kind,
+                    }
+                )
             else:
                 setattr(res, "left_id", l_id)
                 setattr(res, "right_id", r_id)

@@ -65,14 +65,32 @@ class EnginePostgresMetaStore:
     # ----------------------------
     def ensure_initialized(self) -> None:
         schema = self.schema
-        gt = f'{schema}."{self.global_table}"' if self.global_table != "global_seq" else f"{schema}.global_seq"
-        ut = f'{schema}."{self.user_table}"' if self.user_table != "user_seq" else f"{schema}.user_seq"
+        gt = (
+            f'{schema}."{self.global_table}"'
+            if self.global_table != "global_seq"
+            else f"{schema}.global_seq"
+        )
+        ut = (
+            f'{schema}."{self.user_table}"'
+            if self.user_table != "user_seq"
+            else f"{schema}.user_seq"
+        )
 
         with self.transaction() as conn:
             conn.execute(sa.text(f"CREATE SCHEMA IF NOT EXISTS {schema}"))
-            conn.execute(sa.text(f"CREATE TABLE IF NOT EXISTS {gt} (value BIGINT NOT NULL)"))
-            conn.execute(sa.text(f"INSERT INTO {gt}(value) SELECT 0 WHERE NOT EXISTS (SELECT 1 FROM {gt})"))
-            conn.execute(sa.text(f"CREATE TABLE IF NOT EXISTS {ut} (user_id TEXT PRIMARY KEY, value BIGINT NOT NULL)"))
+            conn.execute(
+                sa.text(f"CREATE TABLE IF NOT EXISTS {gt} (value BIGINT NOT NULL)")
+            )
+            conn.execute(
+                sa.text(
+                    f"INSERT INTO {gt}(value) SELECT 0 WHERE NOT EXISTS (SELECT 1 FROM {gt})"
+                )
+            )
+            conn.execute(
+                sa.text(
+                    f"CREATE TABLE IF NOT EXISTS {ut} (user_id TEXT PRIMARY KEY, value BIGINT NOT NULL)"
+                )
+            )
 
             ij = (
                 f"{schema}.{self.index_jobs_table}"
@@ -80,7 +98,8 @@ class EnginePostgresMetaStore:
                 else f'{schema}."{self.index_jobs_table}"'
             )
 
-            conn.execute(sa.text(f"""
+            conn.execute(
+                sa.text(f"""
                 CREATE TABLE IF NOT EXISTS {ij} (
                     job_id TEXT PRIMARY KEY,
                     namespace TEXT NOT NULL DEFAULT 'default',
@@ -99,29 +118,64 @@ class EnginePostgresMetaStore:
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 )
-            """))
-            conn.execute(sa.text(f"CREATE INDEX IF NOT EXISTS idx_index_jobs_status_lease ON {ij}(status, lease_until)"))
-            conn.execute(sa.text(f"CREATE INDEX IF NOT EXISTS idx_index_jobs_status_next_run ON {ij}(status, next_run_at)"))
-            conn.execute(sa.text(f"CREATE INDEX IF NOT EXISTS idx_index_jobs_entity ON {ij}(entity_kind, entity_id, index_kind)"))
-            conn.execute(sa.text(f"CREATE INDEX IF NOT EXISTS idx_index_jobs_namespace ON {ij}(namespace)"))
+            """)
+            )
+            conn.execute(
+                sa.text(
+                    f"CREATE INDEX IF NOT EXISTS idx_index_jobs_status_lease ON {ij}(status, lease_until)"
+                )
+            )
+            conn.execute(
+                sa.text(
+                    f"CREATE INDEX IF NOT EXISTS idx_index_jobs_status_next_run ON {ij}(status, next_run_at)"
+                )
+            )
+            conn.execute(
+                sa.text(
+                    f"CREATE INDEX IF NOT EXISTS idx_index_jobs_entity ON {ij}(entity_kind, entity_id, index_kind)"
+                )
+            )
+            conn.execute(
+                sa.text(
+                    f"CREATE INDEX IF NOT EXISTS idx_index_jobs_namespace ON {ij}(namespace)"
+                )
+            )
 
             # Legacy safety: ensure columns exist (no-op on fresh schemas)
-            conn.execute(sa.text(f"ALTER TABLE {ij} ADD COLUMN IF NOT EXISTS namespace TEXT NOT NULL DEFAULT 'default'"))
-            conn.execute(sa.text(f"ALTER TABLE {ij} ADD COLUMN IF NOT EXISTS coalesce_key TEXT NOT NULL DEFAULT ''"))
+            conn.execute(
+                sa.text(
+                    f"ALTER TABLE {ij} ADD COLUMN IF NOT EXISTS namespace TEXT NOT NULL DEFAULT 'default'"
+                )
+            )
+            conn.execute(
+                sa.text(
+                    f"ALTER TABLE {ij} ADD COLUMN IF NOT EXISTS coalesce_key TEXT NOT NULL DEFAULT ''"
+                )
+            )
 
             # Phase 5: scheduling / DLQ controls
-            conn.execute(sa.text(f"ALTER TABLE {ij} ADD COLUMN IF NOT EXISTS next_run_at TIMESTAMPTZ NULL"))
-            conn.execute(sa.text(f"ALTER TABLE {ij} ADD COLUMN IF NOT EXISTS max_retries INTEGER NOT NULL DEFAULT 10"))
-
+            conn.execute(
+                sa.text(
+                    f"ALTER TABLE {ij} ADD COLUMN IF NOT EXISTS next_run_at TIMESTAMPTZ NULL"
+                )
+            )
+            conn.execute(
+                sa.text(
+                    f"ALTER TABLE {ij} ADD COLUMN IF NOT EXISTS max_retries INTEGER NOT NULL DEFAULT 10"
+                )
+            )
 
             # Phase 2: coalescing constraint (namespaced)
-            conn.execute(sa.text(
-                f"CREATE UNIQUE INDEX IF NOT EXISTS uq_index_jobs_pending_ns_ck ON {ij}(namespace, coalesce_key) WHERE status='PENDING'"
-            ))
+            conn.execute(
+                sa.text(
+                    f"CREATE UNIQUE INDEX IF NOT EXISTS uq_index_jobs_pending_ns_ck ON {ij}(namespace, coalesce_key) WHERE status='PENDING'"
+                )
+            )
 
             # Phase 2: applied fingerprints (namespaced)
             ias = f"{schema}.index_applied_state"
-            conn.execute(sa.text(f"""
+            conn.execute(
+                sa.text(f"""
                 CREATE TABLE IF NOT EXISTS {ias} (
                     namespace TEXT NOT NULL DEFAULT 'default',
                     coalesce_key TEXT NOT NULL,
@@ -130,27 +184,36 @@ class EnginePostgresMetaStore:
                     last_job_id TEXT NULL,
                     PRIMARY KEY(namespace, coalesce_key)
                 )
-            """))
-            conn.execute(sa.text(f"CREATE INDEX IF NOT EXISTS idx_index_applied_state_key ON {ias}(coalesce_key)"))
-
+            """)
+            )
+            conn.execute(
+                sa.text(
+                    f"CREATE INDEX IF NOT EXISTS idx_index_applied_state_key ON {ias}(coalesce_key)"
+                )
+            )
 
             # -------------------------------
             # Phase 2b: event log foundation
             # -------------------------------
 
-            conn.execute(sa.text(f"""
+            conn.execute(
+                sa.text(f"""
             CREATE TABLE IF NOT EXISTS {schema}.namespace_seq (
                 namespace TEXT PRIMARY KEY,
                 next_seq  BIGINT NOT NULL
             )
-            """))
-            conn.execute(sa.text(f"""
+            """)
+            )
+            conn.execute(
+                sa.text(f"""
             INSERT INTO {schema}.namespace_seq(namespace, next_seq)
             VALUES ('default', 1)
             ON CONFLICT(namespace) DO NOTHING
-            """))
+            """)
+            )
 
-            conn.execute(sa.text(f"""
+            conn.execute(
+                sa.text(f"""
             CREATE TABLE IF NOT EXISTS {schema}.entity_events (
                 namespace    TEXT NOT NULL DEFAULT 'default',
                 seq          BIGINT NOT NULL,
@@ -163,13 +226,17 @@ class EnginePostgresMetaStore:
                 PRIMARY KEY(namespace, seq),
                 UNIQUE(event_id)
             )
-            """))
-            conn.execute(sa.text(f"""
+            """)
+            )
+            conn.execute(
+                sa.text(f"""
             CREATE INDEX IF NOT EXISTS idx_entity_events_aggregate
             ON {schema}.entity_events(namespace, entity_kind, entity_id, seq)
-            """))
+            """)
+            )
 
-            conn.execute(sa.text(f"""
+            conn.execute(
+                sa.text(f"""
             CREATE TABLE IF NOT EXISTS {schema}.replay_cursors (
                 namespace  TEXT NOT NULL DEFAULT 'default',
                 consumer   TEXT NOT NULL,
@@ -177,9 +244,11 @@ class EnginePostgresMetaStore:
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 PRIMARY KEY(namespace, consumer)
             )
-            """))
+            """)
+            )
 
-            conn.execute(sa.text(f"""
+            conn.execute(
+                sa.text(f"""
             CREATE TABLE IF NOT EXISTS {schema}.workflow_design_projection_head (
                 workflow_id TEXT PRIMARY KEY,
                 current_version BIGINT NOT NULL,
@@ -191,8 +260,10 @@ class EnginePostgresMetaStore:
                 materialization_status TEXT NOT NULL,
                 updated_at_ms BIGINT NOT NULL
             )
-            """))
-            conn.execute(sa.text(f"""
+            """)
+            )
+            conn.execute(
+                sa.text(f"""
             CREATE TABLE IF NOT EXISTS {schema}.workflow_design_projection_versions (
                 workflow_id TEXT NOT NULL,
                 version BIGINT NOT NULL,
@@ -201,8 +272,10 @@ class EnginePostgresMetaStore:
                 created_at_ms BIGINT NOT NULL,
                 PRIMARY KEY(workflow_id, version)
             )
-            """))
-            conn.execute(sa.text(f"""
+            """)
+            )
+            conn.execute(
+                sa.text(f"""
             CREATE TABLE IF NOT EXISTS {schema}.workflow_design_projection_dropped_ranges (
                 workflow_id TEXT NOT NULL,
                 start_seq BIGINT NOT NULL,
@@ -211,8 +284,10 @@ class EnginePostgresMetaStore:
                 end_version BIGINT NOT NULL,
                 PRIMARY KEY(workflow_id, start_seq, end_seq)
             )
-            """))
-            conn.execute(sa.text(f"""
+            """)
+            )
+            conn.execute(
+                sa.text(f"""
             CREATE TABLE IF NOT EXISTS {schema}.workflow_design_snapshots (
                 workflow_id TEXT NOT NULL,
                 version BIGINT NOT NULL,
@@ -222,8 +297,10 @@ class EnginePostgresMetaStore:
                 created_at_ms BIGINT NOT NULL,
                 PRIMARY KEY(workflow_id, version)
             )
-            """))
-            conn.execute(sa.text(f"""
+            """)
+            )
+            conn.execute(
+                sa.text(f"""
             CREATE TABLE IF NOT EXISTS {schema}.workflow_design_version_deltas (
                 workflow_id TEXT NOT NULL,
                 version BIGINT NOT NULL,
@@ -235,8 +312,10 @@ class EnginePostgresMetaStore:
                 created_at_ms BIGINT NOT NULL,
                 PRIMARY KEY(workflow_id, version)
             )
-            """))
-            conn.execute(sa.text(f"""
+            """)
+            )
+            conn.execute(
+                sa.text(f"""
             CREATE TABLE IF NOT EXISTS {schema}.server_runs (
                 run_id TEXT PRIMARY KEY,
                 conversation_id TEXT NOT NULL,
@@ -253,8 +332,10 @@ class EnginePostgresMetaStore:
                 started_at_ms BIGINT NULL,
                 finished_at_ms BIGINT NULL
             )
-            """))
-            conn.execute(sa.text(f"""
+            """)
+            )
+            conn.execute(
+                sa.text(f"""
             CREATE TABLE IF NOT EXISTS {schema}.server_run_events (
                 seq BIGSERIAL PRIMARY KEY,
                 run_id TEXT NOT NULL,
@@ -262,9 +343,18 @@ class EnginePostgresMetaStore:
                 payload_json TEXT NOT NULL,
                 created_at_ms BIGINT NOT NULL
             )
-            """))
-            conn.execute(sa.text(f"CREATE INDEX IF NOT EXISTS idx_server_runs_status ON {schema}.server_runs(status, updated_at_ms)"))
-            conn.execute(sa.text(f"CREATE INDEX IF NOT EXISTS idx_server_run_events_run_seq ON {schema}.server_run_events(run_id, seq)"))
+            """)
+            )
+            conn.execute(
+                sa.text(
+                    f"CREATE INDEX IF NOT EXISTS idx_server_runs_status ON {schema}.server_runs(status, updated_at_ms)"
+                )
+            )
+            conn.execute(
+                sa.text(
+                    f"CREATE INDEX IF NOT EXISTS idx_server_run_events_run_seq ON {schema}.server_run_events(run_id, seq)"
+                )
+            )
 
     # ----------------------------
     # Transaction helpers
@@ -286,10 +376,18 @@ class EnginePostgresMetaStore:
     def next_global_seq(self) -> int:
         with self.transaction() as conn:
             gt = f"{self.schema}.global_seq"
-            row = conn.execute(sa.text(f"UPDATE {gt} SET value = value + 1 RETURNING value")).fetchone()
+            row = conn.execute(
+                sa.text(f"UPDATE {gt} SET value = value + 1 RETURNING value")
+            ).fetchone()
             if not row:
-                conn.execute(sa.text(f"INSERT INTO {gt}(value) SELECT 0 WHERE NOT EXISTS (SELECT 1 FROM {gt})"))
-                row = conn.execute(sa.text(f"UPDATE {gt} SET value = value + 1 RETURNING value")).fetchone()
+                conn.execute(
+                    sa.text(
+                        f"INSERT INTO {gt}(value) SELECT 0 WHERE NOT EXISTS (SELECT 1 FROM {gt})"
+                    )
+                )
+                row = conn.execute(
+                    sa.text(f"UPDATE {gt} SET value = value + 1 RETURNING value")
+                ).fetchone()
             return int(row[0])
 
     def current_global_seq(self) -> int:
@@ -304,21 +402,27 @@ class EnginePostgresMetaStore:
     def next_user_seq(self, user_id: str) -> int:
         with self.transaction() as conn:
             ut = f"{self.schema}.user_seq"
-            row = conn.execute(sa.text(
-                f"""
+            row = conn.execute(
+                sa.text(
+                    f"""
                 INSERT INTO {ut}(user_id, value)
                 VALUES (:user_id, 1)
                 ON CONFLICT(user_id)
                 DO UPDATE SET value = {ut}.value + 1
                 RETURNING value
                 """
-            ), {"user_id": user_id}).fetchone()
+                ),
+                {"user_id": user_id},
+            ).fetchone()
             return int(row[0])
 
     def current_user_seq(self, user_id: str) -> int:
         ut = f"{self.schema}.user_seq"
         with self.transaction() as conn:
-            row = conn.execute(sa.text(f"SELECT value FROM {ut} WHERE user_id = :user_id"), {"user_id": user_id}).fetchone()
+            row = conn.execute(
+                sa.text(f"SELECT value FROM {ut} WHERE user_id = :user_id"),
+                {"user_id": user_id},
+            ).fetchone()
             return int(row[0]) if row else 0
 
     def set_user_seq(self, user_id: str, value: int) -> None:
@@ -326,14 +430,17 @@ class EnginePostgresMetaStore:
             raise ValueError("value must be >= 0")
         ut = f"{self.schema}.user_seq"
         with self.transaction() as conn:
-            conn.execute(sa.text(
-                f"""
+            conn.execute(
+                sa.text(
+                    f"""
                 INSERT INTO {ut}(user_id, value)
                 VALUES (:user_id, :value)
                 ON CONFLICT(user_id)
                 DO UPDATE SET value = EXCLUDED.value
                 """
-            ), {"user_id": user_id, "value": int(value)})
+                ),
+                {"user_id": user_id, "value": int(value)},
+            )
 
     # ----------------------------
     # Index jobs
@@ -383,7 +490,9 @@ class EnginePostgresMetaStore:
             if row:
                 existing_job_id = str(row[0])
                 existing_op = str(row[1] or "")
-                next_op = "DELETE" if (op == "DELETE" or existing_op == "DELETE") else op
+                next_op = (
+                    "DELETE" if (op == "DELETE" or existing_op == "DELETE") else op
+                )
                 conn.execute(
                     sa.text(
                         f"""
@@ -392,7 +501,11 @@ class EnginePostgresMetaStore:
                         WHERE job_id=:job_id
                         """
                     ),
-                    {"op": next_op, "payload_json": payload_json, "job_id": existing_job_id},
+                    {
+                        "op": next_op,
+                        "payload_json": payload_json,
+                        "job_id": existing_job_id,
+                    },
                 )
                 return existing_job_id
 
@@ -423,12 +536,12 @@ class EnginePostgresMetaStore:
             return job_id
 
     def claim_index_jobs(
-            self,
-            *,
-            limit: int = 50,
-            lease_seconds: int = 60,
-            namespace: Optional[str] = "default",
-        ) -> List[IndexJob]:
+        self,
+        *,
+        limit: int = 50,
+        lease_seconds: int = 60,
+        namespace: Optional[str] = "default",
+    ) -> List[IndexJob]:
         """Lease runnable jobs from the Postgres-backed queue.
 
         Eligibility is decided in SQL: pending jobs whose delay has elapsed plus
@@ -469,7 +582,11 @@ class EnginePostgresMetaStore:
                               j.lease_until, j.next_run_at, j.max_retries, j.retry_count, j.last_error, j.payload_json
                     """
                 ),
-                {"limit": int(limit), "lease_seconds": int(lease_seconds), "namespace": namespace},
+                {
+                    "limit": int(limit),
+                    "lease_seconds": int(lease_seconds),
+                    "namespace": namespace,
+                },
             )
             rows = res.mappings().all()
 
@@ -485,12 +602,28 @@ class EnginePostgresMetaStore:
                     coalesce_key=str(r.get("coalesce_key")),
                     op=str(r.get("op")),
                     status=str(r.get("status")),
-                    lease_until=(str(r.get("lease_until")) if r.get("lease_until") is not None else None),
-                    next_run_at=(str(r.get("next_run_at")) if r.get("next_run_at") is not None else None),
+                    lease_until=(
+                        str(r.get("lease_until"))
+                        if r.get("lease_until") is not None
+                        else None
+                    ),
+                    next_run_at=(
+                        str(r.get("next_run_at"))
+                        if r.get("next_run_at") is not None
+                        else None
+                    ),
                     max_retries=int(r.get("max_retries") or 10),
                     retry_count=int(r.get("retry_count") or 0),
-                    last_error=(str(r.get("last_error")) if r.get("last_error") is not None else None),
-                    payload_json=(str(r.get("payload_json")) if r.get("payload_json") is not None else None),
+                    last_error=(
+                        str(r.get("last_error"))
+                        if r.get("last_error") is not None
+                        else None
+                    ),
+                    payload_json=(
+                        str(r.get("payload_json"))
+                        if r.get("payload_json") is not None
+                        else None
+                    ),
                 )
             )
         return out
@@ -499,14 +632,19 @@ class EnginePostgresMetaStore:
         ij = (
             f"{self.schema}.{self.index_jobs_table}"
             if self.index_jobs_table == "index_jobs"
-            else f"{self.schema}.\"{self.index_jobs_table}\""
+            else f'{self.schema}."{self.index_jobs_table}"'
         )
         with self.transaction() as conn:
-            conn.execute(sa.text(
-                f"UPDATE {ij} SET status='DONE', lease_until=NULL, updated_at=NOW() WHERE job_id=:job_id"
-            ), {"job_id": job_id})
+            conn.execute(
+                sa.text(
+                    f"UPDATE {ij} SET status='DONE', lease_until=NULL, updated_at=NOW() WHERE job_id=:job_id"
+                ),
+                {"job_id": job_id},
+            )
 
-    def mark_index_job_failed(self, job_id: str, error: str, *, final: bool = True) -> None:
+    def mark_index_job_failed(
+        self, job_id: str, error: str, *, final: bool = True
+    ) -> None:
         """Mark a job failed.
 
         If final=True, job becomes terminal FAILED (DLQ) and will never be reclaimed.
@@ -532,7 +670,9 @@ class EnginePostgresMetaStore:
                 {"job_id": job_id, "err": (error or "")[:2000], "final": bool(final)},
             )
 
-    def bump_retry_and_requeue(self, job_id: str, error: str, *, next_run_at_seconds: int) -> None:
+    def bump_retry_and_requeue(
+        self, job_id: str, error: str, *, next_run_at_seconds: int
+    ) -> None:
         """Advance retry state after a failed apply attempt.
 
         The row stays in the durable queue: retry_count increments, last_error is
@@ -582,7 +722,7 @@ class EnginePostgresMetaStore:
         ij = (
             f"{self.schema}.{self.index_jobs_table}"
             if self.index_jobs_table == "index_jobs"
-            else f"{self.schema}.\"{self.index_jobs_table}\""
+            else f'{self.schema}."{self.index_jobs_table}"'
         )
         where: List[str] = []
         params: Dict[str, Any] = {"limit": int(limit)}
@@ -626,26 +766,45 @@ class EnginePostgresMetaStore:
                     coalesce_key=str(r.get("coalesce_key")),
                     op=str(r.get("op")),
                     status=str(r.get("status")),
-                    lease_until=(str(r.get("lease_until")) if r.get("lease_until") is not None else None),
-                    next_run_at=(str(r.get("next_run_at")) if r.get("next_run_at") is not None else None),
+                    lease_until=(
+                        str(r.get("lease_until"))
+                        if r.get("lease_until") is not None
+                        else None
+                    ),
+                    next_run_at=(
+                        str(r.get("next_run_at"))
+                        if r.get("next_run_at") is not None
+                        else None
+                    ),
                     max_retries=int(r.get("max_retries") or 10),
                     retry_count=int(r.get("retry_count") or 0),
-                    last_error=(str(r.get("last_error")) if r.get("last_error") is not None else None),
-                    payload_json=(str(r.get("payload_json")) if r.get("payload_json") is not None else None),
+                    last_error=(
+                        str(r.get("last_error"))
+                        if r.get("last_error") is not None
+                        else None
+                    ),
+                    payload_json=(
+                        str(r.get("payload_json"))
+                        if r.get("payload_json") is not None
+                        else None
+                    ),
                 )
             )
         return out
-
 
     # ----------------------------
     # Phase 2: applied fingerprints (derived index status)
     # ----------------------------
 
-    def get_index_applied_fingerprint(self, *, namespace: str = 'default', coalesce_key: str) -> Optional[str]:
+    def get_index_applied_fingerprint(
+        self, *, namespace: str = "default", coalesce_key: str
+    ) -> Optional[str]:
         ias = f"{self.schema}.index_applied_state"
         with self.transaction() as conn:
             row = conn.execute(
-                sa.text(f"SELECT applied_fingerprint FROM {ias} WHERE namespace=:ns AND coalesce_key=:ck"),
+                sa.text(
+                    f"SELECT applied_fingerprint FROM {ias} WHERE namespace=:ns AND coalesce_key=:ck"
+                ),
                 {"ns": namespace, "ck": coalesce_key},
             ).fetchone()
             return str(row[0]) if row and row[0] is not None else None
@@ -653,7 +812,7 @@ class EnginePostgresMetaStore:
     def set_index_applied_fingerprint(
         self,
         *,
-        namespace: str = 'default',
+        namespace: str = "default",
         coalesce_key: str,
         applied_fingerprint: Optional[str],
         last_job_id: Optional[str] = None,
@@ -671,9 +830,13 @@ class EnginePostgresMetaStore:
                                   last_job_id = EXCLUDED.last_job_id
                     """
                 ),
-                {"ns": namespace, "ck": coalesce_key, "fp": applied_fingerprint, "jid": last_job_id},
+                {
+                    "ns": namespace,
+                    "ck": coalesce_key,
+                    "fp": applied_fingerprint,
+                    "jid": last_job_id,
+                },
             )
-
 
     # ------------------------------------------------------------------
     # Phase 2b: event log foundation
@@ -695,11 +858,12 @@ class EnginePostgresMetaStore:
                 return int(row[0])
 
             conn.execute(
-                sa.text(f"INSERT INTO {schema}.namespace_seq(namespace, next_seq) VALUES (:ns, 2)"),
+                sa.text(
+                    f"INSERT INTO {schema}.namespace_seq(namespace, next_seq) VALUES (:ns, 2)"
+                ),
                 {"ns": namespace},
             )
             return 1
-
 
     def append_entity_event(
         self,
@@ -733,7 +897,6 @@ class EnginePostgresMetaStore:
             )
         return seq
 
-
     def iter_entity_events(
         self,
         *,
@@ -765,7 +928,9 @@ class EnginePostgresMetaStore:
                 )
             yield from rows
 
-    def prune_entity_events_after(self, *, namespace: str = "default", to_seq: int) -> int:
+    def prune_entity_events_after(
+        self, *, namespace: str = "default", to_seq: int
+    ) -> int:
         schema = self.schema
         with self.transaction() as conn:
             res = conn.execute(
@@ -779,7 +944,6 @@ class EnginePostgresMetaStore:
             )
             return int(res.rowcount or 0)
 
-
     def cursor_get(self, *, namespace: str, consumer: str) -> int:
         schema = self.schema
         with self.transaction() as conn:
@@ -791,7 +955,6 @@ class EnginePostgresMetaStore:
                 {"ns": namespace, "c": consumer},
             ).fetchone()
         return int(row[0]) if row else 0
-
 
     def cursor_set(self, *, namespace: str, consumer: str, last_seq: int) -> None:
         schema = self.schema
@@ -810,12 +973,16 @@ class EnginePostgresMetaStore:
         schema = self.schema
         with self.transaction() as conn:
             row = conn.execute(
-                sa.text(f"SELECT COALESCE(MAX(seq), 0) FROM {schema}.entity_events WHERE namespace = :ns"),
+                sa.text(
+                    f"SELECT COALESCE(MAX(seq), 0) FROM {schema}.entity_events WHERE namespace = :ns"
+                ),
                 {"ns": namespace},
             ).fetchone()
         return int(row[0]) if row else 0
 
-    def get_workflow_design_projection(self, *, workflow_id: str) -> Optional[dict[str, Any]]:
+    def get_workflow_design_projection(
+        self, *, workflow_id: str
+    ) -> Optional[dict[str, Any]]:
         schema = self.schema
         with self.transaction() as conn:
             head = conn.execute(
@@ -897,11 +1064,15 @@ class EnginePostgresMetaStore:
         updated_at_ms = int(head.get("updated_at_ms") or 0)
         with self.transaction() as conn:
             conn.execute(
-                sa.text(f"DELETE FROM {schema}.workflow_design_projection_versions WHERE workflow_id = :workflow_id"),
+                sa.text(
+                    f"DELETE FROM {schema}.workflow_design_projection_versions WHERE workflow_id = :workflow_id"
+                ),
                 {"workflow_id": workflow_id},
             )
             conn.execute(
-                sa.text(f"DELETE FROM {schema}.workflow_design_projection_dropped_ranges WHERE workflow_id = :workflow_id"),
+                sa.text(
+                    f"DELETE FROM {schema}.workflow_design_projection_dropped_ranges WHERE workflow_id = :workflow_id"
+                ),
                 {"workflow_id": workflow_id},
             )
             conn.execute(
@@ -933,11 +1104,21 @@ class EnginePostgresMetaStore:
                     "workflow_id": workflow_id,
                     "current_version": int(head.get("current_version") or 0),
                     "active_tip_version": int(head.get("active_tip_version") or 0),
-                    "last_authoritative_seq": int(head.get("last_authoritative_seq") or 0),
-                    "last_materialized_seq": int(head.get("last_materialized_seq") or 0),
-                    "projection_schema_version": int(head.get("projection_schema_version") or 1),
-                    "snapshot_schema_version": int(head.get("snapshot_schema_version") or 1),
-                    "materialization_status": str(head.get("materialization_status") or "ready"),
+                    "last_authoritative_seq": int(
+                        head.get("last_authoritative_seq") or 0
+                    ),
+                    "last_materialized_seq": int(
+                        head.get("last_materialized_seq") or 0
+                    ),
+                    "projection_schema_version": int(
+                        head.get("projection_schema_version") or 1
+                    ),
+                    "snapshot_schema_version": int(
+                        head.get("snapshot_schema_version") or 1
+                    ),
+                    "materialization_status": str(
+                        head.get("materialization_status") or "ready"
+                    ),
                     "updated_at_ms": updated_at_ms,
                 },
             )
@@ -984,15 +1165,21 @@ class EnginePostgresMetaStore:
         schema = self.schema
         with self.transaction() as conn:
             conn.execute(
-                sa.text(f"DELETE FROM {schema}.workflow_design_projection_versions WHERE workflow_id = :workflow_id"),
+                sa.text(
+                    f"DELETE FROM {schema}.workflow_design_projection_versions WHERE workflow_id = :workflow_id"
+                ),
                 {"workflow_id": workflow_id},
             )
             conn.execute(
-                sa.text(f"DELETE FROM {schema}.workflow_design_projection_dropped_ranges WHERE workflow_id = :workflow_id"),
+                sa.text(
+                    f"DELETE FROM {schema}.workflow_design_projection_dropped_ranges WHERE workflow_id = :workflow_id"
+                ),
                 {"workflow_id": workflow_id},
             )
             conn.execute(
-                sa.text(f"DELETE FROM {schema}.workflow_design_projection_head WHERE workflow_id = :workflow_id"),
+                sa.text(
+                    f"DELETE FROM {schema}.workflow_design_projection_head WHERE workflow_id = :workflow_id"
+                ),
                 {"workflow_id": workflow_id},
             )
 
@@ -1075,7 +1262,9 @@ class EnginePostgresMetaStore:
         schema = self.schema
         with self.transaction() as conn:
             conn.execute(
-                sa.text(f"DELETE FROM {schema}.workflow_design_snapshots WHERE workflow_id = :workflow_id"),
+                sa.text(
+                    f"DELETE FROM {schema}.workflow_design_snapshots WHERE workflow_id = :workflow_id"
+                ),
                 {"workflow_id": workflow_id},
             )
 
@@ -1167,7 +1356,9 @@ class EnginePostgresMetaStore:
         schema = self.schema
         with self.transaction() as conn:
             conn.execute(
-                sa.text(f"DELETE FROM {schema}.workflow_design_version_deltas WHERE workflow_id = :workflow_id"),
+                sa.text(
+                    f"DELETE FROM {schema}.workflow_design_version_deltas WHERE workflow_id = :workflow_id"
+                ),
                 {"workflow_id": workflow_id},
             )
 
@@ -1254,7 +1445,9 @@ class EnginePostgresMetaStore:
             "terminal": status in {"succeeded", "failed", "cancelled"},
         }
 
-    def list_server_run_events(self, run_id: str, *, after_seq: int = 0, limit: int = 500) -> list[dict[str, Any]]:
+    def list_server_run_events(
+        self, run_id: str, *, after_seq: int = 0, limit: int = 500
+    ) -> list[dict[str, Any]]:
         schema = self.schema
         with self.transaction() as conn:
             rows = conn.execute(
@@ -1280,7 +1473,9 @@ class EnginePostgresMetaStore:
             for row in rows
         ]
 
-    def append_server_run_event(self, run_id: str, event_type: str, payload_json: str) -> dict[str, Any]:
+    def append_server_run_event(
+        self, run_id: str, event_type: str, payload_json: str
+    ) -> dict[str, Any]:
         schema = self.schema
         now_ms = int(time.time() * 1000)
         with self.transaction() as conn:
@@ -1346,7 +1541,11 @@ class EnginePostgresMetaStore:
                     "error_json": error_json,
                     "started_at_ms": started_at_ms,
                     "finished_at_ms": finished_at_ms,
-                    "cancel_requested": (None if cancel_requested is None else int(bool(cancel_requested))),
+                    "cancel_requested": (
+                        None
+                        if cancel_requested is None
+                        else int(bool(cancel_requested))
+                    ),
                     "updated_at_ms": now_ms,
                 },
             )

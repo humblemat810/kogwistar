@@ -27,9 +27,18 @@ def test_where_jsonb_typed_roundtrip(sa_engine, pg_schema):
         conn.execute(
             sa.insert(t),
             [
-                {"id": "A", "metadata": {"turn_index": 0, "in_conversation_chain": True}},
-                {"id": "B", "metadata": {"turn_index": 1, "in_conversation_chain": True}},
-                {"id": "C", "metadata": {"turn_index": 2, "in_conversation_chain": False}},
+                {
+                    "id": "A",
+                    "metadata": {"turn_index": 0, "in_conversation_chain": True},
+                },
+                {
+                    "id": "B",
+                    "metadata": {"turn_index": 1, "in_conversation_chain": True},
+                },
+                {
+                    "id": "C",
+                    "metadata": {"turn_index": 2, "in_conversation_chain": False},
+                },
             ],
         )
 

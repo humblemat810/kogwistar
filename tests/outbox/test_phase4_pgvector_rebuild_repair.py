@@ -10,10 +10,12 @@ from tests.conftest import FakeEmbeddingFunction
 EMBEDDING_DIM = 3
 TEST_EMBEDDING = FakeEmbeddingFunction(dim=EMBEDDING_DIM)
 
+
 def _mk_span(doc_id: str) -> Span:
     sp = Span.from_dummy_for_document()
     sp.doc_id = doc_id
     return sp
+
 
 def _mk_node(node_id: str, *, doc_id: str) -> Node:
     return Node(
@@ -30,6 +32,7 @@ def _mk_node(node_id: str, *, doc_id: str) -> Node:
         canonical_entity_id=None,
         properties=None,
     )
+
 
 def _mk_edge(edge_id: str, src: str, tgt: str, doc_id: str) -> Edge:
     return Edge(
@@ -51,16 +54,22 @@ def _mk_edge(edge_id: str, src: str, tgt: str, doc_id: str) -> Edge:
         properties=None,
     )
 
+
 @pytest.fixture()
 def pg_engine(sa_engine, pg_schema) -> GraphKnowledgeEngine:
     pytest.importorskip("pgvector")
-    backend = PgVectorBackend(engine=sa_engine, embedding_dim=EMBEDDING_DIM, schema=pg_schema)
+    backend = PgVectorBackend(
+        engine=sa_engine, embedding_dim=EMBEDDING_DIM, schema=pg_schema
+    )
     eng = GraphKnowledgeEngine(backend=backend, embedding_function=TEST_EMBEDDING)
     backend.ensure_schema()
     return eng
 
+
 @pytest.mark.integration
-def test_pgvector_normal_replay_overwrites_tampered_rows(pg_engine, sa_engine, pg_schema):
+def test_pgvector_normal_replay_overwrites_tampered_rows(
+    pg_engine, sa_engine, pg_schema
+):
     eng = pg_engine
     ns = getattr(eng, "namespace", "default")
 
@@ -77,7 +86,9 @@ def test_pgvector_normal_replay_overwrites_tampered_rows(pg_engine, sa_engine, p
     schema = pg_schema
     with sa_engine.begin() as conn:
         conn.execute(
-            sa.text(f'UPDATE "{schema}".gke_nodes SET metadata = CAST(:m AS JSONB) WHERE id = :id'),
+            sa.text(
+                f'UPDATE "{schema}".gke_nodes SET metadata = CAST(:m AS JSONB) WHERE id = :id'
+            ),
             {"m": json.dumps({"tampered": True}), "id": "n1"},
         )
 
@@ -86,7 +97,9 @@ def test_pgvector_normal_replay_overwrites_tampered_rows(pg_engine, sa_engine, p
     assert got0["metadatas"][0].get("tampered") is True
 
     # Normal replay should restore correct payload (pgvector uses upsert semantics)
-    last_seq = eng.replay_namespace(namespace=ns, apply_indexes=False, repair_backend=False)
+    last_seq = eng.replay_namespace(
+        namespace=ns, apply_indexes=False, repair_backend=False
+    )
     assert last_seq >= 3
 
     got1 = eng.backend.node_get(ids=["n1"], include=["metadatas"])
@@ -98,8 +111,11 @@ def test_pgvector_normal_replay_overwrites_tampered_rows(pg_engine, sa_engine, p
     events_after = list(eng.meta_sqlite.iter_entity_events(namespace=ns, from_seq=1))
     assert len(events_after) == len(events_before)
 
+
 @pytest.mark.integration
-def test_pgvector_rebuild_from_event_log_after_truncate(pg_engine, sa_engine, pg_schema):
+def test_pgvector_rebuild_from_event_log_after_truncate(
+    pg_engine, sa_engine, pg_schema
+):
     eng = pg_engine
     ns = getattr(eng, "namespace", "default")
 
@@ -123,10 +139,16 @@ def test_pgvector_rebuild_from_event_log_after_truncate(pg_engine, sa_engine, pg
         conn.execute(sa.text(f'TRUNCATE TABLE "{schema}".gke_nodes'))
 
     # Verify projection empty now
-    assert eng.backend.node_get(ids=["n1"], include=["documents"]).get("ids") in ([], None) or len(eng.backend.node_get(ids=["n1"], include=["documents"]).get("ids", [])) == 0
+    assert (
+        eng.backend.node_get(ids=["n1"], include=["documents"]).get("ids") in ([], None)
+        or len(eng.backend.node_get(ids=["n1"], include=["documents"]).get("ids", []))
+        == 0
+    )
 
     # Replay should rebuild missing rows
-    last_seq = eng.replay_namespace(namespace=ns, apply_indexes=True, repair_backend=False)
+    last_seq = eng.replay_namespace(
+        namespace=ns, apply_indexes=True, repair_backend=False
+    )
     assert last_seq >= 3
 
     after_nodes = {n.safe_get_id() for n in eng.get_nodes()}

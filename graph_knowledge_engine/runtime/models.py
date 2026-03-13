@@ -19,6 +19,7 @@ class WorkflowNodeMetadata(BaseModel):
       - wf_start: marks the start node in this workflow_id
       - wf_terminal: marks terminal node
     """
+
     entity_type: str = Field("workflow_node", description='Must be "workflow_node"')
     workflow_id: str
     wf_op: str = "noop"
@@ -34,7 +35,9 @@ class WorkflowNodeMetadata(BaseModel):
     def _validate(self) -> "WorkflowNodeMetadata":
         if self.entity_type != "workflow_node":
             raise ValueError("WorkflowNodeMetadata.entity_type must be 'workflow_node'")
-        if not self.wf_terminal and (self.wf_op is None or str(self.wf_op).strip() == ""):
+        if not self.wf_terminal and (
+            self.wf_op is None or str(self.wf_op).strip() == ""
+        ):
             raise ValueError("wf_op is required unless wf_terminal=True")
         return self
 
@@ -51,11 +54,14 @@ class WorkflowEdgeMetadata(BaseModel):
       - wf_is_default: used if no predicate matches
       - wf_multiplicity: "one"|"many"  (allows fanout)
     """
+
     entity_type: str = Field("workflow_edge", description='Must be "workflow_edge"')
     workflow_id: str
-    wf_predicate: None | str = None  # llm explanation: wf_predicate: “This path is meant for a specific condition.”
+    wf_predicate: None | str = (
+        None  # llm explanation: wf_predicate: “This path is meant for a specific condition.”
+    )
     wf_priority: int = 100
-    wf_is_default: bool = False         # llm explanation: wf_is_default = what to do if the decision returns nothing
+    wf_is_default: bool = False  # llm explanation: wf_is_default = what to do if the decision returns nothing
     wf_multiplicity: Literal["one", "many"] = "one"
 
     model_config = ConfigDict(extra="allow")
@@ -76,26 +82,31 @@ class WorkflowNode(Node):
     Workflow steps are stored as nodes in the graph. This allows the workflow definition
     itself to be managed, queried, and verified using the same engine as the knowledge data.
     """
+
     metadata: dict
     id_kind: ClassVar[str] = "workflow.node"
+
     @field_validator("metadata")
     def check_metadataWFN(cls, v):
-        v2= WorkflowNodeMetadata.model_validate(v).model_dump()
+        v2 = WorkflowNodeMetadata.model_validate(v).model_dump()
         v.update(v2)
         return v
 
     @property
     def op(self):
-        return self.metadata.get('wf_op') or "noop"
+        return self.metadata.get("wf_op") or "noop"
+
     @property
     def terminal(self):
-        return self.metadata.get('wf_terminal') or False
+        return self.metadata.get("wf_terminal") or False
+
     @property
     def start(self):
-        return self.metadata.get('wf_start') or False
+        return self.metadata.get("wf_start") or False
+
     @property
     def fanout(self):
-        return self.metadata.get('wf_fanout') or False
+        return self.metadata.get("wf_fanout") or False
 
 
 class WorkflowEdge(Edge):
@@ -105,30 +116,36 @@ class WorkflowEdge(Edge):
     Represents transitions between workflow steps (nodes). Includes metadata for
     predicates, priority, and branching logic.
     """
+
     metadata: dict
     id_kind: ClassVar[str] = "workflow.edge"
+
     @field_validator("metadata")
     def check_workflow_edge_metadata(cls, v):
         v = WorkflowEdgeMetadata.model_validate(v).model_dump()
         return v
+
     @property
     def predicate(self):
-        return self.metadata.get('wf_predicate')
+        return self.metadata.get("wf_predicate")
+
     @property
     def multiplicity(self):
-        return self.metadata.get('wf_multiplicity')
+        return self.metadata.get("wf_multiplicity")
+
     @property
     def is_default(self):
-        return self.metadata.get('wf_is_default')
+        return self.metadata.get("wf_is_default")
+
     @property
     def priority(self):
-        return int(self.metadata.get('wf_priority'))
+        return int(self.metadata.get("wf_priority"))
 
 
 # class PrevTurnMetaSummaryDict(TypedDict):
-    # prev_node_char_distance_from_last_summary: int
-    # prev_node_distance_from_last_summary: int
-    # tail_turn_index: int
+# prev_node_char_distance_from_last_summary: int
+# prev_node_distance_from_last_summary: int
+# tail_turn_index: int
 
 
 # class SummaryStateDict(TypedDict):
@@ -158,15 +175,16 @@ class WorkflowState(TypedDict):
     _deps: dict[str, Any]
     _rt_join: dict[str, Any]
 
-StateAppendUpdate = tuple[Literal['u'], Any]
-StateOverwriteUpdate = tuple[Literal['a'], Any]
 
-StateUpdate = Union[StateAppendUpdate , StateOverwriteUpdate]
+StateAppendUpdate = tuple[Literal["u"], Any]
+StateOverwriteUpdate = tuple[Literal["a"], Any]
+
+StateUpdate = Union[StateAppendUpdate, StateOverwriteUpdate]
 
 
 class RunFailure(BaseModel):
     conversation_node_id: Optional[str]
-    state_update: list[StateUpdate] # can still update, append an error message
+    state_update: list[StateUpdate]  # can still update, append an error message
     update: dict[str, Any] | None = None
     errors: list[str]
     next_step_names: list[str] = []  # empty will by default fan out all
@@ -192,8 +210,10 @@ class RunSuspended(BaseModel):
 
 
 class RunSuccess(BaseModel):
-    conversation_node_id: str|None  # node id of the 'entry point' of the node cluster created in a resolver step, 
-    #step can create multiple node edges but at least should expose a node to connect to the main node net
+    conversation_node_id: (
+        str | None
+    )  # node id of the 'entry point' of the node cluster created in a resolver step,
+    # step can create multiple node edges but at least should expose a node to connect to the main node net
     state_update: list[StateUpdate]
     # Optional native update dict (schema-driven). This does NOT replace state_update.
     # When present, WorkflowRuntime.run() applies it using state_schema and then
@@ -201,6 +221,7 @@ class RunSuccess(BaseModel):
     update: dict[str, Any] | None = None
     next_step_names: list[str] = []  # empty will by default fan out all
     status: Literal["success"] = "success"
+
 
 StepRunResult: TypeAlias = RunSuccess | RunFailure | RunSuspended
 
@@ -224,7 +245,9 @@ class WorkflowRunMetadata(BaseModel):
 
 
 class WorkflowStepExecMetadata(BaseModel):
-    entity_type: str = Field("workflow_step_exec", description='Must be "workflow_step_exec"')
+    entity_type: str = Field(
+        "workflow_step_exec", description='Must be "workflow_step_exec"'
+    )
     run_id: str
     workflow_id: str
     workflow_node_id: str
@@ -239,14 +262,18 @@ class WorkflowStepExecMetadata(BaseModel):
     @model_validator(mode="after")
     def _validate(self) -> "WorkflowStepExecMetadata":
         if self.entity_type != "workflow_step_exec":
-            raise ValueError("WorkflowStepExecMetadata.entity_type must be 'workflow_step_exec'")
+            raise ValueError(
+                "WorkflowStepExecMetadata.entity_type must be 'workflow_step_exec'"
+            )
         if self.step_seq < 0:
             raise ValueError("step_seq must be >= 0")
         return self
 
 
 class WorkflowCheckpointMetadata(BaseModel):
-    entity_type: str = Field("workflow_checkpoint", description='Must be "workflow_checkpoint"')
+    entity_type: str = Field(
+        "workflow_checkpoint", description='Must be "workflow_checkpoint"'
+    )
     run_id: str
     workflow_id: str
     step_seq: int
@@ -257,14 +284,18 @@ class WorkflowCheckpointMetadata(BaseModel):
     @model_validator(mode="after")
     def _validate(self) -> "WorkflowCheckpointMetadata":
         if self.entity_type != "workflow_checkpoint":
-            raise ValueError("WorkflowCheckpointMetadata.entity_type must be 'workflow_checkpoint'")
+            raise ValueError(
+                "WorkflowCheckpointMetadata.entity_type must be 'workflow_checkpoint'"
+            )
         if self.step_seq < 0:
             raise ValueError("step_seq must be >= 0")
         return self
 
 
 class WorkflowCompletedMetadata(BaseModel):
-    entity_type: str = Field("workflow_completed", description='Must be "workflow_completed"')
+    entity_type: str = Field(
+        "workflow_completed", description='Must be "workflow_completed"'
+    )
     workflow_id: str
     run_id: str
     conversation_id: str
@@ -275,12 +306,16 @@ class WorkflowCompletedMetadata(BaseModel):
     @model_validator(mode="after")
     def _validate(self) -> "WorkflowCompletedMetadata":
         if self.entity_type != "workflow_completed":
-            raise ValueError("WorkflowCompletedMetadata.entity_type must be 'workflow_completed'")
+            raise ValueError(
+                "WorkflowCompletedMetadata.entity_type must be 'workflow_completed'"
+            )
         return self
 
 
 class WorkflowCancelledMetadata(BaseModel):
-    entity_type: str = Field("workflow_cancelled", description='Must be "workflow_cancelled"')
+    entity_type: str = Field(
+        "workflow_cancelled", description='Must be "workflow_cancelled"'
+    )
     workflow_id: str
     run_id: str
     conversation_id: str
@@ -291,7 +326,9 @@ class WorkflowCancelledMetadata(BaseModel):
     @model_validator(mode="after")
     def _validate(self) -> "WorkflowCancelledMetadata":
         if self.entity_type != "workflow_cancelled":
-            raise ValueError("WorkflowCancelledMetadata.entity_type must be 'workflow_cancelled'")
+            raise ValueError(
+                "WorkflowCancelledMetadata.entity_type must be 'workflow_cancelled'"
+            )
         return self
 
 

@@ -104,7 +104,11 @@ def test_learning_path_has_audience_bands_and_order():
     assert "Beginner / evaluator" in content
     assert "Builder / integrator" in content
     assert "Advanced / contributor" in content
-    assert content.index("01 Hello Graph Engine") < content.index("07 Branch Join Workflows") < content.index("15 Historical Search With Tombstone and Redirect")
+    assert (
+        content.index("01 Hello Graph Engine")
+        < content.index("07 Branch Join Workflows")
+        < content.index("15 Historical Search With Tombstone and Redirect")
+    )
 
 
 def test_numbered_docs_follow_required_template():
@@ -157,9 +161,15 @@ def test_relative_links_in_learning_docs_resolve():
 
 
 def test_tutorial_commands_reference_existing_scripts():
-    texts = [_read(README), *(_read(path) for path in LEGACY_LEVEL_DOCS), *(_read(path) for path in NUMBERED_DOCS)]
+    texts = [
+        _read(README),
+        *(_read(path) for path in LEGACY_LEVEL_DOCS),
+        *(_read(path) for path in NUMBERED_DOCS),
+    ]
     combined = "\n".join(texts)
-    scripts = sorted(set(re.findall(r"python\s+(scripts/[A-Za-z0-9_./-]+\.py)", combined)))
+    scripts = sorted(
+        set(re.findall(r"python\s+(scripts/[A-Za-z0-9_./-]+\.py)", combined))
+    )
     assert scripts, "No script commands found in tutorial docs."
     for rel in scripts:
         script_path = ROOT / rel

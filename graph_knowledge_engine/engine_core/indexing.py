@@ -4,7 +4,7 @@ import hashlib
 import json
 import uuid
 from dataclasses import dataclass
-from typing import Any, Optional, TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
 
 from .models import Node, Edge, Span, Grounding
 
@@ -46,6 +46,7 @@ class IndexingSubsystem:
     - allow focused tests
     - reduce "god object" feel in engine.py
     """
+
     engine: "GraphKnowledgeEngine"
 
     _PHASE1_JOIN_INDEX_KINDS = ("node_docs", "node_refs", "edge_refs", "edge_endpoints")
@@ -81,11 +82,15 @@ class IndexingSubsystem:
 
     def enqueue_index_jobs_for_node(self, node_id: str, *, op: str) -> None:
         for idx in ("node_docs", "node_refs"):
-            self.enqueue_index_job(entity_kind="node", entity_id=node_id, index_kind=idx, op=op)
+            self.enqueue_index_job(
+                entity_kind="node", entity_id=node_id, index_kind=idx, op=op
+            )
 
     def enqueue_index_jobs_for_edge(self, edge_id: str, *, op: str) -> None:
         for idx in ("edge_refs", "edge_endpoints"):
-            self.enqueue_index_job(entity_kind="edge", entity_id=edge_id, index_kind=idx, op=op)
+            self.enqueue_index_job(
+                entity_kind="edge", entity_id=edge_id, index_kind=idx, op=op
+            )
 
     def reconcile_indexes(
         self,
@@ -114,14 +119,32 @@ class IndexingSubsystem:
         applied = 0
         for job in jobs:
             # EngineSQLite returns IndexJobRow; PG meta might return dict.
-            job_id = getattr(job, "job_id", None) or (job.get("job_id") if isinstance(job, dict) else None)
-            entity_kind = getattr(job, "entity_kind", None) or (job.get("entity_kind") if isinstance(job, dict) else None)
-            entity_id = getattr(job, "entity_id", None) or (job.get("entity_id") if isinstance(job, dict) else None)
-            index_kind = getattr(job, "index_kind", None) or (job.get("index_kind") if isinstance(job, dict) else None)
-            op = getattr(job, "op", None) or (job.get("op") if isinstance(job, dict) else None)
+            job_id = getattr(job, "job_id", None) or (
+                job.get("job_id") if isinstance(job, dict) else None
+            )
+            entity_kind = getattr(job, "entity_kind", None) or (
+                job.get("entity_kind") if isinstance(job, dict) else None
+            )
+            entity_id = getattr(job, "entity_id", None) or (
+                job.get("entity_id") if isinstance(job, dict) else None
+            )
+            index_kind = getattr(job, "index_kind", None) or (
+                job.get("index_kind") if isinstance(job, dict) else None
+            )
+            op = getattr(job, "op", None) or (
+                job.get("op") if isinstance(job, dict) else None
+            )
 
-            retry_count = getattr(job, "retry_count", None) if not isinstance(job, dict) else job.get("retry_count")
-            max_retries = getattr(job, "max_retries", None) if not isinstance(job, dict) else job.get("max_retries")
+            retry_count = (
+                getattr(job, "retry_count", None)
+                if not isinstance(job, dict)
+                else job.get("retry_count")
+            )
+            max_retries = (
+                getattr(job, "max_retries", None)
+                if not isinstance(job, dict)
+                else job.get("max_retries")
+            )
             try_rc = int(retry_count or 0)
             try_mr = int(max_retries or 10)
 
@@ -137,7 +160,9 @@ class IndexingSubsystem:
             except Exception as e:
                 err = f"{type(e).__name__}: {e}"
                 bump = getattr(self.engine.meta_sqlite, "bump_retry_and_requeue", None)
-                mark_failed = getattr(self.engine.meta_sqlite, "mark_index_job_failed", None)
+                mark_failed = getattr(
+                    self.engine.meta_sqlite, "mark_index_job_failed", None
+                )
 
                 if job_id:
                     next_retry = try_rc + 1
@@ -200,15 +225,24 @@ class IndexingSubsystem:
 
         # Phase 2: fingerprints + drift detection
         coalesce_key = f"{entity_kind}:{entity_id}:{index_kind}"
-        get_applied = getattr(self.engine.meta_sqlite, "get_index_applied_fingerprint", None)
-        set_applied = getattr(self.engine.meta_sqlite, "set_index_applied_fingerprint", None)
+        get_applied = getattr(
+            self.engine.meta_sqlite, "get_index_applied_fingerprint", None
+        )
+        set_applied = getattr(
+            self.engine.meta_sqlite, "set_index_applied_fingerprint", None
+        )
 
         def _fp(obj: object) -> str:
-            blob = json.dumps(obj, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            blob = json.dumps(obj, sort_keys=True, separators=(",", ":")).encode(
+                "utf-8"
+            )
             return hashlib.blake2b(blob, digest_size=16).hexdigest()
 
         def _stable_sort_dicts(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-            return sorted(rows, key=lambda row: json.dumps(row, sort_keys=True, separators=(",", ":")))
+            return sorted(
+                rows,
+                key=lambda row: json.dumps(row, sort_keys=True, separators=(",", ":")),
+            )
 
         def _as_dict(meta: Any) -> dict[str, Any]:
             return meta if isinstance(meta, dict) else {}
@@ -219,7 +253,9 @@ class IndexingSubsystem:
         def _actual_payload() -> list[Any]:
             if entity_kind == "node":
                 if index_kind == "node_docs":
-                    got = self.engine.backend.node_docs_get(where={"node_id": entity_id}, include=["metadatas"])
+                    got = self.engine.backend.node_docs_get(
+                        where={"node_id": entity_id}, include=["metadatas"]
+                    )
                     doc_ids = [
                         str(md.get("doc_id"))
                         for md in (got.get("metadatas") or [])
@@ -227,9 +263,11 @@ class IndexingSubsystem:
                     ]
                     return sorted(doc_ids)
                 if index_kind == "node_refs":
-                    got = self.engine.backend.node_refs_get(where={"node_id": entity_id}, include=["metadatas"])
+                    got = self.engine.backend.node_refs_get(
+                        where={"node_id": entity_id}, include=["metadatas"]
+                    )
                     payload = []
-                    for md in (got.get("metadatas") or []):
+                    for md in got.get("metadatas") or []:
                         meta = _as_dict(md)
                         payload.append(
                             {
@@ -246,9 +284,11 @@ class IndexingSubsystem:
                     return _stable_sort_dicts(payload)
             elif entity_kind == "edge":
                 if index_kind == "edge_refs":
-                    got = self.engine.backend.edge_refs_get(where={"edge_id": entity_id}, include=["metadatas"])
+                    got = self.engine.backend.edge_refs_get(
+                        where={"edge_id": entity_id}, include=["metadatas"]
+                    )
                     payload = []
-                    for md in (got.get("metadatas") or []):
+                    for md in got.get("metadatas") or []:
                         meta = _as_dict(md)
                         payload.append(
                             {
@@ -264,21 +304,23 @@ class IndexingSubsystem:
                         )
                     return _stable_sort_dicts(payload)
                 if index_kind == "edge_endpoints":
-                    got = self.engine.backend.edge_endpoints_get(where={"edge_id": entity_id}, include=["metadatas"])
+                    got = self.engine.backend.edge_endpoints_get(
+                        where={"edge_id": entity_id}, include=["metadatas"]
+                    )
                     payload = []
-                    for md in (got.get("metadatas") or []):
+                    for md in got.get("metadatas") or []:
                         meta = _as_dict(md)
                         payload.append(
                             _drop_none_values(
                                 {
-                                "id": meta.get("id"),
-                                "edge_id": meta.get("edge_id"),
-                                "endpoint_id": meta.get("endpoint_id"),
-                                "endpoint_type": meta.get("endpoint_type"),
-                                "role": meta.get("role"),
-                                "causal_type": meta.get("causal_type"),
-                                "relation": meta.get("relation"),
-                                "doc_id": meta.get("doc_id"),
+                                    "id": meta.get("id"),
+                                    "edge_id": meta.get("edge_id"),
+                                    "endpoint_id": meta.get("endpoint_id"),
+                                    "endpoint_type": meta.get("endpoint_type"),
+                                    "role": meta.get("role"),
+                                    "causal_type": meta.get("causal_type"),
+                                    "relation": meta.get("relation"),
+                                    "doc_id": meta.get("doc_id"),
                                 }
                             )
                         )
@@ -289,7 +331,9 @@ class IndexingSubsystem:
             return _fp(_actual_payload())
 
         applied_fp = (
-            self.engine.meta_sqlite.get_index_applied_fingerprint(namespace=namespace, coalesce_key=coalesce_key)
+            self.engine.meta_sqlite.get_index_applied_fingerprint(
+                namespace=namespace, coalesce_key=coalesce_key
+            )
             if callable(get_applied)
             else None
         )
@@ -299,10 +343,17 @@ class IndexingSubsystem:
                 if op == "DELETE":
                     self.engine.backend.node_docs_delete(where={"node_id": entity_id})
                     if callable(set_applied):
-                        set_applied(namespace=namespace, coalesce_key=coalesce_key, applied_fingerprint=None, last_job_id=job_id)
+                        set_applied(
+                            namespace=namespace,
+                            coalesce_key=coalesce_key,
+                            applied_fingerprint=None,
+                            last_job_id=job_id,
+                        )
                     return
 
-                got = self.engine.backend.node_get(ids=[entity_id], include=["documents", "metadatas"])
+                got = self.engine.backend.node_get(
+                    ids=[entity_id], include=["documents", "metadatas"]
+                )
                 docs = got.get("documents") or []
                 if not docs or not docs[0]:
                     raise Exception("document not found")
@@ -312,27 +363,48 @@ class IndexingSubsystem:
                 if _is_tombstoned(meta0):
                     self.engine.backend.node_docs_delete(where={"node_id": entity_id})
                     if callable(set_applied):
-                        set_applied(namespace=namespace, coalesce_key=coalesce_key, applied_fingerprint=None, last_job_id=job_id)
+                        set_applied(
+                            namespace=namespace,
+                            coalesce_key=coalesce_key,
+                            applied_fingerprint=None,
+                            last_job_id=job_id,
+                        )
                     return
 
                 desired_fp = _fp(_extract_doc_ids_from_refs(n.mentions))
-                if op != "DELETE" and applied_fp is not None and applied_fp == desired_fp:
+                if (
+                    op != "DELETE"
+                    and applied_fp is not None
+                    and applied_fp == desired_fp
+                ):
                     if _actual_fp() == desired_fp:
                         return
 
                 self.engine.write.index_node_docs(n)
                 if callable(set_applied):
-                    set_applied(namespace=namespace, coalesce_key=coalesce_key, applied_fingerprint=desired_fp, last_job_id=job_id)
+                    set_applied(
+                        namespace=namespace,
+                        coalesce_key=coalesce_key,
+                        applied_fingerprint=desired_fp,
+                        last_job_id=job_id,
+                    )
                 return
 
             if index_kind == "node_refs":
                 if op == "DELETE":
                     self.engine.write.delete_node_ref_rows(entity_id)
                     if callable(set_applied):
-                        set_applied(namespace=namespace, coalesce_key=coalesce_key, applied_fingerprint=None, last_job_id=job_id)
+                        set_applied(
+                            namespace=namespace,
+                            coalesce_key=coalesce_key,
+                            applied_fingerprint=None,
+                            last_job_id=job_id,
+                        )
                     return
 
-                got = self.engine.backend.node_get(ids=[entity_id], include=["documents", "metadatas"])
+                got = self.engine.backend.node_get(
+                    ids=[entity_id], include=["documents", "metadatas"]
+                )
                 docs = got.get("documents") or []
                 if not docs or not docs[0]:
                     raise Exception("document not found")
@@ -342,17 +414,24 @@ class IndexingSubsystem:
                 if _is_tombstoned(meta0):
                     self.engine.write.delete_node_ref_rows(entity_id)
                     if callable(set_applied):
-                        set_applied(namespace=namespace, coalesce_key=coalesce_key, applied_fingerprint=None, last_job_id=job_id)
+                        set_applied(
+                            namespace=namespace,
+                            coalesce_key=coalesce_key,
+                            applied_fingerprint=None,
+                            last_job_id=job_id,
+                        )
                     return
 
                 spans_payload: list[dict[str, Any]] = []
-                for g in (n.mentions or []):
+                for g in n.mentions or []:
                     for sp in getattr(g, "spans", []) or []:
                         ver = getattr(sp, "verification", None)
                         spans_payload.append(
                             {
                                 "doc_id": getattr(sp, "doc_id", None),
-                                "insertion_method": getattr(sp, "insertion_method", None),
+                                "insertion_method": getattr(
+                                    sp, "insertion_method", None
+                                ),
                                 "page": getattr(sp, "page_number", None),
                                 "sc": getattr(sp, "start_char", None),
                                 "ec": getattr(sp, "end_char", None),
@@ -364,13 +443,22 @@ class IndexingSubsystem:
 
                 spans_payload = _stable_sort_dicts(spans_payload)
                 desired_fp = _fp(spans_payload)
-                if op != "DELETE" and applied_fp is not None and applied_fp == desired_fp:
+                if (
+                    op != "DELETE"
+                    and applied_fp is not None
+                    and applied_fp == desired_fp
+                ):
                     if _actual_fp() == desired_fp:
                         return
 
                 self.engine.write.index_node_refs(n)
                 if callable(set_applied):
-                    set_applied(namespace=namespace, coalesce_key=coalesce_key, applied_fingerprint=desired_fp, last_job_id=job_id)
+                    set_applied(
+                        namespace=namespace,
+                        coalesce_key=coalesce_key,
+                        applied_fingerprint=desired_fp,
+                        last_job_id=job_id,
+                    )
                 return
 
             return
@@ -380,10 +468,17 @@ class IndexingSubsystem:
                 if op == "DELETE":
                     self.engine.write.delete_edge_ref_rows(entity_id)
                     if callable(set_applied):
-                        set_applied(namespace=namespace, coalesce_key=coalesce_key, applied_fingerprint=None, last_job_id=job_id)
+                        set_applied(
+                            namespace=namespace,
+                            coalesce_key=coalesce_key,
+                            applied_fingerprint=None,
+                            last_job_id=job_id,
+                        )
                     return
 
-                got = self.engine.backend.edge_get(ids=[entity_id], include=["documents", "metadatas"])
+                got = self.engine.backend.edge_get(
+                    ids=[entity_id], include=["documents", "metadatas"]
+                )
                 docs = got.get("documents") or []
                 if not docs or not docs[0]:
                     raise Exception("document not found")
@@ -393,17 +488,24 @@ class IndexingSubsystem:
                 if _is_tombstoned(meta0):
                     self.engine.write.delete_edge_ref_rows(entity_id)
                     if callable(set_applied):
-                        set_applied(namespace=namespace, coalesce_key=coalesce_key, applied_fingerprint=None, last_job_id=job_id)
+                        set_applied(
+                            namespace=namespace,
+                            coalesce_key=coalesce_key,
+                            applied_fingerprint=None,
+                            last_job_id=job_id,
+                        )
                     return
 
                 spans_payload: list[dict[str, Any]] = []
-                for g in (e.mentions or []):
+                for g in e.mentions or []:
                     for sp in getattr(g, "spans", []) or []:
                         ver = getattr(sp, "verification", None)
                         spans_payload.append(
                             {
                                 "doc_id": getattr(sp, "doc_id", None),
-                                "insertion_method": getattr(sp, "insertion_method", None),
+                                "insertion_method": getattr(
+                                    sp, "insertion_method", None
+                                ),
                                 "page": getattr(sp, "page_number", None),
                                 "sc": getattr(sp, "start_char", None),
                                 "ec": getattr(sp, "end_char", None),
@@ -415,26 +517,44 @@ class IndexingSubsystem:
 
                 spans_payload = _stable_sort_dicts(spans_payload)
                 desired_fp = _fp(spans_payload)
-                if op != "DELETE" and applied_fp is not None and applied_fp == desired_fp:
+                if (
+                    op != "DELETE"
+                    and applied_fp is not None
+                    and applied_fp == desired_fp
+                ):
                     if _actual_fp() == desired_fp:
                         return
 
                 self.engine.write.index_edge_refs(e)
                 if callable(set_applied):
-                    set_applied(namespace=namespace, coalesce_key=coalesce_key, applied_fingerprint=desired_fp, last_job_id=job_id)
+                    set_applied(
+                        namespace=namespace,
+                        coalesce_key=coalesce_key,
+                        applied_fingerprint=desired_fp,
+                        last_job_id=job_id,
+                    )
                 return
 
             if index_kind == "edge_endpoints":
                 if op == "DELETE":
-                    got = self.engine.backend.edge_endpoints_get(where={"edge_id": entity_id}, include=[])
+                    got = self.engine.backend.edge_endpoints_get(
+                        where={"edge_id": entity_id}, include=[]
+                    )
                     ids = got.get("ids") or []
                     if ids:
                         self.engine.backend.edge_endpoints_delete(ids=ids)
                     if callable(set_applied):
-                        set_applied(namespace=namespace, coalesce_key=coalesce_key, applied_fingerprint=None, last_job_id=job_id)
+                        set_applied(
+                            namespace=namespace,
+                            coalesce_key=coalesce_key,
+                            applied_fingerprint=None,
+                            last_job_id=job_id,
+                        )
                     return
 
-                got = self.engine.backend.edge_get(ids=[entity_id], include=["documents", "metadatas"])
+                got = self.engine.backend.edge_get(
+                    ids=[entity_id], include=["documents", "metadatas"]
+                )
                 docs = got.get("documents") or []
                 if not docs or not docs[0]:
                     raise Exception("document not found")
@@ -445,12 +565,19 @@ class IndexingSubsystem:
 
                 meta0 = (got.get("metadatas") or [None])[0] or {}
                 if _is_tombstoned(meta0):
-                    got2 = self.engine.backend.edge_endpoints_get(where={"edge_id": entity_id}, include=[])
+                    got2 = self.engine.backend.edge_endpoints_get(
+                        where={"edge_id": entity_id}, include=[]
+                    )
                     ids2 = got2.get("ids") or []
                     if ids2:
                         self.engine.backend.edge_endpoints_delete(ids=ids2)
                     if callable(set_applied):
-                        set_applied(namespace=namespace, coalesce_key=coalesce_key, applied_fingerprint=None, last_job_id=job_id)
+                        set_applied(
+                            namespace=namespace,
+                            coalesce_key=coalesce_key,
+                            applied_fingerprint=None,
+                            last_job_id=job_id,
+                        )
                     return
 
                 rows = self.engine.write.fanout_endpoints_rows(e, doc_id)
@@ -459,12 +586,20 @@ class IndexingSubsystem:
                 rows = _stable_sort_dicts(rows)
                 desired_fp = _fp(rows)
 
-                if op != "DELETE" and applied_fp is not None and applied_fp == desired_fp:
+                if (
+                    op != "DELETE"
+                    and applied_fp is not None
+                    and applied_fp == desired_fp
+                ):
                     if _actual_fp() == desired_fp:
                         return
 
-                existing = self.engine.backend.edge_endpoints_get(where={"edge_id": entity_id}, include=["metadatas"])
-                existing_ids = {str(i) for i in (existing.get("ids") or []) if i is not None}
+                existing = self.engine.backend.edge_endpoints_get(
+                    where={"edge_id": entity_id}, include=["metadatas"]
+                )
+                existing_ids = {
+                    str(i) for i in (existing.get("ids") or []) if i is not None
+                }
                 desired_ids = {str(r["id"]) for r in rows}
                 stale_ids = sorted(existing_ids - desired_ids)
                 if stale_ids:
@@ -477,8 +612,16 @@ class IndexingSubsystem:
                     ids=ep_ids,
                     documents=ep_docs,
                     metadatas=ep_metas,
-                    embeddings=[self.engine.embed.iterative_defensive_emb(str(d)) for d in ep_docs],
+                    embeddings=[
+                        self.engine.embed.iterative_defensive_emb(str(d))
+                        for d in ep_docs
+                    ],
                 )
                 if callable(set_applied):
-                    set_applied(namespace=namespace, coalesce_key=coalesce_key, applied_fingerprint=desired_fp, last_job_id=job_id)
+                    set_applied(
+                        namespace=namespace,
+                        coalesce_key=coalesce_key,
+                        applied_fingerprint=desired_fp,
+                        last_job_id=job_id,
+                    )
                 return

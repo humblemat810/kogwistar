@@ -6,8 +6,12 @@ from pathlib import Path
 # Add the project root to sys.path to allow importing graph_knowledge_engine
 sys.path.append(str(Path(__file__).parent.parent))
 
-from graph_knowledge_engine.runtime.models import WorkflowNodeMetadata, WorkflowEdgeMetadata
+from graph_knowledge_engine.runtime.models import (
+    WorkflowNodeMetadata,
+    WorkflowEdgeMetadata,
+)
 from pydantic_extension.model_slicing import use_mode
+
 
 def export_schemas():
     # Use environment variable or default to a relative path from the script repo
@@ -17,12 +21,17 @@ def export_schemas():
     else:
         # Relative path from: /parent/graphrag_v2_working_tree/scripts/export_schemas.py
         # to: /parent/kogwistar/designer-app-source/src
-        frontend_src = Path(__file__).resolve().parent.parent.parent.parent / "kogwistar" / "designer-app-source" / "src"
+        frontend_src = (
+            Path(__file__).resolve().parent.parent.parent.parent
+            / "kogwistar"
+            / "designer-app-source"
+            / "src"
+        )
 
     if not frontend_src.exists():
-         print(f"⚠️ Error: Frontend path {frontend_src} does not exist.")
-         print("Please set the FRONTEND_SRC_PATH environment variable.")
-         return
+        print(f"⚠️ Error: Frontend path {frontend_src} does not exist.")
+        print("Please set the FRONTEND_SRC_PATH environment variable.")
+        return
 
     generated_dir = frontend_src / "generated"
     generated_dir.mkdir(exist_ok=True)
@@ -37,7 +46,7 @@ def export_schemas():
     output_path = generated_dir / "schemas.json"
     with open(output_path, "w") as f:
         json.dump(schemas, f, indent=2)
-    
+
     print(f"✅ Exported {len(schemas)} schemas to {output_path}")
 
     # Also generate a simple TS helper to import these
@@ -49,6 +58,7 @@ def export_schemas():
         f.write("export type SchemaName = keyof typeof schemas;\n")
 
     print(f"✅ Generated TS helper: {ts_helper}")
+
 
 if __name__ == "__main__":
     export_schemas()

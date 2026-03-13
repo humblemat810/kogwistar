@@ -1,14 +1,15 @@
 from __future__ import annotations
 
 import argparse
-import os
 import signal
 import sys
 import time
 from dataclasses import dataclass
-from typing import Any, Callable, Optional, TYPE_CHECKING
+from typing import Callable, Optional, TYPE_CHECKING
+
 if TYPE_CHECKING:
     from ..engine_core.engine import GraphKnowledgeEngine
+
 
 @dataclass
 class WorkerTickMetrics:
@@ -87,13 +88,31 @@ class IndexJobWorker:
                 start = time.time()
 
                 # Support both dict-like and dataclass rows.
-                job_id = getattr(job, "job_id", None) or (job.get("job_id") if isinstance(job, dict) else None)
-                entity_kind = getattr(job, "entity_kind", None) or (job.get("entity_kind") if isinstance(job, dict) else None)
-                entity_id = getattr(job, "entity_id", None) or (job.get("entity_id") if isinstance(job, dict) else None)
-                index_kind = getattr(job, "index_kind", None) or (job.get("index_kind") if isinstance(job, dict) else None)
-                op = getattr(job, "op", None) or (job.get("op") if isinstance(job, dict) else None)
-                retry_count = getattr(job, "retry_count", None) if not isinstance(job, dict) else job.get("retry_count")
-                max_retries = getattr(job, "max_retries", None) if not isinstance(job, dict) else job.get("max_retries")
+                job_id = getattr(job, "job_id", None) or (
+                    job.get("job_id") if isinstance(job, dict) else None
+                )
+                entity_kind = getattr(job, "entity_kind", None) or (
+                    job.get("entity_kind") if isinstance(job, dict) else None
+                )
+                entity_id = getattr(job, "entity_id", None) or (
+                    job.get("entity_id") if isinstance(job, dict) else None
+                )
+                index_kind = getattr(job, "index_kind", None) or (
+                    job.get("index_kind") if isinstance(job, dict) else None
+                )
+                op = getattr(job, "op", None) or (
+                    job.get("op") if isinstance(job, dict) else None
+                )
+                retry_count = (
+                    getattr(job, "retry_count", None)
+                    if not isinstance(job, dict)
+                    else job.get("retry_count")
+                )
+                max_retries = (
+                    getattr(job, "max_retries", None)
+                    if not isinstance(job, dict)
+                    else job.get("max_retries")
+                )
 
                 try_rc = int(retry_count or 0)
                 try_mr = int(max_retries or 10)
@@ -150,15 +169,27 @@ def run_forever(
 
 
 def _main(argv: list[str]) -> int:
-    parser = argparse.ArgumentParser(description="GraphKnowledgeEngine index job worker runner")
-    parser.add_argument("--persist-directory", required=True, help="Chroma/engine persist directory (shared with producer)")
+    parser = argparse.ArgumentParser(
+        description="GraphKnowledgeEngine index job worker runner"
+    )
+    parser.add_argument(
+        "--persist-directory",
+        required=True,
+        help="Chroma/engine persist directory (shared with producer)",
+    )
     parser.add_argument("--namespace", default="default", help="Namespace to process")
-    parser.add_argument("--tick-interval-ms", type=int, default=200, help="Sleep between ticks")
+    parser.add_argument(
+        "--tick-interval-ms", type=int, default=200, help="Sleep between ticks"
+    )
     parser.add_argument("--batch-size", type=int, default=50)
     parser.add_argument("--max-jobs-per-tick", type=int, default=200)
     parser.add_argument("--max-inflight", type=int, default=50)
     parser.add_argument("--lease-seconds", type=int, default=60)
-    parser.add_argument("--phase1-enable-index-jobs", action="store_true", help="Enable index_jobs feature flag")
+    parser.add_argument(
+        "--phase1-enable-index-jobs",
+        action="store_true",
+        help="Enable index_jobs feature flag",
+    )
     args = parser.parse_args(argv)
 
     from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine

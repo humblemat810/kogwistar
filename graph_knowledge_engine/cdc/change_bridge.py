@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import sys
 import pathlib
-if __name__=="__main__":
+
+if __name__ == "__main__":
     sys.path.insert(0, str(pathlib.Path(__file__).absolute().parent.parent.parent))
 
 import argparse
@@ -27,9 +28,7 @@ log_path.parent.mkdir(parents=True, exist_ok=True)
 # Configure handler (append mode by default)
 handler = logging.FileHandler(log_path, mode="a", encoding="utf-8")
 
-formatter = logging.Formatter(
-    "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
-)
+formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 handler.setFormatter(formatter)
 
 logger = logging.getLogger(__name__)
@@ -69,7 +68,7 @@ def _stream_match(evj: dict[str, Any], stream: Optional[str]) -> bool:
     if not stream:
         return True
     gt = _event_graph_type(evj)
-    return (gt == stream)
+    return gt == stream
 
 
 def create_app(*, oplog_file: Path, fsync: bool = False) -> FastAPI:
@@ -223,14 +222,26 @@ def reset_oplog(oplog_file: Path) -> None:
 
 def main(argv: Optional[list[str]] = None) -> int:
     if argv is None:
-        argv=sys.argv[1:]
+        argv = sys.argv[1:]
     p = argparse.ArgumentParser(description="CDC change bridge launcher")
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8787)
-    p.add_argument("--oplog-file", type=Path, default=Path(".cdc_debug/data/cdc_oplog.jsonl"))
-    p.add_argument("--fsync", action="store_true", help="fsync oplog on each append (safer, slower)")
-    p.add_argument("--reset-oplog", action="store_true", help="delete oplog file before starting")
-    p.add_argument("--log-level", default="info", help="uvicorn log level (debug/info/warning/error/critical)")
+    p.add_argument(
+        "--oplog-file", type=Path, default=Path(".cdc_debug/data/cdc_oplog.jsonl")
+    )
+    p.add_argument(
+        "--fsync",
+        action="store_true",
+        help="fsync oplog on each append (safer, slower)",
+    )
+    p.add_argument(
+        "--reset-oplog", action="store_true", help="delete oplog file before starting"
+    )
+    p.add_argument(
+        "--log-level",
+        default="info",
+        help="uvicorn log level (debug/info/warning/error/critical)",
+    )
     p.add_argument("--access-log", action="store_true")
     p.add_argument("--reload", action="store_true")
     p.add_argument("--app-dir")
@@ -255,6 +266,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     )
     return 0
 
+
 if __name__ != "__main__":
     app = create_app(oplog_file=Path(".cdc_debug/data/cdc_oplog.jsonl"))
 # Default app instance for uvicorn import-style launch (backward compatible)
@@ -276,8 +288,8 @@ python -m graph_knowledge_engine.cdc.change_bridge --host 127.0.0.1 --port 8787 
 """
 if __name__ == "__main__":
     import sys
+
     raise SystemExit(main())
 
-    
 
 # uvicorn graph_knowledge_engine.cdc.change_bridge:app --host 127.0.0.1 --port 8787 --log-level info --access-log

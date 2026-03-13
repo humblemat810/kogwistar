@@ -1,5 +1,3 @@
-
-
 import pytest
 from dataclasses import dataclass
 from typing import Any, Dict, List, Set
@@ -39,7 +37,9 @@ class FakeWorkflowEdge:
 
 
 class FakeWorkflowEngine:
-    def __init__(self, nodes: List[FakeWorkflowNode], edges: List[FakeWorkflowEdge]) -> None:
+    def __init__(
+        self, nodes: List[FakeWorkflowNode], edges: List[FakeWorkflowEdge]
+    ) -> None:
         self.nodes = nodes
         self.edges = edges
 
@@ -69,9 +69,26 @@ class PredAlwaysTrue(BasePredicate):
         return True
 
 
-def _n(node_id: str, *, op: str, start: bool = False, terminal: bool = False, fanout: bool = False) -> FakeWorkflowNode:
-    md = {"wf_start": start, "wf_terminal": terminal, "wf_fanout": fanout, "wf_op": op, "wf_version": "v1", "workflow_id": "x", "entity_type":"workflow_node"}
-    return FakeWorkflowNode(id=node_id, op=op, terminal=terminal, fanout=fanout, metadata=md)
+def _n(
+    node_id: str,
+    *,
+    op: str,
+    start: bool = False,
+    terminal: bool = False,
+    fanout: bool = False,
+) -> FakeWorkflowNode:
+    md = {
+        "wf_start": start,
+        "wf_terminal": terminal,
+        "wf_fanout": fanout,
+        "wf_op": op,
+        "wf_version": "v1",
+        "workflow_id": "x",
+        "entity_type": "workflow_node",
+    }
+    return FakeWorkflowNode(
+        id=node_id, op=op, terminal=terminal, fanout=fanout, metadata=md
+    )
 
 
 def _seen_nodes(compiled, init_state: Dict[str, Any]) -> Set[str]:
@@ -92,27 +109,76 @@ def test_predicate_signature_and_default_routing():
         _n("end", op="noop", terminal=True),
     ]
     edges = [
-        FakeWorkflowEdge(id="e1", label="to_a", source_ids=["start"], target_ids=["a"],
-                         metadata={"entity_type":"workflow_edge","workflow_id":wid,"wf_priority":0,"wf_predicate":"p_true","wf_multiplicity":"one"}),
-        FakeWorkflowEdge(id="e2", label="to_b", source_ids=["start"], target_ids=["b"],
-                         metadata={"entity_type":"workflow_edge","workflow_id":wid,"wf_priority":1,"wf_is_default":True,"wf_multiplicity":"one"}),
-        FakeWorkflowEdge(id="e3", label="to_end_from_a", source_ids=["a"], target_ids=["end"],
-                         metadata={"entity_type":"workflow_edge","workflow_id":wid,"wf_priority":0,"wf_multiplicity":"one"}),
-        FakeWorkflowEdge(id="e4", label="to_end_from_b", source_ids=["b"], target_ids=["end"],
-                         metadata={"entity_type":"workflow_edge","workflow_id":wid,"wf_priority":0,"wf_multiplicity":"one"}),
+        FakeWorkflowEdge(
+            id="e1",
+            label="to_a",
+            source_ids=["start"],
+            target_ids=["a"],
+            metadata={
+                "entity_type": "workflow_edge",
+                "workflow_id": wid,
+                "wf_priority": 0,
+                "wf_predicate": "p_true",
+                "wf_multiplicity": "one",
+            },
+        ),
+        FakeWorkflowEdge(
+            id="e2",
+            label="to_b",
+            source_ids=["start"],
+            target_ids=["b"],
+            metadata={
+                "entity_type": "workflow_edge",
+                "workflow_id": wid,
+                "wf_priority": 1,
+                "wf_is_default": True,
+                "wf_multiplicity": "one",
+            },
+        ),
+        FakeWorkflowEdge(
+            id="e3",
+            label="to_end_from_a",
+            source_ids=["a"],
+            target_ids=["end"],
+            metadata={
+                "entity_type": "workflow_edge",
+                "workflow_id": wid,
+                "wf_priority": 0,
+                "wf_multiplicity": "one",
+            },
+        ),
+        FakeWorkflowEdge(
+            id="e4",
+            label="to_end_from_b",
+            source_ids=["b"],
+            target_ids=["end"],
+            metadata={
+                "entity_type": "workflow_edge",
+                "workflow_id": wid,
+                "wf_priority": 0,
+                "wf_multiplicity": "one",
+            },
+        ),
     ]
     engine = FakeWorkflowEngine(nodes, edges)
 
-    resolver = Resolver({
-        "noop": lambda state: RR([]),
-        "set_a": lambda state: RR([("u", {"path":"a"})]),
-        "set_b": lambda state: RR([("u", {"path":"b"})]),
-    })
+    resolver = Resolver(
+        {
+            "noop": lambda state: RR([]),
+            "set_a": lambda state: RR([("u", {"path": "a"})]),
+            "set_b": lambda state: RR([("u", {"path": "b"})]),
+        }
+    )
     preds = {"p_true": PredAlwaysTrue()}
 
-    compiled = to_langgraph(workflow_engine=engine, workflow_id=wid, step_resolver=resolver, predicate_registry=preds)
+    compiled = to_langgraph(
+        workflow_engine=engine,
+        workflow_id=wid,
+        step_resolver=resolver,
+        predicate_registry=preds,
+    )
     out = compiled.invoke({})
-    assert out.get("path") or (out["__blob__"]['path']) == "a"
+    assert out.get("path") or (out["__blob__"]["path"]) == "a"
 
 
 def test_parallel_fanout_merges_appends_real_langgraph():
@@ -125,31 +191,88 @@ def test_parallel_fanout_merges_appends_real_langgraph():
         _n("end", op="noop", terminal=True),
     ]
     edges = [
-        FakeWorkflowEdge(id="e1", label="to_fork", source_ids=["start"], target_ids=["fork"],
-                         metadata={"entity_type":"workflow_edge","workflow_id":wid,"wf_priority":0,"wf_multiplicity":"one"}),
-        FakeWorkflowEdge(id="e2", label="to_x", source_ids=["fork"], target_ids=["x"],
-                         metadata={"entity_type":"workflow_edge","workflow_id":wid,"wf_priority":0,"wf_multiplicity":"many"}),
-        FakeWorkflowEdge(id="e3", label="to_y", source_ids=["fork"], target_ids=["y"],
-                         metadata={"entity_type":"workflow_edge","workflow_id":wid,"wf_priority":1,"wf_multiplicity":"many"}),
-        FakeWorkflowEdge(id="e4", label="x_to_end", source_ids=["x"], target_ids=["end"],
-                         metadata={"entity_type":"workflow_edge","workflow_id":wid,"wf_priority":0,"wf_multiplicity":"one"}),
-        FakeWorkflowEdge(id="e5", label="y_to_end", source_ids=["y"], target_ids=["end"],
-                         metadata={"entity_type":"workflow_edge","workflow_id":wid,"wf_priority":0,"wf_multiplicity":"one"}),
+        FakeWorkflowEdge(
+            id="e1",
+            label="to_fork",
+            source_ids=["start"],
+            target_ids=["fork"],
+            metadata={
+                "entity_type": "workflow_edge",
+                "workflow_id": wid,
+                "wf_priority": 0,
+                "wf_multiplicity": "one",
+            },
+        ),
+        FakeWorkflowEdge(
+            id="e2",
+            label="to_x",
+            source_ids=["fork"],
+            target_ids=["x"],
+            metadata={
+                "entity_type": "workflow_edge",
+                "workflow_id": wid,
+                "wf_priority": 0,
+                "wf_multiplicity": "many",
+            },
+        ),
+        FakeWorkflowEdge(
+            id="e3",
+            label="to_y",
+            source_ids=["fork"],
+            target_ids=["y"],
+            metadata={
+                "entity_type": "workflow_edge",
+                "workflow_id": wid,
+                "wf_priority": 1,
+                "wf_multiplicity": "many",
+            },
+        ),
+        FakeWorkflowEdge(
+            id="e4",
+            label="x_to_end",
+            source_ids=["x"],
+            target_ids=["end"],
+            metadata={
+                "entity_type": "workflow_edge",
+                "workflow_id": wid,
+                "wf_priority": 0,
+                "wf_multiplicity": "one",
+            },
+        ),
+        FakeWorkflowEdge(
+            id="e5",
+            label="y_to_end",
+            source_ids=["y"],
+            target_ids=["end"],
+            metadata={
+                "entity_type": "workflow_edge",
+                "workflow_id": wid,
+                "wf_priority": 0,
+                "wf_multiplicity": "one",
+            },
+        ),
     ]
     engine = FakeWorkflowEngine(nodes, edges)
 
-    resolver = Resolver({
-        "noop": lambda state: RR([]),
-        "add_x": lambda state: RR([("a", {"events":"x"})]),
-        "add_y": lambda state: RR([("a", {"events":"y"})]),
-    })
+    resolver = Resolver(
+        {
+            "noop": lambda state: RR([]),
+            "add_x": lambda state: RR([("a", {"events": "x"})]),
+            "add_y": lambda state: RR([("a", {"events": "y"})]),
+        }
+    )
     preds: Dict[str, BasePredicate] = {}
 
-    compiled = to_langgraph(workflow_engine=engine, workflow_id=wid, step_resolver=resolver, predicate_registry=preds)
+    compiled = to_langgraph(
+        workflow_engine=engine,
+        workflow_id=wid,
+        step_resolver=resolver,
+        predicate_registry=preds,
+    )
 
     seen = _seen_nodes(compiled, {})
     assert "x" in seen
     assert "y" in seen
 
     out = compiled.invoke({})
-    assert sorted(out.get("events") or (out["__blob__"]['events'])) == ["x", "y"]
+    assert sorted(out.get("events") or (out["__blob__"]["events"])) == ["x", "y"]

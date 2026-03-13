@@ -5,7 +5,9 @@ from typing import Any, Dict, List
 from graph_knowledge_engine.engine_core.postgres_backend import PgVectorBackend
 
 
-def _dummy_ref(*, doc_id: str, edge_id: str) -> tuple[str, str, Dict[str, Any], List[float] | None]:
+def _dummy_ref(
+    *, doc_id: str, edge_id: str
+) -> tuple[str, str, Dict[str, Any], List[float] | None]:
     _id = f"ref|{doc_id}|{edge_id}"
     doc = f'{{"doc_id":"{doc_id}","edge_id":"{edge_id}"}}'
     meta = {"doc_id": doc_id, "edge_id": edge_id, "entity_type": "edge_ref"}
@@ -44,6 +46,7 @@ def test_phase3_pg_backend_edge_refs_roundtrip(sa_engine, pg_schema) -> None:
     metas_out = got.get("metadatas") or []
     assert all(isinstance(m, dict) for m in metas_out)
 
+
 def test_phase3_pg_backend_node_update_metadata_merge(sa_engine, pg_schema) -> None:
     """Smoke test for JSONB merge update on vector collections.
 
@@ -74,8 +77,8 @@ def test_phase3_pg_backend_node_update_metadata_merge(sa_engine, pg_schema) -> N
 
     m = metas_out[0]
     assert m["keep"] == "x"  # preserved
-    assert m["a"] == 2       # overwritten
-    assert m["b"] == 3       # added
+    assert m["a"] == 2  # overwritten
+    assert m["b"] == 3  # added
 
     # shallow merge behavior: nested object is replaced, not deep-merged
     assert m["nested"] == {"y": 2}

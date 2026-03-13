@@ -7,20 +7,31 @@ from typing import Dict, List, Optional, Tuple, Type, TypeVar, Union, TYPE_CHECK
 from ..runtime.models import WorkflowEdge, WorkflowNode
 
 from ..conversation.models import ConversationEdge, ConversationNode
+
 if TYPE_CHECKING:
     from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
 
+    from ..engine_core.models import (
+        Node,
+        Edge,
+    )  # , ConversationNode, ConversationEdge, WorkflowEdge, WorkflowNode
 
-    from ..engine_core.models import Node, Edge#, ConversationNode, ConversationEdge, WorkflowEdge, WorkflowNode
-    T = TypeVar('T', bound = Union[Node, Edge])
+    T = TypeVar("T", bound=Union[Node, Edge])
+
 
 def _safe_iter(x):
     return x if isinstance(x, list) and x else []
 
-def _load_node_map(engine: GraphKnowledgeEngine, ids: List[str], node_type: Type[Node] | None = None, 
-                   include = ['documents', 'metadatas', "embeddings"]) -> Dict[str, Node]:
+
+def _load_node_map(
+    engine: GraphKnowledgeEngine,
+    ids: List[str],
+    node_type: Type[Node] | None = None,
+    include=["documents", "metadatas", "embeddings"],
+) -> Dict[str, Node]:
     """Robustly load Node models by ids."""
     from ..engine_core.models import Node
+
     if node_type is None:
         node_type = Node
     if engine.kg_graph_type == "conversation":
@@ -34,7 +45,7 @@ def _load_node_map(engine: GraphKnowledgeEngine, ids: List[str], node_type: Type
     try:
         return engine.read.load_node_map(ids, node_type=node_type)
     except Exception:
-        nodes = engine.read.get_nodes(ids=ids, node_type = node_type, include= include)
+        nodes = engine.read.get_nodes(ids=ids, node_type=node_type, include=include)
         out = {n.id: n for n in nodes}
         # for rid, doc in zip(got.get("ids") or [], got.get("documents") or []):
         #     try:
@@ -44,11 +55,16 @@ def _load_node_map(engine: GraphKnowledgeEngine, ids: List[str], node_type: Type
         return out
 
 
-def _load_edge_map(engine: GraphKnowledgeEngine, ids: List[str], edge_type: Type[Edge] | None = None, 
-                   include=['documents', 'metadatas', 'embeddings']) -> Dict[str, Edge]:
+def _load_edge_map(
+    engine: GraphKnowledgeEngine,
+    ids: List[str],
+    edge_type: Type[Edge] | None = None,
+    include=["documents", "metadatas", "embeddings"],
+) -> Dict[str, Edge]:
     """Robustly load Edge models by ids."""
-    
+
     from ..engine_core.models import Edge
+
     if edge_type is None:
         edge_type = Edge
     if engine.kg_graph_type == "conversation":
@@ -62,7 +78,7 @@ def _load_edge_map(engine: GraphKnowledgeEngine, ids: List[str], edge_type: Type
     try:
         return engine.read.load_edge_map(ids, edge_type=edge_type)
     except Exception:
-        edges = engine.read.get_edges(ids=ids, edge_type = edge_type, include = include)
+        edges = engine.read.get_edges(ids=ids, edge_type=edge_type, include=include)
         out = {n.id: n for n in edges}
         return out
 
@@ -80,8 +96,16 @@ def _ids_by_doc(engine, doc_id: Optional[str]) -> Tuple[List[str], List[str]]:
     except Exception:
         # fallback: query node_docs table if present
         try:
-            rows = engine.backend.node_docs_get(where={"doc_id": doc_id}, include=["metadatas"])
-            node_ids : list= list({(m or {}).get("node_id") for m in (rows.get("metadatas") or []) if m and m.get("node_id")})
+            rows = engine.backend.node_docs_get(
+                where={"doc_id": doc_id}, include=["metadatas"]
+            )
+            node_ids: list = list(
+                {
+                    (m or {}).get("node_id")
+                    for m in (rows.get("metadatas") or [])
+                    if m and m.get("node_id")
+                }
+            )
         except Exception:
             node_ids = []
     try:
@@ -89,8 +113,16 @@ def _ids_by_doc(engine, doc_id: Optional[str]) -> Tuple[List[str], List[str]]:
     except Exception:
         # fallback: query endpoints table if present
         try:
-            eps = engine.backend.edge_endpoints_get(where={"doc_id": doc_id}, include=["metadatas"])
-            edge_ids :list= list({(m or {}).get("edge_id") for m in (eps.get("metadatas") or []) if m and m.get("edge_id")})
+            eps = engine.backend.edge_endpoints_get(
+                where={"doc_id": doc_id}, include=["metadatas"]
+            )
+            edge_ids: list = list(
+                {
+                    (m or {}).get("edge_id")
+                    for m in (eps.get("metadatas") or [])
+                    if m and m.get("edge_id")
+                }
+            )
         except Exception:
             edge_ids = []
     return node_ids, edge_ids
@@ -109,9 +141,9 @@ def _filter_by_insertion_method(
 
     # Fast path: use refs index if present
     coll_attr = "node_refs_collection" if kind == "node" else "edge_refs_collection"
-    
+
     coll = getattr(engine, coll_attr, None)
-    
+
     if coll:
         where = {"insertion_method": insertion_method}
         if by_doc_id:
@@ -160,11 +192,14 @@ def _collect_ids(
 ) -> Tuple[List[str], List[str]]:
     """Base selection (doc filter) then optional insertion_method filter."""
     node_ids, edge_ids = _ids_by_doc(engine, doc_id)
-    node_ids = _filter_by_insertion_method(engine, node_ids, "node", insertion_method, by_doc_id=doc_id)
-    edge_ids = _filter_by_insertion_method(engine, edge_ids, "edge", insertion_method, by_doc_id=doc_id)
+    node_ids = _filter_by_insertion_method(
+        engine, node_ids, "node", insertion_method, by_doc_id=doc_id
+    )
+    edge_ids = _filter_by_insertion_method(
+        engine, edge_ids, "edge", insertion_method, by_doc_id=doc_id
+    )
     return node_ids, edge_ids
 
-        
 
 def to_d3_force(
     engine,
@@ -192,51 +227,86 @@ def to_d3_force(
 
     # materialize entity nodes
     for nid, n in node_map.items():
-        
-        nodes[nid] = n.model_dump() 
-        nodes[nid].update({
-            "id": nid,
-            "label": n.label,
-            "type": "entity",
-            "summary" : n.summary,
-            "properties": n.properties or {},
-        })
+        nodes[nid] = n.model_dump()
+        nodes[nid].update(
+            {
+                "id": nid,
+                "label": n.label,
+                "type": "entity",
+                "summary": n.summary,
+                "properties": n.properties or {},
+            }
+        )
 
     if mode.lower() == "reify":
         for eid, e in edge_map.items():
             if eid not in nodes:
-                nodes[eid] = e.model_dump() 
-                nodes[eid].update({
-                    "id": eid,
-                    "label": e.relation or e.label or "edge",
-                    "type": "edge-node",
-                    "summary" : e.summary,
-                    "properties": e.properties or {},
-                })
+                nodes[eid] = e.model_dump()
+                nodes[eid].update(
+                    {
+                        "id": eid,
+                        "label": e.relation or e.label or "edge",
+                        "type": "edge-node",
+                        "summary": e.summary,
+                        "properties": e.properties or {},
+                    }
+                )
             # node sources
             for s in _safe_iter(e.source_ids):
                 if s in nodes:
-                    links.append({"source": s, "target": eid, "relation": e.relation or e.label, "role": "src", "properties": e.properties or {}})
+                    links.append(
+                        {
+                            "source": s,
+                            "target": eid,
+                            "relation": e.relation or e.label,
+                            "role": "src",
+                            "properties": e.properties or {},
+                        }
+                    )
                 else:
-                    raise Exception (f"unexpected path: missing source node {s}")
+                    raise Exception(f"unexpected path: missing source node {s}")
             # edge sources (MISSING TODAY)
             for se in _safe_iter(e.source_edge_ids):
                 if se in edge_map:  # link from another edge-node
-                    links.append({"source": se, "target": eid, "relation": e.relation or e.label, "role": "src", "properties": e.properties or {}})
+                    links.append(
+                        {
+                            "source": se,
+                            "target": eid,
+                            "relation": e.relation or e.label,
+                            "role": "src",
+                            "properties": e.properties or {},
+                        }
+                    )
                 else:
-                    raise Exception (f"unexpected path: missing source edge {se}")
+                    raise Exception(f"unexpected path: missing source edge {se}")
             # node targets
             for t in _safe_iter(e.target_ids):
                 if t in nodes:
-                    links.append({"source": eid, "target": t, "relation": e.relation or e.label, "role": "tgt", "properties": e.properties or {}})
+                    links.append(
+                        {
+                            "source": eid,
+                            "target": t,
+                            "relation": e.relation or e.label,
+                            "role": "tgt",
+                            "properties": e.properties or {},
+                        }
+                    )
                 else:
-                    raise Exception (f"unexpected path: missing target node {t}")
+                    raise Exception(f"unexpected path: missing target node {t}")
             # edge targets (MISSING TODAY)
             for te in _safe_iter(e.target_edge_ids):
                 if te in edge_map:
-                    links.append({"source": eid, "target": te, "relation": e.relation or e.label, "role": "tgt", "properties": e.properties or {}})
+                    links.append(
+                        {
+                            "source": eid,
+                            "target": te,
+                            "relation": e.relation or e.label,
+                            "role": "tgt",
+                            "properties": e.properties or {},
+                        }
+                    )
                 else:
-                    raise Exception (f"unexpected path: missing target edge {te}")
+                    raise Exception(f"unexpected path: missing target edge {te}")
 
     else:
         # classic edges: direct src->tgt
@@ -244,12 +314,14 @@ def to_d3_force(
             for s in _safe_iter(e.source_ids):
                 for t in _safe_iter(e.target_ids):
                     if s in nodes and t in nodes:
-                        links.append({
-                            "source": s, "target": t,
-                            "relation": e.relation or e.label,
-                            "properties": e.properties or {},
-                            
-                        })
+                        links.append(
+                            {
+                                "source": s,
+                                "target": t,
+                                "relation": e.relation or e.label,
+                                "properties": e.properties or {},
+                            }
+                        )
 
     return {
         "nodes": list(nodes.values()),
@@ -283,33 +355,81 @@ def to_cytoscape(
 
     # entity nodes
     for nid, n in node_map.items():
-        elements.append({
-            "data": {"id": nid, "label": n.label, "type": "entity"},
-            "classes": "",
-        })
+        elements.append(
+            {
+                "data": {"id": nid, "label": n.label, "type": "entity"},
+                "classes": "",
+            }
+        )
 
     if mode.lower() == "reify":
         for eid, e in edge_map.items():
-            elements.append({
-                "data": {"id": eid, "label": e.relation or e.label or "edge", "type": "edge-node"},
-                "classes": "edge-node",
-            })
+            elements.append(
+                {
+                    "data": {
+                        "id": eid,
+                        "label": e.relation or e.label or "edge",
+                        "type": "edge-node",
+                    },
+                    "classes": "edge-node",
+                }
+            )
             # node sources
             for s in _safe_iter(e.source_ids):
                 if s in node_map:
-                    elements.append({"data": {"id": f"{eid}::src::{s}", "source": s, "target": eid, "label": e.relation or e.label}, "classes": "src"})
+                    elements.append(
+                        {
+                            "data": {
+                                "id": f"{eid}::src::{s}",
+                                "source": s,
+                                "target": eid,
+                                "label": e.relation or e.label,
+                            },
+                            "classes": "src",
+                        }
+                    )
             # edge sources
             for se in _safe_iter(e.source_edge_ids):
                 if se in edge_map:
-                    elements.append({"data": {"id": f"{eid}::srcE::{se}", "source": se, "target": eid, "label": e.relation or e.label}, "classes": "src"})
+                    elements.append(
+                        {
+                            "data": {
+                                "id": f"{eid}::srcE::{se}",
+                                "source": se,
+                                "target": eid,
+                                "label": e.relation or e.label,
+                            },
+                            "classes": "src",
+                        }
+                    )
             # node targets
             for t in _safe_iter(e.target_ids):
                 if t in node_map:
-                    elements.append({"data": {"id": f"{eid}::tgt::{t}", "source": eid, "target": t, "label": e.relation or e.label}, "classes": "tgt"})
+                    elements.append(
+                        {
+                            "data": {
+                                "id": f"{eid}::tgt::{t}",
+                                "source": eid,
+                                "target": t,
+                                "label": e.relation or e.label,
+                            },
+                            "classes": "tgt",
+                        }
+                    )
             # edge targets
             for te in _safe_iter(e.target_edge_ids):
                 if te in edge_map:
-                    elements.append({"data": {"id": f"{eid}::tgtE::{te}", "source": eid, "target": te, "label": e.relation or e.label}, "classes": "tgt"})
+                    elements.append(
+                        {
+                            "data": {
+                                "id": f"{eid}::tgtE::{te}",
+                                "source": eid,
+                                "target": te,
+                                "label": e.relation or e.label,
+                            },
+                            "classes": "tgt",
+                        }
+                    )
 
     else:
         # classic: direct edge
@@ -317,13 +437,16 @@ def to_cytoscape(
             for s in _safe_iter(e.source_ids):
                 for t in _safe_iter(e.target_ids):
                     if s in node_map and t in node_map:
-                        elements.append({
-                            "data": {
-                                "id": f"{eid}::{s}->{t}",
-                                "source": s, "target": t,
-                                "label": e.relation or e.label,
-                            },
-                            "classes": "",
-                        })
+                        elements.append(
+                            {
+                                "data": {
+                                    "id": f"{eid}::{s}->{t}",
+                                    "source": s,
+                                    "target": t,
+                                    "label": e.relation or e.label,
+                                },
+                                "classes": "",
+                            }
+                        )
 
     return {"elements": elements, "mode": mode, "doc_id": doc_id}

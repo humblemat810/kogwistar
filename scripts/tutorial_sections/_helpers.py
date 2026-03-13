@@ -14,8 +14,11 @@ for candidate in (ROOT, SCRIPTS_DIR):
     if text not in sys.path:
         sys.path.insert(0, text)
 
-from graph_knowledge_engine.engine_core.models import Grounding, MentionVerification, Span
-from tutorial_ladder import LexicalHashEmbeddingFunction
+from graph_knowledge_engine.engine_core.models import (
+    Grounding,
+    MentionVerification,
+    Span,
+)
 
 
 def reset_data_dir(name: str) -> Path:
@@ -31,7 +34,9 @@ def show(title: str, payload) -> None:
     print(json.dumps(payload, indent=2, ensure_ascii=False, default=str))
 
 
-def tutorial_grounding(doc_id: str, excerpt: str, *, insertion_method: str = "tutorial_sections") -> Grounding:
+def tutorial_grounding(
+    doc_id: str, excerpt: str, *, insertion_method: str = "tutorial_sections"
+) -> Grounding:
     span = Span(
         collection_page_url=f"tutorial/{doc_id}",
         document_page_url=f"tutorial/{doc_id}",
@@ -45,7 +50,9 @@ def tutorial_grounding(doc_id: str, excerpt: str, *, insertion_method: str = "tu
         context_after="",
         chunk_id=None,
         source_cluster_id=None,
-        verification=MentionVerification(method="system", is_verified=True, score=1.0, notes=insertion_method),
+        verification=MentionVerification(
+            method="system", is_verified=True, score=1.0, notes=insertion_method
+        ),
     )
     return Grounding(spans=[span])
 

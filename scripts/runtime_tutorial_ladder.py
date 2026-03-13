@@ -17,10 +17,22 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
-from graph_knowledge_engine.engine_core.models import Grounding, MentionVerification, Span
+from graph_knowledge_engine.engine_core.models import (
+    Grounding,
+    MentionVerification,
+    Span,
+)
 from graph_knowledge_engine.runtime.contract import BasePredicate
-from graph_knowledge_engine.runtime.langgraph_converter import LGConverterOptions, to_langgraph
-from graph_knowledge_engine.runtime.models import RunSuccess, RunSuspended, WorkflowEdge, WorkflowNode
+from graph_knowledge_engine.runtime.langgraph_converter import (
+    LGConverterOptions,
+    to_langgraph,
+)
+from graph_knowledge_engine.runtime.models import (
+    RunSuccess,
+    RunSuspended,
+    WorkflowEdge,
+    WorkflowNode,
+)
 from graph_knowledge_engine.runtime.resolvers import MappingStepResolver
 from graph_knowledge_engine.runtime.sandbox import SandboxFactory, SandboxRequest
 from graph_knowledge_engine.runtime.runtime import StepContext, WorkflowRuntime
@@ -41,16 +53,30 @@ RUNTIME_EVENT_ENDPOINT = "/api/workflow/runs/{run_id}/events"
 WORKFLOW_STORE_DIRNAME = "workflow_v2"
 CONVERSATION_STORE_DIRNAME = "conversation_v2"
 
-warnings.filterwarnings("ignore", message=r"Using advanced underscore state key '_deps'.*", category=RuntimeWarning)
-warnings.filterwarnings("ignore", message=r"Using advanced underscore state key '_rt_join'.*", category=RuntimeWarning)
-warnings.filterwarnings("ignore", message=r".*PydanticSerializationUnexpectedValue.*", category=UserWarning)
-warnings.filterwarnings("ignore", category=UserWarning, module=r"pydantic_extension\.model_slicing\.mixin")
+warnings.filterwarnings(
+    "ignore",
+    message=r"Using advanced underscore state key '_deps'.*",
+    category=RuntimeWarning,
+)
+warnings.filterwarnings(
+    "ignore",
+    message=r"Using advanced underscore state key '_rt_join'.*",
+    category=RuntimeWarning,
+)
+warnings.filterwarnings(
+    "ignore", message=r".*PydanticSerializationUnexpectedValue.*", category=UserWarning
+)
+warnings.filterwarnings(
+    "ignore", category=UserWarning, module=r"pydantic_extension\.model_slicing\.mixin"
+)
 
 
 class TinyEmbeddingFunction:
-    _name="TinyEmbedding"
+    _name = "TinyEmbedding"
+
     def name(self):
         return self._name
+
     def __call__(self, input: Sequence[str]) -> list[list[float]]:
         return [[float((len(str(text or "")) % 7) + 1)] for text in input]
 
@@ -100,21 +126,57 @@ class _LGWorkflowEngine:
 
 
 class _LGRunResult:
-    def __init__(self, state_update: list[tuple[str, dict[str, Any]]] | None = None, next_step_names: list[str] | None = None) -> None:
+    def __init__(
+        self,
+        state_update: list[tuple[str, dict[str, Any]]] | None = None,
+        next_step_names: list[str] | None = None,
+    ) -> None:
         self.state_update = state_update or []
         self.next_step_names = next_step_names or []
 
 
 class _LGResolver:
     def __init__(self) -> None:
-        self._state_schema = {"timeline": "a", "join_notes": "a", "custom_event_ops": "a"}
+        self._state_schema = {
+            "timeline": "a",
+            "join_notes": "a",
+            "custom_event_ops": "a",
+        }
         self._handlers = {
-            "start": lambda state: _LGRunResult([("u", {"started": True, "dep_echo": "runtime-tutorial"}), ("a", {"timeline": "start:audience=runtime-tutorial"}), ("a", {"custom_event_ops": "start"})]),
-            "fork": lambda state: _LGRunResult([("u", {"fanout_seen": True}), ("a", {"timeline": "fork:fanout"})]),
-            "branch_a_wait": lambda state: _LGRunResult([("u", {"branch_a_pending": True}), ("a", {"timeline": "branch_a_wait:suspended"}), ("a", {"custom_event_ops": "branch_a_wait"})]),
-            "branch_b_complete": lambda state: _LGRunResult([("u", {"branch_b_done": True}), ("a", {"timeline": "branch_b_complete:completed"}), ("a", {"custom_event_ops": "branch_b_complete"})]),
-            "join": lambda state: _LGRunResult([("u", {"joined": True}), ("a", {"join_notes": "join released"}), ("a", {"timeline": "join:released"})]),
-            "end": lambda state: _LGRunResult([("u", {"ended": True}), ("a", {"timeline": "end:terminal"})]),
+            "start": lambda state: _LGRunResult(
+                [
+                    ("u", {"started": True, "dep_echo": "runtime-tutorial"}),
+                    ("a", {"timeline": "start:audience=runtime-tutorial"}),
+                    ("a", {"custom_event_ops": "start"}),
+                ]
+            ),
+            "fork": lambda state: _LGRunResult(
+                [("u", {"fanout_seen": True}), ("a", {"timeline": "fork:fanout"})]
+            ),
+            "branch_a_wait": lambda state: _LGRunResult(
+                [
+                    ("u", {"branch_a_pending": True}),
+                    ("a", {"timeline": "branch_a_wait:suspended"}),
+                    ("a", {"custom_event_ops": "branch_a_wait"}),
+                ]
+            ),
+            "branch_b_complete": lambda state: _LGRunResult(
+                [
+                    ("u", {"branch_b_done": True}),
+                    ("a", {"timeline": "branch_b_complete:completed"}),
+                    ("a", {"custom_event_ops": "branch_b_complete"}),
+                ]
+            ),
+            "join": lambda state: _LGRunResult(
+                [
+                    ("u", {"joined": True}),
+                    ("a", {"join_notes": "join released"}),
+                    ("a", {"timeline": "join:released"}),
+                ]
+            ),
+            "end": lambda state: _LGRunResult(
+                [("u", {"ended": True}), ("a", {"timeline": "end:terminal"})]
+            ),
         }
 
     def resolve(self, op: str):
@@ -158,7 +220,9 @@ def _span(doc_id: str, excerpt: str) -> Span:
         context_after="",
         chunk_id=None,
         source_cluster_id=None,
-        verification=MentionVerification(method="system", is_verified=True, score=1.0, notes="tutorial_runtime"),
+        verification=MentionVerification(
+            method="system", is_verified=True, score=1.0, notes="tutorial_runtime"
+        ),
     )
 
 
@@ -242,7 +306,9 @@ def _wf_edge(
 
 
 def _workflow_seeded(workflow_engine: GraphKnowledgeEngine) -> bool:
-    got = workflow_engine.backend.node_get(ids=[RT_START_NODE_ID], include=["metadatas"])
+    got = workflow_engine.backend.node_get(
+        ids=[RT_START_NODE_ID], include=["metadatas"]
+    )
     if not got.get("ids"):
         return False
     meta = (got.get("metadatas") or [{}])[0] or {}
@@ -257,7 +323,9 @@ def _resume_payload_for(node_id: str) -> dict[str, Any]:
     }
 
 
-def ensure_workflow_seed(data_dir: Path) -> tuple[GraphKnowledgeEngine, GraphKnowledgeEngine]:
+def ensure_workflow_seed(
+    data_dir: Path,
+) -> tuple[GraphKnowledgeEngine, GraphKnowledgeEngine]:
     workflow_engine, conversation_engine = _build_engines(data_dir)
     if _workflow_seeded(workflow_engine):
         return workflow_engine, conversation_engine
@@ -271,12 +339,50 @@ def ensure_workflow_seed(data_dir: Path) -> tuple[GraphKnowledgeEngine, GraphKno
         _wf_node(node_id=RT_END_NODE_ID, op="end", terminal=True),
     ]
     edges = [
-        _wf_edge(edge_id="rt2:start->fork", src=RT_START_NODE_ID, dst=RT_FORK_NODE_ID, is_default=True, priority=100),
-        _wf_edge(edge_id="rt2:fork->branch_a", src=RT_FORK_NODE_ID, dst=RT_BRANCH_A_NODE_ID, predicate="always", priority=10, multiplicity="many"),
-        _wf_edge(edge_id="rt2:fork->branch_b", src=RT_FORK_NODE_ID, dst=RT_BRANCH_B_NODE_ID, predicate="always", priority=10, multiplicity="many"),
-        _wf_edge(edge_id="rt2:branch_a->join", src=RT_BRANCH_A_NODE_ID, dst=RT_JOIN_NODE_ID, is_default=True, priority=100),
-        _wf_edge(edge_id="rt2:branch_b->join", src=RT_BRANCH_B_NODE_ID, dst=RT_JOIN_NODE_ID, is_default=True, priority=100),
-        _wf_edge(edge_id="rt2:join->end", src=RT_JOIN_NODE_ID, dst=RT_END_NODE_ID, is_default=True, priority=100),
+        _wf_edge(
+            edge_id="rt2:start->fork",
+            src=RT_START_NODE_ID,
+            dst=RT_FORK_NODE_ID,
+            is_default=True,
+            priority=100,
+        ),
+        _wf_edge(
+            edge_id="rt2:fork->branch_a",
+            src=RT_FORK_NODE_ID,
+            dst=RT_BRANCH_A_NODE_ID,
+            predicate="always",
+            priority=10,
+            multiplicity="many",
+        ),
+        _wf_edge(
+            edge_id="rt2:fork->branch_b",
+            src=RT_FORK_NODE_ID,
+            dst=RT_BRANCH_B_NODE_ID,
+            predicate="always",
+            priority=10,
+            multiplicity="many",
+        ),
+        _wf_edge(
+            edge_id="rt2:branch_a->join",
+            src=RT_BRANCH_A_NODE_ID,
+            dst=RT_JOIN_NODE_ID,
+            is_default=True,
+            priority=100,
+        ),
+        _wf_edge(
+            edge_id="rt2:branch_b->join",
+            src=RT_BRANCH_B_NODE_ID,
+            dst=RT_JOIN_NODE_ID,
+            is_default=True,
+            priority=100,
+        ),
+        _wf_edge(
+            edge_id="rt2:join->end",
+            src=RT_JOIN_NODE_ID,
+            dst=RT_END_NODE_ID,
+            is_default=True,
+            priority=100,
+        ),
     ]
     for node in nodes:
         workflow_engine.write.add_node(node)
@@ -287,14 +393,20 @@ def ensure_workflow_seed(data_dir: Path) -> tuple[GraphKnowledgeEngine, GraphKno
 
 def build_resolver() -> MappingStepResolver:
     resolver = MappingStepResolver()
-    resolver.set_state_schema({"timeline": "a", "join_notes": "a", "custom_event_ops": "a"})
+    resolver.set_state_schema(
+        {"timeline": "a", "join_notes": "a", "custom_event_ops": "a"}
+    )
 
     @resolver.register("start")
     def _start(ctx: StepContext):
         deps = dict(ctx.state_view.get("_deps", {}) or {})
         audience = str(deps.get("audience", "runtime-tutorial"))
         if ctx.events is not None:
-            ctx.events.emit(type="tutorial_resolver_note", ctx=ctx.trace_ctx, payload={"op": ctx.op, "audience": audience})
+            ctx.events.emit(
+                type="tutorial_resolver_note",
+                ctx=ctx.trace_ctx,
+                payload={"op": ctx.op, "audience": audience},
+            )
         return RunSuccess(
             conversation_node_id=None,
             state_update=[
@@ -317,7 +429,11 @@ def build_resolver() -> MappingStepResolver:
     @resolver.register("branch_a_wait")
     def _branch_a_wait(ctx: StepContext):
         if ctx.events is not None:
-            ctx.events.emit(type="tutorial_resolver_note", ctx=ctx.trace_ctx, payload={"op": ctx.op, "phase": "suspend"})
+            ctx.events.emit(
+                type="tutorial_resolver_note",
+                ctx=ctx.trace_ctx,
+                payload={"op": ctx.op, "phase": "suspend"},
+            )
         return RunSuspended(
             conversation_node_id=None,
             state_update=[
@@ -331,7 +447,11 @@ def build_resolver() -> MappingStepResolver:
     @resolver.register("branch_b_complete")
     def _branch_b_complete(ctx: StepContext):
         if ctx.events is not None:
-            ctx.events.emit(type="tutorial_resolver_note", ctx=ctx.trace_ctx, payload={"op": ctx.op, "phase": "complete"})
+            ctx.events.emit(
+                type="tutorial_resolver_note",
+                ctx=ctx.trace_ctx,
+                payload={"op": ctx.op, "phase": "complete"},
+            )
         return RunSuccess(
             conversation_node_id=None,
             state_update=[
@@ -365,7 +485,11 @@ def build_resolver() -> MappingStepResolver:
     return resolver
 
 
-def build_runtime(data_dir: Path) -> tuple[WorkflowRuntime, MappingStepResolver, GraphKnowledgeEngine, GraphKnowledgeEngine]:
+def build_runtime(
+    data_dir: Path,
+) -> tuple[
+    WorkflowRuntime, MappingStepResolver, GraphKnowledgeEngine, GraphKnowledgeEngine
+]:
     workflow_engine, conversation_engine = ensure_workflow_seed(data_dir)
     resolver = build_resolver()
     runtime = WorkflowRuntime(
@@ -433,14 +557,18 @@ def _fetch_trace_events(db_path: Path, run_id: str) -> list[dict[str, Any]]:
     return events
 
 
-def _workflow_nodes(conversation_engine: GraphKnowledgeEngine, entity_type: str, run_id: str) -> list[Any]:
+def _workflow_nodes(
+    conversation_engine: GraphKnowledgeEngine, entity_type: str, run_id: str
+) -> list[Any]:
     return conversation_engine.read.get_nodes(
         where={"$and": [{"entity_type": entity_type}, {"run_id": run_id}]},
         limit=1000,
     )
 
 
-def _step_exec_payloads(conversation_engine: GraphKnowledgeEngine, run_id: str) -> list[dict[str, Any]]:
+def _step_exec_payloads(
+    conversation_engine: GraphKnowledgeEngine, run_id: str
+) -> list[dict[str, Any]]:
     payloads: list[dict[str, Any]] = []
     for node in _workflow_nodes(conversation_engine, "workflow_step_exec", run_id):
         meta = dict(getattr(node, "metadata", {}) or {})
@@ -460,11 +588,15 @@ def _step_exec_payloads(conversation_engine: GraphKnowledgeEngine, run_id: str) 
     return payloads
 
 
-def _latest_checkpoint(conversation_engine: GraphKnowledgeEngine, run_id: str) -> tuple[Any | None, dict[str, Any]]:
+def _latest_checkpoint(
+    conversation_engine: GraphKnowledgeEngine, run_id: str
+) -> tuple[Any | None, dict[str, Any]]:
     checkpoints = _workflow_nodes(conversation_engine, "workflow_checkpoint", run_id)
     if not checkpoints:
         return None, {}
-    latest = max(checkpoints, key=lambda n: int(getattr(n, "metadata", {}).get("step_seq", -1)))
+    latest = max(
+        checkpoints, key=lambda n: int(getattr(n, "metadata", {}).get("step_seq", -1))
+    )
     state_json = getattr(latest, "metadata", {}).get("state_json", {})
     if isinstance(state_json, str):
         state_json = json.loads(state_json)
@@ -473,25 +605,158 @@ def _latest_checkpoint(conversation_engine: GraphKnowledgeEngine, run_id: str) -
 
 def _build_langgraph_demo_engine() -> _LGWorkflowEngine:
     nodes = [
-        _LGNode(id="rt_start", op="start", terminal=False, fanout=False, metadata={"wf_start": True, "wf_terminal": False, "wf_fanout": False}),
-        _LGNode(id="rt_fork", op="fork", terminal=False, fanout=True, metadata={"wf_start": False, "wf_terminal": False, "wf_fanout": True}),
-        _LGNode(id="rt_branch_a", op="branch_a_wait", terminal=False, fanout=False, metadata={"wf_start": False, "wf_terminal": False, "wf_fanout": False}),
-        _LGNode(id="rt_branch_b", op="branch_b_complete", terminal=False, fanout=False, metadata={"wf_start": False, "wf_terminal": False, "wf_fanout": False}),
-        _LGNode(id="rt_join", op="join", terminal=False, fanout=False, metadata={"wf_start": False, "wf_terminal": False, "wf_fanout": False, "wf_join": True}),
-        _LGNode(id="rt_end", op="end", terminal=True, fanout=False, metadata={"wf_start": False, "wf_terminal": True, "wf_fanout": False}),
+        _LGNode(
+            id="rt_start",
+            op="start",
+            terminal=False,
+            fanout=False,
+            metadata={"wf_start": True, "wf_terminal": False, "wf_fanout": False},
+        ),
+        _LGNode(
+            id="rt_fork",
+            op="fork",
+            terminal=False,
+            fanout=True,
+            metadata={"wf_start": False, "wf_terminal": False, "wf_fanout": True},
+        ),
+        _LGNode(
+            id="rt_branch_a",
+            op="branch_a_wait",
+            terminal=False,
+            fanout=False,
+            metadata={"wf_start": False, "wf_terminal": False, "wf_fanout": False},
+        ),
+        _LGNode(
+            id="rt_branch_b",
+            op="branch_b_complete",
+            terminal=False,
+            fanout=False,
+            metadata={"wf_start": False, "wf_terminal": False, "wf_fanout": False},
+        ),
+        _LGNode(
+            id="rt_join",
+            op="join",
+            terminal=False,
+            fanout=False,
+            metadata={
+                "wf_start": False,
+                "wf_terminal": False,
+                "wf_fanout": False,
+                "wf_join": True,
+            },
+        ),
+        _LGNode(
+            id="rt_end",
+            op="end",
+            terminal=True,
+            fanout=False,
+            metadata={"wf_start": False, "wf_terminal": True, "wf_fanout": False},
+        ),
     ]
     edges = [
-        _LGEdge(id="rt_start_to_fork", label="rt_start_to_fork", predicate=None, source_ids=["rt_start"], target_ids=["rt_fork"], multiplicity="one", is_default=True, metadata={"wf_predicate": None, "wf_priority": 100, "wf_is_default": True, "wf_multiplicity": "one"}),
-        _LGEdge(id="rt_fork_to_branch_a", label="rt_fork_to_branch_a", predicate="always", source_ids=["rt_fork"], target_ids=["rt_branch_a"], multiplicity="many", is_default=False, metadata={"wf_predicate": "always", "wf_priority": 10, "wf_is_default": False, "wf_multiplicity": "many"}),
-        _LGEdge(id="rt_fork_to_branch_b", label="rt_fork_to_branch_b", predicate="always", source_ids=["rt_fork"], target_ids=["rt_branch_b"], multiplicity="many", is_default=False, metadata={"wf_predicate": "always", "wf_priority": 10, "wf_is_default": False, "wf_multiplicity": "many"}),
-        _LGEdge(id="rt_branch_a_to_join", label="rt_branch_a_to_join", predicate=None, source_ids=["rt_branch_a"], target_ids=["rt_join"], multiplicity="one", is_default=True, metadata={"wf_predicate": None, "wf_priority": 100, "wf_is_default": True, "wf_multiplicity": "one"}),
-        _LGEdge(id="rt_branch_b_to_join", label="rt_branch_b_to_join", predicate=None, source_ids=["rt_branch_b"], target_ids=["rt_join"], multiplicity="one", is_default=True, metadata={"wf_predicate": None, "wf_priority": 100, "wf_is_default": True, "wf_multiplicity": "one"}),
-        _LGEdge(id="rt_join_to_end", label="rt_join_to_end", predicate=None, source_ids=["rt_join"], target_ids=["rt_end"], multiplicity="one", is_default=True, metadata={"wf_predicate": None, "wf_priority": 100, "wf_is_default": True, "wf_multiplicity": "one"}),
+        _LGEdge(
+            id="rt_start_to_fork",
+            label="rt_start_to_fork",
+            predicate=None,
+            source_ids=["rt_start"],
+            target_ids=["rt_fork"],
+            multiplicity="one",
+            is_default=True,
+            metadata={
+                "wf_predicate": None,
+                "wf_priority": 100,
+                "wf_is_default": True,
+                "wf_multiplicity": "one",
+            },
+        ),
+        _LGEdge(
+            id="rt_fork_to_branch_a",
+            label="rt_fork_to_branch_a",
+            predicate="always",
+            source_ids=["rt_fork"],
+            target_ids=["rt_branch_a"],
+            multiplicity="many",
+            is_default=False,
+            metadata={
+                "wf_predicate": "always",
+                "wf_priority": 10,
+                "wf_is_default": False,
+                "wf_multiplicity": "many",
+            },
+        ),
+        _LGEdge(
+            id="rt_fork_to_branch_b",
+            label="rt_fork_to_branch_b",
+            predicate="always",
+            source_ids=["rt_fork"],
+            target_ids=["rt_branch_b"],
+            multiplicity="many",
+            is_default=False,
+            metadata={
+                "wf_predicate": "always",
+                "wf_priority": 10,
+                "wf_is_default": False,
+                "wf_multiplicity": "many",
+            },
+        ),
+        _LGEdge(
+            id="rt_branch_a_to_join",
+            label="rt_branch_a_to_join",
+            predicate=None,
+            source_ids=["rt_branch_a"],
+            target_ids=["rt_join"],
+            multiplicity="one",
+            is_default=True,
+            metadata={
+                "wf_predicate": None,
+                "wf_priority": 100,
+                "wf_is_default": True,
+                "wf_multiplicity": "one",
+            },
+        ),
+        _LGEdge(
+            id="rt_branch_b_to_join",
+            label="rt_branch_b_to_join",
+            predicate=None,
+            source_ids=["rt_branch_b"],
+            target_ids=["rt_join"],
+            multiplicity="one",
+            is_default=True,
+            metadata={
+                "wf_predicate": None,
+                "wf_priority": 100,
+                "wf_is_default": True,
+                "wf_multiplicity": "one",
+            },
+        ),
+        _LGEdge(
+            id="rt_join_to_end",
+            label="rt_join_to_end",
+            predicate=None,
+            source_ids=["rt_join"],
+            target_ids=["rt_end"],
+            multiplicity="one",
+            is_default=True,
+            metadata={
+                "wf_predicate": None,
+                "wf_priority": 100,
+                "wf_is_default": True,
+                "wf_multiplicity": "one",
+            },
+        ),
     ]
     return _LGWorkflowEngine(nodes, edges)
 
 
-def _run_to_suspension(data_dir: Path) -> tuple[dict[str, Any], WorkflowRuntime, MappingStepResolver, GraphKnowledgeEngine, GraphKnowledgeEngine]:
+def _run_to_suspension(
+    data_dir: Path,
+) -> tuple[
+    dict[str, Any],
+    WorkflowRuntime,
+    MappingStepResolver,
+    GraphKnowledgeEngine,
+    GraphKnowledgeEngine,
+]:
     runtime, resolver, workflow_engine, conversation_engine = build_runtime(data_dir)
     run_id = f"runtime-tutorial-{uuid.uuid4().hex}"
     run = runtime.run(
@@ -524,11 +789,15 @@ def reset_data(data_dir: Path) -> dict[str, Any]:
 
 
 def level0_runtime_basics(data_dir: Path) -> dict[str, Any]:
-    result, runtime, resolver, workflow_engine, conversation_engine = _run_to_suspension(data_dir)
+    result, runtime, resolver, workflow_engine, conversation_engine = (
+        _run_to_suspension(data_dir)
+    )
     run = result["run"]
     run_id = result["run_id"]
     step_nodes = _workflow_nodes(conversation_engine, "workflow_step_exec", run_id)
-    checkpoint_nodes = _workflow_nodes(conversation_engine, "workflow_checkpoint", run_id)
+    checkpoint_nodes = _workflow_nodes(
+        conversation_engine, "workflow_checkpoint", run_id
+    )
     _flush_trace(runtime)
     return {
         "level": 0,
@@ -551,7 +820,9 @@ def level0_runtime_basics(data_dir: Path) -> dict[str, Any]:
 
 
 def level1_resolvers_and_deps(data_dir: Path) -> dict[str, Any]:
-    result, runtime, resolver, workflow_engine, _conversation_engine = _run_to_suspension(data_dir)
+    result, runtime, resolver, workflow_engine, _conversation_engine = (
+        _run_to_suspension(data_dir)
+    )
     run = result["run"]
     _flush_trace(runtime)
     events = _fetch_trace_events(_trace_db_path(workflow_engine), result["run_id"])
@@ -575,7 +846,9 @@ def level1_resolvers_and_deps(data_dir: Path) -> dict[str, Any]:
 
 
 def level2_pause_and_resume(data_dir: Path) -> dict[str, Any]:
-    result, runtime, _resolver, workflow_engine, conversation_engine = _run_to_suspension(data_dir)
+    result, runtime, _resolver, workflow_engine, conversation_engine = (
+        _run_to_suspension(data_dir)
+    )
     run = result["run"]
     checkpoint_state = result["checkpoint_state"]
     suspended = list((checkpoint_state.get("_rt_join", {}) or {}).get("suspended", []))
@@ -608,9 +881,17 @@ def level2_pause_and_resume(data_dir: Path) -> dict[str, Any]:
     )
     _flush_trace(runtime)
     events = _fetch_trace_events(_trace_db_path(workflow_engine), result["run_id"])
-    suspended_payloads = [evt["payload"] for evt in events if evt["type"] == "workflow_step_suspended"]
-    checkpoint_nodes = _workflow_nodes(conversation_engine, "workflow_checkpoint", result["run_id"])
-    resume_payload = suspended_payloads[0] if suspended_payloads else _resume_payload_for(str(suspended_node_id))
+    suspended_payloads = [
+        evt["payload"] for evt in events if evt["type"] == "workflow_step_suspended"
+    ]
+    checkpoint_nodes = _workflow_nodes(
+        conversation_engine, "workflow_checkpoint", result["run_id"]
+    )
+    resume_payload = (
+        suspended_payloads[0]
+        if suspended_payloads
+        else _resume_payload_for(str(suspended_node_id))
+    )
     return {
         "level": 2,
         "run_id": result["run_id"],
@@ -619,7 +900,10 @@ def level2_pause_and_resume(data_dir: Path) -> dict[str, Any]:
         "suspended_node_id": str(suspended_node_id),
         "suspended_token_id": str(suspended_token_id),
         "resume_payload": resume_payload,
-        "checkpoint_step_seqs": sorted(int(getattr(n, "metadata", {}).get("step_seq", -1)) for n in checkpoint_nodes),
+        "checkpoint_step_seqs": sorted(
+            int(getattr(n, "metadata", {}).get("step_seq", -1))
+            for n in checkpoint_nodes
+        ),
         "final_state": resumed.final_state,
         "trace_db_path": str(_trace_db_path(workflow_engine)),
         "checkpoint_pass": (
@@ -633,7 +917,9 @@ def level2_pause_and_resume(data_dir: Path) -> dict[str, Any]:
 
 
 def level3_observability_and_langgraph(data_dir: Path) -> dict[str, Any]:
-    result, runtime, resolver, workflow_engine, conversation_engine = _run_to_suspension(data_dir)
+    result, runtime, resolver, workflow_engine, conversation_engine = (
+        _run_to_suspension(data_dir)
+    )
     checkpoint_state = result["checkpoint_state"]
     suspended = list((checkpoint_state.get("_rt_join", {}) or {}).get("suspended", []))
     if suspended:
@@ -644,7 +930,9 @@ def level3_observability_and_langgraph(data_dir: Path) -> dict[str, Any]:
             suspended_token_id=str(suspended_token_id),
             client_result=RunSuccess(
                 conversation_node_id=None,
-                state_update=[("u", {"branch_a_pending": False, "branch_a_result": "approved"})],
+                state_update=[
+                    ("u", {"branch_a_pending": False, "branch_a_result": "approved"})
+                ],
             ),
             workflow_id=WORKFLOW_ID,
             conversation_id=CONVERSATION_ID,
@@ -692,7 +980,9 @@ def level3_observability_and_langgraph(data_dir: Path) -> dict[str, Any]:
 
     run_nodes = _workflow_nodes(conversation_engine, "workflow_run", run_id)
     step_nodes = _workflow_nodes(conversation_engine, "workflow_step_exec", run_id)
-    checkpoint_nodes = _workflow_nodes(conversation_engine, "workflow_checkpoint", run_id)
+    checkpoint_nodes = _workflow_nodes(
+        conversation_engine, "workflow_checkpoint", run_id
+    )
     required_event_types = {
         "workflow_run_started",
         "step_attempt_started",
@@ -718,7 +1008,9 @@ def level3_observability_and_langgraph(data_dir: Path) -> dict[str, Any]:
         "checkpoint_count": len(checkpoint_nodes),
         "workflow_run_count": len(run_nodes),
         "langgraph": langgraph_info,
-        "checkpoint_pass": (required_event_types - {"workflow_step_suspended"}).issubset(set(event_types))
+        "checkpoint_pass": (
+            required_event_types - {"workflow_step_suspended"}
+        ).issubset(set(event_types))
         and Path(CDC_VIEWER_PATH).exists()
         and len(step_nodes) > 0
         and len(checkpoint_nodes) > 0
@@ -748,15 +1040,23 @@ def _sandbox_workflow_seeded(workflow_engine: GraphKnowledgeEngine) -> bool:
     return str(meta.get("workflow_id") or "") == SANDBOX_WORKFLOW_ID
 
 
-def ensure_sandbox_workflow_seed(data_dir: Path) -> tuple[GraphKnowledgeEngine, GraphKnowledgeEngine]:
+def ensure_sandbox_workflow_seed(
+    data_dir: Path,
+) -> tuple[GraphKnowledgeEngine, GraphKnowledgeEngine]:
     workflow_engine, conversation_engine = _build_engines(data_dir)
     if _sandbox_workflow_seeded(workflow_engine):
         return workflow_engine, conversation_engine
 
     nodes = [
-        _wf_node(node_id="sb4:start", op="start", workflow_id=SANDBOX_WORKFLOW_ID, start=True),
-        _wf_node(node_id="sb4:python_exec", op="python_exec", workflow_id=SANDBOX_WORKFLOW_ID),
-        _wf_node(node_id="sb4:end", op="end", workflow_id=SANDBOX_WORKFLOW_ID, terminal=True),
+        _wf_node(
+            node_id="sb4:start", op="start", workflow_id=SANDBOX_WORKFLOW_ID, start=True
+        ),
+        _wf_node(
+            node_id="sb4:python_exec", op="python_exec", workflow_id=SANDBOX_WORKFLOW_ID
+        ),
+        _wf_node(
+            node_id="sb4:end", op="end", workflow_id=SANDBOX_WORKFLOW_ID, terminal=True
+        ),
     ]
     edges = [
         _wf_edge(
@@ -783,7 +1083,11 @@ def ensure_sandbox_workflow_seed(data_dir: Path) -> tuple[GraphKnowledgeEngine, 
     return _build_engines(data_dir)
 
 
-def build_sandbox_runtime(data_dir: Path, *, mode: str = "per_op") -> tuple[WorkflowRuntime, MappingStepResolver, GraphKnowledgeEngine, GraphKnowledgeEngine]:
+def build_sandbox_runtime(
+    data_dir: Path, *, mode: str = "per_op"
+) -> tuple[
+    WorkflowRuntime, MappingStepResolver, GraphKnowledgeEngine, GraphKnowledgeEngine
+]:
     workflow_engine, conversation_engine = ensure_sandbox_workflow_seed(data_dir)
     resolver = MappingStepResolver()
     resolver.set_state_schema({"timeline": "a"})
@@ -871,7 +1175,9 @@ def level4_sandboxed_ops(data_dir: Path) -> dict[str, Any]:
             "safety_summary": "LLM-generated code should be treated as untrusted and executed only in a sandbox.",
         }
 
-    runtime, resolver, workflow_engine, conversation_engine = build_sandbox_runtime(data_dir, mode="per_op")
+    runtime, resolver, workflow_engine, conversation_engine = build_sandbox_runtime(
+        data_dir, mode="per_op"
+    )
     run_id = f"runtime-sandbox-{uuid.uuid4().hex}"
     run = runtime.run(
         workflow_id=SANDBOX_WORKFLOW_ID,
@@ -893,7 +1199,9 @@ def level4_sandboxed_ops(data_dir: Path) -> dict[str, Any]:
     )
     _flush_trace(runtime)
     step_execs = _step_exec_payloads(conversation_engine, run.run_id)
-    sandbox_step = next((step for step in step_execs if step.get("op") == "python_exec"), None)
+    sandbox_step = next(
+        (step for step in step_execs if step.get("op") == "python_exec"), None
+    )
     sandbox_errors = list((sandbox_step or {}).get("result", {}).get("errors") or [])
     return {
         "level": 4,
@@ -902,7 +1210,8 @@ def level4_sandboxed_ops(data_dir: Path) -> dict[str, Any]:
         "status": run.status,
         "sandbox_type": "docker",
         "sandbox_available": True,
-        "sandbox_executed": run.final_state.get("sandbox_result") == "HELLO FROM LLM SANDBOX",
+        "sandbox_executed": run.final_state.get("sandbox_result")
+        == "HELLO FROM LLM SANDBOX",
         "sandbox_mode": run.final_state.get("sandbox_mode"),
         "sandbox_op": run.final_state.get("sandbox_op"),
         "sandbox_result": run.final_state.get("sandbox_result"),
@@ -923,9 +1232,15 @@ def level4_sandboxed_ops(data_dir: Path) -> dict[str, Any]:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Runtime tutorial ladder for resolver, pause/resume, CDC viewer, and LangGraph interop.")
-    parser.add_argument("command", choices=["reset", "level0", "level1", "level2", "level3", "level4"])
-    parser.add_argument("--data-dir", type=Path, default=Path(".gke-data/runtime-tutorial-ladder"))
+    parser = argparse.ArgumentParser(
+        description="Runtime tutorial ladder for resolver, pause/resume, CDC viewer, and LangGraph interop."
+    )
+    parser.add_argument(
+        "command", choices=["reset", "level0", "level1", "level2", "level3", "level4"]
+    )
+    parser.add_argument(
+        "--data-dir", type=Path, default=Path(".gke-data/runtime-tutorial-ladder")
+    )
     args = parser.parse_args()
 
     if args.command == "reset":
@@ -941,7 +1256,7 @@ def main() -> int:
     elif args.command == "level4":
         payload = level4_sandboxed_ops(args.data_dir)
     else:
-        raise ValueError (f"Unrecognised level argument {args.command}")
+        raise ValueError(f"Unrecognised level argument {args.command}")
     _print_json(payload)
     return 0
 

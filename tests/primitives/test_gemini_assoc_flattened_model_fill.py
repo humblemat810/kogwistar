@@ -101,7 +101,10 @@ def _validate_parsed_payload(mode: SchemaMode, parsed: Any) -> dict[str, Any]:
         if len(parsed_model.grounding_spans) < 1:
             return {"ok": False, "reason": "grounding_spans is empty"}
         if len(parsed_model.node_groundings) + len(parsed_model.edge_groundings) < 1:
-            return {"ok": False, "reason": "both node_groundings and edge_groundings are empty"}
+            return {
+                "ok": False,
+                "reason": "both node_groundings and edge_groundings are empty",
+            }
         return {
             "ok": True,
             "reason": None,
@@ -120,7 +123,9 @@ def _validate_parsed_payload(mode: SchemaMode, parsed: Any) -> dict[str, Any]:
         parsed_model = (
             parsed
             if isinstance(parsed, AssocFlattenedLLMGraphExtraction)
-            else AssocFlattenedLLMGraphExtraction.model_validate(parsed, context={"insertion_method": "llm"})
+            else AssocFlattenedLLMGraphExtraction.model_validate(
+                parsed, context={"insertion_method": "llm"}
+            )
         )
         if len(parsed_model.spans) < 1:
             return {"ok": False, "reason": "spans is empty"}
@@ -131,7 +136,10 @@ def _validate_parsed_payload(mode: SchemaMode, parsed: Any) -> dict[str, Any]:
         if len(parsed_model.grounding_spans) < 1:
             return {"ok": False, "reason": "grounding_spans is empty"}
         if len(parsed_model.node_groundings) + len(parsed_model.edge_groundings) < 1:
-            return {"ok": False, "reason": "both node_groundings and edge_groundings are empty"}
+            return {
+                "ok": False,
+                "reason": "both node_groundings and edge_groundings are empty",
+            }
         return {
             "ok": True,
             "reason": None,
@@ -172,7 +180,9 @@ def _validate_parsed_payload(mode: SchemaMode, parsed: Any) -> dict[str, Any]:
     parsed_model = (
         parsed
         if isinstance(parsed, LLMGraphExtraction)
-        else LLMGraphExtraction.model_validate(parsed, context={"insertion_method": "llm"})
+        else LLMGraphExtraction.model_validate(
+            parsed, context={"insertion_method": "llm"}
+        )
     )
     if len(parsed_model.nodes) < 1:
         return {"ok": False, "reason": "nodes is empty"}
@@ -212,7 +222,9 @@ def _invoke_schema_live(
     schema, _ = _schema_for_mode(schema_mode)
     llm = ChatGoogleGenerativeAI(model=model_name, temperature=0)
     try:
-        runnable = llm.with_structured_output(schema, method="json_schema", include_raw=True)
+        runnable = llm.with_structured_output(
+            schema, method="json_schema", include_raw=True
+        )
     except TypeError:
         runnable = llm.with_structured_output(schema, include_raw=True)
 
@@ -235,7 +247,10 @@ def _invoke_schema_live(
     try:
         return _validate_parsed_payload(schema_mode, parsed)
     except Exception as exc:
-        return {"ok": False, "reason": f"schema validation failed: {type(exc).__name__}: {exc}"}
+        return {
+            "ok": False,
+            "reason": f"schema validation failed: {type(exc).__name__}: {exc}",
+        }
 
 
 @pytest.mark.manual
@@ -291,4 +306,6 @@ def test_gemini_models_can_fill_assoc_flattened_schema():
         for (schema_mode, model_name), outcome in outcomes.items()
         if bool(outcome.get("ok"))
     ]
-    assert success_pairs, f"No probed Gemini (mode, model) pair filled the selected schemas successfully: {outcomes}"
+    assert success_pairs, (
+        f"No probed Gemini (mode, model) pair filled the selected schemas successfully: {outcomes}"
+    )

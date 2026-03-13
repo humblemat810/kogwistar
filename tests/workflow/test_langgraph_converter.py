@@ -6,13 +6,17 @@ from typing import Any, Dict, List, Set
 pytest.importorskip("langgraph")
 
 from graph_knowledge_engine.runtime.contract import BasePredicate
-from graph_knowledge_engine.runtime.langgraph_converter import LGConverterOptions, to_langgraph
+from graph_knowledge_engine.runtime.langgraph_converter import (
+    LGConverterOptions,
+    to_langgraph,
+)
 from langgraph.graph.state import CompiledStateGraph
 
 
 # -----------------------------
 # Minimum fake shapes (match test_workflow_join.py)
 # -----------------------------
+
 
 @dataclass
 class FakeNode:
@@ -53,7 +57,16 @@ class FakeWorkflowEngine:
         return self._edges
 
 
-def _n(node_id: str, *, workflow_id: str, op: str, start=False, terminal=False, fanout=False, join=False) -> FakeNode:
+def _n(
+    node_id: str,
+    *,
+    workflow_id: str,
+    op: str,
+    start=False,
+    terminal=False,
+    fanout=False,
+    join=False,
+) -> FakeNode:
     md = {
         "entity_type": "workflow_node",
         "workflow_id": workflow_id,
@@ -158,11 +171,13 @@ def test_converter_predicate_default_is_exclusive_choice_and_auto_inits_blob():
     ]
     engine = FakeWorkflowEngine(nodes, edges)
 
-    resolver = Resolver({
-        "noop": lambda state: RR([]),
-        "set_a": lambda state: RR([("u", {"path": "a"})]),
-        "set_b": lambda state: RR([("u", {"path": "b"})]),
-    })
+    resolver = Resolver(
+        {
+            "noop": lambda state: RR([]),
+            "set_a": lambda state: RR([("u", {"path": "a"})]),
+            "set_b": lambda state: RR([("u", {"path": "b"})]),
+        }
+    )
 
     compiled = to_langgraph(
         workflow_engine=engine,
@@ -170,7 +185,10 @@ def test_converter_predicate_default_is_exclusive_choice_and_auto_inits_blob():
         step_resolver=resolver,
         predicate_registry={"p_true": PredAlwaysTrue()},
     )
-    dump_langgraph_image(compiled, "test_converter_predicate_default_is_exclusive_choice_and_auto_inits_blob")
+    dump_langgraph_image(
+        compiled,
+        "test_converter_predicate_default_is_exclusive_choice_and_auto_inits_blob",
+    )
     out = compiled.invoke({})
     assert out["__blob__"]["path"] == "a"
 
@@ -195,13 +213,20 @@ def test_converter_fanout_no_join_spawns_both_branches():
     ]
     engine = FakeWorkflowEngine(nodes, edges)
 
-    resolver = Resolver({
-        "noop": lambda state: RR([]),
-        "emit_a": lambda state: RR([("a", {"events": "a"})]),
-        "emit_b": lambda state: RR([("a", {"events": "b"})]),
-    })
+    resolver = Resolver(
+        {
+            "noop": lambda state: RR([]),
+            "emit_a": lambda state: RR([("a", {"events": "a"})]),
+            "emit_b": lambda state: RR([("a", {"events": "b"})]),
+        }
+    )
 
-    compiled = to_langgraph(workflow_engine=engine, workflow_id=wid, step_resolver=resolver, predicate_registry={})
+    compiled = to_langgraph(
+        workflow_engine=engine,
+        workflow_id=wid,
+        step_resolver=resolver,
+        predicate_registry={},
+    )
     out = compiled.invoke({"__blob__": {}})
     assert set(out["__blob__"].get("events", [])) == {"a", "b"}
 
@@ -227,17 +252,22 @@ def test_converter_fanout_then_join_barrier_emits_joined_once():
     ]
     engine = FakeWorkflowEngine(nodes, edges)
 
-    resolver = Resolver({
-        "noop": lambda state: RR([]),
-        "emit_a": lambda state: RR([("a", {"events": "a"})]),
-        "emit_b": lambda state: RR([("a", {"events": "b"})]),
-        "join_op": lambda state: RR([("a", {"events": "joined"})]),
-    })
+    resolver = Resolver(
+        {
+            "noop": lambda state: RR([]),
+            "emit_a": lambda state: RR([("a", {"events": "a"})]),
+            "emit_b": lambda state: RR([("a", {"events": "b"})]),
+            "join_op": lambda state: RR([("a", {"events": "joined"})]),
+        }
+    )
     options = LGConverterOptions(execution="semantics")
-    compiled = to_langgraph(workflow_engine=engine, workflow_id=wid, 
-                            step_resolver=resolver, 
-                            predicate_registry={},
-                            options=options)
+    compiled = to_langgraph(
+        workflow_engine=engine,
+        workflow_id=wid,
+        step_resolver=resolver,
+        predicate_registry={},
+        options=options,
+    )
     out = compiled.invoke({"__blob__": {}})
 
     events = out["__blob__"].get("events", [])
@@ -264,20 +294,25 @@ def test_converter_resolver_next_step_names_duplicates_repeat_downstream():
     ]
     engine = FakeWorkflowEngine(nodes, edges)
 
-    resolver = Resolver({
-        "noop": lambda state: RR([]),
-        # Explicit routing override (duplicates preserved)
-        "decide": lambda state: RR([], next_step_names=["x", "x"]),
-        "emit_x": lambda state: RR([("a", {"events": "x"})]),
-    })
+    resolver = Resolver(
+        {
+            "noop": lambda state: RR([]),
+            # Explicit routing override (duplicates preserved)
+            "decide": lambda state: RR([], next_step_names=["x", "x"]),
+            "emit_x": lambda state: RR([("a", {"events": "x"})]),
+        }
+    )
 
     options = LGConverterOptions(execution="semantics")
-    compiled = to_langgraph(workflow_engine=engine, workflow_id=wid, 
-                            step_resolver=resolver, 
-                            predicate_registry={},
-                            options=options)
+    compiled = to_langgraph(
+        workflow_engine=engine,
+        workflow_id=wid,
+        step_resolver=resolver,
+        predicate_registry={},
+        options=options,
+    )
     seen = _seen_nodes(compiled, {"__blob__": {}})
     out = compiled.invoke({"__blob__": {}})
-    
+
     events = out["__blob__"].get("events", [])
     assert events.count("x") == 2

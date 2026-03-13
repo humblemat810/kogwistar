@@ -54,15 +54,34 @@ def engine_triplet():
     try:
         ef = FakeEmbeddingFunction()
         yield (
-            GraphKnowledgeEngine(persist_directory=str(root / "kg"), kg_graph_type="knowledge", embedding_function=ef),
-            GraphKnowledgeEngine(persist_directory=str(root / "conversation"), kg_graph_type="conversation", embedding_function=ef),
-            GraphKnowledgeEngine(persist_directory=str(root / "workflow"), kg_graph_type="workflow", embedding_function=ef),
+            GraphKnowledgeEngine(
+                persist_directory=str(root / "kg"),
+                kg_graph_type="knowledge",
+                embedding_function=ef,
+            ),
+            GraphKnowledgeEngine(
+                persist_directory=str(root / "conversation"),
+                kg_graph_type="conversation",
+                embedding_function=ef,
+            ),
+            GraphKnowledgeEngine(
+                persist_directory=str(root / "workflow"),
+                kg_graph_type="workflow",
+                embedding_function=ef,
+            ),
         )
     finally:
         shutil.rmtree(root, ignore_errors=True)
 
 
-def _configure_server(monkeypatch, engine, conversation_engine, workflow_engine, answer_runner, runtime_runner=None):
+def _configure_server(
+    monkeypatch,
+    engine,
+    conversation_engine,
+    workflow_engine,
+    answer_runner,
+    runtime_runner=None,
+):
     registry = RunRegistry(workflow_engine.meta_sqlite)
     service = ChatRunService(
         get_knowledge_engine=lambda: engine,
@@ -73,8 +92,15 @@ def _configure_server(monkeypatch, engine, conversation_engine, workflow_engine,
         runtime_runner=runtime_runner,
     )
     monkeypatch.setattr(server, "engine", _FixedResource(engine), raising=False)
-    monkeypatch.setattr(server, "conversation_engine", _FixedResource(conversation_engine), raising=False)
-    monkeypatch.setattr(server, "workflow_engine", _FixedResource(workflow_engine), raising=False)
+    monkeypatch.setattr(
+        server,
+        "conversation_engine",
+        _FixedResource(conversation_engine),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        server, "workflow_engine", _FixedResource(workflow_engine), raising=False
+    )
     monkeypatch.setattr(server, "run_registry", _FixedResource(registry), raising=False)
     monkeypatch.setattr(server, "chat_service", _FixedResource(service), raising=False)
     return service
@@ -93,7 +119,9 @@ def _claims(role: str, ns: str, sub: str | None = None):
 
 
 def _structured(result):
-    data = getattr(result, "structuredContent", None) or getattr(result, "structured_content", None)
+    data = getattr(result, "structuredContent", None) or getattr(
+        result, "structured_content", None
+    )
     if data:
         return data
     content = getattr(result, "content", None) or []
@@ -124,13 +152,22 @@ def _success_runner(req: AnswerRunRequest) -> dict:
             turn_index=req.prev_turn_meta_summary.tail_turn_index + 1,
             properties={"content": assistant_text, "entity_type": "assistant_turn"},
             mentions=[Grounding(spans=[Span.from_dummy_for_conversation()])],
-            metadata={"level_from_root": 0, "entity_type": "assistant_turn", "in_conversation_chain": True, "in_ui_chain": True},
+            metadata={
+                "level_from_root": 0,
+                "entity_type": "assistant_turn",
+                "in_conversation_chain": True,
+                "in_ui_chain": True,
+            },
             domain_id=None,
             canonical_entity_id=None,
-            embedding=(embedding.tolist() if hasattr(embedding, "tolist") else embedding),
+            embedding=(
+                embedding.tolist() if hasattr(embedding, "tolist") else embedding
+            ),
         )
     )
-    req.prev_turn_meta_summary.prev_node_char_distance_from_last_summary += len(assistant_text)
+    req.prev_turn_meta_summary.prev_node_char_distance_from_last_summary += len(
+        assistant_text
+    )
     req.prev_turn_meta_summary.prev_node_distance_from_last_summary += 1
     req.prev_turn_meta_summary.tail_turn_index += 1
     return {
@@ -151,7 +188,10 @@ def _cancel_runner(req: AnswerRunRequest) -> dict:
 
 def _runtime_success_runner(req: RuntimeRunRequest) -> dict:
     req.publish("run.stage", {"stage": "execute"})
-    req.publish("reasoning.summary", {"stage": "execute", "summary": "Executing workflow runtime."})
+    req.publish(
+        "reasoning.summary",
+        {"stage": "execute", "summary": "Executing workflow runtime."},
+    )
     if req.is_cancel_requested():
         raise RunCancelledError()
     return {
@@ -172,7 +212,9 @@ def _runtime_cancel_runner(req: RuntimeRunRequest) -> dict:
 @pytest.mark.asyncio
 async def test_mcp_chat_tool_visibility_by_namespace(monkeypatch, engine_triplet):
     engine, conversation_engine, workflow_engine = engine_triplet
-    _configure_server(monkeypatch, engine, conversation_engine, workflow_engine, _success_runner)
+    _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
 
     with _claims("rw", "conversation"):
         tools = await server.mcp.list_tools()
@@ -197,32 +239,50 @@ async def test_mcp_chat_tool_visibility_by_namespace(monkeypatch, engine_triplet
 
 
 @pytest.mark.asyncio
-async def test_mcp_chat_submit_cancel_and_workflow_diagnostics(monkeypatch, engine_triplet):
+async def test_mcp_chat_submit_cancel_and_workflow_diagnostics(
+    monkeypatch, engine_triplet
+):
     engine, conversation_engine, workflow_engine = engine_triplet
-    service = _configure_server(monkeypatch, engine, conversation_engine, workflow_engine, _cancel_runner)
+    service = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _cancel_runner
+    )
 
     with _claims("rw", "conversation"):
-        created = _structured(await server.mcp.call_tool("conversation.create", {"user_id": "u-mcp"}))
+        created = _structured(
+            await server.mcp.call_tool("conversation.create", {"user_id": "u-mcp"})
+        )
         conversation_id = created["conversation_id"]
         asked = _structured(
             await server.mcp.call_tool(
                 "conversation.ask",
-                {"conversation_id": conversation_id, "user_id": "u-mcp", "text": "cancel this"},
+                {
+                    "conversation_id": conversation_id,
+                    "user_id": "u-mcp",
+                    "text": "cancel this",
+                },
             )
         )
         run_id = asked["run_id"]
 
-        cancelled = _structured(await server.mcp.call_tool("conversation.cancel_run", {"run_id": run_id}))
+        cancelled = _structured(
+            await server.mcp.call_tool("conversation.cancel_run", {"run_id": run_id})
+        )
         assert cancelled["status"] == "cancelling"
         cancel_nodes = conversation_engine.get_nodes(
-            where={"$and": [{"entity_type": "workflow_cancel_request"}, {"run_id": run_id}]},
+            where={
+                "$and": [{"entity_type": "workflow_cancel_request"}, {"run_id": run_id}]
+            },
             limit=10,
         )
         assert len(cancel_nodes) == 1
 
         deadline = time.time() + 10.0
         while time.time() < deadline:
-            status = _structured(await server.mcp.call_tool("conversation.run_status", {"run_id": run_id}))
+            status = _structured(
+                await server.mcp.call_tool(
+                    "conversation.run_status", {"run_id": run_id}
+                )
+            )
             if status["status"] == "cancelled":
                 break
             time.sleep(0.05)
@@ -230,7 +290,9 @@ async def test_mcp_chat_submit_cancel_and_workflow_diagnostics(monkeypatch, engi
             raise AssertionError("Run did not reach cancelled status")
 
         transcript = _structured(
-            await server.mcp.call_tool("conversation.get_transcript", {"conversation_id": conversation_id})
+            await server.mcp.call_tool(
+                "conversation.get_transcript", {"conversation_id": conversation_id}
+            )
         )
         assert [turn["role"] for turn in transcript["turns"]] == ["user"]
 
@@ -257,11 +319,19 @@ async def test_mcp_chat_submit_cancel_and_workflow_diagnostics(monkeypatch, engi
     conversation_engine.add_node(checkpoint)
 
     with _claims("ro", "workflow"):
-        got = _structured(await server.mcp.call_tool("workflow.run_checkpoint_get", {"run_id": "diag-run", "step_seq": 0}))
+        got = _structured(
+            await server.mcp.call_tool(
+                "workflow.run_checkpoint_get", {"run_id": "diag-run", "step_seq": 0}
+            )
+        )
         assert got["state"]["answer"] == "draft"
 
         # replay_to needs at least one checkpoint and no subsequent steps for target=0
-        replay = _structured(await server.mcp.call_tool("workflow.run_replay", {"run_id": "diag-run", "target_step_seq": 0}))
+        replay = _structured(
+            await server.mcp.call_tool(
+                "workflow.run_replay", {"run_id": "diag-run", "target_step_seq": 0}
+            )
+        )
         assert replay["state"]["answer"] == "draft"
 
 
@@ -278,7 +348,9 @@ async def test_mcp_workflow_runtime_submit_cancel(monkeypatch, engine_triplet):
     )
 
     with _claims("rw", "conversation"):
-        created = _structured(await server.mcp.call_tool("conversation.create", {"user_id": "u-wf-mcp"}))
+        created = _structured(
+            await server.mcp.call_tool("conversation.create", {"user_id": "u-wf-mcp"})
+        )
         conversation_id = created["conversation_id"]
 
     with _claims("rw", "workflow"):
@@ -293,25 +365,33 @@ async def test_mcp_workflow_runtime_submit_cancel(monkeypatch, engine_triplet):
             )
         )
         run_id = submitted["run_id"]
-        cancelling = _structured(await server.mcp.call_tool("workflow.run_cancel", {"run_id": run_id}))
+        cancelling = _structured(
+            await server.mcp.call_tool("workflow.run_cancel", {"run_id": run_id})
+        )
         assert cancelling["status"] == "cancelling"
 
         deadline = time.time() + 10.0
         while time.time() < deadline:
-            status = _structured(await server.mcp.call_tool("workflow.run_status", {"run_id": run_id}))
+            status = _structured(
+                await server.mcp.call_tool("workflow.run_status", {"run_id": run_id})
+            )
             if status["status"] == "cancelled":
                 break
             time.sleep(0.05)
         else:
             raise AssertionError("Workflow run did not reach cancelled status")
 
-        events = _structured(await server.mcp.call_tool("workflow.run_events", {"run_id": run_id}))
+        events = _structured(
+            await server.mcp.call_tool("workflow.run_events", {"run_id": run_id})
+        )
         names = [str(evt.get("event_type") or "") for evt in events.get("events", [])]
         assert "run.cancelling" in names
         assert "run.cancelled" in names
 
         cancel_nodes = conversation_engine.get_nodes(
-            where={"$and": [{"entity_type": "workflow_cancel_request"}, {"run_id": run_id}]},
+            where={
+                "$and": [{"entity_type": "workflow_cancel_request"}, {"run_id": run_id}]
+            },
             limit=10,
         )
         assert len(cancel_nodes) == 1
@@ -320,7 +400,9 @@ async def test_mcp_workflow_runtime_submit_cancel(monkeypatch, engine_triplet):
 @pytest.mark.asyncio
 async def test_mcp_workflow_design_undo_redo(monkeypatch, engine_triplet):
     engine, conversation_engine, workflow_engine = engine_triplet
-    _configure_server(monkeypatch, engine, conversation_engine, workflow_engine, _success_runner)
+    _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
 
     workflow_id = "wf.design.mcp.undo_redo"
     designer_id = "designer-mcp"
@@ -369,7 +451,11 @@ async def test_mcp_workflow_design_undo_redo(monkeypatch, engine_triplet):
         )
         assert e1["edge_id"] == f"wf|{workflow_id}|e|start_end"
 
-        hist_before = _structured(await server.mcp.call_tool("workflow.design_history", {"workflow_id": workflow_id}))
+        hist_before = _structured(
+            await server.mcp.call_tool(
+                "workflow.design_history", {"workflow_id": workflow_id}
+            )
+        )
         assert int(hist_before["current_version"]) >= 3
         assert bool(hist_before["can_undo"]) is True
 
@@ -410,16 +496,26 @@ async def test_mcp_workflow_design_undo_redo(monkeypatch, engine_triplet):
             )
         )
         assert bool(deleted_after_redo.get("deleted")) is True
-        hist_after = _structured(await server.mcp.call_tool("workflow.design_history", {"workflow_id": workflow_id}))
-        timeline_ops = [str(item.get("op") or "") for item in hist_after.get("timeline", [])]
+        hist_after = _structured(
+            await server.mcp.call_tool(
+                "workflow.design_history", {"workflow_id": workflow_id}
+            )
+        )
+        timeline_ops = [
+            str(item.get("op") or "") for item in hist_after.get("timeline", [])
+        ]
         assert "UNDO_APPLIED" in timeline_ops
         assert "REDO_APPLIED" in timeline_ops
 
 
 @pytest.mark.asyncio
-async def test_mcp_workflow_design_requires_designer_id_and_enforces_subject(monkeypatch, engine_triplet):
+async def test_mcp_workflow_design_requires_designer_id_and_enforces_subject(
+    monkeypatch, engine_triplet
+):
     engine, conversation_engine, workflow_engine = engine_triplet
-    _configure_server(monkeypatch, engine, conversation_engine, workflow_engine, _success_runner)
+    _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
 
     with _claims("rw", "workflow", sub="alice"):
         with pytest.raises(Exception):

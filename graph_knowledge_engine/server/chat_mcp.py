@@ -19,7 +19,11 @@ def build_conversation_mcp(
     @tool_roles({role_rw})
     @require_ns({ns_conversation})
     @mcp.tool(name="conversation.create")
-    def conversation_create(user_id: str, conversation_id: str | None = None, start_node_id: str | None = None) -> dict[str, Any]:
+    def conversation_create(
+        user_id: str,
+        conversation_id: str | None = None,
+        start_node_id: str | None = None,
+    ) -> dict[str, Any]:
         return get_service().create_conversation(
             user_id=user_id,
             conversation_id=conversation_id,
@@ -97,7 +101,9 @@ def build_workflow_mcp(
     ) -> dict[str, Any]:
         if require_workflow_access:
             require_workflow_access(workflow_id, "rw")
-        effective_user_id = (get_user_id() if callable(get_user_id) else None) or user_id
+        effective_user_id = (
+            get_user_id() if callable(get_user_id) else None
+        ) or user_id
         return get_service().submit_workflow_run(
             workflow_id=workflow_id,
             conversation_id=conversation_id,
@@ -121,7 +127,9 @@ def build_workflow_mcp(
     @tool_roles({role_ro, role_rw})
     @require_ns({ns_workflow})
     @mcp.tool(name="workflow.run_events")
-    def workflow_run_events(run_id: str, after_seq: int = 0, limit: int = 200) -> dict[str, Any]:
+    def workflow_run_events(
+        run_id: str, after_seq: int = 0, limit: int = 200
+    ) -> dict[str, Any]:
         events = get_service().list_run_events(run_id, after_seq=after_seq)
         if limit > 0:
             events = events[: int(limit)]
@@ -193,7 +201,9 @@ def build_workflow_mcp(
     @tool_roles({role_rw})
     @require_ns({ns_workflow})
     @mcp.tool(name="workflow.design_node_delete")
-    def workflow_design_node_delete(workflow_id: str, node_id: str, designer_id: str) -> dict[str, Any]:
+    def workflow_design_node_delete(
+        workflow_id: str, node_id: str, designer_id: str
+    ) -> dict[str, Any]:
         return get_service().workflow_design_delete_node(
             workflow_id=workflow_id,
             node_id=node_id,
@@ -205,7 +215,9 @@ def build_workflow_mcp(
     @tool_roles({role_rw})
     @require_ns({ns_workflow})
     @mcp.tool(name="workflow.design_edge_delete")
-    def workflow_design_edge_delete(workflow_id: str, edge_id: str, designer_id: str) -> dict[str, Any]:
+    def workflow_design_edge_delete(
+        workflow_id: str, edge_id: str, designer_id: str
+    ) -> dict[str, Any]:
         return get_service().workflow_design_delete_edge(
             workflow_id=workflow_id,
             edge_id=edge_id,

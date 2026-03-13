@@ -12,13 +12,17 @@ import pytest
 from fastapi.testclient import TestClient
 
 import graph_knowledge_engine.server_mcp_with_admin as server
-from graph_knowledge_engine.conversation.agentic_answering import AgenticAnsweringAgent
 from graph_knowledge_engine.conversation.models import ConversationNode
 from graph_knowledge_engine.conversation.service import ConversationService
 from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
 from graph_knowledge_engine.engine_core.models import Grounding, Span
 from graph_knowledge_engine.runtime.design import load_workflow_design
-from graph_knowledge_engine.runtime.models import WorkflowCancelledNode, WorkflowCompletedNode, WorkflowCheckpointNode, WorkflowStepExecNode
+from graph_knowledge_engine.runtime.models import (
+    WorkflowCancelledNode,
+    WorkflowCompletedNode,
+    WorkflowCheckpointNode,
+    WorkflowStepExecNode,
+)
 from graph_knowledge_engine.server.chat_service import (
     AnswerRunRequest,
     ChatRunService,
@@ -59,15 +63,34 @@ def engine_triplet():
     try:
         ef = FakeEmbeddingFunction()
         yield (
-            GraphKnowledgeEngine(persist_directory=str(root / "kg"), kg_graph_type="knowledge", embedding_function=ef),
-            GraphKnowledgeEngine(persist_directory=str(root / "conversation"), kg_graph_type="conversation", embedding_function=ef),
-            GraphKnowledgeEngine(persist_directory=str(root / "workflow"), kg_graph_type="workflow", embedding_function=ef),
+            GraphKnowledgeEngine(
+                persist_directory=str(root / "kg"),
+                kg_graph_type="knowledge",
+                embedding_function=ef,
+            ),
+            GraphKnowledgeEngine(
+                persist_directory=str(root / "conversation"),
+                kg_graph_type="conversation",
+                embedding_function=ef,
+            ),
+            GraphKnowledgeEngine(
+                persist_directory=str(root / "workflow"),
+                kg_graph_type="workflow",
+                embedding_function=ef,
+            ),
         )
     finally:
         shutil.rmtree(root, ignore_errors=True)
 
 
-def _configure_server(monkeypatch, engine, conversation_engine, workflow_engine, answer_runner, runtime_runner=None):
+def _configure_server(
+    monkeypatch,
+    engine,
+    conversation_engine,
+    workflow_engine,
+    answer_runner,
+    runtime_runner=None,
+):
     registry = RunRegistry(workflow_engine.meta_sqlite)
     service = ChatRunService(
         get_knowledge_engine=lambda: engine,
@@ -78,18 +101,31 @@ def _configure_server(monkeypatch, engine, conversation_engine, workflow_engine,
         runtime_runner=runtime_runner,
     )
     monkeypatch.setattr(server, "engine", _FixedResource(engine), raising=False)
-    monkeypatch.setattr(server, "conversation_engine", _FixedResource(conversation_engine), raising=False)
-    monkeypatch.setattr(server, "workflow_engine", _FixedResource(workflow_engine), raising=False)
+    monkeypatch.setattr(
+        server,
+        "conversation_engine",
+        _FixedResource(conversation_engine),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        server, "workflow_engine", _FixedResource(workflow_engine), raising=False
+    )
     monkeypatch.setattr(server, "run_registry", _FixedResource(registry), raising=False)
     monkeypatch.setattr(server, "chat_service", _FixedResource(service), raising=False)
+
     @asynccontextmanager
     async def _noop_lifespan(_app):
         yield
-    monkeypatch.setattr(server.app.router, "lifespan_context", _noop_lifespan, raising=False)
+
+    monkeypatch.setattr(
+        server.app.router, "lifespan_context", _noop_lifespan, raising=False
+    )
     return service, registry
 
 
-def _token_header(client: TestClient, *, role: str, ns: str, username: str = "tester") -> dict[str, str]:
+def _token_header(
+    client: TestClient, *, role: str, ns: str, username: str = "tester"
+) -> dict[str, str]:
     resp = client.post(
         "/auth/dev-token",
         json={"username": username, "role": role, "ns": ns},
@@ -125,7 +161,9 @@ def _collect_sse_events(
     *,
     path_template: str = "/api/runs/{run_id}/events",
 ) -> list[tuple[str, dict]]:
-    with client.stream("GET", path_template.format(run_id=run_id), headers=headers) as resp:
+    with client.stream(
+        "GET", path_template.format(run_id=run_id), headers=headers
+    ) as resp:
         resp.raise_for_status()
         body = "".join(resp.iter_text())
     events: list[tuple[str, dict]] = []
@@ -138,17 +176,27 @@ def _collect_sse_events(
     return events
 
 
-def _visible_workflow_design_ids(workflow_engine, *, workflow_id: str) -> tuple[str, set[str], set[str]]:
-    start, nodes, adj, _rev_adj = load_workflow_design(workflow_engine=workflow_engine, workflow_id=workflow_id)
+def _visible_workflow_design_ids(
+    workflow_engine, *, workflow_id: str
+) -> tuple[str, set[str], set[str]]:
+    start, nodes, adj, _rev_adj = load_workflow_design(
+        workflow_engine=workflow_engine, workflow_id=workflow_id
+    )
     edge_ids = {str(edge.id) for edges in adj.values() for edge in edges}
     return str(start.id), {str(node_id) for node_id in nodes.keys()}, edge_ids
 
 
 def _success_runner(req: AnswerRunRequest) -> dict:
     req.publish("run.stage", {"stage": "retrieve"})
-    req.publish("reasoning.summary", {"stage": "retrieve", "summary": "Retrieving candidate evidence."})
+    req.publish(
+        "reasoning.summary",
+        {"stage": "retrieve", "summary": "Retrieving candidate evidence."},
+    )
     req.publish("run.stage", {"stage": "draft_answer"})
-    req.publish("reasoning.summary", {"stage": "draft_answer", "summary": "Drafting the answer."})
+    req.publish(
+        "reasoning.summary",
+        {"stage": "draft_answer", "summary": "Drafting the answer."},
+    )
     assistant_text = f"Assistant reply: {req.user_text}"
     assistant_turn_node_id = f"assistant|{uuid.uuid4().hex}"
     embedding = req.conversation_engine.iterative_defensive_emb(assistant_text)
@@ -163,13 +211,22 @@ def _success_runner(req: AnswerRunRequest) -> dict:
             turn_index=req.prev_turn_meta_summary.tail_turn_index + 1,
             properties={"content": assistant_text, "entity_type": "assistant_turn"},
             mentions=[Grounding(spans=[Span.from_dummy_for_conversation()])],
-            metadata={"level_from_root": 0, "entity_type": "assistant_turn", "in_conversation_chain": True, "in_ui_chain": True},
+            metadata={
+                "level_from_root": 0,
+                "entity_type": "assistant_turn",
+                "in_conversation_chain": True,
+                "in_ui_chain": True,
+            },
             domain_id=None,
             canonical_entity_id=None,
-            embedding=(embedding.tolist() if hasattr(embedding, "tolist") else embedding),
+            embedding=(
+                embedding.tolist() if hasattr(embedding, "tolist") else embedding
+            ),
         )
     )
-    req.prev_turn_meta_summary.prev_node_char_distance_from_last_summary += len(assistant_text)
+    req.prev_turn_meta_summary.prev_node_char_distance_from_last_summary += len(
+        assistant_text
+    )
     req.prev_turn_meta_summary.prev_node_distance_from_last_summary += 1
     req.prev_turn_meta_summary.tail_turn_index += 1
     return {
@@ -181,7 +238,10 @@ def _success_runner(req: AnswerRunRequest) -> dict:
 
 def _cancel_runner(req: AnswerRunRequest) -> dict:
     req.publish("run.stage", {"stage": "retrieve"})
-    req.publish("reasoning.summary", {"stage": "retrieve", "summary": "Retrieving candidate evidence."})
+    req.publish(
+        "reasoning.summary",
+        {"stage": "retrieve", "summary": "Retrieving candidate evidence."},
+    )
     deadline = time.time() + 5.0
     while time.time() < deadline:
         if req.is_cancel_requested():
@@ -192,7 +252,10 @@ def _cancel_runner(req: AnswerRunRequest) -> dict:
 
 def _runtime_success_runner(req: RuntimeRunRequest) -> dict:
     req.publish("run.stage", {"stage": "execute"})
-    req.publish("reasoning.summary", {"stage": "execute", "summary": "Executing workflow runtime."})
+    req.publish(
+        "reasoning.summary",
+        {"stage": "execute", "summary": "Executing workflow runtime."},
+    )
     if req.is_cancel_requested():
         raise RunCancelledError()
     return {
@@ -213,7 +276,15 @@ def _runtime_cancel_runner(req: RuntimeRunRequest) -> dict:
     raise AssertionError("Expected runtime workflow to be cancelled")
 
 
-def _seed_step(conversation_engine, *, run_id: str, workflow_id: str, step_seq: int, op: str, state_update: list):
+def _seed_step(
+    conversation_engine,
+    *,
+    run_id: str,
+    workflow_id: str,
+    step_seq: int,
+    op: str,
+    state_update: list,
+):
     node = WorkflowStepExecNode(
         id=f"wf_step|{run_id}|{step_seq}",
         label=f"Step {step_seq}",
@@ -248,7 +319,9 @@ def _seed_step(conversation_engine, *, run_id: str, workflow_id: str, step_seq: 
     conversation_engine.add_node(node)
 
 
-def _seed_checkpoint(conversation_engine, *, run_id: str, workflow_id: str, step_seq: int, state: dict):
+def _seed_checkpoint(
+    conversation_engine, *, run_id: str, workflow_id: str, step_seq: int, state: dict
+):
     node = WorkflowCheckpointNode(
         id=f"wf_ckpt|{run_id}|{step_seq}",
         label=f"Checkpoint {step_seq}",
@@ -306,12 +379,16 @@ def _seed_terminal_node(
 
 def test_chat_rest_submit_and_sse(monkeypatch, engine_triplet):
     engine, conversation_engine, workflow_engine = engine_triplet
-    _configure_server(monkeypatch, engine, conversation_engine, workflow_engine, _success_runner)
+    _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
     with TestClient(server.app) as client:
         rw_headers = _token_header(client, role="rw", ns="conversation")
         ro_headers = _token_header(client, role="ro", ns="conversation")
 
-        created = client.post("/api/conversations", json={"user_id": "u-chat"}, headers=rw_headers)
+        created = client.post(
+            "/api/conversations", json={"user_id": "u-chat"}, headers=rw_headers
+        )
         created.raise_for_status()
         conversation_id = created.json()["conversation_id"]
 
@@ -325,9 +402,13 @@ def test_chat_rest_submit_and_sse(monkeypatch, engine_triplet):
 
         final_run = _wait_for_status(client, run_id, ro_headers, {"succeeded"})
         assert final_run["assistant_turn_node_id"]
-        assert not Path(workflow_engine.persist_directory, "server_runs.sqlite").exists()
+        assert not Path(
+            workflow_engine.persist_directory, "server_runs.sqlite"
+        ).exists()
 
-        turns = client.get(f"/api/conversations/{conversation_id}/turns", headers=ro_headers)
+        turns = client.get(
+            f"/api/conversations/{conversation_id}/turns", headers=ro_headers
+        )
         turns.raise_for_status()
         transcript = turns.json()["turns"]
         assert [turn["role"] for turn in transcript] == ["user", "assistant"]
@@ -343,19 +424,25 @@ def test_chat_rest_submit_and_sse(monkeypatch, engine_triplet):
         assert "output.completed" in names
         assert names[-1] == "run.completed"
 
-        reopened = client.get(f"/api/conversations/{conversation_id}", headers=ro_headers)
+        reopened = client.get(
+            f"/api/conversations/{conversation_id}", headers=ro_headers
+        )
         reopened.raise_for_status()
         assert reopened.json()["turn_count"] == 2
 
 
 def test_chat_rest_cancelled_run_persists_no_assistant(monkeypatch, engine_triplet):
     engine, conversation_engine, workflow_engine = engine_triplet
-    _configure_server(monkeypatch, engine, conversation_engine, workflow_engine, _cancel_runner)
+    _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _cancel_runner
+    )
     with TestClient(server.app) as client:
         rw_headers = _token_header(client, role="rw", ns="conversation")
         ro_headers = _token_header(client, role="ro", ns="conversation")
 
-        created = client.post("/api/conversations", json={"user_id": "u-cancel"}, headers=rw_headers)
+        created = client.post(
+            "/api/conversations", json={"user_id": "u-cancel"}, headers=rw_headers
+        )
         created.raise_for_status()
         conversation_id = created.json()["conversation_id"]
 
@@ -369,7 +456,9 @@ def test_chat_rest_cancelled_run_persists_no_assistant(monkeypatch, engine_tripl
         cancel = client.post(f"/api/runs/{run_id}/cancel", headers=rw_headers)
         assert cancel.status_code == 202
         cancel_nodes = conversation_engine.get_nodes(
-            where={"$and": [{"entity_type": "workflow_cancel_request"}, {"run_id": run_id}]},
+            where={
+                "$and": [{"entity_type": "workflow_cancel_request"}, {"run_id": run_id}]
+            },
             limit=10,
         )
         assert len(cancel_nodes) == 1
@@ -377,7 +466,9 @@ def test_chat_rest_cancelled_run_persists_no_assistant(monkeypatch, engine_tripl
         final_run = _wait_for_status(client, run_id, ro_headers, {"cancelled"})
         assert final_run["assistant_turn_node_id"] in (None, "")
 
-        turns = client.get(f"/api/conversations/{conversation_id}/turns", headers=ro_headers)
+        turns = client.get(
+            f"/api/conversations/{conversation_id}/turns", headers=ro_headers
+        )
         turns.raise_for_status()
         transcript = turns.json()["turns"]
         assert [turn["role"] for turn in transcript] == ["user"]
@@ -390,16 +481,22 @@ def test_chat_rest_cancelled_run_persists_no_assistant(monkeypatch, engine_tripl
 
 def test_chat_debug_endpoints_namespace_and_workflow_viz(monkeypatch, engine_triplet):
     engine, conversation_engine, workflow_engine = engine_triplet
-    service, _registry = _configure_server(monkeypatch, engine, conversation_engine, workflow_engine, _success_runner)
+    service, _registry = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
     with TestClient(server.app) as client:
         docs_headers = _token_header(client, role="rw", ns="docs")
         conv_headers = _token_header(client, role="rw", ns="conversation")
         workflow_headers = _token_header(client, role="ro", ns="workflow")
 
-        forbidden = client.post("/api/conversations", json={"user_id": "u-docs"}, headers=docs_headers)
+        forbidden = client.post(
+            "/api/conversations", json={"user_id": "u-docs"}, headers=docs_headers
+        )
         assert forbidden.status_code == 403
 
-        created = client.post("/api/conversations", json={"user_id": "u-snap"}, headers=conv_headers)
+        created = client.post(
+            "/api/conversations", json={"user_id": "u-snap"}, headers=conv_headers
+        )
         created.raise_for_status()
         conversation_id = created.json()["conversation_id"]
         start_node_id = created.json()["start_node_id"]
@@ -433,23 +530,49 @@ def test_chat_debug_endpoints_namespace_and_workflow_viz(monkeypatch, engine_tri
 
         run_id = "seed-run"
         workflow_id = "wf.test"
-        _seed_checkpoint(conversation_engine, run_id=run_id, workflow_id=workflow_id, step_seq=0, state={"counter": 1})
-        _seed_step(conversation_engine, run_id=run_id, workflow_id=workflow_id, step_seq=0, op="prepare", state_update=[["u", {"counter": 1}]])
-        _seed_step(conversation_engine, run_id=run_id, workflow_id=workflow_id, step_seq=1, op="persist", state_update=[["u", {"counter": 2}]])
+        _seed_checkpoint(
+            conversation_engine,
+            run_id=run_id,
+            workflow_id=workflow_id,
+            step_seq=0,
+            state={"counter": 1},
+        )
+        _seed_step(
+            conversation_engine,
+            run_id=run_id,
+            workflow_id=workflow_id,
+            step_seq=0,
+            op="prepare",
+            state_update=[["u", {"counter": 1}]],
+        )
+        _seed_step(
+            conversation_engine,
+            run_id=run_id,
+            workflow_id=workflow_id,
+            step_seq=1,
+            op="persist",
+            state_update=[["u", {"counter": 2}]],
+        )
 
         steps = client.get(f"/api/runs/{run_id}/steps", headers=workflow_headers)
         steps.raise_for_status()
         assert [step["step_seq"] for step in steps.json()["steps"]] == [0, 1]
 
-        checkpoints = client.get(f"/api/runs/{run_id}/checkpoints", headers=workflow_headers)
+        checkpoints = client.get(
+            f"/api/runs/{run_id}/checkpoints", headers=workflow_headers
+        )
         checkpoints.raise_for_status()
         assert checkpoints.json()["checkpoints"][0]["state"]["counter"] == 1
 
-        checkpoint = client.get(f"/api/runs/{run_id}/checkpoints/0", headers=workflow_headers)
+        checkpoint = client.get(
+            f"/api/runs/{run_id}/checkpoints/0", headers=workflow_headers
+        )
         checkpoint.raise_for_status()
         assert checkpoint.json()["state"]["counter"] == 1
 
-        replay = client.get(f"/api/runs/{run_id}/replay?target_step_seq=1", headers=workflow_headers)
+        replay = client.get(
+            f"/api/runs/{run_id}/replay?target_step_seq=1", headers=workflow_headers
+        )
         replay.raise_for_status()
         assert replay.json()["state"]["counter"] == 2
 
@@ -475,7 +598,9 @@ def test_runtime_rest_submit_and_sse(monkeypatch, engine_triplet):
         wf_rw = _token_header(client, role="rw", ns="workflow")
         wf_ro = _token_header(client, role="ro", ns="workflow")
 
-        created = client.post("/api/conversations", json={"user_id": "u-runtime"}, headers=conv_rw)
+        created = client.post(
+            "/api/conversations", json={"user_id": "u-runtime"}, headers=conv_rw
+        )
         created.raise_for_status()
         conversation_id = created.json()["conversation_id"]
 
@@ -530,7 +655,9 @@ def test_runtime_rest_cancel(monkeypatch, engine_triplet):
         wf_rw = _token_header(client, role="rw", ns="workflow")
         wf_ro = _token_header(client, role="ro", ns="workflow")
 
-        created = client.post("/api/conversations", json={"user_id": "u-runtime-cancel"}, headers=conv_rw)
+        created = client.post(
+            "/api/conversations", json={"user_id": "u-runtime-cancel"}, headers=conv_rw
+        )
         created.raise_for_status()
         conversation_id = created.json()["conversation_id"]
 
@@ -559,7 +686,9 @@ def test_runtime_rest_cancel(monkeypatch, engine_triplet):
         assert final_run["status"] == "cancelled"
 
         cancel_nodes = conversation_engine.get_nodes(
-            where={"$and": [{"entity_type": "workflow_cancel_request"}, {"run_id": run_id}]},
+            where={
+                "$and": [{"entity_type": "workflow_cancel_request"}, {"run_id": run_id}]
+            },
             limit=10,
         )
         assert len(cancel_nodes) == 1
@@ -577,7 +706,9 @@ def test_runtime_rest_cancel(monkeypatch, engine_triplet):
 
 def test_get_run_prefers_workflow_completed_terminal_node(monkeypatch, engine_triplet):
     engine, conversation_engine, workflow_engine = engine_triplet
-    service, registry = _configure_server(monkeypatch, engine, conversation_engine, workflow_engine, _success_runner)
+    service, registry = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
     run_id = "run-terminal-completed"
     registry.create_run(
         run_id=run_id,
@@ -586,7 +717,12 @@ def test_get_run_prefers_workflow_completed_terminal_node(monkeypatch, engine_tr
         user_id="u1",
         user_turn_node_id="turn-1",
     )
-    registry.update_status(run_id, status="succeeded", result={"workflow_status": "succeeded"}, finished=True)
+    registry.update_status(
+        run_id,
+        status="succeeded",
+        result={"workflow_status": "succeeded"},
+        finished=True,
+    )
     _seed_terminal_node(
         conversation_engine,
         node_cls=WorkflowCompletedNode,
@@ -603,7 +739,9 @@ def test_get_run_prefers_workflow_completed_terminal_node(monkeypatch, engine_tr
 
 def test_get_run_prefers_workflow_cancelled_terminal_node(monkeypatch, engine_triplet):
     engine, conversation_engine, workflow_engine = engine_triplet
-    service, registry = _configure_server(monkeypatch, engine, conversation_engine, workflow_engine, _success_runner)
+    service, registry = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
     run_id = "run-terminal-cancelled"
     registry.create_run(
         run_id=run_id,
@@ -612,7 +750,12 @@ def test_get_run_prefers_workflow_cancelled_terminal_node(monkeypatch, engine_tr
         user_id="u1",
         user_turn_node_id="turn-1",
     )
-    registry.update_status(run_id, status="cancelled", result={"workflow_status": "cancelled"}, finished=True)
+    registry.update_status(
+        run_id,
+        status="cancelled",
+        result={"workflow_status": "cancelled"},
+        finished=True,
+    )
     _seed_terminal_node(
         conversation_engine,
         node_cls=WorkflowCancelledNode,
@@ -629,7 +772,9 @@ def test_get_run_prefers_workflow_cancelled_terminal_node(monkeypatch, engine_tr
 
 def test_cancel_run_is_noop_when_run_already_terminal(monkeypatch, engine_triplet):
     engine, conversation_engine, workflow_engine = engine_triplet
-    service, registry = _configure_server(monkeypatch, engine, conversation_engine, workflow_engine, _success_runner)
+    service, registry = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
     run_id = "run-terminal-noop"
     registry.create_run(
         run_id=run_id,
@@ -644,7 +789,9 @@ def test_cancel_run_is_noop_when_run_already_terminal(monkeypatch, engine_triple
     assert result["status"] == "succeeded"
     assert result["terminal"] is True
     cancel_requests = conversation_engine.get_nodes(
-        where={"$and": [{"entity_type": "workflow_cancel_request"}, {"run_id": run_id}]},
+        where={
+            "$and": [{"entity_type": "workflow_cancel_request"}, {"run_id": run_id}]
+        },
         limit=10,
     )
     assert cancel_requests == []
@@ -652,7 +799,9 @@ def test_cancel_run_is_noop_when_run_already_terminal(monkeypatch, engine_triple
 
 def test_runtime_design_rest_undo_redo(monkeypatch, engine_triplet):
     engine, conversation_engine, workflow_engine = engine_triplet
-    _configure_server(monkeypatch, engine, conversation_engine, workflow_engine, _success_runner)
+    _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
     with TestClient(server.app) as client:
         wf_rw = _token_header(client, role="rw", ns="workflow")
         wf_ro = _token_header(client, role="ro", ns="workflow")
@@ -734,16 +883,24 @@ def test_runtime_design_rest_undo_redo(monkeypatch, engine_triplet):
             headers=wf_rw,
         )
         assert deleted_after_redo.status_code == 200
-        hist_after = client.get(f"/api/workflow/design/{workflow_id}/history", headers=wf_ro)
+        hist_after = client.get(
+            f"/api/workflow/design/{workflow_id}/history", headers=wf_ro
+        )
         hist_after.raise_for_status()
-        timeline_ops = [str(item.get("op") or "") for item in hist_after.json().get("timeline", [])]
+        timeline_ops = [
+            str(item.get("op") or "") for item in hist_after.json().get("timeline", [])
+        ]
         assert "UNDO_APPLIED" in timeline_ops
         assert "REDO_APPLIED" in timeline_ops
 
 
-def test_runtime_design_delete_node_undo_redo_uses_delta_and_preserves_ids(monkeypatch, engine_triplet):
+def test_runtime_design_delete_node_undo_redo_uses_delta_and_preserves_ids(
+    monkeypatch, engine_triplet
+):
     engine, conversation_engine, workflow_engine = engine_triplet
-    service, _registry = _configure_server(monkeypatch, engine, conversation_engine, workflow_engine, _success_runner)
+    service, _registry = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
     workflow_id = "wf.design.rest.delete_node_delta"
     start_id = f"wf|{workflow_id}|start"
     end_id = f"wf|{workflow_id}|end"
@@ -755,12 +912,24 @@ def test_runtime_design_delete_node_undo_redo_uses_delta_and_preserves_ids(monke
 
         client.post(
             f"/api/workflow/design/{workflow_id}/nodes",
-            json={"designer_id": designer_id, "node_id": start_id, "label": "Start", "op": "start", "start": True},
+            json={
+                "designer_id": designer_id,
+                "node_id": start_id,
+                "label": "Start",
+                "op": "start",
+                "start": True,
+            },
             headers=wf_rw,
         ).raise_for_status()
         client.post(
             f"/api/workflow/design/{workflow_id}/nodes",
-            json={"designer_id": designer_id, "node_id": end_id, "label": "End", "op": "end", "terminal": True},
+            json={
+                "designer_id": designer_id,
+                "node_id": end_id,
+                "label": "End",
+                "op": "end",
+                "terminal": True,
+            },
             headers=wf_rw,
         ).raise_for_status()
         client.post(
@@ -784,7 +953,9 @@ def test_runtime_design_delete_node_undo_redo_uses_delta_and_preserves_ids(monke
         )
         deleted.raise_for_status()
         assert deleted.json()["deleted"] is True
-        assert _visible_workflow_design_ids(workflow_engine, workflow_id=workflow_id) == (start_id, {start_id}, set())
+        assert _visible_workflow_design_ids(
+            workflow_engine, workflow_id=workflow_id
+        ) == (start_id, {start_id}, set())
 
         delta = workflow_engine.meta_sqlite.get_workflow_design_delta(
             workflow_id=workflow_id,
@@ -800,9 +971,15 @@ def test_runtime_design_delete_node_undo_redo_uses_delta_and_preserves_ids(monke
         assert [str(item["id"]) for item in inverse["upsert_edges"]] == [edge_id]
 
         def _unexpected_rebuild(*, workflow_id: str, state: dict[str, object]) -> None:
-            raise AssertionError(f"unexpected rebuild for {workflow_id}: {state.get('current_version')}")
+            raise AssertionError(
+                f"unexpected rebuild for {workflow_id}: {state.get('current_version')}"
+            )
 
-        monkeypatch.setattr(service._workflow_design, "_workflow_rebuild_namespace_for_state", _unexpected_rebuild)
+        monkeypatch.setattr(
+            service._workflow_design,
+            "_workflow_rebuild_namespace_for_state",
+            _unexpected_rebuild,
+        )
 
         undone = client.post(
             f"/api/workflow/design/{workflow_id}/undo",
@@ -811,7 +988,9 @@ def test_runtime_design_delete_node_undo_redo_uses_delta_and_preserves_ids(monke
         )
         undone.raise_for_status()
         assert undone.json()["status"] == "ok"
-        assert _visible_workflow_design_ids(workflow_engine, workflow_id=workflow_id) == (
+        assert _visible_workflow_design_ids(
+            workflow_engine, workflow_id=workflow_id
+        ) == (
             start_id,
             {start_id, end_id},
             {edge_id},
@@ -829,7 +1008,9 @@ def test_runtime_design_delete_node_undo_redo_uses_delta_and_preserves_ids(monke
         )
         redone.raise_for_status()
         assert redone.json()["status"] == "ok"
-        assert _visible_workflow_design_ids(workflow_engine, workflow_id=workflow_id) == (start_id, {start_id}, set())
+        assert _visible_workflow_design_ids(
+            workflow_engine, workflow_id=workflow_id
+        ) == (start_id, {start_id}, set())
 
         deleted_again = client.request(
             "DELETE",
@@ -840,9 +1021,13 @@ def test_runtime_design_delete_node_undo_redo_uses_delta_and_preserves_ids(monke
         assert deleted_again.status_code == 404
 
 
-def test_runtime_design_delete_edge_undo_redo_uses_delta_and_preserves_ids(monkeypatch, engine_triplet):
+def test_runtime_design_delete_edge_undo_redo_uses_delta_and_preserves_ids(
+    monkeypatch, engine_triplet
+):
     engine, conversation_engine, workflow_engine = engine_triplet
-    service, _registry = _configure_server(monkeypatch, engine, conversation_engine, workflow_engine, _success_runner)
+    service, _registry = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
     workflow_id = "wf.design.rest.delete_edge_delta"
     start_id = f"wf|{workflow_id}|start"
     end_id = f"wf|{workflow_id}|end"
@@ -854,12 +1039,24 @@ def test_runtime_design_delete_edge_undo_redo_uses_delta_and_preserves_ids(monke
 
         client.post(
             f"/api/workflow/design/{workflow_id}/nodes",
-            json={"designer_id": designer_id, "node_id": start_id, "label": "Start", "op": "start", "start": True},
+            json={
+                "designer_id": designer_id,
+                "node_id": start_id,
+                "label": "Start",
+                "op": "start",
+                "start": True,
+            },
             headers=wf_rw,
         ).raise_for_status()
         client.post(
             f"/api/workflow/design/{workflow_id}/nodes",
-            json={"designer_id": designer_id, "node_id": end_id, "label": "End", "op": "end", "terminal": True},
+            json={
+                "designer_id": designer_id,
+                "node_id": end_id,
+                "label": "End",
+                "op": "end",
+                "terminal": True,
+            },
             headers=wf_rw,
         ).raise_for_status()
         client.post(
@@ -883,7 +1080,9 @@ def test_runtime_design_delete_edge_undo_redo_uses_delta_and_preserves_ids(monke
         )
         deleted.raise_for_status()
         assert deleted.json()["deleted"] is True
-        assert _visible_workflow_design_ids(workflow_engine, workflow_id=workflow_id) == (
+        assert _visible_workflow_design_ids(
+            workflow_engine, workflow_id=workflow_id
+        ) == (
             start_id,
             {start_id, end_id},
             set(),
@@ -903,9 +1102,15 @@ def test_runtime_design_delete_edge_undo_redo_uses_delta_and_preserves_ids(monke
         assert [str(item["id"]) for item in inverse["upsert_edges"]] == [edge_id]
 
         def _unexpected_rebuild(*, workflow_id: str, state: dict[str, object]) -> None:
-            raise AssertionError(f"unexpected rebuild for {workflow_id}: {state.get('current_version')}")
+            raise AssertionError(
+                f"unexpected rebuild for {workflow_id}: {state.get('current_version')}"
+            )
 
-        monkeypatch.setattr(service._workflow_design, "_workflow_rebuild_namespace_for_state", _unexpected_rebuild)
+        monkeypatch.setattr(
+            service._workflow_design,
+            "_workflow_rebuild_namespace_for_state",
+            _unexpected_rebuild,
+        )
 
         undone = client.post(
             f"/api/workflow/design/{workflow_id}/undo",
@@ -914,7 +1119,9 @@ def test_runtime_design_delete_edge_undo_redo_uses_delta_and_preserves_ids(monke
         )
         undone.raise_for_status()
         assert undone.json()["status"] == "ok"
-        assert _visible_workflow_design_ids(workflow_engine, workflow_id=workflow_id) == (
+        assert _visible_workflow_design_ids(
+            workflow_engine, workflow_id=workflow_id
+        ) == (
             start_id,
             {start_id, end_id},
             {edge_id},
@@ -932,7 +1139,9 @@ def test_runtime_design_delete_edge_undo_redo_uses_delta_and_preserves_ids(monke
         )
         redone.raise_for_status()
         assert redone.json()["status"] == "ok"
-        assert _visible_workflow_design_ids(workflow_engine, workflow_id=workflow_id) == (
+        assert _visible_workflow_design_ids(
+            workflow_engine, workflow_id=workflow_id
+        ) == (
             start_id,
             {start_id, end_id},
             set(),
@@ -947,9 +1156,13 @@ def test_runtime_design_delete_edge_undo_redo_uses_delta_and_preserves_ids(monke
         assert deleted_again.status_code == 404
 
 
-def test_runtime_design_missing_delta_falls_back_to_rebuild(monkeypatch, engine_triplet):
+def test_runtime_design_missing_delta_falls_back_to_rebuild(
+    monkeypatch, engine_triplet
+):
     engine, conversation_engine, workflow_engine = engine_triplet
-    service, _registry = _configure_server(monkeypatch, engine, conversation_engine, workflow_engine, _success_runner)
+    service, _registry = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
     workflow_id = "wf.design.rest.delta_fallback"
     start_id = f"wf|{workflow_id}|start"
     end_id = f"wf|{workflow_id}|end"
@@ -960,12 +1173,24 @@ def test_runtime_design_missing_delta_falls_back_to_rebuild(monkeypatch, engine_
 
         client.post(
             f"/api/workflow/design/{workflow_id}/nodes",
-            json={"designer_id": designer_id, "node_id": start_id, "label": "Start", "op": "start", "start": True},
+            json={
+                "designer_id": designer_id,
+                "node_id": start_id,
+                "label": "Start",
+                "op": "start",
+                "start": True,
+            },
             headers=wf_rw,
         ).raise_for_status()
         client.post(
             f"/api/workflow/design/{workflow_id}/nodes",
-            json={"designer_id": designer_id, "node_id": end_id, "label": "End", "op": "end", "terminal": True},
+            json={
+                "designer_id": designer_id,
+                "node_id": end_id,
+                "label": "End",
+                "op": "end",
+                "terminal": True,
+            },
             headers=wf_rw,
         ).raise_for_status()
         client.post(
@@ -987,15 +1212,23 @@ def test_runtime_design_missing_delta_falls_back_to_rebuild(monkeypatch, engine_
             headers=wf_rw,
         ).raise_for_status()
 
-        workflow_engine.meta_sqlite.clear_workflow_design_deltas(workflow_id=workflow_id)
+        workflow_engine.meta_sqlite.clear_workflow_design_deltas(
+            workflow_id=workflow_id
+        )
         rebuild_calls: list[int] = []
-        original_rebuild = service._workflow_design._workflow_rebuild_namespace_for_state
+        original_rebuild = (
+            service._workflow_design._workflow_rebuild_namespace_for_state
+        )
 
         def _wrapped_rebuild(*, workflow_id: str, state: dict[str, object]) -> None:
             rebuild_calls.append(int(state.get("current_version") or -1))
             original_rebuild(workflow_id=workflow_id, state=state)
 
-        monkeypatch.setattr(service._workflow_design, "_workflow_rebuild_namespace_for_state", _wrapped_rebuild)
+        monkeypatch.setattr(
+            service._workflow_design,
+            "_workflow_rebuild_namespace_for_state",
+            _wrapped_rebuild,
+        )
 
         undone = client.post(
             f"/api/workflow/design/{workflow_id}/undo",
@@ -1005,16 +1238,22 @@ def test_runtime_design_missing_delta_falls_back_to_rebuild(monkeypatch, engine_
         undone.raise_for_status()
         assert undone.json()["status"] == "ok"
         assert rebuild_calls == [3]
-        assert _visible_workflow_design_ids(workflow_engine, workflow_id=workflow_id) == (
+        assert _visible_workflow_design_ids(
+            workflow_engine, workflow_id=workflow_id
+        ) == (
             start_id,
             {start_id, end_id},
             {edge_id},
         )
 
 
-def test_runtime_design_undo_then_append_does_not_restore_discarded_branch(monkeypatch, engine_triplet):
+def test_runtime_design_undo_then_append_does_not_restore_discarded_branch(
+    monkeypatch, engine_triplet
+):
     engine, conversation_engine, workflow_engine = engine_triplet
-    _configure_server(monkeypatch, engine, conversation_engine, workflow_engine, _success_runner)
+    _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
     with TestClient(server.app) as client:
         wf_rw = _token_header(client, role="rw", ns="workflow")
         wf_ro = _token_header(client, role="ro", ns="workflow")
@@ -1069,7 +1308,12 @@ def test_runtime_design_undo_then_append_does_not_restore_discarded_branch(monke
         # New edit after undo must truncate redo branch.
         client.post(
             f"/api/workflow/design/{workflow_id}/nodes",
-            json={"designer_id": designer_id, "node_id": alt_id, "label": "Alt", "op": "noop"},
+            json={
+                "designer_id": designer_id,
+                "node_id": alt_id,
+                "label": "Alt",
+                "op": "noop",
+            },
             headers=wf_rw,
         ).raise_for_status()
 
@@ -1111,9 +1355,13 @@ def test_runtime_design_undo_then_append_does_not_restore_discarded_branch(monke
         assert delete_alt.status_code == 200
 
 
-def test_runtime_design_requires_designer_id_and_enforces_subject(monkeypatch, engine_triplet):
+def test_runtime_design_requires_designer_id_and_enforces_subject(
+    monkeypatch, engine_triplet
+):
     engine, conversation_engine, workflow_engine = engine_triplet
-    _configure_server(monkeypatch, engine, conversation_engine, workflow_engine, _success_runner)
+    _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
     with TestClient(server.app) as client:
         wf_rw = _token_header(client, role="rw", ns="workflow")
         workflow_id = "wf.design.rest.actor_validation"
@@ -1134,9 +1382,13 @@ def test_runtime_design_requires_designer_id_and_enforces_subject(monkeypatch, e
         assert mismatch.status_code == 403
 
 
-def test_runtime_design_refresh_rebuilds_event_projection_and_uses_no_sidecars(monkeypatch, engine_triplet):
+def test_runtime_design_refresh_rebuilds_event_projection_and_uses_no_sidecars(
+    monkeypatch, engine_triplet
+):
     engine, conversation_engine, workflow_engine = engine_triplet
-    service, _registry = _configure_server(monkeypatch, engine, conversation_engine, workflow_engine, _success_runner)
+    service, _registry = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
     workflow_id = "wf.design.rest.refresh"
     with TestClient(server.app) as client:
         wf_rw = _token_header(client, role="rw", ns="workflow")
@@ -1144,12 +1396,23 @@ def test_runtime_design_refresh_rebuilds_event_projection_and_uses_no_sidecars(m
         designer_id = "tester"
         client.post(
             f"/api/workflow/design/{workflow_id}/nodes",
-            json={"designer_id": designer_id, "node_id": f"wf|{workflow_id}|start", "label": "Start", "op": "start", "start": True},
+            json={
+                "designer_id": designer_id,
+                "node_id": f"wf|{workflow_id}|start",
+                "label": "Start",
+                "op": "start",
+                "start": True,
+            },
             headers=wf_rw,
         ).raise_for_status()
         client.post(
             f"/api/workflow/design/{workflow_id}/nodes",
-            json={"designer_id": designer_id, "node_id": f"wf|{workflow_id}|mid", "label": "Mid", "op": "noop"},
+            json={
+                "designer_id": designer_id,
+                "node_id": f"wf|{workflow_id}|mid",
+                "label": "Mid",
+                "op": "noop",
+            },
             headers=wf_rw,
         ).raise_for_status()
         client.post(
@@ -1159,7 +1422,12 @@ def test_runtime_design_refresh_rebuilds_event_projection_and_uses_no_sidecars(m
         ).raise_for_status()
         client.post(
             f"/api/workflow/design/{workflow_id}/nodes",
-            json={"designer_id": designer_id, "node_id": f"wf|{workflow_id}|alt", "label": "Alt", "op": "noop"},
+            json={
+                "designer_id": designer_id,
+                "node_id": f"wf|{workflow_id}|alt",
+                "label": "Alt",
+                "op": "noop",
+            },
             headers=wf_rw,
         ).raise_for_status()
 
@@ -1169,14 +1437,24 @@ def test_runtime_design_refresh_rebuilds_event_projection_and_uses_no_sidecars(m
         hist.raise_for_status()
         payload = hist.json()
         assert [int(item["version"]) for item in payload["versions"]] == [0, 1, 3]
-        assert "BRANCH_DROPPED" in [str(item.get("op") or "") for item in payload.get("timeline", [])]
-        assert not Path(workflow_engine.persist_directory, "workflow_design_history.sqlite").exists()
-        assert not Path(workflow_engine.persist_directory, "server_runs.sqlite").exists()
+        assert "BRANCH_DROPPED" in [
+            str(item.get("op") or "") for item in payload.get("timeline", [])
+        ]
+        assert not Path(
+            workflow_engine.persist_directory, "workflow_design_history.sqlite"
+        ).exists()
+        assert not Path(
+            workflow_engine.persist_directory, "server_runs.sqlite"
+        ).exists()
 
 
-def test_runtime_design_history_recreates_projection_and_tracks_field_semantics(monkeypatch, engine_triplet):
+def test_runtime_design_history_recreates_projection_and_tracks_field_semantics(
+    monkeypatch, engine_triplet
+):
     engine, conversation_engine, workflow_engine = engine_triplet
-    service, _registry = _configure_server(monkeypatch, engine, conversation_engine, workflow_engine, _success_runner)
+    service, _registry = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
     workflow_id = "wf.design.rest.history_fields"
     start_id = f"wf|{workflow_id}|start"
     old_id = f"wf|{workflow_id}|old"
@@ -1189,12 +1467,24 @@ def test_runtime_design_history_recreates_projection_and_tracks_field_semantics(
 
         client.post(
             f"/api/workflow/design/{workflow_id}/nodes",
-            json={"designer_id": designer_id, "node_id": start_id, "label": "Start", "op": "start", "start": True},
+            json={
+                "designer_id": designer_id,
+                "node_id": start_id,
+                "label": "Start",
+                "op": "start",
+                "start": True,
+            },
             headers=wf_rw,
         ).raise_for_status()
         client.post(
             f"/api/workflow/design/{workflow_id}/nodes",
-            json={"designer_id": designer_id, "node_id": old_id, "label": "Old", "op": "end", "terminal": True},
+            json={
+                "designer_id": designer_id,
+                "node_id": old_id,
+                "label": "Old",
+                "op": "end",
+                "terminal": True,
+            },
             headers=wf_rw,
         ).raise_for_status()
         client.post(
@@ -1210,7 +1500,9 @@ def test_runtime_design_history_recreates_projection_and_tracks_field_semantics(
             headers=wf_rw,
         ).raise_for_status()
 
-        initial = client.get(f"/api/workflow/design/{workflow_id}/history", headers=wf_ro)
+        initial = client.get(
+            f"/api/workflow/design/{workflow_id}/history", headers=wf_ro
+        )
         initial.raise_for_status()
         payload = initial.json()
         assert payload["current_version"] == 3
@@ -1224,7 +1516,9 @@ def test_runtime_design_history_recreates_projection_and_tracks_field_semantics(
             headers=wf_rw,
         ).raise_for_status()
 
-        undone = client.get(f"/api/workflow/design/{workflow_id}/history", headers=wf_ro)
+        undone = client.get(
+            f"/api/workflow/design/{workflow_id}/history", headers=wf_ro
+        )
         undone.raise_for_status()
         undone_payload = undone.json()
         assert undone_payload["current_version"] == 2
@@ -1232,15 +1526,24 @@ def test_runtime_design_history_recreates_projection_and_tracks_field_semantics(
         assert undone_payload["max_version"] == 3
         assert undone_payload["can_undo"] is True
         assert undone_payload["can_redo"] is True
-        assert [int(item["version"]) for item in undone_payload["versions"]] == [0, 1, 2, 3]
-        assert [int(item["version"]) for item in undone_payload["selected_versions"]] == [0, 1, 2]
+        assert [int(item["version"]) for item in undone_payload["versions"]] == [
+            0,
+            1,
+            2,
+            3,
+        ]
+        assert [
+            int(item["version"]) for item in undone_payload["selected_versions"]
+        ] == [0, 1, 2]
 
         meta = workflow_engine.meta_sqlite
         meta.clear_workflow_design_projection(workflow_id=workflow_id)
         assert meta.get_workflow_design_projection(workflow_id=workflow_id) is None
 
         recreated = service.workflow_design_history(workflow_id=workflow_id)
-        recreated_projection = meta.get_workflow_design_projection(workflow_id=workflow_id)
+        recreated_projection = meta.get_workflow_design_projection(
+            workflow_id=workflow_id
+        )
         assert recreated["current_version"] == 2
         assert recreated["active_tip_version"] == 3
         assert recreated_projection is not None
@@ -1249,25 +1552,46 @@ def test_runtime_design_history_recreates_projection_and_tracks_field_semantics(
 
         client.post(
             f"/api/workflow/design/{workflow_id}/nodes",
-            json={"designer_id": designer_id, "node_id": alt_id, "label": "Alt", "op": "end", "terminal": True},
+            json={
+                "designer_id": designer_id,
+                "node_id": alt_id,
+                "label": "Alt",
+                "op": "end",
+                "terminal": True,
+            },
             headers=wf_rw,
         ).raise_for_status()
 
-        branched = client.get(f"/api/workflow/design/{workflow_id}/history", headers=wf_ro)
+        branched = client.get(
+            f"/api/workflow/design/{workflow_id}/history", headers=wf_ro
+        )
         branched.raise_for_status()
         branched_payload = branched.json()
         assert branched_payload["current_version"] == 4
         assert branched_payload["active_tip_version"] == 4
         assert branched_payload["max_version"] == 4
         assert branched_payload["can_redo"] is False
-        assert [int(item["version"]) for item in branched_payload["versions"]] == [0, 1, 2, 4]
-        version_four = next(item for item in branched_payload["selected_versions"] if int(item["version"]) == 4)
+        assert [int(item["version"]) for item in branched_payload["versions"]] == [
+            0,
+            1,
+            2,
+            4,
+        ]
+        version_four = next(
+            item
+            for item in branched_payload["selected_versions"]
+            if int(item["version"]) == 4
+        )
         assert int(version_four["prev_version"]) == 2
 
 
-def test_runtime_design_projection_divergence_rows_are_replaced_from_history(monkeypatch, engine_triplet):
+def test_runtime_design_projection_divergence_rows_are_replaced_from_history(
+    monkeypatch, engine_triplet
+):
     engine, conversation_engine, workflow_engine = engine_triplet
-    service, _registry = _configure_server(monkeypatch, engine, conversation_engine, workflow_engine, _success_runner)
+    service, _registry = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
     workflow_id = "wf.design.rest.projection_divergence"
     start_id = f"wf|{workflow_id}|start"
     end_id = f"wf|{workflow_id}|end"
@@ -1278,12 +1602,24 @@ def test_runtime_design_projection_divergence_rows_are_replaced_from_history(mon
 
         client.post(
             f"/api/workflow/design/{workflow_id}/nodes",
-            json={"designer_id": designer_id, "node_id": start_id, "label": "Start", "op": "start", "start": True},
+            json={
+                "designer_id": designer_id,
+                "node_id": start_id,
+                "label": "Start",
+                "op": "start",
+                "start": True,
+            },
             headers=wf_rw,
         ).raise_for_status()
         client.post(
             f"/api/workflow/design/{workflow_id}/nodes",
-            json={"designer_id": designer_id, "node_id": end_id, "label": "End", "op": "end", "terminal": True},
+            json={
+                "designer_id": designer_id,
+                "node_id": end_id,
+                "label": "End",
+                "op": "end",
+                "terminal": True,
+            },
             headers=wf_rw,
         ).raise_for_status()
         client.post(
@@ -1313,8 +1649,12 @@ def test_runtime_design_projection_divergence_rows_are_replaced_from_history(mon
             "materialization_status": "ready",
             "updated_at_ms": int(time.time() * 1000),
         },
-        versions=[{"version": 999, "prev_version": 998, "target_seq": 999, "created_at_ms": 1}],
-        dropped_ranges=[{"start_seq": 700, "end_seq": 701, "start_version": 998, "end_version": 999}],
+        versions=[
+            {"version": 999, "prev_version": 998, "target_seq": 999, "created_at_ms": 1}
+        ],
+        dropped_ranges=[
+            {"start_seq": 700, "end_seq": 701, "start_version": 998, "end_version": 999}
+        ],
     )
 
     repaired = service.workflow_design_history(workflow_id=workflow_id)
@@ -1328,7 +1668,9 @@ def test_runtime_design_projection_divergence_rows_are_replaced_from_history(mon
     assert projection["dropped_ranges"] == []
 
 
-def test_runtime_design_rebuilding_projection_blocks_mutations_and_runtime_submit(monkeypatch, engine_triplet):
+def test_runtime_design_rebuilding_projection_blocks_mutations_and_runtime_submit(
+    monkeypatch, engine_triplet
+):
     engine, conversation_engine, workflow_engine = engine_triplet
     _configure_server(
         monkeypatch,
@@ -1361,28 +1703,43 @@ def test_runtime_design_rebuilding_projection_blocks_mutations_and_runtime_submi
 
         blocked_node = client.post(
             f"/api/workflow/design/{workflow_id}/nodes",
-            json={"designer_id": "tester", "node_id": "n1", "label": "Node", "op": "noop"},
+            json={
+                "designer_id": "tester",
+                "node_id": "n1",
+                "label": "Node",
+                "op": "noop",
+            },
             headers=wf_rw,
         )
         assert blocked_node.status_code == 409
         assert "rebuilding" in blocked_node.json()["detail"]
 
-        created = client.post("/api/conversations", json={"user_id": "u-runtime-lock"}, headers=conv_rw)
+        created = client.post(
+            "/api/conversations", json={"user_id": "u-runtime-lock"}, headers=conv_rw
+        )
         created.raise_for_status()
         conversation_id = created.json()["conversation_id"]
 
         blocked_run = client.post(
             "/api/workflow/runs",
-            json={"workflow_id": workflow_id, "conversation_id": conversation_id, "initial_state": {}},
+            json={
+                "workflow_id": workflow_id,
+                "conversation_id": conversation_id,
+                "initial_state": {},
+            },
             headers=wf_rw,
         )
         assert blocked_run.status_code == 409
         assert "rebuilding" in blocked_run.json()["detail"]
 
 
-def test_runtime_loader_uses_only_active_branch_nodes_and_edges(monkeypatch, engine_triplet):
+def test_runtime_loader_uses_only_active_branch_nodes_and_edges(
+    monkeypatch, engine_triplet
+):
     engine, conversation_engine, workflow_engine = engine_triplet
-    service, _registry = _configure_server(monkeypatch, engine, conversation_engine, workflow_engine, _success_runner)
+    service, _registry = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
     workflow_id = "wf.design.rest.active_projection"
     start_id = f"wf|{workflow_id}|start"
     old_id = f"wf|{workflow_id}|old"
@@ -1395,12 +1752,24 @@ def test_runtime_loader_uses_only_active_branch_nodes_and_edges(monkeypatch, eng
 
         client.post(
             f"/api/workflow/design/{workflow_id}/nodes",
-            json={"designer_id": designer_id, "node_id": start_id, "label": "Start", "op": "start", "start": True},
+            json={
+                "designer_id": designer_id,
+                "node_id": start_id,
+                "label": "Start",
+                "op": "start",
+                "start": True,
+            },
             headers=wf_rw,
         ).raise_for_status()
         client.post(
             f"/api/workflow/design/{workflow_id}/nodes",
-            json={"designer_id": designer_id, "node_id": old_id, "label": "Old", "op": "end", "terminal": True},
+            json={
+                "designer_id": designer_id,
+                "node_id": old_id,
+                "label": "Old",
+                "op": "end",
+                "terminal": True,
+            },
             headers=wf_rw,
         ).raise_for_status()
         client.post(
@@ -1427,7 +1796,13 @@ def test_runtime_loader_uses_only_active_branch_nodes_and_edges(monkeypatch, eng
         ).raise_for_status()
         client.post(
             f"/api/workflow/design/{workflow_id}/nodes",
-            json={"designer_id": designer_id, "node_id": alt_id, "label": "Alt", "op": "end", "terminal": True},
+            json={
+                "designer_id": designer_id,
+                "node_id": alt_id,
+                "label": "Alt",
+                "op": "end",
+                "terminal": True,
+            },
             headers=wf_rw,
         ).raise_for_status()
         client.post(
@@ -1444,7 +1819,9 @@ def test_runtime_loader_uses_only_active_branch_nodes_and_edges(monkeypatch, eng
         ).raise_for_status()
 
     service.refresh_workflow_design_projection(workflow_id=workflow_id)
-    start_seen, node_ids, edge_ids = _visible_workflow_design_ids(workflow_engine, workflow_id=workflow_id)
+    start_seen, node_ids, edge_ids = _visible_workflow_design_ids(
+        workflow_engine, workflow_id=workflow_id
+    )
     assert start_seen == start_id
     assert node_ids == {start_id, alt_id}
     assert old_id not in node_ids
@@ -1452,9 +1829,13 @@ def test_runtime_loader_uses_only_active_branch_nodes_and_edges(monkeypatch, eng
     assert edge_old_id not in edge_ids
 
 
-def test_runtime_design_snapshot_restore_matches_full_replay(monkeypatch, engine_triplet):
+def test_runtime_design_snapshot_restore_matches_full_replay(
+    monkeypatch, engine_triplet
+):
     engine, conversation_engine, workflow_engine = engine_triplet
-    service, _registry = _configure_server(monkeypatch, engine, conversation_engine, workflow_engine, _success_runner)
+    service, _registry = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
     monkeypatch.setattr(service, "_SNAPSHOT_INTERVAL", 2, raising=False)
     workflow_id = "wf.design.rest.snapshot_restore"
     start_id = f"wf|{workflow_id}|start"
@@ -1466,12 +1847,24 @@ def test_runtime_design_snapshot_restore_matches_full_replay(monkeypatch, engine
 
         client.post(
             f"/api/workflow/design/{workflow_id}/nodes",
-            json={"designer_id": designer_id, "node_id": start_id, "label": "Start", "op": "start", "start": True},
+            json={
+                "designer_id": designer_id,
+                "node_id": start_id,
+                "label": "Start",
+                "op": "start",
+                "start": True,
+            },
             headers=wf_rw,
         ).raise_for_status()
         client.post(
             f"/api/workflow/design/{workflow_id}/nodes",
-            json={"designer_id": designer_id, "node_id": end_id, "label": "End", "op": "end", "terminal": True},
+            json={
+                "designer_id": designer_id,
+                "node_id": end_id,
+                "label": "End",
+                "op": "end",
+                "terminal": True,
+            },
             headers=wf_rw,
         ).raise_for_status()
 
@@ -1495,7 +1888,9 @@ def test_runtime_design_snapshot_restore_matches_full_replay(monkeypatch, engine
             },
             headers=wf_rw,
         ).raise_for_status()
-        workflow_engine.meta_sqlite.clear_workflow_design_deltas(workflow_id=workflow_id)
+        workflow_engine.meta_sqlite.clear_workflow_design_deltas(
+            workflow_id=workflow_id
+        )
 
         snapshot_requested = {"called": False}
         original_get_snapshot = workflow_engine.meta_sqlite.get_workflow_design_snapshot
@@ -1522,19 +1917,25 @@ def test_runtime_design_snapshot_restore_matches_full_replay(monkeypatch, engine
         ).raise_for_status()
 
     assert snapshot_requested["called"] is True
-    snapshot_shape = _visible_workflow_design_ids(workflow_engine, workflow_id=workflow_id)
+    snapshot_shape = _visible_workflow_design_ids(
+        workflow_engine, workflow_id=workflow_id
+    )
     assert snapshot_shape[1] == {start_id, end_id}
     assert snapshot_shape[2] == set()
 
     refreshed = service.refresh_workflow_design_projection(workflow_id=workflow_id)
     assert refreshed["status"] == "ok"
-    assert _visible_workflow_design_ids(workflow_engine, workflow_id=workflow_id) == snapshot_shape
-
+    assert (
+        _visible_workflow_design_ids(workflow_engine, workflow_id=workflow_id)
+        == snapshot_shape
+    )
 
 
 def test_designer_capabilities_endpoint(monkeypatch, engine_triplet):
     engine, conversation_engine, workflow_engine = engine_triplet
-    service, _registry = _configure_server(monkeypatch, engine, conversation_engine, workflow_engine, _success_runner)
+    service, _registry = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
 
     class _StubResolver:
         def __init__(self):
@@ -1590,9 +1991,13 @@ def test_designer_capabilities_endpoint(monkeypatch, engine_triplet):
         assert "wf_multiplicity" in edge_props
 
 
-def test_designer_capabilities_falls_back_to_default_resolver(monkeypatch, engine_triplet):
+def test_designer_capabilities_falls_back_to_default_resolver(
+    monkeypatch, engine_triplet
+):
     engine, conversation_engine, workflow_engine = engine_triplet
-    _configure_server(monkeypatch, engine, conversation_engine, workflow_engine, _success_runner)
+    _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
 
     with TestClient(server.app) as client:
         wf_ro = _token_header(client, role="ro", ns="workflow")

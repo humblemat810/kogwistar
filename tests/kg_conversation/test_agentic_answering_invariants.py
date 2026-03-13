@@ -1,14 +1,16 @@
-
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List
 
-import pytest
 
 from graph_knowledge_engine.conversation.models import MetaFromLastSummary
 from graph_knowledge_engine.conversation.agentic_answering import pointer_id
-from graph_knowledge_engine.engine_core.models import Span, MentionVerification, Grounding
+from graph_knowledge_engine.engine_core.models import (
+    Span,
+    MentionVerification,
+    Grounding,
+)
 
 
 def _span() -> Span:
@@ -25,7 +27,9 @@ def _span() -> Span:
         context_after="",
         chunk_id=None,
         source_cluster_id=None,
-        verification=MentionVerification(method="human", is_verified=True, score=1.0, notes="test"),
+        verification=MentionVerification(
+            method="human", is_verified=True, score=1.0, notes="test"
+        ),
     )
 
 
@@ -54,7 +58,14 @@ class _Backend:
             resp["metadatas"] = metas
         return resp
 
-    def node_add(self, *, ids: List[str], metadatas: List[Dict[str, Any]], documents: List[str], embeddings=None):
+    def node_add(
+        self,
+        *,
+        ids: List[str],
+        metadatas: List[Dict[str, Any]],
+        documents: List[str],
+        embeddings=None,
+    ):
         for _id, md, doc in zip(ids, metadatas, documents):
             self.nodes[_id] = {"metadata": md, "document": doc}
 
@@ -72,7 +83,14 @@ class _Backend:
             resp["metadatas"] = metas
         return resp
 
-    def edge_add(self, *, ids: List[str], sources: List[str], targets: List[str], metadatas: List[Dict[str, Any]]):
+    def edge_add(
+        self,
+        *,
+        ids: List[str],
+        sources: List[str],
+        targets: List[str],
+        metadatas: List[Dict[str, Any]],
+    ):
         for _id, s, t, md in zip(ids, sources, targets, metadatas):
             self.edges[_id] = {"source": s, "target": t, "metadata": md}
 
@@ -80,25 +98,33 @@ class _Backend:
 @dataclass
 class _Engine:
     backend: _Backend
-    def __init__(self, _backend = None):
+
+    def __init__(self, _backend=None):
         self.edges = []
         self.nodes = []
         if _backend:
             self.backend = _backend
+
     def add_edge(self, edge):
         self.edges.append(edge)
         # self.backend.edge_add(edge)
+
     def get_edge(self, *arg, **kwargs):
         return self.edges
+
     def get_edges(self, *arg, **kwargs):
         return self.edges
+
     def get_node(self, *arg, **kwargs):
         return self.nodes
+
     def get_nodes(self, *arg, **kwargs):
         return self.nodes
+
     def add_node(self, node):
         self.nodes.append(node)
         # self.backend.node_add(node)
+
 
 class _AgentWithProjection:
     """Minimal agent shim exposing the projection methods we want to enforce.
@@ -114,9 +140,15 @@ class _AgentWithProjection:
 
 
 def test_pointer_id_is_deterministic() -> None:
-    a = pointer_id(scope="conv:abc", pointer_kind="kg_node", target_kind="node", target_id="N1")
-    b = pointer_id(scope="conv:abc", pointer_kind="kg_node", target_kind="node", target_id="N1")
-    c = pointer_id(scope="conv:abc", pointer_kind="kg_node", target_kind="node", target_id="N2")
+    a = pointer_id(
+        scope="conv:abc", pointer_kind="kg_node", target_kind="node", target_id="N1"
+    )
+    b = pointer_id(
+        scope="conv:abc", pointer_kind="kg_node", target_kind="node", target_id="N1"
+    )
+    c = pointer_id(
+        scope="conv:abc", pointer_kind="kg_node", target_kind="node", target_id="N2"
+    )
     assert a == b
     assert a != c
 
@@ -132,12 +164,18 @@ def test_edge_endpoint_projection_uses_same_node_projection_function() -> None:
     kg_src = "KG_NODE_SRC"
     kg_dst = "KG_NODE_DST"
 
-    expected_src = pointer_id(scope=scope, pointer_kind="kg_node", target_kind="node", target_id=kg_src)
-    expected_dst = pointer_id(scope=scope, pointer_kind="kg_node", target_kind="node", target_id=kg_dst)
+    expected_src = pointer_id(
+        scope=scope, pointer_kind="kg_node", target_kind="node", target_id=kg_src
+    )
+    expected_dst = pointer_id(
+        scope=scope, pointer_kind="kg_node", target_kind="node", target_id=kg_dst
+    )
 
     # A projected edge should use those exact ids as its endpoints.
     # We assert this by checking the endpoint ids the agent writes.
-    from graph_knowledge_engine.conversation.agentic_answering import AgenticAnsweringAgent
+    from graph_knowledge_engine.conversation.agentic_answering import (
+        AgenticAnsweringAgent,
+    )
 
     # If the repo hasn't implemented _project_kg_edge yet, this should fail loudly.
     assert hasattr(AgenticAnsweringAgent, "_project_kg_edge"), (
@@ -155,7 +193,11 @@ def test_edge_endpoint_projection_uses_same_node_projection_function() -> None:
     agent.knowledge_engine.backend.edges[kg_edge_id] = {
         "source_ids": kg_src,
         "target_ids": kg_dst,
-        "metadata": {"source_ids": [kg_src], "target_ids": [kg_dst], "kg_edge_id": kg_edge_id},
+        "metadata": {
+            "source_ids": [kg_src],
+            "target_ids": [kg_dst],
+            "kg_edge_id": kg_edge_id,
+        },
     }
 
     run_node_id = "RUN1"
@@ -164,13 +206,17 @@ def test_edge_endpoint_projection_uses_same_node_projection_function() -> None:
         run_node_id=run_node_id,
         kg_edge_id=kg_edge_id,
         provenance_span=_span(),
-        prev_turn_meta_summary=MetaFromLastSummary(0,0,0),  # or provide real MetaFromLastSummary in repo tests
+        prev_turn_meta_summary=MetaFromLastSummary(
+            0, 0, 0
+        ),  # or provide real MetaFromLastSummary in repo tests
     )
 
     # The projection should have created a projected edge (or edge pointer) using deterministic ids.
     # We check that its stored endpoints are the expected projected node ids.
-    
-    assert pid_edge in [i.id for i in agent.conversation_engine.get_edges()], "Projected edge must exist in conversation engine"
+
+    assert pid_edge in [i.id for i in agent.conversation_engine.get_edges()], (
+        "Projected edge must exist in conversation engine"
+    )
     stored = [i for i in agent.conversation_engine.get_edges() if i.id == pid_edge][0]
     assert stored.source_ids[0] == expected_src
     assert stored.target_ids[0] == expected_dst
@@ -178,7 +224,9 @@ def test_edge_endpoint_projection_uses_same_node_projection_function() -> None:
 
 def test_edge_projection_allows_dangling_endpoints() -> None:
     """Invariant: edge projection must NOT require endpoint nodes to already exist."""
-    from graph_knowledge_engine.conversation.agentic_answering import AgenticAnsweringAgent
+    from graph_knowledge_engine.conversation.agentic_answering import (
+        AgenticAnsweringAgent,
+    )
 
     assert hasattr(AgenticAnsweringAgent, "_project_kg_edge"), (
         "Missing AgenticAnsweringAgent._project_kg_edge. "
@@ -195,7 +243,11 @@ def test_edge_projection_allows_dangling_endpoints() -> None:
     agent.knowledge_engine.backend.edges[kg_edge_id] = {
         "source_ids": [kg_src],
         "target_ids": [kg_dst],
-        "metadata": {"source_ids": [kg_src], "target_ids": [kg_dst], "kg_edge_id": kg_edge_id},
+        "metadata": {
+            "source_ids": [kg_src],
+            "target_ids": [kg_dst],
+            "kg_edge_id": kg_edge_id,
+        },
     }
 
     pid_edge = agent._project_kg_edge(
@@ -203,12 +255,14 @@ def test_edge_projection_allows_dangling_endpoints() -> None:
         run_node_id="RUN2",
         kg_edge_id=kg_edge_id,
         provenance_span=_span(),
-        prev_turn_meta_summary=MetaFromLastSummary(0,0,0)
+        prev_turn_meta_summary=MetaFromLastSummary(0, 0, 0),
     )
 
     # Ensure we did not create endpoint nodes automatically
     engine = agent.conversation_engine
-    assert len(engine.get_nodes()) == 0, "Edge projection should not auto-create endpoint pointer nodes"
+    assert len(engine.get_nodes()) == 0, (
+        "Edge projection should not auto-create endpoint pointer nodes"
+    )
     assert pid_edge in [i.id for i in engine.get_edges()]
 
 

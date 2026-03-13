@@ -66,7 +66,9 @@ class ChatRunService:
         self._run_inspection = _RunInspectionService(self)
 
         self.answer_runner = answer_runner or self._run_execution._default_answer_runner
-        self.runtime_runner = runtime_runner or self._run_execution._default_runtime_runner
+        self.runtime_runner = (
+            runtime_runner or self._run_execution._default_runtime_runner
+        )
 
     def _knowledge_engine(self) -> Any:
         return self._get_knowledge_engine()
@@ -84,7 +86,9 @@ class ChatRunService:
             workflow_engine=self._workflow_engine(),
         )
 
-    def _publish(self, run_id: str, event_type: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    def _publish(
+        self, run_id: str, event_type: str, payload: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         return self.run_registry.append_event(run_id, event_type, payload)
 
     @staticmethod
@@ -117,37 +121,161 @@ class ChatRunService:
         return self._conversation_queries._conversation_owner(conversation_id)
 
     def _assert_workflow_projection_not_rebuilding(self, *, workflow_id: str) -> None:
-        return self._workflow_design._assert_workflow_projection_not_rebuilding(workflow_id=workflow_id)
+        return self._workflow_design._assert_workflow_projection_not_rebuilding(
+            workflow_id=workflow_id
+        )
 
     def _workflow_capture_visible_snapshot(self, *, workflow_id: str) -> dict[str, Any]:
-        return self._workflow_design._workflow_capture_visible_snapshot(workflow_id=workflow_id)
+        return self._workflow_design._workflow_capture_visible_snapshot(
+            workflow_id=workflow_id
+        )
 
     def workflow_design_history(self, *, workflow_id: str) -> dict[str, Any]:
         return self._workflow_design.workflow_design_history(workflow_id=workflow_id)
 
     def refresh_workflow_design_projection(self, *, workflow_id: str) -> dict[str, Any]:
-        return self._workflow_design.refresh_workflow_design_projection(workflow_id=workflow_id)
+        return self._workflow_design.refresh_workflow_design_projection(
+            workflow_id=workflow_id
+        )
 
-    def workflow_design_upsert_node(self, *, workflow_id: str, designer_id: str, node_id: str | None, label: str, op: str | None = None, start: bool = False, terminal: bool = False, fanout: bool = False, metadata: dict[str, Any] | None = None, actor_sub: str | None = None, source: str = "rest") -> dict[str, Any]:
-        return self._workflow_design.workflow_design_upsert_node(workflow_id=workflow_id, designer_id=designer_id, node_id=node_id, label=label, op=op, start=start, terminal=terminal, fanout=fanout, metadata=metadata, actor_sub=actor_sub, source=source)
+    def workflow_design_upsert_node(
+        self,
+        *,
+        workflow_id: str,
+        designer_id: str,
+        node_id: str | None,
+        label: str,
+        op: str | None = None,
+        start: bool = False,
+        terminal: bool = False,
+        fanout: bool = False,
+        metadata: dict[str, Any] | None = None,
+        actor_sub: str | None = None,
+        source: str = "rest",
+    ) -> dict[str, Any]:
+        return self._workflow_design.workflow_design_upsert_node(
+            workflow_id=workflow_id,
+            designer_id=designer_id,
+            node_id=node_id,
+            label=label,
+            op=op,
+            start=start,
+            terminal=terminal,
+            fanout=fanout,
+            metadata=metadata,
+            actor_sub=actor_sub,
+            source=source,
+        )
 
-    def workflow_design_upsert_edge(self, *, workflow_id: str, designer_id: str, edge_id: str | None, src: str, dst: str, relation: str = "wf_next", predicate: str | None = None, priority: int = 100, is_default: bool = False, multiplicity: str = "one", metadata: dict[str, Any] | None = None, actor_sub: str | None = None, source: str = "rest") -> dict[str, Any]:
-        return self._workflow_design.workflow_design_upsert_edge(workflow_id=workflow_id, designer_id=designer_id, edge_id=edge_id, src=src, dst=dst, relation=relation, predicate=predicate, priority=priority, is_default=is_default, multiplicity=multiplicity, metadata=metadata, actor_sub=actor_sub, source=source)
+    def workflow_design_upsert_edge(
+        self,
+        *,
+        workflow_id: str,
+        designer_id: str,
+        edge_id: str | None,
+        src: str,
+        dst: str,
+        relation: str = "wf_next",
+        predicate: str | None = None,
+        priority: int = 100,
+        is_default: bool = False,
+        multiplicity: str = "one",
+        metadata: dict[str, Any] | None = None,
+        actor_sub: str | None = None,
+        source: str = "rest",
+    ) -> dict[str, Any]:
+        return self._workflow_design.workflow_design_upsert_edge(
+            workflow_id=workflow_id,
+            designer_id=designer_id,
+            edge_id=edge_id,
+            src=src,
+            dst=dst,
+            relation=relation,
+            predicate=predicate,
+            priority=priority,
+            is_default=is_default,
+            multiplicity=multiplicity,
+            metadata=metadata,
+            actor_sub=actor_sub,
+            source=source,
+        )
 
-    def workflow_design_delete_node(self, *, workflow_id: str, node_id: str, designer_id: str, actor_sub: str | None = None, source: str = "rest") -> dict[str, Any]:
-        return self._workflow_design.workflow_design_delete_node(workflow_id=workflow_id, node_id=node_id, designer_id=designer_id, actor_sub=actor_sub, source=source)
+    def workflow_design_delete_node(
+        self,
+        *,
+        workflow_id: str,
+        node_id: str,
+        designer_id: str,
+        actor_sub: str | None = None,
+        source: str = "rest",
+    ) -> dict[str, Any]:
+        return self._workflow_design.workflow_design_delete_node(
+            workflow_id=workflow_id,
+            node_id=node_id,
+            designer_id=designer_id,
+            actor_sub=actor_sub,
+            source=source,
+        )
 
-    def workflow_design_delete_edge(self, *, workflow_id: str, edge_id: str, designer_id: str, actor_sub: str | None = None, source: str = "rest") -> dict[str, Any]:
-        return self._workflow_design.workflow_design_delete_edge(workflow_id=workflow_id, edge_id=edge_id, designer_id=designer_id, actor_sub=actor_sub, source=source)
+    def workflow_design_delete_edge(
+        self,
+        *,
+        workflow_id: str,
+        edge_id: str,
+        designer_id: str,
+        actor_sub: str | None = None,
+        source: str = "rest",
+    ) -> dict[str, Any]:
+        return self._workflow_design.workflow_design_delete_edge(
+            workflow_id=workflow_id,
+            edge_id=edge_id,
+            designer_id=designer_id,
+            actor_sub=actor_sub,
+            source=source,
+        )
 
-    def workflow_design_undo(self, *, workflow_id: str, designer_id: str, actor_sub: str | None = None, source: str = "rest") -> dict[str, Any]:
-        return self._workflow_design.workflow_design_undo(workflow_id=workflow_id, designer_id=designer_id, actor_sub=actor_sub, source=source)
+    def workflow_design_undo(
+        self,
+        *,
+        workflow_id: str,
+        designer_id: str,
+        actor_sub: str | None = None,
+        source: str = "rest",
+    ) -> dict[str, Any]:
+        return self._workflow_design.workflow_design_undo(
+            workflow_id=workflow_id,
+            designer_id=designer_id,
+            actor_sub=actor_sub,
+            source=source,
+        )
 
-    def workflow_design_redo(self, *, workflow_id: str, designer_id: str, actor_sub: str | None = None, source: str = "rest") -> dict[str, Any]:
-        return self._workflow_design.workflow_design_redo(workflow_id=workflow_id, designer_id=designer_id, actor_sub=actor_sub, source=source)
+    def workflow_design_redo(
+        self,
+        *,
+        workflow_id: str,
+        designer_id: str,
+        actor_sub: str | None = None,
+        source: str = "rest",
+    ) -> dict[str, Any]:
+        return self._workflow_design.workflow_design_redo(
+            workflow_id=workflow_id,
+            designer_id=designer_id,
+            actor_sub=actor_sub,
+            source=source,
+        )
 
-    def create_conversation(self, *, user_id: str, conversation_id: str | None = None, start_node_id: str | None = None) -> dict[str, Any]:
-        return self._conversation_queries.create_conversation(user_id=user_id, conversation_id=conversation_id, start_node_id=start_node_id)
+    def create_conversation(
+        self,
+        *,
+        user_id: str,
+        conversation_id: str | None = None,
+        start_node_id: str | None = None,
+    ) -> dict[str, Any]:
+        return self._conversation_queries.create_conversation(
+            user_id=user_id,
+            conversation_id=conversation_id,
+            start_node_id=start_node_id,
+        )
 
     def get_conversation(self, conversation_id: str) -> dict[str, Any]:
         return self._conversation_queries.get_conversation(conversation_id)
@@ -155,19 +283,55 @@ class ChatRunService:
     def list_transcript(self, conversation_id: str) -> list[dict[str, Any]]:
         return self._conversation_queries.list_transcript(conversation_id)
 
-    def latest_snapshot(self, conversation_id: str, *, run_id: str | None = None, stage: str | None = None) -> dict[str, Any]:
-        return self._conversation_queries.latest_snapshot(conversation_id, run_id=run_id, stage=stage)
+    def latest_snapshot(
+        self,
+        conversation_id: str,
+        *,
+        run_id: str | None = None,
+        stage: str | None = None,
+    ) -> dict[str, Any]:
+        return self._conversation_queries.latest_snapshot(
+            conversation_id, run_id=run_id, stage=stage
+        )
 
-    def submit_turn_for_answer(self, *, conversation_id: str, user_id: str | None, text: str, workflow_id: str = "agentic_answering.v2") -> dict[str, Any]:
-        return self._run_execution.submit_turn_for_answer(conversation_id=conversation_id, user_id=user_id, text=text, workflow_id=workflow_id)
+    def submit_turn_for_answer(
+        self,
+        *,
+        conversation_id: str,
+        user_id: str | None,
+        text: str,
+        workflow_id: str = "agentic_answering.v2",
+    ) -> dict[str, Any]:
+        return self._run_execution.submit_turn_for_answer(
+            conversation_id=conversation_id,
+            user_id=user_id,
+            text=text,
+            workflow_id=workflow_id,
+        )
 
-    def submit_workflow_run(self, *, workflow_id: str, conversation_id: str, initial_state: dict[str, Any] | None = None, turn_node_id: str | None = None, user_id: str | None = None) -> dict[str, Any]:
-        return self._run_execution.submit_workflow_run(workflow_id=workflow_id, conversation_id=conversation_id, initial_state=initial_state, turn_node_id=turn_node_id, user_id=user_id)
+    def submit_workflow_run(
+        self,
+        *,
+        workflow_id: str,
+        conversation_id: str,
+        initial_state: dict[str, Any] | None = None,
+        turn_node_id: str | None = None,
+        user_id: str | None = None,
+    ) -> dict[str, Any]:
+        return self._run_execution.submit_workflow_run(
+            workflow_id=workflow_id,
+            conversation_id=conversation_id,
+            initial_state=initial_state,
+            turn_node_id=turn_node_id,
+            user_id=user_id,
+        )
 
     def get_run(self, run_id: str) -> dict[str, Any]:
         return self._run_execution.get_run(run_id)
 
-    def list_run_events(self, run_id: str, *, after_seq: int = 0) -> list[dict[str, Any]]:
+    def list_run_events(
+        self, run_id: str, *, after_seq: int = 0
+    ) -> list[dict[str, Any]]:
         return self._run_execution.list_run_events(run_id, after_seq=after_seq)
 
     def cancel_run(self, run_id: str) -> dict[str, Any]:
@@ -185,7 +349,9 @@ class ChatRunService:
     def replay_run(self, run_id: str, target_step_seq: int) -> dict[str, Any]:
         return self._run_inspection.replay_run(run_id, target_step_seq)
 
-    def workflow_design_graph(self, workflow_id: str, refresh: bool = False) -> dict[str, object]:
+    def workflow_design_graph(
+        self, workflow_id: str, refresh: bool = False
+    ) -> dict[str, object]:
         return self._workflow_design.workflow_design_graph(workflow_id, refresh)
 
     def workflow_catalog_ops(self) -> list[dict[str, object]]:

@@ -1,30 +1,31 @@
 from __future__ import annotations
+
 """TO-DO  ingestor responsibility to verify that empty excerpt is only allowed if that source there is really empty only."""
 import uuid
 from dataclasses import dataclass
-from typing import Iterable, List, Optional, Sequence, Tuple, TYPE_CHECKING
+from typing import List, Optional, Sequence, TYPE_CHECKING
 
 from joblib import Memory
 from pydantic import BaseModel, Field
+
 if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel
 import json
 from .engine_core.engine import GraphKnowledgeEngine
-from .engine_core.models import (
-    Document,
-    Edge,
-    Span as GroundingSpan
-)
+from .engine_core.models import Document, Edge, Span as GroundingSpan
 from .engine_core.models import Node
+
 # --- relation name constants (optional but handy) ---
-REL_SUMMARIZES = "summarizes"   # parent -> child
-REL_DETAILS    = "details"      # child  -> parent
+REL_SUMMARIZES = "summarizes"  # parent -> child
+REL_DETAILS = "details"  # child  -> parent
 
-REL_PRECEDES   = "precedes"     # left sib -> right sib
-REL_AFTER      = "after"        # right sib -> left sib
+REL_PRECEDES = "precedes"  # left sib -> right sib
+REL_AFTER = "after"  # right sib -> left sib
 
-REL_SUMMARIZES_DOCUMENT   = "summarizes_document"     # final_summary -> document_node
-REL_DOCUMENT_DETAILED_BY  = "document_detailed_by"    # document_node -> final_summary
+REL_SUMMARIZES_DOCUMENT = "summarizes_document"  # final_summary -> document_node
+REL_DOCUMENT_DETAILED_BY = "document_detailed_by"  # document_node -> final_summary
+
+
 # -----------------------------
 # Joblib cache (disk-persistent)
 # -----------------------------
@@ -33,12 +34,15 @@ def _default_cache_dir(persist_dir: Optional[str]) -> str:
     base = persist_dir or "./chroma_db"
     return f"{base.rstrip('/')}/.ingester_cache"
 
+
 # -----------------------------
 # LLM Schemas
 # -----------------------------
 
+
 class MiniChunk(BaseModel):
     """Result of 'summarize into smaller chunks' for a single input span."""
+
     title: str = Field(..., description="Short title for this micro-chunk.")
     summary: str = Field(..., description="Concise summary of this micro-chunk.")
     start_page: int = Field(..., ge=1)
@@ -46,53 +50,69 @@ class MiniChunk(BaseModel):
     start_char: int = Field(..., ge=0)
     end_char: int = Field(..., ge=0)
 
+
 class FinalSummariseResponse(BaseModel):
-    micro_chunks: MiniChunk = Field(
-        ..., description="Overall summarised content"
-    )
+    micro_chunks: MiniChunk = Field(..., description="Overall summarised content")
+
+
 class SummarizeResponse(BaseModel):
     micro_chunks: List[MiniChunk] = Field(
-        ..., description="Ordered micro-chunks covering the input span without large overlap."
+        ...,
+        description="Ordered micro-chunks covering the input span without large overlap.",
     )
+
 
 class GroupItem(BaseModel):
     """Grouping output referencing positions in the provided input list."""
+
     title: str = Field(..., description="Group title.")
     summary: str = Field(..., description="Higher-level summary of the group.")
-    member_indices: List[int] = Field(..., description="Indices into the provided chunk list, in order.")
+    member_indices: List[int] = Field(
+        ..., description="Indices into the provided chunk list, in order."
+    )
+
 
 class GroupResponse(BaseModel):
     groups: List[GroupItem]
+
 
 # -----------------------------
 # Helper datatypes
 # -----------------------------
 
+
 class Span(BaseModel):
     """Logical span within a document. Used to preserve traceability."""
+
     start_page: int
     end_page: int
     start_char: int
     end_char: int
 
+
 class LeafChunk(BaseModel):
     """Initial (leaf) chunk from the raw document."""
+
     id: str
     text: str
     span: Span
 
+
 class SummaryChunk(BaseModel):
     """A summarized chunk produced by the LLM."""
+
     id: str
     title: str
     summary: str
     span: Span
     level: int  # 0 for micro from leaf, 1 for first grouping, etc.
-    parent_ids : list[str]
+    parent_ids: list[str]
+
 
 # -----------------------------
 # Core side-car ingestor
 # -----------------------------
+
 
 @dataclass
 class BaseDocumentGraphIngestor:
@@ -102,14 +122,26 @@ class BaseDocumentGraphIngestor:
 
     def __post_init__(self):
         self.use_uuid = False
-        self.memory = Memory(self.cache_dir or _default_cache_dir(getattr(self.engine, "persist_directory", None)), verbose=0)
+        self.memory = Memory(
+            self.cache_dir
+            or _default_cache_dir(getattr(self.engine, "persist_directory", None)),
+            verbose=0,
+        )
         # prepare structured-output chains once to make cache keys stable
-        self._coerce_summarized_one_chain = self.llm.with_structured_output(FinalSummariseResponse, include_raw=True)
-        self._summarize_chain = self.llm.with_structured_output(SummarizeResponse, include_raw=True)
-        self._group_chain = self.llm.with_structured_output(GroupResponse, include_raw=True)
+        self._coerce_summarized_one_chain = self.llm.with_structured_output(
+            FinalSummariseResponse, include_raw=True
+        )
+        self._summarize_chain = self.llm.with_structured_output(
+            SummarizeResponse, include_raw=True
+        )
+        self._group_chain = self.llm.with_structured_output(
+            GroupResponse, include_raw=True
+        )
 
         # Wrap LLM calls with joblib to cache by pure-string inputs
-        self._cached_summarize = self.memory.cache(self._summarize_call, ignore=["self"])
+        self._cached_summarize = self.memory.cache(
+            self._summarize_call, ignore=["self"]
+        )
         self._cached_group = self.memory.cache(self._group_call, ignore=["self"])
 
     # ---------- NEW: page coercion helper ----------
@@ -152,6 +184,7 @@ class BaseDocumentGraphIngestor:
 
         # No explicit page structure
         return None
+
     # ---------- public entrypoints ----------
 
     def ingest_document(
@@ -179,7 +212,12 @@ class BaseDocumentGraphIngestor:
 
             coerced_pages = self._coerce_pages(document=document, pages=pages)
             # Step 1: split
-            leaves = self._split_into_leaves(document.content or "", split_max_chars, document.id, pages=coerced_pages)
+            leaves = self._split_into_leaves(
+                document.content or "",
+                split_max_chars,
+                document.id,
+                pages=coerced_pages,
+            )
 
             # Persist leaf nodes (type="page" or "leaf") so relationships have concrete endpoints
             leaf_nodes = self._persist_leaf_nodes(document.id, leaves)
@@ -188,7 +226,9 @@ class BaseDocumentGraphIngestor:
             self._persist_adjacency(document.id, [n.id for n in leaf_nodes])
 
             # Current layer = leaves -> summarize into micro-chunks (level 0)   # self.engine.node_ids_by_doc(document.id)
-            current_layer: List[SummaryChunk] = self._summarize_layer(document.id, leaves, level=0)
+            current_layer: List[SummaryChunk] = self._summarize_layer(
+                document.id, leaves, level=0
+            )
 
             # Persist summarization edges (leaf <-> micro)
             self._persist_layer(document.id, parents=leaf_nodes, children=current_layer)
@@ -199,9 +239,19 @@ class BaseDocumentGraphIngestor:
             while len(current_layer) > 1 and level <= max_levels:
                 layers.append(current_layer)
                 # Optional early force after N levels if not converging
-                if level >= force_summarise_after_levels and len(current_layer) > 4 and len(current_layer) / max(1, len(leaf_nodes)) > 0.15:
-                    final = self._force_summarize(document.id, current_layer, level = level)
-                    self._persist_layer(document.id, parents=[self._as_node(document.id, c) for c in current_layer], children=[final])
+                if (
+                    level >= force_summarise_after_levels
+                    and len(current_layer) > 4
+                    and len(current_layer) / max(1, len(leaf_nodes)) > 0.15
+                ):
+                    final = self._force_summarize(
+                        document.id, current_layer, level=level
+                    )
+                    self._persist_layer(
+                        document.id,
+                        parents=[self._as_node(document.id, c) for c in current_layer],
+                        children=[final],
+                    )
                     current_layer = [final]
                     break
 
@@ -209,24 +259,40 @@ class BaseDocumentGraphIngestor:
                 next_layer = self._group_layer(document.id, current_layer, level=level)
 
                 # persist edges between current_layer (parents) and next_layer (children)
-                self._persist_layer(document.id, parents=[self._as_node(document.id, c) for c in current_layer], children=next_layer)
+                self._persist_layer(
+                    document.id,
+                    parents=[self._as_node(document.id, c) for c in current_layer],
+                    children=next_layer,
+                )
                 current_layer = next_layer
                 level += 1
 
             # If still more than 1, finalize by concatenation
             if len(current_layer) > 1:
-                final = self._force_summarize(document.id, current_layer, level = level)
-                self._persist_layer(document.id, parents=[self._as_node(document.id, c) for c in current_layer], children=[final])
+                final = self._force_summarize(document.id, current_layer, level=level)
+                self._persist_layer(
+                    document.id,
+                    parents=[self._as_node(document.id, c) for c in current_layer],
+                    children=[final],
+                )
                 current_layer = [final]
-                
+
             final = current_layer[0]
-            final_node_id = self._ensure_node(document.id, final)  # ensures final chunk node
-            docnode_id = self._ensure_document_node(document.id, title=document.metadata.get("title") if document.metadata else None, leaves = leaves)
+            final_node_id = self._ensure_node(
+                document.id, final
+            )  # ensures final chunk node
+            docnode_id = self._ensure_document_node(
+                document.id,
+                title=document.metadata.get("title") if document.metadata else None,
+                leaves=leaves,
+            )
 
             # wire asymmetric, document-level relationship
             self._bi_edge(
                 document.id,
-                src=final_node_id if isinstance(final_node_id, str) else self._as_node(document.id, final).id,
+                src=final_node_id
+                if isinstance(final_node_id, str)
+                else self._as_node(document.id, final).id,
                 tgt=docnode_id,
                 relation=REL_SUMMARIZES_DOCUMENT,
                 reverse_relation=REL_DOCUMENT_DETAILED_BY,
@@ -237,22 +303,39 @@ class BaseDocumentGraphIngestor:
             "document_id": document.id,
             "leaf_count": len(leaves),
             "levels": level,
-            "chunk_ids" : [n.id for n in leaf_nodes],
-            "final_node_id": self._as_node(document.id, current_layer[0]).id if current_layer else None,
+            "chunk_ids": [n.id for n in leaf_nodes],
+            "final_node_id": self._as_node(document.id, current_layer[0]).id
+            if current_layer
+            else None,
         }
-    def _ensure_document_node(self, doc_id: str, *, title: str | None = None, leaves) -> str:
+
+    def _ensure_document_node(
+        self, doc_id: str, *, title: str | None = None, leaves
+    ) -> str:
         node_id = f"docnode:{doc_id}"
         if not self.engine.persist.exists_node(node_id):
             from graph_knowledge_engine.engine_core.models import Node, Span
-            embeddings = self.engine.backend.document_get(doc_id, include = ['embeddings'])['embeddings'][0]
-            ref = self._ref(doc_id = doc_id,excerpt = None, span = Span(start_page=1, end_page=len(leaves), start_char=0, end_char=len(leaves[-1].text)))
+
+            embeddings = self.engine.backend.document_get(
+                doc_id, include=["embeddings"]
+            )["embeddings"][0]
+            ref = self._ref(
+                doc_id=doc_id,
+                excerpt=None,
+                span=Span(
+                    start_page=1,
+                    end_page=len(leaves),
+                    start_char=0,
+                    end_char=len(leaves[-1].text),
+                ),
+            )
             n = Node(
                 id=node_id,
                 label=title or f"Document {doc_id}",
                 type="entity",
                 summary="Represents the whole source document.",
-                
-                mentions=[ ref
+                mentions=[
+                    ref
                     # ReferenceSession(
                     # collection_page_url=f"document_collection/{doc_id}",
                     # document_page_url=f"document/{doc_id}",
@@ -262,15 +345,21 @@ class BaseDocumentGraphIngestor:
                 ],
                 doc_id=doc_id,
                 properties={"kind": "document_root"},
-                embedding = embeddings.tolist()
+                embedding=embeddings.tolist(),
             )
             self.engine.write.add_node(n, doc_id=doc_id)
         return node_id
+
     # ---------- splitting ----------
 
-    def _split_into_leaves(self, text: str, max_chars: int, doc_id, 
-                *,
-                pages: Optional[List[str]] = None,) -> List[LeafChunk]:
+    def _split_into_leaves(
+        self,
+        text: str,
+        max_chars: int,
+        doc_id,
+        *,
+        pages: Optional[List[str]] = None,
+    ) -> List[LeafChunk]:
         if pages:
             leaves: List[LeafChunk] = []
             for i, page in enumerate(pages, start=1):
@@ -278,7 +367,7 @@ class BaseDocumentGraphIngestor:
                 span = Span(start_page=i, end_page=i, start_char=0, end_char=len(page))
                 leaves.append(LeafChunk(id=pid, text=page, span=span))
             return leaves
-        
+
         if "\f" in text:  # respect page breaks if present
             raw_pages = [p for p in (seg.strip() for seg in text.split("\f")) if p]
             leaves: List[LeafChunk] = []
@@ -304,7 +393,12 @@ class BaseDocumentGraphIngestor:
                 i += 1
                 chunk_text = "\n\n".join(buf)
                 cid = f"doc:{doc_id}|leaf:{uuid.uuid4() if self.use_uuid else i}"
-                span = Span(start_page=page_counter, end_page=page_counter, start_char=start_char_global, end_char=start_char_global+len(chunk_text))
+                span = Span(
+                    start_page=page_counter,
+                    end_page=page_counter,
+                    start_char=start_char_global,
+                    end_char=start_char_global + len(chunk_text),
+                )
                 leaves.append(LeafChunk(id=cid, text=chunk_text, span=span))
                 start_char_global += len(chunk_text) + 2
                 buf, cur_len = [p], p_len
@@ -315,17 +409,32 @@ class BaseDocumentGraphIngestor:
                     cur_len = p_len
                 buf.append(p)
         if buf:
-            i +=1
+            i += 1
             chunk_text = "\n\n".join(buf)
             cid = f"doc:{doc_id}|leaf:{uuid.uuid4() if self.use_uuid else i}"
-            span = Span(start_page=page_counter, end_page=page_counter, start_char=start_char_global, end_char=start_char_global +len(chunk_text))
+            span = Span(
+                start_page=page_counter,
+                end_page=page_counter,
+                start_char=start_char_global,
+                end_char=start_char_global + len(chunk_text),
+            )
             leaves.append(LeafChunk(id=cid, text=chunk_text, span=span))
 
-        return leaves or [LeafChunk(id=f"doc:{doc_id}|leaf:{uuid.uuid4() if self.use_uuid else i+1}", text=text.strip(), span=Span(start_page=1, end_page=1, start_char=0, end_char=len(text.strip())))]
+        return leaves or [
+            LeafChunk(
+                id=f"doc:{doc_id}|leaf:{uuid.uuid4() if self.use_uuid else i + 1}",
+                text=text.strip(),
+                span=Span(
+                    start_page=1, end_page=1, start_char=0, end_char=len(text.strip())
+                ),
+            )
+        ]
 
     # ---------- LLM calls (cached) ----------
 
-    def _summarize_call(self, prompt_key: str, content: str, final_summary = False): # -> SummarizeResponse | FinalSummariseResponse:
+    def _summarize_call(
+        self, prompt_key: str, content: str, final_summary=False
+    ):  # -> SummarizeResponse | FinalSummariseResponse:
         # single, stable prompt
         system = (
             "You are a precise technical summarizer. "
@@ -341,11 +450,11 @@ class BaseDocumentGraphIngestor:
         if final_summary:
             chain = self._coerce_summarized_one_chain  # structured to SummarizeResponse
         else:
-            chain = self._summarize_chain # structured to SummarizeResponse
+            chain = self._summarize_chain  # structured to SummarizeResponse
         result = chain.invoke(messages)
-        to_return = result['parsed']
-        err = result['parsing_error']
-        raw = result['raw']
+        to_return = result["parsed"]
+        err = result["parsing_error"]
+        raw = result["raw"]
         try:
             assert err is None
             assert to_return is not None
@@ -353,7 +462,9 @@ class BaseDocumentGraphIngestor:
             raise
         return to_return
 
-    def _group_call(self, prompt_key: str, chunk_titles_and_summaries: str, max_groups: int): # -> GroupResponse:
+    def _group_call(
+        self, prompt_key: str, chunk_titles_and_summaries: str, max_groups: int
+    ):  # -> GroupResponse:
         system = (
             "You are a careful text organizer. "
             f"Group the provided items into ≤{max_groups} higher-level groups. "
@@ -366,23 +477,25 @@ class BaseDocumentGraphIngestor:
         ]
         chain = self._group_chain  # structured to GroupResponse
         result = chain.invoke(messages)
-        to_return = result['parsed']
-        err = result['parsing_error']
-        raw = result['raw']
+        to_return = result["parsed"]
+        err = result["parsing_error"]
+        raw = result["raw"]
         try:
             assert err is None
             assert to_return is not None
         except:
             raise
         return to_return
-    
+
     # ---------- summarize/group layers ----------
-    def _force_summarize(self, doc_id: str, chunks: list[SummaryChunk], *, level: int) -> SummaryChunk:
-        combined_text = "\n".join(f"{i+1}. {c.summary}" for i, c in enumerate(chunks))
+    def _force_summarize(
+        self, doc_id: str, chunks: list[SummaryChunk], *, level: int
+    ) -> SummaryChunk:
+        combined_text = "\n".join(f"{i + 1}. {c.summary}" for i, c in enumerate(chunks))
         key = f"force_sum:v1|doc:{doc_id}|level:{level}"
-        res = self._cached_summarize(key, combined_text, final_summary = True)
+        res = self._cached_summarize(key, combined_text, final_summary=True)
         temp = res.model_dump()
-        temp['micro_chunks'] = [temp['micro_chunks']]
+        temp["micro_chunks"] = [temp["micro_chunks"]]
         summary_resp: SummarizeResponse = SummarizeResponse.model_validate(temp)
         # expect exactly one micro_chunk back
         mc = summary_resp.micro_chunks[0]
@@ -390,7 +503,7 @@ class BaseDocumentGraphIngestor:
             start_page=min(c.span.start_page for c in chunks),
             end_page=max(c.span.end_page for c in chunks),
             start_char=0,
-            end_char=max(c.span.end_char for c in chunks)
+            end_char=max(c.span.end_char for c in chunks),
         )
         final_chunk = SummaryChunk(
             id=f"final:{uuid.uuid4()}",
@@ -398,14 +511,22 @@ class BaseDocumentGraphIngestor:
             summary=mc.summary,
             span=final_span,
             level=level,
-            parent_ids = [ch.id for ch in chunks]
+            parent_ids=[ch.id for ch in chunks],
         )
         self._ensure_node(doc_id, final_chunk)
         for c in chunks:
-            self._bi_edge(doc_id, src=final_chunk.id, tgt=c.id,
-                        relation=REL_SUMMARIZES, reverse_relation=REL_DETAILS)
+            self._bi_edge(
+                doc_id,
+                src=final_chunk.id,
+                tgt=c.id,
+                relation=REL_SUMMARIZES,
+                reverse_relation=REL_DETAILS,
+            )
         return final_chunk
-    def _summarize_layer(self, doc_id: str, leaves: Sequence[LeafChunk], *, level: int) -> List[SummaryChunk]:
+
+    def _summarize_layer(
+        self, doc_id: str, leaves: Sequence[LeafChunk], *, level: int
+    ) -> List[SummaryChunk]:
         """Summarize each leaf into micro-chunks and persist that local layer.
 
         Each leaf is summarized independently, producing one or more SummaryChunk
@@ -436,12 +557,16 @@ class BaseDocumentGraphIngestor:
                 )
                 out.append(
                     SummaryChunk(
-                        id=(f"sum:{uuid.uuid4()}" if self.use_uuid else f"sum|doc:{doc_id}|level:{level}|leave:{leaf.id.split('|')[-1].split(':')[-1]}|c{i}"),
+                        id=(
+                            f"sum:{uuid.uuid4()}"
+                            if self.use_uuid
+                            else f"sum|doc:{doc_id}|level:{level}|leave:{leaf.id.split('|')[-1].split(':')[-1]}|c{i}"
+                        ),
                         title=(m.title or "").strip()[:120] or "Untitled",
                         summary=(m.summary or "").strip(),
                         span=span,
                         level=level,
-                        parent_ids = [leaf.id]
+                        parent_ids=[leaf.id],
                     )
                 )
                 local_cnt += 1
@@ -452,15 +577,21 @@ class BaseDocumentGraphIngestor:
         for cnt in counts_per_leaf:
             if cnt == 0:
                 continue
-            subset = out[offset:offset + cnt]          # the micro-chunks from this leaf
-            self._persist_micro_chunks_as_nodes(doc_id, subset)   # <-- persist nodes first
+            subset = out[offset : offset + cnt]  # the micro-chunks from this leaf
+            self._persist_micro_chunks_as_nodes(
+                doc_id, subset
+            )  # <-- persist nodes first
             micros_ids = [c.id for c in subset]
-            self._persist_adjacency(doc_id, micros_ids)           # then wire adjacency (precedes/after)
+            self._persist_adjacency(
+                doc_id, micros_ids
+            )  # then wire adjacency (precedes/after)
             offset += cnt
 
         return out
 
-    def _group_layer(self, doc_id: str, current: Sequence[SummaryChunk], *, level: int) -> List[SummaryChunk]:
+    def _group_layer(
+        self, doc_id: str, current: Sequence[SummaryChunk], *, level: int
+    ) -> List[SummaryChunk]:
         """Group adjacent summary chunks into a higher-level layer.
 
         Grouping is LLM-assisted but keyed for deterministic cache reuse. Each child
@@ -469,7 +600,9 @@ class BaseDocumentGraphIngestor:
         edges between layers after grouping.
         """
         # Prepare the grouping text
-        items_text = "\n".join(f"[{i}] {c.title}: {c.summary}" for i, c in enumerate(current))
+        items_text = "\n".join(
+            f"[{i}] {c.title}: {c.summary}" for i, c in enumerate(current)
+        )
         max_groups = max(1, (len(current) + 1) // 2)  # heuristic: halve the count
         key = f"group:v1|doc:{doc_id}|level:{level}|n:{len(current)}"
         res: GroupResponse = self._cached_group(key, items_text, max_groups)
@@ -489,8 +622,14 @@ class BaseDocumentGraphIngestor:
                 id=f"grp:{uuid.uuid4() if self.use_uuid else i}|level{level}|doc:{doc_id}",
                 title=g.title.strip()[:120] or "Group",
                 summary=g.summary.strip(),
-                span=Span(start_page=start_page, end_page=end_page, start_char=start_char, end_char=end_char),
-                level=level, parent_ids = parent_ids
+                span=Span(
+                    start_page=start_page,
+                    end_page=end_page,
+                    start_char=start_char,
+                    end_char=end_char,
+                ),
+                level=level,
+                parent_ids=parent_ids,
             )
             children.append(child)
             self._ensure_node(doc_id, child)
@@ -503,7 +642,9 @@ class BaseDocumentGraphIngestor:
 
         return children
 
-    def _force_concat(self, doc_id: str, chunks: Sequence[SummaryChunk], level: int) -> SummaryChunk:
+    def _force_concat(
+        self, doc_id: str, chunks: Sequence[SummaryChunk], level: int
+    ) -> SummaryChunk:
         text = " ".join(f"{c.title}. {c.summary}" for c in chunks)
         # Don't call LLM; deterministic concatenation
         start_page = min(c.span.start_page for c in chunks)
@@ -511,26 +652,36 @@ class BaseDocumentGraphIngestor:
         start_char = min(c.span.start_char for c in chunks)
         end_char = max(c.span.end_char for c in chunks)
         return SummaryChunk(
-            id=f"final:{uuid.uuid4()}|doc{doc_id}"  if self.use_uuid else f"final|doc{doc_id}",
+            id=f"final:{uuid.uuid4()}|doc{doc_id}"
+            if self.use_uuid
+            else f"final|doc{doc_id}",
             title="Final Summary",
             summary=text[:2000],  # keep it bounded
-            span=Span(start_page=start_page, end_page=end_page, start_char=start_char, end_char=end_char),
+            span=Span(
+                start_page=start_page,
+                end_page=end_page,
+                start_char=start_char,
+                end_char=end_char,
+            ),
             level=level,
-            parent_ids =[]
+            parent_ids=[],
         )
 
     # ---------- persistence helpers ----------
 
-    def _persist_leaf_nodes(self, doc_id: str, leaves: Sequence[LeafChunk]) -> List[Node]:
+    def _persist_leaf_nodes(
+        self, doc_id: str, leaves: Sequence[LeafChunk]
+    ) -> List[Node]:
         nodes: List[Node] = []
         for i, leaf in enumerate(leaves, start=1):
             leaf_json = json.loads(leaf.text)
             try:
-                
-                embedding_text = leaf_json.get('text')
+                embedding_text = leaf_json.get("text")
                 if embedding_text is None:
-                    embedding_text = json.dumps([i['text'] for i in leaf_json.get('OCR_text_clusters')])
-            
+                    embedding_text = json.dumps(
+                        [i["text"] for i in leaf_json.get("OCR_text_clusters")]
+                    )
+
                 embedding_vector = self.engine._ef([embedding_text])[0]
             except:
                 raise
@@ -539,15 +690,13 @@ class BaseDocumentGraphIngestor:
                 label=f"raw_text_chunk {i}",
                 type="entity",
                 summary=leaf.text,
-                mentions=[
-                    self._ref(doc_id, leaf.span, excerpt=leaf.text[:160])
-                ],
+                mentions=[self._ref(doc_id, leaf.span, excerpt=leaf.text[:160])],
                 doc_id=doc_id,
                 properties={
                     "level": -1,
                     "source_leaf_id": leaf.id,
                 },
-                embedding = embedding_vector.tolist()
+                embedding=embedding_vector.tolist(),
             )
             if not self.engine.persist.exists_node(n.id):
                 self.engine.write.add_node(n, doc_id=doc_id)
@@ -556,7 +705,7 @@ class BaseDocumentGraphIngestor:
 
     def _as_node(self, doc_id: str, ch: SummaryChunk) -> Node:
         label = f"summary:{ch.title}"
-        
+
         return Node(
             id=f"{ch.id}",  # stable per chunk
             label=label,
@@ -569,7 +718,7 @@ class BaseDocumentGraphIngestor:
         )
 
     def _ensure_node(self, doc_id: str, ch: SummaryChunk) -> str:
-        nid = ch.id #f"node:{ch.id}"
+        nid = ch.id  # f"node:{ch.id}"
         if not self.engine.persist.exists_node(nid):
             self.engine.write.add_node(self._as_node(doc_id, ch), doc_id=doc_id)
         return nid
@@ -594,11 +743,20 @@ class BaseDocumentGraphIngestor:
         for c in children:
             cid = c.id
             for pid in c.parent_ids:
-                self._bi_edge(doc_id, src=pid, tgt=cid, relation=REL_SUMMARIZES, reverse_relation=REL_DETAILS)
+                self._bi_edge(
+                    doc_id,
+                    src=pid,
+                    tgt=cid,
+                    relation=REL_SUMMARIZES,
+                    reverse_relation=REL_DETAILS,
+                )
 
         # Sibling order on children (precedes/after)
         self._persist_adjacency(doc_id, child_ids)
-    def _persist_micro_chunks_as_nodes(self, doc_id: str, micro_chunks: list[SummaryChunk]) -> list[str]:
+
+    def _persist_micro_chunks_as_nodes(
+        self, doc_id: str, micro_chunks: list[SummaryChunk]
+    ) -> list[str]:
         """
         Persist each micro-chunk as a Node (type='summary_chunk'), using the same IDs as the SummaryChunk objects.
         Returns the list of node IDs (identical to the SummaryChunk ids).
@@ -606,7 +764,9 @@ class BaseDocumentGraphIngestor:
         node_ids: list[str] = []
         for ch in micro_chunks:
             # Build a reference carrying the span for node_docs indexing
-            ref = self._ref(doc_id, span = ch.span, excerpt = (ch.summary[:160] if ch.summary else None))
+            ref = self._ref(
+                doc_id, span=ch.span, excerpt=(ch.summary[:160] if ch.summary else None)
+            )
             # ref = ReferenceSession(
             #     doc_id = doc_id,
             #     collection_page_url=f"document_collection/{doc_id}",
@@ -619,12 +779,12 @@ class BaseDocumentGraphIngestor:
             # )
 
             n = Node(
-                id=ch.id,                          # keep identical to SummaryChunk.id so edges line up
+                id=ch.id,  # keep identical to SummaryChunk.id so edges line up
                 label=ch.title,
                 type="entity",
                 summary=ch.summary,
                 mentions=[ref],
-                doc_id=doc_id,                     # will also be set by engine.add_node(doc_id=...) but harmless here
+                doc_id=doc_id,  # will also be set by engine.add_node(doc_id=...) but harmless here
                 # embedding = self.engine._ef(ch.summary)[0]
             )
 
@@ -635,6 +795,7 @@ class BaseDocumentGraphIngestor:
             node_ids.append(n.id)
 
         return node_ids
+
     def _persist_adjacency(self, doc_id: str, ordered_node_ids: Sequence[str]):
         """
         Persist asymmetric sibling adjacency:
@@ -642,33 +803,53 @@ class BaseDocumentGraphIngestor:
         b -(after)----> a
         """
         for a, b in zip(ordered_node_ids, ordered_node_ids[1:]):
-            self._bi_edge(doc_id, src=a, tgt=b, relation=REL_PRECEDES, reverse_relation=REL_AFTER)
-            
-    def _bi_edge(self, doc_id: str, *, src: str, tgt: str, relation: str, reverse_relation: str):
+            self._bi_edge(
+                doc_id, src=a, tgt=b, relation=REL_PRECEDES, reverse_relation=REL_AFTER
+            )
+
+    def _bi_edge(
+        self, doc_id: str, *, src: str, tgt: str, relation: str, reverse_relation: str
+    ):
         "this document graph does not enfoce multi headed edge"
-        
+
         # forward
         e1 = Edge(
             id=f"edge:{uuid.uuid4() if self.use_uuid else str(f'({src}::{relation}::{tgt})')}",
-            label = f"{src}::{relation}::{tgt}",
+            label=f"{src}::{relation}::{tgt}",
             relation=relation,
             source_ids=[src],
             target_ids=[tgt],
             type="relationship",
-            summary=f"{relation}: {src} → {tgt}", source_edge_ids = [], target_edge_ids = [],
-            mentions=[self._ref(doc_id, GroundingSpan(start_page=1, end_page=1, start_char=0, end_char=1), excerpt=None)],
+            summary=f"{relation}: {src} → {tgt}",
+            source_edge_ids=[],
+            target_edge_ids=[],
+            mentions=[
+                self._ref(
+                    doc_id,
+                    GroundingSpan(start_page=1, end_page=1, start_char=0, end_char=1),
+                    excerpt=None,
+                )
+            ],
             doc_id=doc_id,
         )
         # reverse (distinct relation name)
         e2 = Edge(
             id=f"edge:{uuid.uuid4() if self.use_uuid else str(f'({tgt}::{relation}::{src})')}",
-            label = f"{src}::{relation}::{tgt}",
+            label=f"{src}::{relation}::{tgt}",
             relation=reverse_relation,
             source_ids=[tgt],
             target_ids=[src],
             type="relationship",
-            summary=f"{reverse_relation}: {tgt} → {src}", source_edge_ids = [], target_edge_ids = [],
-            mentions=[self._ref(doc_id, GroundingSpan(start_page=1, end_page=1, start_char=0, end_char=1), excerpt=None)],
+            summary=f"{reverse_relation}: {tgt} → {src}",
+            source_edge_ids=[],
+            target_edge_ids=[],
+            mentions=[
+                self._ref(
+                    doc_id,
+                    GroundingSpan(start_page=1, end_page=1, start_char=0, end_char=1),
+                    excerpt=None,
+                )
+            ],
             doc_id=doc_id,
         )
         if not self.engine.persist.exists_edge(e1.id):
@@ -676,22 +857,26 @@ class BaseDocumentGraphIngestor:
         if not self.engine.persist.exists_edge(e2.id):
             self.engine.write.add_edge(e2, doc_id=doc_id)
 
-    def _ref(self, doc_id: str, span: GroundingSpan, *, excerpt: Optional[str]) -> GroundingSpan:
+    def _ref(
+        self, doc_id: str, span: GroundingSpan, *, excerpt: Optional[str]
+    ) -> GroundingSpan:
         return GroundingSpan(
-            doc_id = doc_id,
+            doc_id=doc_id,
             collection_page_url=f"document_collection/{doc_id}",
             document_page_url=f"document/{doc_id}",
             start_page=span.start_page,
             end_page=span.end_page,
             start_char=span.start_char,
             end_char=span.end_char,
-            insertion_method = "document_ingestion",
+            insertion_method="document_ingestion",
             excerpt=excerpt,
         )
+
 
 # -----------------------------
 # High-level orchestrator
 # -----------------------------
+
 
 class PagewiseSummaryIngestor(BaseDocumentGraphIngestor):
     """
@@ -711,4 +896,3 @@ class PagewiseSummaryIngestor(BaseDocumentGraphIngestor):
 
     # Fully implemented in the base; left here for future extension hooks.
     pass
-

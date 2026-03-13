@@ -28,7 +28,7 @@ import re
 import time
 import base64
 
-from typing import Any, Callable, Iterable, Optional, Self, Sequence, Type, TypeVar
+from typing import Any, Callable, Optional, Sequence, Type, TypeVar
 
 from pydantic import BaseModel, Field
 from graph_knowledge_engine.llm_tasks import (
@@ -38,8 +38,13 @@ from graph_knowledge_engine.llm_tasks import (
 )
 from typing import TYPE_CHECKING
 
-from .models import ContextSnapshotMetadata, ConversationEdge, ConversationNode, MetaFromLastSummary
+from .models import (
+    ConversationEdge,
+    ConversationNode,
+    MetaFromLastSummary,
+)
 from .policy import get_chat_tail
+
 if TYPE_CHECKING:
     from ..runtime import WorkflowEdgeInfo
 
@@ -48,11 +53,11 @@ from .conversation_state_contracts import ConversationWorkflowState
 from ..engine_core.models import (
     Grounding,
     Span,
-    Node,
-    ContextCost,
 )
 from ..runtime.models import StepRunResult
+
 BaseM = TypeVar("BaseM", bound=BaseModel)
+
 
 def _stable_json(obj: Any) -> str:
     return json.dumps(obj, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -72,10 +77,15 @@ def context_messages_hash(messages: Sequence[Any]) -> str:
     """
     norm: list[dict[str, Any]] = []
     for m in messages or []:
-        role = getattr(m, "role", None) or (m.get("role") if isinstance(m, dict) else None)
-        content = getattr(m, "content", None) or (m.get("content") if isinstance(m, dict) else None)
+        role = getattr(m, "role", None) or (
+            m.get("role") if isinstance(m, dict) else None
+        )
+        content = getattr(m, "content", None) or (
+            m.get("content") if isinstance(m, dict) else None
+        )
         norm.append({"role": str(role or ""), "content": str(content or "")})
     return snapshot_hash({"messages": norm})
+
 
 def deterministic_id(prefix: str, fingerprint: dict, bits: int = 96) -> str:
     s = json.dumps(fingerprint, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -85,7 +95,10 @@ def deterministic_id(prefix: str, fingerprint: dict, bits: int = 96) -> str:
     token = base64.b32encode(short).decode("ascii").rstrip("=")
     return f"{prefix}:{token.lower()}"
 
-def pointer_id(*, scope: str, pointer_kind: str, target_kind: str, target_id: str) -> str:
+
+def pointer_id(
+    *, scope: str, pointer_kind: str, target_kind: str, target_id: str
+) -> str:
     fp = {
         "scope": scope,
         "pointer_kind": pointer_kind,
@@ -108,8 +121,12 @@ def edge_id(*, scope: str, rel: str, src: str, dst: str) -> str:
 class EvidenceSelection(BaseModel):
     """LLM output selecting what is actually used for answering."""
 
-    used_node_ids: list[str] = Field(default_factory=list, description="Knowledge node ids used")
-    used_edge_ids: list[str] = Field(default_factory=list, description="Knowledge edge ids used (optional)")
+    used_node_ids: list[str] = Field(
+        default_factory=list, description="Knowledge node ids used"
+    )
+    used_edge_ids: list[str] = Field(
+        default_factory=list, description="Knowledge edge ids used (optional)"
+    )
     reasoning: str = Field("", description="Short reasoning for selection")
 
 
@@ -122,35 +139,60 @@ class SpanRef(BaseModel):
 
     Indices are ephemeral and only guaranteed valid for the evidence pack used in the same run.
     """
-    source_node_id: str = Field(..., description="Knowledge node id that owns the mention/span")
+
+    source_node_id: str = Field(
+        ..., description="Knowledge node id that owns the mention/span"
+    )
     mention_index: int = Field(..., ge=0, description="Index into mentions list")
-    span_index: int = Field(..., ge=0, description="Index into spans list within the mention")
+    span_index: int = Field(
+        ..., ge=0, description="Index into spans list within the mention"
+    )
 
 
 class ClaimWithCitations(BaseModel):
     """A single atomic claim with supporting citations."""
+
     claim: str = Field(..., description="A single factual claim or assertion")
-    citations: list[SpanRef] = Field(default_factory=list, description="Supporting span references")
+    citations: list[SpanRef] = Field(
+        default_factory=list, description="Supporting span references"
+    )
 
 
 class AnswerWithCitations(BaseModel):
     """Answer text plus claim-level span citations."""
+
     text: str = Field(..., description="Final assistant response")
     reasoning: str = Field(..., description="Reasoning")
-    claims: list[ClaimWithCitations] = Field(default_factory=list, description="Key claims with citations")
-from typing import Callable, TypeVar, ParamSpec, cast
+    claims: list[ClaimWithCitations] = Field(
+        default_factory=list, description="Key claims with citations"
+    )
+
+
+from typing import TypeVar, ParamSpec, cast
 from joblib import Memory
 
 P = ParamSpec("P")
 R = TypeVar("R")
+
+
 def cached(memory: Memory, fn: Callable[P, R], *args, **kwargs) -> Callable[P, R]:
     return cast(Callable[P, R], memory.cache(fn, *args, **kwargs))
+
+
 class AnswerEvaluation(BaseModel):
     """Post-answer evaluation for sufficiency and whether more info is needed."""
-    is_sufficient: bool = Field(..., description="Whether current evidence is sufficient to answer")
-    needs_more_info: bool = Field(..., description="Whether we should retrieve/expand and answer again")
-    missing_aspects: list[str] = Field(default_factory=list, description="What is missing if more info is needed")
+
+    is_sufficient: bool = Field(
+        ..., description="Whether current evidence is sufficient to answer"
+    )
+    needs_more_info: bool = Field(
+        ..., description="Whether we should retrieve/expand and answer again"
+    )
+    missing_aspects: list[str] = Field(
+        default_factory=list, description="What is missing if more info is needed"
+    )
     notes: str = Field("", description="Optional short rationale")
+
 
 @dataclass
 class AgentConfig:
@@ -171,10 +213,14 @@ class AgentConfig:
     # Budget knobs for materialization (kept simple; your resolvers can interpret these)
     max_chars_per_item: int = 900
     max_total_chars: int = 12000
+
+
 from ..engine_core.engine import GraphKnowledgeEngine
+
 
 class AgenticAnsweringAgent:
     """Agent that answers within a conversation canvas using a separate knowledge engine."""
+
     @staticmethod
     def _select_used_evidence_entry(
         agent: "AgenticAnsweringAgent",
@@ -199,12 +245,20 @@ class AgenticAnsweringAgent:
         cache_dir: str | None,
     ):
         if not cache_dir:
-            return EvidenceSelection.model_validate(self._select_used_evidence(system_prompt=system_prompt, question=question, candidates=candidates))
+            return EvidenceSelection.model_validate(
+                self._select_used_evidence(
+                    system_prompt=system_prompt,
+                    question=question,
+                    candidates=candidates,
+                )
+            )
         if not candidates:
             return EvidenceSelection(reasoning="No candidates given for selection.")
         mem = Memory(location=cache_dir, verbose=0)
         cached_fn = cached(mem, self._select_used_evidence_entry, ignore=["agent"])
-        payload = cached_fn(self, system_prompt=system_prompt, question=question, candidates=candidates)
+        payload = cached_fn(
+            self, system_prompt=system_prompt, question=question, candidates=candidates
+        )
         return EvidenceSelection.model_validate(payload)
         # from utils.pydanic_model_consumer_wrapper import cache_pydantic_structured
         # cached_entry = cache_pydantic_structured(
@@ -215,6 +269,7 @@ class AgenticAnsweringAgent:
         #     # dump_exclude={"raw"},  # if you add raw above
         # )
         # return cache_pydantic_structured()
+
     def __init__(
         self,
         *,
@@ -222,7 +277,9 @@ class AgenticAnsweringAgent:
         knowledge_engine: GraphKnowledgeEngine,
         llm_tasks: LLMTaskSet,
         config: Optional[AgentConfig] = None,
-        cache_dir: str | None = str((pathlib.Path()/ ".joblib" / "agentic_answering").absolute())
+        cache_dir: str | None = str(
+            (pathlib.Path() / ".joblib" / "agentic_answering").absolute()
+        ),
     ):
         self.conversation_engine = conversation_engine
         self.knowledge_engine = knowledge_engine
@@ -232,11 +289,20 @@ class AgenticAnsweringAgent:
         self.max_retry = 3
 
     def _provider_label(self, task_name: str) -> str:
-        return str(getattr(self.llm_tasks.provider_hints, f"{task_name}_provider", "") or "")
+        return str(
+            getattr(self.llm_tasks.provider_hints, f"{task_name}_provider", "") or ""
+        )
+
     # ----------------------------
     # Public entrypoint
     # ----------------------------
-    def answer(self, *, conversation_id: str, user_id=None, prev_turn_meta_summary:MetaFromLastSummary) -> dict[str, Any]:
+    def answer(
+        self,
+        *,
+        conversation_id: str,
+        user_id=None,
+        prev_turn_meta_summary: MetaFromLastSummary,
+    ) -> dict[str, Any]:
         """Run bounded agentic answering with evidence selection + optional citation picking.
         Non runtime workflow
         Must Enforce Builder pattern in this function
@@ -271,8 +337,10 @@ class AgenticAnsweringAgent:
             raise ValueError("No user message found in conversation")
 
         # 2) Create run anchor in canvas
-        run_id = f"run_{int(time.time()*1000)}"
-        run_node_id = self._ensure_run_anchor(conversation_id=conversation_id, run_id=run_id)
+        run_id = f"run_{int(time.time() * 1000)}"
+        run_node_id = self._ensure_run_anchor(
+            conversation_id=conversation_id, run_id=run_id
+        )
 
         # Phase 2B: deterministic step identity for snapshot nodes (local to this agent run).
         run_step_seq = 0
@@ -293,7 +361,9 @@ class AgenticAnsweringAgent:
 
             # 4) Select used evidence (LLM or cheap fallback)
             if (self.config.evidence_selector or "llm").lower() == "bm25":
-                selection = self._select_used_evidence_bm25(question=question, candidates=candidates)
+                selection = self._select_used_evidence_bm25(
+                    question=question, candidates=candidates
+                )
             else:
                 # Context snapshot before evidence-selection LLM call.
                 self._persist_context_snapshot(
@@ -308,12 +378,20 @@ class AgenticAnsweringAgent:
                     tail_turn_index=int(prev_turn_meta_summary.tail_turn_index or 0),
                     extra_hash_payload={
                         "question": question,
-                        "candidate_ids": [c.get("node_id") for c in (candidates or []) if isinstance(c, dict) and c.get("node_id")],
+                        "candidate_ids": [
+                            c.get("node_id")
+                            for c in (candidates or [])
+                            if isinstance(c, dict) and c.get("node_id")
+                        ],
                     },
                     llm_input_payload={
                         "system_prompt": system_prompt,
                         "question": question,
-                        "candidate_ids": [c.get("node_id") for c in (candidates or []) if isinstance(c, dict) and c.get("node_id")],
+                        "candidate_ids": [
+                            c.get("node_id")
+                            for c in (candidates or [])
+                            if isinstance(c, dict) and c.get("node_id")
+                        ],
                     },
                 )
                 run_step_seq += 1
@@ -321,7 +399,7 @@ class AgenticAnsweringAgent:
                     system_prompt=system_prompt,
                     question=question,
                     candidates=candidates,
-                    cache_dir = self.cache_dir
+                    cache_dir=self.cache_dir,
                 )
 
             used_node_ids = selection.used_node_ids[: self.config.max_used]
@@ -329,16 +407,21 @@ class AgenticAnsweringAgent:
             last_used = used_node_ids
             from ..utils.pydanic_model_consumer_wrapper import cache_pydantic_structured
             from joblib import Memory
-            
+
             # 5) Materialize evidence pack for answering + citation picking
-            mem=Memory(location = str((pathlib.Path(".joblib")/"_materialize_evidence_pack").absolute()))
-            cached_call = cache_pydantic_structured(fn = self._materialize_evidence_pack,
-                                                    memory = mem,
-                                                    model = None,
-                                                    ignore = ['agent']
-                                                    )
+            mem = Memory(
+                location=str(
+                    (pathlib.Path(".joblib") / "_materialize_evidence_pack").absolute()
+                )
+            )
+            cached_call = cache_pydantic_structured(
+                fn=self._materialize_evidence_pack,
+                memory=mem,
+                model=None,
+                ignore=["agent"],
+            )
             evidence_pack = cached_call(
-                agent = self,
+                agent=self,
                 node_ids=used_node_ids,
                 edge_ids=used_edge_ids,
                 depth=materialize_depth,
@@ -348,6 +431,7 @@ class AgenticAnsweringAgent:
 
             # Digest is persisted inside ContextSnapshot so we can re-materialize later.
             from .models import EvidencePackDigest
+
             evidence_digest = EvidencePackDigest(
                 node_ids=list(used_node_ids),
                 edge_ids=list(used_edge_ids or []),
@@ -372,12 +456,19 @@ class AgenticAnsweringAgent:
             # )
 
             # 6) Generate answer with claim-level citations (SpanRef indices into evidence_pack)
-            mem=Memory(location = str((pathlib.Path(".joblib")/"_generate_answer_with_citations").absolute()))
-            cached_call = cache_pydantic_structured(fn = self._generate_answer_with_citations,
-                                                    memory = mem,
-                                                    model = None,
-                                                    ignore = ["agent"]
-                                                    )            
+            mem = Memory(
+                location=str(
+                    (
+                        pathlib.Path(".joblib") / "_generate_answer_with_citations"
+                    ).absolute()
+                )
+            )
+            cached_call = cache_pydantic_structured(
+                fn=self._generate_answer_with_citations,
+                memory=mem,
+                model=None,
+                ignore=["agent"],
+            )
             # Context snapshot before answer-with-citations LLM call.
             self._persist_context_snapshot(
                 conversation_id=conversation_id,
@@ -402,22 +493,23 @@ class AgenticAnsweringAgent:
             )
             run_step_seq += 1
             ans_json = cached_call(
-                agent = self,
+                agent=self,
                 system_prompt=system_prompt,
                 question=question,
                 evidence_pack=evidence_pack,
                 used_node_ids=used_node_ids,
-                out_model_schema = AnswerWithCitations.model_json_schema(),
-                out_model = AnswerWithCitations
+                out_model_schema=AnswerWithCitations.model_json_schema(),
+                out_model=AnswerWithCitations,
             )
             ans = AnswerWithCitations.model_validate(ans_json)
             # 6b) Validate / repair citations (bounded)
-            
-            cached_call3 = cache_pydantic_structured(fn = self._validate_or_repair_citations,
-                                                    memory = mem,
-                                                    model = None,
-                                                    ignore = ["agent", "answer_in_model"]
-                                                    )
+
+            cached_call3 = cache_pydantic_structured(
+                fn=self._validate_or_repair_citations,
+                memory=mem,
+                model=None,
+                ignore=["agent", "answer_in_model"],
+            )
             # Context snapshot before citation repair (may call LLM on invalid citations).
             self._persist_context_snapshot(
                 conversation_id=conversation_id,
@@ -443,13 +535,13 @@ class AgenticAnsweringAgent:
             )
             run_step_seq += 1
             ans = cached_call3(
-                agent = self,
+                agent=self,
                 system_prompt=system_prompt,
                 question=question,
                 evidence_pack=evidence_pack,
                 used_node_ids=used_node_ids,
                 answer=ans.model_dump(),
-                answer_in_model = AnswerWithCitations
+                answer_in_model=AnswerWithCitations,
                 # out_model_schema = AnswerWithCitations.model_json_schema(),
                 # out_model = AnswerWithCitations
             )
@@ -457,11 +549,12 @@ class AgenticAnsweringAgent:
             last_answer = ans
 
             # 7) Evaluate sufficiency / need-more-info
-            cached_call3 = cache_pydantic_structured(fn = self._evaluate_answer,
-                                                    memory = mem,
-                                                    model = None,
-                                                    ignore = ["agent", "out_model"]
-                                                    )
+            cached_call3 = cache_pydantic_structured(
+                fn=self._evaluate_answer,
+                memory=mem,
+                model=None,
+                ignore=["agent", "out_model"],
+            )
             # Context snapshot before evaluation LLM call.
             self._persist_context_snapshot(
                 conversation_id=conversation_id,
@@ -487,14 +580,14 @@ class AgenticAnsweringAgent:
             )
             run_step_seq += 1
             last_eval = self._evaluate_answer(
-                agent = self,
+                agent=self,
                 system_prompt=system_prompt,
                 question=question,
                 answer_text=ans.text,
                 used_node_ids=used_node_ids,
                 evidence_pack=evidence_pack,
                 out_model_schema=AnswerEvaluation.model_json_schema(),
-                out_model=AnswerEvaluation
+                out_model=AnswerEvaluation,
             )
             last_eval = AnswerEvaluation.model_validate(last_eval)
             if not last_eval.needs_more_info or last_eval.is_sufficient:
@@ -505,7 +598,7 @@ class AgenticAnsweringAgent:
             max_candidates = min(max_candidates * 2, 200)
 
         # # 8) DEMO, uncommment to demo
-        # 
+        #
         # Project used evidence to canvas (idempotent) using final selection
         # projected_pointer_ids: list[str] = []
         # for kid in last_used:
@@ -519,18 +612,18 @@ class AgenticAnsweringAgent:
         # last_projected = projected_pointer_ids
 
         # 9) Persist assistant response as conversation node and link to run
-        assistant_text = (last_answer.text if last_answer else "")
+        assistant_text = last_answer.text if last_answer else ""
         # tail_turn = self.conversation_engine.conversation.get_conversation_tail(conversation_id, prev_turn_meta_summary.tail_turn_index)
-        
+
         # if tail_turn is None or tail_turn.turn_index is None:
-            # raise Exception("no tail turn with index found when answering")
+        # raise Exception("no tail turn with index found when answering")
         tail_turn_index = prev_turn_meta_summary.tail_turn_index
         assistant_turn_node_id, assistant_turn_node = self._add_assistant_turn(
             conversation_id=conversation_id,
             content=assistant_text,
             provenance_span=Span.from_dummy_for_conversation(),
-            turn_index =  tail_turn_index+1,
-            prev_turn_meta_summary=prev_turn_meta_summary
+            turn_index=tail_turn_index + 1,
+            prev_turn_meta_summary=prev_turn_meta_summary,
         )
         # duplicated, unnecessary to add below !warning
         # prev_turn_meta_summary.tail_turn_index = tail_turn_index
@@ -541,7 +634,7 @@ class AgenticAnsweringAgent:
             run_node_id=run_node_id,
             response_node_id=assistant_turn_node_id,
             used_node_ids=last_used,
-            provenance_span = Span.from_dummy_for_conversation(),
+            provenance_span=Span.from_dummy_for_conversation(),
             prev_turn_meta_summary=prev_turn_meta_summary,
         )
 
@@ -553,7 +646,7 @@ class AgenticAnsweringAgent:
             "projected_pointer_ids": last_projected,
             "claim_citations": (last_answer.model_dump() if last_answer else {}),
             "evaluation": (last_eval.model_dump() if last_eval else {}),
-            "turn_node_dump" : assistant_turn_node.model_dump()
+            "turn_node_dump": assistant_turn_node.model_dump(),
         }
 
     # ----------------------------
@@ -582,17 +675,29 @@ class AgenticAnsweringAgent:
 
         # Ensure design exists.
         from ..conversation.designer import AgenticAnsweringWorkflowDesigner
-        def predicate_always(workflow_info: WorkflowEdgeInfo, state: ConversationWorkflowState, last_result: StepRunResult):
+
+        def predicate_always(
+            workflow_info: WorkflowEdgeInfo,
+            state: ConversationWorkflowState,
+            last_result: StepRunResult,
+        ):
             return True
-        
-        def aa_should_iterate(workflow_info: WorkflowEdgeInfo, state: ConversationWorkflowState, last_result: StepRunResult):
+
+        def aa_should_iterate(
+            workflow_info: WorkflowEdgeInfo,
+            state: ConversationWorkflowState,
+            last_result: StepRunResult,
+        ):
             return bool(state.get("should_iterate"))
+
         predicate_registry = {
-            "always": predicate_always, #lambda st, r: True,
-            "aa_should_iterate": aa_should_iterate, #lambda st, r: bool(st.get("should_iterate")),
+            "always": predicate_always,  # lambda st, r: True,
+            "aa_should_iterate": aa_should_iterate,  # lambda st, r: bool(st.get("should_iterate")),
         }
 
-        designer = AgenticAnsweringWorkflowDesigner(workflow_engine=workflow_engine, predicate_registry=predicate_registry)
+        designer = AgenticAnsweringWorkflowDesigner(
+            workflow_engine=workflow_engine, predicate_registry=predicate_registry
+        )
         designer.ensure_answer_flow(workflow_id=workflow_id, mode="full")
 
         # Resolver registry (handlers live in workflow/resolvers.py)
@@ -600,7 +705,10 @@ class AgenticAnsweringAgent:
 
         class AgenticStepResolver(MappingStepResolver):
             def __init__(self) -> None:
-                super().__init__(handlers=dict(default_resolver.handlers), default=default_resolver.default)
+                super().__init__(
+                    handlers=dict(default_resolver.handlers),
+                    default=default_resolver.default,
+                )
 
         resolve_step = AgenticStepResolver()
 
@@ -622,12 +730,16 @@ class AgenticAnsweringAgent:
 
         # Choose a turn_node_id for checkpoint/tracing.
         try:
-            tail = get_chat_tail(self.conversation_engine, conversation_id=conversation_id)
+            tail = get_chat_tail(
+                self.conversation_engine, conversation_id=conversation_id
+            )
         except Exception:
             tail = None
         if tail is None:
             raise ValueError(f"conversation_id={conversation_id!r} has no tail node")
-        turn_node_id = str(getattr(tail, "id", None) or getattr(tail, "node_id", None) or "")
+        turn_node_id = str(
+            getattr(tail, "id", None) or getattr(tail, "node_id", None) or ""
+        )
         if not turn_node_id:
             raise ValueError("Failed to infer turn_node_id from conversation tail")
 
@@ -663,12 +775,20 @@ class AgenticAnsweringAgent:
         # Update caller's prev_turn_meta_summary in-place.
         mts = final_state.get("prev_turn_meta_summary") or {}
         prev_turn_meta_summary.prev_node_char_distance_from_last_summary = int(
-            mts.get("prev_node_char_distance_from_last_summary", prev_turn_meta_summary.prev_node_char_distance_from_last_summary)
+            mts.get(
+                "prev_node_char_distance_from_last_summary",
+                prev_turn_meta_summary.prev_node_char_distance_from_last_summary,
+            )
         )
         prev_turn_meta_summary.prev_node_distance_from_last_summary = int(
-            mts.get("prev_node_distance_from_last_summary", prev_turn_meta_summary.prev_node_distance_from_last_summary)
+            mts.get(
+                "prev_node_distance_from_last_summary",
+                prev_turn_meta_summary.prev_node_distance_from_last_summary,
+            )
         )
-        prev_turn_meta_summary.tail_turn_index = int(mts.get("tail_turn_index", prev_turn_meta_summary.tail_turn_index))
+        prev_turn_meta_summary.tail_turn_index = int(
+            mts.get("tail_turn_index", prev_turn_meta_summary.tail_turn_index)
+        )
 
         out = final_state.get("agentic_answering_result") or {}
         out["workflow_run_id"] = rid
@@ -698,7 +818,9 @@ class AgenticAnsweringAgent:
         return str(getattr(conversation, "last_user_text", "") or "")
 
     def _retrieve_candidates(self, question: str) -> list[dict[str, Any]]:
-        if hasattr(self.knowledge_engine, "embed") and hasattr(self.knowledge_engine.embed, "iterative_defensive_emb"):
+        if hasattr(self.knowledge_engine, "embed") and hasattr(
+            self.knowledge_engine.embed, "iterative_defensive_emb"
+        ):
             emb = self.knowledge_engine.embed.iterative_defensive_emb(question)
         elif hasattr(self.knowledge_engine, "iterative_defensive_emb"):
             emb = self.knowledge_engine.iterative_defensive_emb(question)
@@ -728,21 +850,26 @@ class AgenticAnsweringAgent:
             )
         return out
 
-    def _select_used_evidence(self, *, system_prompt: str, question: str, candidates: Sequence[dict[str, Any]]) -> dict:
+    def _select_used_evidence(
+        self, *, system_prompt: str, question: str, candidates: Sequence[dict[str, Any]]
+    ) -> dict:
         _ = system_prompt
         sel = self._select_used_evidence_bm25(question=question, candidates=candidates)
         return sel.model_dump()
 
-
-    def _select_used_evidence_bm25(self, *, question: str, candidates: Sequence[dict[str, Any]]) -> EvidenceSelection:
+    def _select_used_evidence_bm25(
+        self, *, question: str, candidates: Sequence[dict[str, Any]]
+    ) -> EvidenceSelection:
         """Cheap lexical fallback evidence selector (token overlap scoring).
 
         Note: This is intentionally simple; it is meant as a cost-saving fallback.
         """
-        q_tokens = {t for t in re.findall(r"[A-Za-z0-9_]+", question.lower()) if len(t) >= 3}
+        q_tokens = {
+            t for t in re.findall(r"[A-Za-z0-9_]+", question.lower()) if len(t) >= 3
+        }
         scored: list[tuple[float, dict[str, Any]]] = []
         for c in candidates:
-            text = f"{c.get('label','')} {c.get('summary','')}".lower()
+            text = f"{c.get('label', '')} {c.get('summary', '')}".lower()
             c_tokens = {t for t in re.findall(r"[A-Za-z0-9_]+", text) if len(t) >= 3}
             if not c_tokens:
                 score = 0.0
@@ -752,7 +879,12 @@ class AgenticAnsweringAgent:
             scored.append((score, c))
         scored.sort(key=lambda x: x[0], reverse=True)
         used = [str(c["id"]) for s, c in scored if s > 0][: self.config.max_used]
-        return EvidenceSelection(used_node_ids=used, used_edge_ids=[], reasoning="bm25_fallback_token_overlap")
+        return EvidenceSelection(
+            used_node_ids=used,
+            used_edge_ids=[],
+            reasoning="bm25_fallback_token_overlap",
+        )
+
     @staticmethod
     def _materialize_evidence_pack(
         agent: "AgenticAnsweringAgent",
@@ -772,9 +904,11 @@ class AgenticAnsweringAgent:
         edge_ids = list(edge_ids or [])
 
         for nid in node_ids:
-            got = agent.knowledge_engine.backend.node_get(ids=[nid], include=["documents", "metadatas"])
+            got = agent.knowledge_engine.backend.node_get(
+                ids=[nid], include=["documents", "metadatas"]
+            )
             docs = (got.get("documents") or [None])[0]
-            metas = (got.get("metadatas") or [{}])
+            metas = got.get("metadatas") or [{}]
             meta = metas[0] if metas else {}
 
             label = meta.get("label") or meta.get("title") or ""
@@ -783,10 +917,16 @@ class AgenticAnsweringAgent:
             # Heuristic materialization:
             # - shallow: prefer summary
             # - deep: include doc text if available, else summary
-            if (depth or "shallow") == "deep" and isinstance(docs, str) and docs.strip():
+            if (
+                (depth or "shallow") == "deep"
+                and isinstance(docs, str)
+                and docs.strip()
+            ):
                 text = docs.strip()
             else:
-                text = summary.strip() or (docs.strip() if isinstance(docs, str) else "")
+                text = summary.strip() or (
+                    docs.strip() if isinstance(docs, str) else ""
+                )
 
             if not text:
                 text = ""
@@ -809,10 +949,17 @@ class AgenticAnsweringAgent:
                         if isinstance(sp, dict):
                             spans.append(
                                 {
-                                    "excerpt": (sp.get("excerpt") or sp.get("verbatim_text") or sp.get("text") or "")[:max_chars_per_item],
+                                    "excerpt": (
+                                        sp.get("excerpt")
+                                        or sp.get("verbatim_text")
+                                        or sp.get("text")
+                                        or ""
+                                    )[:max_chars_per_item],
                                     "doc_id": sp.get("doc_id") or meta.get("doc_id"),
-                                    "page_number": sp.get("page_number") or sp.get("page"),
-                                    "document_page_url": sp.get("document_page_url") or meta.get("document_page_url"),
+                                    "page_number": sp.get("page_number")
+                                    or sp.get("page"),
+                                    "document_page_url": sp.get("document_page_url")
+                                    or meta.get("document_page_url"),
                                 }
                             )
                     if spans:
@@ -826,7 +973,18 @@ class AgenticAnsweringAgent:
 
             if not mentions:
                 # single synthetic mention/span candidate using the materialized text
-                mentions = [{"spans": [{"excerpt": text, "doc_id": meta.get("doc_id"), "page_number": meta.get("page_number"), "document_page_url": meta.get("document_page_url")}]}]
+                mentions = [
+                    {
+                        "spans": [
+                            {
+                                "excerpt": text,
+                                "doc_id": meta.get("doc_id"),
+                                "page_number": meta.get("page_number"),
+                                "document_page_url": meta.get("document_page_url"),
+                            }
+                        ]
+                    }
+                ]
 
             pack["nodes"].append(
                 {
@@ -840,17 +998,21 @@ class AgenticAnsweringAgent:
 
         # Materialize edges as compact hints. No endpoint expansion here.
         for eid in edge_ids:
-            got = agent.knowledge_engine.backend.edge_get(ids=[eid], include=["metadatas"])
+            got = agent.knowledge_engine.backend.edge_get(
+                ids=[eid], include=["metadatas"]
+            )
             if not got.get("ids"):
                 continue
-            metas = (got.get("metadatas") or [{}])
+            metas = got.get("metadatas") or [{}]
             meta = metas[0] if metas else {}
-            pack["edges"].append({
-                "id": eid,
-                "label": meta.get("label"),
-                "relation": meta.get("relation") or meta.get("type"),
-                "summary": meta.get("summary"),
-            })
+            pack["edges"].append(
+                {
+                    "id": eid,
+                    "label": meta.get("label"),
+                    "relation": meta.get("relation") or meta.get("type"),
+                    "summary": meta.get("summary"),
+                }
+            )
         return pack
 
     def rehydrate_evidence_pack_from_digest(
@@ -886,7 +1048,9 @@ class AgenticAnsweringAgent:
             "evidence_pack": pack,
             "rehydrated_hash": pack_hash,
             "expected_hash": d.evidence_pack_hash,
-            "hash_matches": (pack_hash == d.evidence_pack_hash) if (pack_hash and d.evidence_pack_hash) else None,
+            "hash_matches": (pack_hash == d.evidence_pack_hash)
+            if (pack_hash and d.evidence_pack_hash)
+            else None,
         }
 
         if enforce_hash_match and out.get("hash_matches") is False:
@@ -895,6 +1059,7 @@ class AgenticAnsweringAgent:
                 f"expected={out.get('expected_hash')!r} got={out.get('rehydrated_hash')!r}"
             )
         return out
+
     @staticmethod
     def _generate_answer_with_citations(
         agent: "AgenticAnsweringAgent",
@@ -904,14 +1069,14 @@ class AgenticAnsweringAgent:
         evidence_pack: dict[str, Any],
         used_node_ids: list[str],
         out_model_schema: dict[str, Any],
-        out_model: Type[BaseM] = AnswerWithCitations
-    ) :
+        out_model: Type[BaseM] = AnswerWithCitations,
+    ):
         """Ask the LLM to answer AND cite exact mention/span indices from the provided evidence pack."""
         # Build a compact, indexable representation for the LLM
         lines: list[str] = []
         for n in evidence_pack.get("nodes", []):
             nid = n["node_id"]
-            lines.append(f"NODE {nid} | {n.get('label','')}")
+            lines.append(f"NODE {nid} | {n.get('label', '')}")
             for mi, m in enumerate(n.get("mentions") or []):
                 for si, sp in enumerate((m or {}).get("spans") or []):
                     ex = (sp.get("excerpt") or "").replace("\n", " ").strip()
@@ -941,13 +1106,13 @@ class AgenticAnsweringAgent:
                 last_err = Exception(str(res.parsing_error))
                 continue
             if res.answer_payload is None:
-                last_err = Exception("Missing parsed output from answer_with_citations task")
+                last_err = Exception(
+                    "Missing parsed output from answer_with_citations task"
+                )
                 continue
             parsed: BaseM = out_model.model_validate(res.answer_payload)
             return parsed.model_dump()
         raise Exception(f"retry too many errors parsing: {last_err}")
-                
-                
 
     @staticmethod
     def _validate_or_repair_citations(
@@ -1005,7 +1170,7 @@ class AgenticAnsweringAgent:
             nid = str(n.get("node_id") or "")
             if not nid:
                 continue
-            lines.append(f"NODE {nid} | {n.get('label','')}")
+            lines.append(f"NODE {nid} | {n.get('label', '')}")
             for mi, m in enumerate(n.get("mentions") or []):
                 for si, sp in enumerate((m or {}).get("spans") or []):
                     ex = (sp.get("excerpt") or "").replace("\n", " ").strip()
@@ -1054,7 +1219,6 @@ class AgenticAnsweringAgent:
         stripped.reasoning = (stripped.reasoning or "") + " | citation_repair_failed"
         return stripped.model_dump()
 
-
     @staticmethod
     def _evaluate_answer(
         agent: "AgenticAnsweringAgent",
@@ -1070,7 +1234,9 @@ class AgenticAnsweringAgent:
         """Coarse sufficiency check (best-effort structured output)."""
         ev_lines: list[str] = []
         for n in evidence_pack.get("nodes", []) or []:
-            ev_lines.append(f"- {n.get('node_id')}: {n.get('label','')} | {n.get('summary','')}")
+            ev_lines.append(
+                f"- {n.get('node_id')}: {n.get('label', '')} | {n.get('summary', '')}"
+            )
         _ = (system_prompt, question, out_model_schema)
         has_answer = bool(str(answer_text or "").strip())
         has_evidence = bool(used_node_ids) and bool(ev_lines)
@@ -1092,7 +1258,9 @@ class AgenticAnsweringAgent:
 
     def _ensure_run_anchor(self, *, conversation_id: str, run_id: str) -> str:
         scope = f"conv:{conversation_id}"
-        rid = pointer_id(scope=scope, pointer_kind="agent_run", target_kind="run", target_id=run_id)
+        rid = pointer_id(
+            scope=scope, pointer_kind="agent_run", target_kind="run", target_id=run_id
+        )
         existing = self.conversation_engine.backend.node_get(ids=[rid], include=[])
         if existing.get("ids"):
             return rid
@@ -1108,15 +1276,16 @@ class AgenticAnsweringAgent:
             turn_index=None,
             properties={"run_id": run_id, "entity_type": "agent_run"},
             mentions=[Grounding(spans=[sp])],
-            metadata={"level_from_root": 0, "entity_type": "agent_run", 
-                      "in_conversation_chain": False},
+            metadata={
+                "level_from_root": 0,
+                "entity_type": "agent_run",
+                "in_conversation_chain": False,
+            },
             domain_id=None,
             canonical_entity_id=None,
-
         )
         self.conversation_engine.add_node(node)
         return rid
-
 
     def _persist_context_snapshot(
         self,
@@ -1141,7 +1310,9 @@ class AgenticAnsweringAgent:
             svc = ConversationService.from_engine(
                 self.conversation_engine,
                 knowledge_engine=self.knowledge_engine,
-                workflow_engine=getattr(self.conversation_engine, "workflow_engine", None),
+                workflow_engine=getattr(
+                    self.conversation_engine, "workflow_engine", None
+                ),
             )
             return svc.persist_context_snapshot(
                 conversation_id=conversation_id,
@@ -1175,12 +1346,19 @@ class AgenticAnsweringAgent:
         prev_turn_meta_summary: MetaFromLastSummary,
     ) -> str:
         scope = f"conv:{conversation_id}"
-        pid = pointer_id(scope=scope, pointer_kind="kg_node", target_kind="node", target_id=kg_node_id)
+        pid = pointer_id(
+            scope=scope,
+            pointer_kind="kg_node",
+            target_kind="node",
+            target_id=kg_node_id,
+        )
 
         # If exists, still ensure run->evidence edge exists (idempotent)
         existing = self.conversation_engine.backend.node_get(ids=[pid], include=[])
         if not existing.get("ids"):
-            kg = self.knowledge_engine.backend.node_get(ids=[kg_node_id], include=["metadatas"])
+            kg = self.knowledge_engine.backend.node_get(
+                ids=[kg_node_id], include=["metadatas"]
+            )
             meta = (kg.get("metadatas") or [{}])[0] or {}
             snap = {
                 "entity_id": kg_node_id,
@@ -1207,13 +1385,18 @@ class AgenticAnsweringAgent:
                     "entity_type": "knowledge_reference",
                 },
                 mentions=[Grounding(spans=[provenance_span])],
-                metadata={"level_from_root": 0, "entity_type": "knowledge_reference", 
-                          "in_conversation_chain": False},
+                metadata={
+                    "level_from_root": 0,
+                    "entity_type": "knowledge_reference",
+                    "in_conversation_chain": False,
+                },
                 domain_id=None,
                 canonical_entity_id=None,
             )
             prev_turn_meta_summary.prev_node_distance_from_last_summary += 1
-            prev_turn_meta_summary.prev_node_char_distance_from_last_summary += len(str(meta.get("summary")))
+            prev_turn_meta_summary.prev_node_char_distance_from_last_summary += len(
+                str(meta.get("summary"))
+            )
             self.conversation_engine.add_node(node)
 
         # Link run -> evidence
@@ -1234,16 +1417,16 @@ class AgenticAnsweringAgent:
                 canonical_entity_id=None,
                 properties={"entity_type": "conversation_edge"},
                 embedding=None,
-                metadata={"char_distance_from_last_summary": prev_turn_meta_summary.prev_node_char_distance_from_last_summary, 
-                          "turn_distance_from_last_summary": prev_turn_meta_summary.prev_node_distance_from_last_summary,
-                          "tail_turn_index": prev_turn_meta_summary.tail_turn_index},
+                metadata={
+                    "char_distance_from_last_summary": prev_turn_meta_summary.prev_node_char_distance_from_last_summary,
+                    "turn_distance_from_last_summary": prev_turn_meta_summary.prev_node_distance_from_last_summary,
+                    "tail_turn_index": prev_turn_meta_summary.tail_turn_index,
+                },
                 source_edge_ids=[],
                 target_edge_ids=[],
             )
             self.conversation_engine.add_edge(edge)
         return pid
-
-    
 
     def _project_kg_edge(
         self,
@@ -1265,10 +1448,17 @@ class AgenticAnsweringAgent:
         - Usage is tracked separately (turn/run-scoped), not on the projection edge.
         """
         scope = f"conv:{conversation_id}"
-        peid = pointer_id(scope=scope, pointer_kind="kg_edge", target_kind="edge", target_id=kg_edge_id)
+        peid = pointer_id(
+            scope=scope,
+            pointer_kind="kg_edge",
+            target_kind="edge",
+            target_id=kg_edge_id,
+        )
 
         # Fetch KG edge metadata once (also used for the usage-pointer node summary).
-        eg = self.knowledge_engine.backend.edge_get(ids=[kg_edge_id], include=["metadatas"])
+        eg = self.knowledge_engine.backend.edge_get(
+            ids=[kg_edge_id], include=["metadatas"]
+        )
         if not eg.get("ids"):
             raise ValueError(f"KG edge not found: {kg_edge_id}")
         meta = (eg.get("metadatas") or [{}])[0] or {}
@@ -1280,11 +1470,21 @@ class AgenticAnsweringAgent:
 
             # Deterministic endpoint projection IDs (nodes may be dangling / not yet created).
             conv_src_ids = [
-                pointer_id(scope=scope, pointer_kind="kg_node", target_kind="node", target_id=sid)
+                pointer_id(
+                    scope=scope,
+                    pointer_kind="kg_node",
+                    target_kind="node",
+                    target_id=sid,
+                )
                 for sid in kg_src_ids
             ]
             conv_tgt_ids = [
-                pointer_id(scope=scope, pointer_kind="kg_node", target_kind="node", target_id=tid)
+                pointer_id(
+                    scope=scope,
+                    pointer_kind="kg_node",
+                    target_kind="node",
+                    target_id=tid,
+                )
                 for tid in kg_tgt_ids
             ]
 
@@ -1376,12 +1576,28 @@ class AgenticAnsweringAgent:
         #     self.conversation_engine.add_edge(used)
 
         return peid
-    def _add_assistant_turn(self, *, conversation_id: str, content: str, provenance_span: Span, turn_index : int, 
-                            prev_turn_meta_summary: MetaFromLastSummary) -> tuple[str, ConversationNode]:
+
+    def _add_assistant_turn(
+        self,
+        *,
+        conversation_id: str,
+        content: str,
+        provenance_span: Span,
+        turn_index: int,
+        prev_turn_meta_summary: MetaFromLastSummary,
+    ) -> tuple[str, ConversationNode]:
         # Minimal assistant turn node
-        nid = pointer_id(scope=f"conv:{conversation_id}", pointer_kind="turn", target_kind="assistant", target_id=str(int(time.time()*1000)))
+        nid = pointer_id(
+            scope=f"conv:{conversation_id}",
+            pointer_kind="turn",
+            target_kind="assistant",
+            target_id=str(int(time.time() * 1000)),
+        )
         import numpy as np
-        emb = cast(np.ndarray, self.conversation_engine.iterative_defensive_emb(content))
+
+        emb = cast(
+            np.ndarray, self.conversation_engine.iterative_defensive_emb(content)
+        )
         node = ConversationNode(
             id=nid,
             label="Assistant turn",
@@ -1392,13 +1608,15 @@ class AgenticAnsweringAgent:
             turn_index=turn_index,
             properties={"content": content, "entity_type": "assistant_turn"},
             mentions=[Grounding(spans=[provenance_span])],
-            metadata={"level_from_root": 0, 
-                      "entity_type": "assistant_turn", 
-                      "in_conversation_chain":True, 
-                      "in_ui_chain": True},
+            metadata={
+                "level_from_root": 0,
+                "entity_type": "assistant_turn",
+                "in_conversation_chain": True,
+                "in_ui_chain": True,
+            },
             domain_id=None,
             canonical_entity_id=None,
-            embedding=emb.tolist()
+            embedding=emb.tolist(),
         )
         self.conversation_engine.add_node(node)
         prev_turn_meta_summary.prev_node_char_distance_from_last_summary += len(content)
@@ -1406,18 +1624,27 @@ class AgenticAnsweringAgent:
         prev_turn_meta_summary.tail_turn_index += 1
         return nid, node
 
-    def _link_run_to_response(self, *, conversation_id: str, run_node_id: str, response_node_id: str, used_node_ids : list[str], 
-                              provenance_span: Span | list[Span],
-                              prev_turn_meta_summary) -> None:
+    def _link_run_to_response(
+        self,
+        *,
+        conversation_id: str,
+        run_node_id: str,
+        response_node_id: str,
+        used_node_ids: list[str],
+        provenance_span: Span | list[Span],
+        prev_turn_meta_summary,
+    ) -> None:
         scope = f"conv:{conversation_id}"
-        eid = edge_id(scope=scope, rel="generated", src=run_node_id, dst=response_node_id)
+        eid = edge_id(
+            scope=scope, rel="generated", src=run_node_id, dst=response_node_id
+        )
         ex = self.conversation_engine.backend.edge_get(ids=[eid], include=[])
         if ex.get("ids"):
             return
-        
-        if type (provenance_span) is Span:
+
+        if type(provenance_span) is Span:
             provenance_span_coerced = [provenance_span]
-        elif type (provenance_span) is list:
+        elif type(provenance_span) is list:
             provenance_span_coerced = provenance_span
         else:
             raise Exception("Unreacheable")
@@ -1434,12 +1661,16 @@ class AgenticAnsweringAgent:
             mentions=[Grounding(spans=provenance_span_coerced)],
             domain_id=None,
             canonical_entity_id=None,
-            properties={"entity_type": "conversation_edge", "used_node_ids" : used_node_ids},
+            properties={
+                "entity_type": "conversation_edge",
+                "used_node_ids": used_node_ids,
+            },
             embedding=None,
-            metadata={"char_distance_from_last_summary": prev_turn_meta_summary.prev_node_char_distance_from_last_summary, 
-                        "turn_distance_from_last_summary": prev_turn_meta_summary.prev_node_distance_from_last_summary, },
+            metadata={
+                "char_distance_from_last_summary": prev_turn_meta_summary.prev_node_char_distance_from_last_summary,
+                "turn_distance_from_last_summary": prev_turn_meta_summary.prev_node_distance_from_last_summary,
+            },
             source_edge_ids=[],
             target_edge_ids=[],
         )
         self.conversation_engine.add_edge(edge)
-

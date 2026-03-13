@@ -1,4 +1,3 @@
-import json
 import pytest
 
 from graph_knowledge_engine.engine_core.models import Node, Edge, Grounding, Span
@@ -9,10 +8,12 @@ from tests.conftest import FakeEmbeddingFunction
 EMBEDDING_DIM = 3
 TEST_EMBEDDING = FakeEmbeddingFunction(dim=EMBEDDING_DIM)
 
+
 def _mk_span(doc_id: str) -> Span:
     sp = Span.from_dummy_for_document()
     sp.doc_id = doc_id
     return sp
+
 
 def _mk_node(node_id: str, *, doc_id: str) -> Node:
     return Node(
@@ -29,6 +30,7 @@ def _mk_node(node_id: str, *, doc_id: str) -> Node:
         canonical_entity_id=None,
         properties=None,
     )
+
 
 def _mk_edge(edge_id: str, src: str, tgt: str, doc_id: str) -> Edge:
     return Edge(
@@ -50,10 +52,13 @@ def _mk_edge(edge_id: str, src: str, tgt: str, doc_id: str) -> Edge:
         properties=None,
     )
 
+
 @pytest.fixture()
 def pg_engine(sa_engine, pg_schema) -> GraphKnowledgeEngine:
     pytest.importorskip("pgvector")
-    backend = PgVectorBackend(engine=sa_engine, embedding_dim=EMBEDDING_DIM, schema=pg_schema)
+    backend = PgVectorBackend(
+        engine=sa_engine, embedding_dim=EMBEDDING_DIM, schema=pg_schema
+    )
     eng = GraphKnowledgeEngine(backend=backend, embedding_function=TEST_EMBEDDING)
     backend.ensure_schema()
     return eng

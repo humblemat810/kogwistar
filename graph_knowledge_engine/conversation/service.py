@@ -18,7 +18,9 @@ from graph_knowledge_engine.conversation.conversation_context import (
     PromptContext,
     apply_ordering,
 )
-from graph_knowledge_engine.conversation.conversation_orchestrator import ConversationOrchestrator
+from graph_knowledge_engine.conversation.conversation_orchestrator import (
+    ConversationOrchestrator,
+)
 from graph_knowledge_engine.conversation.models import (
     AddTurnResult,
     ContextSnapshotMetadata,
@@ -38,7 +40,12 @@ from graph_knowledge_engine.conversation.policy import (
     validate_edge_add,
 )
 from graph_knowledge_engine.llm_tasks import LLMTaskSet
-from graph_knowledge_engine.engine_core.models import ContextCost, Grounding, MentionVerification, Span
+from graph_knowledge_engine.engine_core.models import (
+    ContextCost,
+    Grounding,
+    MentionVerification,
+    Span,
+)
 from graph_knowledge_engine.id_provider import stable_id
 from graph_knowledge_engine.runtime import WorkflowRuntime
 
@@ -75,7 +82,7 @@ class ConversationService:
             ref_knowledge_engine=knowledge_engine,
             workflow_engine=workflow_engine,
             llm_tasks=self.llm_tasks,
-            tool_call_id_factory=stable_id
+            tool_call_id_factory=stable_id,
         )
 
     @classmethod
@@ -191,7 +198,9 @@ class ConversationService:
                     notes="cancel request edge",
                 ),
             )
-            edge_id = str(stable_id("workflow.edge", "cancel_request", run_node_id, node_id))
+            edge_id = str(
+                stable_id("workflow.edge", "cancel_request", run_node_id, node_id)
+            )
             existing_edge = eng.backend.edge_get(ids=[edge_id], include=[])
             if not existing_edge.get("ids"):
                 edge = ConversationEdge(
@@ -258,7 +267,9 @@ class ConversationService:
                 "cancel_request_node_id": cancel_request_node_id,
                 "cancel_request_seq": cancel_request_seq,
                 "accepted_watermark": accepted_watermark,
-                "last_processed_node_id": (str(last_processed_node_id) if last_processed_node_id else None),
+                "last_processed_node_id": (
+                    str(last_processed_node_id) if last_processed_node_id else None
+                ),
                 "level_from_root": 0,
                 "in_conversation_chain": False,
                 "in_ui_chain": False,
@@ -301,7 +312,14 @@ class ConversationService:
                 eng.write.add_edge(edge)
 
         if cancel_request_node_id:
-            edge_id = str(stable_id("workflow.edge", "cancel_reconciled", cancel_request_node_id, node_id))
+            edge_id = str(
+                stable_id(
+                    "workflow.edge",
+                    "cancel_reconciled",
+                    cancel_request_node_id,
+                    node_id,
+                )
+            )
             existing_edge = eng.backend.edge_get(ids=[edge_id], include=[])
             if not existing_edge.get("ids"):
                 edge = ConversationEdge(
@@ -330,7 +348,14 @@ class ConversationService:
                 eng.write.add_edge(edge)
 
         if last_processed_node_id:
-            edge_id = str(stable_id("workflow.edge", "cancelled_at", node_id, str(last_processed_node_id)))
+            edge_id = str(
+                stable_id(
+                    "workflow.edge",
+                    "cancelled_at",
+                    node_id,
+                    str(last_processed_node_id),
+                )
+            )
             existing_edge = eng.backend.edge_get(ids=[edge_id], include=[])
             if not existing_edge.get("ids"):
                 edge = ConversationEdge(
@@ -375,7 +400,9 @@ class ConversationService:
         conv_id=None,
         node_id: str | None | uuid.UUID = None,
     ) -> tuple[str, str]:
-        from graph_knowledge_engine.conversation.conversation_orchestrator import get_id_for_conversation_turn
+        from graph_knowledge_engine.conversation.conversation_orchestrator import (
+            get_id_for_conversation_turn,
+        )
 
         eng = self.conversation_engine
         if eng.kg_graph_type != "conversation":
@@ -429,18 +456,29 @@ class ConversationService:
                 eng.add_node(start_node)
         return conv_id, str(node_id)
 
-    def create_conversation(self, user_id, conv_id=None, node_id: str | None | uuid.UUID = None) -> tuple[str, str]:
-        conv_out, node_out = self._create_conversation_primitive(user_id, conv_id, node_id)
+    def create_conversation(
+        self, user_id, conv_id=None, node_id: str | None | uuid.UUID = None
+    ) -> tuple[str, str]:
+        conv_out, node_out = self._create_conversation_primitive(
+            user_id, conv_id, node_id
+        )
         return str(conv_out), str(node_out)
 
     def _get_last_seq_node(self, conversation_id, min_seq=None):
-        return get_last_seq_node(self.conversation_engine, conversation_id, min_seq=min_seq)
+        return get_last_seq_node(
+            self.conversation_engine, conversation_id, min_seq=min_seq
+        )
 
     def _get_conversation_tail(
         self,
         conversation_id: str,
         min_turn_index: int | None = None,
-        tail_search_includes: list[str] = ["conversation_start", "conversation_turn", "conversation_summary", "assistant_turn"],
+        tail_search_includes: list[str] = [
+            "conversation_start",
+            "conversation_turn",
+            "conversation_summary",
+            "assistant_turn",
+        ],
     ) -> Optional[ConversationNode]:
         return get_chat_tail(
             self.conversation_engine,
@@ -462,7 +500,12 @@ class ConversationService:
             conversation_id=conversation_id,
             min_turn_index=min_turn_index,
             tail_search_includes=tail_search_includes
-            or ["conversation_start", "conversation_turn", "conversation_summary", "assistant_turn"],
+            or [
+                "conversation_start",
+                "conversation_turn",
+                "conversation_summary",
+                "assistant_turn",
+            ],
         )
 
     def add_turn(self, *args, **kwargs):
@@ -477,7 +520,9 @@ class ConversationService:
         role: str,
         content: str,
         ref_knowledge_engine: "GraphKnowledgeEngine",
-        filtering_callback: Callable[..., tuple[FilteringResult | RetrievalResult, str]],
+        filtering_callback: Callable[
+            ..., tuple[FilteringResult | RetrievalResult, str]
+        ],
         max_retrieval_level: int = 2,
         summary_char_threshold=12000,
         prev_turn_meta_summary: MetaFromLastSummary = MetaFromLastSummary(0, 0),
@@ -555,7 +600,9 @@ class ConversationService:
             include_memory_context=include_memory_context,
             include_pinned_kg_refs=include_pinned_kg_refs,
         )
-        items: list[ContextItem] = sources.gather(conversation_id=conversation_id, purpose=purpose)
+        items: list[ContextItem] = sources.gather(
+            conversation_id=conversation_id, purpose=purpose
+        )
 
         sys = self.get_system_prompt(conversation_id)
         items.insert(
@@ -599,14 +646,34 @@ class ConversationService:
                     new_text = it.text[: max(1, it.max_tokens * 4)]
                     new_cost = tokenizer.count_tokens(new_text)
                     if used + new_cost <= budget_tokens:
-                        kept.append(ContextItem(**{**it.__dict__, "text": new_text, "token_cost": new_cost}))
+                        kept.append(
+                            ContextItem(
+                                **{
+                                    **it.__dict__,
+                                    "text": new_text,
+                                    "token_cost": new_cost,
+                                }
+                            )
+                        )
                         used += new_cost
                         dropped.append(
-                            DroppedItem(kind=it.kind, node_id=it.node_id, reason="compressed", token_cost=it.token_cost)
+                            DroppedItem(
+                                kind=it.kind,
+                                node_id=it.node_id,
+                                reason="compressed",
+                                token_cost=it.token_cost,
+                            )
                         )
                         return True
 
-                dropped.append(DroppedItem(kind=it.kind, node_id=it.node_id, reason="over_budget", token_cost=it.token_cost))
+                dropped.append(
+                    DroppedItem(
+                        kind=it.kind,
+                        node_id=it.node_id,
+                        reason="over_budget",
+                        token_cost=it.token_cost,
+                    )
+                )
                 return False
 
             for it in pinned_non_turn:
@@ -620,7 +687,9 @@ class ConversationService:
             turn_kept.sort(key=lambda x: int((x.extra or {}).get("turn_index", 10**9)))
             kept = non_turn_kept + turn_kept
         else:
-            iter_items = apply_ordering(items=list(priced), ordering=ordering_strategy, phase="pre_pack")
+            iter_items = apply_ordering(
+                items=list(priced), ordering=ordering_strategy, phase="pre_pack"
+            )
 
             kept = []
             dropped = []
@@ -637,22 +706,44 @@ class ConversationService:
                     new_text = it.text[: max(1, it.max_tokens * 4)]
                     new_cost = tokenizer.count_tokens(new_text)
                     if used + new_cost <= budget_tokens:
-                        kept.append(ContextItem(**{**it.__dict__, "text": new_text, "token_cost": new_cost}))
+                        kept.append(
+                            ContextItem(
+                                **{
+                                    **it.__dict__,
+                                    "text": new_text,
+                                    "token_cost": new_cost,
+                                }
+                            )
+                        )
                         used += new_cost
                         dropped.append(
-                            DroppedItem(kind=it.kind, node_id=it.node_id, reason="compressed", token_cost=it.token_cost)
+                            DroppedItem(
+                                kind=it.kind,
+                                node_id=it.node_id,
+                                reason="compressed",
+                                token_cost=it.token_cost,
+                            )
                         )
                         return True
 
                 if it.kind == "system_prompt":
                     raise ValueError("System prompt alone exceeds budget")
-                dropped.append(DroppedItem(kind=it.kind, node_id=it.node_id, reason="over_budget", token_cost=it.token_cost))
+                dropped.append(
+                    DroppedItem(
+                        kind=it.kind,
+                        node_id=it.node_id,
+                        reason="over_budget",
+                        token_cost=it.token_cost,
+                    )
+                )
                 return False
 
             for it in iter_items:
                 _try_add(it)
 
-            kept = apply_ordering(items=list(kept), ordering=ordering_strategy, phase="post_pack")
+            kept = apply_ordering(
+                items=list(kept), ordering=ordering_strategy, phase="post_pack"
+            )
 
         non_turn_kept = [i for i in kept if i.kind != "tail_turn"]
         turn_kept = [i for i in kept if i.kind == "tail_turn"]
@@ -664,12 +755,22 @@ class ConversationService:
 
         included_node_ids = tuple(sorted({i.node_id for i in kept if i.node_id}))
         included_edge_ids = tuple(sorted({e for i in kept for e in (i.edge_ids or ())}))
-        included_pointer_ids = tuple(sorted({p for i in kept for p in (i.pointer_ids or ()) if p}))
+        included_pointer_ids = tuple(
+            sorted({p for i in kept for p in (i.pointer_ids or ()) if p})
+        )
 
-        head_summary_ids = tuple(i.node_id for i in kept if i.kind == "head_summary" and i.node_id)
-        tail_turn_ids_out = tuple(i.node_id for i in kept if i.kind == "tail_turn" and i.node_id)
-        active_memory_context_ids = tuple(i.node_id for i in kept if i.kind == "memory_context" and i.node_id)
-        pinned_kg_ref_ids = tuple(i.node_id for i in kept if i.kind == "pinned_kg_ref" and i.node_id)
+        head_summary_ids = tuple(
+            i.node_id for i in kept if i.kind == "head_summary" and i.node_id
+        )
+        tail_turn_ids_out = tuple(
+            i.node_id for i in kept if i.kind == "tail_turn" and i.node_id
+        )
+        active_memory_context_ids = tuple(
+            i.node_id for i in kept if i.kind == "memory_context" and i.node_id
+        )
+        pinned_kg_ref_ids = tuple(
+            i.node_id for i in kept if i.kind == "pinned_kg_ref" and i.node_id
+        )
 
         return ConversationContextView(
             conversation_id=conversation_id,
@@ -717,7 +818,9 @@ class ConversationService:
         eng = self.conversation_engine
 
         def _stable_json(obj: Any) -> str:
-            return json.dumps(obj, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+            return json.dumps(
+                obj, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+            )
 
         def _snapshot_hash(payload: Any) -> str:
             h = hashlib.sha256()
@@ -727,8 +830,12 @@ class ConversationService:
         msgs = list(getattr(view, "messages", None) or [])
         norm_msgs: list[dict[str, str]] = []
         for m in msgs:
-            role = getattr(m, "role", None) or (m.get("role") if isinstance(m, dict) else None)
-            content = getattr(m, "content", None) or (m.get("content") if isinstance(m, dict) else None)
+            role = getattr(m, "role", None) or (
+                m.get("role") if isinstance(m, dict) else None
+            )
+            content = getattr(m, "content", None) or (
+                m.get("content") if isinstance(m, dict) else None
+            )
             norm_msgs.append({"role": str(role or ""), "content": str(content or "")})
         rendered_hash = _snapshot_hash(
             {
@@ -749,7 +856,10 @@ class ConversationService:
         token_count = getattr(getattr(view, "cost", None), "token_count", None)
         if token_count is None:
             token_count = getattr(view, "tokens_used", None)
-        cost = ContextCost(char_count=int(char_count), token_count=(None if token_count is None else int(token_count)))
+        cost = ContextCost(
+            char_count=int(char_count),
+            token_count=(None if token_count is None else int(token_count)),
+        )
 
         meta_model = ContextSnapshotMetadata(
             run_id=run_id,
@@ -792,7 +902,9 @@ class ConversationService:
                     "llm_input_payload": json.dumps(llm_input_payload or {}),
                     "evidence_pack_digest": json.dumps(evidence_pack_digest or {}),
                 },
-                mentions=[Grounding(spans=[self.make_conversation_span(conversation_id)])],
+                mentions=[
+                    Grounding(spans=[self.make_conversation_span(conversation_id)])
+                ],
                 metadata={
                     "entity_type": "context_snapshot",
                     "level_from_root": 0,
@@ -807,7 +919,11 @@ class ConversationService:
 
         scope = f"conv:{conversation_id}"
         for ordinal, nid in enumerate(used_node_ids):
-            eid = str(stable_id("conversation.edge", scope, "depends_on", sid, nid, str(ordinal)))
+            eid = str(
+                stable_id(
+                    "conversation.edge", scope, "depends_on", sid, nid, str(ordinal)
+                )
+            )
             ex = eng.backend.edge_get(ids=[eid], include=[])
             if ex.get("ids"):
                 continue
@@ -861,7 +977,11 @@ class ConversationService:
             node_type=ConversationNode,
             limit=10_000,
         )
-        snaps = [n for n in snaps if str(getattr(n, "conversation_id", "") or "") == conversation_id]
+        snaps = [
+            n
+            for n in snaps
+            if str(getattr(n, "conversation_id", "") or "") == conversation_id
+        ]
         if not snaps:
             return None
 
@@ -878,7 +998,9 @@ class ConversationService:
         *,
         snapshot_node_id: str,
     ) -> dict[str, Any]:
-        got = self.conversation_engine.backend.node_get(ids=[snapshot_node_id], include=["documents", "metadatas"])
+        got = self.conversation_engine.backend.node_get(
+            ids=[snapshot_node_id], include=["documents", "metadatas"]
+        )
         ids = got.get("ids") or []
         if not ids:
             raise KeyError(f"context snapshot node not found: {snapshot_node_id!r}")
@@ -905,7 +1027,9 @@ class ConversationService:
         conversation_id: str,
         stage: str | None = None,
     ) -> ContextCost | None:
-        n = self.latest_context_snapshot_node(conversation_id=conversation_id, stage=stage)
+        n = self.latest_context_snapshot_node(
+            conversation_id=conversation_id, stage=stage
+        )
         if n is None:
             return None
         meta = getattr(n, "metadata", {}) or {}
@@ -918,7 +1042,10 @@ class ConversationService:
     def get_ai_conversation_response(
         self, conversation_id, ref_knowledge_engine=None, model_names=None
     ) -> ConversationAIResponse:
-        if ref_knowledge_engine is not None and ref_knowledge_engine is not self.knowledge_engine:
+        if (
+            ref_knowledge_engine is not None
+            and ref_knowledge_engine is not self.knowledge_engine
+        ):
             self.knowledge_engine = ref_knowledge_engine
             self.orchestrator = ConversationOrchestrator(
                 conversation_engine=self.conversation_engine,
@@ -926,4 +1053,6 @@ class ConversationService:
                 workflow_engine=self.workflow_engine,
                 llm_tasks=self.llm_tasks,
             )
-        return self.answer_only(conversation_id=conversation_id, model_names=model_names)
+        return self.answer_only(
+            conversation_id=conversation_id, model_names=model_names
+        )

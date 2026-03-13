@@ -33,7 +33,7 @@ def build_embedding_text(item: IndexingItem) -> str:
     keywords = ", ".join(item.keywords or [])
     aliases = ", ".join(item.aliases or [])
     lines = [
-        f"ENTITY SEARCH INDEX ENTRY",
+        "ENTITY SEARCH INDEX ENTRY",
         f"CANONICAL TITLE: {item.canonical_title}",
         f"PROVISION/DESCRIPTION: {item.provision}",
     ]

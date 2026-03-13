@@ -1,7 +1,5 @@
 import json
-import tempfile
 
-import pytest
 
 from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
 from graph_knowledge_engine.engine_core.models import (
@@ -28,7 +26,9 @@ def _span() -> Span:
         context_after="",
         chunk_id=None,
         source_cluster_id=None,
-        verification=MentionVerification(method="human", is_verified=True, score=1.0, notes="test"),
+        verification=MentionVerification(
+            method="human", is_verified=True, score=1.0, notes="test"
+        ),
     )
 
 
@@ -36,7 +36,9 @@ def _g() -> Grounding:
     return Grounding(spans=[_span()])
 
 
-def _wf_node(*, workflow_id: str, node_id: str, op: str, start=False, terminal=False) -> WorkflowNode:
+def _wf_node(
+    *, workflow_id: str, node_id: str, op: str, start=False, terminal=False
+) -> WorkflowNode:
     return WorkflowNode(
         id=node_id,
         label=node_id,
@@ -104,34 +106,47 @@ def test_persisted_workflow_design_is_runnable(tmp_path):
     # --------------------
     # Producer: create + save workflow design into workflow_engine
     # --------------------
-    wf_engine = GraphKnowledgeEngine(persist_directory=str(wf_dir), kg_graph_type="workflow")
+    wf_engine = GraphKnowledgeEngine(
+        persist_directory=str(wf_dir), kg_graph_type="workflow"
+    )
 
-    n_a = _wf_node(workflow_id=workflow_id, node_id=f"wf|{workflow_id}|a", op="a", start=True)
+    n_a = _wf_node(
+        workflow_id=workflow_id, node_id=f"wf|{workflow_id}|a", op="a", start=True
+    )
     n_b = _wf_node(workflow_id=workflow_id, node_id=f"wf|{workflow_id}|b", op="b")
-    n_end = _wf_node(workflow_id=workflow_id, node_id=f"wf|{workflow_id}|end", op="end", terminal=True)
+    n_end = _wf_node(
+        workflow_id=workflow_id,
+        node_id=f"wf|{workflow_id}|end",
+        op="end",
+        terminal=True,
+    )
 
     wf_engine.add_node(n_a)
     wf_engine.add_node(n_b)
     wf_engine.add_node(n_end)
 
-    wf_engine.add_edge(_wf_edge(
-        workflow_id=workflow_id,
-        edge_id=f"wf|{workflow_id}|e|a->b",
-        src=n_a.id,
-        dst=n_b.id,
-        predicate=None,
-        priority=100,
-        is_default=True,
-    ))
-    wf_engine.add_edge(_wf_edge(
-        workflow_id=workflow_id,
-        edge_id=f"wf|{workflow_id}|e|b->end",
-        src=n_b.id,
-        dst=n_end.id,
-        predicate=None,
-        priority=100,
-        is_default=True,
-    ))
+    wf_engine.add_edge(
+        _wf_edge(
+            workflow_id=workflow_id,
+            edge_id=f"wf|{workflow_id}|e|a->b",
+            src=n_a.id,
+            dst=n_b.id,
+            predicate=None,
+            priority=100,
+            is_default=True,
+        )
+    )
+    wf_engine.add_edge(
+        _wf_edge(
+            workflow_id=workflow_id,
+            edge_id=f"wf|{workflow_id}|e|b->end",
+            src=n_b.id,
+            dst=n_end.id,
+            predicate=None,
+            priority=100,
+            is_default=True,
+        )
+    )
 
     # Ensure persisted
     # wf_engine.persist()
@@ -139,12 +154,15 @@ def test_persisted_workflow_design_is_runnable(tmp_path):
     # --------------------
     # Consumer: reopen engines and run persisted design using WorkflowRuntime
     # --------------------
-    wf_engine2 = GraphKnowledgeEngine(persist_directory=str(wf_dir), kg_graph_type="workflow")
-    conv_engine = GraphKnowledgeEngine(persist_directory=str(conv_dir), kg_graph_type="conversation")
+    wf_engine2 = GraphKnowledgeEngine(
+        persist_directory=str(wf_dir), kg_graph_type="workflow"
+    )
+    conv_engine = GraphKnowledgeEngine(
+        persist_directory=str(conv_dir), kg_graph_type="conversation"
+    )
 
     # minimal predicates (none used)
     predicate_registry = {}
-    
 
     # step resolver that records it ran
     def resolve_step(op: str):
@@ -154,7 +172,11 @@ def test_persisted_workflow_design_is_runnable(tmp_path):
                 state.setdefault("ops", [])
                 state["ops"].append(op)
                 # {"op": op}
-            return RunSuccess(conversation_node_id=None,state_update = [('u', {"op": op})], )
+            return RunSuccess(
+                conversation_node_id=None,
+                state_update=[("u", {"op": op})],
+            )
+
         return _fn
 
     rt = WorkflowRuntime(
@@ -177,7 +199,9 @@ def test_persisted_workflow_design_is_runnable(tmp_path):
     assert final_state["ops"] == ["a", "b", "end"]
 
     # Optional: confirm checkpoints exist and contain JSON
-    ckpts = conv_engine.get_nodes(where={"entity_type": "workflow_checkpoint"}, limit=1000)
+    ckpts = conv_engine.get_nodes(
+        where={"entity_type": "workflow_checkpoint"}, limit=1000
+    )
     assert len(ckpts) >= 1
     for ckpt in ckpts:
         state_json = ckpt.metadata.get("state_json")

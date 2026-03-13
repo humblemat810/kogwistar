@@ -1,16 +1,13 @@
-from graph_knowledge_engine.engine_core.models import (
-    Node,
-    Edge,
-    Document)
-from joblib import Memory
+from graph_knowledge_engine.engine_core.models import Document
 import os
 import pathlib
 
 from tests._kg_factories import kg_document
 
+
 def test_document_rollback(engine):
     # Create and ingest a dummy document
-    
+
     doc = kg_document(
         doc_id="a882ec6b-75e1-11f0-87ad-0456e5e49702",
         content="The moon orbits the Earth.",
@@ -18,14 +15,18 @@ def test_document_rollback(engine):
         doc_type="text",
     )
     engine.node_collection.delete(where={"doc_id": doc.id})
-    location = os.path.join(".cache", "test", pathlib.Path(__file__).parts[-1], "test_document_rollback")
+    location = os.path.join(
+        ".cache", "test", pathlib.Path(__file__).parts[-1], "test_document_rollback"
+    )
     os.makedirs(location, exist_ok=True)
+
     # memory = Memory(location=location, verbose=0)
     # @memory.cache
     def ingest_with_doc_with_llm(docd):
         doc = Document.model_validate(docd)
         result = engine.ingest_document_with_llm(doc)
         return result
+
     # Ensure data exists
     result = ingest_with_doc_with_llm(doc.model_dump())
     nodes_before = engine.node_collection.get(where={"doc_id": doc.id})
@@ -35,14 +36,19 @@ def test_document_rollback(engine):
     engine.rollback_document(doc.id)
 
     # Ensure all related data is gone
-    nodes_after = engine.backend.node_get(where={"$and": [{"doc_id": doc.id}, {"lifecycle_status": "active"}]})
-    edges_after = engine.backend.edge_get(where={"$and": [{"doc_id": doc.id}, {"lifecycle_status": "active"}]})
+    nodes_after = engine.backend.node_get(
+        where={"$and": [{"doc_id": doc.id}, {"lifecycle_status": "active"}]}
+    )
+    edges_after = engine.backend.edge_get(
+        where={"$and": [{"doc_id": doc.id}, {"lifecycle_status": "active"}]}
+    )
     docs_after = engine.document_collection.get(where={"doc_id": doc.id})
 
     assert len(nodes_after["ids"]) == 0
     assert len(edges_after["ids"]) == 0
     assert len(docs_after["ids"]) == 0
-    
+
+
 def test_batch_document_rollback(engine):
     docs = [
         kg_document(

@@ -16,7 +16,9 @@ def test_phase5_worker_runner_once_smoke(tmp_path, capsys):
     persist.mkdir(parents=True, exist_ok=True)
 
     # Build an engine directly to enqueue a job into its sqlite meta.
-    eng = GraphKnowledgeEngine(persist_directory=str(persist), embedding_function=TEST_EMBEDDING)
+    eng = GraphKnowledgeEngine(
+        persist_directory=str(persist), embedding_function=TEST_EMBEDDING
+    )
     ns = f"phase5_runner_{uuid.uuid4().hex}"
     eng.meta_sqlite.enqueue_index_job(
         namespace=ns,
@@ -38,14 +40,21 @@ def test_phase5_worker_runner_once_smoke(tmp_path, capsys):
 
     worker_runner.GraphKnowledgeEngine = _fake_graph_knowledge_engine
     try:
-        rc = main([
-            "--backend", "chroma",
-            "--persist-directory", str(persist),
-            "--namespace", ns,
-            "--once",
-            "--batch-size", "1",
-            "--max-jobs-per-tick", "1",
-        ])
+        rc = main(
+            [
+                "--backend",
+                "chroma",
+                "--persist-directory",
+                str(persist),
+                "--namespace",
+                ns,
+                "--once",
+                "--batch-size",
+                "1",
+                "--max-jobs-per-tick",
+                "1",
+            ]
+        )
     finally:
         worker_runner.GraphKnowledgeEngine = real_graph_knowledge_engine
     assert rc == 0
@@ -54,7 +63,9 @@ def test_phase5_worker_runner_once_smoke(tmp_path, capsys):
 
 
 @pytest.mark.parametrize("backend_alias", ["pg", "pgvector", "postgres"])
-def test_phase5_worker_runner_pg_aliases_build_pg_backend(monkeypatch, backend_alias: str):
+def test_phase5_worker_runner_pg_aliases_build_pg_backend(
+    monkeypatch, backend_alias: str
+):
     sqlalchemy = pytest.importorskip("sqlalchemy")
 
     class FakePgVectorBackend:

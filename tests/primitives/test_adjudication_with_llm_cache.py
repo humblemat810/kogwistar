@@ -91,15 +91,25 @@ def test_batch_adjudication_with_llm_cache(engine):
     engine.write.add_node(c, doc_id=doc.id)
 
     pairs_payload = [
-        {"left": a.model_dump(), "right": b.model_dump(), "question_code": int(AdjudicationQuestionCode.SAME_ENTITY)},
-        {"left": a.model_dump(), "right": c.model_dump(), "question_code": int(AdjudicationQuestionCode.SAME_ENTITY)},
+        {
+            "left": a.model_dump(),
+            "right": b.model_dump(),
+            "question_code": int(AdjudicationQuestionCode.SAME_ENTITY),
+        },
+        {
+            "left": a.model_dump(),
+            "right": c.model_dump(),
+            "question_code": int(AdjudicationQuestionCode.SAME_ENTITY),
+        },
     ]
     mapping_table = [
         {"code": int(code), "key": QUESTION_KEY[code]}
         for code in AdjudicationQuestionCode
     ]
 
-    location = os.path.join(".cache", "test", pathlib.Path(__file__).parts[-1], "batch_adjudicate")
+    location = os.path.join(
+        ".cache", "test", pathlib.Path(__file__).parts[-1], "batch_adjudicate"
+    )
     os.makedirs(location, exist_ok=True)
     memory = Memory(location=location, verbose=0)
 
@@ -120,16 +130,20 @@ def test_batch_adjudication_with_llm_cache(engine):
             openai_api_type="azure",
         )
 
-        prompt = ChatPromptTemplate.from_messages([
-            (
-                "system",
-                "You adjudicate candidate pairs. Use the mapping table to interpret question_code. "
-                "Return only the structured JSON per schema.",
-            ),
-            ("human", "Mapping table:\n{mapping}\n\nPairs:\n{pairs}"),
-        ])
+        prompt = ChatPromptTemplate.from_messages(
+            [
+                (
+                    "system",
+                    "You adjudicate candidate pairs. Use the mapping table to interpret question_code. "
+                    "Return only the structured JSON per schema.",
+                ),
+                ("human", "Mapping table:\n{mapping}\n\nPairs:\n{pairs}"),
+            ]
+        )
         chain = prompt | llm.with_structured_output(BatchAdjudications)
-        results: BatchAdjudications = cast(BatchAdjudications, chain.invoke({"mapping": mapping, "pairs": payload}))
+        results: BatchAdjudications = cast(
+            BatchAdjudications, chain.invoke({"mapping": mapping, "pairs": payload})
+        )
         return results
 
     results = _adjudicate_with_llm_cached(mapping_table, pairs_payload)
@@ -145,9 +159,14 @@ def test_batch_adjudication_with_llm_cache(engine):
 
     for pair, res in zip([(a, b), (a, c)], results.items):
         if res.verdict.same_entity:
-            canonical = engine.commit_merge(pair[0], pair[1], res.verdict, method="pytest_batch_llm_cache")
+            canonical = engine.commit_merge(
+                pair[0], pair[1], res.verdict, method="pytest_batch_llm_cache"
+            )
             assert canonical
 
     edges = engine.backend.edge_get(include=["metadatas"])
     if any(r.verdict.same_entity for r in results.items):
-        assert any((m or {}).get("relation") == "same_as" for m in (edges.get("metadatas") or []))
+        assert any(
+            (m or {}).get("relation") == "same_as"
+            for m in (edges.get("metadatas") or [])
+        )

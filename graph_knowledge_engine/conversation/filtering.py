@@ -36,9 +36,13 @@ def candiate_filtering_callback(
         not_edge_candidate = set(resp.edge_ids).difference(set(candidate_edge_ids))
         if not_node_candidate or not_edge_candidate:
             if not_node_candidate:
-                err_messages.append(f"Non candidates node ids returned: {sorted(not_node_candidate)}")
+                err_messages.append(
+                    f"Non candidates node ids returned: {sorted(not_node_candidate)}"
+                )
             if not_edge_candidate:
-                err_messages.append(f"Non candidates edge ids returned: {sorted(not_edge_candidate)}")
+                err_messages.append(
+                    f"Non candidates edge ids returned: {sorted(not_edge_candidate)}"
+                )
             continue
         return (
             FilteringResult(node_ids=list(resp.node_ids), edge_ids=list(resp.edge_ids)),

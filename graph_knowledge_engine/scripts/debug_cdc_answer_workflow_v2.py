@@ -1,4 +1,3 @@
-
 """
 Developer debug harness (full script): start CDC bridge, generate CDC-enabled D3 bundles
 (using graph_knowledge_engine.utils.kge_debug_dump.dump_d3_bundle), capture WS stream,
@@ -15,6 +14,7 @@ Example:
     --bridge-app "change_bridge_v2:app" \
     --template "d3.html"
 """
+
 from __future__ import annotations
 
 import argparse
@@ -29,6 +29,7 @@ import subprocess
 import sys
 import threading
 from typing import TYPE_CHECKING
+
 if TYPE_CHECKING:
     from graph_knowledge_engine.engine_core.engine import EngineType
 import time
@@ -36,7 +37,9 @@ import webbrowser
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional
+
 sys.path.insert(0, str(Path(__file__).absolute().parent.parent.parent))
+
 
 def _find_free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -76,6 +79,7 @@ def _wait_tcp_open(host: str, port: int, timeout_s: float = 16.0) -> None:
 # -------------------------
 # CDC capture + validation
 # -------------------------
+
 
 @dataclass
 class CdcValidationReport:
@@ -152,11 +156,15 @@ def validate_cdc_stream_jsonl(path: Path) -> CdcValidationReport:
     )
 
 
-async def _ws_capture_task(ws_url: str, out_path: Path, stop_evt: threading.Event) -> None:
+async def _ws_capture_task(
+    ws_url: str, out_path: Path, stop_evt: threading.Event
+) -> None:
     try:
         import websockets  # type: ignore
     except Exception as e:
-        raise RuntimeError("websockets is required for CDC capture. Install: pip install websockets") from e
+        raise RuntimeError(
+            "websockets is required for CDC capture. Install: pip install websockets"
+        ) from e
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with out_path.open("a", encoding="utf-8") as out:
@@ -190,13 +198,15 @@ async def _ws_capture_task(ws_url: str, out_path: Path, stop_evt: threading.Even
                     await ka
 
 
-def start_ws_capture_in_thread(ws_url: str, out_path: Path) -> tuple[threading.Thread, threading.Event]:
+def start_ws_capture_in_thread(
+    ws_url: str, out_path: Path
+) -> tuple[threading.Thread, threading.Event]:
     stop_evt = threading.Event()
 
     def runner() -> None:
         asyncio.run(_ws_capture_task(ws_url, out_path, stop_evt))
 
-    t = threading.Thread(target=runner, daemon=True, name = "async th _ws_capture_task")
+    t = threading.Thread(target=runner, daemon=True, name="async th _ws_capture_task")
     t.start()
     return t, stop_evt
 
@@ -206,14 +216,16 @@ def start_ws_capture_in_thread(ws_url: str, out_path: Path) -> tuple[threading.T
 # -------------------------
 
 
-def start_uvicorn(app_import: str, host: str, port: int, app_dir: str, log_path: Path) -> subprocess.Popen:
+def start_uvicorn(
+    app_import: str, host: str, port: int, app_dir: str, log_path: Path
+) -> subprocess.Popen:
     """Start uvicorn and persist combined stdout/stderr to log_path."""
     log_path.parent.mkdir(parents=True, exist_ok=True)
     log_fh = open(log_path, "w", encoding="utf-8", buffering=1)
 
     cmd = [
         sys.executable,
-        os.path.join(*app_import.rsplit(':',1)[0].split('.'))+".py", #app_import,
+        os.path.join(*app_import.rsplit(":", 1)[0].split(".")) + ".py",  # app_import,
         "--app-dir",
         app_dir,
         "--host",
@@ -223,13 +235,14 @@ def start_uvicorn(app_import: str, host: str, port: int, app_dir: str, log_path:
         "--log-level",
         "info",
         "--access-log",
-        "--reset-oplog"
+        "--reset-oplog",
     ]
     p = subprocess.Popen(cmd, stdout=log_fh, stderr=subprocess.STDOUT, text=True)
     # Keep handle alive so the fd doesn't get closed early.
     setattr(p, "_log_fh", log_fh)
     setattr(p, "_log_path", str(log_path))
     return p
+
 
 def stop_proc(p: subprocess.Popen) -> None:
     if p.poll() is not None:
@@ -245,7 +258,7 @@ def start_static_server(
     root_dir: Path, host: str, port: int
 ) -> tuple[threading.Thread, http.server.ThreadingHTTPServer]:
     root = str(root_dir.resolve())
-    
+
     handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=root)
     httpd = http.server.ThreadingHTTPServer((host, port), handler)
 
@@ -262,7 +275,10 @@ def start_static_server(
 # Bundle rendering via kge_debug_dump
 # -------------------------
 
-def dump_bundle(*, template_path: Path, out_html: Path, engine_type: EngineType, ws_url: str) -> None:
+
+def dump_bundle(
+    *, template_path: Path, out_html: Path, engine_type: EngineType, ws_url: str
+) -> None:
     try:
         from graph_knowledge_engine.utils.kge_debug_dump import dump_d3_bundle  # type: ignore
     except Exception as e:
@@ -270,8 +286,7 @@ def dump_bundle(*, template_path: Path, out_html: Path, engine_type: EngineType,
             "Failed to import graph_knowledge_engine.utils.kge_debug_dump.dump_d3_bundle. "
             "Run this from repo root with your venv activated."
         ) from e
-    
-    
+
     template_html = template_path.read_text(encoding="utf-8")
     dump_d3_bundle(
         engine=None,
@@ -281,7 +296,11 @@ def dump_bundle(*, template_path: Path, out_html: Path, engine_type: EngineType,
         doc_id=None,
         mode="reify",
         insertion_method=None,
-        bundle_meta={"note": "CDC debug bundle", "engine_type": engine_type, "ws": ws_url},
+        bundle_meta={
+            "note": "CDC debug bundle",
+            "engine_type": engine_type,
+            "ws": ws_url,
+        },
         cdc_enabled=True,
         cdc_ws_url=ws_url,
         embed_empty=True,
@@ -289,18 +308,38 @@ def dump_bundle(*, template_path: Path, out_html: Path, engine_type: EngineType,
 
 
 def main() -> int:
-    default_app_path = f"{str((Path(__file__).absolute().parent.parent.stem))}.cdc.change_bridge:app"
+    default_app_path = (
+        f"{str((Path(__file__).absolute().parent.parent.stem))}.cdc.change_bridge:app"
+    )
     default_app_dir = str(Path(__file__).absolute().parent.parent.parent)
     ap = argparse.ArgumentParser()
-    ap.add_argument("--bridge-app", default=default_app_path, help="Uvicorn app import path")
-    ap.add_argument("--bridge-dir", default=default_app_dir, help="Uvicorn app import app dir")
+    ap.add_argument(
+        "--bridge-app", default=default_app_path, help="Uvicorn app import path"
+    )
+    ap.add_argument(
+        "--bridge-dir", default=default_app_dir, help="Uvicorn app import app dir"
+    )
     ap.add_argument("--bridge-host", default="127.0.0.1")
-    ap.add_argument("--bridge-port", type=int, default=8787, help="0 = choose free port")
-    ap.add_argument("--pytest", default="-k test_answer_workflow_v2_runs_end_to_end -s", help="Pytest args string")
+    ap.add_argument(
+        "--bridge-port", type=int, default=8787, help="0 = choose free port"
+    )
+    ap.add_argument(
+        "--pytest",
+        default="-k test_answer_workflow_v2_runs_end_to_end -s",
+        help="Pytest args string",
+    )
     ap.add_argument("--repo-root", default=".", help="Repo root (where pytest is run)")
-    ap.add_argument("--template", default="graph_knowledge_engine/templates/d3.html", help="Path to templates/d3.html")
-    ap.add_argument("--out-dir", default=".cdc_debug", help="Output directory for bundle + logs")
-    ap.add_argument("--open-browser", action="store_true", help="Open the CDC page automatically")
+    ap.add_argument(
+        "--template",
+        default="graph_knowledge_engine/templates/d3.html",
+        help="Path to templates/d3.html",
+    )
+    ap.add_argument(
+        "--out-dir", default=".cdc_debug", help="Output directory for bundle + logs"
+    )
+    ap.add_argument(
+        "--open-browser", action="store_true", help="Open the CDC page automatically"
+    )
     args = ap.parse_args()
 
     repo_root = Path(args.repo_root).resolve()
@@ -326,13 +365,30 @@ def main() -> int:
         "workflow": out_dir / "workflow.bundle.cdc.html",
         "knowledge": out_dir / "kg.bundle.cdc.html",
     }
-    dump_bundle(template_path=template_path, out_html=bundle_paths["conversation"], engine_type="conversation", ws_url=stream_urls["conversation"])
-    dump_bundle(template_path=template_path, out_html=bundle_paths["workflow"], engine_type="workflow", ws_url=stream_urls["workflow"])
-    dump_bundle(template_path=template_path, out_html=bundle_paths["knowledge"], engine_type="knowledge", ws_url=stream_urls["knowledge"])
+    dump_bundle(
+        template_path=template_path,
+        out_html=bundle_paths["conversation"],
+        engine_type="conversation",
+        ws_url=stream_urls["conversation"],
+    )
+    dump_bundle(
+        template_path=template_path,
+        out_html=bundle_paths["workflow"],
+        engine_type="workflow",
+        ws_url=stream_urls["workflow"],
+    )
+    dump_bundle(
+        template_path=template_path,
+        out_html=bundle_paths["knowledge"],
+        engine_type="knowledge",
+        ws_url=stream_urls["knowledge"],
+    )
 
     page_port = _find_free_port()
     _, httpd = start_static_server(out_dir, "127.0.0.1", page_port)
-    page_urls = {k: f"http://127.0.0.1:{page_port}/{p.name}" for k, p in bundle_paths.items()}
+    page_urls = {
+        k: f"http://127.0.0.1:{page_port}/{p.name}" for k, p in bundle_paths.items()
+    }
 
     print(f"[CDC] Output dir: {out_dir}")
     print(f"[CDC] Bridge ingest: {bridge_http}/ingest")
@@ -340,7 +396,9 @@ def main() -> int:
         print(f"[CDC] {k} WS: {stream_urls[k]}")
         print(f"[CDC] {k} page: {page_urls[k]}")
     bridge_log_path = out_dir / "cdc_bridge.log"
-    bridge = start_uvicorn(args.bridge_app, args.bridge_host, bridge_port, args.bridge_dir, bridge_log_path)
+    bridge = start_uvicorn(
+        args.bridge_app, args.bridge_host, bridge_port, args.bridge_dir, bridge_log_path
+    )
     try:
         _wait_tcp_open(args.bridge_host, page_port, timeout_s=10.0)
         _wait_http_up(f"{bridge_http}/docs", timeout_s=10.0)
@@ -376,7 +434,11 @@ def main() -> int:
 
     print(f"[pytest] running: pytest {args.pytest}")
     # test_answer_workflow_v2_runs_end_to_end
-    p = subprocess.run([sys.executable, "-m", "pytest", *args.pytest.split()], cwd=str(repo_root), env=env)
+    p = subprocess.run(
+        [sys.executable, "-m", "pytest", *args.pytest.split()],
+        cwd=str(repo_root),
+        env=env,
+    )
     rc = int(p.returncode)
 
     stop_evt.set()
@@ -388,11 +450,17 @@ def main() -> int:
         rep = validate_cdc_stream_jsonl(cdc_log_path)
         print("[CDC] validation:", rep)
         if rep.count == 0:
-            print("[CDC] WARNING: captured 0 events. Is engine wired to CDC_BRIDGE_ENDPOINT?")
+            print(
+                "[CDC] WARNING: captured 0 events. Is engine wired to CDC_BRIDGE_ENDPOINT?"
+            )
         if rep.non_monotonic:
-            print(f"[CDC] WARNING: non-monotonic seq count={rep.non_monotonic}. Engine may reset seq on restart.")
+            print(
+                f"[CDC] WARNING: non-monotonic seq count={rep.non_monotonic}. Engine may reset seq on restart."
+            )
         if rep.missing_fields or rep.bad_types:
-            print(f"[CDC] WARNING: malformed events missing={rep.missing_fields} bad_types={rep.bad_types}")
+            print(
+                f"[CDC] WARNING: malformed events missing={rep.missing_fields} bad_types={rep.bad_types}"
+            )
     except Exception as e:
         print("[CDC] validation failed:", e)
 

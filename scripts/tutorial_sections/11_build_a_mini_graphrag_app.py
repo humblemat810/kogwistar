@@ -10,7 +10,9 @@ from _helpers import banner, reset_data_dir, show
 data_dir = reset_data_dir("11_build_a_mini_graphrag_app")
 show("reset", reset_data(data_dir))
 show("seed", seed_data(data_dir))
-banner("The next cells walk from baseline retrieval to seeded retrieval to provenance pinning.")
+banner(
+    "The next cells walk from baseline retrieval to seeded retrieval to provenance pinning."
+)
 
 # %% [markdown]
 # ## Baseline retrieval and answer

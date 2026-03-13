@@ -17,13 +17,14 @@ The codebase supports two workflow "spec" shapes:
 """
 
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Callable, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from graph_knowledge_engine.runtime.models import WorkflowEdge
 from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
 from .contract import BasePredicate
 
 PredicateName = Optional[str]
 Predicate = BasePredicate
+
 
 @dataclass(frozen=True)
 class WFNode:
@@ -59,7 +60,9 @@ class WorkflowSpec:
     out_edges: Dict[str, List[WFEdge]]
 
 
-def build_workflow_from_engine(*, workflow_engine: Any, workflow_id: str) -> WorkflowSpec:
+def build_workflow_from_engine(
+    *, workflow_engine: Any, workflow_id: str
+) -> WorkflowSpec:
     """Load a rich :class:`WorkflowSpec` from a GraphKnowledgeEngine-like API.
 
     Required engine interface:
@@ -71,8 +74,18 @@ def build_workflow_from_engine(*, workflow_engine: Any, workflow_id: str) -> Wor
       edge.metadata["entity_type"] == "workflow_edge"
     """
 
-    nodes_raw = workflow_engine.get_nodes(where={"$and": [{"entity_type": "workflow_node"}, {"workflow_id": workflow_id}]}, limit=5000)
-    edges_raw = workflow_engine.get_edges(where={"$and": [{"entity_type": "workflow_edge"}, {"workflow_id": workflow_id}]}, limit=20000)
+    nodes_raw = workflow_engine.get_nodes(
+        where={
+            "$and": [{"entity_type": "workflow_node"}, {"workflow_id": workflow_id}]
+        },
+        limit=5000,
+    )
+    edges_raw = workflow_engine.get_edges(
+        where={
+            "$and": [{"entity_type": "workflow_edge"}, {"workflow_id": workflow_id}]
+        },
+        limit=20000,
+    )
 
     nodes: Dict[str, WFNode] = {}
     start_node_id: Optional[str] = None
@@ -113,7 +126,9 @@ def build_workflow_from_engine(*, workflow_engine: Any, workflow_id: str) -> Wor
         src = e.source_ids[0] if getattr(e, "source_ids", None) else md.get("src")
         dst = e.target_ids[0] if getattr(e, "target_ids", None) else md.get("dst")
         if src not in nodes or dst not in nodes:
-            raise ValueError(f"workflow edge endpoints not workflow nodes: {src!r} -> {dst!r}")
+            raise ValueError(
+                f"workflow edge endpoints not workflow nodes: {src!r} -> {dst!r}"
+            )
 
         we = WFEdge(
             edge_id=e.id,
@@ -130,10 +145,22 @@ def build_workflow_from_engine(*, workflow_engine: Any, workflow_id: str) -> Wor
     for s in out_edges:
         out_edges[s].sort(key=lambda x: x.priority)
 
-    return WorkflowSpec(workflow_id=workflow_id, start_node_id=start_node_id, nodes=nodes, out_edges=out_edges)
+    return WorkflowSpec(
+        workflow_id=workflow_id,
+        start_node_id=start_node_id,
+        nodes=nodes,
+        out_edges=out_edges,
+    )
 
-def load_workflow_design(*, workflow_engine: GraphKnowledgeEngine, workflow_id: str) -> Tuple[
-            WorkflowNode, Dict[str, WorkflowNode], Dict[str, List[WorkflowEdge]], Dict[str, List[WorkflowEdge]]]:
+
+def load_workflow_design(
+    *, workflow_engine: GraphKnowledgeEngine, workflow_id: str
+) -> Tuple[
+    WorkflowNode,
+    Dict[str, WorkflowNode],
+    Dict[str, List[WorkflowEdge]],
+    Dict[str, List[WorkflowEdge]],
+]:
     """
     Load workflow graph design from workflow_engine.
     Nodes/edges must be tagged with:
@@ -141,38 +168,49 @@ def load_workflow_design(*, workflow_engine: GraphKnowledgeEngine, workflow_id: 
       edge.metadata.entity_type="workflow_edge"
     """
     nodes_raw: list[WorkflowNode] = workflow_engine.get_nodes(
-            where={"$and": [{"entity_type": "workflow_node"},
-                            { "workflow_id": workflow_id}]}, 
-            limit=5000, node_type = WorkflowNode)
+        where={
+            "$and": [{"entity_type": "workflow_node"}, {"workflow_id": workflow_id}]
+        },
+        limit=5000,
+        node_type=WorkflowNode,
+    )
     edges_raw: list[WorkflowEdge] = workflow_engine.get_edges(
-            where={"$and": [{"entity_type": "workflow_edge"},
-                            { "workflow_id": workflow_id}]}, 
-            limit=20000, edge_type = WorkflowEdge)
+        where={
+            "$and": [{"entity_type": "workflow_edge"}, {"workflow_id": workflow_id}]
+        },
+        limit=20000,
+        edge_type=WorkflowEdge,
+    )
 
     nodes: Dict[str, WorkflowNode] = {}
     start_nodes: List[WorkflowNode] = []
     for n in nodes_raw:
-
         nodes[n.id] = n
         if n.metadata.get("wf_start"):
             start_nodes.append(n)
 
     if len(start_nodes) != 1:
-        raise ValueError(f"workflow_id={workflow_id!r} must have exactly one start node (wf_start=True). Found {len(start_nodes)}")
+        raise ValueError(
+            f"workflow_id={workflow_id!r} must have exactly one start node (wf_start=True). Found {len(start_nodes)}"
+        )
 
     adj: Dict[str, List[WorkflowEdge]] = {nid: [] for nid in nodes}
-    rev_adj : Dict[str, List[WorkflowEdge]] = {nid: [] for nid in nodes}
+    rev_adj: Dict[str, List[WorkflowEdge]] = {nid: [] for nid in nodes}
     for e in edges_raw:
         md = e.metadata or {}
         src = e.source_ids[0]
         dst = e.target_ids[0]
         if src not in nodes or dst not in nodes:
-            raise ValueError(f"Workflow edge {e.id} connects non-workflow nodes: {src}->{dst}")
-     
+            raise ValueError(
+                f"Workflow edge {e.id} connects non-workflow nodes: {src}->{dst}"
+            )
+
         adj[src].append(e)
         rev_adj[dst].append(e)
+
     def get_node_priority(n: WorkflowEdge):
-        return n.metadata['wf_priority']
+        return n.metadata["wf_priority"]
+
     for src in adj:
         adj[src].sort(key=get_node_priority)
 
@@ -184,15 +222,17 @@ def validate_workflow_design(
     workflow_engine: Any,
     workflow_id: str,
     predicate_registry: Dict[str, Predicate],
-    resolver: Any = None
+    resolver: Any = None,
 ):
     """Validate an engine-backed workflow design.
 
     Supports both legacy metadata keys (predicate/terminal/start/priority)
     and the newer wf_* schema (wf_predicate/wf_terminal/wf_start/wf_priority).
     """
-    
-    start, nodes, adj, rev_adj = load_workflow_design(workflow_engine=workflow_engine, workflow_id=workflow_id)
+
+    start, nodes, adj, rev_adj = load_workflow_design(
+        workflow_engine=workflow_engine, workflow_id=workflow_id
+    )
     # Resolver-based op validation is optional.
     # - If resolver exposes `.ops`, validate declared workflow ops against it.
     # - If resolver is only a callable (e.g. def resolve_step(op): ...), skip `.ops` validation.
@@ -206,7 +246,9 @@ def validate_workflow_design(
     # predicate resolution
     for edges in adj.values():
         for e in edges:
-            pred: str | None = e.metadata.get("wf_predicate", e.metadata.get("predicate"))
+            pred: str | None = e.metadata.get(
+                "wf_predicate", e.metadata.get("predicate")
+            )
             if pred is not None and pred not in predicate_registry:
                 raise ValueError(f"Unknown predicate {pred!r} on workflow edge {e.id}")
 
@@ -214,7 +256,10 @@ def validate_workflow_design(
     terminals = {
         nid
         for nid, n in nodes.items()
-        if (n.metadata.get("wf_terminal", n.metadata.get("terminal")) or len(adj.get(nid, [])) == 0)
+        if (
+            n.metadata.get("wf_terminal", n.metadata.get("terminal"))
+            or len(adj.get(nid, [])) == 0
+        )
     }
     if not terminals:
         raise ValueError("Workflow has no terminal nodes and no sink nodes")
@@ -238,15 +283,21 @@ def validate_workflow_design(
         raise ValueError("No terminal reachable from start (ignoring predicates).")
     return start, nodes, adj
 
-class BaseWorkflowDesigner:
 
+class BaseWorkflowDesigner:
     """Base helper for building/validating workflow designs.
 
     This is intentionally lightweight: it does not assume any conversation-specific
     invariants. Subclasses can add domain constraints.
     """
 
-    def __init__(self, *, workflow_engine: Any, predicate_registry: Dict[str, Predicate], resolver: BaseResolver | None = None):
+    def __init__(
+        self,
+        *,
+        workflow_engine: Any,
+        predicate_registry: Dict[str, Predicate],
+        resolver: BaseResolver | None = None,
+    ):
         self.workflow_engine = workflow_engine
         self.predicate_registry = predicate_registry
         self.resolver = resolver
@@ -256,8 +307,5 @@ class BaseWorkflowDesigner:
             workflow_engine=self.workflow_engine,
             workflow_id=workflow_id,
             predicate_registry=self.predicate_registry,
-            resolver=resolver or self.resolver
+            resolver=resolver or self.resolver,
         )
-
-
-        

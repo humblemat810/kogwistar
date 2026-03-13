@@ -1,17 +1,18 @@
 # knowledge_graph_engine/changes/change_bus.py
 from __future__ import annotations
 from dataclasses import dataclass
-from collections import deque
-from typing import Deque, Dict, Optional, List
+from typing import Optional
 import threading
 import queue
-import time
 from graph_knowledge_engine.utils import log as logmod
 from graph_knowledge_engine.utils.log import bind_log_context
 from typing import Protocol
 
+
 class ChangeSink(Protocol):
     def publish(self, event: ChangeEvent) -> None: ...
+
+
 @dataclass(frozen=True, slots=True)
 class ChangeEvent:
     seq: int
@@ -33,6 +34,7 @@ class ChangeEvent:
             "step_id": self.step_id,
         }
 
+
 class ChangeBus:
     """
     Sync in-process change bus:
@@ -41,10 +43,12 @@ class ChangeBus:
       - per-subscriber bounded queues
       - never blocks engine on slow subscribers
     """
+
     def __init__(self):
         self._sinks: list[ChangeSink] = []
         self._seq_lock = threading.Lock()
         self._seq = 0
+
     def next_seq(self) -> int:
         with self._seq_lock:
             self._seq += 1
@@ -60,9 +64,14 @@ class ChangeBus:
         for sink in self._sinks:
             sink.publish(event)
 
+
 import requests
+
+
 class FastAPIChangeSink:
-    def __init__(self, endpoint: str, *, max_queue: int = 5000, name: str = 'fastapi sink'):
+    def __init__(
+        self, endpoint: str, *, max_queue: int = 5000, name: str = "fastapi sink"
+    ):
         self.endpoint = endpoint.rstrip("/")
         self.q: queue.Queue[dict] = queue.Queue(maxsize=max_queue)
         self._t = threading.Thread(target=self._run, daemon=True, name=name)
@@ -99,7 +108,10 @@ class FastAPIChangeSink:
                     step_id=ctx.get("step_id"),
                 ):
                     session.post(url, json=ev, timeout=2.5)
-            except (requests.exceptions.ConnectTimeout, requests.exceptions.ConnectionError):
+            except (
+                requests.exceptions.ConnectTimeout,
+                requests.exceptions.ConnectionError,
+            ):
                 pass
             except Exception:
                 raise

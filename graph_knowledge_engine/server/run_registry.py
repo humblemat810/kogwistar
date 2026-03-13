@@ -11,7 +11,9 @@ def _now_ms() -> int:
 
 
 def _stable_json(payload: dict[str, Any] | None) -> str:
-    return json.dumps(payload or {}, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+    return json.dumps(
+        payload or {}, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+    )
 
 
 class RunRegistry:
@@ -52,12 +54,22 @@ class RunRegistry:
         run["terminal"] = str(run.get("status") or "") in self.TERMINAL_STATUSES
         return run
 
-    def list_events(self, run_id: str, *, after_seq: int = 0, limit: int = 500) -> list[dict[str, Any]]:
-        return list(self.meta_store.list_server_run_events(run_id, after_seq=int(after_seq), limit=int(limit)))
+    def list_events(
+        self, run_id: str, *, after_seq: int = 0, limit: int = 500
+    ) -> list[dict[str, Any]]:
+        return list(
+            self.meta_store.list_server_run_events(
+                run_id, after_seq=int(after_seq), limit=int(limit)
+            )
+        )
 
-    def append_event(self, run_id: str, event_type: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    def append_event(
+        self, run_id: str, event_type: str, payload: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         with self._lock:
-            return self.meta_store.append_server_run_event(run_id, event_type, _stable_json(payload))
+            return self.meta_store.append_server_run_event(
+                run_id, event_type, _stable_json(payload)
+            )
 
     def update_status(
         self,
@@ -82,18 +94,30 @@ class RunRegistry:
         if finished:
             finished_at_ms = now
 
-        resolved_assistant_turn_node_id = assistant_turn_node_id or existing.get("assistant_turn_node_id")
+        resolved_assistant_turn_node_id = assistant_turn_node_id or existing.get(
+            "assistant_turn_node_id"
+        )
         resolved_result = result if result is not None else existing.get("result")
         resolved_error = error if error is not None else existing.get("error")
         with self._lock:
             self.meta_store.update_server_run(
                 run_id=run_id,
                 status=status,
-                assistant_turn_node_id=(str(resolved_assistant_turn_node_id) if resolved_assistant_turn_node_id else None),
-                result_json=(None if resolved_result is None else _stable_json(resolved_result)),
-                error_json=(None if resolved_error is None else _stable_json(resolved_error)),
+                assistant_turn_node_id=(
+                    str(resolved_assistant_turn_node_id)
+                    if resolved_assistant_turn_node_id
+                    else None
+                ),
+                result_json=(
+                    None if resolved_result is None else _stable_json(resolved_result)
+                ),
+                error_json=(
+                    None if resolved_error is None else _stable_json(resolved_error)
+                ),
                 started_at_ms=(None if started_at_ms is None else int(started_at_ms)),
-                finished_at_ms=(None if finished_at_ms is None else int(finished_at_ms)),
+                finished_at_ms=(
+                    None if finished_at_ms is None else int(finished_at_ms)
+                ),
             )
         return self.get_run(run_id) or {}
 
@@ -128,7 +152,9 @@ class RunRegistryTraceBridge:
         "persist": ("persist", "Persisting the assistant response."),
     }
 
-    def __init__(self, *, registry: RunRegistry, run_id: str, delegate: Any | None = None) -> None:
+    def __init__(
+        self, *, registry: RunRegistry, run_id: str, delegate: Any | None = None
+    ) -> None:
         self.registry = registry
         self.run_id = run_id
         self.delegate = delegate

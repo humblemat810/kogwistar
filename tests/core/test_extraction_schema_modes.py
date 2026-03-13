@@ -38,13 +38,29 @@ def _fake_task_set(*, provider: str) -> LLMTaskSet:
     )
 
     return LLMTaskSet(
-        extract_graph=lambda _req: ExtractGraphTaskResult(raw=None, parsed_payload={"nodes": [], "edges": []}, parsing_error=None),
-        adjudicate_pair=lambda _req: AdjudicatePairTaskResult(verdict_payload={"same_entity": False}, raw=None, parsing_error=None),
-        adjudicate_batch=lambda _req: AdjudicateBatchTaskResult(verdict_payloads=(), raw=None, parsing_error=None),
-        filter_candidates=lambda _req: FilterCandidatesTaskResult(node_ids=(), edge_ids=(), reasoning="", raw=None, parsing_error=None),
+        extract_graph=lambda _req: ExtractGraphTaskResult(
+            raw=None, parsed_payload={"nodes": [], "edges": []}, parsing_error=None
+        ),
+        adjudicate_pair=lambda _req: AdjudicatePairTaskResult(
+            verdict_payload={"same_entity": False}, raw=None, parsing_error=None
+        ),
+        adjudicate_batch=lambda _req: AdjudicateBatchTaskResult(
+            verdict_payloads=(), raw=None, parsing_error=None
+        ),
+        filter_candidates=lambda _req: FilterCandidatesTaskResult(
+            node_ids=(), edge_ids=(), reasoning="", raw=None, parsing_error=None
+        ),
         summarize_context=lambda _req: SummarizeContextTaskResult(text=""),
-        answer_with_citations=lambda _req: AnswerWithCitationsTaskResult(answer_payload={"text": "", "reasoning": "", "claims": []}, raw=None, parsing_error=None),
-        repair_citations=lambda _req: RepairCitationsTaskResult(answer_payload={"text": "", "reasoning": "", "claims": []}, raw=None, parsing_error=None),
+        answer_with_citations=lambda _req: AnswerWithCitationsTaskResult(
+            answer_payload={"text": "", "reasoning": "", "claims": []},
+            raw=None,
+            parsing_error=None,
+        ),
+        repair_citations=lambda _req: RepairCitationsTaskResult(
+            answer_payload={"text": "", "reasoning": "", "claims": []},
+            raw=None,
+            parsing_error=None,
+        ),
         provider_hints=hints,
     )
 
@@ -76,14 +92,18 @@ def engine():
         ("flattened_full", AssocFlattenedLLMGraphExtraction["llm"], True),
     ],
 )
-def test_structured_schema_for_mode(engine, mode, expected_schema, expects_json_schema_method):
+def test_structured_schema_for_mode(
+    engine, mode, expected_schema, expects_json_schema_method
+):
     schema, prefer_json_schema = engine._structured_schema_for_mode(mode)
     assert schema is expected_schema
     assert prefer_json_schema is expects_json_schema_method
 
 
 def test_build_structured_output_for_mode_is_back_compat_schema_tuple(engine):
-    schema, prefer_json_schema = engine._build_structured_output_for_mode("flattened_lean")
+    schema, prefer_json_schema = engine._build_structured_output_for_mode(
+        "flattened_lean"
+    )
     assert schema is AssocFlattenedLLMGraphExtraction["llm_in"]
     assert prefer_json_schema is True
 
@@ -167,7 +187,11 @@ def test_ingest_document_with_llm_forwards_schema_mode_override(engine, monkeypa
         seen["mode"] = extraction_schema_mode
         seen["offset_mismatch_policy"] = offset_mismatch_policy
         seen["offset_repair_scorer"] = offset_repair_scorer
-        return {"raw": None, "parsed": LLMGraphExtraction.model_validate({"nodes": [], "edges": []}), "error": None}
+        return {
+            "raw": None,
+            "parsed": LLMGraphExtraction.model_validate({"nodes": [], "edges": []}),
+            "error": None,
+        }
 
     def _fake_preflight_validate(parsed, doc_id, alias_book=None):
         _ = parsed, doc_id, alias_book
@@ -175,11 +199,19 @@ def test_ingest_document_with_llm_forwards_schema_mode_override(engine, monkeypa
 
     def _fake_persist_graph_extraction(*, document, parsed, mode):
         _ = parsed, mode
-        return {"document_id": document.id, "node_ids": [], "edge_ids": [], "nodes_added": 0, "edges_added": 0}
+        return {
+            "document_id": document.id,
+            "node_ids": [],
+            "edge_ids": [],
+            "nodes_added": 0,
+            "edges_added": 0,
+        }
 
     monkeypatch.setattr(engine, "extract_graph_with_llm", _fake_extract_graph_with_llm)
     monkeypatch.setattr(engine, "_preflight_validate", _fake_preflight_validate)
-    monkeypatch.setattr(engine, "persist_graph_extraction", _fake_persist_graph_extraction)
+    monkeypatch.setattr(
+        engine, "persist_graph_extraction", _fake_persist_graph_extraction
+    )
     monkeypatch.setattr(engine, "add_document", lambda document: document.id)
 
     document = Document(

@@ -63,9 +63,15 @@ def test_rollback_single_document(engine):
     assert node2_row["metadatas"][0]["lifecycle_status"] == "tombstoned"
     assert edge_row["metadatas"][0]["lifecycle_status"] == "tombstoned"
 
-    assert not (engine.backend.node_docs_get(where={"node_id": node1.id}).get("ids") or [])
-    assert not (engine.backend.node_docs_get(where={"node_id": node2.id}).get("ids") or [])
-    assert not (engine.backend.edge_endpoints_get(where={"edge_id": edge.id}).get("ids") or [])
+    assert not (
+        engine.backend.node_docs_get(where={"node_id": node1.id}).get("ids") or []
+    )
+    assert not (
+        engine.backend.node_docs_get(where={"node_id": node2.id}).get("ids") or []
+    )
+    assert not (
+        engine.backend.edge_endpoints_get(where={"edge_id": edge.id}).get("ids") or []
+    )
 
 
 def test_rollback_multiple_documents(tmp_path):
@@ -85,7 +91,9 @@ def test_rollback_multiple_documents(tmp_path):
     ref1 = kg_grounding(docs[0].id, excerpt="Doc 0", end_char=5)
     ref2 = kg_grounding(docs[1].id, excerpt="Doc 1", end_char=5)
 
-    shared_node = Node(label="X", type="entity", summary="shared", mentions=[ref1, ref2])
+    shared_node = Node(
+        label="X", type="entity", summary="shared", mentions=[ref1, ref2]
+    )
     engine.write.add_node(shared_node)
 
     n1 = Node(label="Y", type="entity", summary="n1", mentions=[ref1])

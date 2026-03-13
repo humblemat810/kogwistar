@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Literal, cast
+from typing import Any, Literal
 
 from ..models import Edge, Node
 from ..utils.metadata import json_or_none, strip_none
@@ -38,7 +38,9 @@ class RollbackSubsystem(NamespaceProxy):
             return doc_ids[0]
         return None
 
-    def _clean_metadata_for_replacement(self, metadata: dict[str, Any] | None) -> dict[str, Any]:
+    def _clean_metadata_for_replacement(
+        self, metadata: dict[str, Any] | None
+    ) -> dict[str, Any]:
         cleaned = dict(metadata or {})
         for key in (
             "lifecycle_status",
@@ -106,9 +108,13 @@ class RollbackSubsystem(NamespaceProxy):
             return None
         return Edge.model_validate_json(docs[0])
 
-    def _edge_ids_for_endpoint(self, endpoint_id: str, endpoint_type: Literal["node", "edge"]) -> set[str]:
+    def _edge_ids_for_endpoint(
+        self, endpoint_id: str, endpoint_type: Literal["node", "edge"]
+    ) -> set[str]:
         rows = self._e.backend.edge_endpoints_get(
-            where={"$and": [{"endpoint_id": endpoint_id}, {"endpoint_type": endpoint_type}]},
+            where={
+                "$and": [{"endpoint_id": endpoint_id}, {"endpoint_type": endpoint_type}]
+            },
             include=["metadatas"],
         )
         edge_ids: set[str] = set()
@@ -126,7 +132,9 @@ class RollbackSubsystem(NamespaceProxy):
         repairs cascade through downstream edge endpoints so rollback converges the
         graph instead of leaving broken references behind.
         """
-        node_rows = self._e.backend.node_docs_get(where={"doc_id": document_id}, include=["metadatas"])
+        node_rows = self._e.backend.node_docs_get(
+            where={"doc_id": document_id}, include=["metadatas"]
+        )
         affected_node_ids = sorted(
             {
                 str(metadata["node_id"])
@@ -142,7 +150,9 @@ class RollbackSubsystem(NamespaceProxy):
         removed_node_ids: set[str] = set()
 
         for node in self._load_nodes(affected_node_ids):
-            surviving_mentions, changed = self._filter_mentions_for_document(node.mentions, document_id)
+            surviving_mentions, changed = self._filter_mentions_for_document(
+                node.mentions, document_id
+            )
             if not changed:
                 continue
             if surviving_mentions:
@@ -156,7 +166,9 @@ class RollbackSubsystem(NamespaceProxy):
                 node_redirects[node.safe_get_id()] = replacement.safe_get_id()
                 updated_node_ids.append(replacement.safe_get_id())
             else:
-                self._e.tombstone_node(node.safe_get_id(), reason=f"rollback_document:{document_id}")
+                self._e.tombstone_node(
+                    node.safe_get_id(), reason=f"rollback_document:{document_id}"
+                )
                 removed_node_ids.add(node.safe_get_id())
                 deleted_node_ids.append(node.safe_get_id())
             self._delete_node_derived_rows(node.safe_get_id())
@@ -216,12 +228,15 @@ class RollbackSubsystem(NamespaceProxy):
             endpoints_changed = (
                 mapped_source_ids != (edge.source_ids or [])
                 or mapped_target_ids != (edge.target_ids or [])
-                or mapped_source_edge_ids != (getattr(edge, "source_edge_ids", []) or [])
-                or mapped_target_edge_ids != (getattr(edge, "target_edge_ids", []) or [])
+                or mapped_source_edge_ids
+                != (getattr(edge, "source_edge_ids", []) or [])
+                or mapped_target_edge_ids
+                != (getattr(edge, "target_edge_ids", []) or [])
             )
 
             if edge.relation == "same_as" and (
-                mapped_source_ids != (edge.source_ids or []) or mapped_target_ids != (edge.target_ids or [])
+                mapped_source_ids != (edge.source_ids or [])
+                or mapped_target_ids != (edge.target_ids or [])
             ):
                 remain = list(dict.fromkeys(mapped_source_ids + mapped_target_ids))
                 if len(remain) >= 2:
@@ -235,8 +250,14 @@ class RollbackSubsystem(NamespaceProxy):
             has_source_endpoints = bool(mapped_source_ids or mapped_source_edge_ids)
             has_target_endpoints = bool(mapped_target_ids or mapped_target_edge_ids)
 
-            if not surviving_mentions or not has_source_endpoints or not has_target_endpoints:
-                self._e.tombstone_edge(edge.safe_get_id(), reason=f"rollback_document:{document_id}")
+            if (
+                not surviving_mentions
+                or not has_source_endpoints
+                or not has_target_endpoints
+            ):
+                self._e.tombstone_edge(
+                    edge.safe_get_id(), reason=f"rollback_document:{document_id}"
+                )
                 self._delete_edge_derived_rows(edge.safe_get_id())
                 tombstoned_edge_ids.append(edge.safe_get_id())
                 deleted_edge_ids.append(edge.safe_get_id())
@@ -274,9 +295,13 @@ class RollbackSubsystem(NamespaceProxy):
                 edge_revision += 1
                 edge_queue.extend(sorted(downstream))
 
-        doc_ids = set(self._e.backend.document_get(where={"doc_id": document_id})["ids"])
+        doc_ids = set(
+            self._e.backend.document_get(where={"doc_id": document_id})["ids"]
+        )
         self._e.backend.document_delete(where={"doc_id": document_id})
-        doc_ids_after = set(self._e.backend.document_get(where={"doc_id": document_id})["ids"])
+        doc_ids_after = set(
+            self._e.backend.document_get(where={"doc_id": document_id})["ids"]
+        )
         return {
             "rolled_back_doc_id": document_id,
             "rolled_back_doc_ids": list(doc_ids - doc_ids_after),
@@ -333,7 +358,11 @@ class RollbackSubsystem(NamespaceProxy):
                     d = json.loads(mj)
                 except Exception:
                     try:
-                        d = (Node if kind == "node" else Edge).model_validate_json(mj).model_dump(field_mode="backend")
+                        d = (
+                            (Node if kind == "node" else Edge)
+                            .model_validate_json(mj)
+                            .model_dump(field_mode="backend")
+                        )
                     except Exception:
                         d = None
                 if d is not None and i < len(ids_out):
@@ -366,30 +395,34 @@ class RollbackSubsystem(NamespaceProxy):
 
         node_ids = set()
         try:
-            nd = self._e.backend.node_docs_get(where={"doc_id": doc_id}, include=["metadatas"])
-            for m in (nd.get("metadatas") or []):
+            nd = self._e.backend.node_docs_get(
+                where={"doc_id": doc_id}, include=["metadatas"]
+            )
+            for m in nd.get("metadatas") or []:
                 if m and m.get("node_id"):
                     node_ids.add(m["node_id"])
             summary["deleted_node_doc_rows"] = len(nd.get("ids") or [])
         except Exception:
             try:
                 q = self._e.backend.node_get(where={"doc_id": doc_id})
-                for nid in (q.get("ids") or []):
+                for nid in q.get("ids") or []:
                     node_ids.add(nid)
             except Exception:
                 pass
 
         edge_ids = set()
         try:
-            ee = self._e.backend.edge_endpoints_get(where={"doc_id": doc_id}, include=["metadatas"])
-            for m in (ee.get("metadatas") or []):
+            ee = self._e.backend.edge_endpoints_get(
+                where={"doc_id": doc_id}, include=["metadatas"]
+            )
+            for m in ee.get("metadatas") or []:
                 if m and m.get("edge_id"):
                     edge_ids.add(m["edge_id"])
             summary["deleted_edge_endpoints"] = len(ee.get("ids") or [])
         except Exception:
             try:
                 q = self._e.backend.edge_get(where={"doc_id": doc_id})
-                for eid in (q.get("ids") or []):
+                for eid in q.get("ids") or []:
                     edge_ids.add(eid)
             except Exception:
                 pass
@@ -400,7 +433,11 @@ class RollbackSubsystem(NamespaceProxy):
             keep = []
             removed = 0
             for r in refs:
-                if r and (r.get("doc_id") == doc_id) and (r.get("insertion_method") == extraction_method):
+                if (
+                    r
+                    and (r.get("doc_id") == doc_id)
+                    and (r.get("insertion_method") == extraction_method)
+                ):
                     removed += 1
                 else:
                     keep.append(r)
@@ -416,13 +453,17 @@ class RollbackSubsystem(NamespaceProxy):
                     except Exception:
                         pass
                     try:
-                        self._e.backend.node_docs_delete(where={"node_id": nid, "doc_id": doc_id})
+                        self._e.backend.node_docs_delete(
+                            where={"node_id": nid, "doc_id": doc_id}
+                        )
                     except Exception:
                         pass
                     summary["deleted_nodes"] += 1
             else:
                 try:
-                    self._e.backend.node_docs_delete(where={"node_id": nid, "doc_id": doc_id})
+                    self._e.backend.node_docs_delete(
+                        where={"node_id": nid, "doc_id": doc_id}
+                    )
                 except Exception:
                     pass
 
@@ -432,13 +473,19 @@ class RollbackSubsystem(NamespaceProxy):
             keep = []
             removed = 0
             for r in refs:
-                if r and (r.get("doc_id") == doc_id) and (r.get("insertion_method") == extraction_method):
+                if (
+                    r
+                    and (r.get("doc_id") == doc_id)
+                    and (r.get("insertion_method") == extraction_method)
+                ):
                     removed += 1
                 else:
                     keep.append(r)
 
             try:
-                self._e.backend.edge_endpoints_delete(where={"edge_id": eid, "doc_id": doc_id})
+                self._e.backend.edge_endpoints_delete(
+                    where={"edge_id": eid, "doc_id": doc_id}
+                )
             except Exception:
                 pass
 
@@ -482,7 +529,9 @@ class RollbackSubsystem(NamespaceProxy):
         else:
             raise Exception("Document loss")
         edge_ids = list({json.loads(doc)["edge_id"] for doc in eps_doc})
-        edges = self._e.backend.edge_get(ids=edge_ids, include=["documents", "metadatas"])
+        edges = self._e.backend.edge_get(
+            ids=edge_ids, include=["documents", "metadatas"]
+        )
 
         removed_edge_ids: set[str] = set()
         updated_edge_ids: set[str] = set()
@@ -538,7 +587,9 @@ class RollbackSubsystem(NamespaceProxy):
                     ):
                         for nid in node_ids:
                             ep_id = f"{eid}::{role}::{nid}"
-                            node_doc = self._e.backend.node_get(ids=[nid], include=["documents"])
+                            node_doc = self._e.backend.node_get(
+                                ids=[nid], include=["documents"]
+                            )
                             if node_doc is None:
                                 raise Exception(f"node_doc for {nid} is lost")
                             per_doc_id = None
@@ -566,7 +617,9 @@ class RollbackSubsystem(NamespaceProxy):
                             ids=ep_ids,
                             documents=ep_docs,
                             metadatas=ep_metas,
-                            embeddings=[self._e._iterative_defensive_emb(d) for d in ep_docs],
+                            embeddings=[
+                                self._e._iterative_defensive_emb(d) for d in ep_docs
+                            ],
                         )
                     updated_edge_ids.add(eid)
                 continue
@@ -616,7 +669,12 @@ class RollbackSubsystem(NamespaceProxy):
         }
 
     def rollback_many_documents(self, document_ids: list[str]):
-        totals = {"deleted_nodes": 0, "deleted_edges": 0, "updated_edges": 0, "deleted_docs": 0}
+        totals = {
+            "deleted_nodes": 0,
+            "deleted_edges": 0,
+            "updated_edges": 0,
+            "deleted_docs": 0,
+        }
         for did in document_ids:
             res = self.rollback_document(did)
             totals["deleted_docs"] += 1

@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 from types import MappingProxyType
@@ -73,10 +72,19 @@ def test_add_user_turn_respects_provided_turn_node_id():
 
 def test_answer_prefers_agentic_when_available():
     class FakeAgent:
-        def answer_workflow_v2(self, *, conversation_id: str, user_id: str | None, prev_turn_meta_summary, workflow_engine=None):
+        def answer_workflow_v2(
+            self,
+            *,
+            conversation_id: str,
+            user_id: str | None,
+            prev_turn_meta_summary,
+            workflow_engine=None,
+        ):
             return {"assistant_turn_node_id": "assist123", "assistant_text": "hi"}
+
     def fake_answer_only(*arg, **kwarg) -> ConversationAIResponse:
         return ConversationAIResponse(text="fake answer", response_node_id="assist123")
+
     ctx = FakeStepContext(
         {
             "conversation_id": "c1",
@@ -84,7 +92,15 @@ def test_answer_prefers_agentic_when_available():
             "turn_node_id": "user1",
             "_deps": {
                 "agent": FakeAgent(),
-                "prev_turn_meta_summary": type("M", (), {"prev_node_char_distance_from_last_summary": 0, "prev_node_distance_from_last_summary": 0, "tail_turn_index": 0})(),
+                "prev_turn_meta_summary": type(
+                    "M",
+                    (),
+                    {
+                        "prev_node_char_distance_from_last_summary": 0,
+                        "prev_node_distance_from_last_summary": 0,
+                        "tail_turn_index": 0,
+                    },
+                )(),
                 "answer_only": fake_answer_only,
             },
         }
@@ -107,7 +123,15 @@ def test_decide_summarize_uses_snapshot_cost_when_available():
                 "conversation_engine": ce,
                 "summary_char_threshold": 1000,
                 "summary_token_threshold": 1000,
-                "prev_turn_meta_summary": type("M", (), {"prev_node_char_distance_from_last_summary": 0, "prev_node_distance_from_last_summary": 0, "tail_turn_index": 0})(),
+                "prev_turn_meta_summary": type(
+                    "M",
+                    (),
+                    {
+                        "prev_node_char_distance_from_last_summary": 0,
+                        "prev_node_distance_from_last_summary": 0,
+                        "tail_turn_index": 0,
+                    },
+                )(),
             },
         }
     )

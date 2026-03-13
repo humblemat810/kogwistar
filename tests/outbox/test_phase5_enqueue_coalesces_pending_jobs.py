@@ -11,7 +11,9 @@ TEST_EMBEDDING = FakeEmbeddingFunction(dim=3)
 def eng(tmp_path) -> GraphKnowledgeEngine:
     persist_dir = tmp_path / "chroma"
     persist_dir.mkdir(parents=True, exist_ok=True)
-    e = GraphKnowledgeEngine(persist_directory=str(persist_dir), embedding_function=TEST_EMBEDDING)
+    e = GraphKnowledgeEngine(
+        persist_directory=str(persist_dir), embedding_function=TEST_EMBEDDING
+    )
     e._phase1_enable_index_jobs = True
     return e
 
@@ -37,7 +39,9 @@ def test_phase5_enqueue_coalesces_pending_jobs(eng):
 
     rows = eng.meta_sqlite.list_index_jobs(namespace=ns, limit=2000)
     pending = [r for r in rows if r.status == "PENDING"]
-    assert len(pending) == 1, "coalescing should collapse multiple PENDING enqueues into one row"
+    assert len(pending) == 1, (
+        "coalescing should collapse multiple PENDING enqueues into one row"
+    )
 
     # It should be one of the submitted job ids (implementation may keep the first or last depending on coalesce strategy)
     assert pending[0].job_id in set(job_ids)

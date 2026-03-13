@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 import json
@@ -7,7 +6,6 @@ from typing import Any, Dict, Iterable, Optional
 import pytest
 import requests
 import websocket  # pip install websocket-client
-
 
 
 from fastapi.testclient import TestClient
@@ -22,15 +20,35 @@ _SAMPLE_CHANGESET: tuple[ChangeEvent, ...] = (
         seq=1,
         op="node.upsert",
         ts_unix_ms=1700000000001,
-        entity={"kind": "node", "id": "conv-node-1", "kg_graph_type": "conversation", "url": None},
-        payload={"id": "conv-node-1", "label": "User turn 1", "type": "message", "props": {"role": "user", "text": "Hello"}},
+        entity={
+            "kind": "node",
+            "id": "conv-node-1",
+            "kg_graph_type": "conversation",
+            "url": None,
+        },
+        payload={
+            "id": "conv-node-1",
+            "label": "User turn 1",
+            "type": "message",
+            "props": {"role": "user", "text": "Hello"},
+        },
     ),
     ChangeEvent(
         seq=2,
         op="node.upsert",
         ts_unix_ms=1700000000002,
-        entity={"kind": "node", "id": "conv-node-2", "kg_graph_type": "conversation", "url": None},
-        payload={"id": "conv-node-2", "label": "Assistant turn 1", "type": "message", "props": {"role": "assistant", "text": "Hi there"}},
+        entity={
+            "kind": "node",
+            "id": "conv-node-2",
+            "kg_graph_type": "conversation",
+            "url": None,
+        },
+        payload={
+            "id": "conv-node-2",
+            "label": "Assistant turn 1",
+            "type": "message",
+            "props": {"role": "assistant", "text": "Hi there"},
+        },
         run_id="sample-run-1",
         step_id="step-1",
     ),
@@ -38,8 +56,19 @@ _SAMPLE_CHANGESET: tuple[ChangeEvent, ...] = (
         seq=3,
         op="edge.upsert",
         ts_unix_ms=1700000000003,
-        entity={"kind": "edge", "id": "conv-edge-1", "kg_graph_type": "conversation", "url": None},
-        payload={"id": "conv-edge-1", "source": "conv-node-1", "target": "conv-node-2", "type": "replies_to", "props": {}},
+        entity={
+            "kind": "edge",
+            "id": "conv-edge-1",
+            "kg_graph_type": "conversation",
+            "url": None,
+        },
+        payload={
+            "id": "conv-edge-1",
+            "source": "conv-node-1",
+            "target": "conv-node-2",
+            "type": "replies_to",
+            "props": {},
+        },
         run_id="sample-run-1",
         step_id="step-1",
     ),
@@ -47,8 +76,17 @@ _SAMPLE_CHANGESET: tuple[ChangeEvent, ...] = (
         seq=4,
         op="doc.upsert",
         ts_unix_ms=1700000000004,
-        entity={"kind": "doc_node", "id": "conv-doc-1", "kg_graph_type": "conversation", "url": "doc://conversation/sample-1"},
-        payload={"id": "conv-doc-1", "title": "Conversation sample 1", "text": "Hello\nHi there"},
+        entity={
+            "kind": "doc_node",
+            "id": "conv-doc-1",
+            "kg_graph_type": "conversation",
+            "url": "doc://conversation/sample-1",
+        },
+        payload={
+            "id": "conv-doc-1",
+            "title": "Conversation sample 1",
+            "text": "Hello\nHi there",
+        },
         run_id="sample-run-1",
         step_id="step-2",
     ),
@@ -56,8 +94,17 @@ _SAMPLE_CHANGESET: tuple[ChangeEvent, ...] = (
         seq=5,
         op="search_index.upsert",
         ts_unix_ms=1700000000005,
-        entity={"kind": "search_index", "id": "conv-index-1", "kg_graph_type": "conversation", "url": None},
-        payload={"id": "conv-index-1", "text": "hello hi there", "doc_id": "conv-doc-1"},
+        entity={
+            "kind": "search_index",
+            "id": "conv-index-1",
+            "kg_graph_type": "conversation",
+            "url": None,
+        },
+        payload={
+            "id": "conv-index-1",
+            "text": "hello hi there",
+            "doc_id": "conv-doc-1",
+        },
         run_id="sample-run-1",
         step_id="step-2",
     ),
@@ -122,7 +169,9 @@ def _load_filtered_events(
 
 
 @pytest.mark.integration
-def test_replay_oplog_broadcasts_to_websocket(tmp_path: Path, replay_oplog_path: Path) -> None:
+def test_replay_oplog_broadcasts_to_websocket(
+    tmp_path: Path, replay_oplog_path: Path
+) -> None:
     """
     End-to-end: replay JSONL -> POST /ingest -> WS /changes/ws receives.
 
@@ -161,9 +210,11 @@ def test_replay_oplog_broadcasts_to_websocket(tmp_path: Path, replay_oplog_path:
 
     assert [e["seq"] for e in received] == [e["seq"] for e in expected_events]
     assert all(
-        (e.get("entity") or {}).get("kg_graph_type") == "conversation"
-        for e in received
-    ), f"Received non-conversation events: {[ (e.get('entity') or {}).get('kg_graph_type') for e in received ]}"
+        (e.get("entity") or {}).get("kg_graph_type") == "conversation" for e in received
+    ), (
+        f"Received non-conversation events: {[(e.get('entity') or {}).get('kg_graph_type') for e in received]}"
+    )
+
 
 @pytest.mark.manual
 def test_replay_oplog_to_real_bridge(replay_oplog_path: Path):
@@ -214,6 +265,5 @@ def test_replay_oplog_to_real_bridge(replay_oplog_path: Path):
     assert received, "No events received from websocket"
 
     assert any(
-        (e.get("entity") or {}).get("kg_graph_type") == "conversation"
-        for e in received
+        (e.get("entity") or {}).get("kg_graph_type") == "conversation" for e in received
     )

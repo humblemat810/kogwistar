@@ -1,6 +1,9 @@
 # shortids.py
 from __future__ import annotations
-import json, hashlib, pathlib, re
+import json
+import hashlib
+import pathlib
+import re
 from typing import Any, Iterable
 from contextvars import ContextVar
 
@@ -9,7 +12,10 @@ run_id_ctx: ContextVar[str] = ContextVar("run_id", default="anonymous")
 
 from contextlib import contextmanager
 
-def token_to_run_id(jwt_token: str) -> str: return jwt_token
+
+def token_to_run_id(jwt_token: str) -> str:
+    return jwt_token
+
 
 @contextmanager
 def run_id_scope(token: str):
@@ -20,18 +26,27 @@ def run_id_scope(token: str):
         run_id_ctx.reset(tok)
 
 
-def set_current_token(jwt_token: str) -> None: run_id_ctx.set(token_to_run_id(jwt_token))
+def set_current_token(jwt_token: str) -> None:
+    run_id_ctx.set(token_to_run_id(jwt_token))
+
 
 class ShortIdMapper:
     SHORT_PREFIX = "<sid>"
-    SHORT_RE     = re.compile(r"^<sid>[0-9]+$")
+    SHORT_RE = re.compile(r"^<sid>[0-9]+$")
 
     # Graph-focused id fields
     SCALAR_ID_KEYS: tuple[str, ...] = (
-        "id", "doc_id", "node_id", "edge_id", "edge_endpoint_id"
+        "id",
+        "doc_id",
+        "node_id",
+        "edge_id",
+        "edge_endpoint_id",
     )
-    LIST_ID_KEYS:   tuple[str, ...] = (
-        "source_ids", "target_ids", "source_edge_ids", "target_edge_ids"
+    LIST_ID_KEYS: tuple[str, ...] = (
+        "source_ids",
+        "target_ids",
+        "source_edge_ids",
+        "target_edge_ids",
     )
 
     def __init__(self, run_id: str, root_dir: str = "./.shortids"):
@@ -62,7 +77,9 @@ class ShortIdMapper:
     def set_obj_max_depth(self, depth: int) -> None:
         self.obj_max_depth = max(0, int(depth))
 
-    def set_id_keys(self, scalars: Iterable[str] | None = None, lists: Iterable[str] | None = None) -> None:
+    def set_id_keys(
+        self, scalars: Iterable[str] | None = None, lists: Iterable[str] | None = None
+    ) -> None:
         if scalars is not None:
             self.SCALAR_ID_KEYS = tuple(scalars)
         if lists is not None:
@@ -136,26 +153,33 @@ class ShortIdMapper:
         return obj
 
     def _val_l2s(self, v: Any) -> Any:
-        if isinstance(v, str): return self.l2s_id(v)
-        if isinstance(v, list): return [self._val_l2s(x) for x in v]
+        if isinstance(v, str):
+            return self.l2s_id(v)
+        if isinstance(v, list):
+            return [self._val_l2s(x) for x in v]
         return v
 
     def _list_l2s(self, v: Any) -> Any:
-        if isinstance(v, list): return [self._val_l2s(x) for x in v]
+        if isinstance(v, list):
+            return [self._val_l2s(x) for x in v]
         return v
 
     def _val_s2l(self, v: Any) -> Any:
-        if isinstance(v, str): return self.s2l_id(v)
-        if isinstance(v, list): return [self._val_s2l(x) for x in v]
+        if isinstance(v, str):
+            return self.s2l_id(v)
+        if isinstance(v, list):
+            return [self._val_s2l(x) for x in v]
         return v
 
     def _list_s2l(self, v: Any) -> Any:
-        if isinstance(v, list): return [self._val_s2l(x) for x in v]
+        if isinstance(v, list):
+            return [self._val_s2l(x) for x in v]
         return v
 
     # --- doc (JSON string) helpers: only targeted keys are touched ---
     def l2s_doc(self, in_doc_str: str) -> str:
-        if not isinstance(in_doc_str, str): return in_doc_str
+        if not isinstance(in_doc_str, str):
+            return in_doc_str
         try:
             data = json.loads(in_doc_str)
         except Exception:
@@ -164,7 +188,8 @@ class ShortIdMapper:
         return json.dumps(data2, ensure_ascii=False)
 
     def s2l_doc(self, in_doc_str: str) -> str:
-        if not isinstance(in_doc_str, str): return in_doc_str
+        if not isinstance(in_doc_str, str):
+            return in_doc_str
         try:
             data = json.loads(in_doc_str)
         except Exception:
@@ -174,15 +199,20 @@ class ShortIdMapper:
 
     # --- plain objects (dict/list) ---
     def l2s_obj(self, in_obj: Any) -> Any:
-        if hasattr(in_obj, "model_dump"): in_obj = in_obj.model_dump()
+        if hasattr(in_obj, "model_dump"):
+            in_obj = in_obj.model_dump()
         return self._walk_ids_l2s(in_obj, self.obj_max_depth - 1)
 
     def s2l_obj(self, in_obj: Any) -> Any:
-        if hasattr(in_obj, "model_dump"): in_obj = in_obj.model_dump()
+        if hasattr(in_obj, "model_dump"):
+            in_obj = in_obj.model_dump()
         return self._walk_ids_s2l(in_obj, self.obj_max_depth - 1)
+
 
 # Per-run registry + required top-level API
 _MAPPERS: dict[str, ShortIdMapper] = {}
+
+
 def _mapper_for_current_run() -> ShortIdMapper:
     rid = run_id_ctx.get()
     m = _MAPPERS.get(rid)
@@ -191,14 +221,37 @@ def _mapper_for_current_run() -> ShortIdMapper:
         _MAPPERS[rid] = m
     return m
 
-def set_shortid_obj_depth(depth: int) -> None: _mapper_for_current_run().set_obj_max_depth(depth)
-def set_shortid_keys(scalars: Iterable[str] | None = None, lists: Iterable[str] | None = None) -> None:
+
+def set_shortid_obj_depth(depth: int) -> None:
+    _mapper_for_current_run().set_obj_max_depth(depth)
+
+
+def set_shortid_keys(
+    scalars: Iterable[str] | None = None, lists: Iterable[str] | None = None
+) -> None:
     _mapper_for_current_run().set_id_keys(scalars, lists)
 
+
 # === required function signatures ===
-def s2l_doc(in_doc_str): return _mapper_for_current_run().s2l_doc(in_doc_str)
-def l2s_doc(in_doc_str): return _mapper_for_current_run().l2s_doc(in_doc_str)
-def l2s_id(in_id):       return _mapper_for_current_run().l2s_id(in_id)
-def s2l_id(in_id):       return _mapper_for_current_run().s2l_id(in_id)
-def s2l_obj(in_obj):     return _mapper_for_current_run().s2l_obj(in_obj)
-def l2s_obj(in_obj):     return _mapper_for_current_run().l2s_obj(in_obj)
+def s2l_doc(in_doc_str):
+    return _mapper_for_current_run().s2l_doc(in_doc_str)
+
+
+def l2s_doc(in_doc_str):
+    return _mapper_for_current_run().l2s_doc(in_doc_str)
+
+
+def l2s_id(in_id):
+    return _mapper_for_current_run().l2s_id(in_id)
+
+
+def s2l_id(in_id):
+    return _mapper_for_current_run().s2l_id(in_id)
+
+
+def s2l_obj(in_obj):
+    return _mapper_for_current_run().s2l_obj(in_obj)
+
+
+def l2s_obj(in_obj):
+    return _mapper_for_current_run().l2s_obj(in_obj)

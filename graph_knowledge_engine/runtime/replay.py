@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, Tuple, Optional, List
+from typing import Any, Dict, List
 
 State = Dict[str, Any]
 
@@ -18,6 +18,7 @@ def load_checkpoint(*, conversation_engine: Any, run_id: str, step_seq: int) -> 
     if md.get("entity_type") != "workflow_checkpoint":
         raise ValueError("Node is not a workflow_checkpoint")
     return json.loads(md["state_json"])
+
 
 def _apply_state_update(state: State, state_update: List[Any]) -> None:
     """
@@ -89,7 +90,9 @@ def replay_to(*, conversation_engine: Any, run_id: str, target_step_seq: int) ->
         where={"$and": [{"entity_type": "workflow_step_exec"}, {"run_id": run_id}]},
         limit=200000,
     )
-    steps_sorted = sorted(steps, key=lambda n: int((n.metadata or {}).get("step_seq", 0)))
+    steps_sorted = sorted(
+        steps, key=lambda n: int((n.metadata or {}).get("step_seq", 0))
+    )
 
     for n in steps_sorted:
         seq = int((n.metadata or {}).get("step_seq", 0))
@@ -115,4 +118,3 @@ def replay_to(*, conversation_engine: Any, run_id: str, target_step_seq: int) ->
         #     state.setdefault("_rt_step_exec", {})[str(seq)] = {"op": op, "result": res}
 
     return state
-

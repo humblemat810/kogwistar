@@ -1,8 +1,20 @@
 from dataclasses import asdict, dataclass, field
 
-from graph_knowledge_engine.engine_core.models import BaseNodeMetadata, ContextCost, Edge, Node
+from graph_knowledge_engine.engine_core.models import (
+    BaseNodeMetadata,
+    ContextCost,
+    Edge,
+    Node,
+)
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationInfo,
+    field_validator,
+    model_validator,
+)
 from typing import Any, ClassVar, Dict, List, Literal, Self, Tuple
 
 # --- Phase 1: chat-edge intent classification (causality) ---
@@ -10,29 +22,26 @@ from typing import Any, ClassVar, Dict, List, Literal, Self, Tuple
 CONVERSATION_EDGE_CAUSAL_TYPE_BY_RELATION: dict[str, str] = {
     # Canonical chain
     "next_turn": "chain",
-
     # Tool / retrieval wiring (non-causal references)
     "tool_call_entry_point": "reference",
     "run_result": "reference",
     "has_memory_context": "reference",
     "has_knowledge_context": "reference",
-
     # Summaries describe past, but do not causally "create" the past
     "summarizes": "summary",
-
     # Default catch-all for chat edges
 }
 
+
 @dataclass
 class MetaFromLastSummary:
-
     prev_node_char_distance_from_last_summary: int
     prev_node_distance_from_last_summary: int
     # distances are rough estimate, also serve as a stub for injection if accounting
     # calculations are done in the process and the two distances indicates how to inject
     # Do not rely on the two to make strict decisions
 
-    tail_turn_index: int=0  # works more like a node seq number
+    tail_turn_index: int = 0  # works more like a node seq number
 
     # Back-compat shim: parts of the workflow/test stack treat this like a Pydantic model.
     def model_dump(self, *_args, **_kwargs) -> dict[str, int]:
@@ -88,7 +97,11 @@ class ContextSnapshotMetadata(BaseModel):
         if isinstance(cost_val, dict):
             cost = ContextCost(
                 char_count=int(cost_val.get("char_count", 0) or 0),
-                token_count=(None if cost_val.get("token_count", None) is None else int(cost_val["token_count"])),
+                token_count=(
+                    None
+                    if cost_val.get("token_count", None) is None
+                    else int(cost_val["token_count"])
+                ),
             )
         else:
             cost = ContextCost.from_flat_metadata(data, prefix="cost")
@@ -137,7 +150,9 @@ class EvidencePackDigest(BaseModel):
 
     node_ids: list[str] = Field(default_factory=list)
     edge_ids: list[str] = Field(default_factory=list)
-    depth: str = Field("shallow", description="Materialization depth hint (e.g. shallow/deep)")
+    depth: str = Field(
+        "shallow", description="Materialization depth hint (e.g. shallow/deep)"
+    )
     max_chars_per_item: int = Field(0, ge=0)
     max_total_chars: int = Field(0, ge=0)
     evidence_pack_hash: str | None = None
@@ -146,17 +161,21 @@ class EvidencePackDigest(BaseModel):
 
 
 @dataclass(frozen=True)
-class AddTurnResult():
+class AddTurnResult:
     user_turn_node_id: str
-    response_turn_node_id: str | None # if add system node with this method, no response required but optional
+    response_turn_node_id: (
+        str | None
+    )  # if add system node with this method, no response required but optional
     turn_index: int
     relevant_kg_node_ids: list[str] = field(default_factory=list)
     relevant_kg_edge_ids: list[str] = field(default_factory=list)
     pinned_kg_pointer_node_ids: list[str] = field(default_factory=list)
     pinned_kg_edge_ids: list[str] = field(default_factory=list)
-    memory_context_node_id: str |None = None
+    memory_context_node_id: str | None = None
     memory_context_edge_ids: list[str] = field(default_factory=list)
-    prev_turn_meta_summary : MetaFromLastSummary = field(default_factory=MetaFromLastSummary)
+    prev_turn_meta_summary: MetaFromLastSummary = field(
+        default_factory=MetaFromLastSummary
+    )
 
 
 class ConversationNodeMetadata(BaseNodeMetadata):
@@ -169,6 +188,7 @@ class ConversationNodeMetadata(BaseNodeMetadata):
 
     This keeps node identity stable and avoids accidental "rewriting the past" via node updates.
     """
+
     level_from_root: int = Field(..., ge=0)
     entity_type: str = Field("conversation_node")
 
@@ -178,12 +198,18 @@ class ConversationNodeMetadata(BaseNodeMetadata):
     def _forbid_summary_distance_fields(self) -> Self:
         # These must never appear on nodes. Accounting belongs to edges.
         # extra = self.model_fields_set or {}
-        forbidden = {"char_distance_from_last_summary", "turn_distance_from_last_summary",
-                     "prev_node_char_distance_from_last_summary", "prev_node_distance_from_last_summary",
-                     "prev_turn_meta_summary"}
+        forbidden = {
+            "char_distance_from_last_summary",
+            "turn_distance_from_last_summary",
+            "prev_node_char_distance_from_last_summary",
+            "prev_node_distance_from_last_summary",
+            "prev_turn_meta_summary",
+        }
         present = forbidden.intersection(self.model_fields_set)
         if present:
-            raise ValueError(f"ConversationNodeMetadata must not contain summary-distance fields: {sorted(present)}")
+            raise ValueError(
+                f"ConversationNodeMetadata must not contain summary-distance fields: {sorted(present)}"
+            )
         return self
 
 
@@ -193,15 +219,19 @@ class ConversationEdgeMetadata(BaseNodeMetadata):
     Phase 1 introduces `causal_type` to make edge intent explicit and enforceable.
     When absent, it can be inferred from `relation` via a mapping.
     """
-    causal_type: None | Literal[
-        "chain",
-        "dependency",
-        "reuse",
-        "annotation",
-        "summary",
-        "reference",
-        "internal",
-    ] = None
+
+    causal_type: (
+        None
+        | Literal[
+            "chain",
+            "dependency",
+            "reuse",
+            "annotation",
+            "summary",
+            "reference",
+            "internal",
+        ]
+    ) = None
 
     # Accounting currently lives on edges (canonical counters will be normalized in Phase 2).
     char_distance_from_last_summary: None | int = None
@@ -210,14 +240,17 @@ class ConversationEdgeMetadata(BaseNodeMetadata):
     model_config = ConfigDict(extra="allow")
 
 
-
-
 class ConversationRoleMixin(BaseModel):
     """Mixin to handle conversation roles and context"""
-    role: None| Literal["user", "assistant", "system", "tool"] = Field(None, description="Role in conversation")
-    turn_index: None|int = Field(None, description="Sequential turn index")
-    conversation_id: None|str = Field(None, description="Conversation thread ID")
-    user_id: None|str = Field(None, description="User ID (cross-conversation memory scope)")
+
+    role: None | Literal["user", "assistant", "system", "tool"] = Field(
+        None, description="Role in conversation"
+    )
+    turn_index: None | int = Field(None, description="Sequential turn index")
+    conversation_id: None | str = Field(None, description="Conversation thread ID")
+    user_id: None | str = Field(
+        None, description="User ID (cross-conversation memory scope)"
+    )
 
     @model_validator(mode="before")
     @classmethod
@@ -248,25 +281,28 @@ class ConversationAIResponse(BaseModel):
     """Standard response model for AI conversation responses."""
 
     text: str = Field(default="", description="Assistant text response to the user.")
-    llm_decision_need_summary: bool = Field(default=False, description="If True, request summarization this turn.")
+    llm_decision_need_summary: bool = Field(
+        default=False, description="If True, request summarization this turn."
+    )
 
     used_kg_node_ids: List[str] = Field(default_factory=list)
     used_memory_node_ids: List[str] = Field(default_factory=list)
     projected_conversation_node_ids: List[str] = Field(default_factory=list)
     projected_conversation_edge_ids: List[str] = Field(default_factory=list)
-    run_trace_node_id: None |str = None
-    response_node_id: str|None =  None
+    run_trace_node_id: None | str = None
+    response_node_id: str | None = None
     meta: Dict[str, Any] = Field(default_factory=dict)
 
 
-class ConversationEdge( Edge):
+class ConversationEdge(Edge):
     """
     Specialized edge for conversation links, extending the base **knowledge graph**.
 
     Used for `next_turn` flow, `references` to knowledge, and `summarizes` relationships.
     Inherits provenance features from `Edge`.
     """
-    metadata: dict#ConversationNodeMetadata
+
+    metadata: dict  # ConversationNodeMetadata
     id_kind: ClassVar[str] = "conversation.edge"
     # id_policy: ClassVar[Literal["event", "canonical"]] = "canonical"
     # id_kind: ClassVar[str] = "model"  # override per subclass if you want stable separation
@@ -276,13 +312,17 @@ class ConversationEdge( Edge):
         Subclasses with id_policy="canonical" MUST override this.
         Should return stable, minimal identity parts.
         """
-        return (self.summary, str(self.doc_id),
-                str(self.source_ids), str(self.target_ids),
-                str(self.source_edge_ids), str(self.target_edge_ids),
-                str(self.metadata.get("entity_type")))
+        return (
+            self.summary,
+            str(self.doc_id),
+            str(self.source_ids),
+            str(self.target_ids),
+            str(self.source_edge_ids),
+            str(self.target_edge_ids),
+            str(self.metadata.get("entity_type")),
+        )
 
-
-    @field_validator('metadata')
+    @field_validator("metadata")
     def check_fields(cls, v):
         # convertible to ConversationNodeMetadata but never materialize the conversion. just a checker model
         try:
@@ -290,6 +330,7 @@ class ConversationEdge( Edge):
         except Exception as _e:
             raise
         return v
+
     def get_extra_update(self) -> dict:
         try:
             updates = {
@@ -308,24 +349,33 @@ class ConversationNode(ConversationRoleMixin, Node):
     as first-class citizens in the graph. It inherits the provenance capabilities of `Node`
     but adds conversation-specific metadata (role, turn_index, etc.).
     """
+
     # id_policy: ClassVar[Literal["event", "canonical"]] = "canonical"
     # id_kind: ClassVar[str] = "model"  # override per subclass if you want stable separation
     id_kind: ClassVar[str] = "conversation.node"
+
     def identity_key(self) -> Tuple[str, ...]:
         # from conversation_orchestrator import get_id_for_conversation_turn
         """
         Subclasses with id_policy="canonical" MUST override this.
         Should return stable, minimal identity parts.
         """
-        return (self.id_kind, json.dumps(self.user_id), json.dumps(self.conversation_id), self.summary,
-                                            json.dumps(self.turn_index), json.dumps(self.role), json.dumps(self.metadata.get("entity_type")),
-                                            json.dumps(self.metadata.get("in_conversation_chain")))
+        return (
+            self.id_kind,
+            json.dumps(self.user_id),
+            json.dumps(self.conversation_id),
+            self.summary,
+            json.dumps(self.turn_index),
+            json.dumps(self.role),
+            json.dumps(self.metadata.get("entity_type")),
+            json.dumps(self.metadata.get("in_conversation_chain")),
+        )
         # return self.summary, str(self.doc_id), str(self.user_id), str(self.conversation_id), str(self.metadata.get("entity_type"))
 
     # @model_validator(mode="after")
     # def _ensure_id(self) -> Self:
     #     if self.node_id is not None:
-    #         return self        
+    #         return self
 
     #     if self.id_policy == "event":
     #         self.id = str(new_id_str())
@@ -336,8 +386,9 @@ class ConversationNode(ConversationRoleMixin, Node):
     #     self.node_id = stable_id(self.id_kind, *key)
     #     return self
 
-    metadata: dict#ConversationNodeMetadata
-    @field_validator('metadata')
+    metadata: dict  # ConversationNodeMetadata
+
+    @field_validator("metadata")
     def check_fields(cls, v):
         # convertible to ConversationNodeMetadata but never materialize the conversion. just a checker model
         try:
@@ -345,12 +396,17 @@ class ConversationNode(ConversationRoleMixin, Node):
         except Exception as _e:
             raise
         return v
-    def get_incoming_turn_edge(self, engine)-> "ConversationEdge | None":
+
+    def get_incoming_turn_edge(self, engine) -> "ConversationEdge | None":
         from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
+
         engine2: GraphKnowledgeEngine = engine
-        edges = engine2.query_edges(where={"relation": "next_turn", "target_id": self.id})
+        edges = engine2.query_edges(
+            where={"relation": "next_turn", "target_id": self.id}
+        )
         assert len(edges) <= 1
         return edges[0] if edges else None
+
     def get_extra_update(self) -> dict:
         try:
             updates = {
@@ -368,8 +424,10 @@ class RetrievalResult:
 
 
 @dataclass
-class BaseToolResult():
-    node_id_entry: str | None # if a tool has created 1 or network of connected node, an entry point of reference
+class BaseToolResult:
+    node_id_entry: (
+        str | None
+    )  # if a tool has created 1 or network of connected node, an entry point of reference
 
 
 @dataclass(kw_only=True)
@@ -391,13 +449,15 @@ class MemoryPinResult(BaseToolResult):
 
 
 class FilteringResult(BaseModel):
-    node_ids: list[str] = Field(description = 'list of relevant node ids')
-    edge_ids: list[str] = Field(description = 'list of relevant edge ids')
+    node_ids: list[str] = Field(description="list of relevant node ids")
+    edge_ids: list[str] = Field(description="list of relevant edge ids")
 
 
 class FilteringResponse(BaseModel):
-    reasoning: str = Field(description = "workspace for reasoning relevance filtering")
-    relevant_ids: FilteringResult = Field(..., description = "a list of relevant node and edge ids")
+    reasoning: str = Field(description="workspace for reasoning relevance filtering")
+    relevant_ids: FilteringResult = Field(
+        ..., description="a list of relevant node and edge ids"
+    )
 
 
 @dataclass(kw_only=True)
@@ -405,14 +465,17 @@ class KnowledgeRetrievalResult(BaseToolResult):
     candidate: RetrievalResult
     selected: FilteringResult | None
     reasoning: str
+
     def get_filtered_candidate(self):
         if self.selected:
             set_node_ids = set(self.selected.node_ids)
             set_edge_ids = set(self.selected.node_ids)
             return RetrievalResult(
                 nodes=[i for i in self.candidate.nodes if i in set_node_ids],
-                edges=[i for i in self.candidate.edges if i in set_edge_ids]
+                edges=[i for i in self.candidate.edges if i in set_edge_ids],
             )
 
         else:
-            raise Exception('selected field cannot be None when calling get_filtered_candidate')
+            raise Exception(
+                "selected field cannot be None when calling get_filtered_candidate"
+            )

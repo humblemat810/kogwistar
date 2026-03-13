@@ -1,7 +1,11 @@
 from graph_knowledge_engine.conversation.models import ConversationNode
 from graph_knowledge_engine.conversation.service import ConversationService
 from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
-from graph_knowledge_engine.engine_core.models import Grounding, Span, MentionVerification
+from graph_knowledge_engine.engine_core.models import (
+    Grounding,
+    Span,
+    MentionVerification,
+)
 
 
 def test_conversation_pin_knowledge_reference_is_noop(tmp_path):
@@ -10,7 +14,9 @@ def test_conversation_pin_knowledge_reference_is_noop(tmp_path):
     A second attempt to pin the same pointer must be a no-op (not error, not update).
     """
     conv_dir = tmp_path / "conv"
-    eng = GraphKnowledgeEngine(persist_directory=str(conv_dir), kg_graph_type="conversation")
+    eng = GraphKnowledgeEngine(
+        persist_directory=str(conv_dir), kg_graph_type="conversation"
+    )
 
     conversation_id = "conv:test_conversation_pin_knowledge_reference_is_noop"
     user_id = "u1"
@@ -34,7 +40,9 @@ def test_conversation_pin_knowledge_reference_is_noop(tmp_path):
         context_after="",
         chunk_id=None,
         source_cluster_id=None,
-        verification=MentionVerification(method="human", is_verified=True, score=1.0, notes="test"),
+        verification=MentionVerification(
+            method="human", is_verified=True, score=1.0, notes="test"
+        ),
     )
 
     nid = "kr:pointer:1"
@@ -67,5 +75,5 @@ def test_conversation_pin_knowledge_reference_is_noop(tmp_path):
     eng.add_node(n2)
 
     nodes = eng.get_nodes(nid)
-    assert len(nodes) ==1
+    assert len(nodes) == 1
     assert nodes[0].summary == "ORIGINAL"

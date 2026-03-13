@@ -38,7 +38,7 @@ class SearchIndexService(NamespaceProxy):
             conn.close()
 
     def upsert_entries(self, items: list[IndexingItem]) -> None:
-        
+
         conn = self._connect()
         try:
             cur = conn.cursor()
@@ -118,8 +118,10 @@ class SearchIndexService(NamespaceProxy):
         finally:
             conn.close()
 
-    def search_hybrid(self, q: str, limit: int = 10, resolve_node: bool = False) -> dict[str, Any]:
-        
+    def search_hybrid(
+        self, q: str, limit: int = 10, resolve_node: bool = False
+    ) -> dict[str, Any]:
+
         conn = self._connect()
         try:
             cur = conn.cursor()
@@ -144,10 +146,13 @@ class SearchIndexService(NamespaceProxy):
             )
             fts_rows = cur.fetchall()
 
-            vector_results = self._e.backend.node_index_query(
-                query_texts=[q],
-                n_results=limit,
-            ) or {}
+            vector_results = (
+                self._e.backend.node_index_query(
+                    query_texts=[q],
+                    n_results=limit,
+                )
+                or {}
+            )
 
             fts_norm = self._normalize_fts_rows(fts_rows)
             vec_norm = self._normalize_vector_results(vector_results)
@@ -166,8 +171,8 @@ class SearchIndexService(NamespaceProxy):
                     "vec_score": 0.0,
                 }
 
-            vec_ids = (vector_results.get("ids") or [[]])
-            vec_metas = (vector_results.get("metadatas") or [[]])
+            vec_ids = vector_results.get("ids") or [[]]
+            vec_metas = vector_results.get("metadatas") or [[]]
 
             if vec_ids and vec_ids[0] and vec_metas and vec_metas[0]:
                 for idx, _ in enumerate(vec_ids[0]):
@@ -201,7 +206,9 @@ class SearchIndexService(NamespaceProxy):
             for row in combined.values():
                 row["hybrid_score"] = 0.6 * row["fts_score"] + 0.4 * row["vec_score"]
 
-            ranked = sorted(combined.values(), key=lambda x: x["hybrid_score"], reverse=True)
+            ranked = sorted(
+                combined.values(), key=lambda x: x["hybrid_score"], reverse=True
+            )
 
             if resolve_node:
                 return self._resolve_nodes(ranked[:limit], q)
@@ -231,11 +238,18 @@ class SearchIndexService(NamespaceProxy):
         return out
 
     def _normalize_vector_results(self, vr: dict[str, Any]) -> dict[str, float]:
-        ids = (vr.get("ids") or [[]])
-        metas = (vr.get("metadatas") or [[]])
-        distances = (vr.get("distances") or [[]])
+        ids = vr.get("ids") or [[]]
+        metas = vr.get("metadatas") or [[]]
+        distances = vr.get("distances") or [[]]
 
-        if not ids or not ids[0] or not metas or not metas[0] or not distances or not distances[0]:
+        if (
+            not ids
+            or not ids[0]
+            or not metas
+            or not metas[0]
+            or not distances
+            or not distances[0]
+        ):
             return {}
 
         raw = [float(d) for d in distances[0]]
@@ -265,7 +279,9 @@ class SearchIndexService(NamespaceProxy):
 
         return out
 
-    def _resolve_nodes(self, ranked_rows: list[dict[str, Any]], q: str) -> dict[str, Any]:
+    def _resolve_nodes(
+        self, ranked_rows: list[dict[str, Any]], q: str
+    ) -> dict[str, Any]:
         unique_node_ids: list[str] = []
         seen: set[str] = set()
 
@@ -275,10 +291,13 @@ class SearchIndexService(NamespaceProxy):
                 seen.add(nid)
                 unique_node_ids.append(nid)
 
-        res = self._e.backend.node_get(
-            ids=unique_node_ids,
-            include=["documents", "metadatas"],
-        ) or {}
+        res = (
+            self._e.backend.node_get(
+                ids=unique_node_ids,
+                include=["documents", "metadatas"],
+            )
+            or {}
+        )
 
         rows_by_node_id: dict[str, dict[str, Any]] = {}
         res_ids = res.get("ids") or []

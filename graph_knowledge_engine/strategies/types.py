@@ -1,9 +1,26 @@
-
-from typing import List, Tuple, Any, Dict, runtime_checkable, Protocol, Sequence, Optional, Callable
+from typing import (
+    List,
+    Tuple,
+    Any,
+    Dict,
+    runtime_checkable,
+    Protocol,
+    Optional,
+)
 from os import PathLike
 from pydantic import BaseModel
-from ..engine_core.models import Node, Edge,AdjudicationQuestionCode, AdjudicationVerdict, AdjudicationTarget, LLMMergeAdjudication, Span
+from ..engine_core.models import (
+    Node,
+    Edge,
+    AdjudicationQuestionCode,
+    AdjudicationVerdict,
+    AdjudicationTarget,
+    LLMMergeAdjudication,
+    Span,
+)
 from ..typing_interfaces import StrategyEngineLike as EngineLike
+
+
 # ---------- Proposer ----------
 @runtime_checkable
 class MergeCandidateProposer(Protocol):
@@ -20,9 +37,7 @@ class MergeCandidateProposer(Protocol):
 
     # Batch proposal within a document: same-kind pairs (node↔node & edge↔edge)
     def same_kind_in_doc(
-        self,
-        engine: "EngineLike",
-        doc_id: str, kind: str
+        self, engine: "EngineLike", doc_id: str, kind: str
     ) -> List[Tuple[Any, Any]]: ...
 
     # Batch proposal within a document: cross-kind pairs (node↔edge)
@@ -36,9 +51,10 @@ class MergeCandidateProposer(Protocol):
 # ---------- Adjudicator ----------
 @runtime_checkable
 class IPairAdjudicationTrace(Protocol):
-    def adjudication(self) ->LLMMergeAdjudication | None: ...
-    def raw(self) ->object | None: ...
-    def parsing_error(self) ->str | None: ...
+    def adjudication(self) -> LLMMergeAdjudication | None: ...
+    def raw(self) -> object | None: ...
+    def parsing_error(self) -> str | None: ...
+
 
 @runtime_checkable
 class IAdjudicator(Protocol):
@@ -46,20 +62,28 @@ class IAdjudicator(Protocol):
         self,
         pairs: List[Tuple["Node", "Node"]],
         question_code: "AdjudicationQuestionCode" = AdjudicationQuestionCode.SAME_ENTITY,
-    )-> list[Any] | tuple[list[Any], str] | tuple[list[None], str]: ...# 
-    def adjudicate_pair(self, left: AdjudicationTarget, right: AdjudicationTarget, question: str)-> Dict[Any, Any] | BaseModel: ...
-    def adjudicate_merge(self, left_node: Node | Edge, right_node: Node | Edge) -> Dict[Any, Any] | BaseModel:...
-    def adjudicate_pair_trace(self,
+    ) -> list[Any] | tuple[list[Any], str] | tuple[list[None], str]: ...  #
+    def adjudicate_pair(
+        self, left: AdjudicationTarget, right: AdjudicationTarget, question: str
+    ) -> Dict[Any, Any] | BaseModel: ...
+    def adjudicate_merge(
+        self, left_node: Node | Edge, right_node: Node | Edge
+    ) -> Dict[Any, Any] | BaseModel: ...
+    def adjudicate_pair_trace(
+        self,
         left: AdjudicationTarget,
         right: AdjudicationTarget,
         question: str,
         *,
         cache_dir: str | PathLike[str] | None = None,
-    ) -> IPairAdjudicationTrace :...
-    
+    ) -> IPairAdjudicationTrace: ...
+
+
 @runtime_checkable
 class PairAdjudicator(Protocol):
-    def adjudicate(self, engine: "EngineLike", left: Any, right: Any) -> AdjudicationVerdict: ...
+    def adjudicate(
+        self, engine: "EngineLike", left: Any, right: Any
+    ) -> AdjudicationVerdict: ...
 
 
 @runtime_checkable
@@ -75,12 +99,23 @@ class BatchAdjudicator(Protocol):
 # ---------- Merge policy ----------
 @runtime_checkable
 class MergePolicy(Protocol):
-    def commit_merge_target(self, left: AdjudicationTarget, right: AdjudicationTarget, verdict: AdjudicationVerdict) -> str:...
+    def commit_merge_target(
+        self,
+        left: AdjudicationTarget,
+        right: AdjudicationTarget,
+        verdict: AdjudicationVerdict,
+    ) -> str: ...
 
 
 @runtime_checkable
 class CrossKindPolicy(Protocol):
-    def commit(self, engine: "EngineLike", left: Node | Edge, right: Node | Edge, verdict: AdjudicationVerdict) -> str: ...
+    def commit(
+        self,
+        engine: "EngineLike",
+        left: Node | Edge,
+        right: Node | Edge,
+        verdict: AdjudicationVerdict,
+    ) -> str: ...
 
 
 # ---------- Verifier ----------
@@ -99,7 +134,11 @@ class Verifier(Protocol):
         ref: Span,
         *,
         min_ngram: int = 5,
-        weights: Dict[str, float] = {"rapidfuzz": 0.5, "coverage": 0.3, "embedding": 0.2},
+        weights: Dict[str, float] = {
+            "rapidfuzz": 0.5,
+            "coverage": 0.3,
+            "embedding": 0.2,
+        },
         threshold: float = 0.70,
     ) -> Span: ...
     def verify_mentions_for_doc(
@@ -109,7 +148,11 @@ class Verifier(Protocol):
         source_text: Optional[str] = None,
         min_ngram: int = 5,
         threshold: float = 0.70,
-        weights: Dict[str, float] = {"rapidfuzz": 0.5, "coverage": 0.3, "embedding": 0.2},
+        weights: Dict[str, float] = {
+            "rapidfuzz": 0.5,
+            "coverage": 0.3,
+            "embedding": 0.2,
+        },
         update_edges: bool = True,
     ) -> Dict[str, int]: ...
     def verify_mentions_for_items(
@@ -119,5 +162,9 @@ class Verifier(Protocol):
         source_text_by_doc: Optional[Dict[str, str]] = None,
         min_ngram: int = 5,
         threshold: float = 0.70,
-        weights: Dict[str, float] = {"rapidfuzz": 0.5, "coverage": 0.3, "embedding": 0.2},
+        weights: Dict[str, float] = {
+            "rapidfuzz": 0.5,
+            "coverage": 0.3,
+            "embedding": 0.2,
+        },
     ) -> Dict[str, int]: ...

@@ -1,4 +1,3 @@
-import multiprocessing
 import socket
 import time
 from typing import Any, Dict, List
@@ -64,7 +63,8 @@ def running_server() -> Dict[str, Any]:
 
     host = "127.0.0.1"
     port = _pick_free_port()
-    import subprocess, threading
+    import subprocess
+    import threading
     import sys
     from collections import deque
 
@@ -77,7 +77,18 @@ def running_server() -> Dict[str, Any]:
             log_buf.append(line)
 
     proc = subprocess.Popen(
-        [sys.executable, "-m", "uvicorn", app_import, "--host", "127.0.0.1", "--port", str(port), "--log-level", "debug"],
+        [
+            sys.executable,
+            "-m",
+            "uvicorn",
+            app_import,
+            "--host",
+            "127.0.0.1",
+            "--port",
+            str(port),
+            "--log-level",
+            "debug",
+        ],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
@@ -126,7 +137,9 @@ def _dev_token(base_http: str, role: str, ns: str = "docs") -> str:
     ).json()["token"]
 
 
-def test_rollback_doc_node_edge_adjudicate(base_http: str, small_test_docs_nodes_edge_adjudcate):
+def test_rollback_doc_node_edge_adjudicate(
+    base_http: str, small_test_docs_nodes_edge_adjudcate
+):
     """Best-effort cleanup for local iteration."""
     rw_token = _dev_token(base_http, "rw", ns="docs")
     for doc_id in small_test_docs_nodes_edge_adjudcate["docs"]:
@@ -138,7 +151,9 @@ def test_rollback_doc_node_edge_adjudicate(base_http: str, small_test_docs_nodes
 
 
 @pytest.mark.asyncio
-async def test_doc_node_edge_adjudicate(base_http: str, base_mcp: str, small_test_docs_nodes_edge_adjudcate):
+async def test_doc_node_edge_adjudicate(
+    base_http: str, base_mcp: str, small_test_docs_nodes_edge_adjudcate
+):
     """E2E seam test:
 
     1) Upsert a small fixture graph via FastAPI.
@@ -155,7 +170,9 @@ async def test_doc_node_edge_adjudicate(base_http: str, base_mcp: str, small_tes
     rw_token = _dev_token(base_http, "rw", ns="docs")
     ro_token = _dev_token(base_http, "ro", ns="docs")
 
-    def _subset_for_doc(items: List[Dict[str, Any]], doc_id: str) -> List[Dict[str, Any]]:
+    def _subset_for_doc(
+        items: List[Dict[str, Any]], doc_id: str
+    ) -> List[Dict[str, Any]]:
         """Keep only items that have at least one reference for doc_id.
         Also ensure each reference carries 'insertion_method' (server may filter by it)."""
         out: List[Dict[str, Any]] = []
@@ -164,7 +181,7 @@ async def test_doc_node_edge_adjudicate(base_http: str, base_mcp: str, small_tes
             # if not any(r.get("doc_id") == doc_id for r in spans):
             #     continue
             # normalize insertion_method on all refs (don’t change doc_id)
-            
+
             it2 = dict(it)
             new_refs = []
             for r in spans:
@@ -178,6 +195,7 @@ async def test_doc_node_edge_adjudicate(base_http: str, base_mcp: str, small_tes
 
     # --- 1) Upsert one payload per document ---\
     from itertools import islice
+
     for doc_id, content in islice(docs.items(), 1, None):
         payload = {
             "doc_id": doc_id,
@@ -185,9 +203,14 @@ async def test_doc_node_edge_adjudicate(base_http: str, base_mcp: str, small_tes
             "doc_type": "text",
             "insertion_method": insertion_method,
         }
-        r = requests.post(f"{base_http}/api/document", json=payload, headers={"Authorization": f"Bearer {rw_token}"}, timeout=None)
+        r = requests.post(
+            f"{base_http}/api/document",
+            json=payload,
+            headers={"Authorization": f"Bearer {rw_token}"},
+            timeout=None,
+        )
         assert r.ok, f"doc upload failed for {doc_id}: {r.status_code} {r.text}"
-    
+
     for doc_id, content in docs.items():
         n_for_doc = _subset_for_doc(nodes, doc_id)
         e_for_doc = _subset_for_doc(edges, doc_id)
@@ -199,12 +222,23 @@ async def test_doc_node_edge_adjudicate(base_http: str, base_mcp: str, small_tes
             "nodes": n_for_doc,
             "edges": e_for_doc,
         }
-        r = requests.post(f"{base_http}/api/graph/upsert", json=payload, headers={"Authorization": f"Bearer {rw_token}"}, timeout=None)
+        r = requests.post(
+            f"{base_http}/api/graph/upsert",
+            json=payload,
+            headers={"Authorization": f"Bearer {rw_token}"},
+            timeout=None,
+        )
         assert r.ok, f"Upsert failed for {doc_id}: {r.status_code} {r.text}"
 
     # --- RO visibility seam: RO must not see RW-only tools ---
-    async with httpx.AsyncClient(headers={"Authorization": f"Bearer {ro_token}"}) as ro_http:
-        async with streamable_http_client(base_mcp, http_client=ro_http) as (r_read, r_write, _):
+    async with httpx.AsyncClient(
+        headers={"Authorization": f"Bearer {ro_token}"}
+    ) as ro_http:
+        async with streamable_http_client(base_mcp, http_client=ro_http) as (
+            r_read,
+            r_write,
+            _,
+        ):
             async with ClientSession(r_read, r_write) as ro_sess:
                 await ro_sess.initialize()
                 ro_tools = await ro_sess.list_tools()
@@ -214,25 +248,38 @@ async def test_doc_node_edge_adjudicate(base_http: str, base_mcp: str, small_tes
                         f"RO should not see {forbidden}; saw {sorted(ro_names)}"
                     )
     # --- 2) MCP: list tools and run cross-doc adjudication ---
-    async with httpx.AsyncClient(headers={"Authorization": f"Bearer {rw_token}"}, timeout=None) as http_client:
-        async with streamable_http_client(base_mcp, http_client=http_client) as (read, write, _):
+    async with httpx.AsyncClient(
+        headers={"Authorization": f"Bearer {rw_token}"}, timeout=None
+    ) as http_client:
+        async with streamable_http_client(base_mcp, http_client=http_client) as (
+            read,
+            write,
+            _,
+        ):
             async with ClientSession(read, write) as session:
                 await session.initialize()
-
 
                 tools = await session.list_tools()
                 names = {t.name for t in tools.tools}
                 # keep your original assertion set; adjust if your server differs
-                assert {"kg_extract", "doc_parse", "kg_crossdoc_adjudicate_anykind"} <= names
+                assert {
+                    "kg_extract",
+                    "doc_parse",
+                    "kg_crossdoc_adjudicate_anykind",
+                } <= names
 
                 # Optional cache/load tool if your server provides it
                 if "kg_load_persisted" in names:
                     _ = await session.call_tool(
                         "kg_load_persisted",
-                        arguments={"inp": {"doc_ids": list(docs.keys()), "insertion_method": insertion_method, "sid": False}},
+                        arguments={
+                            "inp": {
+                                "doc_ids": list(docs.keys()),
+                                "insertion_method": insertion_method,
+                                "sid": False,
+                            }
+                        },
                     )
-
-
 
                 # convenience: allowed docs = the fixture doc ids
                 allowed_docs = list(docs.keys())
@@ -257,20 +304,29 @@ async def test_doc_node_edge_adjudicate(base_http: str, base_mcp: str, small_tes
                         if "left_id" in p and "right_id" in p:
                             a, b = p["left_id"], p["right_id"]
                         else:
-                            a, b = p.get("left", {}).get("id"), p.get("right", {}).get("id")
+                            a, b = (
+                                p.get("left", {}).get("id"),
+                                p.get("right", {}).get("id"),
+                            )
                         if a and b:
                             out.add(tuple(sorted((a, b))))
                     return out
 
                 # expected positives from the fixture
                 must_have = {
-                    tuple(sorted(("N_CHLORO", "N_CHLORO_ALIAS"))),          # node↔node positive (alias)
-                    tuple(sorted(("E_PHOTO_LEAVES", "E_PHOTO_LEAVES_DUP"))),# edge↔edge positive (dup)
-                    tuple(sorted(("N_PHOTO_REIFIED", "E_PHOTO_LEAVES"))),   # cross-type positive (reified ↔ relation)
+                    tuple(
+                        sorted(("N_CHLORO", "N_CHLORO_ALIAS"))
+                    ),  # node↔node positive (alias)
+                    tuple(
+                        sorted(("E_PHOTO_LEAVES", "E_PHOTO_LEAVES_DUP"))
+                    ),  # edge↔edge positive (dup)
+                    tuple(
+                        sorted(("N_PHOTO_REIFIED", "E_PHOTO_LEAVES"))
+                    ),  # cross-type positive (reified ↔ relation)
                 }
                 must_have_cross_doc = {
-                    tuple(sorted(('E_CHLORO_ABSORB','N_CHLORO_ALIAS'))),
-                    tuple(sorted(('E_PHOTO_LEAVES_DUP','N_CHLORO_ALIAS')))
+                    tuple(sorted(("E_CHLORO_ABSORB", "N_CHLORO_ALIAS"))),
+                    tuple(sorted(("E_PHOTO_LEAVES_DUP", "N_CHLORO_ALIAS"))),
                 }
                 must_have.update(must_have_cross_doc)
                 # ----- Vector-based proposals -----
@@ -280,11 +336,13 @@ async def test_doc_node_edge_adjudicate(base_http: str, base_mcp: str, small_tes
                         arguments={
                             "inp": {
                                 "allowed_docs": allowed_docs,
-                                "cross_doc_only": cross_doc_only,         # only cross-document candidates
-                                "include_edges": True,          # allow node↔edge, edge↔edge too
+                                "cross_doc_only": cross_doc_only,  # only cross-document candidates
+                                "include_edges": True,  # allow node↔edge, edge↔edge too
                                 "anchor_only": False,
                                 "top_k": 8,
-                                "where": {"insertion_method": {"$eq": insertion_method}},  # filter by our fixture provenance
+                                "where": {
+                                    "insertion_method": {"$eq": insertion_method}
+                                },  # filter by our fixture provenance
                                 # optional knobs your server already supports:
                                 "score_mode": "distance",
                                 "max_distance": 0.55,
@@ -296,17 +354,26 @@ async def test_doc_node_edge_adjudicate(base_http: str, base_mcp: str, small_tes
                     vec_pairs = _collect_pairs(vec_payload)
 
                     # ensure all required positives are present in vector proposals
-                    for pair in must_have if not cross_doc_only else must_have_cross_doc:
-                        assert pair in vec_pairs, f"Vector proposer missing expected pair {pair}; got {sorted(vec_pairs)}"
+                    for pair in (
+                        must_have if not cross_doc_only else must_have_cross_doc
+                    ):
+                        assert pair in vec_pairs, (
+                            f"Vector proposer missing expected pair {pair}; got {sorted(vec_pairs)}"
+                        )
                     never_pair = tuple(sorted(("N_HEMO", "E_CHLORO_ABSORB")))
-                    assert never_pair not in vec_pairs, f"Vector proposer unexpectedly included negative {never_pair}"
+                    assert never_pair not in vec_pairs, (
+                        f"Vector proposer unexpectedly included negative {never_pair}"
+                    )
                     # vec_pairs adjudicate_pairs
-                    adj_result = await session.call_tool("adjudicate_pairs",arguments={
-                        "inp": {
-                            "pairs": vec_payload['pairs'],
-                            "commit": False,
-                        }
-                    })
+                    adj_result = await session.call_tool(
+                        "adjudicate_pairs",
+                        arguments={
+                            "inp": {
+                                "pairs": vec_payload["pairs"],
+                                "commit": False,
+                            }
+                        },
+                    )
                     pass
 
                 # ----- Brute-force proposals -----
@@ -326,16 +393,24 @@ async def test_doc_node_edge_adjudicate(base_http: str, base_mcp: str, small_tes
                 bf_pairs = _collect_pairs(bf_payload)
 
                 for pair in must_have:
-                    assert tuple(sorted(pair)) in bf_pairs, f"Bruteforce proposer missing expected pair {pair}; got {sorted(bf_pairs)}"
-
+                    assert tuple(sorted(pair)) in bf_pairs, (
+                        f"Bruteforce proposer missing expected pair {pair}; got {sorted(bf_pairs)}"
+                    )
 
                 # Cross-document adjudication (node↔node, edge↔edge, node↔edge)
                 res = await session.call_tool(
                     "kg_crossdoc_adjudicate_anykind",
-                    arguments={"inp": {"doc_ids": list(docs.keys()), "insertion_method": insertion_method}},
+                    arguments={
+                        "inp": {
+                            "doc_ids": list(docs.keys()),
+                            "insertion_method": insertion_method,
+                        }
+                    },
                 )
 
                 assert res.content, "No MCP content returned"
                 first = res.content[0]
-                ok = (first.type == "json") or (first.type == "text" and json.loads(first.text))
+                ok = (first.type == "json") or (
+                    first.type == "text" and json.loads(first.text)
+                )
                 assert ok, f"Unexpected MCP response type: {first.type}"

@@ -27,9 +27,16 @@ class EnginePostgresConfig(PgVectorConfig):
     """Alias for now; keeps the config name stable at call sites."""
 
 
-def build_postgres_backend(cfg: EnginePostgresConfig) -> Tuple[PgVectorBackend, PostgresUnitOfWork]:
+def build_postgres_backend(
+    cfg: EnginePostgresConfig,
+) -> Tuple[PgVectorBackend, PostgresUnitOfWork]:
     max_workers = 4
-    engine = sa.create_engine(cfg.dsn, future=True, pool_size=max_workers+2,pool_timeout=10.0,)
+    engine = sa.create_engine(
+        cfg.dsn,
+        future=True,
+        pool_size=max_workers + 2,
+        pool_timeout=10.0,
+    )
 
     backend = PgVectorBackend(
         engine=engine,

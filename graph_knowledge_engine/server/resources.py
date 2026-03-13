@@ -112,7 +112,9 @@ def _build_wisdom_engine() -> GraphKnowledgeEngine:
     )
 
 
-pg_sqlalchemy_engine: _LazyResource[Engine] = _LazyResource(_build_pg_sqlalchemy_engine, "pg_sqlalchemy_engine")
+pg_sqlalchemy_engine: _LazyResource[Engine] = _LazyResource(
+    _build_pg_sqlalchemy_engine, "pg_sqlalchemy_engine"
+)
 
 
 def _init_auth() -> Engine:
@@ -128,13 +130,27 @@ def _init_auth() -> Engine:
 
 auth_engine_resource: _LazyResource[Engine] = _LazyResource(_init_auth, "auth_engine")
 
-engine: _LazyResource[GraphKnowledgeEngine] = _LazyResource(_build_engine, "knowledge_engine")
-conversation_engine: _LazyResource[GraphKnowledgeEngine] = _LazyResource(_build_conversation_engine, "conversation_engine")
-workflow_engine: _LazyResource[GraphKnowledgeEngine] = _LazyResource(_build_workflow_engine, "workflow_engine")
-wisdom_engine: _LazyResource[GraphKnowledgeEngine] = _LazyResource(_build_wisdom_engine, "wisdom_engine")
-gq: _LazyResource[GraphQuery] = _LazyResource(lambda: GraphQuery(engine.get()), "knowledge_graph_query")
-conversation_gq: _LazyResource[GraphQuery] = _LazyResource(lambda: GraphQuery(conversation_engine.get()), "conversation_graph_query")
-wisdom_gq: _LazyResource[GraphQuery] = _LazyResource(lambda: GraphQuery(wisdom_engine.get()), "wisdom_graph_query")
+engine: _LazyResource[GraphKnowledgeEngine] = _LazyResource(
+    _build_engine, "knowledge_engine"
+)
+conversation_engine: _LazyResource[GraphKnowledgeEngine] = _LazyResource(
+    _build_conversation_engine, "conversation_engine"
+)
+workflow_engine: _LazyResource[GraphKnowledgeEngine] = _LazyResource(
+    _build_workflow_engine, "workflow_engine"
+)
+wisdom_engine: _LazyResource[GraphKnowledgeEngine] = _LazyResource(
+    _build_wisdom_engine, "wisdom_engine"
+)
+gq: _LazyResource[GraphQuery] = _LazyResource(
+    lambda: GraphQuery(engine.get()), "knowledge_graph_query"
+)
+conversation_gq: _LazyResource[GraphQuery] = _LazyResource(
+    lambda: GraphQuery(conversation_engine.get()), "conversation_graph_query"
+)
+wisdom_gq: _LazyResource[GraphQuery] = _LazyResource(
+    lambda: GraphQuery(wisdom_engine.get()), "wisdom_graph_query"
+)
 run_registry: _LazyResource[RunRegistry] = _LazyResource(
     lambda: RunRegistry(workflow_engine.get().meta_sqlite),
     "chat_run_registry",
@@ -150,5 +166,7 @@ chat_service: _LazyResource[ChatRunService] = _LazyResource(
 )
 
 templates = Jinja2Templates(
-    directory=os.path.join(str(pathlib.Path(__file__).resolve().parents[1]), "templates")
+    directory=os.path.join(
+        str(pathlib.Path(__file__).resolve().parents[1]), "templates"
+    )
 )

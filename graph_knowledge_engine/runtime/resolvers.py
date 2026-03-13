@@ -30,7 +30,7 @@ The orchestrator should populate `_deps` in the workflow initial_state.
 """
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Callable, Dict, Mapping, Optional, Union
+from typing import Any, Callable, Dict, Mapping, Optional, Union
 
 # Best-effort self-inspection for state schema inference
 import ast
@@ -41,6 +41,7 @@ if TYPE_CHECKING:
     from .models import StepRunResult
     from .runtime import StepContext
     from .sandbox import Sandbox
+
     RawStepFn = Callable[[StepContext], Union[Json, StepRunResult]]
 
 from graph_knowledge_engine.runtime.models import RunSuccess, RunFailure, RunSuspended
@@ -49,7 +50,6 @@ from graph_knowledge_engine.runtime.sandbox import SandboxRequest
 # Import your real RunResult types from graph_knowledge_engine.runtime/models
 
 
-from graph_knowledge_engine.engine_core.models import Span
 
 
 class BaseResolver:
@@ -58,16 +58,22 @@ class BaseResolver:
 
 _LEGACY_UPDATE_WARNING_EMITTED = False
 
+
 @dataclass
 class MappingStepResolver(BaseResolver):
     handlers: Dict[str, RawStepFn]
     default: Optional[RawStepFn] = None
-    
+
     @property
     def ops(self):
         return set(self.handlers)
 
-    def __init__(self, handlers: Optional[Mapping[str, RawStepFn]] = None, *, default: Optional[RawStepFn] = None) -> None:
+    def __init__(
+        self,
+        handlers: Optional[Mapping[str, RawStepFn]] = None,
+        *,
+        default: Optional[RawStepFn] = None,
+    ) -> None:
         self.handlers = dict(handlers or {})
         self.default = default
         # Ops that are allowed to execute nested workflows (i.e., may call back into
@@ -91,26 +97,34 @@ class MappingStepResolver(BaseResolver):
         if self._sandbox is not None and hasattr(self._sandbox, "close"):
             self._sandbox.close()
 
-    def register(self, op: str, *, is_nested: bool = False, is_sandboxed: bool = False) -> Callable[[RawStepFn], RawStepFn]:
+    def register(
+        self, op: str, *, is_nested: bool = False, is_sandboxed: bool = False
+    ) -> Callable[[RawStepFn], RawStepFn]:
         def _decorator(fn: RawStepFn) -> RawStepFn:
             @functools.wraps(fn)
-            def wrapped_fun (*arg, **kwarg):
+            def wrapped_fun(*arg, **kwarg):
                 ctx: StepContext = arg[0]
-                with bind_log_context(op=op, conversation_id = ctx.conversation_id, 
-                                      workflow_run_id = f"{ctx.workflow_id}--{ctx.run_id}", 
-                                      step_id = ctx.workflow_node_id):
+                with bind_log_context(
+                    op=op,
+                    conversation_id=ctx.conversation_id,
+                    workflow_run_id=f"{ctx.workflow_id}--{ctx.run_id}",
+                    step_id=ctx.workflow_node_id,
+                ):
                     return fn(*arg, **kwarg)
-            self.handlers[op] = fn #wrapped_fun        
+
+            self.handlers[op] = fn  # wrapped_fun
             if is_nested:
                 self.nested_ops.add(str(op))
             if is_sandboxed:
                 self.sandboxed_ops.add(str(op))
             return wrapped_fun
+
         return _decorator
 
     def resolve(self, op: str) -> Callable[[StepContext], StepRunResult]:
         raw = self.handlers.get(op) or self.default
         from graph_knowledge_engine.runtime.models import RunFailure
+
         if raw is None:
             raise KeyError(f"No step handler registered for op={op!r}")
 
@@ -118,7 +132,7 @@ class MappingStepResolver(BaseResolver):
             try:
                 out = raw(ctx)
                 out = self._maybe_execute_sandboxed(op=op, ctx=ctx, out=out)
-                if getattr(out, 'update', None) is not None:
+                if getattr(out, "update", None) is not None:
                     global _LEGACY_UPDATE_WARNING_EMITTED
                     if not _LEGACY_UPDATE_WARNING_EMITTED:
                         warnings.warn(
@@ -133,9 +147,13 @@ class MappingStepResolver(BaseResolver):
                     raise TypeError("Resolver must return StepRunResult")
             except Exception as e:
                 import traceback
-                return RunFailure(conversation_node_id=ctx.state_view.get('workflow_node_id') , 
-                                  state_update = [('a', {'op_log': str(e)})], 
-                                  errors=[str(e), traceback.format_exc()])
+
+                return RunFailure(
+                    conversation_node_id=ctx.state_view.get("workflow_node_id"),
+                    state_update=[("a", {"op_log": str(e)})],
+                    errors=[str(e), traceback.format_exc()],
+                )
+
         return _wrapped
 
     def _maybe_execute_sandboxed(self, *, op: str, ctx: "StepContext", out: Any) -> Any:
@@ -149,10 +167,14 @@ class MappingStepResolver(BaseResolver):
             return RunFailure(
                 conversation_node_id=ctx.workflow_node_id,
                 state_update=[],
-                errors=[f"Sandboxed op '{op}' produced sandbox code but no sandbox runtime is configured"],
+                errors=[
+                    f"Sandboxed op '{op}' produced sandbox code but no sandbox runtime is configured"
+                ],
             )
 
-        sandbox_state = dict(req.state) if req.state is not None else dict(ctx.state_view)
+        sandbox_state = (
+            dict(req.state) if req.state is not None else dict(ctx.state_view)
+        )
         sandbox_context = self._sandbox_context(ctx)
         sandbox_context.update(req.context)
         return self._sandbox.run(req.code, sandbox_state, sandbox_context)
@@ -189,7 +211,6 @@ class MappingStepResolver(BaseResolver):
             "conversation_id": ctx.conversation_id,
             "turn_node_id": ctx.turn_node_id,
         }
-
 
     # ------------------------------------------------------------------
     # State schema for native updates + LangGraph conversion
@@ -242,9 +263,15 @@ class MappingStepResolver(BaseResolver):
                 # state["k"] = ...
                 if isinstance(node, ast.Assign):
                     for tgt in node.targets:
-                        if isinstance(tgt, ast.Subscript) and isinstance(tgt.value, ast.Name) and tgt.value.id == "state":
+                        if (
+                            isinstance(tgt, ast.Subscript)
+                            and isinstance(tgt.value, ast.Name)
+                            and tgt.value.id == "state"
+                        ):
                             sl = tgt.slice
-                            if isinstance(sl, ast.Constant) and isinstance(sl.value, str):
+                            if isinstance(sl, ast.Constant) and isinstance(
+                                sl.value, str
+                            ):
                                 _note(sl.value, "u")
 
                 # state.setdefault("k", []).append/extend
@@ -253,7 +280,10 @@ class MappingStepResolver(BaseResolver):
                     if attr not in ("append", "extend"):
                         continue
                     recv = node.func.value
-                    if not (isinstance(recv, ast.Call) and isinstance(recv.func, ast.Attribute)):
+                    if not (
+                        isinstance(recv, ast.Call)
+                        and isinstance(recv.func, ast.Attribute)
+                    ):
                         continue
                     if recv.func.attr != "setdefault":
                         continue
@@ -271,11 +301,12 @@ class MappingStepResolver(BaseResolver):
 
     def __call__(self, op: str) -> Callable[[StepContext], StepRunResult]:
         return self.resolve(op)
-    
-    
+
 
 def _deps(ctx: StepContext) -> Dict[str, Any]:
     deps = ctx.state_view.get("_deps")
     if not isinstance(deps, dict):
-        raise RuntimeError("StepContext.state['_deps'] must be a dict of injected dependencies")
+        raise RuntimeError(
+            "StepContext.state['_deps'] must be a dict of injected dependencies"
+        )
     return deps

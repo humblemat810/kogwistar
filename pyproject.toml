@@ -33,7 +33,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "pytest-asyncio>=1.1.0", "pytest-dotenv>=0.5.2", "ruff>=0.5", "mypy>=1.8", "build", "twine"]
 chroma = ["chromadb>=1.0.15"]
 pgvector = ["sqlalchemy>=2.0", "pgvector>=0.3.6", "psycopg[binary]>=3.1"]
 openai = ["langchain-core>=0.3.0", "langchain-openai>=0.3.0"]
@@ -43,6 +42,10 @@ ingestion-openai = ["langchain-core>=0.3.0", "langchain-openai>=0.3.0"]
 ingestion-gemini = ["langchain-core>=0.3.0", "langchain-google-genai>=2.0.0"]
 mcp-adapter = ["langchain-mcp-adapters>=0.0.8"]
 viz = ["pygraphviz>=1.14"]
+test = ["pytest>=8", "pytest-asyncio>=1.1.0", "pytest-dotenv>=0.5.2", "testcontainers>=4.0"]
+lint = ["ruff>=0.5"]
+typecheck = ["mypy>=1.8"]
+build = ["build", "twine"]
 full = [
   "chromadb>=1.0.15",
   "sqlalchemy>=2.0",

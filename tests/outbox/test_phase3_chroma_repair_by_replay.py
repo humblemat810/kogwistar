@@ -2,17 +2,22 @@ import uuid
 import pathlib
 import pytest
 
-from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine, _node_doc_and_meta
+from graph_knowledge_engine.engine_core.engine import (
+    GraphKnowledgeEngine,
+    _node_doc_and_meta,
+)
 from graph_knowledge_engine.engine_core.models import Node, Grounding, Span
 from tests.conftest import FakeEmbeddingFunction
 
 EMBEDDING_DIM = 3
 TEST_EMBEDDING = FakeEmbeddingFunction(dim=EMBEDDING_DIM)
 
+
 def _mk_span(doc_id: str) -> Span:
     sp = Span.from_dummy_for_document()
     sp.doc_id = doc_id
     return sp
+
 
 def _mk_node(node_id: str, *, doc_id: str) -> Node:
     return Node(
@@ -30,11 +35,14 @@ def _mk_node(node_id: str, *, doc_id: str) -> Node:
         properties=None,
     )
 
+
 @pytest.fixture
 def chroma_engine(tmp_path: pathlib.Path) -> GraphKnowledgeEngine:
     persist_dir = tmp_path / "chroma"
     persist_dir.mkdir(parents=True, exist_ok=True)
-    eng = GraphKnowledgeEngine(persist_directory=str(persist_dir), embedding_function=TEST_EMBEDDING)
+    eng = GraphKnowledgeEngine(
+        persist_directory=str(persist_dir), embedding_function=TEST_EMBEDDING
+    )
     eng._test_backend_kind = "chroma"  # type: ignore[attr-defined]
     return eng
 
@@ -72,6 +80,7 @@ def test_phase3_chroma_replay_repairs_missing_vector_state(chroma_engine):
     got3 = eng.backend.node_get(ids=[nid], include=["metadatas", "documents"])
     assert got3.get("ids") and nid in got3["ids"]
 
+
 def test_phase3b_chroma_replay_repair_restores_tampered_node(chroma_engine):
     eng = chroma_engine
     ns = f"phase3b_tamper_{uuid.uuid4().hex}"
@@ -91,11 +100,13 @@ def test_phase3b_chroma_replay_repair_restores_tampered_node(chroma_engine):
     node.summary = "TAMPERED"
     doc, meta = _node_doc_and_meta(node)
     eng.backend.node_add(
-            ids=[node.safe_get_id()],
-            documents=[doc],
-            embeddings=[node.embedding] if node.embedding is not None else [eng._iterative_defensive_emb(str(doc))],
-            metadatas=[meta],
-        )
+        ids=[node.safe_get_id()],
+        documents=[doc],
+        embeddings=[node.embedding]
+        if node.embedding is not None
+        else [eng._iterative_defensive_emb(str(doc))],
+        metadatas=[meta],
+    )
     got_tampered = eng.backend.node_get(ids=["n1"], include=["metadatas"])
     assert got_tampered["metadatas"][0]["label"] == "TAMPERED"
 

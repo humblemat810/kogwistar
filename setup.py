@@ -2,9 +2,9 @@ import os
 from setuptools import setup
 from setuptools.command.build_ext import build_ext
 
+
 class BuildPyGraphviz(build_ext):
     def finalize_options(self):
-        import sys
         import pathlib
 
         candidates = [
@@ -24,6 +24,7 @@ class BuildPyGraphviz(build_ext):
                 break
 
         super().finalize_options()
+
 
 setup(
     cmdclass={"build_ext": BuildPyGraphviz},

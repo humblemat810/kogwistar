@@ -2,10 +2,8 @@ from __future__ import annotations
 
 import importlib
 import json
-from pathlib import Path
 from typing import Any
 
-import pytest
 
 
 def _template_html() -> str:
@@ -27,7 +25,12 @@ def _template_html() -> str:
 def _fake_payload() -> dict[str, Any]:
     return {
         "nodes": [
-            {"id": "n1", "label": "Node 1", "type": "entity", "properties": {"refers_to_id": "kg:n1"}},
+            {
+                "id": "n1",
+                "label": "Node 1",
+                "type": "entity",
+                "properties": {"refers_to_id": "kg:n1"},
+            },
             {"id": "e1", "label": "Edge 1", "type": "edge-node"},
         ],
         "links": [
@@ -46,7 +49,10 @@ def test_dump_d3_bundle_injects_embedded_data_and_meta(tmp_path, monkeypatch):
     monkeypatch.setattr(mod, "to_d3_force", lambda *args, **kwargs: payload)
 
     out_html = tmp_path / "one.bundle.html"
-    bundle_meta = {"kg_bundle_href": "./kg.bundle.html", "conversation_bundle_href": "./conversation.bundle.html"}
+    bundle_meta = {
+        "kg_bundle_href": "./kg.bundle.html",
+        "conversation_bundle_href": "./conversation.bundle.html",
+    }
 
     # Call "debugger path"
     mod.dump_d3_bundle(
@@ -131,6 +137,7 @@ def test_cli_one_writes_output_html(tmp_path, monkeypatch, capsys):
     out_path = tmp_path / "cli.bundle.html"
 
     import sys
+
     monkeypatch.setattr(
         sys,
         "argv",

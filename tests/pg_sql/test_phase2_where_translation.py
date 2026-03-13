@@ -24,9 +24,9 @@ def test_where_and_in_and_gte_typed() -> None:
         t.c.metadata,
         {
             "$and": [
-                {"entity_type": "workflow_node"},                 # string
-                {"workflow_id": {"$in": ["wf1", "wf2"]}},         # string IN
-                {"seq": {"$gte": 10}},                            # numeric
+                {"entity_type": "workflow_node"},  # string
+                {"workflow_id": {"$in": ["wf1", "wf2"]}},  # string IN
+                {"seq": {"$gte": 10}},  # numeric
             ]
         },
         numeric_keys={"seq"},
@@ -53,8 +53,8 @@ def test_where_bool_and_numeric_typed() -> None:
         t.c.metadata,
         {
             "$and": [
-                {"in_conversation_chain": True},                 # boolean
-                {"turn_index": {"$gte": 1}},                      # numeric
+                {"in_conversation_chain": True},  # boolean
+                {"turn_index": {"$gte": 1}},  # numeric
             ]
         },
         numeric_keys={"turn_index"},

@@ -6,7 +6,10 @@ from pathlib import Path
 
 import pytest
 
-from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine, _SHIM_METHOD_MAP
+from graph_knowledge_engine.engine_core.engine import (
+    GraphKnowledgeEngine,
+    _SHIM_METHOD_MAP,
+)
 
 
 _SHIM_CASES = [
@@ -22,7 +25,13 @@ _SHIM_CASES = [
     ("redirect_node", "lifecycle", "redirect_node", ("n1", "n2"), {}),
     ("tombstone_edge", "lifecycle", "tombstone_edge", ("e1",), {}),
     ("redirect_edge", "lifecycle", "redirect_edge", ("e1", "e2"), {}),
-    ("persist_graph_extraction", "persist", "persist_graph_extraction", (object(), "doc1"), {}),
+    (
+        "persist_graph_extraction",
+        "persist",
+        "persist_graph_extraction",
+        (object(), "doc1"),
+        {},
+    ),
     ("ingest_document_with_llm", "ingest", "ingest_document_with_llm", ("doc1",), {}),
     ("rollback_document", "rollback", "rollback_document", ("doc1",), {}),
 ]
@@ -52,7 +61,9 @@ def test_non_conversation_shims_forward_and_warn(
 
     monkeypatch.setattr(namespace_obj, ns_method, _stub, raising=False)
 
-    with pytest.warns(DeprecationWarning, match=fr"GraphKnowledgeEngine\.{method_name} is deprecated"):
+    with pytest.warns(
+        DeprecationWarning, match=rf"GraphKnowledgeEngine\.{method_name} is deprecated"
+    ):
         out = getattr(engine, method_name)(*args, **kwargs)
 
     assert out is sentinel

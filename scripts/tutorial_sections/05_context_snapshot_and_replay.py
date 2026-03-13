@@ -4,7 +4,12 @@
 
 # %%
 from graph_knowledge_engine.conversation.service import ConversationService
-from tutorial_ladder import _ensure_seed, deterministic_filter_callback, reset_data, seed_data
+from tutorial_ladder import (
+    _ensure_seed,
+    deterministic_filter_callback,
+    reset_data,
+    seed_data,
+)
 
 from _helpers import banner, reset_data_dir, show
 
@@ -13,7 +18,9 @@ show("reset", reset_data(data_dir))
 show("seed", seed_data(data_dir))
 kg_engine, conv_engine = _ensure_seed(data_dir)
 svc = ConversationService.from_engine(conv_engine, knowledge_engine=kg_engine)
-conversation_id, _start_node_id = svc.create_conversation("demo-user", "conv-snapshot", "conv-snapshot-start")
+conversation_id, _start_node_id = svc.create_conversation(
+    "demo-user", "conv-snapshot", "conv-snapshot-start"
+)
 turn = svc.add_conversation_turn(
     user_id="demo-user",
     conversation_id=conversation_id,
@@ -26,7 +33,9 @@ turn = svc.add_conversation_turn(
     max_retrieval_level=2,
     add_turn_only=True,
 )
-banner("Conversation seeded. Next cell assembles a prompt view under a small token budget.")
+banner(
+    "Conversation seeded. Next cell assembles a prompt view under a small token budget."
+)
 
 # %% [markdown]
 # ## Build the prompt view
@@ -71,7 +80,9 @@ snapshot_node = svc.latest_context_snapshot_node(
     stage="tutorial_snapshot",
 )
 payload = svc.get_context_snapshot_payload(snapshot_node_id=snapshot_id)
-depends_on_edges = conv_engine.get_edges(where={"run_id": "tutorial-sections-run"}, limit=50)
+depends_on_edges = conv_engine.get_edges(
+    where={"run_id": "tutorial-sections-run"}, limit=50
+)
 show(
     "snapshot artifacts",
     {

@@ -56,11 +56,11 @@ def create_chat_router(
             effective_user_id = get_user_id() if callable(get_user_id) else None
             if not effective_user_id:
                 raise HTTPException(status_code=401, detail="User Identity required")
-            return {"conversations": 
-                        get_service()
-                        ._conversation_queries
-                        .list_conversations_for_user(
-                                user_id=effective_user_id)}
+            return {
+                "conversations": get_service()._conversation_queries.list_conversations_for_user(
+                    user_id=effective_user_id
+                )
+            }
         except Exception as exc:  # noqa: BLE001
             raise _as_http_error(exc)
 
@@ -69,7 +69,9 @@ def create_chat_router(
         require_role("rw")
         require_namespace(conversation_namespace)
         try:
-            effective_user_id = (get_user_id() if callable(get_user_id) else None) or inp.user_id
+            effective_user_id = (
+                get_user_id() if callable(get_user_id) else None
+            ) or inp.user_id
             return get_service().create_conversation(
                 user_id=effective_user_id,
                 conversation_id=inp.conversation_id,
@@ -104,7 +106,9 @@ def create_chat_router(
         require_role("rw")
         require_namespace(conversation_namespace)
         try:
-            effective_user_id = (get_user_id() if callable(get_user_id) else None) or inp.user_id
+            effective_user_id = (
+                get_user_id() if callable(get_user_id) else None
+            ) or inp.user_id
             payload = get_service().submit_turn_for_answer(
                 conversation_id=conversation_id,
                 user_id=effective_user_id,
@@ -116,11 +120,15 @@ def create_chat_router(
             raise _as_http_error(exc)
 
     @router.get("/conversations/{conversation_id}/snapshots/latest")
-    def latest_snapshot(conversation_id: str, run_id: str | None = None, stage: str | None = None):
+    def latest_snapshot(
+        conversation_id: str, run_id: str | None = None, stage: str | None = None
+    ):
         require_role("ro")
         require_namespace(workflow_namespaces)
         try:
-            return get_service().latest_snapshot(conversation_id, run_id=run_id, stage=stage)
+            return get_service().latest_snapshot(
+                conversation_id, run_id=run_id, stage=stage
+            )
         except Exception as exc:  # noqa: BLE001
             raise _as_http_error(exc)
 
@@ -155,7 +163,9 @@ def create_chat_router(
                         "created_at_ms": evt["created_at_ms"],
                         **(evt["payload"] or {}),
                     }
-                    yield _sse_frame(event_type=evt["event_type"], seq=last_seq, payload=payload)
+                    yield _sse_frame(
+                        event_type=evt["event_type"], seq=last_seq, payload=payload
+                    )
                 run = service.get_run(run_id)
                 if run["terminal"] and not events:
                     break
@@ -166,7 +176,9 @@ def create_chat_router(
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
         }
-        return StreamingResponse(event_stream(), media_type="text/event-stream", headers=headers)
+        return StreamingResponse(
+            event_stream(), media_type="text/event-stream", headers=headers
+        )
 
     @router.get("/runs/{run_id}/events/poll")
     def get_run_events_poll(run_id: str, after_seq: int = 0, limit: int = 500):
@@ -176,7 +188,9 @@ def create_chat_router(
             get_service().get_run(run_id)
             return {
                 "run_id": run_id,
-                "events": get_service().list_run_events(run_id, after_seq=int(after_seq), limit=int(limit)),
+                "events": get_service().list_run_events(
+                    run_id, after_seq=int(after_seq), limit=int(limit)
+                ),
             }
         except Exception as exc:  # noqa: BLE001
             raise _as_http_error(exc)

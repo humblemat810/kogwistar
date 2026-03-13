@@ -1,4 +1,3 @@
-
 import json
 import re
 from pathlib import Path
@@ -18,7 +17,10 @@ from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.runnables import Runnable, RunnableConfig
 
 from graph_knowledge_engine.conversation.filtering import candiate_filtering_callback
-from graph_knowledge_engine.conversation.models import FilteringResult, MetaFromLastSummary
+from graph_knowledge_engine.conversation.models import (
+    FilteringResult,
+    MetaFromLastSummary,
+)
 from graph_knowledge_engine.conversation.service import ConversationService
 from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
 from graph_knowledge_engine.llm_tasks import (
@@ -41,6 +43,7 @@ from graph_knowledge_engine.engine_core.models import (
     Grounding,
     MentionVerification,
 )
+
 pytestmark = [
     pytest.mark.conversation,
     pytest.mark.workflow,
@@ -87,13 +90,17 @@ class DeterministicLLM(BaseChatModel):
             self._schema = schema
             self._include_raw = include_raw
 
-        def invoke(self, input: Any, config: RunnableConfig | None = None, **kwargs: Any) -> Any:
+        def invoke(
+            self, input: Any, config: RunnableConfig | None = None, **kwargs: Any
+        ) -> Any:
             parsed = self._llm._structured_payload(self._schema, input=input)
             if self._include_raw:
                 return {"raw": None, "parsed": parsed, "parsing_error": None}
             return parsed
 
-        async def ainvoke(self, input: Any, config: RunnableConfig | None = None, **kwargs: Any) -> Any:
+        async def ainvoke(
+            self, input: Any, config: RunnableConfig | None = None, **kwargs: Any
+        ) -> Any:
             return self.invoke(input, config=config, **kwargs)
 
     def __init__(self, content: str):
@@ -105,7 +112,9 @@ class DeterministicLLM(BaseChatModel):
         return "deterministic"
 
     def with_structured_output(self, schema, include_raw=False, **kwargs):
-        return DeterministicLLM._StructuredRunnable(self, schema=schema, include_raw=include_raw)
+        return DeterministicLLM._StructuredRunnable(
+            self, schema=schema, include_raw=include_raw
+        )
 
     @staticmethod
     def _flatten_prompt_text(input_obj: Any) -> str:
@@ -116,7 +125,9 @@ class DeterministicLLM(BaseChatModel):
         if isinstance(input_obj, dict):
             return "\n".join(f"{k}: {v}" for k, v in input_obj.items())
         if isinstance(input_obj, (list, tuple, set)):
-            return "\n".join(DeterministicLLM._flatten_prompt_text(x) for x in input_obj)
+            return "\n".join(
+                DeterministicLLM._flatten_prompt_text(x) for x in input_obj
+            )
 
         msgs = []
         to_messages = getattr(input_obj, "to_messages", None)
@@ -193,11 +204,17 @@ class DeterministicLLM(BaseChatModel):
         elif "banana" in text_l:
             ans_text = "Banana is a fruit, and it is typically yellow."
         else:
-            ans_text = "Based on the provided evidence, this item is a fruit-like entity."
+            ans_text = (
+                "Based on the provided evidence, this item is a fruit-like entity."
+            )
 
         claim = {
             "claim": ans_text,
-            "citations": ([{"source_node_id": first_node, "mention_index": 0, "span_index": 0}] if first_node else []),
+            "citations": (
+                [{"source_node_id": first_node, "mention_index": 0, "span_index": 0}]
+                if first_node
+                else []
+            ),
         }
         payload = {
             "text": ans_text,
@@ -256,10 +273,20 @@ class DeterministicLLM(BaseChatModel):
             return {}
 
     def _generate(self, messages, stop=None, run_manager=None, **kwargs):
-        return ChatResult(generations=[ChatGeneration(message=AIMessage(content=self._content))])
+        return ChatResult(
+            generations=[ChatGeneration(message=AIMessage(content=self._content))]
+        )
 
 
-def _make_engine(*, backend_kind: str, tmp_path: Path, sa_engine, pg_schema: str | None, graph_type: str, dim: int):
+def _make_engine(
+    *,
+    backend_kind: str,
+    tmp_path: Path,
+    sa_engine,
+    pg_schema: str | None,
+    graph_type: str,
+    dim: int,
+):
     engine = None
     if backend_kind == "chroma":
         engine = GraphKnowledgeEngine(
@@ -270,10 +297,12 @@ def _make_engine(*, backend_kind: str, tmp_path: Path, sa_engine, pg_schema: str
 
     if backend_kind == "pg":
         if sa_engine is None or pg_schema is None:
-            pytest.skip("pg backend requested but sa_engine/pg_schema fixtures not available")
+            pytest.skip(
+                "pg backend requested but sa_engine/pg_schema fixtures not available"
+            )
         schema = f"{pg_schema}_{graph_type}"
         backend = PgVectorBackend(engine=sa_engine, embedding_dim=dim, schema=schema)
-        engine =  GraphKnowledgeEngine(
+        engine = GraphKnowledgeEngine(
             persist_directory=str(tmp_path / f"{graph_type}_meta"),
             kg_graph_type=graph_type,
             embedding_function=FakeEmbeddingFunction(dim=dim),
@@ -291,7 +320,9 @@ def _mk_span(excerpt: str) -> Span:
         doc_id="D:test",
         chunk_id=None,
         source_cluster_id=None,
-        verification=MentionVerification(method="human", is_verified=True, score=1.0, notes="test"),
+        verification=MentionVerification(
+            method="human", is_verified=True, score=1.0, notes="test"
+        ),
         collection_page_url="url",
         document_page_url="url",
         insertion_method="test",
@@ -512,9 +543,15 @@ def _deterministic_filter_impl(*, question: str, knowledge_key: str) -> dict[str
     """
     q = question.lower()
     if knowledge_key == "apple" and "apple" in q:
-        return {"node_ids": ["K:apple", "K:fruit", "K:sweet"], "edge_ids": ["E:is_a", "E:has_property"]}
+        return {
+            "node_ids": ["K:apple", "K:fruit", "K:sweet"],
+            "edge_ids": ["E:is_a", "E:has_property"],
+        }
     if knowledge_key == "banana" and "banana" in q:
-        return {"node_ids": ["K:banana", "K:fruit", "K:yellow"], "edge_ids": ["E:is_a", "E:has_color"]}
+        return {
+            "node_ids": ["K:banana", "K:fruit", "K:yellow"],
+            "edge_ids": ["E:is_a", "E:has_color"],
+        }
     return {"node_ids": [], "edge_ids": []}
 
 
@@ -525,15 +562,23 @@ def _deterministic_answer_impl(*, question: str, knowledge_key: str) -> dict[str
     """
     q = question.lower()
     if knowledge_key == "apple" and "apple" in q:
-        return {"content": "Apple is a fruit, and it is often sweet.", "need_summary": False}
+        return {
+            "content": "Apple is a fruit, and it is often sweet.",
+            "need_summary": False,
+        }
     if knowledge_key == "banana" and "banana" in q:
-        return {"content": "Banana is a fruit, and it is typically yellow.", "need_summary": False}
+        return {
+            "content": "Banana is a fruit, and it is typically yellow.",
+            "need_summary": False,
+        }
     return {"content": "I don't know.", "need_summary": False}
 
 
 def _deterministic_llm_tasks(*, knowledge_key: str) -> LLMTaskSet:
     def _filter(req: FilterCandidatesTaskRequest) -> FilterCandidatesTaskResult:
-        picked = _deterministic_filter_impl(question=req.conversation_content, knowledge_key=knowledge_key)
+        picked = _deterministic_filter_impl(
+            question=req.conversation_content, knowledge_key=knowledge_key
+        )
         return FilterCandidatesTaskResult(
             node_ids=tuple(picked.get("node_ids", [])),
             edge_ids=tuple(picked.get("edge_ids", [])),
@@ -543,13 +588,23 @@ def _deterministic_llm_tasks(*, knowledge_key: str) -> LLMTaskSet:
         )
 
     return LLMTaskSet(
-        extract_graph=lambda _req: ExtractGraphTaskResult(raw=None, parsed_payload=None, parsing_error="unused"),
-        adjudicate_pair=lambda _req: AdjudicatePairTaskResult(verdict_payload=None, raw=None, parsing_error="unused"),
-        adjudicate_batch=lambda _req: AdjudicateBatchTaskResult(verdict_payloads=(), raw=None, parsing_error="unused"),
+        extract_graph=lambda _req: ExtractGraphTaskResult(
+            raw=None, parsed_payload=None, parsing_error="unused"
+        ),
+        adjudicate_pair=lambda _req: AdjudicatePairTaskResult(
+            verdict_payload=None, raw=None, parsing_error="unused"
+        ),
+        adjudicate_batch=lambda _req: AdjudicateBatchTaskResult(
+            verdict_payloads=(), raw=None, parsing_error="unused"
+        ),
         filter_candidates=_filter,
         summarize_context=lambda req: SummarizeContextTaskResult(text=req.full_text),
-        answer_with_citations=lambda _req: AnswerWithCitationsTaskResult(answer_payload=None, raw=None, parsing_error="unused"),
-        repair_citations=lambda _req: RepairCitationsTaskResult(answer_payload=None, raw=None, parsing_error="unused"),
+        answer_with_citations=lambda _req: AnswerWithCitationsTaskResult(
+            answer_payload=None, raw=None, parsing_error="unused"
+        ),
+        repair_citations=lambda _req: RepairCitationsTaskResult(
+            answer_payload=None, raw=None, parsing_error="unused"
+        ),
         provider_hints=LLMTaskProviderHints(filter_candidates_provider="custom"),
     )
 
@@ -559,8 +614,18 @@ def _deterministic_llm_tasks(*, knowledge_key: str) -> LLMTaskSet:
     [
         pytest.param("chroma", "fake", id="chroma_fake", marks=[pytest.mark.ci]),
         pytest.param("pg", "fake", id="pg_fake", marks=[pytest.mark.ci_full]),
-        pytest.param("chroma", "real", id="chroma_real", marks=[pytest.mark.nightly, pytest.mark.llm_real]),
-        pytest.param("pg", "real", id="pg_real", marks=[pytest.mark.nightly, pytest.mark.llm_real]),
+        pytest.param(
+            "chroma",
+            "real",
+            id="chroma_real",
+            marks=[pytest.mark.nightly, pytest.mark.llm_real],
+        ),
+        pytest.param(
+            "pg",
+            "real",
+            id="pg_real",
+            marks=[pytest.mark.nightly, pytest.mark.llm_real],
+        ),
     ],
 )
 @pytest.mark.parametrize(
@@ -588,9 +653,30 @@ def test_conversation_flow_v2_param_e2e(
       - knowledge sets: apple, banana (pluggable)
     """
     dim = 8
-    kg = _make_engine(backend_kind=backend_kind, tmp_path=tmp_path, sa_engine=sa_engine, pg_schema=pg_schema, graph_type="knowledge", dim=dim)
-    conv = _make_engine(backend_kind=backend_kind, tmp_path=tmp_path, sa_engine=sa_engine, pg_schema=pg_schema, graph_type="conversation", dim=dim)
-    wf = _make_engine(backend_kind=backend_kind, tmp_path=tmp_path, sa_engine=sa_engine, pg_schema=pg_schema, graph_type="workflow", dim=dim)
+    kg = _make_engine(
+        backend_kind=backend_kind,
+        tmp_path=tmp_path,
+        sa_engine=sa_engine,
+        pg_schema=pg_schema,
+        graph_type="knowledge",
+        dim=dim,
+    )
+    conv = _make_engine(
+        backend_kind=backend_kind,
+        tmp_path=tmp_path,
+        sa_engine=sa_engine,
+        pg_schema=pg_schema,
+        graph_type="conversation",
+        dim=dim,
+    )
+    wf = _make_engine(
+        backend_kind=backend_kind,
+        tmp_path=tmp_path,
+        sa_engine=sa_engine,
+        pg_schema=pg_schema,
+        graph_type="workflow",
+        dim=dim,
+    )
 
     # Seed knowledge
     meta = knowledge_builder(kg, dim=dim)
@@ -611,38 +697,90 @@ def test_conversation_flow_v2_param_e2e(
 
     # Filtering callback
     if llm_mode == "fake":
-        def filtering_callback(_llm_tasks, conversation_content, cand_node_list_str, cand_edge_list_str, candidates_node_ids, candidate_edge_ids, context_text):
-            dumped = cached_filter(question=conversation_content, knowledge_key=knowledge_key)
+
+        def filtering_callback(
+            _llm_tasks,
+            conversation_content,
+            cand_node_list_str,
+            cand_edge_list_str,
+            candidates_node_ids,
+            candidate_edge_ids,
+            context_text,
+        ):
+            dumped = cached_filter(
+                question=conversation_content, knowledge_key=knowledge_key
+            )
             return FilteringResult.model_validate(dumped), "cached deterministic filter"
     else:
         # Use the project's canonical prompting-based filter, but cache it (ignore llm).
-        def cached_inner(llm_tasks: LLMTaskSet, conversation_content, cand_node_list_str, cand_edge_list_str, candidates_node_ids, candidate_edge_ids, context_text):
-            fr, reason = candiate_filtering_callback(llm_tasks, conversation_content, cand_node_list_str, cand_edge_list_str, candidates_node_ids, candidate_edge_ids, context_text)
+        def cached_inner(
+            llm_tasks: LLMTaskSet,
+            conversation_content,
+            cand_node_list_str,
+            cand_edge_list_str,
+            candidates_node_ids,
+            candidate_edge_ids,
+            context_text,
+        ):
+            fr, reason = candiate_filtering_callback(
+                llm_tasks,
+                conversation_content,
+                cand_node_list_str,
+                cand_edge_list_str,
+                candidates_node_ids,
+                candidate_edge_ids,
+                context_text,
+            )
             return fr.model_dump(), reason
+
         cached_fn = cached(memory, cached_inner, ignore=["llm_tasks"])
-        def filtering_callback(llm_tasks: LLMTaskSet, conversation_content, cand_node_list_str, cand_edge_list_str, candidates_node_ids, candidate_edge_ids, context_text):
-            dumped, reason = cached_fn(llm_tasks, conversation_content, cand_node_list_str, cand_edge_list_str, candidates_node_ids, candidate_edge_ids, context_text)
+
+        def filtering_callback(
+            llm_tasks: LLMTaskSet,
+            conversation_content,
+            cand_node_list_str,
+            cand_edge_list_str,
+            candidates_node_ids,
+            candidate_edge_ids,
+            context_text,
+        ):
+            dumped, reason = cached_fn(
+                llm_tasks,
+                conversation_content,
+                cand_node_list_str,
+                cand_edge_list_str,
+                candidates_node_ids,
+                candidate_edge_ids,
+                context_text,
+            )
             return FilteringResult.model_validate(dumped), reason
 
     # Answer harness (cached, serializable-only inner)
-    def answer_only_harness(*, conversation_id: str, prev_turn_meta_summary: MetaFromLastSummary,  **_):
-        
+    def answer_only_harness(
+        *, conversation_id: str, prev_turn_meta_summary: MetaFromLastSummary, **_
+    ):
+
         payload = cached_answer(question=question, knowledge_key=knowledge_key)
         # Use the project's conversation engine API for assistant turn creation if available
         # We keep this harness minimal: the v2 orchestrator expects a ConversationAIResponse-like object.
         # If your repo defines ConversationAIResponse, use it directly.
         try:
-            from graph_knowledge_engine.conversation.models import ConversationAIResponse
+            from graph_knowledge_engine.conversation.models import (
+                ConversationAIResponse,
+            )
+
             return ConversationAIResponse(
                 response_node_id=None,  # will be filled by engine call below if available
                 llm_decision_need_summary=bool(payload.get("need_summary", False)),
                 text=payload["content"],
             )
         except Exception:
+
             class _Resp:
                 response_node_id = None
                 llm_decision_need_summary = bool(payload.get("need_summary", False))
                 content = payload["content"]
+
             return _Resp()
 
     # Monkeypatch: orchestrator v2 still takes answer_only from deps;
@@ -680,7 +818,9 @@ def test_conversation_flow_v2_param_e2e(
 
     # Verify: relevant KG ids contain expected
     for nid in meta["expect_node_ids"]:
-        assert nid in set(res.relevant_kg_node_ids), f"expected KG node id {nid} to be referenced"
+        assert nid in set(res.relevant_kg_node_ids), (
+            f"expected KG node id {nid} to be referenced"
+        )
 
     # Verify: assistant response exists (if your pipeline creates it)
     if res.response_turn_node_id is not None:

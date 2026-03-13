@@ -54,7 +54,9 @@ async def test_readonly_token_blocks_writes_and_allows_reads(mcp_admin_server):
         headers=headers,
         timeout=20,
     )
-    assert resp.status_code == 403, f"Expected 403 for RO delete, got {resp.status_code}: {resp.text}"
+    assert resp.status_code == 403, (
+        f"Expected 403 for RO delete, got {resp.status_code}: {resp.text}"
+    )
 
     async with streamablehttp_client(
         mcp_url,
@@ -67,18 +69,26 @@ async def test_readonly_token_blocks_writes_and_allows_reads(mcp_admin_server):
 
             tools = await session.list_tools()
             names = {t.name for t in tools.tools}
-            assert "kg_find_edges" in names, f"Read tool not found; have: {sorted(names)}"
+            assert "kg_find_edges" in names, (
+                f"Read tool not found; have: {sorted(names)}"
+            )
 
             read_res = await session.call_tool("kg_find_edges", arguments={})
             assert read_res is not None
 
             err_resp = await session.call_tool(
                 "store_document",
-                arguments={"inp": {"id": "RO_BLOCK_TEST", "content": "hello", "type": "text"}},
+                arguments={
+                    "inp": {"id": "RO_BLOCK_TEST", "content": "hello", "type": "text"}
+                },
             )
             assert err_resp.content
             first = err_resp.content[0]
-            blob = getattr(first, "text", "") if getattr(first, "type", "") == "text" else json.dumps(first.json)
+            blob = (
+                getattr(first, "text", "")
+                if getattr(first, "type", "") == "text"
+                else json.dumps(first.json)
+            )
             assert ("403" in blob) or ("Forbidden" in blob)
 
 
@@ -100,7 +110,9 @@ async def test_tools_visibility_filtered_by_role(mcp_admin_server):
             tools = await session.list_tools()
             names = {t.name for t in tools.tools}
 
-            assert READ_TOOLS_MIN & names, f"Expected some read-only tools, got: {sorted(names)}"
+            assert READ_TOOLS_MIN & names, (
+                f"Expected some read-only tools, got: {sorted(names)}"
+            )
             assert WRITE_TOOLS.isdisjoint(names), (
                 f"RO client should not see write tools, but got: {WRITE_TOOLS & names}"
             )
@@ -117,7 +129,9 @@ async def test_tools_visibility_filtered_by_role(mcp_admin_server):
             names = {t.name for t in tools.tools}
 
             missing = WRITE_TOOLS - names
-            assert not missing, f"RW client should see write tools, missing: {sorted(missing)}"
+            assert not missing, (
+                f"RW client should see write tools, missing: {sorted(missing)}"
+            )
 
 
 @pytest.mark.asyncio
@@ -153,12 +167,18 @@ async def test_ro_blocked_on_write_tool_and_rw_allowed(mcp_admin_server):
                         except Exception:
                             payload = {"text": c.text}
                 blob = json.dumps(payload or {})
-                assert ("403" in blob) or ("Forbidden" in blob) or ("not permitted" in blob), (
-                    f"RO must be blocked; got response: {blob}"
-                )
+                assert (
+                    ("403" in blob)
+                    or ("Forbidden" in blob)
+                    or ("not permitted" in blob)
+                ), f"RO must be blocked; got response: {blob}"
             except Exception as exc:
                 text = str(exc)
-                assert ("Permission" in text) or ("Forbidden" in text) or ("not permitted" in text)
+                assert (
+                    ("Permission" in text)
+                    or ("Forbidden" in text)
+                    or ("not permitted" in text)
+                )
 
     async with streamablehttp_client(
         mcp_url,
@@ -168,7 +188,9 @@ async def test_ro_blocked_on_write_tool_and_rw_allowed(mcp_admin_server):
     ) as (read, write, _):
         async with ClientSession(read, write) as session:
             await session.initialize()
-            res = await session.call_tool(write_tool, arguments={"inp": {"mode": "skip-if-exists", "id": "DUMMY"}})
+            res = await session.call_tool(
+                write_tool, arguments={"inp": {"mode": "skip-if-exists", "id": "DUMMY"}}
+            )
             blob = ""
             if res.content:
                 c = res.content[0]
@@ -176,5 +198,7 @@ async def test_ro_blocked_on_write_tool_and_rw_allowed(mcp_admin_server):
             assert "not permitted" not in blob
             assert "Forbidden" not in blob
 
-    cleanup = requests.delete(f"{base_http}/admin/doc/DUMMY", headers=rw_headers, timeout=20)
+    cleanup = requests.delete(
+        f"{base_http}/admin/doc/DUMMY", headers=rw_headers, timeout=20
+    )
     assert cleanup.status_code in {200, 204, 404}

@@ -82,17 +82,27 @@ def _grounding_for(doc_id: str) -> Grounding:
 def _task_set_for_verdict(verdict: AdjudicationVerdict) -> LLMTaskSet:
     payload = {"verdict": verdict.model_dump(mode="python")}
     return LLMTaskSet(
-        extract_graph=lambda _req: ExtractGraphTaskResult(raw=None, parsed_payload=None, parsing_error="unused"),
+        extract_graph=lambda _req: ExtractGraphTaskResult(
+            raw=None, parsed_payload=None, parsing_error="unused"
+        ),
         adjudicate_pair=lambda _req: AdjudicatePairTaskResult(
             verdict_payload=payload,
             raw={"provider": "pytest-stub", "reason": verdict.reason},
             parsing_error=None,
         ),
-        adjudicate_batch=lambda _req: AdjudicateBatchTaskResult(verdict_payloads=(), raw=None, parsing_error="unused"),
-        filter_candidates=lambda _req: FilterCandidatesTaskResult(node_ids=(), edge_ids=(), reasoning="", raw=None, parsing_error=None),
+        adjudicate_batch=lambda _req: AdjudicateBatchTaskResult(
+            verdict_payloads=(), raw=None, parsing_error="unused"
+        ),
+        filter_candidates=lambda _req: FilterCandidatesTaskResult(
+            node_ids=(), edge_ids=(), reasoning="", raw=None, parsing_error=None
+        ),
         summarize_context=lambda req: SummarizeContextTaskResult(text=req.full_text),
-        answer_with_citations=lambda _req: AnswerWithCitationsTaskResult(answer_payload=None, raw=None, parsing_error="unused"),
-        repair_citations=lambda _req: RepairCitationsTaskResult(answer_payload=None, raw=None, parsing_error="unused"),
+        answer_with_citations=lambda _req: AnswerWithCitationsTaskResult(
+            answer_payload=None, raw=None, parsing_error="unused"
+        ),
+        repair_citations=lambda _req: RepairCitationsTaskResult(
+            answer_payload=None, raw=None, parsing_error="unused"
+        ),
         provider_hints=LLMTaskProviderHints(adjudicate_pair_provider="custom"),
     )
 
@@ -268,7 +278,9 @@ def test_generate_cross_kind_candidates_happy_path(engine: GraphKnowledgeEngine)
     _assert_positive_trace(candidate, trace)
 
 
-def test_generate_cross_kind_candidates_disabled_scoped_and_limit(engine: GraphKnowledgeEngine):
+def test_generate_cross_kind_candidates_disabled_scoped_and_limit(
+    engine: GraphKnowledgeEngine,
+):
     doc1, _, _ = _seed_reified_relation_fixture(
         engine,
         doc_id="doc::test_generate_cross_kind_candidates_disabled_scoped_and_limit::1",
@@ -281,7 +293,9 @@ def test_generate_cross_kind_candidates_disabled_scoped_and_limit(engine: GraphK
     )
 
     engine.allow_cross_kind_adjudication = False
-    with pytest.raises(ValueError, match="Configuration disallow cross kind adjudication."):
+    with pytest.raises(
+        ValueError, match="Configuration disallow cross kind adjudication."
+    ):
         engine.generate_cross_kind_candidates(scope_doc_id=doc1.id)
 
     engine.allow_cross_kind_adjudication = True
@@ -295,13 +309,19 @@ def test_generate_cross_kind_candidates_disabled_scoped_and_limit(engine: GraphK
         for candidate in candidates_scoped
     )
 
-    candidates_limited = engine.generate_cross_kind_candidates(scope_doc_id=doc1.id, limit_per_bucket=1)
+    candidates_limited = engine.generate_cross_kind_candidates(
+        scope_doc_id=doc1.id, limit_per_bucket=1
+    )
     assert len(candidates_limited) >= 1
     assert len(candidates_limited) <= len(candidates_scoped)
 
 
-@pytest.mark.skipif(_skip_real_llm, reason="Azure OpenAI env not set for real LLM adjudication")
-def test_generate_cross_kind_candidates_happy_path_real_llm_reason(engine: GraphKnowledgeEngine):
+@pytest.mark.skipif(
+    _skip_real_llm, reason="Azure OpenAI env not set for real LLM adjudication"
+)
+def test_generate_cross_kind_candidates_happy_path_real_llm_reason(
+    engine: GraphKnowledgeEngine,
+):
     doc, relation_node, relation_edge = _seed_reified_relation_fixture(
         engine,
         doc_id="doc::test_generate_cross_kind_candidates_happy_path_real_llm_reason",

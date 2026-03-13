@@ -64,7 +64,9 @@ class ExtractSubsystem(NamespaceProxy):
                 f"Expected one of {sorted(allowed)}"
             )
         if requested == "auto":
-            provider = getattr(self._e.llm_tasks.provider_hints, "extract_graph_provider", "unknown")
+            provider = getattr(
+                self._e.llm_tasks.provider_hints, "extract_graph_provider", "unknown"
+            )
             if provider == "gemini":
                 return "lean"
             return "full"
@@ -198,7 +200,12 @@ class ExtractSubsystem(NamespaceProxy):
                         continue
                     for i_sp, span_row in enumerate(spans):
                         if isinstance(span_row, dict):
-                            rows.append((f"{section}[{i_entry}].mentions[{i_g}].spans[{i_sp}]", span_row))
+                            rows.append(
+                                (
+                                    f"{section}[{i_entry}].mentions[{i_g}].spans[{i_sp}]",
+                                    span_row,
+                                )
+                            )
         return rows
 
     def _build_offset_failure_detail(
@@ -277,7 +284,11 @@ class ExtractSubsystem(NamespaceProxy):
                 prev_len = prev_end - prev_start
                 cur_len = end - start
                 if (score > prev_score) or (
-                    score == prev_score and (cur_dist < prev_dist or (cur_dist == prev_dist and cur_len < prev_len))
+                    score == prev_score
+                    and (
+                        cur_dist < prev_dist
+                        or (cur_dist == prev_dist and cur_len < prev_len)
+                    )
                 ):
                     best = (start, end, score)
         return best
@@ -293,7 +304,11 @@ class ExtractSubsystem(NamespaceProxy):
     ) -> LLMGraphExtraction:
         doc_alias = self._doc_alias()
         if mode in {"lean", "flattened_lean"}:
-            payload = parsed.model_dump() if isinstance(parsed, BaseModel) else deepcopy(parsed)
+            payload = (
+                parsed.model_dump()
+                if isinstance(parsed, BaseModel)
+                else deepcopy(parsed)
+            )
             if not isinstance(payload, dict):
                 raise ValueError(
                     f"Expected parsed payload as dict/BaseModel for mode={mode}, got {type(payload).__name__}"
@@ -327,7 +342,9 @@ class ExtractSubsystem(NamespaceProxy):
                 insertion_method="llm",
             )
         if mode == "flattened_full":
-            assoc_payload = parsed.model_dump() if isinstance(parsed, BaseModel) else parsed
+            assoc_payload = (
+                parsed.model_dump() if isinstance(parsed, BaseModel) else parsed
+            )
             assoc = AssocFlattenedLLMGraphExtraction.model_validate(
                 assoc_payload,
                 context={"insertion_method": "llm"},
@@ -360,7 +377,9 @@ class ExtractSubsystem(NamespaceProxy):
             last_error = str(last_iteration_result.get("error"))
             last_parsed = last_iteration_result.get("parsed")
             if isinstance(last_parsed, BaseModel):
-                last_parsed_payload = cast(dict[str, object], last_parsed.model_dump(mode="python"))
+                last_parsed_payload = cast(
+                    dict[str, object], last_parsed.model_dump(mode="python")
+                )
             elif isinstance(last_parsed, dict):
                 last_parsed_payload = cast(dict[str, object], last_parsed)
 
@@ -372,7 +391,10 @@ class ExtractSubsystem(NamespaceProxy):
                 doc_alias=doc_alias,
                 instruction=instruction_for_node_edge_contents_parsing_inclusion,
                 prompt_rules=prompt_rules,
-                schema_mode=cast(Literal["full", "lean", "flattened_lean", "flattened_full"], resolved_mode),
+                schema_mode=cast(
+                    Literal["full", "lean", "flattened_lean", "flattened_full"],
+                    resolved_mode,
+                ),
                 last_parsed=last_parsed_payload,
                 last_error=last_error,
             )
@@ -390,7 +412,9 @@ class ExtractSubsystem(NamespaceProxy):
             )
         return result.raw, parsed_canonical, result.parsing_error
 
-    def de_alias_ids_in_result(self, doc_id: str, parsed: LLMGraphExtraction) -> LLMGraphExtraction:
+    def de_alias_ids_in_result(
+        self, doc_id: str, parsed: LLMGraphExtraction
+    ) -> LLMGraphExtraction:
         if self._id_strategy() == "base62":
 
             def r(s: str):
@@ -420,7 +444,9 @@ class ExtractSubsystem(NamespaceProxy):
             e.target_ids = [r(x) for x in e.target_ids]
         return parsed
 
-    def aliasify_for_prompt(self, doc_id: str, ctx_nodes: list[dict], ctx_edges: list[dict]):
+    def aliasify_for_prompt(
+        self, doc_id: str, ctx_nodes: list[dict], ctx_edges: list[dict]
+    ):
         if self._id_strategy() == "base62":
             aliased_nodes = []
             for n in ctx_nodes:
@@ -438,11 +464,20 @@ class ExtractSubsystem(NamespaceProxy):
                     {
                         "id": f"E~{uuid_to_base62(e['id'])}",
                         "relation": e["relation"],
-                        "source_ids": [f"N~{uuid_to_base62(s)}" for s in e.get("source_ids", [])],
-                        "target_ids": [f"N~{uuid_to_base62(t)}" for t in e.get("target_ids", [])],
+                        "source_ids": [
+                            f"N~{uuid_to_base62(s)}" for s in e.get("source_ids", [])
+                        ],
+                        "target_ids": [
+                            f"N~{uuid_to_base62(t)}" for t in e.get("target_ids", [])
+                        ],
                     }
                 )
-            return aliased_nodes, aliased_edges, "Node aliases: (implicit base62)", "Edge aliases: (implicit base62)"
+            return (
+                aliased_nodes,
+                aliased_edges,
+                "Node aliases: (implicit base62)",
+                "Edge aliases: (implicit base62)",
+            )
 
         book = self._e._alias_book(doc_id)
         node_ids = [n["id"] for n in ctx_nodes]
@@ -456,7 +491,12 @@ class ExtractSubsystem(NamespaceProxy):
             return book.real_to_alias[x]
 
         aliased_nodes = [
-            {"id": a_node(n["id"]), "label": n["label"], "type": n["type"], "summary": n.get("summary", "")}
+            {
+                "id": a_node(n["id"]),
+                "label": n["label"],
+                "type": n["type"],
+                "summary": n.get("summary", ""),
+            }
             for n in ctx_nodes
         ]
         aliased_edges = [
@@ -470,7 +510,10 @@ class ExtractSubsystem(NamespaceProxy):
         ]
 
         if new_nodes:
-            lines = [f"- {book.real_to_alias[rid]}: {next(n for n in ctx_nodes if n['id'] == rid)['label']}" for rid, _ in new_nodes]
+            lines = [
+                f"- {book.real_to_alias[rid]}: {next(n for n in ctx_nodes if n['id'] == rid)['label']}"
+                for rid, _ in new_nodes
+            ]
             nodes_str = "New node aliases:\n" + "\n".join(lines)
         else:
             nodes_str = "New node aliases: (none)"
@@ -521,7 +564,10 @@ class ExtractSubsystem(NamespaceProxy):
                 )
                 continue
 
-            if 0 <= start_char < end_char <= len(content) and content[start_char:end_char] == excerpt:
+            if (
+                0 <= start_char < end_char <= len(content)
+                and content[start_char:end_char] == excerpt
+            ):
                 continue
 
             exact_matches = self._find_all_exact_occurrences(content, excerpt)
@@ -568,7 +614,9 @@ class ExtractSubsystem(NamespaceProxy):
 
     def coerce_pages(self, content_or_pages):
         if isinstance(content_or_pages, dict):
-            items = sorted(((int(k), v) for k, v in content_or_pages.items()), key=lambda x: x[0])
+            items = sorted(
+                ((int(k), v) for k, v in content_or_pages.items()), key=lambda x: x[0]
+            )
             return [(p, str(t or "")) for p, t in items]
 
         if isinstance(content_or_pages, (list, tuple)):
@@ -581,13 +629,29 @@ class ExtractSubsystem(NamespaceProxy):
                 out = []
                 for i, item in enumerate(content_or_pages, start=1):
                     p = int(item.get("page", i))
-                    out.append((p, str(item.get("text", "\n".join(i["text"] for i in item.get("OCR_text_clusters", ""))) or "")))
+                    out.append(
+                        (
+                            p,
+                            str(
+                                item.get(
+                                    "text",
+                                    "\n".join(
+                                        i["text"]
+                                        for i in item.get("OCR_text_clusters", "")
+                                    ),
+                                )
+                                or ""
+                            ),
+                        )
+                    )
                 return out
             if isinstance(first, list) and first and "pdf_page_num" in first[0]:
                 try:
                     return [(t["pdf_page_num"], str(t or "")) for t in content_or_pages]
                 except KeyError:
-                    raise Exception("Value inconsistency, each page is a dict, some have 'pdf_page_num' but some do not")
+                    raise Exception(
+                        "Value inconsistency, each page is a dict, some have 'pdf_page_num' but some do not"
+                    )
             return [(i, str(t or "")) for i, t in enumerate(content_or_pages, start=1)]
 
         if isinstance(content_or_pages, str):
@@ -611,12 +675,23 @@ class ExtractSubsystem(NamespaceProxy):
         span = span.model_copy(deep=True)
         doc_alias = self._doc_alias()
         if span.document_page_url and doc_alias in span.document_page_url:
-            span.document_page_url = span.document_page_url.replace(doc_alias, real_doc_id)
+            span.document_page_url = span.document_page_url.replace(
+                doc_alias, real_doc_id
+            )
         if span.collection_page_url and doc_alias in span.collection_page_url:
-            span.collection_page_url = span.collection_page_url.replace(doc_alias, real_doc_id)
-        if getattr(span, "doc_id", None) == doc_alias or getattr(span, "doc_id", None) is None:
+            span.collection_page_url = span.collection_page_url.replace(
+                doc_alias, real_doc_id
+            )
+        if (
+            getattr(span, "doc_id", None) == doc_alias
+            or getattr(span, "doc_id", None) is None
+        ):
             span.doc_id = real_doc_id
-        if span.start_char is not None and span.end_char is not None and span.end_char < span.start_char:
+        if (
+            span.start_char is not None
+            and span.end_char is not None
+            and span.end_char < span.start_char
+        ):
             span.end_char = span.start_char
         return span
 
@@ -624,7 +699,9 @@ class ExtractSubsystem(NamespaceProxy):
     def dealias_one_span(self, span: Span, real_doc_id: str) -> Span:
         return self.delias_one_span(span, real_doc_id)
 
-    def dealias_one_grounding(self, grounding: Grounding, real_doc_id: str) -> Grounding:
+    def dealias_one_grounding(
+        self, grounding: Grounding, real_doc_id: str
+    ) -> Grounding:
         out: list[Span] = []
         for span in grounding.spans:
             out.append(self.delias_one_span(span, real_doc_id))
@@ -647,7 +724,9 @@ class ExtractSubsystem(NamespaceProxy):
             if docs:
                 return docs[0] or ""
             raise Exception("document lost")
-        got = self._e.backend.document_get(where={"doc_id": document_id}, include=["documents"])
+        got = self._e.backend.document_get(
+            where={"doc_id": document_id}, include=["documents"]
+        )
         if got and got.get("documents"):
             docs = got.get("documents")
             if docs:
@@ -665,7 +744,10 @@ class ExtractSubsystem(NamespaceProxy):
         if (doc_id is not None) + (doc_type is not None) + (document is not None) != 1:
             raise ValueError("Must only specify one of doc_id, doc_type or document")
 
-        from graph_knowledge_engine.extraction import OcrDocSpanValidator, PlainTextDocSpanValidator
+        from graph_knowledge_engine.extraction import (
+            OcrDocSpanValidator,
+            PlainTextDocSpanValidator,
+        )
 
         if doc_type is None:
             if doc_id is not None:
@@ -723,10 +805,14 @@ class ExtractSubsystem(NamespaceProxy):
                 set([j for i in parsed_copy.edges for j in i.target_ids]).union(
                     set([j for i in parsed_copy.edges for j in i.source_ids])
                 )
-                <= set([i.id for i in parsed_copy.edges]).union(set([i.id for i in parsed_copy.nodes]))
+                <= set([i.id for i in parsed_copy.edges]).union(
+                    set([i.id for i in parsed_copy.nodes])
+                )
             ):
                 raise Exception("LLM error, new uuid hallucinated")
-            span_validator: BaseDocValidator = self._e.get_span_validator_of_doc_type(doc_type=doc_type)
+            span_validator: BaseDocValidator = self._e.get_span_validator_of_doc_type(
+                doc_type=doc_type
+            )
 
             dummy_doc = Document(
                 content=content,
@@ -750,19 +836,30 @@ class ExtractSubsystem(NamespaceProxy):
                             if autofix:
                                 if autofix is True:
                                     fix_result = span_validator.fix_span(
-                                        doc=dummy_doc, span=sp, nodes_edges=parsed_copy.nodes + parsed_copy.edges
+                                        doc=dummy_doc,
+                                        span=sp,
+                                        nodes_edges=parsed_copy.nodes
+                                        + parsed_copy.edges,
                                     )
                                     result = fix_result
                                 else:
-                                    raise NotImplementedError("string method options not iplemented")
+                                    raise NotImplementedError(
+                                        "string method options not iplemented"
+                                    )
                             if result["correctness"] is False:
-                                pre_parsed_node_or_edge: Node | Edge = pre_parse_nodes_or_edges[i]
+                                pre_parsed_node_or_edge: Node | Edge = (
+                                    pre_parse_nodes_or_edges[i]
+                                )
                                 validation_error_group.append(
                                     f"Error found for {pre_parsed_node_or_edge.model_dump(field_mode='backend')}: {str(result)}"
                                 )
 
         if with_parsed:
-            return {"raw": raw, "parsed": parsed, "error": validation_error_group or None}
+            return {
+                "raw": raw,
+                "parsed": parsed,
+                "error": validation_error_group or None,
+            }
         return {"raw": raw, "error": validation_error_group or None}
 
     def cached_extract_graph_with_llm(self, *args, **kwargs):

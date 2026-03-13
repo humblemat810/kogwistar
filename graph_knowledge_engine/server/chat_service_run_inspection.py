@@ -69,7 +69,11 @@ class _RunInspectionService(_BaseComponent):
         return out
 
     def get_checkpoint(self, run_id: str, step_seq: int) -> dict[str, Any]:
-        state = load_checkpoint(conversation_engine=self._conversation_engine(), run_id=run_id, step_seq=step_seq)
+        state = load_checkpoint(
+            conversation_engine=self._conversation_engine(),
+            run_id=run_id,
+            step_seq=step_seq,
+        )
         return {
             "run_id": run_id,
             "step_seq": int(step_seq),

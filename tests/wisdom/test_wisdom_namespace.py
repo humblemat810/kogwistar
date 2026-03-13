@@ -52,8 +52,8 @@
 #     assert r.status_code == 200
 #     err = r.json()["error"]["message"].lower()
 #     assert "forbidden" in err
-    
-    
+
+
 # def test_wisdom_semantic_seed_expand_roundtrip():
 #     t_wis = make_token(ns="wisdom")
 #     body = {
@@ -80,28 +80,44 @@
 #     data = q.json()["result"]
 #     assert "layers" in data
 #     assert isinstance(data["layers"], list)
-    
-    
+
+
 from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
-from graph_knowledge_engine.engine_core.models import PureChromaNode, PureChromaEdge, PureGraph
+from graph_knowledge_engine.engine_core.models import (
+    PureChromaNode,
+    PureChromaEdge,
+    PureGraph,
+)
+
 
 def test_puregraph_persist(tmp_path):
     eng = GraphKnowledgeEngine(persist_directory=str(tmp_path))
-    node = PureChromaNode(domain_id = "wisdom-math", label="T", type="entity", summary="x")
-    edge = PureChromaEdge(domain_id = "wisdom-math", label="E", type="relationship", summary="r",
-                          relation="rel", source_ids=[node.id], target_ids=[node.id],
-                          source_edge_ids=[], target_edge_ids=[])
+    node = PureChromaNode(
+        domain_id="wisdom-math", label="T", type="entity", summary="x"
+    )
+    edge = PureChromaEdge(
+        domain_id="wisdom-math",
+        label="E",
+        type="relationship",
+        summary="r",
+        relation="rel",
+        source_ids=[node.id],
+        target_ids=[node.id],
+        source_edge_ids=[],
+        target_edge_ids=[],
+    )
     g = PureGraph(nodes=[node], edges=[edge])
     out = eng.persist_graph(parsed=g, session_id="unit-test")
     assert out["node_ids"] and out["edge_ids"]
-    
+
+
 # def test_dev_token_endpoint_ns_field():
 #     r = client.post("/auth/dev-token", params={"role": "rw", "ns": "wisdom"})
 #     assert r.status_code == 200
 #     tok = r.json()["token"]
 #     decoded = jwt.decode(tok, JWT_SECRET, algorithms=[JWT_ALG])
 #     assert decoded["ns"] == "wisdom"
-    
+
 # def test_tool_listing_respects_namespace(client):
 #     token_docs = make_token(ns="docs")
 #     token_wisdom = make_token(ns="wisdom")

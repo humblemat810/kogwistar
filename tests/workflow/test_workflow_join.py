@@ -1,7 +1,6 @@
-
 import time
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List
+from typing import Any, Dict, List
 
 import pytest
 
@@ -17,21 +16,22 @@ class FakeNode:
     terminal: bool
     fanout: bool
     metadata: Dict[str, Any] | None = None
-    
+
     def safe_get_id(self):
         return self.id
+
 
 @dataclass
 class FakeEdge:
     id: str
-    label:str
+    label: str
     predicate: str
     source_ids: List[str]
     target_ids: List[str]
     multiplicity: int
     is_default: bool
     metadata: Dict[str, Any] | None = None
-    
+
     def safe_get_id(self):
         return self.id
 
@@ -40,6 +40,7 @@ class FakeConversationEngine:
     """
     Minimal sink for WorkflowRuntime tracing. It only needs to accept add_node/add_edge.
     """
+
     def __init__(self) -> None:
         self.nodes = []
         self.edges = []
@@ -51,10 +52,14 @@ class FakeConversationEngine:
     def add_edge(self, e):
         self.edges.append(e)
         return e
+
     def get_nodes(self, *arg, **kwargs):
         return self.nodes
+
     def get_edges(self, *arg, **kwargs):
         return self.edges
+
+
 class FakeWorkflowEngine:
     def __init__(self, nodes: List[FakeNode], edges: List[FakeEdge]) -> None:
         self._nodes = nodes
@@ -68,7 +73,16 @@ class FakeWorkflowEngine:
         return self._edges
 
 
-def _n(node_id: str, *, workflow_id: str, op: str, start=False, terminal=False, fanout=False, join=False) -> FakeNode:
+def _n(
+    node_id: str,
+    *,
+    workflow_id: str,
+    op: str,
+    start=False,
+    terminal=False,
+    fanout=False,
+    join=False,
+) -> FakeNode:
     md = {
         "entity_type": "workflow_node",
         "workflow_id": workflow_id,
@@ -80,10 +94,26 @@ def _n(node_id: str, *, workflow_id: str, op: str, start=False, terminal=False, 
     }
     if join:
         md["wf_join"] = True
-    return FakeNode(id=node_id, metadata=md, op=md['wf_op'], terminal = bool(md.get('wf_terminal')), fanout = bool(md.get('wf_fanout')))
+    return FakeNode(
+        id=node_id,
+        metadata=md,
+        op=md["wf_op"],
+        terminal=bool(md.get("wf_terminal")),
+        fanout=bool(md.get("wf_fanout")),
+    )
 
 
-def _e(edge_id: str, *, workflow_id: str, src: str, dst: str, predicate=None, priority=100, is_default=False, multiplicity="one") -> FakeEdge:
+def _e(
+    edge_id: str,
+    *,
+    workflow_id: str,
+    src: str,
+    dst: str,
+    predicate=None,
+    priority=100,
+    is_default=False,
+    multiplicity="one",
+) -> FakeEdge:
     md = {
         "entity_type": "workflow_edge",
         "workflow_id": workflow_id,
@@ -92,9 +122,16 @@ def _e(edge_id: str, *, workflow_id: str, src: str, dst: str, predicate=None, pr
         "wf_is_default": bool(is_default),
         "wf_multiplicity": multiplicity,
     }
-    return FakeEdge(id=edge_id, label= f"{src} to {dst}", predicate=md["wf_predicate"], multiplicity = md["wf_multiplicity"],
-                    is_default = md["wf_is_default"],
-                    source_ids=[src], target_ids=[dst], metadata=md)
+    return FakeEdge(
+        id=edge_id,
+        label=f"{src} to {dst}",
+        predicate=md["wf_predicate"],
+        multiplicity=md["wf_multiplicity"],
+        is_default=md["wf_is_default"],
+        source_ids=[src],
+        target_ids=[dst],
+        metadata=md,
+    )
 
 
 @pytest.mark.parametrize("max_workers", [1, 2])
@@ -133,19 +170,18 @@ def test_join_barrier_waits_for_all_arrivals(max_workers: int):
 
     @resolver.register("noop")
     def _noop(ctx):
-        return RunSuccess(conversation_node_id = None, state_update=[])
-
+        return RunSuccess(conversation_node_id=None, state_update=[])
 
     @resolver.register("fast")
     def _fast(ctx: StepContext):
         # mark arrival time
-        
+
         # state.setdefault("op_log", []).append("start")
         # state["started"] = True
         # result = RunSuccess(conversation_node_id=None, state_update=[('u',{"started": True})])
         with ctx.state_write as st:
             st.setdefault("events", []).append(("a_done", time.time()))
-        return RunSuccess(conversation_node_id = None,state_update=[])
+        return RunSuccess(conversation_node_id=None, state_update=[])
 
     @resolver.register("slow")
     def _slow(ctx: StepContext):
@@ -153,20 +189,22 @@ def test_join_barrier_waits_for_all_arrivals(max_workers: int):
         # st = ctx.state
         with ctx.state_write as st:
             st.setdefault("events", []).append(("b_done", time.time()))
-        return RunSuccess(conversation_node_id = None,state_update=[])
+        return RunSuccess(conversation_node_id=None, state_update=[])
+
     @resolver.register("slow_c")
     def _slow_c(ctx: StepContext):
         time.sleep(0.05)
         # st = ctx.state
         with ctx.state_write as st:
             st.setdefault("events", []).append(("c_done", time.time()))
-        return RunSuccess(conversation_node_id = None,state_update=[])
+        return RunSuccess(conversation_node_id=None, state_update=[])
+
     @resolver.register("end")
     def _end(ctx: StepContext):
         with ctx.state_write as st:
             st.setdefault("events", []).append(("end", time.time()))
             st["ended"] = True
-        return RunSuccess(conversation_node_id = None,state_update=[])
+        return RunSuccess(conversation_node_id=None, state_update=[])
 
     rt = WorkflowRuntime(
         workflow_engine=engine,
@@ -177,9 +215,12 @@ def test_join_barrier_waits_for_all_arrivals(max_workers: int):
     )
 
     state: Dict[str, Any] = {}
-    run_result = rt.run(workflow_id=wid, conversation_id="conv_test", 
-                                        turn_node_id="turn_test", 
-                                        initial_state=state)
+    run_result = rt.run(
+        workflow_id=wid,
+        conversation_id="conv_test",
+        turn_node_id="turn_test",
+        initial_state=state,
+    )
     final_state, run_id = run_result.final_state, run_result.run_id
     out = final_state, run_id
     assert state.get("ended") is True
@@ -227,39 +268,43 @@ def test_join_does_not_wait_for_branch_that_can_no_longer_reach_it():
 
     engine = FakeWorkflowEngine(nodes, edges)
     resolver = MappingStepResolver()
+
     @resolver.register("noop")
     def _fast(ctx):
-        return RunSuccess(conversation_node_id = None, state_update=[])
+        return RunSuccess(conversation_node_id=None, state_update=[])
+
     @resolver.register("fast")
     def _fast(ctx):
         with ctx.state_write as st:
             st.setdefault("events", []).append("a_done")
-        return RunSuccess(conversation_node_id = None, state_update=[])
+        return RunSuccess(conversation_node_id=None, state_update=[])
+
     @resolver.register("join")
     def _join(ctx):
         time.sleep(0.05)
         with ctx.state_write as st:
             st.setdefault("events", []).append("join_done")
-        return RunSuccess(conversation_node_id = None, state_update=[])
+        return RunSuccess(conversation_node_id=None, state_update=[])
+
     @resolver.register("slow")
     def _slow(ctx):
         time.sleep(0.05)
         with ctx.state_write as st:
             st.setdefault("events", []).append("b_done")
-        return RunSuccess(conversation_node_id = None, state_update=[])
+        return RunSuccess(conversation_node_id=None, state_update=[])
 
     @resolver.register("end")
     def _end(ctx):
         with ctx.state_write as st:
             st.setdefault("events", []).append("end")
             st["ended"] = True
-        return RunSuccess(conversation_node_id = None, state_update=[])
+        return RunSuccess(conversation_node_id=None, state_update=[])
 
     @resolver.register("end_a")
     def _end_a(ctx):
         with ctx.state_write as st:
             st.setdefault("events", []).append("end_a")
-        return RunSuccess(conversation_node_id = None, state_update=[])
+        return RunSuccess(conversation_node_id=None, state_update=[])
 
     rt = WorkflowRuntime(
         workflow_engine=engine,
@@ -270,13 +315,17 @@ def test_join_does_not_wait_for_branch_that_can_no_longer_reach_it():
     )
 
     state: Dict[str, Any] = {}
-    run_result = rt.run(workflow_id=wid, conversation_id="conv_test", turn_node_id="turn_test", initial_state=state)
+    run_result = rt.run(
+        workflow_id=wid,
+        conversation_id="conv_test",
+        turn_node_id="turn_test",
+        initial_state=state,
+    )
     final_state, _run_id = run_result.final_state, run_result.run_id
     assert final_state.get("ended") is True
     # join must have released even though 'a' never reaches join
     assert "b_done" in final_state.get("events", [])
     assert "end" in final_state.get("events", [])
-
 
 
 def test_nested_joins_human_debug(capsys):
@@ -320,43 +369,45 @@ def test_nested_joins_human_debug(capsys):
 
     engine = FakeWorkflowEngine(nodes, edges)
     resolver = MappingStepResolver()
+
     @resolver.register("noop")
     def _noop(ctx):
         with ctx.state_write as st:
             st.setdefault("events", []).append(("noop", time.time()))
-        return RunSuccess(conversation_node_id = None, state_update=[])
+        return RunSuccess(conversation_node_id=None, state_update=[])
+
     @resolver.register("fast")
     def _fast(ctx):
         with ctx.state_write as st:
             st.setdefault("events", []).append(("a_done", time.time()))
-        return RunSuccess(conversation_node_id = None, state_update=[])
+        return RunSuccess(conversation_node_id=None, state_update=[])
 
     @resolver.register("slow")
     def _slow(ctx):
         time.sleep(0.05)
         with ctx.state_write as st:
             st.setdefault("events", []).append(("b_done", time.time()))
-        return RunSuccess(conversation_node_id = None, state_update=[])
+        return RunSuccess(conversation_node_id=None, state_update=[])
 
     @resolver.register("fast2")
     def _fast2(ctx):
         with ctx.state_write as st:
             st.setdefault("events", []).append(("c_done", time.time()))
-        return RunSuccess(conversation_node_id = None, state_update=[])
+        return RunSuccess(conversation_node_id=None, state_update=[])
 
     @resolver.register("slow2")
     def _slow2(ctx):
         time.sleep(0.05)
         with ctx.state_write as st:
             st.setdefault("events", []).append(("d_done", time.time()))
-        return RunSuccess(conversation_node_id = None, state_update=[])
+        return RunSuccess(conversation_node_id=None, state_update=[])
 
     @resolver.register("end")
     def _end(ctx):
         with ctx.state_write as st:
             st.setdefault("events", []).append(("end", time.time()))
             st["ended"] = True
-        return RunSuccess(conversation_node_id = None, state_update=[])
+        return RunSuccess(conversation_node_id=None, state_update=[])
 
     rt = WorkflowRuntime(
         workflow_engine=engine,
@@ -367,13 +418,23 @@ def test_nested_joins_human_debug(capsys):
     )
 
     state: Dict[str, Any] = {"testcase_rt_join_debug": True}
-    run_result = rt.run(workflow_id=wid, conversation_id="conv_test", turn_node_id="turn_test", initial_state=state)
+    run_result = rt.run(
+        workflow_id=wid,
+        conversation_id="conv_test",
+        turn_node_id="turn_test",
+        initial_state=state,
+    )
     final_state, _run_id = run_result.final_state, run_result.run_id
     assert final_state.get("ended") is True
     events = final_state.get("events", [])
     names = [n for n, _t in events]
     assert names.count("end") == 1
-    assert "a_done" in names and "b_done" in names and "c_done" in names and "d_done" in names
+    assert (
+        "a_done" in names
+        and "b_done" in names
+        and "c_done" in names
+        and "d_done" in names
+    )
 
     # end after all
     t_end = next(t for n, t in events if n == "end")

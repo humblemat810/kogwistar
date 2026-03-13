@@ -5,8 +5,17 @@ import uuid
 from pathlib import Path
 
 from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
-from graph_knowledge_engine.engine_core.models import Grounding, MentionVerification, Span
-from graph_knowledge_engine.runtime.models import RunSuccess, WorkflowCompletedNode, WorkflowEdge, WorkflowNode
+from graph_knowledge_engine.engine_core.models import (
+    Grounding,
+    MentionVerification,
+    Span,
+)
+from graph_knowledge_engine.runtime.models import (
+    RunSuccess,
+    WorkflowCompletedNode,
+    WorkflowEdge,
+    WorkflowNode,
+)
 from graph_knowledge_engine.runtime.runtime import WorkflowRuntime
 
 
@@ -37,7 +46,9 @@ def _span() -> Span:
         context_after="",
         chunk_id=None,
         source_cluster_id=None,
-        verification=MentionVerification(method="human", is_verified=True, score=1.0, notes="test"),
+        verification=MentionVerification(
+            method="human", is_verified=True, score=1.0, notes="test"
+        ),
     )
 
 
@@ -45,7 +56,14 @@ def _g() -> Grounding:
     return Grounding(spans=[_span()])
 
 
-def _wf_node(*, workflow_id: str, node_id: str, op: str, start: bool = False, terminal: bool = False) -> WorkflowNode:
+def _wf_node(
+    *,
+    workflow_id: str,
+    node_id: str,
+    op: str,
+    start: bool = False,
+    terminal: bool = False,
+) -> WorkflowNode:
     return WorkflowNode(
         id=node_id,
         label=node_id,
@@ -114,15 +132,26 @@ def test_runtime_persists_completed_terminal_for_leaf_node():
 
         workflow_id = "wf_runtime_leaf_terminal"
         conversation_id = "conv_runtime_leaf_terminal"
-        start = _wf_node(workflow_id=workflow_id, node_id="wf|start", op="start", start=True)
+        start = _wf_node(
+            workflow_id=workflow_id, node_id="wf|start", op="start", start=True
+        )
         leaf = _wf_node(workflow_id=workflow_id, node_id="wf|leaf", op="leaf")
         workflow_engine.add_node(start)
         workflow_engine.add_node(leaf)
-        workflow_engine.add_edge(_wf_edge(workflow_id=workflow_id, edge_id="wf|start->leaf", src=start.id, dst=leaf.id))
+        workflow_engine.add_edge(
+            _wf_edge(
+                workflow_id=workflow_id,
+                edge_id="wf|start->leaf",
+                src=start.id,
+                dst=leaf.id,
+            )
+        )
 
         def resolve_step(op: str):
             def _fn(ctx):
-                return RunSuccess(conversation_node_id=None, state_update=[("a", {"last_op": op})])
+                return RunSuccess(
+                    conversation_node_id=None, state_update=[("a", {"last_op": op})]
+                )
 
             return _fn
 
@@ -143,7 +172,12 @@ def test_runtime_persists_completed_terminal_for_leaf_node():
 
         assert result.status == "succeeded"
         completed = conversation_engine.get_nodes(
-            where={"$and": [{"entity_type": "workflow_completed"}, {"run_id": result.run_id}]},
+            where={
+                "$and": [
+                    {"entity_type": "workflow_completed"},
+                    {"run_id": result.run_id},
+                ]
+            },
             limit=10,
         )
         assert len(completed) == 1

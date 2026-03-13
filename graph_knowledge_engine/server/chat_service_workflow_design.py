@@ -21,7 +21,9 @@ from .chat_service_workflow_history import _WorkflowDesignHistoryMixin
 class _WorkflowDesignService(_WorkflowDesignHistoryMixin):
     """Owns workflow design history, projections, snapshots, and undo/redo."""
 
-    def _assert_designer_identity(self, *, designer_id: str, actor_sub: str | None) -> str:
+    def _assert_designer_identity(
+        self, *, designer_id: str, actor_sub: str | None
+    ) -> str:
         resolved_designer = str(designer_id or "").strip()
         if not resolved_designer:
             raise ValueError("designer_id is required")
@@ -35,19 +37,29 @@ class _WorkflowDesignService(_WorkflowDesignHistoryMixin):
         if not workflow_id:
             raise ValueError("workflow_id is required")
         with self._workflow_history_lock:
-            return self._workflow_sync_projection_locked(workflow_id=workflow_id, materialize=False)
+            return self._workflow_sync_projection_locked(
+                workflow_id=workflow_id, materialize=False
+            )
 
     def refresh_workflow_design_projection(self, *, workflow_id: str) -> dict[str, Any]:
         workflow_id = str(workflow_id or "").strip()
         if not workflow_id:
             raise ValueError("workflow_id is required")
-        clear_snapshots = getattr(self._workflow_meta_store(), "clear_workflow_design_snapshots", None)
+        clear_snapshots = getattr(
+            self._workflow_meta_store(), "clear_workflow_design_snapshots", None
+        )
         with self._workflow_history_lock:
             state = self._workflow_fold_history(workflow_id=workflow_id)
-            self._store_workflow_projection(workflow_id=workflow_id, state=state, materialization_status="rebuilding")
+            self._store_workflow_projection(
+                workflow_id=workflow_id,
+                state=state,
+                materialization_status="rebuilding",
+            )
             if callable(clear_snapshots):
                 clear_snapshots(workflow_id=workflow_id)
-            out = self._workflow_finalize_design_state_locked(workflow_id=workflow_id, rebuild=True)
+            out = self._workflow_finalize_design_state_locked(
+                workflow_id=workflow_id, rebuild=True
+            )
             out["status"] = "ok"
             return out
 
@@ -69,9 +81,13 @@ class _WorkflowDesignService(_WorkflowDesignHistoryMixin):
         workflow_id = str(workflow_id or "").strip()
         if not workflow_id:
             raise ValueError("workflow_id is required")
-        resolved_designer_id = self._assert_designer_identity(designer_id=designer_id, actor_sub=actor_sub)
+        resolved_designer_id = self._assert_designer_identity(
+            designer_id=designer_id, actor_sub=actor_sub
+        )
         self._assert_workflow_projection_not_rebuilding(workflow_id=workflow_id)
-        resolved_node_id = str(node_id or "").strip() or f"wf|{workflow_id}|n|{new_id_str()}"
+        resolved_node_id = (
+            str(node_id or "").strip() or f"wf|{workflow_id}|n|{new_id_str()}"
+        )
         resolved_label = str(label or "").strip()
         if not resolved_label:
             raise ValueError("label is required")
@@ -104,8 +120,12 @@ class _WorkflowDesignService(_WorkflowDesignHistoryMixin):
         )
         namespace = self._workflow_namespace(workflow_id)
         with self._workflow_history_lock:
-            state_before = self._workflow_sync_projection_locked(workflow_id=workflow_id, materialize=True)
-            before_visible = self._workflow_capture_visible_snapshot(workflow_id=workflow_id)
+            state_before = self._workflow_sync_projection_locked(
+                workflow_id=workflow_id, materialize=True
+            )
+            before_visible = self._workflow_capture_visible_snapshot(
+                workflow_id=workflow_id
+            )
             current_version = int(state_before.get("current_version") or 0)
             new_version = int(state_before.get("allocated_max_version") or 0) + 1
             branch_dropped = False
@@ -131,16 +151,24 @@ class _WorkflowDesignService(_WorkflowDesignHistoryMixin):
                         "target_seq": int(latest_seq),
                     },
                 )
-            after_visible = self._workflow_capture_visible_snapshot(workflow_id=workflow_id)
+            after_visible = self._workflow_capture_visible_snapshot(
+                workflow_id=workflow_id
+            )
             self._workflow_store_version_delta(
                 workflow_id=workflow_id,
                 version=new_version,
                 prev_version=current_version,
                 target_seq=int(latest_seq),
-                forward=self._workflow_compute_visible_delta(before=before_visible, after=after_visible),
-                inverse=self._workflow_compute_visible_delta(before=after_visible, after=before_visible),
+                forward=self._workflow_compute_visible_delta(
+                    before=before_visible, after=after_visible
+                ),
+                inverse=self._workflow_compute_visible_delta(
+                    before=after_visible, after=before_visible
+                ),
             )
-            history = self._workflow_finalize_design_state_locked(workflow_id=workflow_id, rebuild=branch_dropped)
+            history = self._workflow_finalize_design_state_locked(
+                workflow_id=workflow_id, rebuild=branch_dropped
+            )
         return {
             "workflow_id": workflow_id,
             "namespace": namespace,
@@ -172,13 +200,17 @@ class _WorkflowDesignService(_WorkflowDesignHistoryMixin):
         workflow_id = str(workflow_id or "").strip()
         if not workflow_id:
             raise ValueError("workflow_id is required")
-        resolved_designer_id = self._assert_designer_identity(designer_id=designer_id, actor_sub=actor_sub)
+        resolved_designer_id = self._assert_designer_identity(
+            designer_id=designer_id, actor_sub=actor_sub
+        )
         self._assert_workflow_projection_not_rebuilding(workflow_id=workflow_id)
         src = str(src or "").strip()
         dst = str(dst or "").strip()
         if not src or not dst:
             raise ValueError("src and dst are required")
-        resolved_edge_id = str(edge_id or "").strip() or f"wf|{workflow_id}|e|{new_id_str()}"
+        resolved_edge_id = (
+            str(edge_id or "").strip() or f"wf|{workflow_id}|e|{new_id_str()}"
+        )
         md = dict(metadata or {})
         md.update(
             {
@@ -211,8 +243,12 @@ class _WorkflowDesignService(_WorkflowDesignHistoryMixin):
         )
         namespace = self._workflow_namespace(workflow_id)
         with self._workflow_history_lock:
-            state_before = self._workflow_sync_projection_locked(workflow_id=workflow_id, materialize=True)
-            before_visible = self._workflow_capture_visible_snapshot(workflow_id=workflow_id)
+            state_before = self._workflow_sync_projection_locked(
+                workflow_id=workflow_id, materialize=True
+            )
+            before_visible = self._workflow_capture_visible_snapshot(
+                workflow_id=workflow_id
+            )
             current_version = int(state_before.get("current_version") or 0)
             new_version = int(state_before.get("allocated_max_version") or 0) + 1
             branch_dropped = False
@@ -238,16 +274,24 @@ class _WorkflowDesignService(_WorkflowDesignHistoryMixin):
                         "target_seq": int(latest_seq),
                     },
                 )
-            after_visible = self._workflow_capture_visible_snapshot(workflow_id=workflow_id)
+            after_visible = self._workflow_capture_visible_snapshot(
+                workflow_id=workflow_id
+            )
             self._workflow_store_version_delta(
                 workflow_id=workflow_id,
                 version=new_version,
                 prev_version=current_version,
                 target_seq=int(latest_seq),
-                forward=self._workflow_compute_visible_delta(before=before_visible, after=after_visible),
-                inverse=self._workflow_compute_visible_delta(before=after_visible, after=before_visible),
+                forward=self._workflow_compute_visible_delta(
+                    before=before_visible, after=after_visible
+                ),
+                inverse=self._workflow_compute_visible_delta(
+                    before=after_visible, after=before_visible
+                ),
             )
-            history = self._workflow_finalize_design_state_locked(workflow_id=workflow_id, rebuild=branch_dropped)
+            history = self._workflow_finalize_design_state_locked(
+                workflow_id=workflow_id, rebuild=branch_dropped
+            )
         return {
             "workflow_id": workflow_id,
             "namespace": namespace,
@@ -274,13 +318,22 @@ class _WorkflowDesignService(_WorkflowDesignHistoryMixin):
             raise ValueError("workflow_id is required")
         if not node_id:
             raise ValueError("node_id is required")
-        resolved_designer_id = self._assert_designer_identity(designer_id=designer_id, actor_sub=actor_sub)
+        resolved_designer_id = self._assert_designer_identity(
+            designer_id=designer_id, actor_sub=actor_sub
+        )
         self._assert_workflow_projection_not_rebuilding(workflow_id=workflow_id)
         namespace = self._workflow_namespace(workflow_id)
         with self._workflow_history_lock:
-            state_before = self._workflow_sync_projection_locked(workflow_id=workflow_id, materialize=True)
-            before_visible = self._workflow_capture_visible_snapshot(workflow_id=workflow_id)
-            known_node_ids = {str(item.get("id") or "") for item in list(before_visible.get("nodes") or [])}
+            state_before = self._workflow_sync_projection_locked(
+                workflow_id=workflow_id, materialize=True
+            )
+            before_visible = self._workflow_capture_visible_snapshot(
+                workflow_id=workflow_id
+            )
+            known_node_ids = {
+                str(item.get("id") or "")
+                for item in list(before_visible.get("nodes") or [])
+            }
             current_version = int(state_before.get("current_version") or 0)
             new_version = int(state_before.get("allocated_max_version") or 0) + 1
             branch_dropped = False
@@ -320,16 +373,24 @@ class _WorkflowDesignService(_WorkflowDesignHistoryMixin):
                         "target_seq": int(latest_seq),
                     },
                 )
-            after_visible = self._workflow_capture_visible_snapshot(workflow_id=workflow_id)
+            after_visible = self._workflow_capture_visible_snapshot(
+                workflow_id=workflow_id
+            )
             self._workflow_store_version_delta(
                 workflow_id=workflow_id,
                 version=new_version,
                 prev_version=current_version,
                 target_seq=int(latest_seq),
-                forward=self._workflow_compute_visible_delta(before=before_visible, after=after_visible),
-                inverse=self._workflow_compute_visible_delta(before=after_visible, after=before_visible),
+                forward=self._workflow_compute_visible_delta(
+                    before=before_visible, after=after_visible
+                ),
+                inverse=self._workflow_compute_visible_delta(
+                    before=after_visible, after=before_visible
+                ),
             )
-            history = self._workflow_finalize_design_state_locked(workflow_id=workflow_id, rebuild=branch_dropped)
+            history = self._workflow_finalize_design_state_locked(
+                workflow_id=workflow_id, rebuild=branch_dropped
+            )
         return {
             "workflow_id": workflow_id,
             "namespace": namespace,
@@ -357,13 +418,22 @@ class _WorkflowDesignService(_WorkflowDesignHistoryMixin):
             raise ValueError("workflow_id is required")
         if not edge_id:
             raise ValueError("edge_id is required")
-        resolved_designer_id = self._assert_designer_identity(designer_id=designer_id, actor_sub=actor_sub)
+        resolved_designer_id = self._assert_designer_identity(
+            designer_id=designer_id, actor_sub=actor_sub
+        )
         self._assert_workflow_projection_not_rebuilding(workflow_id=workflow_id)
         namespace = self._workflow_namespace(workflow_id)
         with self._workflow_history_lock:
-            state_before = self._workflow_sync_projection_locked(workflow_id=workflow_id, materialize=True)
-            before_visible = self._workflow_capture_visible_snapshot(workflow_id=workflow_id)
-            known_edge_ids = {str(item.get("id") or "") for item in list(before_visible.get("edges") or [])}
+            state_before = self._workflow_sync_projection_locked(
+                workflow_id=workflow_id, materialize=True
+            )
+            before_visible = self._workflow_capture_visible_snapshot(
+                workflow_id=workflow_id
+            )
+            known_edge_ids = {
+                str(item.get("id") or "")
+                for item in list(before_visible.get("edges") or [])
+            }
             current_version = int(state_before.get("current_version") or 0)
             new_version = int(state_before.get("allocated_max_version") or 0) + 1
             branch_dropped = False
@@ -402,16 +472,24 @@ class _WorkflowDesignService(_WorkflowDesignHistoryMixin):
                         "target_seq": int(latest_seq),
                     },
                 )
-            after_visible = self._workflow_capture_visible_snapshot(workflow_id=workflow_id)
+            after_visible = self._workflow_capture_visible_snapshot(
+                workflow_id=workflow_id
+            )
             self._workflow_store_version_delta(
                 workflow_id=workflow_id,
                 version=new_version,
                 prev_version=current_version,
                 target_seq=int(latest_seq),
-                forward=self._workflow_compute_visible_delta(before=before_visible, after=after_visible),
-                inverse=self._workflow_compute_visible_delta(before=after_visible, after=before_visible),
+                forward=self._workflow_compute_visible_delta(
+                    before=before_visible, after=after_visible
+                ),
+                inverse=self._workflow_compute_visible_delta(
+                    before=after_visible, after=before_visible
+                ),
             )
-            history = self._workflow_finalize_design_state_locked(workflow_id=workflow_id, rebuild=branch_dropped)
+            history = self._workflow_finalize_design_state_locked(
+                workflow_id=workflow_id, rebuild=branch_dropped
+            )
         return {
             "workflow_id": workflow_id,
             "namespace": namespace,
@@ -435,28 +513,49 @@ class _WorkflowDesignService(_WorkflowDesignHistoryMixin):
         workflow_id = str(workflow_id or "").strip()
         if not workflow_id:
             raise ValueError("workflow_id is required")
-        resolved_designer_id = self._assert_designer_identity(designer_id=designer_id, actor_sub=actor_sub)
+        resolved_designer_id = self._assert_designer_identity(
+            designer_id=designer_id, actor_sub=actor_sub
+        )
         self._assert_workflow_projection_not_rebuilding(workflow_id=workflow_id)
         with self._workflow_history_lock:
-            state = self._workflow_sync_projection_locked(workflow_id=workflow_id, materialize=True)
+            state = self._workflow_sync_projection_locked(
+                workflow_id=workflow_id, materialize=True
+            )
             current_version = int(state.get("current_version") or 0)
             if current_version <= 0:
                 state["status"] = "noop"
-                self._store_workflow_projection(workflow_id=workflow_id, state=state, materialization_status="ready")
+                self._store_workflow_projection(
+                    workflow_id=workflow_id, state=state, materialization_status="ready"
+                )
                 return state
             selected_versions = list(state.get("selected_versions") or [])
-            current_entry = next((item for item in selected_versions if int(item.get("version") or 0) == current_version), None)
+            current_entry = next(
+                (
+                    item
+                    for item in selected_versions
+                    if int(item.get("version") or 0) == current_version
+                ),
+                None,
+            )
             if current_entry is None:
-                raise RuntimeError(f"Current workflow version missing from selected lineage: {current_version}")
+                raise RuntimeError(
+                    f"Current workflow version missing from selected lineage: {current_version}"
+                )
             target_version = int(current_entry.get("prev_version") or 0)
             target_seq = 0
             if target_version > 0:
                 target_entry = next(
-                    (item for item in selected_versions if int(item.get("version") or 0) == target_version),
+                    (
+                        item
+                        for item in selected_versions
+                        if int(item.get("version") or 0) == target_version
+                    ),
                     None,
                 )
                 if target_entry is None:
-                    raise RuntimeError(f"Undo target missing from selected lineage: {target_version}")
+                    raise RuntimeError(
+                        f"Undo target missing from selected lineage: {target_version}"
+                    )
                 target_seq = int(target_entry.get("target_seq") or 0)
             with self._workflow_engine().uow():
                 self._append_design_control_event(
@@ -472,10 +571,14 @@ class _WorkflowDesignService(_WorkflowDesignHistoryMixin):
                 )
             out = self._workflow_fold_history(workflow_id=workflow_id)
             applied_delta = False
-            delta = self._workflow_version_delta(workflow_id=workflow_id, version=current_version)
+            delta = self._workflow_version_delta(
+                workflow_id=workflow_id, version=current_version
+            )
             if delta is not None:
                 try:
-                    self._workflow_apply_visible_delta(workflow_id=workflow_id, delta=dict(delta.get("inverse") or {}))
+                    self._workflow_apply_visible_delta(
+                        workflow_id=workflow_id, delta=dict(delta.get("inverse") or {})
+                    )
                     applied_delta = True
                 except Exception:
                     logging.getLogger(__name__).exception(
@@ -484,8 +587,12 @@ class _WorkflowDesignService(_WorkflowDesignHistoryMixin):
                         current_version,
                     )
             if not applied_delta:
-                self._workflow_rebuild_namespace_for_state(workflow_id=workflow_id, state=out)
-            self._store_workflow_projection(workflow_id=workflow_id, state=out, materialization_status="ready")
+                self._workflow_rebuild_namespace_for_state(
+                    workflow_id=workflow_id, state=out
+                )
+            self._store_workflow_projection(
+                workflow_id=workflow_id, state=out, materialization_status="ready"
+            )
             self._workflow_store_snapshot_if_needed(workflow_id=workflow_id, state=out)
             out["status"] = "ok"
             return out
@@ -501,19 +608,27 @@ class _WorkflowDesignService(_WorkflowDesignHistoryMixin):
         workflow_id = str(workflow_id or "").strip()
         if not workflow_id:
             raise ValueError("workflow_id is required")
-        resolved_designer_id = self._assert_designer_identity(designer_id=designer_id, actor_sub=actor_sub)
+        resolved_designer_id = self._assert_designer_identity(
+            designer_id=designer_id, actor_sub=actor_sub
+        )
         self._assert_workflow_projection_not_rebuilding(workflow_id=workflow_id)
         with self._workflow_history_lock:
-            state = self._workflow_sync_projection_locked(workflow_id=workflow_id, materialize=True)
+            state = self._workflow_sync_projection_locked(
+                workflow_id=workflow_id, materialize=True
+            )
             current_version = int(state.get("current_version") or 0)
             active_versions = list(state.get("versions") or [])
             active_ids = [int(item.get("version") or 0) for item in active_versions]
             if current_version not in active_ids:
-                raise RuntimeError(f"Current workflow version missing from active lineage: {current_version}")
+                raise RuntimeError(
+                    f"Current workflow version missing from active lineage: {current_version}"
+                )
             current_index = active_ids.index(current_version)
             if current_index >= len(active_ids) - 1:
                 state["status"] = "noop"
-                self._store_workflow_projection(workflow_id=workflow_id, state=state, materialization_status="ready")
+                self._store_workflow_projection(
+                    workflow_id=workflow_id, state=state, materialization_status="ready"
+                )
                 return state
             target_entry = active_versions[current_index + 1]
             target_version = int(target_entry.get("version") or 0)
@@ -532,10 +647,14 @@ class _WorkflowDesignService(_WorkflowDesignHistoryMixin):
                 )
             out = self._workflow_fold_history(workflow_id=workflow_id)
             applied_delta = False
-            delta = self._workflow_version_delta(workflow_id=workflow_id, version=target_version)
+            delta = self._workflow_version_delta(
+                workflow_id=workflow_id, version=target_version
+            )
             if delta is not None:
                 try:
-                    self._workflow_apply_visible_delta(workflow_id=workflow_id, delta=dict(delta.get("forward") or {}))
+                    self._workflow_apply_visible_delta(
+                        workflow_id=workflow_id, delta=dict(delta.get("forward") or {})
+                    )
                     applied_delta = True
                 except Exception:
                     logging.getLogger(__name__).exception(
@@ -544,13 +663,19 @@ class _WorkflowDesignService(_WorkflowDesignHistoryMixin):
                         target_version,
                     )
             if not applied_delta:
-                self._workflow_rebuild_namespace_for_state(workflow_id=workflow_id, state=out)
-            self._store_workflow_projection(workflow_id=workflow_id, state=out, materialization_status="ready")
+                self._workflow_rebuild_namespace_for_state(
+                    workflow_id=workflow_id, state=out
+                )
+            self._store_workflow_projection(
+                workflow_id=workflow_id, state=out, materialization_status="ready"
+            )
             self._workflow_store_snapshot_if_needed(workflow_id=workflow_id, state=out)
             out["status"] = "ok"
             return out
 
-    def workflow_design_graph(self, workflow_id: str, refresh: bool = False) -> dict[str, object]:
+    def workflow_design_graph(
+        self, workflow_id: str, refresh: bool = False
+    ) -> dict[str, object]:
         if refresh:
             self.refresh_workflow_design_projection(workflow_id=workflow_id)
         snapshot = self._workflow_capture_visible_snapshot(workflow_id=workflow_id)
@@ -580,8 +705,22 @@ class _WorkflowDesignService(_WorkflowDesignHistoryMixin):
                 "op": "llm_call",
                 "label": "LLM Call",
                 "description": "Calls an LLM and returns structured output.",
-                "input_schema": {"type": "object", "properties": {"prompt": {"type": "string"}}, "required": ["prompt"]},
-                "output_schema": {"type": "object", "properties": {"answer": {"type": "string"}}, "required": ["answer"]},
-                "config_schema": {"type": "object", "properties": {"model": {"type": "string"}, "temperature": {"type": "number"}}},
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"prompt": {"type": "string"}},
+                    "required": ["prompt"],
+                },
+                "output_schema": {
+                    "type": "object",
+                    "properties": {"answer": {"type": "string"}},
+                    "required": ["answer"],
+                },
+                "config_schema": {
+                    "type": "object",
+                    "properties": {
+                        "model": {"type": "string"},
+                        "temperature": {"type": "number"},
+                    },
+                },
             },
         ]

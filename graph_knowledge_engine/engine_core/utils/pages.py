@@ -14,7 +14,11 @@ def split_pages_from_text(raw: str) -> List[Dict[str, Any]]:
 
     if "\f" in raw:
         parts = raw.split("\f")
-        return [{"page_number": i + 1, "text": p.strip()} for i, p in enumerate(parts) if p.strip()]
+        return [
+            {"page_number": i + 1, "text": p.strip()}
+            for i, p in enumerate(parts)
+            if p.strip()
+        ]
 
     p = re.split(r"(?:^|\n)\s*Page[:\s]+(\d+)\s*(?:\n|$)", raw, flags=re.IGNORECASE)
     if len(p) > 1:
@@ -42,7 +46,9 @@ def split_pages_from_text(raw: str) -> List[Dict[str, Any]]:
     return [{"page_number": 1, "text": raw.strip()}]
 
 
-def coerce_pages(content_or_pages: Any, *, default_page_start: int = 1) -> List[Dict[str, Any]]:
+def coerce_pages(
+    content_or_pages: Any, *, default_page_start: int = 1
+) -> List[Dict[str, Any]]:
     def as_page_dict(x: PageLike, idx0: int) -> Optional[Dict[str, Any]]:
         if isinstance(x, str):
             t = x.strip()
@@ -105,7 +111,9 @@ def chroma_docs_to_pydantic(objs: dict, model_cls: Type[T]) -> List[T]:
     return [model_cls.model_validate_json(doc) for doc in docs]
 
 
-def normalize_chroma_result(objs: Dict[str, Any]) -> Tuple[List[str], List[str], List[Dict[str, Any]]]:
+def normalize_chroma_result(
+    objs: Dict[str, Any],
+) -> Tuple[List[str], List[str], List[Dict[str, Any]]]:
     ids = objs.get("ids") or []
     docs = objs.get("documents") or []
     metas = objs.get("metadatas") or []
@@ -128,7 +136,9 @@ def chroma_to_models(objs: Dict[str, Any], model_cls: Type[T]) -> List[T]:
     return [model_cls.model_validate_json(doc) for doc in docs]
 
 
-def chroma_to_models_with_meta(objs: Dict[str, Any], model_cls: Type[T]) -> List[Tuple[str, T, Dict[str, Any]]]:
+def chroma_to_models_with_meta(
+    objs: Dict[str, Any], model_cls: Type[T]
+) -> List[Tuple[str, T, Dict[str, Any]]]:
     ids, docs, metas = normalize_chroma_result(objs)
     out: List[Tuple[str, T, Dict[str, Any]]] = []
     for rid, doc, meta in zip(ids, docs, metas):

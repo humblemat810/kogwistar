@@ -18,7 +18,9 @@ class _ConversationQueryService(_BaseComponent):
         start_node_id: str | None = None,
     ) -> dict[str, Any]:
         svc = self._conversation_service()
-        conv_id, start_id = svc.create_conversation(user_id=user_id, conv_id=conversation_id, node_id=start_node_id)
+        conv_id, start_id = svc.create_conversation(
+            user_id=user_id, conv_id=conversation_id, node_id=start_node_id
+        )
         return self.get_conversation(conv_id) | {"start_node_id": start_id}
 
     def _conversation_nodes(self, conversation_id: str) -> list[ConversationNode]:
@@ -38,7 +40,8 @@ class _ConversationQueryService(_BaseComponent):
         starts = [
             node
             for node in self._conversation_nodes(conversation_id)
-            if str((getattr(node, "metadata", {}) or {}).get("entity_type") or "") == "conversation_start"
+            if str((getattr(node, "metadata", {}) or {}).get("entity_type") or "")
+            == "conversation_start"
         ]
         if not starts:
             return None
@@ -49,7 +52,12 @@ class _ConversationQueryService(_BaseComponent):
         starts = cast(
             list[ConversationNode],
             self._conversation_engine().get_nodes(
-                where={"$and": [{"entity_type": "conversation_start"}, {"user_id": user_id}]},
+                where={
+                    "$and": [
+                        {"entity_type": "conversation_start"},
+                        {"user_id": user_id},
+                    ]
+                },
                 node_type=ConversationNode,
                 limit=10_000,
             ),
@@ -63,7 +71,10 @@ class _ConversationQueryService(_BaseComponent):
                     {
                         "id": str(conv_id),
                         "start_node_id": str(getattr(start, "id", "")),
-                        "status": str((getattr(start, "properties", {}) or {}).get("status") or "active"),
+                        "status": str(
+                            (getattr(start, "properties", {}) or {}).get("status")
+                            or "active"
+                        ),
                         "turn_count": len(self.list_transcript(str(conv_id))),
                     }
                 )
@@ -77,14 +88,17 @@ class _ConversationQueryService(_BaseComponent):
         starts = [
             node
             for node in nodes
-            if str((getattr(node, "metadata", {}) or {}).get("entity_type") or "") == "conversation_start"
+            if str((getattr(node, "metadata", {}) or {}).get("entity_type") or "")
+            == "conversation_start"
         ]
         turns = self.list_transcript(conversation_id)
         start_node = starts[0] if starts else None
         return {
             "conversation_id": conversation_id,
             "user_id": str(getattr(start_node, "user_id", None) or ""),
-            "status": str((getattr(start_node, "properties", {}) or {}).get("status") or "active"),
+            "status": str(
+                (getattr(start_node, "properties", {}) or {}).get("status") or "active"
+            ),
             "start_node_id": str(getattr(start_node, "id", None) or ""),
             "tail_node_id": str(getattr(tail, "id", None) or ""),
             "turn_count": len(turns),
@@ -121,9 +135,13 @@ class _ConversationQueryService(_BaseComponent):
         stage: str | None = None,
     ) -> dict[str, Any]:
         svc = self._conversation_service()
-        snap = svc.latest_context_snapshot_node(conversation_id=conversation_id, run_id=run_id, stage=stage)
+        snap = svc.latest_context_snapshot_node(
+            conversation_id=conversation_id, run_id=run_id, stage=stage
+        )
         if snap is None:
-            raise KeyError(f"No context snapshot found for conversation_id={conversation_id!r}")
+            raise KeyError(
+                f"No context snapshot found for conversation_id={conversation_id!r}"
+            )
         payload = svc.get_context_snapshot_payload(snapshot_node_id=str(snap.id))
         return {
             "snapshot_node_id": str(snap.id),

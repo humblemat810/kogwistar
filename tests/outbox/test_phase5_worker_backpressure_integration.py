@@ -21,7 +21,7 @@ def _enqueue_jobs(meta, *, ns: str, n: int) -> list[str]:
             namespace=ns,
             job_id=job_id,
             entity_kind="node",
-            entity_id=f"n{i}",          # <-- avoid coalescing
+            entity_id=f"n{i}",  # <-- avoid coalescing
             index_kind="node_docs",
             op="upsert",
             max_retries=10,
@@ -36,7 +36,9 @@ def eng(request, tmp_path, sa_engine, pg_schema) -> GraphKnowledgeEngine:
     if request.param == "chroma":
         persist_dir = tmp_path / "chroma"
         persist_dir.mkdir(parents=True, exist_ok=True)
-        e = GraphKnowledgeEngine(persist_directory=str(persist_dir), embedding_function=TEST_EMBEDDING)
+        e = GraphKnowledgeEngine(
+            persist_directory=str(persist_dir), embedding_function=TEST_EMBEDDING
+        )
         e._phase1_enable_index_jobs = True
         return e
 
@@ -67,7 +69,9 @@ def test_phase5_worker_backpressure_integration_respects_caps(
     _enqueue_jobs(eng.meta_sqlite, ns=ns, n=n_jobs)
 
     applied = set()
-    monkeypatch.setattr(eng.indexing, "apply_index_job", lambda **kw: applied.add(kw["job_id"]))
+    monkeypatch.setattr(
+        eng.indexing, "apply_index_job", lambda **kw: applied.add(kw["job_id"])
+    )
 
     worker = IndexJobWorker(
         engine=eng,

@@ -1,5 +1,4 @@
 import os
-import uuid
 import pathlib
 import pytest
 import requests
@@ -8,13 +7,16 @@ from joblib import Memory
 # Project imports (adjust if your package name/layout differs)
 from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
 from graph_knowledge_engine.engine_core.models import Document
-from graph_knowledge_engine.ingester import PagewiseSummaryIngestor  # your side-car ingester
+from graph_knowledge_engine.ingester import (
+    PagewiseSummaryIngestor,
+)  # your side-car ingester
 
 # ----------------------------
 # Joblib cache for downloads
 # ----------------------------
 _CACHE_DIR = os.getenv("INGESTER_TEST_CACHE", ".ingester_test_cache")
 memory = Memory(_CACHE_DIR, verbose=0)
+
 
 @memory.cache
 def _download_text(url: str, timeout: int = 30) -> str:
@@ -25,19 +27,26 @@ def _download_text(url: str, timeout: int = 30) -> str:
     # A tiny normalization so repeated calls hash-stably:
     return text.replace("\r\n", "\n")
 
+
 # ----------------------------
 # Env & LLM availability
 # ----------------------------
 def _has_azure_openai():
     # Minimal check; adjust if you use different names
-    return all([
-        os.getenv("OPENAI_DEPLOYMENT_NAME_GPT4_1"),
-        os.getenv("OPENAI_MODEL_NAME_GPT4_1"),
-        os.getenv("OPENAI_DEPLOYMENT_ENDPOINT_GPT4_1"),
-        os.getenv("OPENAI_API_KEY_GPT4_1"),
-    ])
+    return all(
+        [
+            os.getenv("OPENAI_DEPLOYMENT_NAME_GPT4_1"),
+            os.getenv("OPENAI_MODEL_NAME_GPT4_1"),
+            os.getenv("OPENAI_DEPLOYMENT_ENDPOINT_GPT4_1"),
+            os.getenv("OPENAI_API_KEY_GPT4_1"),
+        ]
+    )
 
-@pytest.mark.skipif(not _has_azure_openai(), reason="Azure OpenAI env vars not set; skipping long LLM test.")
+
+@pytest.mark.skipif(
+    not _has_azure_openai(),
+    reason="Azure OpenAI env vars not set; skipping long LLM test.",
+)
 def test_sidecar_ingester_on_long_document(tmp_path: pathlib.Path):
     """
     Integration test:
@@ -49,12 +58,14 @@ def test_sidecar_ingester_on_long_document(tmp_path: pathlib.Path):
     #    You can change the URL if you prefer another document.
     url = "https://www.gutenberg.org/cache/epub/2701/pg2701.txt"  # Moby-Dick
     full_text = _download_text(url)
-    assert len(full_text) > 200_000, "Downloaded document seems too short; pick a longer one."
+    assert len(full_text) > 200_000, (
+        "Downloaded document seems too short; pick a longer one."
+    )
 
     # 2) Engine in a temporary, isolated Chroma directory
     persist_dir = tmp_path / "db"
-    persist_dir = os.path.join('.', 'doc_chroma')
-    os.makedirs(persist_dir, exist_ok= True)
+    persist_dir = os.path.join(".", "doc_chroma")
+    os.makedirs(persist_dir, exist_ok=True)
     engine = GraphKnowledgeEngine(persist_directory=str(persist_dir))
 
     # 3) Side-car ingester uses its own explicit model instance.
@@ -69,10 +80,12 @@ def test_sidecar_ingester_on_long_document(tmp_path: pathlib.Path):
         openai_api_type="azure",
         temperature=0.1,
     )
-    ingester = PagewiseSummaryIngestor(engine=engine, llm=ingester_llm, cache_dir=str(os.path.join(".",".llm_cache")))
+    ingester = PagewiseSummaryIngestor(
+        engine=engine, llm=ingester_llm, cache_dir=str(os.path.join(".", ".llm_cache"))
+    )
     partial_doc = full_text[:50000]
     # 4) Create the document row
-    doc_id = f"doc-test_sidecar"
+    doc_id = "doc-test_sidecar"
     doc = Document(
         id=doc_id,
         content=partial_doc,
@@ -86,10 +99,10 @@ def test_sidecar_ingester_on_long_document(tmp_path: pathlib.Path):
     # 5) Run the side-car pipeline
     result = ingester.ingest_document(
         document=doc,
-        split_max_chars=2500,          # ensures many chunks
-        group_size=5,                  # default grouping heuristic
+        split_max_chars=2500,  # ensures many chunks
+        group_size=5,  # default grouping heuristic
         max_levels=6,
-        force_summarise_after_levels=3,   # speed up convergence for tests
+        force_summarise_after_levels=3,  # speed up convergence for tests
     )
 
     # 6) Basic persistence checks
@@ -110,10 +123,14 @@ def test_sidecar_ingester_on_long_document(tmp_path: pathlib.Path):
     assert "after" in rels, "Missing 'after' sibling edges (reverse order)."
 
     # 8) Optional: look for a final summary node (pipeline may force-concat)
-    final_nodes = [n for n in nodes if (n.label or "").lower().startswith("final summary")]
+    final_nodes = [
+        n for n in nodes if (n.label or "").lower().startswith("final summary")
+    ]
     # It's okay if grouping converged to a single non-"Final Summary" label; we won't assert hard here.
     # But do assert at least one summary_chunk exists.
-    summary_chunks = [n for n in nodes if (n.label or "").lower().startswith("summary:")]
+    summary_chunks = [
+        n for n in nodes if (n.label or "").lower().startswith("summary:")
+    ]
     assert len(summary_chunks) > 0, "No summary_chunk nodes found."
 
     # 9) Print a compact note to help debug locally (pytest -s)

@@ -30,7 +30,9 @@ class FakeCollection:
                 self._docs.pop(rid, None)
                 self._metas.pop(rid, None)
         elif where:
-            to_del = [rid for rid, meta in self._metas.items() if _match_where(meta, where)]
+            to_del = [
+                rid for rid, meta in self._metas.items() if _match_where(meta, where)
+            ]
             for rid in to_del:
                 self._docs.pop(rid, None)
                 self._metas.pop(rid, None)
@@ -38,7 +40,9 @@ class FakeCollection:
     def get(self, ids=None, where=None, include=None):
         ids = list(ids) if ids else None
         if ids is None and where is not None:
-            ids = [rid for rid, meta in self._metas.items() if _match_where(meta, where)]
+            ids = [
+                rid for rid, meta in self._metas.items() if _match_where(meta, where)
+            ]
         if ids is None:
             ids = list(self._docs.keys())
         docs = [self._docs.get(rid) for rid in ids]
@@ -53,7 +57,11 @@ class FakeCollection:
     def query(self, query_texts=None, query_embeddings=None, n_results=5):
         if query_texts:
             text = (query_texts[0] or "").lower()
-            ranked = [rid for rid, doc in self._docs.items() if isinstance(doc, str) and text in doc.lower()]
+            ranked = [
+                rid
+                for rid, doc in self._docs.items()
+                if isinstance(doc, str) and text in doc.lower()
+            ]
         else:
             ranked = list(self._docs.keys())
         return {"ids": [ranked[: max(1, int(n_results))]]}
@@ -86,20 +94,54 @@ class _BackendShim:
     def edge_endpoints_get(self, **kwargs):
         return self._e.edge_endpoints_collection.get(**kwargs)
 
-    def node_query(self, *, query_texts=None, query_embeddings=None, n_results, include=None, where=None, limit=None, offset=None):
+    def node_query(
+        self,
+        *,
+        query_texts=None,
+        query_embeddings=None,
+        n_results,
+        include=None,
+        where=None,
+        limit=None,
+        offset=None,
+    ):
         _ = include, where, limit, offset
-        result = self._e.node_collection.query(query_texts=query_texts, query_embeddings=query_embeddings, n_results=n_results)
+        result = self._e.node_collection.query(
+            query_texts=query_texts,
+            query_embeddings=query_embeddings,
+            n_results=n_results,
+        )
         return {
             "ids": result["ids"],
-            "documents": [[self._e.node_collection._docs.get(rid) for rid in row] for row in result["ids"]],
+            "documents": [
+                [self._e.node_collection._docs.get(rid) for rid in row]
+                for row in result["ids"]
+            ],
         }
 
-    def edge_query(self, *, query_texts=None, query_embeddings=None, n_results, include=None, where=None, limit=None, offset=None):
+    def edge_query(
+        self,
+        *,
+        query_texts=None,
+        query_embeddings=None,
+        n_results,
+        include=None,
+        where=None,
+        limit=None,
+        offset=None,
+    ):
         _ = include, where, limit, offset
-        result = self._e.edge_collection.query(query_texts=query_texts, query_embeddings=query_embeddings, n_results=n_results)
+        result = self._e.edge_collection.query(
+            query_texts=query_texts,
+            query_embeddings=query_embeddings,
+            n_results=n_results,
+        )
         return {
             "ids": result["ids"],
-            "documents": [[self._e.edge_collection._docs.get(rid) for rid in row] for row in result["ids"]],
+            "documents": [
+                [self._e.edge_collection._docs.get(rid) for rid in row]
+                for row in result["ids"]
+            ],
         }
 
 
@@ -108,20 +150,36 @@ class _ReadShim:
         self._e = engine
 
     def node_ids_by_doc(self, doc_id: str):
-        got = self._e.node_docs_collection.get(where={"doc_id": doc_id}, include=["metadatas"])
+        got = self._e.node_docs_collection.get(
+            where={"doc_id": doc_id}, include=["metadatas"]
+        )
         return [meta["node_id"] for meta in got.get("metadatas") or [] if meta]
 
     def edge_ids_by_doc(self, doc_id: str):
-        got = self._e.edge_endpoints_collection.get(where={"doc_id": doc_id}, include=["metadatas"])
+        got = self._e.edge_endpoints_collection.get(
+            where={"doc_id": doc_id}, include=["metadatas"]
+        )
         return sorted({meta["edge_id"] for meta in got.get("metadatas") or [] if meta})
 
     def get_nodes(self, ids):
-        got = self._e.node_collection.get(ids=list(ids), include=["documents"]) if ids else {"documents": []}
-        return [Node.model_validate_json(doc) for doc in (got.get("documents") or []) if doc]
+        got = (
+            self._e.node_collection.get(ids=list(ids), include=["documents"])
+            if ids
+            else {"documents": []}
+        )
+        return [
+            Node.model_validate_json(doc) for doc in (got.get("documents") or []) if doc
+        ]
 
     def get_edges(self, ids):
-        got = self._e.edge_collection.get(ids=list(ids), include=["documents"]) if ids else {"documents": []}
-        return [Edge.model_validate_json(doc) for doc in (got.get("documents") or []) if doc]
+        got = (
+            self._e.edge_collection.get(ids=list(ids), include=["documents"])
+            if ids
+            else {"documents": []}
+        )
+        return [
+            Edge.model_validate_json(doc) for doc in (got.get("documents") or []) if doc
+        ]
 
 
 class FakeEngine:
@@ -145,7 +203,11 @@ def small_graph():
             label=label,
             type="entity",
             summary=label,
-            mentions=[kg_grounding(doc_id, collection_page_url=f"document_collection/{doc_id}")],
+            mentions=[
+                kg_grounding(
+                    doc_id, collection_page_url=f"document_collection/{doc_id}"
+                )
+            ],
             doc_id=doc_id,
         )
         engine.node_collection.add(
@@ -155,7 +217,9 @@ def small_graph():
         )
         row_id = f"{node_id}::{doc_id}"
         row = {"id": row_id, "node_id": node_id, "doc_id": doc_id}
-        engine.node_docs_collection.add(ids=[row_id], documents=[json.dumps(row)], metadatas=[row])
+        engine.node_docs_collection.add(
+            ids=[row_id], documents=[json.dumps(row)], metadatas=[row]
+        )
         return node
 
     a_node = add_node("A", "Smoking")
@@ -182,10 +246,30 @@ def small_graph():
         metadatas=[{"doc_id": doc_id, "relation": "causes"}],
     )
     rows = [
-        {"id": f"{edge_id}::src::node::A", "edge_id": edge_id, "endpoint_id": "A", "endpoint_type": "node", "role": "src", "relation": "causes", "doc_id": doc_id},
-        {"id": f"{edge_id}::tgt::node::B", "edge_id": edge_id, "endpoint_id": "B", "endpoint_type": "node", "role": "tgt", "relation": "causes", "doc_id": doc_id},
+        {
+            "id": f"{edge_id}::src::node::A",
+            "edge_id": edge_id,
+            "endpoint_id": "A",
+            "endpoint_type": "node",
+            "role": "src",
+            "relation": "causes",
+            "doc_id": doc_id,
+        },
+        {
+            "id": f"{edge_id}::tgt::node::B",
+            "edge_id": edge_id,
+            "endpoint_id": "B",
+            "endpoint_type": "node",
+            "role": "tgt",
+            "relation": "causes",
+            "doc_id": doc_id,
+        },
     ]
-    engine.edge_endpoints_collection.add(ids=[row["id"] for row in rows], documents=[json.dumps(row) for row in rows], metadatas=rows)
+    engine.edge_endpoints_collection.add(
+        ids=[row["id"] for row in rows],
+        documents=[json.dumps(row) for row in rows],
+        metadatas=rows,
+    )
 
     summary_node = add_node("S", "Final Summary")
     edge_id2 = "E2"
@@ -208,10 +292,30 @@ def small_graph():
         metadatas=[{"doc_id": doc_id, "relation": "summarizes_document"}],
     )
     rows2 = [
-        {"id": f"{edge_id2}::src::node::S", "edge_id": edge_id2, "endpoint_id": "S", "endpoint_type": "node", "role": "src", "relation": "summarizes_document", "doc_id": doc_id},
-        {"id": f"{edge_id2}::tgt::node::docnode:{doc_id}", "edge_id": edge_id2, "endpoint_id": f"docnode:{doc_id}", "endpoint_type": "node", "role": "tgt", "relation": "summarizes_document", "doc_id": doc_id},
+        {
+            "id": f"{edge_id2}::src::node::S",
+            "edge_id": edge_id2,
+            "endpoint_id": "S",
+            "endpoint_type": "node",
+            "role": "src",
+            "relation": "summarizes_document",
+            "doc_id": doc_id,
+        },
+        {
+            "id": f"{edge_id2}::tgt::node::docnode:{doc_id}",
+            "edge_id": edge_id2,
+            "endpoint_id": f"docnode:{doc_id}",
+            "endpoint_type": "node",
+            "role": "tgt",
+            "relation": "summarizes_document",
+            "doc_id": doc_id,
+        },
     ]
-    engine.edge_endpoints_collection.add(ids=[row["id"] for row in rows2], documents=[json.dumps(row) for row in rows2], metadatas=rows2)
+    engine.edge_endpoints_collection.add(
+        ids=[row["id"] for row in rows2],
+        documents=[json.dumps(row) for row in rows2],
+        metadatas=rows2,
+    )
 
     return engine, doc_id
 
@@ -240,7 +344,12 @@ def test_shortest_path_and_find_edges(small_graph):
     gq = GraphQuery(engine)
     path = gq.shortest_path("A", "B", doc_id=doc_id)
     assert path == ["A", "E1", "B"]
-    edge_ids = gq.find_edges(relation="causes", src_label_contains="Smok", tgt_label_contains="Lung", doc_id=doc_id)
+    edge_ids = gq.find_edges(
+        relation="causes",
+        src_label_contains="Smok",
+        tgt_label_contains="Lung",
+        doc_id=doc_id,
+    )
     assert "E1" in edge_ids
 
 

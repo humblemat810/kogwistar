@@ -1,13 +1,15 @@
-import json, importlib
-from pathlib import Path
+import json
+import importlib
 import pytest
 
 from graph_knowledge_engine import shortids
+
 
 @pytest.fixture(autouse=True)
 def in_tmpdir(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     yield
+
 
 @pytest.fixture
 def fresh_run(monkeypatch):
@@ -16,9 +18,10 @@ def fresh_run(monkeypatch):
     shortids.set_current_token("jwt-A")
     shortids.set_shortid_obj_depth(1)
     shortids.set_shortid_keys(
-        scalars=("id","doc_id","node_id","node_ref_id","edge_endpoint_id"),
-        lists=("source_ids","target_ids","source_edge_ids","target_edge_ids"),
+        scalars=("id", "doc_id", "node_id", "node_ref_id", "edge_endpoint_id"),
+        lists=("source_ids", "target_ids", "source_edge_ids", "target_edge_ids"),
     )
+
 
 def test_id_roundtrip_and_reject_non_sid(fresh_run):
     LONG1 = "ANY-LONG-FORM-001"
@@ -39,6 +42,7 @@ def test_id_roundtrip_and_reject_non_sid(fresh_run):
     with pytest.raises(ValueError):  # any non-<sid> in id field is rejected
         shortids.s2l_id(LONG1)
 
+
 def test_obj_depth_and_lists(fresh_run):
     A = "NODE-A-LONG"
     B = "NODE-B-LONG"
@@ -46,7 +50,7 @@ def test_obj_depth_and_lists(fresh_run):
     obj = {
         "id": A,
         "source_ids": [B],
-        "meta": { "id": B },  # nested: ignored at default depth=1
+        "meta": {"id": B},  # nested: ignored at default depth=1
     }
 
     out = shortids.l2s_obj(obj)
@@ -65,6 +69,8 @@ def test_obj_depth_and_lists(fresh_run):
     back = shortids.s2l_obj({"id": "<sid>1", "source_ids": ["<sid>2"]})
     assert back["id"] == A
     assert back["source_ids"] == [B]
+
+
 def test_pydantic_model(fresh_run):
     from pydantic import BaseModel
 
@@ -134,17 +140,21 @@ def test_pydantic_model(fresh_run):
     assert back["edge"]["source_ids"] == [A, B]
     assert back["edge"]["target_edge_ids"] == [C]
     assert back["meta"]["id"] == B
+
+
 def test_doc_json_paths(fresh_run):
     A = "EDGE-AAA"
     B = "EDGE-BBB"
 
-    doc = json.dumps({
-        "id": A,
-        "node_ref_id": B,
-        "source_ids": [A, B],
-        "target_edge_ids": [B],
-        "content": "untouched text; ids only change in targeted keys",
-    })
+    doc = json.dumps(
+        {
+            "id": A,
+            "node_ref_id": B,
+            "source_ids": [A, B],
+            "target_edge_ids": [B],
+            "content": "untouched text; ids only change in targeted keys",
+        }
+    )
 
     doc_short = shortids.l2s_doc(doc)
     d = json.loads(doc_short)
@@ -164,6 +174,7 @@ def test_doc_json_paths(fresh_run):
     # non-JSON doc is returned unchanged
     assert shortids.l2s_doc("not json") == "not json"
     assert shortids.s2l_doc("not json") == "not json"
+
 
 def test_persistence_across_instances(in_tmpdir):
     token = "jwt-PERSIST"

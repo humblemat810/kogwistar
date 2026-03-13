@@ -4,9 +4,10 @@ from fastapi.testclient import TestClient
 
 DOC_ID = "pytest-doc-upsert-1"
 
+
 def test_graph_upsert_llm_batch_with_references():
     # clean slate (best-effort)
-    
+
     from graph_knowledge_engine.server_mcp_with_admin import app
 
     client = TestClient(app)
@@ -23,29 +24,39 @@ def test_graph_upsert_llm_batch_with_references():
                 "label": "Alice Pty Ltd",
                 "type": "entity",
                 "summary": "Party A",
-                "references": [{
-                    "collection_page_url": f"document_collection/{DOC_ID}",
-                    "document_page_url": f"document/{DOC_ID}",
-                    "doc_id": f"{DOC_ID}",
-                    "insertion_method": "test_manual_insert",
-                    "start_page": 1, "end_page": 1, "start_char": 0, "end_char": 24,
-                    "excerpt": "Alice contracts with Bob"
-                }]
+                "references": [
+                    {
+                        "collection_page_url": f"document_collection/{DOC_ID}",
+                        "document_page_url": f"document/{DOC_ID}",
+                        "doc_id": f"{DOC_ID}",
+                        "insertion_method": "test_manual_insert",
+                        "start_page": 1,
+                        "end_page": 1,
+                        "start_char": 0,
+                        "end_char": 24,
+                        "excerpt": "Alice contracts with Bob",
+                    }
+                ],
             },
             {
                 "id": "nn:bob",
                 "label": "Bob Co",
                 "type": "entity",
                 "summary": "Party B",
-                "references": [{
-                    "collection_page_url": f"document_collection/{DOC_ID}",
-                    "document_page_url": f"document/{DOC_ID}",
-                    "doc_id": f"{DOC_ID}",
-                    "insertion_method": "test_manual_insert",
-                    "start_page": 1, "end_page": 1, "start_char": 21, "end_char": 24,
-                    "excerpt": "Bob"
-                }]
-            }
+                "references": [
+                    {
+                        "collection_page_url": f"document_collection/{DOC_ID}",
+                        "document_page_url": f"document/{DOC_ID}",
+                        "doc_id": f"{DOC_ID}",
+                        "insertion_method": "test_manual_insert",
+                        "start_page": 1,
+                        "end_page": 1,
+                        "start_char": 21,
+                        "end_char": 24,
+                        "excerpt": "Bob",
+                    }
+                ],
+            },
         ],
         "edges": [
             {
@@ -58,14 +69,19 @@ def test_graph_upsert_llm_batch_with_references():
                 "target_ids": ["nn:bob"],
                 "source_edge_ids": [],
                 "target_edge_ids": [],
-                "references": [{
-                    "collection_page_url": f"document_collection/{DOC_ID}",
-                    "document_page_url": f"document/{DOC_ID}",
-                    "doc_id": f"{DOC_ID}",
-                    "insertion_method": "test_manual_insert",
-                    "start_page": 1, "end_page": 1, "start_char": 0, "end_char": 30,
-                    "excerpt": "Alice contracts with Bob"
-                }]
+                "references": [
+                    {
+                        "collection_page_url": f"document_collection/{DOC_ID}",
+                        "document_page_url": f"document/{DOC_ID}",
+                        "doc_id": f"{DOC_ID}",
+                        "insertion_method": "test_manual_insert",
+                        "start_page": 1,
+                        "end_page": 1,
+                        "start_char": 0,
+                        "end_char": 30,
+                        "excerpt": "Alice contracts with Bob",
+                    }
+                ],
             },
             {
                 "id": "ne:penalty_meta",
@@ -73,20 +89,25 @@ def test_graph_upsert_llm_batch_with_references():
                 "type": "relationship",
                 "summary": "Penalty clause refers to the contract edge",
                 "relation": "refers_to",
-                "source_ids": [],                           # required (empty is OK)
+                "source_ids": [],  # required (empty is OK)
                 "target_ids": ["nn:bob"],
-                "source_edge_ids": ["ne:contract_e"],       # hyperedge
-                "target_edge_ids": [],                      # required (empty is OK)
-                "references": [{
-                    "collection_page_url": f"document_collection/{DOC_ID}",
-                    "document_page_url": f"document/{DOC_ID}",
-                    "doc_id": f"{DOC_ID}",
-                    "insertion_method": "test_manual_insert",
-                    "start_page": 1, "end_page": 1, "start_char": 31, "end_char": 60,
-                    "excerpt": "penalty clause"
-                }]
-            }
-        ]
+                "source_edge_ids": ["ne:contract_e"],  # hyperedge
+                "target_edge_ids": [],  # required (empty is OK)
+                "references": [
+                    {
+                        "collection_page_url": f"document_collection/{DOC_ID}",
+                        "document_page_url": f"document/{DOC_ID}",
+                        "doc_id": f"{DOC_ID}",
+                        "insertion_method": "test_manual_insert",
+                        "start_page": 1,
+                        "end_page": 1,
+                        "start_char": 31,
+                        "end_char": 60,
+                        "excerpt": "penalty clause",
+                    }
+                ],
+            },
+        ],
     }
 
     # upsert batch
@@ -106,14 +127,14 @@ def test_graph_upsert_llm_batch_with_references():
     assert "nodes" in g and "links" in g
     assert isinstance(g["nodes"], list) and isinstance(g["links"], list)
     # spot-check there is a contracts_with relation somewhere
-    rels = { (l.get("relation") or l.get("label") or "") for l in g.get("links", []) }
+    rels = {(l.get("relation") or l.get("label") or "") for l in g.get("links", [])}
     assert ("contracts_with" in rels) or ("Contract relationship" in rels)
 
 
 import types
-import pytest
 
 from graph_knowledge_engine.visualization import graph_viz
+
 
 def test_to_d3_force_many_to_one_hyperedge():
     """
@@ -135,9 +156,11 @@ def test_to_d3_force_many_to_one_hyperedge():
 
     nodes = [
         types.SimpleNamespace(id="Alice", label="Alice", type="entity", properties={}),
-        types.SimpleNamespace(id="Bob",   label="Bob",   type="entity", properties={}),
+        types.SimpleNamespace(id="Bob", label="Bob", type="entity", properties={}),
         types.SimpleNamespace(id="Carol", label="Carol", type="entity", properties={}),
-        types.SimpleNamespace(id="E",     label="contracts_with", type="edge-node", properties={}),
+        types.SimpleNamespace(
+            id="E", label="contracts_with", type="edge-node", properties={}
+        ),
     ]
 
     d3 = graph_viz.to_d3_force(nodes, [edge])

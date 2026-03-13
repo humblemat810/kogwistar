@@ -3,21 +3,25 @@
 from __future__ import annotations
 from typing import Dict, Optional, List, Tuple
 from dataclasses import dataclass
-import math
 from .types import EngineLike, Verifier
 import json
 
 try:
     from rapidfuzz.fuzz import ratio as fuzz_ratio
     from rapidfuzz import fuzz
+
     _HAS_RAPIDFUZZ = True
 except ImportError:
     _HAS_RAPIDFUZZ = False
+
     def fuzz_ratio(a: str, b: str) -> float:
         # very small fallback
         return 100.0 if a == b else 0.0
 
+
 from ..engine_core.models import Edge, Grounding, MentionVerification, Node, Span
+
+
 # from ..engine_core.engine import GraphKnowledgeEngine
 @dataclass
 class VerifierConfig:
@@ -26,6 +30,7 @@ class VerifierConfig:
     min_levenshtein_score: float = 0.65  # RapidFuzz normalized
     use_embeddings: bool = False  # only if engine has embedding_fn
     min_embed_cosine: float = 0.5
+
 
 class DefaultVerifier(Verifier):
     """
@@ -36,10 +41,10 @@ class DefaultVerifier(Verifier):
       - optional embedding cosine if engine has an embedding_fn
     Stores results back into references[].verification and updates Chroma.
     """
+
     @staticmethod
     def _normalize(s: str) -> str:
         return " ".join((s or "").split()).strip().lower()
-    
 
     @staticmethod
     def _slice_span(full_text: str, start: int, end: int) -> str:
@@ -47,6 +52,7 @@ class DefaultVerifier(Verifier):
         end = max(start, end or start)
         end = min(len(full_text), end)
         return full_text[start:end]
+
     def _score_rapidfuzz(self, a: str, b: str) -> Optional[float]:
         if not _HAS_RAPIDFUZZ:
             return None
@@ -54,11 +60,12 @@ class DefaultVerifier(Verifier):
         if not a or not b:
             return None
         # token_set_ratio is robust to word order/noise; scale 0..100 -> 0..1
-        return float(fuzz.token_set_ratio(a, b)) / 100.0    
-
+        return float(fuzz.token_set_ratio(a, b)) / 100.0
 
     @staticmethod
-    def _score_coverage(extracted: str, cited: str, min_ngram: int = 5) -> Optional[float]:
+    def _score_coverage(
+        extracted: str, cited: str, min_ngram: int = 5
+    ) -> Optional[float]:
         """
         Percent of extracted characters covered by any n-gram (len>=min_ngram)
         that also appears in cited. Simple, fast lower bound for span support.
@@ -71,9 +78,9 @@ class DefaultVerifier(Verifier):
         covered = [False] * len(ex_norm)
         # greedy n-gram cover: slide windows, mark matches
         for i in range(0, len(ex_norm) - n + 1):
-            gram = ex_norm[i:i+n]
+            gram = ex_norm[i : i + n]
             if gram in ci_norm:
-                for j in range(i, i+n):
+                for j in range(i, i + n):
                     covered[j] = True
         # expand matches (optional): if surrounded by covered, keep filling
         # (skip for speed; baseline is fine)
@@ -84,15 +91,17 @@ class DefaultVerifier(Verifier):
     def _score_embedding(self, extracted: str, cited: str) -> float | None:
         u = self._embed_one(extracted or "")
         v = self._embed_one(cited or "")
-        if u is None or v is None: 
+        if u is None or v is None:
             return None
         # cosine
-        dot = sum(a*b for a, b in zip(u, v))
-        nu = (sum(a*a for a in u)) ** 0.5
-        nv = (sum(b*b for b in v)) ** 0.5
+        dot = sum(a * b for a, b in zip(u, v))
+        nu = (sum(a * a for a in u)) ** 0.5
+        nv = (sum(b * b for b in v)) ** 0.5
         return float((dot / (nu * nv))) if nu and nv else None
 
-    def _ensemble(self, scores: Dict[str, Optional[float]], weights: Dict[str, float]) -> Optional[float]:
+    def _ensemble(
+        self, scores: Dict[str, Optional[float]], weights: Dict[str, float]
+    ) -> Optional[float]:
         """Weighted average over available (non-None) scores."""
         num = 0.0
         den = 0.0
@@ -105,13 +114,14 @@ class DefaultVerifier(Verifier):
         if den == 0:
             return None
         return float(num / den)
+
     def _embed_one(self, text: str):
         return self.e.embed.iterative_defensive_emb(text)
+
     def __init__(self, engine: EngineLike, config: Optional[VerifierConfig] = None):
         self.e: EngineLike = engine
         self.cfg = config or VerifierConfig()
-        
-        
+
     # ---------------- public API ----------------
 
     def _verify_one_reference(
@@ -121,7 +131,11 @@ class DefaultVerifier(Verifier):
         ref: Span,
         *,
         min_ngram: int = 5,
-        weights: Dict[str, float] = {"rapidfuzz": 0.5, "coverage": 0.3, "embedding": 0.2},
+        weights: Dict[str, float] = {
+            "rapidfuzz": 0.5,
+            "coverage": 0.3,
+            "embedding": 0.2,
+        },
         threshold: float = 0.70,
     ) -> Span:
         """
@@ -136,7 +150,10 @@ class DefaultVerifier(Verifier):
         cv = self._score_coverage(extracted_text, cited_text, min_ngram=min_ngram)
         em = self._score_embedding(extracted_text, cited_text)
 
-        score = self._ensemble({"rapidfuzz": rf, "coverage": cv, "embedding": em}, weights) or 0.0
+        score = (
+            self._ensemble({"rapidfuzz": rf, "coverage": cv, "embedding": em}, weights)
+            or 0.0
+        )
         is_ok = score >= threshold
 
         out = ref.model_copy(deep=True)
@@ -170,7 +187,11 @@ class DefaultVerifier(Verifier):
         grounding: Grounding,
         *,
         min_ngram: int = 5,
-        weights: Dict[str, float] = {"rapidfuzz": 0.5, "coverage": 0.3, "embedding": 0.2},
+        weights: Dict[str, float] = {
+            "rapidfuzz": 0.5,
+            "coverage": 0.3,
+            "embedding": 0.2,
+        },
         threshold: float = 0.70,
     ) -> Grounding:
         out = grounding.model_copy(deep=True)
@@ -186,6 +207,7 @@ class DefaultVerifier(Verifier):
             for span in grounding.spans
         ]
         return out
+
     def verify_mentions_for_doc(
         self,
         document_id: str,
@@ -193,18 +215,28 @@ class DefaultVerifier(Verifier):
         source_text: Optional[str] = None,
         min_ngram: int = 5,
         threshold: float = 0.70,
-        weights: Dict[str, float] = {"rapidfuzz": 0.5, "coverage": 0.3, "embedding": 0.2},
+        weights: Dict[str, float] = {
+            "rapidfuzz": 0.5,
+            "coverage": 0.3,
+            "embedding": 0.2,
+        },
         update_edges: bool = True,
     ) -> Dict[str, int]:
         """
         Verify all references in nodes (and edges if update_edges=True) for a doc.
         Returns counts of updated items.
         """
-        full_text = source_text if source_text is not None else self.e.extract.fetch_document_text(document_id)
+        full_text = (
+            source_text
+            if source_text is not None
+            else self.e.extract.fetch_document_text(document_id)
+        )
         upd_nodes = upd_edges = 0
 
         # Nodes
-        got = self.e.backend.node_get(where={"doc_id": document_id}, include=["documents"])
+        got = self.e.backend.node_get(
+            where={"doc_id": document_id}, include=["documents"]
+        )
         for nid, ndoc in zip(got.get("ids") or [], got.get("documents") or []):
             n = Node.model_validate_json(ndoc)
             # what text do we try to validate? prioritize summary, then label
@@ -228,7 +260,9 @@ class DefaultVerifier(Verifier):
             upd_nodes += 1
 
         if update_edges:
-            got = self.e.backend.edge_get(where={"doc_id": document_id}, include=["documents"])
+            got = self.e.backend.edge_get(
+                where={"doc_id": document_id}, include=["documents"]
+            )
             for eid, edoc in zip(got.get("ids") or [], got.get("documents") or []):
                 e = Edge.model_validate_json(edoc)
                 extracted = e.summary or e.label or e.relation or ""
@@ -250,7 +284,6 @@ class DefaultVerifier(Verifier):
                 upd_edges += 1
 
         return {"updated_nodes": upd_nodes, "updated_edges": upd_edges}
-    
 
     def verify_mentions_for_items(
         self,
@@ -259,7 +292,11 @@ class DefaultVerifier(Verifier):
         source_text_by_doc: Optional[Dict[str, str]] = None,
         min_ngram: int = 5,
         threshold: float = 0.70,
-        weights: Dict[str, float] = {"rapidfuzz": 0.5, "coverage": 0.3, "embedding": 0.2},
+        weights: Dict[str, float] = {
+            "rapidfuzz": 0.5,
+            "coverage": 0.3,
+            "embedding": 0.2,
+        },
     ) -> Dict[str, int]:
         """
         Targeted verification for a mixed set of nodes/edges.
@@ -268,12 +305,19 @@ class DefaultVerifier(Verifier):
         upd_nodes = upd_edges = 0
         for kind, rid in items:
             if kind == "node":
-                got = self.e.backend.node_get(ids=[rid], include=["documents", "metadatas"])
+                got = self.e.backend.node_get(
+                    ids=[rid], include=["documents", "metadatas"]
+                )
                 if not got.get("documents"):
                     continue
                 n = Node.model_validate_json(got["documents"][0])
                 doc_id = (got["metadatas"][0] or {}).get("doc_id")
-                full_text = (source_text_by_doc or {}).get(doc_id) or self.e.extract.fetch_document_text(doc_id) if doc_id else ""
+                full_text = (
+                    (source_text_by_doc or {}).get(doc_id)
+                    or self.e.extract.fetch_document_text(doc_id)
+                    if doc_id
+                    else ""
+                )
                 extracted = n.summary or n.label or ""
                 if not (n.mentions and extracted):
                     continue
@@ -293,12 +337,19 @@ class DefaultVerifier(Verifier):
                 self.e.write.index_node_docs(n)
                 upd_nodes += 1
             elif kind == "edge":
-                got = self.e.backend.edge_get(ids=[rid], include=["documents", "metadatas"])
+                got = self.e.backend.edge_get(
+                    ids=[rid], include=["documents", "metadatas"]
+                )
                 if not got.get("documents"):
                     continue
                 e = Edge.model_validate_json(got["documents"][0])
                 doc_id = (got["metadatas"][0] or {}).get("doc_id")
-                full_text = (source_text_by_doc or {}).get(doc_id) or self.e.extract.fetch_document_text(doc_id) if doc_id else ""
+                full_text = (
+                    (source_text_by_doc or {}).get(doc_id)
+                    or self.e.extract.fetch_document_text(doc_id)
+                    if doc_id
+                    else ""
+                )
                 extracted = e.summary or e.label or e.relation or ""
                 if not (e.mentions and extracted):
                     continue

@@ -43,7 +43,9 @@ def refs_fingerprint(refs) -> str:
         {
             "doc_id": getattr(r, "doc_id", None),
             "method": getattr(getattr(r, "verification", None), "method", None),
-            "is_verified": getattr(getattr(r, "verification", None), "is_verified", None),
+            "is_verified": getattr(
+                getattr(r, "verification", None), "is_verified", None
+            ),
             "score": getattr(getattr(r, "verification", None), "score", None),
             "sp": getattr(r, "start_page", None),
             "ep": getattr(r, "end_page", None),

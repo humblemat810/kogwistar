@@ -21,15 +21,14 @@ Key design points:
 
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Any, Dict, Iterator, Optional, Protocol
+from typing import Any, Dict, Iterator, Protocol
 
 JSONDict = Dict[str, Any]
 
 
 class UnitOfWork(Protocol):
     @contextmanager
-    def transaction(self) -> Iterator[None]:
-        ...
+    def transaction(self) -> Iterator[None]: ...
 
 
 @dataclass
@@ -114,5 +113,3 @@ class StorageBackend(Protocol):
     def edge_refs_upsert(self, **kwargs) -> Any: ...
     def edge_refs_update(self, **kwargs) -> Any: ...
     def edge_refs_delete(self, **kwargs) -> Any: ...
-
-

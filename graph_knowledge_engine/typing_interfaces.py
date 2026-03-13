@@ -1,7 +1,16 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Protocol, Sequence, Union, runtime_checkable, TYPE_CHECKING
+from typing import (
+    Any,
+    Dict,
+    List,
+    Optional,
+    Protocol,
+    Union,
+    runtime_checkable,
+    TYPE_CHECKING,
+)
 
 try:
     from typing import TypeAlias
@@ -22,7 +31,16 @@ from .engine_core.storage_backend import StorageBackend
 # -------------------------
 
 try:
-    from chromadb.api.types import Embedding, PyEmbedding, Document as ChromaDocument, Image, URI, ID, Include, QueryResult
+    from chromadb.api.types import (
+        Embedding,
+        PyEmbedding,
+        Document as ChromaDocument,
+        Image,
+        URI,
+        ID,
+        Include,
+        QueryResult,
+    )
     from chromadb.base_types import Where, WhereDocument
     from chromadb.api.types import IDs, OneOrMany, GetResult, Metadata
 except Exception:  # pragma: no cover - optional dependency

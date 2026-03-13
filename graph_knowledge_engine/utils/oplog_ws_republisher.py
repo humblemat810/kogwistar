@@ -11,8 +11,7 @@ from typing import Any, Dict, Iterable, Optional
 import requests
 
 
-from graph_knowledge_engine.cdc.oplog import OplogReader
-from graph_knowledge_engine.cdc.change_event import ChangeEvent
+
 
 @dataclass(frozen=True, slots=True)
 class ReplayStats:
@@ -95,7 +94,10 @@ def replay_oplog_to_bridge(
             if r.status_code >= 400:
                 failed += 1
                 if verbose:
-                    print(f"[fail] seq={seq} status={r.status_code} body={r.text[:200]}", file=sys.stderr)
+                    print(
+                        f"[fail] seq={seq} status={r.status_code} body={r.text[:200]}",
+                        file=sys.stderr,
+                    )
                 if stop_on_error:
                     break
             else:
@@ -120,16 +122,32 @@ def replay_oplog_to_bridge(
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Replay oplog JSONL into FastAPI debug bridge /ingest.")
+    ap = argparse.ArgumentParser(
+        description="Replay oplog JSONL into FastAPI debug bridge /ingest."
+    )
     ap.add_argument("--oplog", required=True, help="Path to oplog JSONL file")
-    ap.add_argument("--bridge", required=True, help="Bridge base URL, e.g. http://127.0.0.1:8787")
-    ap.add_argument("--since-seq", type=int, default=0, help="Send events with seq > since-seq")
-    ap.add_argument("--until-seq", type=int, default=None, help="Stop after this seq (inclusive)")
-    ap.add_argument("--kg-graph-type", default=None, help="Filter by entity.kg_graph_type")
-    ap.add_argument("--max-events", type=int, default=None, help="Stop after sending this many")
-    ap.add_argument("--sleep-ms", type=int, default=0, help="Delay between events (throttle)")
+    ap.add_argument(
+        "--bridge", required=True, help="Bridge base URL, e.g. http://127.0.0.1:8787"
+    )
+    ap.add_argument(
+        "--since-seq", type=int, default=0, help="Send events with seq > since-seq"
+    )
+    ap.add_argument(
+        "--until-seq", type=int, default=None, help="Stop after this seq (inclusive)"
+    )
+    ap.add_argument(
+        "--kg-graph-type", default=None, help="Filter by entity.kg_graph_type"
+    )
+    ap.add_argument(
+        "--max-events", type=int, default=None, help="Stop after sending this many"
+    )
+    ap.add_argument(
+        "--sleep-ms", type=int, default=0, help="Delay between events (throttle)"
+    )
     ap.add_argument("--timeout-s", type=float, default=1.0, help="HTTP timeout")
-    ap.add_argument("--stop-on-error", action="store_true", help="Stop on first failed POST")
+    ap.add_argument(
+        "--stop-on-error", action="store_true", help="Stop on first failed POST"
+    )
     ap.add_argument("-v", "--verbose", action="store_true", help="Verbose output")
     args = ap.parse_args()
 
@@ -153,7 +171,7 @@ def main() -> int:
 if __name__ == "__main__":
     raise SystemExit(main())
 
-'''
+"""
 python replay_oplog_to_bridge.py \
   --oplog ./your.oplog.jsonl \
   --bridge http://127.0.0.1:8787 \
@@ -162,4 +180,4 @@ python replay_oplog_to_bridge.py \
   --kg-graph-type conversation \
   -v
 
-'''
+"""

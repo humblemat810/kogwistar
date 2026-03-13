@@ -3,13 +3,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
-import pytest
 
-from graph_knowledge_engine.runtime.langgraph_converter import to_langgraph, LGConverterOptions
+from graph_knowledge_engine.runtime.langgraph_converter import (
+    to_langgraph,
+    LGConverterOptions,
+)
 from graph_knowledge_engine.runtime.contract import BasePredicate
 
 
 # --- Minimum fake shapes (aligned with test_workflow_join.py) ---
+
 
 @dataclass
 class FakeNode:
@@ -38,7 +41,15 @@ class FakeEdge:
         return self.id
 
 
-def _n(node_id: str, *, workflow_id: str, op: str, start=False, terminal=False, fanout=False) -> FakeNode:
+def _n(
+    node_id: str,
+    *,
+    workflow_id: str,
+    op: str,
+    start=False,
+    terminal=False,
+    fanout=False,
+) -> FakeNode:
     md = {
         "entity_type": "workflow_node",
         "workflow_id": workflow_id,
@@ -48,10 +59,26 @@ def _n(node_id: str, *, workflow_id: str, op: str, start=False, terminal=False, 
         "wf_terminal": bool(terminal),
         "wf_fanout": bool(fanout),
     }
-    return FakeNode(id=node_id, metadata=md, op=md["wf_op"], terminal=bool(md.get("wf_terminal")), fanout=bool(md.get("wf_fanout")))
+    return FakeNode(
+        id=node_id,
+        metadata=md,
+        op=md["wf_op"],
+        terminal=bool(md.get("wf_terminal")),
+        fanout=bool(md.get("wf_fanout")),
+    )
 
 
-def _e(edge_id: str, *, workflow_id: str, src: str, dst: str, predicate=None, priority=100, is_default=False, multiplicity="one") -> FakeEdge:
+def _e(
+    edge_id: str,
+    *,
+    workflow_id: str,
+    src: str,
+    dst: str,
+    predicate=None,
+    priority=100,
+    is_default=False,
+    multiplicity="one",
+) -> FakeEdge:
     md = {
         "entity_type": "workflow_edge",
         "workflow_id": workflow_id,
@@ -86,7 +113,11 @@ class FakeWorkflowEngine:
             wf_id = cond.get("workflow_id")
             et = cond.get("entity_type")
             if et == "workflow_node":
-                return [n for n in self._nodes if (n.metadata or {}).get("workflow_id") == wf_id]
+                return [
+                    n
+                    for n in self._nodes
+                    if (n.metadata or {}).get("workflow_id") == wf_id
+                ]
         return list(self._nodes)
 
     def get_edges(self, where=None, limit=9999, edge_type=None, ids=None):
@@ -98,7 +129,11 @@ class FakeWorkflowEngine:
             wf_id = cond.get("workflow_id")
             et = cond.get("entity_type")
             if et == "workflow_edge":
-                return [e for e in self._edges if (e.metadata or {}).get("workflow_id") == wf_id]
+                return [
+                    e
+                    for e in self._edges
+                    if (e.metadata or {}).get("workflow_id") == wf_id
+                ]
         return list(self._edges)
 
 
@@ -115,7 +150,9 @@ class RR:
 
 
 class Resolver:
-    def __init__(self, handlers: Dict[str, Any], schema: Optional[Dict[str, str]] = None):
+    def __init__(
+        self, handlers: Dict[str, Any], schema: Optional[Dict[str, str]] = None
+    ):
         self._h = dict(handlers)
         self._schema = dict(schema or {})
 

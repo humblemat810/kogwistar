@@ -11,6 +11,7 @@ from graph_knowledge_engine.runtime.models import RunSuccess
 
 # --- Minimum fake shapes (aligned with test_workflow_join.py) ---
 
+
 @dataclass
 class FakeNode:
     id: str
@@ -38,7 +39,15 @@ class FakeEdge:
         return self.id
 
 
-def _n(node_id: str, *, workflow_id: str, op: str, start=False, terminal=False, fanout=False) -> FakeNode:
+def _n(
+    node_id: str,
+    *,
+    workflow_id: str,
+    op: str,
+    start=False,
+    terminal=False,
+    fanout=False,
+) -> FakeNode:
     md = {
         "entity_type": "workflow_node",
         "workflow_id": workflow_id,
@@ -48,10 +57,26 @@ def _n(node_id: str, *, workflow_id: str, op: str, start=False, terminal=False, 
         "wf_terminal": bool(terminal),
         "wf_fanout": bool(fanout),
     }
-    return FakeNode(id=node_id, metadata=md, op=md["wf_op"], terminal=bool(md.get("wf_terminal")), fanout=bool(md.get("wf_fanout")))
+    return FakeNode(
+        id=node_id,
+        metadata=md,
+        op=md["wf_op"],
+        terminal=bool(md.get("wf_terminal")),
+        fanout=bool(md.get("wf_fanout")),
+    )
 
 
-def _e(edge_id: str, *, workflow_id: str, src: str, dst: str, predicate=None, priority=100, is_default=False, multiplicity="one") -> FakeEdge:
+def _e(
+    edge_id: str,
+    *,
+    workflow_id: str,
+    src: str,
+    dst: str,
+    predicate=None,
+    priority=100,
+    is_default=False,
+    multiplicity="one",
+) -> FakeEdge:
     md = {
         "entity_type": "workflow_edge",
         "workflow_id": workflow_id,
@@ -89,7 +114,11 @@ class FakeEngine:
             wf_id = cond.get("workflow_id")
             et = cond.get("entity_type")
             if et == "workflow_node":
-                return [n for n in self._nodes if (n.metadata or {}).get("workflow_id") == wf_id]
+                return [
+                    n
+                    for n in self._nodes
+                    if (n.metadata or {}).get("workflow_id") == wf_id
+                ]
             if et == "workflow_checkpoint" or et == "workflow_step_exec":
                 return []
         return list(self._nodes)
@@ -100,7 +129,11 @@ class FakeEngine:
             wf_id = cond.get("workflow_id")
             et = cond.get("entity_type")
             if et == "workflow_edge":
-                return [e for e in self._edges if (e.metadata or {}).get("workflow_id") == wf_id]
+                return [
+                    e
+                    for e in self._edges
+                    if (e.metadata or {}).get("workflow_id") == wf_id
+                ]
         return list(self._edges)
 
     def add_edge(self, e):
@@ -130,7 +163,9 @@ def test_workflow_runtime_native_update_schema_applies_known_and_falls_back_unkn
     @resolver.register("do")
     def _do(ctx):
         # op_log is known -> append; dyn is unknown -> fallback overwrite
-        return RunSuccess(conversation_node_id=None, state_update=[], update={"op_log": "x", "dyn": 1})
+        return RunSuccess(
+            conversation_node_id=None, state_update=[], update={"op_log": "x", "dyn": 1}
+        )
 
     @resolver.register("noop")
     def _noop(ctx):

@@ -1,14 +1,16 @@
-import pytest
 
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
-from graph_knowledge_engine.runtime.langgraph_converter import LGConverterOptions, to_langgraph
-from graph_knowledge_engine.runtime.contract import BasePredicate
+from graph_knowledge_engine.runtime.langgraph_converter import (
+    LGConverterOptions,
+    to_langgraph,
+)
 from graph_knowledge_engine.runtime.models import RunSuccess
 
 
 # ---- Minimum fake shapes (match tests/workflow/test_workflow_join.py) ----
+
 
 @dataclass
 class FakeNode:
@@ -49,7 +51,15 @@ class FakeWorkflowEngine:
         return list(self._edges)
 
 
-def _n(node_id: str, *, workflow_id: str, op: str, start: bool = False, terminal: bool = False, fanout: bool = False) -> FakeNode:
+def _n(
+    node_id: str,
+    *,
+    workflow_id: str,
+    op: str,
+    start: bool = False,
+    terminal: bool = False,
+    fanout: bool = False,
+) -> FakeNode:
     md = {
         "entity_type": "workflow_node",
         "workflow_id": workflow_id,
@@ -59,7 +69,13 @@ def _n(node_id: str, *, workflow_id: str, op: str, start: bool = False, terminal
         "wf_terminal": bool(terminal),
         "wf_fanout": bool(fanout),
     }
-    return FakeNode(id=node_id, metadata=md, op=md["wf_op"], terminal=bool(md.get("wf_terminal")), fanout=bool(md.get("wf_fanout")))
+    return FakeNode(
+        id=node_id,
+        metadata=md,
+        op=md["wf_op"],
+        terminal=bool(md.get("wf_terminal")),
+        fanout=bool(md.get("wf_fanout")),
+    )
 
 
 def _e(
@@ -120,8 +136,12 @@ def test_blob_state_reducer_is_deterministic_under_parallel_fanout():
         _n("end", workflow_id=wid, op="end", terminal=True),
     ]
     edges = [
-        _e("e1", workflow_id=wid, src="start", dst="a", priority=0, multiplicity="many"),
-        _e("e2", workflow_id=wid, src="start", dst="b", priority=0, multiplicity="many"),
+        _e(
+            "e1", workflow_id=wid, src="start", dst="a", priority=0, multiplicity="many"
+        ),
+        _e(
+            "e2", workflow_id=wid, src="start", dst="b", priority=0, multiplicity="many"
+        ),
         _e("e3", workflow_id=wid, src="a", dst="end", priority=0),
         _e("e4", workflow_id=wid, src="b", dst="end", priority=0),
     ]
@@ -130,9 +150,15 @@ def test_blob_state_reducer_is_deterministic_under_parallel_fanout():
 
     resolver = Resolver(
         {
-            "start": lambda blob: RunSuccess(conversation_node_id=None, state_update=[]),
-            "do_a": lambda blob: RunSuccess(conversation_node_id=None, state_update=[("a", {"log": "a"})]),
-            "do_b": lambda blob: RunSuccess(conversation_node_id=None, state_update=[("a", {"log": "b"})]),
+            "start": lambda blob: RunSuccess(
+                conversation_node_id=None, state_update=[]
+            ),
+            "do_a": lambda blob: RunSuccess(
+                conversation_node_id=None, state_update=[("a", {"log": "a"})]
+            ),
+            "do_b": lambda blob: RunSuccess(
+                conversation_node_id=None, state_update=[("a", {"log": "b"})]
+            ),
             "end": lambda blob: RunSuccess(conversation_node_id=None, state_update=[]),
         }
     )
@@ -161,7 +187,14 @@ def test_blob_state_mode_produces_no_apply_node():
     edges = [_e("e1", workflow_id=wid, src="start", dst="end", priority=0)]
 
     engine = FakeWorkflowEngine(nodes, edges)
-    resolver = Resolver({"start": lambda blob: RunSuccess(conversation_node_id=None, state_update=[]), "end": lambda blob: RunSuccess(conversation_node_id=None, state_update=[])})
+    resolver = Resolver(
+        {
+            "start": lambda blob: RunSuccess(
+                conversation_node_id=None, state_update=[]
+            ),
+            "end": lambda blob: RunSuccess(conversation_node_id=None, state_update=[]),
+        }
+    )
 
     compiled = to_langgraph(
         workflow_engine=engine,

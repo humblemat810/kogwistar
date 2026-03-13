@@ -7,7 +7,9 @@ from tests._kg_factories import kg_document, kg_grounding
 from tests.conftest import _make_engine_pair
 
 
-def _mk_claim_node(*, node_id: str, label: str, summary: str, doc_id: str, effective_from: str) -> Node:
+def _mk_claim_node(
+    *, node_id: str, label: str, summary: str, doc_id: str, effective_from: str
+) -> Node:
     return Node(
         id=node_id,
         label=label,
@@ -24,7 +26,9 @@ def _mk_claim_node(*, node_id: str, label: str, summary: str, doc_id: str, effec
 
 
 @pytest.mark.parametrize("backend_kind", ["chroma", "pg"])
-def test_search_nodes_as_of_redirect_cutoff(backend_kind, tmp_path, sa_engine, pg_schema):
+def test_search_nodes_as_of_redirect_cutoff(
+    backend_kind, tmp_path, sa_engine, pg_schema
+):
     eng, _ = _make_engine_pair(
         backend_kind=backend_kind,
         tmp_path=tmp_path,
@@ -84,7 +88,9 @@ def test_search_nodes_as_of_redirect_cutoff(backend_kind, tmp_path, sa_engine, p
 
 
 @pytest.mark.parametrize("backend_kind", ["chroma", "pg"])
-def test_search_nodes_as_of_tombstone_and_future_effective(backend_kind, tmp_path, sa_engine, pg_schema):
+def test_search_nodes_as_of_tombstone_and_future_effective(
+    backend_kind, tmp_path, sa_engine, pg_schema
+):
     eng, _ = _make_engine_pair(
         backend_kind=backend_kind,
         tmp_path=tmp_path,
@@ -156,7 +162,9 @@ def test_search_nodes_as_of_tombstone_and_future_effective(backend_kind, tmp_pat
 
 
 @pytest.mark.parametrize("backend_kind", ["chroma", "pg"])
-def test_search_nodes_as_of_redirect_cycle_and_invalid_target_safety(backend_kind, tmp_path, sa_engine, pg_schema):
+def test_search_nodes_as_of_redirect_cycle_and_invalid_target_safety(
+    backend_kind, tmp_path, sa_engine, pg_schema
+):
     eng, _ = _make_engine_pair(
         backend_kind=backend_kind,
         tmp_path=tmp_path,
@@ -197,9 +205,15 @@ def test_search_nodes_as_of_redirect_cycle_and_invalid_target_safety(backend_kin
     eng.write.add_node(cycle_b)
     eng.write.add_node(invalid_src)
 
-    assert eng.redirect_node("N_CYCLE_A", "N_CYCLE_B", deleted_at="2000-01-01T00:00:00+00:00")
-    assert eng.redirect_node("N_CYCLE_B", "N_CYCLE_A", deleted_at="2001-01-01T00:00:00+00:00")
-    assert eng.redirect_node("N_INVALID_SRC", "N_MISSING_TARGET", deleted_at="2000-01-01T00:00:00+00:00")
+    assert eng.redirect_node(
+        "N_CYCLE_A", "N_CYCLE_B", deleted_at="2000-01-01T00:00:00+00:00"
+    )
+    assert eng.redirect_node(
+        "N_CYCLE_B", "N_CYCLE_A", deleted_at="2001-01-01T00:00:00+00:00"
+    )
+    assert eng.redirect_node(
+        "N_INVALID_SRC", "N_MISSING_TARGET", deleted_at="2000-01-01T00:00:00+00:00"
+    )
 
     hits = eng.search_nodes_as_of(
         query="cycle redirect source",

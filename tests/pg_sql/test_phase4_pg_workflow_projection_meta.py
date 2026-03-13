@@ -8,7 +8,9 @@ from pathlib import Path
 import pytest
 
 from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
-from graph_knowledge_engine.engine_core.engine_postgres_meta import EnginePostgresMetaStore
+from graph_knowledge_engine.engine_core.engine_postgres_meta import (
+    EnginePostgresMetaStore,
+)
 from graph_knowledge_engine.engine_core.postgres_backend import PgVectorBackend
 from graph_knowledge_engine.server.run_registry import RunRegistry
 
@@ -28,12 +30,16 @@ class FakeEmbeddingFunction:
 
 def test_pg_meta_store_workflow_projection_and_server_run_tables(sa_engine, pg_schema):
     if sa_engine is None or pg_schema is None:
-        pytest.skip("pg backend requested but sa_engine/pg_schema fixtures not available")
+        pytest.skip(
+            "pg backend requested but sa_engine/pg_schema fixtures not available"
+        )
 
     root = Path(".tmp_pg_workflow_projection_meta") / str(uuid.uuid4())
     root.mkdir(parents=True, exist_ok=True)
     try:
-        backend = PgVectorBackend(engine=sa_engine, embedding_dim=3, schema=f"{pg_schema}_wf")
+        backend = PgVectorBackend(
+            engine=sa_engine, embedding_dim=3, schema=f"{pg_schema}_wf"
+        )
         workflow_engine = GraphKnowledgeEngine(
             persist_directory=str(root / "pg_workflow_meta"),
             kg_graph_type="workflow",
@@ -59,28 +65,46 @@ def test_pg_meta_store_workflow_projection_and_server_run_tables(sa_engine, pg_s
             versions=[
                 {"version": 0, "prev_version": 0, "target_seq": 0, "created_at_ms": 0},
                 {"version": 1, "prev_version": 0, "target_seq": 3, "created_at_ms": 10},
-                {"version": 4, "prev_version": 1, "target_seq": 12, "created_at_ms": 40},
+                {
+                    "version": 4,
+                    "prev_version": 1,
+                    "target_seq": 12,
+                    "created_at_ms": 40,
+                },
             ],
-            dropped_ranges=[{"start_seq": 4, "end_seq": 9, "start_version": 2, "end_version": 3}],
+            dropped_ranges=[
+                {"start_seq": 4, "end_seq": 9, "start_version": 2, "end_version": 3}
+            ],
         )
         projection = meta.get_workflow_design_projection(workflow_id=workflow_id)
         assert projection is not None
         assert projection["current_version"] == 4
         assert projection["active_tip_version"] == 4
         assert [int(item["version"]) for item in projection["versions"]] == [0, 1, 4]
-        assert projection["dropped_ranges"] == [{"start_seq": 4, "end_seq": 9, "start_version": 2, "end_version": 3}]
+        assert projection["dropped_ranges"] == [
+            {"start_seq": 4, "end_seq": 9, "start_version": 2, "end_version": 3}
+        ]
 
         meta.put_workflow_design_snapshot(
             workflow_id=workflow_id,
             version=4,
             seq=12,
-            payload_json=json.dumps({"nodes": [{"id": "n1"}], "edges": []}, sort_keys=True, separators=(",", ":")),
+            payload_json=json.dumps(
+                {"nodes": [{"id": "n1"}], "edges": []},
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
             schema_version=1,
         )
-        snapshot = meta.get_workflow_design_snapshot(workflow_id=workflow_id, max_version=10, schema_version=1)
+        snapshot = meta.get_workflow_design_snapshot(
+            workflow_id=workflow_id, max_version=10, schema_version=1
+        )
         assert snapshot is not None
         assert snapshot["version"] == 4
-        assert json.loads(str(snapshot["payload_json"])) == {"nodes": [{"id": "n1"}], "edges": []}
+        assert json.loads(str(snapshot["payload_json"])) == {
+            "nodes": [{"id": "n1"}],
+            "edges": [],
+        }
 
         meta.put_workflow_design_delta(
             workflow_id=workflow_id,
@@ -89,7 +113,17 @@ def test_pg_meta_store_workflow_projection_and_server_run_tables(sa_engine, pg_s
             target_seq=12,
             forward_json=json.dumps(
                 {
-                    "upsert_nodes": [{"id": "n1", "metadata": {"entity_type": "workflow_node", "workflow_id": workflow_id, "wf_op": "start", "wf_start": True}}],
+                    "upsert_nodes": [
+                        {
+                            "id": "n1",
+                            "metadata": {
+                                "entity_type": "workflow_node",
+                                "workflow_id": workflow_id,
+                                "wf_op": "start",
+                                "wf_start": True,
+                            },
+                        }
+                    ],
                     "delete_node_ids": [],
                     "upsert_edges": [],
                     "delete_edge_ids": [],
@@ -109,7 +143,9 @@ def test_pg_meta_store_workflow_projection_and_server_run_tables(sa_engine, pg_s
             ),
             schema_version=1,
         )
-        delta = meta.get_workflow_design_delta(workflow_id=workflow_id, version=4, schema_version=1)
+        delta = meta.get_workflow_design_delta(
+            workflow_id=workflow_id, version=4, schema_version=1
+        )
         assert delta is not None
         assert delta["version"] == 4
         assert delta["prev_version"] == 1
@@ -156,8 +192,18 @@ def test_pg_meta_store_workflow_projection_and_server_run_tables(sa_engine, pg_s
         meta.clear_workflow_design_snapshots(workflow_id=workflow_id)
         meta.clear_workflow_design_deltas(workflow_id=workflow_id)
         meta.clear_workflow_design_projection(workflow_id=workflow_id)
-        assert meta.get_workflow_design_snapshot(workflow_id=workflow_id, max_version=10, schema_version=1) is None
-        assert meta.get_workflow_design_delta(workflow_id=workflow_id, version=4, schema_version=1) is None
+        assert (
+            meta.get_workflow_design_snapshot(
+                workflow_id=workflow_id, max_version=10, schema_version=1
+            )
+            is None
+        )
+        assert (
+            meta.get_workflow_design_delta(
+                workflow_id=workflow_id, version=4, schema_version=1
+            )
+            is None
+        )
         assert meta.get_workflow_design_projection(workflow_id=workflow_id) is None
     finally:
         shutil.rmtree(root, ignore_errors=True)

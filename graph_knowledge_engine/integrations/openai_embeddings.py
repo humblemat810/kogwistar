@@ -4,7 +4,9 @@ import os
 from typing import Callable, Optional
 
 
-def build_azure_embedding_fn_from_env() -> Optional[Callable[[str], Optional[list[float]]]]:
+def build_azure_embedding_fn_from_env() -> Optional[
+    Callable[[str], Optional[list[float]]]
+]:
     """Build an optional Azure OpenAI embedding callable from environment vars.
 
     Returns None when dependency/config is unavailable, mirroring the engine's
@@ -36,4 +38,3 @@ def build_azure_embedding_fn_from_env() -> Optional[Callable[[str], Optional[lis
             return None
 
     return _embed_fn
-

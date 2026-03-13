@@ -10,7 +10,10 @@ import pytest
 
 from graph_knowledge_engine.cdc.change_event import ChangeEvent
 from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
-from graph_knowledge_engine.engine_core.search_index.models import IndexingItem, make_index_key_for_item
+from graph_knowledge_engine.engine_core.search_index.models import (
+    IndexingItem,
+    make_index_key_for_item,
+)
 
 
 class MockSink:
@@ -107,7 +110,9 @@ def test_search_index_replay(temp_engine_dir):
     # Clear vector side too so hybrid search is genuinely empty before replay.
     index_key = make_index_key_for_item(item)
     delete_fn = getattr(engine.backend, "node_index_delete", None)
-    assert delete_fn is not None, "backend must support node_index_delete for replay test"
+    assert delete_fn is not None, (
+        "backend must support node_index_delete for replay test"
+    )
     delete_fn(ids=[f"idx:{index_key}"])
 
     search_res = engine.search_index.search_hybrid("Replay", limit=5)
@@ -121,9 +126,10 @@ def test_search_index_replay(temp_engine_dir):
     assert search_res2["results"][0]["node_id"] == "replayed-node"
     assert search_res2["results"][0]["canonical_title"] == "Replay Title"
 
+
 def test_search_index_retrieval(temp_engine_dir):
     engine = GraphKnowledgeEngine(persist_directory=temp_engine_dir)
-    
+
     items = [
         IndexingItem(
             node_id="node-alpha",
@@ -131,7 +137,7 @@ def test_search_index_retrieval(temp_engine_dir):
             keywords=["protocol", "security", "alpha"],
             aliases=["AP-1"],
             provision="The primary security protocol for the system.",
-            doc_id="doc-1"
+            doc_id="doc-1",
         ),
         IndexingItem(
             node_id="node-beta",
@@ -139,7 +145,7 @@ def test_search_index_retrieval(temp_engine_dir):
             keywords=["protocol", "network", "beta"],
             aliases=["BP-1"],
             provision="Secondary network protocol.",
-            doc_id="doc-1"
+            doc_id="doc-1",
         ),
         IndexingItem(
             node_id="node-gamma",
@@ -147,21 +153,21 @@ def test_search_index_retrieval(temp_engine_dir):
             keywords=["radiation", "physics"],
             aliases=["GR"],
             provision="High energy electromagnetic radiation.",
-            doc_id="doc-2"
-        )
+            doc_id="doc-2",
+        ),
     ]
     engine.search_index.upsert_entries(items)
-    
+
     # 1. Search by exact keyword (FTS dominant)
     res_alpha = engine.search_index.search_hybrid("security alpha", limit=2)
     assert len(res_alpha["results"]) > 0
     assert res_alpha["results"][0]["node_id"] == "node-alpha"
-    
+
     # 2. Search by title
     res_gamma = engine.search_index.search_hybrid("Gamma Ray", limit=2)
     assert len(res_gamma["results"]) > 0
     assert res_gamma["results"][0]["node_id"] == "node-gamma"
-    
+
     # 3. Semantic / Vector dominant search
     res_semantic = engine.search_index.search_hybrid("electromagnetic", limit=2)
     assert len(res_semantic["results"]) > 0

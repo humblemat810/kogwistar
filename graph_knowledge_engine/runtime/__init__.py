@@ -6,11 +6,24 @@ from importlib import import_module
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from graph_knowledge_engine.runtime.contract import BasePredicate, WorkflowEdgeInfo, WorkflowNodeInfo, WorkflowSpec
+    from graph_knowledge_engine.runtime.contract import (
+        BasePredicate,
+        WorkflowEdgeInfo,
+        WorkflowNodeInfo,
+        WorkflowSpec,
+    )
     from graph_knowledge_engine.runtime.design import BaseWorkflowDesigner
     from graph_knowledge_engine.runtime.replay import load_checkpoint, replay_to
-    from graph_knowledge_engine.runtime.resolvers import BaseResolver, MappingStepResolver
-    from graph_knowledge_engine.runtime.runtime import RouteDecision, RunResult, StepContext, WorkflowRuntime
+    from graph_knowledge_engine.runtime.resolvers import (
+        BaseResolver,
+        MappingStepResolver,
+    )
+    from graph_knowledge_engine.runtime.runtime import (
+        RouteDecision,
+        RunResult,
+        StepContext,
+        WorkflowRuntime,
+    )
 
 __all__ = [
     "BasePredicate",

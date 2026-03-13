@@ -36,7 +36,11 @@ nodes = [
         type="entity",
         summary="The engine persists graph nodes and edges.",
         doc_id="hello:engine",
-        mentions=[tutorial_grounding("hello:engine", "The engine persists graph nodes and edges.")],
+        mentions=[
+            tutorial_grounding(
+                "hello:engine", "The engine persists graph nodes and edges."
+            )
+        ],
         properties={},
         metadata={"level_from_root": 0},
         domain_id=None,
@@ -50,7 +54,12 @@ nodes = [
         type="entity",
         summary="State survives restart when written to the engine persist directory.",
         doc_id="hello:persistence",
-        mentions=[tutorial_grounding("hello:persistence", "State survives restart when written to the engine persist directory.")],
+        mentions=[
+            tutorial_grounding(
+                "hello:persistence",
+                "State survives restart when written to the engine persist directory.",
+            )
+        ],
         properties={},
         metadata={"level_from_root": 1},
         domain_id=None,
@@ -64,7 +73,12 @@ nodes = [
         type="entity",
         summary="Every graph write can carry provenance-bearing mentions.",
         doc_id="hello:provenance",
-        mentions=[tutorial_grounding("hello:provenance", "Every graph write can carry provenance-bearing mentions.")],
+        mentions=[
+            tutorial_grounding(
+                "hello:provenance",
+                "Every graph write can carry provenance-bearing mentions.",
+            )
+        ],
         properties={},
         metadata={"level_from_root": 1},
         domain_id=None,
@@ -84,7 +98,11 @@ edges = [
         type="relationship",
         summary="The graph engine supports persistence across restarts.",
         doc_id="hello:edge:1",
-        mentions=[tutorial_grounding("hello:edge:1", "The graph engine supports persistence across restarts.")],
+        mentions=[
+            tutorial_grounding(
+                "hello:edge:1", "The graph engine supports persistence across restarts."
+            )
+        ],
         properties={},
         metadata={"level_from_root": 1},
         source_edge_ids=[],
@@ -102,7 +120,12 @@ edges = [
         type="relationship",
         summary="Persistence preserves provenance-bearing writes for later inspection.",
         doc_id="hello:edge:2",
-        mentions=[tutorial_grounding("hello:edge:2", "Persistence preserves provenance-bearing writes for later inspection.")],
+        mentions=[
+            tutorial_grounding(
+                "hello:edge:2",
+                "Persistence preserves provenance-bearing writes for later inspection.",
+            )
+        ],
         properties={},
         metadata={"level_from_root": 1},
         source_edge_ids=[],
@@ -118,16 +141,22 @@ for node in nodes:
 for edge in edges:
     engine.add_edge(edge)
 
-show("seeded ids", {"node_ids": [n.id for n in nodes], "edge_ids": [e.id for e in edges]})
+show(
+    "seeded ids", {"node_ids": [n.id for n in nodes], "edge_ids": [e.id for e in edges]}
+)
 
 # %% [markdown]
 # ## Query the graph back
 # First read by id, then run a simple similarity query.
 
 # %%
-read_back = engine.get_nodes(["hello:engine", "hello:persistence", "hello:provenance"], resolve_mode="redirect")
+read_back = engine.get_nodes(
+    ["hello:engine", "hello:persistence", "hello:provenance"], resolve_mode="redirect"
+)
 query_hits = engine.query_nodes(
-    query_embeddings=[engine._iterative_defensive_emb("restart persistence provenance")],
+    query_embeddings=[
+        engine._iterative_defensive_emb("restart persistence provenance")
+    ],
     n_results=3,
     where={"level_from_root": {"$lte": 3}},
     include=["metadatas", "documents", "embeddings"],
@@ -151,7 +180,9 @@ reopened = GraphKnowledgeEngine(
     kg_graph_type="knowledge",
     embedding_function=LexicalHashEmbeddingFunction(),
 )
-reopened_nodes = reopened.get_nodes(["hello:engine", "hello:persistence", "hello:provenance"], resolve_mode="redirect")
+reopened_nodes = reopened.get_nodes(
+    ["hello:engine", "hello:persistence", "hello:provenance"], resolve_mode="redirect"
+)
 show(
     "reopened state",
     {

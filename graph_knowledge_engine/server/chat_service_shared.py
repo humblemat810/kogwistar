@@ -105,11 +105,15 @@ class ChatRunServiceOwner(Protocol):
 
     def _conversation_service(self) -> ConversationService: ...
 
-    def _assert_workflow_projection_not_rebuilding(self, *, workflow_id: str) -> None: ...
+    def _assert_workflow_projection_not_rebuilding(
+        self, *, workflow_id: str
+    ) -> None: ...
 
     def list_steps(self, run_id: str) -> list[dict[str, Any]]: ...
 
-    def _publish(self, run_id: str, event_type: str, payload: dict[str, Any] | None = None) -> dict[str, Any]: ...
+    def _publish(
+        self, run_id: str, event_type: str, payload: dict[str, Any] | None = None
+    ) -> dict[str, Any]: ...
 
     @contextlib.contextmanager
     def _workflow_namespace_scope(self, workflow_id: str): ...
@@ -192,12 +196,16 @@ class _BaseComponent:
         return self._owner._conversation_owner(conversation_id)
 
     def _assert_workflow_projection_not_rebuilding(self, *, workflow_id: str) -> None:
-        return self._owner._assert_workflow_projection_not_rebuilding(workflow_id=workflow_id)
+        return self._owner._assert_workflow_projection_not_rebuilding(
+            workflow_id=workflow_id
+        )
 
     def list_steps(self, run_id: str) -> list[dict[str, Any]]:
         return self._owner.list_steps(run_id)
 
-    def _publish(self, run_id: str, event_type: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    def _publish(
+        self, run_id: str, event_type: str, payload: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         return self._owner._publish(run_id, event_type, payload)
 
     @staticmethod

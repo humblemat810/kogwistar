@@ -2,26 +2,26 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Literal, Mapping, Optional, TypedDict
-from pydantic import BaseModel, Field
-
+from pydantic import BaseModel
 
 
 # ---- Operation types -------------------------------------------------
 
 Op = Literal[
-    "node.upsert", # tombstoning = delete, updating
-    "node.remove", # never delete in practise so far
-    "doc.upsert", # tombstoning = delete, updating
-    "doc.remove", # never delete in practise so far
-    "edge.upsert", # tombstoning = delete, updating
-    "edge.remove", # never delete in practise so far
-    "search_index.upsert", # search index entries updated
-    "checkpoint", # unused
-    "snapshot",   # unused
+    "node.upsert",  # tombstoning = delete, updating
+    "node.remove",  # never delete in practise so far
+    "doc.upsert",  # tombstoning = delete, updating
+    "doc.remove",  # never delete in practise so far
+    "edge.upsert",  # tombstoning = delete, updating
+    "edge.remove",  # never delete in practise so far
+    "search_index.upsert",  # search index entries updated
+    "checkpoint",  # unused
+    "snapshot",  # unused
 ]
 
 
 # ---- Entity reference -------------------------------------------------
+
 
 class EntityRef(TypedDict, total=False):
     kind: Literal["node", "edge", "doc_node", "search_index"]
@@ -29,15 +29,19 @@ class EntityRef(TypedDict, total=False):
     kg_graph_type: str
     url: str
 
+
 class EntityRefModel(BaseModel):
     kind: Literal["node", "edge", "doc_node", "search_index"]
     id: str
     kg_graph_type: str
     url: str | None
+
     def model_dump_entity_ref(self, *arg, **kwarg):
         return EntityRef(super().model_dump(*arg, **kwarg))
 
+
 # ---- Change event -----------------------------------------------------
+
 
 @dataclass(frozen=True, slots=True)
 class ChangeEvent:

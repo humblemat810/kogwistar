@@ -9,6 +9,7 @@ from .models import Base
 
 _SessionLocal = None
 
+
 def _is_test_env() -> bool:
     if os.getenv("PYTEST_CURRENT_TEST"):
         return True
@@ -48,10 +49,12 @@ def create_auth_engine(db_url: str, *, allow_in_memory: bool | None = None):
         )
     return create_engine(db_url)
 
+
 def init_auth_db(engine):
     global _SessionLocal
     Base.metadata.create_all(bind=engine)
     _SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
 
 def get_session() -> Session:
     if _SessionLocal is None:

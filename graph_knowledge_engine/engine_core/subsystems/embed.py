@@ -41,5 +41,7 @@ class EmbedSubsystem(NamespaceProxy):
             except Exception:
                 success = False
         if embedding is None:
-            raise Exception("cannot get embedding after most defensive embedding strategy.")
+            raise Exception(
+                "cannot get embedding after most defensive embedding strategy."
+            )
         return embedding

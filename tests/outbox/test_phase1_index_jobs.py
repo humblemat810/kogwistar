@@ -54,20 +54,31 @@ class SimpleIndexJobDrainer:
         jobs = self.meta.claim_index_jobs(limit=limit, lease_seconds=lease_seconds)
         for job in jobs:
             try:
-                self._apply(job.index_kind, job.op, job.entity_id, job.payload_json, job.job_id)
+                self._apply(
+                    job.index_kind, job.op, job.entity_id, job.payload_json, job.job_id
+                )
             except Exception as e:
                 err = f"{type(e).__name__}: {e}"
                 next_retry = int(job.retry_count or 0) + 1
                 max_retries = int(job.max_retries or 10)
                 if next_retry < max_retries:
-                    self.meta.bump_retry_and_requeue(job.job_id, err, next_run_at_seconds=0)
+                    self.meta.bump_retry_and_requeue(
+                        job.job_id, err, next_run_at_seconds=0
+                    )
                 else:
                     self.meta.mark_index_job_failed(job.job_id, err)
             else:
                 self.meta.mark_index_job_done(job.job_id)
         return len(jobs)
 
-    def _apply(self, index_kind: str, op: str, entity_id: str, payload_json: str | None, job_id: str) -> None:
+    def _apply(
+        self,
+        index_kind: str,
+        op: str,
+        entity_id: str,
+        payload_json: str | None,
+        job_id: str,
+    ) -> None:
         if index_kind != "node_docs":
             raise NotImplementedError("Phase 1 tests focus on node_docs join index")
 
@@ -80,7 +91,9 @@ class SimpleIndexJobDrainer:
 
         payload = json.loads(payload_json or "{}")
         doc_ids = payload.get("doc_ids")
-        if not isinstance(doc_ids, list) or not all(isinstance(x, str) for x in doc_ids):
+        if not isinstance(doc_ids, list) or not all(
+            isinstance(x, str) for x in doc_ids
+        ):
             raise ValueError("payload_json must contain {'doc_ids': [..]} for UPSERT")
 
         # delete -> add rebuild style (this is the dangerous window Phase 1 addresses)
@@ -104,7 +117,9 @@ def _mk_sqlite(tmp_path: str) -> EngineSQLite:
 def _force_expire_job_lease(meta: EngineSQLite, job_id: str) -> None:
     # Intentionally bypass the metastore API to simulate a stalled worker lease.
     with meta.connect() as conn:
-        conn.execute("UPDATE index_jobs SET lease_until = 0 WHERE job_id = ?", (job_id,))
+        conn.execute(
+            "UPDATE index_jobs SET lease_until = 0 WHERE job_id = ?", (job_id,)
+        )
         conn.commit()
 
 

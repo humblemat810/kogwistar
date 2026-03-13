@@ -5,30 +5,25 @@ import os
 from .db import create_auth_engine, init_auth_db, get_session
 from .seeding import seed_auth_data
 
+
 def main():
-    parser = argparse.ArgumentParser(description="Seed/Upsert Auth data into the database.")
+    parser = argparse.ArgumentParser(
+        description="Seed/Upsert Auth data into the database."
+    )
     parser.add_argument(
-        "--db-url", 
+        "--db-url",
         default=os.getenv("AUTH_DB_URL", "sqlite:///auth.sqlite"),
-        help="Database URL (default: sqlite:///auth.sqlite)"
+        help="Database URL (default: sqlite:///auth.sqlite)",
     )
-    parser.add_argument(
-        "--file", 
-        "-f", 
-        help="Path to JSON seed file"
-    )
-    parser.add_argument(
-        "--json", 
-        "-j", 
-        help="JSON string to seed"
-    )
+    parser.add_argument("--file", "-f", help="Path to JSON seed file")
+    parser.add_argument("--json", "-j", help="JSON string to seed")
 
     args = parser.parse_args()
 
     # Initialize DB
     engine = create_auth_engine(args.db_url)
     init_auth_db(engine)
-    
+
     seed_json = None
     if args.file:
         if not os.path.exists(args.file):
@@ -50,6 +45,7 @@ def main():
         sys.exit(1)
     finally:
         session.close()
+
 
 if __name__ == "__main__":
     main()

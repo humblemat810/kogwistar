@@ -15,6 +15,7 @@ from graph_knowledge_engine.engine_core.models import (
 )
 from graph_knowledge_engine.runtime.models import WorkflowEdge, WorkflowNode
 
+
 def _span():
     return Span(
         collection_page_url="test",
@@ -29,23 +30,41 @@ def _span():
         context_after="",
         chunk_id=None,
         source_cluster_id=None,
-        verification=MentionVerification(method="human", is_verified=True, score=1.0, notes="test"),
+        verification=MentionVerification(
+            method="human", is_verified=True, score=1.0, notes="test"
+        ),
     )
+
+
 def _fake_ef_dim(dim: int):
     def _ef(texts):
         return [[0.01] * dim for _ in texts]
+
     return _ef
+
+
 @pytest.mark.parametrize("backend_kind", ["chroma", "pg"])
-def test_workflow_design_creation_and_persistence(tmp_path, backend_kind, sa_engine, pg_schema):
+def test_workflow_design_creation_and_persistence(
+    tmp_path, backend_kind, sa_engine, pg_schema
+):
     """
     This test scope is to test runnable and persistance and loadable, not the actual completeness of the orchestration
     """
-    
+
     if backend_kind == "chroma":
-        wf_engine = GraphKnowledgeEngine(persist_directory=str(tmp_path / "wf"), kg_graph_type="workflow")
+        wf_engine = GraphKnowledgeEngine(
+            persist_directory=str(tmp_path / "wf"), kg_graph_type="workflow"
+        )
     else:
-        wf_backend = PgVectorBackend(engine=sa_engine, embedding_dim=3, schema=f"{pg_schema}_wf")
-        wf_engine = GraphKnowledgeEngine(persist_directory=str(tmp_path / "wf_meta"), kg_graph_type="workflow", backend=wf_backend, embedding_function=_fake_ef_dim(3))
+        wf_backend = PgVectorBackend(
+            engine=sa_engine, embedding_dim=3, schema=f"{pg_schema}_wf"
+        )
+        wf_engine = GraphKnowledgeEngine(
+            persist_directory=str(tmp_path / "wf_meta"),
+            kg_graph_type="workflow",
+            backend=wf_backend,
+            embedding_function=_fake_ef_dim(3),
+        )
     workflow_id = "wf_demo"
 
     g = Grounding(spans=[_span()])
@@ -117,12 +136,23 @@ def test_workflow_design_creation_and_persistence(tmp_path, backend_kind, sa_eng
 
     # Reopen: ensures persistence works
     if backend_kind == "chroma":
-        wf_engine2 = GraphKnowledgeEngine(persist_directory=str(tmp_path / "wf"), kg_graph_type="workflow")
+        wf_engine2 = GraphKnowledgeEngine(
+            persist_directory=str(tmp_path / "wf"), kg_graph_type="workflow"
+        )
     else:
-        wf_backend2 = PgVectorBackend(engine=sa_engine, embedding_dim=3, schema=f"{pg_schema}_wf")
-        wf_engine2 = GraphKnowledgeEngine(persist_directory=str(tmp_path / "wf_meta"), kg_graph_type="workflow", backend=wf_backend2, embedding_function=_fake_ef_dim(3))
+        wf_backend2 = PgVectorBackend(
+            engine=sa_engine, embedding_dim=3, schema=f"{pg_schema}_wf"
+        )
+        wf_engine2 = GraphKnowledgeEngine(
+            persist_directory=str(tmp_path / "wf_meta"),
+            kg_graph_type="workflow",
+            backend=wf_backend2,
+            embedding_function=_fake_ef_dim(3),
+        )
 
-    spec = build_workflow_from_engine(workflow_engine=wf_engine2, workflow_id=workflow_id)
+    spec = build_workflow_from_engine(
+        workflow_engine=wf_engine2, workflow_id=workflow_id
+    )
 
     assert spec.workflow_id == workflow_id
     assert spec.start_node_id == n1.id

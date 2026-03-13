@@ -2,22 +2,28 @@ from langchain_openai import AzureChatOpenAI
 from pydantic import BaseModel
 import dotenv
 import os
-dotenv.load_dotenv('.env')
+
+dotenv.load_dotenv(".env")
+
+
 class MySchema(BaseModel):
     foo: str
 
 
 from langchain_core.callbacks import BaseCallbackHandler
-from langchain_core.prompts import ChatPromptTemplate
 from typing import Any, Optional
 from uuid import UUID
 from langchain_core.messages import BaseMessage
 
+
 class cb_one(BaseCallbackHandler):
     def on_llm_new_token(self, token: str, **kwargs) -> None:
         print(f"cb_one, token: {token}")
+
+
 class cb_two(BaseCallbackHandler):
-    def on_chat_model_start(self,
+    def on_chat_model_start(
+        self,
         serialized: dict[str, Any],
         messages: list[list[BaseMessage]],
         *,
@@ -28,24 +34,26 @@ class cb_two(BaseCallbackHandler):
         **kwargs: Any,
     ) -> Any:
         print(messages)
-        print(f"cb_two, on chat_start messages: {messages}")    
+        print(f"cb_two, on chat_start messages: {messages}")
         pass
+
     def on_llm_new_token(self, token: str, **kwargs) -> None:
-        print(f"cb_two, token: {token}")        
-        
+        print(f"cb_two, token: {token}")
+
+
 llm = AzureChatOpenAI(
-            deployment_name=os.getenv("OPENAI_DEPLOYMENT_NAME_GPT4_1"),
-            model_name=os.getenv("OPENAI_MODEL_NAME_GPT4_1"),
-            azure_endpoint=os.getenv("OPENAI_DEPLOYMENT_ENDPOINT_GPT4_1"),
-            cache=None,
-            openai_api_key=os.getenv("OPENAI_API_KEY_GPT4_1"),
-            api_version="2024-08-01-preview",
-            model_version=os.getenv("OPENAI_DEPLOYMENT_VERSION_GPT4_1"),
-            temperature=0.1,
-            max_tokens=12000,
-            openai_api_type="azure",
-            callbacks = [cb_one()]
-        )
+    deployment_name=os.getenv("OPENAI_DEPLOYMENT_NAME_GPT4_1"),
+    model_name=os.getenv("OPENAI_MODEL_NAME_GPT4_1"),
+    azure_endpoint=os.getenv("OPENAI_DEPLOYMENT_ENDPOINT_GPT4_1"),
+    cache=None,
+    openai_api_key=os.getenv("OPENAI_API_KEY_GPT4_1"),
+    api_version="2024-08-01-preview",
+    model_version=os.getenv("OPENAI_DEPLOYMENT_VERSION_GPT4_1"),
+    temperature=0.1,
+    max_tokens=12000,
+    openai_api_type="azure",
+    callbacks=[cb_one()],
+)
 
 # First bind with callback
 r1 = llm.model_copy()

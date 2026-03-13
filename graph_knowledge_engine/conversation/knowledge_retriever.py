@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from typing import Callable, List, Optional, Tuple, cast
+from typing import Callable, List, Optional, cast
 
 from graph_knowledge_engine.llm_tasks import LLMTaskSet
 
@@ -15,6 +15,7 @@ from graph_knowledge_engine.id_provider import stable_id
 
 from .models import ConversationNode, FilteringResult, MetaFromLastSummary
 from ..engine_core.models import Grounding, Span
+
 
 class KnowledgeRetriever:
     """
@@ -34,13 +35,15 @@ class KnowledgeRetriever:
         conversation_engine,
         ref_knowledge_engine,
         llm_tasks: LLMTaskSet,
-        filtering_callback: Callable[..., tuple[FilteringResult| RetrievalResult, str]] ,
+        filtering_callback: Callable[
+            ..., tuple[FilteringResult | RetrievalResult, str]
+        ],
         max_retrieval_level: int = 2,
         shallow_n_results: int = 20,
         deep_per_seed_results: int = 10,
         deep_seed_limit: int = 5,
     ) -> None:
-        self.conversation_engine : GraphKnowledgeEngine= conversation_engine
+        self.conversation_engine: GraphKnowledgeEngine = conversation_engine
         self.ref_knowledge_engine: GraphKnowledgeEngine = ref_knowledge_engine
         self.llm_tasks = llm_tasks
         self.filtering_callback = filtering_callback
@@ -49,17 +52,27 @@ class KnowledgeRetriever:
         self.deep_per_seed_results = deep_per_seed_results
         self.deep_seed_limit = deep_seed_limit
 
-    def _shallow_query(self, *, query_embedding: List[float], max_retrieval_level) -> RetrievalResult:
+    def _shallow_query(
+        self, *, query_embedding: List[float], max_retrieval_level
+    ) -> RetrievalResult:
         nodes = self.ref_knowledge_engine.query_nodes(
             query_embeddings=[query_embedding],
             n_results=self.shallow_n_results,
-            where={"level_from_root": {"$lte": max_retrieval_level or self.max_retrieval_level}},
+            where={
+                "level_from_root": {
+                    "$lte": max_retrieval_level or self.max_retrieval_level
+                }
+            },
             include=["metadatas", "documents", "embeddings"],
         )[0]
         edges = self.ref_knowledge_engine.query_edges(
             query_embeddings=[query_embedding],
             n_results=self.shallow_n_results,
-            where={"level_from_root": {"$lte": max_retrieval_level or self.max_retrieval_level}},
+            where={
+                "level_from_root": {
+                    "$lte": max_retrieval_level or self.max_retrieval_level
+                }
+            },
             include=["metadatas", "documents", "embeddings"],
         )[0]
         return RetrievalResult(nodes, edges)
@@ -67,25 +80,29 @@ class KnowledgeRetriever:
         #     n_results=self.shallow_n_results,
         #     where={"level_from_root": {"$lte": self.max_retrieval_level}},
         #     include=["metadatas", "documents", "embeddings"],)
-        
+
         # return (rows.get("ids") or [[]])[0] or []
 
-    def _deep_seeded_semantic(self, *, user_text: str, seed_kg_node_ids: List[str],
-                              max_retrieval_level = 2) -> RetrievalResult:
+    def _deep_seeded_semantic(
+        self, *, user_text: str, seed_kg_node_ids: List[str], max_retrieval_level=2
+    ) -> RetrievalResult:
         seed_ids = seed_kg_node_ids[: self.deep_seed_limit]
         # out: List[str] = []
         # for sid in seed_ids:
-        layers = self.ref_knowledge_engine.query.k_hop(seed_ids, k = max_retrieval_level)
+        layers = self.ref_knowledge_engine.query.k_hop(seed_ids, k=max_retrieval_level)
         nodes = []
         edges = []
         for l in layers:
-            nodes.extend(list(l['nodes']))
-            edges.extend(list(l['edges']))
-        return RetrievalResult(nodes = self.ref_knowledge_engine
-                                  .nodes_from_single_or_id_query_result(self.ref_knowledge_engine.nodes_by_ids(nodes)),
-                                  edges = self.ref_knowledge_engine
-                                  .edges_from_single_or_id_query_result(self.ref_knowledge_engine.edges_by_ids(edges)))
-            
+            nodes.extend(list(l["nodes"]))
+            edges.extend(list(l["edges"]))
+        return RetrievalResult(
+            nodes=self.ref_knowledge_engine.nodes_from_single_or_id_query_result(
+                self.ref_knowledge_engine.nodes_by_ids(nodes)
+            ),
+            edges=self.ref_knowledge_engine.edges_from_single_or_id_query_result(
+                self.ref_knowledge_engine.edges_by_ids(edges)
+            ),
+        )
 
     def retrieve(
         self,
@@ -94,38 +111,67 @@ class KnowledgeRetriever:
         context_text: str,
         query_embedding: List[float],
         seed_kg_node_ids: Optional[List[str]] = None,
-        max_retrieval_level: int = 2
+        max_retrieval_level: int = 2,
     ) -> KnowledgeRetrievalResult:
-        shallow_results = self._shallow_query(query_embedding=query_embedding, max_retrieval_level = max_retrieval_level)
+        shallow_results = self._shallow_query(
+            query_embedding=query_embedding, max_retrieval_level=max_retrieval_level
+        )
         # deep_ids: List[str] = []
         if seed_kg_node_ids:
-            deep_results = self._deep_seeded_semantic(user_text=user_text, seed_kg_node_ids=seed_kg_node_ids, max_retrieval_level = max_retrieval_level)
+            deep_results = self._deep_seeded_semantic(
+                user_text=user_text,
+                seed_kg_node_ids=seed_kg_node_ids,
+                max_retrieval_level=max_retrieval_level,
+            )
         else:
-            deep_results = RetrievalResult(nodes = [], edges = [])
+            deep_results = RetrievalResult(nodes=[], edges=[])
         # merge
-        
-        candidates = RetrievalResult(   nodes = list({n.id: n for n in shallow_results.nodes + deep_results.nodes}.values()), 
-                                        edges = list({n.id: n for n in shallow_results.edges + deep_results.edges}.values()))
-        
+
+        candidates = RetrievalResult(
+            nodes=list(
+                {n.id: n for n in shallow_results.nodes + deep_results.nodes}.values()
+            ),
+            edges=list(
+                {n.id: n for n in shallow_results.edges + deep_results.edges}.values()
+            ),
+        )
 
         reasoning = ""
         if candidates.edges or candidates.nodes:
-            
             cand_node_list_str = "\n".join(
-                [f"-Node ID: {node.id} | Label: {node.metadata.get('label')} | Summary: {node.metadata.get('summary')}" for node in candidates.nodes]
+                [
+                    f"-Node ID: {node.id} | Label: {node.metadata.get('label')} | Summary: {node.metadata.get('summary')}"
+                    for node in candidates.nodes
+                ]
             )
             cand_edge_list_str = "\n".join(
-                [f"-Edge ID: {edge.id} | Label: {edge.metadata.get('label')} | Summary: {edge.metadata.get('summary')}" for edge in candidates.edges]
+                [
+                    f"-Edge ID: {edge.id} | Label: {edge.metadata.get('label')} | Summary: {edge.metadata.get('summary')}"
+                    for edge in candidates.edges
+                ]
             )
-            selected, reasoning = self.filtering_callback(self.llm_tasks, user_text, cand_node_list_str, cand_edge_list_str, 
-                                                          [i.id for i in candidates.nodes],
-                                                          [i.id for i in candidates.edges], context_text)
-            return KnowledgeRetrievalResult(node_id_entry=None, candidate=candidates, selected=selected, reasoning=reasoning)
+            selected, reasoning = self.filtering_callback(
+                self.llm_tasks,
+                user_text,
+                cand_node_list_str,
+                cand_edge_list_str,
+                [i.id for i in candidates.nodes],
+                [i.id for i in candidates.edges],
+                context_text,
+            )
+            return KnowledgeRetrievalResult(
+                node_id_entry=None,
+                candidate=candidates,
+                selected=selected,
+                reasoning=reasoning,
+            )
         else:
-            return KnowledgeRetrievalResult(node_id_entry=None, candidate=RetrievalResult(nodes = [], edges = []), 
-                                            selected=FilteringResult(node_ids = [], edge_ids = []),  
-                                            reasoning=reasoning)
-        
+            return KnowledgeRetrievalResult(
+                node_id_entry=None,
+                candidate=RetrievalResult(nodes=[], edges=[]),
+                selected=FilteringResult(node_ids=[], edge_ids=[]),
+                reasoning=reasoning,
+            )
 
     def pin_selected(
         self,
@@ -137,20 +183,24 @@ class KnowledgeRetriever:
         self_span: Span,
         selected_knowledge: Optional[FilteringResult],
         selected_knowledge_nodes: Optional[RetrievalResult] = None,
-        prev_turn_meta_summary: MetaFromLastSummary| None = None
+        prev_turn_meta_summary: MetaFromLastSummary | None = None,
     ) -> tuple[List[str], List[str]]:
         pinned_pointer_node_ids: List[str] = []
         pinned_edge_ids: List[str] = []
-        
+
         # ref_kg_engine: GraphKnowledgeEngine
         # ref_kg_engine = self.ref_knowledge_engine
         # kgs= selected_knowledge
         if prev_turn_meta_summary is None:
-            raise Exception("prev_turn_meta_summary cannot be None") 
+            raise Exception("prev_turn_meta_summary cannot be None")
         if self.ref_knowledge_engine.kg_graph_type == "knowledge":
             pass
         else:
-            raise(Exception("ref_knowledge_engine used conversation instead of knowledge kg_graph_type"))
+            raise (
+                Exception(
+                    "ref_knowledge_engine used conversation instead of knowledge kg_graph_type"
+                )
+            )
         if selected_knowledge_nodes:
             nodes = selected_knowledge_nodes.nodes
             edges = selected_knowledge_nodes.edges
@@ -160,16 +210,20 @@ class KnowledgeRetriever:
                 if selected_knowledge.node_ids == []:
                     nodes = []
                 else:
-                    nodes = self.ref_knowledge_engine.get_nodes(selected_knowledge.node_ids, resolve_mode="redirect")
+                    nodes = self.ref_knowledge_engine.get_nodes(
+                        selected_knowledge.node_ids, resolve_mode="redirect"
+                    )
                 if selected_knowledge.edge_ids == []:
                     edges = []
                 else:
-                    edges = self.ref_knowledge_engine.get_edges(selected_knowledge.edge_ids, resolve_mode="redirect")
+                    edges = self.ref_knowledge_engine.get_edges(
+                        selected_knowledge.edge_ids, resolve_mode="redirect"
+                    )
             else:
-                raise Exception("selected_knowledge and selected_knowledge_nodes cannot be both None")
-        for kg  in nodes:
-
-            
+                raise Exception(
+                    "selected_knowledge and selected_knowledge_nodes cannot be both None"
+                )
+        for kg in nodes:
             kg_meta = kg.metadata
             summary = str(kg_meta.get("summary", ""))
 
@@ -185,7 +239,8 @@ class KnowledgeRetriever:
             sh = snapshot_hash(snap)
             # Phase-1 invariant: do NOT mutate tail_turn_index for sidecar pins
             ptr_node = ConversationNode(
-                id=None or str(stable_id("knowledge_pin_node", turn_node_id, kg.safe_get_id())),
+                id=None
+                or str(stable_id("knowledge_pin_node", turn_node_id, kg.safe_get_id())),
                 label=f"Ref: {kg_meta.get('label') or getattr(kg, 'label', None)}",
                 type="reference_pointer",
                 doc_id=None,
@@ -200,7 +255,7 @@ class KnowledgeRetriever:
                     "refers_to_collection": "nodes",
                     "refers_to_id": kg.id,
                     "entity_type": "knowledge_reference",
-                    "snapshot_hash": sh
+                    "snapshot_hash": sh,
                 },
                 metadata={
                     "target_namespace": "kg",
@@ -211,16 +266,19 @@ class KnowledgeRetriever:
                 },
                 domain_id=None,
                 canonical_entity_id=None,
-                
             )
-            
+
             ptr_id = ptr_node.safe_get_id()
             self.conversation_engine.add_node(ptr_node)
             pinned_pointer_node_ids.append(ptr_id)
-            
+
             # edge_id = str(uuid.uuid4())
             edge = ConversationEdge(
-                id=str(stable_id("knowledge_pin_edge", turn_node_id, ptr_node.safe_get_id())),
+                id=str(
+                    stable_id(
+                        "knowledge_pin_edge", turn_node_id, ptr_node.safe_get_id()
+                    )
+                ),
                 source_ids=[turn_node_id],
                 target_ids=[ptr_id],
                 relation="references",
@@ -233,23 +291,22 @@ class KnowledgeRetriever:
                 canonical_entity_id=None,
                 properties={"entity_type": "conversation_edge"},
                 embedding=None,
-                metadata={"char_distance_from_last_summary": prev_turn_meta_summary.prev_node_char_distance_from_last_summary,
+                metadata={
+                    "char_distance_from_last_summary": prev_turn_meta_summary.prev_node_char_distance_from_last_summary,
                     "turn_distance_from_last_summary": prev_turn_meta_summary.prev_node_distance_from_last_summary,
-                    "tail_turn_index" : prev_turn_meta_summary.tail_turn_index,
-                    },
+                    "tail_turn_index": prev_turn_meta_summary.tail_turn_index,
+                },
                 source_edge_ids=[],
                 target_edge_ids=[],
             )
             self.conversation_engine.add_edge(edge)
             pinned_edge_ids.append(edge.id)
-            prev_turn_meta_summary.prev_node_char_distance_from_last_summary += len(summary)
+            prev_turn_meta_summary.prev_node_char_distance_from_last_summary += len(
+                summary
+            )
             prev_turn_meta_summary.prev_node_distance_from_last_summary += 1
-            
-            
 
         for kg in edges:
-
-            
             kg_meta = kg.metadata
             summary = str(kg_meta.get("summary", ""))
 
@@ -298,16 +355,20 @@ class KnowledgeRetriever:
                 canonical_entity_id=None,
                 properties={"entity_type": "conversation_edge"},
                 embedding=None,
-                metadata={"char_distance_from_last_summary": prev_turn_meta_summary.prev_node_char_distance_from_last_summary,
+                metadata={
+                    "char_distance_from_last_summary": prev_turn_meta_summary.prev_node_char_distance_from_last_summary,
                     "turn_distance_from_last_summary": prev_turn_meta_summary.prev_node_distance_from_last_summary,
-                    "tail_turn_index": prev_turn_meta_summary.tail_turn_index,},
+                    "tail_turn_index": prev_turn_meta_summary.tail_turn_index,
+                },
                 source_edge_ids=[],
                 target_edge_ids=[],
             )
             self.conversation_engine.add_edge(edge)
             pinned_edge_ids.append(edge_id)
-            
-            prev_turn_meta_summary.prev_node_char_distance_from_last_summary += len(summary)
+
+            prev_turn_meta_summary.prev_node_char_distance_from_last_summary += len(
+                summary
+            )
             prev_turn_meta_summary.prev_node_distance_from_last_summary += 1
-            
+
         return pinned_pointer_node_ids, pinned_edge_ids

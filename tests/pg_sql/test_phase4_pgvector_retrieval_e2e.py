@@ -1,5 +1,4 @@
 import os
-import uuid
 
 import pytest
 import sqlalchemy as sa
@@ -34,7 +33,9 @@ def test_pgvector_retrieval_ordering_e2e(distance: str, sa_engine, pg_schema):
 
     # engine = sa.create_engine(dsn, future=True)
 
-    backend = PgVectorBackend(engine=sa_engine, embedding_dim=3, distance=distance, schema=pg_schema)
+    backend = PgVectorBackend(
+        engine=sa_engine, embedding_dim=3, distance=distance, schema=pg_schema
+    )
 
     try:
         backend.node_add(
@@ -48,7 +49,11 @@ def test_pgvector_retrieval_ordering_e2e(distance: str, sa_engine, pg_schema):
             ],
         )
 
-        got = backend.node_query(query_embeddings=[[1.0, 0.0, 0.0]], n_results=3, include=["documents", "metadatas", "distances"])
+        got = backend.node_query(
+            query_embeddings=[[1.0, 0.0, 0.0]],
+            n_results=3,
+            include=["documents", "metadatas", "distances"],
+        )
 
         assert got["ids"][0] == ["A", "B", "C"]
 

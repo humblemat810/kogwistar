@@ -25,7 +25,7 @@ def _run(args: list[str]) -> subprocess.CompletedProcess[str]:
         check=True,
         capture_output=True,
         text=True,
-    )  
+    )
 
 
 def _extract_last_json(stdout: str) -> dict:
@@ -57,7 +57,11 @@ def test_tutorial_ladder_levels_0_to_2_smoke():
         data_dir = temp_dir / "tutorial-ladder"
 
         _run(["scripts/rag_tutorial_ladder.py", "reset", "--data-dir", str(data_dir)])
-        seed = _extract_last_json(_run(["scripts/rag_tutorial_ladder.py", "seed", "--data-dir", str(data_dir)]).stdout)
+        seed = _extract_last_json(
+            _run(
+                ["scripts/rag_tutorial_ladder.py", "seed", "--data-dir", str(data_dir)]
+            ).stdout
+        )
         assert seed.get("ok") is True
 
         level0 = _extract_last_json(
@@ -133,10 +137,28 @@ def test_level3_claw_command_path_smoke():
         )
         _run(["scripts/claw_runtime_loop.py", "run-once", "--data-dir", str(data_dir)])
         in_rows = _run(
-            ["scripts/claw_runtime_loop.py", "list-events", "--data-dir", str(data_dir), "--direction", "in", "--limit", "10"]
+            [
+                "scripts/claw_runtime_loop.py",
+                "list-events",
+                "--data-dir",
+                str(data_dir),
+                "--direction",
+                "in",
+                "--limit",
+                "10",
+            ]
         ).stdout
         out_rows = _run(
-            ["scripts/claw_runtime_loop.py", "list-events", "--data-dir", str(data_dir), "--direction", "out", "--limit", "10"]
+            [
+                "scripts/claw_runtime_loop.py",
+                "list-events",
+                "--data-dir",
+                str(data_dir),
+                "--direction",
+                "out",
+                "--limit",
+                "10",
+            ]
         ).stdout
         assert "in|" in in_rows
         assert ("out|" in out_rows) or ("claw.gate.output" in out_rows)
@@ -146,37 +168,94 @@ def test_runtime_tutorial_ladder_levels_0_to_4_smoke():
     with _workspace_temp_dir("test_runtime_tutorial_ladder_") as temp_dir:
         data_dir = temp_dir / "runtime-tutorial-ladder"
         try:
-            reset = _extract_last_json(_run(["scripts/runtime_tutorial_ladder.py", "reset", "--data-dir", str(data_dir)]).stdout)
+            reset = _extract_last_json(
+                _run(
+                    [
+                        "scripts/runtime_tutorial_ladder.py",
+                        "reset",
+                        "--data-dir",
+                        str(data_dir),
+                    ]
+                ).stdout
+            )
         except Exception as _e:
             raise
         assert reset.get("ok") is True
 
-        level0 = _extract_last_json(_run(["scripts/runtime_tutorial_ladder.py", "level0", "--data-dir", str(data_dir)]).stdout)
+        level0 = _extract_last_json(
+            _run(
+                [
+                    "scripts/runtime_tutorial_ladder.py",
+                    "level0",
+                    "--data-dir",
+                    str(data_dir),
+                ]
+            ).stdout
+        )
         assert level0.get("checkpoint_pass") is True
         assert level0.get("status") == "suspended"
         assert level0.get("step_exec_count", 0) > 0
         assert level0.get("checkpoint_count", 0) > 0
 
-        level1 = _extract_last_json(_run(["scripts/runtime_tutorial_ladder.py", "level1", "--data-dir", str(data_dir)]).stdout)
+        level1 = _extract_last_json(
+            _run(
+                [
+                    "scripts/runtime_tutorial_ladder.py",
+                    "level1",
+                    "--data-dir",
+                    str(data_dir),
+                ]
+            ).stdout
+        )
         assert level1.get("checkpoint_pass") is True
         assert level1.get("dep_echo") == "runtime-tutorial"
         assert "tutorial_resolver_note" in (level1.get("custom_event_types") or [])
 
-        level2 = _extract_last_json(_run(["scripts/runtime_tutorial_ladder.py", "level2", "--data-dir", str(data_dir)]).stdout)
+        level2 = _extract_last_json(
+            _run(
+                [
+                    "scripts/runtime_tutorial_ladder.py",
+                    "level2",
+                    "--data-dir",
+                    str(data_dir),
+                ]
+            ).stdout
+        )
         assert level2.get("checkpoint_pass") is True
         assert level2.get("initial_status") == "suspended"
         assert level2.get("resumed_status") == "succeeded"
         assert level2.get("final_state", {}).get("ended") is True
 
-        level3 = _extract_last_json(_run(["scripts/runtime_tutorial_ladder.py", "level3", "--data-dir", str(data_dir)]).stdout)
+        level3 = _extract_last_json(
+            _run(
+                [
+                    "scripts/runtime_tutorial_ladder.py",
+                    "level3",
+                    "--data-dir",
+                    str(data_dir),
+                ]
+            ).stdout
+        )
         assert level3.get("checkpoint_pass") is True
         assert level3.get("viewer_asset_exists") is True
         assert "workflow_run_completed" in (level3.get("trace_event_types") or [])
         assert "/api/workflow/runs/" in str(level3.get("runtime_event_endpoint"))
 
-        level4 = _extract_last_json(_run(["scripts/runtime_tutorial_ladder.py", "level4", "--data-dir", str(data_dir)]).stdout)
+        level4 = _extract_last_json(
+            _run(
+                [
+                    "scripts/runtime_tutorial_ladder.py",
+                    "level4",
+                    "--data-dir",
+                    str(data_dir),
+                ]
+            ).stdout
+        )
         assert level4.get("sandbox_type") == "docker"
-        assert "python_exec" in (level4.get("sandboxed_ops") or []) or level4.get("sandbox_available") is False
+        assert (
+            "python_exec" in (level4.get("sandboxed_ops") or [])
+            or level4.get("sandbox_available") is False
+        )
         if level4.get("sandbox_available") is False:
             assert level4.get("sandbox_executed") is False
             assert level4.get("status") == "sandbox_unavailable"
@@ -191,7 +270,9 @@ def test_runtime_tutorial_ladder_keeps_level4_workflow_separate():
     with _workspace_temp_dir("test_runtime_tutorial_ladder_separate_") as temp_dir:
         data_dir = temp_dir / "runtime-tutorial-ladder-separate"
 
-        workflow_engine, _conversation_engine = runtime_tutorial_ladder.ensure_workflow_seed(data_dir)
+        workflow_engine, _conversation_engine = (
+            runtime_tutorial_ladder.ensure_workflow_seed(data_dir)
+        )
         runtime_tutorial_ladder.ensure_sandbox_workflow_seed(data_dir)
 
         start_a, nodes_a, _adj_a = validate_workflow_design(
@@ -222,9 +303,10 @@ def test_runtime_tutorial_ladder_keeps_level4_workflow_separate():
 
 def test_tutorial_section_15_historical_smoke():
     out = _extract_last_json(
-        _run(["scripts/tutorial_sections/15_historical_search_tombstone_redirect.py"]).stdout
+        _run(
+            ["scripts/tutorial_sections/15_historical_search_tombstone_redirect.py"]
+        ).stdout
     )
     assert out.get("checkpoint_pass") is True
     assert "N_SUGAR_OLD" in (out.get("then_ids") or [])
     assert "N_SUGAR_NEW" in (out.get("now_ids") or [])
-

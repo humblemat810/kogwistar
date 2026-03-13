@@ -6,6 +6,8 @@ import sqlite3
 import threading
 import os
 import traceback
+
+
 def safe_format_exception(exc: Exception, base_path: str = None):
     """Format exception with paths relative to project root."""
     if base_path is None:
@@ -13,7 +15,7 @@ def safe_format_exception(exc: Exception, base_path: str = None):
 
     lines = []
     for line in traceback.format_exception(type(exc), exc, exc.__traceback__):
-        if line.startswith('  File'):
+        if line.startswith("  File"):
             parts = line.split('"')
             if len(parts) >= 3:
                 full_path = parts[1]
@@ -24,8 +26,9 @@ def safe_format_exception(exc: Exception, base_path: str = None):
                     # relpath failed (different drive?), keep original
                     pass
         lines.append(line)
-    
-    return ''.join(lines)
+
+    return "".join(lines)
+
 
 def trace_logger_hierarchy(logger):
     while logger:
@@ -35,6 +38,7 @@ def trace_logger_hierarchy(logger):
         print(f"  Propagate: {logger.propagate}")
         print("-" * 40)
         logger = logger.parent
+
 
 class SQLiteHandler(logging.Handler):
     """
@@ -52,7 +56,7 @@ class SQLiteHandler(logging.Handler):
         self.lock = threading.Lock()
         self._initialize_database()
         # Set up a formatter to format the log records
-        self.formatter = logging.Formatter('%(asctime)s', '%Y-%m-%d %H:%M:%S')
+        self.formatter = logging.Formatter("%(asctime)s", "%Y-%m-%d %H:%M:%S")
 
     def _initialize_database(self):
         """
@@ -60,7 +64,7 @@ class SQLiteHandler(logging.Handler):
         """
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
-            cursor.execute('''
+            cursor.execute("""
                 CREATE TABLE IF NOT EXISTS logs (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     timestamp TEXT,
@@ -70,7 +74,7 @@ class SQLiteHandler(logging.Handler):
                     line_number INTEGER,
                     message TEXT
                 )
-            ''')
+            """)
             conn.commit()
 
     def emit(self, record):
@@ -82,29 +86,39 @@ class SQLiteHandler(logging.Handler):
             self.format(record)
             # Format the timestamp using the formatter
             timestamp = self.formatter.formatTime(record)
-            #with self.lock:
+            # with self.lock:
             with sqlite3.connect(self.db_path, timeout=10) as conn:
                 cursor = conn.cursor()
-                cursor.execute('''
+                cursor.execute(
+                    """
                     INSERT INTO logs (timestamp, level, module, filename, line_number, message)
                     VALUES (?, ?, ?, ?, ?, ?)
-                ''', (timestamp, record.levelname, record.module,
-                        record.filename, record.lineno, record.getMessage()))
+                """,
+                    (
+                        timestamp,
+                        record.levelname,
+                        record.module,
+                        record.filename,
+                        record.lineno,
+                        record.getMessage(),
+                    ),
+                )
                 conn.commit()
         except Exception:
             self.handleError(record)
+
     def __del__(self):
         """
         Destructor to perform a WAL checkpoint when the handler is destroyed.
         """
         try:
             with sqlite3.connect(self.db_path) as conn:
-                conn.execute('PRAGMA wal_checkpoint;')
+                conn.execute("PRAGMA wal_checkpoint;")
                 conn.commit()
         except Exception as e:
             print(f"Error during WAL checkpoint: {e}")
-            
-            
+
+
 """_summary_
 
 usage:
@@ -135,8 +149,6 @@ logging.shutdown()
 """
 
 
-
-
 # ----------------------------
 # v2 Compatibility Logging Layer
 # (keeps existing SQLiteHandler intact)
@@ -148,7 +160,6 @@ from pathlib import Path
 import contextlib
 import contextvars
 import logging
-import os
 import sys
 from logging.handlers import RotatingFileHandler
 from typing import Dict, Optional, Iterator, Literal
@@ -158,15 +169,29 @@ EngineType = Literal["conversation", "workflow", "kg"]
 
 
 # Context fields you’ll want everywhere
-_ctx_engine_type: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("engine_type", default=None)
-_ctx_engine_id: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("engine_id", default=None)
-_ctx_conversation_id: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("conversation_id", default=None)
-_ctx_workflow_run_id: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("workflow_run_id", default=None)
-_ctx_step_id: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("step_id", default=None)
-_ctx_op: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("op", default=None)
+_ctx_engine_type: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+    "engine_type", default=None
+)
+_ctx_engine_id: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+    "engine_id", default=None
+)
+_ctx_conversation_id: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+    "conversation_id", default=None
+)
+_ctx_workflow_run_id: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+    "workflow_run_id", default=None
+)
+_ctx_step_id: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+    "step_id", default=None
+)
+_ctx_op: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+    "op", default=None
+)
+
 
 class ContextFilter(logging.Filter):
     """Inject engine/runtime context into all log records."""
+
     def filter(self, record: logging.LogRecord) -> bool:
         record.engine_type = _ctx_engine_type.get() or "-"
         record.engine_id = _ctx_engine_id.get() or "-"
@@ -198,9 +223,13 @@ def bind_log_context(
         if engine_id is not None:
             tokens.append((_ctx_engine_id, _ctx_engine_id.set(engine_id)))
         if conversation_id is not None:
-            tokens.append((_ctx_conversation_id, _ctx_conversation_id.set(conversation_id)))
+            tokens.append(
+                (_ctx_conversation_id, _ctx_conversation_id.set(conversation_id))
+            )
         if workflow_run_id is not None:
-            tokens.append((_ctx_workflow_run_id, _ctx_workflow_run_id.set(workflow_run_id)))
+            tokens.append(
+                (_ctx_workflow_run_id, _ctx_workflow_run_id.set(workflow_run_id))
+            )
         if step_id is not None:
             tokens.append((_ctx_step_id, _ctx_step_id.set(step_id)))
         if op is not None:
@@ -228,6 +257,7 @@ class EngineLogConfig:
     - sqlite_db_path: path to sqlite db (required if enable_sqlite)
     - mode: "prod" installs handlers; "pytest" avoids handlers (pytest captures)
     """
+
     base_dir: Path = Path(".logs")
     app_name: str = "graph_knowledge_engine"
     level: int = logging.INFO
@@ -253,6 +283,7 @@ class EngineLogManager:
     - In pytest: DO NOT install extra handlers; let pytest/vscode capture logs
     - Always inject context fields via ContextFilter
     """
+
     _configured: bool = False
     _config: Optional[EngineLogConfig] = None
     _loggers: Dict[str, logging.Logger] = {}
@@ -353,7 +384,9 @@ class EngineLogManager:
             root.addHandler(sqlite_handler)
 
     @classmethod
-    def _ensure_per_engine_handlers(cls, logger: logging.Logger, engine_type: EngineType) -> None:
+    def _ensure_per_engine_handlers(
+        cls, logger: logging.Logger, engine_type: EngineType
+    ) -> None:
         cfg = cls._config
         if cfg is None:
             # default safe config: pytest-like behavior (no extra handlers)
@@ -365,7 +398,9 @@ class EngineLogManager:
         logger.propagate = True
 
         # Add file handler only once per logger
-        if cfg.enable_files and not any(isinstance(h, RotatingFileHandler) for h in logger.handlers):
+        if cfg.enable_files and not any(
+            isinstance(h, RotatingFileHandler) for h in logger.handlers
+        ):
             base_dir = Path(cfg.base_dir)
             base_dir.mkdir(parents=True, exist_ok=True)
             log_path = base_dir / f"{cfg.app_name}.{engine_type}.log"
@@ -387,7 +422,7 @@ class EngineLogManager:
             fh.setFormatter(logging.Formatter(fmt))
             fh.addFilter(ContextFilter())
             logger.addHandler(fh)
-            
+
             jsonl_path = base_dir / f"{cfg.app_name}.{engine_type}.jsonl"
             jh = RotatingFileHandler(
                 jsonl_path,
@@ -402,9 +437,13 @@ class EngineLogManager:
         # Attach your existing SQLiteHandler if enabled
         if cfg.enable_sqlite and cfg.sqlite_db_path is not None:
             # only add once
-            if not any(h.__class__.__name__ == "SQLiteHandler" for h in logger.handlers):
+            if not any(
+                h.__class__.__name__ == "SQLiteHandler" for h in logger.handlers
+            ):
                 try:
-                    sqlite_handler = SQLiteHandler(str(cfg.sqlite_db_path))  # uses your existing class
+                    sqlite_handler = SQLiteHandler(
+                        str(cfg.sqlite_db_path)
+                    )  # uses your existing class
                     sqlite_handler.setLevel(cfg.level)
                     sqlite_handler.addFilter(ContextFilter())
                     logger.addHandler(sqlite_handler)
@@ -454,10 +493,14 @@ def kg_logger() -> logging.Logger:
 import json
 import datetime as _dt
 
+
 class JsonlFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         payload = {
-            "ts": _dt.datetime.utcfromtimestamp(record.created).isoformat(timespec="milliseconds") + "Z",
+            "ts": _dt.datetime.utcfromtimestamp(record.created).isoformat(
+                timespec="milliseconds"
+            )
+            + "Z",
             "level": record.levelname,
             "logger": record.name,
             "msg": record.getMessage(),

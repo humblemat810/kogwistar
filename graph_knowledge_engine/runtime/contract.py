@@ -34,9 +34,10 @@ Conventions:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Tuple
 
 from .models import StepRunResult, WorkflowEdge, WorkflowState
+
 if TYPE_CHECKING:
     from ..engine_core.engine import GraphKnowledgeEngine
 
@@ -60,7 +61,10 @@ class WorkflowNodeInfo:
     terminal: bool
     fanout: bool
 
+
 from ..engine_core.models import Node, Edge
+
+
 @dataclass(frozen=True)
 class WorkflowEdgeInfo:
     name: str
@@ -71,13 +75,14 @@ class WorkflowEdgeInfo:
     priority: int
     is_default: bool
     multiplicity: str  # "one" | "many"
+
     @staticmethod
-    def from_workflow_edge( e: WorkflowEdge):
+    def from_workflow_edge(e: WorkflowEdge):
         src = e.source_ids[0]
         dst = e.target_ids[0]
         md = e.metadata
         info = WorkflowEdgeInfo(
-            name = e.label,
+            name=e.label,
             edge_id=e.safe_get_id(),
             src=str(src),
             dst=str(dst),
@@ -87,22 +92,37 @@ class WorkflowEdgeInfo:
             multiplicity=str(md.get("wf_multiplicity", "one")),
         )
         return info
+
+
 if TYPE_CHECKING:
     Predicate = Callable[[WorkflowEdgeInfo, WorkflowState, Result], bool]
-class BasePredicate():
-    def __call__(self, e:WorkflowEdgeInfo,  state: WorkflowState, result: StepRunResult):
+
+
+class BasePredicate:
+    def __call__(
+        self, e: WorkflowEdgeInfo, state: WorkflowState, result: StepRunResult
+    ):
         if result.next_step_names:
             return e.name in result.next_step_names
         else:
-            return True # always true if step does not specify next step names
-def build_workflow_from_engine(*, engine: GraphKnowledgeEngine, workflow_id: str) -> WorkflowSpec:
+            return True  # always true if step does not specify next step names
+
+
+def build_workflow_from_engine(
+    *, engine: GraphKnowledgeEngine, workflow_id: str
+) -> WorkflowSpec:
     """
     Loads workflow spec from engine via convention:
       - Exactly one workflow_node has wf_start=True for the workflow_id.
 
     If you want multiple specs per workflow_id, extend this by adding a workflow_variant field.
     """
-    nodes = engine.get_nodes(where={"$and": [{"entity_type": "workflow_node"}, {"workflow_id": workflow_id}]}, limit=500)
+    nodes = engine.get_nodes(
+        where={
+            "$and": [{"entity_type": "workflow_node"}, {"workflow_id": workflow_id}]
+        },
+        limit=500,
+    )
     start = None
     for n in nodes:
         if (n.metadata or {}).get("wf_start") is True:
@@ -117,11 +137,21 @@ def build_workflow_from_engine(*, engine: GraphKnowledgeEngine, workflow_id: str
 
 
 def _iter_wf_nodes(*, engine: GraphKnowledgeEngine, workflow_id: str) -> List[Node]:
-    return engine.get_nodes(where={"$and": [{"entity_type": "workflow_node"}, {"workflow_id": workflow_id}]}, limit=2000)
+    return engine.get_nodes(
+        where={
+            "$and": [{"entity_type": "workflow_node"}, {"workflow_id": workflow_id}]
+        },
+        limit=2000,
+    )
 
 
 def _iter_wf_edges(*, engine: GraphKnowledgeEngine, workflow_id: str) -> List[Edge]:
-    return engine.get_edges(where={"$and": [{"entity_type": "workflow_edge"}, {"workflow_id": workflow_id}]}, limit=5000)
+    return engine.get_edges(
+        where={
+            "$and": [{"entity_type": "workflow_edge"}, {"workflow_id": workflow_id}]
+        },
+        limit=5000,
+    )
 
 
 def load_workflow_graph(
@@ -157,7 +187,9 @@ def load_workflow_graph(
         dst = e.target_ids[0] if getattr(e, "target_ids", None) else md.get("dst")
 
         if src not in nodes or dst not in nodes:
-            raise ValueError(f"workflow edge endpoints not workflow nodes: {src} -> {dst}")
+            raise ValueError(
+                f"workflow edge endpoints not workflow nodes: {src} -> {dst}"
+            )
 
         info = WorkflowEdgeInfo.from_workflow_edge(e)
         adj[str(src)].append(info)
@@ -191,11 +223,17 @@ def validate_workflow(
     for edges in adj.values():
         for e in edges:
             if e.predicate is not None and e.predicate not in predicate_registry:
-                raise ValueError(f"Unknown predicate {e.predicate!r} on edge {e.edge_id}")
+                raise ValueError(
+                    f"Unknown predicate {e.predicate!r} on edge {e.edge_id}"
+                )
 
-    terminal = {nid for nid, n in nodes.items() if n.terminal or len(adj.get(nid, [])) == 0}
+    terminal = {
+        nid for nid, n in nodes.items() if n.terminal or len(adj.get(nid, [])) == 0
+    }
     if not terminal:
-        raise ValueError("Workflow has no terminal nodes (wf_terminal=True) and no sink nodes")
+        raise ValueError(
+            "Workflow has no terminal nodes (wf_terminal=True) and no sink nodes"
+        )
 
     seen = set()
     stack = [spec.start_node_id]
@@ -209,4 +247,6 @@ def validate_workflow(
                 stack.append(e.dst)
 
     if not any(t in seen for t in terminal):
-        raise ValueError("No terminal reachable from start (ignoring predicates). Cyclic graph without exit.")
+        raise ValueError(
+            "No terminal reachable from start (ignoring predicates). Cyclic graph without exit."
+        )

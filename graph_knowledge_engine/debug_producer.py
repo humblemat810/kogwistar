@@ -1,8 +1,7 @@
 import queue
 import threading
-import json
-import time
 import requests
+
 
 class DebugEventProducer:
     def __init__(self, bridge_url: str, *, max_queue: int = 5000):

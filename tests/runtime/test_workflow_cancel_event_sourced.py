@@ -6,7 +6,11 @@ from pathlib import Path
 
 from graph_knowledge_engine.conversation.service import ConversationService
 from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
-from graph_knowledge_engine.engine_core.models import Grounding, MentionVerification, Span
+from graph_knowledge_engine.engine_core.models import (
+    Grounding,
+    MentionVerification,
+    Span,
+)
 from graph_knowledge_engine.id_provider import stable_id
 from graph_knowledge_engine.runtime.models import RunSuccess, WorkflowEdge, WorkflowNode
 from graph_knowledge_engine.runtime.replay import replay_to
@@ -40,7 +44,9 @@ def _span() -> Span:
         context_after="",
         chunk_id=None,
         source_cluster_id=None,
-        verification=MentionVerification(method="human", is_verified=True, score=1.0, notes="test"),
+        verification=MentionVerification(
+            method="human", is_verified=True, score=1.0, notes="test"
+        ),
     )
 
 
@@ -48,7 +54,14 @@ def _g() -> Grounding:
     return Grounding(spans=[_span()])
 
 
-def _wf_node(*, workflow_id: str, node_id: str, op: str, start: bool = False, terminal: bool = False) -> WorkflowNode:
+def _wf_node(
+    *,
+    workflow_id: str,
+    node_id: str,
+    op: str,
+    start: bool = False,
+    terminal: bool = False,
+) -> WorkflowNode:
     return WorkflowNode(
         id=node_id,
         label=node_id.split("|")[-1],
@@ -126,9 +139,23 @@ def test_runtime_event_sourced_cancel_reconciles_and_replay_is_stable():
 
         workflow_id = "wf_cancel_event_sourced"
         conversation_id = "conv_cancel_evt"
-        n_start = _wf_node(workflow_id=workflow_id, node_id=f"wf|{workflow_id}|start", op="trigger_cancel", start=True)
-        n_after = _wf_node(workflow_id=workflow_id, node_id=f"wf|{workflow_id}|after", op="after_cancel")
-        n_end = _wf_node(workflow_id=workflow_id, node_id=f"wf|{workflow_id}|end", op="end", terminal=True)
+        n_start = _wf_node(
+            workflow_id=workflow_id,
+            node_id=f"wf|{workflow_id}|start",
+            op="trigger_cancel",
+            start=True,
+        )
+        n_after = _wf_node(
+            workflow_id=workflow_id,
+            node_id=f"wf|{workflow_id}|after",
+            op="after_cancel",
+        )
+        n_end = _wf_node(
+            workflow_id=workflow_id,
+            node_id=f"wf|{workflow_id}|end",
+            op="end",
+            terminal=True,
+        )
         for node in (n_start, n_after, n_end):
             workflow_engine.add_node(node)
         workflow_engine.add_edge(
@@ -191,7 +218,9 @@ def test_runtime_event_sourced_cancel_reconciles_and_replay_is_stable():
         assert run_result.final_state.get("op_log") == ["trigger_cancel"]
 
         cancel_req_nodes = conversation_engine.get_nodes(
-            where={"$and": [{"entity_type": "workflow_cancel_request"}, {"run_id": run_id}]},
+            where={
+                "$and": [{"entity_type": "workflow_cancel_request"}, {"run_id": run_id}]
+            },
             limit=10,
         )
         assert len(cancel_req_nodes) == 1
@@ -203,11 +232,25 @@ def test_runtime_event_sourced_cancel_reconciles_and_replay_is_stable():
         assert len(cancel_nodes) == 1
         cancel_meta = cancel_nodes[0].metadata or {}
         assert int(cancel_meta.get("accepted_step_seq", -1)) == 0
-        assert str(cancel_meta.get("cancel_request_node_id") or "") == str(cancel_req_nodes[0].id)
+        assert str(cancel_meta.get("cancel_request_node_id") or "") == str(
+            cancel_req_nodes[0].id
+        )
         expected_last_step_id = f"wf_step|{run_id}|0"
-        assert str(cancel_meta.get("last_processed_node_id") or "") == expected_last_step_id
-        cancelled_at_edge_id = str(stable_id("workflow.edge", "cancelled_at", f"wf_cancelled|{run_id}", expected_last_step_id))
-        cancelled_at_edge = conversation_engine.backend.edge_get(ids=[cancelled_at_edge_id], include=[])
+        assert (
+            str(cancel_meta.get("last_processed_node_id") or "")
+            == expected_last_step_id
+        )
+        cancelled_at_edge_id = str(
+            stable_id(
+                "workflow.edge",
+                "cancelled_at",
+                f"wf_cancelled|{run_id}",
+                expected_last_step_id,
+            )
+        )
+        cancelled_at_edge = conversation_engine.backend.edge_get(
+            ids=[cancelled_at_edge_id], include=[]
+        )
         assert cancelled_at_edge.get("ids") == [cancelled_at_edge_id]
 
         replayed = replay_to(

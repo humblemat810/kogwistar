@@ -4,7 +4,9 @@ from typing import Any, Callable
 import inspect
 
 
-def _call_scenario(scn: Callable[..., tuple[Any, str]], *, mode: str, **kwargs) -> tuple[Any, str]:
+def _call_scenario(
+    scn: Callable[..., tuple[Any, str]], *, mode: str, **kwargs
+) -> tuple[Any, str]:
     """Call scenario with best-effort compatibility.
 
     Some scenarios are legacy and do not accept `mode=`. For those, do not inject `mode`.

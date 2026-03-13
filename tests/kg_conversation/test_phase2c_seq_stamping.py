@@ -1,5 +1,7 @@
 # These imports assume the repo layout: graph_knowledge_engine/*.py
-from graph_knowledge_engine.conversation.conversation_orchestrator import ConversationOrchestrator
+from graph_knowledge_engine.conversation.conversation_orchestrator import (
+    ConversationOrchestrator,
+)
 from graph_knowledge_engine.llm_tasks import (
     AdjudicateBatchTaskResult,
     AdjudicatePairTaskResult,
@@ -15,13 +17,29 @@ from graph_knowledge_engine.llm_tasks import (
 
 def _dummy_task_set() -> LLMTaskSet:
     return LLMTaskSet(
-        extract_graph=lambda _req: ExtractGraphTaskResult(raw=None, parsed_payload={"nodes": [], "edges": []}, parsing_error=None),
-        adjudicate_pair=lambda _req: AdjudicatePairTaskResult(verdict_payload={"same_entity": False}, raw=None, parsing_error=None),
-        adjudicate_batch=lambda _req: AdjudicateBatchTaskResult(verdict_payloads=(), raw=None, parsing_error=None),
-        filter_candidates=lambda _req: FilterCandidatesTaskResult(node_ids=(), edge_ids=(), reasoning="", raw=None, parsing_error=None),
+        extract_graph=lambda _req: ExtractGraphTaskResult(
+            raw=None, parsed_payload={"nodes": [], "edges": []}, parsing_error=None
+        ),
+        adjudicate_pair=lambda _req: AdjudicatePairTaskResult(
+            verdict_payload={"same_entity": False}, raw=None, parsing_error=None
+        ),
+        adjudicate_batch=lambda _req: AdjudicateBatchTaskResult(
+            verdict_payloads=(), raw=None, parsing_error=None
+        ),
+        filter_candidates=lambda _req: FilterCandidatesTaskResult(
+            node_ids=(), edge_ids=(), reasoning="", raw=None, parsing_error=None
+        ),
         summarize_context=lambda _req: SummarizeContextTaskResult(text=""),
-        answer_with_citations=lambda _req: AnswerWithCitationsTaskResult(answer_payload={"text": "", "reasoning": "", "claims": []}, raw=None, parsing_error=None),
-        repair_citations=lambda _req: RepairCitationsTaskResult(answer_payload={"text": "", "reasoning": "", "claims": []}, raw=None, parsing_error=None),
+        answer_with_citations=lambda _req: AnswerWithCitationsTaskResult(
+            answer_payload={"text": "", "reasoning": "", "claims": []},
+            raw=None,
+            parsing_error=None,
+        ),
+        repair_citations=lambda _req: RepairCitationsTaskResult(
+            answer_payload={"text": "", "reasoning": "", "claims": []},
+            raw=None,
+            parsing_error=None,
+        ),
         provider_hints=LLMTaskProviderHints(),
     )
 
@@ -40,7 +58,9 @@ def _matches_where(node, where: dict | None) -> bool:
     for key, expected in where.items():
         actual = _node_field(node, key)
         if isinstance(expected, dict):
-            if "$gte" in expected and not (actual is not None and actual >= expected["$gte"]):
+            if "$gte" in expected and not (
+                actual is not None and actual >= expected["$gte"]
+            ):
                 return False
             continue
         if actual != expected:
@@ -158,6 +178,7 @@ def test_seq_stamping_on_turn_node_and_chain_edge():
     assert seq_edge.metadata["run_step_seq"] == 2
     assert seq_edge.metadata["attempt_seq"] == 0
 
+
 def test_backcompat_missing_run_step_seq_defaults_to_zero():
     eng = FakeConversationEngine()
     kg = FakeKnowledgeEngine()
@@ -178,6 +199,7 @@ def test_backcompat_missing_run_step_seq_defaults_to_zero():
                 "entity_type": "conversation_turn",
                 "in_conversation_chain": True,
             }  # no run_step_seq
+
     eng.add_node(Tail())
 
     orch.add_conversation_turn(

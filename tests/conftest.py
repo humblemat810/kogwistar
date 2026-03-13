@@ -1,9 +1,12 @@
 # tests/conftest.py
 from __future__ import annotations
-import shutil, uuid, json
+import shutil
+import uuid
+import json
 import os
 from _pytest.monkeypatch import MonkeyPatch
 from typing import cast
+
 try:
     import sitecustomize  # type: ignore  # pragma: no cover
 except Exception:  # pragma: no cover - local env may not provide it
@@ -12,40 +15,53 @@ _TEST_ENV = MonkeyPatch()
 _TEST_ENV.setenv("ANONYMIZED_TELEMETRY", "FALSE")
 try:
     import sqlalchemy as sa
+
     has_sa = True
 except Exception:  # pragma: no cover - optional for non-pg test subsets
     has_sa = False
 
 
-import os
 import sys
 import pathlib
 from dotenv import load_dotenv
+
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 _TEST_ROOT = pathlib.Path(__file__).resolve().parents[1]
 for _env_name in (".env", ".env.test"):
     load_dotenv(_TEST_ROOT / _env_name, override=False)
 import pytest
 from typing import Any, List, Optional, Sequence, Iterator, TYPE_CHECKING
+
 if TYPE_CHECKING:
     import sqlalchemy as sa
     from testcontainers.postgres import PostgresContainer
 try:
     from langchain_core.runnables import Runnable
 except Exception:  # pragma: no cover - optional for langchain-dependent tests
+
     class Runnable:  # type: ignore
         pass
 
-from graph_knowledge_engine.conversation.models import ConversationEdge, ConversationNode
+
+from graph_knowledge_engine.conversation.models import (
+    ConversationEdge,
+    ConversationNode,
+)
 from graph_knowledge_engine.conversation.service import ConversationService
 from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
 
 from graph_knowledge_engine.engine_core.models import (
-    Edge, LLMGraphExtraction, LLMNode, LLMEdge,
-    LLMMergeAdjudication, AdjudicationVerdict, Node, Span, Grounding,
-    MentionVerification
-    )
-try:        
+    Edge,
+    LLMGraphExtraction,
+    LLMMergeAdjudication,
+    AdjudicationVerdict,
+    Node,
+    Span,
+    Grounding,
+    MentionVerification,
+)
+
+try:
     from graph_knowledge_engine.engine_core.postgres_backend import PgVectorBackend
 except Exception:  # pragma: no cover - allow lightweight test subsets on limited envs
     # ConversationEdge = Any  # type: ignore
@@ -65,15 +81,19 @@ except Exception:  # pragma: no cover - allow lightweight test subsets on limite
     PgVectorBackend = Any  # type: ignore
 
 _TEST_NS = uuid.UUID("00000000-0000-0000-0000-000000000000")
+
+
 @pytest.fixture(scope="session")
 def stable_uuid(*parts: object) -> str:
     return str(uuid.uuid5(_TEST_NS, "|".join(str(p) for p in parts)))
+
+
 from pathlib import Path
 
 import logging
+
 logging.captureWarnings(True)
-from pathlib import Path
-from graph_knowledge_engine.utils.log import EngineLogManager, EngineLogConfig
+from graph_knowledge_engine.utils.log import EngineLogManager
 
 logger = logging.getLogger(__name__)
 
@@ -121,6 +141,7 @@ def _start_postgres_container(image: str):
     pg.start()
     return pg
 
+
 def pytest_addoption(parser):
     parser.addoption(
         "--run-manual",
@@ -149,7 +170,9 @@ def _is_specific_test_function_target(arg: str) -> bool:
     return leaf_base.startswith("test_")
 
 
-def _is_manual_test_explicitly_selected(config: pytest.Config, item: pytest.Item) -> bool:
+def _is_manual_test_explicitly_selected(
+    config: pytest.Config, item: pytest.Item
+) -> bool:
     nodeid = _normalize_pytest_arg(item.nodeid)
     cli_args = getattr(config.invocation_params, "args", ()) or ()
 
@@ -162,14 +185,20 @@ def _is_manual_test_explicitly_selected(config: pytest.Config, item: pytest.Item
 
         # Explicit function/method nodeid selection only.
         if _is_specific_test_function_target(arg):
-            if (nodeid == arg or nodeid.startswith(arg + "[") or nodeid.rsplit('/',1)[-1] in arg 
-                or pathlib.Path(arg).parts[-1] == nodeid.rsplit('/',1)[-1]):
+            if (
+                nodeid == arg
+                or nodeid.startswith(arg + "[")
+                or nodeid.rsplit("/", 1)[-1] in arg
+                or pathlib.Path(arg).parts[-1] == nodeid.rsplit("/", 1)[-1]
+            ):
                 return True
 
     return False
 
 
-def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+def pytest_collection_modifyitems(
+    config: pytest.Config, items: list[pytest.Item]
+) -> None:
     if config.getoption("--run-manual"):
         return
 
@@ -177,20 +206,22 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
         reason="manual test skipped by default; run with --run-manual or target a specific test function."
     )
     for item in items:
-        if "manual" in item.keywords and not _is_manual_test_explicitly_selected(config, item):
+        if "manual" in item.keywords and not _is_manual_test_explicitly_selected(
+            config, item
+        ):
             item.add_marker(skip_manual)
 
 
 def pytest_configure(config):
     EngineLogManager.configure(
         # EngineLogConfig(
-            base_dir=Path(".logs/test"),
-            app_name="gke_test",
-            level=logging.DEBUG,
-            enable_files=True,        # <-- ENABLE FILE LOGGING
-            enable_sqlite=False,
-            # mode="prod",              # <-- NOT pytest
-            enable_jsonl=True
+        base_dir=Path(".logs/test"),
+        app_name="gke_test",
+        level=logging.DEBUG,
+        enable_files=True,  # <-- ENABLE FILE LOGGING
+        enable_sqlite=False,
+        # mode="prod",              # <-- NOT pytest
+        enable_jsonl=True,
         # )
     )
 
@@ -307,16 +338,20 @@ def mcp_admin_server(tmp_path: Path) -> Iterator[dict[str, Any]]:
                 proc.kill()
                 proc.wait(timeout=5)
 
+
 try:
     from chromadb.utils.embedding_functions import EmbeddingFunction
     from chromadb.api.types import Embeddings
 except Exception:  # pragma: no cover - optional for chroma-dependent tests
+
     class EmbeddingFunction:  # type: ignore
         @staticmethod
         def name() -> str:
             return "default"
 
     Embeddings = list[list[float]]  # type: ignore
+
+
 class FakeEmbeddingFunction(EmbeddingFunction):
     @staticmethod
     def name() -> str:
@@ -327,8 +362,11 @@ class FakeEmbeddingFunction(EmbeddingFunction):
 
     def __call__(self, documents_or_texts: Sequence[str]) -> Embeddings:
         return [[0.01] * self._dim for _ in documents_or_texts]
-    
-def _make_engine_pair(*, backend_kind: str, tmp_path, sa_engine, pg_schema, dim: int = 3, use_fake = False):
+
+
+def _make_engine_pair(
+    *, backend_kind: str, tmp_path, sa_engine, pg_schema, dim: int = 3, use_fake=False
+):
     """
     Build (kg_engine, conv_engine) for either chroma or the pg-backed path.
     """
@@ -337,28 +375,59 @@ def _make_engine_pair(*, backend_kind: str, tmp_path, sa_engine, pg_schema, dim:
     if use_fake:
         _ef = FakeEmbeddingFunction(dim=dim)
     if backend_kind == "chroma":
-        kg_engine = GraphKnowledgeEngine(persist_directory=str(tmp_path / "kg"), kg_graph_type="knowledge", embedding_function=FakeEmbeddingFunction(dim=dim)
-                                         )
-        conv_engine = GraphKnowledgeEngine(persist_directory=str(tmp_path / "conv"), kg_graph_type="conversation", embedding_function=FakeEmbeddingFunction(dim=dim)
-                                           )
+        kg_engine = GraphKnowledgeEngine(
+            persist_directory=str(tmp_path / "kg"),
+            kg_graph_type="knowledge",
+            embedding_function=FakeEmbeddingFunction(dim=dim),
+        )
+        conv_engine = GraphKnowledgeEngine(
+            persist_directory=str(tmp_path / "conv"),
+            kg_graph_type="conversation",
+            embedding_function=FakeEmbeddingFunction(dim=dim),
+        )
         return kg_engine, conv_engine
 
     if backend_kind == "pg":
         if sa_engine is None or pg_schema is None:
-            pytest.skip("pg backend requested but sa_engine/pg_schema fixtures not available")
+            pytest.skip(
+                "pg backend requested but sa_engine/pg_schema fixtures not available"
+            )
         kg_schema = f"{pg_schema}_kg"
         conv_schema = f"{pg_schema}_conv"
-        kg_backend = PgVectorBackend(engine=sa_engine, embedding_dim=dim, schema=kg_schema)
-        conv_backend = PgVectorBackend(engine=sa_engine, embedding_dim=dim, schema=conv_schema)
-        kg_engine = GraphKnowledgeEngine(persist_directory=str(tmp_path / "kg_meta"), 
-                                         kg_graph_type="knowledge", embedding_function=FakeEmbeddingFunction(dim=dim), backend=kg_backend)
-        conv_engine = GraphKnowledgeEngine(persist_directory=str(tmp_path / "conv_meta"),
-                                           kg_graph_type="conversation", embedding_function=FakeEmbeddingFunction(dim=dim), backend=conv_backend)
+        kg_backend = PgVectorBackend(
+            engine=sa_engine, embedding_dim=dim, schema=kg_schema
+        )
+        conv_backend = PgVectorBackend(
+            engine=sa_engine, embedding_dim=dim, schema=conv_schema
+        )
+        kg_engine = GraphKnowledgeEngine(
+            persist_directory=str(tmp_path / "kg_meta"),
+            kg_graph_type="knowledge",
+            embedding_function=FakeEmbeddingFunction(dim=dim),
+            backend=kg_backend,
+        )
+        conv_engine = GraphKnowledgeEngine(
+            persist_directory=str(tmp_path / "conv_meta"),
+            kg_graph_type="conversation",
+            embedding_function=FakeEmbeddingFunction(dim=dim),
+            backend=conv_backend,
+        )
         return kg_engine, conv_engine
 
     raise ValueError(f"unknown backend_kind: {backend_kind!r}")
-def _mk_span_from_excerpt(*, doc_id: str, content: str, excerpt: str, insertion_method: str, page_number: int = 1):
-    idx = content.index(excerpt)  # will raise if excerpt not present -> good early failure
+
+
+def _mk_span_from_excerpt(
+    *,
+    doc_id: str,
+    content: str,
+    excerpt: str,
+    insertion_method: str,
+    page_number: int = 1,
+):
+    idx = content.index(
+        excerpt
+    )  # will raise if excerpt not present -> good early failure
     start = idx
     end = idx + len(excerpt)
     return {
@@ -370,8 +439,8 @@ def _mk_span_from_excerpt(*, doc_id: str, content: str, excerpt: str, insertion_
         "start_char": start,
         "end_char": end,
         "excerpt": excerpt,
-        "context_before": content[max(0, start - 40):start],
-        "context_after": content[end:end + 40],
+        "context_before": content[max(0, start - 40) : start],
+        "context_after": content[end : end + 40],
         # optional fields
         "chunk_id": None,
         "source_cluster_id": None,
@@ -382,8 +451,11 @@ def _mk_span_from_excerpt(*, doc_id: str, content: str, excerpt: str, insertion_
             "notes": "no explicit verification from LLM",
         },
     }
+
+
 class FakeStructuredRunnable(Runnable):
     """A minimal Runnable that returns a fixed structured result."""
+
     def __init__(self, parsed: Any, include_raw: bool = False):
         self._parsed = parsed
         self._include_raw = include_raw
@@ -395,16 +467,23 @@ class FakeStructuredRunnable(Runnable):
         return self._parsed
 
     # async single
-    async def ainvoke(self, input: Any, config: Optional[dict] = None, **kwargs: Any) -> Any:
+    async def ainvoke(
+        self, input: Any, config: Optional[dict] = None, **kwargs: Any
+    ) -> Any:
         return self.invoke(input, config=config, **kwargs)
 
     # sync batch
-    def batch(self, inputs: List[Any], config: Optional[dict] = None, **kwargs: Any) -> List[Any]:
+    def batch(
+        self, inputs: List[Any], config: Optional[dict] = None, **kwargs: Any
+    ) -> List[Any]:
         return [self.invoke(i, config=config, **kwargs) for i in inputs]
 
     # async batch
-    async def abatch(self, inputs: List[Any], config: Optional[dict] = None, **kwargs: Any) -> List[Any]:
+    async def abatch(
+        self, inputs: List[Any], config: Optional[dict] = None, **kwargs: Any
+    ) -> List[Any]:
         return [self.invoke(i, config=config, **kwargs) for i in inputs]
+
 
 @pytest.fixture(scope="session")
 def pg_container() -> Iterator[Optional["PostgresContainer"]]:
@@ -418,12 +497,18 @@ def pg_container() -> Iterator[Optional["PostgresContainer"]]:
 
     image = os.getenv("GKE_TEST_PG_IMAGE", "postgres:16")
     initial_ryuk_disabled = _configure_testcontainers_ryuk_env()
-    logger.info("Starting pg test container image=%s ryuk_disabled=%s", image, initial_ryuk_disabled)
+    logger.info(
+        "Starting pg test container image=%s ryuk_disabled=%s",
+        image,
+        initial_ryuk_disabled,
+    )
 
     pg = None
     try:
         pg = _start_postgres_container(image)
-    except Exception as exc:  # pragma: no cover - environment-dependent (docker availability)
+    except (
+        Exception
+    ) as exc:  # pragma: no cover - environment-dependent (docker availability)
         if (not initial_ryuk_disabled) and _is_ryuk_port_mapping_failure(exc):
             logger.warning(
                 "Failed to start pg test container with Ryuk enabled; retrying once without Ryuk. image=%s err=%s",
@@ -435,7 +520,11 @@ def pg_container() -> Iterator[Optional["PostgresContainer"]]:
             try:
                 pg = _start_postgres_container(image)
             except Exception as retry_exc:  # pragma: no cover - environment-dependent
-                logger.warning("Retry without Ryuk also failed for pg test container image=%s: %s", image, retry_exc)
+                logger.warning(
+                    "Retry without Ryuk also failed for pg test container image=%s: %s",
+                    image,
+                    retry_exc,
+                )
                 yield None
                 return
         else:
@@ -506,23 +595,36 @@ def pg_schema(sa_engine) -> Iterator[Optional[str]]:
         with sa_engine.begin() as conn:
             conn.execute(sa.text(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))
 
+
 class FakeLLMForAdjudication:
     """
     Test double for your LLM. Mimics `.with_structured_output(...)` by returning
     a Runnable that yields a fixed LLMMergeAdjudication.
     """
+
     def __init__(self, verdict, include_raw: bool = False):
         from graph_knowledge_engine.engine_core.models import AdjudicationVerdict as AV
+
         self._verdict: AV = cast(AV, verdict)
         self._include_raw = include_raw
 
-    def with_structured_output(self, schema, include_raw: bool = False, many: bool = False):
+    def with_structured_output(
+        self, schema, include_raw: bool = False, many: bool = False
+    ):
         # Build a deterministic structured reply; ignore schema/many in this simple fake
-        from graph_knowledge_engine.engine_core.models import LLMMergeAdjudication as LLMMA
+        from graph_knowledge_engine.engine_core.models import (
+            LLMMergeAdjudication as LLMMA,
+        )
+
         parsed = LLMMA(verdict=self._verdict)
-        return FakeStructuredRunnable(parsed, include_raw=include_raw or self._include_raw)
+        return FakeStructuredRunnable(
+            parsed, include_raw=include_raw or self._include_raw
+        )
+
+
 class _FakeLLMForExtraction:
     """Mocks .with_structured_output(..., include_raw=True) → .invoke(...) for extraction."""
+
     def with_structured_output(self, schema, include_raw=False, many=False):
         self._include_raw = include_raw
         self._schema = schema
@@ -531,12 +633,26 @@ class _FakeLLMForExtraction:
 
     def invoke(self, variables):
         # Deterministic graph from any document
-        from graph_knowledge_engine.engine_core.models import LLMGraphExtraction as LLMGE
-        from graph_knowledge_engine.engine_core.models import LLMNode as LLMN, LLMEdge as LLME
+        from graph_knowledge_engine.engine_core.models import (
+            LLMGraphExtraction as LLMGE,
+        )
+        from graph_knowledge_engine.engine_core.models import (
+            LLMNode as LLMN,
+            LLMEdge as LLME,
+        )
+
         parsed = LLMGE(
             nodes=[
-                LLMN(label="Photosynthesis", type="entity", summary="Process converting light to chemical energy"),
-                LLMN(label="Chlorophyll", type="entity", summary="Molecule absorbing sunlight"),
+                LLMN(
+                    label="Photosynthesis",
+                    type="entity",
+                    summary="Process converting light to chemical energy",
+                ),
+                LLMN(
+                    label="Chlorophyll",
+                    type="entity",
+                    summary="Molecule absorbing sunlight",
+                ),
             ],
             edges=[
                 LLME(
@@ -546,7 +662,7 @@ class _FakeLLMForExtraction:
                     source_ids=["Chlorophyll"],  # will be mapped later in your pipeline
                     target_ids=["Photosynthesis"],
                     relation="enables",
-                    mentions=Grounding(spans=[Span.from_dummy_for_document()])
+                    mentions=Grounding(spans=[Span.from_dummy_for_document()]),
                 )
             ],
         )
@@ -554,8 +670,10 @@ class _FakeLLMForExtraction:
             return {"raw": "fake_raw", "parsed": parsed, "parsing_error": None}
         return parsed
 
+
 class _FakeLLMForAdjudication:
     """Mocks .with_structured_output(LLMMergeAdjudication) for adjudication."""
+
     def with_structured_output(self, schema, include_raw=False, many=False):
         self._schema = schema
         self._include_raw = include_raw
@@ -572,8 +690,10 @@ class _FakeLLMForAdjudication:
         )
         return LLMMergeAdjudication(verdict=ver)
 
+
 class _CompositeFakeLLM:
     """Single fake that behaves for both extraction and adjudication chains."""
+
     def with_structured_output(self, schema, include_raw=False, many=False):
         # route by schema class name
         if getattr(schema, "__name__", "") == "LLMGraphExtraction":
@@ -582,41 +702,59 @@ class _CompositeFakeLLM:
             self._impl = _FakeLLMForAdjudication()
         return self._impl
 
+
 @pytest.fixture(scope="function")
 def tmp_chroma_dir(tmp_path_factory):
     d = tmp_path_factory.mktemp("chroma_db")
     yield str(d)
     shutil.rmtree(d, ignore_errors=True)
 
+
 @pytest.fixture(scope="function")
 def engine(tmp_chroma_dir, monkeypatch):
-    eng = GraphKnowledgeEngine(persist_directory=os.path.join(tmp_chroma_dir, "kg"), 
-                               embedding_cache_path=os.path.join(os.getcwd(), '.embedding_cache'))
+    eng = GraphKnowledgeEngine(
+        persist_directory=os.path.join(tmp_chroma_dir, "kg"),
+        embedding_cache_path=os.path.join(os.getcwd(), ".embedding_cache"),
+    )
     # Patch the real LLM with a deterministic fake
-    #eng.llm = _CompositeFakeLLM()
+    # eng.llm = _CompositeFakeLLM()
     return eng
+
 
 @pytest.fixture(scope="function")
 def tmp_conv_chroma_dir(tmp_path_factory):
     d = tmp_path_factory.mktemp("chroma_db")
     yield str(d)
     shutil.rmtree(d, ignore_errors=True)
+
+
 @pytest.fixture(scope="function")
 def conversation_engine(tmp_conv_chroma_dir, monkeypatch):
-    eng = GraphKnowledgeEngine(persist_directory=os.path.join(tmp_conv_chroma_dir, "conversation"), kg_graph_type = "conversation")
+    eng = GraphKnowledgeEngine(
+        persist_directory=os.path.join(tmp_conv_chroma_dir, "conversation"),
+        kg_graph_type="conversation",
+    )
     # Patch the real LLM with a deterministic fake
-    #eng.llm = _CompositeFakeLLM()
+    # eng.llm = _CompositeFakeLLM()
     return eng
+
+
 @pytest.fixture(scope="function")
 def workflow_engine(tmp_conv_chroma_dir, monkeypatch):
-    eng = GraphKnowledgeEngine(persist_directory=os.path.join(tmp_conv_chroma_dir, "workflow"), kg_graph_type = "workflow")
+    eng = GraphKnowledgeEngine(
+        persist_directory=os.path.join(tmp_conv_chroma_dir, "workflow"),
+        kg_graph_type="workflow",
+    )
     # Patch the real LLM with a deterministic fake
-    #eng.llm = _CompositeFakeLLM()
+    # eng.llm = _CompositeFakeLLM()
     return eng
+
+
 @pytest.fixture()
 def real_small_graph(tmp_path: Path):
     e = GraphKnowledgeEngine(persist_directory=str(tmp_path / "small_graph"))
     doc_id = "D1"
+
     # nodes
     def add_node(nid, label):
         n = Node(
@@ -652,11 +790,17 @@ def real_small_graph(tmp_path: Path):
             ],
             doc_id=doc_id,
         )
-        e.node_collection.add(ids=[nid], documents=[n.model_dump_json(field_mode = 'backend')], metadatas=[{"doc_id": doc_id, "label": n.label, "type": n.type}])
+        e.node_collection.add(
+            ids=[nid],
+            documents=[n.model_dump_json(field_mode="backend")],
+            metadatas=[{"doc_id": doc_id, "label": n.label, "type": n.type}],
+        )
         # node_docs link
         ndid = f"{nid}::{doc_id}"
         row = {"id": ndid, "node_id": nid, "doc_id": doc_id}
-        e.node_docs_collection.add(ids=[ndid], documents=[json.dumps(row)], metadatas=[row])
+        e.node_docs_collection.add(
+            ids=[ndid], documents=[json.dumps(row)], metadatas=[row]
+        )
         return n
 
     A = add_node("A", "Smoking")
@@ -665,31 +809,102 @@ def real_small_graph(tmp_path: Path):
 
     # edge A -[causes]-> B
     e_id = "E1"
-    edge = Edge(id=e_id, label="Smoking causes Lung Cancer", type="relationship", summary="causal", relation="causes",
-                source_ids=["A"], target_ids=["B"], source_edge_ids=[], target_edge_ids=[],
-                mentions=A.mentions, doc_id=doc_id)
-    e.edge_collection.add(ids=[e_id], documents=[edge.model_dump_json(field_mode = 'backend')], metadatas=[{"doc_id": doc_id, "relation": "causes"}])
+    edge = Edge(
+        id=e_id,
+        label="Smoking causes Lung Cancer",
+        type="relationship",
+        summary="causal",
+        relation="causes",
+        source_ids=["A"],
+        target_ids=["B"],
+        source_edge_ids=[],
+        target_edge_ids=[],
+        mentions=A.mentions,
+        doc_id=doc_id,
+    )
+    e.edge_collection.add(
+        ids=[e_id],
+        documents=[edge.model_dump_json(field_mode="backend")],
+        metadatas=[{"doc_id": doc_id, "relation": "causes"}],
+    )
     # endpoints fan-out
     rows = [
-        {"id": f"{e_id}::src::node::A", "edge_id": e_id, "endpoint_id": "A", "endpoint_type": "node", "role": "src", "relation": "causes", "doc_id": doc_id},
-        {"id": f"{e_id}::tgt::node::B", "edge_id": e_id, "endpoint_id": "B", "endpoint_type": "node", "role": "tgt", "relation": "causes", "doc_id": doc_id},
+        {
+            "id": f"{e_id}::src::node::A",
+            "edge_id": e_id,
+            "endpoint_id": "A",
+            "endpoint_type": "node",
+            "role": "src",
+            "relation": "causes",
+            "doc_id": doc_id,
+        },
+        {
+            "id": f"{e_id}::tgt::node::B",
+            "edge_id": e_id,
+            "endpoint_id": "B",
+            "endpoint_type": "node",
+            "role": "tgt",
+            "relation": "causes",
+            "doc_id": doc_id,
+        },
     ]
-    e.edge_endpoints_collection.add(ids=[r["id"] for r in rows], documents=[json.dumps(r) for r in rows], metadatas=rows)
+    e.edge_endpoints_collection.add(
+        ids=[r["id"] for r in rows],
+        documents=[json.dumps(r) for r in rows],
+        metadatas=rows,
+    )
 
     # final summary link S -> docnode:D1
     S = add_node("S", "Final Summary")
     e_id2 = "E2"
-    e.edge_collection.add(ids=[e_id2], documents=[Edge(
-        id=e_id2, label="summarizes_document", type="relationship", summary="S summarizes document", relation="summarizes_document",
-        source_ids=["S"], target_ids=[f"docnode:{doc_id}"], source_edge_ids=[], target_edge_ids=[], mentions=S.mentions, doc_id=doc_id
-    ).model_dump_json(field_mode = 'backend')], metadatas=[{"doc_id": doc_id, "relation": "summarizes_document"}])
+    e.edge_collection.add(
+        ids=[e_id2],
+        documents=[
+            Edge(
+                id=e_id2,
+                label="summarizes_document",
+                type="relationship",
+                summary="S summarizes document",
+                relation="summarizes_document",
+                source_ids=["S"],
+                target_ids=[f"docnode:{doc_id}"],
+                source_edge_ids=[],
+                target_edge_ids=[],
+                mentions=S.mentions,
+                doc_id=doc_id,
+            ).model_dump_json(field_mode="backend")
+        ],
+        metadatas=[{"doc_id": doc_id, "relation": "summarizes_document"}],
+    )
     rows2 = [
-        {"id": f"{e_id2}::src::node::S", "edge_id": e_id2, "endpoint_id": "S", "endpoint_type": "node", "role": "src", "relation": "summarizes_document", "doc_id": doc_id},
-        {"id": f"{e_id2}::tgt::node::docnode:{doc_id}", "edge_id": e_id2, "endpoint_id": f"docnode:{doc_id}", "endpoint_type": "node", "role": "tgt", "relation": "summarizes_document", "doc_id": doc_id},
+        {
+            "id": f"{e_id2}::src::node::S",
+            "edge_id": e_id2,
+            "endpoint_id": "S",
+            "endpoint_type": "node",
+            "role": "src",
+            "relation": "summarizes_document",
+            "doc_id": doc_id,
+        },
+        {
+            "id": f"{e_id2}::tgt::node::docnode:{doc_id}",
+            "edge_id": e_id2,
+            "endpoint_id": f"docnode:{doc_id}",
+            "endpoint_type": "node",
+            "role": "tgt",
+            "relation": "summarizes_document",
+            "doc_id": doc_id,
+        },
     ]
-    e.edge_endpoints_collection.add(ids=[r["id"] for r in rows2], documents=[json.dumps(r) for r in rows2], metadatas=rows2)
+    e.edge_endpoints_collection.add(
+        ids=[r["id"] for r in rows2],
+        documents=[json.dumps(r) for r in rows2],
+        metadatas=rows2,
+    )
 
     return e, doc_id
+
+
 @pytest.fixture()
 def small_test_docs_nodes_edge_adjudcate():
     """
@@ -755,9 +970,7 @@ def small_test_docs_nodes_edge_adjudcate():
         text = docs[doc_id]
         idx = text.find(excerpt)
         if idx < 0:
-            raise AssertionError(
-                f"Exact excerpt not found in {doc_id}: {excerpt!r}"
-            )
+            raise AssertionError(f"Exact excerpt not found in {doc_id}: {excerpt!r}")
         return idx, idx + len(excerpt)
 
     def _ref(doc_id: str, excerpt: str, method: str = "llm"):
@@ -775,9 +988,15 @@ def small_test_docs_nodes_edge_adjudcate():
             "context_before": docs[doc_id][max(0, s - 40) : s],
             "context_after": docs[doc_id][e : min(len(docs[doc_id]), e + 40)],
             # Optional verification payload
-            "verification": {"method": method, "is_verified": True, "score": 1.0, "notes": "fixture"},
+            "verification": {
+                "method": method,
+                "is_verified": True,
+                "score": 1.0,
+                "notes": "fixture",
+            },
             "insertion_method": "llm_graph_extraction",
         }
+
     # ---------- Nodes ----------
     nodes = [
         {
@@ -785,86 +1004,140 @@ def small_test_docs_nodes_edge_adjudcate():
             "label": "Chlorophyll",
             "type": "entity",
             "summary": "A green pigment found in plants.",
-            "mentions": [{"spans": [
-                _ref("DOC_A", "Chlorophyll is the molecule that absorbs sunlight."),
-                _ref("DOC_C", "chlorophyll is essential for photosynthesis"),
-            ]}],
+            "mentions": [
+                {
+                    "spans": [
+                        _ref(
+                            "DOC_A",
+                            "Chlorophyll is the molecule that absorbs sunlight.",
+                        ),
+                        _ref("DOC_C", "chlorophyll is essential for photosynthesis"),
+                    ]
+                }
+            ],
         },
         {
             "id": "N_CHLORO_ALIAS",
             "label": "Chlorophyll (pigment)",
             "type": "entity",
             "summary": "Alias name for the same pigment.",
-            "mentions": [{"spans": [
-                _ref("DOC_C", "the pigment chlorophyll is essential"),
-            ]}],
+            "mentions": [
+                {
+                    "spans": [
+                        _ref("DOC_C", "the pigment chlorophyll is essential"),
+                    ]
+                }
+            ],
         },
         {
             "id": "N_CHLORO_A",
             "label": "Chlorophyll a",
             "type": "entity",
             "summary": "One variant of chlorophyll.",
-            "mentions": [{"spans": [
-                _ref("DOC_B", "chlorophyll a and chlorophyll b are present."),
-            ]}],
+            "mentions": [
+                {
+                    "spans": [
+                        _ref("DOC_B", "chlorophyll a and chlorophyll b are present."),
+                    ]
+                }
+            ],
         },
         {
             "id": "N_PHOTOSYN",
             "label": "Photosynthesis",
             "type": "entity",
             "summary": "Converts light energy to chemical energy.",
-            "mentions": [{"spans": [
-                _ref("DOC_A", "Photosynthesis is a process used by plants to convert light energy"),
-                _ref("DOC_C", "rate of photosynthesis with wavelengths that chlorophyll absorbs"),
-            ]}],
+            "mentions": [
+                {
+                    "spans": [
+                        _ref(
+                            "DOC_A",
+                            "Photosynthesis is a process used by plants to convert light energy",
+                        ),
+                        _ref(
+                            "DOC_C",
+                            "rate of photosynthesis with wavelengths that chlorophyll absorbs",
+                        ),
+                    ]
+                }
+            ],
         },
         {
             "id": "N_LEAVES",
             "label": "Leaves",
             "type": "entity",
             "summary": "Plant organs that host photosynthesis.",
-            "mentions": [{"spans": [
-                _ref("DOC_A", "Plants perform photosynthesis in their leaves."),
-                _ref("DOC_B", "The pigment chlorophyll gives leaves their green color."),
-            ]}],
+            "mentions": [
+                {
+                    "spans": [
+                        _ref("DOC_A", "Plants perform photosynthesis in their leaves."),
+                        _ref(
+                            "DOC_B",
+                            "The pigment chlorophyll gives leaves their green color.",
+                        ),
+                    ]
+                }
+            ],
         },
         {
             "id": "N_SUN",
             "label": "Sunlight",
             "type": "entity",
             "summary": "Incoming solar radiation.",
-            "mentions": [{"spans": [
-                _ref("DOC_A", "light energy into chemical energy"),
-            ]}],
+            "mentions": [
+                {
+                    "spans": [
+                        _ref("DOC_A", "light energy into chemical energy"),
+                    ]
+                }
+            ],
         },
         {
             "id": "N_HEMO",
             "label": "Hemoglobin",
             "type": "entity",
             "summary": "Oxygen transport protein in blood.",
-            "mentions": [{"spans": [
-                _ref("DOC_D", "Hemoglobin absorbs oxygen in red blood cells and transports it to tissues."),
-            ]}],
+            "mentions": [
+                {
+                    "spans": [
+                        _ref(
+                            "DOC_D",
+                            "Hemoglobin absorbs oxygen in red blood cells and transports it to tissues.",
+                        ),
+                    ]
+                }
+            ],
         },
         {
             "id": "N_OXY",
             "label": "Oxygen",
             "type": "entity",
             "summary": "O₂ molecule transported in blood.",
-            "mentions": [{"spans": [
-                _ref("DOC_D", "Hemoglobin absorbs oxygen in red blood cells and transports it to tissues."),
-            ]}],
+            "mentions": [
+                {
+                    "spans": [
+                        _ref(
+                            "DOC_D",
+                            "Hemoglobin absorbs oxygen in red blood cells and transports it to tissues.",
+                        ),
+                    ]
+                }
+            ],
         },
         # Reified relation as a node (for cross-type positive)
         {
             "id": "N_PHOTO_REIFIED",
             "label": "Photosynthesis occurs in Leaves",
             "type": "entity",
-            "summary": "Photosynthesis occurs in Leaves", # Reified relation concept.
+            "summary": "Photosynthesis occurs in Leaves",  # Reified relation concept.
             "properties": {"signature_text": "occurs_in(Photosynthesis, Leaves)"},
-            "mentions": [{"spans": [
-                _ref("DOC_A", "Plants perform photosynthesis in their leaves."),
-            ]}],
+            "mentions": [
+                {
+                    "spans": [
+                        _ref("DOC_A", "Plants perform photosynthesis in their leaves."),
+                    ]
+                }
+            ],
         },
     ]
 
@@ -880,9 +1153,16 @@ def small_test_docs_nodes_edge_adjudcate():
             "target_ids": ["N_SUN"],
             "source_edge_ids": [],
             "target_edge_ids": [],
-            "mentions": [{"spans": [
-                _ref("DOC_A", "Chlorophyll is the molecule that absorbs sunlight."),
-            ]}],
+            "mentions": [
+                {
+                    "spans": [
+                        _ref(
+                            "DOC_A",
+                            "Chlorophyll is the molecule that absorbs sunlight.",
+                        ),
+                    ]
+                }
+            ],
             "properties": {"signature_text": "absorbs(Chlorophyll, Sunlight)"},
         },
         {
@@ -895,9 +1175,13 @@ def small_test_docs_nodes_edge_adjudcate():
             "target_ids": ["N_LEAVES"],
             "source_edge_ids": [],
             "target_edge_ids": [],
-            "mentions": [{"spans": [
-                _ref("DOC_A", "Plants perform photosynthesis in their leaves."),
-            ]}],
+            "mentions": [
+                {
+                    "spans": [
+                        _ref("DOC_A", "Plants perform photosynthesis in their leaves."),
+                    ]
+                }
+            ],
             "properties": {"signature_text": "occurs_in(Photosynthesis, Leaves)"},
         },
         {
@@ -910,9 +1194,13 @@ def small_test_docs_nodes_edge_adjudcate():
             "target_ids": ["N_LEAVES"],
             "source_edge_ids": [],
             "target_edge_ids": [],
-            "mentions": [{"spans": [
-                _ref("DOC_A", "Plants perform photosynthesis in their leaves."),
-            ]}],
+            "mentions": [
+                {
+                    "spans": [
+                        _ref("DOC_A", "Plants perform photosynthesis in their leaves."),
+                    ]
+                }
+            ],
             "properties": {"signature_text": "occurs_in(Photosynthesis, Leaves)"},
         },
         {
@@ -925,9 +1213,16 @@ def small_test_docs_nodes_edge_adjudcate():
             "target_ids": ["N_OXY"],
             "source_edge_ids": [],
             "target_edge_ids": [],
-            "mentions": [{"spans": [
-                _ref("DOC_D", "Hemoglobin absorbs oxygen in red blood cells and transports it to tissues."),
-            ]}],
+            "mentions": [
+                {
+                    "spans": [
+                        _ref(
+                            "DOC_D",
+                            "Hemoglobin absorbs oxygen in red blood cells and transports it to tissues.",
+                        ),
+                    ]
+                }
+            ],
             "properties": {"signature_text": "transports(Hemoglobin, Oxygen)"},
         },
     ]
@@ -936,39 +1231,52 @@ def small_test_docs_nodes_edge_adjudcate():
     adjudication_pairs = {
         # Node ↔ Node (2 positive, 2 negative typical)
         "positive": [
-            ["N_CHLORO", "N_CHLORO_ALIAS"],   # alias
-            ["N_PHOTO_REIFIED", "E_PHOTO_LEAVES"],  # cross-type positive (see below, also listed under cross)
+            ["N_CHLORO", "N_CHLORO_ALIAS"],  # alias
+            [
+                "N_PHOTO_REIFIED",
+                "E_PHOTO_LEAVES",
+            ],  # cross-type positive (see below, also listed under cross)
         ],
         "negative": [
-            ["N_CHLORO", "N_HEMO"],           # different domains
-            ["N_CHLORO_A", "N_CHLORO_ALIAS"], # related but not same
+            ["N_CHLORO", "N_HEMO"],  # different domains
+            ["N_CHLORO_A", "N_CHLORO_ALIAS"],  # related but not same
         ],
         # Edge ↔ Edge
         "edge_positive": [
             ["E_PHOTO_LEAVES", "E_PHOTO_LEAVES_DUP"],  # duplicate semantics
         ],
         "edge_negative": [
-            ["E_CHLORO_ABSORB", "E_HEMO_TRANSPORT"],   # different relation/entities
+            ["E_CHLORO_ABSORB", "E_HEMO_TRANSPORT"],  # different relation/entities
         ],
         # Cross-type (node ↔ edge)
         "cross_positive": [
-            ["N_PHOTO_REIFIED", "E_PHOTO_LEAVES"],     # reified node vs relation
+            ["N_PHOTO_REIFIED", "E_PHOTO_LEAVES"],  # reified node vs relation
         ],
         "cross_negative": [
-            ["N_HEMO", "E_CHLORO_ABSORB"],             # unrelated
+            ["N_HEMO", "E_CHLORO_ABSORB"],  # unrelated
         ],
     }
 
     # Pre-flight validate the JSON-ish payload against the current models.
     # This keeps the fixture from silently drifting out-of-date with models.py.
     try:
-        _ = LLMGraphExtraction.FromLLMSlice({"nodes": nodes, "edges": edges}, insertion_method="fixture_sample")
+        _ = LLMGraphExtraction.FromLLMSlice(
+            {"nodes": nodes, "edges": edges}, insertion_method="fixture_sample"
+        )
     except Exception as e:
-        raise AssertionError(f"Fixture small_test_docs_nodes_edge_adjudcate is not model-compatible: {e}")
+        raise AssertionError(
+            f"Fixture small_test_docs_nodes_edge_adjudcate is not model-compatible: {e}"
+        )
 
-    sample_dataset = {"docs": docs, "nodes": nodes, "edges": edges, "adjudication_pairs": adjudication_pairs}
+    sample_dataset = {
+        "docs": docs,
+        "nodes": nodes,
+        "edges": edges,
+        "adjudication_pairs": adjudication_pairs,
+    }
 
     return sample_dataset
+
 
 def mk_verification(
     *,
@@ -1082,7 +1390,10 @@ def add_edge_raw(
 # Seed KG graph (real Node/Edge objects with proper mentions/spans)
 # ---------------------------------------------------------------------
 
-def seed_kg_graph(*, kg_engine: GraphKnowledgeEngine, kg_doc_id: str = "D_KG_001") -> dict[str, Any]:
+
+def seed_kg_graph(
+    *, kg_engine: GraphKnowledgeEngine, kg_doc_id: str = "D_KG_001"
+) -> dict[str, Any]:
     """
     Seeds a minimal KG doc with:
       - N1, N2 nodes
@@ -1191,6 +1502,7 @@ def seed_kg_graph(*, kg_engine: GraphKnowledgeEngine, kg_doc_id: str = "D_KG_001
 # ---------------------------------------------------------------------
 # Seed Conversation graph with refs to KG
 # ---------------------------------------------------------------------
+
 
 def seed_conversation_graph(
     *,
@@ -1469,7 +1781,9 @@ def seed_conversation_graph(
     conv_id = "conv_test_1"
     user_id = "user_test_1"
 
-    kg_target_id = "KG_N1"  # must exist in the KG bundle if you want openRef to succeed later
+    kg_target_id = (
+        "KG_N1"  # must exist in the KG bundle if you want openRef to succeed later
+    )
 
     kg_ref_node = ConversationNode(
         id="CONV_REF_KG_N1",
@@ -1479,7 +1793,9 @@ def seed_conversation_graph(
         doc_id="CONV_REF_KG_N1",
         mentions=[
             Grounding(
-                spans=[Span.from_dummy_for_conversation()]  # ensures spans>=1, mentions>=1
+                spans=[
+                    Span.from_dummy_for_conversation()
+                ]  # ensures spans>=1, mentions>=1
             )
         ],
         properties={
@@ -1492,7 +1808,6 @@ def seed_conversation_graph(
             "level_from_root": 0,
             "entity_type": "kg_ref",
             "in_conversation_chain": False,
-
             # OPTIONAL but useful (ConversationRoleMixin syncs these too)
             "role": "system",
             "turn_index": 1,
@@ -1502,10 +1817,10 @@ def seed_conversation_graph(
         role="system",
         turn_index=1,
         conversation_id=conv_id,
-        user_id=user_id,        
-        embedding=None,        
+        user_id=user_id,
+        embedding=None,
         domain_id=None,
-        canonical_entity_id=None,        
+        canonical_entity_id=None,
         level_from_root=0,
     )
 
@@ -1539,7 +1854,6 @@ def seed_conversation_graph(
 #     return {"kg": kg_seed, "conversation": conv_seed}
 
 
-
 @pytest.fixture
 def seeded_kg_and_conversation(tmp_path: Path):
     """
@@ -1553,8 +1867,12 @@ def seeded_kg_and_conversation(tmp_path: Path):
     kg_dir = tmp_path / "chroma_kg"
     conv_dir = tmp_path / "chroma_conversation"
 
-    kg_engine = GraphKnowledgeEngine(persist_directory=str(kg_dir), kg_graph_type="knowledge")
-    conversation_engine = GraphKnowledgeEngine(persist_directory=str(conv_dir), kg_graph_type="conversation")
+    kg_engine = GraphKnowledgeEngine(
+        persist_directory=str(kg_dir), kg_graph_type="knowledge"
+    )
+    conversation_engine = GraphKnowledgeEngine(
+        persist_directory=str(conv_dir), kg_graph_type="conversation"
+    )
 
     kg_seed = seed_kg_graph(kg_engine=kg_engine, kg_doc_id="D_KG_001")
     conv_seed = seed_conversation_graph(

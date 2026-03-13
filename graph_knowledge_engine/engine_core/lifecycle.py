@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any, Callable, Literal, Sequence, TypeVar, TYPE_CHECKING
+from typing import Callable, Literal, Sequence, TypeVar, TYPE_CHECKING
 from .subsystems.base import NamespaceProxy
+
 if TYPE_CHECKING:
     # Avoid runtime import cycles; we only need this for typing.
     from .engine import GraphKnowledgeEngine
@@ -38,7 +39,11 @@ class LifecycleSubsystem(NamespaceProxy):
             return [
                 x
                 for x in items
-                if ((getattr(x, "metadata", {}) or {}).get("lifecycle_status") or "active") == "active"
+                if (
+                    (getattr(x, "metadata", {}) or {}).get("lifecycle_status")
+                    or "active"
+                )
+                == "active"
             ]
         return items
 
@@ -109,11 +114,16 @@ class LifecycleSubsystem(NamespaceProxy):
             patch["deleted_by"] = kw["deleted_by"]
 
         ok = self._e._backend_update_record_lifecycle(
-            backend=self._e.backend, kind="node", record_id=node_id, lifecycle_patch=patch
+            backend=self._e.backend,
+            kind="node",
+            record_id=node_id,
+            lifecycle_patch=patch,
         )
 
         if ok:
-            self._best_effort_event(entity_kind="node", entity_id=node_id, op="TOMBSTONE", **kw)
+            self._best_effort_event(
+                entity_kind="node", entity_id=node_id, op="TOMBSTONE", **kw
+            )
             self._maybe_index_delete(entity_kind="node", entity_id=node_id)
 
         return ok
@@ -133,7 +143,10 @@ class LifecycleSubsystem(NamespaceProxy):
             patch["deleted_by"] = kw["deleted_by"]
 
         ok = self._e._backend_update_record_lifecycle(
-            backend=self._e.backend, kind="node", record_id=from_id, lifecycle_patch=patch
+            backend=self._e.backend,
+            kind="node",
+            record_id=from_id,
+            lifecycle_patch=patch,
         )
         if ok:
             self._maybe_index_delete(entity_kind="node", entity_id=from_id)
@@ -151,11 +164,16 @@ class LifecycleSubsystem(NamespaceProxy):
             patch["deleted_by"] = kw["deleted_by"]
 
         ok = self._e._backend_update_record_lifecycle(
-            backend=self._e.backend, kind="edge", record_id=edge_id, lifecycle_patch=patch
+            backend=self._e.backend,
+            kind="edge",
+            record_id=edge_id,
+            lifecycle_patch=patch,
         )
 
         if ok:
-            self._best_effort_event(entity_kind="edge", entity_id=edge_id, op="TOMBSTONE", **kw)
+            self._best_effort_event(
+                entity_kind="edge", entity_id=edge_id, op="TOMBSTONE", **kw
+            )
             self._maybe_index_delete(entity_kind="edge", entity_id=edge_id)
 
         return ok
@@ -175,7 +193,10 @@ class LifecycleSubsystem(NamespaceProxy):
             patch["deleted_by"] = kw["deleted_by"]
 
         ok = self._e._backend_update_record_lifecycle(
-            backend=self._e.backend, kind="edge", record_id=from_id, lifecycle_patch=patch
+            backend=self._e.backend,
+            kind="edge",
+            record_id=from_id,
+            lifecycle_patch=patch,
         )
         if ok:
             self._maybe_index_delete(entity_kind="edge", entity_id=from_id)
@@ -185,7 +206,9 @@ class LifecycleSubsystem(NamespaceProxy):
     # Internals
     # -----------------------
 
-    def _best_effort_event(self, *, entity_kind: str, entity_id: str, op: str, **kw) -> None:
+    def _best_effort_event(
+        self, *, entity_kind: str, entity_id: str, op: str, **kw
+    ) -> None:
         try:
             payload = {"entity_id": entity_id}
             if kw.get("reason") is not None:

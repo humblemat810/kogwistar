@@ -1,11 +1,12 @@
-
 import pytest
 from dataclasses import dataclass
 from typing import Any, Dict, List
+
 pytest.importorskip("langgraph")
 
 from graph_knowledge_engine.runtime.contract import BasePredicate
 from graph_knowledge_engine.runtime.langgraph_converter import to_langgraph
+
 
 # minimum fake shapes
 @dataclass
@@ -15,7 +16,10 @@ class FakeNode:
     terminal: bool
     fanout: bool
     metadata: Dict[str, Any] | None = None
-    def safe_get_id(self): return self.id
+
+    def safe_get_id(self):
+        return self.id
+
 
 @dataclass
 class FakeEdge:
@@ -27,16 +31,32 @@ class FakeEdge:
     multiplicity: Any
     is_default: bool
     metadata: Dict[str, Any] | None = None
-    def safe_get_id(self): return self.id
+
+    def safe_get_id(self):
+        return self.id
+
 
 class FakeWorkflowEngine:
     def __init__(self, nodes: List[FakeNode], edges: List[FakeEdge]) -> None:
         self._nodes = nodes
         self._edges = edges
-    def get_nodes(self, where=None, limit=5000, **kwargs): return self._nodes
-    def get_edges(self, where=None, limit=20000, **kwargs): return self._edges
 
-def _n(node_id: str, *, workflow_id: str, op: str, start=False, terminal=False, fanout=False) -> FakeNode:
+    def get_nodes(self, where=None, limit=5000, **kwargs):
+        return self._nodes
+
+    def get_edges(self, where=None, limit=20000, **kwargs):
+        return self._edges
+
+
+def _n(
+    node_id: str,
+    *,
+    workflow_id: str,
+    op: str,
+    start=False,
+    terminal=False,
+    fanout=False,
+) -> FakeNode:
     md = {
         "entity_type": "workflow_node",
         "workflow_id": workflow_id,
@@ -46,9 +66,18 @@ def _n(node_id: str, *, workflow_id: str, op: str, start=False, terminal=False, 
         "wf_terminal": bool(terminal),
         "wf_fanout": bool(fanout),
     }
-    return FakeNode(id=node_id, metadata=md, op=md["wf_op"], terminal=bool(md.get("wf_terminal")), fanout=bool(md.get("wf_fanout")))
+    return FakeNode(
+        id=node_id,
+        metadata=md,
+        op=md["wf_op"],
+        terminal=bool(md.get("wf_terminal")),
+        fanout=bool(md.get("wf_fanout")),
+    )
 
-def _e(edge_id: str, *, workflow_id: str, src: str, dst: str, multiplicity="one") -> FakeEdge:
+
+def _e(
+    edge_id: str, *, workflow_id: str, src: str, dst: str, multiplicity="one"
+) -> FakeEdge:
     md = {
         "entity_type": "workflow_edge",
         "workflow_id": workflow_id,
@@ -68,17 +97,25 @@ def _e(edge_id: str, *, workflow_id: str, src: str, dst: str, multiplicity="one"
         metadata=md,
     )
 
+
 class Resolver:
-    def __init__(self, mapping): self.mapping = mapping
-    def resolve(self, op): return self.mapping[op]
+    def __init__(self, mapping):
+        self.mapping = mapping
+
+    def resolve(self, op):
+        return self.mapping[op]
+
 
 class RR:
     def __init__(self, state_update=None, next_step_names=None):
         self.state_update = state_update or []
         self.next_step_names = next_step_names or []
 
+
 class PredAlwaysTrue(BasePredicate):
-    def __call__(self, e, state, result): return True
+    def __call__(self, e, state, result):
+        return True
+
 
 def test_converter_fanout_spawns_both_branches():
     wid = "wf_lg_fanout"
@@ -95,11 +132,13 @@ def test_converter_fanout_spawns_both_branches():
         _e("e4", workflow_id=wid, src="b", dst="end"),
     ]
     engine = FakeWorkflowEngine(nodes, edges)
-    resolver = Resolver({
-        "noop": lambda state: RR([]),
-        "emit_a": lambda state: RR([("a", {"events": "a"})]),
-        "emit_b": lambda state: RR([("a", {"events": "b"})]),
-    })
+    resolver = Resolver(
+        {
+            "noop": lambda state: RR([]),
+            "emit_a": lambda state: RR([("a", {"events": "a"})]),
+            "emit_b": lambda state: RR([("a", {"events": "b"})]),
+        }
+    )
 
     compiled = to_langgraph(
         workflow_engine=engine,

@@ -86,9 +86,11 @@ class IngestSubsystem(NamespaceProxy):
         res["raw"] = raw
 
         if auto_adjudicate:
-            data = self._e.backend.node_get(where={"doc_id": doc_id}, include=["documents"])
+            data = self._e.backend.node_get(
+                where={"doc_id": doc_id}, include=["documents"]
+            )
             buckets = {}
-            for ndoc in (data.get("documents") or []):
+            for ndoc in data.get("documents") or []:
                 n = Node.model_validate_json(ndoc)
                 buckets.setdefault((n.type, n.label.strip().lower()), []).append(n)
             pairs = []

@@ -5,7 +5,9 @@ from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
 from graph_knowledge_engine.engine_core.postgres_backend import PgVectorBackend
 
 # New meta-store introduced by the patch
-from graph_knowledge_engine.engine_core.engine_postgres_meta import EnginePostgresMetaStore
+from graph_knowledge_engine.engine_core.engine_postgres_meta import (
+    EnginePostgresMetaStore,
+)
 
 
 def _fake_ef(texts):
@@ -14,8 +16,12 @@ def _fake_ef(texts):
 
 
 @pytest.mark.parametrize("distance", ["cosine"])
-def test_pg_backend_uses_postgres_meta_store(sa_engine, pg_schema, tmp_path, distance: str):
-    backend = PgVectorBackend(engine=sa_engine, embedding_dim=3, distance=distance, schema=pg_schema)
+def test_pg_backend_uses_postgres_meta_store(
+    sa_engine, pg_schema, tmp_path, distance: str
+):
+    backend = PgVectorBackend(
+        engine=sa_engine, embedding_dim=3, distance=distance, schema=pg_schema
+    )
 
     eng = GraphKnowledgeEngine(
         persist_directory=str(tmp_path / "gke_meta"),
@@ -40,8 +46,10 @@ def _count_nodes(sa_engine, schema: str) -> int:
 
 
 @pytest.mark.parametrize("distance", ["cosine"])
-def test_engine_uow_rolls_back_meta_and_graph_writes_together(sa_engine, pg_schema, tmp_path, distance: str):
-    '''
+def test_engine_uow_rolls_back_meta_and_graph_writes_together(
+    sa_engine, pg_schema, tmp_path, distance: str
+):
+    """
     Proves the new PG meta-store participates in the SAME PG transaction as pgvector writes.
 
     Inside engine.uow():
@@ -52,8 +60,10 @@ def test_engine_uow_rolls_back_meta_and_graph_writes_together(sa_engine, pg_sche
     After exception:
       - gke_user_seq should have no row (meta write rolled back)
       - gke_nodes should have no row (graph write rolled back)
-    '''
-    backend = PgVectorBackend(engine=sa_engine, embedding_dim=3, distance=distance, schema=pg_schema)
+    """
+    backend = PgVectorBackend(
+        engine=sa_engine, embedding_dim=3, distance=distance, schema=pg_schema
+    )
     eng = GraphKnowledgeEngine(
         persist_directory=str(tmp_path / "gke_meta"),
         embedding_function=_fake_ef,

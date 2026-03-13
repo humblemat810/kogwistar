@@ -9,15 +9,20 @@ from tests.conftest import FakeEmbeddingFunction
 EMBEDDING_DIM = 3
 TEST_EMBEDDING = FakeEmbeddingFunction(dim=EMBEDDING_DIM)
 
+
 @pytest.fixture(params=["chroma", "pg"], ids=["chroma", "pg"])
 def e2e_engine(request, tmp_path, sa_engine, pg_schema) -> GraphKnowledgeEngine:
     if request.param == "chroma":
         persist_dir = tmp_path / "chroma"
         persist_dir.mkdir(parents=True, exist_ok=True)
-        eng = GraphKnowledgeEngine(persist_directory=str(persist_dir), embedding_function=TEST_EMBEDDING)
+        eng = GraphKnowledgeEngine(
+            persist_directory=str(persist_dir), embedding_function=TEST_EMBEDDING
+        )
     else:
         pytest.importorskip("pgvector")
-        backend = PgVectorBackend(engine=sa_engine, embedding_dim=EMBEDDING_DIM, schema=pg_schema)
+        backend = PgVectorBackend(
+            engine=sa_engine, embedding_dim=EMBEDDING_DIM, schema=pg_schema
+        )
         eng = GraphKnowledgeEngine(backend=backend, embedding_function=TEST_EMBEDDING)
 
     eng._test_backend_kind = request.param  # type: ignore[attr-defined]
@@ -165,7 +170,11 @@ def test_phase3_parallel_uow_one_rollback_one_commit_isolated(e2e_engine, reques
                 )
 
                 slot["started"].set()
-                _wait_evt(other_slot["started"], timeout=5.0, msg="other thread did not start in time")
+                _wait_evt(
+                    other_slot["started"],
+                    timeout=5.0,
+                    msg="other thread did not start in time",
+                )
                 _wait_evt(release, timeout=5.0, msg="release was not set")
 
                 if not success:
@@ -177,16 +186,16 @@ def test_phase3_parallel_uow_one_rollback_one_commit_isolated(e2e_engine, reques
         except BaseException as e:  # pragma: no cover
             slot["errors"].append(e)
 
-
-    t1 = threading.Thread(target=worker, args=[1,False], name="uow-thread-rollback")
-    t2 = threading.Thread(target=worker, args=[2,True], name="uow-thread-commit")
+    t1 = threading.Thread(target=worker, args=[1, False], name="uow-thread-rollback")
+    t2 = threading.Thread(target=worker, args=[2, True], name="uow-thread-commit")
 
     t1.start()
     t2.start()
-    if request.node.name.endswith('[chroma]'):
+    if request.node.name.endswith("[chroma]"):
         context_manager = pytest.raises(AssertionError)
     else:
         import contextlib
+
         context_manager = contextlib.nullcontext()
     with context_manager:
         _wait_evt(arena[1]["started"], timeout=5.0, msg="thread1 never entered uow")
@@ -195,16 +204,16 @@ def test_phase3_parallel_uow_one_rollback_one_commit_isolated(e2e_engine, reques
 
     t1.join(timeout=10.0)
     t2.join(timeout=10.0)
-    
+
     assert not t1.is_alive(), "thread1 did not finish"
     assert not t2.is_alive(), "thread2 did not finish"
     with context_manager:
         assert not t1_exc, f"thread1 unexpected errors: {t1_exc!r}"
         assert not t2_exc, f"thread2 unexpected errors: {t2_exc!r}"
-    
+
     assert _count_events(eng, ns1) == 0
     assert _count_jobs(eng, ns1) == 0
-    if request.node.name.endswith('[chroma]'):
+    if request.node.name.endswith("[chroma]"):
         return
     assert _count_events(eng, ns2) == 1
     assert _count_jobs(eng, ns2) == 1

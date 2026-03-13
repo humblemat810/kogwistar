@@ -7,7 +7,9 @@ import sqlalchemy as sa
 
 from graph_knowledge_engine.engine_core.chroma_backend import ChromaBackend
 from graph_knowledge_engine.engine_core.postgres_backend import PgVectorBackend
-from graph_knowledge_engine.engine_core.engine_postgres_meta import EnginePostgresMetaStore
+from graph_knowledge_engine.engine_core.engine_postgres_meta import (
+    EnginePostgresMetaStore,
+)
 
 from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
 from graph_knowledge_engine.engine_core.models import Node, Edge, Grounding, Span
@@ -22,10 +24,13 @@ def _mk_span(doc_id: str) -> Span:
     sp.doc_id = doc_id
     return sp
 
+
 EMBEDDING_DIM = 3
 TEST_EMBEDDING = FakeEmbeddingFunction(dim=EMBEDDING_DIM)
+
+
 def _mk_node(node_id: str, *, doc_id: str) -> Node:
-    
+
     node = Node(
         id=node_id,
         label=f"Node {node_id}",
@@ -36,9 +41,9 @@ def _mk_node(node_id: str, *, doc_id: str) -> Node:
         metadata={"level_from_root": 0, "entity_type": "kg_entity"},
         embedding=[0.1] * EMBEDDING_DIM,
         level_from_root=0,
-        domain_id = None,
+        domain_id=None,
         canonical_entity_id=None,
-        properties = None
+        properties=None,
     )
     return node
 
@@ -58,9 +63,9 @@ def _mk_edge(edge_id: str, *, src: str, tgt: str, doc_id: str) -> Edge:
         mentions=[Grounding(spans=[_mk_span(doc_id)])],
         metadata={"level_from_root": 0, "entity_type": "kg_relation"},
         embedding=[0.1] * EMBEDDING_DIM,
-        domain_id = None,
+        domain_id=None,
         canonical_entity_id=None,
-        properties = None
+        properties=None,
     )
 
 
@@ -76,7 +81,9 @@ def e2e_engine(
     if request.param == "chroma":
         persist_dir = tmp_path / "chroma"
         persist_dir.mkdir(parents=True, exist_ok=True)
-        eng = GraphKnowledgeEngine(persist_directory=str(persist_dir), embedding_function=TEST_EMBEDDING)
+        eng = GraphKnowledgeEngine(
+            persist_directory=str(persist_dir), embedding_function=TEST_EMBEDDING
+        )
     else:
         # Skip cleanly if the pgvector dependency isn't available in this environment.
         pytest.importorskip("pgvector")
@@ -145,10 +152,18 @@ def test_reconcile_builds_all_joins_from_raw_entities(e2e_engine: GraphKnowledge
 
     # Enqueue the "slow path" derived index rebuilds
     for nid in ("n1", "n2"):
-        eng.enqueue_index_job(entity_kind="node", entity_id=nid, index_kind="node_docs", op="UPSERT")
-        eng.enqueue_index_job(entity_kind="node", entity_id=nid, index_kind="node_refs", op="UPSERT")
-    eng.enqueue_index_job(entity_kind="edge", entity_id="e1", index_kind="edge_endpoints", op="UPSERT")
-    eng.enqueue_index_job(entity_kind="edge", entity_id="e1", index_kind="edge_refs", op="UPSERT")
+        eng.enqueue_index_job(
+            entity_kind="node", entity_id=nid, index_kind="node_docs", op="UPSERT"
+        )
+        eng.enqueue_index_job(
+            entity_kind="node", entity_id=nid, index_kind="node_refs", op="UPSERT"
+        )
+    eng.enqueue_index_job(
+        entity_kind="edge", entity_id="e1", index_kind="edge_endpoints", op="UPSERT"
+    )
+    eng.enqueue_index_job(
+        entity_kind="edge", entity_id="e1", index_kind="edge_refs", op="UPSERT"
+    )
 
     processed = eng.reconcile_indexes(max_jobs=50)
     assert processed >= 1
@@ -174,12 +189,16 @@ def test_reconcile_builds_all_joins_from_raw_entities(e2e_engine: GraphKnowledge
     assert len(_ids(got)) >= 1
 
 
-def test_race_job_before_entity_exists_recovers_on_later_insert(e2e_engine: GraphKnowledgeEngine):
+def test_race_job_before_entity_exists_recovers_on_later_insert(
+    e2e_engine: GraphKnowledgeEngine,
+):
     """If reconcile runs before the entity exists, the job should requeue, then recover on a later insert."""
     eng = e2e_engine
     _assert_backend_kind(eng)
 
-    jid = eng.enqueue_index_job(entity_kind="node", entity_id="n_race", index_kind="node_docs", op="UPSERT")
+    jid = eng.enqueue_index_job(
+        entity_kind="node", entity_id="n_race", index_kind="node_docs", op="UPSERT"
+    )
     eng.reconcile_indexes(max_jobs=10)
 
     first = _job_by_id(eng, jid)
@@ -216,15 +235,21 @@ def test_race_job_before_entity_exists_recovers_on_later_insert(e2e_engine: Grap
     assert len(_ids(got)) >= 1
 
 
-def test_tombstoned_entities_never_resurrect_derived_rows(e2e_engine: GraphKnowledgeEngine):
+def test_tombstoned_entities_never_resurrect_derived_rows(
+    e2e_engine: GraphKnowledgeEngine,
+):
     eng = e2e_engine
     _assert_backend_kind(eng)
 
     eng.add_node(_mk_node("n_dead", doc_id="d1"))
 
     # First build derived rows
-    eng.enqueue_index_job(entity_kind="node", entity_id="n_dead", index_kind="node_docs", op="UPSERT")
-    eng.enqueue_index_job(entity_kind="node", entity_id="n_dead", index_kind="node_refs", op="UPSERT")
+    eng.enqueue_index_job(
+        entity_kind="node", entity_id="n_dead", index_kind="node_docs", op="UPSERT"
+    )
+    eng.enqueue_index_job(
+        entity_kind="node", entity_id="n_dead", index_kind="node_refs", op="UPSERT"
+    )
     eng.reconcile_indexes(max_jobs=10)
 
     assert len(_ids(eng.backend.node_docs_get(where={"node_id": "n_dead"}))) >= 1
@@ -233,21 +258,30 @@ def test_tombstoned_entities_never_resurrect_derived_rows(e2e_engine: GraphKnowl
     assert eng.tombstone_node("n_dead") is True
 
     # Even if an UPSERT is enqueued, reconcile should delete derived rows instead of rebuilding.
-    eng.enqueue_index_job(entity_kind="node", entity_id="n_dead", index_kind="node_docs", op="UPSERT")
-    eng.enqueue_index_job(entity_kind="node", entity_id="n_dead", index_kind="node_refs", op="UPSERT")
+    eng.enqueue_index_job(
+        entity_kind="node", entity_id="n_dead", index_kind="node_docs", op="UPSERT"
+    )
+    eng.enqueue_index_job(
+        entity_kind="node", entity_id="n_dead", index_kind="node_refs", op="UPSERT"
+    )
     eng.reconcile_indexes(max_jobs=10)
 
     assert len(_ids(eng.backend.node_docs_get(where={"node_id": "n_dead"}))) == 0
     assert len(_ids(eng.backend.node_refs_get(where={"node_id": "n_dead"}))) == 0
 
 
-def test_stuck_doing_job_is_stealable_after_lease_expiry(e2e_engine: GraphKnowledgeEngine):
+def test_stuck_doing_job_is_stealable_after_lease_expiry(
+    e2e_engine: GraphKnowledgeEngine,
+):
     """Covers the 'halted forever' scenario: DOING with expired lease must be reclaimed."""
     eng = e2e_engine
     _assert_backend_kind(eng)
     import re
+
     eng.add_node(_mk_node("n_stuck", doc_id="d1"))
-    jid = eng.enqueue_index_job(entity_kind="node", entity_id="n_stuck", index_kind="node_docs", op="UPSERT")
+    jid = eng.enqueue_index_job(
+        entity_kind="node", entity_id="n_stuck", index_kind="node_docs", op="UPSERT"
+    )
 
     # Force the job into DOING with an expired lease to simulate a crashed worker.
     # (We do it at the metastore level; this is not monkeypatching runtime logic.)
@@ -262,7 +296,7 @@ def test_stuck_doing_job_is_stealable_after_lease_expiry(e2e_engine: GraphKnowle
                     raise AssertionError(f"invalid schema in test: {schema!r}")
                 if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", table):
                     raise AssertionError(f"invalid table in test: {table!r}")
-                ij = f"{schema}.{table}"                
+                ij = f"{schema}.{table}"
                 conn.execute(
                     sa.text(
                         f"UPDATE {ij} "

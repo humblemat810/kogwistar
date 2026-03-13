@@ -5,10 +5,16 @@ from typing import TYPE_CHECKING, Any, Optional
 
 from graph_knowledge_engine.graph_kinds import KIND_CHAT
 
-from .models import ConversationEdge, ConversationNode, CONVERSATION_EDGE_CAUSAL_TYPE_BY_RELATION
+from .models import (
+    ConversationEdge,
+    ConversationNode,
+    CONVERSATION_EDGE_CAUSAL_TYPE_BY_RELATION,
+)
+
 
 def infer_conversation_edge_causal_type(relation: str) -> str:
     return CONVERSATION_EDGE_CAUSAL_TYPE_BY_RELATION.get(relation, "reference")
+
 
 if TYPE_CHECKING:
     from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
@@ -29,7 +35,9 @@ def edge_endpoints_exists(engine: "GraphKnowledgeEngine", *, where: dict) -> boo
     return bool(mds and mds[0])
 
 
-def edge_endpoints_first_edge_id(engine: "GraphKnowledgeEngine", *, where: dict) -> str | None:
+def edge_endpoints_first_edge_id(
+    engine: "GraphKnowledgeEngine", *, where: dict
+) -> str | None:
     res = engine.backend.edge_endpoints_get(where=where, include=["metadatas"], limit=1)
     mds = res.get("metadatas") or []
     if not mds or not mds[0]:
@@ -49,13 +57,19 @@ def doc_id_for_edge(edge: ConversationEdge) -> str | None:
     if isinstance(doc_id, str) and doc_id:
         return doc_id
     md = edge.metadata or {}
-    conv_id = md.get("conversation_id") or md.get("conv_id") or getattr(edge, "conversation_id", None)
+    conv_id = (
+        md.get("conversation_id")
+        or md.get("conv_id")
+        or getattr(edge, "conversation_id", None)
+    )
     if isinstance(conv_id, str) and conv_id:
         return f"conv:{conv_id}"
     return None
 
 
-def is_duplicate_next_turn_noop(engine: "GraphKnowledgeEngine", edge: ConversationEdge) -> bool:
+def is_duplicate_next_turn_noop(
+    engine: "GraphKnowledgeEngine", edge: ConversationEdge
+) -> bool:
     if engine.kg_graph_type != KIND_CHAT:
         return False
     if edge.relation != "next_turn":
@@ -94,8 +108,12 @@ def is_duplicate_next_turn_noop(engine: "GraphKnowledgeEngine", edge: Conversati
 
     same_src = obj.get("source_ids") == [src]
     same_tgt = obj.get("target_ids") == [tgt]
-    same_src_edges = (obj.get("source_edge_ids") or []) == (getattr(edge, "source_edge_ids", []) or [])
-    same_tgt_edges = (obj.get("target_edge_ids") or []) == (getattr(edge, "target_edge_ids", []) or [])
+    same_src_edges = (obj.get("source_edge_ids") or []) == (
+        getattr(edge, "source_edge_ids", []) or []
+    )
+    same_tgt_edges = (obj.get("target_edge_ids") or []) == (
+        getattr(edge, "target_edge_ids", []) or []
+    )
     return bool(same_src and same_tgt and same_src_edges and same_tgt_edges)
 
 
@@ -112,7 +130,9 @@ def validate_edge_add(engine: "GraphKnowledgeEngine", edge: ConversationEdge) ->
 
     normalize_edge_metadata(edge)
     md = edge.metadata or {}
-    causal_type = md.get("causal_type") or infer_conversation_edge_causal_type(edge.relation)
+    causal_type = md.get("causal_type") or infer_conversation_edge_causal_type(
+        edge.relation
+    )
     doc_id = doc_id_for_edge(edge)
 
     src = (edge.source_ids or [None])[0]
@@ -121,7 +141,9 @@ def validate_edge_add(engine: "GraphKnowledgeEngine", edge: ConversationEdge) ->
     if edge.relation == "next_turn" or causal_type == "chain":
         if src is None or tgt is None:
             raise ValueError("next_turn requires single source_id and single target_id")
-        if (getattr(edge, "source_edge_ids", []) or []) or (getattr(edge, "target_edge_ids", []) or []):
+        if (getattr(edge, "source_edge_ids", []) or []) or (
+            getattr(edge, "target_edge_ids", []) or []
+        ):
             raise ValueError("next_turn must be node-to-node only (no edge endpoints)")
 
         w_out = where_and(
@@ -162,8 +184,12 @@ def validate_edge_add(engine: "GraphKnowledgeEngine", edge: ConversationEdge) ->
             {"causal_type": "dependency"},
             ({"doc_id": doc_id} if doc_id else {}),
         )
-        if edge_endpoints_exists(engine, where=w_used_chain) or edge_endpoints_exists(engine, where=w_used_dep):
-            raise ValueError(f"Cannot add dependency incoming edge into already-used node {tgt}")
+        if edge_endpoints_exists(engine, where=w_used_chain) or edge_endpoints_exists(
+            engine, where=w_used_dep
+        ):
+            raise ValueError(
+                f"Cannot add dependency incoming edge into already-used node {tgt}"
+            )
 
 
 def maybe_assign_seq(engine: "GraphKnowledgeEngine", node: Any) -> None:
@@ -193,13 +219,16 @@ def get_last_seq_node(engine: "GraphKnowledgeEngine", conversation_id, min_seq=N
         raise RuntimeError("chat-only call")
     got = engine.backend.node_get(
         where={
-            "$and": [{"conversation_id": conversation_id}] + [{"seq": {"$gte": min_seq or 0}}],
+            "$and": [{"conversation_id": conversation_id}]
+            + [{"seq": {"$gte": min_seq or 0}}],
         },
         include=["documents", "metadatas", "embeddings"],
     )
     if not got["ids"]:
         return None
-    nodes: list[ConversationNode] = engine.read.nodes_from_single_or_id_query_result(got, node_type=ConversationNode)
+    nodes: list[ConversationNode] = engine.read.nodes_from_single_or_id_query_result(
+        got, node_type=ConversationNode
+    )
     nodes.sort(key=lambda n: n.metadata.get("seq") or -1)
     return nodes[-1]
 
@@ -208,20 +237,34 @@ def get_chat_tail(
     engine: "GraphKnowledgeEngine",
     conversation_id: str,
     min_turn_index: int | None = None,
-    tail_search_includes: list[str] = ["conversation_start", "conversation_turn", "conversation_summary", "assistant_turn"],
+    tail_search_includes: list[str] = [
+        "conversation_start",
+        "conversation_turn",
+        "conversation_summary",
+        "assistant_turn",
+    ],
 ) -> Optional[ConversationNode]:
     if engine.kg_graph_type != KIND_CHAT:
         raise RuntimeError("chat-only call")
     got = engine.backend.node_get(
         where={
-            "$and": [{"conversation_id": conversation_id}, {"in_conversation_chain": True}]
-            + ([{"turn_index": {"$gte": min_turn_index}}] if min_turn_index is not None else [])
+            "$and": [
+                {"conversation_id": conversation_id},
+                {"in_conversation_chain": True},
+            ]
+            + (
+                [{"turn_index": {"$gte": min_turn_index}}]
+                if min_turn_index is not None
+                else []
+            )
         },
         include=["documents", "metadatas", "embeddings"],
     )
     if not got["ids"]:
         return None
-    nodes: list[ConversationNode] = engine.read.nodes_from_single_or_id_query_result(got, node_type=ConversationNode)
+    nodes: list[ConversationNode] = engine.read.nodes_from_single_or_id_query_result(
+        got, node_type=ConversationNode
+    )
     nodes2 = [x for x in nodes if x.metadata.get("entity_type") in tail_search_includes]
     if not nodes2:
         return None
@@ -283,7 +326,9 @@ def install_engine_hooks(engine: "GraphKnowledgeEngine") -> None:
     pure_edge_hooks = getattr(engine, "pre_add_pure_edge_hooks", None)
     if isinstance(pure_edge_hooks, list):
         pure_edge_hooks.append(_edge_hook_pure)
-    missing_doc_hooks = getattr(engine, "allow_missing_doc_id_on_endpoint_rows_hooks", None)
+    missing_doc_hooks = getattr(
+        engine, "allow_missing_doc_id_on_endpoint_rows_hooks", None
+    )
     if isinstance(missing_doc_hooks, list):
         missing_doc_hooks.append(_allow_missing_doc)
 

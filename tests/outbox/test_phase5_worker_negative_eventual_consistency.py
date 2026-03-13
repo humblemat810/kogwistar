@@ -12,7 +12,9 @@ TEST_EMBEDDING = FakeEmbeddingFunction(dim=3)
 def eng(tmp_path) -> GraphKnowledgeEngine:
     persist_dir = tmp_path / "chroma"
     persist_dir.mkdir(parents=True, exist_ok=True)
-    e = GraphKnowledgeEngine(persist_directory=str(persist_dir), embedding_function=TEST_EMBEDDING)
+    e = GraphKnowledgeEngine(
+        persist_directory=str(persist_dir), embedding_function=TEST_EMBEDDING
+    )
     e._phase1_enable_index_jobs = True
     return e
 
@@ -54,7 +56,10 @@ def test_phase5_lease_expiry_allows_steal(eng):
     # Force lease expiry + make runnable now
     with eng.meta_sqlite.transaction() as conn:
         now = eng.meta_sqlite._now_epoch()
-        conn.execute("UPDATE index_jobs SET lease_until=?, next_run_at=? WHERE job_id=?", (now - 10, now, job_id))
+        conn.execute(
+            "UPDATE index_jobs SET lease_until=?, next_run_at=? WHERE job_id=?",
+            (now - 10, now, job_id),
+        )
 
     got2 = eng.meta_sqlite.claim_index_jobs(limit=1, lease_seconds=60, namespace=ns)
     assert len(got2) == 1
@@ -88,7 +93,9 @@ def test_phase5_crash_after_apply_before_ack_eventually_converges(eng, monkeypat
 
     monkeypatch.setattr(eng.meta_sqlite, "mark_index_job_done", _done_crash)
 
-    worker = IndexJobWorker(engine=eng, batch_size=1, lease_seconds=60, max_jobs_per_tick=1, namespace=ns)
+    worker = IndexJobWorker(
+        engine=eng, batch_size=1, lease_seconds=60, max_jobs_per_tick=1, namespace=ns
+    )
 
     # First tick: apply happens, but ack fails => job should NOT be DONE.
     m1 = worker.tick()
@@ -99,7 +106,10 @@ def test_phase5_crash_after_apply_before_ack_eventually_converges(eng, monkeypat
 
     rows1 = eng.meta_sqlite.list_index_jobs(namespace=ns, limit=50)
     row1 = [r for r in rows1 if r.job_id == job_id][0]
-    assert row1.status in ("PENDING", "FAILED")  # SQLite meta may immediately requeue to PENDING with next_run_at
+    assert row1.status in (
+        "PENDING",
+        "FAILED",
+    )  # SQLite meta may immediately requeue to PENDING with next_run_at
     assert row1.status != "DONE"
 
     # Make eligible again (skip delay/lease) and run again; should converge to DONE without duplicating effect

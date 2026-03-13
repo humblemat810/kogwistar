@@ -1,6 +1,10 @@
-import json
 
-from graph_knowledge_engine.engine_core.models import Grounding, MentionVerification, Node, Span
+from graph_knowledge_engine.engine_core.models import (
+    Grounding,
+    MentionVerification,
+    Node,
+    Span,
+)
 
 
 def _ref_for(doc_id: str) -> Span:
@@ -10,7 +14,9 @@ def _ref_for(doc_id: str) -> Span:
         page_number=1,
         start_char=0,
         end_char=1,
-        verification=MentionVerification(method="heuristic", is_verified=False, notes=None, score=0.9),
+        verification=MentionVerification(
+            method="heuristic", is_verified=False, notes=None, score=0.9
+        ),
         insertion_method="pytest-manual",
         doc_id=doc_id,
         source_cluster_id=None,

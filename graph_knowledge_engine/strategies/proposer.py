@@ -2,7 +2,15 @@
 from __future__ import annotations
 
 from typing import (
-    List, Tuple, Optional, Iterable, Literal, Any, Sequence, Union, Dict, Set
+    List,
+    Tuple,
+    Optional,
+    Iterable,
+    Literal,
+    Any,
+    Sequence,
+    Union,
+    Dict,
 )
 from dataclasses import dataclass
 import json
@@ -10,21 +18,36 @@ import json
 from ..engine_core.models import Node, Edge
 from .types import MergeCandidateProposer, EngineLike  # your existing protocol types
 
-PairKind = Literal["node_node", "edge_edge", "node_edge", "any_any", "any_node", "any_edge", "node_any", "edge_any"]
+PairKind = Literal[
+    "node_node",
+    "edge_edge",
+    "node_edge",
+    "any_any",
+    "any_node",
+    "any_edge",
+    "node_any",
+    "edge_any",
+]
+
 
 @dataclass(frozen=True)
 class _Pair:
     left: Any
     right: Any
 
-def _and_where(a: Optional[Dict[str, Any]], b: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+
+def _and_where(
+    a: Optional[Dict[str, Any]], b: Optional[Dict[str, Any]]
+) -> Optional[Dict[str, Any]]:
     """Return a ∧ b in Chroma 'where' syntax; tolerate None."""
     if a and b:
         return {"$and": [a, b]}
     return a or b
 
+
 def _norm(s: Optional[str]) -> str:
     return (s or "").strip().lower()
+
 
 def _edge_sig(e: Edge) -> tuple:
     """Very light signature for equality-ish edge pairing."""
@@ -35,11 +58,16 @@ def _edge_sig(e: Edge) -> tuple:
     te = tuple(sorted((getattr(e, "target_edge_ids", None) or [])))
     return (rel, s, t, se, te)
 
-def _first_doc_id(engine: EngineLike, obj_id: str, kind: Literal["node", "edge"]) -> Optional[str]:
+
+def _first_doc_id(
+    engine: EngineLike, obj_id: str, kind: Literal["node", "edge"]
+) -> Optional[str]:
     """Infer a primary doc_id for an entity id using your existing indices."""
     try:
         if kind == "node":
-            rows = engine.backend.node_docs_get(where={"node_id": obj_id}, include=["metadatas"])
+            rows = engine.backend.node_docs_get(
+                where={"node_id": obj_id}, include=["metadatas"]
+            )
             metas = rows.get("metadatas") or []
             if metas and metas[0] and metas[0].get("doc_id"):
                 return metas[0]["doc_id"]
@@ -52,7 +80,9 @@ def _first_doc_id(engine: EngineLike, obj_id: str, kind: Literal["node", "edge"]
                 return doc_ids[0]
             return None
         else:
-            rows = engine.backend.edge_endpoints_get(where={"edge_id": obj_id}, include=["metadatas"])
+            rows = engine.backend.edge_endpoints_get(
+                where={"edge_id": obj_id}, include=["metadatas"]
+            )
             metas = rows.get("metadatas") or []
             if metas and metas[0] and metas[0].get("doc_id"):
                 return metas[0]["doc_id"]
@@ -61,6 +91,7 @@ def _first_doc_id(engine: EngineLike, obj_id: str, kind: Literal["node", "edge"]
             return md.get("doc_id")
     except Exception:
         return None
+
 
 def _load_nodes(engine: EngineLike, ids: Sequence[str]) -> List[Node]:
     if not ids:
@@ -75,6 +106,7 @@ def _load_nodes(engine: EngineLike, ids: Sequence[str]) -> List[Node]:
             pass
     return out
 
+
 def _load_edges(engine: EngineLike, ids: Sequence[str]) -> List[Edge]:
     if not ids:
         return []
@@ -88,7 +120,12 @@ def _load_edges(engine: EngineLike, ids: Sequence[str]) -> List[Edge]:
             pass
     return out
 
-def _coerce_query_nodes(engine: EngineLike, spec: Union[Node, str, Sequence[Union[Node, str]]], is_edge = False) -> List[Node]:
+
+def _coerce_query_nodes(
+    engine: EngineLike,
+    spec: Union[Node, str, Sequence[Union[Node, str]]],
+    is_edge=False,
+) -> List[Node]:
     """Accept Node | id | list[...] and return concrete Node objects (with embeddings)."""
     if isinstance(spec, (Node, str)):
         specs = [spec]
@@ -108,7 +145,7 @@ def _coerce_query_nodes(engine: EngineLike, spec: Union[Node, str, Sequence[Unio
             got = engine.backend.edge_get(ids=need_fetch_ids, include=["documents"])
         else:
             got = engine.backend.node_get(ids=need_fetch_ids, include=["documents"])
-        for dj in (got.get("documents") or []):
+        for dj in got.get("documents") or []:
             try:
                 nodes.append(Node.model_validate_json(dj))
             except Exception:
@@ -116,6 +153,7 @@ def _coerce_query_nodes(engine: EngineLike, spec: Union[Node, str, Sequence[Unio
 
     # keep only those that actually have embeddings
     return [n for n in nodes if getattr(n, "embedding", None)]
+
 
 class VectorProposer(MergeCandidateProposer):
     """
@@ -126,6 +164,7 @@ class VectorProposer(MergeCandidateProposer):
       - batch Chroma query on nodes (and optionally edges)
       - a 'where' filter that flows to Chroma, e.g. {"insertion_method": "graph_extractor"}
     """
+
     def __init__(self, engine: EngineLike):
         self.e = engine
         self.limit_per_bucket = 100
@@ -154,26 +193,33 @@ class VectorProposer(MergeCandidateProposer):
         Returns list of (query_entity, matched_entity) where matched_entity ∈ {Node, Edge}.
         """
         engine = self.e or engine
-        if not( include_nodes or include_edges):
+        if not (include_nodes or include_edges):
             return []
         # ---- seed query IDs when caller didn't specify --------------------------------
         if new_node is None:
             if anchor_doc_id:
                 new_node = engine.read.node_ids_by_doc(anchor_doc_id)
             elif allowed_docs:
-                new_node = [nid for d in allowed_docs for nid in engine.read.node_ids_by_doc(d)]
+                new_node = [
+                    nid for d in allowed_docs for nid in engine.read.node_ids_by_doc(d)
+                ]
             else:
                 new_node = (engine.backend.node_get() or {}).get("ids", [])  # all nodes
 
         if new_edge is None:
             if anchor_doc_id:
-                new_edge = engine.read.edge_ids_by_doc(anchor_doc_id)  # <-- fixed (was node_ids_by_doc)
+                new_edge = engine.read.edge_ids_by_doc(
+                    anchor_doc_id
+                )  # <-- fixed (was node_ids_by_doc)
             elif allowed_docs:
-                new_edge = [eid for d in allowed_docs for eid in engine.read.edge_ids_by_doc(d)]
+                new_edge = [
+                    eid for d in allowed_docs for eid in engine.read.edge_ids_by_doc(d)
+                ]
             else:
                 new_edge = (engine.backend.edge_get() or {}).get("ids", [])  # all edges
         if not (new_node or new_edge):
             return []
+
         # ---- tiny local coercers (ids -> objects) -------------------------------------
         def _coerce_query_nodes(e: EngineLike, xs) -> List[Node]:
             if xs is None:
@@ -185,7 +231,9 @@ class VectorProposer(MergeCandidateProposer):
                 if isinstance(item, Node):
                     out.append(item)
                 else:
-                    got = e.backend.node_get(ids=[item], include=["documents", "embeddings"])
+                    got = e.backend.node_get(
+                        ids=[item], include=["documents", "embeddings"]
+                    )
                     dj = (got.get("documents") or [None])[0]
                     if dj:
                         try:
@@ -195,7 +243,7 @@ class VectorProposer(MergeCandidateProposer):
                                 n = Node.model_validate(json.loads(dj))
                             except Exception:
                                 raise
-                        n.embedding = got['embeddings'][0]
+                        n.embedding = got["embeddings"][0]
                         out.append(n)
             return out
 
@@ -209,7 +257,9 @@ class VectorProposer(MergeCandidateProposer):
                 if isinstance(item, Edge):
                     out.append(item)
                 else:
-                    got = e.backend.edge_get(ids=[item], include=["documents", "embeddings"])
+                    got = e.backend.edge_get(
+                        ids=[item], include=["documents", "embeddings"]
+                    )
                     dj = (got.get("documents") or [None])[0]
                     if dj:
                         try:
@@ -219,7 +269,7 @@ class VectorProposer(MergeCandidateProposer):
                                 n = Edge.model_validate(json.loads(dj))
                             except Exception:
                                 raise
-                        n.embedding = got['embeddings'][0]
+                        n.embedding = got["embeddings"][0]
                         out.append(n)
             return out
 
@@ -242,42 +292,49 @@ class VectorProposer(MergeCandidateProposer):
         cand_where = _and_where(where, extra)
 
         # ---- doc rules (post-filter) --------------------------------------------------
-        def _pass_doc_rules(lhs_doc: Optional[str], rhs_id: str, rhs_kind: Literal["node", "edge"]) -> bool:
+        def _pass_doc_rules(
+            lhs_doc: Optional[str], rhs_id: str, rhs_kind: Literal["node", "edge"]
+        ) -> bool:
             rhs_doc = _first_doc_id(engine, rhs_id, rhs_kind)
             if allowed_docs and (rhs_doc not in allowed_docs):
                 return False
             if cross_doc_only and lhs_doc and rhs_doc and lhs_doc == rhs_doc:
                 return False
-            if anchor_doc_id and anchor_only and not ((lhs_doc == anchor_doc_id) or (rhs_doc == anchor_doc_id)):
+            if (
+                anchor_doc_id
+                and anchor_only
+                and not ((lhs_doc == anchor_doc_id) or (rhs_doc == anchor_doc_id))
+            ):
                 return False
             return True
 
-        
         if include_nodes:
             # ---- search nodes given node and/or edge embedding in a list---------------------------------------
-            
+
             node_ref_result = engine.backend.node_refs_get(where=cand_where)
-            ok_node_ids = set((i['node_id']) for i in node_ref_result['metadatas']) 
+            ok_node_ids = set((i["node_id"]) for i in node_ref_result["metadatas"])
             node_results = engine.backend.node_query(
                 query_embeddings=q_embs,
                 n_results=top_k,
-                ids = list(ok_node_ids),
-                include = ['documents', 'metadatas', 'embeddings', 'distances']
+                ids=list(ok_node_ids),
+                include=["documents", "metadatas", "embeddings", "distances"],
             )
-            # set((i['node_id'], i['insertion_method'], i['doc_id']) for i in node_ref_result['metadatas']) 
+            # set((i['node_id'], i['insertion_method'], i['doc_id']) for i in node_ref_result['metadatas'])
             node_docs_per_q = node_results.get("documents") or []
             node_ids_per_q = node_results.get("ids") or []
-            node_scores_per_q = node_results.get("distances") or node_results.get("similarities") or []
+            node_scores_per_q = (
+                node_results.get("distances") or node_results.get("similarities") or []
+            )
             node_embs_per_q = node_results.get("embeddings") or []
         # ---- search edges given node and/or edge embedding in a list --------------------------------------------------
         if include_edges:
             edge_ref_result = engine.backend.edge_refs_get(where=cand_where)
-            ok_edge_ids = set((i['edge_id']) for i in edge_ref_result['metadatas']) 
+            ok_edge_ids = set((i["edge_id"]) for i in edge_ref_result["metadatas"])
             edge_results = engine.backend.edge_query(
                 query_embeddings=q_embs,
                 n_results=top_k,
-                ids = list(ok_edge_ids),
-                include = ['documents', 'metadatas', 'embeddings', 'distances']
+                ids=list(ok_edge_ids),
+                include=["documents", "metadatas", "embeddings", "distances"],
             )
             # edge_results = engine.edge_collection.query(
             #     query_embeddings=q_embs,
@@ -286,11 +343,13 @@ class VectorProposer(MergeCandidateProposer):
             # )
             edge_docs_per_q = edge_results.get("documents") or []
             edge_ids_per_q = edge_results.get("ids") or []
-            edge_scores_per_q = edge_results.get("distances") or edge_results.get("similarities") or []
+            edge_scores_per_q = (
+                edge_results.get("distances") or edge_results.get("similarities") or []
+            )
             edge_embs_per_q = edge_results.get("embeddings") or []
         else:
             edge_docs_per_q = edge_ids_per_q = edge_scores_per_q = edge_embs_per_q = []
-        pairs: dict[Tuple[str, str],Tuple[Node, Node, float]] = {}
+        pairs: dict[Tuple[str, str], Tuple[Node, Node, float]] = {}
         # ---- materialize matches per query -------------------------------------------
         for qi, qent in enumerate(queries):
             q_doc = getattr(qent, "doc_id", None)
@@ -301,7 +360,11 @@ class VectorProposer(MergeCandidateProposer):
             scs = node_scores_per_q[qi] if qi < len(node_scores_per_q) else []
             embs = node_embs_per_q[qi] if qi < len(node_embs_per_q) else []
             for mid, mj, score, emb in zip(ids_, docs, scs, embs):
-                keep = (score <= max_distance) if score_mode == "distance" else (score >= min_similarity)
+                keep = (
+                    (score <= max_distance)
+                    if score_mode == "distance"
+                    else (score >= min_similarity)
+                )
                 if mid == queries[qi].id:
                     continue
                 if not keep:
@@ -322,7 +385,9 @@ class VectorProposer(MergeCandidateProposer):
                 match_sorted = tuple(sorted([match, qent], key=lambda x: x.id))
                 key = tuple(ele.id for ele in match_sorted)
                 if key not in pairs:
-                    pairs[tuple(ele.id for ele in [match_sorted[0], match_sorted[1]])] = (match_sorted[0], match_sorted[1], score)
+                    pairs[
+                        tuple(ele.id for ele in [match_sorted[0], match_sorted[1]])
+                    ] = (match_sorted[0], match_sorted[1], score)
                 # pairs.append((qent, match, score))
 
             # edge matches
@@ -332,7 +397,11 @@ class VectorProposer(MergeCandidateProposer):
                 escs = edge_scores_per_q[qi] if qi < len(edge_scores_per_q) else []
                 embs = edge_embs_per_q[qi] if qi < len(edge_embs_per_q) else []
                 for mid, mj, score, emb in zip(eids_, edocs, escs, embs):
-                    keep = (score <= max_distance) if score_mode == "distance" else (score >= min_similarity)
+                    keep = (
+                        (score <= max_distance)
+                        if score_mode == "distance"
+                        else (score >= min_similarity)
+                    )
                     if not keep:
                         continue
                     try:
@@ -348,7 +417,9 @@ class VectorProposer(MergeCandidateProposer):
                     match_sorted = tuple(sorted([match, qent], key=lambda x: x.id))
                     key = tuple(ele.id for ele in match_sorted)
                     if key not in pairs:
-                        pairs[tuple(ele.id for ele in [match_sorted[0], match_sorted[1]])] = (match_sorted[0], match_sorted[1], score)
+                        pairs[
+                            tuple(ele.id for ele in [match_sorted[0], match_sorted[1]])
+                        ] = (match_sorted[0], match_sorted[1], score)
         return pairs
 
     # ---------------- UNIFIED ENTRY POINT (kept) ----------------
@@ -413,12 +484,21 @@ class VectorProposer(MergeCandidateProposer):
                 all_ids.extend(doc2edges.get(d, []))
             return _load_edges(engine, all_ids)
 
-        def _passes_doc_rules(id_a: str, kind_a: Literal["node", "edge"], id_b: str, kind_b: Literal["node", "edge"]) -> bool:
+        def _passes_doc_rules(
+            id_a: str,
+            kind_a: Literal["node", "edge"],
+            id_b: str,
+            kind_b: Literal["node", "edge"],
+        ) -> bool:
             da = _first_doc_id(engine, id_a, kind_a)
             db = _first_doc_id(engine, id_b, kind_b)
             if allowed_docs and (da not in allowed_docs or db not in allowed_docs):
                 return False
-            if anchor_doc_id and anchor_only and not (da == anchor_doc_id or db == anchor_doc_id):
+            if (
+                anchor_doc_id
+                and anchor_only
+                and not (da == anchor_doc_id or db == anchor_doc_id)
+            ):
                 return False
             if cross_doc_only and da and db and da == db:
                 return False
@@ -434,9 +514,11 @@ class VectorProposer(MergeCandidateProposer):
         def _doc_pairs(doc_a: str, doc_b: str) -> List[_Pair]:
             out: List[_Pair] = []
             left_kind, right_kind = pair_kind.split("_")
-            lefts: List[Node|Edge] = []
-            rights: List[Node|Edge] = []
-            for assignee, kind, doc in zip([lefts,rights], [left_kind, right_kind], [doc_a, doc_b]):
+            lefts: List[Node | Edge] = []
+            rights: List[Node | Edge] = []
+            for assignee, kind, doc in zip(
+                [lefts, rights], [left_kind, right_kind], [doc_a, doc_b]
+            ):
                 if kind == "node":
                     assignee += _pool_nodes([doc])
                 elif kind == "edge":
@@ -449,11 +531,14 @@ class VectorProposer(MergeCandidateProposer):
             # rights = {ne.id: ne for ne in rights}
             for i, L in enumerate(lefts):
                 for j, R in enumerate(rights):
-                    if (doc_a == doc_b and left_kind == right_kind and j <= i) or L.id == R.id: # dif doc ids can refer to same nodes, already adjudicated nodes potentially
+                    if (
+                        (doc_a == doc_b and left_kind == right_kind and j <= i)
+                        or L.id == R.id
+                    ):  # dif doc ids can refer to same nodes, already adjudicated nodes potentially
                         continue
                     # if _passes_doc_rules(L.id, left_kind, R.id, right_kind):
                     out.append(_Pair(L, R))
-            
+
             # if pair_kind == "node_node":
             #     lefts = _pool_nodes([doc_a])
             #     rights = _pool_nodes([doc_b])
@@ -496,7 +581,7 @@ class VectorProposer(MergeCandidateProposer):
             for i, da in enumerate(doc_universe):
                 if not cross_doc_only:
                     pairs.extend(_doc_pairs(da, da))
-                for db in doc_universe[i + 1:]:
+                for db in doc_universe[i + 1 :]:
                     pairs.extend(_doc_pairs(da, db))
 
         # dedupe symmetric
@@ -507,8 +592,10 @@ class VectorProposer(MergeCandidateProposer):
             b = getattr(p.right, "id", None)
             if a is None or b is None:
                 continue
-            key = (("node" if isinstance(p.left, Node) else "edge", a),
-                   ("node" if isinstance(p.right, Node) else "edge", b))
+            key = (
+                ("node" if isinstance(p.left, Node) else "edge", a),
+                ("node" if isinstance(p.right, Node) else "edge", b),
+            )
             rkey = (key[1], key[0])
             if key in seen or rkey in seen:
                 continue
@@ -518,7 +605,9 @@ class VectorProposer(MergeCandidateProposer):
 
     # ---------------- BACK-COMPAT WRAPPERS ----------------
 
-    def same_kind_in_doc(self, *, engine: EngineLike, doc_id: str, kind: Literal["node", "edge"] = "node") -> List[Tuple[Any, Any]]:
+    def same_kind_in_doc(
+        self, *, engine: EngineLike, doc_id: str, kind: Literal["node", "edge"] = "node"
+    ) -> List[Tuple[Any, Any]]:
         pk: PairKind = "node_node" if kind == "node" else "edge_edge"
         return self.propose_any_kind_any_doc(
             engine=engine,
@@ -529,7 +618,9 @@ class VectorProposer(MergeCandidateProposer):
             anchor_only=True,
         )
 
-    def cross_kind_in_doc(self, *, engine: EngineLike, doc_id: str, limit_per_bucket: int = 200) -> List[Tuple[Node, Edge]]:
+    def cross_kind_in_doc(
+        self, *, engine: EngineLike, doc_id: str, limit_per_bucket: int = 200
+    ) -> List[Tuple[Node, Edge]]:
         out = self.propose_any_kind_any_doc(
             engine=engine,
             pair_kind="node_edge",
@@ -558,6 +649,7 @@ class VectorProposer(MergeCandidateProposer):
         )
         return [(q, m) for (q, m) in pairs if isinstance(m, Node)]
 
+
 class CompositeProposer(MergeCandidateProposer):
     def __init__(self, base: Optional[VectorProposer] = None):
         self.base = base or VectorProposer
@@ -569,11 +661,18 @@ class CompositeProposer(MergeCandidateProposer):
         top_k: int = 5,
         similarity_threshold: float = 0.85,
     ) -> List[Tuple[Node, Node]]:
-        return self.base(engine).for_new_node(engine, new_node, top_k, similarity_threshold)
+        return self.base(engine).for_new_node(
+            engine, new_node, top_k, similarity_threshold
+        )
 
-    def same_kind_in_doc(self, engine: EngineLike, doc_id: str) -> List[Tuple[Any, Any]]:
-        return self.base(engine).same_kind_in_doc(engine=engine, doc_id=doc_id, kind="node")
+    def same_kind_in_doc(
+        self, engine: EngineLike, doc_id: str
+    ) -> List[Tuple[Any, Any]]:
+        return self.base(engine).same_kind_in_doc(
+            engine=engine, doc_id=doc_id, kind="node"
+        )
 
-    def cross_kind_in_doc(self, engine: EngineLike, doc_id: str) -> List[Tuple[Any, Any]]:
+    def cross_kind_in_doc(
+        self, engine: EngineLike, doc_id: str
+    ) -> List[Tuple[Any, Any]]:
         return self.base(engine).cross_kind_in_doc(engine=engine, doc_id=doc_id)
-

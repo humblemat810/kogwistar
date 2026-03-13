@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
 
 if TYPE_CHECKING:
-    import sqlalchemy as sa
+    pass
 
 GraphType = Literal["knowledge", "conversation", "workflow", "wisdom"]
 BackendKind = Literal["chroma", "pg"]
@@ -25,7 +25,9 @@ def _normalize_backend_name(raw_backend: str | None) -> BackendKind:
     }
     normalized = aliases.get(value)
     if normalized is None:
-        raise RuntimeError(f"Unsupported GKE_BACKEND={value!r}; expected 'chroma' or 'pg'.")
+        raise RuntimeError(
+            f"Unsupported GKE_BACKEND={value!r}; expected 'chroma' or 'pg'."
+        )
     return normalized
 
 
@@ -62,7 +64,9 @@ class ServerStorageSettings:
         return f"{self.pg_schema_base}_{graph_type}"
 
 
-def load_server_storage_settings(env: dict[str, str] | None = None) -> ServerStorageSettings:
+def load_server_storage_settings(
+    env: dict[str, str] | None = None,
+) -> ServerStorageSettings:
     values = env or os.environ
     backend = _normalize_backend_name(values.get("GKE_BACKEND"))
     base_persist = str(values.get("GKE_PERSIST_DIRECTORY") or "./.gke-data")
@@ -72,26 +76,46 @@ def load_server_storage_settings(env: dict[str, str] | None = None) -> ServerSto
         knowledge_dir = str(
             values.get("MCP_CHROMA_DIR")
             or values.get("GKE_KNOWLEDGE_PERSIST_DIRECTORY")
-            or (os.path.join(base_persist, "knowledge") if has_shared_persist_root else "./.chroma-mcp")
+            or (
+                os.path.join(base_persist, "knowledge")
+                if has_shared_persist_root
+                else "./.chroma-mcp"
+            )
         )
         conversation_dir = str(
             values.get("MCP_CHROMA_DIR_CONVERSATION")
             or values.get("GKE_CONVERSATION_PERSIST_DIRECTORY")
-            or (os.path.join(base_persist, "conversation") if has_shared_persist_root else f"{knowledge_dir}-conversation")
+            or (
+                os.path.join(base_persist, "conversation")
+                if has_shared_persist_root
+                else f"{knowledge_dir}-conversation"
+            )
         )
         workflow_dir = str(
             values.get("MCP_CHROMA_DIR_WORKFLOW")
             or values.get("GKE_WORKFLOW_PERSIST_DIRECTORY")
-            or (os.path.join(base_persist, "workflow") if has_shared_persist_root else f"{knowledge_dir}-workflow")
+            or (
+                os.path.join(base_persist, "workflow")
+                if has_shared_persist_root
+                else f"{knowledge_dir}-workflow"
+            )
         )
         wisdom_dir = str(
             values.get("MCP_CHROMA_DIR_WISDOM")
             or values.get("GKE_WISDOM_PERSIST_DIRECTORY")
-            or (os.path.join(base_persist, "wisdom") if has_shared_persist_root else f"{knowledge_dir}-wisdom")
+            or (
+                os.path.join(base_persist, "wisdom")
+                if has_shared_persist_root
+                else f"{knowledge_dir}-wisdom"
+            )
         )
         index_dir = str(
             values.get("GKE_INDEX_DIR")
-            or (os.path.join(base_persist, "index") if has_shared_persist_root else _derive_index_dir_from_knowledge_dir(knowledge_dir))
+            or (
+                os.path.join(base_persist, "index")
+                if has_shared_persist_root
+                else _derive_index_dir_from_knowledge_dir(knowledge_dir)
+            )
         )
         return ServerStorageSettings(
             backend=backend,
@@ -108,10 +132,22 @@ def load_server_storage_settings(env: dict[str, str] | None = None) -> ServerSto
     index_dir = str(values.get("GKE_INDEX_DIR") or os.path.join(base_persist, "index"))
     return ServerStorageSettings(
         backend=backend,
-        knowledge_dir=str(values.get("GKE_KNOWLEDGE_PERSIST_DIRECTORY") or os.path.join(base_persist, "knowledge")),
-        conversation_dir=str(values.get("GKE_CONVERSATION_PERSIST_DIRECTORY") or os.path.join(base_persist, "conversation")),
-        workflow_dir=str(values.get("GKE_WORKFLOW_PERSIST_DIRECTORY") or os.path.join(base_persist, "workflow")),
-        wisdom_dir=str(values.get("GKE_WISDOM_PERSIST_DIRECTORY") or os.path.join(base_persist, "wisdom")),
+        knowledge_dir=str(
+            values.get("GKE_KNOWLEDGE_PERSIST_DIRECTORY")
+            or os.path.join(base_persist, "knowledge")
+        ),
+        conversation_dir=str(
+            values.get("GKE_CONVERSATION_PERSIST_DIRECTORY")
+            or os.path.join(base_persist, "conversation")
+        ),
+        workflow_dir=str(
+            values.get("GKE_WORKFLOW_PERSIST_DIRECTORY")
+            or os.path.join(base_persist, "workflow")
+        ),
+        wisdom_dir=str(
+            values.get("GKE_WISDOM_PERSIST_DIRECTORY")
+            or os.path.join(base_persist, "wisdom")
+        ),
         index_dir=index_dir,
         pg_url=str(pg_url),
         pg_schema_base=str(values.get("GKE_PG_SCHEMA") or "gke"),
@@ -121,7 +157,9 @@ def load_server_storage_settings(env: dict[str, str] | None = None) -> ServerSto
 
 def build_sqlalchemy_engine(settings: ServerStorageSettings) -> Any:
     if settings.backend != "pg" or not settings.pg_url:
-        raise RuntimeError("SQLAlchemy engine is only available for pg storage settings.")
+        raise RuntimeError(
+            "SQLAlchemy engine is only available for pg storage settings."
+        )
     import sqlalchemy as sa
 
     return sa.create_engine(settings.pg_url, future=True)

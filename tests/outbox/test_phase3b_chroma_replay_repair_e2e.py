@@ -33,7 +33,10 @@ def _mk_node(node_id: str, *, doc_id: str, label: str) -> Node:
         properties=None,
     )
 
-def _mk_edge(edge_id: str, *, doc_id: str, label: str, source_id: str, target_id: str) -> Edge:
+
+def _mk_edge(
+    edge_id: str, *, doc_id: str, label: str, source_id: str, target_id: str
+) -> Edge:
     return Edge(
         id=edge_id,
         label=label,
@@ -58,12 +61,16 @@ def _mk_edge(edge_id: str, *, doc_id: str, label: str, source_id: str, target_id
 def chroma_engine(tmp_path: pathlib.Path) -> GraphKnowledgeEngine:
     persist_dir = tmp_path / "chroma"
     persist_dir.mkdir(parents=True, exist_ok=True)
-    eng = GraphKnowledgeEngine(persist_directory=str(persist_dir), embedding_function=TEST_EMBEDDING)
+    eng = GraphKnowledgeEngine(
+        persist_directory=str(persist_dir), embedding_function=TEST_EMBEDDING
+    )
     eng._test_backend_kind = "chroma"  # type: ignore[attr-defined]
     return eng
 
 
-def test_phase3b_chroma_replay_repair_overwrites_tampered_row(chroma_engine: GraphKnowledgeEngine):
+def test_phase3b_chroma_replay_repair_overwrites_tampered_row(
+    chroma_engine: GraphKnowledgeEngine,
+):
     """Phase 3b: repair replay must overwrite tampered materialized state.
 
     Scenario:
@@ -93,7 +100,9 @@ def test_phase3b_chroma_replay_repair_overwrites_tampered_row(chroma_engine: Gra
     eng.backend.node_add(
         ids=[nid],
         documents=[doc],
-        embeddings=[wrong.embedding] if wrong.embedding is not None else [eng._iterative_defensive_emb(doc)],
+        embeddings=[wrong.embedding]
+        if wrong.embedding is not None
+        else [eng._iterative_defensive_emb(doc)],
         metadatas=[{"label": wrong.label, "doc_id": "d1"}],
     )
 
@@ -110,8 +119,9 @@ def test_phase3b_chroma_replay_repair_overwrites_tampered_row(chroma_engine: Gra
     assert meta3.get("label") == "Correct Label"
 
 
-
-def test_phase3b_chroma_normal_replay_does_not_overwrite_tamper(chroma_engine: GraphKnowledgeEngine):
+def test_phase3b_chroma_normal_replay_does_not_overwrite_tamper(
+    chroma_engine: GraphKnowledgeEngine,
+):
     """Normal replay_namespace() is *not* a repair mechanism for Chroma.
 
     If the materialized row is tampered (but still exists), Chroma's 'add' won't upsert,
@@ -131,7 +141,9 @@ def test_phase3b_chroma_normal_replay_does_not_overwrite_tamper(chroma_engine: G
 
     upd = getattr(eng.backend, "node_update", None)
     if upd is None:
-        pytest.skip("backend.node_update not available; cannot simulate in-place tamper")
+        pytest.skip(
+            "backend.node_update not available; cannot simulate in-place tamper"
+        )
 
     upd(ids=[nid], metadatas=[{"label": "TAMPERED", "doc_id": "d1"}])
 
@@ -146,7 +158,9 @@ def test_phase3b_chroma_normal_replay_does_not_overwrite_tamper(chroma_engine: G
     assert meta3.get("label") == "TAMPERED"
 
 
-def test_phase3b_chroma_replay_repair_is_idempotent(chroma_engine: GraphKnowledgeEngine):
+def test_phase3b_chroma_replay_repair_is_idempotent(
+    chroma_engine: GraphKnowledgeEngine,
+):
     """repair replay can be safely re-run (idempotent in outcome)."""
 
     eng = chroma_engine
@@ -158,7 +172,9 @@ def test_phase3b_chroma_replay_repair_is_idempotent(chroma_engine: GraphKnowledg
 
     upd = getattr(eng.backend, "node_update", None)
     if upd is None:
-        pytest.skip("backend.node_update not available; cannot simulate in-place tamper")
+        pytest.skip(
+            "backend.node_update not available; cannot simulate in-place tamper"
+        )
     upd(ids=[nid], metadatas=[{"label": "TAMPERED", "doc_id": "d1"}])
 
     eng.replay_repair_namespace(namespace=ns, apply_indexes=False)
@@ -169,7 +185,9 @@ def test_phase3b_chroma_replay_repair_is_idempotent(chroma_engine: GraphKnowledg
     assert meta.get("label") == "Correct Label"
 
 
-def test_phase3b_chroma_replay_repair_overwrites_tampered_edge(chroma_engine: GraphKnowledgeEngine):
+def test_phase3b_chroma_replay_repair_overwrites_tampered_edge(
+    chroma_engine: GraphKnowledgeEngine,
+):
     """Phase 3b edge parity: repair replay should overwrite tampered edge rows too."""
 
     eng = chroma_engine
@@ -180,7 +198,9 @@ def test_phase3b_chroma_replay_repair_overwrites_tampered_edge(chroma_engine: Gr
     eng.add_node(_mk_node("n_tgt", doc_id="d1", label="TGT"))
 
     eid = "e1"
-    e = _mk_edge(eid, doc_id="d1", label="Correct Edge", source_id="n_src", target_id="n_tgt")
+    e = _mk_edge(
+        eid, doc_id="d1", label="Correct Edge", source_id="n_src", target_id="n_tgt"
+    )
     eng.add_edge(e)
 
     got1 = eng.backend.edge_get(ids=[eid], include=["metadatas"])
@@ -188,18 +208,24 @@ def test_phase3b_chroma_replay_repair_overwrites_tampered_edge(chroma_engine: Gr
 
     eupd = getattr(eng.backend, "edge_update", None)
     if eupd is None:
-        pytest.skip("backend.edge_update not available; cannot simulate in-place edge tamper")
+        pytest.skip(
+            "backend.edge_update not available; cannot simulate in-place edge tamper"
+        )
     doc, meta = eng._edge_doc_and_meta(e)
     # tamper document
     import json
+
     doc = json.loads(doc)
-    doc.update({'label': "TAMPERED_EDGE"})
+    doc.update({"label": "TAMPERED_EDGE"})
     meta.update({"label": "TAMPERED_EDGE", "doc_id": "d1"})
-    eng.backend.edge_update(ids=[eid], documents = [json.dumps(doc)],  metadatas=[meta])
+    eng.backend.edge_update(ids=[eid], documents=[json.dumps(doc)], metadatas=[meta])
 
     got2 = eng.backend.edge_get(ids=[eid], include=["metadatas"])
     meta2 = (got2.get("metadatas") or [None])[0] or {}
-    assert meta2.get("label") == "TAMPERED_EDGE" and eng.get_edges(ids=[eid])[0].label== "TAMPERED_EDGE"
+    assert (
+        meta2.get("label") == "TAMPERED_EDGE"
+        and eng.get_edges(ids=[eid])[0].label == "TAMPERED_EDGE"
+    )
 
     eng.replay_repair_namespace(namespace=ns, apply_indexes=False)
 
@@ -215,6 +241,8 @@ def _max_seq(eng: GraphKnowledgeEngine, ns: str) -> int:
     for seq, *_rest in eng.meta_sqlite.iter_entity_events(namespace=ns, from_seq=1):
         last = int(seq)
     return last
+
+
 def test_phase3b_replay_does_not_emit_new_entity_events_normal_or_repair(chroma_engine):
     eng = chroma_engine
     ns = f"phase3b_noevents_{uuid.uuid4().hex}"
@@ -238,7 +266,7 @@ def test_phase3b_replay_does_not_emit_new_entity_events_normal_or_repair(chroma_
     # best effort: delete from backend directly, then re-add wrong content with event log disabled.
     eng.backend.node_delete(ids=[nid])
 
-    wrong = _mk_node(nid, doc_id="d1", label = "TAMPERED")
+    wrong = _mk_node(nid, doc_id="d1", label="TAMPERED")
     wrong.label = "TAMPERED"
     wrong.summary = "TAMPERED"
 

@@ -1,6 +1,12 @@
-from typing import Any, Generator
 from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
-from graph_knowledge_engine.engine_core.models import Document, Edge, Grounding, MentionVerification, Node, Span
+from graph_knowledge_engine.engine_core.models import (
+    Document,
+    Edge,
+    Grounding,
+    MentionVerification,
+    Node,
+    Span,
+)
 
 
 def _mk_span(doc_id: str, method: str) -> Span:
@@ -15,14 +21,28 @@ def _mk_span(doc_id: str, method: str) -> Span:
         excerpt="x",
         context_before="",
         context_after="",
-        verification=MentionVerification(method="human" if method == "pytest-manual" else "llm", is_verified=True, score=1.0, notes=None),
+        verification=MentionVerification(
+            method="human" if method == "pytest-manual" else "llm",
+            is_verified=True,
+            score=1.0,
+            notes=None,
+        ),
         source_cluster_id=None,
         chunk_id=None,
     )
 
 
 def test_node_refs_indexing(engine: GraphKnowledgeEngine):
-    doc = Document(id="doc-node-refs", content="x", type="text", metadata={}, domain_id=None, processed=False, embeddings=None, source_map=None)
+    doc = Document(
+        id="doc-node-refs",
+        content="x",
+        type="text",
+        metadata={},
+        domain_id=None,
+        processed=False,
+        embeddings=None,
+        source_map=None,
+    )
     engine.add_document(doc)
 
     ref_llm = _mk_span(doc.id, "pytest-llm")
@@ -43,15 +63,28 @@ def test_node_refs_indexing(engine: GraphKnowledgeEngine):
     engine._index_node_refs(n)
 
     assert n.id in engine.nodes_by_doc(doc.id, where={"insertion_method": "pytest-llm"})
-    assert n.id in engine.nodes_by_doc(doc.id, where={"insertion_method": "pytest-manual"})
+    assert n.id in engine.nodes_by_doc(
+        doc.id, where={"insertion_method": "pytest-manual"}
+    )
 
-def iter_span(n_or_e : Node | Edge):
+
+def iter_span(n_or_e: Node | Edge):
     for g in n_or_e.mentions:
         for sp in g.spans:
             yield sp
 
+
 def test_edge_refs_indexing(engine):
-    doc = Document(id="doc-edge-refs", content="x", type="text", metadata={}, domain_id=None, processed=False, embeddings=None, source_map=None)
+    doc = Document(
+        id="doc-edge-refs",
+        content="x",
+        type="text",
+        metadata={},
+        domain_id=None,
+        processed=False,
+        embeddings=None,
+        source_map=None,
+    )
     engine.add_document(doc)
     ref_llm = _mk_span(doc.id, "pytest-llm")
     ref_manual = _mk_span(doc.id, "pytest-manual")
@@ -103,7 +136,23 @@ def test_edge_refs_indexing(engine):
     engine.add_edge(e, doc_id=doc.id)
     engine._index_edge_refs(e)
     doc_eids = engine.edges_by_doc(doc.id)
-    assert e.id in doc_eids # , where={"insertion_method": "pytest-llm"}
-    assert list([sp.insertion_method for e in engine.get_edges() for sp in e.iter_span() if sp.insertion_method=="pytest-llm"])
-    assert e.id in engine.edges_by_doc(doc.id) #, where={"insertion_method": "pytest-manual"}
-    assert list([sp.insertion_method for e in engine.get_edges() for sp in e.iter_span() if sp.insertion_method=="pytest-manual"])
+    assert e.id in doc_eids  # , where={"insertion_method": "pytest-llm"}
+    assert list(
+        [
+            sp.insertion_method
+            for e in engine.get_edges()
+            for sp in e.iter_span()
+            if sp.insertion_method == "pytest-llm"
+        ]
+    )
+    assert e.id in engine.edges_by_doc(
+        doc.id
+    )  # , where={"insertion_method": "pytest-manual"}
+    assert list(
+        [
+            sp.insertion_method
+            for e in engine.get_edges()
+            for sp in e.iter_span()
+            if sp.insertion_method == "pytest-manual"
+        ]
+    )

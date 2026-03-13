@@ -1,4 +1,3 @@
-\
 import uuid
 import pytest
 
@@ -8,6 +7,7 @@ from tests.conftest import FakeEmbeddingFunction
 
 EMBEDDING_DIM = 3
 TEST_EMBEDDING = FakeEmbeddingFunction(dim=EMBEDDING_DIM)
+
 
 def _mk_node(node_id: str, *, doc_id: str) -> models.Node:
     sp = models.Span.from_dummy_for_document()
@@ -26,6 +26,7 @@ def _mk_node(node_id: str, *, doc_id: str) -> models.Node:
         canonical_entity_id=None,
         properties=None,
     )
+
 
 def _mk_edge(edge_id: str, src: str, dst: str, *, doc_id: str) -> models.Edge:
     sp = models.Span.from_dummy_for_document()
@@ -50,17 +51,24 @@ def _mk_edge(edge_id: str, src: str, dst: str, *, doc_id: str) -> models.Edge:
         target_edge_ids=None,
     )
 
+
 @pytest.fixture
 def chroma_engine(tmp_path) -> GraphKnowledgeEngine:
     persist_dir = tmp_path / "chroma"
     persist_dir.mkdir(parents=True, exist_ok=True)
-    eng = GraphKnowledgeEngine(persist_directory=str(persist_dir), embedding_function=TEST_EMBEDDING)
+    eng = GraphKnowledgeEngine(
+        persist_directory=str(persist_dir), embedding_function=TEST_EMBEDDING
+    )
     return eng
+
 
 def _count_events(eng: GraphKnowledgeEngine, ns: str) -> int:
     return sum(1 for _ in eng.meta_sqlite.iter_entity_events(namespace=ns, from_seq=1))
 
-def _insert_raw_event(eng: GraphKnowledgeEngine, ns: str, *, ek: str, eid: str, op: str, payload_json: str):
+
+def _insert_raw_event(
+    eng: GraphKnowledgeEngine, ns: str, *, ek: str, eid: str, op: str, payload_json: str
+):
     eng.meta_sqlite.append_entity_event(
         namespace=ns,
         event_id=f"ev_{uuid.uuid4().hex}",
@@ -69,6 +77,7 @@ def _insert_raw_event(eng: GraphKnowledgeEngine, ns: str, *, ek: str, eid: str, 
         op=op,
         payload_json=payload_json,
     )
+
 
 def _repair_replay(eng: GraphKnowledgeEngine, ns: str):
     # Supports either replay_namespace(..., repair_backend=True) or wrapper replay_repair_namespace
@@ -159,12 +168,13 @@ def test_phase3b_chroma_repair_replay_repairs_tampered_edge(chroma_engine):
     finally:
         eng._disable_event_log = prev
     import json
-    got = eng.backend.edge_get(ids=["e1"], include=["metadatas", 'documents'])
+
+    got = eng.backend.edge_get(ids=["e1"], include=["metadatas", "documents"])
     assert json.loads(got["documents"][0])["label"] == "TAMPERED"
 
     _repair_replay(eng, ns)
 
-    got2 = eng.backend.edge_get(ids=["e1"], include=["metadatas", 'documents'])
+    got2 = eng.backend.edge_get(ids=["e1"], include=["metadatas", "documents"])
     assert json.loads(got2["documents"][0])["label"] == edge.label
 
 
@@ -175,22 +185,36 @@ def test_phase3b_replay_corrupt_payload_halts(chroma_engine):
     eng = chroma_engine
     ns = f"phase3b_corrupt_halt_{uuid.uuid4().hex}"
 
-    _insert_raw_event(eng, ns, ek="node", eid="n_bad", op="ADD", payload_json="{not-json")
+    _insert_raw_event(
+        eng, ns, ek="node", eid="n_bad", op="ADD", payload_json="{not-json"
+    )
 
     # Either it raises, or it must explicitly skip. Default should be "halt" unless you changed it.
     with pytest.raises(Exception):
         eng.replay_namespace(namespace=ns, apply_indexes=False)
 
+
 def test_phase3b_replay_corrupt_payload_can_skip_if_supported(chroma_engine):
     eng = chroma_engine
     ns = f"phase3b_corrupt_skip_{uuid.uuid4().hex}"
 
-    _insert_raw_event(eng, ns, ek="node", eid="n_bad", op="ADD", payload_json="{not-json")
+    _insert_raw_event(
+        eng, ns, ek="node", eid="n_bad", op="ADD", payload_json="{not-json"
+    )
     good = _mk_node("n_ok", doc_id="d1")
-    _insert_raw_event(eng, ns, ek="node", eid="n_ok", op="ADD", payload_json=good.model_dump_json(exclude={"embedding"}))
+    _insert_raw_event(
+        eng,
+        ns,
+        ek="node",
+        eid="n_ok",
+        op="ADD",
+        payload_json=good.model_dump_json(exclude={"embedding"}),
+    )
 
     if "on_corrupt" not in eng.replay_namespace.__code__.co_varnames:
-        pytest.skip("Engine has no on_corrupt=... mode; only one policy is implemented.")
+        pytest.skip(
+            "Engine has no on_corrupt=... mode; only one policy is implemented."
+        )
 
     last = eng.replay_namespace(namespace=ns, apply_indexes=False, on_corrupt="skip")
     assert last >= 2
@@ -211,7 +235,9 @@ def test_phase3b_tombstone_missing_is_idempotent(chroma_engine):
 # Cross-store non-2PC expectation:
 # If meta append fails after backend write, PG should rollback; Chroma likely persists.
 # This test only runs for Chroma here; you likely already have PG atomicity coverage.
-def test_phase3b_chroma_meta_failure_after_backend_write_persists(chroma_engine, monkeypatch):
+def test_phase3b_chroma_meta_failure_after_backend_write_persists(
+    chroma_engine, monkeypatch
+):
     """Chroma projection is not 2PC with meta.
 
     If meta append fails after the backend write, we do NOT abort the write in Chroma mode.

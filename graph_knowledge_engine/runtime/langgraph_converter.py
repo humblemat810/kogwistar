@@ -9,7 +9,20 @@ Send/Command plus blob-state bookkeeping.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, Tuple, Annotated, Mapping, Literal, NamedTuple, cast
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Dict,
+    List,
+    Optional,
+    Sequence,
+    Tuple,
+    Annotated,
+    Mapping,
+    Literal,
+    NamedTuple,
+    cast,
+)
 from typing_extensions import TypedDict
 
 from graph_knowledge_engine.runtime import design as wf_design
@@ -101,11 +114,15 @@ def _apply_state_update(mute_state: dict, state_update: Sequence[StateUpdate]) -
             raise ValueError(f"Unknown state update kind: {kind!r}")
 
 
-def _concat_updates(left: Optional[List[StateUpdate]], right: Optional[List[StateUpdate]]) -> List[StateUpdate]:
+def _concat_updates(
+    left: Optional[List[StateUpdate]], right: Optional[List[StateUpdate]]
+) -> List[StateUpdate]:
     return list(left or []) + list(right or [])
 
 
-def _delta_to_updates(delta: Mapping[str, Any], schema: Mapping[str, str] | None) -> List[StateUpdate]:
+def _delta_to_updates(
+    delta: Mapping[str, Any], schema: Mapping[str, str] | None
+) -> List[StateUpdate]:
     """Convert a native update dict into ('u'/'a'/'e') updates using schema."""
     sch = dict(schema or {})
     buckets: dict[str, dict[str, Any]] = {"u": {}, "a": {}, "e": {}}
@@ -126,8 +143,9 @@ def _resolve_start_nodes_and_adj(
     workflow_engine: Any,
     workflow_id: str,
 ) -> tuple[Any, Dict[str, Any], Dict[str, List[Any]], Dict[str, List[Any]]]:
-    return wf_design.load_workflow_design(workflow_engine=workflow_engine, workflow_id=workflow_id)
-
+    return wf_design.load_workflow_design(
+        workflow_engine=workflow_engine, workflow_id=workflow_id
+    )
 
 
 def _route_next(
@@ -224,6 +242,7 @@ def _route_next(
 # blob_state mode
 # ----------------------------
 
+
 def _blob_reducer(left: Optional[dict], right: Optional[dict]) -> dict:
     """Reducer for '__blob__' field.
 
@@ -254,6 +273,7 @@ class LGBlobState(TypedDict, total=False):
 # apply_node mode (legacy)
 # ----------------------------
 
+
 class LGApplyState(TypedDict, total=False):
     __updates__: Annotated[List[StateUpdate], _concat_updates]
     __goto__: Any
@@ -283,8 +303,14 @@ def to_langgraph(
     Command = langgraph.command
     Send = langgraph.send
 
-    start, nodes, adj, rev_adj = _resolve_start_nodes_and_adj(workflow_engine=workflow_engine, workflow_id=workflow_id)
-    schema = step_resolver.describe_state() if hasattr(step_resolver, "describe_state") else {}
+    start, nodes, adj, rev_adj = _resolve_start_nodes_and_adj(
+        workflow_engine=workflow_engine, workflow_id=workflow_id
+    )
+    schema = (
+        step_resolver.describe_state()
+        if hasattr(step_resolver, "describe_state")
+        else {}
+    )
 
     if opt.mode == "apply_node":
         # --- legacy implementation (kept for compatibility) ---
@@ -302,7 +328,11 @@ def to_langgraph(
 
         for node_id, node in nodes.items():
             op = node.op
-            fn = step_resolver.resolve(op) if hasattr(step_resolver, "resolve") else step_resolver(op)
+            fn = (
+                step_resolver.resolve(op)
+                if hasattr(step_resolver, "resolve")
+                else step_resolver(op)
+            )
 
             def make_step(nid: str, node_obj: Any, fn_):
                 def step_node(state: LGApplyState) -> Command:
@@ -310,15 +340,20 @@ def to_langgraph(
                     updates: List[StateUpdate]
                     if isinstance(out, dict):
                         updates = _delta_to_updates(out, schema)
+
                         class _R:  # minimal proxy for BasePredicate
-                            def __init__(self): self.next_step_names = []
+                            def __init__(self):
+                                self.next_step_names = []
+
                         result_obj = _R()
                     else:
                         upd_native = getattr(out, "update", None) or {}
-                        updates = _delta_to_updates(upd_native, schema) + list(getattr(out, "state_update", []) or [])
+                        updates = _delta_to_updates(upd_native, schema) + list(
+                            getattr(out, "state_update", []) or []
+                        )
                         result_obj = out
 
-                    edges = list(adj.get(nid, [])) # + list(rev_adj.get(nid, []))
+                    edges = list(adj.get(nid, []))  # + list(rev_adj.get(nid, []))
                     next_nodes = _route_next(
                         edges=edges,
                         state=state,
@@ -327,7 +362,9 @@ def to_langgraph(
                         predicate_registry=predicate_registry,
                     )
 
-                    terminal = bool(getattr(node_obj, "terminal", False)) or len(edges) == 0
+                    terminal = (
+                        bool(getattr(node_obj, "terminal", False)) or len(edges) == 0
+                    )
                     if terminal or not next_nodes:
                         goto = END
                     elif len(next_nodes) == 1:
@@ -336,7 +373,9 @@ def to_langgraph(
                         goto = [Send(n, {}) for n in next_nodes]
 
                     state["__goto__"] = goto
-                    return Command(goto=opt.apply_node_id, update={opt.updates_key: updates})
+                    return Command(
+                        goto=opt.apply_node_id, update={opt.updates_key: updates}
+                    )
 
                 return step_node
 
@@ -351,10 +390,7 @@ def to_langgraph(
         sg.add_edge(opt.apply_node_id, END)
         return sg.compile()
 
-    
-        
         # --- blob_state mode ---
-
 
     # visual execution: prefer clean diagram, drop token semantics / Send / joins.
     if opt.execution == "visual":
@@ -381,7 +417,11 @@ def to_langgraph(
         # Add step nodes
         for node_id, node in nodes.items():
             op = node.op
-            fn = step_resolver.resolve(op) if hasattr(step_resolver, "resolve") else step_resolver(op)
+            fn = (
+                step_resolver.resolve(op)
+                if hasattr(step_resolver, "resolve")
+                else step_resolver(op)
+            )
 
             def make_step_update(nid: str, node_obj: Any, fn_):
                 def step_node(state: LGBlobState) -> dict:
@@ -390,12 +430,17 @@ def to_langgraph(
 
                     if isinstance(out, dict):
                         updates = _delta_to_updates(out, schema)
+
                         class _R:
-                            def __init__(self): self.next_step_names = []
+                            def __init__(self):
+                                self.next_step_names = []
+
                         result_obj = _R()
                     else:
                         upd_native = getattr(out, "update", None) or {}
-                        updates = _delta_to_updates(upd_native, schema) + list(getattr(out, "state_update", []) or [])
+                        updates = _delta_to_updates(upd_native, schema) + list(
+                            getattr(out, "state_update", []) or []
+                        )
                         result_obj = out
 
                     # Persist next_step_names for predicate fallbacks (BasePredicate). Always clear/set.
@@ -403,6 +448,7 @@ def to_langgraph(
                     updates = list(updates) + [("u", {"__next_step_names__": ns})]
 
                     return {opt.blob_key: {opt.blob_ops_key: updates}}
+
                 return step_node
 
             sg.add_node(node_id, make_step_update(node_id, node, fn))
@@ -425,7 +471,9 @@ def to_langgraph(
             else:
                 # Router returns a single destination (exclusive choice).
                 def make_router(nid: str, node_obj: Any, edges: list[Any]):
-                    possible = {WorkflowEdgeInfo.from_workflow_edge(e).dst for e in edges}
+                    possible = {
+                        WorkflowEdgeInfo.from_workflow_edge(e).dst for e in edges
+                    }
                     path_map = {d: d for d in sorted(possible)}
                     # if node can really terminate, allow END
                     if bool(getattr(node_obj, "terminal", False)):
@@ -437,7 +485,9 @@ def to_langgraph(
 
                     def router(state: LGBlobState):
                         blob = cast(dict, state.get(opt.blob_key) or {})
-                        proxy = _LastResultProxy(list(blob.get("__next_step_names__", []) or []))
+                        proxy = _LastResultProxy(
+                            list(blob.get("__next_step_names__", []) or [])
+                        )
                         nxt = _route_next(
                             edges=edges,
                             state=blob,
@@ -446,8 +496,11 @@ def to_langgraph(
                             predicate_registry=predicate_registry,
                         )
                         if not nxt:
-                            raise RuntimeError(f"No eligible outgoing edge from {nid!r} (not terminal)")
+                            raise RuntimeError(
+                                f"No eligible outgoing edge from {nid!r} (not terminal)"
+                            )
                         return nxt[0]
+
                     return router, path_map
 
                 router_fn, path_map = make_router(src, node_obj, edges)
@@ -461,7 +514,8 @@ def to_langgraph(
 
     # Join nodes are marked via node.metadata['wf_join'].
     join_nodes: set[str] = {
-        nid for nid, n in nodes.items()
+        nid
+        for nid, n in nodes.items()
         if bool((n.metadata or getattr(n, "metadata", {}) or {}).get("wf_join", False))
     }
 
@@ -514,10 +568,13 @@ def to_langgraph(
 
         return False
 
-
     for node_id, node in nodes.items():
         op = node.op
-        fn = step_resolver.resolve(op) if hasattr(step_resolver, "resolve") else step_resolver(op)
+        fn = (
+            step_resolver.resolve(op)
+            if hasattr(step_resolver, "resolve")
+            else step_resolver(op)
+        )
         use_send = _needs_send_payload(node_id, node)
 
         if use_send:
@@ -534,22 +591,31 @@ def to_langgraph(
                         arr_key = f"__join_arrivals__:{nid}"
                         if bool(blob.get(done_key, False)):
                             # join already satisfied; ignore repeated arrivals
-                            return Command(goto=END, update={opt.blob_key: {opt.blob_ops_key: []}})
+                            return Command(
+                                goto=END, update={opt.blob_key: {opt.blob_ops_key: []}}
+                            )
                         arrived = set(cast(list, blob.get(arr_key, []) or []))
                         if req and not req.issubset(arrived):
                             # barrier not satisfied yet; stop this activation
-                            return Command(goto=END, update={opt.blob_key: {opt.blob_ops_key: []}})
+                            return Command(
+                                goto=END, update={opt.blob_key: {opt.blob_ops_key: []}}
+                            )
 
                     out = fn_(blob)
 
                     if isinstance(out, dict):
                         updates = _delta_to_updates(out, schema)
+
                         class _R:
-                            def __init__(self): self.next_step_names = []
+                            def __init__(self):
+                                self.next_step_names = []
+
                         result_obj = _R()
                     else:
                         upd_native = getattr(out, "update", None) or {}
-                        updates = _delta_to_updates(upd_native, schema) + list(getattr(out, "state_update", []) or [])
+                        updates = _delta_to_updates(upd_native, schema) + list(
+                            getattr(out, "state_update", []) or []
+                        )
                         result_obj = out
 
                     # persist next_step_names for routing fallbacks (BasePredicate)
@@ -576,10 +642,13 @@ def to_langgraph(
                     # Record join arrivals as side-effects when routing into join nodes.
                     for dst in next_nodes:
                         if dst in join_nodes:
-                            updates = list(updates) + [("a", {f"__join_arrivals__:{dst}": nid})]
+                            updates = list(updates) + [
+                                ("a", {f"__join_arrivals__:{dst}": nid})
+                            ]
 
-
-                    terminal = bool(getattr(node_obj, "terminal", False)) or len(edges) == 0
+                    terminal = (
+                        bool(getattr(node_obj, "terminal", False)) or len(edges) == 0
+                    )
                     if terminal or not next_nodes:
                         goto = END
                     elif len(next_nodes) == 1:
@@ -589,11 +658,19 @@ def to_langgraph(
                         for i, n in enumerate(next_nodes):
                             child_tid = _make_token_id(token_id, i)
                             # put token id into blob via ops, not as a top-level key
-                            child_state = {opt.blob_key: {opt.blob_ops_key: [("u", {"__token_id__": child_tid})]}}
+                            child_state = {
+                                opt.blob_key: {
+                                    opt.blob_ops_key: [
+                                        ("u", {"__token_id__": child_tid})
+                                    ]
+                                }
+                            }
                             sends.append(Send(n, child_state))
                         goto = sends
 
-                    return Command(goto=goto, update={opt.blob_key: {opt.blob_ops_key: updates}})
+                    return Command(
+                        goto=goto, update={opt.blob_key: {opt.blob_ops_key: updates}}
+                    )
 
                 return step_node
 
@@ -608,17 +685,22 @@ def to_langgraph(
 
                 if isinstance(out, dict):
                     updates = _delta_to_updates(out, schema)
+
                     class _R:
-                        def __init__(self): self.next_step_names = []
+                        def __init__(self):
+                            self.next_step_names = []
+
                     result_obj = _R()
                 else:
                     upd_native = getattr(out, "update", None) or {}
-                    updates = _delta_to_updates(upd_native, schema) + list(getattr(out, "state_update", []) or [])
+                    updates = _delta_to_updates(upd_native, schema) + list(
+                        getattr(out, "state_update", []) or []
+                    )
                     result_obj = out
 
                 # persist next_step_names for routing fallbacks (BasePredicate)
                 ns = list(getattr(result_obj, "next_step_names", []) or [])
-                
+
                 updates = list(updates) + [("u", {"__next_step_names__": ns})]
 
                 # Emit blob delta as ops for reducer (unknown/dynamic keys supported via DSL ops)
@@ -639,7 +721,7 @@ def to_langgraph(
                 possible.add(info.dst)
 
             path_map = {d: d for d in sorted(possible)}
-            
+
             # Only include END as an explicit transition if this node can really terminate.
             # Otherwise the diagram will imply "everything can end here".
             if bool(getattr(node_obj, "terminal", False)) or len(edges) == 0:
@@ -651,7 +733,9 @@ def to_langgraph(
 
             def router(state: LGBlobState):
                 blob = cast(dict, state.get(opt.blob_key) or {})
-                proxy = _LastResultProxy(list(blob.get("__next_step_names__", []) or []))
+                proxy = _LastResultProxy(
+                    list(blob.get("__next_step_names__", []) or [])
+                )
 
                 next_nodes = _route_next(
                     edges=edges,
@@ -666,8 +750,11 @@ def to_langgraph(
                     return END
                 if not next_nodes:
                     # No matching edge, and not terminal: this is a design/config error.
-                    raise RuntimeError(f"No eligible outgoing edge from {nid!r} (not terminal)")
-                return next_nodes # filtering/ priority logic goes in _route_next
+                    raise RuntimeError(
+                        f"No eligible outgoing edge from {nid!r} (not terminal)"
+                    )
+                return next_nodes  # filtering/ priority logic goes in _route_next
+
             return router, path_map
 
         router_fn, path_map = make_router(node_id, node)

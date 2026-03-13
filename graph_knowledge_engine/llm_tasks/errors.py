@@ -11,4 +11,3 @@ class MissingTaskError(LLMTaskError):
 
 class ProviderDependencyError(LLMTaskError):
     """Raised when an optional provider dependency is required but unavailable."""
-

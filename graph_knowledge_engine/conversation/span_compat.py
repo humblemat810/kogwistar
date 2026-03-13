@@ -22,10 +22,14 @@ def from_dummy_for_conversation(doc_id: str = "_conv:_dummy"):
         context_after="",
         chunk_id=None,
         source_cluster_id=None,
-        verification=MentionVerification(method="system", is_verified=True, score=1.0, notes=""),
+        verification=MentionVerification(
+            method="system", is_verified=True, score=1.0, notes=""
+        ),
     )
 
 
 def install_span_compat_aliases() -> None:
     # Keep legacy name in the chat module boundary, not in engine_core.
-    setattr(Span, "from_dummy_for_conversation", staticmethod(from_dummy_for_conversation))
+    setattr(
+        Span, "from_dummy_for_conversation", staticmethod(from_dummy_for_conversation)
+    )

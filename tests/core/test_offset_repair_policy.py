@@ -79,7 +79,9 @@ def _flattened_lean_payload(*, excerpt: str, start_char: int, end_char: int) -> 
     }
 
 
-def _full_payload_with_mismatched_excerpt(*, excerpt: str, start_char: int, end_char: int) -> dict:
+def _full_payload_with_mismatched_excerpt(
+    *, excerpt: str, start_char: int, end_char: int
+) -> dict:
     return {
         "nodes": [
             {
@@ -110,7 +112,9 @@ def _full_payload_with_mismatched_excerpt(*, excerpt: str, start_char: int, end_
     }
 
 
-def _flattened_full_payload_with_mismatched_excerpt(*, excerpt: str, start_char: int, end_char: int) -> dict:
+def _flattened_full_payload_with_mismatched_excerpt(
+    *, excerpt: str, start_char: int, end_char: int
+) -> dict:
     return {
         "spans": [
             {
@@ -214,11 +218,13 @@ def test_offset_policy_exact_fuzzy_repairs_when_exact_missing(engine):
     assert span.start_char == 5
     assert span.end_char == 19
     assert span.excerpt == "Proof step one"
-    assert content[span.start_char:span.end_char] == span.excerpt
+    assert content[span.start_char : span.end_char] == span.excerpt
 
 
 def test_offset_policy_exact_fuzzy_repairs_flattened_lean_when_exact_missing(engine):
-    payload = _flattened_lean_payload(excerpt="Proof-step one", start_char=5, end_char=19)
+    payload = _flattened_lean_payload(
+        excerpt="Proof-step one", start_char=5, end_char=19
+    )
     content = "0123 Proof step one 7890"
 
     graph = engine._to_canonical_extraction_for_mode(
@@ -231,7 +237,7 @@ def test_offset_policy_exact_fuzzy_repairs_flattened_lean_when_exact_missing(eng
     assert span.start_char == 5
     assert span.end_char == 19
     assert span.excerpt == "Proof step one"
-    assert content[span.start_char:span.end_char] == span.excerpt
+    assert content[span.start_char : span.end_char] == span.excerpt
 
 
 def test_offset_policy_exact_fuzzy_prefers_per_call_scorer(engine):
@@ -239,7 +245,9 @@ def test_offset_policy_exact_fuzzy_prefers_per_call_scorer(engine):
     content = "0123 Proof step one 7890"
 
     def _engine_level_scorer(candidate: str, excerpt: str) -> float:
-        raise AssertionError("engine-level scorer should not be used when per-call scorer is provided")
+        raise AssertionError(
+            "engine-level scorer should not be used when per-call scorer is provided"
+        )
 
     calls: list[tuple[str, str]] = []
 
@@ -282,7 +290,9 @@ def test_offset_policy_exact_fuzzy_reports_actionable_failure(engine):
     assert "failed_spans=1" in message
 
 
-def test_offset_policy_exact_fuzzy_reports_actionable_failure_for_flattened_lean(engine):
+def test_offset_policy_exact_fuzzy_reports_actionable_failure_for_flattened_lean(
+    engine,
+):
     payload = _flattened_lean_payload(
         excerpt="THIS STRING DOES NOT EXIST ANYWHERE",
         start_char=0,

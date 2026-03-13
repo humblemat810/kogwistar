@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Callable, Literal, Mapping, Protocol, Sequence
+
 try:
     from typing import TypeAlias
 except ImportError:  # pragma: no cover - py<3.10 compatibility
@@ -12,7 +13,9 @@ from pydantic import BaseModel
 from .errors import MissingTaskError
 
 ProviderKind: TypeAlias = Literal["gemini", "openai", "custom", "unknown"]
-ExtractionSchemaMode: TypeAlias = Literal["full", "lean", "flattened_lean", "flattened_full"]
+ExtractionSchemaMode: TypeAlias = Literal[
+    "full", "lean", "flattened_lean", "flattened_full"
+]
 
 
 @dataclass(frozen=True)
@@ -139,27 +142,39 @@ class ExtractGraphTask(Protocol):
 
 
 class AdjudicatePairTask(Protocol):
-    def __call__(self, request: AdjudicatePairTaskRequest) -> AdjudicatePairTaskResult: ...
+    def __call__(
+        self, request: AdjudicatePairTaskRequest
+    ) -> AdjudicatePairTaskResult: ...
 
 
 class AdjudicateBatchTask(Protocol):
-    def __call__(self, request: AdjudicateBatchTaskRequest) -> AdjudicateBatchTaskResult: ...
+    def __call__(
+        self, request: AdjudicateBatchTaskRequest
+    ) -> AdjudicateBatchTaskResult: ...
 
 
 class FilterCandidatesTask(Protocol):
-    def __call__(self, request: FilterCandidatesTaskRequest) -> FilterCandidatesTaskResult: ...
+    def __call__(
+        self, request: FilterCandidatesTaskRequest
+    ) -> FilterCandidatesTaskResult: ...
 
 
 class SummarizeContextTask(Protocol):
-    def __call__(self, request: SummarizeContextTaskRequest) -> SummarizeContextTaskResult: ...
+    def __call__(
+        self, request: SummarizeContextTaskRequest
+    ) -> SummarizeContextTaskResult: ...
 
 
 class AnswerWithCitationsTask(Protocol):
-    def __call__(self, request: AnswerWithCitationsTaskRequest) -> AnswerWithCitationsTaskResult: ...
+    def __call__(
+        self, request: AnswerWithCitationsTaskRequest
+    ) -> AnswerWithCitationsTaskResult: ...
 
 
 class RepairCitationsTask(Protocol):
-    def __call__(self, request: RepairCitationsTaskRequest) -> RepairCitationsTaskResult: ...
+    def __call__(
+        self, request: RepairCitationsTaskRequest
+    ) -> RepairCitationsTaskResult: ...
 
 
 @dataclass(frozen=True)

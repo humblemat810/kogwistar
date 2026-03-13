@@ -14,7 +14,11 @@ from graph_knowledge_engine.engine_core.subsystems import (
     RollbackSubsystem,
     WriteSubsystem,
 )
-from graph_knowledge_engine.engine_core.storage_backend import NoopUnitOfWork, StorageBackend, UnitOfWork
+from graph_knowledge_engine.engine_core.storage_backend import (
+    NoopUnitOfWork,
+    StorageBackend,
+    UnitOfWork,
+)
 from graph_knowledge_engine.engine_core.types import (
     EngineType,
     ExtractionSchemaMode,
@@ -64,27 +68,43 @@ def __getattr__(name: str):
 
     if name in {"EnginePostgresConfig", "build_postgres_backend"}:
         try:
-            from graph_knowledge_engine.engine_core.engine_postgres import EnginePostgresConfig, build_postgres_backend
+            from graph_knowledge_engine.engine_core.engine_postgres import (
+                EnginePostgresConfig,
+                build_postgres_backend,
+            )
         except Exception as e:  # pragma: no cover - optional dependency path
             raise RuntimeError(
                 "Postgres backend support requires optional dependencies. "
                 "Install with: pip install 'kogwistar[pgvector]'"
             ) from e
-        return {"EnginePostgresConfig": EnginePostgresConfig, "build_postgres_backend": build_postgres_backend}[name]
+        return {
+            "EnginePostgresConfig": EnginePostgresConfig,
+            "build_postgres_backend": build_postgres_backend,
+        }[name]
 
     if name in {"EnginePostgresMetaStore", "IndexJob"}:
         try:
-            from graph_knowledge_engine.engine_core.engine_postgres_meta import EnginePostgresMetaStore, IndexJob
+            from graph_knowledge_engine.engine_core.engine_postgres_meta import (
+                EnginePostgresMetaStore,
+                IndexJob,
+            )
         except Exception as e:  # pragma: no cover - optional dependency path
             raise RuntimeError(
                 "Postgres meta store requires optional dependencies. "
                 "Install with: pip install 'kogwistar[pgvector]'"
             ) from e
-        return {"EnginePostgresMetaStore": EnginePostgresMetaStore, "IndexJob": IndexJob}[name]
+        return {
+            "EnginePostgresMetaStore": EnginePostgresMetaStore,
+            "IndexJob": IndexJob,
+        }[name]
 
     if name in {"PgVectorBackend", "PgVectorConfig", "PostgresUnitOfWork"}:
         try:
-            from graph_knowledge_engine.engine_core.postgres_backend import PgVectorBackend, PgVectorConfig, PostgresUnitOfWork
+            from graph_knowledge_engine.engine_core.postgres_backend import (
+                PgVectorBackend,
+                PgVectorConfig,
+                PostgresUnitOfWork,
+            )
         except Exception as e:  # pragma: no cover - optional dependency path
             raise RuntimeError(
                 "PgVector backend requires optional dependencies. "

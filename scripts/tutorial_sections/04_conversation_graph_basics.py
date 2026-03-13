@@ -4,7 +4,12 @@
 
 # %%
 from graph_knowledge_engine.conversation.service import ConversationService
-from tutorial_ladder import _ensure_seed, deterministic_filter_callback, reset_data, seed_data
+from tutorial_ladder import (
+    _ensure_seed,
+    deterministic_filter_callback,
+    reset_data,
+    seed_data,
+)
 
 from _helpers import banner, reset_data_dir, show
 
@@ -13,7 +18,9 @@ show("reset", reset_data(data_dir))
 show("seed", seed_data(data_dir))
 kg_engine, conv_engine = _ensure_seed(data_dir)
 svc = ConversationService.from_engine(conv_engine, knowledge_engine=kg_engine)
-conversation_id, start_node_id = svc.create_conversation("demo-user", "conv-sections", "conv-sections-start")
+conversation_id, start_node_id = svc.create_conversation(
+    "demo-user", "conv-sections", "conv-sections-start"
+)
 banner("Conversation created. Next cell appends a user turn with add_turn_only=True.")
 
 # %% [markdown]
@@ -34,9 +41,15 @@ turn = svc.add_conversation_turn(
     add_turn_only=True,
 )
 all_nodes = conv_engine.get_nodes(limit=200)
-conversation_nodes = [node for node in all_nodes if getattr(node, "conversation_id", None) == conversation_id]
+conversation_nodes = [
+    node
+    for node in all_nodes
+    if getattr(node, "conversation_id", None) == conversation_id
+]
 seeded_refs = [
-    node for node in all_nodes if (getattr(node, "metadata", {}) or {}).get("entity_type") == "knowledge_reference"
+    node
+    for node in all_nodes
+    if (getattr(node, "metadata", {}) or {}).get("entity_type") == "knowledge_reference"
 ]
 show(
     "conversation graph snapshot",

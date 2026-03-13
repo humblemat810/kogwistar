@@ -4,7 +4,9 @@ import uuid
 import pytest
 
 from graph_knowledge_engine.engine_core.engine_postgres import PgVectorBackend
-from graph_knowledge_engine.engine_core.engine_postgres_meta import EnginePostgresMetaStore
+from graph_knowledge_engine.engine_core.engine_postgres_meta import (
+    EnginePostgresMetaStore,
+)
 from graph_knowledge_engine.engine_core.postgres_backend import PostgresUnitOfWork
 
 
@@ -22,7 +24,9 @@ def test_uow_commit_creates_node_event_vector_and_job(sa_engine, pg_schema):
     be.node_delete(ids=[nid])
 
     event_id = str(uuid.uuid4())
-    payload_json = json.dumps({"id": nid, "hello": "world"}, sort_keys=True, separators=(",", ":"))
+    payload_json = json.dumps(
+        {"id": nid, "hello": "world"}, sort_keys=True, separators=(",", ":")
+    )
     job_id = str(uuid.uuid4())
 
     with uow.transaction():
@@ -59,10 +63,14 @@ def test_uow_commit_creates_node_event_vector_and_job(sa_engine, pg_schema):
 
     # Event exists
     events = list(meta.iter_entity_events(namespace="default", from_seq=1))
-    assert any((row[2] == nid) for row in events), "expected at least one event for node id"
+    assert any((row[2] == nid) for row in events), (
+        "expected at least one event for node id"
+    )
 
     # Job exists
-    jobs = meta.list_index_jobs(namespace="default", entity_kind="node", entity_id=nid, limit=50)
+    jobs = meta.list_index_jobs(
+        namespace="default", entity_kind="node", entity_id=nid, limit=50
+    )
     assert any(j.index_kind == "node_docs" for j in jobs)
 
 
@@ -83,7 +91,9 @@ def test_uow_rollback_leaves_no_node_event_vector_or_job(sa_engine, pg_schema):
     payload_json = json.dumps({"id": nid}, sort_keys=True, separators=(",", ":"))
     job_id = str(uuid.uuid4())
 
-    start_seq = meta.cursor_get(namespace="default", consumer="__phase4_test__")  # best-effort baseline
+    start_seq = meta.cursor_get(
+        namespace="default", consumer="__phase4_test__"
+    )  # best-effort baseline
 
     with pytest.raises(RuntimeError):
         with uow.transaction():
@@ -117,7 +127,9 @@ def test_uow_rollback_leaves_no_node_event_vector_or_job(sa_engine, pg_schema):
     assert got.get("ids") in ([], None) or len(got.get("ids", [])) == 0
 
     # Job should not exist
-    jobs = meta.list_index_jobs(namespace="default", entity_kind="node", entity_id=nid, limit=50)
+    jobs = meta.list_index_jobs(
+        namespace="default", entity_kind="node", entity_id=nid, limit=50
+    )
     assert len(jobs) == 0
 
     # Event should not exist (check by entity_id scan)

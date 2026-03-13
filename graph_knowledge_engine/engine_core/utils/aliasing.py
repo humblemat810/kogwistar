@@ -78,7 +78,9 @@ class AliasBook:
         for rid in edge_ids:
             self.alias_for_edge(rid)
 
-    def legend_delta(self, node_ids: list[str], edge_ids: list[str]) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+    def legend_delta(
+        self, node_ids: list[str], edge_ids: list[str]
+    ) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
         """Return only (real_id, alias) pairs that are NEW since last turn."""
         new_nodes: list[tuple[str, str]] = []
         new_edges: list[tuple[str, str]] = []

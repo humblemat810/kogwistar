@@ -8,9 +8,13 @@ from chromadb.utils.embedding_functions import EmbeddingFunction
 from chromadb.api.types import Embeddings
 
 from joblib import Memory
-from typing import Callable, Sequence, Any, ParamSpec, TypeVar, cast
+from typing import Callable, Sequence, ParamSpec, TypeVar, cast
 
-from graph_knowledge_engine.conversation.models import ConversationAIResponse, FilteringResult, MetaFromLastSummary
+from graph_knowledge_engine.conversation.models import (
+    ConversationAIResponse,
+    FilteringResult,
+    MetaFromLastSummary,
+)
 from graph_knowledge_engine.conversation.service import ConversationService
 from graph_knowledge_engine.cdc.oplog import OplogWriter
 from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
@@ -39,7 +43,9 @@ class FakeEmbeddingFunction(EmbeddingFunction):
         return [[0.01] * self._dim for _ in documents_or_texts]
 
 
-def _make_engine_pair(*, backend_kind: str, tmp_path, sa_engine, pg_schema, dim: int = 384):
+def _make_engine_pair(
+    *, backend_kind: str, tmp_path, sa_engine, pg_schema, dim: int = 384
+):
     if backend_kind == "chroma":
         kg_engine = GraphKnowledgeEngine(
             persist_directory=str(tmp_path / "kg"),
@@ -55,11 +61,17 @@ def _make_engine_pair(*, backend_kind: str, tmp_path, sa_engine, pg_schema, dim:
 
     if backend_kind == "pg":
         if sa_engine is None or pg_schema is None:
-            pytest.skip("pg backend requested but sa_engine/pg_schema fixtures not available")
+            pytest.skip(
+                "pg backend requested but sa_engine/pg_schema fixtures not available"
+            )
         kg_schema = f"{pg_schema}_kg"
         conv_schema = f"{pg_schema}_conv"
-        kg_backend = PgVectorBackend(engine=sa_engine, embedding_dim=dim, schema=kg_schema)
-        conv_backend = PgVectorBackend(engine=sa_engine, embedding_dim=dim, schema=conv_schema)
+        kg_backend = PgVectorBackend(
+            engine=sa_engine, embedding_dim=dim, schema=kg_schema
+        )
+        conv_backend = PgVectorBackend(
+            engine=sa_engine, embedding_dim=dim, schema=conv_schema
+        )
         kg_engine = GraphKnowledgeEngine(
             persist_directory=str(tmp_path / "kg_meta"),
             kg_graph_type="knowledge",
@@ -77,7 +89,9 @@ def _make_engine_pair(*, backend_kind: str, tmp_path, sa_engine, pg_schema, dim:
     raise ValueError(f"unknown backend_kind: {backend_kind!r}")
 
 
-def _make_workflow_engine(*, backend_kind: str, tmp_path, sa_engine, pg_schema, dim: int = 384) -> GraphKnowledgeEngine:
+def _make_workflow_engine(
+    *, backend_kind: str, tmp_path, sa_engine, pg_schema, dim: int = 384
+) -> GraphKnowledgeEngine:
     if backend_kind == "chroma":
         return GraphKnowledgeEngine(
             persist_directory=str(tmp_path / "wf"),
@@ -86,9 +100,13 @@ def _make_workflow_engine(*, backend_kind: str, tmp_path, sa_engine, pg_schema, 
         )
     if backend_kind == "pg":
         if sa_engine is None or pg_schema is None:
-            pytest.skip("pg backend requested but sa_engine/pg_schema fixtures not available")
+            pytest.skip(
+                "pg backend requested but sa_engine/pg_schema fixtures not available"
+            )
         wf_schema = f"{pg_schema}_wf"
-        wf_backend = PgVectorBackend(engine=sa_engine, embedding_dim=dim, schema=wf_schema)
+        wf_backend = PgVectorBackend(
+            engine=sa_engine, embedding_dim=dim, schema=wf_schema
+        )
         return GraphKnowledgeEngine(
             persist_directory=str(tmp_path / "wf_meta"),
             kg_graph_type="workflow",
@@ -210,7 +228,9 @@ def _add_apple_knowledge(kg_engine: GraphKnowledgeEngine, *, dim: int = 384):
             canonical_entity_id=None,
             properties=None,
             embedding=None,
-            mentions=[Grounding(spans=[_mk_span("D:apple", "Apples can taste sweet.")])],
+            mentions=[
+                Grounding(spans=[_mk_span("D:apple", "Apples can taste sweet.")])
+            ],
             metadata={"level_from_root": 0},
             source_edge_ids=[],
             target_edge_ids=[],
@@ -234,7 +254,11 @@ def _add_apple_knowledge(kg_engine: GraphKnowledgeEngine, *, dim: int = 384):
                 canonical_entity_id=None,
                 properties=None,
                 embedding=None,
-                mentions=[Grounding(spans=[_mk_span("D:apple", "Apple is a fruit and sweet.")])],
+                mentions=[
+                    Grounding(
+                        spans=[_mk_span("D:apple", "Apple is a fruit and sweet.")]
+                    )
+                ],
                 metadata={"level_from_root": 0},
                 source_edge_ids=[],
                 target_edge_ids=[],
@@ -304,7 +328,9 @@ def _deterministic_answer_impl(
 
 
 @pytest.mark.parametrize("backend_kind", ["chroma", "pg"])
-def test_conversation_flow_v2_end_to_end_cached_llm(backend_kind: str, tmp_path, sa_engine, pg_schema):
+def test_conversation_flow_v2_end_to_end_cached_llm(
+    backend_kind: str, tmp_path, sa_engine, pg_schema
+):
     """True E2E: call ConversationOrchestrator.add_conversation_turn_workflow_v2.
 
     - No direct WorkflowRuntime.run calls.
@@ -332,7 +358,9 @@ def test_conversation_flow_v2_end_to_end_cached_llm(backend_kind: str, tmp_path,
     bundle_dir = Path(tmp_path) / "bundle"
     bundle_dir.mkdir(parents=True, exist_ok=True)
     kg_engine._oplog = OplogWriter(bundle_dir / "kg_changes.jsonl", fsync=False)
-    conversation_engine._oplog = OplogWriter(bundle_dir / "conv_changes.jsonl", fsync=False)
+    conversation_engine._oplog = OplogWriter(
+        bundle_dir / "conv_changes.jsonl", fsync=False
+    )
 
     # Deterministic factories.
     conversation_engine.tool_call_id_factory = stable_id
@@ -366,8 +394,12 @@ def test_conversation_flow_v2_end_to_end_cached_llm(backend_kind: str, tmp_path,
         conversation_content = kwargs.get("conversation_content")
         if conversation_content is None and len(args) >= 2:
             conversation_content = args[1]
-        candidates_node_ids = kwargs.get("candidates_node_ids") or kwargs.get("candidates_node_ids", [])
-        candidate_edge_ids = kwargs.get("candidate_edge_ids") or kwargs.get("candidate_edge_ids", [])
+        candidates_node_ids = kwargs.get("candidates_node_ids") or kwargs.get(
+            "candidates_node_ids", []
+        )
+        candidate_edge_ids = kwargs.get("candidate_edge_ids") or kwargs.get(
+            "candidate_edge_ids", []
+        )
         dumped, reasoning = cached_filter(
             str(conversation_content or ""),
             list(candidates_node_ids or []),
@@ -378,7 +410,9 @@ def test_conversation_flow_v2_end_to_end_cached_llm(backend_kind: str, tmp_path,
     # Answer-only harness: cached + ignores non-serializable state.
     cached_answer = cached(memory, _deterministic_answer_impl)
 
-    def answer_only_harness(*, conversation_id: str, prev_turn_meta_summary: MetaFromLastSummary, **_):
+    def answer_only_harness(
+        *, conversation_id: str, prev_turn_meta_summary: MetaFromLastSummary, **_
+    ):
         # Pull used ids from last retrieval artifacts if present; keep deterministic.
         # In v2, relevant ids are stored on the conversation via pointer nodes, but
         # the resolver state includes `kg.selected`/etc. For a harness, we rely on

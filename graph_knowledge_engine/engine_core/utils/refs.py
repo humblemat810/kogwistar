@@ -42,7 +42,9 @@ def ref_insertion_method(ref) -> str:
 
 
 def default_verification(note: str = "fallback span") -> MentionVerification:
-    return MentionVerification(method="heuristic", is_verified=False, score=None, notes=note)
+    return MentionVerification(
+        method="heuristic", is_verified=False, score=None, notes=note
+    )
 
 
 def ensure_ref_span(ref: Span, doc_id: str) -> Span:
@@ -53,7 +55,7 @@ def ensure_ref_span(ref: Span, doc_id: str) -> Span:
         r.document_page_url = _DOC_URL.format(doc_id=doc_id)
     if r.start_char is None or r.end_char is None:
         r.start_char, r.end_char = 0, 0
-    if (not hasattr(r, "verification") and r.__class__.__name__.endswith("LlmSlice")):
+    if not hasattr(r, "verification") and r.__class__.__name__.endswith("LlmSlice"):
         pass
     elif hasattr(r, "verification") and r.verification is None:
         r.verification = default_verification("no explicit verification from LLM")
@@ -94,6 +96,7 @@ def extract_doc_ids_from_refs(refs: list[Span] | list[Grounding]) -> list[str]:
 def select_best_grounding(entity: "Node | Edge") -> Grounding:
     mentions = list(getattr(entity, "mentions", None) or [])
     if mentions:
+
         def _sort_key(grounding: Grounding) -> tuple[int, int]:
             span = grounding.spans[0] if grounding.spans else None
             page = getattr(span, "page_number", None)
@@ -117,11 +120,20 @@ def select_best_grounding(entity: "Node | Edge") -> Grounding:
                 continue
             note = span.verification.notes or ""
             if "adjudication evidence" not in note:
-                span.verification.notes = f"{note} | adjudication evidence" if note else "adjudication evidence"
+                span.verification.notes = (
+                    f"{note} | adjudication evidence"
+                    if note
+                    else "adjudication evidence"
+                )
         return selected
 
     doc_id = getattr(entity, "doc_id", None) or "unknown"
-    excerpt = safe_excerpt(getattr(entity, "summary", None) or getattr(entity, "label", None) or "") or ""
+    excerpt = (
+        safe_excerpt(
+            getattr(entity, "summary", None) or getattr(entity, "label", None) or ""
+        )
+        or ""
+    )
     span = Span(
         collection_page_url=f"document_collection/{doc_id}",
         document_page_url=_DOC_URL.format(doc_id=doc_id),
@@ -158,7 +170,9 @@ def node_doc_and_meta(n: "Node | PureChromaNode") -> tuple[str, dict]:
 
     mentions = getattr(n, "mentions", None)
     if mentions is not None:
-        meta["mentions"] = json_or_none([r.model_dump(field_mode="backend") for r in mentions])
+        meta["mentions"] = json_or_none(
+            [r.model_dump(field_mode="backend") for r in mentions]
+        )
     meta = strip_none(meta)
     return doc, meta
 
@@ -180,7 +194,9 @@ def edge_doc_and_meta(e: "Edge | PureChromaEdge") -> tuple[str, dict]:
     )
     mentions = getattr(e, "mentions", None)
     if mentions is not None:
-        meta["mentions"] = json_or_none([r.model_dump(field_mode="backend") for r in mentions])
+        meta["mentions"] = json_or_none(
+            [r.model_dump(field_mode="backend") for r in mentions]
+        )
     meta = strip_none(meta)
     return doc, meta
 
@@ -203,14 +219,22 @@ def merge_refs(old_refs_json: str | None, new_refs):
         )
 
     seen = {key(r): r for r in old}
-    for r in (new_refs or []):
+    for r in new_refs or []:
         r2 = r.model_dump(field_mode="backend") if hasattr(r, "model_dump") else r
         seen[key(r2)] = r2
     merged = list(seen.values())
     return merged, json.dumps(merged)
 
 
-def backend_update_record_lifecycle(*, backend: Any, kind: str, record_id: str, lifecycle_patch: dict, safe_json_dict_fn, merge_meta_fn) -> bool:
+def backend_update_record_lifecycle(
+    *,
+    backend: Any,
+    kind: str,
+    record_id: str,
+    lifecycle_patch: dict,
+    safe_json_dict_fn,
+    merge_meta_fn,
+) -> bool:
     get_fn = getattr(backend, f"{kind}_get", None)
     upd_fn = getattr(backend, f"{kind}_update", None)
     if get_fn is None or upd_fn is None:

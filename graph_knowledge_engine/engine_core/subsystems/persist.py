@@ -98,7 +98,9 @@ class PersistSubsystem(NamespaceProxy):
             missing_edges = need_edges - got
 
         if missing_nodes or missing_edges:
-            raise ValueError(f"Dangling references: nodes={sorted(missing_nodes)}, edges={sorted(missing_edges)}")
+            raise ValueError(
+                f"Dangling references: nodes={sorted(missing_nodes)}, edges={sorted(missing_edges)}"
+            )
         return batch_node_ids, batch_edge_ids
 
     def resolve_llm_ids(
@@ -140,7 +142,11 @@ class PersistSubsystem(NamespaceProxy):
         ne2uuid: dict[str, str] = {}
         for e in parsed.edges:
             tok = getattr(e, "local_id", None) or e.id
-            if (not tok) or _is_new_edge(tok) or _is_new_edge(getattr(e, "local_id", None)):
+            if (
+                (not tok)
+                or _is_new_edge(tok)
+                or _is_new_edge(getattr(e, "local_id", None))
+            ):
                 rid = ne2uuid.get(tok or "") or str(uuid.uuid4())
                 if tok:
                     ne2uuid[tok] = rid
@@ -163,7 +169,14 @@ class PersistSubsystem(NamespaceProxy):
                         out.append(de_alias(x))
                     else:
                         key = (x or "").strip().lower()
-                        rid = next((n.id for n in parsed.nodes if (n.label or "").strip().lower() == key), None)
+                        rid = next(
+                            (
+                                n.id
+                                for n in parsed.nodes
+                                if (n.label or "").strip().lower() == key
+                            ),
+                            None,
+                        )
                         if not rid:
                             raise ValueError(f"Unresolvable node endpoint token: {x}")
                         out.append(rid)
@@ -236,7 +249,9 @@ class PersistSubsystem(NamespaceProxy):
             if ids:
                 got = set(self._e.backend.edge_get(ids=ids).get("ids") or [])
                 if got != set(ids):
-                    raise ValueError(f"Missing edge endpoints in {attr}: {sorted(set(ids) - got)}")
+                    raise ValueError(
+                        f"Missing edge endpoints in {attr}: {sorted(set(ids) - got)}"
+                    )
 
     def exists_node(self, rid: str) -> bool:
         g = self._e.backend.node_get(ids=[rid])
@@ -252,9 +267,15 @@ class PersistSubsystem(NamespaceProxy):
     def dealias_span(self, *args, **kwargs):
         return self._e.extract.dealias_span(*args, **kwargs)
 
-    def select_doc_context(self, doc_id: str, max_nodes: int = 200, max_edges: int = 400):
-        nodes = self._e.backend.node_get(where={"doc_id": doc_id}, include=["documents"])
-        edges = self._e.backend.edge_get(where={"doc_id": doc_id}, include=["documents"])
+    def select_doc_context(
+        self, doc_id: str, max_nodes: int = 200, max_edges: int = 400
+    ):
+        nodes = self._e.backend.node_get(
+            where={"doc_id": doc_id}, include=["documents"]
+        )
+        edges = self._e.backend.edge_get(
+            where={"doc_id": doc_id}, include=["documents"]
+        )
 
         node_items = []
         for i, (nid, ndoc) in enumerate(
@@ -263,7 +284,9 @@ class PersistSubsystem(NamespaceProxy):
             if i >= max_nodes:
                 break
             n = Node.model_validate_json(ndoc)
-            node_items.append({"id": nid, "label": n.label, "type": n.type, "summary": n.summary})
+            node_items.append(
+                {"id": nid, "label": n.label, "type": n.type, "summary": n.summary}
+            )
 
         edge_items = []
         for i, (eid, edoc) in enumerate(
@@ -400,10 +423,14 @@ class PersistSubsystem(NamespaceProxy):
                             doc_id=doc_id,
                             span=sp,
                             engine=self._e,
-                            doc=document if document.id == sp.doc_id else self._e.get_document(sp.doc_id),
+                            doc=document
+                            if document.id == sp.doc_id
+                            else self._e.get_document(sp.doc_id),
                         )
                         if result["correctness"] is not True:
-                            raise Exception(f"Incorrect span occur in grounding {str(g)} span {str(sp)}")
+                            raise Exception(
+                                f"Incorrect span occur in grounding {str(g)} span {str(sp)}"
+                            )
                 n = ln.model_copy(deep=True)
                 emb_text = f"{n.label}: {n.summary} : {nl.join(i['context'] for i in self._e.extract_reference_contexts(ln)[:1])}"
                 n.embedding = self._e._ef([emb_text])[0]
@@ -429,10 +456,14 @@ class PersistSubsystem(NamespaceProxy):
                             doc_id=doc_id,
                             span=sp,
                             engine=self._e,
-                            doc=document if document.id == sp.doc_id else self._e.get_document(sp.doc_id),
+                            doc=document
+                            if document.id == sp.doc_id
+                            else self._e.get_document(sp.doc_id),
                         )
                         if result["correctness"] is not True:
-                            raise Exception(f"Incorrect span occur in grounding {str(g)} span {str(sp)}")
+                            raise Exception(
+                                f"Incorrect span occur in grounding {str(g)} span {str(sp)}"
+                            )
                 e = le.model_copy(deep=True)
                 emb_text = f"{le.label}: {le.summary} : {nl.join(i['context'] for i in self._e.extract_reference_contexts(le)[:1])}"
                 e.embedding = self._e._ef([emb_text])[0]
@@ -519,22 +550,37 @@ class PersistSubsystem(NamespaceProxy):
                 ln: Node = obj
                 if self.exists_node(rid):
                     if ln.mentions:
-                        prior = self._e.backend.node_get(ids=[rid], include=["documents", "metadatas"])
+                        prior = self._e.backend.node_get(
+                            ids=[rid], include=["documents", "metadatas"]
+                        )
                         prior_meta = (prior.get("metadatas") or [None])[0] or {}
                         prior_mentions = cast(str, prior_meta.get("mentions"))
-                        merged_list, merged_json = merge_refs(prior_mentions, ln.mentions)
+                        merged_list, merged_json = merge_refs(
+                            prior_mentions, ln.mentions
+                        )
                         doc = prior["documents"]
                         if not doc:
                             raise Exception("missing documents")
                         n = Node.model_validate_json(doc[0])
-                        mentions = Grounding(spans=[Span.model_validate(r) for r in merged_list])
+                        mentions = Grounding(
+                            spans=[Span.model_validate(r) for r in merged_list]
+                        )
                         for sp in mentions.spans:
                             span_validator.validate_span(span=sp)
                         n.mentions = [mentions]
                         self._e.backend.node_update(
                             ids=[rid],
                             documents=[n.model_dump_json(field_mode="backend")],
-                            metadatas=[{**{k: v for k, v in prior_meta.items() if v is not None}, "references": merged_json}],
+                            metadatas=[
+                                {
+                                    **{
+                                        k: v
+                                        for k, v in prior_meta.items()
+                                        if v is not None
+                                    },
+                                    "references": merged_json,
+                                }
+                            ],
                         )
                         self._e.write.index_node_docs(n)
                     continue
@@ -548,22 +594,37 @@ class PersistSubsystem(NamespaceProxy):
                 le: Edge = obj
                 if self.exists_edge(rid):
                     if le.mentions:
-                        prior = self._e.backend.edge_get(ids=[rid], include=["documents", "metadatas"])
+                        prior = self._e.backend.edge_get(
+                            ids=[rid], include=["documents", "metadatas"]
+                        )
                         prior_meta = (prior.get("metadatas") or [None])[0] or {}
                         prior_mentions = cast(str, prior_meta.get("mentions"))
-                        merged_list, merged_json = merge_refs(prior_mentions, le.mentions)
+                        merged_list, merged_json = merge_refs(
+                            prior_mentions, le.mentions
+                        )
                         doc = prior["documents"]
                         if not doc:
                             raise Exception("missing documents")
                         e = Edge.model_validate_json(doc[0])
-                        mentions = Grounding(spans=[Span.model_validate(r) for r in merged_list])
+                        mentions = Grounding(
+                            spans=[Span.model_validate(r) for r in merged_list]
+                        )
                         for sp in mentions.spans:
                             span_validator.validate_span(span=sp)
                         e.mentions = [mentions]
                         self._e.backend.edge_update(
                             ids=[rid],
                             documents=[e.model_dump_json(field_mode="backend")],
-                            metadatas=[{**{k: v for k, v in prior_meta.items() if v is not None}, "references": merged_json}],
+                            metadatas=[
+                                {
+                                    **{
+                                        k: v
+                                        for k, v in prior_meta.items()
+                                        if v is not None
+                                    },
+                                    "references": merged_json,
+                                }
+                            ],
                         )
                         self._e.write.maybe_reindex_edge_refs(e)
                     continue
@@ -654,6 +715,7 @@ class PersistSubsystem(NamespaceProxy):
                 elif ek == "search_index":
                     if op == "search_index.upsert":
                         from ..search_index.models import IndexingItem
+
                         try:
                             item = IndexingItem.model_validate(payload)
                         except Exception:

@@ -10,10 +10,13 @@ from tests.conftest import FakeEmbeddingFunction
 EMBEDDING_DIM = 3
 TEST_EMBEDDING = FakeEmbeddingFunction(dim=EMBEDDING_DIM)
 
+
 def _mk_span(doc_id: str) -> Span:
     sp = Span.from_dummy_for_document()
     sp.doc_id = doc_id
     return sp
+
+
 def _mk_node(node_id: str, *, doc_id: str) -> Node:
     return Node(
         id=node_id,
@@ -31,8 +34,6 @@ def _mk_node(node_id: str, *, doc_id: str) -> Node:
     )
 
 
-
-
 def _mk_edge(edge_id: str, src: str, tgt: str, doc_id: str) -> Edge:
     return Edge(
         id=edge_id,
@@ -48,10 +49,11 @@ def _mk_edge(edge_id: str, src: str, tgt: str, doc_id: str) -> Edge:
         mentions=[Grounding(spans=[_mk_span(doc_id)])],
         metadata={"level_from_root": 0, "entity_type": "kg_relation"},
         embedding=[0.1] * EMBEDDING_DIM,
-        domain_id = None,
+        domain_id=None,
         canonical_entity_id=None,
-        properties = None
+        properties=None,
     )
+
 
 @pytest.fixture(params=["chroma", "pg"], ids=["chroma", "pg"])
 def e2e_engine(
@@ -114,6 +116,7 @@ def test_phase2b_event_log_replay_e2e(e2e_engine):
     assert before_nodes == after_nodes
     assert before_edges == after_edges
 
+
 def _read_all_events(eng: GraphKnowledgeEngine, namespace: str):
     return list(eng.meta_sqlite.iter_entity_events(namespace=namespace, from_seq=1))
 
@@ -121,6 +124,7 @@ def _read_all_events(eng: GraphKnowledgeEngine, namespace: str):
 def test_phase2b_event_log_no_duplicate_and_payload_sanity(e2e_engine):
     """Phase 2b: replay must NOT append new entity_events; payload must be node/edge shaped."""
     import json
+
     eng = e2e_engine
     ns = getattr(eng, "namespace", "default")
 
@@ -166,7 +170,10 @@ def test_phase2b_event_log_tombstone_and_cursor_roundtrip(e2e_engine):
 
     events = _read_all_events(eng, ns)
     # Expect at least one TOMBSTONE for node n2
-    assert any((ek == "node" and eid == "n2" and op in ("TOMBSTONE", "DELETE")) for _, ek, eid, op, _ in events)
+    assert any(
+        (ek == "node" and eid == "n2" and op in ("TOMBSTONE", "DELETE"))
+        for _, ek, eid, op, _ in events
+    )
 
     # Replay should preserve tombstone state and not double events
     before_n = len(events)

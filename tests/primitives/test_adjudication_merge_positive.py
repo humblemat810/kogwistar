@@ -35,7 +35,9 @@ def _span_for(doc_id: str) -> Span:
         page_number=1,
         start_char=0,
         end_char=1,
-        verification=MentionVerification(method="heuristic", is_verified=False, notes=None, score=0.9),
+        verification=MentionVerification(
+            method="heuristic", is_verified=False, notes=None, score=0.9
+        ),
         insertion_method="pytest-manual",
         doc_id=doc_id,
         source_cluster_id=None,
@@ -47,7 +49,9 @@ def _span_for(doc_id: str) -> Span:
 
 
 def _first_token_batch_task_set() -> LLMTaskSet:
-    def _adjudicate_batch(request: AdjudicateBatchTaskRequest) -> AdjudicateBatchTaskResult:
+    def _adjudicate_batch(
+        request: AdjudicateBatchTaskRequest,
+    ) -> AdjudicateBatchTaskResult:
         items: list[Mapping[str, object]] = []
         for item in request.pairs:
             left = item.get("left") if isinstance(item, Mapping) else {}
@@ -64,16 +68,28 @@ def _first_token_batch_task_set() -> LLMTaskSet:
                 canonical_entity_id=None,
             )
             items.append({"verdict": ver.model_dump(mode="python")})
-        return AdjudicateBatchTaskResult(verdict_payloads=items, raw=None, parsing_error=None)
+        return AdjudicateBatchTaskResult(
+            verdict_payloads=items, raw=None, parsing_error=None
+        )
 
     return LLMTaskSet(
-        extract_graph=lambda _req: ExtractGraphTaskResult(raw=None, parsed_payload=None, parsing_error="unused"),
-        adjudicate_pair=lambda _req: AdjudicatePairTaskResult(verdict_payload=None, raw=None, parsing_error="unused"),
+        extract_graph=lambda _req: ExtractGraphTaskResult(
+            raw=None, parsed_payload=None, parsing_error="unused"
+        ),
+        adjudicate_pair=lambda _req: AdjudicatePairTaskResult(
+            verdict_payload=None, raw=None, parsing_error="unused"
+        ),
         adjudicate_batch=_adjudicate_batch,
-        filter_candidates=lambda _req: FilterCandidatesTaskResult(node_ids=(), edge_ids=(), reasoning="", raw=None, parsing_error=None),
+        filter_candidates=lambda _req: FilterCandidatesTaskResult(
+            node_ids=(), edge_ids=(), reasoning="", raw=None, parsing_error=None
+        ),
         summarize_context=lambda req: SummarizeContextTaskResult(text=req.full_text),
-        answer_with_citations=lambda _req: AnswerWithCitationsTaskResult(answer_payload=None, raw=None, parsing_error="unused"),
-        repair_citations=lambda _req: RepairCitationsTaskResult(answer_payload=None, raw=None, parsing_error="unused"),
+        answer_with_citations=lambda _req: AnswerWithCitationsTaskResult(
+            answer_payload=None, raw=None, parsing_error="unused"
+        ),
+        repair_citations=lambda _req: RepairCitationsTaskResult(
+            answer_payload=None, raw=None, parsing_error="unused"
+        ),
         provider_hints=LLMTaskProviderHints(adjudicate_batch_provider="custom"),
     )
 
@@ -97,19 +113,45 @@ def test_deterministic_batch_merge(engine, monkeypatch):
     engine.add_document(doc)
 
     ref = _span_for(doc.id)
-    a = Node(label="Chlorophyll a", type="entity", summary="Pigment in plants", mentions=[Grounding(spans=[ref])])
-    b = Node(label="Chlorophyll b", type="entity", summary="Another chlorophyll pigment", mentions=[Grounding(spans=[ref])])
-    c = Node(label="Hemoglobin", type="entity", summary="Protein in red blood cells", mentions=[Grounding(spans=[ref])])
+    a = Node(
+        label="Chlorophyll a",
+        type="entity",
+        summary="Pigment in plants",
+        mentions=[Grounding(spans=[ref])],
+    )
+    b = Node(
+        label="Chlorophyll b",
+        type="entity",
+        summary="Another chlorophyll pigment",
+        mentions=[Grounding(spans=[ref])],
+    )
+    c = Node(
+        label="Hemoglobin",
+        type="entity",
+        summary="Protein in red blood cells",
+        mentions=[Grounding(spans=[ref])],
+    )
 
     engine.add_node(a, doc_id=doc.id)
     engine.add_node(b, doc_id=doc.id)
     engine.add_node(c, doc_id=doc.id)
 
     pairs_payload = [
-        {"left": a.model_dump(), "right": b.model_dump(), "question_code": int(AdjudicationQuestionCode.SAME_ENTITY)},
-        {"left": a.model_dump(), "right": c.model_dump(), "question_code": int(AdjudicationQuestionCode.SAME_ENTITY)},
+        {
+            "left": a.model_dump(),
+            "right": b.model_dump(),
+            "question_code": int(AdjudicationQuestionCode.SAME_ENTITY),
+        },
+        {
+            "left": a.model_dump(),
+            "right": c.model_dump(),
+            "question_code": int(AdjudicationQuestionCode.SAME_ENTITY),
+        },
     ]
-    mapping_table = [{"code": int(code), "key": QUESTION_KEY[code]} for code in AdjudicationQuestionCode]
+    mapping_table = [
+        {"code": int(code), "key": QUESTION_KEY[code]}
+        for code in AdjudicationQuestionCode
+    ]
     _ = (pairs_payload, mapping_table)
     engine.llm_tasks = _first_token_batch_task_set()
 
@@ -123,7 +165,7 @@ def test_deterministic_batch_merge(engine, monkeypatch):
     assert v1.same_entity is True and v1.confidence > 0.5
     assert v2.same_entity is False and v2.confidence <= 0.5
 
-    canonical = engine.commit_merge(a, b, v1, method='llm')
+    canonical = engine.commit_merge(a, b, v1, method="llm")
     assert canonical
 
     a_got = engine.backend.node_get(ids=[a.id], include=["documents"])
@@ -134,4 +176,6 @@ def test_deterministic_batch_merge(engine, monkeypatch):
     assert b_doc.get("canonical_entity_id") == canonical
 
     edges = engine.backend.edge_get(include=["metadatas"])
-    assert any((m or {}).get("relation") == "same_as" for m in edges.get("metadatas") or [])
+    assert any(
+        (m or {}).get("relation") == "same_as" for m in edges.get("metadatas") or []
+    )

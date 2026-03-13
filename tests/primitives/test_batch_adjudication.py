@@ -75,9 +75,24 @@ def test_batch_adjudication_and_commit(engine, monkeypatch):
     engine.write.add_document(doc)
 
     ref = _grounding_for(doc.id)
-    a = Node(label="Chlorophyll a", type="entity", summary="Pigment in plants", mentions=[ref])
-    b = Node(label="Chlorophyll b", type="entity", summary="Another chlorophyll pigment", mentions=[ref])
-    c = Node(label="Hemoglobin", type="entity", summary="Protein in red blood cells", mentions=[ref])
+    a = Node(
+        label="Chlorophyll a",
+        type="entity",
+        summary="Pigment in plants",
+        mentions=[ref],
+    )
+    b = Node(
+        label="Chlorophyll b",
+        type="entity",
+        summary="Another chlorophyll pigment",
+        mentions=[ref],
+    )
+    c = Node(
+        label="Hemoglobin",
+        type="entity",
+        summary="Protein in red blood cells",
+        mentions=[ref],
+    )
 
     engine.write.add_node(a, doc_id=doc.id)
     engine.write.add_node(b, doc_id=doc.id)
@@ -85,7 +100,9 @@ def test_batch_adjudication_and_commit(engine, monkeypatch):
 
     pairs = [(a, b), (a, c)]
 
-    def fake_batch_adjudicate_merges(pairs, question_code=AdjudicationQuestionCode.SAME_ENTITY):
+    def fake_batch_adjudicate_merges(
+        pairs, question_code=AdjudicationQuestionCode.SAME_ENTITY
+    ):
         outs = []
         for left, right in pairs:
             if "Chlorophyll a" in left.label and "Chlorophyll b" in right.label:
@@ -135,4 +152,6 @@ def test_batch_adjudication_and_commit(engine, monkeypatch):
     assert b_doc.get("canonical_entity_id") == canonical
 
     edges = engine.backend.edge_get(include=["metadatas"])
-    assert any((m or {}).get("relation") == "same_as" for m in edges.get("metadatas") or [])
+    assert any(
+        (m or {}).get("relation") == "same_as" for m in edges.get("metadatas") or []
+    )

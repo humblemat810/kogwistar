@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable, Optional, List
+from typing import List
 
 
 @dataclass(frozen=True)
@@ -32,23 +32,25 @@ def split_doc_deterministic(
       within a backward window of `prefer_window`.
     - If none found, does a hard cut at max_chars.
     - Applies overlap by moving next start back by overlap_chars.
-    
+
     overlap_chars: a hard limit that may split words into letters
-    
+
     Multilingual-safe because it doesn't require word/sentence tokenization.
     """
     if prefer_window is None:
         prefer_window = overlap_chars // 2
     if prefer_window < 0:
         raise ValueError("prefer_window must be >= 0")
-    guaranteed_progression = (max_chars -(prefer_window + overlap_chars))
-         
+    guaranteed_progression = max_chars - (prefer_window + overlap_chars)
+
     if max_chars <= 0:
         raise ValueError("max_chars must be > 0")
     if overlap_chars < 0:
         raise ValueError("overlap_chars must be >= 0")
     if guaranteed_progression <= 0:
-        raise ValueError("max_chars must be at larger than overlap_chars+prefer_window ")
+        raise ValueError(
+            "max_chars must be at larger than overlap_chars+prefer_window "
+        )
 
     n = len(content)
     if n == 0:
@@ -127,21 +129,25 @@ def split_doc_deterministic(
         #     chunks.append(Chunk(doc_id=doc_id, start_char=end, end_char=n, text=text))
         #     break
         # Next start with overlap
-        
+
         start = find_break(max(0, end - overlap_chars), end - (overlap_chars // 2))
         if start == end - (overlap_chars // 2):  # no break found
             start = max(0, end - overlap_chars)
 
         # Prevent infinite loops if overlap is too large and boundary chooser returns same end
-        if chunks and start < chunks[-1].end_char and (chunks[-1].end_char - start) >= max_chars:
+        if (
+            chunks
+            and start < chunks[-1].end_char
+            and (chunks[-1].end_char - start) >= max_chars
+        ):
             start = chunks[-1].end_char  # force progress, but indeed never happen
-            
+
         # quick check if it exceed a hard limit of maximum possible chunk iteration if implemented correctly
         cnt += 1
-        if cnt >= int(n // guaranteed_progression ) + 1:
+        if cnt >= int(n // guaranteed_progression) + 1:
             raise Exception("Infinite loop or incorrect implementation")
     # Final assertion: source-map correctness
     for c in chunks:
-        assert c.text == content[c.start_char:c.end_char]
+        assert c.text == content[c.start_char : c.end_char]
 
     return chunks

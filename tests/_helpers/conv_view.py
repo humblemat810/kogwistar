@@ -1,10 +1,17 @@
-
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Mapping
 
-RUN_META_KEYS_PREFIXES = ("run_", "attempt_", "worker_", "timestamp", "ts_", "duration", "latency")
+RUN_META_KEYS_PREFIXES = (
+    "run_",
+    "attempt_",
+    "worker_",
+    "timestamp",
+    "ts_",
+    "duration",
+    "latency",
+)
 
 
 def _get(obj: Any, key: str, default: Any = None) -> Any:
@@ -41,7 +48,13 @@ def _edge_tuple(e: Any) -> tuple[str, str, str, str]:
 
 def _is_workflow_trace_node(n: Any) -> bool:
     et = _meta(n).get("entity_type")
-    return et in {"workflow_node", "workflow_edge", "workflow_run", "workflow_step_exec", "workflow_checkpoint"}
+    return et in {
+        "workflow_node",
+        "workflow_edge",
+        "workflow_run",
+        "workflow_step_exec",
+        "workflow_checkpoint",
+    }
 
 
 def _is_workflow_trace_edge(e: Any) -> bool:
@@ -61,10 +74,14 @@ class ConvGraphView:
     snapshot_costs: tuple[tuple[str, int, int | None], ...]
 
 
-def extract_conv_view(conversation_engine: Any, *, conversation_id: str | None = None) -> ConvGraphView:
+def extract_conv_view(
+    conversation_engine: Any, *, conversation_id: str | None = None
+) -> ConvGraphView:
     if conversation_id is not None:
         try:
-            nodes = conversation_engine.get_nodes(where={"conversation_id": conversation_id})
+            nodes = conversation_engine.get_nodes(
+                where={"conversation_id": conversation_id}
+            )
         except Exception:
             nodes = conversation_engine.get_nodes()
     else:
@@ -146,7 +163,6 @@ def extract_conv_view(conversation_engine: Any, *, conversation_id: str | None =
     )
 
 
-
 def diff_views(a: ConvGraphView, b: ConvGraphView) -> str:
     """Human-friendly diff for pytest failures."""
     parts: list[str] = []
@@ -157,13 +173,16 @@ def diff_views(a: ConvGraphView, b: ConvGraphView) -> str:
             parts.append(f"- {field} differs:\n  a={av}\n  b={bv}")
     return "\n".join(parts) if parts else "(no diff)"
 
+
 def assert_tier0_invariants(view: ConvGraphView) -> None:
     outgoing: dict[str, int] = {}
     for _, _, src, _ in view.next_turn_edges:
         outgoing[src] = outgoing.get(src, 0) + 1
     bad = {src: c for src, c in outgoing.items() if c > 1}
     if bad:
-        raise AssertionError(f"Tier0 violation: multiple outgoing next_turn edges: {bad}")
+        raise AssertionError(
+            f"Tier0 violation: multiple outgoing next_turn edges: {bad}"
+        )
 
 
 def _diff(a: Any, b: Any) -> str:
@@ -175,10 +194,12 @@ def _diff(a: Any, b: Any) -> str:
             parts.append(f"- {field} differs:\n  a={av}\n  b={bv}")
     return "\n".join(parts) if parts else "(no diff)"
 
+
 def assert_views_equivalent(a: ConvGraphView, b: ConvGraphView) -> None:
     if a != b:
         raise AssertionError(diff_views(a, b))
-    
+
+
 def assert_tier1_equal(a: ConvGraphView, b: ConvGraphView) -> None:
     if a != b:
         raise AssertionError(_diff(a, b))

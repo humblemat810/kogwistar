@@ -3,7 +3,18 @@ from __future__ import annotations
 import ast
 import json
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Literal, Optional, Sequence, Type, TypeVar, Union, cast
+from typing import (
+    Any,
+    Dict,
+    List,
+    Literal,
+    Optional,
+    Sequence,
+    Type,
+    TypeVar,
+    Union,
+    cast,
+)
 
 import numpy as np
 
@@ -32,7 +43,9 @@ class ReadSubsystem(NamespaceProxy):
         include: list[str] | None = None,
         where=None,
         limit: int | None = 200,
-        resolve_mode: Literal["active_only", "redirect", "include_tombstones"] = "active_only",
+        resolve_mode: Literal[
+            "active_only", "redirect", "include_tombstones"
+        ] = "active_only",
     ) -> list[Node]:
         if include is None:
             include = ["documents", "embeddings", "metadatas"]
@@ -64,7 +77,9 @@ class ReadSubsystem(NamespaceProxy):
         where=None,
         limit: int | None = 400,
         include: list[str] | None = None,
-        resolve_mode: Literal["active_only", "redirect", "include_tombstones"] = "active_only",
+        resolve_mode: Literal[
+            "active_only", "redirect", "include_tombstones"
+        ] = "active_only",
     ) -> list[Edge]:
         if include is None:
             include = ["documents", "embeddings", "metadatas"]
@@ -77,7 +92,9 @@ class ReadSubsystem(NamespaceProxy):
             where=where,
             limit=limit,
         )
-        edges = self.edges_from_single_or_id_query_result(got, edge_type=edge_type, include=include)
+        edges = self.edges_from_single_or_id_query_result(
+            got, edge_type=edge_type, include=include
+        )
         edges = self._e._resolve_redirect_chain(
             initial_items=edges,
             resolve_mode=resolve_mode,
@@ -104,7 +121,11 @@ class ReadSubsystem(NamespaceProxy):
             id=doc_get_result["ids"][0],
             content=docs[0],
             metadata=metadata,
-            domain_id=(None if metadata.get("domain_id") is None else str(metadata.get("domain_id"))),
+            domain_id=(
+                None
+                if metadata.get("domain_id") is None
+                else str(metadata.get("domain_id"))
+            ),
             type=metadata["type"],
             processed=metadata["processed"],
             embeddings=None,
@@ -123,7 +144,9 @@ class ReadSubsystem(NamespaceProxy):
     ):
         if query_embeddings is not None:
             if query is not None:
-                raise Exception("either query or query embedding but not both specified.")
+                raise Exception(
+                    "either query or query embedding but not both specified."
+                )
         else:
             if query is not None:
                 query_embeddings = self._e._iterative_defensive_emb(query)
@@ -209,10 +232,14 @@ class ReadSubsystem(NamespaceProxy):
             if self._is_node_visible_as_of(current, as_of):
                 return current
 
-            if (not follow_redirects) or (not self._redirect_applies_as_of(current, as_of)):
+            if (not follow_redirects) or (
+                not self._redirect_applies_as_of(current, as_of)
+            ):
                 return None
 
-            next_id = str(((getattr(current, "metadata", {}) or {}).get("redirect_to_id") or "")).strip()
+            next_id = str(
+                ((getattr(current, "metadata", {}) or {}).get("redirect_to_id") or "")
+            ).strip()
             if not next_id:
                 return None
 
@@ -370,7 +397,9 @@ class ReadSubsystem(NamespaceProxy):
             res.append(selected_type.model_validate(json_d))
         return res
 
-    def edges_from_single_or_id_query_result(self, got, edge_type: Type[Edge] = Edge, include=None):
+    def edges_from_single_or_id_query_result(
+        self, got, edge_type: Type[Edge] = Edge, include=None
+    ):
         if include is None:
             include = ["documents", "metadatas", "embeddings"]
         docs: list[str] = cast(list[str], got.get("documents"))
@@ -402,13 +431,21 @@ class ReadSubsystem(NamespaceProxy):
             n_doc = len(gots["ids"][i_q])
             for _ids, docs, embs, metadatas in zip(
                 gots.get("ids"),
-                gots.get("documents") if gots.get("documents") is not None else [[]] * n_doc,
-                gots.get("embeddings") if gots.get("embeddings") is not None else [[]] * n_doc,
-                gots.get("metadatas") if gots.get("metadatas") is not None else [[]] * n_doc,
+                gots.get("documents")
+                if gots.get("documents") is not None
+                else [[]] * n_doc,
+                gots.get("embeddings")
+                if gots.get("embeddings") is not None
+                else [[]] * n_doc,
+                gots.get("metadatas")
+                if gots.get("metadatas") is not None
+                else [[]] * n_doc,
             ):
                 docs = cast(list[str], docs)
                 got = {"documents": docs, "embeddings": embs, "metadatas": metadatas}
-                res.append(self.nodes_from_single_or_id_query_result(got, node_type=node_type))
+                res.append(
+                    self.nodes_from_single_or_id_query_result(got, node_type=node_type)
+                )
         return res
 
     def edges_from_query_result(self, gots, edge_type: Type[Edge] = Edge):
@@ -417,13 +454,26 @@ class ReadSubsystem(NamespaceProxy):
             n_doc = len(gots["ids"][i_q])
             for ids, docs, embs, metadatas in zip(
                 gots.get("ids"),
-                gots.get("documents") if gots.get("documents") is not None else [[]] * n_doc,
-                gots.get("embeddings") if gots.get("embeddings") is not None else [[]] * n_doc,
-                gots.get("metadatas") if gots.get("metadatas") is not None else [[]] * n_doc,
+                gots.get("documents")
+                if gots.get("documents") is not None
+                else [[]] * n_doc,
+                gots.get("embeddings")
+                if gots.get("embeddings") is not None
+                else [[]] * n_doc,
+                gots.get("metadatas")
+                if gots.get("metadatas") is not None
+                else [[]] * n_doc,
             ):
                 docs = cast(list[str], docs)
-                got = {"ids": ids, "documents": docs, "embeddings": embs, "metadatas": metadatas}
-                res.append(self.edges_from_single_or_id_query_result(got, edge_type=edge_type))
+                got = {
+                    "ids": ids,
+                    "documents": docs,
+                    "embeddings": embs,
+                    "metadatas": metadatas,
+                }
+                res.append(
+                    self.edges_from_single_or_id_query_result(got, edge_type=edge_type)
+                )
         return res
 
     def where_update_from_resolve_mode(
@@ -475,7 +525,12 @@ class ReadSubsystem(NamespaceProxy):
 
         def _coerce_to_referencable_text(text_or_ast_str):
             try:
-                return "\n".join((i["text"] for i in ast.literal_eval(text_or_ast_str)["OCR_text_clusters"]))
+                return "\n".join(
+                    (
+                        i["text"]
+                        for i in ast.literal_eval(text_or_ast_str)["OCR_text_clusters"]
+                    )
+                )
             except Exception:
                 return text_or_ast_str
 
@@ -487,7 +542,9 @@ class ReadSubsystem(NamespaceProxy):
                 pages = doc_cache.get(doc_id)
                 full_doc = None
                 if not pages:
-                    full_doc = self._e.extract.fetch_document_text(doc_id) if doc_id else None
+                    full_doc = (
+                        self._e.extract.fetch_document_text(doc_id) if doc_id else None
+                    )
                     pages = self._e.extract.coerce_pages(full_doc)
                     doc_cache[doc_id] = pages
                 excerpt = getattr(span, "excerpt", None)
@@ -496,17 +553,27 @@ class ReadSubsystem(NamespaceProxy):
                 span_end = None
 
                 if full_doc:
-                    page_relevant = {p[0]: p[1] for p in pages if (p[0] >= span.page_number and p[0] <= span.page_number)}
+                    page_relevant = {
+                        p[0]: p[1]
+                        for p in pages
+                        if (p[0] >= span.page_number and p[0] <= span.page_number)
+                    }
                     if span.page_number and span.page_number:
                         if span.page_number == span.page_number:
                             ctx_text = ""
                             if span.start_char and span.end_char:
                                 try:
-                                    _coerce_to_referencable_text(page_relevant[span.page_number])
+                                    _coerce_to_referencable_text(
+                                        page_relevant[span.page_number]
+                                    )
                                 except Exception:
                                     raise
-                                ctx_text = _coerce_to_referencable_text(page_relevant[span.page_number])[
-                                    max(span.start_char - window_chars, 0) : span.end_char + window_chars
+                                ctx_text = _coerce_to_referencable_text(
+                                    page_relevant[span.page_number]
+                                )[
+                                    max(
+                                        span.start_char - window_chars, 0
+                                    ) : span.end_char + window_chars
                                 ]
 
                     if ctx_text is None:
@@ -515,7 +582,11 @@ class ReadSubsystem(NamespaceProxy):
                             idx = full_doc.find(label)
 
                         if idx >= 0:
-                            length = len(excerpt) if excerpt else (len(label) if label else 0)
+                            length = (
+                                len(excerpt)
+                                if excerpt
+                                else (len(label) if label else 0)
+                            )
                             span_start = idx
                             span_end = idx + length
                             left = max(0, span_start - window_chars)
@@ -524,18 +595,26 @@ class ReadSubsystem(NamespaceProxy):
                 out.append(
                     {
                         "doc_id": doc_id,
-                        "collection_page_url": getattr(span, "collection_page_url", None),
+                        "collection_page_url": getattr(
+                            span, "collection_page_url", None
+                        ),
                         "document_page_url": getattr(span, "document_page_url", None),
                         "start_page": getattr(span, "start_page", None),
                         "end_page": getattr(span, "end_page", None),
                         "start_char": getattr(span, "start_char", None),
                         "end_char": getattr(span, "end_char", None),
                         "insertion_method": getattr(span, "insertion_method", None),
-                        "verification": (span.verification.model_dump() if getattr(span, "verification", None) else None),
+                        "verification": (
+                            span.verification.model_dump()
+                            if getattr(span, "verification", None)
+                            else None
+                        ),
                         "context": ctx_text,
                         "mention": mention,
                         "loc_found": (span_start is not None),
-                        "loc_span": [span_start, span_end] if span_start is not None else None,
+                        "loc_span": [span_start, span_end]
+                        if span_start is not None
+                        else None,
                         "ref": span.model_dump(field_mode="backend"),
                     }
                 )
@@ -546,7 +625,9 @@ class ReadSubsystem(NamespaceProxy):
         return out
 
     # Doc-index helpers
-    def node_ids_by_doc(self, doc_id: str, insertion_method: str | None = None) -> list[str]:
+    def node_ids_by_doc(
+        self, doc_id: str, insertion_method: str | None = None
+    ) -> list[str]:
         if insertion_method:
             return self.ids_with_insertion_method(
                 kind="node",
@@ -554,25 +635,31 @@ class ReadSubsystem(NamespaceProxy):
                 doc_id=doc_id,
             )
         if hasattr(self._e, "node_docs_collection"):
-            rows = self._e.backend.node_docs_get(where={"doc_id": doc_id}, include=["metadatas"])
+            rows = self._e.backend.node_docs_get(
+                where={"doc_id": doc_id}, include=["metadatas"]
+            )
             result = set()
-            for m in (rows.get("metadatas") or []):
+            for m in rows.get("metadatas") or []:
                 if m and m.get("node_id"):
                     result.add(m.get("node_id"))
             return sorted(result)
         got = self._e.backend.node_get(where={"doc_id": doc_id})
         return got.get("ids") or []
 
-    def edge_ids_by_doc(self, doc_id: str, insertion_method: str | None = None) -> list[str]:
+    def edge_ids_by_doc(
+        self, doc_id: str, insertion_method: str | None = None
+    ) -> list[str]:
         if insertion_method:
             return self.ids_with_insertion_method(
                 kind="edge",
                 insertion_method=insertion_method,
                 doc_id=doc_id,
             )
-        eps = self._e.backend.edge_endpoints_get(where={"doc_id": doc_id}, include=["metadatas"])
+        eps = self._e.backend.edge_endpoints_get(
+            where={"doc_id": doc_id}, include=["metadatas"]
+        )
         result = set()
-        for m in (eps.get("metadatas") or []):
+        for m in eps.get("metadatas") or []:
             if m and m.get("edge_id"):
                 result.add(m.get("edge_id"))
         return sorted(result)
@@ -586,7 +673,9 @@ class ReadSubsystem(NamespaceProxy):
         rows = self._e.backend.edge_refs_get(where=where, include=["documents"])
         return list({json.loads(d)["edge_id"] for d in (rows.get("documents") or [])})
 
-    def list_edges_with_ref_filter(self, doc_id: str, where: dict | None = None) -> list[Edge]:
+    def list_edges_with_ref_filter(
+        self, doc_id: str, where: dict | None = None
+    ) -> list[Edge]:
         ids = self.edges_by_doc(doc_id, where)
         if not ids:
             return []
@@ -602,7 +691,9 @@ class ReadSubsystem(NamespaceProxy):
         rows = self._e.backend.node_refs_get(where=where, include=["documents"])
         return list({json.loads(d)["node_id"] for d in (rows.get("documents") or [])})
 
-    def list_nodes_with_ref_filter(self, doc_id: str, *, where: dict | None = None) -> list[Node]:
+    def list_nodes_with_ref_filter(
+        self, doc_id: str, *, where: dict | None = None
+    ) -> list[Node]:
         ids = self.nodes_by_doc(doc_id, where=where)
         if not ids:
             return []
@@ -635,13 +726,21 @@ class ReadSubsystem(NamespaceProxy):
         if ids:
             where[key] = {"$in": list(ids)}
 
-        get_refs = self._e.backend.node_refs_get if kind == "node" else self._e.backend.edge_refs_get
+        get_refs = (
+            self._e.backend.node_refs_get
+            if kind == "node"
+            else self._e.backend.edge_refs_get
+        )
         rows = get_refs(where=where, include=["metadatas"])
-        picked = {str(m.get(key)) for m in (rows.get("metadatas") or []) if m and m.get(key)}
+        picked = {
+            str(m.get(key)) for m in (rows.get("metadatas") or []) if m and m.get(key)
+        }
         if picked:
             return sorted(picked)
 
-        get_primary = self._e.backend.node_get if kind == "node" else self._e.backend.edge_get
+        get_primary = (
+            self._e.backend.node_get if kind == "node" else self._e.backend.edge_get
+        )
         if ids:
             got = get_primary(ids=list(ids), include=["documents"])
             documents = got.get("documents") or []
@@ -654,7 +753,7 @@ class ReadSubsystem(NamespaceProxy):
         keep: set[str] = set()
         for entity_id, blob in zip(entity_ids, documents):
             ent = model_cls.model_validate_json(blob)
-            for ref in (ent.mentions or []):
+            for ref in ent.mentions or []:
                 im = getattr(ref, "insertion_method", None)
                 if im == insertion_method and (not doc_id or ref_doc_id(ref) == doc_id):
                     keep.add(entity_id)
@@ -662,10 +761,14 @@ class ReadSubsystem(NamespaceProxy):
         return sorted(keep)
 
     # Legacy names retained during migration
-    def nodes_by_doc_index(self, doc_id: str, insertion_method: str | None = None) -> list[str]:
+    def nodes_by_doc_index(
+        self, doc_id: str, insertion_method: str | None = None
+    ) -> list[str]:
         return self.node_ids_by_doc(doc_id, insertion_method=insertion_method)
 
-    def edge_ids_by_doc_index(self, doc_id: str, insertion_method: str | None = None) -> list[str]:
+    def edge_ids_by_doc_index(
+        self, doc_id: str, insertion_method: str | None = None
+    ) -> list[str]:
         return self.edge_ids_by_doc(doc_id, insertion_method=insertion_method)
 
     def load_node_map(self, *args, **kwargs):
@@ -679,7 +782,9 @@ class ReadSubsystem(NamespaceProxy):
             raise TypeError("load_node_map accepts only ids, node_type, and include")
         if ids is None:
             return {}
-        nodes = self.get_nodes(ids=list(ids), node_type=node_type, include=include or ["documents"])
+        nodes = self.get_nodes(
+            ids=list(ids), node_type=node_type, include=include or ["documents"]
+        )
         return {n.safe_get_id(): n for n in nodes}
 
     def load_edge_map(self, *args, **kwargs):
@@ -693,5 +798,7 @@ class ReadSubsystem(NamespaceProxy):
             raise TypeError("load_edge_map accepts only ids, edge_type, and include")
         if ids is None:
             return {}
-        edges = self.get_edges(ids=list(ids), edge_type=edge_type, include=include or ["documents"])
+        edges = self.get_edges(
+            ids=list(ids), edge_type=edge_type, include=include or ["documents"]
+        )
         return {e.safe_get_id(): e for e in edges}

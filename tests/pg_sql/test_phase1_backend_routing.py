@@ -3,9 +3,8 @@ from __future__ import annotations
 import inspect
 import re
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import List
 
-import pytest
 
 from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
 from graph_knowledge_engine.engine_core import models
@@ -35,7 +34,9 @@ def _dummy_grounding(doc_id: str = "_dummy_doc") -> models.Grounding:
     return models.Grounding(spans=[_dummy_span(doc_id)])
 
 
-def _make_node(*, summary: str, label: str = "N", doc_id: str = "_dummy_doc") -> models.Node:
+def _make_node(
+    *, summary: str, label: str = "N", doc_id: str = "_dummy_doc"
+) -> models.Node:
     return models.Node(
         label=label,
         type="entity",
@@ -51,7 +52,9 @@ def _make_node(*, summary: str, label: str = "N", doc_id: str = "_dummy_doc") ->
     )
 
 
-def _make_edge(*, src: str, tgt: str, relation: str = "related_to", doc_id: str = "_dummy_doc") -> models.Edge:
+def _make_edge(
+    *, src: str, tgt: str, relation: str = "related_to", doc_id: str = "_dummy_doc"
+) -> models.Edge:
     return models.Edge(
         label="E",
         type="relationship",
@@ -110,8 +113,12 @@ def test_phase1_edge_endpoints_materialized_for_hypergraph(tmp_path: Path) -> No
     metas: list[dict] = got.get("metadatas")
 
     assert len(ids) > 0, "Expected edge_endpoints rows for endpoint_id=n1"
-    assert any(m.get("edge_id") == e.safe_get_id() for m in metas), "Expected rows to reference created edge_id"
-    assert any(m.get("role") in ("src", "tgt") for m in metas), "Expected role to be materialized"
+    assert any(m.get("edge_id") == e.safe_get_id() for m in metas), (
+        "Expected rows to reference created edge_id"
+    )
+    assert any(m.get("role") in ("src", "tgt") for m in metas), (
+        "Expected role to be materialized"
+    )
 
 
 def test_phase1_no_direct_collection_method_calls_in_engine() -> None:

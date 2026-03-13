@@ -1,11 +1,9 @@
-
-import os
 import pytest
 
 # NOTE: this test uses the v2 patched engine/backend copies living in /mnt/data.
 from graph_knowledge_engine.engine_core.engine_postgres import PgVectorBackend
 from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
-from graph_knowledge_engine.engine_core.postgres_backend import PgVectorConfig, build_postgres_backend
+
 
 @pytest.mark.integration
 def test_pg_uow_rolls_back_backend_writes(sa_engine, pg_schema):
@@ -21,7 +19,9 @@ def test_pg_uow_rolls_back_backend_writes(sa_engine, pg_schema):
 
     with pytest.raises(RuntimeError):
         with engine.uow():
-            engine.backend.node_add(ids=[nid], documents=["doc"], metadatas=[{"a": 1}], embeddings=None)
+            engine.backend.node_add(
+                ids=[nid], documents=["doc"], metadatas=[{"a": 1}], embeddings=None
+            )
             raise RuntimeError("boom")
 
     got = engine.backend.node_get(ids=[nid], include=["documents", "metadatas"])

@@ -1,10 +1,8 @@
-
 import json
 import sqlite3
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
-import pytest
 
 from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
 from graph_knowledge_engine.engine_core.models import (
@@ -32,7 +30,9 @@ def _span() -> Span:
         context_after="",
         chunk_id=None,
         source_cluster_id=None,
-        verification=MentionVerification(method="human", is_verified=True, score=1.0, notes="test"),
+        verification=MentionVerification(
+            method="human", is_verified=True, score=1.0, notes="test"
+        ),
     )
 
 
@@ -40,7 +40,15 @@ def _g() -> Grounding:
     return Grounding(spans=[_span()])
 
 
-def _wf_node(*, workflow_id: str, node_id: str, op: str, start=False, terminal=False, extra_metadata: dict | None = None) -> WorkflowNode:
+def _wf_node(
+    *,
+    workflow_id: str,
+    node_id: str,
+    op: str,
+    start=False,
+    terminal=False,
+    extra_metadata: dict | None = None,
+) -> WorkflowNode:
     md = {
         "entity_type": "workflow_node",
         "workflow_id": workflow_id,
@@ -122,7 +130,17 @@ def _fetch_events(db_path: Path, *, run_id: str) -> List[Dict[str, Any]]:
         )
         rows = cur.fetchall()
         out: List[Dict[str, Any]] = []
-        for ts_ms, typ, rid, token_id, step_seq, node_id, span_id, parent_span_id, payload_json in rows:
+        for (
+            ts_ms,
+            typ,
+            rid,
+            token_id,
+            step_seq,
+            node_id,
+            span_id,
+            parent_span_id,
+            payload_json,
+        ) in rows:
             out.append(
                 {
                     "ts_ms": int(ts_ms),
@@ -132,7 +150,9 @@ def _fetch_events(db_path: Path, *, run_id: str) -> List[Dict[str, Any]]:
                     "step_seq": int(step_seq),
                     "node_id": str(node_id),
                     "span_id": str(span_id),
-                    "parent_span_id": str(parent_span_id) if parent_span_id is not None else None,
+                    "parent_span_id": str(parent_span_id)
+                    if parent_span_id is not None
+                    else None,
                     "payload": json.loads(payload_json) if payload_json else {},
                 }
             )
@@ -145,7 +165,9 @@ def _events_of(events: List[Dict[str, Any]], typ: str) -> List[Dict[str, Any]]:
     return [e for e in events if e["type"] == typ]
 
 
-def _group_by_step(events: List[Dict[str, Any]], typ: str) -> Dict[Tuple[int, str], List[Dict[str, Any]]]:
+def _group_by_step(
+    events: List[Dict[str, Any]], typ: str
+) -> Dict[Tuple[int, str], List[Dict[str, Any]]]:
     # key: (step_seq, node_id)
     out: Dict[Tuple[int, str], List[Dict[str, Any]]] = {}
     for e in events:
@@ -166,9 +188,15 @@ def _assert_started_completed_pairing(events: List[Dict[str, Any]]) -> None:
     # Every started key must have a completed key
     for k, evs in started.items():
         assert k in completed, f"Missing completed for step {k}"
-        assert len(evs) == 1, f"Expected exactly 1 started event for {k}, got {len(evs)}"
-        assert len(completed[k]) == 1, f"Expected exactly 1 completed event for {k}, got {len(completed[k])}"
-        assert started[k][0]["ts_ms"] <= completed[k][0]["ts_ms"], f"Completed before started for {k}"
+        assert len(evs) == 1, (
+            f"Expected exactly 1 started event for {k}, got {len(evs)}"
+        )
+        assert len(completed[k]) == 1, (
+            f"Expected exactly 1 completed event for {k}, got {len(completed[k])}"
+        )
+        assert started[k][0]["ts_ms"] <= completed[k][0]["ts_ms"], (
+            f"Completed before started for {k}"
+        )
 
     # And no completed without started
     for k in completed.keys():
@@ -180,61 +208,88 @@ def test_tracing_routing_decision_end_to_end(tmp_path: Path):
     conv_dir = tmp_path / "conv"
 
     workflow_id = "wf_trace_routing_gate"
-    workflow_engine = GraphKnowledgeEngine(persist_directory=str(wf_dir), kg_graph_type="workflow")
-    conversation_engine = GraphKnowledgeEngine(persist_directory=str(conv_dir), kg_graph_type="conversation")
+    workflow_engine = GraphKnowledgeEngine(
+        persist_directory=str(wf_dir), kg_graph_type="workflow"
+    )
+    conversation_engine = GraphKnowledgeEngine(
+        persist_directory=str(conv_dir), kg_graph_type="conversation"
+    )
 
     # gate(start) -> b if has_done_a else -> a(default); a -> end
-    n_gate = _wf_node(workflow_id=workflow_id, node_id=f"wf|{workflow_id}|gate", op="gate", start=True)
+    n_gate = _wf_node(
+        workflow_id=workflow_id, node_id=f"wf|{workflow_id}|gate", op="gate", start=True
+    )
     n_a = _wf_node(workflow_id=workflow_id, node_id=f"wf|{workflow_id}|a", op="a")
     n_b = _wf_node(workflow_id=workflow_id, node_id=f"wf|{workflow_id}|b", op="b")
-    n_end = _wf_node(workflow_id=workflow_id, node_id=f"wf|{workflow_id}|end", op="end", terminal=True)
+    n_end = _wf_node(
+        workflow_id=workflow_id,
+        node_id=f"wf|{workflow_id}|end",
+        op="end",
+        terminal=True,
+    )
 
     for n in [n_gate, n_a, n_b, n_end]:
         workflow_engine.add_node(n)
 
-    workflow_engine.add_edge(_wf_edge(
-        workflow_id=workflow_id,
-        edge_id=f"wf|{workflow_id}|e|gate->b",
-        src=n_gate.id,
-        dst=n_b.id,
-        predicate="has_done_a",
-        priority=0,
-        is_default=False,
-    ))
-    workflow_engine.add_edge(_wf_edge(
-        workflow_id=workflow_id,
-        edge_id=f"wf|{workflow_id}|e|gate->a|default",
-        src=n_gate.id,
-        dst=n_a.id,
-        predicate=None,
-        priority=100,
-        is_default=True,
-    ))
-    workflow_engine.add_edge(_wf_edge(
-        workflow_id=workflow_id,
-        edge_id=f"wf|{workflow_id}|e|a->end",
-        src=n_a.id,
-        dst=n_end.id,
-        predicate=None,
-        priority=100,
-        is_default=True,
-    ))
+    workflow_engine.add_edge(
+        _wf_edge(
+            workflow_id=workflow_id,
+            edge_id=f"wf|{workflow_id}|e|gate->b",
+            src=n_gate.id,
+            dst=n_b.id,
+            predicate="has_done_a",
+            priority=0,
+            is_default=False,
+        )
+    )
+    workflow_engine.add_edge(
+        _wf_edge(
+            workflow_id=workflow_id,
+            edge_id=f"wf|{workflow_id}|e|gate->a|default",
+            src=n_gate.id,
+            dst=n_a.id,
+            predicate=None,
+            priority=100,
+            is_default=True,
+        )
+    )
+    workflow_engine.add_edge(
+        _wf_edge(
+            workflow_id=workflow_id,
+            edge_id=f"wf|{workflow_id}|e|a->end",
+            src=n_a.id,
+            dst=n_end.id,
+            predicate=None,
+            priority=100,
+            is_default=True,
+        )
+    )
 
     predicate_registry = {
-        "has_done_a": lambda wf_edge_info, st, last: ("result.a" in st),
+        "has_done_a": lambda wf_edge_info, st, last: "result.a" in st,
     }
 
     def resolve_step(op: str):
         def _fn(ctx):
             if op == "a":
-                return RunSuccess(conversation_node_id=None, state_update=[("u", {"result.a": {"value": "v_a"}})])
+                return RunSuccess(
+                    conversation_node_id=None,
+                    state_update=[("u", {"result.a": {"value": "v_a"}})],
+                )
             if op == "end":
-                return RunSuccess(conversation_node_id=None, state_update=[("u", {"result.end": {"value": "v_end"}})])
+                return RunSuccess(
+                    conversation_node_id=None,
+                    state_update=[("u", {"result.end": {"value": "v_end"}})],
+                )
             return RunSuccess(conversation_node_id=None, state_update=[])
+
         return _fn
-    resolve_step.ops=['a', 'end', 'b', 'gate']
+
+    resolve_step.ops = ["a", "end", "b", "gate"]
     rt = WorkflowRuntime(
-        workflow_engine=GraphKnowledgeEngine(persist_directory=str(wf_dir), kg_graph_type="workflow"),
+        workflow_engine=GraphKnowledgeEngine(
+            persist_directory=str(wf_dir), kg_graph_type="workflow"
+        ),
         conversation_engine=conversation_engine,
         step_resolver=resolve_step,
         predicate_registry=predicate_registry,
@@ -275,7 +330,10 @@ def test_tracing_routing_decision_end_to_end(tmp_path: Path):
     assert gate_rd
     payload = gate_rd[0]["payload"]
     assert "evaluated" in payload and "selected" in payload and "next_nodes" in payload
-    assert any((isinstance(x, list) and len(x) >= 2 and x[1] is False) for x in payload["evaluated"]), payload
+    assert any(
+        (isinstance(x, list) and len(x) >= 2 and x[1] is False)
+        for x in payload["evaluated"]
+    ), payload
     assert payload["next_nodes"] == [n_a.id]
 
     # Standard per-item events exist for telemetry compatibility
@@ -292,56 +350,128 @@ def test_tracing_join_events_end_to_end(tmp_path: Path):
     conv_dir = tmp_path / "conv"
 
     workflow_id = "wf_trace_join"
-    workflow_engine = GraphKnowledgeEngine(persist_directory=str(wf_dir), kg_graph_type="workflow")
-    conversation_engine = GraphKnowledgeEngine(persist_directory=str(conv_dir), kg_graph_type="conversation")
+    workflow_engine = GraphKnowledgeEngine(
+        persist_directory=str(wf_dir), kg_graph_type="workflow"
+    )
+    conversation_engine = GraphKnowledgeEngine(
+        persist_directory=str(conv_dir), kg_graph_type="conversation"
+    )
 
     # start -> fork(fanout) -> (a,b) -> join -> end
-    n_start = _wf_node(workflow_id=workflow_id, node_id=f"wf|{workflow_id}|start", op="start", start=True)
-    n_fork = _wf_node(workflow_id=workflow_id, node_id=f"wf|{workflow_id}|fork", op="fork", extra_metadata={"wf_fanout": True})
+    n_start = _wf_node(
+        workflow_id=workflow_id,
+        node_id=f"wf|{workflow_id}|start",
+        op="start",
+        start=True,
+    )
+    n_fork = _wf_node(
+        workflow_id=workflow_id,
+        node_id=f"wf|{workflow_id}|fork",
+        op="fork",
+        extra_metadata={"wf_fanout": True},
+    )
     n_a = _wf_node(workflow_id=workflow_id, node_id=f"wf|{workflow_id}|a", op="a")
     n_b = _wf_node(workflow_id=workflow_id, node_id=f"wf|{workflow_id}|b", op="b")
-    n_join = _wf_node(workflow_id=workflow_id, node_id=f"wf|{workflow_id}|join", op="join", extra_metadata={"wf_join": True, "wf_join_is_merge": True})
-    n_end = _wf_node(workflow_id=workflow_id, node_id=f"wf|{workflow_id}|end", op="end", terminal=True)
+    n_join = _wf_node(
+        workflow_id=workflow_id,
+        node_id=f"wf|{workflow_id}|join",
+        op="join",
+        extra_metadata={"wf_join": True, "wf_join_is_merge": True},
+    )
+    n_end = _wf_node(
+        workflow_id=workflow_id,
+        node_id=f"wf|{workflow_id}|end",
+        op="end",
+        terminal=True,
+    )
 
     for n in [n_start, n_fork, n_a, n_b, n_join, n_end]:
         workflow_engine.add_node(n)
 
-    workflow_engine.add_edge(_wf_edge(workflow_id=workflow_id, edge_id=f"wf|{workflow_id}|e|start->fork", src=n_start.id, dst=n_fork.id, predicate=None, priority=100, is_default=True))
+    workflow_engine.add_edge(
+        _wf_edge(
+            workflow_id=workflow_id,
+            edge_id=f"wf|{workflow_id}|e|start->fork",
+            src=n_start.id,
+            dst=n_fork.id,
+            predicate=None,
+            priority=100,
+            is_default=True,
+        )
+    )
     # fork fanout edges: predicate edges that always match so fanout returns BOTH
-    workflow_engine.add_edge(_wf_edge(
-        workflow_id=workflow_id,
-        edge_id=f"wf|{workflow_id}|e|fork->a",
-        src=n_fork.id,
-        dst=n_a.id,
-        predicate="fork_all",     # <-- force match
-        priority=10,
-        is_default=False,
-    ))
-    workflow_engine.add_edge(_wf_edge(
-        workflow_id=workflow_id,
-        edge_id=f"wf|{workflow_id}|e|fork->b",
-        src=n_fork.id,
-        dst=n_b.id,
-        predicate="fork_all",     # <-- force match
-        priority=20,
-        is_default=False,
-    ))
+    workflow_engine.add_edge(
+        _wf_edge(
+            workflow_id=workflow_id,
+            edge_id=f"wf|{workflow_id}|e|fork->a",
+            src=n_fork.id,
+            dst=n_a.id,
+            predicate="fork_all",  # <-- force match
+            priority=10,
+            is_default=False,
+        )
+    )
+    workflow_engine.add_edge(
+        _wf_edge(
+            workflow_id=workflow_id,
+            edge_id=f"wf|{workflow_id}|e|fork->b",
+            src=n_fork.id,
+            dst=n_b.id,
+            predicate="fork_all",  # <-- force match
+            priority=20,
+            is_default=False,
+        )
+    )
 
-    predicate_registry = {
-        "fork_all": lambda wf_edge_info, st, last: True
-    }
-    workflow_engine.add_edge(_wf_edge(workflow_id=workflow_id, edge_id=f"wf|{workflow_id}|e|a->join", src=n_a.id, dst=n_join.id, predicate=None, priority=100, is_default=True))
-    workflow_engine.add_edge(_wf_edge(workflow_id=workflow_id, edge_id=f"wf|{workflow_id}|e|b->join", src=n_b.id, dst=n_join.id, predicate=None, priority=100, is_default=True))
-    workflow_engine.add_edge(_wf_edge(workflow_id=workflow_id, edge_id=f"wf|{workflow_id}|e|join->end", src=n_join.id, dst=n_end.id, predicate=None, priority=100, is_default=True))
-
+    predicate_registry = {"fork_all": lambda wf_edge_info, st, last: True}
+    workflow_engine.add_edge(
+        _wf_edge(
+            workflow_id=workflow_id,
+            edge_id=f"wf|{workflow_id}|e|a->join",
+            src=n_a.id,
+            dst=n_join.id,
+            predicate=None,
+            priority=100,
+            is_default=True,
+        )
+    )
+    workflow_engine.add_edge(
+        _wf_edge(
+            workflow_id=workflow_id,
+            edge_id=f"wf|{workflow_id}|e|b->join",
+            src=n_b.id,
+            dst=n_join.id,
+            predicate=None,
+            priority=100,
+            is_default=True,
+        )
+    )
+    workflow_engine.add_edge(
+        _wf_edge(
+            workflow_id=workflow_id,
+            edge_id=f"wf|{workflow_id}|e|join->end",
+            src=n_join.id,
+            dst=n_end.id,
+            predicate=None,
+            priority=100,
+            is_default=True,
+        )
+    )
 
     def resolve_step(op: str):
         def _fn(ctx):
-            return RunSuccess(conversation_node_id=None, state_update=[("u", {f"result.{op}": {"value": f"v_{op}"}})])
+            return RunSuccess(
+                conversation_node_id=None,
+                state_update=[("u", {f"result.{op}": {"value": f"v_{op}"}})],
+            )
+
         return _fn
-    resolve_step.ops=['start', 'end', 'a', 'b', 'join', 'fork']
+
+    resolve_step.ops = ["start", "end", "a", "b", "join", "fork"]
     rt = WorkflowRuntime(
-        workflow_engine=GraphKnowledgeEngine(persist_directory=str(wf_dir), kg_graph_type="workflow"),
+        workflow_engine=GraphKnowledgeEngine(
+            persist_directory=str(wf_dir), kg_graph_type="workflow"
+        ),
         conversation_engine=conversation_engine,
         step_resolver=resolve_step,
         predicate_registry=predicate_registry,
@@ -366,7 +496,9 @@ def test_tracing_join_events_end_to_end(tmp_path: Path):
     assert "join_released" in types
 
     join_events = [e for e in events if e["type"].startswith("join_")]
-    assert any(e["payload"].get("join_node_id") == n_join.id for e in join_events), join_events[:5]
+    assert any(e["payload"].get("join_node_id") == n_join.id for e in join_events), (
+        join_events[:5]
+    )
 
     # Sanity final state
     assert final_state["result.start"]["value"] == "v_start"

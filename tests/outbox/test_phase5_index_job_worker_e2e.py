@@ -12,7 +12,9 @@ TEST_EMBEDDING = FakeEmbeddingFunction(dim=3)
 def eng(tmp_path) -> GraphKnowledgeEngine:
     persist_dir = tmp_path / "chroma"
     persist_dir.mkdir(parents=True, exist_ok=True)
-    e = GraphKnowledgeEngine(persist_directory=str(persist_dir), embedding_function=TEST_EMBEDDING)
+    e = GraphKnowledgeEngine(
+        persist_directory=str(persist_dir), embedding_function=TEST_EMBEDDING
+    )
     e._phase1_enable_index_jobs = True  # ensure reconcile pipeline enabled
     return e
 
@@ -65,7 +67,9 @@ def test_phase5_job_fail_increments_retry_and_requeues(eng, monkeypatch):
 
     monkeypatch.setattr(eng.indexing, "apply_index_job", lambda **kw: _boom(**kw))
 
-    worker = IndexJobWorker(engine=eng, batch_size=1, lease_seconds=60, max_jobs_per_tick=1, namespace=ns)
+    worker = IndexJobWorker(
+        engine=eng, batch_size=1, lease_seconds=60, max_jobs_per_tick=1, namespace=ns
+    )
     m = worker.tick()
     assert m.claimed == 1
     assert m.retried == 1
@@ -92,9 +96,15 @@ def test_phase5_job_exceeds_max_retry_becomes_dlq_terminal(eng, monkeypatch):
         max_retries=2,
     )
 
-    monkeypatch.setattr(eng.indexing, "apply_index_job", lambda **kw: (_ for _ in ()).throw(RuntimeError("boom")))
+    monkeypatch.setattr(
+        eng.indexing,
+        "apply_index_job",
+        lambda **kw: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
 
-    worker = IndexJobWorker(engine=eng, batch_size=1, lease_seconds=60, max_jobs_per_tick=1, namespace=ns)
+    worker = IndexJobWorker(
+        engine=eng, batch_size=1, lease_seconds=60, max_jobs_per_tick=1, namespace=ns
+    )
 
     # 1st failure => retry
     m1 = worker.tick()
@@ -103,7 +113,9 @@ def test_phase5_job_exceeds_max_retry_becomes_dlq_terminal(eng, monkeypatch):
     # Make eligible immediately (simulate time passing)
     with eng.meta_sqlite.transaction() as conn:
         now = eng.meta_sqlite._now_epoch()
-        conn.execute("UPDATE index_jobs SET next_run_at=? WHERE job_id=?", (now, job_id))
+        conn.execute(
+            "UPDATE index_jobs SET next_run_at=? WHERE job_id=?", (now, job_id)
+        )
 
     # 2nd failure => DLQ (FAILED terminal)
     m2 = worker.tick()
@@ -167,7 +179,9 @@ def test_phase5_idempotent_apply_under_at_least_once(eng, monkeypatch):
         op="upsert",
     )
 
-    worker = IndexJobWorker(engine=eng, batch_size=1, lease_seconds=60, max_jobs_per_tick=1, namespace=ns)
+    worker = IndexJobWorker(
+        engine=eng, batch_size=1, lease_seconds=60, max_jobs_per_tick=1, namespace=ns
+    )
 
     m1 = worker.tick()
     assert m1.done == 1

@@ -80,7 +80,11 @@ def test_pg_container_fixture_starts_and_stops_container(monkeypatch):
 
 
 def test_pg_container_fixture_yields_none_on_start_failure(monkeypatch):
-    monkeypatch.setattr(test_conf, "_start_postgres_container", MagicMock(side_effect=RuntimeError("docker unavailable")))
+    monkeypatch.setattr(
+        test_conf,
+        "_start_postgres_container",
+        MagicMock(side_effect=RuntimeError("docker unavailable")),
+    )
     monkeypatch.setattr(test_conf.logger, "warning", MagicMock())
     gen = test_conf.pg_container.__wrapped__()
 
@@ -96,7 +100,9 @@ def test_pg_container_fixture_retries_without_ryuk_on_ryuk_port_failure(monkeypa
     fake_pg = MagicMock()
     start_mock = MagicMock(
         side_effect=[
-            RuntimeError("Port mapping for container abc and port 8080 is not available"),
+            RuntimeError(
+                "Port mapping for container abc and port 8080 is not available"
+            ),
             fake_pg,
         ]
     )
@@ -129,7 +135,9 @@ def test_sa_engine_fixture_disposes_engine(monkeypatch):
 
     yielded = next(gen)
     assert yielded is fake_engine
-    fake_sa.create_engine.assert_called_once_with("postgresql+psycopg://example/test", future=True)
+    fake_sa.create_engine.assert_called_once_with(
+        "postgresql+psycopg://example/test", future=True
+    )
 
     gen.close()
     fake_engine.dispose.assert_called_once_with()

@@ -1,7 +1,10 @@
 import pytest
 from pydantic import ValidationError
 
-from graph_knowledge_engine.conversation.models import ConversationEdge, ConversationNodeMetadata
+from graph_knowledge_engine.conversation.models import (
+    ConversationEdge,
+    ConversationNodeMetadata,
+)
 from graph_knowledge_engine.engine_core.models import Span, Grounding
 from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
 
@@ -17,10 +20,13 @@ def test_node_metadata_forbids_summary_distance_fields():
                 "turn_distance_from_last_summary": 2,
             }
         )
+
+
 def _mk_span(doc_id: str) -> Span:
     sp = Span.from_dummy_for_document()
     sp.doc_id = doc_id
     return sp
+
 
 def _mk_edge(src: str, tgt: str) -> ConversationEdge:
     # Avoid heavy validation; we only need fields used by Phase-1 invariants.
@@ -58,14 +64,20 @@ def _flatten_and(where: dict | None) -> dict:
 
 def _bind(eng: GraphKnowledgeEngine, *, existing_endpoints: list[dict]):
     # Bind the real normalization + validation implementations
-    eng._normalize_conversation_edge_metadata = GraphKnowledgeEngine._normalize_conversation_edge_metadata.__get__(eng)
-    eng._validate_conversation_edge_add = GraphKnowledgeEngine._validate_conversation_edge_add.__get__(eng)
+    eng._normalize_conversation_edge_metadata = (
+        GraphKnowledgeEngine._normalize_conversation_edge_metadata.__get__(eng)
+    )
+    eng._validate_conversation_edge_add = (
+        GraphKnowledgeEngine._validate_conversation_edge_add.__get__(eng)
+    )
 
     # Minimal where-and helper (matches engine semantics for Phase-1)
     if not hasattr(eng, "_where_and"):
+
         def _where_and(*parts):
             terms = [p for p in parts if isinstance(p, dict) and p]
             return {"$and": terms} if len(terms) > 1 else (terms[0] if terms else {})
+
         eng._where_and = _where_and  # type: ignore
 
     # Endpoint existence check is what Phase-1 validator uses (no full scans)
@@ -89,8 +101,20 @@ def test_conversation_engine_next_turn_outgoing_uniqueness_enforced():
 
     # Existing edge A -> B implies an outgoing next_turn endpoint for src=A
     existing_endpoints = [
-        {"doc_id": "conv:c", "relation": "next_turn", "role": "src", "endpoint_type": "node", "endpoint_id": "A"},
-        {"doc_id": "conv:c", "relation": "next_turn", "role": "tgt", "endpoint_type": "node", "endpoint_id": "B"},
+        {
+            "doc_id": "conv:c",
+            "relation": "next_turn",
+            "role": "src",
+            "endpoint_type": "node",
+            "endpoint_id": "A",
+        },
+        {
+            "doc_id": "conv:c",
+            "relation": "next_turn",
+            "role": "tgt",
+            "endpoint_type": "node",
+            "endpoint_id": "B",
+        },
     ]
     _bind(eng, existing_endpoints=existing_endpoints)
     eng.kg_graph_type = "conversation"
@@ -103,8 +127,20 @@ def test_conversation_engine_next_turn_incoming_uniqueness_enforced():
 
     # Existing edge A -> B implies an incoming next_turn endpoint for tgt=B
     existing_endpoints = [
-        {"doc_id": "conv:c", "relation": "next_turn", "role": "src", "endpoint_type": "node", "endpoint_id": "A"},
-        {"doc_id": "conv:c", "relation": "next_turn", "role": "tgt", "endpoint_type": "node", "endpoint_id": "B"},
+        {
+            "doc_id": "conv:c",
+            "relation": "next_turn",
+            "role": "src",
+            "endpoint_type": "node",
+            "endpoint_id": "A",
+        },
+        {
+            "doc_id": "conv:c",
+            "relation": "next_turn",
+            "role": "tgt",
+            "endpoint_type": "node",
+            "endpoint_id": "B",
+        },
     ]
     _bind(eng, existing_endpoints=existing_endpoints)
     eng.kg_graph_type = "conversation"

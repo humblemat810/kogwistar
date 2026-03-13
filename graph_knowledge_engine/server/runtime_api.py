@@ -76,6 +76,7 @@ def create_runtime_router(
 ):
     router = APIRouter(prefix="/api/workflow", tags=["runtime"])
     get_service_r = cast(Callable[[], ChatRunService], get_service)
+
     @router.post("/runs")
     def submit_workflow_run(inp: SubmitWorkflowRunIn):
         require_role("rw")
@@ -83,7 +84,9 @@ def create_runtime_router(
         if require_workflow_access:
             require_workflow_access(inp.workflow_id, "rw")
         try:
-            effective_user_id = (get_user_id() if callable(get_user_id) else None) or inp.user_id
+            effective_user_id = (
+                get_user_id() if callable(get_user_id) else None
+            ) or inp.user_id
             payload = get_service_r().submit_workflow_run(
                 workflow_id=inp.workflow_id,
                 conversation_id=inp.conversation_id,
@@ -129,7 +132,9 @@ def create_runtime_router(
                         "created_at_ms": evt["created_at_ms"],
                         **(evt["payload"] or {}),
                     }
-                    yield _sse_frame(event_type=evt["event_type"], seq=last_seq, payload=payload)
+                    yield _sse_frame(
+                        event_type=evt["event_type"], seq=last_seq, payload=payload
+                    )
                 run = service.get_run(run_id)
                 if run["terminal"] and not events:
                     break
@@ -140,7 +145,9 @@ def create_runtime_router(
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
         }
-        return StreamingResponse(event_stream(), media_type="text/event-stream", headers=headers)
+        return StreamingResponse(
+            event_stream(), media_type="text/event-stream", headers=headers
+        )
 
     @router.post("/runs/{run_id}/cancel")
     def cancel_workflow_run(run_id: str):
@@ -324,11 +331,13 @@ def create_runtime_router(
             )
         except Exception as exc:  # noqa: BLE001
             raise _as_http_error(exc)
-        
+
     @router.get("/api/workflow/design/{workflow_id}/graph")
     def workflow_design_graph(workflow_id: str, refresh: bool = False):
         service = get_service_r()
-        return service.get().workflow_design_graph(workflow_id=workflow_id, refresh=refresh)
+        return service.get().workflow_design_graph(
+            workflow_id=workflow_id, refresh=refresh
+        )
 
     @router.get("/api/workflow/catalog/ops")
     def workflow_catalog_ops():

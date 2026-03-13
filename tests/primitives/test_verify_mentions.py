@@ -6,12 +6,14 @@ from graph_knowledge_engine.engine_core.models import MentionVerification, Node
 from tests.conftest import FakeEmbeddingFunction
 from tests._kg_factories import kg_document, kg_grounding
 
+
 @pytest.fixture
 def engine_tmp(tmp_path):
     return GraphKnowledgeEngine(
         persist_directory=str(tmp_path / "chroma"),
         embedding_function=FakeEmbeddingFunction(dim=8),
     )
+
 
 def test_verify_mentions_for_doc(engine_tmp):
     # 1) add a doc with known text

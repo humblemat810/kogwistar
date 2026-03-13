@@ -36,7 +36,8 @@ show("claw loop hints", claw_hints)
 show(
     "checkpoint",
     {
-        "checkpoint_pass": bool(runtime_level3.get("checkpoint_pass")) and bool(claw_hints.get("commands")),
+        "checkpoint_pass": bool(runtime_level3.get("checkpoint_pass"))
+        and bool(claw_hints.get("commands")),
         "trace_event_types": runtime_level3.get("trace_event_types"),
         "invariant": "execution history remains observable through trace sink and event-loop surfaces",
     },

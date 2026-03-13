@@ -13,10 +13,9 @@ Each provider implements the ChromaDB EmbeddingFunction protocol:
 
 from __future__ import annotations
 
-import functools
 import logging
 import os
-from typing import Any, Callable, Sequence, cast
+from typing import Any, Sequence, cast
 
 import numpy as np
 
@@ -28,15 +27,18 @@ logger = logging.getLogger(__name__)
 try:
     from chromadb.api.types import EmbeddingFunction, Embeddings  # type: ignore
 except Exception:
+
     class EmbeddingFunction:  # type: ignore[no-redef]
         @staticmethod
         def name() -> str:
             return "default"
+
     Embeddings = list[list[float]]  # type: ignore[assignment]
 
 # ---------------------------------------------------------------------------
 # Shared normalisation helper
 # ---------------------------------------------------------------------------
+
 
 def _l2_normalize(vectors: list[list[float]]) -> list[list[float]]:
     """L2-normalise each vector; skip zero-vectors."""
@@ -52,6 +54,7 @@ def _l2_normalize(vectors: list[list[float]]) -> list[list[float]]:
 # Provider implementations
 # ---------------------------------------------------------------------------
 
+
 class OllamaEmbeddingFunction(EmbeddingFunction):
     """Ollama-backed embeddings (default). Reads OLLAMA_HOST for endpoint."""
 
@@ -64,6 +67,7 @@ class OllamaEmbeddingFunction(EmbeddingFunction):
 
     def __call__(self, documents_or_texts: Sequence[str]) -> Embeddings:
         import ollama  # deferred so absence doesn't crash other providers
+
         raw: list[list[float]] = []
         for p in documents_or_texts:
             out = ollama.embeddings(model=self.model_name, prompt=p)
@@ -79,16 +83,23 @@ class OpenAIEmbeddingFunction(EmbeddingFunction):
     def name() -> str:
         return "openai"
 
-    def __init__(self, model_name: str = "text-embedding-3-small", api_key: str | None = None):
+    def __init__(
+        self, model_name: str = "text-embedding-3-small", api_key: str | None = None
+    ):
         self.model_name = model_name
         self.api_key = api_key or os.getenv("OPENAI_API_KEY")
         if not self.api_key:
-            raise ValueError("OPENAI_API_KEY env var required for openai embedding provider")
+            raise ValueError(
+                "OPENAI_API_KEY env var required for openai embedding provider"
+            )
 
     def __call__(self, documents_or_texts: Sequence[str]) -> Embeddings:
         import openai
+
         client = openai.OpenAI(api_key=self.api_key)
-        resp = client.embeddings.create(input=list(documents_or_texts), model=self.model_name)
+        resp = client.embeddings.create(
+            input=list(documents_or_texts), model=self.model_name
+        )
         raw = [item.embedding for item in resp.data]
         return _l2_normalize(raw)
 
@@ -112,16 +123,21 @@ class AzureEmbeddingFunction(EmbeddingFunction):
         self.endpoint = endpoint or os.getenv("AZURE_OPENAI_ENDPOINT")
         self.api_version = api_version
         if not self.api_key or not self.endpoint:
-            raise ValueError("AZURE_OPENAI_API_KEY and AZURE_OPENAI_ENDPOINT required for azure embedding provider")
+            raise ValueError(
+                "AZURE_OPENAI_API_KEY and AZURE_OPENAI_ENDPOINT required for azure embedding provider"
+            )
 
     def __call__(self, documents_or_texts: Sequence[str]) -> Embeddings:
         import openai
+
         client = openai.AzureOpenAI(
             api_key=self.api_key,
             api_version=self.api_version,
             azure_endpoint=self.endpoint,
         )
-        resp = client.embeddings.create(input=list(documents_or_texts), model=self.model_name)
+        resp = client.embeddings.create(
+            input=list(documents_or_texts), model=self.model_name
+        )
         raw = [item.embedding for item in resp.data]
         return _l2_normalize(raw)
 
@@ -133,19 +149,26 @@ class GoogleEmbeddingFunction(EmbeddingFunction):
     def name() -> str:
         return "google"
 
-    def __init__(self, model_name: str = "text-embedding-004", api_key: str | None = None):
+    def __init__(
+        self, model_name: str = "text-embedding-004", api_key: str | None = None
+    ):
         self.model_name = model_name
         self.api_key = api_key or os.getenv("GOOGLE_API_KEY")
         if not self.api_key:
-            raise ValueError("GOOGLE_API_KEY env var required for google embedding provider")
+            raise ValueError(
+                "GOOGLE_API_KEY env var required for google embedding provider"
+            )
 
     def __call__(self, documents_or_texts: Sequence[str]) -> Embeddings:
         import google.generativeai as genai
+
         genai.configure(api_key=self.api_key)
         raw: list[list[float]] = []
         # Batch if possible, else one-by-one
         for text in documents_or_texts:
-            result = genai.embed_content(model=f"models/{self.model_name}", content=text)
+            result = genai.embed_content(
+                model=f"models/{self.model_name}", content=text
+            )
             raw.append(result["embedding"])
         return _l2_normalize(raw)
 

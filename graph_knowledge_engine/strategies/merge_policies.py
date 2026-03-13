@@ -110,7 +110,9 @@ class PreferExistingCanonical(MergePolicy):
             source_ids=s_nodes,
             target_ids=t_nodes,
             properties={"confidence": verdict.confidence},
-            mentions=[Grounding(spans=[adjundication_span(verdict, left, right, method)])],
+            mentions=[
+                Grounding(spans=[adjundication_span(verdict, left, right, method)])
+            ],
             doc_id="__adjudication__",
             source_edge_ids=s_edges,
             target_edge_ids=t_edges,

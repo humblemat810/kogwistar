@@ -15,6 +15,7 @@ import re
 from graph_knowledge_engine.conversation.models import ConversationNode
 from tests.conftest import _make_engine_pair
 
+
 def _minimal_bundle_template() -> str:
     """
     Minimal HTML template used for dump tests.
@@ -62,11 +63,11 @@ window.__BUNDLE_META__ = null;
 #         conv_schema = f"{pg_schema}_conv"
 #         kg_backend = PgVectorBackend(engine=sa_engine, embedding_dim=dim, schema=kg_schema)
 #         conv_backend = PgVectorBackend(engine=sa_engine, embedding_dim=dim, schema=conv_schema)
-#         kg_engine = GraphKnowledgeEngine(persist_directory=str(tmp_path / "kg_meta"), kg_graph_type="knowledge", 
-#                                         #  embedding_function=ef, 
+#         kg_engine = GraphKnowledgeEngine(persist_directory=str(tmp_path / "kg_meta"), kg_graph_type="knowledge",
+#                                         #  embedding_function=ef,
 #                                          backend=kg_backend)
-#         conv_engine = GraphKnowledgeEngine(persist_directory=str(tmp_path / "conv_meta"), kg_graph_type="conversation", 
-#                                         #    embedding_function=ef, 
+#         conv_engine = GraphKnowledgeEngine(persist_directory=str(tmp_path / "conv_meta"), kg_graph_type="conversation",
+#                                         #    embedding_function=ef,
 #                                            backend=conv_backend)
 #         return kg_engine, conv_engine
 
@@ -81,12 +82,23 @@ def seeded_kg_and_conversation(request, tmp_path, sa_engine, pg_schema):
     """
     backend_kind: str = request.param
     kg_engine, conv_engine = _make_engine_pair(
-        backend_kind=backend_kind, tmp_path=tmp_path, sa_engine=sa_engine, pg_schema=pg_schema, dim=3
+        backend_kind=backend_kind,
+        tmp_path=tmp_path,
+        sa_engine=sa_engine,
+        pg_schema=pg_schema,
+        dim=3,
     )
 
-    from graph_knowledge_engine.engine_core.models import Node, Grounding, Span, MentionVerification
+    from graph_knowledge_engine.engine_core.models import (
+        Node,
+        Grounding,
+        Span,
+        MentionVerification,
+    )
+
     conv_id = "test-conv-seeded_kg_and_conversation"
     t0_text = "show me what happened in the graph engine"
+
     def _span():
         return Span(
             collection_page_url="test",
@@ -101,7 +113,9 @@ def seeded_kg_and_conversation(request, tmp_path, sa_engine, pg_schema):
             context_after="",
             chunk_id=None,
             source_cluster_id=None,
-            verification=MentionVerification(method="human", is_verified=True, score=1.0, notes="seed"),
+            verification=MentionVerification(
+                method="human", is_verified=True, score=1.0, notes="seed"
+            ),
         )
 
     g = Grounding(spans=[_span()])
@@ -138,10 +152,10 @@ def seeded_kg_and_conversation(request, tmp_path, sa_engine, pg_schema):
         domain_id=None,
         canonical_entity_id=None,
         metadata={
-                "entity_type": "conversation_turn",
-                "level_from_root": 0,
-                "in_conversation_chain": True,
-            },
+            "entity_type": "conversation_turn",
+            "level_from_root": 0,
+            "in_conversation_chain": True,
+        },
         role="user",  # type: ignore
         turn_index=0,
         conversation_id=conv_id,
@@ -151,10 +165,13 @@ def seeded_kg_and_conversation(request, tmp_path, sa_engine, pg_schema):
     conv_engine.add_node(conv_n)
 
     kg_dir = pathlib.Path(getattr(kg_engine, "persist_directory", str(tmp_path / "kg")))
-    conv_dir = pathlib.Path(getattr(conv_engine, "persist_directory", str(tmp_path / "conv")))
+    conv_dir = pathlib.Path(
+        getattr(conv_engine, "persist_directory", str(tmp_path / "conv"))
+    )
     kg_seed = {"node_ids": ["A", "B", "C"]}
     conv_seed = {"node_ids": ["conv|turn|1"]}
     return kg_engine, conv_engine, kg_seed, conv_seed, kg_dir, conv_dir
+
 
 # Regex-based extraction is used instead of string slicing because:
 # - HTML formatting may change
@@ -164,6 +181,7 @@ _EMBEDDED_RE = re.compile(
     r"window\.__EMBEDDED_DATA__\s*=\s*(\{.*?\})\s*;",
     re.DOTALL,
 )
+
 
 def _extract_embedded_payload(html: str) -> dict:
     """
@@ -177,8 +195,12 @@ def _extract_embedded_payload(html: str) -> dict:
     return json.loads(m.group(1))
 
 
-def test_dump_paired_bundles_embeds_graph_data_and_links(tmp_path: Path, seeded_kg_and_conversation):
-    kg_engine, conv_engine, kg_seed, conv_seed, kg_dir, conv_dir = seeded_kg_and_conversation
+def test_dump_paired_bundles_embeds_graph_data_and_links(
+    tmp_path: Path, seeded_kg_and_conversation
+):
+    kg_engine, conv_engine, kg_seed, conv_seed, kg_dir, conv_dir = (
+        seeded_kg_and_conversation
+    )
     mod = importlib.import_module("graph_knowledge_engine.utils.kge_debug_dump")
 
     out_dir = tmp_path / "dump_run"
@@ -216,50 +238,81 @@ def test_dump_paired_bundles_embeds_graph_data_and_links(tmp_path: Path, seeded_
 
     # Find conversation node that points at KG
     conv_nodes = conv_payload.get("nodes", [])
-    ref_nodes = [n for n in conv_nodes if (n.get("properties") or {}).get("refers_to_id")]
-    assert ref_nodes, "Expected at least one conversation node with properties.refers_to_id"
+    ref_nodes = [
+        n for n in conv_nodes if (n.get("properties") or {}).get("refers_to_id")
+    ]
+    assert ref_nodes, (
+        "Expected at least one conversation node with properties.refers_to_id"
+    )
 
     # Ensure the referenced ID exists in KG payload
-    ref_id = (ref_nodes[0]["properties"]["refers_to_id"])
+    ref_id = ref_nodes[0]["properties"]["refers_to_id"]
     assert ref_id in kg_node_ids
-    
-    
+
+
 import subprocess
 import sys
 
+
 def test_cli_pair_real_persisted(tmp_path: Path, seeded_kg_and_conversation):
-    kg_engine, conv_engine, kg_seed, conv_seed, kg_dir, conv_dir = seeded_kg_and_conversation
+    kg_engine, conv_engine, kg_seed, conv_seed, kg_dir, conv_dir = (
+        seeded_kg_and_conversation
+    )
 
     # The CLI creates engines from persist dirs, so we pass the same dirs.
-    kg_dir = Path(kg_engine.persist_directory) if hasattr(kg_engine, "persist_directory") else (tmp_path / "chroma_kg")
-    conv_dir = Path(conv_engine.persist_directory) if hasattr(conv_engine, "persist_directory") else (tmp_path / "chroma_conv")
-    workflow_dir = Path(conv_engine.persist_directory) if hasattr(conv_engine, "persist_directory") else (tmp_path / "workflow")
-    
+    kg_dir = (
+        Path(kg_engine.persist_directory)
+        if hasattr(kg_engine, "persist_directory")
+        else (tmp_path / "chroma_kg")
+    )
+    conv_dir = (
+        Path(conv_engine.persist_directory)
+        if hasattr(conv_engine, "persist_directory")
+        else (tmp_path / "chroma_conv")
+    )
+    workflow_dir = (
+        Path(conv_engine.persist_directory)
+        if hasattr(conv_engine, "persist_directory")
+        else (tmp_path / "workflow")
+    )
+
     template = tmp_path / "d3.html"
-    template.write_text("""<script>
+    template.write_text(
+        """<script>
 window.__EMBEDDED_DATA__ = null;
 window.__BUNDLE_META__ = null;
-</script>""", encoding="utf-8")
+</script>""",
+        encoding="utf-8",
+    )
 
     out_dir = tmp_path / "cli_dump"
 
     cmd = [
-        sys.executable, "-m", "graph_knowledge_engine.utils.kge_debug_dump",
+        sys.executable,
+        "-m",
+        "graph_knowledge_engine.utils.kge_debug_dump",
         "bundle",
-        "--kg-persist-dir", str(kg_dir),
-        "--conversation-persist-dir", str(conv_dir),
-        "--workflow-persist-dir", str(workflow_dir),
-        "--template", str(template),
-        "--out-dir", str(out_dir),
-        "--kg-doc-id", "KG_DOC",
-        "--conversation-doc-id", "CONV_DOC",
-        "--mode", "reify",
-        "--insertion-method", "pytest-seed",
+        "--kg-persist-dir",
+        str(kg_dir),
+        "--conversation-persist-dir",
+        str(conv_dir),
+        "--workflow-persist-dir",
+        str(workflow_dir),
+        "--template",
+        str(template),
+        "--out-dir",
+        str(out_dir),
+        "--kg-doc-id",
+        "KG_DOC",
+        "--conversation-doc-id",
+        "CONV_DOC",
+        "--mode",
+        "reify",
+        "--insertion-method",
+        "pytest-seed",
     ]
     subprocess.check_call(cmd)
 
     assert (out_dir / "kg.bundle.html").exists()
     assert (out_dir / "conversation.bundle.html").exists()
     assert (out_dir / "bundle.meta.json").exists()
-    
-    

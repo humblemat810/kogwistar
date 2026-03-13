@@ -1,9 +1,13 @@
 import json
-import pytest
 import uuid
-import queue
 from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
-from graph_knowledge_engine.runtime.models import RunFailure, RunSuccess, RunSuspended, WorkflowEdge, WorkflowNode
+from graph_knowledge_engine.runtime.models import (
+    RunFailure,
+    RunSuccess,
+    RunSuspended,
+    WorkflowEdge,
+    WorkflowNode,
+)
 from graph_knowledge_engine.runtime.runtime import WorkflowRuntime, StepContext
 from graph_knowledge_engine.runtime.resolvers import MappingStepResolver
 from graph_knowledge_engine.runtime.sandbox import SandboxRequest
@@ -11,7 +15,10 @@ from tests.conftest import FakeEmbeddingFunction
 
 from graph_knowledge_engine.engine_core.models import Span, Grounding
 
-from graph_knowledge_engine.engine_core.models import Span, Grounding, MentionVerification
+from graph_knowledge_engine.engine_core.models import (
+    MentionVerification,
+)
+
 
 def _get_dummy_grounding():
     sp = Span(
@@ -27,12 +34,23 @@ def _get_dummy_grounding():
         context_after="",
         chunk_id=None,
         source_cluster_id=None,
-        verification=MentionVerification(method="system", is_verified=True, score=1.0, notes="")
+        verification=MentionVerification(
+            method="system", is_verified=True, score=1.0, notes=""
+        ),
     )
     return Grounding(spans=[sp])
 
 
-def _create_node(engine: GraphKnowledgeEngine, wf_id: str, node_id: str, op: str, start: bool = False, terminal: bool = False, fanout: bool = False, wf_join: bool = False):
+def _create_node(
+    engine: GraphKnowledgeEngine,
+    wf_id: str,
+    node_id: str,
+    op: str,
+    start: bool = False,
+    terminal: bool = False,
+    fanout: bool = False,
+    wf_join: bool = False,
+):
     engine.add_node(
         WorkflowNode(
             id=node_id,
@@ -55,9 +73,10 @@ def _create_node(engine: GraphKnowledgeEngine, wf_id: str, node_id: str, op: str
             domain_id=None,
             canonical_entity_id=None,
             embedding=None,
-            level_from_root=0
+            level_from_root=0,
         )
     )
+
 
 def _create_edge(
     engine: GraphKnowledgeEngine,
@@ -97,8 +116,12 @@ def _create_edge(
 
 
 def _latest_checkpoint_state(conv_engine: GraphKnowledgeEngine, run_id: str) -> dict:
-    ckpts = conv_engine.get_nodes(where={"$and": [{"entity_type": "workflow_checkpoint"}, {"run_id": run_id}]})
-    latest = max(ckpts, key=lambda c: int(getattr(c, "metadata", {}).get("step_seq", -1)))
+    ckpts = conv_engine.get_nodes(
+        where={"$and": [{"entity_type": "workflow_checkpoint"}, {"run_id": run_id}]}
+    )
+    latest = max(
+        ckpts, key=lambda c: int(getattr(c, "metadata", {}).get("step_seq", -1))
+    )
     state_json = latest.metadata.get("state_json", {})
     if isinstance(state_json, str):
         state_json = json.loads(state_json)
@@ -106,7 +129,10 @@ def _latest_checkpoint_state(conv_engine: GraphKnowledgeEngine, run_id: str) -> 
 
 
 def _workflow_step_exec_nodes(conv_engine: GraphKnowledgeEngine, run_id: str):
-    return conv_engine.get_nodes(where={"$and": [{"entity_type": "workflow_step_exec"}, {"run_id": run_id}]})
+    return conv_engine.get_nodes(
+        where={"$and": [{"entity_type": "workflow_step_exec"}, {"run_id": run_id}]}
+    )
+
 
 def test_workflow_suspend_and_resume(tmp_path):
     wf_engine = GraphKnowledgeEngine(
@@ -119,14 +145,14 @@ def test_workflow_suspend_and_resume(tmp_path):
         kg_graph_type="conversation",
         embedding_function=FakeEmbeddingFunction(),
     )
-    
+
     wf_id = "test_suspend_wf"
-    
+
     # start -> do_suspend -> end
     _create_node(wf_engine, wf_id, "n_start", "start_op", start=True)
     _create_node(wf_engine, wf_id, "n_suspend", "suspend_op")
     _create_node(wf_engine, wf_id, "n_end", "end_op", terminal=True)
-    
+
     _create_edge(wf_engine, wf_id, "n_start", "n_suspend")
     _create_edge(wf_engine, wf_id, "n_suspend", "n_end")
 
@@ -134,19 +160,23 @@ def test_workflow_suspend_and_resume(tmp_path):
 
     @resolver.register("start_op")
     def _start(ctx: StepContext):
-        return RunSuccess(conversation_node_id=None, state_update=[('u', {'started': True})])
+        return RunSuccess(
+            conversation_node_id=None, state_update=[("u", {"started": True})]
+        )
 
     @resolver.register("suspend_op")
     def _suspend(ctx: StepContext):
         return RunSuspended(
             conversation_node_id=None,
             state_update=[],
-            resume_payload={"task": "calculate_pi"}
+            resume_payload={"task": "calculate_pi"},
         )
 
     @resolver.register("end_op")
     def _end(ctx: StepContext):
-        return RunSuccess(conversation_node_id=None, state_update=[('u', {'ended': True})])
+        return RunSuccess(
+            conversation_node_id=None, state_update=[("u", {"ended": True})]
+        )
 
     runtime = WorkflowRuntime(
         workflow_engine=wf_engine,
@@ -164,8 +194,17 @@ def test_workflow_suspend_and_resume(tmp_path):
         workflow_id=wf_id,
         conversation_id=conv_id,
         turn_node_id="turn_1",
-        initial_state={"conversation_id": "test", "user_id": "test", "turn_node_id": "test", "turn_index": 0, "role": "user", "user_text": "", "mem_id": "test", "self_span": {}}, # type: ignore
-        run_id=run_id
+        initial_state={
+            "conversation_id": "test",
+            "user_id": "test",
+            "turn_node_id": "test",
+            "turn_index": 0,
+            "role": "user",
+            "user_text": "",
+            "mem_id": "test",
+            "self_span": {},
+        },  # type: ignore
+        run_id=run_id,
     )
 
     assert res1.status == "suspended"
@@ -177,9 +216,12 @@ def test_workflow_suspend_and_resume(tmp_path):
         where={"$and": [{"entity_type": "workflow_checkpoint"}, {"run_id": run_id}]}
     )
     assert len(ckpts) > 0
-    latest = max(ckpts, key=lambda c: int(getattr(c, "metadata", {}).get("step_seq", -1)))
+    latest = max(
+        ckpts, key=lambda c: int(getattr(c, "metadata", {}).get("step_seq", -1))
+    )
     state_json = latest.metadata.get("state_json", {})
     import json
+
     if isinstance(state_json, str):
         state_json = json.loads(state_json)
     rt_join = state_json.get("_rt_join", {})
@@ -191,8 +233,7 @@ def test_workflow_suspend_and_resume(tmp_path):
 
     # 2. Emulate client finishing task and providing result
     client_result = RunSuccess(
-        conversation_node_id=None,
-        state_update=[('u', {'pi': 3.14})]
+        conversation_node_id=None, state_update=[("u", {"pi": 3.14})]
     )
 
     # 3. Resume run
@@ -203,13 +244,14 @@ def test_workflow_suspend_and_resume(tmp_path):
         client_result=client_result,
         workflow_id=wf_id,
         conversation_id=conv_id,
-        turn_node_id="turn_1"
+        turn_node_id="turn_1",
     )
 
     assert res2.status == "succeeded"
     assert res2.final_state.get("started") is True
     assert res2.final_state.get("pi") == 3.14
     assert res2.final_state.get("ended") is True
+
 
 def test_workflow_suspend_and_resume_branching(tmp_path):
     wf_engine = GraphKnowledgeEngine(
@@ -222,9 +264,9 @@ def test_workflow_suspend_and_resume_branching(tmp_path):
         kg_graph_type="conversation",
         embedding_function=FakeEmbeddingFunction(),
     )
-    
+
     wf_id = "test_suspend_branching_wf"
-    
+
     # start -> fork (fanout) -> a (suspends) -> join -> end
     #                        \> b (normal)  /
     _create_node(wf_engine, wf_id, "start", "start", start=True)
@@ -233,7 +275,7 @@ def test_workflow_suspend_and_resume_branching(tmp_path):
     _create_node(wf_engine, wf_id, "b", "normal_b")
     _create_node(wf_engine, wf_id, "join", "noop", wf_join=True)
     _create_node(wf_engine, wf_id, "end", "end", terminal=True)
-    
+
     _create_edge(wf_engine, wf_id, "start", "fork")
     _create_edge(wf_engine, wf_id, "fork", "a")
     _create_edge(wf_engine, wf_id, "fork", "b")
@@ -245,7 +287,9 @@ def test_workflow_suspend_and_resume_branching(tmp_path):
 
     @resolver.register("start")
     def _start(ctx: StepContext):
-        return RunSuccess(conversation_node_id=None, state_update=[('u', {'started': True})])
+        return RunSuccess(
+            conversation_node_id=None, state_update=[("u", {"started": True})]
+        )
 
     @resolver.register("noop")
     def _noop(ctx: StepContext):
@@ -256,16 +300,20 @@ def test_workflow_suspend_and_resume_branching(tmp_path):
         return RunSuspended(
             conversation_node_id=None,
             state_update=[],
-            resume_payload={"task": "do_something"}
+            resume_payload={"task": "do_something"},
         )
 
     @resolver.register("normal_b")
     def _normal_b(ctx: StepContext):
-        return RunSuccess(conversation_node_id=None, state_update=[('u', {'b_done': True})])
+        return RunSuccess(
+            conversation_node_id=None, state_update=[("u", {"b_done": True})]
+        )
 
     @resolver.register("end")
     def _end(ctx: StepContext):
-        return RunSuccess(conversation_node_id=None, state_update=[('u', {'ended': True})])
+        return RunSuccess(
+            conversation_node_id=None, state_update=[("u", {"ended": True})]
+        )
 
     runtime = WorkflowRuntime(
         workflow_engine=wf_engine,
@@ -285,8 +333,17 @@ def test_workflow_suspend_and_resume_branching(tmp_path):
         workflow_id=wf_id,
         conversation_id=conv_id,
         turn_node_id="turn_1",
-        initial_state={"conversation_id": "test", "user_id": "test", "turn_node_id": "test", "turn_index": 0, "role": "user", "user_text": "", "mem_id": "test", "self_span": {}}, # type: ignore
-        run_id=run_id
+        initial_state={
+            "conversation_id": "test",
+            "user_id": "test",
+            "turn_node_id": "test",
+            "turn_index": 0,
+            "role": "user",
+            "user_text": "",
+            "mem_id": "test",
+            "self_span": {},
+        },  # type: ignore
+        run_id=run_id,
     )
 
     assert res1.status == "suspended"
@@ -294,10 +351,15 @@ def test_workflow_suspend_and_resume_branching(tmp_path):
     assert res1.final_state.get("ended") is None
 
     # Check pending token
-    ckpts = conv_engine.get_nodes(where={"$and": [{"entity_type": "workflow_checkpoint"}, {"run_id": run_id}]})
-    latest = max(ckpts, key=lambda c: int(getattr(c, "metadata", {}).get("step_seq", -1)))
+    ckpts = conv_engine.get_nodes(
+        where={"$and": [{"entity_type": "workflow_checkpoint"}, {"run_id": run_id}]}
+    )
+    latest = max(
+        ckpts, key=lambda c: int(getattr(c, "metadata", {}).get("step_seq", -1))
+    )
     state_json = latest.metadata.get("state_json", {})
     import json
+
     if isinstance(state_json, str):
         state_json = json.loads(state_json)
     rt_join = state_json.get("_rt_join", {})
@@ -309,8 +371,7 @@ def test_workflow_suspend_and_resume_branching(tmp_path):
 
     # 2. Resume
     client_result = RunSuccess(
-        conversation_node_id=None,
-        state_update=[('u', {'a_done': True})]
+        conversation_node_id=None, state_update=[("u", {"a_done": True})]
     )
 
     res2 = runtime.resume_run(
@@ -320,7 +381,7 @@ def test_workflow_suspend_and_resume_branching(tmp_path):
         client_result=client_result,
         workflow_id=wf_id,
         conversation_id=conv_id,
-        turn_node_id="turn_1"
+        turn_node_id="turn_1",
     )
 
     assert res2.status == "succeeded"
@@ -364,15 +425,21 @@ def test_workflow_failure_does_not_route_to_terminal(tmp_path):
 
     @resolver.register("start_op")
     def _start(ctx: StepContext):
-        return RunSuccess(conversation_node_id=None, state_update=[("u", {"started": True})])
+        return RunSuccess(
+            conversation_node_id=None, state_update=[("u", {"started": True})]
+        )
 
     @resolver.register("python_exec", is_sandboxed=True)
     def _python_exec(ctx: StepContext):
-        return SandboxRequest(code="result = {'state_update': [('u', {'sandbox_result': 'ok'})]}")
+        return SandboxRequest(
+            code="result = {'state_update': [('u', {'sandbox_result': 'ok'})]}"
+        )
 
     @resolver.register("end_op")
     def _end(ctx: StepContext):
-        return RunSuccess(conversation_node_id=None, state_update=[("u", {"ended": True})])
+        return RunSuccess(
+            conversation_node_id=None, state_update=[("u", {"ended": True})]
+        )
 
     runtime = WorkflowRuntime(
         workflow_engine=wf_engine,
@@ -386,7 +453,16 @@ def test_workflow_failure_does_not_route_to_terminal(tmp_path):
         workflow_id=wf_id,
         conversation_id=f"conv_{uuid.uuid4().hex}",
         turn_node_id="turn_1",
-        initial_state={"conversation_id": "test", "user_id": "test", "turn_node_id": "test", "turn_index": 0, "role": "user", "user_text": "", "mem_id": "test", "self_span": {}},  # type: ignore
+        initial_state={
+            "conversation_id": "test",
+            "user_id": "test",
+            "turn_node_id": "test",
+            "turn_index": 0,
+            "role": "user",
+            "user_text": "",
+            "mem_id": "test",
+            "self_span": {},
+        },  # type: ignore
         run_id=f"run_{uuid.uuid4().hex}",
     )
 
@@ -413,7 +489,15 @@ def test_workflow_failure_can_route_to_recovery_branch(tmp_path):
     _create_node(wf_engine, wf_id, "recover", "recover_op")
     _create_node(wf_engine, wf_id, "end", "end_op", terminal=True)
     _create_edge(wf_engine, wf_id, "start", "exec")
-    _create_edge(wf_engine, wf_id, "exec", "recover", label="recover_on_failure", predicate="if_failure", is_default=False)
+    _create_edge(
+        wf_engine,
+        wf_id,
+        "exec",
+        "recover",
+        label="recover_on_failure",
+        predicate="if_failure",
+        is_default=False,
+    )
     _create_edge(wf_engine, wf_id, "exec", "end", label="finish", is_default=True)
     _create_edge(wf_engine, wf_id, "recover", "end")
 
@@ -425,7 +509,9 @@ def test_workflow_failure_can_route_to_recovery_branch(tmp_path):
 
     @resolver.register("start_op")
     def _start(ctx: StepContext):
-        return RunSuccess(conversation_node_id=None, state_update=[("u", {"started": True})])
+        return RunSuccess(
+            conversation_node_id=None, state_update=[("u", {"started": True})]
+        )
 
     @resolver.register("exec_op")
     def _exec(ctx: StepContext):
@@ -437,11 +523,15 @@ def test_workflow_failure_can_route_to_recovery_branch(tmp_path):
 
     @resolver.register("recover_op")
     def _recover(ctx: StepContext):
-        return RunSuccess(conversation_node_id=None, state_update=[("u", {"recovered": True})])
+        return RunSuccess(
+            conversation_node_id=None, state_update=[("u", {"recovered": True})]
+        )
 
     @resolver.register("end_op")
     def _end(ctx: StepContext):
-        return RunSuccess(conversation_node_id=None, state_update=[("u", {"ended": True})])
+        return RunSuccess(
+            conversation_node_id=None, state_update=[("u", {"ended": True})]
+        )
 
     runtime = WorkflowRuntime(
         workflow_engine=wf_engine,
@@ -455,7 +545,16 @@ def test_workflow_failure_can_route_to_recovery_branch(tmp_path):
         workflow_id=wf_id,
         conversation_id=f"conv_{uuid.uuid4().hex}",
         turn_node_id="turn_1",
-        initial_state={"conversation_id": "test", "user_id": "test", "turn_node_id": "test", "turn_index": 0, "role": "user", "user_text": "", "mem_id": "test", "self_span": {}},  # type: ignore
+        initial_state={
+            "conversation_id": "test",
+            "user_id": "test",
+            "turn_node_id": "test",
+            "turn_index": 0,
+            "role": "user",
+            "user_text": "",
+            "mem_id": "test",
+            "self_span": {},
+        },  # type: ignore
         run_id=f"run_{uuid.uuid4().hex}",
     )
 
@@ -483,7 +582,15 @@ def test_resume_run_failure_can_route_to_recovery_branch(tmp_path):
     _create_node(wf_engine, wf_id, "recover", "recover_op")
     _create_node(wf_engine, wf_id, "end", "end_op", terminal=True)
     _create_edge(wf_engine, wf_id, "start", "gate")
-    _create_edge(wf_engine, wf_id, "gate", "recover", label="recover_on_failure", predicate="if_failure", is_default=False)
+    _create_edge(
+        wf_engine,
+        wf_id,
+        "gate",
+        "recover",
+        label="recover_on_failure",
+        predicate="if_failure",
+        is_default=False,
+    )
     _create_edge(wf_engine, wf_id, "gate", "end", label="finish", is_default=True)
     _create_edge(wf_engine, wf_id, "recover", "end")
 
@@ -495,23 +602,36 @@ def test_resume_run_failure_can_route_to_recovery_branch(tmp_path):
 
     @resolver.register("start_op")
     def _start(ctx: StepContext):
-        return RunSuccess(conversation_node_id=None, state_update=[("u", {"started": True})])
+        return RunSuccess(
+            conversation_node_id=None, state_update=[("u", {"started": True})]
+        )
 
     @resolver.register("suspend_op")
     def _suspend(ctx: StepContext):
         return RunSuspended(
             conversation_node_id=None,
             state_update=[],
-            resume_payload={"type": "recoverable_error", "op": "suspend_op", "category": "missing_input", "message": "need fix", "errors": ["need fix"], "repair_payload": {"prompt": "fix it"}},
+            resume_payload={
+                "type": "recoverable_error",
+                "op": "suspend_op",
+                "category": "missing_input",
+                "message": "need fix",
+                "errors": ["need fix"],
+                "repair_payload": {"prompt": "fix it"},
+            },
         )
 
     @resolver.register("recover_op")
     def _recover(ctx: StepContext):
-        return RunSuccess(conversation_node_id=None, state_update=[("u", {"failure_routed": True})])
+        return RunSuccess(
+            conversation_node_id=None, state_update=[("u", {"failure_routed": True})]
+        )
 
     @resolver.register("end_op")
     def _end(ctx: StepContext):
-        return RunSuccess(conversation_node_id=None, state_update=[("u", {"ended": True})])
+        return RunSuccess(
+            conversation_node_id=None, state_update=[("u", {"ended": True})]
+        )
 
     runtime = WorkflowRuntime(
         workflow_engine=wf_engine,
@@ -527,7 +647,16 @@ def test_resume_run_failure_can_route_to_recovery_branch(tmp_path):
         workflow_id=wf_id,
         conversation_id=conv_id,
         turn_node_id="turn_1",
-        initial_state={"conversation_id": "test", "user_id": "test", "turn_node_id": "test", "turn_index": 0, "role": "user", "user_text": "", "mem_id": "test", "self_span": {}},  # type: ignore
+        initial_state={
+            "conversation_id": "test",
+            "user_id": "test",
+            "turn_node_id": "test",
+            "turn_index": 0,
+            "role": "user",
+            "user_text": "",
+            "mem_id": "test",
+            "self_span": {},
+        },  # type: ignore
         run_id=run_id,
     )
     state1 = _latest_checkpoint_state(conv_engine, run_id)
@@ -537,7 +666,11 @@ def test_resume_run_failure_can_route_to_recovery_branch(tmp_path):
         run_id=run_id,
         suspended_node_id="gate",
         suspended_token_id=suspended_token_id,
-        client_result=RunFailure(conversation_node_id=None, state_update=[("u", {"resume_failed": True})], errors=["still broken"]),
+        client_result=RunFailure(
+            conversation_node_id=None,
+            state_update=[("u", {"resume_failed": True})],
+            errors=["still broken"],
+        ),
         workflow_id=wf_id,
         conversation_id=conv_id,
         turn_node_id="turn_1",
@@ -573,19 +706,30 @@ def test_resume_run_can_resuspend_same_token_with_updated_payload(tmp_path):
 
     @resolver.register("start_op")
     def _start(ctx: StepContext):
-        return RunSuccess(conversation_node_id=None, state_update=[("u", {"started": True})])
+        return RunSuccess(
+            conversation_node_id=None, state_update=[("u", {"started": True})]
+        )
 
     @resolver.register("suspend_op")
     def _suspend(ctx: StepContext):
         return RunSuspended(
             conversation_node_id=None,
             state_update=[],
-            resume_payload={"type": "recoverable_error", "op": "suspend_op", "category": "missing_input", "message": "first pause", "errors": ["first"], "repair_payload": {"attempt": 1}},
+            resume_payload={
+                "type": "recoverable_error",
+                "op": "suspend_op",
+                "category": "missing_input",
+                "message": "first pause",
+                "errors": ["first"],
+                "repair_payload": {"attempt": 1},
+            },
         )
 
     @resolver.register("end_op")
     def _end(ctx: StepContext):
-        return RunSuccess(conversation_node_id=None, state_update=[("u", {"ended": True})])
+        return RunSuccess(
+            conversation_node_id=None, state_update=[("u", {"ended": True})]
+        )
 
     runtime = WorkflowRuntime(
         workflow_engine=wf_engine,
@@ -601,7 +745,16 @@ def test_resume_run_can_resuspend_same_token_with_updated_payload(tmp_path):
         workflow_id=wf_id,
         conversation_id=conv_id,
         turn_node_id="turn_1",
-        initial_state={"conversation_id": "test", "user_id": "test", "turn_node_id": "test", "turn_index": 0, "role": "user", "user_text": "", "mem_id": "test", "self_span": {}},  # type: ignore
+        initial_state={
+            "conversation_id": "test",
+            "user_id": "test",
+            "turn_node_id": "test",
+            "turn_index": 0,
+            "role": "user",
+            "user_text": "",
+            "mem_id": "test",
+            "self_span": {},
+        },  # type: ignore
         run_id=run_id,
     )
     state1 = _latest_checkpoint_state(conv_engine, run_id)
@@ -614,7 +767,14 @@ def test_resume_run_can_resuspend_same_token_with_updated_payload(tmp_path):
         client_result=RunSuspended(
             conversation_node_id=None,
             state_update=[("u", {"retry_count": 1})],
-            resume_payload={"type": "recoverable_error", "op": "suspend_op", "category": "missing_input", "message": "second pause", "errors": ["second"], "repair_payload": {"attempt": 2}},
+            resume_payload={
+                "type": "recoverable_error",
+                "op": "suspend_op",
+                "category": "missing_input",
+                "message": "second pause",
+                "errors": ["second"],
+                "repair_payload": {"attempt": 2},
+            },
         ),
         workflow_id=wf_id,
         conversation_id=conv_id,
@@ -630,8 +790,12 @@ def test_resume_run_can_resuspend_same_token_with_updated_payload(tmp_path):
     assert (state2.get("_rt_join", {}) or {}).get("suspended", [])[0][0] == "gate"
 
     step_execs = _workflow_step_exec_nodes(conv_engine, run_id)
-    latest_step = max(step_execs, key=lambda n: int(getattr(n, "metadata", {}).get("step_seq", -1)))
-    latest_result = json.loads(getattr(latest_step, "metadata", {}).get("result_json", "{}"))
+    latest_step = max(
+        step_execs, key=lambda n: int(getattr(n, "metadata", {}).get("step_seq", -1))
+    )
+    latest_result = json.loads(
+        getattr(latest_step, "metadata", {}).get("result_json", "{}")
+    )
     assert getattr(latest_step, "metadata", {}).get("status") == "suspended"
     assert latest_result.get("resume_payload", {}).get("message") == "second pause"
 
@@ -678,15 +842,21 @@ def test_sandbox_recoverable_error_can_suspend_then_resume_success(tmp_path):
 
     @resolver.register("start_op")
     def _start(ctx: StepContext):
-        return RunSuccess(conversation_node_id=None, state_update=[("u", {"started": True})])
+        return RunSuccess(
+            conversation_node_id=None, state_update=[("u", {"started": True})]
+        )
 
     @resolver.register("python_exec", is_sandboxed=True)
     def _python_exec(ctx: StepContext):
-        return SandboxRequest(code="result = {'state_update': [('u', {'sandbox_result': 'fixed'})]}")
+        return SandboxRequest(
+            code="result = {'state_update': [('u', {'sandbox_result': 'fixed'})]}"
+        )
 
     @resolver.register("end_op")
     def _end(ctx: StepContext):
-        return RunSuccess(conversation_node_id=None, state_update=[("u", {"ended": True})])
+        return RunSuccess(
+            conversation_node_id=None, state_update=[("u", {"ended": True})]
+        )
 
     runtime = WorkflowRuntime(
         workflow_engine=wf_engine,
@@ -702,7 +872,16 @@ def test_sandbox_recoverable_error_can_suspend_then_resume_success(tmp_path):
         workflow_id=wf_id,
         conversation_id=conv_id,
         turn_node_id="turn_1",
-        initial_state={"conversation_id": "test", "user_id": "test", "turn_node_id": "test", "turn_index": 0, "role": "user", "user_text": "", "mem_id": "test", "self_span": {}},  # type: ignore
+        initial_state={
+            "conversation_id": "test",
+            "user_id": "test",
+            "turn_node_id": "test",
+            "turn_index": 0,
+            "role": "user",
+            "user_text": "",
+            "mem_id": "test",
+            "self_span": {},
+        },  # type: ignore
         run_id=run_id,
     )
     state1 = _latest_checkpoint_state(conv_engine, run_id)
@@ -712,7 +891,9 @@ def test_sandbox_recoverable_error_can_suspend_then_resume_success(tmp_path):
         run_id=run_id,
         suspended_node_id="python_exec",
         suspended_token_id=suspended_token_id,
-        client_result=RunSuccess(conversation_node_id=None, state_update=[("u", {"sandbox_result": "fixed"})]),
+        client_result=RunSuccess(
+            conversation_node_id=None, state_update=[("u", {"sandbox_result": "fixed"})]
+        ),
         workflow_id=wf_id,
         conversation_id=conv_id,
         turn_node_id="turn_1",
@@ -720,10 +901,18 @@ def test_sandbox_recoverable_error_can_suspend_then_resume_success(tmp_path):
 
     assert res1.status == "suspended"
     step_execs = _workflow_step_exec_nodes(conv_engine, run_id)
-    first_suspend = next(n for n in step_execs if getattr(n, "metadata", {}).get("workflow_node_id") == "python_exec")
-    first_result = json.loads(getattr(first_suspend, "metadata", {}).get("result_json", "{}"))
+    first_suspend = next(
+        n
+        for n in step_execs
+        if getattr(n, "metadata", {}).get("workflow_node_id") == "python_exec"
+    )
+    first_result = json.loads(
+        getattr(first_suspend, "metadata", {}).get("result_json", "{}")
+    )
     assert first_result.get("resume_payload", {}).get("type") == "recoverable_error"
-    assert first_result.get("resume_payload", {}).get("category") == "sandbox_code_error"
+    assert (
+        first_result.get("resume_payload", {}).get("category") == "sandbox_code_error"
+    )
 
     assert res2.status == "succeeded"
     assert res2.final_state.get("sandbox_result") == "fixed"

@@ -3,7 +3,11 @@
 # This walkthrough focuses on resolver telemetry and suspend/resume.
 
 # %%
-from runtime_tutorial_ladder import level1_resolvers_and_deps, level2_pause_and_resume, reset_data
+from runtime_tutorial_ladder import (
+    level1_resolvers_and_deps,
+    level2_pause_and_resume,
+    reset_data,
+)
 
 from _helpers import banner, reset_data_dir, show
 
@@ -34,7 +38,8 @@ show("runtime level2", level2)
 show(
     "checkpoint",
     {
-        "checkpoint_pass": bool(level1.get("checkpoint_pass")) and bool(level2.get("checkpoint_pass")),
+        "checkpoint_pass": bool(level1.get("checkpoint_pass"))
+        and bool(level2.get("checkpoint_pass")),
         "resumed_status": level2.get("resumed_status"),
         "invariant": "branch and join behavior remains inspectable through checkpoints and traces",
     },

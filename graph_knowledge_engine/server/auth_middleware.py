@@ -5,13 +5,16 @@ import contextvars
 import os
 from contextvars import ContextVar
 from enum import Enum
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING
 
 try:
     from dotenv import load_dotenv
 except ModuleNotFoundError:
+
     def load_dotenv(*args, **kwargs):
         return False
+
+
 from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse
 from jose import JWTError, jwt
@@ -19,8 +22,9 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.types import Scope
 
 from graph_knowledge_engine.shortids import run_id_scope
+
 if TYPE_CHECKING:
-    from graph_knowledge_engine.server.auth.service import AuthService
+    pass
 
 
 load_dotenv()
@@ -30,7 +34,9 @@ JWT_ALG = os.getenv("JWT_ALG", "HS256")  # HS256 (shared secret) or RS256 (publi
 JWT_SECRET = os.getenv("JWT_SECRET", "dev-secret")  # HS256 secret OR RS256 public key
 JWT_ISS = os.getenv("JWT_ISS")  # optional issuer to check
 JWT_AUD = os.getenv("JWT_AUD")  # optional audience to check
-PROTECTED_PREFIXES = tuple((os.getenv("JWT_PROTECTED_PATHS") or "/mcp,/admin").split(","))
+PROTECTED_PREFIXES = tuple(
+    (os.getenv("JWT_PROTECTED_PATHS") or "/mcp,/admin").split(",")
+)
 
 
 class Role(str, Enum):
@@ -52,7 +58,9 @@ DEFAULT_NAMESPACE = NameSpace.DOCS.value
 
 
 # Context var to expose claims in any handler/tool
-claims_ctx: contextvars.ContextVar[dict | None] = contextvars.ContextVar("claims", default=None)
+claims_ctx: contextvars.ContextVar[dict | None] = contextvars.ContextVar(
+    "claims", default=None
+)
 current_role: ContextVar[str] = ContextVar("current_role", default=Role.RO.value)
 
 
@@ -99,16 +107,21 @@ def _decode_role_from_headers(scope: Scope) -> str:
         return Role.RO.value
 
 
-
-
 class DevStreamGuardMiddleware:
     """Dev-only ASGI guard that downgrades expected stream disconnect noise."""
 
     def __init__(self, app):
         self.app = app
-        self.enabled = str(os.getenv("DEV_STREAM_GUARD", "1")).strip().lower() in {"1", "true", "yes", "on"}
+        self.enabled = str(os.getenv("DEV_STREAM_GUARD", "1")).strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
         self.auth_mode = str(os.getenv("AUTH_MODE", "")).strip().lower()
-        raw_paths = os.getenv("DEV_STREAM_PATH_PREFIXES", "/api/runs/,/api/workflow/runs/")
+        raw_paths = os.getenv(
+            "DEV_STREAM_PATH_PREFIXES", "/api/runs/,/api/workflow/runs/"
+        )
         self.path_prefixes = tuple(p.strip() for p in raw_paths.split(",") if p.strip())
 
     def _applies(self, scope: Scope) -> bool:
@@ -125,7 +138,10 @@ class DevStreamGuardMiddleware:
 
     @staticmethod
     def _expected_disconnect(exc: BaseException) -> bool:
-        if isinstance(exc, (asyncio.CancelledError, BrokenPipeError, ConnectionResetError, OSError)):
+        if isinstance(
+            exc,
+            (asyncio.CancelledError, BrokenPipeError, ConnectionResetError, OSError),
+        ):
             return True
         return isinstance(exc, RuntimeError) and str(exc) == "No response returned."
 
@@ -184,7 +200,10 @@ def get_current_role() -> str:
 def require_role(min_role: str = "ro"):
     user_role = get_current_role()
     if ROLE_ORDER.get(user_role, 0) < ROLE_ORDER.get(min_role, 0):
-        raise HTTPException(status_code=403, detail=f"Forbidden: requires role '{min_role}', you have '{user_role}'")
+        raise HTTPException(
+            status_code=403,
+            detail=f"Forbidden: requires role '{min_role}', you have '{user_role}'",
+        )
 
 
 def get_current_namespaces() -> set[str]:
@@ -211,7 +230,9 @@ def get_current_user_id() -> str | None:
     return claims.get("user_id")
 
 
-def _normalize_namespaces(expected: set[NameSpace] | NameSpace | set[str] | str) -> set[str]:
+def _normalize_namespaces(
+    expected: set[NameSpace] | NameSpace | set[str] | str,
+) -> set[str]:
     if isinstance(expected, set):
         raw_items = list(expected)
     else:
@@ -239,7 +260,10 @@ def require_namespace(expected: set[NameSpace] | NameSpace | set[str] | str):
         if a in allowed:
             return a
 
-    raise HTTPException(status_code=403, detail=f"Forbidden: namespaces {actuals} do not permit access to {allowed}")
+    raise HTTPException(
+        status_code=403,
+        detail=f"Forbidden: namespaces {actuals} do not permit access to {allowed}",
+    )
 
 
 _auth_app = None

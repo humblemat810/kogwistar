@@ -3,7 +3,10 @@ import pytest
 from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
 
 try:
-    from graph_knowledge_engine.engine_core.postgres_backend import PgVectorBackend, PostgresUnitOfWork
+    from graph_knowledge_engine.engine_core.postgres_backend import (
+        PgVectorBackend,
+        PostgresUnitOfWork,
+    )
 except Exception:  # pragma: no cover
     PgVectorBackend = None  # type: ignore
     PostgresUnitOfWork = None  # type: ignore
@@ -28,7 +31,9 @@ def _insert_three(backend) -> None:
 
 
 @pytest.mark.parametrize("backend_kind", ["chroma", "pg"])
-def test_engine_vector_search_nodes_orders_neighbors(backend_kind: str, tmp_path, sa_engine, pg_schema):
+def test_engine_vector_search_nodes_orders_neighbors(
+    backend_kind: str, tmp_path, sa_engine, pg_schema
+):
     """Engine-level smoke: add 3 nodes with known embeddings, vector search returns correct order.
 
     This runs against both:
@@ -41,8 +46,12 @@ def test_engine_vector_search_nodes_orders_neighbors(backend_kind: str, tmp_path
         if PgVectorBackend is None:
             pytest.skip("pgvector not installed")
         _require_pg_fixtures(sa_engine, pg_schema)
-        backend = PgVectorBackend(engine=sa_engine, embedding_dim=3, distance="cosine", schema=pg_schema)
-        eng = GraphKnowledgeEngine(persist_directory=str(tmp_path / "pg_engine"), backend=backend)
+        backend = PgVectorBackend(
+            engine=sa_engine, embedding_dim=3, distance="cosine", schema=pg_schema
+        )
+        eng = GraphKnowledgeEngine(
+            persist_directory=str(tmp_path / "pg_engine"), backend=backend
+        )
 
     _insert_three(eng.backend)
     got = eng.vector_search_nodes([1.0, 0.0, 0.0], top_k=3)
@@ -50,7 +59,9 @@ def test_engine_vector_search_nodes_orders_neighbors(backend_kind: str, tmp_path
 
 
 @pytest.mark.parametrize("backend_kind", ["chroma", "pg"])
-def test_engine_uow_power_out_rollback(backend_kind: str, tmp_path, sa_engine, pg_schema):
+def test_engine_uow_power_out_rollback(
+    backend_kind: str, tmp_path, sa_engine, pg_schema
+):
     """Transaction atomicity: crash-before-commit rolls back all writes (pgvector only).
 
     For Chroma we skip because there's no SQL transaction to roll back.
@@ -62,8 +73,12 @@ def test_engine_uow_power_out_rollback(backend_kind: str, tmp_path, sa_engine, p
         pytest.skip("pgvector not installed")
     _require_pg_fixtures(sa_engine, pg_schema)
 
-    backend = PgVectorBackend(engine=sa_engine, embedding_dim=3, distance="cosine", schema=pg_schema)
-    eng = GraphKnowledgeEngine(persist_directory=str(tmp_path / "pg_engine_txn"), backend=backend)
+    backend = PgVectorBackend(
+        engine=sa_engine, embedding_dim=3, distance="cosine", schema=pg_schema
+    )
+    eng = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path / "pg_engine_txn"), backend=backend
+    )
     uow = PostgresUnitOfWork(engine=sa_engine)
 
     with pytest.raises(RuntimeError):

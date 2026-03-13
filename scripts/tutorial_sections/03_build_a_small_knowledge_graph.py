@@ -18,8 +18,12 @@ banner("The small tutorial graph is now persisted and queryable.")
 # The tutorial ladder uses stable ids so readers can inspect the graph by name.
 
 # %%
-nodes = kg_engine.get_nodes(["K:architecture", "K:provenance", "K:ttl_guardrail"], resolve_mode="redirect")
-edges = kg_engine.get_edges(["E:arch->retrieval", "E:retrieval->prov"], resolve_mode="redirect")
+nodes = kg_engine.get_nodes(
+    ["K:architecture", "K:provenance", "K:ttl_guardrail"], resolve_mode="redirect"
+)
+edges = kg_engine.get_edges(
+    ["E:arch->retrieval", "E:retrieval->prov"], resolve_mode="redirect"
+)
 show(
     "seeded graph primitives",
     {

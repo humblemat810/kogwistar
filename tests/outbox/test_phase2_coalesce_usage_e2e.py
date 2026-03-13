@@ -7,7 +7,9 @@ import sqlalchemy as sa
 
 from graph_knowledge_engine.engine_core.chroma_backend import ChromaBackend
 from graph_knowledge_engine.engine_core.postgres_backend import PgVectorBackend
-from graph_knowledge_engine.engine_core.engine_postgres_meta import EnginePostgresMetaStore
+from graph_knowledge_engine.engine_core.engine_postgres_meta import (
+    EnginePostgresMetaStore,
+)
 from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
 from graph_knowledge_engine.engine_core.models import Node, Grounding, Span
 from tests.conftest import FakeEmbeddingFunction
@@ -62,7 +64,9 @@ def e2e_engine(
     if request.param == "chroma":
         persist_dir = tmp_path / "chroma"
         persist_dir.mkdir(parents=True, exist_ok=True)
-        eng = GraphKnowledgeEngine(persist_directory=str(persist_dir), embedding_function=TEST_EMBEDDING)
+        eng = GraphKnowledgeEngine(
+            persist_directory=str(persist_dir), embedding_function=TEST_EMBEDDING
+        )
     else:
         pytest.importorskip("pgvector")
         backend = PgVectorBackend(engine=sa_engine, embedding_dim=3, schema=pg_schema)
@@ -100,7 +104,9 @@ def test_phase2_coalescing_sample_usage(e2e_engine: GraphKnowledgeEngine):
 
     # 2) Many triggers happen quickly (hot entity)
     job_ids = [
-        eng.enqueue_index_job(entity_kind="node", entity_id="n_hot", index_kind="node_docs", op="UPSERT")
+        eng.enqueue_index_job(
+            entity_kind="node", entity_id="n_hot", index_kind="node_docs", op="UPSERT"
+        )
         for _ in range(10)
     ]
 
@@ -125,7 +131,9 @@ def test_phase2_coalescing_sample_usage(e2e_engine: GraphKnowledgeEngine):
     assert len(_ids(got)) >= 1
 
 
-def test_phase2_enqueue_while_doing_creates_new_pending(e2e_engine: GraphKnowledgeEngine):
+def test_phase2_enqueue_while_doing_creates_new_pending(
+    e2e_engine: GraphKnowledgeEngine,
+):
     """Sample usage: enqueue while DOING should create a NEW PENDING job.
 
     Scenario:
@@ -142,7 +150,9 @@ def test_phase2_enqueue_while_doing_creates_new_pending(e2e_engine: GraphKnowled
 
     eng.add_node(_mk_node("n_busy", doc_id="d1"))
 
-    jid1 = eng.enqueue_index_job(entity_kind="node", entity_id="n_busy", index_kind="node_docs", op="UPSERT")
+    jid1 = eng.enqueue_index_job(
+        entity_kind="node", entity_id="n_busy", index_kind="node_docs", op="UPSERT"
+    )
 
     # Force J1 into DOING with a *future* lease_until to simulate an active worker.
     if hasattr(eng.meta_sqlite, "transaction"):
@@ -172,7 +182,9 @@ def test_phase2_enqueue_while_doing_creates_new_pending(e2e_engine: GraphKnowled
                 )
 
     # Enqueue again while J1 is DOING.
-    jid2 = eng.enqueue_index_job(entity_kind="node", entity_id="n_busy", index_kind="node_docs", op="UPSERT")
+    jid2 = eng.enqueue_index_job(
+        entity_kind="node", entity_id="n_busy", index_kind="node_docs", op="UPSERT"
+    )
     assert jid2 != jid1
 
     # Exactly one PENDING for that key, plus one DOING.

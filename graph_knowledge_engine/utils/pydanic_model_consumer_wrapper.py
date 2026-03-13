@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import functools
-import hashlib
 import inspect
 import json
 from typing import Any, Callable, ParamSpec, Type, TypeVar, cast, overload
@@ -14,18 +13,22 @@ M = TypeVar("M")
 
 
 def _stable_json(obj: Any) -> str:
-    return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str)
+    return json.dumps(
+        obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str
+    )
 
 
-from typing import Callable, TypeVar, ParamSpec, cast
-from joblib import Memory
+from typing import TypeVar, ParamSpec
 
 P = ParamSpec("P")
 R = TypeVar("R")
-TNode = TypeVar("TNode", bound= BaseModel)
-BaseM = TypeVar("BaseM", bound = BaseModel)
+TNode = TypeVar("TNode", bound=BaseModel)
+BaseM = TypeVar("BaseM", bound=BaseModel)
+
+
 def cached(memory: Memory, fn: Callable[P, R], *args, **kwargs) -> Callable[P, R]:
     return cast(Callable[P, R], memory.cache(fn, *args, **kwargs))
+
 
 @overload
 def cache_pydantic_structured(
@@ -35,8 +38,7 @@ def cache_pydantic_structured(
     fn: Callable[P, BaseM],
     ignore: list[str] | None = None,
     dump_exclude: set[str] | None = None,
-) -> Callable[P, BaseM]:
-    ...
+) -> Callable[P, BaseM]: ...
 @overload
 def cache_pydantic_structured(
     *,
@@ -45,8 +47,7 @@ def cache_pydantic_structured(
     fn: Callable[P, Any],
     ignore: list[str] | None = None,
     dump_exclude: set[str] | None = None,
-) -> Callable[P, Any]:
-    ...
+) -> Callable[P, Any]: ...
 def cache_pydantic_structured(
     *,
     memory: Memory,
@@ -151,16 +152,28 @@ if __name__ == "__main__":
         def __init__(self):
             self.calls = 0
 
-        def _select_used_evidence(self, question: str, candidates: list[dict], out_model: Type[BaseM]) -> BaseM:
+        def _select_used_evidence(
+            self, question: str, candidates: list[dict], out_model: Type[BaseM]
+        ) -> BaseM:
             # simulate "LLM" work
             self.calls += 1
-            outdict = dict(used_node_ids=[c["node_id"] for c in candidates],
-                score=len(question),)
+            outdict = dict(
+                used_node_ids=[c["node_id"] for c in candidates],
+                score=len(question),
+            )
             return out_model.model_validate(outdict)
 
         @staticmethod
-        def entry(agent: "FakeAgent", question: str, candidates: list[dict], out_schema, out_model: Type[BaseM]) -> BaseM:
-            return agent._select_used_evidence(question=question, candidates=candidates, out_model=out_model)
+        def entry(
+            agent: "FakeAgent",
+            question: str,
+            candidates: list[dict],
+            out_schema,
+            out_model: Type[BaseM],
+        ) -> BaseM:
+            return agent._select_used_evidence(
+                question=question, candidates=candidates, out_model=out_model
+            )
 
     # ----------------------------
     # Temp cache dir
@@ -187,7 +200,13 @@ if __name__ == "__main__":
         # ----------------------------
         # First call → cache MISS
         # ----------------------------
-        out1 = cached_entry(agent=agent, question="hi", candidates=candidates, out_schema = FakeSelection.model_json_schema, out_model=FakeSelection)
+        out1 = cached_entry(
+            agent=agent,
+            question="hi",
+            candidates=candidates,
+            out_schema=FakeSelection.model_json_schema,
+            out_model=FakeSelection,
+        )
         print("out1:", out1)
         print("agent.calls after first:", agent.calls)
         assert agent.calls == 1
@@ -195,7 +214,13 @@ if __name__ == "__main__":
         # ----------------------------
         # Second call → cache HIT
         # ----------------------------
-        out2 = cached_entry(agent=agent, question="hi", candidates=candidates, out_schema = FakeSelection.model_json_schema, out_model=FakeSelection)
+        out2 = cached_entry(
+            agent=agent,
+            question="hi",
+            candidates=candidates,
+            out_schema=FakeSelection.model_json_schema,
+            out_model=FakeSelection,
+        )
         print("out2:", out2)
         print("agent.calls after second:", agent.calls)
         assert agent.calls == 1  # no increment → cache hit
@@ -203,7 +228,13 @@ if __name__ == "__main__":
         # ----------------------------
         # Different input → cache MISS
         # ----------------------------
-        out3 = cached_entry(agent=agent, question="different", candidates=candidates, out_schema = FakeSelection.model_json_schema, out_model=FakeSelection)
+        out3 = cached_entry(
+            agent=agent,
+            question="different",
+            candidates=candidates,
+            out_schema=FakeSelection.model_json_schema,
+            out_model=FakeSelection,
+        )
         print("out3:", out3)
         print("agent.calls after third:", agent.calls)
         assert agent.calls == 2

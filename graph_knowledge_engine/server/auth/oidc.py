@@ -1,10 +1,10 @@
 from __future__ import annotations
 import base64
 import hashlib
-import os
 import secrets
 from typing import Dict, Any, Optional
 import httpx
+
 
 class OIDCClient:
     def __init__(
@@ -30,9 +30,11 @@ class OIDCClient:
     @staticmethod
     def generate_pkce() -> Dict[str, str]:
         verifier = secrets.token_urlsafe(64)
-        challenge = base64.urlsafe_b64encode(
-            hashlib.sha256(verifier.encode()).digest()
-        ).decode().rstrip("=")
+        challenge = (
+            base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest())
+            .decode()
+            .rstrip("=")
+        )
         return {"verifier": verifier, "challenge": challenge}
 
     @staticmethod

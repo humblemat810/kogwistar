@@ -1,7 +1,7 @@
 # graph_query.py — polished traversal layer with higher‑level APIs
 from __future__ import annotations
 from collections import deque
-from typing import Dict, Set, List, Optional, Tuple, Iterable
+from typing import Dict, Set, List, Optional, Iterable
 import json
 
 from .engine_core.models import Node, Edge
@@ -48,15 +48,25 @@ class GraphQuery:
     # ---- doc scoping ----
     def nodes_in_doc(self, doc_id: str) -> List[Node]:
         ids = self.e.read.node_ids_by_doc(doc_id)
-        got = self.e.backend.node_get(ids=ids, include=["documents"]) if ids else {"documents": []}
+        got = (
+            self.e.backend.node_get(ids=ids, include=["documents"])
+            if ids
+            else {"documents": []}
+        )
         return [Node.model_validate_json(d) for d in (got.get("documents") or []) if d]
 
     def edges_in_doc(self, doc_id: str) -> List[Edge]:
         ids = self.e.read.edge_ids_by_doc(doc_id)
-        got = self.e.backend.edge_get(ids=ids, include=["documents"]) if ids else {"documents": []}
+        got = (
+            self.e.backend.edge_get(ids=ids, include=["documents"])
+            if ids
+            else {"documents": []}
+        )
         return [Edge.model_validate_json(d) for d in (got.get("documents") or []) if d]
 
-    def document_subgraph(self, doc_id: str, *, center_ids: Optional[Iterable[str]] = None, hops: int = 1) -> Dict[str, List]:
+    def document_subgraph(
+        self, doc_id: str, *, center_ids: Optional[Iterable[str]] = None, hops: int = 1
+    ) -> Dict[str, List]:
         """Return a small subgraph for a document: seeds + k‑hop neighborhood.
         If center_ids omitted, seeds are all nodes in the doc (bounded by hops=0/1 recommended).
         """
@@ -80,9 +90,14 @@ class GraphQuery:
         """Find the single node that has a 'summarizes_document' edge -> docnode:{doc_id}."""
         tgt = f"docnode:{doc_id}"
         eps = self.e.backend.edge_endpoints_get(
-            where={"$and": [
-                {"endpoint_id": tgt}, {"endpoint_type": "node"}, {"role": "tgt"}, {"relation": "summarizes_document"}
-            ]},
+            where={
+                "$and": [
+                    {"endpoint_id": tgt},
+                    {"endpoint_type": "node"},
+                    {"role": "tgt"},
+                    {"relation": "summarizes_document"},
+                ]
+            },
             include=["documents"],
         )
         eids = {json.loads(d)["edge_id"] for d in (eps.get("documents") or [])}
@@ -91,12 +106,16 @@ class GraphQuery:
         # For each edge, fetch its src node endpoint
         for eid in eids:
             srcs = self.e.backend.edge_endpoints_get(
-                where={"$and": [
-                    {"edge_id": eid}, {"endpoint_type": "node"}, {"role": "src"}
-                ]},
+                where={
+                    "$and": [
+                        {"edge_id": eid},
+                        {"endpoint_type": "node"},
+                        {"role": "src"},
+                    ]
+                },
                 include=["documents"],
             )
-            for d in (srcs.get("documents") or []):
+            for d in srcs.get("documents") or []:
                 row = json.loads(d)
                 return row.get("endpoint_id")
         return None
@@ -105,13 +124,24 @@ class GraphQuery:
         rid = self.final_summary_node_id(doc_id)
         if not rid:
             return None
-        got = self.e.backend.node_get(ids=[rid], include=["documents"]) if rid else {"documents": []}
+        got = (
+            self.e.backend.node_get(ids=[rid], include=["documents"])
+            if rid
+            else {"documents": []}
+        )
         if got.get("documents"):
             return Node.model_validate_json(got["documents"][0])
         return None
 
     # ---- generic traversals ----
-    def neighbors(self, rid: str, *, direction: str = "both", doc_id: Optional[str] = None, allow_jump_edge = True) -> Dict[str, Set[str]]:
+    def neighbors(
+        self,
+        rid: str,
+        *,
+        direction: str = "both",
+        doc_id: Optional[str] = None,
+        allow_jump_edge=True,
+    ) -> Dict[str, Set[str]]:
         """
         For a node-id: neighbors are incident edges and opposite endpoint nodes.
         For an edge-id: neighbors are endpoint nodes and meta-edges (if any).
@@ -121,20 +151,35 @@ class GraphQuery:
         is_edge = self._is_edge(rid)
         if not (is_node or is_edge):
             return {"nodes": set(), "edges": set()}
-        
+
         nodes, edges = set(), set()
         if is_node:
-            q = {"$and": [{"endpoint_type": 'node'},{"endpoint_id": rid}]} if doc_id is None else {"$and": [{"endpoint_type": 'node'},{"endpoint_id": rid}, {"doc_id": doc_id}]}
+            q = (
+                {"$and": [{"endpoint_type": "node"}, {"endpoint_id": rid}]}
+                if doc_id is None
+                else {
+                    "$and": [
+                        {"endpoint_type": "node"},
+                        {"endpoint_id": rid},
+                        {"doc_id": doc_id},
+                    ]
+                }
+            )
             eps = self.e.backend.edge_endpoints_get(where=q, include=["documents"])
             for d in eps.get("documents") or []:
                 row = json.loads(d)
                 edges.add(row["edge_id"])
                 # pull opposite endpoints
                 if allow_jump_edge:
-                    eps2 = self.e.backend.edge_endpoints_get(where={"edge_id": row["edge_id"]}, include=["documents"])
+                    eps2 = self.e.backend.edge_endpoints_get(
+                        where={"edge_id": row["edge_id"]}, include=["documents"]
+                    )
                     for d2 in eps2.get("documents") or []:
                         r2 = json.loads(d2)
-                        if r2.get("endpoint_type") == "node" and r2["endpoint_id"] != rid:
+                        if (
+                            r2.get("endpoint_type") == "node"
+                            and r2["endpoint_id"] != rid
+                        ):
                             nodes.add(r2["endpoint_id"])
 
         if is_edge:
@@ -152,7 +197,14 @@ class GraphQuery:
 
         return {"nodes": nodes, "edges": edges}
 
-    def k_hop(self, start_ids: List[str], k: int = 2, *, doc_id: Optional[str] = None , allow_jump_edge=False) -> List[Dict[str, Set[str]]]:
+    def k_hop(
+        self,
+        start_ids: List[str],
+        k: int = 2,
+        *,
+        doc_id: Optional[str] = None,
+        allow_jump_edge=False,
+    ) -> List[Dict[str, Set[str]]]:
         visited: Set[str] = set()
         frontier: Set[str] = set(start_ids)
         layers: List[Dict[str, Set[str]]] = []
@@ -164,7 +216,9 @@ class GraphQuery:
                 if rid in visited:
                     continue
                 visited.add(rid)
-                nbrs = self.neighbors(rid, doc_id=doc_id, allow_jump_edge = allow_jump_edge)
+                nbrs = self.neighbors(
+                    rid, doc_id=doc_id, allow_jump_edge=allow_jump_edge
+                )
                 layer_nodes |= nbrs["nodes"]
                 layer_edges |= nbrs["edges"]
                 next_frontier |= nbrs["nodes"] | nbrs["edges"]
@@ -172,7 +226,14 @@ class GraphQuery:
             frontier = next_frontier - visited
         return layers
 
-    def shortest_path(self, src_id: str, dst_id: str, *, doc_id: Optional[str] = None, max_depth: int = 8) -> List[str]:
+    def shortest_path(
+        self,
+        src_id: str,
+        dst_id: str,
+        *,
+        doc_id: Optional[str] = None,
+        max_depth: int = 8,
+    ) -> List[str]:
         if src_id == dst_id:
             return [src_id]
         q = deque([(src_id, [src_id])])
@@ -182,8 +243,8 @@ class GraphQuery:
         while q and depth <= max_depth:
             for _ in range(len(q)):
                 cur, path = q.popleft()
-                nbrs = self.neighbors(cur, doc_id=doc_id, allow_jump_edge= False)
-                for v in (nbrs["nodes"] | nbrs["edges"]):
+                nbrs = self.neighbors(cur, doc_id=doc_id, allow_jump_edge=False)
+                for v in nbrs["nodes"] | nbrs["edges"]:
                     if v in seen:
                         continue
                     if v == dst_id:
@@ -216,19 +277,34 @@ class GraphQuery:
             n = Node.model_validate_json(ndoc)
             if type and (n.type != type):
                 continue
-            if label_contains and (label_contains.lower() not in (n.label or "").lower()):
+            if label_contains and (
+                label_contains.lower() not in (n.label or "").lower()
+            ):
                 continue
-            if summary_contains and (summary_contains.lower() not in (n.summary or "").lower()):
+            if summary_contains and (
+                summary_contains.lower() not in (n.summary or "").lower()
+            ):
                 continue
             out.append(nid)
             if len(out) >= max(1, limit):
                 break
         return out
 
-    def path_between_labels(self, src_substr: str, dst_substr: str, *, doc_id: Optional[str] = None, max_depth: int = 8) -> List[str]:
+    def path_between_labels(
+        self,
+        src_substr: str,
+        dst_substr: str,
+        *,
+        doc_id: Optional[str] = None,
+        max_depth: int = 8,
+    ) -> List[str]:
         """Find a shortest path between any node whose label contains src_substr and any whose label contains dst_substr."""
-        src_candidates = self.search_nodes(label_contains=src_substr, doc_id=doc_id, limit=50)
-        dst_candidates = set(self.search_nodes(label_contains=dst_substr, doc_id=doc_id, limit=50))
+        src_candidates = self.search_nodes(
+            label_contains=src_substr, doc_id=doc_id, limit=50
+        )
+        dst_candidates = set(
+            self.search_nodes(label_contains=dst_substr, doc_id=doc_id, limit=50)
+        )
         best: List[str] = []
         for s in src_candidates:
             for t in dst_candidates:
@@ -253,7 +329,7 @@ class GraphQuery:
         if not (where):
             where = None
         elif len(where) > 1:
-            where = {"$and": [{k:v} for k,v in where.items()]}
+            where = {"$and": [{k: v} for k, v in where.items()]}
         edges = self.e.backend.edge_get(where=where, include=["documents"])
         out: List[str] = []
         for eid, edoc in zip(edges.get("ids") or [], edges.get("documents") or []):
@@ -263,21 +339,41 @@ class GraphQuery:
 
             ok_src = src_label_contains is None
             ok_tgt = tgt_label_contains is None
-            if (src_label_contains or tgt_label_contains):
-                srcs = self.e.backend.node_get(ids=e.source_ids or [], include=["documents"])
-                tgts = self.e.backend.node_get(ids=e.target_ids or [], include=["documents"])
-                src_labels = [Node.model_validate_json(j).label for j in (srcs.get("documents") or []) if j]
-                tgt_labels = [Node.model_validate_json(j).label for j in (tgts.get("documents") or []) if j]
+            if src_label_contains or tgt_label_contains:
+                srcs = self.e.backend.node_get(
+                    ids=e.source_ids or [], include=["documents"]
+                )
+                tgts = self.e.backend.node_get(
+                    ids=e.target_ids or [], include=["documents"]
+                )
+                src_labels = [
+                    Node.model_validate_json(j).label
+                    for j in (srcs.get("documents") or [])
+                    if j
+                ]
+                tgt_labels = [
+                    Node.model_validate_json(j).label
+                    for j in (tgts.get("documents") or [])
+                    if j
+                ]
                 if src_label_contains:
-                    ok_src = any(src_label_contains.lower() in (s or "").lower() for s in src_labels)
+                    ok_src = any(
+                        src_label_contains.lower() in (s or "").lower()
+                        for s in src_labels
+                    )
                 if tgt_label_contains:
-                    ok_tgt = any(tgt_label_contains.lower() in (t or "").lower() for t in tgt_labels)
+                    ok_tgt = any(
+                        tgt_label_contains.lower() in (t or "").lower()
+                        for t in tgt_labels
+                    )
 
             if ok_src and ok_tgt:
                 out.append(eid)
         return out
 
-    def adjacency_list(self, node_ids: Iterable[str], *, doc_id: Optional[str] = None) -> Dict[str, Dict[str, Set[str]]]:
+    def adjacency_list(
+        self, node_ids: Iterable[str], *, doc_id: Optional[str] = None
+    ) -> Dict[str, Dict[str, Set[str]]]:
         """For each node id, return {node_id: {"nodes": set(), "edges": set()}}"""
         out: Dict[str, Dict[str, Set[str]]] = {}
         for nid in node_ids:
@@ -285,35 +381,61 @@ class GraphQuery:
         return out
 
     # ---- semantic seed ----
-    def semantic_seed_then_expand(self, query_embedding: List[float], *, top_k: int = 5, hops: int = 1):
-        hits = self.e.backend.node_query(query_embeddings=[query_embedding], n_results=top_k)
+    def semantic_seed_then_expand(
+        self, query_embedding: List[float], *, top_k: int = 5, hops: int = 1
+    ):
+        hits = self.e.backend.node_query(
+            query_embeddings=[query_embedding], n_results=top_k
+        )
         seed_ids = [nid for nid in (hits.get("ids") or [[]])[0]]
         layers = self.k_hop(seed_ids, k=hops)
         return {"seeds": seed_ids, "layers": layers}
-    def semantic_seed_then_expand_text(self, query_text: str, *, top_k: int = 5, hops: int = 1, doc_ids = None, where = None):
+
+    def semantic_seed_then_expand_text(
+        self,
+        query_text: str,
+        *,
+        top_k: int = 5,
+        hops: int = 1,
+        doc_ids=None,
+        where=None,
+    ):
         """Seed by a TEXT query using the collection's default embedding function, then expand K hops.
         This avoids any custom embedding pipeline and uses the underlying vector store's default embeddings.
         """
-        _where = {"doc_id" : doc_ids} if type(doc_ids) is str else None
+        _where = {"doc_id": doc_ids} if type(doc_ids) is str else None
         if type(doc_ids) is list:
             if _where is None:
                 _where = {}
-            _where['doc_id'] = {"$in": doc_ids}
+            _where["doc_id"] = {"$in": doc_ids}
         if where:
             if _where:
                 if _where.get("and"):
-                    if type(_where['and']) is list:
-                        _where_and : list = _where['and']
+                    if type(_where["and"]) is list:
+                        _where_and: list = _where["and"]
                         _where_and.append(where)
                     else:
-                        raise SyntaxError("vector backend syntax error: where invalid syntax")
+                        raise SyntaxError(
+                            "vector backend syntax error: where invalid syntax"
+                        )
                     # _where['and'].append()
                 else:
                     _where = {"$and": [where, _where]}
-        hits = self.e.backend.node_query(query_texts=[query_text], n_results=top_k, where = _where)
+        hits = self.e.backend.node_query(
+            query_texts=[query_text], n_results=top_k, where=_where
+        )
         seed_ids = [nid for nid in (hits.get("ids") or [[]])[0] if nid]
         layers = self.k_hop(seed_ids, k=hops)
-        out_layers = [{'nodes': self.e.backend.node_get(ids=list(l['nodes']))['documents'] if l['nodes'] else [], 
-          'edges':  self.e.backend.edge_get(ids=list(l['edges']))['documents'] if l['edges'] else []} for l in layers]
-        res =  {"seeds": hits['documents'][0], "layers": out_layers}
+        out_layers = [
+            {
+                "nodes": self.e.backend.node_get(ids=list(l["nodes"]))["documents"]
+                if l["nodes"]
+                else [],
+                "edges": self.e.backend.edge_get(ids=list(l["edges"]))["documents"]
+                if l["edges"]
+                else [],
+            }
+            for l in layers
+        ]
+        res = {"seeds": hits["documents"][0], "layers": out_layers}
         return res

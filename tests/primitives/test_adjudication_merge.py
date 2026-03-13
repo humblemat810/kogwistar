@@ -18,13 +18,25 @@ from tests._kg_factories import kg_document, kg_grounding
 def _task_set_for_verdict(verdict: AdjudicationVerdict) -> LLMTaskSet:
     pair_payload = {"verdict": verdict.model_dump(mode="python")}
     return LLMTaskSet(
-        extract_graph=lambda _req: ExtractGraphTaskResult(raw=None, parsed_payload=None, parsing_error="unused"),
-        adjudicate_pair=lambda _req: AdjudicatePairTaskResult(verdict_payload=pair_payload, raw=None, parsing_error=None),
-        adjudicate_batch=lambda _req: AdjudicateBatchTaskResult(verdict_payloads=(), raw=None, parsing_error="unused"),
-        filter_candidates=lambda _req: FilterCandidatesTaskResult(node_ids=(), edge_ids=(), reasoning="", raw=None, parsing_error=None),
+        extract_graph=lambda _req: ExtractGraphTaskResult(
+            raw=None, parsed_payload=None, parsing_error="unused"
+        ),
+        adjudicate_pair=lambda _req: AdjudicatePairTaskResult(
+            verdict_payload=pair_payload, raw=None, parsing_error=None
+        ),
+        adjudicate_batch=lambda _req: AdjudicateBatchTaskResult(
+            verdict_payloads=(), raw=None, parsing_error="unused"
+        ),
+        filter_candidates=lambda _req: FilterCandidatesTaskResult(
+            node_ids=(), edge_ids=(), reasoning="", raw=None, parsing_error=None
+        ),
         summarize_context=lambda req: SummarizeContextTaskResult(text=req.full_text),
-        answer_with_citations=lambda _req: AnswerWithCitationsTaskResult(answer_payload=None, raw=None, parsing_error="unused"),
-        repair_citations=lambda _req: RepairCitationsTaskResult(answer_payload=None, raw=None, parsing_error="unused"),
+        answer_with_citations=lambda _req: AnswerWithCitationsTaskResult(
+            answer_payload=None, raw=None, parsing_error="unused"
+        ),
+        repair_citations=lambda _req: RepairCitationsTaskResult(
+            answer_payload=None, raw=None, parsing_error="unused"
+        ),
         provider_hints=LLMTaskProviderHints(adjudicate_pair_provider="custom"),
     )
 
@@ -74,7 +86,9 @@ def test_adjudication_and_commit(engine):
     engine.write.add_node(a, doc_id=doc.id)
     engine.write.add_node(b, doc_id=doc.id)
 
-    verdict = AdjudicationVerdict(same_entity=True, confidence=0.9, reason="dup", canonical_entity_id=None)
+    verdict = AdjudicationVerdict(
+        same_entity=True, confidence=0.9, reason="dup", canonical_entity_id=None
+    )
     engine.llm_tasks = _task_set_for_verdict(verdict)
 
     res = engine.adjudicate_merge(a, b)
@@ -92,7 +106,9 @@ def test_adjudication_and_commit(engine):
     assert b_doc.get("canonical_entity_id") == canonical
 
     edges = engine.backend.edge_get(include=["metadatas"])
-    assert any((m or {}).get("relation") == "same_as" for m in (edges.get("metadatas") or []))
+    assert any(
+        (m or {}).get("relation") == "same_as" for m in (edges.get("metadatas") or [])
+    )
 
 
 def test_commit_cross_kind_creates_reifies(engine):
@@ -168,7 +184,12 @@ def test_commit_cross_kind_creates_reifies(engine):
     )
     engine.write.add_edge(edge_b, doc_id=doc.id)
 
-    verdict = AdjudicationVerdict(same_entity=True, confidence=0.95, reason="same idea", canonical_entity_id="pctt")
+    verdict = AdjudicationVerdict(
+        same_entity=True,
+        confidence=0.95,
+        reason="same idea",
+        canonical_entity_id="pctt",
+    )
     engine.commit_any_kind(
         engine._target_from_node(node_a),
         engine._target_from_edge(edge_b),
@@ -176,4 +197,6 @@ def test_commit_cross_kind_creates_reifies(engine):
     )
 
     edges = engine.backend.edge_get(include=["metadatas"])
-    assert any((m or {}).get("relation") == "reifies" for m in (edges.get("metadatas") or []))
+    assert any(
+        (m or {}).get("relation") == "reifies" for m in (edges.get("metadatas") or [])
+    )

@@ -4,6 +4,7 @@ from typing import Optional
 from sqlalchemy.orm import Session
 from .models import User, ExternalIdentity, WorkflowACL
 
+
 class AuthRepository:
     def __init__(self, session: Session):
         self.session = session
@@ -15,12 +16,12 @@ class AuthRepository:
         return self.session.query(User).filter(User.email == email).first()
 
     def upsert_user(
-        self, 
-        user_id: str, 
-        email: str, 
+        self,
+        user_id: str,
+        email: str,
         display_name: Optional[str] = None,
         global_role: Optional[str] = None,
-        global_ns: Optional[str] = None
+        global_ns: Optional[str] = None,
     ) -> User:
         user = self.get_user(user_id)
         if user:
@@ -50,27 +51,34 @@ class AuthRepository:
             user.last_login_at = datetime.utcnow()
             self.session.commit()
 
-    def get_external_identity(self, issuer: str, subject: str) -> Optional[ExternalIdentity]:
-        return self.session.query(ExternalIdentity).filter(
-            ExternalIdentity.issuer == issuer,
-            ExternalIdentity.subject == subject
-        ).first()
+    def get_external_identity(
+        self, issuer: str, subject: str
+    ) -> Optional[ExternalIdentity]:
+        return (
+            self.session.query(ExternalIdentity)
+            .filter(
+                ExternalIdentity.issuer == issuer, ExternalIdentity.subject == subject
+            )
+            .first()
+        )
 
-    def link_external_identity(self, user_id: str, issuer: str, subject: str, email: Optional[str] = None):
+    def link_external_identity(
+        self, user_id: str, issuer: str, subject: str, email: Optional[str] = None
+    ):
         identity = ExternalIdentity(
-            user_id=user_id,
-            issuer=issuer,
-            subject=subject,
-            email=email
+            user_id=user_id, issuer=issuer, subject=subject, email=email
         )
         self.session.add(identity)
         self.session.commit()
 
     def get_workflow_acl(self, workflow_id: str, user_id: str) -> Optional[WorkflowACL]:
-        return self.session.query(WorkflowACL).filter(
-            WorkflowACL.workflow_id == workflow_id,
-            WorkflowACL.user_id == user_id
-        ).first()
+        return (
+            self.session.query(WorkflowACL)
+            .filter(
+                WorkflowACL.workflow_id == workflow_id, WorkflowACL.user_id == user_id
+            )
+            .first()
+        )
 
     def set_workflow_acl(self, workflow_id: str, user_id: str, role: str):
         acl = self.get_workflow_acl(workflow_id, user_id)

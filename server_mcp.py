@@ -15,27 +15,34 @@ engine = GraphKnowledgeEngine(persist_directory=persist_directory)
 gq = GraphQuery(engine)
 mcp = FastMCP("KnowledgeEngine")
 
+
 # ---------- Query I/O models ----------
 class FindEdgesOut(BaseModel):
     edges: List[str]
+
 
 class NeighborsOut(BaseModel):
     nodes: List[str]
     edges: List[str]
 
+
 class KHopLayer(BaseModel):
     nodes: List[str]
     edges: List[str]
 
+
 class KHopOut(BaseModel):
     layers: List[KHopLayer]
+
 
 class ShortestPathOut(BaseModel):
     path: List[str]
 
+
 class SeedExpandOut(BaseModel):
     seeds: List[str]
     layers: List[KHopLayer]
+
 
 # ---------- Query tools ----------
 @mcp.tool(structured_output=True)
@@ -53,10 +60,12 @@ def kg_find_edges(
     )
     return FindEdgesOut(edges=eids)
 
+
 @mcp.tool(structured_output=True)
 def kg_neighbors(rid: str, doc_id: Optional[str] = None) -> NeighborsOut:
     nb = gq.neighbors(rid, doc_id=doc_id)
     return NeighborsOut(nodes=sorted(nb["nodes"]), edges=sorted(nb["edges"]))
+
 
 @mcp.tool(structured_output=True)
 def kg_k_hop(start_ids: List[str], k: int = 1, doc_id: Optional[str] = None) -> KHopOut:
@@ -66,9 +75,15 @@ def kg_k_hop(start_ids: List[str], k: int = 1, doc_id: Optional[str] = None) -> 
     ]
     return KHopOut(layers=layers)
 
+
 @mcp.tool(structured_output=True)
-def kg_shortest_path(src_id: str, dst_id: str, doc_id: Optional[str] = None, max_depth: int = 8) -> ShortestPathOut:
-    return ShortestPathOut(path=gq.shortest_path(src_id, dst_id, doc_id=doc_id, max_depth=max_depth))
+def kg_shortest_path(
+    src_id: str, dst_id: str, doc_id: Optional[str] = None, max_depth: int = 8
+) -> ShortestPathOut:
+    return ShortestPathOut(
+        path=gq.shortest_path(src_id, dst_id, doc_id=doc_id, max_depth=max_depth)
+    )
+
 
 @mcp.tool(structured_output=True)
 def kg_semantic_seed_then_expand_text(
@@ -76,8 +91,12 @@ def kg_semantic_seed_then_expand_text(
 ) -> SeedExpandOut:
     # NOTE: current GraphQuery.semantic_seed_then_expand_text ignores doc_id.
     out = gq.semantic_seed_then_expand_text(text, top_k=top_k, hops=hops)
-    layers = [KHopLayer(nodes=sorted(L["nodes"]), edges=sorted(L["edges"])) for L in out["layers"]]
+    layers = [
+        KHopLayer(nodes=sorted(L["nodes"]), edges=sorted(L["edges"]))
+        for L in out["layers"]
+    ]
     return SeedExpandOut(seeds=out["seeds"], layers=layers)
+
 
 # ========== Document parsing (text injection layer) ==========
 class DocParseIn(BaseModel):
@@ -85,10 +104,12 @@ class DocParseIn(BaseModel):
     content: str
     type: str = "text"
 
+
 class DocParseOut(BaseModel):
     doc_id: str
     chunk_ids: List[str]
     summary_node_id: Optional[str]
+
 
 @mcp.tool(structured_output=True)
 def doc_parse(inp: DocParseIn) -> DocParseOut:
@@ -101,10 +122,12 @@ def doc_parse(inp: DocParseIn) -> DocParseOut:
     # TODO: when your chunking + summary-tree pipeline is ready, call it here and populate outputs.
     return DocParseOut(doc_id=doc.id, chunk_ids=[], summary_node_id=None)
 
+
 # ========== Graph extraction (from existing document text) ==========
 class KGExtractIn(BaseModel):
     doc_id: str
-    mode: str = "append"      # "append" | "replace" | "skip-if-exists"
+    mode: str = "append"  # "append" | "replace" | "skip-if-exists"
+
 
 class KGExtractOut(BaseModel):
     doc_id: str
@@ -112,6 +135,7 @@ class KGExtractOut(BaseModel):
     edge_ids: List[str]
     nodes_added: int
     edges_added: int
+
 
 @mcp.tool(structured_output=True)
 def kg_extract(inp: KGExtractIn) -> KGExtractOut:
@@ -121,7 +145,9 @@ def kg_extract(inp: KGExtractIn) -> KGExtractOut:
     # 1) fetch the document text already stored via doc_parse
     content = engine._fetch_document_text(inp.doc_id)
     if not content:
-        raise ValueError(f"Document '{inp.doc_id}' not found or empty; run doc_parse first.")
+        raise ValueError(
+            f"Document '{inp.doc_id}' not found or empty; run doc_parse first."
+        )
 
     # 2) LLM extraction (pure; no writes)
     extracted = engine.extract_graph_with_llm(content=content)
@@ -144,6 +170,7 @@ def kg_extract(inp: KGExtractIn) -> KGExtractOut:
         nodes_added=persisted.get("nodes_added", len(persisted["node_ids"])),
         edges_added=persisted.get("edges_added", len(persisted["edge_ids"])),
     )
+
 
 # ---------- Entrypoints ----------
 if __name__ == "__main__":

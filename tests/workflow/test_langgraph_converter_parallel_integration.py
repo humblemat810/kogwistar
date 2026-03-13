@@ -1,4 +1,3 @@
-
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, List
@@ -12,6 +11,7 @@ from graph_knowledge_engine.runtime.langgraph_converter import to_langgraph
 
 
 # --- Minimum working fake shapes (MUST match tests/workflow/test_workflow_join.py) ---
+
 
 @dataclass
 class FakeNode:
@@ -44,6 +44,7 @@ class FakeConversationEngine:
     """
     Minimal sink for WorkflowRuntime tracing. It only needs to accept add_node/add_edge.
     """
+
     def __init__(self) -> None:
         self.nodes = []
         self.edges = []
@@ -69,7 +70,16 @@ class FakeWorkflowEngine:
         return self._edges
 
 
-def _n(node_id: str, *, workflow_id: str, op: str, start=False, terminal=False, fanout=False, join=False) -> FakeNode:
+def _n(
+    node_id: str,
+    *,
+    workflow_id: str,
+    op: str,
+    start=False,
+    terminal=False,
+    fanout=False,
+    join=False,
+) -> FakeNode:
     md = {
         "entity_type": "workflow_node",
         "workflow_id": workflow_id,
@@ -90,7 +100,17 @@ def _n(node_id: str, *, workflow_id: str, op: str, start=False, terminal=False, 
     )
 
 
-def _e(edge_id: str, *, workflow_id: str, src: str, dst: str, predicate=None, priority=100, is_default=False, multiplicity="one") -> FakeEdge:
+def _e(
+    edge_id: str,
+    *,
+    workflow_id: str,
+    src: str,
+    dst: str,
+    predicate=None,
+    priority=100,
+    is_default=False,
+    multiplicity="one",
+) -> FakeEdge:
     md = {
         "entity_type": "workflow_edge",
         "workflow_id": workflow_id,
@@ -148,14 +168,25 @@ def test_langgraph_parallel_fanout_merges_updates_end_to_end():
     ]
     engine = FakeWorkflowEngine(nodes, edges)
 
-    resolver = Resolver({
-        "noop": lambda state: RR([]),
-        "add_x": lambda state: RR([("a", {"events": ("x", time.time())})]),
-        "add_y": lambda state: RR([("a", {"events": ("y", time.time())})]),
-    })
+    resolver = Resolver(
+        {
+            "noop": lambda state: RR([]),
+            "add_x": lambda state: RR([("a", {"events": ("x", time.time())})]),
+            "add_y": lambda state: RR([("a", {"events": ("y", time.time())})]),
+        }
+    )
 
-    compiled = to_langgraph(workflow_engine=engine, workflow_id=wid, step_resolver=resolver, predicate_registry={})
+    compiled = to_langgraph(
+        workflow_engine=engine,
+        workflow_id=wid,
+        step_resolver=resolver,
+        predicate_registry={},
+    )
     out = compiled.invoke({})
 
-    names = out.get("events", []) or [i[0] for i in (out.get("__blob__") and out["__blob__"].get('events')) or []] or []
+    names = (
+        out.get("events", [])
+        or [i[0] for i in (out.get("__blob__") and out["__blob__"].get("events")) or []]
+        or []
+    )
     assert "x" in names and "y" in names

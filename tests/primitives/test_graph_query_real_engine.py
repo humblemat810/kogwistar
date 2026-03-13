@@ -5,7 +5,13 @@ import pytest
 import graph_knowledge_engine.engine_core.engine as engmod
 from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
 from graph_knowledge_engine.graph_query import GraphQuery
-from graph_knowledge_engine.engine_core.models import Document, Node, Edge, Span, Grounding
+from graph_knowledge_engine.engine_core.models import (
+    Document,
+    Node,
+    Edge,
+    Span,
+    Grounding,
+)
 
 pytestmark = [
     pytest.mark.ci,
@@ -13,15 +19,23 @@ pytestmark = [
     pytest.mark.integration,
 ]
 
+
 # ---- Test helpers ----
 class _DummyLLM:
     """Prevents AzureChatOpenAI from initializing/networking during tests."""
+
     def __init__(self, *_, **__):
         pass
+
     def with_structured_output(self, *_a, **_k):
         class _Chain:
             def invoke(self, *_x, **_y):
-                return {"raw": "(disabled)", "parsed": None, "parsing_error": "LLM disabled in tests"}
+                return {
+                    "raw": "(disabled)",
+                    "parsed": None,
+                    "parsing_error": "LLM disabled in tests",
+                }
+
         return _Chain()
 
 
@@ -32,7 +46,7 @@ def _ref(doc_id: str, excerpt: str = "") -> Span:
         doc_id=doc_id,
         page_number=1,
         start_char=0,
-        insertion_method='test-manual',
+        insertion_method="test-manual",
         end_char=max(1, len(excerpt) or 1),
         excerpt=excerpt or "x",
         context_before="",
@@ -72,20 +86,26 @@ def test_graph_query_structural_end_to_end(tmp_path):
 
     # 2) Real nodes (persisted into Chroma)
     n_smoke = Node(
-        label="Smoking", type="entity", summary="habit",
-        mentions=[Grounding(spans=[_ref(doc.id, "Smoking")])], doc_id=doc.id,
-        metadata = {},
-        level_from_root = 0,
+        label="Smoking",
+        type="entity",
+        summary="habit",
+        mentions=[Grounding(spans=[_ref(doc.id, "Smoking")])],
+        doc_id=doc.id,
+        metadata={},
+        level_from_root=0,
         domain_id=None,
         canonical_entity_id=None,
         properties=None,
         embedding=None,
     )
     n_cancer = Node(
-        label="Lung cancer", type="entity", summary="disease",
-        mentions=[Grounding(spans=[_ref(doc.id, "lung cancer")])], doc_id=doc.id,
-        metadata = {},
-        level_from_root = 0,
+        label="Lung cancer",
+        type="entity",
+        summary="disease",
+        mentions=[Grounding(spans=[_ref(doc.id, "lung cancer")])],
+        doc_id=doc.id,
+        metadata={},
+        level_from_root=0,
         domain_id=None,
         canonical_entity_id=None,
         properties=None,
@@ -99,9 +119,16 @@ def test_graph_query_structural_end_to_end(tmp_path):
 
     # 3) Real edge (engine will fan out edge_endpoints rows)
     e_causes = Edge(
-        label="Smoking→Cancer", type="relationship", relation="causes",
-        source_ids=[smoke_id], target_ids=[cancer_id], source_edge_ids=[], target_edge_ids = [], summary="causal claim",
-        mentions=[Grounding(spans=[_ref(doc.id, "causes")])], doc_id=doc.id,
+        label="Smoking→Cancer",
+        type="relationship",
+        relation="causes",
+        source_ids=[smoke_id],
+        target_ids=[cancer_id],
+        source_edge_ids=[],
+        target_edge_ids=[],
+        summary="causal claim",
+        mentions=[Grounding(spans=[_ref(doc.id, "causes")])],
+        doc_id=doc.id,
         metadata={"causal_type": "test"},
         domain_id=None,
         canonical_entity_id=None,
@@ -120,7 +147,9 @@ def test_graph_query_structural_end_to_end(tmp_path):
     assert causes_id in nbrs["edges"], f"Expected {causes_id} in edges, got {nbrs}"
     assert cancer_id in nbrs["nodes"], f"Expected {cancer_id} in nodes, got {nbrs}"
     nbrs = gq.neighbors(smoke_id, allow_jump_edge=False)
-    assert len(nbrs["nodes"]) == 0, "node should not jump over edge to another jode in no jump mode"
+    assert len(nbrs["nodes"]) == 0, (
+        "node should not jump over edge to another jode in no jump mode"
+    )
     # k-hop expansion
     layers = gq.k_hop([smoke_id], k=2)
     assert causes_id in layers[0]["edges"]
@@ -139,7 +168,8 @@ def test_graph_query_structural_end_to_end(tmp_path):
         doc_id=doc.id,
     )
     assert causes_id in results
-    
+
+
 def test_semantic_seed_then_expand_text(tmp_path):
     e = make_engine(tmp_path)
     doc = Document(
@@ -155,7 +185,9 @@ def test_semantic_seed_then_expand_text(tmp_path):
     e.add_document(doc)
 
     n_smoke = Node(
-        label="Smoking", type="entity", summary="habit",
+        label="Smoking",
+        type="entity",
+        summary="habit",
         mentions=[Grounding(spans=[_ref(doc.id, "Smoking")])],
         doc_id=doc.id,
         metadata={},
@@ -166,7 +198,9 @@ def test_semantic_seed_then_expand_text(tmp_path):
         embedding=None,
     )
     n_disease = Node(
-        label="Disease", type="entity", summary="outcome",
+        label="Disease",
+        type="entity",
+        summary="outcome",
         mentions=[Grounding(spans=[_ref(doc.id, "disease")])],
         doc_id=doc.id,
         metadata={},
@@ -183,9 +217,13 @@ def test_semantic_seed_then_expand_text(tmp_path):
     disease_id = n_disease.id
 
     rel = Edge(
-        label="Smoking→Disease", type="relationship", relation="causes",
-        source_ids=[smoke_id], target_ids=[disease_id],
-        source_edge_ids=[], target_edge_ids=[],
+        label="Smoking→Disease",
+        type="relationship",
+        relation="causes",
+        source_ids=[smoke_id],
+        target_ids=[disease_id],
+        source_edge_ids=[],
+        target_edge_ids=[],
         summary="causal",
         mentions=[Grounding(spans=[_ref(doc.id, "causes")])],
         doc_id=doc.id,
