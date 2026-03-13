@@ -13,7 +13,7 @@ if TYPE_CHECKING:
     from graph_knowledge_engine.conversation.agentic_answering import AgenticAnsweringAgent
     from graph_knowledge_engine.conversation.conversation_context import ConversationContextBuilder, ContextSources, PromptContext
     from graph_knowledge_engine.conversation.conversation_orchestrator import ConversationOrchestrator
-    from graph_knowledge_engine.conversation.conversation_state_contracts import WorkflowState
+    from graph_knowledge_engine.conversation.conversation_state_contracts import ConversationWorkflowState
     from graph_knowledge_engine.conversation.knowledge_retriever import KnowledgeRetriever
     from graph_knowledge_engine.conversation.memory_retriever import MemoryRetriever
     from graph_knowledge_engine.conversation.retrieval_orchestrator import RetrievalOrchestrator
@@ -27,7 +27,7 @@ __all__ = [
     "ContextSources",
     "PromptContext",
     "ConversationOrchestrator",
-    "WorkflowState",
+    "ConversationWorkflowState",
     "KnowledgeRetriever",
     "MemoryRetriever",
     "RetrievalOrchestrator",
@@ -55,8 +55,8 @@ def __getattr__(name: str):
         from graph_knowledge_engine.conversation.conversation_orchestrator import ConversationOrchestrator
         return ConversationOrchestrator
     if name == "WorkflowState":
-        from graph_knowledge_engine.conversation.conversation_state_contracts import WorkflowState
-        return WorkflowState
+        from graph_knowledge_engine.conversation.conversation_state_contracts import ConversationWorkflowState
+        return ConversationWorkflowState
     if name == "KnowledgeRetriever":
         from graph_knowledge_engine.conversation.knowledge_retriever import KnowledgeRetriever
         return KnowledgeRetriever

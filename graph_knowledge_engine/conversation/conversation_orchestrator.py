@@ -18,7 +18,7 @@ from graph_knowledge_engine.llm_tasks import LLMTaskSet, SummarizeContextTaskReq
 from .models import ConversationEdge, MetaFromLastSummary
 from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
 from graph_knowledge_engine.id_provider import stable_id
-from .conversation_state_contracts import WorkflowStateModel, PrevTurnMetaSummaryModel, WorkflowState
+from .conversation_state_contracts import WorkflowStateModel, PrevTurnMetaSummaryModel, ConversationWorkflowState
 from ..engine_core.models import Grounding, MentionVerification, Span, Role
 from .models import (
     ConversationAIResponse,
@@ -320,7 +320,7 @@ class ConversationOrchestrator:
                 max_workers=max_workers,
             )
 
-            init_state: WorkflowState = cast(WorkflowState, WorkflowStateModel(
+            init_state: ConversationWorkflowState = cast(ConversationWorkflowState, WorkflowStateModel(
                 conversation_id=conversation_id,
                 user_id=user_id,
                 turn_node_id=turn_node_id,
@@ -571,8 +571,8 @@ class ConversationOrchestrator:
                 ),
                 "add_link_to_new_turn": self.add_link_to_new_turn,
             }
-        init_state: WorkflowState = cast(
-            WorkflowState,
+        init_state: ConversationWorkflowState = cast(
+            ConversationWorkflowState,
             WorkflowStateModel(
                 conversation_id=conversation_id,
                 user_id=user_id,

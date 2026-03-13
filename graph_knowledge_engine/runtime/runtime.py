@@ -12,12 +12,23 @@ import pathlib
 import logging
 from contextlib import nullcontext
 
-from ..conversation.models import ConversationEdge, ConversationNode, WorkflowCheckpointNode, WorkflowRunNode, WorkflowStepExecNode
 from graph_knowledge_engine.id_provider import stable_id
 from graph_knowledge_engine.utils.log import bind_log_context
 from graph_knowledge_engine.runtime.models import StateUpdate
 from graph_knowledge_engine.engine_core.models import MentionVerification
-from graph_knowledge_engine.runtime.models import RunFailure, RunSuccess, WorkflowEdge, WorkflowNode
+from graph_knowledge_engine.runtime.models import (
+    RunFailure,
+    RunSuccess,
+    WorkflowCancelledNode,
+    WorkflowCheckpointNode,
+    WorkflowCompletedNode,
+    WorkflowEdge,
+    WorkflowNode,
+    WorkflowRunNode,
+    WorkflowRuntimeEdge,
+    WorkflowState,
+    WorkflowStepExecNode,
+)
 
 from .design import validate_workflow_design, Predicate
 from .serialize import try_serialize_with_ref
@@ -210,7 +221,6 @@ from graph_knowledge_engine.engine_core.models import Grounding, Span
 from .models import StepRunResult
 
 StepFn: TypeAlias = Callable[["StepContext"], StepRunResult]
-from ..conversation.conversation_state_contracts import WorkflowState
 
 from dataclasses import dataclass, field
 from typing import Dict, List, Mapping, TypedDict, Iterator, TypeVar
@@ -369,6 +379,50 @@ def _make_trace_span(*, conversation_id: str, excerpt: str, doc_id: str) -> Any:
             "notes": "workflow trace",
         },
     }
+
+
+def _make_runtime_edge(
+    *,
+    edge_id: str,
+    relation: str,
+    label: str,
+    summary: str,
+    doc_id: str,
+    conversation_id: str,
+    source_ids: list[str],
+    target_ids: list[str],
+    mentions: list[Grounding],
+    run_id: str | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> WorkflowRuntimeEdge:
+    edge_metadata = {
+        "entity_type": "conversation_edge",
+        "relation": relation,
+        "conversation_id": conversation_id,
+    }
+    if run_id is not None:
+        edge_metadata["run_id"] = run_id
+    if metadata:
+        edge_metadata.update(metadata)
+    return WorkflowRuntimeEdge(
+        id=edge_id,
+        source_ids=source_ids,
+        target_ids=target_ids,
+        relation=relation,
+        label=label,
+        type="relationship",
+        summary=summary,
+        doc_id=doc_id,
+        mentions=mentions,
+        domain_id=None,
+        canonical_entity_id=None,
+        properties={},
+        embedding=None,
+        metadata=edge_metadata,
+        source_edge_ids=[],
+        target_edge_ids=[],
+    )
+
 from threading import Lock
 class WorkflowRuntime:
     """
@@ -1104,6 +1158,13 @@ class WorkflowRuntime:
                         else:
                             # done
                             # self._update_workflow_run_status(conversation_id, run_id, "succeeded")
+                            self._persist_completed_terminal(
+                                conversation_id=str(conversation_id),
+                                workflow_id=str(workflow_id),
+                                run_id=str(run_id),
+                                accepted_step_seq=max(-1, int(step_seq) - 1),
+                                last_processed_node_id=(str(last_exec_node.safe_get_id()) if last_exec_node is not None else None),
+                            )
                             # trace: workflow run completed
                             try:
                                 tc_done = TraceContext(run_id=str(run_id), token_id=str(run_id), step_seq=int(step_seq), node_id="run", attempt=1, conversation_id=str(conversation_id) if conversation_id is not None else None, turn_node_id=str(turn_node_id) if turn_node_id is not None else None)
@@ -1270,27 +1331,37 @@ class WorkflowRuntime:
                     step_seq_current = step_seq
                     step_seq += 1
 
+                    def _checkpoint_current_step() -> None:
+                        if (step_seq_current % self.checkpoint_every_n_steps) == 0:
+                            with self._maybe_step_uow():
+                                self._persist_checkpoint(
+                                    conversation_id=conversation_id,
+                                    workflow_id=workflow_id,
+                                    run_id=run_id,
+                                    step_seq=step_seq_current,
+                                    state=state,
+                                    last_exec_node=last_exec_node,
+                                )
+                            try:
+                                tc_ck = TraceContext(
+                                    run_id=str(run_id),
+                                    token_id=str(token_id),
+                                    step_seq=int(step_seq_current),
+                                    node_id=str(node_id),
+                                    attempt=1,
+                                    conversation_id=str(conversation_id),
+                                    turn_node_id=str(turn_node_id),
+                                )
+                                self.emitter.emit(type="checkpoint_saved", ctx=tc_ck, payload={"step_seq": int(step_seq_current)})
+                            except Exception:
+                                pass
+
                     if status == "suspended":
                         # When suspended, the token is parked here pending external resume.
                         # We DO NOT decrement the join obligations because the token still exists
                         # and will eventually reach downstream joins once resumed.
                         _persist_rt_join_runtime()
-                        
-                        if (step_seq_current % self.checkpoint_every_n_steps) == 0:
-                            with self._maybe_step_uow():
-                                self._persist_checkpoint(
-                                        conversation_id=conversation_id,
-                                        workflow_id=workflow_id,
-                                        run_id=run_id,
-                                        step_seq=step_seq_current,
-                                        state=state,
-                                        last_exec_node=last_exec_node,
-                                )
-                            try:
-                                tc_ck = TraceContext(run_id=str(run_id), token_id=str(token_id), step_seq=int(step_seq_current), node_id=str(node_id), attempt=1, conversation_id=str(conversation_id), turn_node_id=str(turn_node_id))
-                                self.emitter.emit(type="checkpoint_saved", ctx=tc_ck, payload={"step_seq": int(step_seq_current)})
-                            except Exception:
-                                pass
+                        _checkpoint_current_step()
                         
                         # Emit specific suspension payload for client ingestion
                         if hasattr(run_result, 'resume_payload'):
@@ -1304,31 +1375,20 @@ class WorkflowRuntime:
                                 pass
                         continue
 
+                    if _enter_cancelling(reason_node_id=str(node_id), token_id=str(token_id)):
+                        # The current token completed after a cancel request was accepted.
+                        # Stop it here so no downstream work is scheduled during cancellation.
+                        _dec(mask)
+                        _persist_rt_join_runtime()
+                        _checkpoint_current_step()
+                        continue
+
                     # route
                     if wn.terminal or len(adj.get(node_id, [])) == 0:
                         # token ends here -> it will never reach any remaining joins
                         _dec(mask)
                         _persist_rt_join_runtime()
-
-                        if (step_seq_current % self.checkpoint_every_n_steps) == 0:
-                            with self._maybe_step_uow():
-                                self._persist_checkpoint(
-                                        conversation_id=conversation_id,
-                                        workflow_id=workflow_id,
-                                        run_id=run_id,
-                                        step_seq=step_seq_current,
-                                        state=state,
-                                        last_exec_node=last_exec_node,
-                                )
-                            try:
-
-                                tc_ck = TraceContext(run_id=str(run_id), token_id=str(token_id), step_seq=int(step_seq_current), node_id=str(node_id), attempt=1, conversation_id=str(conversation_id), turn_node_id=str(turn_node_id))
-
-                                self.emitter.emit(type="checkpoint_saved", ctx=tc_ck, payload={"step_seq": int(step_seq_current)})
-
-                            except Exception:
-
-                                pass
+                        _checkpoint_current_step()
                         _enter_cancelling(reason_node_id=str(node_id), token_id=str(token_id))
                         continue
 
@@ -1456,25 +1516,7 @@ class WorkflowRuntime:
                             scheduled_q.put(t)
                             _persist_rt_join_runtime()
 
-                    if (step_seq_current % self.checkpoint_every_n_steps) == 0:
-                        with self._maybe_step_uow():
-                                self._persist_checkpoint(
-                                    conversation_id=conversation_id,
-                                    workflow_id=workflow_id,
-                                    run_id=run_id,
-                                    step_seq=step_seq_current,
-                                    state=state,
-                                    last_exec_node=last_exec_node,
-                                )
-                        try:
-
-                            tc_ck = TraceContext(run_id=str(run_id), token_id=str(token_id), step_seq=int(step_seq_current), node_id=str(node_id), attempt=1, conversation_id=str(conversation_id), turn_node_id=str(turn_node_id))
-
-                            self.emitter.emit(type="checkpoint_saved", ctx=tc_ck, payload={"step_seq": int(step_seq_current)})
-
-                        except Exception:
-
-                            pass
+                    _checkpoint_current_step()
                     _enter_cancelling(reason_node_id=str(node_id), token_id=str(token_id))
             raise Exception('unreacheable')
 
@@ -1689,7 +1731,7 @@ class WorkflowRuntime:
         watermark = None if not cancel_info else cancel_info.get("watermark")
         excerpt = f"workflow cancelled run_id={run_id} accepted_step_seq={accepted_step_seq}"
         span = Span(**_make_trace_span(conversation_id=conversation_id, excerpt=excerpt, doc_id=f"conv:{conversation_id}"))
-        node = ConversationNode(
+        node = WorkflowCancelledNode(
             id=node_id,
             label="Workflow cancelled",
             type="entity",
@@ -1709,9 +1751,6 @@ class WorkflowRuntime:
                 "last_processed_node_id": (str(last_processed_node_id) if last_processed_node_id else None),
                 "level_from_root": 0,
             },
-            conversation_id=conversation_id,
-            role="system",
-            turn_index=None,
             level_from_root=0,
             domain_id=None,
             canonical_entity_id=None,
@@ -1725,23 +1764,17 @@ class WorkflowRuntime:
             edge_id = str(stable_id("workflow.edge", "cancelled", run_node_id, node_id))
             edge_existing = self.conversation_engine.backend.edge_get(ids=[edge_id], include=[])
             if not edge_existing.get("ids"):
-                edge = ConversationEdge(
-                    id=edge_id,
-                    source_ids=[run_node_id],
-                    target_ids=[node_id],
+                edge = _make_runtime_edge(
+                    edge_id=edge_id,
                     relation="wf_cancelled",
                     label="wf_cancelled",
-                    type="relationship",
                     summary="workflow cancelled",
                     doc_id=f"wf_cancelled|{run_id}",
+                    conversation_id=conversation_id,
+                    source_ids=[run_node_id],
+                    target_ids=[node_id],
                     mentions=[Grounding(spans=[Span.from_dummy_for_conversation()])],
-                    domain_id=None,
-                    canonical_entity_id=None,
-                    properties={},
-                    embedding=None,
-                    metadata={"entity_type": "conversation_edge", "run_id": run_id, "conversation_id": conversation_id},
-                    source_edge_ids=[],
-                    target_edge_ids=[],
+                    run_id=run_id,
                 )
                 self.conversation_engine.add_edge(edge)
 
@@ -1749,23 +1782,17 @@ class WorkflowRuntime:
             req_edge_id = str(stable_id("workflow.edge", "cancel_reconciled", req_node_id, node_id))
             req_edge_existing = self.conversation_engine.backend.edge_get(ids=[req_edge_id], include=[])
             if not req_edge_existing.get("ids"):
-                req_edge = ConversationEdge(
-                    id=req_edge_id,
-                    source_ids=[req_node_id],
-                    target_ids=[node_id],
+                req_edge = _make_runtime_edge(
+                    edge_id=req_edge_id,
                     relation="wf_cancel_reconciled",
                     label="wf_cancel_reconciled",
-                    type="relationship",
                     summary="cancel request reconciled",
                     doc_id=f"wf_cancelled|{run_id}",
+                    conversation_id=conversation_id,
+                    source_ids=[req_node_id],
+                    target_ids=[node_id],
                     mentions=[Grounding(spans=[Span.from_dummy_for_conversation()])],
-                    domain_id=None,
-                    canonical_entity_id=None,
-                    properties={},
-                    embedding=None,
-                    metadata={"entity_type": "conversation_edge", "run_id": run_id, "conversation_id": conversation_id},
-                    source_edge_ids=[],
-                    target_edge_ids=[],
+                    run_id=run_id,
                 )
                 self.conversation_engine.add_edge(req_edge)
 
@@ -1773,23 +1800,17 @@ class WorkflowRuntime:
             cancelled_at_edge_id = str(stable_id("workflow.edge", "cancelled_at", node_id, str(last_processed_node_id)))
             cancelled_at_edge_existing = self.conversation_engine.backend.edge_get(ids=[cancelled_at_edge_id], include=[])
             if not cancelled_at_edge_existing.get("ids"):
-                cancelled_at_edge = ConversationEdge(
-                    id=cancelled_at_edge_id,
-                    source_ids=[node_id],
-                    target_ids=[str(last_processed_node_id)],
+                cancelled_at_edge = _make_runtime_edge(
+                    edge_id=cancelled_at_edge_id,
                     relation="wf_cancelled_at",
                     label="wf_cancelled_at",
-                    type="relationship",
                     summary="workflow cancelled at node",
                     doc_id=f"wf_cancelled|{run_id}",
+                    conversation_id=conversation_id,
+                    source_ids=[node_id],
+                    target_ids=[str(last_processed_node_id)],
                     mentions=[Grounding(spans=[Span.from_dummy_for_conversation()])],
-                    domain_id=None,
-                    canonical_entity_id=None,
-                    properties={},
-                    embedding=None,
-                    metadata={"entity_type": "conversation_edge", "run_id": run_id, "conversation_id": conversation_id},
-                    source_edge_ids=[],
-                    target_edge_ids=[],
+                    run_id=run_id,
                 )
                 self.conversation_engine.add_edge(cancelled_at_edge)
         return node_id
@@ -1810,7 +1831,7 @@ class WorkflowRuntime:
 
         excerpt = f"workflow completed run_id={run_id} accepted_step_seq={accepted_step_seq}"
         span = Span(**_make_trace_span(conversation_id=conversation_id, excerpt=excerpt, doc_id=f"conv:{conversation_id}"))
-        node = ConversationNode(
+        node = WorkflowCompletedNode(
             id=node_id,
             label="Workflow completed",
             type="entity",
@@ -1827,9 +1848,6 @@ class WorkflowRuntime:
                 "last_processed_node_id": (str(last_processed_node_id) if last_processed_node_id else None),
                 "level_from_root": 0,
             },
-            conversation_id=conversation_id,
-            role="system",
-            turn_index=None,
             level_from_root=0,
             domain_id=None,
             canonical_entity_id=None,
@@ -1843,23 +1861,17 @@ class WorkflowRuntime:
             edge_id = str(stable_id("workflow.edge", "completed", run_node_id, node_id))
             edge_existing = self.conversation_engine.backend.edge_get(ids=[edge_id], include=[])
             if not edge_existing.get("ids"):
-                edge = ConversationEdge(
-                    id=edge_id,
-                    source_ids=[run_node_id],
-                    target_ids=[node_id],
+                edge = _make_runtime_edge(
+                    edge_id=edge_id,
                     relation="wf_completed",
                     label="wf_completed",
-                    type="relationship",
                     summary="workflow completed",
                     doc_id=f"wf_completed|{run_id}",
+                    conversation_id=conversation_id,
+                    source_ids=[run_node_id],
+                    target_ids=[node_id],
                     mentions=[Grounding(spans=[Span.from_dummy_for_conversation()])],
-                    domain_id=None,
-                    canonical_entity_id=None,
-                    properties={},
-                    embedding=None,
-                    metadata={"entity_type": "conversation_edge", "run_id": run_id, "conversation_id": conversation_id},
-                    source_edge_ids=[],
-                    target_edge_ids=[],
+                    run_id=run_id,
                 )
                 self.conversation_engine.add_edge(edge)
         return node_id
@@ -2038,21 +2050,24 @@ class WorkflowRuntime:
                 ),
             )
             eid = f"wf_next_step_exec|{run_id}|{step_seq}|last::{last_exec_node.safe_get_id()}|to::{n.safe_get_id()}"
-            e = ConversationEdge(id = eid, type = 'relationship', summary = f"wf_next_step_exec {step_seq=}",
-                                 domain_id=None, label=f'wf_next_step_exec {step_seq=}', 
-                                 properties={}, 
-                                 mentions=[Grounding(spans=[self_span])], canonical_entity_id=None, 
-                                 source_ids=[last_exec_node.safe_get_id()], target_ids=[n.safe_get_id()],
-                                 relation="wf_next_step_exec", source_edge_ids = [], target_edge_ids = [], embedding = None,
-                                 doc_id = f"wf_next_step_exec|{run_id}|{step_seq}",
-                                 metadata={"relation":"wf_next_step_exec",
-                                           "source_id":[last_exec_node.safe_get_id()],
-                                           "target_id":[n.safe_get_id()],
-                                           "char_distance_from_last_summary": 0,
-                                           "turn_distance_from_last_summary": 0,
-                                        
-                                           },
-                                 )
+            e = _make_runtime_edge(
+                edge_id=eid,
+                relation="wf_next_step_exec",
+                label=f"wf_next_step_exec {step_seq=}",
+                summary=f"wf_next_step_exec {step_seq=}",
+                doc_id=f"wf_next_step_exec|{run_id}|{step_seq}",
+                conversation_id=conversation_id,
+                source_ids=[last_exec_node.safe_get_id()],
+                target_ids=[n.safe_get_id()],
+                mentions=[Grounding(spans=[self_span])],
+                run_id=run_id,
+                metadata={
+                    "source_id": [last_exec_node.safe_get_id()],
+                    "target_id": [n.safe_get_id()],
+                    "char_distance_from_last_summary": 0,
+                    "turn_distance_from_last_summary": 0,
+                },
+            )
             self.conversation_engine.add_edge(e)
         if result.conversation_node_id:
             content = f"{n.safe_get_id()} created {result.conversation_node_id} durign execution"
@@ -2077,20 +2092,24 @@ class WorkflowRuntime:
                 ),
             )
             eid = f"conv:{conversation_id}|wfexe:{n.safe_get_id()}|created:{result.conversation_node_id}"
-            e = ConversationEdge(id = eid, type = 'relationship', summary = f"created node during {step_seq=}",
-                                 domain_id=None, label=f'created node during {step_seq=}', 
-                                 properties={}, 
-                                 mentions=[Grounding(spans=[self_span])], canonical_entity_id=None, 
-                                 source_ids=[n.safe_get_id()], target_ids=[result.conversation_node_id],
-                                 relation="created_child", source_edge_ids = [], target_edge_ids = [], embedding = None,
-                                 doc_id = f"wf_next_step_exec|{run_id}|{step_seq}",
-                                 metadata={"relation":"created_child",
-                                           "source_id":[n.safe_get_id()],
-                                           "target_id":[result.conversation_node_id],
-                                           "char_distance_from_last_summary": 0,
-                                           "turn_distance_from_last_summary": 0,
-                                        
-                                           },)
+            e = _make_runtime_edge(
+                edge_id=eid,
+                relation="created_child",
+                label=f"created node during {step_seq=}",
+                summary=f"created node during {step_seq=}",
+                doc_id=f"wf_next_step_exec|{run_id}|{step_seq}",
+                conversation_id=conversation_id,
+                source_ids=[n.safe_get_id()],
+                target_ids=[result.conversation_node_id],
+                mentions=[Grounding(spans=[self_span])],
+                run_id=run_id,
+                metadata={
+                    "source_id": [n.safe_get_id()],
+                    "target_id": [result.conversation_node_id],
+                    "char_distance_from_last_summary": 0,
+                    "turn_distance_from_last_summary": 0,
+                },
+            )
             
             self.conversation_engine.add_edge(e)
         return n
@@ -2153,19 +2172,22 @@ class WorkflowRuntime:
                 ),
             )
             eid = f"persist_checkpoint|{run_id}|{step_seq}|last::{last_exec_node.safe_get_id()}|to::{n.safe_get_id()}"
-            e = ConversationEdge(id = eid, type = 'relationship', summary = f"persist_checkpoint during {step_seq=}",
-                                 domain_id=None, label=f'persist_checkpoint during {step_seq=}', 
-                                 properties={}, 
-                                 mentions=[Grounding(spans=[self_span])], canonical_entity_id=None, 
-                                 source_ids=[n.safe_get_id()], target_ids=[last_exec_node.safe_get_id()],
-                                 relation="persist_checkpoint during", source_edge_ids = [], target_edge_ids = [], embedding = None,
-                                 doc_id = f"wf_next_step_exec|{run_id}|{step_seq}",
-                                 metadata={"relation":"wf_next_step_exec",
-                                           "source_id":[last_exec_node.safe_get_id()],
-                                           "target_id":[n.safe_get_id()],
-                                           "char_distance_from_last_summary": 0,
-                                           "turn_distance_from_last_summary": 0,
-                                        
-                                           },
-                                 )
+            e = _make_runtime_edge(
+                edge_id=eid,
+                relation="persist_checkpoint during",
+                label=f"persist_checkpoint during {step_seq=}",
+                summary=f"persist_checkpoint during {step_seq=}",
+                doc_id=f"wf_next_step_exec|{run_id}|{step_seq}",
+                conversation_id=conversation_id,
+                source_ids=[n.safe_get_id()],
+                target_ids=[last_exec_node.safe_get_id()],
+                mentions=[Grounding(spans=[self_span])],
+                run_id=run_id,
+                metadata={
+                    "source_id": [last_exec_node.safe_get_id()],
+                    "target_id": [n.safe_get_id()],
+                    "char_distance_from_last_summary": 0,
+                    "turn_distance_from_last_summary": 0,
+                },
+            )
             self.conversation_engine.add_edge(e)

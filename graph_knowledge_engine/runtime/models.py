@@ -1,7 +1,7 @@
-from typing import Any, ClassVar, Literal
+from typing import Any, ClassVar, Literal, Optional, TypeAlias, TypedDict, Union
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from ..engine_core.models import Edge, Node
+from ..engine_core.models import Edge, Node, Span
 
 
 class WorkflowNodeMetadata(BaseModel):
@@ -123,7 +123,40 @@ class WorkflowEdge(Edge):
     @property
     def priority(self):
         return int(self.metadata.get('wf_priority'))
-from typing import Union, TypeAlias, Literal, Any, Optional
+
+
+# class PrevTurnMetaSummaryDict(TypedDict):
+    # prev_node_char_distance_from_last_summary: int
+    # prev_node_distance_from_last_summary: int
+    # tail_turn_index: int
+
+
+# class SummaryStateDict(TypedDict):
+#     should_summarize: bool
+#     did_summarize: bool
+#     summary_node_id: Optional[str]
+
+
+class WorkflowState(TypedDict):
+    conversation_id: str
+    user_id: str
+    turn_node_id: str
+    turn_index: int
+    role: str
+    user_text: str
+    mem_id: str
+    self_span: Span
+    embedding: Any
+    memory: Optional[Any]
+    memory_raw: Optional[Any]
+    kg: Optional[Any]
+    memory_pin: Optional[Any]
+    kg_pin: Optional[Any]
+    answer: Optional[Any]
+    # summary: SummaryStateDict
+    # prev_turn_meta_summary: PrevTurnMetaSummaryDict
+    _deps: dict[str, Any]
+    _rt_join: dict[str, Any]
 
 StateAppendUpdate = tuple[Literal['u'], Any]
 StateOverwriteUpdate = tuple[Literal['a'], Any]
@@ -161,3 +194,157 @@ class RunSuccess(BaseModel):
     status: Literal["success"] = "success"
 
 StepRunResult: TypeAlias = RunSuccess | RunFailure | RunSuspended
+
+
+class WorkflowRunMetadata(BaseModel):
+    entity_type: str = Field("workflow_run", description='Must be "workflow_run"')
+    workflow_id: str
+    workflow_version: str = "v1"
+    run_id: str
+    conversation_id: str
+    turn_node_id: str
+    status: str = "running"
+
+    model_config = ConfigDict(extra="allow")
+
+    @model_validator(mode="after")
+    def _validate(self) -> "WorkflowRunMetadata":
+        if self.entity_type != "workflow_run":
+            raise ValueError("WorkflowRunMetadata.entity_type must be 'workflow_run'")
+        return self
+
+
+class WorkflowStepExecMetadata(BaseModel):
+    entity_type: str = Field("workflow_step_exec", description='Must be "workflow_step_exec"')
+    run_id: str
+    workflow_id: str
+    workflow_node_id: str
+    step_seq: int
+    op: str
+    status: str = "ok"
+    duration_ms: int = 0
+    result_json: str
+
+    model_config = ConfigDict(extra="allow")
+
+    @model_validator(mode="after")
+    def _validate(self) -> "WorkflowStepExecMetadata":
+        if self.entity_type != "workflow_step_exec":
+            raise ValueError("WorkflowStepExecMetadata.entity_type must be 'workflow_step_exec'")
+        if self.step_seq < 0:
+            raise ValueError("step_seq must be >= 0")
+        return self
+
+
+class WorkflowCheckpointMetadata(BaseModel):
+    entity_type: str = Field("workflow_checkpoint", description='Must be "workflow_checkpoint"')
+    run_id: str
+    workflow_id: str
+    step_seq: int
+    state_json: str
+
+    model_config = ConfigDict(extra="allow")
+
+    @model_validator(mode="after")
+    def _validate(self) -> "WorkflowCheckpointMetadata":
+        if self.entity_type != "workflow_checkpoint":
+            raise ValueError("WorkflowCheckpointMetadata.entity_type must be 'workflow_checkpoint'")
+        if self.step_seq < 0:
+            raise ValueError("step_seq must be >= 0")
+        return self
+
+
+class WorkflowCompletedMetadata(BaseModel):
+    entity_type: str = Field("workflow_completed", description='Must be "workflow_completed"')
+    workflow_id: str
+    run_id: str
+    conversation_id: str
+    accepted_step_seq: int
+
+    model_config = ConfigDict(extra="allow")
+
+    @model_validator(mode="after")
+    def _validate(self) -> "WorkflowCompletedMetadata":
+        if self.entity_type != "workflow_completed":
+            raise ValueError("WorkflowCompletedMetadata.entity_type must be 'workflow_completed'")
+        return self
+
+
+class WorkflowCancelledMetadata(BaseModel):
+    entity_type: str = Field("workflow_cancelled", description='Must be "workflow_cancelled"')
+    workflow_id: str
+    run_id: str
+    conversation_id: str
+    accepted_step_seq: int
+
+    model_config = ConfigDict(extra="allow")
+
+    @model_validator(mode="after")
+    def _validate(self) -> "WorkflowCancelledMetadata":
+        if self.entity_type != "workflow_cancelled":
+            raise ValueError("WorkflowCancelledMetadata.entity_type must be 'workflow_cancelled'")
+        return self
+
+
+class WorkflowRuntimeEdgeMetadata(BaseModel):
+    relation: str
+    conversation_id: str | None = None
+    run_id: str | None = None
+    entity_type: str = "conversation_edge"
+
+    model_config = ConfigDict(extra="allow")
+
+
+class WorkflowRunNode(Node):
+    metadata: dict
+
+    @field_validator("metadata")
+    def check_metadata(cls, v):
+        WorkflowRunMetadata.model_validate(v)
+        return v
+
+
+class WorkflowStepExecNode(Node):
+    metadata: dict
+
+    @field_validator("metadata")
+    def check_metadata(cls, v):
+        WorkflowStepExecMetadata.model_validate(v)
+        return v
+
+
+class WorkflowCheckpointNode(Node):
+    metadata: dict
+
+    @field_validator("metadata")
+    def check_metadata(cls, v):
+        WorkflowCheckpointMetadata.model_validate(v)
+        return v
+
+
+class WorkflowCompletedNode(Node):
+    metadata: dict
+
+    @field_validator("metadata")
+    def check_metadata(cls, v):
+        WorkflowCompletedMetadata.model_validate(v)
+        return v
+
+
+class WorkflowCancelledNode(Node):
+    metadata: dict
+
+    @field_validator("metadata")
+    def check_metadata(cls, v):
+        WorkflowCancelledMetadata.model_validate(v)
+        return v
+
+
+class WorkflowRuntimeEdge(Edge):
+    metadata: dict
+    id_kind: ClassVar[str] = "workflow.runtime.edge"
+
+    @field_validator("metadata")
+    def check_metadata(cls, v):
+        WorkflowRuntimeEdgeMetadata.model_validate(v)
+        return v

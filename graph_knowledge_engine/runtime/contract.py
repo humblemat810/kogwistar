@@ -36,7 +36,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 
-from .models import WorkflowEdge
+from .models import StepRunResult, WorkflowEdge, WorkflowState
 if TYPE_CHECKING:
     from ..engine_core.engine import GraphKnowledgeEngine
 
@@ -88,9 +88,7 @@ class WorkflowEdgeInfo:
         )
         return info
 if TYPE_CHECKING:
-    from ..conversation.conversation_state_contracts import WorkflowState
     Predicate = Callable[[WorkflowEdgeInfo, WorkflowState, Result], bool]
-    from .models import StepRunResult
 class BasePredicate():
     def __call__(self, e:WorkflowEdgeInfo,  state: WorkflowState, result: StepRunResult):
         if result.next_step_names:

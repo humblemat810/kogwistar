@@ -43,7 +43,7 @@ from .policy import get_chat_tail
 if TYPE_CHECKING:
     from ..runtime import WorkflowEdgeInfo
 
-from .conversation_state_contracts import WorkflowState
+from .conversation_state_contracts import ConversationWorkflowState
 
 from ..engine_core.models import (
     Grounding,
@@ -582,10 +582,10 @@ class AgenticAnsweringAgent:
 
         # Ensure design exists.
         from ..conversation.designer import AgenticAnsweringWorkflowDesigner
-        def predicate_always(workflow_info: WorkflowEdgeInfo, state: WorkflowState, last_result: StepRunResult):
+        def predicate_always(workflow_info: WorkflowEdgeInfo, state: ConversationWorkflowState, last_result: StepRunResult):
             return True
         
-        def aa_should_iterate(workflow_info: WorkflowEdgeInfo, state: WorkflowState, last_result: StepRunResult):
+        def aa_should_iterate(workflow_info: WorkflowEdgeInfo, state: ConversationWorkflowState, last_result: StepRunResult):
             return bool(state.get("should_iterate"))
         predicate_registry = {
             "always": predicate_always, #lambda st, r: True,
