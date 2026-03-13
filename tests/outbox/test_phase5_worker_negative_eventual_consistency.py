@@ -3,13 +3,16 @@ import pytest
 
 from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
 from graph_knowledge_engine.workers.index_job_worker import IndexJobWorker
+from tests.conftest import FakeEmbeddingFunction
+
+TEST_EMBEDDING = FakeEmbeddingFunction(dim=3)
 
 
 @pytest.fixture
 def eng(tmp_path) -> GraphKnowledgeEngine:
     persist_dir = tmp_path / "chroma"
     persist_dir.mkdir(parents=True, exist_ok=True)
-    e = GraphKnowledgeEngine(persist_directory=str(persist_dir))
+    e = GraphKnowledgeEngine(persist_directory=str(persist_dir), embedding_function=TEST_EMBEDDING)
     e._phase1_enable_index_jobs = True
     return e
 

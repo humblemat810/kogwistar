@@ -13,11 +13,12 @@ from fastapi.testclient import TestClient
 
 import graph_knowledge_engine.server_mcp_with_admin as server
 from graph_knowledge_engine.conversation.agentic_answering import AgenticAnsweringAgent
-from graph_knowledge_engine.conversation.models import ConversationNode, WorkflowCheckpointNode, WorkflowStepExecNode
+from graph_knowledge_engine.conversation.models import ConversationNode
 from graph_knowledge_engine.conversation.service import ConversationService
 from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
 from graph_knowledge_engine.engine_core.models import Grounding, Span
 from graph_knowledge_engine.runtime.design import load_workflow_design
+from graph_knowledge_engine.runtime.models import WorkflowCancelledNode, WorkflowCompletedNode, WorkflowCheckpointNode, WorkflowStepExecNode
 from graph_knowledge_engine.server.chat_service import (
     AnswerRunRequest,
     ChatRunService,
@@ -262,6 +263,38 @@ def _seed_checkpoint(conversation_engine, *, run_id: str, workflow_id: str, step
             "workflow_id": workflow_id,
             "step_seq": step_seq,
             "state_json": json.dumps(state),
+        },
+        level_from_root=0,
+        domain_id=None,
+        canonical_entity_id=None,
+        embedding=None,
+    )
+    conversation_engine.add_node(node)
+
+
+def _seed_terminal_node(
+    conversation_engine,
+    *,
+    node_cls,
+    entity_type: str,
+    run_id: str,
+    workflow_id: str,
+    conversation_id: str,
+):
+    node = node_cls(
+        id=f"{entity_type}|{run_id}",
+        label=entity_type,
+        type="entity",
+        doc_id=f"{entity_type}|{run_id}",
+        summary=f"{entity_type} {run_id}",
+        mentions=[Grounding(spans=[Span.from_dummy_for_conversation()])],
+        properties={"entity_type": entity_type},
+        metadata={
+            "entity_type": entity_type,
+            "run_id": run_id,
+            "workflow_id": workflow_id,
+            "conversation_id": conversation_id,
+            "accepted_step_seq": 1,
         },
         level_from_root=0,
         domain_id=None,
@@ -540,6 +573,81 @@ def test_runtime_rest_cancel(monkeypatch, engine_triplet):
         names = [name for name, _payload in events]
         assert "run.cancelling" in names
         assert names[-1] == "run.cancelled"
+
+
+def test_get_run_prefers_workflow_completed_terminal_node(monkeypatch, engine_triplet):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service, registry = _configure_server(monkeypatch, engine, conversation_engine, workflow_engine, _success_runner)
+    run_id = "run-terminal-completed"
+    registry.create_run(
+        run_id=run_id,
+        conversation_id="conv-terminal",
+        workflow_id="wf.completed",
+        user_id="u1",
+        user_turn_node_id="turn-1",
+    )
+    registry.update_status(run_id, status="succeeded", result={"workflow_status": "succeeded"}, finished=True)
+    _seed_terminal_node(
+        conversation_engine,
+        node_cls=WorkflowCompletedNode,
+        entity_type="workflow_completed",
+        run_id=run_id,
+        workflow_id="wf.completed",
+        conversation_id="conv-terminal",
+    )
+
+    run = service.get_run(run_id)
+    assert run["status"] == "succeeded"
+    assert run["terminal"] is True
+
+
+def test_get_run_prefers_workflow_cancelled_terminal_node(monkeypatch, engine_triplet):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service, registry = _configure_server(monkeypatch, engine, conversation_engine, workflow_engine, _success_runner)
+    run_id = "run-terminal-cancelled"
+    registry.create_run(
+        run_id=run_id,
+        conversation_id="conv-terminal",
+        workflow_id="wf.cancelled",
+        user_id="u1",
+        user_turn_node_id="turn-1",
+    )
+    registry.update_status(run_id, status="cancelled", result={"workflow_status": "cancelled"}, finished=True)
+    _seed_terminal_node(
+        conversation_engine,
+        node_cls=WorkflowCancelledNode,
+        entity_type="workflow_cancelled",
+        run_id=run_id,
+        workflow_id="wf.cancelled",
+        conversation_id="conv-terminal",
+    )
+
+    run = service.get_run(run_id)
+    assert run["status"] == "cancelled"
+    assert run["terminal"] is True
+
+
+def test_cancel_run_is_noop_when_run_already_terminal(monkeypatch, engine_triplet):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service, registry = _configure_server(monkeypatch, engine, conversation_engine, workflow_engine, _success_runner)
+    run_id = "run-terminal-noop"
+    registry.create_run(
+        run_id=run_id,
+        conversation_id="conv-terminal",
+        workflow_id="wf.completed",
+        user_id="u1",
+        user_turn_node_id="turn-1",
+        status="succeeded",
+    )
+
+    result = service.cancel_run(run_id)
+    assert result["status"] == "succeeded"
+    assert result["terminal"] is True
+    cancel_requests = conversation_engine.get_nodes(
+        where={"$and": [{"entity_type": "workflow_cancel_request"}, {"run_id": run_id}]},
+        limit=10,
+    )
+    assert cancel_requests == []
 
 
 def test_runtime_design_rest_undo_redo(monkeypatch, engine_triplet):

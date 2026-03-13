@@ -26,7 +26,7 @@ def test_workflow_runtime_uses_default_resolver(tmp_path):
 
     from graph_knowledge_engine.engine_core.models import Span, Grounding, MentionVerification
     from graph_knowledge_engine.runtime.runtime import WorkflowRuntime
-    from graph_knowledge_engine.conversation.conversation_state_contracts import WorkflowStateModel, WorkflowState
+    from graph_knowledge_engine.conversation.conversation_state_contracts import WorkflowStateModel, ConversationWorkflowState
     from graph_knowledge_engine.runtime.runtime import StepRunResult, State
     from graph_knowledge_engine.conversation.resolvers import default_resolver
     
@@ -269,7 +269,7 @@ def test_workflow_runtime_uses_default_resolver(tmp_path):
     mem_id = "mem-001"
     role = "user"
     from graph_knowledge_engine.conversation.conversation_state_contracts import PrevTurnMetaSummaryModel
-    init_state: WorkflowState = WorkflowStateModel(
+    init_state: ConversationWorkflowState = WorkflowStateModel(
         conversation_id=conversation_id,
         user_id="new-test-user",
         turn_node_id="test-turn-id-123",

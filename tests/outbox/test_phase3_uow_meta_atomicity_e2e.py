@@ -4,22 +4,21 @@ import pytest
 
 from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
 from graph_knowledge_engine.engine_core.postgres_backend import PgVectorBackend
+from tests.conftest import FakeEmbeddingFunction
 
 EMBEDDING_DIM = 3
-
-def _emb(*args, **kwargs):
-    return [0.1] * EMBEDDING_DIM
+TEST_EMBEDDING = FakeEmbeddingFunction(dim=EMBEDDING_DIM)
 
 @pytest.fixture(params=["chroma", "pg"], ids=["chroma", "pg"])
 def e2e_engine(request, tmp_path, sa_engine, pg_schema) -> GraphKnowledgeEngine:
     if request.param == "chroma":
         persist_dir = tmp_path / "chroma"
         persist_dir.mkdir(parents=True, exist_ok=True)
-        eng = GraphKnowledgeEngine(persist_directory=str(persist_dir))
+        eng = GraphKnowledgeEngine(persist_directory=str(persist_dir), embedding_function=TEST_EMBEDDING)
     else:
         pytest.importorskip("pgvector")
         backend = PgVectorBackend(engine=sa_engine, embedding_dim=EMBEDDING_DIM, schema=pg_schema)
-        eng = GraphKnowledgeEngine(backend=backend)
+        eng = GraphKnowledgeEngine(backend=backend, embedding_function=TEST_EMBEDDING)
 
     eng._test_backend_kind = request.param  # type: ignore[attr-defined]
     return eng
@@ -41,8 +40,6 @@ def test_phase3_meta_atomicity_event_and_job_rollback(e2e_engine):
     then raise => BOTH tables must have 0 rows for that namespace.
     """
     eng = e2e_engine
-    eng._ef._emb = _emb  # keep consistent with other E2E tests
-
     ns = f"phase3_atomic_{uuid.uuid4().hex}"
 
     assert _count_events(eng, ns) == 0
@@ -75,8 +72,6 @@ def test_phase3_meta_atomicity_event_and_job_rollback(e2e_engine):
 
 def test_phase3_nested_uow_inner_does_not_commit_if_outer_rolls_back(e2e_engine):
     eng = e2e_engine
-    eng._ef._emb = _emb
-
     ns = f"phase3_nested_{uuid.uuid4().hex}"
 
     with pytest.raises(RuntimeError):
@@ -115,8 +110,6 @@ def test_phase3_parallel_uow_one_rollback_one_commit_isolated(e2e_engine, reques
     Expected: rollback in thread1 does not cancel committed rows from thread2.
     """
     eng = e2e_engine
-    eng._ef._emb = _emb
-
     ns1 = f"phase3_parallel_rb_{uuid.uuid4().hex}"
     ns2 = f"phase3_parallel_ok_{uuid.uuid4().hex}"
 

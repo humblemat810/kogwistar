@@ -6,6 +6,9 @@ import pytest
 import graph_knowledge_engine.workers.run_index_job_worker as worker_runner
 from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
 from graph_knowledge_engine.workers.run_index_job_worker import main
+from tests.conftest import FakeEmbeddingFunction
+
+TEST_EMBEDDING = FakeEmbeddingFunction(dim=3)
 
 
 def test_phase5_worker_runner_once_smoke(tmp_path, capsys):
@@ -13,7 +16,7 @@ def test_phase5_worker_runner_once_smoke(tmp_path, capsys):
     persist.mkdir(parents=True, exist_ok=True)
 
     # Build an engine directly to enqueue a job into its sqlite meta.
-    eng = GraphKnowledgeEngine(persist_directory=str(persist))
+    eng = GraphKnowledgeEngine(persist_directory=str(persist), embedding_function=TEST_EMBEDDING)
     ns = f"phase5_runner_{uuid.uuid4().hex}"
     eng.meta_sqlite.enqueue_index_job(
         namespace=ns,
@@ -27,14 +30,24 @@ def test_phase5_worker_runner_once_smoke(tmp_path, capsys):
     # Run worker once via CLI entrypoint. It will build a NEW engine pointing to same persist dir.
     # We don't assert job completion here (engine.apply may be a no-op depending on configuration),
     # just that it runs without crashing and prints metrics.
-    rc = main([
-        "--backend", "chroma",
-        "--persist-directory", str(persist),
-        "--namespace", ns,
-        "--once",
-        "--batch-size", "1",
-        "--max-jobs-per-tick", "1",
-    ])
+    real_graph_knowledge_engine = worker_runner.GraphKnowledgeEngine
+
+    def _fake_graph_knowledge_engine(*args, **kwargs):
+        kwargs.setdefault("embedding_function", TEST_EMBEDDING)
+        return real_graph_knowledge_engine(*args, **kwargs)
+
+    worker_runner.GraphKnowledgeEngine = _fake_graph_knowledge_engine
+    try:
+        rc = main([
+            "--backend", "chroma",
+            "--persist-directory", str(persist),
+            "--namespace", ns,
+            "--once",
+            "--batch-size", "1",
+            "--max-jobs-per-tick", "1",
+        ])
+    finally:
+        worker_runner.GraphKnowledgeEngine = real_graph_knowledge_engine
     assert rc == 0
     out = capsys.readouterr().out
     assert "claimed=" in out

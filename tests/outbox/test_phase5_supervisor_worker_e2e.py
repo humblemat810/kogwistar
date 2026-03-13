@@ -8,6 +8,9 @@ from pathlib import Path
 import pytest
 
 from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
+from tests.conftest import FakeEmbeddingFunction
+
+TEST_EMBEDDING = FakeEmbeddingFunction(dim=3)
 
 
 def _wait_until_done(eng: GraphKnowledgeEngine, *, ns: str, job_id: str, timeout_s: float = 10.0) -> None:
@@ -35,7 +38,7 @@ def test_phase5_supervisor_runs_worker_processes_job_then_graceful_shutdown(tmp_
     proc = subprocess.Popen(cmd)
 
     try:
-        eng = GraphKnowledgeEngine(persist_directory=str(persist_dir))
+        eng = GraphKnowledgeEngine(persist_directory=str(persist_dir), embedding_function=TEST_EMBEDDING)
         eng._phase1_enable_index_jobs = True
         eng.namespace = ns  # type: ignore[attr-defined]
 
@@ -86,7 +89,7 @@ def test_phase5_supervisor_restarts_worker_after_kill_and_processes_job(tmp_path
             os.kill(worker_pid, 9)
 
         # Enqueue a job and ensure it is completed after restart.
-        eng = GraphKnowledgeEngine(persist_directory=str(persist_dir))
+        eng = GraphKnowledgeEngine(persist_directory=str(persist_dir), embedding_function=TEST_EMBEDDING)
         eng._phase1_enable_index_jobs = True
         eng.namespace = ns  # type: ignore[attr-defined]
 

@@ -6,6 +6,7 @@ from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
 from graph_knowledge_engine.engine_core.postgres_backend import PgVectorBackend
 
 from graph_knowledge_engine.engine_core.models import Node, Edge, Grounding, Span
+from tests.conftest import FakeEmbeddingFunction
 
 
 def _mk_span(doc_id: str) -> Span:
@@ -15,6 +16,7 @@ def _mk_span(doc_id: str) -> Span:
 
 
 EMBEDDING_DIM = 3
+TEST_EMBEDDING = FakeEmbeddingFunction(dim=EMBEDDING_DIM)
 
 def _mk_node(node_id: str, *, doc_id: str) -> Node:
     return Node(
@@ -45,11 +47,11 @@ def e2e_engine(
     if request.param == "chroma":
         persist_dir = tmp_path / "chroma"
         persist_dir.mkdir(parents=True, exist_ok=True)
-        eng = GraphKnowledgeEngine(persist_directory=str(persist_dir))
+        eng = GraphKnowledgeEngine(persist_directory=str(persist_dir), embedding_function=TEST_EMBEDDING)
     else:
         pytest.importorskip("pgvector")
         backend = PgVectorBackend(engine=sa_engine, embedding_dim=3, schema=pg_schema)
-        eng = GraphKnowledgeEngine(backend=backend)
+        eng = GraphKnowledgeEngine(backend=backend, embedding_function=TEST_EMBEDDING)
 
     eng._test_backend_kind = request.param  # type: ignore[attr-defined]
     return eng
