@@ -152,3 +152,13 @@ def test_runtime_tutorial_ladder_levels_0_to_3_smoke(tmp_path: Path):
     assert "workflow_run_completed" in (level3.get("trace_event_types") or [])
     assert "/api/workflow/runs/" in str(level3.get("runtime_event_endpoint"))
 
+
+def test_tutorial_section_15_historical_smoke(tmp_path: Path):
+    _ = tmp_path  # reserved for future data-dir parameterization
+    out = _extract_last_json(
+        _run(["scripts/tutorial_sections/15_historical_search_tombstone_redirect.py"]).stdout
+    )
+    assert out.get("checkpoint_pass") is True
+    assert "N_SUGAR_OLD" in (out.get("then_ids") or [])
+    assert "N_SUGAR_NEW" in (out.get("now_ids") or [])
+

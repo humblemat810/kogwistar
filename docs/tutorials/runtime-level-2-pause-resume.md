@@ -2,6 +2,16 @@
 
 Goal: inspect the suspended token, then continue the same run with `resume_run(...)`.
 
+## What You Will Build
+
+You will pause the canonical workflow, recover the suspended token from checkpoint state, and resume the same run to a terminal success state.
+
+## Why This Matters
+
+Suspend/resume is one of the runtime's differentiators. This level proves the scheduler state is recoverable and not tied to the process that originally executed the run.
+
+## Run or Inspect
+
 ## Quick Run
 
 ```powershell
@@ -17,28 +27,11 @@ Expected output fields:
 - `"final_state"`: includes `branch_a_result`, `joined`, and `ended`
 - `"checkpoint_pass": true`
 
-Example shape:
+## Inspect The Result
 
-```json
-{
-  "level": 2,
-  "initial_status": "suspended",
-  "resumed_status": "succeeded",
-  "suspended_node_id": "rt:branch_a",
-  "suspended_token_id": "tok_...",
-  "resume_payload": {
-    "action": "provide-approval",
-    "node_id": "rt:branch_a",
-    "expected_result_key": "branch_a_result"
-  },
-  "final_state": {
-    "branch_a_result": "approved",
-    "joined": true,
-    "ended": true
-  },
-  "checkpoint_pass": true
-}
-```
+- Inspect the suspended token identifiers pulled from `_rt_join`.
+- Confirm the resumed run reaches `join` and `end`.
+- Compare the initial and resumed statuses to see that pause/resume is one continuous run, not a fresh rerun.
 
 ## What This Level Teaches
 
@@ -62,7 +55,15 @@ Pass when:
 - the resumed run status is `"succeeded"`
 - the resumed state reaches `join` and `end`
 
+## Invariant Demonstrated
+
+Checkpointed workflow frontier state is sufficient to resume the parked token deterministically.
+
 ## Troubleshooting
 
 - If no suspended token is found, the workflow did not pause where expected.
 - If resume fails, confirm the run id and suspended token id came from the latest checkpoint for that run.
+
+## Next Tutorial
+
+Continue to [Runtime Level 3 - CDC Viewer and LangGraph Interop](./runtime-level-3-observability-interop.md) or return to [07 Branch Join Workflows](./07_branch_join_workflows.md).

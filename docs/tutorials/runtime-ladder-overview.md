@@ -2,6 +2,8 @@
 
 Goal: give one compact entrypoint for the runtime tutorial track so a human or LLM can understand the flow before reading the level pages.
 
+If you are new to the repo, read [06 First Workflow](./06_first_workflow.md), [07 Branch Join Workflows](./07_branch_join_workflows.md), and [10 Event Log Replay and CDC](./10_event_log_replay_and_cdc.md) first. Come back here when you want the script-backed runtime ladder as a compact execution index.
+
 ## Canonical Workflow
 
 All runtime levels use the same workflow:

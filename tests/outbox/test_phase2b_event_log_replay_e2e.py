@@ -5,8 +5,10 @@ from graph_knowledge_engine.engine_core.models import Node, Edge
 from graph_knowledge_engine.engine_core.postgres_backend import PgVectorBackend
 from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
 from graph_knowledge_engine.engine_core.models import Grounding, Span
+from tests.conftest import FakeEmbeddingFunction
 
 EMBEDDING_DIM = 3
+TEST_EMBEDDING = FakeEmbeddingFunction(dim=EMBEDDING_DIM)
 
 def _mk_span(doc_id: str) -> Span:
     sp = Span.from_dummy_for_document()
@@ -51,9 +53,6 @@ def _mk_edge(edge_id: str, src: str, tgt: str, doc_id: str) -> Edge:
         properties = None
     )
 
-def _emb(*arg, **kwarg):
-    return [0.1] * EMBEDDING_DIM
-
 @pytest.fixture(params=["chroma", "pg"], ids=["chroma", "pg"])
 def e2e_engine(
     request: pytest.FixtureRequest,
@@ -72,11 +71,17 @@ def e2e_engine(
     if request.param == "chroma":
         persist_dir = tmp_path / "chroma"
         persist_dir.mkdir(parents=True, exist_ok=True)
-        eng = GraphKnowledgeEngine(persist_directory=str(persist_dir))
+        eng = GraphKnowledgeEngine(
+            persist_directory=str(persist_dir),
+            embedding_function=TEST_EMBEDDING,
+        )
     else:
         pytest.importorskip("pgvector")
         backend = PgVectorBackend(engine=sa_engine, embedding_dim=3, schema=pg_schema)
-        eng = GraphKnowledgeEngine(backend=backend)
+        eng = GraphKnowledgeEngine(
+            backend=backend,
+            embedding_function=TEST_EMBEDDING,
+        )
 
     eng._test_backend_kind = request.param  # type: ignore[attr-defined]
     return eng
@@ -89,8 +94,6 @@ def test_phase2b_event_log_replay_e2e(e2e_engine):
     """
     eng = e2e_engine
     ns = getattr(eng, "namespace", "default")
-    # monkey patch embedding function
-    eng._ef._emb = _emb
     # Write a tiny graph
     eng.add_node(_mk_node("n1", doc_id="d1"))
     eng.add_node(_mk_node("n2", doc_id="d2"))
@@ -120,7 +123,6 @@ def test_phase2b_event_log_no_duplicate_and_payload_sanity(e2e_engine):
     import json
     eng = e2e_engine
     ns = getattr(eng, "namespace", "default")
-    eng._ef._emb = _emb
 
     eng.add_node(_mk_node("n1", doc_id="d1"))
     eng.add_node(_mk_node("n2", doc_id="d2"))
@@ -148,7 +150,6 @@ def test_phase2b_event_log_tombstone_and_cursor_roundtrip(e2e_engine):
     """Phase 2b: tombstones must be logged and cursor_get/set must work."""
     eng = e2e_engine
     ns = getattr(eng, "namespace", "default")
-    eng._ef._emb = _emb
 
     eng.add_node(_mk_node("n1", doc_id="d1"))
     eng.add_node(_mk_node("n2", doc_id="d2"))

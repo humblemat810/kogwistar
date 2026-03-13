@@ -4,11 +4,10 @@ import pytest
 
 from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine, _node_doc_and_meta
 from graph_knowledge_engine.engine_core.models import Node, Grounding, Span
+from tests.conftest import FakeEmbeddingFunction
 
 EMBEDDING_DIM = 3
-
-def _emb(*args, **kwargs):
-    return [0.1] * EMBEDDING_DIM
+TEST_EMBEDDING = FakeEmbeddingFunction(dim=EMBEDDING_DIM)
 
 def _mk_span(doc_id: str) -> Span:
     sp = Span.from_dummy_for_document()
@@ -35,9 +34,8 @@ def _mk_node(node_id: str, *, doc_id: str) -> Node:
 def chroma_engine(tmp_path: pathlib.Path) -> GraphKnowledgeEngine:
     persist_dir = tmp_path / "chroma"
     persist_dir.mkdir(parents=True, exist_ok=True)
-    eng = GraphKnowledgeEngine(persist_directory=str(persist_dir))
+    eng = GraphKnowledgeEngine(persist_directory=str(persist_dir), embedding_function=TEST_EMBEDDING)
     eng._test_backend_kind = "chroma"  # type: ignore[attr-defined]
-    eng._ef._emb = _emb
     return eng
 
 

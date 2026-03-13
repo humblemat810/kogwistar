@@ -46,7 +46,7 @@ def pick_node_type(*, graph_kind: str, metadata: dict[str, Any], fallback: Type)
 
     entity_type = metadata.get("entity_type")
     if entity_type == "workflow_checkpoint" and graph_kind == "workflow":
-        from .conversation.models import WorkflowCheckpointNode
+        from .runtime.models import WorkflowCheckpointNode
 
         return WorkflowCheckpointNode
     return fallback

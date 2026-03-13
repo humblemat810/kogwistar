@@ -73,6 +73,11 @@ Take on Toon
 
     a commercial plot, the business that draw the cartoon want to stimulate stock price.
 
+
+
+King - Man + Women -> Queen So, What happen to multimodal embedding?
+    2 images, One image with a cat running from the right, another image show it is on the left. What will the embdding model give in closes vocab and image ?  Is their vector subtraction will apply to a car on the right, will it result a car on the left image when searching?
+
 Past prophecies that came true
     1. Around 2018/2019 Wached harvard youtube video on autoregressive model on pixel by pixel generation of image, I related it to text and code characters,
     now we have all code assistants.

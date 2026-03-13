@@ -56,7 +56,13 @@ class SimpleIndexJobDrainer:
             try:
                 self._apply(job.index_kind, job.op, job.entity_id, job.payload_json, job.job_id)
             except Exception as e:
-                self.meta.mark_index_job_failed(job.job_id, f"{type(e).__name__}: {e}")
+                err = f"{type(e).__name__}: {e}"
+                next_retry = int(job.retry_count or 0) + 1
+                max_retries = int(job.max_retries or 10)
+                if next_retry < max_retries:
+                    self.meta.bump_retry_and_requeue(job.job_id, err, next_run_at_seconds=0)
+                else:
+                    self.meta.mark_index_job_failed(job.job_id, err)
             else:
                 self.meta.mark_index_job_done(job.job_id)
         return len(jobs)
@@ -171,13 +177,13 @@ def test_crash_after_delete_then_retry_recovers(tmp_path: str) -> None:
 
     drainer.drain(limit=10)
 
-    # After failure: derived state should be missing (deleted), and job FAILED.
+    # After failure: derived state should be missing (deleted), and job requeued.
     assert "n1" not in derived.node_docs
-    failed = meta.list_index_jobs(status="FAILED")
-    assert [j.job_id for j in failed] == [job_id]
-    assert failed[0].retry_count == 1
+    pending = meta.list_index_jobs(status="PENDING")
+    assert [j.job_id for j in pending] == [job_id]
+    assert pending[0].retry_count == 1
 
-    # Next drain should steal/retry and complete
+    # Next drain should retry and complete
     drainer.drain(limit=10)
     assert derived.node_docs["n1"] == {"d1", "d2"}
     done = meta.list_index_jobs(status="DONE")

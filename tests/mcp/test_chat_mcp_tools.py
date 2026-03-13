@@ -10,7 +10,8 @@ import uuid
 import pytest
 
 import graph_knowledge_engine.server_mcp_with_admin as server
-from graph_knowledge_engine.conversation.models import ConversationNode, WorkflowCheckpointNode
+from graph_knowledge_engine.conversation.models import ConversationNode
+from graph_knowledge_engine.runtime.models import WorkflowCheckpointNode
 from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
 from graph_knowledge_engine.engine_core.models import Grounding, Span
 from graph_knowledge_engine.server.chat_service import (

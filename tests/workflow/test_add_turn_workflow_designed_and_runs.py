@@ -5,7 +5,7 @@ from typing import Any, Dict, List
 import pytest
 
 from graph_knowledge_engine.conversation.resolvers import RunSuccess
-from graph_knowledge_engine.conversation.models import WorkflowCheckpointNode, WorkflowRunNode, WorkflowStepExecNode
+from graph_knowledge_engine.runtime.models import WorkflowCheckpointNode, WorkflowRunNode, WorkflowStepExecNode
 from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
 from graph_knowledge_engine.engine_core.models import (
     Grounding,

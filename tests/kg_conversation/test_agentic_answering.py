@@ -437,7 +437,7 @@ def test_agent_answer_creates_run_anchor_projects_used_evidence(monkeypatch, eng
         staticmethod(fake_evaluate_answer),
     )
 
-    def fake_get_conversation_view(*, conversation_id, user_id=None, purpose=None, budget_tokens=None):
+    def fake_get_conversation_view(self, *, conversation_id, user_id=None, purpose=None, budget_tokens=None, **kwargs):
         # Minimal shape for the agent to proceed.
         # Add fields here if your agent accesses more attributes.
         return SimpleNamespace(
@@ -459,7 +459,9 @@ def test_agent_answer_creates_run_anchor_projects_used_evidence(monkeypatch, eng
         "_generate_answer_with_citations",
         staticmethod(fake_generate_answer_with_citations),
     )
-    monkeypatch.setattr(conv, "get_conversation_view", fake_get_conversation_view)
+    from graph_knowledge_engine.conversation.service import ConversationService
+
+    monkeypatch.setattr(ConversationService, "get_conversation_view", fake_get_conversation_view)
     monkeypatch.setattr(agent, "_select_used_evidence", fake_select)
     from graph_knowledge_engine.conversation.models import MetaFromLastSummary
     

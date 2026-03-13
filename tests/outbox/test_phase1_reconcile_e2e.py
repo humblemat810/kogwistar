@@ -11,6 +11,7 @@ from graph_knowledge_engine.engine_core.engine_postgres_meta import EnginePostgr
 
 from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
 from graph_knowledge_engine.engine_core.models import Node, Edge, Grounding, Span
+from tests.conftest import FakeEmbeddingFunction
 
 # Reuse raw helpers to avoid duplicating Chroma plumbing.
 # from tests.conftest import add_node_raw, add_edge_raw
@@ -22,6 +23,7 @@ def _mk_span(doc_id: str) -> Span:
     return sp
 
 EMBEDDING_DIM = 3
+TEST_EMBEDDING = FakeEmbeddingFunction(dim=EMBEDDING_DIM)
 def _mk_node(node_id: str, *, doc_id: str) -> Node:
     
     node = Node(
@@ -74,12 +76,12 @@ def e2e_engine(
     if request.param == "chroma":
         persist_dir = tmp_path / "chroma"
         persist_dir.mkdir(parents=True, exist_ok=True)
-        eng = GraphKnowledgeEngine(persist_directory=str(persist_dir))
+        eng = GraphKnowledgeEngine(persist_directory=str(persist_dir), embedding_function=TEST_EMBEDDING)
     else:
         # Skip cleanly if the pgvector dependency isn't available in this environment.
         pytest.importorskip("pgvector")
         backend = PgVectorBackend(engine=sa_engine, embedding_dim=3, schema=pg_schema)
-        eng = GraphKnowledgeEngine(backend=backend)
+        eng = GraphKnowledgeEngine(backend=backend, embedding_function=TEST_EMBEDDING)
 
     # Test helper (not used by production code): lets tests assert backend type.
     eng._test_backend_kind = request.param  # type: ignore[attr-defined]

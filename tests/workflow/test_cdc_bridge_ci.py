@@ -44,13 +44,14 @@ def test_dump_d3_bundle_cdc_injection_no_jinja_tokens(tmp_path: Path) -> None:
     assert "cdc" in html.lower()
 
 
-def test_cdc_bridge_broadcasts_to_websocket_clients_ci() -> None:
+def test_cdc_bridge_broadcasts_to_websocket_clients_ci(tmp_path: Path) -> None:
     """CI-safe: bridge broadcasts ingested events to websocket clients (live stream)."""
     try:
-        from graph_knowledge_engine.cdc.change_bridge import app  # type: ignore
+        from graph_knowledge_engine.cdc.change_bridge import create_app  # type: ignore
     except Exception:  # pragma: no cover
-        from change_bridge import app  # type: ignore
+        from change_bridge import create_app  # type: ignore
     import time
+    app = create_app(oplog_file=tmp_path / "cdc_oplog.jsonl")
     with TestClient(app) as client:
         with client.websocket_connect("/changes/ws") as ws:
             ev = {
