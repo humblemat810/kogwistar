@@ -30,7 +30,7 @@ class _RunExecutionService(_BaseComponent):
         if not text:
             raise ValueError("text must be non-empty")
 
-        resolved_user_id = str(user_id or self._owner._conversation_owner(conversation_id) or "")
+        resolved_user_id = str(user_id or self._conversation_owner(conversation_id) or "")
         if not resolved_user_id:
             raise ValueError("user_id is required for this conversation")
 
@@ -197,12 +197,12 @@ class _RunExecutionService(_BaseComponent):
         workflow_id = str(workflow_id or "").strip()
         if not workflow_id:
             raise ValueError("workflow_id is required")
-        self._owner._assert_workflow_projection_not_rebuilding(workflow_id=workflow_id)
+        self._assert_workflow_projection_not_rebuilding(workflow_id=workflow_id)
         conversation_id = str(conversation_id or "").strip()
         if not conversation_id:
             raise ValueError("conversation_id is required")
 
-        self._owner._conversation_nodes(conversation_id)
+        self._conversation_nodes(conversation_id)
 
         resolved_turn_node_id = str(turn_node_id or "").strip()
         if not resolved_turn_node_id:
@@ -385,7 +385,7 @@ class _RunExecutionService(_BaseComponent):
                         run["terminal"] = True
                         break
 
-        steps = self._owner.list_steps(run_id)
+        steps = self.list_steps(run_id)
         if steps:
             run["last_step_seq"] = int(steps[-1]["step_seq"])
             run["step_count"] = len(steps)

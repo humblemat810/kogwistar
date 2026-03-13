@@ -1,3 +1,11 @@
+"""Run inspection helpers for workflow trace lookup, checkpoints, and replay.
+
+This module serves the read-only inspection surface for workflow runs. It
+retrieves persisted step execution and checkpoint artifacts from the
+conversation graph and delegates replay reconstruction to the runtime replay
+helpers without owning run execution itself.
+"""
+
 from __future__ import annotations
 
 import json

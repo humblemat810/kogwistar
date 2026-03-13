@@ -1,3 +1,11 @@
+"""Shared chat service contracts, errors, and base wiring helpers.
+
+This module holds the request dataclasses, shared exceptions, common protocols,
+and base component accessors used by the split chat service modules. It is the
+thin dependency layer that lets design, execution, and inspection services
+share infrastructure without importing each other directly.
+"""
+
 from __future__ import annotations
 
 import contextlib
@@ -5,9 +13,10 @@ import json
 import threading
 import time
 from dataclasses import dataclass
-from typing import Any, Callable, Protocol, runtime_checkable
+from typing import Any, cast, Callable, Protocol, runtime_checkable
 
 from graph_knowledge_engine.conversation.models import MetaFromLastSummary
+from graph_knowledge_engine.conversation.models import ConversationNode
 from graph_knowledge_engine.conversation.service import ConversationService
 from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
 
@@ -90,7 +99,15 @@ class ChatRunServiceOwner(Protocol):
 
     def _workflow_engine(self) -> Any: ...
 
+    def _conversation_nodes(self, conversation_id: str) -> list[ConversationNode]: ...
+
+    def _conversation_owner(self, conversation_id: str) -> str | None: ...
+
     def _conversation_service(self) -> ConversationService: ...
+
+    def _assert_workflow_projection_not_rebuilding(self, *, workflow_id: str) -> None: ...
+
+    def list_steps(self, run_id: str) -> list[dict[str, Any]]: ...
 
     def _publish(self, run_id: str, event_type: str, payload: dict[str, Any] | None = None) -> dict[str, Any]: ...
 
@@ -120,6 +137,42 @@ class _BaseComponent:
     def _workflow_history_lock(self) -> threading.Lock:
         return self._owner._workflow_history_lock
 
+    @property
+    def _design_control_kind(self) -> str:
+        return self._owner._DESIGN_CONTROL_KIND
+
+    @property
+    def _ctrl_undo_applied(self) -> str:
+        return self._owner._CTRL_UNDO_APPLIED
+
+    @property
+    def _ctrl_redo_applied(self) -> str:
+        return self._owner._CTRL_REDO_APPLIED
+
+    @property
+    def _ctrl_branch_dropped(self) -> str:
+        return self._owner._CTRL_BRANCH_DROPPED
+
+    @property
+    def _ctrl_mutation_committed(self) -> str:
+        return self._owner._CTRL_MUTATION_COMMITTED
+
+    @property
+    def _projection_schema_version(self) -> int:
+        return self._owner._PROJECTION_SCHEMA_VERSION
+
+    @property
+    def _snapshot_schema_version(self) -> int:
+        return self._owner._SNAPSHOT_SCHEMA_VERSION
+
+    @property
+    def _delta_schema_version(self) -> int:
+        return self._owner._DELTA_SCHEMA_VERSION
+
+    @property
+    def _snapshot_interval(self) -> int:
+        return self._owner._SNAPSHOT_INTERVAL
+
     def _knowledge_engine(self) -> GraphKnowledgeEngine:
         return self._owner._knowledge_engine()
 
@@ -131,6 +184,18 @@ class _BaseComponent:
 
     def _conversation_service(self) -> ConversationService:
         return self._owner._conversation_service()
+
+    def _conversation_nodes(self, conversation_id: str) -> list[ConversationNode]:
+        return self._owner._conversation_nodes(conversation_id)
+
+    def _conversation_owner(self, conversation_id: str) -> str | None:
+        return self._owner._conversation_owner(conversation_id)
+
+    def _assert_workflow_projection_not_rebuilding(self, *, workflow_id: str) -> None:
+        return self._owner._assert_workflow_projection_not_rebuilding(workflow_id=workflow_id)
+
+    def list_steps(self, run_id: str) -> list[dict[str, Any]]:
+        return self._owner.list_steps(run_id)
 
     def _publish(self, run_id: str, event_type: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         return self._owner._publish(run_id, event_type, payload)
@@ -150,4 +215,4 @@ class _BaseComponent:
     @contextlib.contextmanager
     def _workflow_namespace_scope(self, workflow_id: str):
         with self._owner._workflow_namespace_scope(workflow_id) as eng:
-            yield eng
+            yield cast(GraphKnowledgeEngine, eng)

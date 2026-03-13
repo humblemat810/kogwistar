@@ -1,10 +1,18 @@
+"""Workflow design history helpers for event-sourced workflow editing.
+
+This module owns the low-level history folding, projection rebuild, snapshot,
+and delta application utilities used by the chat service's workflow designer
+surface. It operates on workflow design nodes and edges and does not handle run
+execution or conversation lifecycle concerns.
+"""
+
 from __future__ import annotations
 
 import json
 import logging
 import uuid
 from collections import deque
-from typing import Any, Generator, cast
+from typing import Any, Generator, NotRequired, TypedDict, cast
 
 from sqlalchemy import Row
 
@@ -13,6 +21,109 @@ from graph_knowledge_engine.engine_core.models import Node as CoreNode
 from graph_knowledge_engine.runtime.models import WorkflowEdge, WorkflowNode
 
 from .chat_service_shared import WorkflowProjectionRebuildingError, _BaseComponent
+
+
+class WorkflowVisibleSnapshot(TypedDict):
+    nodes: list[dict[str, Any]]
+    edges: list[dict[str, Any]]
+
+
+class WorkflowVisibleDelta(TypedDict):
+    upsert_nodes: list[dict[str, Any]]
+    delete_node_ids: list[str]
+    upsert_edges: list[dict[str, Any]]
+    delete_edge_ids: list[str]
+
+
+class WorkflowVersionCommit(TypedDict):
+    version: int
+    prev_version: int
+    target_seq: int
+    created_at_ms: int
+    entity_id: str
+    action: str
+
+
+class WorkflowVersionRef(TypedDict):
+    version: int
+    seq: int
+    created_at_ms: int
+
+
+class WorkflowSelectedVersionRef(TypedDict):
+    version: int
+    seq: int
+    created_at_ms: int
+    prev_version: int
+    target_seq: int
+
+
+class WorkflowDroppedRange(TypedDict):
+    start_version: int
+    end_version: int
+    start_seq: int
+    end_seq: int
+
+
+class WorkflowControlTimelineItem(TypedDict, total=False):
+    seq: int
+    op: str
+    designer_id: str
+    ts_ms: int
+    workflow_id: NotRequired[str]
+    source: NotRequired[str]
+    action: NotRequired[str]
+    entity_id: NotRequired[str]
+    version: NotRequired[int]
+    prev_version: NotRequired[int]
+    target_seq: NotRequired[int]
+    from_version: NotRequired[int]
+    to_version: NotRequired[int]
+    drop_from_version: NotRequired[int]
+    drop_to_version: NotRequired[int]
+    drop_from_seq: NotRequired[int]
+    drop_to_seq: NotRequired[int]
+    reason: NotRequired[str]
+
+
+class WorkflowProjectionRow(TypedDict, total=False):
+    current_version: int
+    active_tip_version: int
+    last_authoritative_seq: int
+    last_materialized_seq: int
+    projection_schema_version: int
+    snapshot_schema_version: int
+    materialization_status: str
+    updated_at_ms: int
+
+
+class WorkflowVersionDeltaRecord(TypedDict):
+    workflow_id: str
+    version: int
+    prev_version: int
+    target_seq: int
+    forward: WorkflowVisibleDelta
+    inverse: WorkflowVisibleDelta
+    schema_version: int
+    created_at_ms: int
+
+
+class WorkflowFoldState(TypedDict):
+    workflow_id: str
+    namespace: str
+    current_version: int
+    active_tip_version: int
+    max_version: int
+    allocated_max_version: int
+    current_seq: int
+    can_undo: bool
+    can_redo: bool
+    versions: list[WorkflowVersionRef]
+    selected_versions: list[WorkflowSelectedVersionRef]
+    dropped_ranges: list[WorkflowDroppedRange]
+    latest_seq: int
+    timeline: list[WorkflowControlTimelineItem]
+    commits: dict[int, WorkflowVersionCommit]
 
 
 class _WorkflowDesignHistoryMixin(_BaseComponent):
@@ -96,7 +207,7 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
             append(
                 namespace=self._workflow_namespace(workflow_id),
                 event_id=str(uuid.uuid4()),
-                entity_kind=self._owner._DESIGN_CONTROL_KIND,
+                entity_kind=self._design_control_kind,
                 entity_id=str(workflow_id),
                 op=str(op),
                 payload_json=json.dumps(body, sort_keys=True, separators=(",", ":")),
@@ -135,7 +246,7 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
             return None
         return getter(workflow_id=str(workflow_id))
 
-    def _workflow_empty_delta(self) -> dict[str, Any]:
+    def _workflow_empty_delta(self) -> WorkflowVisibleDelta:
         return {
             "upsert_nodes": [],
             "delete_node_ids": [],
@@ -143,7 +254,12 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
             "delete_edge_ids": [],
         }
 
-    def _workflow_compute_visible_delta(self, *, before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
+    def _workflow_compute_visible_delta(
+        self,
+        *,
+        before: WorkflowVisibleSnapshot,
+        after: WorkflowVisibleSnapshot,
+    ) -> WorkflowVisibleDelta:
         before_nodes = {str(item.get("id") or ""): item for item in list(before.get("nodes") or []) if str(item.get("id") or "")}
         after_nodes = {str(item.get("id") or ""): item for item in list(after.get("nodes") or []) if str(item.get("id") or "")}
         before_edges = {str(item.get("id") or ""): item for item in list(before.get("edges") or []) if str(item.get("id") or "")}
@@ -170,8 +286,8 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
         version: int,
         prev_version: int,
         target_seq: int,
-        forward: dict[str, Any],
-        inverse: dict[str, Any],
+        forward: WorkflowVisibleDelta,
+        inverse: WorkflowVisibleDelta,
     ) -> None:
         putter = getattr(self._workflow_meta_store(), "put_workflow_design_delta", None)
         if not callable(putter):
@@ -183,17 +299,17 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
             target_seq=int(target_seq),
             forward_json=json.dumps(dict(forward or self._workflow_empty_delta()), sort_keys=True, separators=(",", ":")),
             inverse_json=json.dumps(dict(inverse or self._workflow_empty_delta()), sort_keys=True, separators=(",", ":")),
-            schema_version=self._owner._DELTA_SCHEMA_VERSION,
+            schema_version=self._delta_schema_version,
         )
 
-    def _workflow_version_delta(self, *, workflow_id: str, version: int) -> dict[str, Any] | None:
+    def _workflow_version_delta(self, *, workflow_id: str, version: int) -> WorkflowVersionDeltaRecord | None:
         getter = self._workflow_meta_store().get_workflow_design_delta
         if not callable(getter):
             return None
         row = getter(
             workflow_id=str(workflow_id),
             version=int(version),
-            schema_version=self._owner._DELTA_SCHEMA_VERSION,
+            schema_version=self._delta_schema_version,
         )
         if row is None:
             return None
@@ -204,12 +320,12 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
             "target_seq": int(row.get("target_seq") or 0),
             "forward": self._parse_event_payload(str(row.get("forward_json") or "{}")),
             "inverse": self._parse_event_payload(str(row.get("inverse_json") or "{}")),
-            "schema_version": int(row.get("schema_version") or self._owner._DELTA_SCHEMA_VERSION),
+            "schema_version": int(row.get("schema_version") or self._delta_schema_version),
             "created_at_ms": int(row.get("created_at_ms") or 0),
         }
 
-    def _workflow_apply_visible_delta(self, *, workflow_id: str, delta: dict[str, Any] | None) -> None:
-        payload = dict(delta or self._workflow_empty_delta())
+    def _workflow_apply_visible_delta(self, *, workflow_id: str, delta: WorkflowVisibleDelta | None) -> None:
+        payload: WorkflowVisibleDelta = dict(delta or self._workflow_empty_delta())
         eng = self._workflow_engine()
         prev_log = getattr(eng, "_disable_event_log", False)
         prev_idx = getattr(eng, "_phase1_enable_index_jobs", False)
@@ -232,17 +348,17 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
             eng._disable_event_log = prev_log
             eng._phase1_enable_index_jobs = prev_idx
 
-    def _workflow_control_timeline(self, *, namespace: str, limit: int = 500) -> list[dict[str, Any]]:
+    def _workflow_control_timeline(self, *, namespace: str, limit: int = 500) -> list[WorkflowControlTimelineItem]:
         keep = max(1, int(limit))
-        out: deque[dict[str, Any]] = deque(maxlen=keep)
+        out: deque[WorkflowControlTimelineItem] = deque(maxlen=keep)
         for seq, entity_kind, _entity_id, op, payload_raw in self._iter_entity_events(
             namespace=namespace,
             from_seq=1,
         ):
-            if str(entity_kind) != self._owner._DESIGN_CONTROL_KIND:
+            if str(entity_kind) != self._design_control_kind:
                 continue
             payload = self._parse_event_payload(payload_raw)
-            item: dict[str, Any] = {
+            item: WorkflowControlTimelineItem = {
                 "seq": int(seq),
                 "op": str(op),
                 "designer_id": str(payload.get("designer_id") or ""),
@@ -258,12 +374,12 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
     def _workflow_lineage_path(
         self,
         *,
-        commits: dict[int, dict[str, Any]],
+        commits: dict[int, WorkflowVersionCommit],
         version: int,
-    ) -> list[dict[str, Any]]:
+    ) -> list[WorkflowVersionCommit]:
         if int(version) <= 0:
             return [{"version": 0, "prev_version": 0, "target_seq": 0, "created_at_ms": 0}]
-        path: list[dict[str, Any]] = []
+        path: list[WorkflowVersionCommit] = []
         seen: set[int] = set()
         current = int(version)
         while current > 0:
@@ -278,10 +394,10 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
         path.reverse()
         return [{"version": 0, "prev_version": 0, "target_seq": 0, "created_at_ms": 0}] + path
 
-    def _workflow_fold_history(self, *, workflow_id: str) -> dict[str, Any]:
+    def _workflow_fold_history(self, *, workflow_id: str) -> WorkflowFoldState:
         namespace = self._workflow_namespace(workflow_id)
-        commits: dict[int, dict[str, Any]] = {}
-        dropped_ranges: list[dict[str, Any]] = []
+        commits: dict[int, WorkflowVersionCommit] = {}
+        dropped_ranges: list[WorkflowDroppedRange] = []
         current_version = 0
         active_tip_version = 0
         allocated_max_version = 0
@@ -289,15 +405,15 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
 
         for seq, entity_kind, _entity_id, op, payload_raw in self._iter_entity_events(namespace=namespace, from_seq=1):
             latest_seq = max(latest_seq, int(seq))
-            if str(entity_kind) != self._owner._DESIGN_CONTROL_KIND:
+            if str(entity_kind) != self._design_control_kind:
                 continue
             payload = self._parse_event_payload(payload_raw)
             op_s = str(op or "")
-            if op_s == self._owner._CTRL_MUTATION_COMMITTED:
+            if op_s == self._ctrl_mutation_committed:
                 version = int(payload.get("version") or 0)
                 prev_version = int(payload.get("prev_version") or 0)
                 target_seq = int(payload.get("target_seq") or payload.get("seq") or 0)
-                commit = {
+                commit: WorkflowVersionCommit = {
                     "version": version,
                     "prev_version": prev_version,
                     "target_seq": target_seq,
@@ -309,11 +425,11 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
                 allocated_max_version = max(allocated_max_version, version)
                 current_version = version
                 active_tip_version = version
-            elif op_s == self._owner._CTRL_UNDO_APPLIED:
+            elif op_s == self._ctrl_undo_applied:
                 current_version = int(payload.get("to_version") or current_version)
-            elif op_s == self._owner._CTRL_REDO_APPLIED:
+            elif op_s == self._ctrl_redo_applied:
                 current_version = int(payload.get("to_version") or current_version)
-            elif op_s == self._owner._CTRL_BRANCH_DROPPED:
+            elif op_s == self._ctrl_branch_dropped:
                 start_version = int(payload.get("drop_from_version") or 0)
                 end_version = int(payload.get("drop_to_version") or -1)
                 start_seq = int(payload.get("drop_from_seq") or 0)
@@ -332,7 +448,7 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
 
         active_lineage = self._workflow_lineage_path(commits=commits, version=active_tip_version)
         selected_lineage = self._workflow_lineage_path(commits=commits, version=current_version)
-        active_versions = [
+        active_versions: list[WorkflowVersionRef] = [
             {
                 "version": int(item.get("version") or 0),
                 "seq": int(item.get("target_seq") or 0),
@@ -340,7 +456,7 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
             }
             for item in active_lineage
         ]
-        selected_versions = [
+        selected_versions: list[WorkflowSelectedVersionRef] = [
             {
                 "version": int(item.get("version") or 0),
                 "seq": int(item.get("target_seq") or 0),
@@ -372,12 +488,12 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
             "commits": commits,
         }
 
-    def _workflow_projection_stale(self, *, state: dict[str, Any], projection: dict[str, Any] | None) -> bool:
+    def _workflow_projection_stale(self, *, state: WorkflowFoldState, projection: WorkflowProjectionRow | None) -> bool:
         if projection is None:
             return True
-        if int(projection.get("projection_schema_version") or 0) != self._owner._PROJECTION_SCHEMA_VERSION:
+        if int(projection.get("projection_schema_version") or 0) != self._projection_schema_version:
             return True
-        if int(projection.get("snapshot_schema_version") or 0) != self._owner._SNAPSHOT_SCHEMA_VERSION:
+        if int(projection.get("snapshot_schema_version") or 0) != self._snapshot_schema_version:
             return True
         if int(projection.get("last_authoritative_seq") or 0) < int(state.get("latest_seq") or 0):
             return True
@@ -385,19 +501,30 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
             return True
         return False
 
-    def _workflow_projection_head(self, *, state: dict[str, Any], materialization_status: str = "ready") -> dict[str, Any]:
+    def _workflow_projection_head(
+        self,
+        *,
+        state: WorkflowFoldState,
+        materialization_status: str = "ready",
+    ) -> WorkflowProjectionRow:
         return {
             "current_version": int(state.get("current_version") or 0),
             "active_tip_version": int(state.get("active_tip_version") or 0),
             "last_authoritative_seq": int(state.get("latest_seq") or 0),
             "last_materialized_seq": int(state.get("current_seq") or 0),
-            "projection_schema_version": self._owner._PROJECTION_SCHEMA_VERSION,
-            "snapshot_schema_version": self._owner._SNAPSHOT_SCHEMA_VERSION,
+            "projection_schema_version": self._projection_schema_version,
+            "snapshot_schema_version": self._snapshot_schema_version,
             "materialization_status": str(materialization_status),
             "updated_at_ms": self._now_ms(),
         }
 
-    def _store_workflow_projection(self, *, workflow_id: str, state: dict[str, Any], materialization_status: str = "ready") -> None:
+    def _store_workflow_projection(
+        self,
+        *,
+        workflow_id: str,
+        state: WorkflowFoldState,
+        materialization_status: str = "ready",
+    ) -> None:
         replace = getattr(self._workflow_meta_store(), "replace_workflow_design_projection", None)
         if not callable(replace):
             return
@@ -453,7 +580,7 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
             {str(edge.id) for edge in edges},
         )
 
-    def _workflow_seq_in_dropped_ranges(self, seq: int, dropped_ranges: list[dict[str, Any]]) -> bool:
+    def _workflow_seq_in_dropped_ranges(self, seq: int, dropped_ranges: list[WorkflowDroppedRange]) -> bool:
         for item in dropped_ranges:
             start_seq = int(item.get("start_seq") or 0)
             end_seq = int(item.get("end_seq") or -1)
@@ -467,7 +594,7 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
         namespace: str,
         from_seq: int,
         to_seq: int,
-        dropped_ranges: list[dict[str, Any]] | None = None,
+        dropped_ranges: list[WorkflowDroppedRange] | None = None,
     ) -> None:
         eng = self._workflow_engine()
         prev_log = getattr(eng, "_disable_event_log", False)
@@ -483,7 +610,7 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
                 if self._workflow_seq_in_dropped_ranges(int(seq), list(dropped_ranges or [])):
                     continue
                 entity_kind_s = str(entity_kind)
-                if entity_kind_s == self._owner._DESIGN_CONTROL_KIND:
+                if entity_kind_s == self._design_control_kind:
                     continue
                 payload = self._parse_event_payload(payload_raw)
                 op_s = str(op)
@@ -509,7 +636,7 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
             eng._disable_event_log = prev_log
             eng._phase1_enable_index_jobs = prev_idx
 
-    def _workflow_capture_visible_snapshot(self, *, workflow_id: str) -> dict[str, Any]:
+    def _workflow_capture_visible_snapshot(self, *, workflow_id: str) -> WorkflowVisibleSnapshot:
         nodes = self._safe_workflow_nodes(workflow_id=workflow_id)
         edges = self._safe_workflow_edges(workflow_id=workflow_id)
         return {
@@ -517,7 +644,7 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
             "edges": [edge.model_dump(field_mode="backend", exclude={"embedding"}) for edge in edges],
         }
 
-    def _workflow_restore_snapshot(self, *, snapshot_payload: dict[str, Any]) -> None:
+    def _workflow_restore_snapshot(self, *, snapshot_payload: WorkflowVisibleSnapshot) -> None:
         eng = self._workflow_engine()
         prev_log = getattr(eng, "_disable_event_log", False)
         prev_idx = getattr(eng, "_phase1_enable_index_jobs", False)
@@ -549,9 +676,9 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
         if orphan_ids:
             self._workflow_engine().backend.edge_delete(ids=sorted(orphan_ids))
 
-    def _workflow_store_snapshot_if_needed(self, *, workflow_id: str, state: dict[str, Any]) -> None:
+    def _workflow_store_snapshot_if_needed(self, *, workflow_id: str, state: WorkflowFoldState) -> None:
         current_version = int(state.get("current_version") or 0)
-        if current_version <= 0 or current_version % self._owner._SNAPSHOT_INTERVAL != 0:
+        if current_version <= 0 or current_version % self._snapshot_interval != 0:
             return
         put_snapshot = getattr(self._workflow_meta_store(), "put_workflow_design_snapshot", None)
         if not callable(put_snapshot):
@@ -562,10 +689,10 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
             version=current_version,
             seq=int(state.get("current_seq") or 0),
             payload_json=json.dumps(payload, sort_keys=True, separators=(",", ":")),
-            schema_version=self._owner._SNAPSHOT_SCHEMA_VERSION,
+            schema_version=self._snapshot_schema_version,
         )
 
-    def _workflow_rebuild_namespace_for_state(self, *, workflow_id: str, state: dict[str, Any]) -> None:
+    def _workflow_rebuild_namespace_for_state(self, *, workflow_id: str, state: WorkflowFoldState) -> None:
         namespace = self._workflow_namespace(workflow_id)
         eng = self._workflow_engine()
         node_ids, edge_ids = self._workflow_collect_visible_entity_ids(workflow_id=workflow_id)
@@ -587,7 +714,7 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
             snapshot = snapshot_get(
                 workflow_id=workflow_id,
                 max_version=int(state.get("current_version") or 0),
-                schema_version=self._owner._SNAPSHOT_SCHEMA_VERSION,
+                schema_version=self._snapshot_schema_version,
             )
             if snapshot is not None and int(snapshot.get("version") or 0) in selected_by_version:
                 try:
@@ -621,7 +748,7 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
         workflow_id: str,
         force_rebuild: bool = False,
         materialize: bool = True,
-    ) -> dict[str, Any]:
+    ) -> WorkflowFoldState:
         state = self._workflow_fold_history(workflow_id=workflow_id)
         projection = self._workflow_projection(workflow_id=workflow_id)
         if force_rebuild or materialize and self._workflow_projection_stale(state=state, projection=projection):
@@ -634,7 +761,7 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
         self,
         *,
         workflow_id: str,
-        state: dict[str, Any],
+        state: WorkflowFoldState,
         designer_id: str,
         source: str,
     ) -> bool:
@@ -644,7 +771,7 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
             return False
         self._append_design_control_event(
             workflow_id=workflow_id,
-            op=self._owner._CTRL_BRANCH_DROPPED,
+            op=self._ctrl_branch_dropped,
             designer_id=designer_id,
             source=source,
             payload={
@@ -657,7 +784,7 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
         )
         return True
 
-    def _workflow_finalize_design_state_locked(self, *, workflow_id: str, rebuild: bool) -> dict[str, Any]:
+    def _workflow_finalize_design_state_locked(self, *, workflow_id: str, rebuild: bool) -> WorkflowFoldState:
         state = self._workflow_fold_history(workflow_id=workflow_id)
         if rebuild:
             self._workflow_rebuild_namespace_for_state(workflow_id=workflow_id, state=state)

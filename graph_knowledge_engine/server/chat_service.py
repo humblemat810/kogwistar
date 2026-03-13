@@ -1,3 +1,11 @@
+"""Top-level facade that composes the split chat and workflow service modules.
+
+This module wires together conversation queries, run execution, run
+inspection/replay, and workflow design services behind the public
+``ChatRunService`` interface. It should stay orchestration-focused and delegate
+specialized behavior to the narrower collaborator modules.
+"""
+
 from __future__ import annotations
 
 import contextlib

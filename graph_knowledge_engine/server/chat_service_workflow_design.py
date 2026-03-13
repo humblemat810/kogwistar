@@ -1,3 +1,11 @@
+"""Workflow design service for mutations, history reads, and projection sync.
+
+This module exposes the workflow-design-facing operations that the top-level
+chat service routes to: create/update/delete workflow design artifacts,
+undo/redo, history inspection, and projection refresh. It composes the history
+helpers and keeps workflow design management separate from run execution.
+"""
+
 from __future__ import annotations
 
 import logging
@@ -112,7 +120,7 @@ class _WorkflowDesignService(_WorkflowDesignHistoryMixin):
                 latest_seq = self._workflow_latest_seq(namespace=namespace, from_seq=1)
                 self._append_design_control_event(
                     workflow_id=workflow_id,
-                    op=self._owner._CTRL_MUTATION_COMMITTED,
+                    op=self._ctrl_mutation_committed,
                     designer_id=resolved_designer_id,
                     source=source,
                     payload={
@@ -219,7 +227,7 @@ class _WorkflowDesignService(_WorkflowDesignHistoryMixin):
                 latest_seq = self._workflow_latest_seq(namespace=namespace, from_seq=1)
                 self._append_design_control_event(
                     workflow_id=workflow_id,
-                    op=self._owner._CTRL_MUTATION_COMMITTED,
+                    op=self._ctrl_mutation_committed,
                     designer_id=resolved_designer_id,
                     source=source,
                     payload={
@@ -301,7 +309,7 @@ class _WorkflowDesignService(_WorkflowDesignHistoryMixin):
                 latest_seq = self._workflow_latest_seq(namespace=namespace, from_seq=1)
                 self._append_design_control_event(
                     workflow_id=workflow_id,
-                    op=self._owner._CTRL_MUTATION_COMMITTED,
+                    op=self._ctrl_mutation_committed,
                     designer_id=resolved_designer_id,
                     source=source,
                     payload={
@@ -383,7 +391,7 @@ class _WorkflowDesignService(_WorkflowDesignHistoryMixin):
                 latest_seq = self._workflow_latest_seq(namespace=namespace, from_seq=1)
                 self._append_design_control_event(
                     workflow_id=workflow_id,
-                    op=self._owner._CTRL_MUTATION_COMMITTED,
+                    op=self._ctrl_mutation_committed,
                     designer_id=resolved_designer_id,
                     source=source,
                     payload={
@@ -453,7 +461,7 @@ class _WorkflowDesignService(_WorkflowDesignHistoryMixin):
             with self._workflow_engine().uow():
                 self._append_design_control_event(
                     workflow_id=workflow_id,
-                    op=self._owner._CTRL_UNDO_APPLIED,
+                    op=self._ctrl_undo_applied,
                     designer_id=resolved_designer_id,
                     source=source,
                     payload={
@@ -513,7 +521,7 @@ class _WorkflowDesignService(_WorkflowDesignHistoryMixin):
             with self._workflow_engine().uow():
                 self._append_design_control_event(
                     workflow_id=workflow_id,
-                    op=self._owner._CTRL_REDO_APPLIED,
+                    op=self._ctrl_redo_applied,
                     designer_id=resolved_designer_id,
                     source=source,
                     payload={
