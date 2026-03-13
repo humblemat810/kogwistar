@@ -12,9 +12,12 @@ import json
 import logging
 import uuid
 from collections import deque
-from typing import Any, Generator, NotRequired, TypedDict, cast
+from typing import TYPE_CHECKING, Any, Generator, NotRequired, TypedDict, cast
 
-from sqlalchemy import Row
+if TYPE_CHECKING:
+    from sqlalchemy import Row as SQLAlchemyRow
+else:
+    SQLAlchemyRow = Any
 
 from graph_knowledge_engine.engine_core.models import Edge as CoreEdge
 from graph_knowledge_engine.engine_core.models import Node as CoreNode
@@ -154,7 +157,7 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
             raise
 
     def _iter_entity_events(self, *, namespace: str, from_seq: int = 1, to_seq: int | None = None):
-        iter_events = cast(Generator[Row[Any], Any, None], getattr(self._workflow_engine().meta_sqlite, "iter_entity_events", None))
+        iter_events = cast(Generator[SQLAlchemyRow, Any, None], getattr(self._workflow_engine().meta_sqlite, "iter_entity_events", None))
         if not callable(iter_events):
             return
         kwargs: dict[str, Any] = {"namespace": str(namespace), "from_seq": int(from_seq)}

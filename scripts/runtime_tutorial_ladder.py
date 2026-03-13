@@ -440,6 +440,26 @@ def _workflow_nodes(conversation_engine: GraphKnowledgeEngine, entity_type: str,
     )
 
 
+def _step_exec_payloads(conversation_engine: GraphKnowledgeEngine, run_id: str) -> list[dict[str, Any]]:
+    payloads: list[dict[str, Any]] = []
+    for node in _workflow_nodes(conversation_engine, "workflow_step_exec", run_id):
+        meta = dict(getattr(node, "metadata", {}) or {})
+        raw = meta.get("result_json", "{}")
+        try:
+            result_json = json.loads(raw) if isinstance(raw, str) else dict(raw or {})
+        except Exception:
+            result_json = {"_raw_result_json": raw}
+        payloads.append(
+            {
+                "workflow_node_id": str(meta.get("workflow_node_id") or ""),
+                "op": str(meta.get("op") or ""),
+                "status": str(meta.get("status") or ""),
+                "result": result_json,
+            }
+        )
+    return payloads
+
+
 def _latest_checkpoint(conversation_engine: GraphKnowledgeEngine, run_id: str) -> tuple[Any | None, dict[str, Any]]:
     checkpoints = _workflow_nodes(conversation_engine, "workflow_checkpoint", run_id)
     if not checkpoints:
@@ -851,7 +871,7 @@ def level4_sandboxed_ops(data_dir: Path) -> dict[str, Any]:
             "safety_summary": "LLM-generated code should be treated as untrusted and executed only in a sandbox.",
         }
 
-    runtime, resolver, workflow_engine, _conversation_engine = build_sandbox_runtime(data_dir, mode="per_op")
+    runtime, resolver, workflow_engine, conversation_engine = build_sandbox_runtime(data_dir, mode="per_op")
     run_id = f"runtime-sandbox-{uuid.uuid4().hex}"
     run = runtime.run(
         workflow_id=SANDBOX_WORKFLOW_ID,
@@ -872,6 +892,9 @@ def level4_sandboxed_ops(data_dir: Path) -> dict[str, Any]:
         run_id=run_id,
     )
     _flush_trace(runtime)
+    step_execs = _step_exec_payloads(conversation_engine, run.run_id)
+    sandbox_step = next((step for step in step_execs if step.get("op") == "python_exec"), None)
+    sandbox_errors = list((sandbox_step or {}).get("result", {}).get("errors") or [])
     return {
         "level": 4,
         "tutorial": "runtime sandboxed ops",
@@ -883,6 +906,8 @@ def level4_sandboxed_ops(data_dir: Path) -> dict[str, Any]:
         "sandbox_mode": run.final_state.get("sandbox_mode"),
         "sandbox_op": run.final_state.get("sandbox_op"),
         "sandbox_result": run.final_state.get("sandbox_result"),
+        "sandbox_step_status": (sandbox_step or {}).get("status"),
+        "sandbox_errors": sandbox_errors,
         "registered_ops": sorted(resolver.ops),
         "sandboxed_ops": sorted(resolver.sandboxed_ops),
         "trace_db_path": str(_trace_db_path(workflow_engine)),

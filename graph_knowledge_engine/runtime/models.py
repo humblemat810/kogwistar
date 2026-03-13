@@ -179,6 +179,15 @@ class RunSuspended(BaseModel):
     update: dict[str, Any] | None = None
     next_step_names: list[str] = Field(default_factory=list)
     status: Literal["suspended"] = "suspended"
+    # Recommended recoverable-error payload shape:
+    # {
+    #   "type": "recoverable_error",
+    #   "op": "<workflow op>",
+    #   "category": "<symbolic code>",
+    #   "message": "<human-readable summary>",
+    #   "errors": ["..."],
+    #   "repair_payload": {...},
+    # }
     resume_payload: dict[str, Any] = Field(default_factory=dict)
 
 

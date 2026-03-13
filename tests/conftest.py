@@ -2,12 +2,14 @@
 from __future__ import annotations
 import shutil, uuid, json
 import os
+from _pytest.monkeypatch import MonkeyPatch
 from typing import cast
 try:
     import sitecustomize  # type: ignore  # pragma: no cover
 except Exception:  # pragma: no cover - local env may not provide it
     sitecustomize = None  # type: ignore
-os.environ["ANONYMIZED_TELEMETRY"] = "FALSE"
+_TEST_ENV = MonkeyPatch()
+_TEST_ENV.setenv("ANONYMIZED_TELEMETRY", "FALSE")
 try:
     import sqlalchemy as sa
     has_sa = True
@@ -191,6 +193,10 @@ def pytest_configure(config):
             enable_jsonl=True
         # )
     )
+
+
+def pytest_unconfigure(config):
+    _TEST_ENV.undo()
 
 
 def _pick_free_port() -> int:
@@ -576,7 +582,7 @@ class _CompositeFakeLLM:
             self._impl = _FakeLLMForAdjudication()
         return self._impl
 
-@pytest.fixture(scope="module")
+@pytest.fixture(scope="function")
 def tmp_chroma_dir(tmp_path_factory):
     d = tmp_path_factory.mktemp("chroma_db")
     yield str(d)
@@ -590,7 +596,7 @@ def engine(tmp_chroma_dir, monkeypatch):
     #eng.llm = _CompositeFakeLLM()
     return eng
 
-@pytest.fixture(scope="module")
+@pytest.fixture(scope="function")
 def tmp_conv_chroma_dir(tmp_path_factory):
     d = tmp_path_factory.mktemp("chroma_db")
     yield str(d)
@@ -608,8 +614,8 @@ def workflow_engine(tmp_conv_chroma_dir, monkeypatch):
     #eng.llm = _CompositeFakeLLM()
     return eng
 @pytest.fixture()
-def real_small_graph():
-    e = GraphKnowledgeEngine(persist_directory = "small_graph")
+def real_small_graph(tmp_path: Path):
+    e = GraphKnowledgeEngine(persist_directory=str(tmp_path / "small_graph"))
     doc_id = "D1"
     # nodes
     def add_node(nid, label):

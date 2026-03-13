@@ -116,6 +116,11 @@ def test_docker_sandbox_per_op_invokes_runtime_once():
     assert args[args.index("--network") + 1] == "none"
 
 
+def test_docker_sandbox_runner_code_is_valid_python():
+    runner = DockerPythonSandbox._runner_code()
+    compile(runner, "<docker_sandbox_runner>", "exec")
+
+
 def test_docker_sandbox_per_run_reuses_container_until_close():
     sandbox = DockerPythonSandbox(image="python:3.11-slim", mode="per_run", runtime_cmd="docker")
 

@@ -166,21 +166,33 @@ class DockerPythonSandbox(Sandbox):
 
     @staticmethod
     def _runner_code() -> str:
-        return (
-            "import json,sys,traceback;"
-            "payload=json.load(sys.stdin);"
-            "state=payload.get('state') or {};"
-            "context=payload.get('context') or {};"
-            "code=payload.get('code') or '';"
-            "scope={'state': state, 'context': context};"
-            "try:\n"
-            " exec(code, scope);\n"
-            " result=scope.get('result');\n"
-            " if result is None:\n"
-            "  result={'state_update':[('u', scope.get('state', {}))]};\n"
-            " sys.stdout.write(json.dumps(result));\n"
-            "except Exception as e:\n"
-            " sys.stdout.write(json.dumps({'status':'failure','conversation_node_id':None,'state_update':[],'errors':[str(e), traceback.format_exc()]}));\n"
+        return "\n".join(
+            [
+                "import json",
+                "import sys",
+                "import traceback",
+                "",
+                "payload = json.load(sys.stdin)",
+                "state = payload.get('state') or {}",
+                "context = payload.get('context') or {}",
+                "code = payload.get('code') or ''",
+                "scope = {'state': state, 'context': context}",
+                "",
+                "try:",
+                "    exec(code, scope)",
+                "    result = scope.get('result')",
+                "    if result is None:",
+                "        result = {'state_update': [('u', scope.get('state', {}))]}",
+                "    sys.stdout.write(json.dumps(result))",
+                "except Exception as e:",
+                "    sys.stdout.write(json.dumps({",
+                "        'status': 'failure',",
+                "        'conversation_node_id': None,",
+                "        'state_update': [],",
+                "        'errors': [str(e), traceback.format_exc()],",
+                "    }))",
+                "",
+            ]
         )
 
     def _run_subprocess(self, args: list[str], *, payload_json: Optional[str] = None) -> subprocess.CompletedProcess[str]:

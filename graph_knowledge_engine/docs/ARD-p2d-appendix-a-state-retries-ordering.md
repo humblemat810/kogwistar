@@ -1,7 +1,7 @@
 ﻿# ARD-P2D Appendix A: State, Effects, Retries, Ordering, and Chain Semantics
 
 **Status:** Accepted as workflow/conversation governance appendix  
-**Last Updated:** 2026-03-08  
+**Last Updated:** 2026-03-14  
 
 **Purpose:** This appendix pins down the â€œhard rulesâ€ for WorkflowState, branching, retries, ordering, and how the *main conversation chain* remains linear while still allowing fanout/sidecars and multiple in-chain events per user turn.
 
@@ -168,25 +168,84 @@ Same pattern applies to `kg_retrieve`.
 
 ## A7. Error Propagation and â€œAbort vs Continueâ€ Policies
 
-### A7.1 Result model (Go/Rust-style)
-Steps should record outcomes as:
-- `Ok(value)` or
-- `Err(error)`
-in state, not only via raised exceptions.
+### A7.1 Structured result model
+Steps should communicate policy-bearing outcomes via structured runtime results:
+- `RunSuccess`
+- `RunFailure`
+- `RunSuspended`
 
-### A7.2 Runtime default
-Current runtime behavior is typically â€œraise = abort runâ€.
+Raised exceptions are still allowed, but they should be treated as runtime/infrastructure failures unless the resolver explicitly converts them into a structured result.
 
-### A7.3 Configurable policy
-Make abort/continue behavior configurable per step and/or per workflow:
-- `wf_on_error = "abort" | "continue" | "continue_with_flag"`
-- When continuing, downstream decision steps can read prior errors and decide:
-  - degrade gracefully
-  - request user intervention
-  - enforce timeout
-  - halt main chain via explicit interrupt
+### A7.2 Recoverable vs failed execution outcomes
+The key distinction is whether the run can continue immediately:
 
-This preserves general runtime behavior while enabling conversation-specific â€œstuckable unless timeoutâ€ semantics.
+- **Recoverable / user-fixable**
+  - model as `RunSuspended`
+  - the run pauses and waits for external correction or input
+  - examples:
+    - sandboxed code references an undefined variable and a user/agent can fix the code
+    - a required business field is missing and must be supplied by a user
+    - approval is required before continuing
+
+- **Failed execution result**
+  - model as `RunFailure`
+  - the step has completed with a failed outcome, but that failure is still valid input to workflow routing policy
+  - examples:
+    - tool invocation failed and should route to fallback/help/abort
+    - retrieval failed and should route to retry or degraded-answer logic
+    - sandbox infrastructure failed and should route to retry or terminate
+
+### A7.3 Standard recoverable-error suspension payload
+For recoverable/user-fixable errors, `RunSuspended.resume_payload` should use this minimum shape:
+
+- `type`: `"recoverable_error"`
+- `op`: workflow op name
+- `category`: symbolic code such as `sandbox_code_error` or `missing_input`
+- `message`: one human-readable summary
+- `errors`: list of concrete error strings
+- `repair_payload`: opaque client/agent-specific repair context
+
+This payload is transport-oriented: it tells the external fixer what happened and what is needed to resume.
+
+### A7.4 Routing semantics for `RunFailure`
+`RunFailure` is routable.
+
+The runtime must:
+- apply the failure result state updates before routing
+- persist the step execution with failed status
+- evaluate normal outgoing workflow policy using predicates and/or `next_step_names`
+
+If a failure result produces a matching route:
+- continue through the selected recovery / retry / help branch
+
+If a failure result produces no route:
+- terminate the run with `status="failure"`
+
+So `RunFailure` is neither “always hard-stop” nor “always recoverable”. The graph decides, and unmatched failure ends failed.
+
+### A7.5 Resume semantics for recoverable errors
+`resume_run(...)` must accept all structured result types from the external fixer:
+
+- `RunSuccess`
+  - continue from the suspended node using success semantics
+
+- `RunFailure`
+  - continue from the suspended node using failure-routing semantics
+  - if no branch matches, end failed
+
+- `RunSuspended`
+  - re-park the same token at the same node
+  - replace the prior `resume_payload`
+  - allow multi-turn repair loops without changing run identity
+
+The resumed result is the `last_result` seen by downstream predicates exactly as if the step had produced it in-process.
+
+### A7.6 Design guidance
+Use these patterns:
+
+- Use `RunSuspended` when the system needs outside help before it can decide the next step.
+- Use `RunFailure` when the step has a failed outcome that downstream workflow policy should inspect and route on.
+- Let unmatched `RunFailure` terminate the run as failure by default.
 
 ---
 

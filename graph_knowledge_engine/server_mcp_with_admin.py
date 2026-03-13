@@ -87,7 +87,14 @@ try:
     from graph_knowledge_engine.server.auth.seeding import seed_auth_data
     from graph_knowledge_engine.server.auth.service import AuthService
 except ModuleNotFoundError as exc:
-    if exc.name and exc.name.startswith("sqlalchemy"):
+    missing_name = str(getattr(exc, "name", "") or "")
+    missing_text = str(exc)
+    if (
+        missing_name == "sqlalchemy"
+        or missing_name.startswith("sqlalchemy.")
+        or missing_text == "sqlalchemy"
+        or missing_text.startswith("sqlalchemy.")
+    ):
         get_session = None  # type: ignore[assignment]
         OIDCClient = None  # type: ignore[assignment]
         seed_auth_data = None  # type: ignore[assignment]
