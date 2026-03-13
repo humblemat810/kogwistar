@@ -9,6 +9,11 @@ except Exception:  # pragma: no cover
     PostgresUnitOfWork = None  # type: ignore
 
 
+def _require_pg_fixtures(sa_engine, pg_schema) -> None:
+    if sa_engine is None or pg_schema is None:
+        pytest.skip("pg test container/fixtures are not available in this environment")
+
+
 def _insert_three(backend) -> None:
     backend.node_add(
         ids=["A", "B", "C"],
@@ -35,6 +40,7 @@ def test_engine_vector_search_nodes_orders_neighbors(backend_kind: str, tmp_path
     else:
         if PgVectorBackend is None:
             pytest.skip("pgvector not installed")
+        _require_pg_fixtures(sa_engine, pg_schema)
         backend = PgVectorBackend(engine=sa_engine, embedding_dim=3, distance="cosine", schema=pg_schema)
         eng = GraphKnowledgeEngine(persist_directory=str(tmp_path / "pg_engine"), backend=backend)
 
@@ -54,6 +60,7 @@ def test_engine_uow_power_out_rollback(backend_kind: str, tmp_path, sa_engine, p
 
     if PgVectorBackend is None or PostgresUnitOfWork is None:
         pytest.skip("pgvector not installed")
+    _require_pg_fixtures(sa_engine, pg_schema)
 
     backend = PgVectorBackend(engine=sa_engine, embedding_dim=3, distance="cosine", schema=pg_schema)
     eng = GraphKnowledgeEngine(persist_directory=str(tmp_path / "pg_engine_txn"), backend=backend)

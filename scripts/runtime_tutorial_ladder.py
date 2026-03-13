@@ -5,6 +5,7 @@ import json
 import shutil
 import sqlite3
 import sys
+import subprocess
 import uuid
 import warnings
 from dataclasses import dataclass
@@ -21,14 +22,24 @@ from graph_knowledge_engine.runtime.contract import BasePredicate
 from graph_knowledge_engine.runtime.langgraph_converter import LGConverterOptions, to_langgraph
 from graph_knowledge_engine.runtime.models import RunSuccess, RunSuspended, WorkflowEdge, WorkflowNode
 from graph_knowledge_engine.runtime.resolvers import MappingStepResolver
+from graph_knowledge_engine.runtime.sandbox import SandboxFactory, SandboxRequest
 from graph_knowledge_engine.runtime.runtime import StepContext, WorkflowRuntime
 
 
-WORKFLOW_ID = "tutorial_runtime_pause_resume"
+WORKFLOW_ID = "tutorial_runtime_pause_resume_v2"
+SANDBOX_WORKFLOW_ID = "tutorial_runtime_sandboxed_ops_v2"
+RT_START_NODE_ID = "rt2:start"
+RT_FORK_NODE_ID = "rt2:fork"
+RT_BRANCH_A_NODE_ID = "rt2:branch_a"
+RT_BRANCH_B_NODE_ID = "rt2:branch_b"
+RT_JOIN_NODE_ID = "rt2:join"
+RT_END_NODE_ID = "rt2:end"
 CONVERSATION_ID = "tutorial-runtime-conv"
 TURN_NODE_ID = "tutorial-runtime-turn-1"
 CDC_VIEWER_PATH = "graph_knowledge_engine/scripts/workflow.bundle.cdc.script.hl3.html"
 RUNTIME_EVENT_ENDPOINT = "/api/workflow/runs/{run_id}/events"
+WORKFLOW_STORE_DIRNAME = "workflow_v2"
+CONVERSATION_STORE_DIRNAME = "conversation_v2"
 
 warnings.filterwarnings("ignore", message=r"Using advanced underscore state key '_deps'.*", category=RuntimeWarning)
 warnings.filterwarnings("ignore", message=r"Using advanced underscore state key '_rt_join'.*", category=RuntimeWarning)
@@ -121,12 +132,12 @@ def _build_engines(data_dir: Path) -> tuple[GraphKnowledgeEngine, GraphKnowledge
     data_dir.mkdir(parents=True, exist_ok=True)
     ef = TinyEmbeddingFunction()
     workflow_engine = GraphKnowledgeEngine(
-        persist_directory=str(data_dir / "workflow"),
+        persist_directory=str(data_dir / WORKFLOW_STORE_DIRNAME),
         kg_graph_type="workflow",
         embedding_function=ef,
     )
     conversation_engine = GraphKnowledgeEngine(
-        persist_directory=str(data_dir / "conversation"),
+        persist_directory=str(data_dir / CONVERSATION_STORE_DIRNAME),
         kg_graph_type="conversation",
         embedding_function=ef,
     )
@@ -155,7 +166,16 @@ def _grounding(doc_id: str, excerpt: str) -> Grounding:
     return Grounding(spans=[_span(doc_id, excerpt)])
 
 
-def _wf_node(*, node_id: str, op: str, start: bool = False, terminal: bool = False, fanout: bool = False, join: bool = False) -> WorkflowNode:
+def _wf_node(
+    *,
+    node_id: str,
+    op: str,
+    workflow_id: str = WORKFLOW_ID,
+    start: bool = False,
+    terminal: bool = False,
+    fanout: bool = False,
+    join: bool = False,
+) -> WorkflowNode:
     summary = f"{node_id}::{op}"
     return WorkflowNode(
         id=node_id,
@@ -167,7 +187,7 @@ def _wf_node(*, node_id: str, op: str, start: bool = False, terminal: bool = Fal
         properties={},
         metadata={
             "entity_type": "workflow_node",
-            "workflow_id": WORKFLOW_ID,
+            "workflow_id": workflow_id,
             "wf_op": op,
             "wf_version": "v1",
             "wf_start": start,
@@ -182,7 +202,17 @@ def _wf_node(*, node_id: str, op: str, start: bool = False, terminal: bool = Fal
     )
 
 
-def _wf_edge(*, edge_id: str, src: str, dst: str, predicate: str | None = None, priority: int = 100, is_default: bool = False, multiplicity: str = "one") -> WorkflowEdge:
+def _wf_edge(
+    *,
+    edge_id: str,
+    src: str,
+    dst: str,
+    workflow_id: str = WORKFLOW_ID,
+    predicate: str | None = None,
+    priority: int = 100,
+    is_default: bool = False,
+    multiplicity: str = "one",
+) -> WorkflowEdge:
     summary = f"{src} -> {dst}"
     return WorkflowEdge(
         id=edge_id,
@@ -199,7 +229,7 @@ def _wf_edge(*, edge_id: str, src: str, dst: str, predicate: str | None = None, 
         mentions=[_grounding(f"wf-edge:{edge_id}", summary)],
         metadata={
             "entity_type": "workflow_edge",
-            "workflow_id": WORKFLOW_ID,
+            "workflow_id": workflow_id,
             "wf_predicate": predicate,
             "wf_priority": priority,
             "wf_is_default": is_default,
@@ -212,8 +242,11 @@ def _wf_edge(*, edge_id: str, src: str, dst: str, predicate: str | None = None, 
 
 
 def _workflow_seeded(workflow_engine: GraphKnowledgeEngine) -> bool:
-    got = workflow_engine.backend.node_get(ids=["rt:start"], include=[])
-    return bool(got.get("ids"))
+    got = workflow_engine.backend.node_get(ids=[RT_START_NODE_ID], include=["metadatas"])
+    if not got.get("ids"):
+        return False
+    meta = (got.get("metadatas") or [{}])[0] or {}
+    return str(meta.get("workflow_id") or "") == WORKFLOW_ID
 
 
 def _resume_payload_for(node_id: str) -> dict[str, Any]:
@@ -230,26 +263,26 @@ def ensure_workflow_seed(data_dir: Path) -> tuple[GraphKnowledgeEngine, GraphKno
         return workflow_engine, conversation_engine
 
     nodes = [
-        _wf_node(node_id="rt:start", op="start", start=True),
-        _wf_node(node_id="rt:fork", op="fork", fanout=True),
-        _wf_node(node_id="rt:branch_a", op="branch_a_wait"),
-        _wf_node(node_id="rt:branch_b", op="branch_b_complete"),
-        _wf_node(node_id="rt:join", op="join", join=True),
-        _wf_node(node_id="rt:end", op="end", terminal=True),
+        _wf_node(node_id=RT_START_NODE_ID, op="start", start=True),
+        _wf_node(node_id=RT_FORK_NODE_ID, op="fork", fanout=True),
+        _wf_node(node_id=RT_BRANCH_A_NODE_ID, op="branch_a_wait"),
+        _wf_node(node_id=RT_BRANCH_B_NODE_ID, op="branch_b_complete"),
+        _wf_node(node_id=RT_JOIN_NODE_ID, op="join", join=True),
+        _wf_node(node_id=RT_END_NODE_ID, op="end", terminal=True),
     ]
     edges = [
-        _wf_edge(edge_id="rt:start->fork", src="rt:start", dst="rt:fork", is_default=True, priority=100),
-        _wf_edge(edge_id="rt:fork->branch_a", src="rt:fork", dst="rt:branch_a", predicate="always", priority=10, multiplicity="many"),
-        _wf_edge(edge_id="rt:fork->branch_b", src="rt:fork", dst="rt:branch_b", predicate="always", priority=10, multiplicity="many"),
-        _wf_edge(edge_id="rt:branch_a->join", src="rt:branch_a", dst="rt:join", is_default=True, priority=100),
-        _wf_edge(edge_id="rt:branch_b->join", src="rt:branch_b", dst="rt:join", is_default=True, priority=100),
-        _wf_edge(edge_id="rt:join->end", src="rt:join", dst="rt:end", is_default=True, priority=100),
+        _wf_edge(edge_id="rt2:start->fork", src=RT_START_NODE_ID, dst=RT_FORK_NODE_ID, is_default=True, priority=100),
+        _wf_edge(edge_id="rt2:fork->branch_a", src=RT_FORK_NODE_ID, dst=RT_BRANCH_A_NODE_ID, predicate="always", priority=10, multiplicity="many"),
+        _wf_edge(edge_id="rt2:fork->branch_b", src=RT_FORK_NODE_ID, dst=RT_BRANCH_B_NODE_ID, predicate="always", priority=10, multiplicity="many"),
+        _wf_edge(edge_id="rt2:branch_a->join", src=RT_BRANCH_A_NODE_ID, dst=RT_JOIN_NODE_ID, is_default=True, priority=100),
+        _wf_edge(edge_id="rt2:branch_b->join", src=RT_BRANCH_B_NODE_ID, dst=RT_JOIN_NODE_ID, is_default=True, priority=100),
+        _wf_edge(edge_id="rt2:join->end", src=RT_JOIN_NODE_ID, dst=RT_END_NODE_ID, is_default=True, priority=100),
     ]
     for node in nodes:
         workflow_engine.write.add_node(node)
     for edge in edges:
         workflow_engine.write.add_edge(edge)
-    return workflow_engine, conversation_engine
+    return _build_engines(data_dir)
 
 
 def build_resolver() -> MappingStepResolver:
@@ -673,9 +706,200 @@ def level3_observability_and_langgraph(data_dir: Path) -> dict[str, Any]:
     }
 
 
+def _docker_available() -> bool:
+    try:
+        proc = subprocess.run(
+            ["docker", "version", "--format", "{{.Server.Version}}"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except Exception:
+        return False
+    return proc.returncode == 0 and bool((proc.stdout or "").strip())
+
+
+def _sandbox_workflow_seeded(workflow_engine: GraphKnowledgeEngine) -> bool:
+    got = workflow_engine.backend.node_get(ids=["sb4:start"], include=["metadatas"])
+    if not got.get("ids"):
+        return False
+    meta = (got.get("metadatas") or [{}])[0] or {}
+    return str(meta.get("workflow_id") or "") == SANDBOX_WORKFLOW_ID
+
+
+def ensure_sandbox_workflow_seed(data_dir: Path) -> tuple[GraphKnowledgeEngine, GraphKnowledgeEngine]:
+    workflow_engine, conversation_engine = _build_engines(data_dir)
+    if _sandbox_workflow_seeded(workflow_engine):
+        return workflow_engine, conversation_engine
+
+    nodes = [
+        _wf_node(node_id="sb4:start", op="start", workflow_id=SANDBOX_WORKFLOW_ID, start=True),
+        _wf_node(node_id="sb4:python_exec", op="python_exec", workflow_id=SANDBOX_WORKFLOW_ID),
+        _wf_node(node_id="sb4:end", op="end", workflow_id=SANDBOX_WORKFLOW_ID, terminal=True),
+    ]
+    edges = [
+        _wf_edge(
+            edge_id="sb4:start->python_exec",
+            src="sb4:start",
+            dst="sb4:python_exec",
+            workflow_id=SANDBOX_WORKFLOW_ID,
+            is_default=True,
+            priority=100,
+        ),
+        _wf_edge(
+            edge_id="sb4:python_exec->end",
+            src="sb4:python_exec",
+            dst="sb4:end",
+            workflow_id=SANDBOX_WORKFLOW_ID,
+            is_default=True,
+            priority=100,
+        ),
+    ]
+    for node in nodes:
+        workflow_engine.write.add_node(node)
+    for edge in edges:
+        workflow_engine.write.add_edge(edge)
+    return _build_engines(data_dir)
+
+
+def build_sandbox_runtime(data_dir: Path, *, mode: str = "per_op") -> tuple[WorkflowRuntime, MappingStepResolver, GraphKnowledgeEngine, GraphKnowledgeEngine]:
+    workflow_engine, conversation_engine = ensure_sandbox_workflow_seed(data_dir)
+    resolver = MappingStepResolver()
+    resolver.set_state_schema({"timeline": "a"})
+    resolver.set_sandbox(
+        SandboxFactory.create(
+            "docker",
+            {
+                "image": "python:3.11-slim",
+                "mode": mode,
+                "runtime_cmd": "docker",
+                "timeout_s": 15,
+                "container_name_prefix": "gke-tutorial-sandbox",
+            },
+        )
+    )
+
+    @resolver.register("start")
+    def _start(ctx: StepContext):
+        return RunSuccess(
+            conversation_node_id=None,
+            state_update=[
+                ("u", {"started": True, "llm_generated_code_is_untrusted": True}),
+                ("a", {"timeline": "start:prepare sandboxed op"}),
+            ],
+        )
+
+    @resolver.register("python_exec", is_sandboxed=True)
+    def _python_exec(ctx: StepContext):
+        proposed_code = (
+            "result = {\n"
+            "  'conversation_node_id': None,\n"
+            "  'state_update': [\n"
+            "    ('u', {\n"
+            "      'sandbox_result': state.get('unsafe_candidate', '').upper(),\n"
+            "      'sandbox_mode': context.get('sandbox_mode'),\n"
+            "      'sandbox_op': context.get('op'),\n"
+            "      'sandbox_run_id': context.get('run_id'),\n"
+            "    }),\n"
+            "    ('a', {'timeline': f\"sandbox:{context.get('op')} executed\"}),\n"
+            "  ],\n"
+            "  'status': 'success'\n"
+            "}\n"
+        )
+        return SandboxRequest(
+            code=proposed_code,
+            context={
+                "sandbox_mode": mode,
+                "safety_note": "Run LLM-generated code in a sandbox instead of on the host.",
+            },
+        )
+
+    @resolver.register("end")
+    def _end(ctx: StepContext):
+        return RunSuccess(
+            conversation_node_id=None,
+            state_update=[
+                ("u", {"ended": True}),
+                ("a", {"timeline": "end:terminal"}),
+            ],
+        )
+
+    runtime = WorkflowRuntime(
+        workflow_engine=workflow_engine,
+        conversation_engine=conversation_engine,
+        step_resolver=resolver,
+        predicate_registry={},
+        checkpoint_every_n_steps=1,
+        max_workers=1,
+    )
+    return runtime, resolver, workflow_engine, conversation_engine
+
+
+def level4_sandboxed_ops(data_dir: Path) -> dict[str, Any]:
+    docker_available = _docker_available()
+    if not docker_available:
+        return {
+            "level": 4,
+            "tutorial": "runtime sandboxed ops",
+            "sandbox_type": "docker",
+            "sandbox_available": False,
+            "sandbox_executed": False,
+            "checkpoint_pass": False,
+            "status": "sandbox_unavailable",
+            "message": "Docker is not available, so the tutorial did not execute untrusted code on the host.",
+            "safety_summary": "LLM-generated code should be treated as untrusted and executed only in a sandbox.",
+        }
+
+    runtime, resolver, workflow_engine, _conversation_engine = build_sandbox_runtime(data_dir, mode="per_op")
+    run_id = f"runtime-sandbox-{uuid.uuid4().hex}"
+    run = runtime.run(
+        workflow_id=SANDBOX_WORKFLOW_ID,
+        conversation_id=CONVERSATION_ID,
+        turn_node_id=TURN_NODE_ID,
+        initial_state={
+            "conversation_id": CONVERSATION_ID,
+            "user_id": "tutorial-user",
+            "turn_node_id": TURN_NODE_ID,
+            "turn_index": 1,
+            "role": "user",
+            "user_text": "Please compute this transformation.",
+            "mem_id": "tutorial-mem",
+            "self_span": {},
+            "unsafe_candidate": "hello from llm sandbox",
+            "_deps": {"audience": "runtime-tutorial"},
+        },
+        run_id=run_id,
+    )
+    _flush_trace(runtime)
+    return {
+        "level": 4,
+        "tutorial": "runtime sandboxed ops",
+        "run_id": run.run_id,
+        "status": run.status,
+        "sandbox_type": "docker",
+        "sandbox_available": True,
+        "sandbox_executed": run.final_state.get("sandbox_result") == "HELLO FROM LLM SANDBOX",
+        "sandbox_mode": run.final_state.get("sandbox_mode"),
+        "sandbox_op": run.final_state.get("sandbox_op"),
+        "sandbox_result": run.final_state.get("sandbox_result"),
+        "registered_ops": sorted(resolver.ops),
+        "sandboxed_ops": sorted(resolver.sandboxed_ops),
+        "trace_db_path": str(_trace_db_path(workflow_engine)),
+        "safety_summary": "LLM-generated code may be hallucinated or prompt-injected; the runtime returns SandboxRequest and executes it in Docker instead of on the host.",
+        "checkpoint_pass": (
+            run.status == "succeeded"
+            and run.final_state.get("sandbox_result") == "HELLO FROM LLM SANDBOX"
+            and run.final_state.get("sandbox_mode") == "per_op"
+            and run.final_state.get("sandbox_op") == "python_exec"
+            and run.final_state.get("ended") is True
+        ),
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Runtime tutorial ladder for resolver, pause/resume, CDC viewer, and LangGraph interop.")
-    parser.add_argument("command", choices=["reset", "level0", "level1", "level2", "level3"])
+    parser.add_argument("command", choices=["reset", "level0", "level1", "level2", "level3", "level4"])
     parser.add_argument("--data-dir", type=Path, default=Path(".gke-data/runtime-tutorial-ladder"))
     args = parser.parse_args()
 
@@ -687,8 +911,12 @@ def main() -> int:
         payload = level1_resolvers_and_deps(args.data_dir)
     elif args.command == "level2":
         payload = level2_pause_and_resume(args.data_dir)
-    else:
+    elif args.command == "level3":
         payload = level3_observability_and_langgraph(args.data_dir)
+    elif args.command == "level4":
+        payload = level4_sandboxed_ops(args.data_dir)
+    else:
+        raise ValueError (f"Unrecognised level argument {args.command}")
     _print_json(payload)
     return 0
 

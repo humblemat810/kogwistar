@@ -3,7 +3,9 @@ import pytest
 from typing import Any, Type, TypeVar
 from pydantic import BaseModel
 
+from graph_knowledge_engine.conversation.conversation_context import ContextItem, ContextMessage, PromptContext
 from graph_knowledge_engine.conversation.models import ConversationNode, MetaFromLastSummary
+from graph_knowledge_engine.conversation.service import ConversationService
 from graph_knowledge_engine.id_provider import stable_id
 BaseM = TypeVar("BaseM", bound=BaseModel)
 from graph_knowledge_engine.engine_core.models import Span, Grounding
@@ -189,3 +191,55 @@ def test_answer_flow_creates_context_snapshots_and_edges(backend_kind, tmp_path,
     # Accounting must not appear on arbitrary conversation turns
     turns = conv.get_nodes(where={"entity_type": "conversation_turn"})
     assert all("cost.char_count" not in (t.metadata or {}) for t in turns)
+
+
+@pytest.mark.parametrize("backend_kind", ["chroma", "pg"])
+def test_persist_context_snapshot_allows_empty_used_node_ids(backend_kind, tmp_path, sa_engine, pg_schema):
+    kg, conv = _make_engine_pair(
+        backend_kind=backend_kind,
+        tmp_path=tmp_path,
+        sa_engine=sa_engine,
+        pg_schema=pg_schema,
+        dim=3,
+        use_fake=True,
+    )
+    svc = ConversationService.from_engine(conversation_engine=conv, knowledge_engine=kg)
+
+    view = PromptContext(
+        conversation_id="c-empty-snapshot",
+        purpose="answer",
+        token_budget=16,
+        tokens_used=1,
+        items=(
+            ContextItem(
+                kind="system_prompt",
+                role="system",
+                text="Only a system prompt.",
+                source="system",
+                token_cost=1,
+            ),
+        ),
+        messages=(
+            ContextMessage(
+                role="system",
+                content="Only a system prompt.",
+                source="system",
+            ),
+        ),
+    )
+
+    snapshot_id = svc.persist_context_snapshot(
+        conversation_id="c-empty-snapshot",
+        run_id="run-empty",
+        run_step_seq=0,
+        stage="draft_answer",
+        view=view,
+        model_name="fake-model",
+        budget_tokens=16,
+    )
+
+    snaps = conv.backend.node_get(ids=[snapshot_id], include=["metadatas"])
+    assert snaps["ids"] == [snapshot_id]
+    meta = (snaps.get("metadatas") or [{}])[0] or {}
+    assert meta.get("entity_type") == "context_snapshot"
+    assert "used_node_ids" not in meta

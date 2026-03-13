@@ -2,10 +2,8 @@
 from __future__ import annotations
 
 import json
-import time
 from pathlib import Path
 from typing import Any, Dict, Iterable, Optional
-import threading
 import pytest
 import requests
 import websocket  # pip install websocket-client
@@ -14,9 +12,71 @@ import websocket  # pip install websocket-client
 
 from fastapi.testclient import TestClient
 
-# Import the bridge app from your codebase
-# Adjust import path to match your project layout:
-from graph_knowledge_engine.cdc.change_bridge import app  # or wherever change_bridge.py lives
+from graph_knowledge_engine.cdc.change_bridge import create_app
+from graph_knowledge_engine.cdc.change_event import ChangeEvent
+from graph_knowledge_engine.cdc.oplog import OplogWriter
+
+
+_SAMPLE_CHANGESET: tuple[ChangeEvent, ...] = (
+    ChangeEvent(
+        seq=1,
+        op="node.upsert",
+        ts_unix_ms=1700000000001,
+        entity={"kind": "node", "id": "conv-node-1", "kg_graph_type": "conversation", "url": None},
+        payload={"id": "conv-node-1", "label": "User turn 1", "type": "message", "props": {"role": "user", "text": "Hello"}},
+    ),
+    ChangeEvent(
+        seq=2,
+        op="node.upsert",
+        ts_unix_ms=1700000000002,
+        entity={"kind": "node", "id": "conv-node-2", "kg_graph_type": "conversation", "url": None},
+        payload={"id": "conv-node-2", "label": "Assistant turn 1", "type": "message", "props": {"role": "assistant", "text": "Hi there"}},
+        run_id="sample-run-1",
+        step_id="step-1",
+    ),
+    ChangeEvent(
+        seq=3,
+        op="edge.upsert",
+        ts_unix_ms=1700000000003,
+        entity={"kind": "edge", "id": "conv-edge-1", "kg_graph_type": "conversation", "url": None},
+        payload={"id": "conv-edge-1", "source": "conv-node-1", "target": "conv-node-2", "type": "replies_to", "props": {}},
+        run_id="sample-run-1",
+        step_id="step-1",
+    ),
+    ChangeEvent(
+        seq=4,
+        op="doc.upsert",
+        ts_unix_ms=1700000000004,
+        entity={"kind": "doc_node", "id": "conv-doc-1", "kg_graph_type": "conversation", "url": "doc://conversation/sample-1"},
+        payload={"id": "conv-doc-1", "title": "Conversation sample 1", "text": "Hello\nHi there"},
+        run_id="sample-run-1",
+        step_id="step-2",
+    ),
+    ChangeEvent(
+        seq=5,
+        op="search_index.upsert",
+        ts_unix_ms=1700000000005,
+        entity={"kind": "search_index", "id": "conv-index-1", "kg_graph_type": "conversation", "url": None},
+        payload={"id": "conv-index-1", "text": "hello hi there", "doc_id": "conv-doc-1"},
+        run_id="sample-run-1",
+        step_id="step-2",
+    ),
+)
+
+
+def _export_sample_oplog(path: Path) -> Path:
+    writer = OplogWriter(path, fsync=False)
+    for event in _SAMPLE_CHANGESET:
+        writer.append(event)
+    return path
+
+
+@pytest.fixture
+def replay_oplog_path(tmp_path: Path) -> Path:
+    repo_path = Path("tests/input_test_data/changes.jsonl")
+    if repo_path.exists():
+        return repo_path
+    return _export_sample_oplog(tmp_path / "changes.jsonl")
 
 
 def _iter_jsonl(path: Path) -> Iterable[Dict[str, Any]]:
@@ -33,16 +93,14 @@ def _iter_jsonl(path: Path) -> Iterable[Dict[str, Any]]:
                 continue
 
 
-def _replay_into_bridge(
-    client: TestClient,
+def _load_filtered_events(
     *,
     oplog_path: Path,
     since_seq: int = 0,
     kg_graph_type: Optional[str] = None,
-    sleep_ms: int = 0,
-) -> int:
-    """POST events to /ingest; returns count posted successfully."""
-    sent = 0
+    limit: Optional[int] = None,
+) -> list[Dict[str, Any]]:
+    events: list[Dict[str, Any]] = []
     for ev in _iter_jsonl(oplog_path):
         try:
             seq = int(ev.get("seq", -1))
@@ -57,17 +115,14 @@ def _replay_into_bridge(
             if ent.get("kg_graph_type") != kg_graph_type:
                 continue
 
-        r = client.post("/ingest", json=ev)
-        assert r.status_code == 200, r.text
-        sent += 1
-
-        if sleep_ms:
-            time.sleep(sleep_ms / 1000.0)
-    return sent
+        events.append(ev)
+        if limit is not None and len(events) >= limit:
+            break
+    return events
 
 
 @pytest.mark.integration
-def test_replay_oplog_broadcasts_to_websocket(tmp_path: Path) -> None:
+def test_replay_oplog_broadcasts_to_websocket(tmp_path: Path, replay_oplog_path: Path) -> None:
     """
     End-to-end: replay JSONL -> POST /ingest -> WS /changes/ws receives.
 
@@ -75,7 +130,7 @@ def test_replay_oplog_broadcasts_to_websocket(tmp_path: Path) -> None:
       replay_oplog_to_bridge.py --oplog ... --bridge ... --kg-graph-type conversation
     """
     # Your test data path
-    oplog_path = Path("tests/input_test_data/changes.jsonl")
+    oplog_path = replay_oplog_path
     assert oplog_path.exists(), f"Missing test data: {oplog_path.resolve()}"
 
     # If your bridge module stores global subscriber state, it's safer to reset it here.
@@ -87,47 +142,31 @@ def test_replay_oplog_broadcasts_to_websocket(tmp_path: Path) -> None:
     # except Exception:
     #     pass
 
-    client = TestClient(app)
+    expected_events = _load_filtered_events(
+        oplog_path=oplog_path,
+        since_seq=0,
+        kg_graph_type="conversation",
+        limit=10,
+    )
+    assert expected_events, "No conversation events were available in the oplog fixture"
 
-    # Connect WS first (bridge only broadcasts live).
-    with client.websocket_connect("/changes/ws") as ws:
-        # Start replay in background thread (so ws.receive_text() can block safely).
-        sent_holder = {"sent": 0}
+    with TestClient(create_app(oplog_file=tmp_path / "bridge_oplog.jsonl")) as client:
+        # Subscribe to the conversation stream only so unrelated bridge state cannot pollute the assertion.
+        with client.websocket_connect("/changes/ws?stream=conversation") as ws:
+            received = []
+            for ev in expected_events:
+                r = client.post("/ingest", json=ev)
+                assert r.status_code == 200, r.text
+                received.append(json.loads(ws.receive_text()))
 
-        def _bg_send():
-            sent_holder["sent"] = _replay_into_bridge(
-                client,
-                oplog_path=oplog_path,
-                since_seq=0,
-                kg_graph_type="conversation",
-                sleep_ms=0,  # keep test fast; you can set to 2 if you want
-            )
-
-        t = threading.Thread(target=_bg_send, daemon=True)
-        t.start()
-
-        # Collect a few events to prove broadcast works.
-        received = []
-        deadline = time.time() + 5.0  # seconds
-
-        while time.time() < deadline and len(received) < 10:
-            msg = ws.receive_text()
-            ev = json.loads(msg)
-            received.append(ev)
-
-        t.join(timeout=2.0)
-
-    assert sent_holder["sent"] > 0, "No events were posted from the oplog (filter too strict?)"
-    assert len(received) > 0, "No events received on websocket"
-
-    # Validate that at least one received event is the intended topic.
-    assert any(
+    assert [e["seq"] for e in received] == [e["seq"] for e in expected_events]
+    assert all(
         (e.get("entity") or {}).get("kg_graph_type") == "conversation"
         for e in received
-    ), f"Did not receive any conversation events. Got: {[ (e.get('entity') or {}).get('kg_graph_type') for e in received[:10] ]}"
+    ), f"Received non-conversation events: {[ (e.get('entity') or {}).get('kg_graph_type') for e in received ]}"
 
 @pytest.mark.manual
-def test_replay_oplog_to_real_bridge():
+def test_replay_oplog_to_real_bridge(replay_oplog_path: Path):
     """
     Requires:
       - FastAPI bridge running at http://127.0.0.1:8787
@@ -136,7 +175,7 @@ def test_replay_oplog_to_real_bridge():
     bridge_http = "http://127.0.0.1:8787/ingest"
     bridge_ws = "ws://127.0.0.1:8787/changes/ws"
 
-    oplog_path = Path("tests/input_test_data/changes.jsonl")
+    oplog_path = replay_oplog_path
     assert oplog_path.exists()
 
     # Connect websocket first

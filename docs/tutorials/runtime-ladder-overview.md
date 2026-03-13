@@ -32,6 +32,7 @@ python scripts/runtime_tutorial_ladder.py level0 --data-dir .gke-data/runtime-tu
 python scripts/runtime_tutorial_ladder.py level1 --data-dir .gke-data/runtime-tutorial-ladder
 python scripts/runtime_tutorial_ladder.py level2 --data-dir .gke-data/runtime-tutorial-ladder
 python scripts/runtime_tutorial_ladder.py level3 --data-dir .gke-data/runtime-tutorial-ladder
+python scripts/runtime_tutorial_ladder.py level4 --data-dir .gke-data/runtime-tutorial-ladder
 ```
 
 ## Levels
@@ -40,6 +41,7 @@ python scripts/runtime_tutorial_ladder.py level3 --data-dir .gke-data/runtime-tu
 - Level 1: show how `MappingStepResolver` handlers consume `StepContext`, `_deps`, and `StepContext.events`.
 - Level 2: recover the suspended token from checkpoint state and continue the run with `WorkflowRuntime.resume_run(...)`.
 - Level 3: inspect runtime trace events, connect them to the CDC viewer, and export the workflow to LangGraph.
+- Level 4: treat LLM-generated code as untrusted and execute a sandboxed workflow op inside Docker.
 
 ## What To Inspect
 
@@ -71,3 +73,4 @@ python scripts/runtime_tutorial_ladder.py level3 --data-dir .gke-data/runtime-tu
 - [Runtime Level 1 - Custom Resolvers](./runtime-level-1-resolvers.md)
 - [Runtime Level 2 - Pause and Resume](./runtime-level-2-pause-resume.md)
 - [Runtime Level 3 - CDC Viewer and LangGraph Interop](./runtime-level-3-observability-interop.md)
+- [Runtime Level 4 - Sandboxed Ops With Docker](./runtime-level-4-sandboxed-ops.md)

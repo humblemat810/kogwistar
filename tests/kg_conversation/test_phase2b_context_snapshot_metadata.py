@@ -58,3 +58,21 @@ def test_context_snapshot_metadata_accepts_flat_cost_on_validate():
     )
     assert meta.cost.char_count == 9
     assert meta.cost.token_count == 3
+
+
+def test_context_snapshot_metadata_omits_empty_used_node_ids_for_chroma():
+    meta = ContextSnapshotMetadata(
+        run_id="r3",
+        run_step_seq=3,
+        attempt_seq=0,
+        stage="answer",
+        rendered_context_hash="hh3",
+        used_node_ids=[],
+        cost=ContextCost(char_count=7, token_count=2),
+    )
+
+    flat = meta.to_chroma_metadata()
+    assert "used_node_ids" not in flat
+
+    back = ContextSnapshotMetadata.from_chroma_metadata(flat)
+    assert back.used_node_ids == []

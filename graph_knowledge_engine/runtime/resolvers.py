@@ -1,5 +1,6 @@
 from __future__ import annotations
 import functools
+import warnings
 
 from graph_knowledge_engine.utils.log import bind_log_context
 
@@ -29,8 +30,6 @@ The orchestrator should populate `_deps` in the workflow initial_state.
 """
 
 from dataclasses import dataclass
-import pathlib
-import time
 from typing import TYPE_CHECKING, Any, Callable, Dict, Mapping, Optional, Union
 
 # Best-effort self-inspection for state schema inference
@@ -45,6 +44,7 @@ if TYPE_CHECKING:
     RawStepFn = Callable[[StepContext], Union[Json, StepRunResult]]
 
 from graph_knowledge_engine.runtime.models import RunSuccess, RunFailure, RunSuspended
+from graph_knowledge_engine.runtime.sandbox import SandboxRequest
 
 # Import your real RunResult types from graph_knowledge_engine.runtime/models
 
@@ -54,6 +54,9 @@ from graph_knowledge_engine.engine_core.models import Span
 
 class BaseResolver:
     ops: set
+
+
+_LEGACY_UPDATE_WARNING_EMITTED = False
 
 @dataclass
 class MappingStepResolver(BaseResolver):
@@ -80,6 +83,14 @@ class MappingStepResolver(BaseResolver):
     def set_sandbox(self, sandbox: "Sandbox"):
         self._sandbox = sandbox
 
+    def close_sandbox_run(self, run_id: str) -> None:
+        if self._sandbox is not None and hasattr(self._sandbox, "close_run"):
+            self._sandbox.close_run(str(run_id))
+
+    def close_sandbox(self) -> None:
+        if self._sandbox is not None and hasattr(self._sandbox, "close"):
+            self._sandbox.close()
+
     def register(self, op: str, *, is_nested: bool = False, is_sandboxed: bool = False) -> Callable[[RawStepFn], RawStepFn]:
         def _decorator(fn: RawStepFn) -> RawStepFn:
             @functools.wraps(fn)
@@ -104,18 +115,18 @@ class MappingStepResolver(BaseResolver):
             raise KeyError(f"No step handler registered for op={op!r}")
 
         def _wrapped(ctx: StepContext) -> StepRunResult:
-            if op in self.sandboxed_ops and self._sandbox:
-                # Specialized sandboxed execution logic could go here.
-                # For now, we still execute the local handler, which might then
-                # decide to call sandbox.run() if it wants to execute code.
-                pass
-
             try:
                 out = raw(ctx)
+                out = self._maybe_execute_sandboxed(op=op, ctx=ctx, out=out)
                 if getattr(out, 'update', None) is not None:
-                    import warnings
-                    warnings.simplefilter("once")
-                    warnings.warn("legacy update detected, use state_update if you need to append list state multiple times")
+                    global _LEGACY_UPDATE_WARNING_EMITTED
+                    if not _LEGACY_UPDATE_WARNING_EMITTED:
+                        warnings.warn(
+                            "legacy update detected, use state_update if you need to append list state multiple times",
+                            RuntimeWarning,
+                            stacklevel=2,
+                        )
+                        _LEGACY_UPDATE_WARNING_EMITTED = True
                 if isinstance(out, (RunSuccess, RunFailure, RunSuspended)):
                     return out
                 else:
@@ -126,6 +137,58 @@ class MappingStepResolver(BaseResolver):
                                   state_update = [('a', {'op_log': str(e)})], 
                                   errors=[str(e), traceback.format_exc()])
         return _wrapped
+
+    def _maybe_execute_sandboxed(self, *, op: str, ctx: "StepContext", out: Any) -> Any:
+        if op not in self.sandboxed_ops:
+            return out
+
+        req = self._coerce_sandbox_request(out)
+        if req is None:
+            return out
+        if self._sandbox is None:
+            return RunFailure(
+                conversation_node_id=ctx.workflow_node_id,
+                state_update=[],
+                errors=[f"Sandboxed op '{op}' produced sandbox code but no sandbox runtime is configured"],
+            )
+
+        sandbox_state = dict(req.state) if req.state is not None else dict(ctx.state_view)
+        sandbox_context = self._sandbox_context(ctx)
+        sandbox_context.update(req.context)
+        return self._sandbox.run(req.code, sandbox_state, sandbox_context)
+
+    @staticmethod
+    def _coerce_sandbox_request(out: Any) -> SandboxRequest | None:
+        if isinstance(out, SandboxRequest):
+            return out
+        if isinstance(out, str):
+            return SandboxRequest(code=out)
+        if isinstance(out, dict) and "sandbox_code" in out:
+            code = out.get("sandbox_code")
+            if not isinstance(code, str) or not code.strip():
+                raise ValueError("sandbox_code must be a non-empty string")
+            state = out.get("sandbox_state")
+            if state is not None and not isinstance(state, dict):
+                raise ValueError("sandbox_state must be a dict when provided")
+            context = out.get("sandbox_context") or {}
+            if not isinstance(context, dict):
+                raise ValueError("sandbox_context must be a dict when provided")
+            return SandboxRequest(code=code, state=state, context=context)
+        return None
+
+    @staticmethod
+    def _sandbox_context(ctx: "StepContext") -> dict[str, Any]:
+        return {
+            "run_id": ctx.run_id,
+            "workflow_id": ctx.workflow_id,
+            "workflow_node_id": ctx.workflow_node_id,
+            "op": ctx.op,
+            "token_id": ctx.token_id,
+            "attempt": ctx.attempt,
+            "step_seq": ctx.step_seq,
+            "conversation_id": ctx.conversation_id,
+            "turn_node_id": ctx.turn_node_id,
+        }
 
 
     # ------------------------------------------------------------------

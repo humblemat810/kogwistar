@@ -51,6 +51,28 @@ def test_mint_token(auth_service):
     assert claims["role"] == "rw"
     assert claims["ns"] == "workflow"
 
+
+def test_mint_token_uses_persisted_defaults_when_overrides_omitted(auth_service):
+    user_id = auth_service.resolve_user_from_external(
+        issuer="test-issuer",
+        subject="test-sub-defaults",
+        email="defaults@example.com",
+        default_role="rw",
+        default_ns="docs,workflow",
+    )
+
+    token = auth_service.mint_token(user_id)
+
+    from jose import jwt
+    claims = jwt.decode(token, "test-secret", algorithms=["HS256"])
+    assert claims["role"] == "rw"
+    assert claims["ns"] == ["docs", "workflow"]
+
+
+def test_mint_token_unknown_user_raises(auth_service):
+    with pytest.raises(ValueError, match="not found"):
+        auth_service.mint_token("missing-user-id")
+
 def test_workflow_acl(auth_service):
     user_id = auth_service.resolve_user_from_external(
         issuer="test-issuer",

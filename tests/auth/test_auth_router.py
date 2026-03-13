@@ -36,8 +36,47 @@ def test_auth_me_authorized(client):
     data = response.json()
     assert data["user_id"] == user_id
     assert data["email"] == "test@example.com"
+    assert data["role"] == "ro"
+    assert data["ns"] == "docs"
+
+def test_login_dev_mode_redirects_with_token_and_requested_redirect(client, monkeypatch):
+    client.cookies.clear()
+    app.state.auth_mode = "dev"
+    monkeypatch.setenv("DEV_AUTH_EMAIL", "dev-user@example.com")
+    monkeypatch.setenv("DEV_AUTH_ROLE", "rw")
+    monkeypatch.setenv("DEV_AUTH_NS", "workflow,conversation")
+
+    response = client.get(
+        "/api/auth/login?redirect_uri=https://ui.example.local/welcome",
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 307
+    location = response.headers["location"]
+    parsed = urlparse(location)
+    assert parsed.scheme == "https"
+    assert parsed.netloc == "ui.example.local"
+    assert parsed.path == "/welcome"
+    params = parse_qs(parsed.query)
+    assert "token" in params
+
+    token = params["token"][0]
+    claims = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
+    assert claims["sub"] == "dev-user@example.com"
+    assert claims["role"] == "rw"
+    assert set(claims["ns"]) == {"workflow", "conversation"}
+
+def test_login_rejects_redirect_override_outside_dev(client):
+    app.state.auth_mode = "oidc"
+    response = client.get(
+        "/api/auth/login?redirect_uri=https://ui.example.local/welcome",
+        follow_redirects=False,
+    )
+    assert response.status_code == 400
+    assert response.json()["detail"] == "redirect_uri override is only allowed when AUTH_MODE=dev"
 
 def test_login_redirect(client):
+    app.state.auth_mode = "oidc"
     # Mock OIDC client discovery
     app.state.oidc_client.get_auth_url = AsyncMock(return_value="https://example.com/auth")
     
@@ -55,6 +94,7 @@ def test_logout(client):
 
 def test_callback_success_redirects_with_token(client, monkeypatch):
     client.cookies.clear()
+    app.state.auth_mode = "oidc"
     monkeypatch.setenv("UI_URL", "https://ui.example.local/")
     app.state.oidc_client.exchange_code = AsyncMock(return_value={"access_token": "access"})
     app.state.oidc_client.get_userinfo = AsyncMock(
@@ -78,6 +118,7 @@ def test_callback_success_redirects_with_token(client, monkeypatch):
 
 def test_callback_rejects_invalid_state(client):
     client.cookies.clear()
+    app.state.auth_mode = "oidc"
     client.cookies.set("auth_state", "state-abc")
     client.cookies.set("auth_pkce_verifier", "verifier-abc")
     response = client.get("/api/auth/callback?code=abc&state=state-wrong", follow_redirects=False)
@@ -86,6 +127,7 @@ def test_callback_rejects_invalid_state(client):
 
 def test_callback_rejects_missing_verifier(client):
     client.cookies.clear()
+    app.state.auth_mode = "oidc"
     client.cookies.set("auth_state", "state-abc")
     response = client.get("/api/auth/callback?code=abc&state=state-abc", follow_redirects=False)
     assert response.status_code == 400

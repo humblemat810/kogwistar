@@ -39,6 +39,7 @@ LEGACY_LEVEL_DOCS = [
     TUTORIALS_DIR / "runtime-level-1-resolvers.md",
     TUTORIALS_DIR / "runtime-level-2-pause-resume.md",
     TUTORIALS_DIR / "runtime-level-3-observability-interop.md",
+    TUTORIALS_DIR / "runtime-level-4-sandboxed-ops.md",
 ]
 
 COMPANION_FILES = [
@@ -132,6 +133,7 @@ def test_tutorial_index_mentions_learning_path_companions_and_pattern_matrix():
     assert "different depth/pathway" in content
     assert "Level 0" in content
     assert "Level 3" in content
+    assert "Level 4" in content
 
 
 def test_companion_files_exist_and_have_vscode_cells():
@@ -167,5 +169,7 @@ def test_tutorial_commands_reference_existing_scripts():
 def test_historical_tutorial_cross_links_present():
     mini_app = _read(TUTORIALS_DIR / "11_build_a_mini_graphrag_app.md")
     rag_level2 = _read(TUTORIALS_DIR / "level-2-provenance-pinning.md")
+    runtime_overview = _read(TUTORIALS_DIR / "runtime-ladder-overview.md")
     assert "./15_historical_search_tombstone_redirect.md" in mini_app
     assert "./15_historical_search_tombstone_redirect.md" in rag_level2
+    assert "./runtime-level-4-sandboxed-ops.md" in runtime_overview
