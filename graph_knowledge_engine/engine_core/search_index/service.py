@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import pathlib
 import sqlite3
 from typing import Any
 
@@ -22,6 +23,8 @@ class SearchIndexService(NamespaceProxy):
         self.ensure_initialized()
 
     def _connect(self) -> sqlite3.Connection:
+        if self.index_db_path not in ("", ":memory:"):
+            pathlib.Path(self.index_db_path).parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(self.index_db_path)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON;")

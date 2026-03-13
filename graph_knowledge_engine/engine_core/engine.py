@@ -187,6 +187,7 @@ def _is_pgvector_backend_instance(backend: object) -> bool:
 
 
 def _build_postgres_uow_if_needed(backend: StorageBackend):
+    from .postgres_backend import PgVectorBackend
     if not _is_pgvector_backend_instance(backend):
         return NoopUnitOfWork()
     try:
