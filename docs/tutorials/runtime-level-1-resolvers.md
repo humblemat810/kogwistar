@@ -2,6 +2,16 @@
 
 Goal: show how resolvers consume runtime context, injected dependencies, and `StepContext.events`.
 
+## What You Will Build
+
+You will run the canonical workflow with registered resolver handlers, inspect custom trace emissions, and confirm injected `_deps` reaches the resolver code.
+
+## Why This Matters
+
+This level shows how the runtime becomes programmable without losing its core execution model. Resolver logic is explicit and inspectable, not hidden behind framework magic.
+
+## Run or Inspect
+
 ## Quick Run
 
 ```powershell
@@ -17,32 +27,11 @@ Expected output fields:
 - `"custom_event_payloads"`: emitted from resolver code through `StepContext.events`
 - `"checkpoint_pass": true`
 
-Example shape:
+## Inspect The Result
 
-```json
-{
-  "level": 1,
-  "status": "suspended",
-  "dep_echo": "runtime-tutorial",
-  "state_schema": {
-    "timeline": "a",
-    "join_notes": "a",
-    "custom_event_ops": "a"
-  },
-  "registered_ops": [
-    "branch_a_wait",
-    "branch_b_complete",
-    "end",
-    "fork",
-    "join",
-    "start"
-  ],
-  "custom_event_types": [
-    "tutorial_resolver_note"
-  ],
-  "checkpoint_pass": true
-}
-```
+- Confirm the resolver reads the injected audience from `_deps`.
+- Inspect the custom event payloads recorded in the trace sink.
+- Compare this with [07 Branch Join Workflows](./07_branch_join_workflows.md) if you want the higher-level explanation first.
 
 ## What This Level Teaches
 
@@ -67,7 +56,15 @@ Pass when:
 - custom `tutorial_resolver_note` events show up in the trace sink
 - the run still suspends at the same workflow point as Level 0
 
+## Invariant Demonstrated
+
+Runtime customization stays observable. Resolver logic can emit domain-specific notes without bypassing the runtime's step model.
+
 ## Troubleshooting
 
 - If `dep_echo` is empty, inspect the script's `_base_initial_state()` helper.
 - If custom events are missing, verify the trace sink file exists under the workflow data directory.
+
+## Next Tutorial
+
+Continue to [Runtime Level 2 - Pause and Resume](./runtime-level-2-pause-resume.md) or return to [07 Branch Join Workflows](./07_branch_join_workflows.md).

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import json
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Literal, Optional, Sequence, Type, TypeVar, Union, cast
 
 import numpy as np
@@ -136,6 +137,183 @@ class ReadSubsystem(NamespaceProxy):
             **kwargs,
         )
         return self.nodes_from_query_result(got, node_type=node_type)
+
+    def _coerce_ts_utc(self, raw: Any) -> datetime | None:
+        if raw is None:
+            return None
+        if isinstance(raw, datetime):
+            dt = raw
+        elif isinstance(raw, (int, float)):
+            dt = datetime.fromtimestamp(float(raw), tz=timezone.utc)
+        elif isinstance(raw, str):
+            text = raw.strip()
+            if not text:
+                return None
+            if text.endswith("Z"):
+                text = text[:-1] + "+00:00"
+            try:
+                dt = datetime.fromisoformat(text)
+            except ValueError:
+                return None
+        else:
+            return None
+        if dt.tzinfo is None:
+            return dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+
+    def _is_node_visible_as_of(self, node: Node, as_of: datetime) -> bool:
+        meta = getattr(node, "metadata", {}) or {}
+        effective_from = self._coerce_ts_utc(meta.get("effective_from"))
+        if effective_from is not None and effective_from > as_of:
+            return False
+
+        status = str(meta.get("lifecycle_status") or "active")
+        if status != "tombstoned":
+            return True
+
+        deleted_at = self._coerce_ts_utc(meta.get("deleted_at"))
+        if deleted_at is None:
+            return False
+        return deleted_at > as_of
+
+    def _redirect_applies_as_of(self, node: Node, as_of: datetime) -> bool:
+        meta = getattr(node, "metadata", {}) or {}
+        redirect_to_id = meta.get("redirect_to_id")
+        if not redirect_to_id:
+            return False
+        deleted_at = self._coerce_ts_utc(meta.get("deleted_at"))
+        if deleted_at is None:
+            return False
+        return deleted_at <= as_of
+
+    def _resolve_node_as_of(
+        self,
+        node: Node,
+        *,
+        as_of: datetime,
+        node_type: Type[Node],
+        cache: dict[str, Node],
+        follow_redirects: bool,
+        max_redirect_hops: int,
+    ) -> Node | None:
+        visited: set[str] = set()
+        current = node
+        hops = 0
+
+        while True:
+            current_id = str(current.safe_get_id())
+            if current_id in visited:
+                return None
+            visited.add(current_id)
+
+            if self._is_node_visible_as_of(current, as_of):
+                return current
+
+            if (not follow_redirects) or (not self._redirect_applies_as_of(current, as_of)):
+                return None
+
+            next_id = str(((getattr(current, "metadata", {}) or {}).get("redirect_to_id") or "")).strip()
+            if not next_id:
+                return None
+
+            hops += 1
+            if hops > max_redirect_hops:
+                return None
+
+            nxt = cache.get(next_id)
+            if nxt is None:
+                fetched = self.get_nodes(
+                    ids=[next_id],
+                    node_type=node_type,
+                    include=["documents", "embeddings", "metadatas"],
+                    resolve_mode="include_tombstones",
+                )
+                if not fetched:
+                    return None
+                nxt = fetched[0]
+                cache[next_id] = nxt
+            current = nxt
+
+    def search_nodes_as_of(
+        self,
+        *,
+        query: str | None = None,
+        query_embeddings: list[list[float]] | None = None,
+        as_of_ts: datetime | str,
+        where: dict[str, Any] | None = None,
+        n_results: int = 20,
+        follow_redirects: bool = True,
+        node_type: Type[Node] = Node,
+        include: list[str] | None = None,
+        max_redirect_hops: int = 16,
+        **kwargs,
+    ) -> list[Node]:
+        def _normalize_query_embeddings(raw: Any) -> list[list[float]]:
+            # Backends expect plain list[list[float]], not numpy arrays.
+            if isinstance(raw, np.ndarray):
+                if raw.ndim == 1:
+                    return [raw.astype(float).tolist()]
+                if raw.ndim == 2:
+                    return [np.asarray(row, dtype=float).tolist() for row in raw]
+                raise ValueError(f"Unsupported query embedding rank: {raw.ndim}")
+
+            seq = list(raw or [])
+            if not seq:
+                return []
+
+            first = seq[0]
+            if isinstance(first, (int, float, np.floating)):
+                return [[float(v) for v in seq]]
+            if isinstance(first, np.ndarray):
+                return [np.asarray(row, dtype=float).tolist() for row in seq]
+            return [[float(v) for v in row] for row in seq]
+
+        if include is None:
+            include = ["documents", "embeddings", "metadatas"]
+        if query is not None and query_embeddings is not None:
+            raise ValueError("Specify only one of query or query_embeddings.")
+        if query_embeddings is None:
+            if query is None:
+                raise ValueError("Either query or query_embeddings must be provided.")
+            query_embeddings = self._e._iterative_defensive_emb(query)
+        query_embeddings = _normalize_query_embeddings(query_embeddings)
+        if not query_embeddings:
+            raise ValueError("query_embeddings resolved to an empty list.")
+
+        as_of = self._coerce_ts_utc(as_of_ts)
+        if as_of is None:
+            raise ValueError(f"Invalid as_of_ts: {as_of_ts!r}")
+
+        got = self._e.backend.node_query(
+            query_embeddings=query_embeddings,
+            include=include,
+            n_results=n_results,
+            where=where,
+            **kwargs,
+        )
+        batches = self.nodes_from_query_result(got, node_type=node_type)
+        candidates = [node for batch in batches for node in batch] if batches else []
+        cache = {str(node.safe_get_id()): node for node in candidates}
+
+        out: list[Node] = []
+        seen: set[str] = set()
+        for node in candidates:
+            resolved = self._resolve_node_as_of(
+                node,
+                as_of=as_of,
+                node_type=node_type,
+                cache=cache,
+                follow_redirects=follow_redirects,
+                max_redirect_hops=max_redirect_hops,
+            )
+            if resolved is None:
+                continue
+            node_id = str(resolved.safe_get_id())
+            if node_id in seen:
+                continue
+            seen.add(node_id)
+            out.append(resolved)
+        return out
 
     def query_edges(
         self,
