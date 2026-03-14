@@ -17,11 +17,18 @@ class OIDCClient:
         client_secret: str,
         discovery_url: str,
         redirect_uri: str,
+        *,
+        issuer: str | None = None,
+        scopes: list[str] | None = None,
+        clock_skew_seconds: int = 60,
     ):
         self.client_id = client_id
         self.client_secret = client_secret
         self.discovery_url = discovery_url
         self.redirect_uri = redirect_uri
+        self.issuer = issuer
+        self.scopes = scopes or ["openid", "email", "profile"]
+        self.clock_skew_seconds = clock_skew_seconds
         self._config: Optional[Dict[str, Any]] = None
         self._jwk_client: Optional[pyjwt.PyJWKClient] = None
 
@@ -62,7 +69,7 @@ class OIDCClient:
         params = {
             "client_id": self.client_id,
             "response_type": "code",
-            "scope": "openid email profile",
+            "scope": " ".join(self.scopes),
             "redirect_uri": self.redirect_uri,
             "state": state,
             "code_challenge": code_challenge,
@@ -113,7 +120,8 @@ class OIDCClient:
                 signing_key,
                 algorithms=[alg],
                 audience=self.client_id,
-                issuer=self._config.get("issuer"),
+                issuer=self.issuer or self._config.get("issuer"),
+                leeway=self.clock_skew_seconds,
                 options={"require": ["exp", "iat", "iss", "aud", "sub"]},
             )
         except InvalidTokenError as exc:

@@ -23,6 +23,35 @@ OIDC_TEST_IDENTITY = {
 }
 
 
+def oidc_provider_json(
+    *,
+    discovery_url: str,
+    redirect_uri: str,
+    issuer: str,
+    provider_name: str = "keycloak",
+    client_id: str = "kge-local",
+    client_secret: str = "",
+) -> str:
+    return json.dumps(
+        {
+            "default_provider": provider_name,
+            "providers": {
+                provider_name: {
+                    "name": provider_name,
+                    "discovery_url": discovery_url,
+                    "redirect_uri": redirect_uri,
+                    "issuer": issuer,
+                    "client_id": client_id,
+                    "client_secret": client_secret,
+                    "scopes": ["openid", "email", "profile"],
+                    "required_email": True,
+                    "allowed": True,
+                }
+            },
+        }
+    )
+
+
 def oidc_seed_json() -> str:
     return json.dumps(
         [

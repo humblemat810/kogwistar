@@ -11,9 +11,10 @@ import graph_knowledge_engine.server_mcp_with_admin as server
 from graph_knowledge_engine.server.auth.db import create_auth_engine, init_auth_db
 from graph_knowledge_engine.server.auth.models import ExternalIdentity, User
 from graph_knowledge_engine.server.auth.oidc import OIDCClient
+from graph_knowledge_engine.server.auth.provider_config import OIDCProviderConfig
 from graph_knowledge_engine.server.auth.seeding import seed_auth_data
 from graph_knowledge_engine.server.auth.service import AuthService
-from tests.server.oidc_test_support import extract_login_action
+from tests.server.oidc_test_support import extract_login_action, oidc_provider_json
 
 
 pytestmark = [pytest.mark.integration]
@@ -27,26 +28,48 @@ def oidc_test_client(monkeypatch, keycloak_container: dict[str, str], oidc_test_
     seed_auth_data(session, seed_json=oidc_test_identity["seed_json"])
 
     saved_auth_mode = getattr(server.app.state, "auth_mode", None)
-    saved_oidc_client = getattr(server.app.state, "oidc_client", None)
+    saved_oidc_clients = getattr(server.app.state, "oidc_clients", None)
+    saved_oidc_default_provider = getattr(server.app.state, "oidc_default_provider", None)
+    saved_oidc_provider_configs = getattr(server.app.state, "oidc_provider_configs", None)
     saved_auth_service = getattr(server.app.state, "auth_service", None)
     saved_seed_auth_data = server.seed_auth_data
 
     monkeypatch.setenv("AUTH_MODE", "oidc")
     monkeypatch.setenv("UI_URL", "http://ui.local/")
-    monkeypatch.setenv("OIDC_CLIENT_ID", "kge-local")
-    monkeypatch.setenv("OIDC_CLIENT_SECRET", "")
     monkeypatch.setenv(
-        "OIDC_REDIRECT_URI", "http://localhost:28110/api/auth/callback"
+        "OIDC_PROVIDERS_JSON",
+        oidc_provider_json(
+            discovery_url=keycloak_container["discovery_url"],
+            redirect_uri="http://localhost:28110/api/auth/callback",
+            issuer=keycloak_container["issuer"],
+        ),
     )
 
     server.app.state.auth_mode = "oidc"
     server.seed_auth_data = lambda _session: None
-    server.app.state.oidc_client = OIDCClient(
-        client_id="kge-local",
-        client_secret="",
-        discovery_url=keycloak_container["discovery_url"],
-        redirect_uri="http://localhost:28110/api/auth/callback",
-    )
+    provider_name = "keycloak"
+    redirect_uri = "http://localhost:28110/api/auth/callback"
+    server.app.state.oidc_clients = {
+        provider_name: OIDCClient(
+            client_id="kge-local",
+            client_secret="",
+            discovery_url=keycloak_container["discovery_url"],
+            redirect_uri=redirect_uri,
+            issuer=keycloak_container["issuer"],
+            scopes=["openid", "email", "profile"],
+        )
+    }
+    server.app.state.oidc_default_provider = provider_name
+    server.app.state.oidc_provider_configs = {
+        provider_name: OIDCProviderConfig(
+            name=provider_name,
+            discovery_url=keycloak_container["discovery_url"],
+            redirect_uri=redirect_uri,
+            issuer=keycloak_container["issuer"],
+            client_id="kge-local",
+            client_secret="",
+        )
+    }
     server.app.state.auth_service = AuthService(session, jwt_secret=server.JWT_SECRET)
 
     try:
@@ -61,7 +84,9 @@ def oidc_test_client(monkeypatch, keycloak_container: dict[str, str], oidc_test_
         session.close()
         engine.dispose()
         server.app.state.auth_mode = saved_auth_mode
-        server.app.state.oidc_client = saved_oidc_client
+        server.app.state.oidc_clients = saved_oidc_clients
+        server.app.state.oidc_default_provider = saved_oidc_default_provider
+        server.app.state.oidc_provider_configs = saved_oidc_provider_configs
         server.app.state.auth_service = saved_auth_service
         server.seed_auth_data = saved_seed_auth_data
 

@@ -119,71 +119,71 @@ def test_oidc_flow_integration(monkeypatch, auth_engine, auth_db):
     with patch(
         "graph_knowledge_engine.server.auth.router._get_auth_mode", return_value="oidc"
     ):
-        with patch(
-            "graph_knowledge_engine.server.auth.router.get_oidc_client"
-        ) as mock_oidc_factory:
-            mock_oidc = AsyncMock()
-            mock_oidc.discovery_url = "http://mock-issuer"
-            mock_oidc.get_auth_url.return_value = "http://mock-auth-url"
-            mock_oidc.exchange_code.return_value = {
-                "access_token": "mock-access-token",
-                "id_token": "mock-id-token",
-            }
-            mock_oidc.validate_id_token.return_value = {
-                "sub": "oidc-sub",
-                "email": "oidc@example.com",
-                "name": "OIDC User",
-                "iss": "http://mock-issuer/realm",
-                "aud": "kge-local",
-                "nonce": "nonce-123",
-            }
-            mock_oidc.get_userinfo.return_value = {
-                "sub": "oidc-sub",
-                "email": "oidc@example.com",
-                "name": "OIDC User",
-            }
-            mock_oidc_factory.return_value = mock_oidc
+        mock_oidc = AsyncMock()
+        mock_oidc.discovery_url = "http://mock-issuer"
+        mock_oidc.get_auth_url.return_value = "http://mock-auth-url"
+        mock_oidc.exchange_code.return_value = {
+            "access_token": "mock-access-token",
+            "id_token": "mock-id-token",
+        }
+        mock_oidc.validate_id_token.return_value = {
+            "sub": "oidc-sub",
+            "email": "oidc@example.com",
+            "name": "OIDC User",
+            "iss": "http://mock-issuer/realm",
+            "aud": "kge-local",
+            "nonce": "nonce-123",
+        }
+        mock_oidc.get_userinfo.return_value = {
+            "sub": "oidc-sub",
+            "email": "oidc@example.com",
+            "name": "OIDC User",
+        }
 
-            # Setup AuthService in app state
-            service = AuthService(auth_db, jwt_secret=server.JWT_SECRET)
-            server.app.state.auth_service = service
-            server.app.state.auth_mode = "oidc"
-            server.app.state.oidc_client = mock_oidc
+        # Setup AuthService in app state
+        service = AuthService(auth_db, jwt_secret=server.JWT_SECRET)
+        server.app.state.auth_service = service
+        server.app.state.auth_mode = "oidc"
+        server.app.state.oidc_clients = {"test": mock_oidc}
+        server.app.state.oidc_default_provider = "test"
+        server.app.state.oidc_provider_configs = {}
 
-            client = TestClient(server.app)
+        client = TestClient(server.app)
 
-            # 1. Login redirect
-            resp = client.get("/api/auth/login", follow_redirects=False)
-            assert resp.status_code == 307
-            assert resp.headers["location"] == "http://mock-auth-url"
-            state_cookie = resp.cookies.get("auth_state")
-            pkce_cookie = resp.cookies.get("auth_pkce_verifier")
-            nonce_cookie = resp.cookies.get("auth_nonce")
+        # 1. Login redirect
+        resp = client.get("/api/auth/login", follow_redirects=False)
+        assert resp.status_code == 307
+        assert resp.headers["location"] == "http://mock-auth-url"
+        state_cookie = resp.cookies.get("auth_state")
+        pkce_cookie = resp.cookies.get("auth_pkce_verifier")
+        nonce_cookie = resp.cookies.get("auth_nonce")
+        provider_cookie = resp.cookies.get("auth_provider")
 
-            # 2. Callback
-            callback_resp = client.get(
-                f"/api/auth/callback?code=mock-code&state={state_cookie}",
-                cookies={
-                    "auth_state": state_cookie,
-                    "auth_pkce_verifier": pkce_cookie,
-                    "auth_nonce": nonce_cookie,
-                },
-                follow_redirects=False,
-            )
-            assert callback_resp.status_code == 307
-            location = callback_resp.headers["location"]
-            assert "?token=" in location
+        # 2. Callback
+        callback_resp = client.get(
+            f"/api/auth/callback?code=mock-code&state={state_cookie}",
+            cookies={
+                "auth_state": state_cookie,
+                "auth_pkce_verifier": pkce_cookie,
+                "auth_nonce": nonce_cookie,
+                "auth_provider": provider_cookie,
+            },
+            follow_redirects=False,
+        )
+        assert callback_resp.status_code == 307
+        location = callback_resp.headers["location"]
+        assert "?token=" in location
 
-            # 3. Verify user created in DB
-            auth_db.expire_all()  # Ensure we fetch fresh data
-            user = auth_db.query(User).filter(User.email == "oidc@example.com").first()
-            assert user is not None
-            assert user.display_name == "OIDC User"
+        # 3. Verify user created in DB
+        auth_db.expire_all()  # Ensure we fetch fresh data
+        user = auth_db.query(User).filter(User.email == "oidc@example.com").first()
+        assert user is not None
+        assert user.display_name == "OIDC User"
 
-            identity = (
-                auth_db.query(ExternalIdentity)
-                .filter(ExternalIdentity.subject == "oidc-sub")
-                .first()
-            )
-            assert identity is not None
-            assert identity.user_id == user.user_id
+        identity = (
+            auth_db.query(ExternalIdentity)
+            .filter(ExternalIdentity.subject == "oidc-sub")
+            .first()
+        )
+        assert identity is not None
+        assert identity.user_id == user.user_id

@@ -75,6 +75,9 @@ load_dotenv()
 try:
     from graph_knowledge_engine.server.auth.db import get_session
     from graph_knowledge_engine.server.auth.oidc import OIDCClient
+    from graph_knowledge_engine.server.auth.provider_config import (
+        load_oidc_provider_configs_from_env,
+    )
     from graph_knowledge_engine.server.auth.router import router as auth_router
     from graph_knowledge_engine.server.auth.seeding import seed_auth_data
     from graph_knowledge_engine.server.auth.service import AuthService
@@ -89,6 +92,7 @@ except ModuleNotFoundError as exc:
     ):
         get_session = None  # type: ignore[assignment]
         OIDCClient = None  # type: ignore[assignment]
+        load_oidc_provider_configs_from_env = None  # type: ignore[assignment]
         seed_auth_data = None  # type: ignore[assignment]
         AuthService = None  # type: ignore[assignment]
         auth_router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -124,16 +128,33 @@ async def combined_lifespan(app: FastAPI):
                 jwt_iss=JWT_ISS,
                 jwt_aud=JWT_AUD,
             )
-        if getattr(app.state, "oidc_client", None) is None:
-            app.state.oidc_client = None
-        if auth_mode != "dev" and OIDCClient is not None:
-            existing_oidc = getattr(app.state, "oidc_client", None)
-            app.state.oidc_client = existing_oidc or OIDCClient(
-                client_id=os.getenv("OIDC_CLIENT_ID", ""),
-                client_secret=os.getenv("OIDC_CLIENT_SECRET", ""),
-                discovery_url=os.getenv("OIDC_DISCOVERY_URL", ""),
-                redirect_uri=os.getenv("OIDC_REDIRECT_URI", ""),
-            )
+        if getattr(app.state, "oidc_clients", None) is None:
+            app.state.oidc_clients = {}
+        if getattr(app.state, "oidc_provider_configs", None) is None:
+            app.state.oidc_provider_configs = {}
+        if getattr(app.state, "oidc_default_provider", None) is None:
+            app.state.oidc_default_provider = None
+        if (
+            auth_mode != "dev"
+            and OIDCClient is not None
+            and load_oidc_provider_configs_from_env is not None
+        ):
+            default_provider, provider_configs = load_oidc_provider_configs_from_env()
+            if provider_configs:
+                app.state.oidc_provider_configs = provider_configs
+                app.state.oidc_default_provider = default_provider
+                app.state.oidc_clients = {
+                    name: OIDCClient(
+                        client_id=config.client_id,
+                        client_secret=config.client_secret,
+                        discovery_url=config.discovery_url,
+                        redirect_uri=config.redirect_uri,
+                        issuer=config.issuer,
+                        scopes=config.scopes,
+                    )
+                    for name, config in provider_configs.items()
+                    if config.allowed
+                }
 
     async with mcp_app.lifespan(app):
         yield

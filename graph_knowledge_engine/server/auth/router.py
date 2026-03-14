@@ -12,11 +12,38 @@ def get_auth_service(request: Request) -> AuthService:
     return request.app.state.auth_service
 
 
-def get_oidc_client(request: Request) -> OIDCClient:
-    oidc = getattr(request.app.state, "oidc_client", None)
+def _get_oidc_clients(request: Request) -> dict[str, OIDCClient]:
+    return getattr(request.app.state, "oidc_clients", None) or {}
+
+
+def _get_default_provider(request: Request) -> str | None:
+    return getattr(request.app.state, "oidc_default_provider", None)
+
+
+def _resolve_provider_name(request: Request, provider: str | None = None) -> str:
+    clients = _get_oidc_clients(request)
+    provider_name = provider or _get_default_provider(request)
+    if not provider_name:
+        raise HTTPException(status_code=400, detail="OIDC provider is not configured")
+    if provider_name not in clients:
+        raise HTTPException(
+            status_code=400,
+            detail=f"OIDC provider {provider_name!r} is not configured",
+        )
+    return provider_name
+
+
+def _get_oidc_client_for_provider(
+    request: Request, provider: str | None = None
+) -> tuple[str, OIDCClient]:
+    provider_name = _resolve_provider_name(request, provider)
+    oidc = _get_oidc_clients(request).get(provider_name)
     if oidc is None:
-        raise HTTPException(status_code=400, detail="OIDC is disabled (AUTH_MODE=dev)")
-    return oidc
+        raise HTTPException(
+            status_code=400,
+            detail=f"OIDC provider {provider_name!r} is not configured",
+        )
+    return provider_name, oidc
 
 
 def _get_auth_mode(request: Request) -> str:
@@ -47,6 +74,7 @@ def _mint_dev_token(auth_service: AuthService) -> str:
 async def login(
     request: Request,
     redirect_uri: str | None = None,
+    provider: str | None = None,
 ):
     auth_mode = _get_auth_mode(request)
 
@@ -63,7 +91,7 @@ async def login(
         token = _mint_dev_token(auth_service)
         return RedirectResponse(f"{ui_url}?token={token}")
 
-    oidc = get_oidc_client(request)
+    provider_name, oidc = _get_oidc_client_for_provider(request, provider)
     state = OIDCClient.generate_state()
     pkce = OIDCClient.generate_pkce()
     nonce = OIDCClient.generate_nonce()
@@ -76,6 +104,7 @@ async def login(
         "auth_pkce_verifier", pkce["verifier"], httponly=True, max_age=600
     )
     response.set_cookie("auth_nonce", nonce, httponly=True, max_age=600)
+    response.set_cookie("auth_provider", provider_name, httponly=True, max_age=600)
     return response
 
 
@@ -101,11 +130,11 @@ async def callback(
     if not code:
         raise HTTPException(status_code=400, detail="Missing authorization code")
 
-    oidc = get_oidc_client(request)
     auth_service = get_auth_service(request)
     stored_state = request.cookies.get("auth_state")
     stored_verifier = request.cookies.get("auth_pkce_verifier")
     stored_nonce = request.cookies.get("auth_nonce")
+    stored_provider = request.cookies.get("auth_provider")
 
     if not stored_state or state != stored_state:
         raise HTTPException(status_code=400, detail="Invalid state")
@@ -113,6 +142,10 @@ async def callback(
         raise HTTPException(status_code=400, detail="Missing PKCE verifier")
     if not stored_nonce:
         raise HTTPException(status_code=400, detail="Missing nonce")
+    if not stored_provider:
+        raise HTTPException(status_code=400, detail="Missing provider")
+
+    _, oidc = _get_oidc_client_for_provider(request, stored_provider)
 
     tokens = await oidc.exchange_code(code, stored_verifier)
     id_token = tokens.get("id_token")
@@ -157,6 +190,7 @@ async def callback(
     response.delete_cookie("auth_state")
     response.delete_cookie("auth_pkce_verifier")
     response.delete_cookie("auth_nonce")
+    response.delete_cookie("auth_provider")
     return response
 
 

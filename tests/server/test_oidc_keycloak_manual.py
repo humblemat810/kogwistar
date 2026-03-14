@@ -17,7 +17,7 @@ from sqlalchemy.orm import sessionmaker
 
 from graph_knowledge_engine.server.auth.db import create_auth_engine
 from graph_knowledge_engine.server.auth.models import ExternalIdentity, User
-from tests.server.oidc_test_support import oidc_seed_json
+from tests.server.oidc_test_support import oidc_provider_json, oidc_seed_json
 
 
 pytestmark = [pytest.mark.integration, pytest.mark.manual]
@@ -100,10 +100,11 @@ def manual_oidc_server(
         "AUTH_MODE": "oidc",
         "AUTH_DB_URL": f"sqlite:///{auth_db_path.as_posix()}",
         "UI_URL": "http://localhost:28110/__test__/auth/success",
-        "OIDC_CLIENT_ID": "kge-local",
-        "OIDC_CLIENT_SECRET": "",
-        "OIDC_DISCOVERY_URL": keycloak_container["discovery_url"],
-        "OIDC_REDIRECT_URI": "http://localhost:28110/api/auth/callback",
+        "OIDC_PROVIDERS_JSON": oidc_provider_json(
+            discovery_url=keycloak_container["discovery_url"],
+            redirect_uri="http://localhost:28110/api/auth/callback",
+            issuer=keycloak_container["issuer"],
+        ),
         "JWT_SECRET": "dev-secret",
         "GKE_BACKEND": "chroma",
         "GKE_PERSIST_DIRECTORY": str((data_root / "gke-data").resolve()),

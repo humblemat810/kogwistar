@@ -9,10 +9,8 @@ services:
       HOST: 0.0.0.0
       PORT: 28110
       AUTH_MODE: ${AUTH_MODE:-oidc}
-      OIDC_DISCOVERY_URL: ${OIDC_DISCOVERY_URL:-http://keycloak:8080/realms/kge/.well-known/openid-configuration}
-      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-kge-local}
-      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-}
-      OIDC_REDIRECT_URI: ${OIDC_REDIRECT_URI:-http://localhost:28110/api/auth/callback}
+      OIDC_PROVIDERS_JSON: >-
+        {"default_provider":"keycloak","providers":{"keycloak":{"name":"keycloak","discovery_url":"${OIDC_DISCOVERY_URL:-http://keycloak:8080/realms/kge/.well-known/openid-configuration}","redirect_uri":"${OIDC_REDIRECT_URI:-http://localhost:28110/api/auth/callback}","issuer":"${OIDC_ISSUER:-http://keycloak:8080/realms/kge}","client_id":"${OIDC_CLIENT_ID:-kge-local}","client_secret":"${OIDC_CLIENT_SECRET:-}","scopes":["openid","email","profile"],"required_email":true,"allowed":true}}}
       UI_URL: ${UI_URL:-http://localhost:5173/}
       DEV_AUTH_NS: workflow
       GKE_BACKEND: chroma
@@ -70,10 +68,8 @@ services:
       HOST: 0.0.0.0
       PORT: 28110
       AUTH_MODE: ${AUTH_MODE:-oidc}
-      OIDC_DISCOVERY_URL: ${OIDC_DISCOVERY_URL:-http://keycloak:8080/realms/kge/.well-known/openid-configuration}
-      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-kge-local}
-      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-}
-      OIDC_REDIRECT_URI: ${OIDC_REDIRECT_URI:-http://localhost:28110/api/auth/callback}
+      OIDC_PROVIDERS_JSON: >-
+        {"default_provider":"keycloak","providers":{"keycloak":{"name":"keycloak","discovery_url":"${OIDC_DISCOVERY_URL:-http://keycloak:8080/realms/kge/.well-known/openid-configuration}","redirect_uri":"${OIDC_REDIRECT_URI:-http://localhost:28110/api/auth/callback}","issuer":"${OIDC_ISSUER:-http://keycloak:8080/realms/kge}","client_id":"${OIDC_CLIENT_ID:-kge-local}","client_secret":"${OIDC_CLIENT_SECRET:-}","scopes":["openid","email","profile"],"required_email":true,"allowed":true}}}
       UI_URL: ${UI_URL:-http://localhost:5173/}
       DEV_AUTH_NS: workflow
       GKE_BACKEND: pg
