@@ -125,7 +125,18 @@ def test_oidc_flow_integration(monkeypatch, auth_engine, auth_db):
             mock_oidc = AsyncMock()
             mock_oidc.discovery_url = "http://mock-issuer"
             mock_oidc.get_auth_url.return_value = "http://mock-auth-url"
-            mock_oidc.exchange_code.return_value = {"access_token": "mock-access-token"}
+            mock_oidc.exchange_code.return_value = {
+                "access_token": "mock-access-token",
+                "id_token": "mock-id-token",
+            }
+            mock_oidc.validate_id_token.return_value = {
+                "sub": "oidc-sub",
+                "email": "oidc@example.com",
+                "name": "OIDC User",
+                "iss": "http://mock-issuer/realm",
+                "aud": "kge-local",
+                "nonce": "nonce-123",
+            }
             mock_oidc.get_userinfo.return_value = {
                 "sub": "oidc-sub",
                 "email": "oidc@example.com",
@@ -147,11 +158,16 @@ def test_oidc_flow_integration(monkeypatch, auth_engine, auth_db):
             assert resp.headers["location"] == "http://mock-auth-url"
             state_cookie = resp.cookies.get("auth_state")
             pkce_cookie = resp.cookies.get("auth_pkce_verifier")
+            nonce_cookie = resp.cookies.get("auth_nonce")
 
             # 2. Callback
             callback_resp = client.get(
                 f"/api/auth/callback?code=mock-code&state={state_cookie}",
-                cookies={"auth_state": state_cookie, "auth_pkce_verifier": pkce_cookie},
+                cookies={
+                    "auth_state": state_cookie,
+                    "auth_pkce_verifier": pkce_cookie,
+                    "auth_nonce": nonce_cookie,
+                },
                 follow_redirects=False,
             )
             assert callback_resp.status_code == 307

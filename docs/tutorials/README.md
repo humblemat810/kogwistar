@@ -61,7 +61,7 @@ This ladder keeps one canonical workflow all the way through:
 
 ## Prerequisites
 
-- Python `3.10+`
+- Python `3.13`
 - Repo dependencies installed, recommended: `pip install -e ".[chroma]"`
 - Run from repo root
 

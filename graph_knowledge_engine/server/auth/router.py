@@ -66,14 +66,16 @@ async def login(
     oidc = get_oidc_client(request)
     state = OIDCClient.generate_state()
     pkce = OIDCClient.generate_pkce()
+    nonce = OIDCClient.generate_nonce()
 
-    auth_url = await oidc.get_auth_url(state, pkce["challenge"])
+    auth_url = await oidc.get_auth_url(state, pkce["challenge"], nonce)
 
     response = RedirectResponse(auth_url)
     response.set_cookie("auth_state", state, httponly=True, max_age=600)
     response.set_cookie(
         "auth_pkce_verifier", pkce["verifier"], httponly=True, max_age=600
     )
+    response.set_cookie("auth_nonce", nonce, httponly=True, max_age=600)
     return response
 
 
@@ -103,20 +105,49 @@ async def callback(
     auth_service = get_auth_service(request)
     stored_state = request.cookies.get("auth_state")
     stored_verifier = request.cookies.get("auth_pkce_verifier")
+    stored_nonce = request.cookies.get("auth_nonce")
 
     if not stored_state or state != stored_state:
         raise HTTPException(status_code=400, detail="Invalid state")
     if not stored_verifier:
         raise HTTPException(status_code=400, detail="Missing PKCE verifier")
+    if not stored_nonce:
+        raise HTTPException(status_code=400, detail="Missing nonce")
 
     tokens = await oidc.exchange_code(code, stored_verifier)
+    id_token = tokens.get("id_token")
+    if not id_token:
+        raise HTTPException(status_code=400, detail="Missing id_token")
+
+    try:
+        id_claims = await oidc.validate_id_token(id_token, nonce=stored_nonce)
+    except ValueError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+
     userinfo = await oidc.get_userinfo(tokens["access_token"])
+    if userinfo.get("sub") != id_claims["sub"]:
+        raise HTTPException(
+            status_code=401,
+            detail="userinfo subject does not match validated id_token subject",
+        )
+
+    id_email = id_claims.get("email")
+    userinfo_email = userinfo.get("email")
+    if id_email and userinfo_email and id_email != userinfo_email:
+        raise HTTPException(
+            status_code=401,
+            detail="userinfo email does not match validated id_token email",
+        )
+    email = id_email or userinfo_email
+    if not email:
+        raise HTTPException(status_code=400, detail="OIDC identity missing email")
+    display_name = id_claims.get("name") or userinfo.get("name")
 
     user_id = auth_service.resolve_user_from_external(
-        issuer=oidc.discovery_url,
-        subject=userinfo["sub"],
-        email=userinfo["email"],
-        display_name=userinfo.get("name"),
+        issuer=id_claims.get("iss") or oidc.discovery_url,
+        subject=id_claims["sub"],
+        email=email,
+        display_name=display_name,
     )
 
     app_token = auth_service.mint_token(user_id)
@@ -125,6 +156,7 @@ async def callback(
     response = RedirectResponse(f"{ui_url}?token={app_token}")
     response.delete_cookie("auth_state")
     response.delete_cookie("auth_pkce_verifier")
+    response.delete_cookie("auth_nonce")
     return response
 
 

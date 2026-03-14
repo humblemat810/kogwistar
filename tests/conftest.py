@@ -4,6 +4,7 @@ import shutil
 import uuid
 import json
 import os
+import re
 from _pytest.monkeypatch import MonkeyPatch
 from typing import cast
 
@@ -196,6 +197,79 @@ def _is_manual_test_explicitly_selected(
     return False
 
 
+_EXECUTION_MARKERS = {"unit", "integration", "e2e", "manual"}
+_AREA_MARKERS = {"core", "workflow", "conversation"}
+_INTEGRATION_DIRS = {
+    "cdc",
+    "ingestions",
+    "kg_conversation",
+    "mcp",
+    "outbox",
+    "pg_sql",
+    "runtime",
+    "server",
+    "wisdom",
+    "workflow",
+}
+_CORE_DIRS = {"cdc", "core", "ingestions", "outbox", "pg_sql", "primitives"}
+_CONVERSATION_DIRS = {"kg_conversation", "mcp", "wisdom"}
+_WORKFLOW_DIRS = {"runtime", "workflow"}
+_E2E_PATH_RE = re.compile(r"(^|[_\\/])e2e([_./\\-]|$)|[_\\/]test_.*_e2e(?:[_./\\-]|$)")
+
+
+def _item_path_parts(item: pytest.Item) -> tuple[str, ...]:
+    path = getattr(item, "path", None)
+    if path is None:
+        return ()
+    try:
+        return tuple(str(path).replace("\\", "/").split("/"))
+    except Exception:
+        return ()
+
+
+def _has_marker(item: pytest.Item, names: set[str]) -> bool:
+    return any(name in item.keywords for name in names)
+
+
+def _primary_test_dir(item: pytest.Item) -> str | None:
+    parts = _item_path_parts(item)
+    try:
+        idx = parts.index("tests")
+    except ValueError:
+        return None
+    if idx + 2 < len(parts):
+        return parts[idx + 1]
+    return None
+
+
+def _infer_area_markers(item: pytest.Item) -> list[pytest.MarkDecorator]:
+    if _has_marker(item, _AREA_MARKERS):
+        return []
+
+    parts = set(_item_path_parts(item))
+    primary_dir = _primary_test_dir(item)
+    markers: list[pytest.MarkDecorator] = []
+    if parts & _WORKFLOW_DIRS:
+        markers.append(pytest.mark.workflow)
+    if parts & _CONVERSATION_DIRS:
+        markers.append(pytest.mark.conversation)
+    if not markers and (parts & _CORE_DIRS or primary_dir is None):
+        markers.append(pytest.mark.core)
+    return markers
+
+
+def _infer_execution_marker(item: pytest.Item) -> pytest.MarkDecorator | None:
+    if _has_marker(item, _EXECUTION_MARKERS):
+        return None
+
+    path = "/".join(_item_path_parts(item)).lower()
+    if _E2E_PATH_RE.search(path):
+        return pytest.mark.e2e
+    if "integration" in path or any(part in _INTEGRATION_DIRS for part in path.split("/")):
+        return pytest.mark.integration
+    return pytest.mark.unit
+
+
 def pytest_collection_modifyitems(
     config: pytest.Config, items: list[pytest.Item]
 ) -> None:
@@ -206,6 +280,11 @@ def pytest_collection_modifyitems(
         reason="manual test skipped by default; run with --run-manual or target a specific test function."
     )
     for item in items:
+        for marker in _infer_area_markers(item):
+            item.add_marker(marker)
+        inferred_execution = _infer_execution_marker(item)
+        if inferred_execution is not None:
+            item.add_marker(inferred_execution)
         if "manual" in item.keywords and not _is_manual_test_explicitly_selected(
             config, item
         ):

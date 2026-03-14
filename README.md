@@ -1,23 +1,122 @@
-# kogwistar
 
-Knowledge engine plus MCP server for graph and document querying.
+<p align="center">
+  <img src="assets/kogwistar_256.png" width="280"/>
+</p>
+
+<h1 align="center">Kogwistar</h1>
+
+<p align="center">
+Graph / Hypergraph-Native Agent Intelligence Platform
+</p>
+
+<p align="center">
+Build knowledge graphs, workflow runtimes, conversation memory, and provenance systems
+as a single substrate for AI agents.
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/github/stars/YOURORG/kogwistar?style=flat-square"/>
+  <img src="https://img.shields.io/github/license/YOURORG/kogwistar?style=flat-square"/>
+  <img src="https://img.shields.io/badge/python-3.13+-blue?style=flat-square"/>
+  <img src="https://img.shields.io/badge/runtime-graph--native-purple?style=flat-square"/>
+</p>
+
+`kogwistar` is a graph/hypergraph-native agent platform.
+
+It treats knowledge, conversation, workflow/runtime, provenance, and future wisdom as one connected substrate.
+
+It is better understood as a graph-native memory and execution substrate than as only another GraphRAG repository.
+
+Today the repo implements graph memory and query, workflow design/runtime, provenance and replay-oriented surfaces, CDC/event-oriented patterns, and self-hostable development paths.
 
 ## Quickstart
 
 - Standalone setup (no frontend integration): [QUICKSTART.md](QUICKSTART.md)
+- Roadmap and research direction: [docs/roadmap.md](docs/roadmap.md)
+- Detailed comparison with adjacent products/frameworks: [docs/llm-generated-comparison.md](docs/llm-generated-comparison.md)
+- Author notes, build context, and design history: [docs/author-notes.md](docs/author-notes.md)
+- Runtime rationale: [graph_knowledge_engine/docs/ARD-custom-runtime-rationale.md](graph_knowledge_engine/docs/ARD-custom-runtime-rationale.md)
 
-## Highlights
+## Core Features
 
+- Graph/hypergraph-oriented memory and query surfaces.
+- Workflow design stored as graph structure, with runtime, replay, and event-oriented execution seams.
+- Support conversation execution events stored as hypergraph/graph
 - CDC-oriented graph updates and replay workflows.
-- Multiple storage backends (including Chroma and PostgreSQL/pgvector paths).
+- Provenance-heavy first class primitives with lifecycle-aware and temporal retrieval support.
+- Multiple storage backends, including Chroma and PostgreSQL/pgvector paths. With dual-store eventual consistency or transactional atomicity.
 - MCP tooling surface for graph query, extraction, and admin operations.
-- Visualization helpers for D3 and Cytoscape payloads.
+- Visualization helpers for D3 payloads.
+
+## How This Differs
+
+- Unlike typical agent products, this repo centers a unified graph/hypergraph substrate rather than only chat, skills, or tool orchestration.
+- Unlike workflow-first frameworks, it treats provenance, replay, and event history (event source) as part of the core data model rather than secondary runtime features.
+- Compared with local/self-hosted agent products, it emphasizes graph-native memory and workflow design seams more than channel breadth or app-registry breadth.
+- It spans retrieval, memory, runtime, and provenance concerns together, so it maps less cleanly to a single existing OSS category.
+
+## Application Best Fit
+
+- A strong base platform for teams building audit-heavy business or enterprise systems.
+- Best suited for use cases where provenance, replay, lifecycle-aware retrieval, and workflow history matter.
+- A foundation repo, not yet a finished enterprise product.
+
+## Security Support
+
+- Role- and namespace-based access control across API and MCP surfaces.
+- OIDC/PKCE support for authenticated deployments, with simpler dev-mode auth for local work.
+- Sandboxable runtime paths, including container-based execution with networking disabled by default.
+- Security-aware boundaries are part of the design, but this repo should still be treated as a foundation platform rather than a fully hardened security product.
+
+
+## Research Direction
+
+- Move toward privacy-first personal agents with stronger local-first memory and execution.
+- Distill conversation and workflow traces into a future wisdom layer.
+- Explore agents that can propose and revise their own workflow graphs under human-auditable constraints.
+- These are research directions and design seams, not completed product claims.
+  Runtime design rationale: [graph_knowledge_engine/docs/ARD-custom-runtime-rationale.md](graph_knowledge_engine/docs/ARD-custom-runtime-rationale.md)
+
+## Why This Repo Exists
+
+- Raise the engineering bar for graph-native agent systems.
+- Avoid every team rebuilding the same retrieval, memory, workflow, and provenance stack from scratch.
+- Provide a reusable foundation where those concerns are already structurally integrated.
+  Additional motivation, build-cost context, and design history: [docs/author-notes.md](docs/author-notes.md)
 
 ## Run (Development)
 
-1. Create and activate a Python environment (3.10+).
+1. Create and activate a Python 3.13 environment.
 2. Install dependencies for local work.
-3. Start the app with `knowledge-mcp` (defaults to port `28110`).
+3. Pick a development mode:
+   - Server-style MCP app:
+     - Start the app with `knowledge-mcp` (defaults to port `28110`).
+   - CLI-style workflow/runtime loop:
+     - Use the standalone tutorial/runtime script in [QUICKSTART.md](QUICKSTART.md) under `scripts/claw_runtime_loop.py`.
+     - This mode is useful for local development when you want to iterate on workflow execution, CDC flow, and event-loop behavior without running the full server surface.
+
+## Development and Test Install
+
+- Minimal local development:
+  - `pip install -e ".[chroma,test]"`
+- Development with LangGraph-related tests:
+  - `pip install -e ".[chroma,test,langgraph]"`
+- PostgreSQL parity/integration work:
+  - `pip install -e ".[pgvector,test]"`
+- Full local contributor setup:
+  - `pip install -e ".[full,test]"`
+
+## Run Tests
+
+- Run the default test suite:
+  - `pytest`
+- Run a specific test file:
+  - `pytest tests/workflow/test_save_load_progress.py -q`
+- Real Keycloak OIDC end-to-end test:
+  - `pytest tests/server/test_oidc_keycloak_e2e.py -q`
+- Browser-visible manual Keycloak OIDC test:
+  - `pytest tests/server/test_oidc_keycloak_manual.py::test_oidc_keycloak_browser_manual --run-manual -q -s`
+- Some integration tests may require Docker/testcontainers or optional extras such as `langgraph`.
 
 ## Install Options
 
@@ -40,13 +139,13 @@ Knowledge engine plus MCP server for graph and document querying.
 - Everything:
   - `pip install -e ".[full]"`
 
-## Private GitHub Install
+## GitHub Install
 
-- Use the package name, not the repo name, when installing with extras from a private repository.
+- Use the package name, not the repo name, when installing with extras from a repository.
 - Examples:
   - `pip install "kogwistar[chroma] @ git+ssh://git@github.com/<org>/<repo>.git@main"`
   - `pip install "kogwistar[pgvector,openai] @ git+ssh://git@github.com/<org>/<repo>.git@<commit>"`
-- For HTTPS-based private installs, use the same direct-reference form with a token-authenticated `git+https://...` URL.
+- For HTTPS-based installs, use the same direct-reference form with a token-authenticated `git+https://...` URL.
 
 ## Runtime Configuration
 
