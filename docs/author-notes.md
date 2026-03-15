@@ -4,7 +4,7 @@ This document captures practical motivation behind the repo that does not belong
 
 ## Build Cost
 
-The rough build cost was about 3-4 months of ChatGPT subscription spend, plus the author time required to repeatedly refine architecture, experiments, and implementation direction.
+The rough build cost was about 3-4 months of ChatGPT subscription spend, plus the author time required to repeatedly refine architecture, experiments, and implementation direction. So there is no token bill shock.
 
 This is not meant as a pricing claim. It is a rough statement of the iteration cost behind the repo.
 
@@ -30,3 +30,12 @@ This is not meant as a pricing claim. It is a rough statement of the iteration c
   - Codex-style coding agents became part of the implementation loop for faster iteration, refactoring support, and documentation work.
 
 The important point is that the repo evolved through multiple stages of human-led design and AI-assisted iteration, rather than appearing all at once from one generation pass.
+
+## Development Context
+
+This system was developed as a solo-not-even-a-preneur engineering project.
+
+It is not part of a startup or venture-backed initiative.  
+The goal is exploration of graph-native AI infrastructure and knowledge systems.
+
+At the time of writing, the author prefers a quiet, research-oriented approach and focuses on building reliable systems rather than pursuing hype-driven development, but the author does inspect and review existing work to avoid reinventing the wheel.

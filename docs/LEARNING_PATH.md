@@ -33,6 +33,7 @@ This repo is a graph-native RAG and workflow runtime that treats knowledge, conv
 13. [13 How to Test This Repo](./tutorials/13_how_to_test_this_repo.md)
 14. [14 Architecture Deep Dive](./tutorials/14_architecture_deep_dive.md)
 15. [15 Historical Search With Tombstone and Redirect](./tutorials/15_historical_search_tombstone_redirect.md)
+16. [16 Leakage Prevention with Model Slicing](./tutorials/16_leakage_prevention_with_model_slicing.md)
 
 ## How To Use The Tutorials
 
