@@ -16,7 +16,10 @@ from typing import (
     cast,
 )
 
-import numpy as np
+from ...utils.embedding_vectors import (
+    normalize_embedding_rows,
+    normalize_embedding_vector,
+)
 
 from ...entity_registry import (
     default_edge_type_for_graph_kind,
@@ -152,6 +155,10 @@ class ReadSubsystem(NamespaceProxy):
                 query_embeddings = self._e._iterative_defensive_emb(query)
             else:
                 raise ValueError("either query or query embeddings must be specified")
+        query_embeddings = cast(
+            list[list[float]],
+            normalize_embedding_rows(query_embeddings, allow_empty=False),
+        )
 
         got = self._e.backend.node_query(
             query_embeddings=query_embeddings,
@@ -275,26 +282,6 @@ class ReadSubsystem(NamespaceProxy):
         max_redirect_hops: int = 16,
         **kwargs,
     ) -> list[Node]:
-        def _normalize_query_embeddings(raw: Any) -> list[list[float]]:
-            # Backends expect plain list[list[float]], not numpy arrays.
-            if isinstance(raw, np.ndarray):
-                if raw.ndim == 1:
-                    return [raw.astype(float).tolist()]
-                if raw.ndim == 2:
-                    return [np.asarray(row, dtype=float).tolist() for row in raw]
-                raise ValueError(f"Unsupported query embedding rank: {raw.ndim}")
-
-            seq = list(raw or [])
-            if not seq:
-                return []
-
-            first = seq[0]
-            if isinstance(first, (int, float, np.floating)):
-                return [[float(v) for v in seq]]
-            if isinstance(first, np.ndarray):
-                return [np.asarray(row, dtype=float).tolist() for row in seq]
-            return [[float(v) for v in row] for row in seq]
-
         if include is None:
             include = ["documents", "embeddings", "metadatas"]
         if query is not None and query_embeddings is not None:
@@ -303,7 +290,10 @@ class ReadSubsystem(NamespaceProxy):
             if query is None:
                 raise ValueError("Either query or query_embeddings must be provided.")
             query_embeddings = self._e._iterative_defensive_emb(query)
-        query_embeddings = _normalize_query_embeddings(query_embeddings)
+        query_embeddings = cast(
+            list[list[float]],
+            normalize_embedding_rows(query_embeddings, allow_empty=False),
+        )
         if not query_embeddings:
             raise ValueError("query_embeddings resolved to an empty list.")
 
@@ -356,6 +346,10 @@ class ReadSubsystem(NamespaceProxy):
                 query_embeddings = self._e._iterative_defensive_emb(query)
             else:
                 raise ValueError("either query or query embeddings must be specified")
+        query_embeddings = cast(
+            list[list[float]],
+            normalize_embedding_rows(query_embeddings, allow_empty=False),
+        )
 
         got = self._e.backend.edge_query(
             query_embeddings=query_embeddings,
@@ -385,10 +379,13 @@ class ReadSubsystem(NamespaceProxy):
 
         res: list[TNode] = []
         for d, emb, metadata in zip(docs, embs, metadatas):
-            if isinstance(emb, np.ndarray):
-                emb = emb.tolist()
             json_d = json.loads(d)
-            json_d.update({"embedding": emb, "metadata": metadata})
+            json_d.update(
+                {
+                    "embedding": normalize_embedding_vector(emb),
+                    "metadata": metadata,
+                }
+            )
             selected_type = pick_node_type(
                 graph_kind=self._e.kg_graph_type,
                 metadata=metadata,
@@ -417,10 +414,13 @@ class ReadSubsystem(NamespaceProxy):
 
         res = []
         for d, emb, metadata in zip(docs, embs, metadatas):
-            if isinstance(emb, np.ndarray):
-                emb = emb.tolist()
             json_d = json.loads(d)
-            json_d.update({"embedding": emb, "metadata": metadata})
+            json_d.update(
+                {
+                    "embedding": normalize_embedding_vector(emb),
+                    "metadata": metadata,
+                }
+            )
             selected_type = pick_edge_type(metadata=metadata, fallback=edge_type)
             res.append(selected_type.model_validate(json_d))
         return res

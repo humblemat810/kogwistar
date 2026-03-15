@@ -36,6 +36,9 @@ Today the repo implements graph memory and query, workflow design/runtime, prove
 - Detailed comparison with adjacent products/frameworks: [docs/llm-generated-comparison.md](docs/llm-generated-comparison.md)
 - Author notes, build context, and design history: [docs/author-notes.md](docs/author-notes.md)
 - Runtime rationale: [graph_knowledge_engine/docs/ARD-custom-runtime-rationale.md](graph_knowledge_engine/docs/ARD-custom-runtime-rationale.md)
+- Local conversation walkthrough: [docs/tutorials/conversation-pipeline-basics.md](docs/tutorials/conversation-pipeline-basics.md)
+
+- Alternatively, let your AI agent read throught and set up the credential/ keys and environemnt variables for you, and run the appropriate commands.
 
 ## Core Features
 
@@ -83,6 +86,15 @@ Today the repo implements graph memory and query, workflow design/runtime, prove
 - Avoid every team rebuilding the same retrieval, memory, workflow, and provenance stack from scratch.
 - Provide a reusable foundation where those concerns are already structurally integrated.
   Additional motivation, build-cost context, and design history: [docs/author-notes.md](docs/author-notes.md)
+
+## Important Tool Sets
+
+- Graph substrate and provenance toolkit for storing nodes, edges, grounding, lifecycle state, and replayable graph changes as first-class primitives.
+- Conversation and retrieval orchestration toolkit for building local conversation flows, memory retrieval, KG retrieval, evidence pinning, and workflow-driven v2 turn execution.
+- Workflow runtime and replay toolkit for graph-defined execution, checkpoints, joins, suspend/resume flows, and inspectable run traces.
+- LLM task abstraction and strategy toolkit for provider-neutral extraction, filtering, summarization, answering, citation repair, verification, and merge/adjudication behavior.
+- Server and MCP integration toolkit for exposing conversations, workflow runs, admin operations, and graph tooling through app and tool boundaries.
+- Tutorial, CDC, and debugging toolkit for local development ladders, event-stream inspection, CDC viewers, and operational debugging workflows.
 
 ## Run (Development)
 

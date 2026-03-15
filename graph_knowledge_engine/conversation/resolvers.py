@@ -38,6 +38,8 @@ The orchestrator should populate `_deps` in the workflow initial_state.
 
 import pathlib
 import time
+from ..utils.cache_paths import joblib_cache_path
+from ..utils.embedding_vectors import normalize_embedding_vector
 from typing import TYPE_CHECKING, Any, Callable, Dict, Union
 
 # Best-effort self-inspection for state schema inference
@@ -233,6 +235,7 @@ def _add_user_turn(ctx: "StepContext") -> "StepRunResult":
             embedding = ce.iterative_defensive_emb(emb_text0)
         elif hasattr(ce, "_iterative_defensive_emb"):
             embedding = ce._iterative_defensive_emb(emb_text0)
+    embedding = normalize_embedding_vector(embedding)
     span = Span(
         collection_page_url=f"conversation/{conversation_id}",
         document_page_url=f"conversation/{conversation_id}#{turn_doc_id}",
@@ -745,9 +748,15 @@ def _kg_pin(ctx: StepContext) -> StepRunResult:
 def _answer(ctx: StepContext) -> StepRunResult:
     """Run answering step (no chain linking here).
 
-    Phase C:
-    - Prefer agentic answering workflow if deps['agent'] is provided.
-    - Else fallback to deps['answer_only'] callable (legacy).
+    Answering capability selection is explicit:
+    - Use `deps['agent'].answer_workflow_v2(...)` when an agent is available.
+    - Use `deps['answer_only'](...)` only when the caller explicitly forces that
+      path, or when no agentic workflow capability is present.
+
+    `answer_only` is not a hidden error fallback. It is the explicit local
+    "use the current conversation view plus assembled KG evidence to answer
+    now" path. Callers can use it when they want KG-backed answering without
+    depending on the full workflow-driven assistant-turn materialization flow.
 
     Writes:
       state['answer'] = {'response_node_id': ..., 'llm_decision_need_summary': bool}
@@ -757,46 +766,46 @@ def _answer(ctx: StepContext) -> StepRunResult:
         state.setdefault("op_log", []).append("answer")
     state = ctx.state_view
     mts = _get_prev_turn_meta_summary_from_state_or_deps(ctx)
+    answer_only = deps.get("answer_only")
+    force_answer_only = bool(deps.get("force_answer_only", False))
 
     response_node_id: str | None = None
     llm_decision_need_summary: bool = False
     assistant_text: str = ""
 
-    # 1) Agentic answering via workflow (preferred)
-    agent: AgenticAnsweringAgent = deps.get("agent")
-    if agent is not None:
-        try:
-            workflow_engine = deps.get("agentic_workflow_engine") or deps.get(
-                "workflow_engine"
-            )
-            out = agent.answer_workflow_v2(
-                conversation_id=state["conversation_id"],
-                user_id=state.get("user_id"),
-                prev_turn_meta_summary=mts,
-                workflow_engine=workflow_engine,
-                # reuse current runtime's emitter to avoid duplicate sqlite writers in nested runs
-                events=ctx.events,
-                trace=(ctx.events is None),
-            )
-            mts.tail_turn_index += 1
-            if isinstance(out, dict):
-                response_node_id = out.get("assistant_turn_node_id") or out.get(
-                    "response_node_id"
-                )
-                # agentic path doesn't currently expose llm_decision_need_summary; keep False unless present
-                llm_decision_need_summary = bool(
-                    out.get("llm_decision_need_summary", False)
-                )
-        except Exception:
-            # fall back to legacy if provided
-            agent = None
+    # 1) Choose the answering capability explicitly.
+    agent: AgenticAnsweringAgent | None = None if force_answer_only else deps.get("agent")
+    agent_answer = getattr(agent, "answer_workflow_v2", None) if agent is not None else None
 
-    # 2) Legacy answer_only callable
-    if response_node_id is None:
-        answer_only = deps.get("answer_only")
+    if callable(agent_answer):
+        workflow_engine = deps.get("agentic_workflow_engine") or deps.get(
+            "workflow_engine"
+        )
+        out = agent_answer(
+            conversation_id=state["conversation_id"],
+            user_id=state.get("user_id"),
+            prev_turn_meta_summary=mts,
+            workflow_engine=workflow_engine,
+            # reuse current runtime's emitter to avoid duplicate sqlite writers in nested runs
+            events=ctx.events,
+            trace=(ctx.events is None),
+        )
+        mts.tail_turn_index += 1
+        if isinstance(out, dict):
+            response_node_id = out.get("assistant_turn_node_id") or out.get(
+                "response_node_id"
+            )
+            assistant_text = str(
+                out.get("assistant_text") or out.get("text") or out.get("content") or ""
+            )
+            # agentic path doesn't currently expose llm_decision_need_summary; keep False unless present
+            llm_decision_need_summary = bool(
+                out.get("llm_decision_need_summary", False)
+            )
+    else:
         if not callable(answer_only):
             raise RuntimeError(
-                "deps must provide either 'agent' or callable 'answer_only'"
+                "deps must provide either callable agent.answer_workflow_v2 or callable answer_only"
             )
         res_raw = answer_only(
             conversation_id=state["conversation_id"], prev_turn_meta_summary=mts
@@ -811,7 +820,6 @@ def _answer(ctx: StepContext) -> StepRunResult:
             )
             assistant_text = str(getattr(resp, "text", "") or "")
         except Exception:
-            # best-effort: accept dict-like
             if isinstance(res_raw, dict):
                 response_node_id = res_raw.get("response_node_id") or res_raw.get(
                     "assistant_turn_node_id"
@@ -825,9 +833,28 @@ def _answer(ctx: StepContext) -> StepRunResult:
                     or res_raw.get("content")
                     or ""
                 )
+            else:
+                response_node_id = getattr(res_raw, "response_node_id", None) or getattr(
+                    res_raw, "assistant_turn_node_id", None
+                )
+                llm_decision_need_summary = bool(
+                    getattr(res_raw, "llm_decision_need_summary", False)
+                )
+                assistant_text = str(
+                    getattr(res_raw, "text", None)
+                    or getattr(res_raw, "assistant_text", None)
+                    or getattr(res_raw, "content", None)
+                    or ""
+                )
+                if response_node_id is None and not assistant_text.strip():
+                    raise TypeError(
+                        "answer_only returned an unsupported response without assistant text or response node id"
+                    )
 
-    # 3) Backward-compatible fallback:
-    # if answer payload has text but no persisted response node, materialize an assistant turn.
+    # 3) Backward-compatible materialization:
+    # if an explicit answer path returned text but not a persisted assistant
+    # node, materialize one here so downstream workflow state still has a
+    # concrete assistant turn to reference.
     if assistant_text:
         ce = deps.get("conversation_engine")
         if ce is not None:
@@ -914,11 +941,20 @@ def _answer(ctx: StepContext) -> StepRunResult:
                     elif hasattr(ce, "_iterative_defensive_emb"):
                         embedding = ce._iterative_defensive_emb(emb_text0)
                     if embedding is not None:
-                        node.embedding = embedding
+                        node.embedding = normalize_embedding_vector(
+                            embedding, allow_none=False
+                        )
                     ce.add_node(node)
             except Exception:
                 # Keep previous behavior if fallback materialization fails for any reason.
                 pass
+
+    if (
+        bool(deps.get("strict_answer_failure", False))
+        and response_node_id is None
+        and not str(assistant_text or "").strip()
+    ):
+        raise RuntimeError("Answer step produced no assistant response.")
 
     outj = {
         "response_node_id": response_node_id,
@@ -1301,9 +1337,7 @@ def _aa_materialize_evidence_pack(ctx: StepContext) -> StepRunResult:
     from .models import EvidencePackDigest
 
     mem = Memory(
-        location=str(
-            (pathlib.Path(".joblib") / "_materialize_evidence_pack").absolute()
-        )
+        location=str(joblib_cache_path("_materialize_evidence_pack"))
     )
     cached_call = cache_pydantic_structured(
         fn=agent._materialize_evidence_pack,
@@ -1377,9 +1411,7 @@ def _aa_generate_answer_with_citations(ctx: StepContext) -> StepRunResult:
     from joblib import Memory
 
     mem = Memory(
-        location=str(
-            (pathlib.Path(".joblib") / "_generate_answer_with_citations").absolute()
-        )
+        location=str(joblib_cache_path("_generate_answer_with_citations"))
     )
     cached_call = cache_pydantic_structured(
         fn=agent._generate_answer_with_citations,
@@ -1474,9 +1506,7 @@ def _aa_validate_or_repair_citations(ctx: StepContext) -> StepRunResult:
     from joblib import Memory
 
     mem = Memory(
-        location=str(
-            (pathlib.Path(".joblib") / "_generate_answer_with_citations").absolute()
-        )
+        location=str(joblib_cache_path("_generate_answer_with_citations"))
     )
     cached_call = cache_pydantic_structured(
         fn=agent._validate_or_repair_citations,

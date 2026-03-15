@@ -7,6 +7,7 @@ from typing import Any, Sequence, cast
 from ...cdc.change_event import EntityRefModel
 from ..models import Document, Domain, Edge, Node, PureChromaEdge, PureChromaNode
 from ..utils.metadata import json_or_none, strip_none
+from ...utils.embedding_vectors import normalize_embedding_vector
 from ..utils.refs import (
     edge_doc_and_meta as edge_doc_and_meta_util,
     extract_doc_ids_from_refs,
@@ -153,6 +154,7 @@ class WriteSubsystem(NamespaceProxy):
         doc, meta = self.node_doc_and_meta(node)
         if node.embedding is None:
             node.embedding = self._e.embed.iterative_defensive_emb(doc)
+        node.embedding = normalize_embedding_vector(node.embedding, allow_none=False)
         meta["_class_name"] = type(node).__name__
 
         self._e.backend.node_add(
@@ -220,6 +222,7 @@ class WriteSubsystem(NamespaceProxy):
         doc = edge.model_dump_json(field_mode="backend", exclude=["embedding"])
         if edge.embedding is None:
             edge.embedding = self._e.embed.iterative_defensive_emb(str(doc))
+        edge.embedding = normalize_embedding_vector(edge.embedding, allow_none=False)
 
         doc = edge.model_dump_json(field_mode="backend", exclude=["embedding"])
         base_metadata = [self.enrich_edge_meta(edge)]
@@ -283,9 +286,13 @@ class WriteSubsystem(NamespaceProxy):
         self._e.backend.node_add(
             ids=[node.id],
             documents=[doc],
-            embeddings=[node.embedding]
-            if node.embedding is not None
-            else [self._e.embed.iterative_defensive_emb(str(doc))],
+            embeddings=[
+                normalize_embedding_vector(node.embedding, allow_none=False)
+                if node.embedding is not None
+                else normalize_embedding_vector(
+                    self._e.embed.iterative_defensive_emb(str(doc)), allow_none=False
+                )
+            ],
             metadatas=[meta],
         )
 
@@ -308,9 +315,13 @@ class WriteSubsystem(NamespaceProxy):
         self._e.backend.edge_add(
             ids=[edge.id],
             documents=[str(doc)],
-            embeddings=[edge.embedding]
-            if edge.embedding is not None
-            else [self._e.embed.iterative_defensive_emb(str(doc))],
+            embeddings=[
+                normalize_embedding_vector(edge.embedding, allow_none=False)
+                if edge.embedding is not None
+                else normalize_embedding_vector(
+                    self._e.embed.iterative_defensive_emb(str(doc)), allow_none=False
+                )
+            ],
             metadatas=base_metadata,
         )
 
@@ -319,12 +330,20 @@ class WriteSubsystem(NamespaceProxy):
             document.embeddings = self._e.embed.iterative_defensive_emb(
                 str(document.content)
             )
+        document.embeddings = normalize_embedding_vector(
+            document.embeddings, allow_none=False
+        )
         self._e.backend.document_add(
             ids=[document.id],
             documents=[str(document.content)],
             embeddings=[cast(Sequence[float], document.embeddings)]
             if document.embeddings is not None
-            else [self._e.embed.iterative_defensive_emb(str(document.content))],
+            else [
+                normalize_embedding_vector(
+                    self._e.embed.iterative_defensive_emb(str(document.content)),
+                    allow_none=False,
+                )
+            ],
             metadatas=[
                 strip_none(
                     {
@@ -363,7 +382,10 @@ class WriteSubsystem(NamespaceProxy):
                 )
             ],
             embeddings=[
-                self._e.embed.iterative_defensive_emb(str(domain.model_dump_json()))
+                normalize_embedding_vector(
+                    self._e.embed.iterative_defensive_emb(str(domain.model_dump_json())),
+                    allow_none=False,
+                )
             ],
         )
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from types import MappingProxyType
 from typing import Any, Dict, Mapping, List
+import pytest
 
 from graph_knowledge_engine.conversation.models import ConversationAIResponse
 from graph_knowledge_engine.conversation.resolvers import default_resolver
@@ -29,6 +30,7 @@ class FakeConversationEngine:
 class FakeStepContext:
     def __init__(self, state: Dict[str, Any]) -> None:
         self._state = state
+        self.events = None
 
     @property
     def state_view(self) -> Mapping[str, Any]:
@@ -79,6 +81,8 @@ def test_answer_prefers_agentic_when_available():
             user_id: str | None,
             prev_turn_meta_summary,
             workflow_engine=None,
+            events=None,
+            trace=True,
         ):
             return {"assistant_turn_node_id": "assist123", "assistant_text": "hi"}
 
@@ -111,6 +115,109 @@ def test_answer_prefers_agentic_when_available():
     # state update contains answer.response_node_id
     upd = res.state_update[0][1]["answer"]
     assert upd["response_node_id"] == "assist123"
+
+
+def test_answer_does_not_implicitly_fallback_on_agent_error():
+    class RaisingAgent:
+        def answer_workflow_v2(
+            self,
+            *,
+            conversation_id: str,
+            user_id: str | None,
+            prev_turn_meta_summary,
+            workflow_engine=None,
+            events=None,
+            trace=True,
+        ):
+            _ = (
+                conversation_id,
+                user_id,
+                prev_turn_meta_summary,
+                workflow_engine,
+                events,
+                trace,
+            )
+            raise RuntimeError("agent failed")
+
+    def fake_answer_only(*arg, **kwarg) -> ConversationAIResponse:
+        return ConversationAIResponse(text="fallback answer", response_node_id="assist999")
+
+    ctx = FakeStepContext(
+        {
+            "conversation_id": "c1",
+            "user_id": "u1",
+            "turn_node_id": "user1",
+            "_deps": {
+                "agent": RaisingAgent(),
+                "prev_turn_meta_summary": type(
+                    "M",
+                    (),
+                    {
+                        "prev_node_char_distance_from_last_summary": 0,
+                        "prev_node_distance_from_last_summary": 0,
+                        "tail_turn_index": 0,
+                    },
+                )(),
+                "answer_only": fake_answer_only,
+            },
+        }
+    )
+    fn = default_resolver.handlers["answer"]
+    with pytest.raises(RuntimeError, match="agent failed"):
+        fn(ctx)
+
+
+def test_answer_can_be_forced_to_use_answer_only():
+    class RaisingAgent:
+        def answer_workflow_v2(
+            self,
+            *,
+            conversation_id: str,
+            user_id: str | None,
+            prev_turn_meta_summary,
+            workflow_engine=None,
+            events=None,
+            trace=True,
+        ):
+            _ = (
+                conversation_id,
+                user_id,
+                prev_turn_meta_summary,
+                workflow_engine,
+                events,
+                trace,
+            )
+            raise RuntimeError("agent should not run")
+
+    def fake_answer_only(*arg, **kwarg) -> ConversationAIResponse:
+        return ConversationAIResponse(text="fallback answer", response_node_id="assist999")
+
+    ctx = FakeStepContext(
+        {
+            "conversation_id": "c1",
+            "user_id": "u1",
+            "turn_node_id": "user1",
+            "_deps": {
+                "agent": RaisingAgent(),
+                "force_answer_only": True,
+                "prev_turn_meta_summary": type(
+                    "M",
+                    (),
+                    {
+                        "prev_node_char_distance_from_last_summary": 0,
+                        "prev_node_distance_from_last_summary": 0,
+                        "tail_turn_index": 0,
+                    },
+                )(),
+                "answer_only": fake_answer_only,
+            },
+        }
+    )
+    fn = default_resolver.handlers["answer"]
+    res = fn(ctx)
+    assert isinstance(res, RunSuccess)
+    upd = res.state_update[0][1]["answer"]
+    assert upd["response_node_id"] == "assist999"
 
 
 def test_decide_summarize_uses_snapshot_cost_when_available():

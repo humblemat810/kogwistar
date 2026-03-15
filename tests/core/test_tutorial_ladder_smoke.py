@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 import scripts.runtime_tutorial_ladder as runtime_tutorial_ladder
+import scripts.tutorial_ladder as tutorial_ladder
 from graph_knowledge_engine.runtime.design import validate_workflow_design
 
 pytest.importorskip("chromadb")
@@ -23,6 +24,16 @@ def _run(args: list[str]) -> subprocess.CompletedProcess[str]:
         [sys.executable, *args],
         cwd=str(ROOT),
         check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
+def _run_allow_fail(args: list[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, *args],
+        cwd=str(ROOT),
+        check=False,
         capture_output=True,
         text=True,
     )
@@ -52,7 +63,7 @@ def _workspace_temp_dir(prefix: str):
         shutil.rmtree(temp_dir, ignore_errors=True)
 
 
-def test_tutorial_ladder_levels_0_to_2_smoke():
+def test_tutorial_ladder_levels_0_to_2b_smoke():
     with _workspace_temp_dir("test_tutorial_ladder_") as temp_dir:
         data_dir = temp_dir / "tutorial-ladder"
 
@@ -115,6 +126,26 @@ def test_tutorial_ladder_levels_0_to_2_smoke():
         assert level2.get("pinned_kg_pointer_node_ids")
         assert level2.get("pinned_kg_edge_ids")
 
+        level2b = _extract_last_json(
+            _run(
+                [
+                    "scripts/rag_tutorial_ladder.py",
+                    "level2b",
+                    "--data-dir",
+                    str(data_dir),
+                    "--question",
+                    "Show the equivalent provenance flow through add_turn_workflow_v2.",
+                    "--max-retrieval-level",
+                    "2",
+                ]
+            ).stdout
+        )
+        assert level2b.get("checkpoint_pass") is True
+        assert level2b.get("assistant_turn_node_id")
+        assert level2b.get("pinned_kg_pointer_node_ids")
+        assert level2b.get("pinned_kg_edge_ids")
+        assert level2b.get("transcript_roles") == ["user", "assistant"]
+
 
 def test_level3_claw_command_path_smoke():
     with _workspace_temp_dir("test_claw_loop_") as temp_dir:
@@ -162,6 +193,45 @@ def test_level3_claw_command_path_smoke():
         ).stdout
         assert "in|" in in_rows
         assert ("out|" in out_rows) or ("claw.gate.output" in out_rows)
+
+
+def test_tutorial_ladder_level2b_missing_ollama_model_fails_clearly():
+    with _workspace_temp_dir("test_tutorial_ladder_missing_ollama_") as temp_dir:
+        data_dir = temp_dir / "tutorial-ladder"
+        _run(["scripts/rag_tutorial_ladder.py", "reset", "--data-dir", str(data_dir)])
+        _run(["scripts/rag_tutorial_ladder.py", "seed", "--data-dir", str(data_dir)])
+
+        missing_model = "definitely-missing-ollama-model-for-tests:1b"
+        result = _run_allow_fail(
+            [
+                "scripts/rag_tutorial_ladder.py",
+                "level2b",
+                "--data-dir",
+                str(data_dir),
+                "--question",
+                "Answer from the collected evidence pack.",
+                "--max-retrieval-level",
+                "2",
+                "--llm-provider",
+                "ollama",
+                "--llm-model",
+                missing_model,
+            ]
+        )
+
+        assert result.returncode != 0
+        assert f"Run `ollama pull {missing_model}` first" in result.stderr
+
+
+def test_extract_ollama_model_names_supports_typed_response_objects():
+    model_a = type("Model", (), {"model": "qwen3:4b"})()
+    model_b = type("Model", (), {"name": "phi4-mini"})()
+    response = type("ListResponse", (), {"models": [model_a, model_b]})()
+
+    assert tutorial_ladder._extract_ollama_model_names(response) == [
+        "qwen3:4b",
+        "phi4-mini",
+    ]
 
 
 def test_runtime_tutorial_ladder_levels_0_to_4_smoke():

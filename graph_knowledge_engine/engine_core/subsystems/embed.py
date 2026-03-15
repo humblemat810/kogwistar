@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from .base import NamespaceProxy
+from ...utils.embedding_vectors import normalize_embedding_vector
 
 
 class EmbedSubsystem(NamespaceProxy):
@@ -44,4 +45,4 @@ class EmbedSubsystem(NamespaceProxy):
             raise Exception(
                 "cannot get embedding after most defensive embedding strategy."
             )
-        return embedding
+        return normalize_embedding_vector(embedding, allow_none=False)
