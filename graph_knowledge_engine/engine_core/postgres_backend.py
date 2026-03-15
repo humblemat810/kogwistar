@@ -43,7 +43,7 @@ from dataclasses import dataclass
 from contextlib import contextmanager
 import contextvars
 import json
-from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
+from typing import Any, cast, Dict, List, Optional, Sequence, Set, Tuple
 
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql as psql
