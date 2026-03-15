@@ -19,6 +19,8 @@ from typing import Any, Sequence, cast
 
 import numpy as np
 
+from ..utils.embedding_vectors import normalize_embedding_vector
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -72,7 +74,7 @@ class OllamaEmbeddingFunction(EmbeddingFunction):
         for p in documents_or_texts:
             out = ollama.embeddings(model=self.model_name, prompt=p)
             vec_any = cast(Any, out).embedding
-            raw.append(list(vec_any))
+            raw.append(normalize_embedding_vector(vec_any, allow_none=False) or [])
         return _l2_normalize(raw)
 
 

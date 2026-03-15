@@ -55,6 +55,8 @@ from ..engine_core.models import (
     Span,
 )
 from ..runtime.models import StepRunResult
+from ..utils.cache_paths import joblib_cache_path
+from ..utils.embedding_vectors import normalize_embedding_vector
 
 BaseM = TypeVar("BaseM", bound=BaseModel)
 
@@ -277,9 +279,7 @@ class AgenticAnsweringAgent:
         knowledge_engine: GraphKnowledgeEngine,
         llm_tasks: LLMTaskSet,
         config: Optional[AgentConfig] = None,
-        cache_dir: str | None = str(
-            (pathlib.Path() / ".joblib" / "agentic_answering").absolute()
-        ),
+        cache_dir: str | None = str(joblib_cache_path("agentic_answering")),
     ):
         self.conversation_engine = conversation_engine
         self.knowledge_engine = knowledge_engine
@@ -410,9 +410,7 @@ class AgenticAnsweringAgent:
 
             # 5) Materialize evidence pack for answering + citation picking
             mem = Memory(
-                location=str(
-                    (pathlib.Path(".joblib") / "_materialize_evidence_pack").absolute()
-                )
+                location=str(joblib_cache_path("_materialize_evidence_pack"))
             )
             cached_call = cache_pydantic_structured(
                 fn=self._materialize_evidence_pack,
@@ -457,11 +455,7 @@ class AgenticAnsweringAgent:
 
             # 6) Generate answer with claim-level citations (SpanRef indices into evidence_pack)
             mem = Memory(
-                location=str(
-                    (
-                        pathlib.Path(".joblib") / "_generate_answer_with_citations"
-                    ).absolute()
-                )
+                location=str(joblib_cache_path("_generate_answer_with_citations"))
             )
             cached_call = cache_pydantic_structured(
                 fn=self._generate_answer_with_citations,
@@ -1593,10 +1587,9 @@ class AgenticAnsweringAgent:
             target_kind="assistant",
             target_id=str(int(time.time() * 1000)),
         )
-        import numpy as np
-
-        emb = cast(
-            np.ndarray, self.conversation_engine.iterative_defensive_emb(content)
+        emb = normalize_embedding_vector(
+            self.conversation_engine.iterative_defensive_emb(content),
+            allow_none=False,
         )
         node = ConversationNode(
             id=nid,
@@ -1616,7 +1609,7 @@ class AgenticAnsweringAgent:
             },
             domain_id=None,
             canonical_entity_id=None,
-            embedding=emb.tolist(),
+            embedding=emb,
         )
         self.conversation_engine.add_node(node)
         prev_turn_meta_summary.prev_node_char_distance_from_last_summary += len(content)

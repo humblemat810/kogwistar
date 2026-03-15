@@ -9,6 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 import graph_knowledge_engine.server_mcp_with_admin as server
@@ -2009,3 +2010,108 @@ def test_designer_capabilities_falls_back_to_default_resolver(
         runtime = payload["runtime"]
         assert runtime["resolver_found"] is True
         assert "start" in runtime["builtin_ops"]
+
+
+def test_admin_delete_doc_uses_node_ids_for_node_refs(monkeypatch):
+    doc_id = "doc-1"
+    calls: list[tuple[str, object]] = []
+
+    class _Read:
+        def node_ids_by_doc(self, value):
+            assert value == doc_id
+            return ["node-1", "node-2"]
+
+        def edge_ids_by_doc(self, value):
+            assert value == doc_id
+            return ["edge-1"]
+
+    class _Backend:
+        def edge_endpoints_delete(self, **kwargs):
+            calls.append(("edge_endpoints_delete", kwargs))
+
+        def node_docs_delete(self, **kwargs):
+            calls.append(("node_docs_delete", kwargs))
+
+        def edge_refs_delete(self, **kwargs):
+            calls.append(("edge_refs_delete", kwargs))
+
+        def edge_delete(self, **kwargs):
+            calls.append(("edge_delete", kwargs))
+
+        def node_refs_delete(self, **kwargs):
+            calls.append(("node_refs_delete", kwargs))
+
+        def node_delete(self, **kwargs):
+            calls.append(("node_delete", kwargs))
+
+        def document_delete(self, **kwargs):
+            calls.append(("document_delete", kwargs))
+
+    monkeypatch.setattr(
+        server,
+        "engine",
+        _FixedResource(SimpleNamespace(read=_Read(), backend=_Backend())),
+        raising=False,
+    )
+    monkeypatch.setattr(server, "require_role", lambda role: None, raising=False)
+
+    payload = server.admin_delete_doc(doc_id)
+
+    assert payload == {
+        "ok": True,
+        "doc_id": doc_id,
+        "deleted": {"nodes": 2, "edges": 1},
+    }
+    assert ("node_refs_delete", {"ids": ["node-1", "node-2"]}) in calls
+    assert ("edge_refs_delete", {"ids": ["edge-1"]}) in calls
+
+
+def test_admin_delete_doc_raises_when_backend_delete_fails(monkeypatch):
+    doc_id = "doc-2"
+
+    class _Read:
+        def node_ids_by_doc(self, value):
+            assert value == doc_id
+            return ["node-1"]
+
+        def edge_ids_by_doc(self, value):
+            assert value == doc_id
+            return ["edge-1"]
+
+    class _Backend:
+        def edge_endpoints_delete(self, **kwargs):
+            return None
+
+        def node_docs_delete(self, **kwargs):
+            return None
+
+        def edge_refs_delete(self, **kwargs):
+            raise RuntimeError("delete failed")
+
+        def edge_delete(self, **kwargs):
+            pytest.fail("edge_delete should not run after edge_refs_delete failure")
+
+        def node_refs_delete(self, **kwargs):
+            pytest.fail("node cleanup should not run after edge cleanup failure")
+
+        def node_delete(self, **kwargs):
+            pytest.fail("node cleanup should not run after edge cleanup failure")
+
+        def document_delete(self, **kwargs):
+            pytest.fail("document_delete should not run after edge cleanup failure")
+
+    monkeypatch.setattr(
+        server,
+        "engine",
+        _FixedResource(SimpleNamespace(read=_Read(), backend=_Backend())),
+        raising=False,
+    )
+    monkeypatch.setattr(server, "require_role", lambda role: None, raising=False)
+
+    with pytest.raises(HTTPException) as exc_info:
+        server.admin_delete_doc(doc_id)
+
+    assert exc_info.value.status_code == 500
+    assert exc_info.value.detail == (
+        f"Failed to delete document {doc_id!r} during edge_refs_delete"
+    )

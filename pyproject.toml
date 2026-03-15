@@ -8,11 +8,11 @@ dynamic = ["version"]
 description = "Knowledge engine + MCP server for graph & document querying"
 readme = "README.md"
 license = { file = "LICENSE" }
-requires-python = ">=3.10"
+requires-python = ">=3.13"
 authors = [{ name = "Peter Chan", email = "humblemat@gmail.com" }]
 
 dependencies = [
-  "pydantic-extension",
+  "pydantic-extension>=0.0.7",
   "pydantic>=2.6",
   "anyio>=4.0",
   "fastapi>=0.111",
@@ -37,6 +37,7 @@ chroma = ["chromadb>=1.0.15"]
 pgvector = ["sqlalchemy>=2.0", "pgvector>=0.3.6", "psycopg[binary]>=3.1"]
 openai = ["langchain-core>=0.3.0", "langchain-openai>=0.3.0"]
 gemini = ["langchain-core>=0.3.0", "langchain-google-genai>=2.0.0"]
+ollama = ["langchain-core>=0.3.0", "langchain-ollama>=0.3.0"]
 langgraph = ["langgraph>=0.6.5"]
 ingestion-openai = ["langchain-core>=0.3.0", "langchain-openai>=0.3.0"]
 ingestion-gemini = ["langchain-core>=0.3.0", "langchain-google-genai>=2.0.0"]
@@ -54,6 +55,7 @@ full = [
   "langchain-core>=0.3.0",
   "langchain-openai>=0.3.0",
   "langchain-google-genai>=2.0.0",
+  "langchain-ollama>=0.3.0",
   "langgraph>=0.6.5",
   "langchain-mcp-adapters>=0.0.8",
 ]

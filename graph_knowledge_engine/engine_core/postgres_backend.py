@@ -48,6 +48,8 @@ from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql as psql
 
+from ..utils.embedding_vectors import normalize_embedding_rows, normalize_embedding_vector
+
 try:
     # pip install pgvector
     from pgvector.sqlalchemy import Vector  # type: ignore
@@ -766,7 +768,7 @@ class PgVectorBackend:
             out["metadatas"] = [dict(r.metadata or {}) for r in rows]
         if "embeddings" in include and has_embedding:
             out["embeddings"] = [
-                list(r.embedding) if r.embedding is not None else None for r in rows
+                normalize_embedding_vector(r.embedding) for r in rows
             ]
         return out
 
@@ -799,6 +801,7 @@ class PgVectorBackend:
             for i, e in enumerate(embeddings):
                 if e is None:
                     continue
+                e = normalize_embedding_vector(e, allow_none=False) or []
                 if len(e) != self.embedding_dim:
                     raise ValueError(
                         f"embedding dim mismatch at index {i}: got {len(e)}, expected {self.embedding_dim}"
@@ -812,7 +815,9 @@ class PgVectorBackend:
                 "metadata": metadatas[i] if i < len(metadatas) else {},
             }
             if embeddings is not None and "embedding" in table.c:
-                row["embedding"] = list(embeddings[i])
+                row["embedding"] = normalize_embedding_vector(
+                    embeddings[i], allow_none=False
+                )
             rows.append(row)
 
         stmt = psql.insert(table).values(rows)
@@ -838,6 +843,10 @@ class PgVectorBackend:
         where: Optional[Json],
         include: List[str],
     ) -> Dict[str, Any]:
+        query_embeddings = cast(
+            Sequence[Sequence[float]],
+            normalize_embedding_rows(query_embeddings, allow_empty=False),
+        )
         if not query_embeddings:
             raise ValueError("query_embeddings is required")
         if "embedding" not in table.c:
@@ -890,7 +899,12 @@ class PgVectorBackend:
                 metas_out.append([dict(r.metadata or {}) for r in rows])
                 dists_out.append([float(r.distance) for r in rows])
                 if want_embeddings:
-                    embs_out.append([list(r.embedding) for r in rows])
+                    embs_out.append(
+                        [
+                            normalize_embedding_vector(r.embedding, allow_none=False) or []
+                            for r in rows
+                        ]
+                    )
 
         out: Dict[str, Any] = {"ids": ids_out}
         if "documents" in include:
@@ -940,6 +954,7 @@ class PgVectorBackend:
             for i, e in enumerate(embeddings):
                 if e is None:
                     continue
+                e = normalize_embedding_vector(e, allow_none=False) or []
                 if len(e) != self.embedding_dim:
                     raise ValueError(
                         f"embedding dim mismatch at index {i}: got {len(e)}, expected {self.embedding_dim}"
@@ -965,7 +980,11 @@ class PgVectorBackend:
                 if embeddings is not None and "embedding" in table.c:
                     # If caller passes None, we clear the embedding.
                     e = embeddings[i]
-                    values["embedding"] = list(e) if e is not None else None
+                    values["embedding"] = (
+                        normalize_embedding_vector(e, allow_none=False)
+                        if e is not None
+                        else None
+                    )
 
                 stmt = sa.update(table).where(table.c.id == _id).values(**values)
                 conn.execute(stmt, params)

@@ -4,7 +4,7 @@ This guide is for running the backend by itself (no Designer app integration).
 
 ## 1) Prerequisites
 
-- Python `3.10+`
+- Python `3.13`
 - `pip`
 - (Optional) Docker Desktop for container setup
 

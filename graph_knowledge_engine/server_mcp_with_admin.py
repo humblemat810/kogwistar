@@ -1,6 +1,7 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
+import logging
 import os
 import sqlite3
 import time
@@ -72,9 +73,14 @@ from graph_knowledge_engine.visualization.graph_viz import to_cytoscape, to_d3_f
 
 load_dotenv()
 
+logger = logging.getLogger(__name__)
+
 try:
     from graph_knowledge_engine.server.auth.db import get_session
     from graph_knowledge_engine.server.auth.oidc import OIDCClient
+    from graph_knowledge_engine.server.auth.provider_config import (
+        load_oidc_provider_configs_from_env,
+    )
     from graph_knowledge_engine.server.auth.router import router as auth_router
     from graph_knowledge_engine.server.auth.seeding import seed_auth_data
     from graph_knowledge_engine.server.auth.service import AuthService
@@ -89,6 +95,7 @@ except ModuleNotFoundError as exc:
     ):
         get_session = None  # type: ignore[assignment]
         OIDCClient = None  # type: ignore[assignment]
+        load_oidc_provider_configs_from_env = None  # type: ignore[assignment]
         seed_auth_data = None  # type: ignore[assignment]
         AuthService = None  # type: ignore[assignment]
         auth_router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -124,16 +131,33 @@ async def combined_lifespan(app: FastAPI):
                 jwt_iss=JWT_ISS,
                 jwt_aud=JWT_AUD,
             )
-        if getattr(app.state, "oidc_client", None) is None:
-            app.state.oidc_client = None
-        if auth_mode != "dev" and OIDCClient is not None:
-            existing_oidc = getattr(app.state, "oidc_client", None)
-            app.state.oidc_client = existing_oidc or OIDCClient(
-                client_id=os.getenv("OIDC_CLIENT_ID", ""),
-                client_secret=os.getenv("OIDC_CLIENT_SECRET", ""),
-                discovery_url=os.getenv("OIDC_DISCOVERY_URL", ""),
-                redirect_uri=os.getenv("OIDC_REDIRECT_URI", ""),
-            )
+        if getattr(app.state, "oidc_clients", None) is None:
+            app.state.oidc_clients = {}
+        if getattr(app.state, "oidc_provider_configs", None) is None:
+            app.state.oidc_provider_configs = {}
+        if getattr(app.state, "oidc_default_provider", None) is None:
+            app.state.oidc_default_provider = None
+        if (
+            auth_mode != "dev"
+            and OIDCClient is not None
+            and load_oidc_provider_configs_from_env is not None
+        ):
+            default_provider, provider_configs = load_oidc_provider_configs_from_env()
+            if provider_configs:
+                app.state.oidc_provider_configs = provider_configs
+                app.state.oidc_default_provider = default_provider
+                app.state.oidc_clients = {
+                    name: OIDCClient(
+                        client_id=config.client_id,
+                        client_secret=config.client_secret,
+                        discovery_url=config.discovery_url,
+                        redirect_uri=config.redirect_uri,
+                        issuer=config.issuer,
+                        scopes=config.scopes,
+                    )
+                    for name, config in provider_configs.items()
+                    if config.allowed
+                }
 
     async with mcp_app.lifespan(app):
         yield
@@ -224,11 +248,10 @@ def _designer_resolver_candidates(service: Any) -> list[Any]:
         "runtime_resolver",
         "workflow_step_resolver",
     ):
-        try:
-            _add(getattr(service, attr, None))
-        except Exception:
-            pass
-
+        
+        if a:=getattr(service, attr, None):
+            _add(a)
+        
     for attr in (
         "get_resolver",
         "get_step_resolver",
@@ -242,7 +265,7 @@ def _designer_resolver_candidates(service: Any) -> list[Any]:
             except TypeError:
                 pass
             except Exception:
-                pass
+                raise
 
     return candidates
 
@@ -258,7 +281,8 @@ def _designer_runtime_capabilities() -> dict[str, Any]:
 
     try:
         service = chat_service.get()
-    except Exception:
+    except RuntimeError:
+        logger.warning("Chat service unavailable while collecting designer capabilities")
         service = None
 
     if service and hasattr(service, "workflow_catalog_ops"):
@@ -268,8 +292,11 @@ def _designer_runtime_capabilities() -> dict[str, Any]:
                 op_name = op_def.get("op")
                 if op_name:
                     builtin_ops.add(str(op_name))
-        except Exception:
-            pass
+        except (AttributeError, TypeError, ValueError) as exc:
+            logger.warning(
+                "Failed to inspect workflow catalog ops for designer capabilities: %s",
+                exc,
+            )
 
     resolver_candidates = _designer_resolver_candidates(service)
     if not resolver_candidates:
@@ -279,7 +306,11 @@ def _designer_runtime_capabilities() -> dict[str, Any]:
             from graph_knowledge_engine.conversation.resolvers import default_resolver
 
             resolver_candidates = [default_resolver]
-        except Exception:
+        except (ImportError, AttributeError) as exc:
+            logger.warning(
+                "Default resolver unavailable while collecting designer capabilities: %s",
+                exc,
+            )
             resolver_candidates = []
 
     for resolver in resolver_candidates:
@@ -288,35 +319,49 @@ def _designer_runtime_capabilities() -> dict[str, Any]:
             ops = getattr(resolver, "ops", None)
             if ops is not None:
                 builtin_ops.update(str(op) for op in ops)
-        except Exception:
-            pass
+        except (AttributeError, TypeError, ValueError) as exc:
+            logger.warning(
+                "Failed to inspect resolver ops for designer capabilities: %s", exc
+            )
         try:
             nested_ops.update(
                 str(op) for op in (getattr(resolver, "nested_ops", set()) or set())
             )
-        except Exception:
-            pass
+        except (AttributeError, TypeError, ValueError) as exc:
+            logger.warning(
+                "Failed to inspect resolver nested ops for designer capabilities: %s",
+                exc,
+            )
         try:
             sandboxed = getattr(resolver, "sandboxed_ops", None)
             if sandboxed is not None:
                 sandbox_support = True
                 sandboxed_ops.update(str(op) for op in sandboxed)
-        except Exception:
-            pass
+        except (AttributeError, TypeError, ValueError) as exc:
+            logger.warning(
+                "Failed to inspect resolver sandboxed ops for designer capabilities: %s",
+                exc,
+            )
         try:
             describe_state = getattr(resolver, "describe_state", None)
             if callable(describe_state):
                 state_schema.update(
                     {str(k): str(v) for k, v in (describe_state() or {}).items()}
                 )
-        except Exception:
-            pass
+        except (AttributeError, TypeError, ValueError) as exc:
+            logger.warning(
+                "Failed to inspect resolver state schema for designer capabilities: %s",
+                exc,
+            )
         try:
             if getattr(resolver, "_sandbox", None) is not None:
                 sandbox_runtime_configured = True
                 sandbox_support = True
-        except Exception:
-            pass
+        except AttributeError as exc:
+            logger.warning(
+                "Failed to inspect resolver sandbox runtime for designer capabilities: %s",
+                exc,
+            )
 
     return {
         "resolver_found": resolver_found,
@@ -404,47 +449,61 @@ def health():
 def admin_delete_doc(doc_id: str):
     require_role("rw")
     eng = engine.get()
-    # Collect counts before deletion
     try:
         node_ids = eng.read.node_ids_by_doc(doc_id)
         edge_ids = eng.read.edge_ids_by_doc(doc_id)
-    except Exception:
-        node_ids, edge_ids = [], []
+    except Exception as exc:
+        logger.exception("Failed to enumerate graph rows for admin delete: doc_id=%s", doc_id)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to inspect document {doc_id!r} before deletion",
+        ) from exc
 
-    # Delete endpoints and mapping tables first
-    try:
-        eng.backend.edge_endpoints_delete(where={"doc_id": doc_id})
-    except Exception:
-        pass
-    try:
-        eng.backend.node_docs_delete(where={"doc_id": doc_id})
-    except Exception:
-        pass
+    def _delete_step(step_name: str, fn) -> None:
+        try:
+            fn()
+        except Exception as exc:
+            logger.exception(
+                "Admin document delete failed at step '%s': doc_id=%s",
+                step_name,
+                doc_id,
+            )
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to delete document {doc_id!r} during {step_name}",
+            ) from exc
 
-    # Delete primary rows
+    _delete_step(
+        "edge_endpoints_delete",
+        lambda: eng.backend.edge_endpoints_delete(where={"doc_id": doc_id}),
+    )
+    _delete_step(
+        "node_docs_delete",
+        lambda: eng.backend.node_docs_delete(where={"doc_id": doc_id}),
+    )
 
-    try:
-        if edge_ids:
-            eng.backend.edge_refs_delete(ids=edge_ids)
-            eng.backend.edge_delete(ids=edge_ids)
-        else:
-            eng.backend.edge_delete(where={"doc_id": doc_id})
-    except Exception:
-        pass
-    try:
-        if node_ids:
-            eng.backend.node_refs_delete(ids=edge_ids)
-            eng.backend.node_delete(ids=node_ids)
-        else:
-            eng.backend.node_delete(where={"doc_id": doc_id})
-    except Exception:
-        pass
+    if edge_ids:
+        _delete_step("edge_refs_delete", lambda: eng.backend.edge_refs_delete(ids=edge_ids))
+        _delete_step("edge_delete", lambda: eng.backend.edge_delete(ids=edge_ids))
+    else:
+        _delete_step(
+            "edge_delete",
+            lambda: eng.backend.edge_delete(where={"doc_id": doc_id}),
+        )
 
-    # Optional: document row (if you keep one)
-    try:
-        eng.backend.document_delete(where={"doc_id": doc_id})
-    except Exception:
-        pass
+    if node_ids:
+        _delete_step("node_refs_delete", lambda: eng.backend.node_refs_delete(ids=node_ids))
+        _delete_step("node_delete", lambda: eng.backend.node_delete(ids=node_ids))
+    else:
+        _delete_step(
+            "node_delete",
+            lambda: eng.backend.node_delete(where={"doc_id": doc_id}),
+        )
+
+    _delete_step(
+        "document_delete",
+        lambda: eng.backend.document_delete(where={"doc_id": doc_id}),
+    )
 
     return {
         "ok": True,

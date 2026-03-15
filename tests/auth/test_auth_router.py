@@ -17,9 +17,13 @@ def client():
     # Setup in-memory auth DB for testing
     engine = create_auth_engine("sqlite:///:memory:")
     init_auth_db(engine)
+    mock_oidc = AsyncMock()
 
     # Manually initialize app state for tests
     app.state.auth_service = AuthService(get_session(), jwt_secret=JWT_SECRET)
+    app.state.oidc_clients = {"test": mock_oidc}
+    app.state.oidc_default_provider = "test"
+    app.state.oidc_provider_configs = {}
 
     with TestClient(app) as c:
         yield c
@@ -91,7 +95,7 @@ def test_login_rejects_redirect_override_outside_dev(client):
 def test_login_redirect(client):
     app.state.auth_mode = "oidc"
     # Mock OIDC client discovery
-    app.state.oidc_client.get_auth_url = AsyncMock(
+    app.state.oidc_clients["test"].get_auth_url = AsyncMock(
         return_value="https://example.com/auth"
     )
 
@@ -101,6 +105,8 @@ def test_login_redirect(client):
     # Check if cookies are set
     assert "auth_state" in response.cookies
     assert "auth_pkce_verifier" in response.cookies
+    assert "auth_nonce" in response.cookies
+    assert response.cookies["auth_provider"] == "test"
 
 
 def test_logout(client):
@@ -113,10 +119,20 @@ def test_callback_success_redirects_with_token(client, monkeypatch):
     client.cookies.clear()
     app.state.auth_mode = "oidc"
     monkeypatch.setenv("UI_URL", "https://ui.example.local/")
-    app.state.oidc_client.exchange_code = AsyncMock(
-        return_value={"access_token": "access"}
+    app.state.oidc_clients["test"].exchange_code = AsyncMock(
+        return_value={"access_token": "access", "id_token": "id-token"}
     )
-    app.state.oidc_client.get_userinfo = AsyncMock(
+    app.state.oidc_clients["test"].validate_id_token = AsyncMock(
+        return_value={
+            "sub": "sub-123",
+            "email": "user@example.com",
+            "name": "Test User",
+            "iss": "https://issuer.example.local",
+            "aud": "kge-local",
+            "nonce": "nonce-123",
+        }
+    )
+    app.state.oidc_clients["test"].get_userinfo = AsyncMock(
         return_value={
             "sub": "sub-123",
             "email": "user@example.com",
@@ -126,6 +142,8 @@ def test_callback_success_redirects_with_token(client, monkeypatch):
 
     client.cookies.set("auth_state", "state-123")
     client.cookies.set("auth_pkce_verifier", "verifier-123")
+    client.cookies.set("auth_nonce", "nonce-123")
+    client.cookies.set("auth_provider", "test")
     response = client.get(
         "/api/auth/callback?code=abc&state=state-123", follow_redirects=False
     )
@@ -140,6 +158,9 @@ def test_callback_success_redirects_with_token(client, monkeypatch):
     token = params["token"][0]
     claims = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
     assert claims["sub"] == "user@example.com"
+    app.state.oidc_clients["test"].validate_id_token.assert_awaited_once_with(
+        "id-token", nonce="nonce-123"
+    )
 
 
 def test_callback_rejects_invalid_state(client):
@@ -163,3 +184,53 @@ def test_callback_rejects_missing_verifier(client):
     )
     assert response.status_code == 400
     assert response.json()["detail"] == "Missing PKCE verifier"
+
+
+def test_callback_rejects_missing_nonce(client):
+    client.cookies.clear()
+    app.state.auth_mode = "oidc"
+    client.cookies.set("auth_state", "state-abc")
+    client.cookies.set("auth_pkce_verifier", "verifier-abc")
+    response = client.get(
+        "/api/auth/callback?code=abc&state=state-abc", follow_redirects=False
+    )
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Missing nonce"
+
+
+def test_callback_rejects_userinfo_subject_mismatch(client):
+    client.cookies.clear()
+    app.state.auth_mode = "oidc"
+    app.state.oidc_clients["test"].exchange_code = AsyncMock(
+        return_value={"access_token": "access", "id_token": "id-token"}
+    )
+    app.state.oidc_clients["test"].validate_id_token = AsyncMock(
+        return_value={
+            "sub": "sub-123",
+            "email": "user@example.com",
+            "name": "Test User",
+            "iss": "https://issuer.example.local",
+            "aud": "kge-local",
+            "nonce": "nonce-abc",
+        }
+    )
+    app.state.oidc_clients["test"].get_userinfo = AsyncMock(
+        return_value={
+            "sub": "sub-wrong",
+            "email": "user@example.com",
+            "name": "Test User",
+        }
+    )
+
+    client.cookies.set("auth_state", "state-abc")
+    client.cookies.set("auth_pkce_verifier", "verifier-abc")
+    client.cookies.set("auth_nonce", "nonce-abc")
+    client.cookies.set("auth_provider", "test")
+    response = client.get(
+        "/api/auth/callback?code=abc&state=state-abc", follow_redirects=False
+    )
+    assert response.status_code == 401
+    assert (
+        response.json()["detail"]
+        == "userinfo subject does not match validated id_token subject"
+    )

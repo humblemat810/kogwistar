@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import math
+import os
 import re
 import shutil
 import sys
@@ -18,6 +19,7 @@ if str(ROOT) not in sys.path:
 from graph_knowledge_engine.conversation.knowledge_retriever import KnowledgeRetriever
 from graph_knowledge_engine.conversation.memory_retriever import MemoryRetriever
 from graph_knowledge_engine.conversation.models import (
+    ConversationAIResponse,
     ConversationEdge,
     ConversationNode,
     FilteringResult,
@@ -32,6 +34,14 @@ from graph_knowledge_engine.engine_core.models import (
     MentionVerification,
     Node,
     Span,
+)
+from graph_knowledge_engine.llm_tasks import (
+    AnswerWithCitationsTaskRequest,
+    AnswerWithCitationsTaskResult,
+    LLMTaskProviderHints,
+    LLMTaskSet,
+    RepairCitationsTaskRequest,
+    RepairCitationsTaskResult,
 )
 
 
@@ -95,6 +105,229 @@ def _print_json(data: dict[str, Any]) -> None:
     print(json.dumps(data, indent=2, ensure_ascii=False))
 
 
+def _configure_tutorial_cache_env(data_dir: Path) -> None:
+    os.environ["GKE_JOBLIB_CACHE_DIR"] = str((data_dir / ".joblib").resolve())
+
+
+def _context_messages_to_text(messages: Sequence[Any]) -> str:
+    lines: list[str] = []
+    for msg in messages:
+        role = str(getattr(msg, "role", "") or "system")
+        content = str(getattr(msg, "content", "") or "").strip()
+        if content:
+            lines.append(f"{role}: {content}")
+    return "\n".join(lines)
+
+
+def _emit_ollama_pull_note(model_name: str | None) -> None:
+    model = str(model_name or "qwen3:4b")
+    print(
+        (
+            f"[tutorial] Ollama provider selected with model '{model}'. "
+            "If this is the first run, Ollama may need to download the model and "
+            "that can take several minutes. Native Ollama pull progress will appear "
+            "in the terminal if a download is required."
+        ),
+        file=sys.stderr,
+    )
+
+
+def _extract_ollama_model_names(response: Any) -> list[str]:
+    models = None
+    if isinstance(response, dict):
+        models = response.get("models")
+    else:
+        models = getattr(response, "models", None)
+
+    names: list[str] = []
+    for item in models or []:
+        name = None
+        if isinstance(item, dict):
+            name = item.get("model") or item.get("name")
+        else:
+            name = getattr(item, "model", None) or getattr(item, "name", None)
+        if isinstance(name, str) and name:
+            names.append(name)
+    return names
+
+
+def _ensure_local_ollama_model(model_name: str | None) -> None:
+    model = str(model_name or "qwen3:4b")
+    try:
+        import ollama  # type: ignore
+    except Exception as exc:
+        raise RuntimeError(
+            "Ollama tutorial mode requires the 'ollama' Python package."
+        ) from exc
+
+    try:
+        response = ollama.Client().list()
+    except Exception as exc:
+        raise RuntimeError(
+            "Failed to query the local Ollama server. Ensure Ollama is running."
+        ) from exc
+
+    names = _extract_ollama_model_names(response)
+    if any(model == name or name.startswith(f"{model}:") for name in names):
+        return
+    available = ", ".join(names) if names else "(none)"
+    raise RuntimeError(
+        f"Ollama model '{model}' is not available locally. "
+        f"Run `ollama pull {model}` first. Available local models: {available}"
+    )
+
+
+def _invoke_structured_model(
+    *, model: Any, schema: type[Any], prompt: str
+) -> tuple[object | None, dict[str, Any] | None, str | None]:
+    try:
+        structured = model.with_structured_output(schema, include_raw=True)
+    except TypeError:
+        structured = model.with_structured_output(schema)
+    result = structured.invoke(prompt)
+    if isinstance(result, dict):
+        raw = result.get("raw")
+        parsed = result.get("parsed")
+        parsing_error = result.get("parsing_error")
+    else:
+        raw = None
+        parsed = result
+        parsing_error = None
+    if parsing_error is not None:
+        return raw, None, str(parsing_error)
+    try:
+        validated = schema.model_validate(parsed)
+    except Exception as exc:
+        return raw, None, str(exc)
+    payload = validated.model_dump(mode="python")
+    return raw, payload if isinstance(payload, dict) else {"value": payload}, None
+
+
+def _build_live_tutorial_model(*, provider: str, model_name: str | None) -> Any:
+    provider_key = str(provider or "deterministic").strip().lower()
+    if provider_key == "gemini":
+        try:
+            from langchain_google_genai import ChatGoogleGenerativeAI  # type: ignore
+        except Exception as exc:
+            raise RuntimeError(
+                "Gemini tutorial mode requires 'langchain-google-genai'. "
+                "Install the Gemini extra and set GOOGLE_API_KEY."
+            ) from exc
+        return ChatGoogleGenerativeAI(
+            model=model_name or os.getenv("GKE_TUTORIAL_GEMINI_MODEL", "gemini-2.5-flash"),
+            temperature=0.1,
+            max_retries=2,
+        )
+    if provider_key == "openai":
+        try:
+            from langchain_openai import ChatOpenAI  # type: ignore
+        except Exception as exc:
+            raise RuntimeError(
+                "OpenAI tutorial mode requires 'langchain-openai'. "
+                "Install the OpenAI extra and set OPENAI_API_KEY."
+            ) from exc
+        return ChatOpenAI(
+            model=model_name or os.getenv("GKE_TUTORIAL_OPENAI_MODEL", "gpt-4.1-mini"),
+            temperature=0.1,
+            max_retries=2,
+        )
+    if provider_key == "ollama":
+        _emit_ollama_pull_note(model_name)
+        _ensure_local_ollama_model(model_name)
+        try:
+            from langchain_ollama import ChatOllama  # type: ignore
+        except Exception as exc:
+            raise RuntimeError(
+                "Ollama tutorial mode requires 'langchain-ollama'. "
+                "Install it and ensure the Ollama server is running."
+            ) from exc
+        return ChatOllama(
+            model=model_name or os.getenv("GKE_TUTORIAL_OLLAMA_MODEL", "qwen3:4b"),
+            temperature=0.1,
+        )
+    raise ValueError(f"Unsupported tutorial provider: {provider!r}")
+
+
+def _build_provider_task_set(
+    *,
+    base_tasks: LLMTaskSet,
+    provider: str,
+    model_name: str | None,
+) -> tuple[LLMTaskSet, str]:
+    provider_key = str(provider or "deterministic").strip().lower()
+    model = _build_live_tutorial_model(provider=provider_key, model_name=model_name)
+    resolved_model = str(
+        getattr(model, "model", "") or getattr(model, "model_name", "") or model_name or ""
+    )
+
+    def _answer_with_citations(
+        request: AnswerWithCitationsTaskRequest,
+    ) -> AnswerWithCitationsTaskResult:
+        prompt = (
+            f"{request.system_prompt}\n\n"
+            "Answer the question using only the supplied evidence.\n"
+            "Return structured output matching the requested schema.\n\n"
+            f"Question:\n{request.question}\n\n"
+            f"Evidence:\n{request.evidence}"
+        )
+        raw, payload, parsing_error = _invoke_structured_model(
+            model=model,
+            schema=request.response_model,
+            prompt=prompt,
+        )
+        return AnswerWithCitationsTaskResult(
+            answer_payload=payload,
+            raw=raw,
+            parsing_error=parsing_error,
+        )
+
+    def _repair_citations(
+        request: RepairCitationsTaskRequest,
+    ) -> RepairCitationsTaskResult:
+        prompt = (
+            f"{request.system_prompt}\n\n"
+            "Repair or simplify the answer so it conforms to the requested schema.\n"
+            "Use only the supplied evidence and avoid unsupported citations.\n\n"
+            f"Question:\n{request.question}\n\n"
+            f"Current answer text:\n{request.answer_text}\n\n"
+            f"Evidence:\n{request.evidence}"
+        )
+        raw, payload, parsing_error = _invoke_structured_model(
+            model=model,
+            schema=request.response_model,
+            prompt=prompt,
+        )
+        return RepairCitationsTaskResult(
+            answer_payload=payload,
+            raw=raw,
+            parsing_error=parsing_error,
+        )
+
+    answer_hint = provider_key if provider_key in {"gemini", "openai"} else "custom"
+    hints = LLMTaskProviderHints(
+        extract_graph_provider=base_tasks.provider_hints.extract_graph_provider,
+        adjudicate_pair_provider=base_tasks.provider_hints.adjudicate_pair_provider,
+        adjudicate_batch_provider=base_tasks.provider_hints.adjudicate_batch_provider,
+        filter_candidates_provider=base_tasks.provider_hints.filter_candidates_provider,
+        summarize_context_provider=base_tasks.provider_hints.summarize_context_provider,
+        answer_with_citations_provider=answer_hint,
+        repair_citations_provider=answer_hint,
+    )
+    return (
+        LLMTaskSet(
+            extract_graph=base_tasks.extract_graph,
+            adjudicate_pair=base_tasks.adjudicate_pair,
+            adjudicate_batch=base_tasks.adjudicate_batch,
+            filter_candidates=base_tasks.filter_candidates,
+            summarize_context=base_tasks.summarize_context,
+            answer_with_citations=_answer_with_citations,
+            repair_citations=_repair_citations,
+            provider_hints=hints,
+        ),
+        resolved_model,
+    )
+
+
 def _build_engines(data_dir: Path) -> tuple[GraphKnowledgeEngine, GraphKnowledgeEngine]:
     data_dir.mkdir(parents=True, exist_ok=True)
     ef = LexicalHashEmbeddingFunction()
@@ -109,6 +342,15 @@ def _build_engines(data_dir: Path) -> tuple[GraphKnowledgeEngine, GraphKnowledge
         embedding_function=ef,
     )
     return kg_engine, conv_engine
+
+
+def _build_workflow_engine(data_dir: Path) -> GraphKnowledgeEngine:
+    ef = LexicalHashEmbeddingFunction()
+    return GraphKnowledgeEngine(
+        persist_directory=str(data_dir / "wf"),
+        kg_graph_type="workflow",
+        embedding_function=ef,
+    )
 
 
 def _has_seed_data(kg_engine: GraphKnowledgeEngine) -> bool:
@@ -342,6 +584,14 @@ def _ensure_seed(data_dir: Path) -> tuple[GraphKnowledgeEngine, GraphKnowledgeEn
         _upsert_knowledge_graph(kg_engine)
         _upsert_memory_history(conv_engine)
     return kg_engine, conv_engine
+
+
+def _ensure_seed_with_workflow(
+    data_dir: Path,
+) -> tuple[GraphKnowledgeEngine, GraphKnowledgeEngine, GraphKnowledgeEngine]:
+    kg_engine, conv_engine = _ensure_seed(data_dir)
+    workflow_engine = _build_workflow_engine(data_dir)
+    return kg_engine, conv_engine, workflow_engine
 
 
 def _parse_node_lines(cand_node_list_str: str) -> dict[str, str]:
@@ -607,6 +857,120 @@ def run_level2(
     }
 
 
+def run_level2b(
+    data_dir: Path,
+    question: str,
+    max_retrieval_level: int,
+    llm_provider: str = "deterministic",
+    llm_model: str | None = None,
+) -> dict[str, Any]:
+    kg_engine, conv_engine, workflow_engine = _ensure_seed_with_workflow(data_dir)
+    provider_key = str(llm_provider or "deterministic").strip().lower()
+    resolved_model_name = ""
+    llm_tasks = conv_engine.llm_tasks
+    if provider_key != "deterministic":
+        llm_tasks, resolved_model_name = _build_provider_task_set(
+            base_tasks=conv_engine.llm_tasks,
+            provider=provider_key,
+            model_name=llm_model,
+        )
+    svc = ConversationService(
+        conversation_engine=conv_engine,
+        knowledge_engine=kg_engine,
+        workflow_engine=workflow_engine,
+        llm_tasks=llm_tasks,
+    )
+    conversation_id, _ = svc.create_conversation(
+        "demo-user", "conv-demo-v2", "conv-demo-v2-start"
+    )
+
+    def answer_only_harness(
+        *, conversation_id: str, prev_turn_meta_summary: MetaFromLastSummary, **_
+    ) -> ConversationAIResponse:
+        _ = conversation_id, prev_turn_meta_summary
+        # This harness intentionally exercises the explicit KG/context-backed
+        # answer_only primitive rather than the full provider-backed workflow.
+        answer_text = "Tutorial v2 reply grounded in architecture and provenance."
+        return ConversationAIResponse(
+            text=answer_text,
+            llm_decision_need_summary=False,
+            used_kg_node_ids=["K:architecture", "K:provenance"],
+            projected_conversation_node_ids=[],
+            meta={
+                "source": "tutorial_level2b_deterministic",
+                "provider": "deterministic",
+                "model_name": "",
+            },
+            response_node_id=None,
+        )
+
+    if provider_key == "deterministic":
+        svc.orchestrator.answer_only = answer_only_harness
+
+    add_result = svc.add_turn_workflow_v2(
+        run_id="run-demo-v2",
+        user_id="demo-user",
+        conversation_id=conversation_id,
+        turn_id="turn-demo-v2",
+        mem_id="mem-demo-v2",
+        role="user",
+        content=question,
+        filtering_callback=deterministic_filter_callback,
+        workflow_id="conversation.add_turn.v2.tutorial",
+        max_retrieval_level=max_retrieval_level,
+        in_conv=True,
+        add_turn_only=False,
+        max_workers=1,
+        strict_answer_failure=(provider_key != "deterministic"),
+        force_answer_only=(provider_key == "deterministic"),
+    )
+
+    transcript = svc.get_conversation_view(
+        conversation_id=conversation_id,
+        user_id="demo-user",
+    ).messages
+    visible_turn_roles = [
+        str(role)
+        for role in (getattr(m, "role", "") for m in transcript)
+        if role in {"user", "assistant"}
+    ]
+    assistant_node_id = add_result.response_turn_node_id
+    assistant_exists = bool(
+        assistant_node_id
+        and conv_engine.backend.node_get(ids=[assistant_node_id], include=[]).get("ids")
+    )
+    pinned_ptrs = list(add_result.pinned_kg_pointer_node_ids or [])
+    pinned_edges = list(add_result.pinned_kg_edge_ids or [])
+    assistant_text = ""
+    if assistant_node_id:
+        try:
+            assistant_nodes = conv_engine.get_nodes([assistant_node_id], resolve_mode="redirect")
+            if assistant_nodes:
+                assistant_text = str(getattr(assistant_nodes[0], "summary", "") or "")
+        except Exception:
+            assistant_text = ""
+    if not assistant_text:
+        assistant_messages = [m for m in transcript if getattr(m, "role", "") == "assistant"]
+        if assistant_messages:
+            assistant_text = str(getattr(assistant_messages[-1], "content", "") or "")
+
+    return {
+        "level": "2b",
+        "question": question,
+        "conversation_id": conversation_id,
+        "turn_node_id": add_result.user_turn_node_id,
+        "assistant_turn_node_id": assistant_node_id,
+        "pinned_kg_pointer_node_ids": pinned_ptrs,
+        "pinned_kg_edge_ids": pinned_edges,
+        "transcript_roles": visible_turn_roles,
+        "assistant_text": assistant_text,
+        "llm_provider": provider_key,
+        "llm_model": resolved_model_name or llm_model or "",
+        "checkpoint_pass": bool(assistant_exists and pinned_ptrs and pinned_edges),
+        "checkpoint": "workflow-driven v2 conversation path materializes assistant output and the same inspectable evidence pointers",
+    }
+
+
 def level3_command_hints(data_dir: Path) -> dict[str, Any]:
     claw_data_dir = str(data_dir.parent / "claw-loop")
     cmds = [
@@ -644,6 +1008,19 @@ def main() -> None:
     )
     p2.add_argument("--max-retrieval-level", type=int, default=2)
 
+    p2b = sub.add_parser("level2b", parents=[common])
+    p2b.add_argument(
+        "--question",
+        default="Show the equivalent provenance flow through add_turn_workflow_v2.",
+    )
+    p2b.add_argument("--max-retrieval-level", type=int, default=2)
+    p2b.add_argument(
+        "--llm-provider",
+        choices=["deterministic", "gemini", "openai", "ollama"],
+        default="deterministic",
+    )
+    p2b.add_argument("--llm-model", default=None)
+
     sub.add_parser("level3-hints", parents=[common])
 
     p_all = sub.add_parser("run-all", parents=[common])
@@ -660,6 +1037,7 @@ def main() -> None:
 
     args = parser.parse_args()
     data_dir = Path(args.data_dir).resolve()
+    _configure_tutorial_cache_env(data_dir)
 
     if args.cmd == "reset":
         _print_json(reset_data(data_dir))
@@ -688,6 +1066,19 @@ def main() -> None:
             )
         )
         return
+    if args.cmd == "level2b":
+        _print_json(
+            run_level2b(
+                data_dir,
+                question=str(args.question),
+                max_retrieval_level=int(args.max_retrieval_level),
+                llm_provider=str(args.llm_provider),
+                llm_model=(
+                    None if args.llm_model in (None, "", "None") else str(args.llm_model)
+                ),
+            )
+        )
+        return
     if args.cmd == "level3-hints":
         _print_json(level3_command_hints(data_dir))
         return
@@ -705,6 +1096,13 @@ def main() -> None:
                 data_dir,
                 question=str(args.question2),
                 max_retrieval_level=int(args.max_retrieval_level),
+            ),
+            "level2b": run_level2b(
+                data_dir,
+                question="Show the equivalent provenance flow through add_turn_workflow_v2.",
+                max_retrieval_level=int(args.max_retrieval_level),
+                llm_provider="deterministic",
+                llm_model=None,
             ),
             "level3_hints": level3_command_hints(data_dir),
         }

@@ -24,6 +24,7 @@ from .conversation_state_contracts import (
     ConversationWorkflowState,
 )
 from ..engine_core.models import Grounding, MentionVerification, Span, Role
+from ..utils.embedding_vectors import normalize_embedding_vector
 from .models import (
     ConversationAIResponse,
     ConversationNode,
@@ -145,11 +146,17 @@ def _get_conversation_tail_compat(conversation_engine: Any, conversation_id: str
 def _iterative_emb_compat(engine: Any, text: str):
     embed_ns = getattr(engine, "embed", None)
     if embed_ns is not None and hasattr(embed_ns, "iterative_defensive_emb"):
-        return embed_ns.iterative_defensive_emb(text)
+        return normalize_embedding_vector(
+            embed_ns.iterative_defensive_emb(text), allow_none=False
+        )
     if hasattr(engine, "iterative_defensive_emb"):
-        return engine.iterative_defensive_emb(text)
+        return normalize_embedding_vector(
+            engine.iterative_defensive_emb(text), allow_none=False
+        )
     if hasattr(engine, "_iterative_defensive_emb"):
-        return engine._iterative_defensive_emb(text)
+        return normalize_embedding_vector(
+            engine._iterative_defensive_emb(text), allow_none=False
+        )
     raise AttributeError("conversation engine has no defensive embedding API")
 
 
@@ -323,6 +330,8 @@ class ConversationOrchestrator:
         prev_turn_meta_summary: MetaFromLastSummary | None = None,
         add_turn_only=None,
         max_workers: int = 4,
+        strict_answer_failure: bool = False,
+        force_answer_only: bool | None = None,
     ) -> AddTurnResult:
 
         prev_node = (
@@ -503,6 +512,8 @@ class ConversationOrchestrator:
         prev_turn_meta_summary: MetaFromLastSummary | None = None,
         add_turn_only=None,
         max_workers: int = 4,
+        strict_answer_failure: bool = False,
+        force_answer_only: bool | None = None,
     ) -> AddTurnResult:
         """
         V2 workflow-driven orchestration.
@@ -642,6 +653,14 @@ class ConversationOrchestrator:
             checkpoint_every_n_steps=1,
             max_workers=1,
         )
+        uses_custom_answer_only = force_answer_only
+        if uses_custom_answer_only is None:
+            bound_answer_only = getattr(self.answer_only, "__func__", None)
+            uses_custom_answer_only = (
+                bound_answer_only is None
+                or bound_answer_only is not ConversationOrchestrator.answer_only
+            )
+
         deps = {
             "conversation_engine": self.conversation_engine,
             "ref_knowledge_engine": self.ref_knowledge_engine,
@@ -657,6 +676,8 @@ class ConversationOrchestrator:
             "summary_token_threshold": summary_token_threshold,
             "summary_turn_threshold": summary_turn_threshold,
             "token_estimator": token_estimator,
+            "strict_answer_failure": bool(strict_answer_failure),
+            "force_answer_only": bool(uses_custom_answer_only),
             "answer_only": lambda *, conversation_id, prev_turn_meta_summary: (
                 self.answer_only(
                     conversation_id=conversation_id,
@@ -705,6 +726,10 @@ class ConversationOrchestrator:
             run_id=f"add_turn|{turn_node_id}",
         )
         final_state, run_id = run_result.final_state, run_result.run_id
+        if str(getattr(run_result, "status", "")) != "succeeded":
+            raise RuntimeError(
+                f"Workflow add-turn run failed with status={getattr(run_result, 'status', '')!r}"
+            )
         # ----------------------------
         # 6) Map final state to legacy AddTurnResult
         # ----------------------------
@@ -732,7 +757,7 @@ class ConversationOrchestrator:
             mts.get("tail_turn_index", prev_turn_meta_summary.tail_turn_index)
         )
 
-        return AddTurnResult(
+        result = AddTurnResult(
             user_turn_node_id=turn_node_id,
             response_turn_node_id=answer.get("response_node_id"),
             turn_index=new_index,
@@ -746,6 +771,11 @@ class ConversationOrchestrator:
             memory_context_edge_ids=list(mem_pin.get("pinned_edge_ids") or []),
             prev_turn_meta_summary=prev_turn_meta_summary,
         )
+        if strict_answer_failure and not result.response_turn_node_id:
+            raise RuntimeError(
+                "Workflow add-turn completed without materializing an assistant response node."
+            )
+        return result
 
     def __init__(
         self,
@@ -1656,7 +1686,18 @@ class ConversationOrchestrator:
         model_names: Optional[list[str]] = None,
         prev_turn_meta_summary: MetaFromLastSummary,
     ) -> ConversationAIResponse:
-        """Generate an answer for an existing conversation (no new user turn ingestion)."""
+        """Generate an answer from the assembled conversation/KG context.
+
+        This path answers against the current conversation view and pinned KG
+        evidence without requiring the full workflow-driven assistant-turn
+        materialization path. It is the explicit non-agentic/local-development
+        route for "use the KG and current context to answer now".
+
+        In other words, `answer_only(...)` is the direct "answer from the
+        current conversation state plus retrieved knowledge" primitive. It is
+        useful when callers want KG-backed answering without explicitly driving
+        the conversation graph response workflow.
+        """
 
         from .agentic_answering import AgenticAnsweringAgent, AgentConfig
 

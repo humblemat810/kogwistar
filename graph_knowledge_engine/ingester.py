@@ -14,6 +14,7 @@ import json
 from .engine_core.engine import GraphKnowledgeEngine
 from .engine_core.models import Document, Edge, Span as GroundingSpan
 from .engine_core.models import Node
+from .utils.embedding_vectors import normalize_embedding_vector
 
 # --- relation name constants (optional but handy) ---
 REL_SUMMARIZES = "summarizes"  # parent -> child
@@ -345,7 +346,7 @@ class BaseDocumentGraphIngestor:
                 ],
                 doc_id=doc_id,
                 properties={"kind": "document_root"},
-                embedding=embeddings.tolist(),
+                embedding=normalize_embedding_vector(embeddings, allow_none=False),
             )
             self.engine.write.add_node(n, doc_id=doc_id)
         return node_id
@@ -696,7 +697,9 @@ class BaseDocumentGraphIngestor:
                     "level": -1,
                     "source_leaf_id": leaf.id,
                 },
-                embedding=embedding_vector.tolist(),
+                embedding=normalize_embedding_vector(
+                    embedding_vector, allow_none=False
+                ),
             )
             if not self.engine.persist.exists_node(n.id):
                 self.engine.write.add_node(n, doc_id=doc_id)

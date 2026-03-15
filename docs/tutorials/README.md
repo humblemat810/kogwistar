@@ -43,6 +43,7 @@ This ladder remains the fastest execution proof for retrieval behavior.
 | Level 0 | Simple RAG baseline | `scripts/rag_tutorial_ladder.py level0` | ~10-30s | Deterministic answer with non-empty evidence context |
 | Level 1 | Reinforced retrieval orchestration | `scripts/rag_tutorial_ladder.py level1` | ~20-40s | Seeded retrieval changes candidate set under `max_retrieval_level` |
 | Level 2 | Reinforced provenance and pinning | `scripts/rag_tutorial_ladder.py level2` | ~20-50s | `reference_pointer` nodes + `references` edges are materialized |
+| Level 2b | Equivalent v2 conversation path | `scripts/rag_tutorial_ladder.py level2b` | ~20-50s | `add_turn_workflow_v2(...)` produces the same inspectable evidence pointers through the workflow/runtime registry path, with optional live `gemini` / `openai` / `ollama` answering |
 | Level 3 | Reinforced event-sourced loop control | `scripts/claw_runtime_loop.py` | ~1-3m | Inbox/outbox transitions, TTL guardrails, optional CDC stream |
 
 ## Runtime Ladder: Resolver -> Pause/Resume -> CDC -> LangGraph
@@ -61,7 +62,7 @@ This ladder keeps one canonical workflow all the way through:
 
 ## Prerequisites
 
-- Python `3.10+`
+- Python `3.13`
 - Repo dependencies installed, recommended: `pip install -e ".[chroma]"`
 - Run from repo root
 
