@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 from contextlib import contextmanager
 import contextvars
 
@@ -1009,6 +1009,7 @@ class GraphKnowledgeEngine:
         offset_repair_scorer: OffsetRepairScorer | None = None,
         llm_tasks: LLMTaskSet | None = None,
         default_task_provider_config: DefaultTaskProviderConfig | None = None,
+        cache_dir: os.PathLike|str|None = None
     ):
         """
         embedding_function: callable(texts: List[str]) -> List[List[float]].
@@ -1023,7 +1024,7 @@ class GraphKnowledgeEngine:
         self.namespace = namespace
         self.extraction_schema_mode: ExtractionSchemaMode = extraction_schema_mode
         self.offset_repair_scorer: OffsetRepairScorer | None = offset_repair_scorer
-
+        self.cache_dir = cache_dir or self.persist_directory
         self.indexing = IndexingSubsystem(self)
 
         self._uow_ctx_conn: contextvars.ContextVar[object | None] = (
@@ -1214,8 +1215,8 @@ class GraphKnowledgeEngine:
             build_azure_embedding_fn_from_env()
         )
 
-        self.memory = Memory(location=os.path.join(".", ".kg_cache"))
-        self._cached_extract_graph_with_llm = self.memory.cache(
+        self.memory = Memory(location=self.cache_dir or os.path.join(".", ".kg_cache"))
+        self._cached_extract_graph_with_llm = self.memory.cache( # engine owned, use engine cache
             self.extract_graph_with_llm, ignore=["self"]
         )
         self.cached_embed: Optional[Callable[[str], Iterable[float]]] = None

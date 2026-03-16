@@ -23,6 +23,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 import json
+import os
 import pathlib
 import re
 import time
@@ -37,6 +38,8 @@ from graph_knowledge_engine.llm_tasks import (
     RepairCitationsTaskRequest,
 )
 from typing import TYPE_CHECKING
+
+from graph_knowledge_engine.llm_tasks.contracts import AnswerWithCitationsTaskResult
 
 from .models import (
     ConversationEdge,
@@ -410,7 +413,7 @@ class AgenticAnsweringAgent:
 
             # 5) Materialize evidence pack for answering + citation picking
             mem = Memory(
-                location=str(joblib_cache_path("_materialize_evidence_pack"))
+                location=os.path.join(self.cache_dir, "_materialize_evidence_pack")
             )
             cached_call = cache_pydantic_structured(
                 fn=self._materialize_evidence_pack,
@@ -455,7 +458,7 @@ class AgenticAnsweringAgent:
 
             # 6) Generate answer with claim-level citations (SpanRef indices into evidence_pack)
             mem = Memory(
-                location=str(joblib_cache_path("_generate_answer_with_citations"))
+                location=os.path.join(self.cache_dir, "_generate_answer_with_citations")
             )
             cached_call = cache_pydantic_structured(
                 fn=self._generate_answer_with_citations,
@@ -528,7 +531,7 @@ class AgenticAnsweringAgent:
                 evidence_pack_digest=evidence_digest,
             )
             run_step_seq += 1
-            ans = cached_call3(
+            ans3 = cached_call3(
                 agent=self,
                 system_prompt=system_prompt,
                 question=question,
@@ -539,8 +542,8 @@ class AgenticAnsweringAgent:
                 # out_model_schema = AnswerWithCitations.model_json_schema(),
                 # out_model = AnswerWithCitations
             )
-            ans = AnswerWithCitations.model_validate(ans)
-            last_answer = ans
+            ans4 = AnswerWithCitations.model_validate(ans3)
+            last_answer = ans4
 
             # 7) Evaluate sufficiency / need-more-info
             cached_call3 = cache_pydantic_structured(
@@ -659,6 +662,7 @@ class AgenticAnsweringAgent:
         events: Any | None = None,
         trace: bool = True,
         cancel_requested: Callable[[str], bool] | None = None,
+        cache_dir = None
     ) -> dict[str, Any]:
         """Run agentic answering using the workflow runtime.
 
@@ -763,6 +767,7 @@ class AgenticAnsweringAgent:
             turn_node_id=turn_node_id,
             initial_state=init_state,
             run_id=(run_id or f"agentic_answer|{turn_node_id}"),
+            cache_dir=cache_dir
         )
         final_state, rid = run_result.final_state, run_result.run_id
 
@@ -842,6 +847,7 @@ class AgenticAnsweringAgent:
                     "doc": docs[i],
                 }
             )
+        out.sort(key=lambda x: str(x.get("id")))
         return out
 
     def _select_used_evidence(
@@ -1088,7 +1094,8 @@ class AgenticAnsweringAgent:
         evidence_text = "\n".join(lines)
         last_err: Exception | None = None
         for _ in range(int(getattr(agent, "max_retry", 3) or 3)):
-            res = agent.llm_tasks.answer_with_citations(
+            res:AnswerWithCitationsTaskResult = agent.llm_tasks.answer_with_citations(
+                # AnswerWithCitations
                 AnswerWithCitationsTaskRequest(
                     system_prompt=system_prompt,
                     question=question,
@@ -1096,6 +1103,11 @@ class AgenticAnsweringAgent:
                     response_model=out_model,
                 )
             )
+    # AnswerWithCitationsTaskResult(
+    #     answer_payload={"text": "Tutorial answer via Vertex REST", "claims": []},
+    #     raw={"status": "mocked_success", "note": "Use the boilerplate above for real calls"},
+    #     parsing_error=None
+    # )
             if res.parsing_error:
                 last_err = Exception(str(res.parsing_error))
                 continue

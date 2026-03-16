@@ -16,7 +16,7 @@ from graph_knowledge_engine.runtime.runtime import StepContext
 
 
 def test_local_sandbox_basic():
-    sandbox = SimplePythonSandbox()
+    sandbox = SimplePythonSandbox(timeout = 300)
     code = "result = {'state_update': [('u', {'a': state['a'] + 1})]}"
     state = {"a": 1}
     context = {}

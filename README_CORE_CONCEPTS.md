@@ -8,6 +8,8 @@ This repository implements a graph-based knowledge engine where **provenance** a
 The `GraphKnowledgeEngine` (in `graph_knowledge_engine/engine.py`) serves as the base abstraction for the system. It manages the underlying "knowledge graph" or "graph database".
 - **Primitives**: The fundamental units are `Node` and `Edge` (in `graph_knowledge_engine/models.py`).
 - **Provenance-Heavy**: Unlike typical graph databases, every primitive in this system is designed to be **provenance-heavy**. This means nodes and edges carry rich metadata about their origin, including source documents, spans, verification status, and insertion methods.
+- **Leakage Prevention**: All core models use `pydantic-extension`'s `ModeSlicingMixin`. This allows designating specific fields as internal-only (using `ExcludeMode("llm")`), preventing sensitive metadata or backend IDs from leaking into LLM prompts via automated schema generation.
+- **Local-First Performance**: The abstractions map cleanly to embedded databases (SQLite/Chroma) and lightweight local containers, enabling fast experimentation on regular machines while remaining scalable to full deployments.
 
 ## Extensions
 

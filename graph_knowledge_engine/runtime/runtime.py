@@ -1,4 +1,5 @@
 from __future__ import annotations
+from os import PathLike
 import warnings
 
 import time
@@ -309,6 +310,7 @@ class StepContext:
     token_id: str
     attempt: int
     step_seq: int
+    cache_dir: str | PathLike | None
 
     # --- optional provenance (may be None for non-conversational workloads) ---
     conversation_id: str | None = None
@@ -329,7 +331,7 @@ class StepContext:
         default_factory=threading.RLock, init=False, repr=False
     )
     log: BoundLoggerAdapter = field(init=False, repr=False)
-
+    
     def __post_init__(self, state: "WorkflowState") -> None:
         self._state = state
         # bind a correlated logger for resolver-level details
@@ -629,6 +631,7 @@ class WorkflowRuntime:
         workflow_id: str,
         conversation_id: str,
         turn_node_id: str,
+        cache_dir = None
     ) -> RunResult:
         """
         Resumes a suspended workflow run using the results of an externally executed task
@@ -947,6 +950,7 @@ class WorkflowRuntime:
                 turn_node_id=turn_node_id,
                 initial_state=initial_state,
                 run_id=run_id,
+                cache_dir = cache_dir
             )
 
         if new_suspended:
@@ -1021,6 +1025,7 @@ class WorkflowRuntime:
         turn_node_id: str,  # parent run may trigger another run in a node
         initial_state: WorkflowState,
         run_id: Optional[str] = None,
+        cache_dir = None
     ) -> RunResult:
         """
         Returns (final_state, run_id).
@@ -1364,6 +1369,7 @@ class WorkflowRuntime:
                 parent_token_id: str | None,
                 step_seq: int,
                 mask: int,
+                cache_dir : str | PathLike | None = None
             ) -> None:
 
                 t = threading.current_thread()
@@ -1396,6 +1402,7 @@ class WorkflowRuntime:
                                 state=state,
                                 message_queue=mq,
                                 events=self.emitter,
+                                cache_dir=cache_dir,
                             )
                             # step attempt start
                             self.emitter.step_started(ctx.trace_ctx)
@@ -1795,6 +1802,7 @@ class WorkflowRuntime:
                             parent_token_id,
                             step_seq,
                             mask,
+                            cache_dir=cache_dir,
                         )
 
                     try:

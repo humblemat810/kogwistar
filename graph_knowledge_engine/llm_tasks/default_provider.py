@@ -26,7 +26,7 @@ from .contracts import (
 )
 from .errors import ProviderDependencyError
 
-ProviderName = Literal["gemini", "openai"]
+ProviderName = Literal["gemini", "openai", "ollama"]
 
 
 @dataclass(frozen=True)
@@ -39,9 +39,11 @@ class DefaultTaskProviderConfig:
     answer_with_citations_provider: ProviderName = "gemini"
     repair_citations_provider: ProviderName = "gemini"
     gemini_model_name: str = "gemini-2.5-pro"
+    ollama_model_name: str = "qwen3:4b"  # Default for ollama
 
 
 class _Runner:
+    # the abstracted shape for llm provider, override for multimodel or custom behaviour
     def invoke_structured(
         self,
         *,
@@ -144,6 +146,8 @@ class _LangChainRunner(_Runner):
 
 
 def _provider_extra_name(provider: ProviderName) -> str:
+    if provider == "ollama":
+        return "ollama"
     return "gemini" if provider == "gemini" else "openai"
 
 
@@ -168,6 +172,18 @@ def _build_runner(provider: ProviderName, config: DefaultTaskProviderConfig) -> 
                 max_tokens=None,
                 timeout=None,
                 max_retries=2,
+            )
+        )
+
+    if provider == "ollama":
+        try:
+            from langchain_ollama import ChatOllama
+        except Exception:
+            return _MissingRunner(_missing_provider_message(provider))
+        return _LangChainRunner(
+            ChatOllama(
+                model=config.ollama_model_name,
+                temperature=0.1,
             )
         )
 
@@ -527,6 +543,7 @@ def build_default_llm_tasks(
     }
 
     def _runner_for_provider(provider: ProviderName) -> _Runner:
+        # get llm configured
         if provider not in runner_cache:
             runner_cache[provider] = _build_runner(provider, cfg)
         return runner_cache[provider]

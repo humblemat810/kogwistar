@@ -31,89 +31,7 @@ from graph_knowledge_engine.engine_core.postgres_backend import PgVectorBackend
 # -----------------------
 # Minimal embedding func
 # -----------------------
-class FakeEmbeddingFunction(EmbeddingFunction):
-    @staticmethod
-    def name() -> str:
-        return "default"
-
-    def __init__(self, dim: int = 384):
-        self._dim = dim
-
-    def __call__(self, documents_or_texts: Sequence[str]) -> Embeddings:
-        return [[0.01] * self._dim for _ in documents_or_texts]
-
-
-def _make_engine_pair(
-    *, backend_kind: str, tmp_path, sa_engine, pg_schema, dim: int = 384
-):
-    if backend_kind == "chroma":
-        kg_engine = GraphKnowledgeEngine(
-            persist_directory=str(tmp_path / "kg"),
-            kg_graph_type="knowledge",
-            embedding_function=FakeEmbeddingFunction(dim=dim),
-        )
-        conv_engine = GraphKnowledgeEngine(
-            persist_directory=str(tmp_path / "conv"),
-            kg_graph_type="conversation",
-            embedding_function=FakeEmbeddingFunction(dim=dim),
-        )
-        return kg_engine, conv_engine
-
-    if backend_kind == "pg":
-        if sa_engine is None or pg_schema is None:
-            pytest.skip(
-                "pg backend requested but sa_engine/pg_schema fixtures not available"
-            )
-        kg_schema = f"{pg_schema}_kg"
-        conv_schema = f"{pg_schema}_conv"
-        kg_backend = PgVectorBackend(
-            engine=sa_engine, embedding_dim=dim, schema=kg_schema
-        )
-        conv_backend = PgVectorBackend(
-            engine=sa_engine, embedding_dim=dim, schema=conv_schema
-        )
-        kg_engine = GraphKnowledgeEngine(
-            persist_directory=str(tmp_path / "kg_meta"),
-            kg_graph_type="knowledge",
-            embedding_function=FakeEmbeddingFunction(dim=dim),
-            backend=kg_backend,
-        )
-        conv_engine = GraphKnowledgeEngine(
-            persist_directory=str(tmp_path / "conv_meta"),
-            kg_graph_type="conversation",
-            embedding_function=FakeEmbeddingFunction(dim=dim),
-            backend=conv_backend,
-        )
-        return kg_engine, conv_engine
-
-    raise ValueError(f"unknown backend_kind: {backend_kind!r}")
-
-
-def _make_workflow_engine(
-    *, backend_kind: str, tmp_path, sa_engine, pg_schema, dim: int = 384
-) -> GraphKnowledgeEngine:
-    if backend_kind == "chroma":
-        return GraphKnowledgeEngine(
-            persist_directory=str(tmp_path / "wf"),
-            kg_graph_type="workflow",
-            embedding_function=FakeEmbeddingFunction(dim=dim),
-        )
-    if backend_kind == "pg":
-        if sa_engine is None or pg_schema is None:
-            pytest.skip(
-                "pg backend requested but sa_engine/pg_schema fixtures not available"
-            )
-        wf_schema = f"{pg_schema}_wf"
-        wf_backend = PgVectorBackend(
-            engine=sa_engine, embedding_dim=dim, schema=wf_schema
-        )
-        return GraphKnowledgeEngine(
-            persist_directory=str(tmp_path / "wf_meta"),
-            kg_graph_type="workflow",
-            embedding_function=FakeEmbeddingFunction(dim=dim),
-            backend=wf_backend,
-        )
-    raise ValueError(f"unknown backend_kind: {backend_kind!r}")
+from tests.conftest import _make_engine_pair, _make_workflow_engine, FakeEmbeddingFunction
 
 
 def _mk_span(doc_id: str, excerpt: str) -> Span:
@@ -328,8 +246,16 @@ def _deterministic_answer_impl(
 
 
 @pytest.mark.parametrize("backend_kind", ["chroma", "pg"])
+@pytest.mark.parametrize(
+    "llm_provider_name", ["gemini", "ollama"], indirect=True
+)
 def test_conversation_flow_v2_end_to_end_cached_llm(
-    backend_kind: str, tmp_path, sa_engine, pg_schema
+    backend_kind: str,
+    tmp_path,
+    sa_engine,
+    pg_schema,
+    llm_tasks,
+    llm_provider_name,
 ):
     """True E2E: call ConversationOrchestrator.add_conversation_turn_workflow_v2.
 
@@ -371,6 +297,7 @@ def test_conversation_flow_v2_end_to_end_cached_llm(
         conversation_engine,
         knowledge_engine=kg_engine,
         workflow_engine=workflow_engine,
+        llm_tasks=llm_tasks,
     )
     orc = svc.orchestrator
     orc.tool_runner.tool_call_id_factory = stable_id

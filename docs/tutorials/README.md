@@ -19,6 +19,8 @@ Use [docs/LEARNING_PATH.md](../LEARNING_PATH.md) as the main entrypoint. This pa
 - [13 How to Test This Repo](./13_how_to_test_this_repo.md)
 - [14 Architecture Deep Dive](./14_architecture_deep_dive.md)
 - [15 Historical Search With Tombstone and Redirect](./15_historical_search_tombstone_redirect.md)
+- [16 Leakage Prevention with Model Slicing](./16_leakage_prevention_with_model_slicing.md)
+- [17 Custom LLM Provider (Registry Style)](./17_custom_llm_provider.md)
 
 ## VS Code Companion Files
 

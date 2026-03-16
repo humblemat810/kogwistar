@@ -92,6 +92,7 @@ class ConversationService:
         *,
         knowledge_engine: "GraphKnowledgeEngine | None" = None,
         workflow_engine: "GraphKnowledgeEngine | None" = None,
+        llm_tasks: LLMTaskSet | None = None,
     ) -> "ConversationService":
         cache = getattr(conversation_engine, "_conversation_service_cache", None)
         if cache is None:
@@ -100,7 +101,8 @@ class ConversationService:
 
         ke = knowledge_engine or conversation_engine
         we = workflow_engine
-        key = (id(ke), id(we), id(conversation_engine.llm_tasks))
+        tasks = llm_tasks or conversation_engine.llm_tasks
+        key = (id(ke), id(we), id(tasks))
         svc = cache.get(key)
         if svc is not None:
             return svc
@@ -109,7 +111,7 @@ class ConversationService:
             conversation_engine=conversation_engine,
             knowledge_engine=ke,
             workflow_engine=we,
-            llm_tasks=conversation_engine.llm_tasks,
+            llm_tasks=tasks,
         )
         cache[key] = svc
         return svc

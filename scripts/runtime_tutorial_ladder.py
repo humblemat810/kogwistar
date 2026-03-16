@@ -1117,6 +1117,7 @@ def build_sandbox_runtime(
     @resolver.register("python_exec", is_sandboxed=True)
     def _python_exec(ctx: StepContext):
         proposed_code = (
+            # "exec(state.get('code', ''))"
             "result = {\n"
             "  'conversation_node_id': None,\n"
             "  'state_update': [\n"
@@ -1184,6 +1185,7 @@ def level4_sandboxed_ops(data_dir: Path) -> dict[str, Any]:
         conversation_id=CONVERSATION_ID,
         turn_node_id=TURN_NODE_ID,
         initial_state={
+            "code" : "print('can be Bomb!')",
             "conversation_id": CONVERSATION_ID,
             "user_id": "tutorial-user",
             "turn_node_id": TURN_NODE_ID,

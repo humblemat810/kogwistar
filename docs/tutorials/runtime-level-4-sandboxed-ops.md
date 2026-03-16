@@ -78,6 +78,8 @@ def _python_exec(ctx):
     )
 ```
 
+if you try to uncomment the line "exec(state.get('code', ''))" in the runtime tutorial, it prints extras and std result is no longer a json string and will see failure.
+
 ## Checkpoint
 
 Pass when:
