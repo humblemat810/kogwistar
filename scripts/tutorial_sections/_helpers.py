@@ -19,7 +19,34 @@ from graph_knowledge_engine.engine_core.models import (
     MentionVerification,
     Span,
 )
+import re
+import math
+from typing import Sequence
+import hashlib
+class LexicalHashEmbeddingFunction:
+    """Small deterministic lexical embedder for tutorial reproducibility."""
 
+    def __init__(self, dim: int = 96) -> None:
+        self._dim = dim
+
+    @staticmethod
+    def name() -> str:
+        return "tutorial-lexical-hash-v1"
+
+    def __call__(self, input: Sequence[str]) -> list[list[float]]:
+        vectors: list[list[float]] = []
+        for text in input:
+            v = [0.0] * self._dim
+            tokens = re.findall(r"[a-z0-9_]+", str(text or "").lower())
+            for tok in tokens:
+                idx = (
+                    int(hashlib.sha256(tok.encode("utf-8")).hexdigest()[:8], 16)
+                    % self._dim
+                )
+                v[idx] += 1.0
+            norm = math.sqrt(sum(x * x for x in v)) or 1.0
+            vectors.append([x / norm for x in v])
+        return vectors
 
 def reset_data_dir(name: str) -> Path:
     path = DATA_ROOT / name

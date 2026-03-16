@@ -13,6 +13,19 @@
             "args": ["level4"]
         },
         {
+            "name": "Python rag_tutorial_ladder: level 2b",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "scripts/rag_tutorial_ladder.py",
+            "console": "integratedTerminal",
+            "args": ["level2b", 
+                    "--data-dir", ".gke-data/tutorial-ladder", 
+                    "--question", "Answer from the collected evidence pack.", 
+                    "--max-retrieval-level", "2", 
+                    "--llm-provider", "ollama", 
+                    "--llm-model", "qwen3:4b"]
+        },
+        {
             "name": "Python Debugger: Claw Tutorial",
             "type": "debugpy",
             "cwd": "${workspaceFolder}",

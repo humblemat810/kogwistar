@@ -1,5 +1,5 @@
 # RAG Level 0: Simple RAG Baseline
-
+##### p.s. This repository is much more than just rag, but RAG is an instant gratification quick start if you are coming for better RAG results.
 Goal: prove end-to-end retrieval and answering with the smallest mental model.
 
 ## What You Will Build
@@ -14,11 +14,10 @@ This level removes fear early. It proves the repo can answer a question from per
 
 ## Quick Run
 
-```powershell
-python scripts/rag_tutorial_ladder.py level0 `
-  --data-dir .gke-data/tutorial-ladder `
-  --question "How does this repo implement simple RAG?"
+```bash
+python scripts/rag_tutorial_ladder.py level0   --data-dir .gke-data/tutorial-ladder   --question "How does this repo implement simple RAG?"
 ```
+Note that the retrieval and embedding is real, the llm round is precompiled to save llm token.
 
 Expected output fields:
 

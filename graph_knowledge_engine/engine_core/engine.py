@@ -416,6 +416,11 @@ class GraphKnowledgeEngine:
 
     Methods are generally arranged from low-level generic helpers to task-specific calls.
     High-level orchestration for extracting, storing, and adjudicating knowledge graph data.
+    
+    As a facade core, when a few small function start to cohere, or one single large method appear,
+    they then should be moved to a new cluster subsystem/group/module. To prevent premature clustering and 
+    unstable subsystem clustering.
+    
     """
 
     # --------------------

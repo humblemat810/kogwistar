@@ -8,13 +8,15 @@ This guide is for running the backend by itself (no Designer app integration).
 - `pip`
 - (Optional) Docker Desktop for container setup
 
+## 1.5) [Hypergraph-RAG QA example](./docs/tutorials/level-0-simple-rag.md)
+
 ## 2) Local Setup (No Docker)
 
 From repo root:
 
-```powershell
+```bash
 python -m venv .venv
-. .\.venv\Scripts\Activate.ps1
+. ./.venv/Scripts/Activate
 pip install -e ".[chroma]"
 ```
 
@@ -30,7 +32,7 @@ GKE_PERSIST_DIRECTORY=./.gke-data
 
 Start server:
 
-```powershell
+```
 knowledge-mcp
 ```
 
@@ -90,7 +92,7 @@ docker compose down
 - If auth calls fail, confirm `AUTH_MODE=dev` in your running process/container.
 - If you previously changed auth schema, remove stale local `auth.sqlite` and restart.
 
-## 7) Standalone Claw-Style Runtime Loop (No Server)
+## 7) Standalone Claw-Style Runtime Loop (No Web Server, loop count capped)
 
 This uses a custom resolver + `WorkflowRuntime` wrapper script, with persistent input events in SQLite.
 
