@@ -14,10 +14,10 @@ This is the first concrete example of "graph RAG" behaving differently from flat
 
 ## Quick Run
 
-```powershell
-python scripts/rag_tutorial_ladder.py level1 `
-  --data-dir .gke-data/tutorial-ladder `
-  --question "How does architecture reinforce retrieval?" `
+```bash
+python scripts/rag_tutorial_ladder.py level1 \
+  --data-dir .gke-data/tutorial-ladder \
+  --question "How does architecture reinforce retrieval?" \
   --max-retrieval-level 2
 ```
 
@@ -26,6 +26,8 @@ Expected output fields:
 - `"seed_kg_node_ids"`: non-empty list
 - `"added_by_seed"`: candidate IDs that only appear when seeded expansion is enabled
 - `"checkpoint_pass": true`
+
+As you notice, you can retrieve nearby ideas by graph-neighbourhood and proceed.
 
 ## Inspect The Result
 

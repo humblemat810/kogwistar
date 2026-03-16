@@ -38,37 +38,41 @@ from graph_knowledge_engine.engine_core.models import (
 from graph_knowledge_engine.llm_tasks import (
     AnswerWithCitationsTaskRequest,
     AnswerWithCitationsTaskResult,
+    DefaultTaskProviderConfig,
     LLMTaskProviderHints,
     LLMTaskSet,
     RepairCitationsTaskRequest,
     RepairCitationsTaskResult,
+    SummarizeContextTaskRequest,
+    SummarizeContextTaskResult,
+    build_default_llm_tasks,
 )
 
+from scripts.tutorial_sections._helpers import LexicalHashEmbeddingFunction
+# class LexicalHashEmbeddingFunction:
+#     """Small deterministic lexical embedder for tutorial reproducibility."""
 
-class LexicalHashEmbeddingFunction:
-    """Small deterministic lexical embedder for tutorial reproducibility."""
+#     def __init__(self, dim: int = 96) -> None:
+#         self._dim = dim
 
-    def __init__(self, dim: int = 96) -> None:
-        self._dim = dim
+#     @staticmethod
+#     def name() -> str:
+#         return "tutorial-lexical-hash-v1"
 
-    @staticmethod
-    def name() -> str:
-        return "tutorial-lexical-hash-v1"
-
-    def __call__(self, input: Sequence[str]) -> list[list[float]]:
-        vectors: list[list[float]] = []
-        for text in input:
-            v = [0.0] * self._dim
-            tokens = re.findall(r"[a-z0-9_]+", str(text or "").lower())
-            for tok in tokens:
-                idx = (
-                    int(hashlib.sha256(tok.encode("utf-8")).hexdigest()[:8], 16)
-                    % self._dim
-                )
-                v[idx] += 1.0
-            norm = math.sqrt(sum(x * x for x in v)) or 1.0
-            vectors.append([x / norm for x in v])
-        return vectors
+#     def __call__(self, input: Sequence[str]) -> list[list[float]]:
+#         vectors: list[list[float]] = []
+#         for text in input:
+#             v = [0.0] * self._dim
+#             tokens = re.findall(r"[a-z0-9_]+", str(text or "").lower())
+#             for tok in tokens:
+#                 idx = (
+#                     int(hashlib.sha256(tok.encode("utf-8")).hexdigest()[:8], 16)
+#                     % self._dim
+#                 )
+#                 v[idx] += 1.0
+#             norm = math.sqrt(sum(x * x for x in v)) or 1.0
+#             vectors.append([x / norm for x in v])
+#         return vectors
 
 
 def _now_id(prefix: str) -> str:
@@ -303,7 +307,7 @@ def _build_provider_task_set(
             parsing_error=parsing_error,
         )
 
-    answer_hint = provider_key if provider_key in {"gemini", "openai"} else "custom"
+    answer_hint = provider_key if provider_key in {"gemini", "openai", "ollama"} else "custom"
     hints = LLMTaskProviderHints(
         extract_graph_provider=base_tasks.provider_hints.extract_graph_provider,
         adjudicate_pair_provider=base_tasks.provider_hints.adjudicate_pair_provider,
@@ -667,11 +671,38 @@ def run_level0(data_dir: Path, question: str) -> dict[str, Any]:
         include=["metadatas", "documents", "embeddings"],
     )[0]
     evidence = [{"id": n.id, "summary": n.summary} for n in retrieved[:3]]
-    answer = (
-        "Answer (tutorial baseline): "
-        + " ".join([str(e["summary"]) for e in evidence[:2]])
-        + " This response is grounded in retrieved graph evidence."
-    ).strip()
+    answer = None
+    ##### Optional: real LLM call (uncomment if you have a local model running)
+    #####
+    ##### Requires: pip install langchain-ollama
+    
+    # from langchain_ollama import ChatOllama
+    
+    # ollama_model = ChatOllama(
+    #     model="qwen3:4b",
+    #     temperature=0.1,
+    #     base_url="http://localhost:11434"
+    # )
+    
+    # context = "\n".join(e["summary"] for e in evidence)
+    # prompt = f"""
+    # Answer the question using the provided evidence paraphrased.
+    
+    # Question:
+    # {question}
+    
+    # Evidence:
+    # {context}
+    # """
+    
+    # answer = ollama_model.invoke(prompt).content
+    
+    if answer is None:
+        answer = (
+            "Answer (tutorial baseline): "
+            + " ".join([str(e["summary"]) for e in evidence[:2]])
+            + " This response is grounded in retrieved graph evidence."
+        ).strip()
     return {
         "level": 0,
         "question": question,
@@ -867,13 +898,27 @@ def run_level2b(
     kg_engine, conv_engine, workflow_engine = _ensure_seed_with_workflow(data_dir)
     provider_key = str(llm_provider or "deterministic").strip().lower()
     resolved_model_name = ""
-    llm_tasks = conv_engine.llm_tasks
+    
+    
+    
     if provider_key != "deterministic":
+
+        if provider_key == "ollama":
+            config = DefaultTaskProviderConfig(summarize_context_provider=provider_key,
+                                    answer_with_citations_provider=provider_key,
+                                    repair_citations_provider=provider_key)
+            from dataclasses import replace
+            config = replace(config, ollama_model_name="qwen3:4b")
+            llm_tasks = build_default_llm_tasks(config=config)
+            conv_engine.llm_tasks = llm_tasks
         llm_tasks, resolved_model_name = _build_provider_task_set(
             base_tasks=conv_engine.llm_tasks,
             provider=provider_key,
             model_name=llm_model,
         )
+    # else:
+        
+
     svc = ConversationService(
         conversation_engine=conv_engine,
         knowledge_engine=kg_engine,
@@ -906,7 +951,6 @@ def run_level2b(
 
     if provider_key == "deterministic":
         svc.orchestrator.answer_only = answer_only_harness
-
     add_result = svc.add_turn_workflow_v2(
         run_id="run-demo-v2",
         user_id="demo-user",
@@ -923,6 +967,7 @@ def run_level2b(
         max_workers=1,
         strict_answer_failure=(provider_key != "deterministic"),
         force_answer_only=(provider_key == "deterministic"),
+        cache_dir=data_dir / "run_level_2b"
     )
 
     transcript = svc.get_conversation_view(

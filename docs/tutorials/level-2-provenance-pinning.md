@@ -1,5 +1,9 @@
 # RAG Level 2: Reinforced Provenance and Pinning
 
+Note that everytime rerunning, it is recommended default datadir (.gke-data) to be deleted to restart from fresh,
+Each run should fresh a new id but for this tutorial a easy to read run id is applied.
+The default config hold strong invariant on certain part of graph ontology (structure) that rerun with the same run id
+
 Goal: materialize inspectable evidence references in the conversation graph.
 
 ## What You Will Build
@@ -10,56 +14,65 @@ You will create a user turn, select evidence, and project that evidence into the
 
 This is where the repo's provenance story becomes visible. Instead of only saying "the answer used these facts," the system writes graph artifacts you can inspect later.
 
+## Some concepts
+Knowledge data stays in knowledge graph, and is pinned and projected as reference in the conversation graph. The nodes on conversation graph are then further selected as evidence pack and 
+
 ## Run or Inspect
 
 ## Quick Run
 
-```powershell
-python scripts/rag_tutorial_ladder.py level2 `
-  --data-dir .gke-data/tutorial-ladder `
-  --question "Show evidence and provenance for retrieval decisions." `
+```bash
+python scripts/rag_tutorial_ladder.py level2 \
+  --data-dir .gke-data/tutorial-ladder \
+  --question "Show evidence and provenance for retrieval decisions." \
   --max-retrieval-level 2
 ```
 
+The knowledge and memory are pinned down as nodes on the conversation graph. The pinned knowledge and memories are then selected and filtered (via llm or reranker or whatsoever customizable) and can be used to answer llm result. Everything is on the graph to trace provenance.
+
+You can also design your own conversation graph pipelines with or without a runtime. Event source provenance is still preserved. 
+The above is a serials of method calls within the library while
+below shows the same default pipeline steps via runtime primitives.
+
 Equivalent workflow-driven v2 path:
 
-```powershell
-python scripts/rag_tutorial_ladder.py level2b `
-  --data-dir .gke-data/tutorial-ladder `
-  --question "Show the equivalent provenance flow through add_turn_workflow_v2." `
+```bash
+python scripts/rag_tutorial_ladder.py level2b \
+  --data-dir .gke-data/tutorial-ladder \
+  --question "Show the equivalent provenance flow through add_turn_workflow_v2." \
   --max-retrieval-level 2
 ```
 
 Live LLM answer with Gemini:
 
-```powershell
-python scripts/rag_tutorial_ladder.py level2b `
-  --data-dir .gke-data/tutorial-ladder `
-  --question "Answer from the collected evidence pack." `
-  --max-retrieval-level 2 `
-  --llm-provider gemini `
+```bash
+python scripts/rag_tutorial_ladder.py level2b \
+  --data-dir .gke-data/tutorial-ladder \
+  --question "Answer from the collected evidence pack." \
+  --max-retrieval-level 2 \
+  --llm-provider gemini \
   --llm-model gemini-2.5-flash
 ```
 
 Live LLM answer with OpenAI:
 
-```powershell
-python scripts/rag_tutorial_ladder.py level2b `
-  --data-dir .gke-data/tutorial-ladder `
-  --question "Answer from the collected evidence pack." `
-  --max-retrieval-level 2 `
-  --llm-provider openai `
+```bash
+python scripts/rag_tutorial_ladder.py level2b \
+  --data-dir .gke-data/tutorial-ladder \
+  --question "Answer from the collected evidence pack." \
+  --max-retrieval-level 2 \
+  --llm-provider openai \
   --llm-model gpt-4.1-mini
 ```
 
 Live LLM answer with Ollama:
 
-```powershell
-python scripts/rag_tutorial_ladder.py level2b `
-  --data-dir .gke-data/tutorial-ladder `
-  --question "Answer from the collected evidence pack." `
-  --max-retrieval-level 2 `
-  --llm-provider ollama `
+```bash
+python scripts/rag_tutorial_ladder.py level2b \
+  --data-dir .gke-data/tutorial-ladder \
+  --question "Answer from the collected evidence pack." \
+  --max-retrieval-level 2 \
+  --llm-provider ollama \
   --llm-model qwen3:4b
 ```
 
@@ -69,12 +82,12 @@ shown in the terminal when a pull is required.
 
 If you want the smallest local option, swap the model to `phi4-mini`:
 
-```powershell
-python scripts/rag_tutorial_ladder.py level2b `
-  --data-dir .gke-data/tutorial-ladder `
-  --question "Answer from the collected evidence pack." `
-  --max-retrieval-level 2 `
-  --llm-provider ollama `
+```bash
+python scripts/rag_tutorial_ladder.py level2b \
+  --data-dir .gke-data/tutorial-ladder \
+  --question "Answer from the collected evidence pack." \
+  --max-retrieval-level 2 \
+  --llm-provider ollama \
   --llm-model phi4-mini
 ```
 

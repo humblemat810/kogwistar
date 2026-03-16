@@ -26,7 +26,7 @@ from .contracts import (
 )
 from .errors import ProviderDependencyError
 
-ProviderName = Literal["gemini", "openai", "ollama"]
+ProviderName = Literal["gemini", "openai", "ollama"] # add your own
 
 
 @dataclass(frozen=True)

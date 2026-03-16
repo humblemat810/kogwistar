@@ -12,10 +12,8 @@ from typing import Any, Dict, List, Literal, Optional
 try:
     from dotenv import load_dotenv
 except ModuleNotFoundError:
-
     def load_dotenv(*args, **kwargs):
         return False
-
 
 from fastapi import APIRouter, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -104,7 +102,6 @@ except ModuleNotFoundError as exc:
 
 mcp_app = mcp.http_app(path="/mcp")
 
-
 @asynccontextmanager
 async def combined_lifespan(app: FastAPI):
     if (
@@ -162,7 +159,6 @@ async def combined_lifespan(app: FastAPI):
     async with mcp_app.lifespan(app):
         yield
 
-
 app = FastAPI(title="KnowledgeEngine + MCP + Admin", lifespan=combined_lifespan)
 set_auth_app(app)
 
@@ -202,12 +198,10 @@ app.include_router(
 )
 app.include_router(auth_router)
 
-
 class DevTokenInp(BaseModel):
     username: str = "dev"
     role: str = "ro"
     ns: Literal["docs", "conversation", "workflow", "wisdom"] = "docs"
-
 
 @app.post("/auth/dev-token")
 async def dev_token(request: Request):
@@ -226,7 +220,6 @@ async def dev_token(request: Request):
     payload = {k: v for k, v in payload.items() if v is not None}
     token = jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALG)
     return {"token": token}
-
 
 def _designer_resolver_candidates(service: Any) -> list[Any]:
     candidates: list[Any] = []
@@ -268,7 +261,6 @@ def _designer_resolver_candidates(service: Any) -> list[Any]:
                 raise
 
     return candidates
-
 
 def _designer_runtime_capabilities() -> dict[str, Any]:
     builtin_ops: set[str] = set()
@@ -375,7 +367,6 @@ def _designer_runtime_capabilities() -> dict[str, Any]:
         "state_schema": dict(sorted(state_schema.items())),
     }
 
-
 @app.get("/designer/capabilities")
 def designer_capabilities():
     require_role("ro")
@@ -442,7 +433,6 @@ def health():
         if storage_settings.backend == "pg"
         else None,
     }
-
 
 # DELETE /admin/doc/{doc_id}  (non-MCP utility)
 @app.delete("/admin/doc/{doc_id}")
@@ -511,7 +501,6 @@ def admin_delete_doc(doc_id: str):
         "deleted": {"nodes": len(node_ids), "edges": len(edge_ids)},
     }
 
-
 # http://localhost:28110/api/viz/d3.json?doc_id=pytest-doc-upsert-1&mode=reify
 # http://localhost:28110/api/viz/d3.json?doc_id=&mode=reify
 @app.get("/api/viz/cytoscape.json")
@@ -534,7 +523,6 @@ def api_viz_cytoscape(
         use_engine, doc_id=doc_id, mode=mode, insertion_method=insertion_method
     )
     return JSONResponse(payload)
-
 
 @app.get("/viz/d3.bundle", response_class=HTMLResponse)
 def viz_d3_bundle(
@@ -579,7 +567,6 @@ def viz_d3_bundle(
         },
     )
 
-
 @app.get("/api/viz/d3.json")
 def api_viz_d3(
     doc_id: Optional[str] = None,
@@ -602,21 +589,16 @@ def api_viz_d3(
     )
     return JSONResponse(payload)
 
-
 class DocumentGraphProposal(BaseModel):
     doc_id: str
     insertion_method: str = "document_parser_v1"
     nodes: List[Dict[str, Any]]
     edges: List[Dict[str, Any]] = []
 
-
 class DocumentGraphValidationResult(BaseModel):
     ok: bool
     node_errors: Dict[str, str] = {}
     edge_errors: Dict[str, str] = {}
-
-
-
 
 @app.post("/api/document.validate_graph", response_model=DocumentGraphValidationResult)
 async def document_validate_graph(payload: DocumentGraphProposal):
@@ -670,9 +652,6 @@ async def document_validate_graph(payload: DocumentGraphProposal):
         ok=ok, node_errors=node_errors, edge_errors=edge_errors
     )
 
-
-
-
 class GraphUpsertLLMIn(BaseModel):
     """
     Strict LLM-conformant upsert:
@@ -696,14 +675,12 @@ class GraphUpsertLLMIn(BaseModel):
         default_factory=list, description="LLMEdge['llm']-shaped dicts"
     )
 
-
 class DocumentGraphUpsertOut(BaseModel):
     document_id: str
     node_ids: List[str]
     edge_ids: List[str]
     nodes_added: int
     edges_added: int
-
 
 @app.post("/api/graph/upsert", response_model=DocumentGraphUpsertOut)
 def api_graph_upsert_llm(inp: GraphUpsertLLMIn):
@@ -798,7 +775,6 @@ def api_graph_upsert_llm(inp: GraphUpsertLLMIn):
         edges_added=persisted["edges_added"],
     )
 
-
 class DocumentGraphUpsert(BaseModel):
     doc_id: str
     insertion_method: str = "document_parser_v1"
@@ -812,17 +788,14 @@ class DocumentGraphUpsertResult(BaseModel):
     inserted_edges: int
     engine_result: Dict[str, Any] | None = None
 
-
 class DocumentUpsert(BaseModel):
     doc_id: str
     doc_type: str
     insertion_method: str = "document_parser_v1"
     content: str  # json string
 
-
 class DocumentUpsertResult(BaseModel):
     status: str
-
 
 @app.post("/api/document")
 async def document_upsert(inp: DocumentUpsert, response_model=DocumentUpsertResult):
@@ -852,7 +825,6 @@ async def document_upsert(inp: DocumentUpsert, response_model=DocumentUpsertResu
         doc.metadata["insertion_method"] = inp.insertion_method
     eng.write.add_document(doc)
 
-
 @app.post("/api/document.upsert_tree", response_model=DocumentGraphUpsertResult)
 async def document_upsert_tree(payload: DocumentGraphUpsert):
     """Upsert a generic tree with document root, use only when complete control of all backend fields are clearly known."""
@@ -880,8 +852,6 @@ async def document_upsert_tree(payload: DocumentGraphUpsert):
         inserted_edges=len(payload.edges),
         engine_result=res,
     )
-
-
 class KGUpsertIn(BaseModel):
     """
     Strict LLM-conformant upsert:
@@ -902,14 +872,11 @@ class KGUpsertIn(BaseModel):
     edges: List[Dict[str, Any]] = Field(
         default_factory=list, description="PureEdge-shaped dicts"
     )
-
-
 class GraphUpsertOut(BaseModel):
     node_ids: List[str]
     edge_ids: List[str]
     nodes_added: int
     edges_added: int
-
 
 @app.get("/viz/cytoscape", response_class=HTMLResponse)
 def viz_cytoscape(
@@ -928,7 +895,6 @@ def viz_cytoscape(
         },
     )
 
-
 @app.get("/viz/d3", response_class=HTMLResponse)
 def viz_d3(
     request: Request,
@@ -945,7 +911,6 @@ def viz_d3(
             "insertion_method": insertion_method,
         },
     )
-
 
 @app.get("/viz/go", response_class=HTMLResponse)
 def viz_go(
@@ -964,10 +929,7 @@ def viz_go(
         },
     )
 
-
 from pydantic import BaseModel
-
-
 class IndexingItem(BaseModel):
     node_id: str
     canonical_title: str
@@ -976,30 +938,10 @@ class IndexingItem(BaseModel):
     provision: str
     doc_id: Optional[str]
 
-
-def _safe_upsert_fts(cur, idx_id, item):
-    kw = " ".join(item.keywords) if item.keywords else ""
-    al = " ".join(item.aliases) if item.aliases else ""
-    try:
-        cur.execute("DELETE FROM semantic_index_fts WHERE rowid = ?", (idx_id,))
-        cur.execute(
-            """
-            INSERT INTO semantic_index_fts (rowid, canonical_title, keywords, aliases, provision)
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            (idx_id, item.canonical_title, kw, al, item.provision),
-        )
-    except sqlite3.DatabaseError as e:
-        # mark to rebuild later, but don't kill the whole request
-        print("WARNING: FTS table bad / missing, need rebuild:", e)
-        # you could set a flag in another table, or just skip
-
-
 @app.post("/api/add_index_entries")
 def add_index_entries(payload: AddIndexEntriesInput):
     engine.get().search_index.upsert_entries(payload.index)
     return {"ok": True}
-
 
 @app.get("/api/search_index_hybrid")
 def search_index_hybrid(q: str, limit: int = 10, resolve_node: bool = False):
@@ -1009,10 +951,8 @@ def search_index_hybrid(q: str, limit: int = 10, resolve_node: bool = False):
         resolve_node=resolve_node,
     )
 
-
 # Mount the MCP server
 app.mount("/", mcp_app)
-
 
 # Run with:
 #   uvicorn server_mcp_with_admin:app --port 28110
