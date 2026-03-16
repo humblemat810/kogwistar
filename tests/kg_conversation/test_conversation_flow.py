@@ -57,7 +57,7 @@ class FakeEmbeddingFunction(EmbeddingFunction):
         return self._emb(documents_or_texts)
 
 
-from tests.conftest import _make_engine_pair
+from tests._helpers.engine_factories import _make_engine_pair#, FakeEmbeddingFunction
 # def _make_engine_pair(*, backend_kind: str, tmp_path, sa_engine, pg_schema, dim: int = 3):
 #     """
 #     Build (kg_engine, conv_engine) for either chroma or the pg-backed path.
@@ -102,7 +102,17 @@ def cached(memory: Memory, fn: Callable[P, R], *args, **kwargs) -> Callable[P, R
 
 
 @pytest.mark.parametrize("backend_kind", ["chroma", "pg"])
-def test_conversation_flow(backend_kind: str, tmp_path, sa_engine, pg_schema):
+@pytest.mark.parametrize(
+    "llm_provider_name", ["gemini", "ollama"], indirect=True
+)
+def test_conversation_flow(
+    backend_kind: str,
+    tmp_path,
+    sa_engine,
+    pg_schema,
+    llm_tasks,
+    llm_provider_name,
+):
     engine, conversation_engine = _make_engine_pair(
         backend_kind=backend_kind,
         tmp_path=tmp_path,
@@ -126,6 +136,7 @@ def test_conversation_flow(backend_kind: str, tmp_path, sa_engine, pg_schema):
     svc = ConversationService.from_engine(
         conversation_engine,
         knowledge_engine=engine,
+        llm_tasks=llm_tasks,
     )
     orc = svc.orchestrator
     orc.tool_runner.tool_call_id_factory = my_factory

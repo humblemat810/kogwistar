@@ -60,8 +60,9 @@ Today the repo implements graph memory and query, workflow design/runtime, prove
 
 ## Application Best Fit
 
-- A strong base platform for teams building audit-heavy business or enterprise systems.
+- A strong base platform for building audit-heavy systems, ranging from local personal agents to scalable AI backends.
 - Best suited for use cases where provenance, replay, lifecycle-aware retrieval, and workflow history matter.
+- Designed to run efficiently on normal local machines (via SQLite/Chroma or lightweight Docker with PostgreSQL/pgvector).
 - A foundation repo, not yet a finished enterprise product.
 
 ## Security Support
@@ -83,8 +84,8 @@ Today the repo implements graph memory and query, workflow design/runtime, prove
 ## Why This Repo Exists
 
 - Raise the engineering bar for graph-native agent systems.
-- Avoid every team rebuilding the same retrieval, memory, workflow, and provenance stack from scratch.
-- Provide a reusable foundation where those concerns are already structurally integrated.
+- Lower the barrier to entry for building high-quality agent memory and execution layers on normal local hardware.
+- Provide a reusable foundation where retrieval, memory, workflow, and provenance are already structurally integrated.
   Additional motivation, build-cost context, and design history: [docs/author-notes.md](docs/author-notes.md)
 
 ## Important Tool Sets

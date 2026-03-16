@@ -87,10 +87,11 @@ class ToolRunner:
         """Execute a tool handler and record tool_call/tool_result nodes."""
         try:
             last_node = get_chat_tail(self.engine, conversation_id=conversation_id)
-        except Exception:
-            last_node = None
-        if last_node is None:
-            raise Exception("unreachable")
+        except Exception as _e:
+            raise
+        #     last_node = None
+        # if last_node is None:
+        #     raise Exception("unreachable")
         # Tool call node (assistant role)
         call_node_content = f"Calling tool {tool_name}"
         call_id = str(

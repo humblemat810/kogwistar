@@ -73,7 +73,7 @@ In sample conversation pipelines primitives
 - **Conversation Orchestrator**: Acts as the command dispatcher, initiating workflows that generate events.
 
 ### 2. Workflow & Execution Layer (Command Side)
-- **Workflow Runtime**: Executes the business logic (commands). Instead of mutating state directly, it produces atomic changes.
+- **Workflow Runtime**: Executes the core agentic and workflow logic (commands). Instead of mutating state directly, it produces atomic changes.
 - **Agentic Answering**: Complex reasoning logic that determines *what* changes need to happen.
 
 ### 3. Event Sourcing Backbone

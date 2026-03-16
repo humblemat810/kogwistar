@@ -36,9 +36,10 @@ Handlers are expected to retrieve dependencies from `ctx.state["_deps"]`, e.g.:
 The orchestrator should populate `_deps` in the workflow initial_state.
 """
 
+import os
 import pathlib
 import time
-from ..utils.cache_paths import joblib_cache_path
+
 from ..utils.embedding_vectors import normalize_embedding_vector
 from typing import TYPE_CHECKING, Any, Callable, Dict, Union
 
@@ -762,6 +763,7 @@ def _answer(ctx: StepContext) -> StepRunResult:
       state['answer'] = {'response_node_id': ..., 'llm_decision_need_summary': bool}
     """
     deps = _deps(ctx)
+    cache_dir = getattr(ctx, "cache_dir", None)
     with ctx.state_write as state:
         state.setdefault("op_log", []).append("answer")
     state = ctx.state_view
@@ -808,7 +810,8 @@ def _answer(ctx: StepContext) -> StepRunResult:
                 "deps must provide either callable agent.answer_workflow_v2 or callable answer_only"
             )
         res_raw = answer_only(
-            conversation_id=state["conversation_id"], prev_turn_meta_summary=mts
+            conversation_id=state["conversation_id"], prev_turn_meta_summary=mts,
+            cache_dir=cache_dir
         )
         try:
             from .models import ConversationAIResponse
@@ -1073,11 +1076,12 @@ def _summarize(ctx: StepContext) -> StepRunResult:
     summarize_batch = deps.get("summarize_batch")
     if not callable(summarize_batch):
         raise RuntimeError("deps['summarize_batch'] must be callable")
-
+    cache_dir = ctx.cache_dir
     added_id = summarize_batch(
         state["conversation_id"],
         int(state["turn_index"]) + 1,
         prev_turn_meta_summary=prev_turn_meta_summary,
+        cache_dir=cache_dir
     )
 
     # Legacy resets after summarization.
@@ -1337,7 +1341,7 @@ def _aa_materialize_evidence_pack(ctx: StepContext) -> StepRunResult:
     from .models import EvidencePackDigest
 
     mem = Memory(
-        location=str(joblib_cache_path("_materialize_evidence_pack"))
+        location=os.path.join(agent.cache_dir, "_materialize_evidence_pack")
     )
     cached_call = cache_pydantic_structured(
         fn=agent._materialize_evidence_pack,
@@ -1411,7 +1415,7 @@ def _aa_generate_answer_with_citations(ctx: StepContext) -> StepRunResult:
     from joblib import Memory
 
     mem = Memory(
-        location=str(joblib_cache_path("_generate_answer_with_citations"))
+        location=os.path.join(agent.cache_dir, "_generate_answer_with_citations")
     )
     cached_call = cache_pydantic_structured(
         fn=agent._generate_answer_with_citations,
@@ -1506,7 +1510,7 @@ def _aa_validate_or_repair_citations(ctx: StepContext) -> StepRunResult:
     from joblib import Memory
 
     mem = Memory(
-        location=str(joblib_cache_path("_generate_answer_with_citations"))
+        location=os.path.join(agent.cache_dir, "_generate_answer_with_citations")
     )
     cached_call = cache_pydantic_structured(
         fn=agent._validate_or_repair_citations,

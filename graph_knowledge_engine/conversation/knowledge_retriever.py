@@ -128,11 +128,17 @@ class KnowledgeRetriever:
         # merge
 
         candidates = RetrievalResult(
-            nodes=list(
-                {n.id: n for n in shallow_results.nodes + deep_results.nodes}.values()
+            nodes=sorted(
+                list(
+                    {n.id: n for n in shallow_results.nodes + deep_results.nodes}.values()
+                ),
+                key=lambda x: str(x.id),
             ),
-            edges=list(
-                {n.id: n for n in shallow_results.edges + deep_results.edges}.values()
+            edges=sorted(
+                list(
+                    {n.id: n for n in shallow_results.edges + deep_results.edges}.values()
+                ),
+                key=lambda x: str(x.id),
             ),
         )
 

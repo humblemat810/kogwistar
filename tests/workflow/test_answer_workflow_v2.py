@@ -87,7 +87,8 @@ def _ensure_user_turn(
 
 @pytest.mark.parametrize("question", ["What is chlorophyll?"])
 def test_answer_workflow_v2_runs_end_to_end(
-    workflow_engine, conversation_engine, engine, question
+    workflow_engine, conversation_engine, engine, question,
+    tmp_path
 ):
     # Create a conversation with at least one user turn (tail must exist).
     conversation_engine.tool_call_id_factory = stable_id
@@ -145,6 +146,7 @@ def test_answer_workflow_v2_runs_end_to_end(
         conversation_id=conversation_id,
         user_id=user_id,
         prev_turn_meta_summary=mts,
+        cache_dir=tmp_path/ "agent_answer_workflow_v2_cache_dir"
     )
 
     # Minimal end-to-end assertions

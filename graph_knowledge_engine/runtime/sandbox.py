@@ -65,18 +65,19 @@ class Sandbox(abc.ABC):
 
 class SimplePythonSandbox(Sandbox):
     """A local process-based sandbox using restricted globals."""
-
+    def __init__(self, timeout=30):
+        self.timeout = timeout
     def run(
         self, code: str, state: Dict[str, Any], context: Dict[str, Any]
     ) -> StepRunResult:
         # We use a Queue to get the result back from the child process
         result_queue: multiprocessing.Queue = multiprocessing.Queue()
-
+        
         p = multiprocessing.Process(
             target=self._worker, args=(code, state, context, result_queue)
         )
         p.start()
-        p.join(timeout=30)  # Default 30s timeout
+        p.join(timeout=self.timeout)  # Default 30s timeout
 
         if p.is_alive():
             p.terminate()
@@ -374,7 +375,10 @@ class DockerPythonSandbox(Sandbox):
         self, code: str, state: Dict[str, Any], context: Dict[str, Any]
     ) -> StepRunResult:
         payload_json = json.dumps({"code": code, "state": state, "context": context})
-        runner = self._runner_code()
+        # sandbox specific code to run, default it is a code that take a json input and do something with it
+        # the state design to have some code (not used unless changed runner script) to run eval on (this is why unsafe!)
+        runner = self._runner_code() 
+        
         container_name: Optional[str] = None
         run_id: Optional[str] = None
 

@@ -7,6 +7,7 @@ import os
 import re
 from _pytest.monkeypatch import MonkeyPatch
 from typing import cast
+import dataclasses
 
 try:
     import sitecustomize  # type: ignore  # pragma: no cover
@@ -99,6 +100,144 @@ from graph_knowledge_engine.utils.log import EngineLogManager
 logger = logging.getLogger(__name__)
 
 
+@pytest.fixture
+def llm_provider_name(request) -> str:
+    """Fixture for LLM provider name. Can be overriden via parameterization."""
+    if hasattr(request, "param"):
+        return request.param
+    return request.config.getoption("--llm-provider")
+
+
+@pytest.fixture
+def llm_cache_dir(request) -> str:
+    return request.config.getoption("--llm-cache-dir")
+
+def _to_stable_key(obj):
+    """Recursively normalize objects for stable JSON serialization (hashing)."""
+    if isinstance(obj, type) and hasattr(obj, "model_dump"):
+        return obj.model_json_schema
+    if hasattr(obj, "model_dump"):  # Pydantic v2
+        return _to_stable_key(obj.model_dump(mode="json"))
+    if dataclasses.is_dataclass(obj):
+        return {k: _to_stable_key(v) for k, v in dataclasses.asdict(obj).items()}
+    if isinstance(obj, (list, tuple)):
+        return [_to_stable_key(x) for x in obj]
+    if isinstance(obj, dict):
+        return {k: _to_stable_key(v) for k, v in obj.items()}
+    if isinstance(obj, type):
+        return f"{obj.__module__}.{obj.__name__}"
+    return obj
+class LLMCallTracker:
+    def __init__(self):
+        self.hits = []
+        self.misses = []
+
+    def reset(self):
+        self.hits.clear()
+        self.misses.clear()
+
+    @property
+    def total_calls(self):
+        return len(self.hits) + len(self.misses)
+
+@pytest.fixture(scope="session")
+def llm_cache_tracker():
+    return LLMCallTracker()
+
+@pytest.fixture
+def llm_tasks(llm_provider_name, llm_cache_dir, llm_cache_tracker) -> Iterator[LLMTaskSet]:
+    """
+    Function-scoped LLM task set with centralized joblib caching.
+    Supports gemini, openai, and ollama.
+    """
+    from joblib import Memory
+    from graph_knowledge_engine.llm_tasks import (
+        build_default_llm_tasks,
+        DefaultTaskProviderConfig,
+    )
+
+    # Configure the base task set
+    config = DefaultTaskProviderConfig(
+        extract_graph_provider=llm_provider_name,
+        adjudicate_pair_provider=llm_provider_name,
+        adjudicate_batch_provider=llm_provider_name,
+        filter_candidates_provider=llm_provider_name,
+        summarize_context_provider=llm_provider_name,
+        answer_with_citations_provider=llm_provider_name,
+        repair_citations_provider=llm_provider_name,
+    )
+    
+    # Special defaults for providers
+    if llm_provider_name == "ollama":
+        # Force qwen3:4b for ollama tests as per plan
+        config = dataclasses.replace(config, ollama_model_name="qwen3:4b")
+    
+    base_tasks = build_default_llm_tasks(config)
+    
+    # Set up caching
+    os.makedirs(llm_cache_dir, exist_ok=True)
+    memory = Memory(location=llm_cache_dir, verbose=0)
+
+    # We wrap the task set with caching. 
+    # Since LLMTaskSet is a frozen dataclass, we use dataclasses.replace.
+
+
+    from functools import wraps
+    def _make_cached_task(task_fn):
+        @memory.cache(ignore=["request"])
+        def _actual_cached_call(stable_key: str, request: Any):
+            return task_fn(request)
+        @wraps(task_fn)
+        def _wrapper(request):
+            # We normalize and JSON-dump the request to create a stable key.
+            # This handles Pydantic models (via model_dump) and types (via stringify).
+            norm = _to_stable_key(request)
+            key = json.dumps(norm, sort_keys=True, default=str)
+            
+            # Check if it's already in cache (best effort check to avoid double call)
+            # joblib doesn't have a simple is_cached, so we'll just log before/after or use a wrapper.
+            # Actually, joblib's call() will either run or use cache.
+            # We can use memory.check_call_in_cache
+            
+            is_hit = False
+            try:
+                is_hit = _actual_cached_call.check_call_in_cache(key, request)
+            except Exception:
+                pass
+            
+            if is_hit:
+                llm_cache_tracker.hits.append(task_fn.__name__)
+                print(f"\n[LLM CACHE HIT] task={task_fn.__name__}")
+            else:
+                llm_cache_tracker.misses.append(task_fn.__name__)
+                print(f"\n[LLM CACHE MISS] task={task_fn.__name__} key={key[:100]}...")
+            
+            # Debug logging to file for comparison
+            debug_file = os.environ.get("GKE_LLM_CACHE_DEBUG_FILE")
+            if debug_file:
+                with open(debug_file, "a", encoding="utf-8") as f:
+                    # Log as a single line for easy sorting/diffing
+                    f.write(f"TASK:{task_fn.__name__} KEY:{key}\n")
+                
+            return _actual_cached_call(key, request)
+
+        return _wrapper
+
+    cached_tasks = dataclasses.replace(
+        base_tasks,
+        extract_graph=_make_cached_task(base_tasks.extract_graph),
+        adjudicate_pair=_make_cached_task(base_tasks.adjudicate_pair),
+        adjudicate_batch=_make_cached_task(base_tasks.adjudicate_batch),
+        filter_candidates=_make_cached_task(base_tasks.filter_candidates),
+        summarize_context=_make_cached_task(base_tasks.summarize_context),
+        answer_with_citations=_make_cached_task(base_tasks.answer_with_citations),
+        repair_citations=_make_cached_task(base_tasks.repair_citations),
+    )
+    
+    yield cached_tasks
+
+
+
 def _env_truthy(name: str) -> bool:
     value = os.getenv(name)
     if value is None:
@@ -149,6 +288,19 @@ def pytest_addoption(parser):
         action="store_true",
         default=False,
         help="Run tests marked as manual.",
+    )
+    parser.addoption(
+        "--llm-provider",
+        action="store",
+        default="gemini",
+        choices=["gemini", "openai", "ollama"],
+        help="LLM provider for real-model tests (default: gemini)",
+    )
+    parser.addoption(
+        "--llm-cache-dir",
+        action="store",
+        default=".cache/tests/llm_results",
+        help="Directory for caching LLM results",
     )
 
 
@@ -493,6 +645,33 @@ def _make_engine_pair(
         )
         return kg_engine, conv_engine
 
+    raise ValueError(f"unknown backend_kind: {backend_kind!r}")
+
+
+def _make_workflow_engine(
+    *, backend_kind: str, tmp_path, sa_engine, pg_schema, dim: int = 384
+) -> GraphKnowledgeEngine:
+    if backend_kind == "chroma":
+        return GraphKnowledgeEngine(
+            persist_directory=str(tmp_path / "wf"),
+            kg_graph_type="workflow",
+            embedding_function=FakeEmbeddingFunction(dim=dim),
+        )
+    if backend_kind == "pg":
+        if sa_engine is None or pg_schema is None:
+            pytest.skip(
+                "pg backend requested but sa_engine/pg_schema fixtures not available"
+            )
+        wf_schema = f"{pg_schema}_wf"
+        wf_backend = PgVectorBackend(
+            engine=sa_engine, embedding_dim=dim, schema=wf_schema
+        )
+        return GraphKnowledgeEngine(
+            persist_directory=str(tmp_path / "wf_meta"),
+            kg_graph_type="workflow",
+            embedding_function=FakeEmbeddingFunction(dim=dim),
+            backend=wf_backend,
+        )
     raise ValueError(f"unknown backend_kind: {backend_kind!r}")
 
 

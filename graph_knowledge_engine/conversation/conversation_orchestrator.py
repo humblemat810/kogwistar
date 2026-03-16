@@ -514,6 +514,7 @@ class ConversationOrchestrator:
         max_workers: int = 4,
         strict_answer_failure: bool = False,
         force_answer_only: bool | None = None,
+        cache_dir = None,
     ) -> AddTurnResult:
         """
         V2 workflow-driven orchestration.
@@ -660,7 +661,19 @@ class ConversationOrchestrator:
                 bound_answer_only is None
                 or bound_answer_only is not ConversationOrchestrator.answer_only
             )
-
+        def cacheable_summarize_batch(conversation_id, current_index, *, prev_turn_meta_summary, cache_dir):
+            return self._summarize_conversation_batch(
+                    conversation_id,
+                    current_index,
+                    prev_turn_meta_summary=prev_turn_meta_summary,
+                    cache_dir = cache_dir
+                )
+        def cacheable_answer_only(*, conversation_id, prev_turn_meta_summary, cache_dir):
+            return self.answer_only(
+                    conversation_id=conversation_id,
+                    prev_turn_meta_summary=prev_turn_meta_summary,
+                    cache_dir=cache_dir
+                )
         deps = {
             "conversation_engine": self.conversation_engine,
             "ref_knowledge_engine": self.ref_knowledge_engine,
@@ -678,19 +691,21 @@ class ConversationOrchestrator:
             "token_estimator": token_estimator,
             "strict_answer_failure": bool(strict_answer_failure),
             "force_answer_only": bool(uses_custom_answer_only),
-            "answer_only": lambda *, conversation_id, prev_turn_meta_summary: (
-                self.answer_only(
-                    conversation_id=conversation_id,
-                    prev_turn_meta_summary=prev_turn_meta_summary,
-                )
-            ),
-            "summarize_batch": lambda conversation_id, current_index, *, prev_turn_meta_summary: (
-                self._summarize_conversation_batch(
-                    conversation_id,
-                    current_index,
-                    prev_turn_meta_summary=prev_turn_meta_summary,
-                )
-            ),
+            "answer_only": cacheable_answer_only,#lambda *, conversation_id, prev_turn_meta_summary, cache_dir: (
+                # self.answer_only(
+                #     conversation_id=conversation_id,
+                #     prev_turn_meta_summary=prev_turn_meta_summary,
+                #     cache_dir=cache_dir
+                # )
+            # ),
+            "summarize_batch":  cacheable_summarize_batch,#lambda conversation_id, current_index, *, prev_turn_meta_summary, cache_dir: (
+            #     self._summarize_conversation_batch(
+            #         conversation_id,
+            #         current_index,
+            #         prev_turn_meta_summary=prev_turn_meta_summary,
+            #         cache_dir = cache_dir
+            #     )
+            # ),
             "add_link_to_new_turn": self.add_link_to_new_turn,
         }
         init_state: ConversationWorkflowState = cast(
@@ -724,6 +739,7 @@ class ConversationOrchestrator:
             turn_node_id=turn_node_id,
             initial_state=init_state,
             run_id=f"add_turn|{turn_node_id}",
+            cache_dir = cache_dir,
         )
         final_state, run_id = run_result.final_state, run_result.run_id
         if str(getattr(run_result, "status", "")) != "succeeded":
@@ -785,6 +801,7 @@ class ConversationOrchestrator:
         workflow_engine: GraphKnowledgeEngine | None = None,
         tool_call_id_factory: Callable | None = None,
         llm_tasks: LLMTaskSet | None = None,
+        agent_cache_dir: str | None = None,
     ) -> None:
         tool_call_id_factory = (
             tool_call_id_factory or conversation_engine.tool_call_id_factory
@@ -808,6 +825,7 @@ class ConversationOrchestrator:
                 conversation_engine=self.conversation_engine,
                 knowledge_engine=self.ref_knowledge_engine,
                 llm_tasks=self.llm_tasks,
+                cache_dir=agent_cache_dir,
             )
         except Exception:
             self.agentic_answering_agent = None
@@ -1159,6 +1177,7 @@ class ConversationOrchestrator:
         summary_turn_threshold: int = 5,
         summary_token_threshold: int | None = None,
         token_estimator: Callable[[str], int] | None = None,
+        cache_dir = None,
     ):
         """Run retrieval, pinning, answer generation, and optional summarization for one turn.
 
@@ -1272,6 +1291,7 @@ class ConversationOrchestrator:
         response = self.answer_only(
             conversation_id=conversation_id,
             prev_turn_meta_summary=prev_turn_meta_summary,
+            cache_dir=cache_dir
         )
         st.answer = response
         response_turn_node_id = None
@@ -1385,6 +1405,7 @@ class ConversationOrchestrator:
         in_conv=True,
         user_id: str = None,
         prev_turn_meta_summary: MetaFromLastSummary = None,
+        cache_dir = None
     ):
         """Summarize a recent conversation window into a summary turn plus provenance edges.
 
@@ -1459,7 +1480,12 @@ class ConversationOrchestrator:
         full_text = "\n".join(batch_text)
 
         # LLM Summarize
-        @self.conversation_engine.memory.cache
+        if cache_dir:
+            import joblib
+            memory = joblib.Memory(cache_dir)
+        else:
+            memory = self.conversation_engine.memory  # .memory.cache
+        @memory.cache
         def get_summary(full_text):
             summary_res = self.llm_tasks.summarize_context(
                 SummarizeContextTaskRequest(full_text=str(full_text or ""))
@@ -1685,6 +1711,7 @@ class ConversationOrchestrator:
         conversation_id: str,
         model_names: Optional[list[str]] = None,
         prev_turn_meta_summary: MetaFromLastSummary,
+        cache_dir = None,
     ) -> ConversationAIResponse:
         """Generate an answer from the assembled conversation/KG context.
 
@@ -1716,6 +1743,7 @@ class ConversationOrchestrator:
             knowledge_engine=self.ref_knowledge_engine,
             llm_tasks=self.llm_tasks,
             config=AgentConfig(),
+            cache_dir = cache_dir
         )
         out = agent.answer(
             conversation_id=conversation_id,
