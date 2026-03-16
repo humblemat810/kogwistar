@@ -92,7 +92,7 @@ docker compose down
 - If auth calls fail, confirm `AUTH_MODE=dev` in your running process/container.
 - If you previously changed auth schema, remove stale local `auth.sqlite` and restart.
 
-## 7) Standalone Claw-Style Runtime Loop (No Web Server, loop capped)
+## 7) Standalone Claw-Style Runtime Loop (No Web Server, loop count capped)
 
 This uses a custom resolver + `WorkflowRuntime` wrapper script, with persistent input events in SQLite.
 

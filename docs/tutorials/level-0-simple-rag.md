@@ -1,5 +1,5 @@
 # RAG Level 0: Simple RAG Baseline
-
+##### p.s. This repository is much more than just rag, but RAG is an instant gratification quick start if you are coming for better RAG results.
 Goal: prove end-to-end retrieval and answering with the smallest mental model.
 
 ## What You Will Build
