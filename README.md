@@ -31,7 +31,7 @@ Today the repo implements graph memory and query, workflow design/runtime, prove
 
 ## Quickstart
 
-- Standalone setup (no frontend integration): [QUICKSTART.md](QUICKSTART.md)
+- Standalone setup then run simple flow in 2 minutes. (no frontend integration): [QUICKSTART.md](QUICKSTART.md)
 - Roadmap and research direction: [docs/roadmap.md](docs/roadmap.md)
 - Detailed comparison with adjacent products/frameworks: [docs/llm-generated-comparison.md](docs/llm-generated-comparison.md)
 - Author notes, build context, and design history: [docs/author-notes.md](docs/author-notes.md)
@@ -42,18 +42,21 @@ Today the repo implements graph memory and query, workflow design/runtime, prove
 
 ## Core Features
 
-- Graph/hypergraph-oriented memory and query surfaces.
+- Graph/hypergraph-oriented memory and query surfaces. 
+- Knowledge can go outdated. Trace available knowledge/graph status back in any time.
 - Workflow design stored as graph structure, with runtime, replay, and event-oriented execution seams.
 - Support conversation execution events stored as hypergraph/graph
-- CDC-oriented graph updates and replay workflows.
+- CDC-oriented graph updates and replay workflows. (Observability is FREE, NOT freemium!)
 - Provenance-heavy first class primitives with lifecycle-aware and temporal retrieval support.
 - Multiple storage backends, including Chroma and PostgreSQL/pgvector paths. With dual-store eventual consistency or transactional atomicity.
-- MCP tooling surface for graph query, extraction, and admin operations.
+- MCP/ REST tooling surface for graph query, extraction, and admin operations.
 - Visualization helpers for D3 payloads.
+- Security design, servers with RBAC, namespaces. LLM call has built-in privacy guards. Data model has slice guards to prevent data leakage.
+- Since everything is node and each node has provenance and embeddings, besides graph algorithms, you can trace provenence down everything and semantically search trace logs, design nodes, conversation nodes. Future conversation can semantically search past history for wisdom.
 
 ## How This Differs
 
-- Unlike typical agent products, this repo centers a unified graph/hypergraph substrate rather than only chat, skills, or tool orchestration.
+- Unlike typical agent products, this repo centers a unified graph/hypergraph substrate, more than only chat, skills, or tool orchestration.
 - Unlike workflow-first frameworks, it treats provenance, replay, and event history (event source) as part of the core data model rather than secondary runtime features.
 - Compared with local/self-hosted agent products, it emphasizes graph-native memory and workflow design seams more than channel breadth or app-registry breadth.
 - It spans retrieval, memory, runtime, and provenance concerns together, so it maps less cleanly to a single existing OSS category.
@@ -222,8 +225,22 @@ Best practices:
 - Avoid drive-letter paths in `compose.yml` unless you must.
 - Ensure the file exists before running `docker compose up`, otherwise Keycloak starts without importing.
 
+## Misnomer
+
+This is not langgraph. Langgraph is making workflow a graph.
+We are making workflow possibly hypergraph. You don't need Langsmith.
+All standalone, even decent local graphical debugging experience and primitives Via replayable CDCs. Langgraph is NOT hypergraph. Langgraph/Langchain do not concern knowledge. Langgraph do not gurantee everything node and edges and not persistable as node and edges and therefore not captured by CDCs.
+
+This repo everything is graph and knowledge can be naturally extracted as graphs. Such as workflow wisdom as a graph. 
+
+Langgraph does not provide knowledge shape. This repo unify everything as graphs.
+Observability is local and 'battery-included' no freemium model needed for basic needs.
+Simple python logging too messy and loses structures.
+[Further details](graph_knowledge_engine\docs\Differentiation_With_Langgraph.md)
+
 ## License
 
 MIT. See [LICENSE](LICENSE).
 
-
+#### Author Thoughts/ ideas
+[Zen.md](ZEN.md)
