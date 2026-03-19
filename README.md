@@ -5,10 +5,11 @@
 
 <h1 align="center">Kogwistar</h1>
 
-<p align="center">
-Graph / Hypergraph-Native Agent Intelligence Platform
-</p>
+<h4 align="center">AI substrate system, from provenance to wisdom</h1>
 
+<p align="center">
+Graph / Hypergraph-Native execution, memory and observability substrate for AI systems
+</p>
 <p align="center">
 Build knowledge graphs, workflow runtimes, conversation memory, and provenance systems
 as a single substrate for AI agents.
@@ -29,7 +30,11 @@ It is better understood as a graph-native memory and execution substrate than as
 
 Today the repo implements graph memory and query, workflow design/runtime, provenance and replay-oriented surfaces, CDC/event-oriented patterns, and self-hostable development paths.
 
+This repo is a substrate, that means, some basic blocks are given. Specific examples are given, and you can build your own system by composing. The substrate provides guarantees.
+
 ## Quickstart
+
+- As this is a substrate, you can pick anywhere you immediately want to start with e.g. hypergraphrag, runtime, mcp server, conversation primitives, workflow design. As you need grows, you can compose more consisntently and coherently.
 
 - Standalone setup then run simple flow in 2 minutes. (no frontend integration): [QUICKSTART.md](QUICKSTART.md)
 - Roadmap and research direction: [docs/roadmap.md](docs/roadmap.md)
@@ -67,6 +72,8 @@ Today the repo implements graph memory and query, workflow design/runtime, prove
 - Best suited for use cases where provenance, replay, lifecycle-aware retrieval, and workflow history matter.
 - Designed to run efficiently on normal local machines (via SQLite/Chroma or lightweight Docker with PostgreSQL/pgvector).
 - A foundation repo, not yet a finished enterprise product.
+- Personal use that require robustness and stability.
+- Collect data for future AI wisdom on what and how to do things.
 
 ## Security Support
 
@@ -226,15 +233,26 @@ Best practices:
 - Ensure the file exists before running `docker compose up`, otherwise Keycloak starts without importing.
 
 ## Misnomer
+#### How This Differs from LangGraph
+**TL;DR**
+
+LangGraph is a graph-based workflow engine.
+This project is a graph-native system where knowledge, workflow, memory, and provenance are unified.
 
 This is not langgraph. Langgraph is making workflow a graph.
 We are making workflow possibly hypergraph. You don't need Langsmith.
-All standalone, even decent local graphical debugging experience and primitives Via replayable CDCs. Langgraph is NOT hypergraph. Langgraph/Langchain do not concern knowledge. Langgraph do not gurantee everything node and edges and not persistable as node and edges and therefore not captured by CDCs.
+All standalone, even decent local graphical debugging experience and primitives Via replayable CDCs. Langgraph is NOT hypergraph. 
+Langgraph/Langchain do not concern knowledge. 
+Langgraph do not gurantee everything node and edges and not persistable as node and edges and therefore not captured by CDCs.
 
 This repo everything is graph and knowledge can be naturally extracted as graphs. Such as workflow wisdom as a graph. 
 
-Langgraph does not provide knowledge shape. This repo unify everything as graphs.
-Observability is local and 'battery-included' no freemium model needed for basic needs.
+Langgraph does not provide knowledge shape. This repo has an opinion on knowledge and how knowledge is managed. 
+This repo unify everything as graphs.
+Observability is local and 'battery-included' no freemium model needed for basic needs, infinite tracing configurable to anywhere without limit. **No bundle as registered user to use designer/ visibility layer**.
+
+This repo expose observability primitives and structure simply, allow for easy custom connection for your own visibility layer.
+
 Simple python logging too messy and loses structures.
 [Further details](graph_knowledge_engine\docs\Differentiation_With_Langgraph.md)
 

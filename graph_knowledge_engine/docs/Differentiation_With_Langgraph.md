@@ -2,7 +2,11 @@
 ### Overview
 While LangGraph and Kogwistar both use graph-based abstractions for agentic workflows, they occupy different architectural niches. **LangGraph** is a library for orchestrating stateful, multi-agent systems via code-defined cyclic graphs. **Kogwistar** is a graph/hypergraph-native substrate that unifies knowledge, conversation, workflow execution, and provenance into a single, queryable data model.
 
+If you inspect the code base, you will see that the core knowledge graph are reused in conversation graph and runtime graph. This is the most distinct. The LC/LG core primitives are runnables.
+
 ### Key Differences
+
+#### **Langgraph shows no vision pathway to wisdom, we do**
 
 #### 1. Fundamental Substrate: Orchestration vs. Unified Graph
 *   **LangGraph:** Treats the graph as a control-flow abstraction. The "graph" exists primarily to route state between nodes in code.
@@ -80,6 +84,10 @@ The runtime semantics of Kogwistar differ significantly from LangGraph in how th
 *   **LangGraph:** Tracing (e.g., in LangSmith) is a side-effect or an observability layer.
 *   **Kogwistar:** The trace *is* the runtime. Running a workflow semantically means **mutating the conversation graph**. Each step execution creates a `WorkflowStepExecNode`. The runtime doesn't just "do work" and log it; it "grows the graph" to represent the work done.
 
+### 7. Langgraph is a runtime application level framework, Kogwistar is a substrate. 
+
+This is why the primitives can be converted into langgraph as a special case.
+
 ### Summary of Runtime Semantics
 
 | Feature | LangGraph | Kogwistar |
@@ -91,4 +99,5 @@ The runtime semantics of Kogwistar differ significantly from LangGraph in how th
 | **Atomicity** | Checkpoint snapshots | Transactional Unit of Work (UoW) |
 | **Provenance** | Side-effect / Logs | First-class Graph Mutation |
 
+Example workflow node edge design in CDC view.
 ![Screnshot of workflow nodes and edges](screenshots\workflow-cdc.png)

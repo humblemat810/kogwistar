@@ -63,6 +63,9 @@ from graph_knowledge_engine.engine_core.models import (
     MentionVerification,
 )
 
+# Import type used for type hints in fixtures
+from graph_knowledge_engine.llm_tasks import LLMTaskSet
+
 try:
     from graph_knowledge_engine.engine_core.postgres_backend import PgVectorBackend
 except Exception:  # pragma: no cover - allow lightweight test subsets on limited envs
@@ -442,6 +445,25 @@ def pytest_collection_modifyitems(
         ):
             item.add_marker(skip_manual)
 
+    collected = []
+
+    for item in items:
+        entry = {
+            "nodeid": item.nodeid,
+            "name": item.name,
+            "file": str(item.fspath),
+            "params": {},
+        }
+
+        if hasattr(item, "callspec"):
+            entry["params"] = item.callspec.params
+
+        collected.append(entry)
+
+    # store somewhere (file, graph, etc.)
+    import json
+    with open("collected_tests.json", "w") as f:
+        json.dump(collected, f, indent=2, default=str)
 
 def pytest_configure(config):
     EngineLogManager.configure(

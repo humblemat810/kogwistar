@@ -1263,7 +1263,11 @@ class ClawRuntimeApp:
         clock_conversation_id: str,
         max_pending_ticks: int = 1,
     ) -> None:
-        i = 0
+        # to rewrite this part into workflow design graph, put the init count states in initial_state
+        # of the run time, add another node before end, update loop state, and add predicate to either
+        # route back to start or go to end.
+        
+        i = 0  
         last_clock = 0
         while True:
             if clock_interval_ms > 0 and _now_ms() - last_clock >= clock_interval_ms:

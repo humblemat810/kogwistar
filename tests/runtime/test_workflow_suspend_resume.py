@@ -202,7 +202,6 @@ def test_workflow_suspend_and_resume(tmp_path):
             "role": "user",
             "user_text": "",
             "mem_id": "test",
-            "self_span": {},
         },  # type: ignore
         run_id=run_id,
     )
@@ -341,7 +340,6 @@ def test_workflow_suspend_and_resume_branching(tmp_path):
             "role": "user",
             "user_text": "",
             "mem_id": "test",
-            "self_span": {},
         },  # type: ignore
         run_id=run_id,
     )
@@ -461,7 +459,6 @@ def test_workflow_failure_does_not_route_to_terminal(tmp_path):
             "role": "user",
             "user_text": "",
             "mem_id": "test",
-            "self_span": {},
         },  # type: ignore
         run_id=f"run_{uuid.uuid4().hex}",
     )
@@ -553,7 +550,6 @@ def test_workflow_failure_can_route_to_recovery_branch(tmp_path):
             "role": "user",
             "user_text": "",
             "mem_id": "test",
-            "self_span": {},
         },  # type: ignore
         run_id=f"run_{uuid.uuid4().hex}",
     )
@@ -655,7 +651,6 @@ def test_resume_run_failure_can_route_to_recovery_branch(tmp_path):
             "role": "user",
             "user_text": "",
             "mem_id": "test",
-            "self_span": {},
         },  # type: ignore
         run_id=run_id,
     )
@@ -753,7 +748,6 @@ def test_resume_run_can_resuspend_same_token_with_updated_payload(tmp_path):
             "role": "user",
             "user_text": "",
             "mem_id": "test",
-            "self_span": {},
         },  # type: ignore
         run_id=run_id,
     )
@@ -880,7 +874,6 @@ def test_sandbox_recoverable_error_can_suspend_then_resume_success(tmp_path):
             "role": "user",
             "user_text": "",
             "mem_id": "test",
-            "self_span": {},
         },  # type: ignore
         run_id=run_id,
     )
