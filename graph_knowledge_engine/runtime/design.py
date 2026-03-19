@@ -4,16 +4,12 @@ from .models import WorkflowNode
 
 from .resolvers import BaseResolver
 
-"""In-memory workflow design helpers.
+"""Workflow design helpers.
 
-The codebase supports two workflow "spec" shapes:
-
-1) Engine-backed: a minimal spec (workflow_id + start_node_id) that is resolved
+   Engine-backed: a minimal spec (workflow_id + start_node_id) that is resolved
    into nodes/edges by reading from a GraphKnowledgeEngine. See
    :mod:`graph_knowledge_engine.runtime.contract`.
 
-2) In-memory: a rich spec that contains explicit nodes and edges and can be run
-   without any engine. This module provides that rich spec.
 """
 
 from dataclasses import dataclass

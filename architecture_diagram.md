@@ -16,14 +16,15 @@ System Architecture
 ├── Workflow & Execution Layer (Command Side - Produces Events)
 │   ├── Workflow Runtime (State Machine Execution)
 │   ├── Agentic Answering (Logic & Reasoning)
-│   ├── Resolvers (Step Implementation)
+│   ├── Resolvers to Ops, customizable (Step Implementation)
 │   └── Strategies (Decision Logic)
 │
 ├── Event Sourcing Backbone (The Source of Truth)
 │   ├── OpLog (Append-Only Event Store)
 │   │   └── Sequential Change Events
 │   ├── CDC / Change Bus (Event Propagation)
-│   └── Change Bridge (Sync & Replay Mechanism)
+│   ├── Change Bridge (Sync & Replay Mechanism)
+│   └── Dev tool listening to CDC for graph event node edge visualization
 │
 ├── Knowledge Graph Layer (The "Brain")
 │   ├── Unified Graph Model (Hypergraph & Schema)
@@ -35,7 +36,7 @@ System Architecture
 │   │   ├── Conversation Graph ("Canvas", User Context)
 │   │   ├── Workflow Design Graph (Intent/Template)
 │   │   ├── Orchestration Trace Graph (Execution History)
-│   │   └── Wisdom Graph (Meta-patterns)
+│   │   └── Wisdom Graph (Meta-patterns, (in plan))
 │
 ├── Provenance & Grounding Layer (The "Trust")
 │   ├── Spans & Groundings (Source Locators)
@@ -44,7 +45,8 @@ System Architecture
 │
 └── Physical Storage (Persistence)
     ├── PostgreSQL / SQLite (Relational/Graph Store)
-    └── Vector Store (Chroma / PgVector - Embedding Index)
+    ├── Vector Store (Chroma / PgVector - Embedding Index)
+    └── Extensible for custom backend
 
 Key Abstractions:
 - Event Sourcing (State derived from OpLog replay)

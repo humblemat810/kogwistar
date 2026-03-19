@@ -15,12 +15,12 @@ Build knowledge graphs, workflow runtimes, conversation memory, and provenance s
 as a single substrate for AI agents.
 </p>
 
-<p align="center">
+<!-- <p align="center">
   <img src="https://img.shields.io/github/stars/YOURORG/kogwistar?style=flat-square"/>
   <img src="https://img.shields.io/github/license/YOURORG/kogwistar?style=flat-square"/>
   <img src="https://img.shields.io/badge/python-3.13+-blue?style=flat-square"/>
   <img src="https://img.shields.io/badge/runtime-graph--native-purple?style=flat-square"/>
-</p>
+</p> -->
 
 `kogwistar` is a graph/hypergraph-native agent platform.
 
@@ -37,11 +37,13 @@ This repo is a substrate, that means, some basic blocks are given. Specific exam
 - As this is a substrate, you can pick anywhere you immediately want to start with e.g. hypergraphrag, runtime, mcp server, conversation primitives, workflow design. As you need grows, you can compose more consisntently and coherently.
 
 - Standalone setup then run simple flow in 2 minutes. (no frontend integration): [QUICKSTART.md](QUICKSTART.md)
-- Roadmap and research direction: [docs/roadmap.md](docs/roadmap.md)
+
 - Detailed comparison with adjacent products/frameworks: [docs/llm-generated-comparison.md](docs/llm-generated-comparison.md)
 - Author notes, build context, and design history: [docs/author-notes.md](docs/author-notes.md)
 - Runtime rationale: [graph_knowledge_engine/docs/ARD-custom-runtime-rationale.md](graph_knowledge_engine/docs/ARD-custom-runtime-rationale.md)
 - Local conversation walkthrough: [docs/tutorials/conversation-pipeline-basics.md](docs/tutorials/conversation-pipeline-basics.md)
+
+- Roadmap and research direction: [docs/roadmap.md](docs/roadmap.md)
 
 - Alternatively, let your AI agent read throught and set up the credential/ keys and environemnt variables for you, and run the appropriate commands.
 

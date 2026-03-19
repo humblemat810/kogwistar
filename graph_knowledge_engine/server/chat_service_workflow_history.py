@@ -1,9 +1,38 @@
 """Workflow design history helpers for event-sourced workflow editing.
 
-This module owns the low-level history folding, projection rebuild, snapshot,
-and delta application utilities used by the chat service's workflow designer
-surface. It operates on workflow design nodes and edges and does not handle run
-execution or conversation lifecycle concerns.
+This module implements the low-level history folding, projection rebuild,
+snapshotting, and visible-delta application used by the workflow designer
+surface. It operates on workflow design nodes and edges only; it does not
+manage workflow execution, scheduler/runtime concerns, or conversation
+lifecycle state.
+
+Two authoring patterns are supported.
+
+1. Designer-history pattern
+   Designer actions are recorded as append-only control events
+   (for example: mutation committed, undo applied, redo applied, branch
+   dropped). Those control events define the authoritative design history.
+   The currently visible workflow graph is then treated as a materialized
+   projection derived from that history.
+
+2. Direct graph mutation pattern
+   Callers may bypass the designer-history helpers and operate directly on
+   workflow node/edge primitives using the underlying workflow graph APIs.
+   In that mode, the workflow graph behaves like the broader CR-style graph
+   model used elsewhere (KG-graph CR) in the system. In this case, the graph
+   is source of truth but not projected
+
+In the designer-history pattern, CR-like graph behavior is preserved by
+recording control-plane events separately, computing deltas between visible
+snapshots, and materializing those deltas back into workflow node/edge
+entities. As a result, visible workflow node/edge changes may be emitted
+again during projection update or rebuild. This is intentional: the graph is
+the projection, while design control events remain the authoritative editing
+history.
+
+These two patterns are related but distinct. This module is concerned only
+with the first pattern and with the projection machinery needed to keep the
+visible workflow graph consistent with design history.
 """
 
 from __future__ import annotations
@@ -130,7 +159,41 @@ class WorkflowFoldState(TypedDict):
 
 
 class _WorkflowDesignHistoryMixin(_BaseComponent):
+    """Designer-side workflow history and projection helper mixin.
+
+    This mixin treats the visible workflow graph as a materialized projection
+    of append-only design control events plus workflow entity events within a
+    workflow-specific namespace.
+
+    Responsibilities include:
+    - reading entity/control events from the workflow namespace
+    - folding control history into an undo/redo/branch state model
+    - rebuilding the visible workflow graph from snapshots and event replay
+    - storing version deltas and snapshots for efficient materialization
+    - applying visible deltas while suppressing recursive event-log feedback
+
+    It does not execute workflows and does not define conversation/runtime
+    behavior.
+    """
     def _safe_workflow_nodes(self, *, workflow_id: str) -> list[WorkflowNode]:
+        """Return all visible workflow nodes for a workflow.
+
+        This is a defensive wrapper around the workflow engine's node query API.
+        Some backends may raise transient/read-path exceptions when a collection
+        exists logically but has not yet been materialized on disk. In those
+        cases this helper returns an empty list instead of failing the designer
+        surface.
+
+        Args:
+            workflow_id: Workflow whose visible node projection should be read.
+
+        Returns:
+            The current visible workflow nodes in the workflow namespace.
+
+        Notes:
+            This reads the materialized graph projection, not the authoritative
+            design-control history.
+        """        
         try:
             return self._workflow_engine().get_nodes(
                 where={
@@ -149,6 +212,18 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
             raise
 
     def _safe_workflow_edges(self, *, workflow_id: str) -> list[WorkflowEdge]:
+        """Return all visible workflow edges for a workflow.
+
+        This is the edge equivalent of `_safe_workflow_nodes`, with the same
+        defensive behavior for partially materialized or backend-specific empty
+        states.
+
+        Args:
+            workflow_id: Workflow whose visible edge projection should be read.
+
+        Returns:
+            The current visible workflow edges in the workflow namespace.
+        """
         try:
             return self._workflow_engine().get_edges(
                 where={
@@ -169,6 +244,30 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
     def _iter_entity_events(
         self, *, namespace: str, from_seq: int = 1, to_seq: int | None = None
     ):
+        """Iterate append-only entity events for a namespace.
+
+        The underlying metadata store may expose slightly different iterator
+        signatures across implementations. This helper normalizes that access
+        and yields rows in increasing sequence order.
+
+        Args:
+            namespace: Event namespace to read from.
+            from_seq: Inclusive lower bound sequence number.
+            to_seq: Optional inclusive upper bound sequence number.
+
+        Yields:
+            Rows shaped like `(seq, entity_kind, entity_id, op, payload_raw)`.
+
+        Notes:
+            - Both control-plane designer events and data-plane node/edge events
+            live in the same namespace stream.
+            - Callers are responsible for filtering by `entity_kind`.
+
+        Example:
+            A rebuild path may replay only entity events between two committed
+            versions by calling this helper with the lower and upper sequence
+            bounds derived from version metadata.
+        """
         iter_events = cast(
             Generator[SQLAlchemyRow, Any, None],
             getattr(self._workflow_engine().meta_sqlite, "iter_entity_events", None),
@@ -195,6 +294,17 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
             yield row
 
     def _parse_event_payload(self, payload_raw: Any) -> dict[str, Any]:
+        """Best-effort parse an event payload into a dictionary.
+
+        Payloads may already be decoded dicts or raw JSON strings depending on
+        the metadata backend. Invalid or non-dict payloads degrade to `{}`.
+
+        Args:
+            payload_raw: Raw payload returned from the event store.
+
+        Returns:
+            A dictionary payload suitable for downstream folding/replay logic.
+        """
         if isinstance(payload_raw, dict):
             return dict(payload_raw)
         if isinstance(payload_raw, str):
@@ -214,6 +324,28 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
         source: str,
         payload: dict[str, Any] | None = None,
     ) -> int:
+        """Append a designer control-plane event to the workflow namespace.
+
+        Control events encode editing history such as commit, undo, redo, and
+        branch-drop operations. These events are the authoritative source of
+        versioned designer state.
+
+        Args:
+            workflow_id: Workflow being edited.
+            op: Control operation name.
+            designer_id: Logical actor performing the change.
+            source: Caller/source label for traceability.
+            payload: Additional operation-specific fields.
+
+        Returns:
+            The appended event sequence number, or `0` if the metadata store does
+            not support appends.
+
+        Example:
+            After a designer mutation is accepted, the service may append a
+            `mutation_committed` control event carrying version, prev_version,
+            target_seq, entity_id, and action metadata.
+        """
         append = self._workflow_engine().meta_sqlite.append_entity_event
         if not callable(append):
             return 0
@@ -244,6 +376,25 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
         op: str,
         payload: dict[str, Any] | None = None,
     ) -> int:
+        """Append a workflow data-plane entity event to the workflow namespace.
+
+        This records node/edge-level changes in the same namespace as designer
+        control events, but under a distinct `entity_kind`.
+
+        Args:
+            workflow_id: Workflow namespace owner.
+            entity_kind: `node` or `edge`.
+            entity_id: Entity identifier.
+            op: Entity operation such as ADD, REPLACE, DELETE, or TOMBSTONE.
+            payload: Serialized entity body or mutation payload.
+
+        Returns:
+            The appended event sequence number, or `0` if unsupported.
+
+        Notes:
+            In the designer-history pattern, these events are replayed to
+            reconstruct the visible graph between committed versions.
+        """
         append = self._workflow_engine().meta_sqlite.append_entity_event
         if not callable(append):
             return 0
@@ -261,15 +412,35 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
         )
 
     def _workflow_meta_store(self):
+        """Return the workflow metadata store backing design history state."""
         return self._workflow_engine().meta_sqlite
 
     def _workflow_projection(self, *, workflow_id: str):
+        """Load the persisted workflow design projection metadata.
+
+        This reads projection head/version metadata from the meta store, not the
+        visible node/edge graph itself.
+
+        Args:
+            workflow_id: Workflow whose projection metadata is requested.
+
+        Returns:
+            A projection row dict if present, else `None`.
+        """
         getter = self._workflow_meta_store().get_workflow_design_projection
         if not callable(getter):
             return None
         return getter(workflow_id=str(workflow_id))
 
     def _workflow_empty_delta(self) -> WorkflowVisibleDelta:
+        """Return an empty visible-delta structure.
+
+        The visible delta format describes graph materialization changes as:
+        - node upserts
+        - node deletes
+        - edge upserts
+        - edge deletes
+        """
         return {
             "upsert_nodes": [],
             "delete_node_ids": [],
@@ -283,6 +454,25 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
         before: WorkflowVisibleSnapshot,
         after: WorkflowVisibleSnapshot,
     ) -> WorkflowVisibleDelta:
+        """Compute the materialized graph delta between two visible snapshots.
+
+        Args:
+            before: Previous visible workflow snapshot.
+            after: New visible workflow snapshot.
+
+        Returns:
+            A delta containing upserts for changed/new entities and delete lists
+            for removed entities.
+
+        Notes:
+            Identity is by entity `id`; payload equality is structural dict
+            equality.
+
+        Example:
+            If a node label changes but its id stays the same, that node appears in
+            `upsert_nodes`. If an edge is removed entirely, its id appears in
+            `delete_edge_ids`.
+        """
         before_nodes = {
             str(item.get("id") or ""): item
             for item in list(before.get("nodes") or [])
@@ -332,6 +522,19 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
         forward: WorkflowVisibleDelta,
         inverse: WorkflowVisibleDelta,
     ) -> None:
+        """Persist the forward and inverse visible deltas for a committed version.
+
+        These deltas allow efficient undo/redo or targeted materialization without
+        always rebuilding from scratch.
+
+        Args:
+            workflow_id: Workflow owning the version.
+            version: Newly committed version.
+            prev_version: Parent version in lineage.
+            target_seq: Authoritative event sequence associated with this version.
+            forward: Delta from previous visible snapshot to this version.
+            inverse: Delta that would revert this version back to its parent.
+        """
         putter = getattr(self._workflow_meta_store(), "put_workflow_design_delta", None)
         if not callable(putter):
             return
@@ -356,6 +559,16 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
     def _workflow_version_delta(
         self, *, workflow_id: str, version: int
     ) -> WorkflowVersionDeltaRecord | None:
+        """Load the stored visible delta for a committed version.
+
+        Args:
+            workflow_id: Workflow owning the version.
+            version: Version to load.
+
+        Returns:
+            A normalized delta record, or `None` if no compatible stored delta
+            exists.
+        """
         getter = self._workflow_meta_store().get_workflow_design_delta
         if not callable(getter):
             return None
@@ -382,6 +595,27 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
     def _workflow_apply_visible_delta(
         self, *, workflow_id: str, delta: WorkflowVisibleDelta | None
     ) -> None:
+        """Apply a visible delta directly to the materialized workflow graph.
+
+        This mutates the visible node/edge projection while temporarily disabling
+        recursive event-log/index side effects. It is intended for projection
+        maintenance, not for authoritatively recording designer intent.
+
+        Args:
+            workflow_id: Workflow whose visible graph will be updated.
+            delta: Delta to apply. `None` is treated as an empty delta.
+
+        Behavior:
+            1. delete edges
+            2. delete nodes
+            3. upsert nodes
+            4. upsert edges
+            5. remove orphan edges
+
+        Why order matters:
+            Edge deletion happens before node deletion to avoid dangling edge
+            references during backend mutation.
+        """
         payload: WorkflowVisibleDelta = dict(delta or self._workflow_empty_delta())
         eng = self._workflow_engine()
         prev_log = getattr(eng, "_disable_event_log", False)
@@ -420,6 +654,20 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
     def _workflow_control_timeline(
         self, *, namespace: str, limit: int = 500
     ) -> list[WorkflowControlTimelineItem]:
+        """Return recent designer control events for a workflow namespace.
+
+        Args:
+            namespace: Workflow namespace.
+            limit: Maximum number of most recent control events to retain.
+
+        Returns:
+            A bounded timeline of control-plane events suitable for UI/history
+            inspection.
+
+        Notes:
+            This ignores node/edge entity events and includes only
+            `self._design_control_kind`.
+        """
         keep = max(1, int(limit))
         out: deque[WorkflowControlTimelineItem] = deque(maxlen=keep)
         for seq, entity_kind, _entity_id, op, payload_raw in self._iter_entity_events(
@@ -448,6 +696,23 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
         commits: dict[int, WorkflowVersionCommit],
         version: int,
     ) -> list[WorkflowVersionCommit]:
+        """Resolve the ancestry path from version 0 to a target committed version.
+
+        Args:
+            commits: Mapping of version id to committed version metadata.
+            version: Target version to resolve.
+
+        Returns:
+            An ordered list beginning with synthetic version 0 and ending with the
+            requested version.
+
+        Raises:
+            RuntimeError: If lineage loops or missing parent commits are detected.
+
+        Example:
+            If version 5 descends from 3, and 3 descends from 1, the returned path
+            is `[0, 1, 3, 5]`.
+        """
         if int(version) <= 0:
             return [
                 {"version": 0, "prev_version": 0, "target_seq": 0, "created_at_ms": 0}
@@ -474,6 +739,38 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
         ] + path
 
     def _workflow_fold_history(self, *, workflow_id: str) -> WorkflowFoldState:
+        """Fold the workflow namespace event stream into designer history state.
+
+        This is the core history reducer for the workflow designer. It scans the
+        namespace event log, interprets control events, and derives:
+
+        - current selected version
+        - active tip version
+        - undo/redo availability
+        - lineage-visible versions
+        - dropped branch ranges
+        - control timeline
+        - committed version metadata
+
+        Args:
+            workflow_id: Workflow whose design history should be folded.
+
+        Returns:
+            A normalized `WorkflowFoldState`.
+
+        Important distinction:
+            - `current_version` is the currently selected version after undo/redo.
+            - `active_tip_version` is the active branch tip after commit/drop logic.
+            - `allocated_max_version` tracks the highest version number ever used,
+            even if later dropped.
+
+        Example:
+            Suppose versions 1, 2, 3 are committed, then the user undoes to 2, then
+            commits a new edit as version 4. The old forward branch from 3 may be
+            marked dropped; `current_version` and `active_tip_version` both become
+            4, while `allocated_max_version` may still reflect the highest allocated
+            version id seen overall.
+        """
         namespace = self._workflow_namespace(workflow_id)
         commits: dict[int, WorkflowVersionCommit] = {}
         dropped_ranges: list[WorkflowDroppedRange] = []
@@ -577,6 +874,12 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
     def _workflow_projection_stale(
         self, *, state: WorkflowFoldState, projection: WorkflowProjectionRow | None
     ) -> bool:
+        """Return whether persisted projection metadata is stale.
+
+        A projection is considered stale if it is missing, uses an incompatible
+        schema version, lags behind the authoritative event sequence, or is not in
+        the `ready` materialized state.
+        """
         if projection is None:
             return True
         if (
@@ -603,6 +906,16 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
         state: WorkflowFoldState,
         materialization_status: str = "ready",
     ) -> WorkflowProjectionRow:
+        """Build a projection-head row from folded history state.
+
+        Args:
+            state: Folded workflow history state.
+            materialization_status: Status to persist with the head row.
+
+        Returns:
+            A projection metadata row describing the currently selected version and
+            authoritative/materialized sequence positions.
+        """
         return {
             "current_version": int(state.get("current_version") or 0),
             "active_tip_version": int(state.get("active_tip_version") or 0),
@@ -621,6 +934,12 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
         state: WorkflowFoldState,
         materialization_status: str = "ready",
     ) -> None:
+        """Persist the workflow projection head and version metadata.
+
+        This writes the projection metadata view used by the designer surface to
+        reason about the selected lineage, active versions, and dropped ranges
+        without rescanning the entire event log on every request.
+        """
         replace = getattr(
             self._workflow_meta_store(), "replace_workflow_design_projection", None
         )
@@ -663,18 +982,29 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
         )
 
     def _workflow_projection_status(self, *, workflow_id: str) -> str | None:
+        """Return the current projection materialization status, if any."""
         projection = self._workflow_projection(workflow_id=workflow_id)
         if projection is None:
             return None
         return str(projection.get("materialization_status") or "")
 
     def _assert_workflow_projection_not_rebuilding(self, *, workflow_id: str) -> None:
+        """Raise if the workflow projection is currently marked as rebuilding.
+
+        This protects read/write API surfaces that require a stable visible graph
+        while a projection rebuild is in progress.
+        """
         if self._workflow_projection_status(workflow_id=workflow_id) == "rebuilding":
             raise WorkflowProjectionRebuildingError(
                 f"workflow_id={workflow_id!r} is rebuilding; retry later"
             )
 
     def _workflow_latest_seq(self, *, namespace: str, from_seq: int = 1) -> int:
+        """Return the latest entity-event sequence for a namespace.
+
+        Uses a direct metadata-store shortcut when available; otherwise falls back
+        to iterating events from `from_seq`.
+        """
         getter = self._workflow_meta_store().get_latest_entity_event_seq
         if callable(getter) and int(from_seq) <= 1:
             return int(getter(namespace=namespace))
@@ -690,6 +1020,11 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
     ) -> tuple[set[str], set[str]]:
         nodes = self._safe_workflow_nodes(workflow_id=workflow_id)
         edges = self._safe_workflow_edges(workflow_id=workflow_id)
+        """Collect ids of currently materialized workflow nodes and edges.
+
+        Returns:
+            `(node_ids, edge_ids)` for the visible workflow projection.
+        """
         return (
             {str(node.id) for node in nodes},
             {str(edge.id) for edge in edges},
@@ -713,6 +1048,28 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
         to_seq: int,
         dropped_ranges: list[WorkflowDroppedRange] | None = None,
     ) -> None:
+        """Replay node/edge entity events from a namespace sequence range.
+
+        This is the low-level materialization primitive used during projection
+        rebuild. Control-plane designer events are ignored; only node/edge entity
+        events are replayed. Events whose sequences lie inside dropped ranges are
+        skipped.
+
+        Args:
+            namespace: Workflow namespace to replay from.
+            from_seq: Inclusive lower bound.
+            to_seq: Inclusive upper bound.
+            dropped_ranges: Optional branch ranges to suppress during replay.
+
+        Notes:
+            Event logging and index jobs are temporarily disabled during replay so
+            that reconstruction does not recursively append new history.
+
+        Example:
+            If version 7 descends from version 4, rebuild may restore a snapshot at
+            4 and replay only the entity events between seq(4)+1 and seq(7), while
+            skipping sequences that belong to a branch dropped after undo.
+        """
         eng = self._workflow_engine()
         prev_log = getattr(eng, "_disable_event_log", False)
         prev_idx = getattr(eng, "_phase1_enable_index_jobs", False)
@@ -764,6 +1121,16 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
     def _workflow_capture_visible_snapshot(
         self, *, workflow_id: str
     ) -> WorkflowVisibleSnapshot:
+        """Capture the currently visible workflow graph as a serializable snapshot.
+
+        Returns:
+            A snapshot containing node and edge payloads suitable for later restore
+            or delta computation.
+
+        Notes:
+            Embeddings are excluded because this snapshot is concerned with visible
+            structural design state, not derived vector data.
+        """
         nodes = self._safe_workflow_nodes(workflow_id=workflow_id)
         edges = self._safe_workflow_edges(workflow_id=workflow_id)
         return {
@@ -780,6 +1147,15 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
     def _workflow_restore_snapshot(
         self, *, snapshot_payload: WorkflowVisibleSnapshot
     ) -> None:
+        """Restore a previously captured visible snapshot into the workflow graph.
+
+        This writes nodes and edges back into the materialized projection while
+        suppressing recursive event-log/index side effects.
+
+        Notes:
+            This does not clear existing entities first. Callers that need a clean
+            rebuild should delete the visible projection before restoring.
+        """
         eng = self._workflow_engine()
         prev_log = getattr(eng, "_disable_event_log", False)
         prev_idx = getattr(eng, "_phase1_enable_index_jobs", False)
@@ -797,6 +1173,16 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
             eng._phase1_enable_index_jobs = prev_idx
 
     def _workflow_remove_orphan_edges(self, *, workflow_id: str) -> None:
+        """Delete visible edges whose endpoints are missing or malformed.
+
+        An edge is considered orphaned if:
+        - it has no source ids
+        - it has no target ids
+        - its first source id does not exist as a visible node
+        - its first target id does not exist as a visible node
+
+        This is a repair/sanity step used after delta application and rebuild.
+        """
         nodes = self._safe_workflow_nodes(workflow_id=workflow_id)
         node_ids = {str(node.id) for node in nodes}
         edges = self._safe_workflow_edges(workflow_id=workflow_id)
@@ -814,6 +1200,12 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
     def _workflow_store_snapshot_if_needed(
         self, *, workflow_id: str, state: WorkflowFoldState
     ) -> None:
+        """Persist a snapshot for the current selected version when eligible.
+
+        Snapshots are stored only for positive versions that land on the configured
+        snapshot interval. They are used to accelerate later rebuilds by reducing
+        replay distance.
+        """
         current_version = int(state.get("current_version") or 0)
         if current_version <= 0 or current_version % self._snapshot_interval != 0:
             return
@@ -834,6 +1226,31 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
     def _workflow_rebuild_namespace_for_state(
         self, *, workflow_id: str, state: WorkflowFoldState
     ) -> None:
+        """Rebuild the visible workflow namespace from folded designer state.
+
+        Rebuild strategy:
+            1. clear the currently materialized visible graph
+            2. restore the nearest compatible snapshot on the selected lineage
+            3. replay remaining entity events version-by-version up to the selected
+            current version
+            4. remove orphan edges
+
+        Args:
+            workflow_id: Workflow whose visible graph should be rebuilt.
+            state: Folded designer state describing selected lineage and dropped
+                branch ranges.
+
+        Why this exists:
+            The authoritative source of designer history is the append-only control
+            stream, not the currently visible graph. When projection metadata is
+            stale or a force rebuild is requested, the graph must be reconstructed
+            from history.
+
+        Example:
+            If the current selected version is 12 and a snapshot exists at version
+            10 on the selected lineage, rebuild restores version 10's snapshot and
+            then replays only the entity events needed to reach versions 11 and 12.
+        """
         namespace = self._workflow_namespace(workflow_id)
         eng = self._workflow_engine()
         node_ids, edge_ids = self._workflow_collect_visible_entity_ids(
@@ -910,6 +1327,20 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
         force_rebuild: bool = False,
         materialize: bool = True,
     ) -> WorkflowFoldState:
+        """Fold history and ensure projection metadata/materialization are aligned.
+
+        Args:
+            workflow_id: Workflow to synchronize.
+            force_rebuild: If true, always rebuild the visible graph projection.
+            materialize: If true, rebuild when the stored projection is stale.
+
+        Returns:
+            The freshly folded workflow state.
+
+        Notes:
+            This method assumes the caller already holds whatever higher-level lock
+            or serialization discipline protects concurrent designer updates.
+        """
         state = self._workflow_fold_history(workflow_id=workflow_id)
         projection = self._workflow_projection(workflow_id=workflow_id)
         if (
@@ -936,6 +1367,20 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
         designer_id: str,
         source: str,
     ) -> bool:
+        """Append a branch-drop control event when editing after undo.
+
+        If the selected version is not the active tip and a new edit is about to be
+        committed, the forward branch beyond the selected version is considered
+        dropped. This helper records that dropped sequence/version range.
+
+        Returns:
+            True if a branch-drop event was appended, else False.
+
+        Example:
+            History is 1 -> 2 -> 3. User undoes to 1, then edits again.
+            Version 2..3 becomes a dropped forward range before the new commit is
+            recorded on the new branch.
+        """
         current_version = int(state.get("current_version") or 0)
         dropped_versions = [
             item
@@ -962,6 +1407,20 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
     def _workflow_finalize_design_state_locked(
         self, *, workflow_id: str, rebuild: bool
     ) -> WorkflowFoldState:
+        """Finalize projection metadata after a designer mutation workflow.
+
+        This helper refolds the workflow history, optionally rebuilds the visible
+        namespace, persists projection metadata, and stores a snapshot if the
+        current version lands on the snapshot interval.
+
+        Args:
+            workflow_id: Workflow to finalize.
+            rebuild: Whether to force a visible-graph rebuild before storing
+                projection metadata.
+
+        Returns:
+            The final folded workflow state after persistence.
+        """
         state = self._workflow_fold_history(workflow_id=workflow_id)
         if rebuild:
             self._workflow_rebuild_namespace_for_state(
