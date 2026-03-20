@@ -69,7 +69,11 @@ def _stable_json(obj: Any) -> str:
 
 
 def snapshot_hash(payload: Any) -> str:
-    """Compute a stable hash for a snapshot payload."""
+    """Compute a stable hash for a snapshot payload.
+    
+    This is used to detect if the knowledge graph state has changed between
+    the time of extraction/answering and subsequent inspections or re-runs.
+    """
     h = hashlib.sha256()
     h.update(_stable_json(payload).encode("utf-8"))
     return h.hexdigest()
@@ -93,6 +97,11 @@ def context_messages_hash(messages: Sequence[Any]) -> str:
 
 
 def deterministic_id(prefix: str, fingerprint: dict, bits: int = 96) -> str:
+    """Generate a stable, collision-resistant ID based on a payload fingerprint.
+    
+    This ensures that multiple projections of the same underlying entity into
+    a conversation canvas result in the same ID, preventing duplicate nodes.
+    """
     s = json.dumps(fingerprint, sort_keys=True, separators=(",", ":")).encode("utf-8")
     h = hashlib.sha256(s).digest()
     nbytes = bits // 8
@@ -104,6 +113,12 @@ def deterministic_id(prefix: str, fingerprint: dict, bits: int = 96) -> str:
 def pointer_id(
     *, scope: str, pointer_kind: str, target_kind: str, target_id: str
 ) -> str:
+    """Generates a deterministic ID for a 'pointer' node in the conversation graph.
+    
+    A pointer node is a conversation-specific proxy for an entity that lives in
+    another namespace (like the Knowledge Graph). Idempotency is critical here
+    to maintain a clean UI/canvas.
+    """
     fp = {
         "scope": scope,
         "pointer_kind": pointer_kind,
@@ -1351,6 +1366,19 @@ class AgenticAnsweringAgent:
         provenance_span: Span,
         prev_turn_meta_summary: MetaFromLastSummary,
     ) -> str:
+        """Projects a Knowledge Graph (KG) node into the conversation canvas.
+        
+        ### Projections and Idempotency:
+        In this system, we don't move nodes between graphs. Instead, we create a
+        'reference pointer' in the conversation graph that refers back to the KG.
+        
+        1. **Deterministic IDs**: By using `pointer_id(...)`, we ensure that even if
+           this method is called multiple times for the same KG node in the same
+           conversation, it will always resolve to the same ID in the conversation graph.
+        2. **Snapshots**: We store a `snapshot_hash` of the KG node's content. This
+           allows us to detect if the source knowledge has drifted since it was
+           first used in this conversation.
+        """
         scope = f"conv:{conversation_id}"
         pid = pointer_id(
             scope=scope,

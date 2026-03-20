@@ -163,6 +163,7 @@ Created: 2026-03-01
       <div style="margin-bottom:6px;">
         <b>doc_id</b>=<code>{{ doc_id or '' }}</code> &nbsp;|&nbsp;
         <b>mode</b>=<code>{{ mode }}</code> &nbsp;|&nbsp;
+        <b>view</b>=<code id="viewModeLabel">reify</code> &nbsp;|&nbsp;
         <b>insertion_method</b>=<code>{{ insertion_method or '' }}</code>
         {% if is_bundle %}&nbsp;|&nbsp;<b>bundle</b>=<code>true</code>{% endif %}
       </div>
@@ -176,6 +177,7 @@ Created: 2026-03-01
       <label>Charge <input id="charge" type="range" min="-800" max="-20" value="-300"></label>
       <label>Gravity <input id="gravity" type="range" min="0" max="0.3" step="0.005" value="0.06"></label>
       <label><input type="checkbox" id="freeze"> Freeze forces</label>
+      <label><input type="checkbox" id="renderReify" checked> Reify edges (♦)</label>
       <label style="margin-left:12px;">
         Layout:
         <select id="layoutMode">
@@ -442,25 +444,219 @@ Created: 2026-03-01
 
         const MODE = "{{ mode }}";
         const BUNDLE_GRAPH_TYPE = window.__BUNDLE_GRAPH_TYPE__;
+        const renderReifyToggle = document.getElementById("renderReify");
+        const viewModeLabel = document.getElementById("viewModeLabel");
 
-                // In-memory mutable model (keyed by id). CDC events mutate this model.
+        function uniq(xs){ return [...new Set((xs || []).filter(Boolean))]; }
+        function sourceIdOf(e){ return (typeof e.source === "object" ? e.source.id : e.source); }
+        function targetIdOf(e){ return (typeof e.target === "object" ? e.target.id : e.target); }
+        function currentViewMode(){ return (renderReifyToggle && renderReifyToggle.checked) ? "reify" : "graph"; }
+        function updateViewModeLabel(){ if (viewModeLabel) viewModeLabel.textContent = currentViewMode(); }
+        updateViewModeLabel();
+
+        // Rendered model (keyed by id). This is rebuilt from rawModel whenever the
+        // view mode changes, so the same raw graph can be shown in reified or graph mode.
         const model = {
           nodesById: new Map(),
           linksById: new Map(),
           lastSeq: 0,
         };
+        // Canonical raw graph/hypergraph store.
+        const rawModel = {
+          nodesById: new Map(),
+          edgesById: new Map(),
+          lastSeq: 0,
+        };
 
-        // Seed model from the embedded snapshot/dump.
-        for (const n of (data.nodes || [])) model.nodesById.set(n.id, { ...n });
-        for (const l of (data.links || [])) {
-          const id = l.id || null;
-          // If dump omitted id, synthesize a stable one.
-          const sid = (typeof l.source === "object" ? l.source.id : l.source);
-          const tid = (typeof l.target === "object" ? l.target.id : l.target);
-          const rel = (l.relation || l.label || "");
-          const key = id || `${sid}->${tid}:${rel}`;
-          model.linksById.set(key, { ...l, id: key });
+        function ensureRawNode(nodeLike){
+          if (!nodeLike || !nodeLike.id) return;
+          const prev = rawModel.nodesById.get(nodeLike.id) || {};
+          rawModel.nodesById.set(nodeLike.id, {
+            id: nodeLike.id,
+            label: nodeLike.label || nodeLike.summary || nodeLike.id,
+            type: nodeLike.type || prev.type || "entity",
+            summary: nodeLike.summary || prev.summary || "",
+            properties: nodeLike.properties || nodeLike.metadata || prev.properties || {},
+            ...prev,
+            ...nodeLike,
+          });
         }
+        function ensureRawNodePlaceholder(id, type){
+          if (!id || rawModel.nodesById.has(id)) return;
+          rawModel.nodesById.set(id, { id, label: id, type: type || "entity", summary: "", properties: {}, _placeholder: true });
+        }
+        function normalizeRawEdge(edgeLike){
+          if (!edgeLike || !edgeLike.id) return null;
+          const rel = edgeLike.relation || edgeLike.label || "";
+          const srcNodeIds = Array.isArray(edgeLike.source_ids) ? edgeLike.source_ids : [];
+          const tgtNodeIds = Array.isArray(edgeLike.target_ids) ? edgeLike.target_ids : [];
+          const srcEdgeIds = Array.isArray(edgeLike.source_edge_ids) ? edgeLike.source_edge_ids : [];
+          const tgtEdgeIds = Array.isArray(edgeLike.target_edge_ids) ? edgeLike.target_edge_ids : [];
+          return {
+            ...edgeLike,
+            id: edgeLike.id,
+            relation: rel,
+            label: edgeLike.label || rel,
+            source_ids: uniq([...srcNodeIds, ...((!srcNodeIds.length && edgeLike.source_id) ? [edgeLike.source_id] : [])]),
+            target_ids: uniq([...tgtNodeIds, ...((!tgtNodeIds.length && edgeLike.target_id) ? [edgeLike.target_id] : [])]),
+            source_edge_ids: uniq([...srcEdgeIds, ...(edgeLike.source_edge_id ? [edgeLike.source_edge_id] : [])]),
+            target_edge_ids: uniq([...tgtEdgeIds, ...(edgeLike.target_edge_id ? [edgeLike.target_edge_id] : [])]),
+            properties: edgeLike.properties || edgeLike.metadata || {},
+            summary: edgeLike.summary || "",
+          };
+        }
+        function isTrueHyperEdge(e){
+          return !!(e && (
+            (e.source_ids || []).length > 1 ||
+            (e.target_ids || []).length > 1 ||
+            (e.source_edge_ids || []).length > 0 ||
+            (e.target_edge_ids || []).length > 0
+          ));
+        }
+        function projectRawToRendered(){
+          // Preserve rendered node layout across rebuilds so incremental CDC updates
+          // do not scatter the whole graph whenever a new node/edge arrives.
+          const prevRenderedNodes = new Map(model.nodesById);
+          model.nodesById.clear();
+          model.linksById.clear();
+          model.lastSeq = rawModel.lastSeq;
+          const mode = currentViewMode();
+
+          function withPrevLayout(nodeLike){
+            const prev = prevRenderedNodes.get(nodeLike.id) || null;
+            if (!prev) return { ...nodeLike };
+            return {
+              ...nodeLike,
+              x: prev.x,
+              y: prev.y,
+              vx: prev.vx,
+              vy: prev.vy,
+              fx: prev.fx,
+              fy: prev.fy,
+              index: prev.index,
+            };
+          }
+
+          for (const n of rawModel.nodesById.values()) {
+            if (n && n.type !== "edge-node") model.nodesById.set(n.id, withPrevLayout(n));
+          }
+
+          for (const e of rawModel.edgesById.values()) {
+            const rel = e.relation || e.label || "";
+            const props = e.properties || e.metadata || {};
+            const s1 = uniq(e.source_ids || []);
+            const t1 = uniq(e.target_ids || []);
+            const se1 = uniq(e.source_edge_ids || []);
+            const te1 = uniq(e.target_edge_ids || []);
+
+            for (const sid of s1) ensureEntityNode(sid);
+            for (const tid of t1) ensureEntityNode(tid);
+            for (const seid of se1) if (!model.nodesById.has(seid)) model.nodesById.set(seid, withPrevLayout({ id: seid, label: seid, type: "edge-node", summary: "", properties: {}, _placeholder: true }));
+            for (const teid of te1) if (!model.nodesById.has(teid)) model.nodesById.set(teid, withPrevLayout({ id: teid, label: teid, type: "edge-node", summary: "", properties: {}, _placeholder: true }));
+
+            const shouldReify = mode === "reify" || isTrueHyperEdge(e);
+            if (shouldReify) {
+              const edgeNode = withPrevLayout({ ...e, id: e.id, label: rel || (e.label || "edge"), type: "edge-node", summary: e.summary || "", properties: props });
+              model.nodesById.set(e.id, edgeNode);
+              for (const sid of s1) model.linksById.set(`${e.id}:s:${sid}`, { id: `${e.id}:s:${sid}`, source: sid, target: e.id, relation: rel, label: rel, properties: props });
+              for (const seid of se1) model.linksById.set(`${e.id}:se:${seid}`, { id: `${e.id}:se:${seid}`, source: seid, target: e.id, relation: rel, label: rel, properties: props });
+              for (const tid of t1) model.linksById.set(`${e.id}:t:${tid}`, { id: `${e.id}:t:${tid}`, source: e.id, target: tid, relation: rel, label: rel, properties: props });
+              for (const teid of te1) model.linksById.set(`${e.id}:te:${teid}`, { id: `${e.id}:te:${teid}`, source: e.id, target: teid, relation: rel, label: rel, properties: props });
+            } else {
+              for (const sid of s1) {
+                for (const tid of t1) {
+                  const lid = `${e.id}:${sid}->${tid}`;
+                  model.linksById.set(lid, { id: lid, source: sid, target: tid, relation: rel, label: rel, properties: props });
+                }
+              }
+            }
+          }
+        }
+        function seedRawModelFromData(snapshot){
+          rawModel.nodesById.clear();
+          rawModel.edgesById.clear();
+          rawModel.lastSeq = 0;
+
+          if (Array.isArray(snapshot.raw_nodes) || Array.isArray(snapshot.raw_edges)) {
+            for (const n of (snapshot.raw_nodes || [])) ensureRawNode(n);
+            for (const e of (snapshot.raw_edges || [])) {
+              const rawEdge = normalizeRawEdge(e);
+              if (!rawEdge) continue;
+              rawModel.edgesById.set(rawEdge.id, rawEdge);
+            }
+          } else {
+            const snapshotNodes = new Map();
+            for (const n of (snapshot.nodes || [])) snapshotNodes.set(n.id, { ...n });
+            const snapshotLinks = (snapshot.links || []).map(l => ({ ...l, source: sourceIdOf(l), target: targetIdOf(l) }));
+            const edgeNodes = Array.from(snapshotNodes.values()).filter(n => n && n.type === "edge-node");
+
+            if (edgeNodes.length) {
+              for (const n of snapshotNodes.values()) {
+                if (n && n.type !== "edge-node") ensureRawNode(n);
+              }
+              const consumed = new Set();
+              for (const en of edgeNodes) {
+                const edgeId = en.id;
+                const incoming = snapshotLinks.filter(l => String(l.target) === String(edgeId));
+                const outgoing = snapshotLinks.filter(l => String(l.source) === String(edgeId));
+                incoming.forEach(l => consumed.add(l.id || `${l.source}->${l.target}:${l.relation || l.label || ""}`));
+                outgoing.forEach(l => consumed.add(l.id || `${l.source}->${l.target}:${l.relation || l.label || ""}`));
+                const rawEdge = normalizeRawEdge({
+                  ...en,
+                  id: edgeId,
+                  relation: en.relation || en.label || "",
+                  label: en.label || en.relation || "",
+                  source_ids: incoming.filter(l => !(snapshotNodes.get(String(l.source)) || {}).type || (snapshotNodes.get(String(l.source)) || {}).type !== "edge-node").map(l => String(l.source)),
+                  source_edge_ids: incoming.filter(l => (snapshotNodes.get(String(l.source)) || {}).type === "edge-node").map(l => String(l.source)),
+                  target_ids: outgoing.filter(l => !(snapshotNodes.get(String(l.target)) || {}).type || (snapshotNodes.get(String(l.target)) || {}).type !== "edge-node").map(l => String(l.target)),
+                  target_edge_ids: outgoing.filter(l => (snapshotNodes.get(String(l.target)) || {}).type === "edge-node").map(l => String(l.target)),
+                });
+                if (rawEdge) rawModel.edgesById.set(rawEdge.id, rawEdge);
+              }
+              for (const l of snapshotLinks) {
+                const lk = l.id || `${l.source}->${l.target}:${l.relation || l.label || ""}`;
+                if (consumed.has(lk)) continue;
+                const srcType = (snapshotNodes.get(String(l.source)) || {}).type;
+                const tgtType = (snapshotNodes.get(String(l.target)) || {}).type;
+                const rawEdge = normalizeRawEdge({
+                  id: lk,
+                  relation: l.relation || l.label || "",
+                  label: l.label || l.relation || "",
+                  source_ids: srcType === "edge-node" ? [] : [String(l.source)],
+                  source_edge_ids: srcType === "edge-node" ? [String(l.source)] : [],
+                  target_ids: tgtType === "edge-node" ? [] : [String(l.target)],
+                  target_edge_ids: tgtType === "edge-node" ? [String(l.target)] : [],
+                  properties: l.properties || l.metadata || {},
+                });
+                if (rawEdge) rawModel.edgesById.set(rawEdge.id, rawEdge);
+              }
+            } else {
+              for (const n of snapshotNodes.values()) ensureRawNode(n);
+              for (const l of snapshotLinks) {
+                const rawEdge = normalizeRawEdge({
+                  ...l,
+                  id: l.id || `${l.source}->${l.target}:${l.relation || l.label || ""}`,
+                  relation: l.relation || l.label || "",
+                  label: l.label || l.relation || "",
+                  source_ids: l.source != null ? [String(l.source)] : [],
+                  target_ids: l.target != null ? [String(l.target)] : [],
+                  properties: l.properties || l.metadata || {},
+                });
+                if (rawEdge) rawModel.edgesById.set(rawEdge.id, rawEdge);
+              }
+            }
+          }
+
+          // Ensure raw endpoints exist as placeholder nodes even if they arrive before node CDC events.
+          for (const e of rawModel.edgesById.values()) {
+            for (const sid of (e.source_ids || [])) ensureRawNodePlaceholder(sid, "entity");
+            for (const tid of (e.target_ids || [])) ensureRawNodePlaceholder(tid, "entity");
+            for (const seid of (e.source_edge_ids || [])) ensureRawNodePlaceholder(seid, "edge-node");
+            for (const teid of (e.target_edge_ids || [])) ensureRawNodePlaceholder(teid, "edge-node");
+          }
+          projectRawToRendered();
+        }
+        seedRawModelFromData(data);
 
         let allNodes = Array.from(model.nodesById.values());
         let allLinks = Array.from(model.linksById.values());
@@ -534,6 +730,7 @@ Created: 2026-03-01
         const gLinks = gRoot.append("g").attr("stroke","#999").attr("stroke-opacity",0.75);
         const gNodes = gRoot.append("g");
         const gLabels= gRoot.append("g");
+        const gEdgeLabels = gRoot.append("g");
 
         const fontSize    = document.getElementById('fontSize');
         const linkDistIn  = document.getElementById('linkDist');
@@ -604,6 +801,7 @@ Created: 2026-03-01
         let nodeDiamond;
         let nodeFailRing;
         let labelSel;
+        let edgeLabelSel;
 
         const diamondPath = d3.symbol().type(d3.symbolDiamond).size(120);
 
@@ -688,12 +886,34 @@ Created: 2026-03-01
           nodeCircle.select("title").text(d => [d.label||d.id, d.summary, d.id].filter(Boolean).join("\n"));
           nodeDiamond.select("title").text(d => [d.label||"edge-node", d.summary, d.id].filter(Boolean).join("\n"));
 
-          // Labels
+          // Node labels
           labelSel = gLabels.selectAll("text")
             .data(allNodes, d => d.id)
             .join("text")
             .text(d=>d.label||d.id)
             .style("font", fontSize.value + "px sans-serif");
+
+          // In simplified graph mode, edge-node diamonds disappear, so keep their
+          // relation labels visible by rendering text at the midpoint of the
+          // de-reified direct links. In reify mode we suppress these extra edge
+          // labels to avoid duplicating the diamond text.
+          const showDereifiedEdgeLabels = currentViewMode() !== "reify";
+          const edgeLabelData = showDereifiedEdgeLabels
+            ? allLinks.filter(d => !!(d.relation || d.label))
+            : [];
+
+          edgeLabelSel = gEdgeLabels.selectAll("text.edge-label")
+            .data(edgeLabelData, d => d.id)
+            .join(
+              enter => enter.append("text").attr("class", "edge-label"),
+              update => update,
+              exit => exit.remove()
+            )
+            .text(d => d.relation || d.label || "")
+            .style("font", fontSize.value + "px sans-serif")
+            .style("pointer-events", "none")
+            .attr("text-anchor", "middle")
+            .attr("dominant-baseline", "central");
         }
 
         rebuildGraphElements();
@@ -705,12 +925,22 @@ Created: 2026-03-01
           if (nodeFailRing) nodeFailRing.classed("focus-node", d => focusSet.has(d.id));
           nodeDiamond.classed("focus-node", d => focusSet.has(d.id));
           labelSel.classed("focus-label", d => focusSet.has(d.id));
+          if (edgeLabelSel) {
+            edgeLabelSel.classed("focus-label", d => focusSet.has(String((d.source && d.source.id) || d.source)) || focusSet.has(String((d.target && d.target.id) || d.target)));
+          }
+
+          if (!hasFocus && edgeLabelSel) {
+            edgeLabelSel.classed("dim", false).classed("focus-label", false);
+          }
 
           if (hasFocus) {
             nodeCircle.classed("dim", d => !focusSet.has(d.id));
             if (nodeFailRing) nodeFailRing.classed("dim", d => !focusSet.has(d.id));
             nodeDiamond.classed("dim", d => !focusSet.has(d.id));
             labelSel.classed("dim", d => !focusSet.has(d.id));
+            if (edgeLabelSel) {
+              edgeLabelSel.classed("dim", d => !(focusSet.has(String((d.source && d.source.id) || d.source)) || focusSet.has(String((d.target && d.target.id) || d.target))));
+            }
           }
         }
         applyFocusStyles();
@@ -740,6 +970,11 @@ Created: 2026-03-01
             if (nodeFailRing) nodeFailRing.attr("cx", d => d.x).attr("cy", d => d.y);
             nodeDiamond.attr("transform", d => `translate(${d.x},${d.y})`);
             labelSel.attr("x", d => d.x + 6).attr("y", d => d.y + 3);
+            if (edgeLabelSel) {
+              edgeLabelSel
+                .attr("x", d => (((d.source && d.source.x) || 0) + ((d.target && d.target.x) || 0)) / 2)
+                .attr("y", d => (((d.source && d.source.y) || 0) + ((d.target && d.target.y) || 0)) / 2 - 4);
+            }
           });
 
         // Drag: X-only when doc_tree (pinned Y), free otherwise
@@ -783,7 +1018,10 @@ Created: 2026-03-01
         nodeCircle.call(makeDrag(new Map(), 40, +layerGapIn.value));
         nodeDiamond.call(makeDrag(new Map(), 40, +layerGapIn.value));
 
-        fontSize.oninput = () => labelSel.style("font", fontSize.value + "px sans-serif");
+        fontSize.oninput = () => {
+          labelSel.style("font", fontSize.value + "px sans-serif");
+          if (edgeLabelSel) edgeLabelSel.style("font", fontSize.value + "px sans-serif");
+        };
         linkDistIn.oninput = () => { linkForce.distance(+linkDistIn.value); sim.alpha(0.3).restart(); };
         chargeIn.oninput   = () => { chargeForce.strength(+chargeIn.value); sim.alpha(0.3).restart(); };
         gravityIn.oninput  = () => {
@@ -1148,12 +1386,12 @@ Created: 2026-03-01
             return;
           }
 
-          if (typeof ev.seq === "number") model.lastSeq = Math.max(model.lastSeq, ev.seq);
+          if (typeof ev.seq === "number") rawModel.lastSeq = Math.max(rawModel.lastSeq, ev.seq);
 
           if (ev.op === "node.upsert") {
             const p = ev.payload || {};
             if (!p.id) return;
-            model.nodesById.set(p.id, {
+            ensureRawNode({
               id: p.id,
               label: p.label || p.summary || p.id,
               type: p.type || "entity",
@@ -1165,146 +1403,30 @@ Created: 2026-03-01
 
           if (ev.op === "node.remove") {
             const id = (eg && eg.id) || null;
-            if (id) model.nodesById.delete(id);
-            // Also drop any links that still point to it.
-            for (const k of Array.from(model.linksById.keys())) {
-              const l = model.linksById.get(k);
-              const s = (typeof l.source === "object" ? l.source.id : l.source);
-              const t = (typeof l.target === "object" ? l.target.id : l.target);
-              if (s === id || t === id) model.linksById.delete(k);
+            if (id) rawModel.nodesById.delete(id);
+            if (id) {
+              for (const [k, e] of Array.from(rawModel.edgesById.entries())) {
+                if ((e.source_ids || []).includes(id) || (e.target_ids || []).includes(id)) rawModel.edgesById.delete(k);
+              }
             }
           }
 
           if (ev.op === "edge.upsert") {
-            const e = ev.payload || {};
-            if (!e.id) return;
-
-            // Remove the previous representation of this edge (links + optional edge-node)
-            removeLinksByPrefix(e.id + ":");
-            // In reify mode, the edge-node id is the edge id.
-            if (MODE === "reify") model.nodesById.delete(e.id);
-
-            const rel = e.relation || e.label || "";
-            const uniq = (xs) => [...new Set((xs || []).filter(Boolean))];
-            const srcNodeIds = Array.isArray(e.source_ids) ? e.source_ids : [];
-            const tgtNodeIds = Array.isArray(e.target_ids) ? e.target_ids : [];
-            const srcEdgeIds = Array.isArray(e.source_edge_ids) ? e.source_edge_ids : [];
-            const tgtEdgeIds = Array.isArray(e.target_edge_ids) ? e.target_edge_ids : [];
-
-            // Be defensive: accept singular endpoint fields too.
-            const s1 = uniq([
-              ...srcNodeIds,
-              ...((!srcNodeIds.length && e.source_id) ? [e.source_id] : []),
-            ]);
-            const t1 = uniq([
-              ...tgtNodeIds,
-              ...((!tgtNodeIds.length && e.target_id) ? [e.target_id] : []),
-            ]);
-            const se1 = uniq([
-              ...srcEdgeIds,
-              ...(e.source_edge_id ? [e.source_edge_id] : []),
-            ]);
-            const te1 = uniq([
-              ...tgtEdgeIds,
-              ...(e.target_edge_id ? [e.target_edge_id] : []),
-            ]);
-
-            for (const sid of s1) ensureEntityNode(sid);
-            for (const tid of t1) ensureEntityNode(tid);
-
-            // In reify mode, referenced edges are also nodes. Create lightweight placeholders
-            // so node→edge, edge→node, and edge→edge hyperlinks render even when events arrive out of order.
-            if (MODE === "reify") {
-              for (const seid of se1) {
-                if (!model.nodesById.has(seid)) {
-                  model.nodesById.set(seid, { id: seid, label: seid, type: "edge-node", summary: "", properties: {}, _placeholder: true });
-                }
-              }
-              for (const teid of te1) {
-                if (!model.nodesById.has(teid)) {
-                  model.nodesById.set(teid, { id: teid, label: teid, type: "edge-node", summary: "", properties: {}, _placeholder: true });
-                }
-              }
-            }
-            if (MODE === "reify") {
-              // IMPORTANT: spread `e` first, then override fields so `e.type` (often "edge")
-              // does not clobber our special rendering type ("edge-node").
-              const edgeNode = { ...e };
-              edgeNode.id = e.id;
-              edgeNode.label = rel || (e.label || "edge");
-              edgeNode.type = "edge-node";
-              edgeNode.summary = e.summary || "";
-              edgeNode.properties = e.properties || e.metadata || {};
-              model.nodesById.set(e.id, edgeNode);
-
-              for (const sid of s1) {
-                const lid = `${e.id}:s:${sid}`;
-                model.linksById.set(lid, {
-                  id: lid,
-                  source: sid,
-                  target: e.id,
-                  relation: rel,
-                  label: rel,
-                  properties: e.properties || e.metadata || {},
-                });
-              }
-              for (const seid of se1) {
-                const lid = `${e.id}:se:${seid}`;
-                model.linksById.set(lid, {
-                  id: lid,
-                  source: seid,
-                  target: e.id,
-                  relation: rel,
-                  label: rel,
-                  properties: e.properties || e.metadata || {},
-                });
-              }
-              for (const tid of t1) {
-                const lid = `${e.id}:t:${tid}`;
-                model.linksById.set(lid, {
-                  id: lid,
-                  source: e.id,
-                  target: tid,
-                  relation: rel,
-                  label: rel,
-                  properties: e.properties || e.metadata || {},
-                });
-              }
-              for (const teid of te1) {
-                const lid = `${e.id}:te:${teid}`;
-                model.linksById.set(lid, {
-                  id: lid,
-                  source: e.id,
-                  target: teid,
-                  relation: rel,
-                  label: rel,
-                  properties: e.properties || e.metadata || {},
-                });
-              }
-            } else {
-              for (const sid of s1) {
-                for (const tid of t1) {
-                  const lid = `${e.id}:${sid}->${tid}`;
-                  model.linksById.set(lid, {
-                    id: lid,
-                    source: sid,
-                    target: tid,
-                    relation: rel,
-                    label: rel,
-                    properties: e.properties || e.metadata || {},
-                  });
-                }
-              }
-            }
+            const rawEdge = normalizeRawEdge(ev.payload || {});
+            if (!rawEdge) return;
+            rawModel.edgesById.set(rawEdge.id, rawEdge);
+            for (const sid of (rawEdge.source_ids || [])) ensureRawNodePlaceholder(sid, "entity");
+            for (const tid of (rawEdge.target_ids || [])) ensureRawNodePlaceholder(tid, "entity");
+            for (const seid of (rawEdge.source_edge_ids || [])) ensureRawNodePlaceholder(seid, "edge-node");
+            for (const teid of (rawEdge.target_edge_ids || [])) ensureRawNodePlaceholder(teid, "edge-node");
           }
 
           if (ev.op === "edge.remove") {
             const id = (eg && eg.id) || null;
-            if (id) {
-              model.nodesById.delete(id);
-              removeLinksByPrefix(id + ":");
-            }
+            if (id) rawModel.edgesById.delete(id);
           }
+
+          projectRawToRendered();
         }
 
         // Defensive normalization: D3 forceSimulation requires node entries to be objects.
@@ -1330,6 +1452,22 @@ Created: 2026-03-01
         }
         function refreshFromModel(){
           normalizeAllNodes();
+
+          // Reuse prior node layout for stable ids. This keeps the graph readable
+          // during incremental updates in the same mode, and also helps preserve
+          // user-adjusted positions when toggling between modes.
+          const prevNodeState = new Map((allNodes || []).map(n => [String(n.id), n]));
+          for (const n of model.nodesById.values()) {
+            const prev = prevNodeState.get(String(n.id));
+            if (!prev) continue;
+            if (n.x == null) n.x = prev.x;
+            if (n.y == null) n.y = prev.y;
+            if (n.vx == null) n.vx = prev.vx;
+            if (n.vy == null) n.vy = prev.vy;
+            if (n.fx == null) n.fx = prev.fx;
+            if (n.fy == null) n.fy = prev.fy;
+          }
+
           allNodes = Array.from(model.nodesById.values());
           allLinks = Array.from(model.linksById.values());
           recomputeParallelEdgeHints();
@@ -1505,20 +1643,7 @@ Created: 2026-03-01
         }
 
         function replaceGraphFromParsed(parsed){
-          model.nodesById.clear();
-          model.linksById.clear();
-
-          for (const n of (parsed.nodes || [])) {
-            model.nodesById.set(n.id, { ...n });
-          }
-          for (const l of (parsed.links || [])) {
-            const sid = (typeof l.source === "object" ? l.source.id : l.source);
-            const tid = (typeof l.target === "object" ? l.target.id : l.target);
-            const rel = (l.relation || l.label || "");
-            const key = l.id || `${sid}->${tid}:${rel}`;
-            model.linksById.set(key, { ...l, id: key });
-          }
-
+          seedRawModelFromData(parsed || {});
           refreshFromModel();
           updateRelationsMenuFromLinks();
           if (typeof applyVisibility === "function") applyVisibility();
@@ -1603,6 +1728,29 @@ add_edge(edge_id=wid("e1"), src=wid("add_user"), dst=wid("mem"), pred="always")`
           if (scriptStats) scriptStats.textContent = `nodes: ${parsed.nodes.length} • links: ${parsed.links.length}`;
           replaceGraphFromParsed(parsed);
         };
+        if (renderReifyToggle) {
+          renderReifyToggle.onchange = () => {
+            const scriptReify = document.getElementById('scriptReify');
+            if (scriptReify) scriptReify.checked = renderReifyToggle.checked;
+            updateViewModeLabel();
+            projectRawToRendered();
+            refreshFromModel();
+            updateRelationsMenuFromLinks();
+          };
+        }
+        {
+          const scriptReify = document.getElementById('scriptReify');
+          if (scriptReify) {
+            scriptReify.checked = currentViewMode() === 'reify';
+            scriptReify.onchange = () => {
+              if (renderReifyToggle) renderReifyToggle.checked = !!scriptReify.checked;
+              updateViewModeLabel();
+              projectRawToRendered();
+              refreshFromModel();
+              updateRelationsMenuFromLinks();
+            };
+          }
+        }
 
 
         function resolveCdcWsUrl(){
@@ -1699,7 +1847,7 @@ add_edge(edge_id=wid("e1"), src=wid("add_user"), dst=wid("mem"), pred="always")`
           }
 
           const wsUrl = resolveCdcWsUrl();
-          cdcLog(`[CDC] resolve wsUrl=${wsUrl || "(null)"} bundle_graph_type=${BUNDLE_GRAPH_TYPE || "(null)"} mode=${MODE}`);
+          cdcLog(`[CDC] resolve wsUrl=${wsUrl || "(null)"} bundle_graph_type=${BUNDLE_GRAPH_TYPE || "(null)"} mode=${currentViewMode()}`);
           if (!wsUrl) {
             setCdcStatus("no ws url");
             console.warn("CDC enabled but no ws URL resolved. Pass cdc_ws_url into the bundle.");
@@ -1745,6 +1893,7 @@ add_edge(edge_id=wid("e1"), src=wid("add_user"), dst=wid("mem"), pred="always")`
             try {
               applyCdcEvent(ev);
               refreshFromModel();
+              updateRelationsMenuFromLinks();
             } catch (e) {
               cdcLog("[CDC] apply/refresh failed: " + String(e));
               console.error(e);

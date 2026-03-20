@@ -325,7 +325,7 @@ def main() -> int:
     )
     ap.add_argument(
         "--pytest",
-        default="-k test_answer_workflow_v2_runs_end_to_end -s",
+        default="""tests/workflow/test_answer_workflow_v2.py::test_answer_workflow_v2_runs_end_to_end -s --ignore=.cache""",
         help="Pytest args string",
     )
     ap.add_argument("--repo-root", default=".", help="Repo root (where pytest is run)")

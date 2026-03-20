@@ -170,6 +170,19 @@ def create_app(*, oplog_file: Path, fsync: bool = False) -> FastAPI:
             description="Optional graph-type filter (conversation/workflow/knowledge). Backward compatible when omitted.",
         ),
     ) -> None:
+        """WebSocket endpoint for real-time change events with replay.
+        
+        ### Connection Lifecycle & Race-Condition Prevention:
+        To ensure a seamless transition from historical replay to live tail without
+        missing or duplicating events, we use a 'watermark' strategy:
+        
+        1. **Watermark Acquisition**: We lock ingestion and find the current maximum
+           sequence number in the oplog. This is our 'watermark'.
+        2. **Initial Replay**: We replay all events from `since` up to the `watermark`.
+        3. **Live Subscription**: we add the client to the active subscribers list.
+        4. **Gap Catch-up**: We perform a final scan of the oplog for any events with
+           `seq > watermark` that might have arrived between steps 1 and 3.
+        """
         await websocket.accept()
 
         # Determine a replay watermark under ingest_lock so we can avoid missing
@@ -180,7 +193,7 @@ def create_app(*, oplog_file: Path, fsync: bool = False) -> FastAPI:
                 if ev.seq > watermark:
                     watermark = ev.seq
 
-        # Replay up to watermark
+        # Replay up to watermark (Historical Phase)
         for ev in oplog_reader.iter_since(since_seq=since, limit=None):
             if ev.seq <= watermark:
                 evj = ev.to_jsonable()
@@ -189,11 +202,12 @@ def create_app(*, oplog_file: Path, fsync: bool = False) -> FastAPI:
             else:
                 break
 
-        # Subscribe for live tail.
+        # Subscribe for live tail (Live Phase)
         async with subs_lock:
             subscribers[websocket] = stream
 
         # Catch-up in case events arrived between watermark scan and subscribe.
+        # This ensures that no events are lost in the 'handoff' between replay and live tail.
         for ev in oplog_reader.iter_since(since_seq=watermark, limit=None):
             evj = ev.to_jsonable()
             if _stream_match(evj, stream):

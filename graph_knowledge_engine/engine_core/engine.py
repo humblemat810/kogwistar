@@ -409,18 +409,21 @@ class GraphKnowledgeEngine:
     Unlike typical graph databases, every primitive here carries rich metadata about its origin
     (source document, span, verification status).
 
+    ### Architectural Pattern: Facade & Subsystems
+    This class acts as a **Facade** that orchestrates complex operations by delegating to specialized
+    subsystems (e.g., `read`, `write`, `extract`, `persist`). This prevents the core engine from
+    becoming a monolithic "God Object" while providing a single, stable entry point for users.
+    As functionality matures, logic is moved from this facade into dedicated modules within
+    the `subsystems/` directory.
+
     Key responsibilities:
     - Persisting nodes and edges with full provenance.
     - Managing extensions like chat/workflow node variants.
     - Providing low-level to high-level APIs for extraction, storage, and adjudication.
+    - Orchestrating cross-backend consistency (SQL metadata + Vector storage).
 
     Methods are generally arranged from low-level generic helpers to task-specific calls.
     High-level orchestration for extracting, storing, and adjudicating knowledge graph data.
-    
-    As a facade core, when a few small function start to cohere, or one single large method appear,
-    they then should be moved to a new cluster subsystem/group/module. To prevent premature clustering and 
-    unstable subsystem clustering.
-    
     """
 
     # --------------------
@@ -1373,7 +1376,15 @@ class GraphKnowledgeEngine:
     def uow(self):
         """Nest-safe Unit of Work for meta-store writes.
 
-        Nested calls join the outer transaction; only the outermost commits/rolls back.
+        This context manager ensures atomic transactions across the primary SQL meta-store
+        (`meta_sqlite`) and the storage backend (e.g., PgVector).
+
+        ### Transaction Semantics:
+        - **Atomicity**: Either all changes in the block are committed, or none are.
+        - **Nesting**: Supports re-entrant/nested calls. Only the outermost UoW manages the
+          actual commit/rollback; nested calls participate in the existing transaction.
+        - **Cross-Backend Synchronization**: Coordinates the SQLite/Postgres metadata
+          transaction with the Vector backend's transaction (if supported).
         """
         self._ensure_uow_ctxvars()
 
@@ -2048,6 +2059,12 @@ _SHIM_METHOD_MAP: dict[str, tuple[str, str]] = {
 
 
 def _install_legacy_shims() -> None:
+    """Dynamically installs backward-compatibility shims.
+    
+    As logic is refactored into subsystems (e.g., moving `add_node` to `engine.write.add_node`),
+    this function ensures that legacy calls on the `GraphKnowledgeEngine` instance still work
+    while emitting a `DeprecationWarning`.
+    """
     for method_name, (namespace_name, namespace_method) in _SHIM_METHOD_MAP.items():
         original = getattr(GraphKnowledgeEngine, method_name, None)
         if original is None:

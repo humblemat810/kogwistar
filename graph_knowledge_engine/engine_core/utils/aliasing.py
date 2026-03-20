@@ -1,3 +1,20 @@
+"""Graph ID Aliasing Utilities.
+
+### Rationale:
+In GraphRAG systems, raw entity IDs (typically UUIDs) are often long and token-heavy.
+When including multiple nodes and edges in an LLM prompt, using raw IDs can quickly
+exhaust the token budget and lead to LLM confusion.
+
+This module provides utilities to:
+1. **Shorten IDs**: Map long UUIDs to short, stable aliases like `N1`, `E2` (session-based)
+   or deterministic base62 strings (e.g., `N~...`).
+2. **Ensure Stability**: Maintain consistent mappings within a conversation session
+   or a single document extraction run, allowing the LLM to refer back to previously
+   mentioned entities reliably.
+3. **De-alias**: Reconstruct the original graph structure by mapping LLM-generated
+   aliases back to their canonical UUIDs.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field

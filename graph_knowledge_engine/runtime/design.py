@@ -24,6 +24,18 @@ Predicate = BasePredicate
 
 @dataclass(frozen=True)
 class WFNode:
+    """In-memory representation of a workflow node.
+    
+    Attributes:
+        node_id: Canonical graph node ID.
+        workflow_id: ID of the workflow this node belongs to.
+        op: The operation name (resolved via BaseResolver). Maps to metadata `wf_op`.
+        version: Semantic version of the operation. Maps to metadata `wf_version`.
+        start: Whether this is the entry point. Maps to metadata `wf_start`.
+        terminal: Whether this is an exit point. Maps to metadata `wf_terminal`.
+        fanout: Whether this step supports parallel execution. Maps to metadata `wf_fanout`.
+        cacheable: Whether step results can be memoized. Maps to metadata `wf_cacheable`.
+    """
     node_id: str
     workflow_id: str
     op: str
@@ -36,6 +48,18 @@ class WFNode:
 
 @dataclass(frozen=True)
 class WFEdge:
+    """In-memory representation of a workflow transition.
+    
+    Attributes:
+        edge_id: Canonical graph edge ID.
+        workflow_id: ID of the workflow this edge belongs to.
+        src: Source node ID.
+        dst: Destination node ID.
+        predicate: Optional name of a transition guard. Maps to metadata `wf_predicate`.
+        priority: Evaluation order for branching. Maps to metadata `wf_priority`.
+        is_default: Fallback path if no predicates match. Maps to metadata `wf_is_default`.
+        multiplicity: 'one' or 'many' (for fan-out). Maps to metadata `wf_multiplicity`.
+    """
     edge_id: str
     workflow_id: str
     src: str
