@@ -12,9 +12,11 @@ Graph / Hypergraph-Native execution, memory and observability substrate for AI s
 </p>
 <p align="center">
 Build knowledge graphs, workflow runtimes, conversation memory, and provenance systems
-as a single substrate for AI agents.
+as a single substrate for AI agents. 
 </p>
-
+<p align="center">
+Open-source substrate and harness for AI agent systems.
+</p>
 <p align="center">
   <img src="https://img.shields.io/github/stars/humblemat810/kogwistar?style=flat-square"/>
   <img src="https://img.shields.io/github/license/humblemat810/kogwistar?style=flat-square"/>
@@ -22,17 +24,25 @@ as a single substrate for AI agents.
   <img src="https://img.shields.io/badge/runtime-graph--native-purple?style=flat-square"/>
 </p>
 
-`kogwistar` is a graph/hypergraph-native agent harness and substrate.
+`kogwistar` is a graph/hypergraph-native substrate with an embedded workflow/runtime harness layer.
 
-It treats knowledge, conversation, workflow/runtime, provenance, and future wisdom as one connected substrate.
+It treats knowledge, conversation, workflow/runtime, provenance, and future wisdom(long-term distilled knowledge) as one connected substrate.
 
-It is better understood as a graph-native memory and execution substrate than as only another GraphRAG repository.
+**It is better understood as a graph-native memory and execution substrate than as only another GraphRAG repository.**
 
-If you are looking for an agent harness, agent substrate, workflow runtime, or graph-native memory system, this repo is intentionally positioned in that category.
+If you are looking for a graph-native substrate, workflow/runtime harness, or graph-native memory system, this repo is positioned in that category. For example, it can support agent loops where workflows dynamically define and execute sub-tasks, similar to emerging recursive agent execution patterns. 
 
 Today the repo implements graph memory and query, workflow design/runtime, provenance and replay-oriented surfaces, CDC/event-oriented patterns, and self-hostable development paths.
 
-This repo is a substrate, that means, some basic blocks are given. Specific examples are given, and you can build your own system by composing. The substrate provides guarantees.
+This repo is a substrate, that means, some basic blocks are given. Specific examples are given, and you can build your own system by composing. The substrate is designed to provide strong guarantees (such as replayability, provenance tracking, and projection), particularly along the authoritative evented path.
+
+## Harness and Substrate
+
+Kogwistar is both a graph-native substrate and a workflow/runtime harness, but the labels apply to different layers. The substrate is the shared node/edge/event foundation: workflow structure, conversation structure, knowledge, provenance, and replayable history are modeled on the same primitives, and authoritative history can be projected back into materialized views. That is the layer the repo is trying to keep stable over time.
+
+The harness is the execution layer on top of that foundation. The repository includes a native workflow/runtime engine, step orchestration, conversation and workflow execution surfaces, and MCP-facing control paths that make the graph design runnable. In that sense it overlaps with harness and orchestration frameworks, while remaining tied to the graph-native model underneath.
+
+The distinction matters because not every low-level path carries the same guarantees. The authoritative evented path is where replay, provenance, and projection semantics are strongest; lower-level primitives remain exposed for advanced builders who want custom composition or reduced ceremony. Compared with runtime-first frameworks such as LangGraph, this repo is runtime-overlapping but semantically broader: it tries to unify execution, structure, and provenance on one graph-native system model rather than treating the runtime as the only product surface.
 
 ## Quickstart
 
@@ -246,27 +256,13 @@ Best practices:
 - Ensure the file exists before running `docker compose up`, otherwise Keycloak starts without importing.
 
 ## Misnomer
-#### How This Differs from LangGraph
-**TL;DR**
+#### Relationship to LangGraph
 
-LangGraph is a graph-based workflow engine.
-This project is a graph-native system where knowledge, workflow, memory, and provenance are unified.
+LangGraph focuses on execution: it provides a strong runtime model for orchestrating stateful workflows with persistence and resume capabilities.
 
-This is not langgraph. Langgraph is making workflow a graph.
-We are making workflow possibly hypergraph. You don't need Langsmith.
-All standalone, even decent local graphical debugging experience and primitives Via replayable CDCs. Langgraph is NOT hypergraph. 
-Langgraph/Langchain do not concern knowledge. 
-Langgraph do not gurantee everything node and edges and not persistable as node and edges and therefore not captured by CDCs.
+Kogwistar overlaps with that execution layer, but extends the system model by treating workflow structure, conversation structure, knowledge, and provenance as first-class graph entities. Rather than representing state primarily as messages or dictionaries, it aims to unify these domains on a shared node/edge/event substrate with replay and projection semantics.
 
-This repo everything is graph and knowledge can be naturally extracted as graphs. Such as workflow wisdom as a graph. 
-
-Langgraph does not provide knowledge shape. This repo has an opinion on knowledge and how knowledge is managed. 
-This repo unify everything as graphs.
-Observability is local and 'battery-included' no freemium model needed for basic needs, infinite tracing configurable to anywhere without limit. **No bundle as registered user to use designer/ visibility layer**.
-
-This repo expose observability primitives and structure simply, allow for easy custom connection for your own visibility layer.
-
-Simple python logging too messy and loses structures.
+The difference is not only in execution, but in what is considered part of the system’s core data model.
 [Further details](graph_knowledge_engine\docs\Differentiation_With_Langgraph.md)
 
 ## License
