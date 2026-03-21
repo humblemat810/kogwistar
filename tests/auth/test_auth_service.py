@@ -1,4 +1,6 @@
 import pytest
+
+pytestmark = pytest.mark.ci
 from graph_knowledge_engine.server.auth.db import (
     create_auth_engine,
     init_auth_db,

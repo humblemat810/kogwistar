@@ -49,6 +49,7 @@ from graph_knowledge_engine.conversation.models import (
     ConversationEdge,
     ConversationNode,
 )
+from graph_knowledge_engine.conversation.policy import install_engine_hooks
 from graph_knowledge_engine.conversation.service import ConversationService
 from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
 
@@ -142,6 +143,11 @@ class LLMCallTracker:
     @property
     def total_calls(self):
         return len(self.hits) + len(self.misses)
+
+
+def _install_conversation_policy(engine: GraphKnowledgeEngine) -> None:
+    if getattr(engine, "kg_graph_type", None) == "conversation":
+        install_engine_hooks(engine)
 
 @pytest.fixture(scope="session")
 def llm_cache_tracker():
@@ -638,6 +644,7 @@ def _make_engine_pair(
             kg_graph_type="conversation",
             embedding_function=FakeEmbeddingFunction(dim=dim),
         )
+        _install_conversation_policy(conv_engine)
         return kg_engine, conv_engine
 
     if backend_kind == "pg":
@@ -665,6 +672,7 @@ def _make_engine_pair(
             embedding_function=FakeEmbeddingFunction(dim=dim),
             backend=conv_backend,
         )
+        _install_conversation_policy(conv_engine)
         return kg_engine, conv_engine
 
     raise ValueError(f"unknown backend_kind: {backend_kind!r}")
@@ -1014,6 +1022,7 @@ def conversation_engine(tmp_conv_chroma_dir, monkeypatch):
         persist_directory=os.path.join(tmp_conv_chroma_dir, "conversation"),
         kg_graph_type="conversation",
     )
+    _install_conversation_policy(eng)
     # Patch the real LLM with a deterministic fake
     # eng.llm = _CompositeFakeLLM()
     return eng
@@ -2153,6 +2162,7 @@ def seeded_kg_and_conversation(tmp_path: Path):
     conversation_engine = GraphKnowledgeEngine(
         persist_directory=str(conv_dir), kg_graph_type="conversation"
     )
+    _install_conversation_policy(conversation_engine)
 
     kg_seed = seed_kg_graph(kg_engine=kg_engine, kg_doc_id="D_KG_001")
     conv_seed = seed_conversation_graph(

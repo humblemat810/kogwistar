@@ -152,9 +152,8 @@ AdjudicationTarget: TypeAlias = Union[NodeLike, EdgeLike]
 # Shared engine surface
 # -------------------------
 
-
 class EmbeddingFunctionLike(Protocol):
-    def __call__(self, documents_or_texts: list[str]) -> Any: ...
+    def __call__(self, documents_or_texts: list[str]) -> list[list[float]] : ...
 
 
 class ReadLike(Protocol):

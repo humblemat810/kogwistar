@@ -1012,6 +1012,7 @@ class GraphKnowledgeEngine:
         kg_graph_type: EngineType = "knowledge",
         debug_dir: pathlib.Path | None = None,
         backend: str | StorageBackend | None = None,
+        backend_factory: Callable[[Self], StorageBackend] | None = None,
         namespace: str = "default",
         extraction_schema_mode: ExtractionSchemaMode = "auto",
         offset_repair_scorer: OffsetRepairScorer | None = None,
@@ -1106,7 +1107,11 @@ class GraphKnowledgeEngine:
             return vecs[0] if vecs else None
 
         self._embed_one = _embed_one
-        if backend is None or (type(backend) is str and backend == "chroma"):
+        if backend_factory is not None:
+            if backend is not None:
+                raise ValueError("Backend factory and backend can only either be specified")
+            self.backend = backend_factory(self)
+        elif backend is None or (type(backend) is str and backend == "chroma"):
             # 2) Chroma client + collections; inject embedder on vectorized collections
             ChromaClient, ChromaSettings = _import_chroma_client()
             self.chroma_client = ChromaClient(

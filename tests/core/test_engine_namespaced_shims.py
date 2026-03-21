@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pytest
 
+pytestmark = pytest.mark.ci
+
 from graph_knowledge_engine.engine_core.engine import (
     GraphKnowledgeEngine,
     _SHIM_METHOD_MAP,

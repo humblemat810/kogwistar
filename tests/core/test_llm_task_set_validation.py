@@ -5,6 +5,8 @@ from typing import cast
 
 import pytest
 
+pytestmark = pytest.mark.ci
+
 from graph_knowledge_engine.llm_tasks import (
     AdjudicateBatchTaskResult,
     AdjudicatePairTaskResult,

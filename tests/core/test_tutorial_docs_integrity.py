@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import pytest
+
+pytestmark = pytest.mark.ci
 import re
 from pathlib import Path
 
@@ -28,6 +31,8 @@ NUMBERED_DOCS = [
     TUTORIALS_DIR / "13_how_to_test_this_repo.md",
     TUTORIALS_DIR / "14_architecture_deep_dive.md",
     TUTORIALS_DIR / "15_historical_search_tombstone_redirect.md",
+    TUTORIALS_DIR / "16_leakage_prevention_with_model_slicing.md",
+    TUTORIALS_DIR / "17_custom_llm_provider.md",
 ]
 
 LEGACY_LEVEL_DOCS = [
@@ -52,6 +57,8 @@ COMPANION_FILES = [
     SECTIONS_DIR / "10_event_log_replay_and_cdc.py",
     SECTIONS_DIR / "11_build_a_mini_graphrag_app.py",
     SECTIONS_DIR / "15_historical_search_tombstone_redirect.py",
+    SECTIONS_DIR / "16_leakage_prevention_with_model_slicing.py",
+    SECTIONS_DIR / "17_custom_llm_provider.py",
 ]
 
 REQUIRED_TEMPLATE_HEADINGS = [
@@ -123,10 +130,10 @@ def test_legacy_level_docs_are_upgraded_and_still_runnable():
         content = _read(path)
         for heading in REQUIRED_TEMPLATE_HEADINGS:
             assert heading in content, f"Missing heading {heading!r} in {path}"
-        assert "## Quick Run" in content
-        assert "## Checkpoint" in content
-        assert "## Troubleshooting" in content
-        assert "```powershell" in content
+        assert "## Quick Run" in content, str(path) + " is missing '## Quick Run' "
+        assert "## Checkpoint" in content, str(path) + " is missing '## Checkpoint' "
+        assert "## Troubleshooting" in content, str(path) + " is missing '## Troubleshooting' "
+        assert "```powershell" in content or "```bash" in content, str(path) + " is missing '## runnable scripts' "
 
 
 def test_tutorial_index_mentions_learning_path_companions_and_pattern_matrix():

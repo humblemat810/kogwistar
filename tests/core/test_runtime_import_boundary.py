@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import pytest
+
+pytestmark = pytest.mark.ci
 import ast
 from pathlib import Path
 
