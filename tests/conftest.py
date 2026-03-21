@@ -116,6 +116,45 @@ def llm_provider_name(request) -> str:
 def llm_cache_dir(request) -> str:
     return request.config.getoption("--llm-cache-dir")
 
+
+@pytest.fixture(scope="session")
+def embedding_kind(request) -> str:
+    """Default test embedding kind.
+
+    Override per test with:
+
+    ```python
+    @pytest.mark.parametrize("embedding_kind", ["lexical_hash"], indirect=True)
+    def test_something(conversation_engine):
+        ...
+    ```
+    """
+
+    if hasattr(request, "param"):
+        return str(request.param)
+    return str(request.config.getoption("--embedding-kind"))
+
+
+@pytest.fixture(scope="session")
+def embedding_dim(request) -> int:
+    """Default embedding dimension for test embeddings."""
+
+    if hasattr(request, "param"):
+        return int(request.param)
+    return int(request.config.getoption("--embedding-dim"))
+
+
+@pytest.fixture(scope="function")
+def embedding_function(embedding_kind: str, embedding_dim: int):
+    """Deterministic embedding function chosen from the test config.
+
+    Use ``constant`` for the smallest possible test footprint or
+    ``lexical_hash`` when you want tutorial-style lexical similarity.
+    """
+
+    return build_test_embedding_function(embedding_kind, dim=embedding_dim)
+
+
 def _to_stable_key(obj):
     """Recursively normalize objects for stable JSON serialization (hashing)."""
     if isinstance(obj, type) and hasattr(obj, "model_dump"):
@@ -310,6 +349,23 @@ def pytest_addoption(parser):
         action="store",
         default=".cache/tests/llm_results",
         help="Directory for caching LLM results",
+    )
+    parser.addoption(
+        "--embedding-kind",
+        action="store",
+        default="constant",
+        choices=["constant", "lexical_hash"],
+        help=(
+            "Default deterministic test embedding kind. "
+            "Use lexical_hash to mirror the tutorial ladder embedder."
+        ),
+    )
+    parser.addoption(
+        "--embedding-dim",
+        action="store",
+        type=int,
+        default=384,
+        help="Default dimension used by test embedding factories.",
     )
 
 
@@ -598,51 +654,53 @@ def mcp_admin_server(tmp_path: Path) -> Iterator[dict[str, Any]]:
                 proc.wait(timeout=5)
 
 
-try:
-    from chromadb.utils.embedding_functions import EmbeddingFunction
-    from chromadb.api.types import Embeddings
-except Exception:  # pragma: no cover - optional for chroma-dependent tests
-
-    class EmbeddingFunction:  # type: ignore
-        @staticmethod
-        def name() -> str:
-            return "default"
-
-    Embeddings = list[list[float]]  # type: ignore
+from tests._helpers.embeddings import (
+    ConstantEmbeddingFunction,
+    EmbeddingFunction,
+    Embeddings,
+    LexicalHashEmbeddingFunction,
+    build_test_embedding_function,
+)
 
 
-class FakeEmbeddingFunction(EmbeddingFunction):
-    @staticmethod
-    def name() -> str:
-        return "default"
-
-    def __init__(self, dim: int = 384):
-        self._dim = dim
-
-    def __call__(self, documents_or_texts: Sequence[str]) -> Embeddings:
-        return [[0.01] * self._dim for _ in documents_or_texts]
+FakeEmbeddingFunction = ConstantEmbeddingFunction
 
 
 def _make_engine_pair(
-    *, backend_kind: str, tmp_path, sa_engine, pg_schema, dim: int = 3, use_fake=False
+    *,
+    backend_kind: str,
+    tmp_path,
+    sa_engine,
+    pg_schema,
+    dim: int = 3,
+    use_fake: bool = False,
+    embedding_kind: str | None = None,
+    embedding_function: Any | None = None,
 ):
+    """Build `(kg_engine, conv_engine)` for a chosen backend and embedding.
+
+    Set ``embedding_kind="lexical_hash"`` to mirror the tutorial ladder embedder.
+    Tests can also pass a concrete ``embedding_function`` instance directly.
+    ``use_fake=True`` remains as a legacy alias for the constant embedder.
     """
-    Build (kg_engine, conv_engine) for either chroma or the pg-backed path.
-    """
-    # ef = _fake_ef_dim(dim)
-    _ef = None
-    if use_fake:
-        _ef = FakeEmbeddingFunction(dim=dim)
+
+    ef = (
+        embedding_function
+        if embedding_function is not None
+        else build_test_embedding_function(
+            embedding_kind or "constant", dim=dim
+        )
+    )
     if backend_kind == "chroma":
         kg_engine = GraphKnowledgeEngine(
             persist_directory=str(tmp_path / "kg"),
             kg_graph_type="knowledge",
-            embedding_function=FakeEmbeddingFunction(dim=dim),
+            embedding_function=ef,
         )
         conv_engine = GraphKnowledgeEngine(
             persist_directory=str(tmp_path / "conv"),
             kg_graph_type="conversation",
-            embedding_function=FakeEmbeddingFunction(dim=dim),
+            embedding_function=ef,
         )
         _install_conversation_policy(conv_engine)
         return kg_engine, conv_engine
@@ -663,13 +721,13 @@ def _make_engine_pair(
         kg_engine = GraphKnowledgeEngine(
             persist_directory=str(tmp_path / "kg_meta"),
             kg_graph_type="knowledge",
-            embedding_function=FakeEmbeddingFunction(dim=dim),
+            embedding_function=ef,
             backend=kg_backend,
         )
         conv_engine = GraphKnowledgeEngine(
             persist_directory=str(tmp_path / "conv_meta"),
             kg_graph_type="conversation",
-            embedding_function=FakeEmbeddingFunction(dim=dim),
+            embedding_function=ef,
             backend=conv_backend,
         )
         _install_conversation_policy(conv_engine)
@@ -679,13 +737,30 @@ def _make_engine_pair(
 
 
 def _make_workflow_engine(
-    *, backend_kind: str, tmp_path, sa_engine, pg_schema, dim: int = 384
+    *,
+    backend_kind: str,
+    tmp_path,
+    sa_engine,
+    pg_schema,
+    dim: int = 384,
+    use_fake: bool = False,
+    embedding_kind: str | None = None,
+    embedding_function: Any | None = None,
 ) -> GraphKnowledgeEngine:
+    """Build a workflow engine with an explicit test embedding strategy."""
+
+    ef = (
+        embedding_function
+        if embedding_function is not None
+        else build_test_embedding_function(
+            embedding_kind or "constant", dim=dim
+        )
+    )
     if backend_kind == "chroma":
         return GraphKnowledgeEngine(
             persist_directory=str(tmp_path / "wf"),
             kg_graph_type="workflow",
-            embedding_function=FakeEmbeddingFunction(dim=dim),
+            embedding_function=ef,
         )
     if backend_kind == "pg":
         if sa_engine is None or pg_schema is None:
@@ -699,7 +774,7 @@ def _make_workflow_engine(
         return GraphKnowledgeEngine(
             persist_directory=str(tmp_path / "wf_meta"),
             kg_graph_type="workflow",
-            embedding_function=FakeEmbeddingFunction(dim=dim),
+            embedding_function=ef,
             backend=wf_backend,
         )
     raise ValueError(f"unknown backend_kind: {backend_kind!r}")
@@ -999,10 +1074,11 @@ def tmp_chroma_dir(tmp_path_factory):
 
 
 @pytest.fixture(scope="function")
-def engine(tmp_chroma_dir, monkeypatch):
+def engine(tmp_chroma_dir, monkeypatch, embedding_function):
     eng = GraphKnowledgeEngine(
         persist_directory=os.path.join(tmp_chroma_dir, "kg"),
         embedding_cache_path=os.path.join(os.getcwd(), ".embedding_cache"),
+        embedding_function=embedding_function,
     )
     # Patch the real LLM with a deterministic fake
     # eng.llm = _CompositeFakeLLM()
@@ -1017,10 +1093,11 @@ def tmp_conv_chroma_dir(tmp_path_factory):
 
 
 @pytest.fixture(scope="function")
-def conversation_engine(tmp_conv_chroma_dir, monkeypatch):
+def conversation_engine(tmp_conv_chroma_dir, monkeypatch, embedding_function):
     eng = GraphKnowledgeEngine(
         persist_directory=os.path.join(tmp_conv_chroma_dir, "conversation"),
         kg_graph_type="conversation",
+        embedding_function=embedding_function,
     )
     _install_conversation_policy(eng)
     # Patch the real LLM with a deterministic fake
@@ -1029,10 +1106,11 @@ def conversation_engine(tmp_conv_chroma_dir, monkeypatch):
 
 
 @pytest.fixture(scope="function")
-def workflow_engine(tmp_conv_chroma_dir, monkeypatch):
+def workflow_engine(tmp_conv_chroma_dir, monkeypatch, embedding_function):
     eng = GraphKnowledgeEngine(
         persist_directory=os.path.join(tmp_conv_chroma_dir, "workflow"),
         kg_graph_type="workflow",
+        embedding_function=embedding_function,
     )
     # Patch the real LLM with a deterministic fake
     # eng.llm = _CompositeFakeLLM()
@@ -2144,7 +2222,7 @@ def seed_conversation_graph(
 
 
 @pytest.fixture
-def seeded_kg_and_conversation(tmp_path: Path):
+def seeded_kg_and_conversation(tmp_path: Path, embedding_function):
     """
     Returns (kg_engine, conversation_engine, kg_seed, conv_seed, kg_dir, conv_dir)
 
@@ -2157,10 +2235,14 @@ def seeded_kg_and_conversation(tmp_path: Path):
     conv_dir = tmp_path / "chroma_conversation"
 
     kg_engine = GraphKnowledgeEngine(
-        persist_directory=str(kg_dir), kg_graph_type="knowledge"
+        persist_directory=str(kg_dir),
+        kg_graph_type="knowledge",
+        embedding_function=embedding_function,
     )
     conversation_engine = GraphKnowledgeEngine(
-        persist_directory=str(conv_dir), kg_graph_type="conversation"
+        persist_directory=str(conv_dir),
+        kg_graph_type="conversation",
+        embedding_function=embedding_function,
     )
     _install_conversation_policy(conversation_engine)
 
