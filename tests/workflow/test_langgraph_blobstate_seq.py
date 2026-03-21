@@ -4,11 +4,11 @@ from typing import Any, Dict, List
 
 import pytest
 
-from graph_knowledge_engine.runtime.langgraph_converter import (
+from kogwistar.runtime.langgraph_converter import (
     LGConverterOptions,
     to_langgraph,
 )
-from graph_knowledge_engine.runtime.models import RunSuccess
+from kogwistar.runtime.models import RunSuccess
 
 pytestmark = pytest.mark.ci
 

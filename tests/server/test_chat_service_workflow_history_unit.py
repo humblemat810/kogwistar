@@ -5,7 +5,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from graph_knowledge_engine.server.chat_service_workflow_history import (
+from kogwistar.server.chat_service_workflow_history import (
     _WorkflowDesignHistoryMixin,
 )
 

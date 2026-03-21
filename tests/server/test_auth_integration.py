@@ -6,14 +6,14 @@ from fastapi.testclient import TestClient
 from unittest.mock import AsyncMock, patch
 from sqlalchemy.orm import sessionmaker
 
-import graph_knowledge_engine.server_mcp_with_admin as server
-from graph_knowledge_engine.server.auth.db import (
+import kogwistar.server_mcp_with_admin as server
+from kogwistar.server.auth.db import (
     create_auth_engine,
     init_auth_db,
 )
-from graph_knowledge_engine.server.auth.seeding import seed_auth_data
-from graph_knowledge_engine.server.auth.service import AuthService
-from graph_knowledge_engine.server.auth.models import User, ExternalIdentity
+from kogwistar.server.auth.seeding import seed_auth_data
+from kogwistar.server.auth.service import AuthService
+from kogwistar.server.auth.models import User, ExternalIdentity
 
 pytestmark = [pytest.mark.ci_full]
 
@@ -119,7 +119,7 @@ def test_oidc_flow_integration(monkeypatch, auth_engine, auth_db):
     server.auth_engine_resource._state = "initialized"
 
     with patch(
-        "graph_knowledge_engine.server.auth.router._get_auth_mode", return_value="oidc"
+        "kogwistar.server.auth.router._get_auth_mode", return_value="oidc"
     ):
         mock_oidc = AsyncMock()
         mock_oidc.discovery_url = "http://mock-issuer"

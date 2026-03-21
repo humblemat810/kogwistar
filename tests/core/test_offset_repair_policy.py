@@ -8,7 +8,7 @@ import pytest
 
 pytestmark = pytest.mark.ci
 
-from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.engine_core.engine import GraphKnowledgeEngine
 
 class EmbeddingFunction:  # type: ignore
     @staticmethod

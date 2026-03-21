@@ -4,11 +4,11 @@ from __future__ import annotations
 import json
 import pytest
 from typing import Literal
-from graph_knowledge_engine.conversation.models import (
+from kogwistar.conversation.models import (
     ConversationEdge,
     ConversationNode,
 )
-from graph_knowledge_engine.engine_core.models import (
+from kogwistar.engine_core.models import (
     Grounding,
     Span,
     MentionVerification,

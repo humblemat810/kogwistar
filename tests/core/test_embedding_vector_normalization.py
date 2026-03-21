@@ -4,7 +4,7 @@ import pytest
 
 pytestmark = pytest.mark.ci
 
-from graph_knowledge_engine.utils.embedding_vectors import (
+from kogwistar.utils.embedding_vectors import (
     normalize_embedding_rows,
     normalize_embedding_vector,
 )

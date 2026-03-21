@@ -4,17 +4,17 @@ import shutil
 import uuid
 from pathlib import Path
 
-from graph_knowledge_engine.conversation.service import ConversationService
-from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
-from graph_knowledge_engine.engine_core.models import (
+from kogwistar.conversation.service import ConversationService
+from kogwistar.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.engine_core.models import (
     Grounding,
     MentionVerification,
     Span,
 )
-from graph_knowledge_engine.id_provider import stable_id
-from graph_knowledge_engine.runtime.models import RunSuccess, WorkflowEdge, WorkflowNode
-from graph_knowledge_engine.runtime.replay import replay_to
-from graph_knowledge_engine.runtime.runtime import WorkflowRuntime
+from kogwistar.id_provider import stable_id
+from kogwistar.runtime.models import RunSuccess, WorkflowEdge, WorkflowNode
+from kogwistar.runtime.replay import replay_to
+from kogwistar.runtime.runtime import WorkflowRuntime
 
 
 class FakeEmbeddingFunction:

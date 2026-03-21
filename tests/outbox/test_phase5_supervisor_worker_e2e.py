@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from tests.conftest import FakeEmbeddingFunction
 
 TEST_EMBEDDING = FakeEmbeddingFunction(dim=3)
@@ -39,7 +39,7 @@ def test_phase5_supervisor_runs_worker_processes_job_then_graceful_shutdown(tmp_
     pidfile = tmp_path / "worker.pid"
     sup_py = (
         Path(__file__).resolve().parent.parent.parent
-        / "graph_knowledge_engine"
+        / "kogwistar"
         / "workers"
         / "worker_supervisor.py"
     )
@@ -92,7 +92,7 @@ def test_phase5_supervisor_restarts_worker_after_kill_and_processes_job(tmp_path
     pidfile = tmp_path / "worker.pid"
     sup_py = (
         Path(__file__).resolve().parent.parent.parent
-        / "graph_knowledge_engine"
+        / "kogwistar"
         / "workers"
         / "worker_supervisor.py"
     )

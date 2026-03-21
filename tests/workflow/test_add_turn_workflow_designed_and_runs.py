@@ -1,21 +1,21 @@
 import json
 
 
-from graph_knowledge_engine.conversation.resolvers import RunSuccess
-from graph_knowledge_engine.runtime.models import (
+from kogwistar.conversation.resolvers import RunSuccess
+from kogwistar.runtime.models import (
     WorkflowRunNode,
     WorkflowStepExecNode,
 )
-from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
-from graph_knowledge_engine.engine_core.models import (
+from kogwistar.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.engine_core.models import (
     Grounding,
     Span,
     MentionVerification,
 )
-from graph_knowledge_engine.runtime.runtime import WorkflowRuntime
-from graph_knowledge_engine.runtime.models import WorkflowEdge, WorkflowNode
-from graph_knowledge_engine.runtime.contract import validate_workflow, WorkflowSpec
-from graph_knowledge_engine.runtime.design import validate_workflow_design
+from kogwistar.runtime.runtime import WorkflowRuntime
+from kogwistar.runtime.models import WorkflowEdge, WorkflowNode
+from kogwistar.runtime.contract import validate_workflow, WorkflowSpec
+from kogwistar.runtime.design import validate_workflow_design
 
 
 def _span() -> Span:

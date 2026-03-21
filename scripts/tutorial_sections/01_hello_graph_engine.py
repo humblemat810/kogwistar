@@ -5,8 +5,8 @@
 # `python scripts/tutorial_sections/01_hello_graph_engine.py`
 
 # %%
-from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
-from graph_knowledge_engine.engine_core.models import Edge, Node
+from kogwistar.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.engine_core.models import Edge, Node
 
 from _helpers import (
     LexicalHashEmbeddingFunction,

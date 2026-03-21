@@ -4,9 +4,9 @@ from dataclasses import dataclass
 from typing import Any, Dict, List
 
 
-from graph_knowledge_engine.conversation.models import MetaFromLastSummary
-from graph_knowledge_engine.conversation.agentic_answering import pointer_id
-from graph_knowledge_engine.engine_core.models import (
+from kogwistar.conversation.models import MetaFromLastSummary
+from kogwistar.conversation.agentic_answering import pointer_id
+from kogwistar.engine_core.models import (
     Span,
     MentionVerification,
     Grounding,
@@ -173,7 +173,7 @@ def test_edge_endpoint_projection_uses_same_node_projection_function() -> None:
 
     # A projected edge should use those exact ids as its endpoints.
     # We assert this by checking the endpoint ids the agent writes.
-    from graph_knowledge_engine.conversation.agentic_answering import (
+    from kogwistar.conversation.agentic_answering import (
         AgenticAnsweringAgent,
     )
 
@@ -224,7 +224,7 @@ def test_edge_endpoint_projection_uses_same_node_projection_function() -> None:
 
 def test_edge_projection_allows_dangling_endpoints() -> None:
     """Invariant: edge projection must NOT require endpoint nodes to already exist."""
-    from graph_knowledge_engine.conversation.agentic_answering import (
+    from kogwistar.conversation.agentic_answering import (
         AgenticAnsweringAgent,
     )
 
@@ -272,7 +272,7 @@ def test_evidence_pack_digest_includes_edges_if_supported() -> None:
     This enforces the 'edges are evidence' design. If your repo intentionally
     keeps edges as non-evidence, delete this test.
     """
-    from graph_knowledge_engine.conversation.models import EvidencePackDigest  # type: ignore
+    from kogwistar.conversation.models import EvidencePackDigest  # type: ignore
 
     d = EvidencePackDigest(
         node_ids=["N1"],

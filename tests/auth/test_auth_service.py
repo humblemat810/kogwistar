@@ -1,12 +1,12 @@
 import pytest
 
 pytestmark = pytest.mark.ci
-from graph_knowledge_engine.server.auth.db import (
+from kogwistar.server.auth.db import (
     create_auth_engine,
     init_auth_db,
     get_session,
 )
-from graph_knowledge_engine.server.auth.service import AuthService
+from kogwistar.server.auth.service import AuthService
 
 
 @pytest.fixture

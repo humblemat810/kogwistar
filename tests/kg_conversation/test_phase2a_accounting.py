@@ -2,11 +2,11 @@ import pytest
 
 pytest.importorskip("chromadb")
 
-from graph_knowledge_engine.conversation.conversation_orchestrator import (
+from kogwistar.conversation.conversation_orchestrator import (
     ConversationOrchestrator,
     _estimate_tokens_from_chars,
 )
-from graph_knowledge_engine.conversation.models import FilteringResult
+from kogwistar.conversation.models import FilteringResult
 from tests.conftest import _make_engine_pair
 
 

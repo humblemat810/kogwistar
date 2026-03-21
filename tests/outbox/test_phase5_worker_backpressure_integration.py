@@ -1,8 +1,8 @@
 import uuid
 import pytest
 
-from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
-from graph_knowledge_engine.workers.index_job_worker import IndexJobWorker
+from kogwistar.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.workers.index_job_worker import IndexJobWorker
 from tests.conftest import FakeEmbeddingFunction
 
 TEST_EMBEDDING = FakeEmbeddingFunction(dim=3)
@@ -43,7 +43,7 @@ def eng(request, tmp_path, sa_engine, pg_schema) -> GraphKnowledgeEngine:
         return e
 
     pytest.importorskip("pgvector")
-    from graph_knowledge_engine.engine_core.postgres_backend import PgVectorBackend
+    from kogwistar.engine_core.postgres_backend import PgVectorBackend
 
     backend = PgVectorBackend(engine=sa_engine, embedding_dim=3, schema=pg_schema)
     backend.ensure_schema()

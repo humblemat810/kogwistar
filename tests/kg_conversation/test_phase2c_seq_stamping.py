@@ -1,8 +1,8 @@
-# These imports assume the repo layout: graph_knowledge_engine/*.py
-from graph_knowledge_engine.conversation.conversation_orchestrator import (
+# These imports assume the repo layout: kogwistar/*.py
+from kogwistar.conversation.conversation_orchestrator import (
     ConversationOrchestrator,
 )
-from graph_knowledge_engine.llm_tasks import (
+from kogwistar.llm_tasks import (
     AdjudicateBatchTaskResult,
     AdjudicatePairTaskResult,
     AnswerWithCitationsTaskResult,

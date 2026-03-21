@@ -1,6 +1,6 @@
 import pytest
 
-from graph_knowledge_engine.engine_core.engine_postgres import PgVectorBackend
+from kogwistar.engine_core.engine_postgres import PgVectorBackend
 
 
 @pytest.mark.ci_full

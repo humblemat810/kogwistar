@@ -1,8 +1,8 @@
 import pytest
 
 # NOTE: this test uses the v2 patched engine/backend copies living in /mnt/data.
-from graph_knowledge_engine.engine_core.engine_postgres import PgVectorBackend
-from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.engine_core.engine_postgres import PgVectorBackend
+from kogwistar.engine_core.engine import GraphKnowledgeEngine
 
 
 @pytest.mark.ci_full

@@ -2,7 +2,7 @@ import pytest
 from dataclasses import dataclass
 from typing import List, Literal, Optional
 
-from graph_knowledge_engine.workers.index_job_worker import IndexJobWorker
+from kogwistar.workers.index_job_worker import IndexJobWorker
 
 
 @dataclass

@@ -1,8 +1,8 @@
 import pytest
 import json
 
-from graph_knowledge_engine.engine_core.models import AdjudicationVerdict, Edge, Node
-from graph_knowledge_engine.llm_tasks import (
+from kogwistar.engine_core.models import AdjudicationVerdict, Edge, Node
+from kogwistar.llm_tasks import (
     AdjudicateBatchTaskResult,
     AdjudicatePairTaskResult,
     AnswerWithCitationsTaskResult,

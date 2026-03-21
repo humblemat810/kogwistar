@@ -1,6 +1,6 @@
 import json
-from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
-from graph_knowledge_engine.engine_core.models import Node
+from kogwistar.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.engine_core.models import Node
 
 from tests._kg_factories import kg_document, kg_grounding
 

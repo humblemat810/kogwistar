@@ -11,10 +11,10 @@ def test_dump_cdc_as_tool_not_temp_path():
     os.system(
         " ".join(
             [
-                "python graph_knowledge_engine/utils/kge_debug_dump.py",
+                "python kogwistar/utils/kge_debug_dump.py",
                 "bundle",
                 "--template",
-                "./graph_knowledge_engine/templates/d3.html",
+                "./kogwistar/templates/d3.html",
                 "--out-dir",
                 out_dir,
                 "--empty",

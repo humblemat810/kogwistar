@@ -11,9 +11,9 @@ def test_bundle_contains_d3_rendering_logic(tmp_path, seeded_kg_and_conversation
     - Do NOT validate visual correctness.
     """
     kg_engine, conv_engine, *_ = seeded_kg_and_conversation
-    from graph_knowledge_engine.utils.kge_debug_dump import dump_paired_bundles
+    from kogwistar.utils.kge_debug_dump import dump_paired_bundles
 
-    template_html = Path("graph_knowledge_engine/templates/d3.html").read_text(
+    template_html = Path("kogwistar/templates/d3.html").read_text(
         encoding="utf-8"
     )
     out_dir = tmp_path / "bundle"

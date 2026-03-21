@@ -1,4 +1,4 @@
-from graph_knowledge_engine.engine_core.models import Document
+from kogwistar.engine_core.models import Document
 import os
 import pathlib
 

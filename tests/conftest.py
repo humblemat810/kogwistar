@@ -45,15 +45,15 @@ except Exception:  # pragma: no cover - optional for langchain-dependent tests
         pass
 
 
-from graph_knowledge_engine.conversation.models import (
+from kogwistar.conversation.models import (
     ConversationEdge,
     ConversationNode,
 )
-from graph_knowledge_engine.conversation.policy import install_engine_hooks
-from graph_knowledge_engine.conversation.service import ConversationService
-from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.conversation.policy import install_engine_hooks
+from kogwistar.conversation.service import ConversationService
+from kogwistar.engine_core.engine import GraphKnowledgeEngine
 
-from graph_knowledge_engine.engine_core.models import (
+from kogwistar.engine_core.models import (
     Edge,
     LLMGraphExtraction,
     LLMMergeAdjudication,
@@ -65,10 +65,10 @@ from graph_knowledge_engine.engine_core.models import (
 )
 
 # Import type used for type hints in fixtures
-from graph_knowledge_engine.llm_tasks import LLMTaskSet
+from kogwistar.llm_tasks import LLMTaskSet
 
 try:
-    from graph_knowledge_engine.engine_core.postgres_backend import PgVectorBackend
+    from kogwistar.engine_core.postgres_backend import PgVectorBackend
 except Exception:  # pragma: no cover - allow lightweight test subsets on limited envs
     # ConversationEdge = Any  # type: ignore
     # ConversationNode = Any  # type: ignore
@@ -99,7 +99,7 @@ from pathlib import Path
 import logging
 
 logging.captureWarnings(True)
-from graph_knowledge_engine.utils.log import EngineLogManager
+from kogwistar.utils.log import EngineLogManager
 
 logger = logging.getLogger(__name__)
 
@@ -200,7 +200,7 @@ def llm_tasks(llm_provider_name, llm_cache_dir, llm_cache_tracker) -> Iterator[L
     Supports gemini, openai, and ollama.
     """
     from joblib import Memory
-    from graph_knowledge_engine.llm_tasks import (
+    from kogwistar.llm_tasks import (
         build_default_llm_tasks,
         DefaultTaskProviderConfig,
     )
@@ -602,7 +602,7 @@ def mcp_admin_server(tmp_path: Path) -> Iterator[dict[str, Any]]:
         sys.executable,
         "-m",
         "uvicorn",
-        "graph_knowledge_engine.server_mcp_with_admin:app",
+        "kogwistar.server_mcp_with_admin:app",
         "--host",
         host,
         "--port",
@@ -1055,7 +1055,7 @@ class FakeLLMForAdjudication:
     """
 
     def __init__(self, verdict, include_raw: bool = False):
-        from graph_knowledge_engine.engine_core.models import AdjudicationVerdict as AV
+        from kogwistar.engine_core.models import AdjudicationVerdict as AV
 
         self._verdict: AV = cast(AV, verdict)
         self._include_raw = include_raw
@@ -1064,7 +1064,7 @@ class FakeLLMForAdjudication:
         self, schema, include_raw: bool = False, many: bool = False
     ):
         # Build a deterministic structured reply; ignore schema/many in this simple fake
-        from graph_knowledge_engine.engine_core.models import (
+        from kogwistar.engine_core.models import (
             LLMMergeAdjudication as LLMMA,
         )
 
@@ -1085,10 +1085,10 @@ class _FakeLLMForExtraction:
 
     def invoke(self, variables):
         # Deterministic graph from any document
-        from graph_knowledge_engine.engine_core.models import (
+        from kogwistar.engine_core.models import (
             LLMGraphExtraction as LLMGE,
         )
-        from graph_knowledge_engine.engine_core.models import (
+        from kogwistar.engine_core.models import (
             LLMNode as LLMN,
             LLMEdge as LLME,
         )
@@ -1516,7 +1516,7 @@ def small_test_docs_nodes_edge_adjudcate():
 
     def _ref(doc_id: str, excerpt: str, method: str = "llm"):
         s, e = _find_span(doc_id, excerpt)
-        # Span-like dict compatible with graph_knowledge_engine.models.Span
+        # Span-like dict compatible with kogwistar.models.Span
         # (kept as a dict because this fixture emulates a JSON payload).
         return {
             "doc_id": doc_id,

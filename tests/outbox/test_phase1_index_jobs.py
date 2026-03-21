@@ -11,7 +11,7 @@ import sys
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from graph_knowledge_engine.engine_core.engine_sqlite import EngineSQLite
+from kogwistar.engine_core.engine_sqlite import EngineSQLite
 
 
 @dataclass

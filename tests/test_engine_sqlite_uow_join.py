@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from graph_knowledge_engine.engine_core.engine_sqlite import EngineSQLite
+from kogwistar.engine_core.engine_sqlite import EngineSQLite
 
 pytestmark = pytest.mark.ci
 

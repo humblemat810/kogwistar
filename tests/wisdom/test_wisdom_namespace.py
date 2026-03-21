@@ -1,7 +1,7 @@
 # test_wisdom_namespace.py
 # import jwt, os
 # from fastapi.testclient import TestClient
-# from graph_knowledge_engine.server_mcp_with_admin import app, JWT_SECRET, JWT_ALG
+# from kogwistar.server_mcp_with_admin import app, JWT_SECRET, JWT_ALG
 
 # client = TestClient(app)
 
@@ -82,8 +82,8 @@
 #     assert isinstance(data["layers"], list)
 
 
-from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
-from graph_knowledge_engine.engine_core.models import (
+from kogwistar.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.engine_core.models import (
     PureChromaNode,
     PureChromaEdge,
     PureGraph,

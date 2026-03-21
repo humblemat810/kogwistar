@@ -1,9 +1,9 @@
 import os
 import pytest
 import json
-from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
-from graph_knowledge_engine.engine_core.models import LLMGraphExtraction
-from graph_knowledge_engine.llm_tasks import DefaultTaskProviderConfig
+from kogwistar.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.engine_core.models import LLMGraphExtraction
+from kogwistar.llm_tasks import DefaultTaskProviderConfig
 from typing import cast
 import sys
 import pathlib

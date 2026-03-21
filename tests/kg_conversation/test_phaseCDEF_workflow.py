@@ -4,9 +4,9 @@ from types import MappingProxyType
 from typing import Any, Dict, Mapping, List
 import pytest
 
-from graph_knowledge_engine.conversation.models import ConversationAIResponse
-from graph_knowledge_engine.conversation.resolvers import default_resolver
-from graph_knowledge_engine.runtime.models import RunSuccess
+from kogwistar.conversation.models import ConversationAIResponse
+from kogwistar.conversation.resolvers import default_resolver
+from kogwistar.runtime.models import RunSuccess
 
 
 class FakeConversationEngine:

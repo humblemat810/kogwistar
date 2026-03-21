@@ -1,8 +1,8 @@
 import uuid
 import pytest
 
-from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
-from graph_knowledge_engine.workers.index_job_worker import IndexJobWorker
+from kogwistar.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.workers.index_job_worker import IndexJobWorker
 from tests.conftest import FakeEmbeddingFunction
 
 TEST_EMBEDDING = FakeEmbeddingFunction(dim=3)

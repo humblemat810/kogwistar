@@ -8,7 +8,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
-RUNTIME_DIR = ROOT / "graph_knowledge_engine" / "runtime"
+RUNTIME_DIR = ROOT / "kogwistar" / "runtime"
 
 
 def _runtime_python_files() -> list[Path]:

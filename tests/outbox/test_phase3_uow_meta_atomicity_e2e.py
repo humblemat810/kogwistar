@@ -2,8 +2,8 @@ import uuid
 import threading
 import pytest
 
-from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
-from graph_knowledge_engine.engine_core.postgres_backend import PgVectorBackend
+from kogwistar.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.engine_core.postgres_backend import PgVectorBackend
 from tests.conftest import FakeEmbeddingFunction
 
 EMBEDDING_DIM = 3

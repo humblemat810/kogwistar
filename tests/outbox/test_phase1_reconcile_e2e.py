@@ -5,14 +5,14 @@ import pytest
 
 import sqlalchemy as sa
 
-from graph_knowledge_engine.engine_core.chroma_backend import ChromaBackend
-from graph_knowledge_engine.engine_core.postgres_backend import PgVectorBackend
-from graph_knowledge_engine.engine_core.engine_postgres_meta import (
+from kogwistar.engine_core.chroma_backend import ChromaBackend
+from kogwistar.engine_core.postgres_backend import PgVectorBackend
+from kogwistar.engine_core.engine_postgres_meta import (
     EnginePostgresMetaStore,
 )
 
-from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
-from graph_knowledge_engine.engine_core.models import Node, Edge, Grounding, Span
+from kogwistar.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.engine_core.models import Node, Edge, Grounding, Span
 from tests.conftest import FakeEmbeddingFunction
 
 # Reuse raw helpers to avoid duplicating Chroma plumbing.

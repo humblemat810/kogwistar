@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from graph_knowledge_engine.conversation.designer import ConversationWorkflowDesigner
+from kogwistar.conversation.designer import ConversationWorkflowDesigner
 import pytest
 from typing import Sequence
 
@@ -27,7 +27,7 @@ def test_phase2d_conversation_designer_ensure_backbone(
 ):
     # Reuse canonical engine fixture builder.
     # from tests.conftest import _make_engine_pair
-    from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
+    from kogwistar.engine_core.engine import GraphKnowledgeEngine
     # _kg, conv = _make_engine_pair(backend_kind=backend_kind, tmp_path=tmp_path, sa_engine=sa_engine, pg_schema=pg_schema, dim=3, use_fake=True)
 
     wf_dir = tmp_path / "wf"

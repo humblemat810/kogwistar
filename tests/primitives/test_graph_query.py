@@ -2,8 +2,8 @@ import json
 
 import pytest
 
-from graph_knowledge_engine.engine_core.models import Edge, Node
-from graph_knowledge_engine.graph_query import GraphQuery
+from kogwistar.engine_core.models import Edge, Node
+from kogwistar.graph_query import GraphQuery
 from tests._kg_factories import kg_grounding
 
 

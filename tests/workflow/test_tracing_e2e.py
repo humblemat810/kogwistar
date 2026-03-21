@@ -6,16 +6,16 @@ from typing import Any, Dict, List, Tuple
 import pytest
 
 
-from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
-from graph_knowledge_engine.engine_core.models import (
+from kogwistar.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.engine_core.models import (
     Grounding,
     Span,
     MentionVerification,
 )
 
-from graph_knowledge_engine.runtime.runtime import WorkflowRuntime
-from graph_knowledge_engine.runtime.models import RunSuccess
-from graph_knowledge_engine.runtime.models import WorkflowEdge, WorkflowNode
+from kogwistar.runtime.runtime import WorkflowRuntime
+from kogwistar.runtime.models import RunSuccess
+from kogwistar.runtime.models import WorkflowEdge, WorkflowNode
 
 pytestmark = [pytest.mark.e2e, pytest.mark.ci_full]
 

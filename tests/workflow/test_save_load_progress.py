@@ -2,17 +2,17 @@ import json
 from pathlib import Path
 
 
-from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
-from graph_knowledge_engine.engine_core.models import (
+from kogwistar.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.engine_core.models import (
     Grounding,
     Span,
     MentionVerification,
 )
 
-from graph_knowledge_engine.runtime.runtime import WorkflowRuntime
-from graph_knowledge_engine.runtime.replay import load_checkpoint, replay_to
-from graph_knowledge_engine.runtime.models import RunSuccess
-from graph_knowledge_engine.runtime.models import WorkflowEdge, WorkflowNode
+from kogwistar.runtime.runtime import WorkflowRuntime
+from kogwistar.runtime.replay import load_checkpoint, replay_to
+from kogwistar.runtime.models import RunSuccess
+from kogwistar.runtime.models import WorkflowEdge, WorkflowNode
 
 
 def _span() -> Span:

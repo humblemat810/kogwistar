@@ -3,12 +3,12 @@ import pytest
 pytestmark = pytest.mark.ci
 from pydantic import ValidationError
 
-from graph_knowledge_engine.conversation.models import (
+from kogwistar.conversation.models import (
     ConversationEdge,
     ConversationNodeMetadata,
 )
-from graph_knowledge_engine.engine_core.models import Span, Grounding
-from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.engine_core.models import Span, Grounding
+from kogwistar.engine_core.engine import GraphKnowledgeEngine
 
 
 def test_node_metadata_forbids_summary_distance_fields():
@@ -66,7 +66,7 @@ def _flatten_and(where: dict | None) -> dict:
 
 def _bind(eng: GraphKnowledgeEngine, *, existing_endpoints: list[dict]):
     from unittest.mock import MagicMock
-    from graph_knowledge_engine.conversation.service import ConversationService
+    from kogwistar.conversation.service import ConversationService
 
     # Mock backend to support edge_endpoints_get
     class MockBackend:

@@ -5,20 +5,20 @@ from fastapi.testclient import TestClient
 
 
 def _read_template_html() -> str:
-    p = Path("graph_knowledge_engine/templates/d3.html")
+    p = Path("kogwistar/templates/d3.html")
     if p.exists():
         return p.read_text(encoding="utf-8")
     p2 = Path("d3.html")
     if p2.exists():
         return p2.read_text(encoding="utf-8")
     raise RuntimeError(
-        "Cannot find d3.html template at graph_knowledge_engine/templates/d3.html or ./d3.html"
+        "Cannot find d3.html template at kogwistar/templates/d3.html or ./d3.html"
     )
 
 
 def test_dump_d3_bundle_cdc_injection_no_jinja_tokens(tmp_path: Path) -> None:
     """CI-safe: ensure bundle rendering uses the shared utility and doesn't leak Jinja tokens."""
-    from graph_knowledge_engine.utils.kge_debug_dump import dump_d3_bundle
+    from kogwistar.utils.kge_debug_dump import dump_d3_bundle
 
     template_html = _read_template_html()
     out_html = tmp_path / "conversation.bundle.cdc.html"
@@ -48,7 +48,7 @@ def test_dump_d3_bundle_cdc_injection_no_jinja_tokens(tmp_path: Path) -> None:
 def test_cdc_bridge_broadcasts_to_websocket_clients_ci(tmp_path: Path) -> None:
     """CI-safe: bridge broadcasts ingested events to websocket clients (live stream)."""
     try:
-        from graph_knowledge_engine.cdc.change_bridge import create_app  # type: ignore
+        from kogwistar.cdc.change_bridge import create_app  # type: ignore
     except Exception:  # pragma: no cover
         from change_bridge import create_app  # type: ignore
     import time

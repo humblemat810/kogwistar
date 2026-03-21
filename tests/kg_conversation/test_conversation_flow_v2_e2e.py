@@ -10,22 +10,22 @@ from chromadb.api.types import Embeddings
 from joblib import Memory
 from typing import Callable, Sequence, ParamSpec, TypeVar, cast
 
-from graph_knowledge_engine.conversation.models import (
+from kogwistar.conversation.models import (
     ConversationAIResponse,
     FilteringResult,
     MetaFromLastSummary,
 )
-from graph_knowledge_engine.conversation.service import ConversationService
-from graph_knowledge_engine.cdc.oplog import OplogWriter
-from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
-from graph_knowledge_engine.engine_core.models import (
+from kogwistar.conversation.service import ConversationService
+from kogwistar.cdc.oplog import OplogWriter
+from kogwistar.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.engine_core.models import (
     Node,
     Span,
     Grounding,
     MentionVerification,
 )
-from graph_knowledge_engine.id_provider import stable_id
-from graph_knowledge_engine.engine_core.postgres_backend import PgVectorBackend
+from kogwistar.id_provider import stable_id
+from kogwistar.engine_core.postgres_backend import PgVectorBackend
 
 
 # -----------------------
@@ -113,7 +113,7 @@ def _add_apple_knowledge(kg_engine: GraphKnowledgeEngine, *, dim: int = 384):
 
     # Best-effort: add edges/hyperedges if your repo exposes them in models.
     try:
-        from graph_knowledge_engine.engine_core.models import Edge  # type: ignore
+        from kogwistar.engine_core.models import Edge  # type: ignore
 
         is_a = Edge(
             id="E:is_a",

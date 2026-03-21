@@ -3,8 +3,8 @@ from typing import Mapping
 
 import pytest
 
-from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
-from graph_knowledge_engine.engine_core.models import (
+from kogwistar.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.engine_core.models import (
     AdjudicationQuestionCode,
     AdjudicationVerdict,
     Document,
@@ -14,7 +14,7 @@ from graph_knowledge_engine.engine_core.models import (
     QUESTION_KEY,
     Span,
 )
-from graph_knowledge_engine.llm_tasks import (
+from kogwistar.llm_tasks import (
     AdjudicateBatchTaskRequest,
     AdjudicateBatchTaskResult,
     AdjudicatePairTaskResult,

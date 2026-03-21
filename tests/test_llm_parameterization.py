@@ -1,6 +1,6 @@
 import pytest
 import os
-from graph_knowledge_engine.llm_tasks import LLMTaskSet
+from kogwistar.llm_tasks import LLMTaskSet
 
 pytestmark = pytest.mark.ci
 

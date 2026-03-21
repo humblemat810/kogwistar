@@ -95,14 +95,14 @@ def _install_langchain_core_stubs() -> None:
 
 
 def _install_gke_models_stub() -> None:
-    """Stub graph_knowledge_engine.models to avoid importing the full Pydantic graph.
+    """Stub kogwistar.models to avoid importing the full Pydantic graph.
 
     These tests focus on agent orchestration + projection idempotency.
     """
-    if "graph_knowledge_engine.models" in sys.modules:
+    if "kogwistar.models" in sys.modules:
         return
 
-    m = types.ModuleType("graph_knowledge_engine.models")
+    m = types.ModuleType("kogwistar.models")
 
     @dataclass
     class Span:
@@ -164,7 +164,7 @@ def _install_gke_models_stub() -> None:
     m.ConversationNode = ConversationNode
     m.ConversationEdge = ConversationEdge
 
-    sys.modules["graph_knowledge_engine.models"] = m
+    sys.modules["kogwistar.models"] = m
 
 
 _install_langchain_core_stubs()
@@ -173,7 +173,7 @@ _install_gke_models_stub()
 from langchain_google_genai import ChatGoogleGenerativeAI
 import pytest
 
-from graph_knowledge_engine.conversation.agentic_answering import (
+from kogwistar.conversation.agentic_answering import (
     AgenticAnsweringAgent,
     AnswerWithCitations,
     AnswerEvaluation,
@@ -183,8 +183,8 @@ from graph_knowledge_engine.conversation.agentic_answering import (
     snapshot_hash,
     EvidenceSelection,
 )
-from graph_knowledge_engine.engine_core.models import Span
-from graph_knowledge_engine.llm_tasks import (
+from kogwistar.engine_core.models import Span
+from kogwistar.llm_tasks import (
     AdjudicateBatchTaskResult,
     AdjudicatePairTaskResult,
     AnswerWithCitationsTaskResult,
@@ -542,13 +542,13 @@ def test_agent_answer_creates_run_anchor_projects_used_evidence(monkeypatch, eng
         "_generate_answer_with_citations",
         staticmethod(fake_generate_answer_with_citations),
     )
-    from graph_knowledge_engine.conversation.service import ConversationService
+    from kogwistar.conversation.service import ConversationService
 
     monkeypatch.setattr(
         ConversationService, "get_conversation_view", fake_get_conversation_view
     )
     monkeypatch.setattr(agent, "_select_used_evidence", fake_select)
-    from graph_knowledge_engine.conversation.models import MetaFromLastSummary
+    from kogwistar.conversation.models import MetaFromLastSummary
 
     out = agent.answer(
         conversation_id=conversation_id,
@@ -577,7 +577,7 @@ def test_agent_answer_creates_run_anchor_projects_used_evidence(monkeypatch, eng
 @pytest.mark.ci
 def test_projection_is_idempotent(engines):
     conv, kg, conversation_id = engines
-    from graph_knowledge_engine.conversation.models import MetaFromLastSummary
+    from kogwistar.conversation.models import MetaFromLastSummary
 
     agent = AgenticAnsweringAgent(
         conversation_engine=conv,
@@ -622,7 +622,7 @@ def test_projection_is_idempotent(engines):
 
 @pytest.mark.ci_full
 def test_agent_with_real_llm_cached(monkeypatch, engine, conversation_engine):
-    from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
+    from kogwistar.engine_core.engine import GraphKnowledgeEngine
 
     engine: GraphKnowledgeEngine
     conversation_engine: GraphKnowledgeEngine
@@ -718,10 +718,10 @@ def test_agent_with_real_llm_cached(monkeypatch, engine, conversation_engine):
         return cached_invoke(payload)
 
     # Patch agent internals to use cached real-LLM boundaries
-    from graph_knowledge_engine.conversation.agentic_answering import (
+    from kogwistar.conversation.agentic_answering import (
         AgenticAnsweringAgent,
     )
-    from graph_knowledge_engine.conversation.models import MetaFromLastSummary
+    from kogwistar.conversation.models import MetaFromLastSummary
 
     prev_turn_meta_summary = MetaFromLastSummary(0, 0, 0)
 
@@ -738,8 +738,8 @@ def test_agent_with_real_llm_cached(monkeypatch, engine, conversation_engine):
 
     # Now run your end-to-end agent call
     user_id = "test_agent_with_llm_cached"
-    from graph_knowledge_engine.conversation.models import FilteringResult
-    from graph_knowledge_engine.conversation.service import ConversationService
+    from kogwistar.conversation.models import FilteringResult
+    from kogwistar.conversation.service import ConversationService
 
     conv_svc = ConversationService.from_engine(
         conversation_engine,

@@ -3,7 +3,7 @@ from sqlalchemy.dialects import postgresql as psql
 
 import pytest
 
-from graph_knowledge_engine.engine_core.postgres_backend import where_jsonb
+from kogwistar.engine_core.postgres_backend import where_jsonb
 
 pytestmark = pytest.mark.ci_full
 

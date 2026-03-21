@@ -4,8 +4,8 @@ from typing import Any, Dict, List, Tuple
 import pytest
 from joblib import Memory
 
-from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
-from graph_knowledge_engine.engine_core.models import (
+from kogwistar.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.engine_core.models import (
     AdjudicationQuestionCode,
     Edge,
     LLMMergeAdjudication,

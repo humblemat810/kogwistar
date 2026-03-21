@@ -7,12 +7,12 @@ from pathlib import Path
 
 import pytest
 
-from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
-from graph_knowledge_engine.engine_core.engine_postgres_meta import (
+from kogwistar.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.engine_core.engine_postgres_meta import (
     EnginePostgresMetaStore,
 )
-from graph_knowledge_engine.engine_core.postgres_backend import PgVectorBackend
-from graph_knowledge_engine.server.run_registry import RunRegistry
+from kogwistar.engine_core.postgres_backend import PgVectorBackend
+from kogwistar.server.run_registry import RunRegistry
 
 
 class FakeEmbeddingFunction:

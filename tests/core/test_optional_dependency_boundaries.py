@@ -49,7 +49,7 @@ def test_base_import_is_safe_without_optional_dependencies() -> None:
             "langgraph",
         ),
         body="""
-import graph_knowledge_engine.engine_core as engine_core
+import kogwistar.engine_core as engine_core
 assert hasattr(engine_core, "GraphKnowledgeEngine")
 print("ok")
 """,
@@ -70,11 +70,11 @@ def test_optional_modules_import_safely_without_optional_dependencies() -> None:
             "langgraph",
         ),
         body="""
-import graph_knowledge_engine.ingester as ingester
-import graph_knowledge_engine.ocr as ocr
-import graph_knowledge_engine.runtime as runtime_pkg
-import graph_knowledge_engine.runtime.langgraph_converter as langgraph_converter
-import graph_knowledge_engine.utils.langchain as langchain_utils
+import kogwistar.ingester as ingester
+import kogwistar.ocr as ocr
+import kogwistar.runtime as runtime_pkg
+import kogwistar.runtime.langgraph_converter as langgraph_converter
+import kogwistar.utils.langchain as langchain_utils
 
 assert hasattr(ingester, "PagewiseSummaryIngestor")
 assert hasattr(ocr, "RawOCRResponse")
@@ -102,7 +102,7 @@ def test_server_entrypoint_requires_server_dependency() -> None:
         ),
         body="""
 try:
-    import graph_knowledge_engine.server_mcp_with_admin as server
+    import kogwistar.server_mcp_with_admin as server
 except RuntimeError as e:
     msg = str(e)
     assert "kogwistar[server]" in msg
@@ -119,7 +119,7 @@ def test_missing_chroma_dependency_error_is_actionable() -> None:
     code = _script_with_blocked_imports(
         blocked_roots=("chromadb",),
         body="""
-from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.engine_core.engine import GraphKnowledgeEngine
 try:
     GraphKnowledgeEngine(persist_directory=".")
 except RuntimeError as e:
@@ -138,7 +138,7 @@ def test_missing_langgraph_dependency_error_is_actionable() -> None:
     code = _script_with_blocked_imports(
         blocked_roots=("langgraph",),
         body="""
-from graph_knowledge_engine.runtime.langgraph_converter import to_langgraph
+from kogwistar.runtime.langgraph_converter import to_langgraph
 
 try:
     to_langgraph(
@@ -163,7 +163,7 @@ def test_missing_gemini_dependency_error_is_actionable() -> None:
     code = _script_with_blocked_imports(
         blocked_roots=("langchain_google_genai",),
         body="""
-from graph_knowledge_engine.llm_tasks import (
+from kogwistar.llm_tasks import (
     DefaultTaskProviderConfig,
     SummarizeContextTaskRequest,
     build_default_llm_tasks,
@@ -190,7 +190,7 @@ def test_missing_ocr_dependency_error_is_actionable() -> None:
     code = _script_with_blocked_imports(
         blocked_roots=("langchain_core", "langchain_google_genai"),
         body="""
-import graph_knowledge_engine.ocr as ocr
+import kogwistar.ocr as ocr
 
 try:
     ocr.SystemMessage("hello")
@@ -210,7 +210,7 @@ def test_missing_openai_dependency_error_is_actionable() -> None:
     code = _script_with_blocked_imports(
         blocked_roots=("langchain_openai",),
         body="""
-from graph_knowledge_engine.llm_tasks import (
+from kogwistar.llm_tasks import (
     DefaultTaskProviderConfig,
     SummarizeContextTaskRequest,
     build_default_llm_tasks,

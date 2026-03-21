@@ -3,11 +3,11 @@ import uuid
 
 import pytest
 
-from graph_knowledge_engine.engine_core.engine_postgres import PgVectorBackend
-from graph_knowledge_engine.engine_core.engine_postgres_meta import (
+from kogwistar.engine_core.engine_postgres import PgVectorBackend
+from kogwistar.engine_core.engine_postgres_meta import (
     EnginePostgresMetaStore,
 )
-from graph_knowledge_engine.engine_core.postgres_backend import PostgresUnitOfWork
+from kogwistar.engine_core.postgres_backend import PostgresUnitOfWork
 
 
 @pytest.mark.ci_full

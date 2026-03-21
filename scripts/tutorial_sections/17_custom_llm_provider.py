@@ -14,8 +14,8 @@ if str(ROOT) not in sys.path:
 
 import httpx
 from langchain_ollama import ChatOllama
-from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
-from graph_knowledge_engine.llm_tasks import (
+from kogwistar.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.llm_tasks import (
     LLMTaskSet,
     build_default_llm_tasks,
     AnswerWithCitationsTaskRequest,

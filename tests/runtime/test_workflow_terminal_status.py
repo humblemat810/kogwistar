@@ -4,19 +4,19 @@ import shutil
 import uuid
 from pathlib import Path
 
-from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
-from graph_knowledge_engine.engine_core.models import (
+from kogwistar.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.engine_core.models import (
     Grounding,
     MentionVerification,
     Span,
 )
-from graph_knowledge_engine.runtime.models import (
+from kogwistar.runtime.models import (
     RunSuccess,
     WorkflowCompletedNode,
     WorkflowEdge,
     WorkflowNode,
 )
-from graph_knowledge_engine.runtime.runtime import WorkflowRuntime
+from kogwistar.runtime.runtime import WorkflowRuntime
 
 
 class FakeEmbeddingFunction:

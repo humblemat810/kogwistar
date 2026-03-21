@@ -8,8 +8,8 @@ from typing import List
 import pytest
 
 
-from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
-from graph_knowledge_engine.engine_core import models
+from kogwistar.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.engine_core import models
 
 pytestmark = pytest.mark.ci
 

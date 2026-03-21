@@ -2,10 +2,10 @@ import pathlib
 
 import pytest
 
-from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
-from graph_knowledge_engine.engine_core.postgres_backend import PgVectorBackend
+from kogwistar.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.engine_core.postgres_backend import PgVectorBackend
 
-from graph_knowledge_engine.engine_core.models import Node, Grounding, Span
+from kogwistar.engine_core.models import Node, Grounding, Span
 from tests.conftest import FakeEmbeddingFunction
 
 

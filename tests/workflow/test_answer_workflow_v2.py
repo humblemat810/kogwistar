@@ -1,19 +1,19 @@
 import pytest
 
-from graph_knowledge_engine.conversation.agentic_answering import (
+from kogwistar.conversation.agentic_answering import (
     AgenticAnsweringAgent,
     AgentConfig,
     AnswerEvaluation,
     AnswerWithCitations,
     EvidenceSelection,
 )
-from graph_knowledge_engine.id_provider import stable_id
-from graph_knowledge_engine.conversation.models import (
+from kogwistar.id_provider import stable_id
+from kogwistar.conversation.models import (
     FilteringResult,
     MetaFromLastSummary,
 )
-from graph_knowledge_engine.conversation.service import ConversationService
-from graph_knowledge_engine.llm_tasks import (
+from kogwistar.conversation.service import ConversationService
+from kogwistar.llm_tasks import (
     AdjudicateBatchTaskResult,
     AdjudicatePairTaskResult,
     AnswerWithCitationsTaskResult,

@@ -39,8 +39,8 @@ async def _wait(url: str, timeout=15):
 
 # --- Preseed helper (same models/engine your server uses) ---
 def _preseed_chroma_dir(persist_dir: str):
-    from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
-    from graph_knowledge_engine.engine_core.models import Edge, Node
+    from kogwistar.engine_core.engine import GraphKnowledgeEngine
+    from kogwistar.engine_core.models import Edge, Node
 
     from tests._kg_factories import kg_document, kg_grounding
 

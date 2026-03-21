@@ -2,9 +2,9 @@ import json
 import pytest
 import sqlalchemy as sa
 
-from graph_knowledge_engine.engine_core.models import Node, Edge, Grounding, Span
-from graph_knowledge_engine.engine_core.postgres_backend import PgVectorBackend
-from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.engine_core.models import Node, Edge, Grounding, Span
+from kogwistar.engine_core.postgres_backend import PgVectorBackend
+from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from tests.conftest import FakeEmbeddingFunction
 
 EMBEDDING_DIM = 3

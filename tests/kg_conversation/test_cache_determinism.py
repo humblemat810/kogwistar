@@ -9,13 +9,13 @@ import json
 from typing import Any
 from joblib import Memory
 
-from graph_knowledge_engine.conversation.agentic_answering import AnswerWithCitations
-from graph_knowledge_engine.conversation.conversation_orchestrator import ConversationOrchestrator
-from graph_knowledge_engine.llm_tasks import AnswerWithCitationsTaskResult, LLMTaskSet
+from kogwistar.conversation.agentic_answering import AnswerWithCitations
+from kogwistar.conversation.conversation_orchestrator import ConversationOrchestrator
+from kogwistar.llm_tasks import AnswerWithCitationsTaskResult, LLMTaskSet
 from tests.conftest import _make_engine_pair, _make_workflow_engine, _to_stable_key
-from graph_knowledge_engine.id_provider import stable_id
-from graph_knowledge_engine.conversation.models import RetrievalResult
-from graph_knowledge_engine.engine_core.models import Node, Grounding, Span
+from kogwistar.id_provider import stable_id
+from kogwistar.conversation.models import RetrievalResult
+from kogwistar.engine_core.models import Node, Grounding, Span
 
 @pytest.mark.parametrize("llm_provider_name", ["ollama"], indirect=True)
 def test_cross_backend_cache_determinism(
@@ -212,7 +212,7 @@ def test_cross_backend_cache_determinism(
         mentions=[Grounding(spans=[Span.from_dummy_for_document()])],
         level_from_root=0
     )
-    from graph_knowledge_engine.conversation.models import FilteringResult
+    from kogwistar.conversation.models import FilteringResult
     def mock_filtering_callback(*args, **kwargs):
         # Always return the same context
         return FilteringResult(node_ids=[ceo_node.safe_get_id()], edge_ids=[]), "query: CEO"
@@ -255,7 +255,7 @@ def test_cross_backend_cache_determinism(
         sa_engine=sa_engine,
         pg_schema=pg_schema,
     )
-    # from graph_knowledge_engine.utils.cache_paths import joblib_cache_path
+    # from kogwistar.utils.cache_paths import joblib_cache_path
     orch_chroma = ConversationOrchestrator(
         conversation_engine=ce_chroma,
         ref_knowledge_engine=kg_chroma,

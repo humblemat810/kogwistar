@@ -5,15 +5,15 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 import pytest
 
-from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
-from graph_knowledge_engine.engine_core.models import Span, Grounding
-from graph_knowledge_engine.runtime.models import RunSuccess
-from graph_knowledge_engine.runtime.runtime import WorkflowRuntime, StepContext
-from graph_knowledge_engine.runtime.resolvers import MappingStepResolver
+from kogwistar.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.engine_core.models import Span, Grounding
+from kogwistar.runtime.models import RunSuccess
+from kogwistar.runtime.runtime import WorkflowRuntime, StepContext
+from kogwistar.runtime.resolvers import MappingStepResolver
 import logging
 
 # Reuse your canonical engine factory (already parametrized in other tests)
-from graph_knowledge_engine.runtime.models import WorkflowEdge, WorkflowNode
+from kogwistar.runtime.models import WorkflowEdge, WorkflowNode
 from tests.conftest import _make_engine_pair, FakeEmbeddingFunction
 import os
 

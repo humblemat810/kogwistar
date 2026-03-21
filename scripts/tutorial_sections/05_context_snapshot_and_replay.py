@@ -3,7 +3,7 @@
 # This companion persists a prompt view as a `context_snapshot`.
 
 # %%
-from graph_knowledge_engine.conversation.service import ConversationService
+from kogwistar.conversation.service import ConversationService
 from tutorial_ladder import (
     _ensure_seed,
     deterministic_filter_callback,

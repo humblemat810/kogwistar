@@ -6,8 +6,8 @@ from typing import Any
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
-from graph_knowledge_engine.server.auth_middleware import verify_jwt
-from graph_knowledge_engine.server_mcp_with_admin import app as backend_app
+from kogwistar.server.auth_middleware import verify_jwt
+from kogwistar.server_mcp_with_admin import app as backend_app
 
 
 @asynccontextmanager

@@ -41,7 +41,7 @@ def _fake_payload() -> dict[str, Any]:
 
 
 def test_dump_d3_bundle_injects_embedded_data_and_meta(tmp_path, monkeypatch):
-    mod = importlib.import_module("graph_knowledge_engine.utils.kge_debug_dump")
+    mod = importlib.import_module("kogwistar.utils.kge_debug_dump")
 
     payload = _fake_payload()
 
@@ -76,7 +76,7 @@ def test_dump_d3_bundle_injects_embedded_data_and_meta(tmp_path, monkeypatch):
 
 
 def test_dump_paired_bundles_writes_both_and_meta_json(tmp_path, monkeypatch):
-    mod = importlib.import_module("graph_knowledge_engine.utils.kge_debug_dump")
+    mod = importlib.import_module("kogwistar.utils.kge_debug_dump")
 
     payload = _fake_payload()
     monkeypatch.setattr(mod, "to_d3_force", lambda *args, **kwargs: payload)
@@ -123,7 +123,7 @@ def test_cli_one_writes_output_html(tmp_path, monkeypatch, capsys):
     - patches build_engine + to_d3_force
     - runs main() with monkeypatched sys.argv
     """
-    mod = importlib.import_module("graph_knowledge_engine.utils.kge_debug_dump")
+    mod = importlib.import_module("kogwistar.utils.kge_debug_dump")
 
     payload = _fake_payload()
     monkeypatch.setattr(mod, "to_d3_force", lambda *args, **kwargs: payload)

@@ -1,0 +1,1712 @@
+<!--
+Component: Conversation Workflow Graph Debug viewer
+Description: Renders the CDC workflow visualization using D3.js
+
+Also contains a debugger tooling to heuristically turn some declarative node and edge scripts into graphs 
+for workflow high level visualization
+
+Author: Your Name
+Created: 2026-03-01
+-->
+
+
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>D3 graph viewer</title>
+    <style>
+      body { margin:0; }
+      svg { width:100vw; height:100vh; display:block; }
+      #bar {
+        position:fixed; top:8px; left:8px; z-index: 10;
+        background:#fff9; padding:8px 10px; border-radius:8px;
+        font: 12px/1.3 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+        box-shadow: 0 2px 8px rgba(0,0,0,.15);
+        max-width: calc(100vw - 16px);
+      }
+      #bar label { margin-right:8px; white-space: nowrap; }
+      #bar input[type=range] { width:120px; vertical-align: middle; }
+      #bar button { margin-right:6px; }
+      code { background:#eef; padding:1px 4px; border-radius:4px; }
+      .dropdown { display:inline-block; position:relative; margin-left:8px; }
+      .dropdown button { padding:2px 8px; }
+      .menu {
+        position:absolute; top:100%; left:0; margin-top:4px; min-width:260px;
+        background:#fff; border:1px solid #ccc; border-radius:6px; padding:8px;
+        box-shadow: 0 2px 12px rgba(0,0,0,.15); display:none; z-index:20;
+        max-height: 40vh; overflow:auto;
+      }
+      .menu label { display:flex; gap:8px; align-items:center; font:12px/1.4 sans-serif; padding:2px 0; }
+      .menu .cmds { display:flex; gap:6px; margin-bottom:6px; flex-wrap: wrap; }
+      #legend {
+        position:fixed; right:8px; top:8px; z-index:10;
+        background:#fff9; padding:8px 10px; border-radius:8px; font:12px/1.2 sans-serif;
+        box-shadow: 0 2px 8px rgba(0,0,0,.15);
+      }
+      #legend .dot { display:inline-block; width:10px; height:10px; border-radius:50%; background:#69b; margin-right:6px; }
+      #legend .diamond { display:inline-block; width:10px; height:10px; background:#d77; transform:rotate(45deg); margin-right:6px; }
+      .hidden { display: none; }
+
+      .focus-node { stroke: #ffb000; stroke-width: 3px; }
+      .focus-label { font-weight: 700; text-decoration: underline; }
+      .dim { opacity: 0.15; }
+
+      #inspector {
+        position: fixed;
+        right: 8px;
+        bottom: 8px;
+        width: min(520px, calc(100vw - 16px));
+        max-height: 55vh;
+        overflow: auto;
+        background:#fff9;
+        border-radius: 8px;
+        box-shadow: 0 2px 10px rgba(0,0,0,.18);
+        padding: 10px;
+        font: 12px/1.35 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        z-index: 10;
+      }
+      #inspector pre { margin:0; white-space: pre-wrap; word-break: break-word; }
+      #inspector .hdr { display:flex; align-items:center; justify-content:space-between; margin-bottom:6px; }
+      #inspector .hdr b { font: 12px/1.2 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+      #inspector button { font: 12px/1.2 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+
+      #cdcBadge {
+        display:inline-block;
+        margin-left:10px;
+        padding:2px 8px;
+        border-radius:999px;
+        border:1px solid #bbb;
+        background:#fff;
+        font: 12px/1.2 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      }
+      #cdcBadge.hidden { display:none; }
+
+      /* ===== Script → Graph panel (minimal add) ===== */
+      #scriptPanel {
+        position: fixed;
+        left: 8px;
+        top: 92px;
+        width: calc(100vw - 16px);
+        max-height: 82vh;
+        overflow: hidden;
+        background:#fff;
+        border-radius: 10px;
+        border: 1px solid #ddd;
+        box-shadow: 0 2px 12px rgba(0,0,0,.15);
+        z-index: 11;
+      }
+      #scriptPanel.hidden { display:none; }
+      #scriptPanel .hdr {
+        display:flex; align-items:center; justify-content:space-between; gap:10px;
+        padding: 8px 10px;
+        border-bottom: 1px solid #e5e5e5;
+        background: #fff;
+        font: 12px/1.2 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      }
+      #scriptPanel .hdr b { font-size: 12px; }
+      #scriptPanel .hdr .btns { display:flex; gap:6px; flex-wrap:wrap; align-items:center; }
+      #scriptPanel .editorWrap{
+        position: relative;
+        width: 100%;
+        height: 62vh;
+      }
+      #scriptPanel pre#scriptHi {
+        position: absolute;
+        inset: 0;
+        margin: 0;
+        padding: 12px 10px;
+        overflow: auto;
+        white-space: pre;
+        font: 15px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        box-sizing: border-box;
+        background: #fff;
+      }
+      #scriptPanel textarea#scriptSrc {
+        position: absolute;
+        inset: 0;
+        margin: 0;
+        padding: 12px 10px;
+        resize: none;
+        border: 0;
+        outline: none;
+        background: transparent;
+        color: transparent;           /* hide raw text; caret still visible */
+        caret-color: #111;            /* keep caret visible */
+        font: 15px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        box-sizing: border-box;
+        overflow: auto;
+      }
+      #scriptPanel .ln { display:inline-block; width: 3.2em; padding-right: 10px; color:#999; user-select:none; }
+      #scriptPanel .code { color:#111; }
+      #scriptPanel .cmt  { color:#9aa0a6; }
+      #scriptPanel .node { color:#0b6b3a; font-weight:600; }
+      #scriptPanel .edge { color:#1b4f9c; font-weight:600; }
+      #scriptPanel .ft {
+        padding: 8px 10px;
+        border-top: 1px solid #e5e5e5;
+        background: #fafafa;
+        font: 12px/1.25 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+        color: #444;
+      }
+      #scriptPanel .pill {
+        display:inline-block; padding:2px 8px; border-radius:999px;
+        border:1px solid #bbb; background:#fff; font: 12px/1.2 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      }
+
+    </style>
+    <script src="https://unpkg.com/d3@7"></script>
+  </head>
+
+  <body>
+    <div id="bar">
+      <div style="margin-bottom:6px;">
+        <b>doc_id</b>=<code>null</code> &nbsp;|&nbsp;
+        <b>mode</b>=<code>reify</code> &nbsp;|&nbsp;
+        <b>insertion_method</b>=<code>null</code>
+        &nbsp;|&nbsp;<b>bundle</b>=<code>true</code>
+      </div>
+
+      <button id="zoomIn">＋</button>
+      <button id="zoomOut">－</button>
+      <button id="resetZoom">Reset</button>
+
+      <label>Label <input id="fontSize" type="range" min="8" max="18" value="10"></label>
+      <label>Link <input id="linkDist" type="range" min="30" max="240" value="100"></label>
+      <label>Charge <input id="charge" type="range" min="-800" max="-20" value="-300"></label>
+      <label>Gravity <input id="gravity" type="range" min="0" max="0.3" step="0.005" value="0.06"></label>
+      <label><input type="checkbox" id="freeze"> Freeze forces</label>
+      <label style="margin-left:12px;">
+        Layout:
+        <select id="layoutMode">
+          <option value="force">Force</option>
+          <option value="spine">Conversation spine</option>
+        </select>
+      </label>
+      <label style="margin-left:12px;">
+        <input type="checkbox" id="spineMode"> Conversation spine
+      </label>
+      <label>Layer gap <input id="layerGap" type="range" min="60" max="300" value="160"></label>
+      <br/>
+
+      <label><input type="checkbox" id="treeMode"> Tree from summarizes_document root</label>
+      <label><input type="checkbox" id="outwardOnly" disabled> Outward only</label>
+      <label><input type="checkbox" id="inwardOnly" disabled> Inward only</label>
+      <label><input type="checkbox" id="includeLateral" disabled> Include lateral</label>
+      <label><input type="checkbox" id="showOrphans" checked> Show orphan nodes</label>
+      <span class="dropdown">
+        <button id="relMenuBtn">Relations ▾</button>
+        <div class="menu" id="relMenu">
+          <div class="cmds">
+            <button type="button" id="relAll">All</button>
+            <button type="button" id="NotAny">NotAny</button>
+            <button type="button" id="relSumm">Only “summ”</button>
+          </div>
+          <div id="relList"></div>
+        </div>
+      </span>
+
+      <button id="applyFilters">Apply</button>
+      <button id="toggleScript" style="margin-left:10px;">Script ▾</button>
+      <button id="toggleCdc" style="margin-left:6px;">CDC: On</button>
+      <span id="cdcBadge" class="hidden">CDC: <span id="cdcStatus">disabled</span></span>
+    </div>
+
+
+    <!-- Script → Graph panel (minimal add) -->
+    <div id="scriptPanel" class="hidden">
+      <div class="hdr">
+        <b>Script → Graph</b>
+        <div class="btns">
+          <button id="scriptParse">Parse & Render</button>
+          <button id="scriptSample">Load sample</button>
+          <label style="display:flex; gap:6px; align-items:center; font:12px/1.2 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;"><input type="checkbox" id="scriptReify" checked> Reify edges (♦)</label>
+          <span class="pill" id="scriptStats">nodes: 0 • links: 0</span>
+          <button id="scriptHide">Hide</button>
+        </div>
+      </div>
+      <div class="editorWrap"><pre id="scriptHi"></pre><textarea id="scriptSrc" spellcheck="false"></textarea></div>
+      <div class="ft">
+        Heuristics (loose): ignore <code>#</code> comments. Node if <code>node_id=</code> OR contains “node”+“add”.
+        Edge if contains <code>src=</code> and <code>dst=</code>/<code>tgt=</code>/<code>target=</code>/<code>to=</code>.
+      </div>
+    </div>
+
+    <div id="legend">
+      <div><span class="dot"></span> entity node</div>
+      <div><span class="diamond"></span> edge-node (reified relation)</div>
+      <div style="margin-top:6px;"><span style="border-bottom:2px solid #999;">&nbsp;&nbsp;&nbsp;</span> directed link</div>
+      <div style="margin-top:6px;">Tip: click a node to inspect JSON.</div>
+      <div>Tip: <code>?focus=id1,id2</code> highlights.</div>
+    </div>
+
+    <div id="inspector" class="hidden">
+      <div class="hdr">
+        <b>Inspector</b>
+        <div>
+          <button id="openRef">Open ref</button>
+          <button id="closeInspector">Close</button>
+        </div>
+      </div>
+      <pre id="inspectorBody"></pre>
+    </div>
+
+    <div id="cdcPanel" class="hidden" style="
+      position: fixed;
+      left: 8px;
+      bottom: 8px;
+      width: min(520px, calc(100vw - 16px));
+      max-height: 28vh;
+      overflow: auto;
+      background: #111c;
+      color: #ddd;
+      border-radius: 8px;
+      border: 1px solid #444;
+      box-shadow: 0 2px 10px rgba(0,0,0,.25);
+      padding: 8px 10px;
+      font: 12px/1.35 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      z-index: 10;">
+      <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:6px;">
+        <b style="font:12px/1.2 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; color:#fff;">CDC debug</b>
+        <div style="display:flex; gap:8px; align-items:center;">
+          <span id="cdcPanelStatus">disabled</span>
+          <button id="cdcClear" style="font:12px/1.2 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;">Clear</button>
+          <button id="cdcHide" style="font:12px/1.2 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;">Hide</button>
+        </div>
+      </div>
+      <div id="cdcPanelLog"></div>
+    </div>
+
+    <svg></svg>
+
+    <script>
+      // Optional (bundle mode): server or CLI may inject these.
+      window.__EMBEDDED_DATA__ = {"nodes": [], "links": []};
+      window.__BUNDLE_META__ = {"note": "CDC debug bundle", "engine_type": "workflow", "ws": "ws://127.0.0.1:8787/changes/ws?since=0&stream=workflow"};
+
+      // Live CDC (optional): CLI/bundler can inject these.
+      // - bundle_graph_type: "knowledge" | "conversation" | "workflow" (or null)
+      // - cdc_enabled: boolean
+      // - cdc_ws_url: string|null (e.g. "ws://127.0.0.1:8787/changes/ws")
+      window.__BUNDLE_GRAPH_TYPE__ = "workflow";
+      window.__CDC_ENABLED__ = true;
+      window.__CDC_WS_URL__ = "ws://127.0.0.1:8787/changes/ws?since=0&stream=workflow";
+    </script>
+
+    <script>
+      function linkPath(d){
+        const sx = d.source.x, sy = d.source.y;
+        const tx = d.target.x, ty = d.target.y;
+
+        const k = d._parallel_count || 1;
+        const i = d._parallel_index || 0;
+
+        // Self-loop
+        if (d.source.id === d.target.id) {
+          const r = 18 + i * 8; // different radius for multiple self-loops
+          // Arc loop around node
+          return `M ${sx} ${sy} m 0 -${r} a ${r} ${r} 0 1 1 1 0 a ${r} ${r} 0 1 1 -1 0`;
+        }
+
+        // Parallel edges: curve offset perpendicular to the line
+        const dx = tx - sx, dy = ty - sy;
+        const len = Math.hypot(dx, dy) || 1;
+        const nx = -dy / len, ny = dx / len; // unit perpendicular
+
+        const step = 14; // spacing between parallel edges
+        const offset = (i - (k - 1) / 2) * step;
+
+        const mx = (sx + tx) / 2;
+        const my = (sy + ty) / 2;
+
+        const cx = mx + nx * offset;
+        const cy = my + ny * offset;
+
+        return `M ${sx} ${sy} Q ${cx} ${cy} ${tx} ${ty}`;
+      }
+      function isTurnNode(n) {
+        return (typeof n.id === "string" && n.id.startsWith("TURN_")) ||
+              (typeof n.label === "string" && /^Turn\s+\d+/.test(n.label));
+      }
+
+      function isConversationStart(n) {
+        return (typeof n.id === "string" && n.id.startsWith("CONV_START")) ||
+              (typeof n.label === "string" && n.label.toLowerCase().includes("conversation start"));
+      }
+
+      function isNextTurnEdgeNode(n) {
+        return n && n.type === "edge-node" && (n.label === "next_turn" || n.label === "next turn");
+      }
+
+      function getTurnIndex(n) {
+        // Prefer explicit if you later add it, else parse from label/id.
+        const t = n?.properties?.turn_index ?? n?.metadata?.turn_index;
+        if (typeof t === "number") return t;
+        if (typeof n.label === "string") {
+          const m = n.label.match(/^Turn\s+(\d+)/);
+          if (m) return parseInt(m[1], 10);
+        }
+        if (typeof n.id === "string") {
+          const m = n.id.match(/TURN_(\d+)/);
+          if (m) return parseInt(m[1], 10);
+        }
+        return 0;
+      }
+
+      // Build spine order: start -> turn0 -> next_turn_edge -> turn1 -> ...
+      function buildConversationSpine(nodes, links) {
+        const byId = new Map(nodes.map(n => [n.id, n]));
+        const turns = nodes.filter(isTurnNode).sort((a,b) => getTurnIndex(a) - getTurnIndex(b));
+        if (!turns.length) return [];
+
+        const start = nodes.find(isConversationStart);
+        const order = [];
+        if (start) order.push(start.id);
+
+        // helper to find edge-node between two turns (turn -> edge -> turn)
+        const out = new Map();
+        for (const l of links) {
+          const s = (typeof l.source === "object") ? l.source.id : l.source;
+          const t = (typeof l.target === "object") ? l.target.id : l.target;
+          if (!out.has(s)) out.set(s, []);
+          out.get(s).push(t);
+        }
+        function findEdgeNodeBetween(aId, bId) {
+          const mids = out.get(aId) || [];
+          for (const mid of mids) {
+            const midNode = byId.get(mid);
+            if (!midNode || !isNextTurnEdgeNode(midNode)) continue;
+            const midsOut = out.get(mid) || [];
+            if (midsOut.includes(bId)) return mid;
+          }
+          return null;
+        }
+
+        for (let i = 0; i < turns.length; i++) {
+          order.push(turns[i].id);
+          if (i < turns.length - 1) {
+            const edgeId = findEdgeNodeBetween(turns[i].id, turns[i+1].id);
+            if (edgeId) order.push(edgeId);
+          }
+        }
+        return order;
+      }
+
+      function parseQuery() {
+        const u = new URL(window.location.href);
+        const qs = u.searchParams;
+        const focus = (qs.get("focus") || "").split(",").map(s => s.trim()).filter(Boolean);
+        const dataUrl = qs.get("data_url");
+        return { focus, dataUrl };
+      }
+
+      function safeSvgId(s) {
+        return String(s).replace(/[^A-Za-z0-9_-]/g, "_");
+      }
+
+      async function main(){
+        const { focus, dataUrl } = parseQuery();
+        const focusSet = new Set(focus);
+
+        const params = new URLSearchParams({
+          "doc_id":"null",
+          "mode":"reify"
+        });
+        const insertionMethod = "null";
+        if (insertionMethod) params.set("insertion_method", insertionMethod);
+
+        const resolvedDataUrl = dataUrl || ("/api/viz/d3.json?" + params.toString());
+
+        let data = window.__EMBEDDED_DATA__;
+        if (!data) {
+          const res = await fetch(resolvedDataUrl);
+          data = await res.json();
+        }
+
+        const MODE = "reify";
+        const BUNDLE_GRAPH_TYPE = window.__BUNDLE_GRAPH_TYPE__;
+
+                // In-memory mutable model (keyed by id). CDC events mutate this model.
+        const model = {
+          nodesById: new Map(),
+          linksById: new Map(),
+          lastSeq: 0,
+        };
+
+        // Seed model from the embedded snapshot/dump.
+        for (const n of (data.nodes || [])) model.nodesById.set(n.id, { ...n });
+        for (const l of (data.links || [])) {
+          const id = l.id || null;
+          // If dump omitted id, synthesize a stable one.
+          const sid = (typeof l.source === "object" ? l.source.id : l.source);
+          const tid = (typeof l.target === "object" ? l.target.id : l.target);
+          const rel = (l.relation || l.label || "");
+          const key = id || `${sid}->${tid}:${rel}`;
+          model.linksById.set(key, { ...l, id: key });
+        }
+
+        let allNodes = Array.from(model.nodesById.values());
+        let allLinks = Array.from(model.linksById.values());
+
+        function recomputeParallelEdgeHints(){
+          function stKey(e){
+            const sid = (typeof e.source === "object" ? e.source.id : e.source);
+            const tid = (typeof e.target === "object" ? e.target.id : e.target);
+            return `${sid}→${tid}`;
+          }
+          const byPair = new Map();
+          allLinks.forEach(e => {
+            const k = stKey(e);
+            if (!byPair.has(k)) byPair.set(k, []);
+            byPair.get(k).push(e);
+          });
+          byPair.forEach(list => {
+            list.forEach((e, i) => {
+              e._parallel_index = i;
+              e._parallel_count = list.length;
+            });
+          });
+        }
+        recomputeParallelEdgeHints();
+        const svg = d3.select("svg"),
+              width = window.innerWidth,
+              height = window.innerHeight;
+
+        const gRoot = svg.append("g");
+        const zoom = d3.zoom().scaleExtent([0.2, 24]).on("zoom", (e) => gRoot.attr("transform", e.transform));
+        svg.call(zoom);
+
+        const defs = svg.append("defs");
+        const gradDefs = defs.append("g").attr("id", "edge-gradients");
+
+        function keyEdge(e){
+          const sid = (typeof e.source === "object" ? e.source.id : e.source);
+          const tid = (typeof e.target === "object" ? e.target.id : e.target);
+          const rel = (e.relation || e.label || "");
+          return e.id || `${sid}->${tid}:${rel}`;
+        }
+        function gradIdForEdge(e){
+          return "g-" + safeSvgId(keyEdge(e));
+        }
+
+        let gradSel;
+        function rebuildGradients(){
+          gradSel = gradDefs
+            .selectAll("linearGradient")
+            .data(allLinks, keyEdge)
+            .join(
+              enter => {
+                const g = enter.append("linearGradient")
+                  .attr("id", d => gradIdForEdge(d))
+                  .attr("gradientUnits", "userSpaceOnUse");
+                g.append("stop").attr("offset", "0%").attr("stop-color", "#b3b3b3");
+                g.append("stop").attr("offset", "100%").attr("stop-color", "#000");
+                return g;
+              },
+              update => update,
+              exit => exit.remove()
+            );
+        }
+        rebuildGradients();
+
+        defs.append("marker")
+          .attr("id","arrow").attr("viewBox","0 -5 10 10").attr("refX",12).attr("refY",0)
+          .attr("markerWidth",6).attr("markerHeight",6).attr("orient","auto")
+          .append("path").attr("d","M0,-5L10,0L0,5").attr("fill","#999");
+
+        const gLinks = gRoot.append("g").attr("stroke","#999").attr("stroke-opacity",0.75);
+        const gNodes = gRoot.append("g");
+        const gLabels= gRoot.append("g");
+
+        const fontSize    = document.getElementById('fontSize');
+        const linkDistIn  = document.getElementById('linkDist');
+        const chargeIn    = document.getElementById('charge');
+        const gravityIn   = document.getElementById('gravity');
+        const layerGapIn  = document.getElementById('layerGap');
+        const freezeIn    = document.getElementById('freeze');
+
+        const treeMode     = document.getElementById('treeMode');
+        const spineMode = document.getElementById('spineMode');
+        const outwardOnly  = document.getElementById('outwardOnly');
+        const inwardOnly   = document.getElementById('inwardOnly');
+        const includeLat   = document.getElementById('includeLateral');
+        const showOrphans  = document.getElementById('showOrphans');
+        const applyBtn     = document.getElementById('applyFilters');
+
+        document.getElementById('zoomIn').onclick  = () => svg.transition().call(zoom.scaleBy, 1.4);
+        document.getElementById('zoomOut').onclick = () => svg.transition().call(zoom.scaleBy, 1/1.4);
+        document.getElementById('resetZoom').onclick = () => svg.transition().call(zoom.transform, d3.zoomIdentity);
+
+        const uniqueRelations = Array.from(
+          new Set(allLinks.map(e => (e.relation || e.label || "").toLowerCase()).filter(Boolean))
+        ).sort();
+        const relList = document.getElementById('relList');
+        const relMenu = document.getElementById('relMenu');
+        const relBtn  = document.getElementById('relMenuBtn');
+
+        function buildRelMenu() {
+          relList.innerHTML = "";
+          uniqueRelations.forEach(r => {
+            const id = "rel_" + r.replace(/\W+/g, "_");
+            const wrap = document.createElement('label');
+            const cb = document.createElement('input');
+            cb.type = "checkbox"; cb.id = id; cb.value = r; cb.checked = true;
+            wrap.appendChild(cb);
+            const span = document.createElement('span'); span.textContent = r;
+            wrap.appendChild(span);
+            relList.appendChild(wrap);
+          });
+        }
+        buildRelMenu();
+
+        relBtn.onclick = () => relMenu.style.display = (relMenu.style.display === "block") ? "none" : "block";
+        document.addEventListener('click', (e) => {
+          if (!relMenu.contains(e.target) && e.target !== relBtn) relMenu.style.display = "none";
+        });
+        document.getElementById('relAll').onclick = () => {
+          relList.querySelectorAll('input[type=checkbox]').forEach(cb => cb.checked = true);
+        };
+        document.getElementById('NotAny').onclick = () => {
+          relList.querySelectorAll('input[type=checkbox]').forEach(cb => cb.checked = false);
+        };
+        document.getElementById('relSumm').onclick = () => {
+          relList.querySelectorAll('input[type=checkbox]').forEach(cb => cb.checked = cb.value.includes("summ"));
+        };
+
+        // Auto-hint for document_ingestion
+        if (["document_ingestion", "document_parser_v1"].includes((insertionMethod || "").toLowerCase())) {
+          treeMode.checked = true;
+          outwardOnly.checked = true;
+          outwardOnly.disabled = false;
+          inwardOnly.disabled  = false;
+          includeLat.disabled  = false;
+        }
+
+        let linkSel;
+        let nodeCircle;
+        let nodeDiamond;
+        let labelSel;
+
+        const diamondPath = d3.symbol().type(d3.symbolDiamond).size(120);
+
+        function rebuildGraphElements(){
+          rebuildGradients();
+
+          // Links
+          linkSel = gLinks.selectAll("path")
+            .data(allLinks, keyEdge)
+            .join(
+              enter => {
+                const p = enter.append("path")
+                  .attr("fill", "none")
+                  .attr("stroke-width", 1.6)
+                  .attr("marker-end", "url(#arrow)");
+                p.append("title");
+                return p;
+              },
+              update => update,
+              exit => exit.remove()
+            )
+            .attr("stroke", d => `url(#${gradIdForEdge(d)})`);
+
+          linkSel.select("title").text(d => {
+            const rel = d.relation || d.label || "";
+            const props = d.properties ? JSON.stringify(d.properties) : "";
+            return [rel, props].filter(Boolean).join(" • ") || "link";
+          });
+
+          // Nodes
+          const entities = allNodes.filter(n => n.type !== "edge-node");
+          const eNodes   = allNodes.filter(n => n.type === "edge-node");
+
+          nodeCircle = gNodes.selectAll("circle")
+            .data(entities, d => d.id)
+            .join(
+              enter => {
+                const c = enter.append("circle")
+                  .attr("r", 5)
+                  .attr("fill", "#69b")
+                  .attr("stroke", "#fff")
+                  .attr("stroke-width", 1.3);
+                c.append("title");
+                return c;
+              },
+              update => update,
+              exit => exit.remove()
+            );
+
+          nodeDiamond = gNodes.selectAll("path")
+            .data(eNodes, d => d.id)
+            .join(
+              enter => {
+                const p = enter.append("path")
+                  .attr("d", diamondPath)
+                  .attr("fill", "#d77")
+                  .attr("stroke", "#fff")
+                  .attr("stroke-width", 1.0);
+                p.append("title");
+                return p;
+              },
+              update => update,
+              exit => exit.remove()
+            );
+
+          nodeCircle.select("title").text(d => [d.label||d.id, d.summary, d.id].filter(Boolean).join("\n"));
+          nodeDiamond.select("title").text(d => [d.label||"edge-node", d.summary, d.id].filter(Boolean).join("\n"));
+
+          // Labels
+          labelSel = gLabels.selectAll("text")
+            .data(allNodes, d => d.id)
+            .join("text")
+            .text(d=>d.label||d.id)
+            .style("font", fontSize.value + "px sans-serif");
+        }
+
+        rebuildGraphElements();
+
+
+        function applyFocusStyles(){
+          const hasFocus = focusSet.size > 0;
+          nodeCircle.classed("focus-node", d => focusSet.has(d.id));
+          nodeDiamond.classed("focus-node", d => focusSet.has(d.id));
+          labelSel.classed("focus-label", d => focusSet.has(d.id));
+
+          if (hasFocus) {
+            nodeCircle.classed("dim", d => !focusSet.has(d.id));
+            nodeDiamond.classed("dim", d => !focusSet.has(d.id));
+            labelSel.classed("dim", d => !focusSet.has(d.id));
+          }
+        }
+        applyFocusStyles();
+
+        const linkForce   = d3.forceLink(allLinks).id(d => d.id).distance(+linkDistIn.value);
+        const chargeForce = d3.forceManyBody().strength(+chargeIn.value);
+        const gravX       = d3.forceX(width/2).strength(+gravityIn.value);
+        const gravY       = d3.forceY(height/2).strength(+gravityIn.value);
+
+        const sim = d3.forceSimulation(allNodes)
+          .force("charge", chargeForce)
+          .force("link", linkForce)
+          .force("center", d3.forceCenter(width/2, height/2))
+          .force("gravityX", gravX)
+          .force("gravityY", gravY)
+          .alpha(0.5).alphaDecay(0.08).velocityDecay(0.6)
+          .on("tick", () => {
+            linkSel.attr("d", linkPath);
+
+            gradSel
+              .attr("x1", d => (d.source && d.source.x) || 0)
+              .attr("y1", d => (d.source && d.source.y) || 0)
+              .attr("x2", d => (d.target && d.target.x) || 0)
+              .attr("y2", d => (d.target && d.target.y) || 0);
+
+            nodeCircle.attr("cx", d => d.x).attr("cy", d => d.y);
+            nodeDiamond.attr("transform", d => `translate(${d.x},${d.y})`);
+            labelSel.attr("x", d => d.x + 6).attr("y", d => d.y + 3);
+          });
+
+        // Drag: X-only when doc_tree (pinned Y), free otherwise
+        const isDocTreePinnedY = () => treeMode.checked && (["document_ingestion", "document_parser_v1"].includes((insertionMethod || "").toLowerCase()));
+
+        function layerY(n, depth, baseY, gap){
+          const d = depth.get(n.id);
+          return (d !== undefined) ? (baseY + d * gap) : n.y;
+        }
+
+        function makeDrag(depth, baseY, gap) {
+          return d3.drag()
+            .on("start", (event,d) => {
+              if (!event.active) sim.alphaTarget(0.3).restart();
+              if (isDocTreePinnedY()) {
+                d.fx = d.x;
+                d.fy = layerY(d, depth, baseY, gap);
+              } else {
+                d.fx = d.x; d.fy = d.y;
+              }
+            })
+            .on("drag", (event,d) => {
+              if (isDocTreePinnedY()) {
+                d.fx = event.x;
+                d.fy = layerY(d, depth, baseY, gap);
+              } else {
+                d.fx = event.x; d.fy = event.y;
+              }
+            })
+            .on("end", (event,d) => {
+              if (!event.active) sim.alphaTarget(0);
+              if (isDocTreePinnedY()) {
+                d.fx = null;
+                d.fy = layerY(d, depth, baseY, gap);
+              } else {
+                d.fx = null; d.fy = null;
+              }
+            });
+        }
+
+        nodeCircle.call(makeDrag(new Map(), 40, +layerGapIn.value));
+        nodeDiamond.call(makeDrag(new Map(), 40, +layerGapIn.value));
+
+        fontSize.oninput = () => labelSel.style("font", fontSize.value + "px sans-serif");
+        linkDistIn.oninput = () => { linkForce.distance(+linkDistIn.value); sim.alpha(0.3).restart(); };
+        chargeIn.oninput   = () => { chargeForce.strength(+chargeIn.value); sim.alpha(0.3).restart(); };
+        gravityIn.oninput  = () => {
+          const s = +gravityIn.value;
+          gravX.strength(s);
+          gravY.strength(s);
+          sim.alpha(0.3).restart();
+        };
+        freezeIn.onchange  = () => {
+          if (freezeIn.checked) sim.stop();
+          else sim.alpha(0.6).restart();
+        };
+        if (showOrphans) showOrphans.onchange = () => applyVisibility();
+        treeMode.onchange = () => {
+          const on = treeMode.checked;
+          outwardOnly.disabled = !on;
+          inwardOnly.disabled  = !on;
+          includeLat.disabled  = !on;
+          if (!on) { outwardOnly.checked = false; inwardOnly.checked = false; }
+          applyVisibility();
+        };
+        layoutMode.onchange = () => { applyVisibility(); };
+        outwardOnly.onchange = () => { if (outwardOnly.checked) inwardOnly.checked = false; applyVisibility();};
+        inwardOnly.onchange  = () => { if (inwardOnly.checked)  outwardOnly.checked = false; applyVisibility();};
+        includeLat.onchange = () => { applyVisibility(); };
+        function pickRootId() {
+          const relName = "summarizes_document";
+          const out = new Set(), inn = new Set();
+          for (const e of allLinks) {
+            const r = (e.relation || e.label || "").toLowerCase();
+            if (r === relName) {
+              const sid = (typeof e.source === "object" ? e.source.id : e.source);
+              const tid = (typeof e.target === "object" ? e.target.id : e.target);
+              out.add(sid); inn.add(tid);
+            }
+          }
+          const candidates = [...out].filter(x => !inn.has(x));
+          if (candidates.length > 0) return candidates[0];
+          for (const n of allNodes) {
+            const props = n.properties || n.metadata || {};
+            if (props.kind && String(props.kind).toLowerCase() === "document_root") return n.id;
+          }
+          return (allNodes[0] && allNodes[0].id) || null;
+        }
+
+        function computeDepth(rootId) {
+          const depth = new Map();
+          if (!rootId) return depth;
+          depth.set(rootId, 0);
+          const q = [rootId];
+          while (q.length) {
+            const u = q.shift();
+            const du = depth.get(u);
+            for (const e of allLinks) {
+              const sid = (typeof e.source === "object" ? e.source.id : e.source);
+              const tid = (typeof e.target === "object" ? e.target.id : e.target);
+              if (sid !== u) continue;
+              if (!depth.has(tid)) { depth.set(tid, du + 1); q.push(tid); }
+            }
+          }
+          return depth;
+        }
+
+        function readChosenRelations(){
+          const set = new Set();
+          document.querySelectorAll('#relList input[type=checkbox]').forEach(cb => {
+            if (cb.checked) set.add(cb.value);
+          });
+          if (set.size === 0) uniqueRelations.forEach(r => set.add(r));
+          return set;
+        }
+        function applyVisibility(){
+          const chosen = readChosenRelations();
+
+          let depth = new Map();
+          const baseY = 40;
+          const layerGap = +layerGapIn.value;
+
+          if (treeMode.checked) {
+            const rootId = pickRootId();
+            depth = computeDepth(rootId);
+          }
+
+          const linkVisible = new Map();
+
+          linkSel.each(function(e){
+            const rname = (e.relation || e.label || "").toLowerCase();
+            const sid = (typeof e.source === "object" ? e.source.id : e.source);
+            const tid = (typeof e.target === "object" ? e.target.id : e.target);
+
+            let ok = chosen.has(rname);
+            if (!ok) {
+              // Relation not present in the checkbox menu => default to visible,
+              // otherwise new CDC relations would be hidden forever.
+              const hasCb = document.querySelector(`#relList input[type=checkbox][value="${rname}"]`);
+              if (!hasCb) ok = true;
+            }
+
+            if (ok && treeMode.checked) {
+              const ds = depth.get(sid), dt = depth.get(tid);
+              if (ds === undefined || dt === undefined) ok = false;
+
+              const outOnly = outwardOnly.checked;
+              const inOnly  = inwardOnly.checked;
+
+              if (ok && outOnly) {
+                ok = dt > ds || (includeLat.checked && dt === ds);
+              } else if (ok && inOnly) {
+                ok = dt < ds || (includeLat.checked && dt === ds);
+              } else if (ok && !outOnly && !inOnly) {
+                if (!includeLat.checked) ok = dt !== ds;
+              }
+            }
+
+            linkVisible.set(keyEdge(e), ok);
+            d3.select(this).classed("hidden", !ok);
+          });
+
+
+          // If no links are visible (e.g., edge-less graphs), show orphan nodes too.
+          const always_show_orphan_node = showOrphans ? showOrphans.checked : true;
+          const nodeVisible = new Map(allNodes.map(n => [n.id, false || always_show_orphan_node]));
+          const anyNodeVisible = Array.from(nodeVisible.values()).some(Boolean);
+          if (!anyNodeVisible) {
+            allNodes.forEach(n => nodeVisible.set(n.id, true));
+          }
+          
+          
+          let anyVisible = false;
+          linkSel.each(function(e){
+            const k = keyEdge(e);
+            if (!linkVisible.get(k)) return;
+            const sid = (typeof e.source === "object" ? e.source.id : e.source);
+            const tid = (typeof e.target === "object" ? e.target.id : e.target);
+            nodeVisible.set(sid, true);
+            anyVisible = true;
+            nodeVisible.set(tid, true);
+          });
+          
+          if (!anyVisible) {
+            // No visible links => show isolated nodes too
+            allNodes.forEach(n => nodeVisible.set(n.id, true));
+          }
+
+          nodeCircle.classed("hidden", d => !nodeVisible.get(d.id));
+          nodeDiamond.classed("hidden", d => !nodeVisible.get(d.id));
+          labelSel.classed("hidden", d => !nodeVisible.get(d.id));
+
+          // ---- PINNING (mutually exclusive) ----
+          if (layoutMode.value === "spine") {
+            const spineY = 180;
+            const turnGap = 240;
+
+            const turns = allNodes
+              .filter(n => nodeVisible.get(n.id) && isTurnNode(n))
+              .map(n => ({ n, idx: getTurnIndex(n) }))
+              .filter(x => x.idx !== null)
+              .sort((a,b) => a.idx - b.idx);
+
+            const idxPos = new Map();
+            turns.forEach((t, i) => idxPos.set(t.n.id, i));
+
+            allNodes.forEach(n => {
+              if (!nodeVisible.get(n.id)) return;
+
+              if (idxPos.has(n.id)) {
+                const i = idxPos.get(n.id);
+                n.fx = 140 + i * turnGap;
+                n.fy = spineY;
+                n.y  = spineY;
+              } else {
+                // leave others unpinned (do NOT clear their x unless you really want)
+                n.fy = null;
+              }
+            });
+
+          } else if (treeMode.checked) {
+            // doc-tree pin: do NOT gate on insertionMethod
+            allNodes.forEach(n => {
+              if (!nodeVisible.get(n.id)) return;
+              const d = depth.get(n.id);
+              if (d !== undefined) {
+                const y = baseY + d * layerGap;
+                n.y = y; n.fy = y;
+              } else {
+                n.fy = null;
+              }
+            });
+
+          } else {
+            allNodes.forEach(n => { n.fy = null; n.fx = null; });
+          }
+
+          nodeCircle.call(makeDrag(depth, baseY, layerGap));
+          nodeDiamond.call(makeDrag(depth, baseY, layerGap));
+
+          if (!freezeIn.checked) sim.alpha(0.25).restart();
+          applyFocusStyles();
+        }
+
+        applyBtn.onclick = () => applyVisibility();
+
+        const inspector = document.getElementById("inspector");
+        const inspectorBody = document.getElementById("inspectorBody");
+        const closeInspector = document.getElementById("closeInspector");
+        const openRefBtn = document.getElementById("openRef");
+
+        let _selectedNode = null;
+
+        function extractRefId(n) {
+          if (!n) return null;
+          const p = n.properties || {};
+          // common patterns
+          if (typeof p.refers_to_id === "string" && p.refers_to_id) return p.refers_to_id;
+          if (Array.isArray(p.ref_node_ids) && p.ref_node_ids.length) return String(p.ref_node_ids[0]);
+          if (Array.isArray(p.ref_edge_ids) && p.ref_edge_ids.length) return String(p.ref_edge_ids[0]);
+          return null;
+        }
+
+        function showInspector(n) {
+          _selectedNode = n;
+          const refId = extractRefId(n);
+
+          inspectorBody.textContent = JSON.stringify(n, null, 2);
+          inspector.classList.remove("hidden");
+
+          openRefBtn.disabled = !refId;
+          openRefBtn.dataset.refId = refId || "";
+        }
+
+
+        openRefBtn.onclick = () => {
+          const refId = openRefBtn.dataset.refId;
+          if (!refId) return;
+
+          const meta = window.__BUNDLE_META__ || {};
+          // Prefer offline paired bundles when available
+          let targetHref = null;
+
+          // If this page is conversation, open KG bundle; if this page is KG, open conversation bundle.
+          // We infer current graph type from meta if present; otherwise fall back to "file:" heuristic.
+          const currentType = (meta.graph_type || meta.current_graph_type || "").toLowerCase();
+
+          if (currentType === "conversation" && meta.kg_bundle_href) targetHref = meta.kg_bundle_href;
+          if (currentType === "knowledge" && meta.conversation_bundle_href) targetHref = meta.conversation_bundle_href;
+
+          if (targetHref) {
+            const u = new URL(targetHref, window.location.href);
+            u.searchParams.set("focus", refId);
+            // preserve mode if known
+            const mm = meta.mode || (typeof mode === "string" ? mode : null);
+            if (mm) u.searchParams.set("mode", mm);
+            window.open(u.toString(), "_blank");
+            return;
+          }
+
+          // If opened from file:// without paired bundle meta, avoid producing file:///viz/...
+          if (window.location.protocol === "file:") {
+            alert("No bundled reference target available. Create a paired bundle (kg + conversation) to enable Open ref offline.");
+            return;
+          }
+
+          // Online fallback (relative to current origin)
+          const u = new URL(window.location.origin + "/viz/d3");
+          u.searchParams.set("mode", (meta.mode || mode || "reify"));
+          u.searchParams.set("focus", refId);
+          window.open(u.toString(), "_blank");
+        };
+
+
+        let selectedDatum = null;
+
+        function getRefIds(d){
+          const props = (d && (d.properties || d.metadata)) || {};
+          // Preferred explicit pointer(s)
+          if (props.refers_to_id) return [String(props.refers_to_id)];
+          if (props.kg && props.kg.refers_to_id) return [String(props.kg.refers_to_id)];
+
+          // Bundle/export schema: ref_doc_id + ref_node_ids/ref_edge_ids
+          const ids = [];
+          if (Array.isArray(props.ref_node_ids)) ids.push(...props.ref_node_ids.map(String));
+          if (Array.isArray(props.ref_edge_ids)) ids.push(...props.ref_edge_ids.map(String));
+          // As a last resort, allow doc-level jump (open KG bundle without focus)
+          if (props.ref_doc_id) ids.push(String(props.ref_doc_id));
+
+          // De-dupe while preserving order
+          return [...new Set(ids)].filter(Boolean);
+        }
+
+        function hideInspector(){
+          inspector.classList.add("hidden");
+          selectedDatum = null;
+        }
+        closeInspector.onclick = hideInspector;
+        svg.on("click", () => hideInspector());
+
+        function attachClick(sel){
+          sel.on("click", (event, d) => {
+            event.stopPropagation();
+            showInspector(d);
+          });
+        }
+        attachClick(nodeCircle);
+        attachClick(nodeDiamond);
+
+        // -----------------------------
+        // Live CDC (optional)
+        // -----------------------------
+        // -----------------------------
+        // CDC debug logging (always-on when CDC enabled)
+        // -----------------------------
+        const cdcPanel = document.getElementById("cdcPanel");
+        const cdcPanelStatus = document.getElementById("cdcPanelStatus");
+        const cdcPanelLog = document.getElementById("cdcPanelLog");
+        const cdcClearBtn = document.getElementById("cdcClear");
+        const cdcHideBtn = document.getElementById("cdcHide");
+
+        function cdcLog(line){
+          try {
+            // console (always)
+        console.log(line);
+            // panel (when present)
+            if (cdcPanelLog) {
+              const div = document.createElement("div");
+              div.textContent = line;
+              cdcPanelLog.appendChild(div);
+              while (cdcPanelLog.childNodes.length > 200) cdcPanelLog.removeChild(cdcPanelLog.firstChild);
+              cdcPanelLog.scrollTop = cdcPanelLog.scrollHeight;
+            }
+          } catch (_) {}
+        }
+
+        function cdcPanelSetStatus(s){
+          if (cdcPanelStatus) cdcPanelStatus.textContent = s;
+        }
+
+        if (cdcClearBtn) cdcClearBtn.onclick = () => { if (cdcPanelLog) cdcPanelLog.innerHTML = ""; };
+        if (cdcHideBtn) cdcHideBtn.onclick = () => { if (cdcPanel) cdcPanel.classList.add("hidden"); };
+
+
+        function ensureEntityNode(id){
+          if (!id) return;
+          if (!model.nodesById.has(id)) {
+            model.nodesById.set(id, { id, label: id, type: "entity", summary: "", properties: {} });
+          }
+        
+        }
+
+        function removeLinksByPrefix(prefix){
+          for (const k of Array.from(model.linksById.keys())) {
+            if (k.startsWith(prefix)) model.linksById.delete(k);
+          }
+        }
+
+        function applyCdcEvent(ev){
+          if (!ev || !ev.op) return;
+
+          // Topic filter (kg vs conversation vs workflow)
+          const eg = ev.entity || {};
+          if (BUNDLE_GRAPH_TYPE && eg.kg_graph_type && eg.kg_graph_type !== BUNDLE_GRAPH_TYPE) {
+            return;
+          }
+
+          if (typeof ev.seq === "number") model.lastSeq = Math.max(model.lastSeq, ev.seq);
+
+          if (ev.op === "node.upsert") {
+            const p = ev.payload || {};
+            if (!p.id) return;
+            model.nodesById.set(p.id, {
+              id: p.id,
+              label: p.label || p.summary || p.id,
+              type: p.type || "entity",
+              summary: p.summary || "",
+              properties: p.properties || p.metadata || {},
+              ...p,
+            });
+          }
+
+          if (ev.op === "node.remove") {
+            const id = (eg && eg.id) || null;
+            if (id) model.nodesById.delete(id);
+            // Also drop any links that still point to it.
+            for (const k of Array.from(model.linksById.keys())) {
+              const l = model.linksById.get(k);
+              const s = (typeof l.source === "object" ? l.source.id : l.source);
+              const t = (typeof l.target === "object" ? l.target.id : l.target);
+              if (s === id || t === id) model.linksById.delete(k);
+            }
+          }
+
+          if (ev.op === "edge.upsert") {
+            const e = ev.payload || {};
+            if (!e.id) return;
+
+            // Remove the previous representation of this edge (links + optional edge-node)
+            removeLinksByPrefix(e.id + ":");
+            // In reify mode, the edge-node id is the edge id.
+            if (MODE === "reify") model.nodesById.delete(e.id);
+
+            const rel = e.relation || e.label || "";
+            const srcs = Array.isArray(e.source_ids) ? e.source_ids : [];
+            const tgts = Array.isArray(e.target_ids) ? e.target_ids : [];
+
+            // Be defensive: fall back to source_id/target_id when present.
+            const s1 = (!srcs.length && e.source_id) ? [e.source_id] : srcs;
+            const t1 = (!tgts.length && e.target_id) ? [e.target_id] : tgts;
+
+            for (const sid of s1) ensureEntityNode(sid);
+            for (const tid of t1) ensureEntityNode(tid);
+
+            if (MODE === "reify") {
+              // IMPORTANT: spread `e` first, then override fields so `e.type` (often "edge")
+              // does not clobber our special rendering type ("edge-node").
+              const edgeNode = { ...e };
+              edgeNode.id = e.id;
+              edgeNode.label = rel || (e.label || "edge");
+              edgeNode.type = "edge-node";
+              edgeNode.summary = e.summary || "";
+              edgeNode.properties = e.properties || e.metadata || {};
+              model.nodesById.set(e.id, edgeNode);
+
+              for (const sid of s1) {
+                const lid = `${e.id}:s:${sid}`;
+                model.linksById.set(lid, {
+                  id: lid,
+                  source: sid,
+                  target: e.id,
+                  relation: rel,
+                  label: rel,
+                  properties: e.properties || e.metadata || {},
+                });
+              }
+              for (const tid of t1) {
+                const lid = `${e.id}:t:${tid}`;
+                model.linksById.set(lid, {
+                  id: lid,
+                  source: e.id,
+                  target: tid,
+                  relation: rel,
+                  label: rel,
+                  properties: e.properties || e.metadata || {},
+                });
+              }
+            } else {
+              for (const sid of s1) {
+                for (const tid of t1) {
+                  const lid = `${e.id}:${sid}->${tid}`;
+                  model.linksById.set(lid, {
+                    id: lid,
+                    source: sid,
+                    target: tid,
+                    relation: rel,
+                    label: rel,
+                    properties: e.properties || e.metadata || {},
+                  });
+                }
+              }
+            }
+          }
+
+          if (ev.op === "edge.remove") {
+            const id = (eg && eg.id) || null;
+            if (id) {
+              model.nodesById.delete(id);
+              removeLinksByPrefix(id + ":");
+            }
+          }
+        }
+
+        // Defensive normalization: D3 forceSimulation requires node entries to be objects.
+        // If any string/invalid node slips into model.nodesById (e.g. from CDC ordering),
+        // convert it into a placeholder node object in-place.
+        function normalizeNodeValue(key, val){
+          // If val is already a plain object with an id, keep it.
+          if (val && typeof val === "object") {
+            if (!val.id) val.id = String(key);
+            return val;
+          }
+          const id = String(val ?? key);
+          return { id, label: id, type: "entity", summary: "", properties: {}, _placeholder: true };
+        }
+
+        function normalizeAllNodes(){
+          for (const [k, v] of Array.from(model.nodesById.entries())) {
+            const nv = normalizeNodeValue(k, v);
+            if (nv !== v) model.nodesById.set(nv.id, nv);
+            // If the key differs from node id, also ensure correct key mapping
+            if (String(k) !== String(nv.id)) model.nodesById.delete(k);
+          }
+        }
+        function refreshFromModel(){
+          normalizeAllNodes();
+          allNodes = Array.from(model.nodesById.values());
+          allLinks = Array.from(model.linksById.values());
+          recomputeParallelEdgeHints();
+
+          // Update D3 selections
+          rebuildGraphElements();
+
+          // Update forces
+          sim.nodes(allNodes);
+          linkForce.links(allLinks);
+
+          // Re-attach inspector handlers on the new selections
+          attachClick(nodeCircle);
+          attachClick(nodeDiamond);
+
+          // Re-apply current visibility / layout constraints if already computed
+          if (typeof applyVisibility === "function") {
+            applyVisibility();
+          }
+
+          if (!freezeIn.checked) sim.alpha(0.35).restart();
+          applyFocusStyles();
+        }
+
+        
+        // ===== Script → Graph (minimal add) =====
+        function _isCommentLine(line){ return line.trim().startsWith("#"); }
+        function _extractQuotedStrings(line) {
+          const re = /(["'])(.*?)\1/g;
+          const out = [];
+          let m;
+          while ((m = re.exec(line)) !== null) out.push(m[2]);
+          return out;
+        }
+        function _extractAfterKey(line, key) {
+          const re = new RegExp(
+            String.raw`${key}\s*=\s*(?:[a-zA-Z_]\w*\s*\(\s*)?(["'])(.*?)\1`,
+            "i"
+          );
+          const m = line.match(re);
+          return m ? m[2] : null;
+        }
+        function _looksLikeNode(line) {
+          const s = line.toLowerCase();
+          if (s.includes("node_id=")) return true;
+          if (s.includes("add") && s.includes("node")) return true;
+          return false;
+        }
+        function _looksLikeEdge(line) {
+          const s = line.toLowerCase();
+          const hasSrc = /\bsrc\s*=/.test(s);
+          const hasDst = /\b(?:dst|tgt|target|to)\s*=/.test(s);
+          return hasSrc && hasDst;
+        }
+
+                function parseScriptToGraph(text, opts) {
+                  const options = opts || {};
+                  const reifyEdges = options.reifyEdges !== false; // default true
+                  const nodes = new Map(); // id -> node
+                  const links = [];
+                  const lines = (text || "").split(/\r?\n/);
+
+                  function ensureNode(id, label, type) {
+                    if (!id || id === "??") return;
+                    if (!nodes.has(id)) {
+                      nodes.set(id, { id, label: label || id, type: type || "entity", summary: "", properties: {} });
+                    } else if (label) {
+                      const n = nodes.get(id);
+                      if (!n.label || n.label === n.id) n.label = label;
+                    }
+                    if (type) {
+                      const n = nodes.get(id);
+                      n.type = type;
+                    }
+                  }
+
+                  function mkEdgeNodeId(edgeId) {
+                    // Avoid colliding with existing workflow node ids
+                    return "EDGE_NODE:" + String(edgeId);
+                  }
+
+                  for (let i = 0; i < lines.length; i++) {
+                    const raw = lines[i];
+                    const lineNo = i + 1;
+                    const line = raw.trim();
+                    if (!line) continue;
+                    if (_isCommentLine(line)) continue;
+
+                    if (_looksLikeEdge(line)) {
+                      const edgeId = _extractAfterKey(line, "edge_id") || _extractAfterKey(line, "id") || `edge@L${lineNo}`;
+                      const src = _extractAfterKey(line, "src") || null;
+                      const dst = _extractAfterKey(line, "dst") || _extractAfterKey(line, "tgt") || _extractAfterKey(line, "target") || _extractAfterKey(line, "to") || null;
+                      const rel = _extractAfterKey(line, "pred") || _extractAfterKey(line, "relation") || "edge";
+                      const q = _extractQuotedStrings(line);
+
+                      let fsrc = src, fdst = dst;
+                      if ((!fsrc || !fdst) && q.length >= 2) {
+                        if (!fsrc && !fdst) {
+                          fsrc = q[q.length - 2];
+                          fdst = q[q.length - 1];
+                        } else {
+                          fsrc = fsrc || q[0];
+                          fdst = fdst || q[1];
+                        }
+                      }
+                      fsrc = fsrc || "??";
+                      fdst = fdst || "??";
+
+                      ensureNode(fsrc);
+                      ensureNode(fdst);
+
+                      const props = { lineNo, rawLine: raw, edge_id: String(edgeId), pred: rel, src: fsrc, dst: fdst };
+
+                      if (reifyEdges) {
+                        const enId = mkEdgeNodeId(edgeId);
+                        ensureNode(enId, rel, "edge-node");
+                        // Two links around the edge-node so diamonds render
+                        links.push({
+                          id: String(edgeId) + ":in",
+                          source: fsrc,
+                          target: enId,
+                          relation: rel,
+                          label: rel,
+                          properties: props
+                        });
+                        links.push({
+                          id: String(edgeId) + ":out",
+                          source: enId,
+                          target: fdst,
+                          relation: rel,
+                          label: rel,
+                          properties: props
+                        });
+                      } else {
+                        links.push({
+                          id: String(edgeId),
+                          source: fsrc,
+                          target: fdst,
+                          relation: rel,
+                          label: rel,
+                          properties: props
+                        });
+                      }
+                      continue;
+                    }
+
+                    if (_looksLikeNode(line)) {
+                      const nodeId = _extractAfterKey(line, "node_id") || _extractAfterKey(line, "id") || null;
+                      const label = _extractAfterKey(line, "label") || null;
+                      const op = _extractAfterKey(line, "op") || null;
+                      const q = _extractQuotedStrings(line);
+                      const fid = nodeId || (q.length ? q[0] : `node@L${lineNo}`);
+
+                      ensureNode(fid, label || fid, "entity");
+                      if (op) {
+                        const n = nodes.get(fid);
+                        n.properties = n.properties || {};
+                        n.properties.op = op;
+                      }
+                      continue;
+                    }
+                  }
+
+                  return { nodes: Array.from(nodes.values()), links };
+                }
+
+        function updateRelationsMenuFromLinks(){
+          // uniqueRelations is const binding but mutable array; keep minimal
+          uniqueRelations.length = 0;
+          const rels = Array.from(new Set(allLinks.map(e => (e.relation || e.label || "").toLowerCase()).filter(Boolean))).sort();
+          for (const r of rels) uniqueRelations.push(r);
+          buildRelMenu();
+        }
+
+        function replaceGraphFromParsed(parsed){
+          model.nodesById.clear();
+          model.linksById.clear();
+
+          for (const n of (parsed.nodes || [])) {
+            model.nodesById.set(n.id, { ...n });
+          }
+          for (const l of (parsed.links || [])) {
+            const sid = (typeof l.source === "object" ? l.source.id : l.source);
+            const tid = (typeof l.target === "object" ? l.target.id : l.target);
+            const rel = (l.relation || l.label || "");
+            const key = l.id || `${sid}->${tid}:${rel}`;
+            model.linksById.set(key, { ...l, id: key });
+          }
+
+          refreshFromModel();
+          updateRelationsMenuFromLinks();
+          if (typeof applyVisibility === "function") applyVisibility();
+        }
+
+        // Script panel wiring
+        const scriptPanel = document.getElementById("scriptPanel");
+        const toggleScript = document.getElementById("toggleScript");
+        const scriptHide = document.getElementById("scriptHide");
+        const scriptParse = document.getElementById("scriptParse");
+        const scriptSample = document.getElementById("scriptSample");
+        const scriptSrc = document.getElementById("scriptSrc");
+        const scriptStats = document.getElementById("scriptStats");
+
+        const scriptHi = document.getElementById("scriptHi");
+
+        function _escHtml(s){
+          return String(s)
+            .replace(/&/g,"&amp;")
+            .replace(/</g,"&lt;")
+            .replace(/>/g,"&gt;")
+            .replace(/"/g,"&quot;")
+            .replace(/'/g,"&#39;");
+        }
+
+        function renderScriptHighlight(){
+          if (!scriptHi) return;
+          const text = scriptSrc.value || "";
+          const lines = text.split(/\r?\n/);
+
+          const parts = [];
+          for (let i = 0; i < lines.length; i++){
+            const raw = lines[i];
+            const ln = i + 1;
+            const trimmed = raw.trim();
+
+            let cls = "code";
+            if (trimmed.startsWith("#")) cls = "cmt";
+            else if (_looksLikeEdge(trimmed)) cls = "edge";
+            else if (_looksLikeNode(trimmed)) cls = "node";
+
+            parts.push(
+              `<span class="ln">${ln}</span><span class="${cls}">${_escHtml(raw || " ")}</span>`
+            );
+          }
+          scriptHi.innerHTML = parts.join("\n");
+
+          // Keep highlight scroll synced
+          scriptHi.scrollTop = scriptSrc.scrollTop;
+          scriptHi.scrollLeft = scriptSrc.scrollLeft;
+        }
+
+        // Keep highlight updated as user types/pastes, and keep scroll synced.
+        scriptSrc.addEventListener("input", renderScriptHighlight);
+        scriptSrc.addEventListener("scroll", () => {
+          if (!scriptHi) return;
+          scriptHi.scrollTop = scriptSrc.scrollTop;
+          scriptHi.scrollLeft = scriptSrc.scrollLeft;
+        });
+
+        function showScriptPanel(){ scriptPanel.classList.remove("hidden"); renderScriptHighlight(); }
+        function hideScriptPanel(){ scriptPanel.classList.add("hidden"); }
+
+        if (toggleScript) toggleScript.onclick = () => {
+          if (scriptPanel.classList.contains("hidden")) showScriptPanel();
+          else hideScriptPanel();
+        };
+        if (scriptHide) scriptHide.onclick = hideScriptPanel;
+
+        const SCRIPT_SAMPLE = `add_node(node_id=wid("start"), label="Start", op="start", start=True, terminal=False)
+add_node(node_id=wid("add_user"), label="Add user turn", op="add_user_turn")
+add_node(node_id=wid("mem"), label="Memory retrieve", op="memory_retrieve")
+add_edge(edge_id=wid("e0"), src=wid("start"), dst=wid("add_user"), pred="always")
+add_edge(edge_id=wid("e1"), src=wid("add_user"), dst=wid("mem"), pred="always")`;
+
+        if (scriptSample) scriptSample.onclick = () => { scriptSrc.value = SCRIPT_SAMPLE; showScriptPanel(); };
+
+        if (scriptParse) scriptParse.onclick = () => {
+          renderScriptHighlight();
+          const reifyEdges = !!(document.getElementById('scriptReify') && document.getElementById('scriptReify').checked);
+          const parsed = parseScriptToGraph(scriptSrc.value || "", { reifyEdges });
+          if (scriptStats) scriptStats.textContent = `nodes: ${parsed.nodes.length} • links: ${parsed.links.length}`;
+          replaceGraphFromParsed(parsed);
+        };
+
+
+        function resolveCdcWsUrl(){
+          const explicit = window.__CDC_WS_URL__;
+          if (explicit && typeof explicit === "string") return explicit;
+          // If the bundle is opened from file://, location.host is empty. In that case
+          // you must pass --cdc-ws-url (or equivalent) when dumping.
+          if (!location.host) return null;
+          const proto = location.protocol === "https:" ? "wss:" : "ws:";
+          return `${proto}//${location.host}/changes/ws`;
+        }
+
+        // Live CDC (optional): when enabled, we try to keep a WebSocket connection open.
+        // IMPORTANT: do NOT hard-refresh the page when the socket is down (common when viewing a bundle offline).
+        // Instead, reconnect with backoff.
+        let cdcWs = null;
+        let cdcReconnectAttempt = 0;
+        let cdcReconnectTimer = null;
+
+        function setCdcStatus(label){
+          const badge = document.getElementById("cdcBadge");
+          const status = document.getElementById("cdcStatus");
+          if (!badge || !status) return;
+          if (window.__CDC_ENABLED__) badge.classList.remove("hidden");
+          else badge.classList.add("hidden");
+          status.textContent = label;
+
+          // Panel status + log (debug)
+          if (cdcPanel) cdcPanel.classList.remove("hidden");
+          cdcPanelSetStatus(label);
+          cdcLog(`[CDC] status=${label}`);
+        }
+// --- FIXED CDC LOGIC ---
+        function scheduleCdcReconnect() {
+          if (!window.__CDC_ENABLED__) return;
+          if (cdcReconnectTimer) return;
+          const delay = Math.min(10000, 500 * Math.pow(1.6, cdcReconnectAttempt++));
+          setCdcStatus(`reconnecting in ${Math.round(delay)}ms`);
+          cdcReconnectTimer = setTimeout(() => {
+            cdcReconnectTimer = null;
+            connectCdcWs();
+          }, delay);
+        }
+
+        function disableCdc() {
+          window.__CDC_ENABLED__ = false;
+          // 1. Kill the timer so it doesn't fire while we are turning off
+          if (cdcReconnectTimer) { clearTimeout(cdcReconnectTimer); cdcReconnectTimer = null; }
+          // 2. Wipe handlers and close so onclose doesn't trigger a reconnect
+          if (cdcWs) {
+            cdcWs.onopen = cdcWs.onmessage = cdcWs.onerror = cdcWs.onclose = null;
+            cdcWs.close();
+            cdcWs = null;
+          }
+          setCdcStatus("disabled");
+          if (document.getElementById('toggleCdc')) document.getElementById('toggleCdc').textContent = "CDC: Off";
+        }
+
+        function enableCdc() {
+          window.__CDC_ENABLED__ = true;
+          cdcReconnectAttempt = 0; // Reset backoff
+          if (document.getElementById('toggleCdc')) document.getElementById('toggleCdc').textContent = "CDC: On";
+          connectCdcWs();
+        }
+
+        // Wire up the button
+        const toggleCdcBtn = document.getElementById('toggleCdc');
+        if (toggleCdcBtn) {
+          toggleCdcBtn.onclick = () => {
+            if (window.__CDC_ENABLED__) disableCdc();
+            else enableCdc();
+          };
+        }
+
+        function scheduleCdcReconnect(){
+          if (!window.__CDC_ENABLED__) return;
+          if (cdcReconnectTimer) return;
+
+          const base = 500;
+          const max = 10000;
+          const delay = Math.min(max, base * Math.pow(1.6, cdcReconnectAttempt++));
+          setCdcStatus(`reconnecting in ${Math.round(delay)}ms`);
+
+          cdcReconnectTimer = setTimeout(() => {
+            cdcReconnectTimer = null;
+            connectCdcWs();
+          }, delay);
+        }
+
+        function connectCdcWs(){
+          if (!window.__CDC_ENABLED__) {
+            setCdcStatus("disabled");
+            return;
+          }
+
+          const wsUrl = resolveCdcWsUrl();
+          cdcLog(`[CDC] resolve wsUrl=${wsUrl || "(null)"} bundle_graph_type=${BUNDLE_GRAPH_TYPE || "(null)"} mode=${MODE}`);
+          if (!wsUrl) {
+            setCdcStatus("no ws url");
+            console.warn("CDC enabled but no ws URL resolved. Pass cdc_ws_url into the bundle.");
+            return;
+          }
+
+          try {
+            if (cdcWs && (cdcWs.readyState === WebSocket.OPEN || cdcWs.readyState === WebSocket.CONNECTING)) {
+              return;
+            }
+            cdcWs = new WebSocket(wsUrl);
+          } catch (e) {
+            console.warn("CDC websocket init failed", e);
+            scheduleCdcReconnect();
+            return;
+          }
+
+          setCdcStatus("connecting...");
+
+          cdcWs.onopen = () => {
+            cdcReconnectAttempt = 0;
+            setCdcStatus("connected");
+            cdcLog("[CDC] ws open");
+          };
+
+          cdcWs.onmessage = (m) => {
+            cdcLog(`[CDC] ws message bytes=${(m && m.data && m.data.length) || 0}`);
+            let ev = null;
+            try {
+              ev = JSON.parse(m.data);
+            } catch (e) {
+              cdcLog("[CDC] JSON.parse failed: " + String(e));
+              return;
+            }
+
+            const seq = ev && ev.seq;
+            const op  = ev && ev.op;
+            const kind = ev && ev.entity && ev.entity.kind;
+            const id = ev && ev.entity && ev.entity.id;
+            const gtype = ev && ev.entity && ev.entity.kg_graph_type;
+            cdcLog(`[CDC] recv seq=${seq} op=${op} kind=${kind} id=${id} kg_graph_type=${gtype}`);
+
+            try {
+              applyCdcEvent(ev);
+              refreshFromModel();
+            } catch (e) {
+              cdcLog("[CDC] apply/refresh failed: " + String(e));
+              console.error(e);
+            }
+          };
+
+          // Avoid spamming reconnect logic from onerror; let onclose handle it.
+          cdcWs.onerror = () => {
+            setCdcStatus("error");
+            cdcLog("[CDC] ws error");
+          };
+
+          cdcWs.onclose = (e) => {
+            setCdcStatus("disconnected");
+            cdcLog(`[CDC] ws close code=${e && e.code} reason=${(e && e.reason) || ""}`);
+            scheduleCd                // ---- CDC toggle button (minimal add) ----
+                const toggleCdcBtn = document.getElementById("toggleCdc");
+                function disableCdc(){
+                  window.__CDC_ENABLED__ = false;
+                  try { if (cdcReconnectTimer) { clearTimeout(cdcReconnectTimer); cdcReconnectTimer = null; } } catch {}
+                  try { if (cdcWs) { cdcWs.onopen = cdcWs.onmessage = cdcWs.onerror = cdcWs.onclose = null; cdcWs.close(); } } catch {}
+                  cdcWs = null;
+                  setCdcStatus("disabled");
+                  if (toggleCdcBtn) toggleCdcBtn.textContent = "CDC: Off";
+                }
+                function enableCdc(){
+                  window.__CDC_ENABLED__ = true;
+                  if (toggleCdcBtn) toggleCdcBtn.textContent = "CDC: On";
+                  connectCdcWs();
+                }
+                if (toggleCdcBtn) {
+                  toggleCdcBtn.onclick = () => {
+                    if (window.__CDC_ENABLED__) disableCdc();
+                    else enableCdc();
+                  };
+                }
+
+            cReconnect();
+          };
+        }
+
+        cdcLog(`[CDC] enabled=${window.__CDC_ENABLED__} ws_url=${window.__CDC_WS_URL__ || "(null)"} bundle_graph_type=${BUNDLE_GRAPH_TYPE || "(null)"}`);
+        if (window.__CDC_ENABLED__) {
+          if (document.getElementById('toggleCdc')) document.getElementById('toggleCdc').textContent = 'CDC: On';
+          connectCdcWs();
+        } else {
+          if (document.getElementById('toggleCdc')) document.getElementById('toggleCdc').textContent = 'CDC: Off';
+          setCdcStatus("disabled");
+        }
+
+        applyVisibility();
+      }
+      main();
+    </script>
+  </body>
+</html>

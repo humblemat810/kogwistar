@@ -4,7 +4,7 @@ from typing import Any, Dict, List
 
 import pytest
 
-from graph_knowledge_engine.engine_core.postgres_backend import PgVectorBackend
+from kogwistar.engine_core.postgres_backend import PgVectorBackend
 
 
 pytestmark = pytest.mark.ci_full

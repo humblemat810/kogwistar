@@ -4,9 +4,9 @@ from typing import Any, Dict, List
 
 import pytest
 
-from graph_knowledge_engine.runtime.runtime import StepContext, WorkflowRuntime
-from graph_knowledge_engine.runtime.resolvers import MappingStepResolver
-from graph_knowledge_engine.runtime.models import RunSuccess
+from kogwistar.runtime.runtime import StepContext, WorkflowRuntime
+from kogwistar.runtime.resolvers import MappingStepResolver
+from kogwistar.runtime.models import RunSuccess
 
 
 @dataclass

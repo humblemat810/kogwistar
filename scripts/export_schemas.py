@@ -3,10 +3,10 @@ import os
 import sys
 from pathlib import Path
 
-# Add the project root to sys.path to allow importing graph_knowledge_engine
+# Add the project root to sys.path to allow importing kogwistar
 sys.path.append(str(Path(__file__).parent.parent))
 
-from graph_knowledge_engine.runtime.models import (
+from kogwistar.runtime.models import (
     WorkflowNodeMetadata,
     WorkflowEdgeMetadata,
 )

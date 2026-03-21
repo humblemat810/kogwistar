@@ -9,7 +9,7 @@ class DummyEF:
 
 def test_custom_embedder(tmp_path):
     # Prove we can inject our own EF into engine and it drives Chroma collections
-    from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
+    from kogwistar.engine_core.engine import GraphKnowledgeEngine
     from tests._kg_factories import kg_document, kg_grounding
 
     eng = GraphKnowledgeEngine(
@@ -17,7 +17,7 @@ def test_custom_embedder(tmp_path):
     )
 
     # Adding a node with embeddings=None uses DummyEF
-    from graph_knowledge_engine.engine_core.models import Node
+    from kogwistar.engine_core.models import Node
 
     doc = kg_document(
         doc_id="doc::test_custom_embedder",

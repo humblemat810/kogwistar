@@ -1,7 +1,7 @@
-from graph_knowledge_engine.conversation.models import ConversationNode
-from graph_knowledge_engine.conversation.service import ConversationService
-from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
-from graph_knowledge_engine.engine_core.models import (
+from kogwistar.conversation.models import ConversationNode
+from kogwistar.conversation.service import ConversationService
+from kogwistar.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.engine_core.models import (
     Grounding,
     Span,
     MentionVerification,

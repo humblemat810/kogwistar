@@ -1,18 +1,18 @@
 import json
 from pathlib import Path
 
-from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
-from graph_knowledge_engine.engine_core.models import (
+from kogwistar.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.engine_core.models import (
     Grounding,
     Span,
     MentionVerification,
 )
 from typing import TYPE_CHECKING
 
-from graph_knowledge_engine.runtime.runtime import State
-from graph_knowledge_engine.runtime.models import StepRunResult
-from graph_knowledge_engine.runtime.models import RunSuccess
-from graph_knowledge_engine.runtime.models import WorkflowEdge, WorkflowNode
+from kogwistar.runtime.runtime import State
+from kogwistar.runtime.models import StepRunResult
+from kogwistar.runtime.models import RunSuccess
+from kogwistar.runtime.models import WorkflowEdge, WorkflowNode
 import pytest
 
 pytestmark = pytest.mark.ci
@@ -20,10 +20,10 @@ pytestmark = pytest.mark.ci
 if TYPE_CHECKING:
     pass
 
-from graph_knowledge_engine.runtime.runtime import WorkflowRuntime
+from kogwistar.runtime.runtime import WorkflowRuntime
 
 # IMPORTANT: use your existing dumper (calls to_d3_force internally)
-from graph_knowledge_engine.utils.kge_debug_dump import dump_paired_bundles  # type: ignore
+from kogwistar.utils.kge_debug_dump import dump_paired_bundles  # type: ignore
 
 
 def _span() -> Span:
@@ -308,8 +308,8 @@ def test_add_turn_like_workflow_dump_bundles(tmp_path: Path):
     # 1.) D3 bundle dumps (HTML) before save
     # -----------------------------
     # You need your real template file here:
-    # graph_knowledge_engine/templates/d3.html (or wherever it lives)
-    template_html = Path("graph_knowledge_engine/templates/d3.html").read_text(
+    # kogwistar/templates/d3.html (or wherever it lives)
+    template_html = Path("kogwistar/templates/d3.html").read_text(
         encoding="utf-8"
     )
 
@@ -383,8 +383,8 @@ def test_add_turn_like_workflow_dump_bundles(tmp_path: Path):
     #             return {"done": True}
     #         raise KeyError(op)
     #     return _fn
-    from graph_knowledge_engine.runtime.resolvers import MappingStepResolver
-    from graph_knowledge_engine.runtime.runtime import StepContext
+    from kogwistar.runtime.resolvers import MappingStepResolver
+    from kogwistar.runtime.runtime import StepContext
 
     resolver = MappingStepResolver()
 
@@ -532,8 +532,8 @@ def test_add_turn_like_workflow_dump_bundles(tmp_path: Path):
     # 3) D3 bundle dumps (HTML) for manual inspection
     # -----------------------------
     # You need your real template file here:
-    # graph_knowledge_engine/templates/d3.html (or wherever it lives)
-    template_html = Path("graph_knowledge_engine/templates/d3.html").read_text(
+    # kogwistar/templates/d3.html (or wherever it lives)
+    template_html = Path("kogwistar/templates/d3.html").read_text(
         encoding="utf-8"
     )
 

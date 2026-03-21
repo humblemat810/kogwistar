@@ -5,9 +5,9 @@ import requests
 from joblib import Memory
 
 # Project imports (adjust if your package name/layout differs)
-from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
-from graph_knowledge_engine.engine_core.models import Document
-from graph_knowledge_engine.ingester import (
+from kogwistar.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.engine_core.models import Document
+from kogwistar.ingester import (
     PagewiseSummaryIngestor,
 )  # your side-car ingester
 

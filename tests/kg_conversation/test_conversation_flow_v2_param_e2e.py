@@ -16,14 +16,14 @@ from langchain_core.messages import AIMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.runnables import Runnable, RunnableConfig
 
-from graph_knowledge_engine.conversation.filtering import candiate_filtering_callback
-from graph_knowledge_engine.conversation.models import (
+from kogwistar.conversation.filtering import candiate_filtering_callback
+from kogwistar.conversation.models import (
     FilteringResult,
     MetaFromLastSummary,
 )
-from graph_knowledge_engine.conversation.service import ConversationService
-from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
-from graph_knowledge_engine.llm_tasks import (
+from kogwistar.conversation.service import ConversationService
+from kogwistar.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.llm_tasks import (
     AdjudicateBatchTaskResult,
     AdjudicatePairTaskResult,
     AnswerWithCitationsTaskResult,
@@ -35,9 +35,9 @@ from graph_knowledge_engine.llm_tasks import (
     RepairCitationsTaskResult,
     SummarizeContextTaskResult,
 )
-from graph_knowledge_engine.id_provider import stable_id
-from graph_knowledge_engine.engine_core.postgres_backend import PgVectorBackend
-from graph_knowledge_engine.engine_core.models import (
+from kogwistar.id_provider import stable_id
+from kogwistar.engine_core.postgres_backend import PgVectorBackend
+from kogwistar.engine_core.models import (
     Node,
     Span,
     Grounding,
@@ -52,7 +52,7 @@ pytestmark = [
 
 # Optional: knowledge-edge model may not exist in some repo versions.
 try:
-    from graph_knowledge_engine.engine_core.models import Edge  # type: ignore
+    from kogwistar.engine_core.models import Edge  # type: ignore
 except Exception:  # pragma: no cover
     Edge = None  # type: ignore
 
@@ -765,7 +765,7 @@ def test_conversation_flow_v2_param_e2e(
         # We keep this harness minimal: the v2 orchestrator expects a ConversationAIResponse-like object.
         # If your repo defines ConversationAIResponse, use it directly.
         try:
-            from graph_knowledge_engine.conversation.models import (
+            from kogwistar.conversation.models import (
                 ConversationAIResponse,
             )
 

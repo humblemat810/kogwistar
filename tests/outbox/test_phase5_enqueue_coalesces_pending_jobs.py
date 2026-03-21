@@ -1,7 +1,7 @@
 import uuid
 import pytest
 
-from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from tests.conftest import FakeEmbeddingFunction
 
 TEST_EMBEDDING = FakeEmbeddingFunction(dim=3)

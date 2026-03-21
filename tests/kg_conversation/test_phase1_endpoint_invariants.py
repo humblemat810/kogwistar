@@ -3,11 +3,11 @@ from __future__ import annotations
 
 import pytest
 
-from graph_knowledge_engine.conversation.models import (
+from kogwistar.conversation.models import (
     ConversationEdge,
     ConversationNode,
 )
-from graph_knowledge_engine.engine_core.models import (
+from kogwistar.engine_core.models import (
     Grounding,
     MentionVerification,
     Span,
@@ -16,7 +16,7 @@ from tests.conftest import _make_engine_pair
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
+    from kogwistar.engine_core.engine import GraphKnowledgeEngine
 
 
 pytestmark = pytest.mark.parametrize(
@@ -130,7 +130,7 @@ def _mk_edge(
 
 
 def _noop_filtering_callback(*_args, **_kwargs):
-    from graph_knowledge_engine.conversation.models import FilteringResult
+    from kogwistar.conversation.models import FilteringResult
 
     return FilteringResult(node_ids=[], edge_ids=[]), "noop"
 

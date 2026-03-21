@@ -8,14 +8,14 @@ pytest.importorskip("langchain_core")
 from chromadb.utils.embedding_functions import EmbeddingFunction
 from chromadb.api.types import Embeddings
 from langchain_core.language_models import BaseChatModel
-from graph_knowledge_engine.conversation.filtering import candiate_filtering_callback
-from graph_knowledge_engine.conversation.models import (
+from kogwistar.conversation.filtering import candiate_filtering_callback
+from kogwistar.conversation.models import (
     FilteringResult,
     MetaFromLastSummary,
 )
-from graph_knowledge_engine.conversation.service import ConversationService
-from graph_knowledge_engine.cdc.oplog import OplogWriter
-from graph_knowledge_engine.engine_core.models import (
+from kogwistar.conversation.service import ConversationService
+from kogwistar.cdc.oplog import OplogWriter
+from kogwistar.engine_core.models import (
     Node,
     Span,
     Grounding,
@@ -26,7 +26,7 @@ from graph_knowledge_engine.engine_core.models import (
 from typing import Callable, TypeVar, ParamSpec, cast, Sequence
 from joblib import Memory
 
-from graph_knowledge_engine.id_provider import stable_id
+from kogwistar.id_provider import stable_id
 
 
 # def _fake_ef_dim(dim: int):
@@ -344,9 +344,9 @@ def test_conversation_flow(
         where={"entity_type": "knowledge_reference"}
     )
 
-    # template_html = Path("graph_knowledge_engine/templates/d3.html").read_text(encoding="utf-8")
+    # template_html = Path("kogwistar/templates/d3.html").read_text(encoding="utf-8")
     # out_dir = Path(".") / "bundle"
-    # from graph_knowledge_engine.utils.kge_debug_dump import dump_paired_bundles
+    # from kogwistar.utils.kge_debug_dump import dump_paired_bundles
     # dump_paired_bundles(
     #     kg_engine=engine,
     #     conversation_engine=conversation_engine,
@@ -368,11 +368,11 @@ def test_conversation_flow(
     assert e_doc["source_ids"] == [turn_id]
     assert e_doc["target_ids"] == [ref_doc["id"]]
 
-    template_html = Path("graph_knowledge_engine/templates/d3.html").read_text(
+    template_html = Path("kogwistar/templates/d3.html").read_text(
         encoding="utf-8"
     )
     out_dir = Path(".") / "bundle" / "turn1"
-    from graph_knowledge_engine.utils.kge_debug_dump import dump_paired_bundles
+    from kogwistar.utils.kge_debug_dump import dump_paired_bundles
 
     dump_paired_bundles(
         kg_engine=engine,
@@ -414,11 +414,11 @@ def test_conversation_flow(
         )
         last_node_ids.append(svc.get_conversation_tail(conv_id))
         prev_turn_meta_summary: MetaFromLastSummary = res.prev_turn_meta_summary
-        template_html = Path("graph_knowledge_engine/templates/d3.html").read_text(
+        template_html = Path("kogwistar/templates/d3.html").read_text(
             encoding="utf-8"
         )
         out_dir = Path(".") / "bundle" / f"turn {res.turn_index}-{i}"
-        from graph_knowledge_engine.utils.kge_debug_dump import dump_paired_bundles
+        from kogwistar.utils.kge_debug_dump import dump_paired_bundles
 
         dump_paired_bundles(
             kg_engine=engine,
@@ -452,11 +452,11 @@ def test_conversation_flow(
 
     print("Conversation flow test passed!")
 
-    template_html = Path("graph_knowledge_engine/templates/d3.html").read_text(
+    template_html = Path("kogwistar/templates/d3.html").read_text(
         encoding="utf-8"
     )
     out_dir = Path(".") / "bundle"
-    from graph_knowledge_engine.utils.kge_debug_dump import dump_paired_bundles
+    from kogwistar.utils.kge_debug_dump import dump_paired_bundles
 
     dump_paired_bundles(
         kg_engine=engine,

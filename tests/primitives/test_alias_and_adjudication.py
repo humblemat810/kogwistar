@@ -1,12 +1,12 @@
 import uuid
 
-from graph_knowledge_engine.engine_core.engine import (
+from kogwistar.engine_core.engine import (
     AliasBook,
     GraphKnowledgeEngine,
     base62_to_uuid,
     uuid_to_base62,
 )
-from graph_knowledge_engine.engine_core.models import (
+from kogwistar.engine_core.models import (
     AdjudicationVerdict,
     Document,
     Edge,

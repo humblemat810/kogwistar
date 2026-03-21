@@ -40,7 +40,7 @@ def running_server() -> Dict[str, Any]:
     import traceback
 
     app_import_candidates = [
-        "graph_knowledge_engine.server_mcp_with_admin:app",
+        "kogwistar.server_mcp_with_admin:app",
     ]
 
     errors = []

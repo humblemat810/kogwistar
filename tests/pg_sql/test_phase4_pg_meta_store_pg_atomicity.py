@@ -1,11 +1,11 @@
 import pytest
 import sqlalchemy as sa
 
-from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
-from graph_knowledge_engine.engine_core.postgres_backend import PgVectorBackend
+from kogwistar.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.engine_core.postgres_backend import PgVectorBackend
 
 # New meta-store introduced by the patch
-from graph_knowledge_engine.engine_core.engine_postgres_meta import (
+from kogwistar.engine_core.engine_postgres_meta import (
     EnginePostgresMetaStore,
 )
 

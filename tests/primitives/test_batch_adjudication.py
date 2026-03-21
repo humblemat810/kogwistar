@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
-from graph_knowledge_engine.engine_core.models import (
+from kogwistar.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.engine_core.models import (
     AdjudicationQuestionCode,
     AdjudicationVerdict,
     Document,

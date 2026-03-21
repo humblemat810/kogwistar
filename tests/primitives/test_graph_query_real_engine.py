@@ -2,10 +2,10 @@
 from __future__ import annotations
 import pytest
 
-import graph_knowledge_engine.engine_core.engine as engmod
-from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
-from graph_knowledge_engine.graph_query import GraphQuery
-from graph_knowledge_engine.engine_core.models import (
+import kogwistar.engine_core.engine as engmod
+from kogwistar.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.graph_query import GraphQuery
+from kogwistar.engine_core.models import (
     Document,
     Node,
     Edge,

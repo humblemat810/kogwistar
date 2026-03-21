@@ -7,7 +7,7 @@ import pytest
 
 pytestmark = pytest.mark.ci
 
-from graph_knowledge_engine.llm_tasks import (
+from kogwistar.llm_tasks import (
     AdjudicateBatchTaskResult,
     AdjudicatePairTaskResult,
     AnswerWithCitationsTaskResult,

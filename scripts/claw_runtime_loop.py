@@ -45,8 +45,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
-from graph_knowledge_engine.engine_core.models import (
+from kogwistar.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.engine_core.models import (
     Document,
     Edge,
     Grounding,
@@ -54,11 +54,11 @@ from graph_knowledge_engine.engine_core.models import (
     Node,
     Span,
 )
-from graph_knowledge_engine.runtime.models import RunSuccess, WorkflowEdge, WorkflowNode
-from graph_knowledge_engine.runtime.resolvers import MappingStepResolver
-from graph_knowledge_engine.runtime.runtime import WorkflowRuntime
-from graph_knowledge_engine.utils.kge_debug_dump import dump_paired_bundles
-from graph_knowledge_engine.extraction import (
+from kogwistar.runtime.models import RunSuccess, WorkflowEdge, WorkflowNode
+from kogwistar.runtime.resolvers import MappingStepResolver
+from kogwistar.runtime.runtime import WorkflowRuntime
+from kogwistar.utils.kge_debug_dump import dump_paired_bundles
+from kogwistar.extraction import (
     find_all_exact,
     fuzzy_find_best_spans,
     pick_nearest,
@@ -1293,7 +1293,7 @@ class ClawRuntimeApp:
         self, *, out_dir: Path, cdc_ws_url: str, embed_empty: bool
     ) -> Dict[str, Any]:
         template_html = (
-            ROOT / "graph_knowledge_engine" / "templates" / "d3.html"
+            ROOT / "kogwistar" / "templates" / "d3.html"
         ).read_text(encoding="utf-8")
         meta = dump_paired_bundles(
             kg_engine=None if embed_empty else self.knowledge_engine,
@@ -1716,7 +1716,7 @@ def main() -> None:
     if a.cmd == "tutorial" and not a.cdc_publish_endpoint:
         a.cdc_publish_endpoint = f"http://{a.cdc_host}:{int(a.cdc_port)}/ingest"
     if a.cmd == "run-cdc-bridge":
-        from graph_knowledge_engine.cdc.change_bridge import main as bridge_main
+        from kogwistar.cdc.change_bridge import main as bridge_main
 
         argv = [
             "--host",

@@ -16,26 +16,26 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
-from graph_knowledge_engine.engine_core.models import (
+from kogwistar.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.engine_core.models import (
     Grounding,
     MentionVerification,
     Span,
 )
-from graph_knowledge_engine.runtime.contract import BasePredicate
-from graph_knowledge_engine.runtime.langgraph_converter import (
+from kogwistar.runtime.contract import BasePredicate
+from kogwistar.runtime.langgraph_converter import (
     LGConverterOptions,
     to_langgraph,
 )
-from graph_knowledge_engine.runtime.models import (
+from kogwistar.runtime.models import (
     RunSuccess,
     RunSuspended,
     WorkflowEdge,
     WorkflowNode,
 )
-from graph_knowledge_engine.runtime.resolvers import MappingStepResolver
-from graph_knowledge_engine.runtime.sandbox import SandboxFactory, SandboxRequest
-from graph_knowledge_engine.runtime.runtime import StepContext, WorkflowRuntime
+from kogwistar.runtime.resolvers import MappingStepResolver
+from kogwistar.runtime.sandbox import SandboxFactory, SandboxRequest
+from kogwistar.runtime.runtime import StepContext, WorkflowRuntime
 
 
 WORKFLOW_ID = "tutorial_runtime_pause_resume_v2"
@@ -48,7 +48,7 @@ RT_JOIN_NODE_ID = "rt2:join"
 RT_END_NODE_ID = "rt2:end"
 CONVERSATION_ID = "tutorial-runtime-conv"
 TURN_NODE_ID = "tutorial-runtime-turn-1"
-CDC_VIEWER_PATH = "graph_knowledge_engine/scripts/workflow.bundle.cdc.script.hl3.html"
+CDC_VIEWER_PATH = "kogwistar/scripts/workflow.bundle.cdc.script.hl3.html"
 RUNTIME_EVENT_ENDPOINT = "/api/workflow/runs/{run_id}/events"
 WORKFLOW_STORE_DIRNAME = "workflow_v2"
 CONVERSATION_STORE_DIRNAME = "conversation_v2"

@@ -1,5 +1,5 @@
 
-from graph_knowledge_engine.engine_core.models import (
+from kogwistar.engine_core.models import (
     Grounding,
     MentionVerification,
     Node,

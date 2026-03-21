@@ -1,13 +1,13 @@
 import pytest
 import uuid
 
-from graph_knowledge_engine.engine_core.engine import (
+from kogwistar.engine_core.engine import (
     AliasBook,
     GraphKnowledgeEngine,
     base62_to_uuid,
     uuid_to_base62,
 )
-from graph_knowledge_engine.engine_core.models import LLMGraphExtraction, Edge, Node
+from kogwistar.engine_core.models import LLMGraphExtraction, Edge, Node
 from tests._kg_factories import kg_document, kg_grounding, kg_llm_grounding_payload
 
 

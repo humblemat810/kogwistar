@@ -3,7 +3,7 @@ import os
 import pytest
 import sqlalchemy as sa
 
-from graph_knowledge_engine.engine_core.postgres_backend import PgVectorBackend
+from kogwistar.engine_core.postgres_backend import PgVectorBackend
 
 
 def _pg_dsn() -> str | None:

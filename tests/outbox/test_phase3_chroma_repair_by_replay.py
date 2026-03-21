@@ -2,11 +2,11 @@ import uuid
 import pathlib
 import pytest
 
-from graph_knowledge_engine.engine_core.engine import (
+from kogwistar.engine_core.engine import (
     GraphKnowledgeEngine,
     _node_doc_and_meta,
 )
-from graph_knowledge_engine.engine_core.models import Node, Grounding, Span
+from kogwistar.engine_core.models import Node, Grounding, Span
 from tests.conftest import FakeEmbeddingFunction
 
 EMBEDDING_DIM = 3

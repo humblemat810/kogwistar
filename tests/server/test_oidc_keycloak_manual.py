@@ -15,8 +15,8 @@ import httpx
 import pytest
 from sqlalchemy.orm import sessionmaker
 
-from graph_knowledge_engine.server.auth.db import create_auth_engine
-from graph_knowledge_engine.server.auth.models import ExternalIdentity, User
+from kogwistar.server.auth.db import create_auth_engine
+from kogwistar.server.auth.models import ExternalIdentity, User
 from tests.server.oidc_test_support import oidc_provider_json, oidc_seed_json
 
 

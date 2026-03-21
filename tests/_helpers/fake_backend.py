@@ -37,8 +37,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence
 
-from graph_knowledge_engine.engine_core.engine_sqlite import EngineSQLite
-from graph_knowledge_engine.engine_core.storage_backend import NoopUnitOfWork
+from kogwistar.engine_core.engine_sqlite import EngineSQLite
+from kogwistar.engine_core.storage_backend import NoopUnitOfWork
 
 
 def _is_operator_dict(value: Any) -> bool:

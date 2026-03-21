@@ -10,9 +10,9 @@ import websocket  # pip install websocket-client
 
 from fastapi.testclient import TestClient
 
-from graph_knowledge_engine.cdc.change_bridge import create_app
-from graph_knowledge_engine.cdc.change_event import ChangeEvent
-from graph_knowledge_engine.cdc.oplog import OplogWriter
+from kogwistar.cdc.change_bridge import create_app
+from kogwistar.cdc.change_event import ChangeEvent
+from kogwistar.cdc.oplog import OplogWriter
 
 
 _SAMPLE_CHANGESET: tuple[ChangeEvent, ...] = (
@@ -186,7 +186,7 @@ def test_replay_oplog_broadcasts_to_websocket(
     # If your bridge module stores global subscriber state, it's safer to reset it here.
     # Only do this if change_bridge.py defines a global `subscribers` set.
     # try:
-    #     import graph_knowledge_engine.cdc.change_bridge as bridge_mod  # adjust if needed
+    #     import kogwistar.cdc.change_bridge as bridge_mod  # adjust if needed
     #     if hasattr(bridge_mod, "subscribers"):
     #         bridge_mod.subscribers.clear()
     # except Exception:

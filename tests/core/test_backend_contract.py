@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import pytest
 
-from graph_knowledge_engine.conversation.models import ConversationEdge, ConversationNode
-from graph_knowledge_engine.engine_core.models import Edge, Grounding, Node, Span
-from graph_knowledge_engine.server.run_registry import RunRegistry
+from kogwistar.conversation.models import ConversationEdge, ConversationNode
+from kogwistar.engine_core.models import Edge, Grounding, Node, Span
+from kogwistar.server.run_registry import RunRegistry
 from tests.conftest import _make_engine_pair
 
 pytestmark = [pytest.mark.core, pytest.mark.ci]

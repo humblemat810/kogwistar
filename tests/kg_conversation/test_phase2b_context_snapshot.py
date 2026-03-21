@@ -2,25 +2,25 @@ import pytest
 from typing import Any, Type, TypeVar
 from pydantic import BaseModel
 
-from graph_knowledge_engine.conversation.conversation_context import (
+from kogwistar.conversation.conversation_context import (
     ContextItem,
     ContextMessage,
     PromptContext,
 )
-from graph_knowledge_engine.conversation.models import (
+from kogwistar.conversation.models import (
     ConversationNode,
     MetaFromLastSummary,
 )
-from graph_knowledge_engine.conversation.service import ConversationService
-from graph_knowledge_engine.id_provider import stable_id
+from kogwistar.conversation.service import ConversationService
+from kogwistar.id_provider import stable_id
 
 BaseM = TypeVar("BaseM", bound=BaseModel)
-from graph_knowledge_engine.engine_core.models import Span, Grounding
-from graph_knowledge_engine.conversation.conversation_orchestrator import (
+from kogwistar.engine_core.models import Span, Grounding
+from kogwistar.conversation.conversation_orchestrator import (
     ConversationOrchestrator,
     get_id_for_conversation_turn,
 )
-from graph_knowledge_engine.conversation.agentic_answering import (
+from kogwistar.conversation.agentic_answering import (
     AgentConfig,
     AgenticAnsweringAgent,
     AnswerWithCitations,

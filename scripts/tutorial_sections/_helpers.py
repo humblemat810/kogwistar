@@ -14,7 +14,7 @@ for candidate in (ROOT, SCRIPTS_DIR):
     if text not in sys.path:
         sys.path.insert(0, text)
 
-from graph_knowledge_engine.engine_core.models import (
+from kogwistar.engine_core.models import (
     Grounding,
     MentionVerification,
     Span,

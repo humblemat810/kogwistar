@@ -12,7 +12,7 @@ import pytest
 
 import scripts.runtime_tutorial_ladder as runtime_tutorial_ladder
 import scripts.tutorial_ladder as tutorial_ladder
-from graph_knowledge_engine.runtime.design import validate_workflow_design
+from kogwistar.runtime.design import validate_workflow_design
 
 pytest.importorskip("chromadb")
 

@@ -1,7 +1,7 @@
 import pytest
 import subprocess
 from unittest.mock import MagicMock, patch
-from graph_knowledge_engine.runtime.sandbox import (
+from kogwistar.runtime.sandbox import (
     AzureFunctionSandbox,
     CloudFunctionSandbox,
     DockerPythonSandbox,
@@ -10,9 +10,9 @@ from graph_knowledge_engine.runtime.sandbox import (
     SandboxRequest,
     SimplePythonSandbox,
 )
-from graph_knowledge_engine.runtime.resolvers import MappingStepResolver
-from graph_knowledge_engine.runtime.models import RunSuccess, RunFailure
-from graph_knowledge_engine.runtime.runtime import StepContext
+from kogwistar.runtime.resolvers import MappingStepResolver
+from kogwistar.runtime.models import RunSuccess, RunFailure
+from kogwistar.runtime.runtime import StepContext
 
 
 def test_local_sandbox_basic():

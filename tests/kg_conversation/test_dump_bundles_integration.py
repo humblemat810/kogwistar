@@ -10,9 +10,9 @@ import pytest
 import re
 
 # import pytest
-# from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
-# from graph_knowledge_engine.engine_core.postgres_backend import PgVectorBackend
-from graph_knowledge_engine.conversation.models import ConversationNode
+# from kogwistar.engine_core.engine import GraphKnowledgeEngine
+# from kogwistar.engine_core.postgres_backend import PgVectorBackend
+from kogwistar.conversation.models import ConversationNode
 from tests.conftest import _make_engine_pair
 
 
@@ -89,7 +89,7 @@ def seeded_kg_and_conversation(request, tmp_path, sa_engine, pg_schema):
         dim=3,
     )
 
-    from graph_knowledge_engine.engine_core.models import (
+    from kogwistar.engine_core.models import (
         Node,
         Grounding,
         Span,
@@ -201,7 +201,7 @@ def test_dump_paired_bundles_embeds_graph_data_and_links(
     kg_engine, conv_engine, kg_seed, conv_seed, kg_dir, conv_dir = (
         seeded_kg_and_conversation
     )
-    mod = importlib.import_module("graph_knowledge_engine.utils.kge_debug_dump")
+    mod = importlib.import_module("kogwistar.utils.kge_debug_dump")
 
     out_dir = tmp_path / "dump_run"
     meta = mod.dump_paired_bundles(
@@ -290,7 +290,7 @@ window.__BUNDLE_META__ = null;
     cmd = [
         sys.executable,
         "-m",
-        "graph_knowledge_engine.utils.kge_debug_dump",
+        "kogwistar.utils.kge_debug_dump",
         "bundle",
         "--kg-persist-dir",
         str(kg_dir),

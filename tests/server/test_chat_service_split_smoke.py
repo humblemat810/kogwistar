@@ -4,17 +4,17 @@ import contextlib
 import pytest
 import threading
 
-from graph_knowledge_engine.server.chat_service import (
+from kogwistar.server.chat_service import (
     AnswerRunRequest,
     ChatRunService,
     RunCancelledError,
     RuntimeRunRequest,
     WorkflowProjectionRebuildingError,
 )
-from graph_knowledge_engine.server.chat_service_workflow_design import (
+from kogwistar.server.chat_service_workflow_design import (
     _WorkflowDesignService,
 )
-from graph_knowledge_engine.server.resources import _LazyResource
+from kogwistar.server.resources import _LazyResource
 
 pytestmark = pytest.mark.ci
 

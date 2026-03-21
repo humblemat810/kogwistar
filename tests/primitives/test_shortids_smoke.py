@@ -2,7 +2,7 @@ import json
 import importlib
 import pytest
 
-from graph_knowledge_engine import shortids
+from kogwistar import shortids
 
 
 @pytest.fixture(autouse=True)

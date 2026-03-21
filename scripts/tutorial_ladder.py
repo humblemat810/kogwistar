@@ -16,9 +16,9 @@ if True:
     if str(ROOT) not in sys.path:
         sys.path.insert(0, str(ROOT))
 
-from graph_knowledge_engine.conversation.knowledge_retriever import KnowledgeRetriever
-from graph_knowledge_engine.conversation.memory_retriever import MemoryRetriever
-from graph_knowledge_engine.conversation.models import (
+from kogwistar.conversation.knowledge_retriever import KnowledgeRetriever
+from kogwistar.conversation.memory_retriever import MemoryRetriever
+from kogwistar.conversation.models import (
     ConversationAIResponse,
     ConversationEdge,
     ConversationNode,
@@ -26,16 +26,16 @@ from graph_knowledge_engine.conversation.models import (
     MetaFromLastSummary,
     RetrievalResult,
 )
-from graph_knowledge_engine.conversation.service import ConversationService
-from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
-from graph_knowledge_engine.engine_core.models import (
+from kogwistar.conversation.service import ConversationService
+from kogwistar.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.engine_core.models import (
     Edge,
     Grounding,
     MentionVerification,
     Node,
     Span,
 )
-from graph_knowledge_engine.llm_tasks import (
+from kogwistar.llm_tasks import (
     AnswerWithCitationsTaskRequest,
     AnswerWithCitationsTaskResult,
     DefaultTaskProviderConfig,
@@ -1136,4 +1136,4 @@ def main() -> None:
 if __name__ == "__main__":
     main()
 
-# view cdc: python -m graph_knowledge_engine.cdc.change_bridge --host 127.0.0.1 --port 8787 --oplog-file .cdc_debug/data/cdc_oplog.jsonl --reset-oplog
+# view cdc: python -m kogwistar.cdc.change_bridge --host 127.0.0.1 --port 8787 --oplog-file .cdc_debug/data/cdc_oplog.jsonl --reset-oplog

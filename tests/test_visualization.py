@@ -2,18 +2,18 @@ from pathlib import Path
 
 import pytest
 
-from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
-from graph_knowledge_engine.engine_core.models import (
+from kogwistar.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.engine_core.models import (
     Edge,
     Grounding,
     MentionVerification,
     Node,
     Span,
 )
-from graph_knowledge_engine.visualization.basic_visualization import Visualizer
+from kogwistar.visualization.basic_visualization import Visualizer
 
-from graph_knowledge_engine.utils.kge_debug_dump import dump_d3_bundle
-from graph_knowledge_engine.runtime.models import WorkflowEdge, WorkflowNode
+from kogwistar.utils.kge_debug_dump import dump_d3_bundle
+from kogwistar.runtime.models import WorkflowEdge, WorkflowNode
 from tests._helpers.fake_backend import build_fake_backend
 
 @pytest.mark.ci
@@ -109,7 +109,7 @@ def test_pretty_print_graph():
     assert "(empty)" not in txt
 
 
-from graph_knowledge_engine.engine_core.models import (
+from kogwistar.engine_core.models import (
     Span,
     Grounding,
     MentionVerification,
@@ -265,7 +265,7 @@ def test_d3_litmus_workflow_self_and_parallel():
     # dump
     out_dir = Path("test_d3_litmus_workflow_self_and_parallel") / "d3"
     out_dir.mkdir(parents=True, exist_ok=True)
-    template_html = Path("graph_knowledge_engine") / "templates" / "d3.html"
+    template_html = Path("kogwistar") / "templates" / "d3.html"
     template_html = template_html.read_text(encoding="utf-8")
     dump_d3_bundle(
         template_html=template_html,

@@ -6,11 +6,11 @@ from typing import Any, Dict, List, Optional
 import pytest
 
 
-from graph_knowledge_engine.runtime.langgraph_converter import (
+from kogwistar.runtime.langgraph_converter import (
     to_langgraph,
     LGConverterOptions,
 )
-from graph_knowledge_engine.runtime.contract import BasePredicate
+from kogwistar.runtime.contract import BasePredicate
 
 pytestmark = pytest.mark.ci
 

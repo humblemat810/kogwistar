@@ -12,25 +12,25 @@ import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
-import graph_knowledge_engine.server_mcp_with_admin as server
-from graph_knowledge_engine.conversation.models import ConversationNode
-from graph_knowledge_engine.conversation.service import ConversationService
-from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
-from graph_knowledge_engine.engine_core.models import Grounding, Span
-from graph_knowledge_engine.runtime.design import load_workflow_design
-from graph_knowledge_engine.runtime.models import (
+import kogwistar.server_mcp_with_admin as server
+from kogwistar.conversation.models import ConversationNode
+from kogwistar.conversation.service import ConversationService
+from kogwistar.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.engine_core.models import Grounding, Span
+from kogwistar.runtime.design import load_workflow_design
+from kogwistar.runtime.models import (
     WorkflowCancelledNode,
     WorkflowCompletedNode,
     WorkflowCheckpointNode,
     WorkflowStepExecNode,
 )
-from graph_knowledge_engine.server.chat_service import (
+from kogwistar.server.chat_service import (
     AnswerRunRequest,
     ChatRunService,
     RunCancelledError,
     RuntimeRunRequest,
 )
-from graph_knowledge_engine.server.run_registry import RunRegistry
+from kogwistar.server.run_registry import RunRegistry
 
 pytestmark = pytest.mark.ci
 

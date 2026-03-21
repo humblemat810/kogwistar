@@ -1,9 +1,9 @@
 import pytest
 
-from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.engine_core.engine import GraphKnowledgeEngine
 
 try:
-    from graph_knowledge_engine.engine_core.postgres_backend import (
+    from kogwistar.engine_core.postgres_backend import (
         PgVectorBackend,
         PostgresUnitOfWork,
     )

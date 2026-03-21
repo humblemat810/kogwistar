@@ -1,6 +1,6 @@
 import pytest
 
-from graph_knowledge_engine.runtime.contract import WorkflowSpec, validate_workflow
+from kogwistar.runtime.contract import WorkflowSpec, validate_workflow
 
 pytestmark = pytest.mark.ci
 

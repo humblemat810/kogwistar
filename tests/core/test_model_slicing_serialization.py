@@ -4,7 +4,7 @@ import pytest
 
 pytestmark = pytest.mark.ci
 
-from graph_knowledge_engine.engine_core.models import Grounding, Node, Span
+from kogwistar.engine_core.models import Grounding, Node, Span
 
 
 def test_model_dump_does_not_warn_for_typed_groundings():

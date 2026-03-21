@@ -1,21 +1,21 @@
 import json
 import uuid
-from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
-from graph_knowledge_engine.runtime.models import (
+from kogwistar.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.runtime.models import (
     RunFailure,
     RunSuccess,
     RunSuspended,
     WorkflowEdge,
     WorkflowNode,
 )
-from graph_knowledge_engine.runtime.runtime import WorkflowRuntime, StepContext
-from graph_knowledge_engine.runtime.resolvers import MappingStepResolver
-from graph_knowledge_engine.runtime.sandbox import SandboxRequest
+from kogwistar.runtime.runtime import WorkflowRuntime, StepContext
+from kogwistar.runtime.resolvers import MappingStepResolver
+from kogwistar.runtime.sandbox import SandboxRequest
 from tests.conftest import FakeEmbeddingFunction
 
-from graph_knowledge_engine.engine_core.models import Span, Grounding
+from kogwistar.engine_core.models import Span, Grounding
 
-from graph_knowledge_engine.engine_core.models import (
+from kogwistar.engine_core.models import (
     MentionVerification,
 )
 

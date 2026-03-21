@@ -3,9 +3,9 @@ import uuid
 
 import pytest
 
-import graph_knowledge_engine.workers.run_index_job_worker as worker_runner
-from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
-from graph_knowledge_engine.workers.run_index_job_worker import main
+import kogwistar.workers.run_index_job_worker as worker_runner
+from kogwistar.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.workers.run_index_job_worker import main
 from tests.conftest import FakeEmbeddingFunction
 
 TEST_EMBEDDING = FakeEmbeddingFunction(dim=3)
@@ -32,13 +32,13 @@ def test_phase5_worker_runner_once_smoke(tmp_path, capsys):
     # Run worker once via CLI entrypoint. It will build a NEW engine pointing to same persist dir.
     # We don't assert job completion here (engine.apply may be a no-op depending on configuration),
     # just that it runs without crashing and prints metrics.
-    real_graph_knowledge_engine = worker_runner.GraphKnowledgeEngine
+    real_kogwistar = worker_runner.GraphKnowledgeEngine
 
-    def _fake_graph_knowledge_engine(*args, **kwargs):
+    def _fake_kogwistar(*args, **kwargs):
         kwargs.setdefault("embedding_function", TEST_EMBEDDING)
-        return real_graph_knowledge_engine(*args, **kwargs)
+        return real_kogwistar(*args, **kwargs)
 
-    worker_runner.GraphKnowledgeEngine = _fake_graph_knowledge_engine
+    worker_runner.GraphKnowledgeEngine = _fake_kogwistar
     try:
         rc = main(
             [
@@ -56,7 +56,7 @@ def test_phase5_worker_runner_once_smoke(tmp_path, capsys):
             ]
         )
     finally:
-        worker_runner.GraphKnowledgeEngine = real_graph_knowledge_engine
+        worker_runner.GraphKnowledgeEngine = real_kogwistar
     assert rc == 0
     out = capsys.readouterr().out
     assert "claimed=" in out

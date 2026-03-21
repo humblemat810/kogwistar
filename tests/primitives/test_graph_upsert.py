@@ -8,7 +8,7 @@ DOC_ID = "pytest-doc-upsert-1"
 def test_graph_upsert_llm_batch_with_references():
     # clean slate (best-effort)
 
-    from graph_knowledge_engine.server_mcp_with_admin import app
+    from kogwistar.server_mcp_with_admin import app
 
     client = TestClient(app)
     client.delete(f"/admin/doc/{DOC_ID}")
@@ -133,7 +133,7 @@ def test_graph_upsert_llm_batch_with_references():
 
 import types
 
-from graph_knowledge_engine.visualization import graph_viz
+from kogwistar.visualization import graph_viz
 
 
 def test_to_d3_force_many_to_one_hyperedge():

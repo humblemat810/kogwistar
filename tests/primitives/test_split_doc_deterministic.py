@@ -15,7 +15,7 @@ import sys
 import pathlib
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
-from graph_knowledge_engine.splitter import split_doc_deterministic
+from kogwistar.splitter import split_doc_deterministic
 
 
 def _assert_basic_invariants(chunks, doc_id, content, max_chars, overlap_chars):

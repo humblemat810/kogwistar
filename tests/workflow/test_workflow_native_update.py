@@ -3,10 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, List
 
-from graph_knowledge_engine.runtime.runtime import WorkflowRuntime
-from graph_knowledge_engine.runtime.resolvers import MappingStepResolver
-from graph_knowledge_engine.runtime.contract import BasePredicate
-from graph_knowledge_engine.runtime.models import RunSuccess
+from kogwistar.runtime.runtime import WorkflowRuntime
+from kogwistar.runtime.resolvers import MappingStepResolver
+from kogwistar.runtime.contract import BasePredicate
+from kogwistar.runtime.models import RunSuccess
 
 
 # --- Minimum fake shapes (aligned with test_workflow_join.py) ---

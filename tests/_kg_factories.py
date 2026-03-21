@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from graph_knowledge_engine.engine_core.models import (
+from kogwistar.engine_core.models import (
     Document,
     Grounding,
     MentionVerification,

@@ -1,14 +1,14 @@
 import pytest
 
-from graph_knowledge_engine.conversation.filtering import candiate_filtering_callback
-from graph_knowledge_engine.conversation.service import ConversationService
-from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
-from graph_knowledge_engine.conversation.conversation_orchestrator import (
+from kogwistar.conversation.filtering import candiate_filtering_callback
+from kogwistar.conversation.service import ConversationService
+from kogwistar.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.conversation.conversation_orchestrator import (
     ConversationOrchestrator,
 )
-from graph_knowledge_engine.conversation.models import MetaFromLastSummary
-from graph_knowledge_engine.runtime import MappingStepResolver
-from graph_knowledge_engine.runtime.models import WorkflowEdge, WorkflowNode
+from kogwistar.conversation.models import MetaFromLastSummary
+from kogwistar.runtime import MappingStepResolver
+from kogwistar.runtime.models import WorkflowEdge, WorkflowNode
 from tests._helpers.embeddings import build_test_embedding_function
 from tests._helpers.fake_backend import build_fake_backend
 
@@ -26,20 +26,20 @@ def test_workflow_runtime_uses_default_resolver(tmp_path):
     assertions minimal and avoids HTML bundle dumping.
     """
 
-    from graph_knowledge_engine.engine_core.models import (
+    from kogwistar.engine_core.models import (
         Span,
         Grounding,
         MentionVerification,
     )
-    from graph_knowledge_engine.runtime.runtime import WorkflowRuntime
-    from graph_knowledge_engine.conversation.conversation_state_contracts import (
+    from kogwistar.runtime.runtime import WorkflowRuntime
+    from kogwistar.conversation.conversation_state_contracts import (
         WorkflowStateModel,
         ConversationWorkflowState,
     )
-    from graph_knowledge_engine.runtime.runtime import StepRunResult, State
-    from graph_knowledge_engine.conversation.resolvers import default_resolver
+    from kogwistar.runtime.runtime import StepRunResult, State
+    from kogwistar.conversation.resolvers import default_resolver
 
-    from graph_knowledge_engine.conversation.tool_runner import ToolRunner
+    from kogwistar.conversation.tool_runner import ToolRunner
 
     from typing import Callable, TypeVar, ParamSpec, cast
     from joblib import Memory
@@ -347,14 +347,14 @@ def test_workflow_runtime_uses_default_resolver(tmp_path):
         max_workers=1,
     )
     # import uuid
-    from graph_knowledge_engine.id_provider import stable_id
+    from kogwistar.id_provider import stable_id
 
     tool_runner = ToolRunner(
         conversation_engine=conversation_engine, tool_call_id_factory=stable_id
     )
     # max_retrieval_level: int = 2
     # summary_char_threshold: int = 12000
-    from graph_knowledge_engine.conversation.conversation_orchestrator import (
+    from kogwistar.conversation.conversation_orchestrator import (
         ConversationOrchestrator,
     )
 
@@ -392,7 +392,7 @@ def test_workflow_runtime_uses_default_resolver(tmp_path):
     # init_state = {}
     mem_id = "mem-001"
     role = "user"
-    from graph_knowledge_engine.conversation.conversation_state_contracts import (
+    from kogwistar.conversation.conversation_state_contracts import (
         PrevTurnMetaSummaryModel,
     )
 
@@ -457,7 +457,7 @@ def test_orchestrator_has_v2(tmp_path):
         embedding_function=ef,
         backend_factory=build_fake_backend,
     )
-    from graph_knowledge_engine.id_provider import stable_id
+    from kogwistar.id_provider import stable_id
 
     # NOTE: adapt args to your orchestrator's real __init__ signature
     orch = ConversationOrchestrator(

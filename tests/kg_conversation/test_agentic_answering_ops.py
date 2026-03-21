@@ -7,8 +7,8 @@ from types import SimpleNamespace
 from typing import Any, Dict, Iterator, List
 
 
-from graph_knowledge_engine.engine_core.models import Span
-from graph_knowledge_engine.llm_tasks import (
+from kogwistar.engine_core.models import Span
+from kogwistar.llm_tasks import (
     AdjudicateBatchTaskResult,
     AdjudicatePairTaskResult,
     AnswerWithCitationsTaskResult,
@@ -18,9 +18,9 @@ from graph_knowledge_engine.llm_tasks import (
     RepairCitationsTaskResult,
     SummarizeContextTaskResult,
 )
-from graph_knowledge_engine.runtime.models import RunFailure
-from graph_knowledge_engine.conversation.resolvers import default_resolver
-from graph_knowledge_engine.runtime.models import RunSuccess
+from kogwistar.runtime.models import RunFailure
+from kogwistar.conversation.resolvers import default_resolver
+from kogwistar.runtime.models import RunSuccess
 
 
 @dataclass

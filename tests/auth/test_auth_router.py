@@ -2,13 +2,13 @@ import pytest
 from fastapi.testclient import TestClient
 
 pytestmark = pytest.mark.ci
-from graph_knowledge_engine.server_mcp_with_admin import app, JWT_SECRET, JWT_ALG
-from graph_knowledge_engine.server.auth.db import (
+from kogwistar.server_mcp_with_admin import app, JWT_SECRET, JWT_ALG
+from kogwistar.server.auth.db import (
     create_auth_engine,
     init_auth_db,
     get_session,
 )
-from graph_knowledge_engine.server.auth.service import AuthService
+from kogwistar.server.auth.service import AuthService
 from jose import jwt
 from urllib.parse import urlparse, parse_qs
 from unittest.mock import AsyncMock

@@ -8,9 +8,9 @@ import tempfile
 
 import pytest
 
-from graph_knowledge_engine.cdc.change_event import ChangeEvent
-from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
-from graph_knowledge_engine.engine_core.search_index.models import (
+from kogwistar.cdc.change_event import ChangeEvent
+from kogwistar.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.engine_core.search_index.models import (
     IndexingItem,
     make_index_key_for_item,
 )

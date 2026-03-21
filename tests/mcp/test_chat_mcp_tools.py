@@ -11,20 +11,20 @@ import pytest
 
 pytestmark = pytest.mark.ci
 
-import graph_knowledge_engine.server_mcp_with_admin as server
-from graph_knowledge_engine.server import resources as server_resources
-from graph_knowledge_engine.server.auth_middleware import claims_ctx
-from graph_knowledge_engine.conversation.models import ConversationNode
-from graph_knowledge_engine.runtime.models import WorkflowCheckpointNode
-from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
-from graph_knowledge_engine.engine_core.models import Grounding, Span
-from graph_knowledge_engine.server.chat_service import (
+import kogwistar.server_mcp_with_admin as server
+from kogwistar.server import resources as server_resources
+from kogwistar.server.auth_middleware import claims_ctx
+from kogwistar.conversation.models import ConversationNode
+from kogwistar.runtime.models import WorkflowCheckpointNode
+from kogwistar.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.engine_core.models import Grounding, Span
+from kogwistar.server.chat_service import (
     AnswerRunRequest,
     ChatRunService,
     RunCancelledError,
     RuntimeRunRequest,
 )
-from graph_knowledge_engine.server.run_registry import RunRegistry
+from kogwistar.server.run_registry import RunRegistry
 from tests._helpers.fake_backend import build_fake_backend
 
 

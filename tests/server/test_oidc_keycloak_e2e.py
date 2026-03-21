@@ -7,13 +7,13 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import sessionmaker
 
-import graph_knowledge_engine.server_mcp_with_admin as server
-from graph_knowledge_engine.server.auth.db import create_auth_engine, init_auth_db
-from graph_knowledge_engine.server.auth.models import ExternalIdentity, User
-from graph_knowledge_engine.server.auth.oidc import OIDCClient
-from graph_knowledge_engine.server.auth.provider_config import OIDCProviderConfig
-from graph_knowledge_engine.server.auth.seeding import seed_auth_data
-from graph_knowledge_engine.server.auth.service import AuthService
+import kogwistar.server_mcp_with_admin as server
+from kogwistar.server.auth.db import create_auth_engine, init_auth_db
+from kogwistar.server.auth.models import ExternalIdentity, User
+from kogwistar.server.auth.oidc import OIDCClient
+from kogwistar.server.auth.provider_config import OIDCProviderConfig
+from kogwistar.server.auth.seeding import seed_auth_data
+from kogwistar.server.auth.service import AuthService
 from tests.server.oidc_test_support import extract_login_action, oidc_provider_json
 
 pytestmark = [pytest.mark.ci_full]
