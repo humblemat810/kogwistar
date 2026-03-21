@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-pytestmark = pytest.mark.ci
+pytestmark = [pytest.mark.core, pytest.mark.unit]
 
 from graph_knowledge_engine.engine_core.models import Node
 from tests._kg_factories import kg_document, kg_grounding
@@ -27,10 +27,21 @@ def _mk_claim_node(
     )
 
 
-@pytest.mark.parametrize("backend_kind", ["chroma", "pg"])
+@pytest.mark.parametrize(
+    "backend_kind",
+    [
+        pytest.param("fake", marks=pytest.mark.ci),
+        pytest.param("chroma", marks=pytest.mark.ci_full),
+        pytest.param("pg", marks=pytest.mark.ci_full),
+    ],
+)
 def test_search_nodes_as_of_redirect_cutoff(
-    backend_kind, tmp_path, sa_engine, pg_schema
+    request, backend_kind, tmp_path
 ):
+    sa_engine = pg_schema = None
+    if backend_kind == "pg":
+        sa_engine = request.getfixturevalue("sa_engine")
+        pg_schema = request.getfixturevalue("pg_schema")
     eng, _ = _make_engine_pair(
         backend_kind=backend_kind,
         tmp_path=tmp_path,
@@ -89,10 +100,21 @@ def test_search_nodes_as_of_redirect_cutoff(
     assert "N_SUGAR_OLD" not in ids_now
 
 
-@pytest.mark.parametrize("backend_kind", ["chroma", "pg"])
+@pytest.mark.parametrize(
+    "backend_kind",
+    [
+        pytest.param("fake", marks=pytest.mark.ci),
+        pytest.param("chroma", marks=pytest.mark.ci_full),
+        pytest.param("pg", marks=pytest.mark.ci_full),
+    ],
+)
 def test_search_nodes_as_of_tombstone_and_future_effective(
-    backend_kind, tmp_path, sa_engine, pg_schema
+    request, backend_kind, tmp_path
 ):
+    sa_engine = pg_schema = None
+    if backend_kind == "pg":
+        sa_engine = request.getfixturevalue("sa_engine")
+        pg_schema = request.getfixturevalue("pg_schema")
     eng, _ = _make_engine_pair(
         backend_kind=backend_kind,
         tmp_path=tmp_path,
@@ -163,10 +185,21 @@ def test_search_nodes_as_of_tombstone_and_future_effective(
     assert "N_DEAD" not in ids_after
 
 
-@pytest.mark.parametrize("backend_kind", ["chroma", "pg"])
+@pytest.mark.parametrize(
+    "backend_kind",
+    [
+        pytest.param("fake", marks=pytest.mark.ci),
+        pytest.param("chroma", marks=pytest.mark.ci_full),
+        pytest.param("pg", marks=pytest.mark.ci_full),
+    ],
+)
 def test_search_nodes_as_of_redirect_cycle_and_invalid_target_safety(
-    backend_kind, tmp_path, sa_engine, pg_schema
+    request, backend_kind, tmp_path
 ):
+    sa_engine = pg_schema = None
+    if backend_kind == "pg":
+        sa_engine = request.getfixturevalue("sa_engine")
+        pg_schema = request.getfixturevalue("pg_schema")
     eng, _ = _make_engine_pair(
         backend_kind=backend_kind,
         tmp_path=tmp_path,

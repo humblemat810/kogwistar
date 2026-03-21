@@ -519,6 +519,11 @@ def pytest_collection_modifyitems(
             config, item
         ):
             item.add_marker(skip_manual)
+        if not _has_marker(item, {"ci", "ci_full"}):
+            if "e2e" in item.keywords or "integration" in item.keywords:
+                item.add_marker(pytest.mark.ci_full)
+            elif "unit" in item.keywords:
+                item.add_marker(pytest.mark.ci)
 
     collected = []
 
