@@ -5,19 +5,99 @@ import pytest
 
 from graph_knowledge_engine.conversation.models import (
     ConversationEdge,
+    ConversationNode,
 )
-from graph_knowledge_engine.conversation.service import ConversationService
-from graph_knowledge_engine.engine_core.models import Span, Grounding
+from graph_knowledge_engine.engine_core.models import (
+    Grounding,
+    MentionVerification,
+    Span,
+)
+from tests.conftest import _make_engine_pair
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
 
 
+pytestmark = pytest.mark.parametrize(
+    "phase1_engine_pair",
+    [
+        pytest.param(
+            {
+                "backend_kind": "fake",
+                "embedding_kind": "constant",
+                "dim": 384,
+            },
+            id="fake_backend_constant",
+            marks=pytest.mark.ci,
+        ),
+        pytest.param(
+            {
+                "backend_kind": "chroma",
+                "embedding_kind": "provider",
+                "dim": 384,
+            },
+            id="real_chroma_provider",
+            marks=pytest.mark.ci_full,
+        ),
+    ],
+    indirect=True,
+)
+
+
 def _mk_span(doc_id: str) -> Span:
-    sp = Span.from_dummy_for_document()
-    sp.doc_id = doc_id
-    return sp
+    return Span(
+        collection_page_url="N/A",
+        document_page_url="N/A",
+        doc_id=doc_id,
+        insertion_method="test",
+        page_number=1,
+        start_char=0,
+        end_char=1,
+        excerpt="x",
+        context_before="",
+        context_after="",
+        chunk_id=None,
+        source_cluster_id=None,
+        verification=MentionVerification(
+            method="human", is_verified=True, score=1.0, notes="test"
+        ),
+    )
+
+
+def _mk_turn(
+    *,
+    conversation_id: str,
+    user_id: str,
+    turn_id: str,
+    role: str,
+    turn_index: int,
+) -> ConversationNode:
+    doc_id = f"conv:{conversation_id}"
+    return ConversationNode(
+        id=turn_id,
+        label=turn_id,
+        type="entity",
+        summary=f"{role}:{turn_index}",
+        mentions=[Grounding(spans=[_mk_span(doc_id)])],
+        doc_id=doc_id,
+        metadata={
+            "entity_type": f"{role}_turn",
+            "in_conversation_chain": True,
+            "conversation_id": conversation_id,
+            "user_id": user_id,
+            "level_from_root": 0,
+        },
+        role=role,  # type: ignore[arg-type]
+        turn_index=turn_index,
+        conversation_id=conversation_id,
+        user_id=user_id,
+        domain_id=None,
+        canonical_entity_id=None,
+        properties=None,
+        embedding=None,
+        level_from_root=0,
+    )
 
 
 def _mk_edge(
@@ -55,6 +135,37 @@ def _noop_filtering_callback(*_args, **_kwargs):
     return FilteringResult(node_ids=[], edge_ids=[]), "noop"
 
 
+@pytest.fixture
+def phase1_engine_pair(request, tmp_path):
+    """Build one conversation/knowledge engine pair for this file.
+
+    The module is parametrized into two variants:
+    - `fake_backend_constant`: cheap CI coverage
+    - `real_chroma_provider`: fuller backend/embedding coverage
+
+    To add another variant later, extend the `pytestmark` parametrization above.
+    """
+
+    cfg = dict(request.param)
+    return _disable_phase1_index_jobs(
+        _make_engine_pair(
+            backend_kind=cfg["backend_kind"],
+            tmp_path=tmp_path,
+            sa_engine=None,
+            pg_schema=None,
+            dim=int(cfg.get("dim", 384)),
+            embedding_kind=str(cfg["embedding_kind"]),
+        )
+    )
+
+
+def _disable_phase1_index_jobs(engine_pair):
+    kg_engine, conversation_engine = engine_pair
+    kg_engine._phase1_enable_index_jobs = False
+    conversation_engine._phase1_enable_index_jobs = False
+    return kg_engine, conversation_engine
+
+
 def _mk_three_turns(
     conversation_engine: GraphKnowledgeEngine,
     kg_engine: GraphKnowledgeEngine,
@@ -63,76 +174,65 @@ def _mk_three_turns(
     conv_id: str,
     # causal_type: str="chain"
 ):
-    from graph_knowledge_engine.id_provider import stable_id
-
-    conversation_engine.tool_call_id_factory = stable_id
-    kg_engine.tool_call_id_factory = stable_id
-    """Create 3 turns using the real public API + orchestrator.
-
-    We intentionally use add_conversation_turn (not direct node creation) to satisfy
-    ConversationNode shape requirements and to ensure any automatic next_turn edge
-    creation happens as in production.
-    """
-    svc = ConversationService.from_engine(
-        conversation_engine,
-        knowledge_engine=kg_engine,
-    )
-    conv_id, _start_id = svc.create_conversation(user_id, conv_id)
-
-    # Turn 1 (user)
-    r1 = svc.add_conversation_turn(
-        user_id,
-        conv_id,
+    t1 = _mk_turn(
+        conversation_id=conv_id,
+        user_id=user_id,
         turn_id="turn_1_user",
-        mem_id="mem_1",
         role="user",
-        content="u1",
-        ref_knowledge_engine=kg_engine,
-        filtering_callback=_noop_filtering_callback,
-        add_turn_only=True,
+        turn_index=1,
     )
-
-    # Turn 2 (assistant/system)
-    r2 = svc.add_conversation_turn(
-        user_id,
-        conv_id,
+    t2 = _mk_turn(
+        conversation_id=conv_id,
+        user_id=user_id,
         turn_id="turn_2_assistant",
-        mem_id="mem_2",
         role="assistant",
-        content="a1",
-        ref_knowledge_engine=kg_engine,
-        filtering_callback=_noop_filtering_callback,
-        add_turn_only=True,
-        prev_turn_meta_summary=r1.prev_turn_meta_summary,
+        turn_index=2,
     )
-
-    # Turn 3 (user)
-    r3 = svc.add_conversation_turn(
-        user_id,
-        conv_id,
+    t3 = _mk_turn(
+        conversation_id=conv_id,
+        user_id=user_id,
         turn_id="turn_3_user",
-        mem_id="mem_3",
         role="user",
-        content="u2",
-        ref_knowledge_engine=kg_engine,
-        filtering_callback=_noop_filtering_callback,
-        add_turn_only=True,
-        prev_turn_meta_summary=r2.prev_turn_meta_summary,
+        turn_index=3,
+    )
+    conversation_engine.add_node(t1)
+    conversation_engine.add_node(t2)
+    conversation_engine.add_node(t3)
+    return t1.id, t2.id, t3.id
+
+
+def _seed_chain_edge(
+    conversation_engine: GraphKnowledgeEngine,
+    *,
+    conversation_id: str,
+    src: str,
+    tgt: str,
+) -> None:
+    conversation_engine.add_edge(
+        _mk_edge(
+            src=src,
+            tgt=tgt,
+            relation="next_turn",
+            causal_type="chain",
+            doc_id=f"conv:{conversation_id}",
+        )
     )
 
-    return r1.user_turn_node_id, r2.user_turn_node_id, r3.user_turn_node_id
 
-
-def test_next_turn_outgoing_uniqueness_enforced(conversation_engine, engine):
+def test_next_turn_outgoing_uniqueness_enforced(phase1_engine_pair):
     """If a turn already has a next_turn outgoing, adding a second must fail.
 
     This test assumes Phase-1 validation is wired into BOTH add_edge and add_pure_edge.
     """
+    engine, conversation_engine = phase1_engine_pair
     t1, t2, t3 = _mk_three_turns(
         conversation_engine, engine, user_id="u", conv_id="conv_out_unique"
     )
 
-    # Orchestrator should already have created t1 -> t2 next_turn.
+    _seed_chain_edge(
+        conversation_engine, conversation_id="conv_out_unique", src=t1, tgt=t2
+    )
+
     # Adding another next_turn out of t1 must be rejected.
     with pytest.raises(ValueError):
         conversation_engine.add_edge(
@@ -146,12 +246,16 @@ def test_next_turn_outgoing_uniqueness_enforced(conversation_engine, engine):
         )
 
 
-def test_next_turn_incoming_uniqueness_enforced(conversation_engine, engine):
+def test_next_turn_incoming_uniqueness_enforced(phase1_engine_pair):
+    engine, conversation_engine = phase1_engine_pair
     t1, t2, t3 = _mk_three_turns(
         conversation_engine, engine, user_id="u", conv_id="conv_in_unique"
     )
 
-    # Orchestrator should already have created t1 -> t2 next_turn.
+    _seed_chain_edge(
+        conversation_engine, conversation_id="conv_in_unique", src=t1, tgt=t2
+    )
+
     # Adding another next_turn into t2 must be rejected.
     with pytest.raises(ValueError):
         conversation_engine.add_edge(
@@ -165,9 +269,14 @@ def test_next_turn_incoming_uniqueness_enforced(conversation_engine, engine):
         )
 
 
-def test_next_turn_validated_in_add_pure_edge(conversation_engine, engine):
+def test_next_turn_validated_in_add_pure_edge(phase1_engine_pair):
+    engine, conversation_engine = phase1_engine_pair
     t1, t2, t3 = _mk_three_turns(
         conversation_engine, engine, user_id="u", conv_id="conv_pure_edge"
+    )
+
+    _seed_chain_edge(
+        conversation_engine, conversation_id="conv_pure_edge", src=t1, tgt=t2
     )
 
     with pytest.raises(ValueError):
@@ -183,18 +292,22 @@ def test_next_turn_validated_in_add_pure_edge(conversation_engine, engine):
 
 
 def test_dependency_freeze_rule_does_not_scan_all_edges(
-    conversation_engine, engine, monkeypatch
+    phase1_engine_pair, monkeypatch
 ):
     """Freeze rule should be implementable via endpoint existence checks.
 
     We assert that get_edges() is not called during validation (regression guard).
     """
+    engine, conversation_engine = phase1_engine_pair
     t1, t2, t3 = _mk_three_turns(
         conversation_engine,
         engine,
         user_id="u",
         conv_id="conv_dep_freeze",
         # , causal_type='chain'
+    )
+    _seed_chain_edge(
+        conversation_engine, conversation_id="conv_dep_freeze", src=t1, tgt=t2
     )
 
     # If implementation regresses to scanning, fail fast.

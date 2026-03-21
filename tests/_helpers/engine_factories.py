@@ -9,6 +9,7 @@ from tests._helpers.embeddings import (
     Embeddings,
     build_test_embedding_function,
 )
+from tests._helpers.fake_backend import build_fake_backend
 
 FakeEmbeddingFunction = ConstantEmbeddingFunction
 
@@ -30,17 +31,39 @@ def _make_engine_pair(
         if embedding_function is not None
         else build_test_embedding_function(embedding_kind or "constant", dim=dim)
     )
-    if backend_kind == "chroma":
+    if backend_kind == "fake":
         kg_engine = GraphKnowledgeEngine(
             persist_directory=str(Path(tmp_path) / "kg"),
             kg_graph_type="knowledge",
             embedding_function=ef,
+            backend_factory=build_fake_backend,
         )
         conv_engine = GraphKnowledgeEngine(
             persist_directory=str(Path(tmp_path) / "conv"),
             kg_graph_type="conversation",
             embedding_function=ef,
+            backend_factory=build_fake_backend,
         )
+        return kg_engine, conv_engine
+    if backend_kind == "chroma":
+        try:
+            kg_engine = GraphKnowledgeEngine(
+                persist_directory=str(Path(tmp_path) / "kg"),
+                kg_graph_type="knowledge",
+                embedding_function=ef,
+            )
+            conv_engine = GraphKnowledgeEngine(
+                persist_directory=str(Path(tmp_path) / "conv"),
+                kg_graph_type="conversation",
+                embedding_function=ef,
+            )
+        except Exception as exc:
+            if embedding_function is None and str(embedding_kind or "").lower() in {
+                "provider",
+                "real",
+            }:
+                pytest.skip(f"real embedding provider unavailable: {exc}")
+            raise
         return kg_engine, conv_engine
 
     if backend_kind == "pg":
@@ -88,12 +111,27 @@ def _make_workflow_engine(
         if embedding_function is not None
         else build_test_embedding_function(embedding_kind or "constant", dim=dim)
     )
-    if backend_kind == "chroma":
+    if backend_kind == "fake":
         return GraphKnowledgeEngine(
             persist_directory=str(Path(tmp_path) / "wf"),
             kg_graph_type="workflow",
             embedding_function=ef,
+            backend_factory=build_fake_backend,
         )
+    if backend_kind == "chroma":
+        try:
+            return GraphKnowledgeEngine(
+                persist_directory=str(Path(tmp_path) / "wf"),
+                kg_graph_type="workflow",
+                embedding_function=ef,
+            )
+        except Exception as exc:
+            if embedding_function is None and str(embedding_kind or "").lower() in {
+                "provider",
+                "real",
+            }:
+                pytest.skip(f"real embedding provider unavailable: {exc}")
+            raise
     if backend_kind == "pg":
         if sa_engine is None or pg_schema is None:
             pytest.skip(

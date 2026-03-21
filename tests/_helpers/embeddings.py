@@ -8,6 +8,8 @@ external embedding services.
 Supported modes:
 - ``constant``: returns a dense constant vector
 - ``lexical_hash``: token-hash embedding similar to ``scripts/tutorial_ladder.py``
+- ``provider`` / ``real``: return ``None`` so the engine uses its configured
+  default embedding provider from the environment
 
 Example:
 
@@ -76,15 +78,21 @@ class LexicalHashEmbeddingFunction(EmbeddingFunction):
         return vectors
 
 
-def build_test_embedding_function(kind: str, *, dim: int) -> EmbeddingFunction:
-    """Return a deterministic test embedding function by name."""
+def build_test_embedding_function(kind: str, *, dim: int) -> EmbeddingFunction | None:
+    """Return a test embedding function by name.
+
+    ``provider`` and ``real`` mean "use the engine default" and therefore
+    return ``None``.
+    """
 
     normalized = str(kind or "constant").strip().lower()
     if normalized in {"constant", "default", "fake"}:
         return ConstantEmbeddingFunction(dim=dim)
     if normalized in {"lexical_hash", "lexical", "hash", "tutorial"}:
         return LexicalHashEmbeddingFunction(dim=dim)
+    if normalized in {"provider", "real", "default_provider"}:
+        return None
     raise ValueError(
         f"Unsupported test embedding kind: {kind!r}. "
-        "Use 'constant' or 'lexical_hash'."
+        "Use 'constant', 'lexical_hash', or 'provider'."
     )
