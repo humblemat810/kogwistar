@@ -1,58 +1,112 @@
-import logging
+from pathlib import Path
 
-from graph_knowledge_engine.engine_core.models import Document
+import pytest
+
+from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
+from graph_knowledge_engine.engine_core.models import (
+    Edge,
+    Grounding,
+    MentionVerification,
+    Node,
+    Span,
+)
 from graph_knowledge_engine.visualization.basic_visualization import Visualizer
-from joblib import Memory
-import pathlib
 
 from graph_knowledge_engine.utils.kge_debug_dump import dump_d3_bundle
 from graph_knowledge_engine.runtime.models import WorkflowEdge, WorkflowNode
+from tests._helpers.fake_backend import build_fake_backend
 
-
-def test_pretty_print_graph(engine):
-    import os
-    from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
-
-    engine2: GraphKnowledgeEngine = engine
-    doc_content = (
-        "Photosynthesis is a process used by plants to convert light energy into chemical energy. "
-        "Chlorophyll is the molecule that absorbs sunlight. "
-        "Plants perform photosynthesis in their leaves."
-    )
-    doc = Document(
-        id="doc::test::test_pretty_print_graph",
-        content=doc_content,
-        type="text",
-        metadata={"source": "test"},
-        processed=False,
-        source_map=None,
-        embeddings=engine2._iterative_defensive_emb(doc_content),
-        domain_id="test-cases",
+@pytest.mark.ci
+def test_pretty_print_graph():
+    doc_id = "doc::test::pretty_print_graph"
+    engine = GraphKnowledgeEngine(
+        persist_directory=str(Path("test_pretty_print_graph") / "kg"),
+        backend_factory=build_fake_backend,
+        embedding_function=lambda texts: [[0.1] * 384 for _ in texts],
     )
 
-    # cache ONLY the pure extraction on the doc content
+    def _span(excerpt: str) -> Span:
+        return Span(
+            collection_page_url=f"document_collection/{doc_id}",
+            document_page_url=f"document/{doc_id}",
+            doc_id=doc_id,
+            insertion_method="test",
+            page_number=1,
+            start_char=0,
+            end_char=min(len(excerpt), 4),
+            excerpt=excerpt,
+            context_before="",
+            context_after="",
+            chunk_id=None,
+            source_cluster_id=None,
+            verification=MentionVerification(
+                method="human", is_verified=True, score=1.0, notes="test"
+            ),
+        )
 
-    location = os.path.join(
-        ".cache", "test", pathlib.Path(__file__).parts[-1], "_extract_only"
+    def _g(excerpt: str) -> Grounding:
+        return Grounding(spans=[_span(excerpt)])
+
+    node_a = Node(
+        id="A",
+        label="Smoking",
+        type="entity",
+        summary="Smoking",
+        mentions=[_g("smok")],
+        properties={},
+        metadata={"entity_type": "test_node", "level_from_root": 0},
+        domain_id=None,
+        canonical_entity_id=None,
+        embedding=None,
+        doc_id=doc_id,
+        level_from_root=0,
     )
-    os.makedirs(location, exist_ok=True)
-    memory = Memory(location=location, verbose=0)
-
-    @memory.cache
-    def _extract_only(content: str, doc_type):
-        return engine2.extract_graph_with_llm(content=content, doc_type="text")
-
-    extracted = _extract_only(
-        doc.model_dump(field_mode="dto")["content"], doc_type="text"
+    node_b = Node(
+        id="B",
+        label="Lung Cancer",
+        type="entity",
+        summary="Lung Cancer",
+        mentions=[_g("lung")],
+        properties={},
+        metadata={"entity_type": "test_node", "level_from_root": 0},
+        domain_id=None,
+        canonical_entity_id=None,
+        embedding=None,
+        doc_id=doc_id,
+        level_from_root=0,
     )
-    parsed = extracted["parsed"]
-    visualiser = Visualizer(engine=engine2)
-    # persist deterministically (choose replace/append/skip-if-exists)
-    out = engine2.persist_graph_extraction(document=doc, parsed=parsed, mode="replace")
+    edge = Edge(
+        id="E1",
+        label="Smoking causes Lung Cancer",
+        type="relationship",
+        summary="causal",
+        relation="causes",
+        source_ids=["A"],
+        target_ids=["B"],
+        source_edge_ids=[],
+        target_edge_ids=[],
+        mentions=[_g("smok")],
+        doc_id=doc_id,
+        properties={},
+        metadata={"entity_type": "test_edge", "level_from_root": 0},
+        domain_id=None,
+        canonical_entity_id=None,
+        embedding=None,
+    )
 
-    txt = visualiser.pretty_print_graph(by_doc_id=doc.id, include_refs=True)
-    print(txt)
-    logging.info(txt)
+    engine.add_node(node_a, doc_id=doc_id)
+    engine.add_node(node_b, doc_id=doc_id)
+    engine.add_edge(edge, doc_id=doc_id)
+    visualiser = Visualizer(engine=engine)
+
+    txt = visualiser.pretty_print_graph(by_doc_id=doc_id, include_refs=True)
+
+    assert txt.startswith("Nodes:")
+    assert "Smoking" in txt
+    assert "Lung Cancer" in txt
+    assert "Edges:" in txt
+    assert "causes" in txt
+    assert "(empty)" not in txt
 
 
 from graph_knowledge_engine.engine_core.models import (
@@ -146,11 +200,11 @@ def _wf_edge(
     )
 
 
-def test_d3_litmus_workflow_self_and_parallel(tmp_path):
-    from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
+@pytest.mark.ci_full
+def test_d3_litmus_workflow_self_and_parallel():
 
     wf_id = "wf_d3_litmus"
-    wf_dir = tmp_path / "wf"
+    wf_dir = Path("test_d3_litmus_workflow_self_and_parallel") / "wf"
     workflow_engine = GraphKnowledgeEngine(
         persist_directory=str(wf_dir), kg_graph_type="workflow"
     )
@@ -209,18 +263,14 @@ def test_d3_litmus_workflow_self_and_parallel(tmp_path):
     )
 
     # dump
-    out_dir = pathlib.Path(".") / "test_d3_litmus_workflow_self_and_parallel" / "d3"
+    out_dir = Path("test_d3_litmus_workflow_self_and_parallel") / "d3"
     out_dir.mkdir(parents=True, exist_ok=True)
-    template_html = (
-        pathlib.Path(".") / "graph_knowledge_engine" / "templates" / "d3.html"
-    ).read_text(encoding="utf-8")
+    template_html = Path("graph_knowledge_engine") / "templates" / "d3.html"
+    template_html = template_html.read_text(encoding="utf-8")
     dump_d3_bundle(
         template_html=template_html,
         engine=workflow_engine,
         # doc_id=wf_id,
         out_html=out_dir / "wf_self_and_multiple.html",
     )
-    import os
-
-    os.startfile(str(out_dir))
     assert (out_dir / "wf_self_and_multiple.html").exists()

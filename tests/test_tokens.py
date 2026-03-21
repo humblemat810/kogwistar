@@ -8,6 +8,8 @@ import requests
 from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
 
+pytestmark = pytest.mark.ci_full
+
 JWT_SECRET = os.getenv("JWT_SECRET", "dev-secret")
 JWT_ALG = os.getenv("JWT_ALG", "HS256")
 

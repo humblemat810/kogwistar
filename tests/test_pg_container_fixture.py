@@ -5,7 +5,10 @@ import os
 import types
 from unittest.mock import MagicMock
 
+import pytest
 import tests.conftest as test_conf
+
+pytestmark = pytest.mark.ci
 
 
 def test_configure_testcontainers_ryuk_env_defaults_enabled(monkeypatch):
@@ -67,13 +70,16 @@ def test_load_postgres_container_cls_applies_env_before_import(monkeypatch):
 
 def test_pg_container_fixture_starts_and_stops_container(monkeypatch):
     fake_pg = MagicMock()
-    monkeypatch.setattr(test_conf, "_start_postgres_container", lambda image: fake_pg)
+    start_mock = MagicMock(return_value=fake_pg)
+    monkeypatch.setenv("GKE_TEST_PG_IMAGE", "postgres:16")
+    monkeypatch.setattr(test_conf, "_start_postgres_container", start_mock)
     monkeypatch.setattr(test_conf.logger, "info", MagicMock())
     gen = test_conf.pg_container.__wrapped__()
 
     yielded = next(gen)
     assert yielded is fake_pg
-    fake_pg.start.assert_called_once_with()
+    start_mock.assert_called_once()
+    assert start_mock.call_args.args[0] == "postgres:16"
 
     gen.close()
     fake_pg.stop.assert_called_once_with()

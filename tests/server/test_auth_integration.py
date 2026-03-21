@@ -15,6 +15,8 @@ from graph_knowledge_engine.server.auth.seeding import seed_auth_data
 from graph_knowledge_engine.server.auth.service import AuthService
 from graph_knowledge_engine.server.auth.models import User, ExternalIdentity
 
+pytestmark = [pytest.mark.ci_full]
+
 
 @pytest.fixture(params=["memory", "file"])
 def db_url(request, tmp_path):

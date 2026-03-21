@@ -6,6 +6,8 @@ import pytest
 
 from graph_knowledge_engine.server.bootstrap import load_server_storage_settings
 
+pytestmark = pytest.mark.ci
+
 
 def _norm(path: str) -> str:
     return path.replace("\\", "/")

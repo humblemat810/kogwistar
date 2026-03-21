@@ -13,6 +13,9 @@ from graph_knowledge_engine.runtime.runtime import State
 from graph_knowledge_engine.runtime.models import StepRunResult
 from graph_knowledge_engine.runtime.models import RunSuccess
 from graph_knowledge_engine.runtime.models import WorkflowEdge, WorkflowNode
+import pytest
+
+pytestmark = pytest.mark.ci
 
 if TYPE_CHECKING:
     pass

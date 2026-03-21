@@ -3,12 +3,16 @@ from __future__ import annotations
 from pathlib import Path
 from typing import List
 
+import pytest
+
 from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
 from graph_knowledge_engine.engine_core import models
 from graph_knowledge_engine.engine_core.postgres_backend import (
     PgVectorBackend,
     PostgresUnitOfWork,
 )
+
+pytestmark = pytest.mark.ci_full
 
 
 def _dummy_grounding() -> models.Grounding:

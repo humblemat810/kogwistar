@@ -20,7 +20,7 @@ from graph_knowledge_engine.server.auth.models import ExternalIdentity, User
 from tests.server.oidc_test_support import oidc_provider_json, oidc_seed_json
 
 
-pytestmark = [pytest.mark.integration, pytest.mark.manual]
+pytestmark = [pytest.mark.manual]
 
 
 def _port_available(host: str, port: int) -> bool:

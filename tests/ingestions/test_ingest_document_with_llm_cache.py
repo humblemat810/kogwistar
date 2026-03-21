@@ -1,10 +1,13 @@
 # tests/test_ingest_document_with_llm_cache.py
 import json
+import pytest
 from joblib import Memory
 import os
 import pathlib
 
 from tests._kg_factories import kg_document
+
+pytestmark = pytest.mark.ci_full
 
 
 def test_ingest_document_with_llm_cache(engine):

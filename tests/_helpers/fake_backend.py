@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""In-memory backend used by tests that need Chroma-shaped behavior without Chroma.
+"""Test backend used by tests that need Chroma-shaped behavior without Chroma.
 
 This backend is intentionally small but not simplistic:
 - it exposes the same collection verbs as the engine backend contract
@@ -9,6 +9,8 @@ This backend is intentionally small but not simplistic:
   - logical operators `{"$and": [...]}` and `{"$or": [...]}`
   - comparison operators `{"$in"}`, `{"$ne"}`, `{"$gt"}`, `{"$gte"}`, `{"$lt"}`, `{"$lte"}`
 - it returns Chroma-shaped `get()` and `query()` payloads
+- it uses the real SQLite metastore on a temp path, so engine/runtime code
+  exercises the same meta-store contract as the normal SQLite backend
 
 Usage:
 
@@ -28,12 +30,14 @@ The same pattern can be parameterized in pytest fixtures so a test can opt into:
 - real backend + real/provider embeddings for fuller coverage
 """
 
-from dataclasses import dataclass, field
 import copy
 import math
 from contextlib import contextmanager
+from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence
 
+from graph_knowledge_engine.engine_core.engine_sqlite import EngineSQLite
 from graph_knowledge_engine.engine_core.storage_backend import NoopUnitOfWork
 
 
@@ -619,6 +623,12 @@ class InMemoryBackend:
 
 
 class _FakeMetaStore:
+    """Legacy pure-Python meta-store stub kept for reference.
+
+    The active fake backend now uses EngineSQLite so tests exercise the same
+    metastore API as the real sqlite path.
+    """
+
     def __init__(self) -> None:
         self._user_seq: dict[str, int] = {}
         self._global_seq = 0
@@ -665,8 +675,20 @@ class _DummyLock:
 
 def build_fake_backend(engine: Any) -> InMemoryBackend:
     backend = InMemoryBackend(engine)
-    engine.meta_sqlite = _FakeMetaStore()
-    engine.collection_lock = {"node": _DummyLock(), "edge": _DummyLock()}
+    meta_root = Path(engine.persist_directory or ".").resolve() / "_fake_meta"
+    engine.meta_sqlite = EngineSQLite(meta_root, "meta.sqlite")
+    engine.meta_sqlite.ensure_initialized()
+    engine.collection_lock = {
+        "node": _DummyLock(),
+        "edge": _DummyLock(),
+        "node_index": _DummyLock(),
+        "edge_endpoints": _DummyLock(),
+        "document": _DummyLock(),
+        "domain": _DummyLock(),
+        "node_docs": _DummyLock(),
+        "node_refs": _DummyLock(),
+        "edge_refs": _DummyLock(),
+    }
     engine.node_index_collection = backend.node_index
     engine.node_collection = backend.node
     engine.edge_collection = backend.edge

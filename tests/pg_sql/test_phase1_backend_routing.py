@@ -5,9 +5,13 @@ import re
 from pathlib import Path
 from typing import List
 
+import pytest
+
 
 from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
 from graph_knowledge_engine.engine_core import models
+
+pytestmark = pytest.mark.ci
 
 
 def _dummy_span(doc_id: str = "_dummy_doc") -> models.Span:

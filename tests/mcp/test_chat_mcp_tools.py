@@ -25,6 +25,7 @@ from graph_knowledge_engine.server.chat_service import (
     RuntimeRunRequest,
 )
 from graph_knowledge_engine.server.run_registry import RunRegistry
+from tests._helpers.fake_backend import build_fake_backend
 
 
 class FakeEmbeddingFunction:
@@ -62,16 +63,19 @@ def engine_triplet():
                 persist_directory=str(root / "kg"),
                 kg_graph_type="knowledge",
                 embedding_function=ef,
+                backend_factory=build_fake_backend,
             ),
             GraphKnowledgeEngine(
                 persist_directory=str(root / "conversation"),
                 kg_graph_type="conversation",
                 embedding_function=ef,
+                backend_factory=build_fake_backend,
             ),
             GraphKnowledgeEngine(
                 persist_directory=str(root / "workflow"),
                 kg_graph_type="workflow",
                 embedding_function=ef,
+                backend_factory=build_fake_backend,
             ),
         )
     finally:

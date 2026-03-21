@@ -11,6 +11,8 @@ from tests._kg_factories import kg_document
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 
+pytestmark = pytest.mark.ci_full
+
 
 @pytest.fixture(scope="module")
 def engine() -> GraphKnowledgeEngine:

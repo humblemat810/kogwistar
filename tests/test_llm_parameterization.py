@@ -2,6 +2,8 @@ import pytest
 import os
 from graph_knowledge_engine.llm_tasks import LLMTaskSet
 
+pytestmark = pytest.mark.ci
+
 def test_llm_tasks_fixture_exists(llm_tasks):
     """Verify that the llm_tasks fixture is available and returns the correct type."""
     assert isinstance(llm_tasks, LLMTaskSet)

@@ -14,12 +14,11 @@ from tests._helpers.fake_backend import build_fake_backend
 
 pytestmark = [
     pytest.mark.workflow,
-    pytest.mark.integration,
 ]
 
 
-@pytest.mark.ci_full
 @pytest.mark.e2e
+@pytest.mark.ci_full
 def test_workflow_runtime_uses_default_resolver(tmp_path):
     """Smoke: a persisted workflow design can be executed using the package default resolver.
 
@@ -438,7 +437,6 @@ def test_workflow_runtime_uses_default_resolver(tmp_path):
 
 
 @pytest.mark.ci
-@pytest.mark.unit
 def test_orchestrator_has_v2(tmp_path):
     ef = build_test_embedding_function("constant", dim=384)
     conv = GraphKnowledgeEngine(

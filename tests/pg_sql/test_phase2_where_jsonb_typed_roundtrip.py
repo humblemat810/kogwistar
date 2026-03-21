@@ -1,6 +1,11 @@
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql as psql
+
+import pytest
+
 from graph_knowledge_engine.engine_core.postgres_backend import where_jsonb
+
+pytestmark = pytest.mark.ci_full
 
 
 def test_where_jsonb_typed_roundtrip(sa_engine, pg_schema):

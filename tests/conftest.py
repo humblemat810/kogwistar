@@ -427,7 +427,7 @@ def _is_manual_test_explicitly_selected(
     return False
 
 
-_EXECUTION_MARKERS = {"unit", "integration", "e2e", "manual"}
+_EXECUTION_MARKERS = {"ci", "ci_full", "e2e", "manual"}
 _AREA_MARKERS = {"core", "workflow", "conversation"}
 _INTEGRATION_DIRS = {
     "cdc",
@@ -489,15 +489,17 @@ def _infer_area_markers(item: pytest.Item) -> list[pytest.MarkDecorator]:
 
 
 def _infer_execution_marker(item: pytest.Item) -> pytest.MarkDecorator | None:
-    if _has_marker(item, _EXECUTION_MARKERS):
+    if _has_marker(item, {"ci", "ci_full"}):
+        return None
+    if "manual" in item.keywords:
         return None
 
     path = "/".join(_item_path_parts(item)).lower()
-    if _E2E_PATH_RE.search(path):
-        return pytest.mark.e2e
-    if "integration" in path or any(part in _INTEGRATION_DIRS for part in path.split("/")):
-        return pytest.mark.integration
-    return pytest.mark.unit
+    if _E2E_PATH_RE.search(path) or "integration" in path or any(
+        part in _INTEGRATION_DIRS for part in path.split("/")
+    ):
+        return pytest.mark.ci_full
+    return pytest.mark.ci
 
 
 def pytest_collection_modifyitems(
@@ -519,10 +521,10 @@ def pytest_collection_modifyitems(
             config, item
         ):
             item.add_marker(skip_manual)
-        if not _has_marker(item, {"ci", "ci_full"}):
+        if not _has_marker(item, {"ci", "ci_full"}) and "manual" not in item.keywords:
             if "e2e" in item.keywords or "integration" in item.keywords:
                 item.add_marker(pytest.mark.ci_full)
-            elif "unit" in item.keywords:
+            else:
                 item.add_marker(pytest.mark.ci)
 
     collected = []

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-pytestmark = [pytest.mark.core, pytest.mark.unit]
+pytestmark = [pytest.mark.core, pytest.mark.ci]
 
 from graph_knowledge_engine.engine_core.models import Node
 from tests._kg_factories import kg_document, kg_grounding

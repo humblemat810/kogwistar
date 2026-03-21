@@ -73,7 +73,7 @@ class _FakeEngine:
         self.applied: list[str] = []
 
 
-@pytest.mark.unit
+@pytest.mark.ci
 @pytest.mark.parametrize(
     "batch_size,max_jobs_per_tick,max_inflight,n_jobs,expected_processed,expected_claim_limits",
     [

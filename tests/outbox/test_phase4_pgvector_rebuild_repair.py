@@ -66,7 +66,7 @@ def pg_engine(sa_engine, pg_schema) -> GraphKnowledgeEngine:
     return eng
 
 
-@pytest.mark.integration
+@pytest.mark.ci_full
 def test_pgvector_normal_replay_overwrites_tampered_rows(
     pg_engine, sa_engine, pg_schema
 ):
@@ -112,7 +112,7 @@ def test_pgvector_normal_replay_overwrites_tampered_rows(
     assert len(events_after) == len(events_before)
 
 
-@pytest.mark.integration
+@pytest.mark.ci_full
 def test_pgvector_rebuild_from_event_log_after_truncate(
     pg_engine, sa_engine, pg_schema
 ):

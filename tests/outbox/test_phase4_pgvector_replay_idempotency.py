@@ -64,7 +64,7 @@ def pg_engine(sa_engine, pg_schema) -> GraphKnowledgeEngine:
     return eng
 
 
-@pytest.mark.integration
+@pytest.mark.ci_full
 def test_pgvector_replay_is_idempotent_no_new_events(pg_engine):
     eng = pg_engine
     ns = getattr(eng, "namespace", "default")

@@ -3,7 +3,11 @@ from __future__ import annotations
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
+import pytest
+
 from graph_knowledge_engine.engine_core.postgres_backend import where_jsonb
+
+pytestmark = pytest.mark.ci
 
 
 def _compile(clause: sa.ClauseElement) -> str:

@@ -3,7 +3,7 @@ import pytest
 from graph_knowledge_engine.engine_core.engine_postgres import PgVectorBackend
 
 
-@pytest.mark.integration
+@pytest.mark.ci_full
 def test_pgvector_similarity_ordering_is_correct(sa_engine, pg_schema):
     be = PgVectorBackend(engine=sa_engine, embedding_dim=3, schema=pg_schema)
     be.ensure_schema()
@@ -37,7 +37,7 @@ def test_pgvector_similarity_ordering_is_correct(sa_engine, pg_schema):
     assert got["ids"][0] == ["a", "b", "c"]
 
 
-@pytest.mark.integration
+@pytest.mark.ci_full
 def test_pgvector_ties_break_by_id(sa_engine, pg_schema):
     be = PgVectorBackend(engine=sa_engine, embedding_dim=2, schema=pg_schema)
     be.ensure_schema()

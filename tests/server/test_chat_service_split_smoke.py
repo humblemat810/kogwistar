@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import pytest
 import threading
 
 from graph_knowledge_engine.server.chat_service import (
@@ -14,6 +15,8 @@ from graph_knowledge_engine.server.chat_service_workflow_design import (
     _WorkflowDesignService,
 )
 from graph_knowledge_engine.server.resources import _LazyResource
+
+pytestmark = pytest.mark.ci
 
 
 class _Owner:

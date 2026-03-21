@@ -5,7 +5,7 @@ from graph_knowledge_engine.engine_core.engine_postgres import PgVectorBackend
 from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
 
 
-@pytest.mark.integration
+@pytest.mark.ci_full
 def test_pg_uow_rolls_back_backend_writes(sa_engine, pg_schema):
     # pg_url = os.getenv("TEST_PG_URL")
     # if not pg_url:

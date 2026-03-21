@@ -169,7 +169,7 @@ def _load_filtered_events(
 
 
 @pytest.mark.ci
-@pytest.mark.integration
+@pytest.mark.ci_full
 def test_replay_oplog_broadcasts_to_websocket(
     tmp_path: Path, replay_oplog_path: Path
 ) -> None:

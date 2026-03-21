@@ -17,7 +17,6 @@ from tests._helpers.fake_backend import build_fake_backend
 
 pytestmark = [
     pytest.mark.core,
-    pytest.mark.unit,
 ]
 
 

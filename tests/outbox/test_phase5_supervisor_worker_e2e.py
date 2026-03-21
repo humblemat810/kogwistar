@@ -29,7 +29,7 @@ def _wait_until_done(
     raise AssertionError(f"job did not complete within {timeout_s}s: {job_id}")
 
 
-@pytest.mark.integration
+@pytest.mark.ci_full
 def test_phase5_supervisor_runs_worker_processes_job_then_graceful_shutdown(tmp_path):
     ns = f"phase5_sup_{uuid.uuid4().hex}"
     persist_dir = tmp_path / "persist"
@@ -83,7 +83,7 @@ def test_phase5_supervisor_runs_worker_processes_job_then_graceful_shutdown(tmp_
         proc.wait(timeout=5)
 
 
-@pytest.mark.integration
+@pytest.mark.ci_full
 def test_phase5_supervisor_restarts_worker_after_kill_and_processes_job(tmp_path):
     ns = f"phase5_sup_restart_{uuid.uuid4().hex}"
     persist_dir = tmp_path / "persist"

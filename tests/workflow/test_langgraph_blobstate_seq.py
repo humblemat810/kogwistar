@@ -2,11 +2,15 @@
 from dataclasses import dataclass
 from typing import Any, Dict, List
 
+import pytest
+
 from graph_knowledge_engine.runtime.langgraph_converter import (
     LGConverterOptions,
     to_langgraph,
 )
 from graph_knowledge_engine.runtime.models import RunSuccess
+
+pytestmark = pytest.mark.ci
 
 
 # ---- Minimum fake shapes (match tests/workflow/test_workflow_join.py) ----
