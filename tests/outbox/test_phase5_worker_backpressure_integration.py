@@ -52,7 +52,7 @@ def eng(request, tmp_path, sa_engine, pg_schema) -> GraphKnowledgeEngine:
     return e
 
 
-@pytest.mark.integration
+@pytest.mark.ci_full
 @pytest.mark.parametrize(
     "batch_size,max_jobs_per_tick,max_inflight,n_jobs",
     [

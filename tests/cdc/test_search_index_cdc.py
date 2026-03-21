@@ -15,6 +15,8 @@ from graph_knowledge_engine.engine_core.search_index.models import (
     make_index_key_for_item,
 )
 
+pytestmark = pytest.mark.ci_full
+
 
 class MockSink:
     def __init__(self):

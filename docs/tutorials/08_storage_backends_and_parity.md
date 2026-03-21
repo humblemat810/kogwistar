@@ -27,6 +27,12 @@ Advanced readers will not trust backend abstraction claims unless the repo expla
 
 Behavioral contracts are enforced above the storage choice. Backends may differ operationally, but the repo treats parity as a tested requirement.
 
+The repo now also has a backend-contract smoke suite. If you are adding or swapping a backend, start there:
+
+- `fake` is the fast CI double. It uses in-memory collections plus the real SQLite metastore on a temp path.
+- `chroma` and `pg` are broader coverage paths and should keep passing the same contract checks.
+- New backends should prove they satisfy the common contract before they are used by higher-level conversation, MCP, or workflow tests.
+
 ## Next Tutorial
 
 Continue to [09 Indexing Pipeline](./09_indexing_pipeline.md).

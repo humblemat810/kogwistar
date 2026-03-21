@@ -10,7 +10,7 @@ from graph_knowledge_engine.engine_core.engine_postgres_meta import (
 from graph_knowledge_engine.engine_core.postgres_backend import PostgresUnitOfWork
 
 
-@pytest.mark.integration
+@pytest.mark.ci_full
 def test_uow_commit_creates_node_event_vector_and_job(sa_engine, pg_schema):
     be = PgVectorBackend(engine=sa_engine, embedding_dim=2, schema=pg_schema)
     be.ensure_schema()
@@ -74,7 +74,7 @@ def test_uow_commit_creates_node_event_vector_and_job(sa_engine, pg_schema):
     assert any(j.index_kind == "node_docs" for j in jobs)
 
 
-@pytest.mark.integration
+@pytest.mark.ci_full
 def test_uow_rollback_leaves_no_node_event_vector_or_job(sa_engine, pg_schema):
     be = PgVectorBackend(engine=sa_engine, embedding_dim=2, schema=pg_schema)
     be.ensure_schema()

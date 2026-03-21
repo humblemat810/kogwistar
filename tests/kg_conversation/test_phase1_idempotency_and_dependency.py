@@ -13,6 +13,49 @@ from graph_knowledge_engine.engine_core.models import (
     Span,
     MentionVerification,
 )
+from tests.conftest import _make_engine_pair
+
+
+pytestmark = pytest.mark.parametrize(
+    "phase1_engine_pair",
+    [
+        pytest.param(
+            {
+                "backend_kind": "fake",
+                "embedding_kind": "constant",
+                "dim": 384,
+            },
+            id="fake_backend_constant",
+            marks=pytest.mark.ci,
+        ),
+        pytest.param(
+            {
+                "backend_kind": "chroma",
+                "embedding_kind": "provider",
+                "dim": 384,
+            },
+            id="real_chroma_provider",
+            marks=pytest.mark.ci_full,
+        ),
+    ],
+    indirect=True,
+)
+
+
+@pytest.fixture
+def phase1_engine_pair(request, tmp_path):
+    cfg = dict(request.param)
+    kg_engine, conv_engine =_make_engine_pair(
+        backend_kind=cfg["backend_kind"],
+        tmp_path=tmp_path,
+        sa_engine=None,
+        pg_schema=None,
+        dim=int(cfg.get("dim", 384)),
+        embedding_kind=str(cfg["embedding_kind"]),
+    )
+    kg_engine._phase1_enable_index_jobs = False
+    conv_engine._phase1_enable_index_jobs = False
+    return kg_engine, conv_engine
 
 
 def _mk_grounding(doc_id: str, excerpt: str = "x") -> Grounding:
@@ -142,8 +185,9 @@ def _count_next_turn_edges(
     return cnt
 
 
-def test_next_turn_duplicate_is_idempotent_in_add_edge(conversation_engine):
+def test_next_turn_duplicate_is_idempotent_in_add_edge(phase1_engine_pair):
     """Adding the exact same next_turn edge twice should be a NOOP (idempotent), not a failure."""
+    _kg_engine, conversation_engine = phase1_engine_pair
     conversation_id = "conv_idem_edge"
     user_id = "u"
     t1 = _mk_turn(
@@ -179,7 +223,8 @@ def test_next_turn_duplicate_is_idempotent_in_add_edge(conversation_engine):
     )
 
 
-def test_next_turn_duplicate_is_not_idempotent_in_add_pure_edge(conversation_engine):
+def test_next_turn_duplicate_is_not_idempotent_in_add_pure_edge(phase1_engine_pair):
+    _kg_engine, conversation_engine = phase1_engine_pair
     conversation_id = "conv_idem_pure"
     user_id = "u"
     t1 = _mk_turn(
@@ -215,10 +260,11 @@ def test_next_turn_duplicate_is_not_idempotent_in_add_pure_edge(conversation_eng
 
 
 def test_dependency_freeze_rejects_new_incoming_into_used_node_without_scanning_all_edges(
-    conversation_engine, monkeypatch
+    phase1_engine_pair, monkeypatch
 ):
     """If a node has produced outputs (chain/dependency outgoing), it is 'used'.
     Adding NEW dependency-incoming edges into it must fail, and validation must not scan all edges."""
+    _kg_engine, conversation_engine = phase1_engine_pair
     conversation_id = "conv_dep_freeze_v2"
     user_id = "u"
     t1 = _mk_turn(

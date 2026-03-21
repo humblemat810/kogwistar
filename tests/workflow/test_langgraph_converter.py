@@ -12,6 +12,8 @@ from graph_knowledge_engine.runtime.langgraph_converter import (
 )
 from langgraph.graph.state import CompiledStateGraph
 
+pytestmark = pytest.mark.ci
+
 
 # -----------------------------
 # Minimum fake shapes (match test_workflow_join.py)

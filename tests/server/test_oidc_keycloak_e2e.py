@@ -16,8 +16,7 @@ from graph_knowledge_engine.server.auth.seeding import seed_auth_data
 from graph_knowledge_engine.server.auth.service import AuthService
 from tests.server.oidc_test_support import extract_login_action, oidc_provider_json
 
-
-pytestmark = [pytest.mark.integration]
+pytestmark = [pytest.mark.ci_full]
 
 
 @pytest.fixture

@@ -59,6 +59,7 @@ Normalized numbering and phase-series naming:
 - `ARD-0013-core-vendor-neutrality-and-sidecar-optionality.md`
 
 ### ARD (topic + phase series)
+- `ARD-ci-marking-strategy.md`
 - `ARD-p2d-conversation-workflow-v2-parity.md`
 - `ARD-p2d-appendix-a-state-retries-ordering.md`
 - `ARD-agentic-answering-system.md`

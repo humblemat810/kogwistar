@@ -25,6 +25,8 @@ from graph_knowledge_engine.llm_tasks import (
     SummarizeContextTaskResult,
 )
 
+pytestmark = pytest.mark.ci
+
 
 def _fixed_llm_tasks(answer: AnswerWithCitations) -> LLMTaskSet:
     payload = answer.model_dump(mode="python")

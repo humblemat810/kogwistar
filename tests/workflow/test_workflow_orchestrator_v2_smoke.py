@@ -9,15 +9,16 @@ from graph_knowledge_engine.conversation.conversation_orchestrator import (
 from graph_knowledge_engine.conversation.models import MetaFromLastSummary
 from graph_knowledge_engine.runtime import MappingStepResolver
 from graph_knowledge_engine.runtime.models import WorkflowEdge, WorkflowNode
+from tests._helpers.embeddings import build_test_embedding_function
+from tests._helpers.fake_backend import build_fake_backend
 
 pytestmark = [
     pytest.mark.workflow,
-    pytest.mark.integration,
 ]
 
 
-@pytest.mark.ci_full
 @pytest.mark.e2e
+@pytest.mark.ci_full
 def test_workflow_runtime_uses_default_resolver(tmp_path):
     """Smoke: a persisted workflow design can be executed using the package default resolver.
 
@@ -436,16 +437,25 @@ def test_workflow_runtime_uses_default_resolver(tmp_path):
 
 
 @pytest.mark.ci
-@pytest.mark.unit
 def test_orchestrator_has_v2(tmp_path):
+    ef = build_test_embedding_function("constant", dim=384)
     conv = GraphKnowledgeEngine(
-        persist_directory=str(tmp_path / "conv"), kg_graph_type="conversation"
+        persist_directory=str(tmp_path / "conv"),
+        kg_graph_type="conversation",
+        embedding_function=ef,
+        backend_factory=build_fake_backend,
     )
     kg = GraphKnowledgeEngine(
-        persist_directory=str(tmp_path / "kg"), kg_graph_type="knowledge"
+        persist_directory=str(tmp_path / "kg"),
+        kg_graph_type="knowledge",
+        embedding_function=ef,
+        backend_factory=build_fake_backend,
     )
     wf = GraphKnowledgeEngine(
-        persist_directory=str(tmp_path / "wf"), kg_graph_type="workflow"
+        persist_directory=str(tmp_path / "wf"),
+        kg_graph_type="workflow",
+        embedding_function=ef,
+        backend_factory=build_fake_backend,
     )
     from graph_knowledge_engine.id_provider import stable_id
 

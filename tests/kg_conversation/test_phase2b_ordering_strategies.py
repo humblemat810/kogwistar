@@ -1,3 +1,7 @@
+import pytest
+
+pytestmark = pytest.mark.ci
+
 from graph_knowledge_engine.conversation.conversation_context import (
     ContextItem,
     apply_ordering,

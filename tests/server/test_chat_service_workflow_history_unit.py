@@ -9,6 +9,8 @@ from graph_knowledge_engine.server.chat_service_workflow_history import (
     _WorkflowDesignHistoryMixin,
 )
 
+pytestmark = pytest.mark.ci
+
 
 class MockOwner:
     def __init__(self):

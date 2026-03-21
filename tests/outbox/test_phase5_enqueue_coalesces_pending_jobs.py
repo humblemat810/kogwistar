@@ -18,7 +18,7 @@ def eng(tmp_path) -> GraphKnowledgeEngine:
     return e
 
 
-@pytest.mark.integration
+@pytest.mark.ci_full
 def test_phase5_enqueue_coalesces_pending_jobs(eng):
     ns = f"phase5_coalesce_{uuid.uuid4().hex}"
 

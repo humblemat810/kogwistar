@@ -7,6 +7,8 @@ pytest.importorskip("langgraph")
 from graph_knowledge_engine.runtime.langgraph_converter import to_langgraph
 from graph_knowledge_engine.runtime.contract import BasePredicate
 
+pytestmark = pytest.mark.ci
+
 
 @dataclass
 class FakeWorkflowNode:

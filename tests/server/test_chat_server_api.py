@@ -32,6 +32,8 @@ from graph_knowledge_engine.server.chat_service import (
 )
 from graph_knowledge_engine.server.run_registry import RunRegistry
 
+pytestmark = pytest.mark.ci
+
 
 class FakeEmbeddingFunction:
     @staticmethod

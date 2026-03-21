@@ -1,5 +1,9 @@
 import warnings
 
+import pytest
+
+pytestmark = pytest.mark.ci
+
 from graph_knowledge_engine.engine_core.models import Grounding, Node, Span
 
 

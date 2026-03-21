@@ -7,6 +7,7 @@ from typing import Any
 
 import pytest
 
+pytestmark = pytest.mark.ci
 from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
 from graph_knowledge_engine.engine_core.models import (
     AssocFlattenedLLMGraphExtraction,

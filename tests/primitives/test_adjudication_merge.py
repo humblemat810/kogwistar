@@ -1,3 +1,4 @@
+import pytest
 import json
 
 from graph_knowledge_engine.engine_core.models import AdjudicationVerdict, Edge, Node
@@ -18,23 +19,23 @@ from tests._kg_factories import kg_document, kg_grounding
 def _task_set_for_verdict(verdict: AdjudicationVerdict) -> LLMTaskSet:
     pair_payload = {"verdict": verdict.model_dump(mode="python")}
     return LLMTaskSet(
-        extract_graph=lambda _req: ExtractGraphTaskResult(
+        extract_graph=lambda request: ExtractGraphTaskResult(
             raw=None, parsed_payload=None, parsing_error="unused"
         ),
-        adjudicate_pair=lambda _req: AdjudicatePairTaskResult(
+        adjudicate_pair=lambda request: AdjudicatePairTaskResult(
             verdict_payload=pair_payload, raw=None, parsing_error=None
         ),
-        adjudicate_batch=lambda _req: AdjudicateBatchTaskResult(
+        adjudicate_batch=lambda request: AdjudicateBatchTaskResult(
             verdict_payloads=(), raw=None, parsing_error="unused"
         ),
-        filter_candidates=lambda _req: FilterCandidatesTaskResult(
+        filter_candidates=lambda request: FilterCandidatesTaskResult(
             node_ids=(), edge_ids=(), reasoning="", raw=None, parsing_error=None
         ),
-        summarize_context=lambda req: SummarizeContextTaskResult(text=req.full_text),
-        answer_with_citations=lambda _req: AnswerWithCitationsTaskResult(
+        summarize_context=lambda request: SummarizeContextTaskResult(text=request.full_text),
+        answer_with_citations=lambda request: AnswerWithCitationsTaskResult(
             answer_payload=None, raw=None, parsing_error="unused"
         ),
-        repair_citations=lambda _req: RepairCitationsTaskResult(
+        repair_citations=lambda request: RepairCitationsTaskResult(
             answer_payload=None, raw=None, parsing_error="unused"
         ),
         provider_hints=LLMTaskProviderHints(adjudicate_pair_provider="custom"),
@@ -47,6 +48,15 @@ def _load_node(engine, node_id: str) -> dict:
     return json.loads(got["documents"][0])
 
 
+@pytest.mark.parametrize(
+    "backend_kind",
+    [
+        pytest.param("fake", marks=pytest.mark.ci),
+        "chroma",
+    ],
+    indirect=True,
+)
+@pytest.mark.parametrize("embedding_kind", ["constant"], indirect=True)
 def test_adjudication_and_commit(engine):
     doc = kg_document(
         doc_id="doc::test_adjunication_merge_with_llm_cache",
@@ -111,6 +121,15 @@ def test_adjudication_and_commit(engine):
     )
 
 
+@pytest.mark.parametrize(
+    "backend_kind",
+    [
+        pytest.param("fake", marks=pytest.mark.ci),
+        "chroma",
+    ],
+    indirect=True,
+)
+@pytest.mark.parametrize("embedding_kind", ["constant"], indirect=True)
 def test_commit_cross_kind_creates_reifies(engine):
     doc = kg_document(
         doc_id="doc::test_commit_cross_kind_creates_reifies",

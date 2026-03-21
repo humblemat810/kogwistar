@@ -3,11 +3,48 @@ from __future__ import annotations
 import shutil
 import uuid
 from pathlib import Path
-
+from typing import Sequence
 import pytest
+
+pytestmark = pytest.mark.ci
 
 from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
 
+class EmbeddingFunction:  # type: ignore
+    @staticmethod
+    def name() -> str:
+        return "default"
+
+Embeddings = list[list[float]]  # type: ignore
+
+
+class FakeEmbeddingFunction(EmbeddingFunction):
+    @staticmethod
+    def name() -> str:
+        return "default"
+
+    def __init__(self, dim: int = 384):
+        self._dim = dim
+
+    def __call__(self, input: Sequence[str]) -> Embeddings:
+        return [[0.01] * self._dim for _ in input]
+class FakeBackend:
+    def __init__(self, engine):
+        self._engine = engine
+
+    def node_get(self, where=None, ids=None, include=None):
+        nodes = self._engine.nodes
+        if ids is not None:
+            selected = [node for node in nodes if node.id in ids]
+        else:
+            selected = [node for node in nodes if _matches_where(node, where)]
+        return {
+            "ids": [node.id for node in selected],
+            "documents": [getattr(node, "summary", None) for node in selected],
+            "metadatas": [getattr(node, "metadata", None) for node in selected],
+            "embeddings": [getattr(node, "embedding", None) for node in selected],
+            "objects": selected,
+        }
 
 @pytest.fixture
 def engine():
@@ -19,6 +56,8 @@ def engine():
     eng = GraphKnowledgeEngine(
         persist_directory=str(persist_dir),
         embedding_cache_path=str(persist_dir / "emb_cache"),
+        embedding_function=FakeEmbeddingFunction(),
+        backend_factory = FakeBackend
     )
     try:
         yield eng

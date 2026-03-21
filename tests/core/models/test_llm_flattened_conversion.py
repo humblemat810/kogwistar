@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import pytest
 
+pytestmark = pytest.mark.ci
+
 from graph_knowledge_engine.engine_core.models import (
     AssocFlattenedLLMGraphExtraction,
     FlattenedLLMGraphExtraction,

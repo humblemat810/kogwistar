@@ -49,6 +49,7 @@ from graph_knowledge_engine.conversation.models import (
     ConversationEdge,
     ConversationNode,
 )
+from graph_knowledge_engine.conversation.policy import install_engine_hooks
 from graph_knowledge_engine.conversation.service import ConversationService
 from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
 
@@ -115,6 +116,46 @@ def llm_provider_name(request) -> str:
 def llm_cache_dir(request) -> str:
     return request.config.getoption("--llm-cache-dir")
 
+
+@pytest.fixture(scope="session")
+def embedding_kind(request) -> str:
+    """Default test embedding kind.
+
+    Override per test with:
+
+    ```python
+    @pytest.mark.parametrize("embedding_kind", ["lexical_hash"], indirect=True)
+    def test_something(conversation_engine):
+        ...
+    ```
+    """
+
+    if hasattr(request, "param"):
+        return str(request.param)
+    return str(request.config.getoption("--embedding-kind"))
+
+
+@pytest.fixture(scope="session")
+def embedding_dim(request) -> int:
+    """Default embedding dimension for test embeddings."""
+
+    if hasattr(request, "param"):
+        return int(request.param)
+    return int(request.config.getoption("--embedding-dim"))
+
+
+@pytest.fixture(scope="function")
+def embedding_function(embedding_kind: str, embedding_dim: int):
+    """Embedding function chosen from the test config.
+
+    Use ``constant`` for the smallest possible test footprint,
+    ``lexical_hash`` for deterministic lexical similarity, or
+    ``provider`` / ``real`` to let the engine resolve its default provider.
+    """
+
+    return build_test_embedding_function(embedding_kind, dim=embedding_dim)
+
+
 def _to_stable_key(obj):
     """Recursively normalize objects for stable JSON serialization (hashing)."""
     if isinstance(obj, type) and hasattr(obj, "model_dump"):
@@ -142,6 +183,11 @@ class LLMCallTracker:
     @property
     def total_calls(self):
         return len(self.hits) + len(self.misses)
+
+
+def _install_conversation_policy(engine: GraphKnowledgeEngine) -> None:
+    if getattr(engine, "kg_graph_type", None) == "conversation":
+        install_engine_hooks(engine)
 
 @pytest.fixture(scope="session")
 def llm_cache_tracker():
@@ -305,6 +351,35 @@ def pytest_addoption(parser):
         default=".cache/tests/llm_results",
         help="Directory for caching LLM results",
     )
+    parser.addoption(
+        "--embedding-kind",
+        action="store",
+        default="constant",
+        choices=["constant", "lexical_hash", "provider", "real"],
+        help=(
+            "Default embedding kind for test engines. "
+            "Use lexical_hash to mirror the tutorial ladder embedder, "
+            "or provider/real to let the engine resolve its default provider."
+        ),
+    )
+    parser.addoption(
+        "--embedding-dim",
+        action="store",
+        type=int,
+        default=384,
+        help="Default dimension used by test embedding factories.",
+    )
+    parser.addoption(
+        "--backend-kind",
+        action="store",
+        default="chroma",
+        choices=["fake", "chroma", "pg"],
+        help=(
+            "Default backend kind for test engines. "
+            "Use fake for the in-memory backend, chroma for the current backend, "
+            "or pg for pgvector."
+        ),
+    )
 
 
 def _normalize_pytest_arg(value: str) -> str:
@@ -352,7 +427,7 @@ def _is_manual_test_explicitly_selected(
     return False
 
 
-_EXECUTION_MARKERS = {"unit", "integration", "e2e", "manual"}
+_EXECUTION_MARKERS = {"ci", "ci_full", "e2e", "manual"}
 _AREA_MARKERS = {"core", "workflow", "conversation"}
 _INTEGRATION_DIRS = {
     "cdc",
@@ -414,15 +489,17 @@ def _infer_area_markers(item: pytest.Item) -> list[pytest.MarkDecorator]:
 
 
 def _infer_execution_marker(item: pytest.Item) -> pytest.MarkDecorator | None:
-    if _has_marker(item, _EXECUTION_MARKERS):
+    if _has_marker(item, {"ci", "ci_full"}):
+        return None
+    if "manual" in item.keywords:
         return None
 
     path = "/".join(_item_path_parts(item)).lower()
-    if _E2E_PATH_RE.search(path):
-        return pytest.mark.e2e
-    if "integration" in path or any(part in _INTEGRATION_DIRS for part in path.split("/")):
-        return pytest.mark.integration
-    return pytest.mark.unit
+    if _E2E_PATH_RE.search(path) or "integration" in path or any(
+        part in _INTEGRATION_DIRS for part in path.split("/")
+    ):
+        return pytest.mark.ci_full
+    return pytest.mark.ci
 
 
 def pytest_collection_modifyitems(
@@ -444,6 +521,11 @@ def pytest_collection_modifyitems(
             config, item
         ):
             item.add_marker(skip_manual)
+        if not _has_marker(item, {"ci", "ci_full"}) and "manual" not in item.keywords:
+            if "e2e" in item.keywords or "integration" in item.keywords:
+                item.add_marker(pytest.mark.ci_full)
+            else:
+                item.add_marker(pytest.mark.ci)
 
     collected = []
 
@@ -592,52 +674,109 @@ def mcp_admin_server(tmp_path: Path) -> Iterator[dict[str, Any]]:
                 proc.wait(timeout=5)
 
 
-try:
-    from chromadb.utils.embedding_functions import EmbeddingFunction
-    from chromadb.api.types import Embeddings
-except Exception:  # pragma: no cover - optional for chroma-dependent tests
-
-    class EmbeddingFunction:  # type: ignore
-        @staticmethod
-        def name() -> str:
-            return "default"
-
-    Embeddings = list[list[float]]  # type: ignore
+from tests._helpers.embeddings import (
+    ConstantEmbeddingFunction,
+    EmbeddingFunction,
+    Embeddings,
+    LexicalHashEmbeddingFunction,
+    build_test_embedding_function,
+)
+from tests._helpers.fake_backend import build_fake_backend
 
 
-class FakeEmbeddingFunction(EmbeddingFunction):
-    @staticmethod
-    def name() -> str:
-        return "default"
+FakeEmbeddingFunction = ConstantEmbeddingFunction
 
-    def __init__(self, dim: int = 384):
-        self._dim = dim
 
-    def __call__(self, documents_or_texts: Sequence[str]) -> Embeddings:
-        return [[0.01] * self._dim for _ in documents_or_texts]
+@pytest.fixture(scope="session")
+def backend_kind(request) -> str:
+    """Default backend kind for test engines.
+
+    Use ``fake`` for an in-memory backend with no Chroma/PG dependency,
+    ``chroma`` for the current vector-store backend, or ``pg`` for pgvector.
+    Per-test override example:
+
+    ```python
+    @pytest.mark.parametrize("backend_kind", ["fake"], indirect=True)
+    def test_smoke(conversation_engine):
+        ...
+    ```
+    """
+
+    if hasattr(request, "param"):
+        return str(request.param)
+    return str(request.config.getoption("--backend-kind"))
 
 
 def _make_engine_pair(
-    *, backend_kind: str, tmp_path, sa_engine, pg_schema, dim: int = 3, use_fake=False
+    *,
+    backend_kind: str,
+    tmp_path,
+    sa_engine,
+    pg_schema,
+    dim: int = 3,
+    use_fake: bool = False,
+    embedding_kind: str | None = None,
+    embedding_function: Any | None = None,
 ):
+    """Build `(kg_engine, conv_engine)` for a chosen backend and embedding.
+
+    Backend choices:
+    - ``fake``: in-memory backend with Chroma-shaped collections
+    - ``chroma``: current vector-store backend
+    - ``pg``: PostgreSQL + pgvector backend
+
+    Embedding choices:
+    - ``constant``: minimal deterministic test embedding
+    - ``lexical_hash``: tutorial-style lexical hash embedding
+    - ``provider`` / ``real``: let the engine choose its configured provider
+
+    Tests can also pass a concrete ``embedding_function`` instance directly.
+    ``use_fake=True`` remains as a legacy alias for the constant embedder.
     """
-    Build (kg_engine, conv_engine) for either chroma or the pg-backed path.
-    """
-    # ef = _fake_ef_dim(dim)
-    _ef = None
-    if use_fake:
-        _ef = FakeEmbeddingFunction(dim=dim)
-    if backend_kind == "chroma":
+
+    ef = (
+        embedding_function
+        if embedding_function is not None
+        else build_test_embedding_function(
+            embedding_kind or "constant", dim=dim
+        )
+    )
+    if backend_kind == "fake":
         kg_engine = GraphKnowledgeEngine(
             persist_directory=str(tmp_path / "kg"),
             kg_graph_type="knowledge",
-            embedding_function=FakeEmbeddingFunction(dim=dim),
+            embedding_function=ef,
+            backend_factory=build_fake_backend,
         )
         conv_engine = GraphKnowledgeEngine(
             persist_directory=str(tmp_path / "conv"),
             kg_graph_type="conversation",
-            embedding_function=FakeEmbeddingFunction(dim=dim),
+            embedding_function=ef,
+            backend_factory=build_fake_backend,
         )
+        _install_conversation_policy(conv_engine)
+        return kg_engine, conv_engine
+
+    if backend_kind == "chroma":
+        try:
+            kg_engine = GraphKnowledgeEngine(
+                persist_directory=str(tmp_path / "kg"),
+                kg_graph_type="knowledge",
+                embedding_function=ef,
+            )
+            conv_engine = GraphKnowledgeEngine(
+                persist_directory=str(tmp_path / "conv"),
+                kg_graph_type="conversation",
+                embedding_function=ef,
+            )
+        except Exception as exc:
+            if embedding_function is None and str(embedding_kind or "").lower() in {
+                "provider",
+                "real",
+            }:
+                pytest.skip(f"real embedding provider unavailable: {exc}")
+            raise
+        _install_conversation_policy(conv_engine)
         return kg_engine, conv_engine
 
     if backend_kind == "pg":
@@ -656,29 +795,62 @@ def _make_engine_pair(
         kg_engine = GraphKnowledgeEngine(
             persist_directory=str(tmp_path / "kg_meta"),
             kg_graph_type="knowledge",
-            embedding_function=FakeEmbeddingFunction(dim=dim),
+            embedding_function=ef,
             backend=kg_backend,
         )
         conv_engine = GraphKnowledgeEngine(
             persist_directory=str(tmp_path / "conv_meta"),
             kg_graph_type="conversation",
-            embedding_function=FakeEmbeddingFunction(dim=dim),
+            embedding_function=ef,
             backend=conv_backend,
         )
+        _install_conversation_policy(conv_engine)
         return kg_engine, conv_engine
 
     raise ValueError(f"unknown backend_kind: {backend_kind!r}")
 
 
 def _make_workflow_engine(
-    *, backend_kind: str, tmp_path, sa_engine, pg_schema, dim: int = 384
+    *,
+    backend_kind: str,
+    tmp_path,
+    sa_engine,
+    pg_schema,
+    dim: int = 384,
+    use_fake: bool = False,
+    embedding_kind: str | None = None,
+    embedding_function: Any | None = None,
 ) -> GraphKnowledgeEngine:
-    if backend_kind == "chroma":
+    """Build a workflow engine with an explicit test embedding strategy."""
+
+    ef = (
+        embedding_function
+        if embedding_function is not None
+        else build_test_embedding_function(
+            embedding_kind or "constant", dim=dim
+        )
+    )
+    if backend_kind == "fake":
         return GraphKnowledgeEngine(
             persist_directory=str(tmp_path / "wf"),
             kg_graph_type="workflow",
-            embedding_function=FakeEmbeddingFunction(dim=dim),
+            embedding_function=ef,
+            backend_factory=build_fake_backend,
         )
+    if backend_kind == "chroma":
+        try:
+            return GraphKnowledgeEngine(
+                persist_directory=str(tmp_path / "wf"),
+                kg_graph_type="workflow",
+                embedding_function=ef,
+            )
+        except Exception as exc:
+            if embedding_function is None and str(embedding_kind or "").lower() in {
+                "provider",
+                "real",
+            }:
+                pytest.skip(f"real embedding provider unavailable: {exc}")
+            raise
     if backend_kind == "pg":
         if sa_engine is None or pg_schema is None:
             pytest.skip(
@@ -691,7 +863,7 @@ def _make_workflow_engine(
         return GraphKnowledgeEngine(
             persist_directory=str(tmp_path / "wf_meta"),
             kg_graph_type="workflow",
-            embedding_function=FakeEmbeddingFunction(dim=dim),
+            embedding_function=ef,
             backend=wf_backend,
         )
     raise ValueError(f"unknown backend_kind: {backend_kind!r}")
@@ -991,11 +1163,39 @@ def tmp_chroma_dir(tmp_path_factory):
 
 
 @pytest.fixture(scope="function")
-def engine(tmp_chroma_dir, monkeypatch):
-    eng = GraphKnowledgeEngine(
-        persist_directory=os.path.join(tmp_chroma_dir, "kg"),
-        embedding_cache_path=os.path.join(os.getcwd(), ".embedding_cache"),
-    )
+def engine(request, tmp_chroma_dir, monkeypatch, backend_kind, embedding_function):
+    if backend_kind == "fake":
+        eng = GraphKnowledgeEngine(
+            persist_directory=os.path.join(tmp_chroma_dir, "kg"),
+            embedding_cache_path=os.path.join(os.getcwd(), ".embedding_cache"),
+            embedding_function=embedding_function,
+            backend_factory=build_fake_backend,
+        )
+    elif backend_kind == "pg":
+        try:
+            sa_engine = request.getfixturevalue("sa_engine")
+            pg_schema = request.getfixturevalue("pg_schema")
+        except Exception as exc:  # pragma: no cover - optional backend
+            pytest.skip(f"pg backend requested but fixtures are unavailable: {exc}")
+        eng = GraphKnowledgeEngine(
+            persist_directory=os.path.join(tmp_chroma_dir, "kg"),
+            embedding_cache_path=os.path.join(os.getcwd(), ".embedding_cache"),
+            embedding_function=embedding_function,
+            backend=PgVectorBackend(
+                engine=sa_engine, embedding_dim=384, schema=f"{pg_schema}_kg"
+            ),
+        )
+    else:
+        try:
+            eng = GraphKnowledgeEngine(
+                persist_directory=os.path.join(tmp_chroma_dir, "kg"),
+                embedding_cache_path=os.path.join(os.getcwd(), ".embedding_cache"),
+                embedding_function=embedding_function,
+            )
+        except Exception as exc:
+            if embedding_function is None:
+                pytest.skip(f"real embedding provider unavailable: {exc}")
+            raise
     # Patch the real LLM with a deterministic fake
     # eng.llm = _CompositeFakeLLM()
     return eng
@@ -1009,22 +1209,83 @@ def tmp_conv_chroma_dir(tmp_path_factory):
 
 
 @pytest.fixture(scope="function")
-def conversation_engine(tmp_conv_chroma_dir, monkeypatch):
-    eng = GraphKnowledgeEngine(
-        persist_directory=os.path.join(tmp_conv_chroma_dir, "conversation"),
-        kg_graph_type="conversation",
-    )
+def conversation_engine(
+    request, tmp_conv_chroma_dir, monkeypatch, backend_kind, embedding_function
+):
+    if backend_kind == "fake":
+        eng = GraphKnowledgeEngine(
+            persist_directory=os.path.join(tmp_conv_chroma_dir, "conversation"),
+            kg_graph_type="conversation",
+            embedding_function=embedding_function,
+            backend_factory=build_fake_backend,
+        )
+    elif backend_kind == "pg":
+        try:
+            sa_engine = request.getfixturevalue("sa_engine")
+            pg_schema = request.getfixturevalue("pg_schema")
+        except Exception as exc:  # pragma: no cover - optional backend
+            pytest.skip(f"pg backend requested but fixtures are unavailable: {exc}")
+        eng = GraphKnowledgeEngine(
+            persist_directory=os.path.join(tmp_conv_chroma_dir, "conversation"),
+            kg_graph_type="conversation",
+            embedding_function=embedding_function,
+            backend=PgVectorBackend(
+                engine=sa_engine, embedding_dim=384, schema=f"{pg_schema}_conv"
+            ),
+        )
+    else:
+        try:
+            eng = GraphKnowledgeEngine(
+                persist_directory=os.path.join(tmp_conv_chroma_dir, "conversation"),
+                kg_graph_type="conversation",
+                embedding_function=embedding_function,
+            )
+        except Exception as exc:
+            if embedding_function is None:
+                pytest.skip(f"real embedding provider unavailable: {exc}")
+            raise
+    _install_conversation_policy(eng)
     # Patch the real LLM with a deterministic fake
     # eng.llm = _CompositeFakeLLM()
     return eng
 
 
 @pytest.fixture(scope="function")
-def workflow_engine(tmp_conv_chroma_dir, monkeypatch):
-    eng = GraphKnowledgeEngine(
-        persist_directory=os.path.join(tmp_conv_chroma_dir, "workflow"),
-        kg_graph_type="workflow",
-    )
+def workflow_engine(
+    request, tmp_conv_chroma_dir, monkeypatch, backend_kind, embedding_function
+):
+    if backend_kind == "fake":
+        eng = GraphKnowledgeEngine(
+            persist_directory=os.path.join(tmp_conv_chroma_dir, "workflow"),
+            kg_graph_type="workflow",
+            embedding_function=embedding_function,
+            backend_factory=build_fake_backend,
+        )
+    elif backend_kind == "pg":
+        try:
+            sa_engine = request.getfixturevalue("sa_engine")
+            pg_schema = request.getfixturevalue("pg_schema")
+        except Exception as exc:  # pragma: no cover - optional backend
+            pytest.skip(f"pg backend requested but fixtures are unavailable: {exc}")
+        eng = GraphKnowledgeEngine(
+            persist_directory=os.path.join(tmp_conv_chroma_dir, "workflow"),
+            kg_graph_type="workflow",
+            embedding_function=embedding_function,
+            backend=PgVectorBackend(
+                engine=sa_engine, embedding_dim=384, schema=f"{pg_schema}_wf"
+            ),
+        )
+    else:
+        try:
+            eng = GraphKnowledgeEngine(
+                persist_directory=os.path.join(tmp_conv_chroma_dir, "workflow"),
+                kg_graph_type="workflow",
+                embedding_function=embedding_function,
+            )
+        except Exception as exc:
+            if embedding_function is None:
+                pytest.skip(f"real embedding provider unavailable: {exc}")
+            raise
     # Patch the real LLM with a deterministic fake
     # eng.llm = _CompositeFakeLLM()
     return eng
@@ -2135,7 +2396,7 @@ def seed_conversation_graph(
 
 
 @pytest.fixture
-def seeded_kg_and_conversation(tmp_path: Path):
+def seeded_kg_and_conversation(request, tmp_path: Path, backend_kind, embedding_function):
     """
     Returns (kg_engine, conversation_engine, kg_seed, conv_seed, kg_dir, conv_dir)
 
@@ -2144,15 +2405,61 @@ def seeded_kg_and_conversation(tmp_path: Path):
     - Conversation is seeded with conversation nodes/edges + memory ctx + summary + kg_ref
     - Conversation kg_ref points to KG ids via properties.ref_node_ids/ref_edge_ids
     """
-    kg_dir = tmp_path / "chroma_kg"
-    conv_dir = tmp_path / "chroma_conversation"
+    kg_dir = tmp_path / f"{backend_kind}_kg"
+    conv_dir = tmp_path / f"{backend_kind}_conversation"
 
-    kg_engine = GraphKnowledgeEngine(
-        persist_directory=str(kg_dir), kg_graph_type="knowledge"
-    )
-    conversation_engine = GraphKnowledgeEngine(
-        persist_directory=str(conv_dir), kg_graph_type="conversation"
-    )
+    if backend_kind == "fake":
+        kg_engine = GraphKnowledgeEngine(
+            persist_directory=str(kg_dir),
+            kg_graph_type="knowledge",
+            embedding_function=embedding_function,
+            backend_factory=build_fake_backend,
+        )
+        conversation_engine = GraphKnowledgeEngine(
+            persist_directory=str(conv_dir),
+            kg_graph_type="conversation",
+            embedding_function=embedding_function,
+            backend_factory=build_fake_backend,
+        )
+    elif backend_kind == "pg":
+        try:
+            sa_engine = request.getfixturevalue("sa_engine")
+            pg_schema = request.getfixturevalue("pg_schema")
+        except Exception as exc:  # pragma: no cover - optional backend
+            pytest.skip(f"pg backend requested but fixtures are unavailable: {exc}")
+        kg_engine = GraphKnowledgeEngine(
+            persist_directory=str(kg_dir),
+            kg_graph_type="knowledge",
+            embedding_function=embedding_function,
+            backend=PgVectorBackend(
+                engine=sa_engine, embedding_dim=384, schema=f"{pg_schema}_kg"
+            ),
+        )
+        conversation_engine = GraphKnowledgeEngine(
+            persist_directory=str(conv_dir),
+            kg_graph_type="conversation",
+            embedding_function=embedding_function,
+            backend=PgVectorBackend(
+                engine=sa_engine, embedding_dim=384, schema=f"{pg_schema}_conv"
+            ),
+        )
+    else:
+        try:
+            kg_engine = GraphKnowledgeEngine(
+                persist_directory=str(kg_dir),
+                kg_graph_type="knowledge",
+                embedding_function=embedding_function,
+            )
+            conversation_engine = GraphKnowledgeEngine(
+                persist_directory=str(conv_dir),
+                kg_graph_type="conversation",
+                embedding_function=embedding_function,
+            )
+        except Exception as exc:
+            if embedding_function is None:
+                pytest.skip(f"real embedding provider unavailable: {exc}")
+            raise
+    _install_conversation_policy(conversation_engine)
 
     kg_seed = seed_kg_graph(kg_engine=kg_engine, kg_doc_id="D_KG_001")
     conv_seed = seed_conversation_graph(

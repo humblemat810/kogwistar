@@ -1,5 +1,7 @@
 import pytest
 from fastapi.testclient import TestClient
+
+pytestmark = pytest.mark.ci
 from graph_knowledge_engine.server_mcp_with_admin import app, JWT_SECRET, JWT_ALG
 from graph_knowledge_engine.server.auth.db import (
     create_auth_engine,

@@ -8,7 +8,6 @@ import pytest
 from joblib import Memory
 from pydantic import BaseModel, Field, create_model
 
-pytestmark = [pytest.mark.integration]
 
 
 def _build_non_recursive_nested_schema(depth: int) -> type[BaseModel]:

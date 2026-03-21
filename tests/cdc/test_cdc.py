@@ -1,3 +1,7 @@
+import pytest
+
+pytestmark = pytest.mark.nightly
+
 def test_dump_cdc_as_tool_not_temp_path():
     import os
     import pathlib

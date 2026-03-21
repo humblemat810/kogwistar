@@ -396,6 +396,7 @@ def engines():
     return conv, kg, conversation_id
 
 
+@pytest.mark.ci
 def test_snapshot_hash_is_stable():
     payload = {"b": 2, "a": 1}
     h1 = snapshot_hash(payload)
@@ -403,6 +404,7 @@ def test_snapshot_hash_is_stable():
     assert h1 == h2
 
 
+@pytest.mark.ci
 def test_pointer_and_edge_ids_are_deterministic():
     pid1 = pointer_id(
         scope="conv:1", pointer_kind="kg_node", target_kind="node", target_id="A"
@@ -445,6 +447,7 @@ class NullLLM(BaseChatModel):
 from langchain_core.language_models import BaseChatModel
 
 
+@pytest.mark.ci
 def test_agent_answer_creates_run_anchor_projects_used_evidence(monkeypatch, engines):
     conv, kg, conversation_id = engines
 
@@ -571,6 +574,7 @@ def test_agent_answer_creates_run_anchor_projects_used_evidence(monkeypatch, eng
     assert gen_eid in conv.edge_collection._rows
 
 
+@pytest.mark.ci
 def test_projection_is_idempotent(engines):
     conv, kg, conversation_id = engines
     from graph_knowledge_engine.conversation.models import MetaFromLastSummary
@@ -616,7 +620,7 @@ def test_projection_is_idempotent(engines):
     assert mid_edges >= before_edges + 1
 
 
-@pytest.mark.integration
+@pytest.mark.ci_full
 def test_agent_with_real_llm_cached(monkeypatch, engine, conversation_engine):
     from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
 

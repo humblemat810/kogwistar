@@ -3,7 +3,7 @@ import pytest
 from graph_knowledge_engine.engine_core.engine_postgres import PgVectorBackend
 
 
-@pytest.mark.integration
+@pytest.mark.ci_full
 def test_pgvector_where_filters_tombstones(sa_engine, pg_schema):
     be = PgVectorBackend(engine=sa_engine, embedding_dim=2, schema=pg_schema)
     be.ensure_schema()

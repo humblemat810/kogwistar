@@ -92,6 +92,7 @@ This repo is a substrate, that means, some basic blocks are given. Specific exam
 - Explore agents that can propose and revise their own workflow graphs under human-auditable constraints.
 - These are research directions and design seams, not completed product claims.
   Runtime design rationale: [graph_knowledge_engine/docs/ARD-custom-runtime-rationale.md](graph_knowledge_engine/docs/ARD-custom-runtime-rationale.md)
+- Research application note: [docs/research-applications.md](docs/research-applications.md)
 
 ## Why This Repo Exists
 

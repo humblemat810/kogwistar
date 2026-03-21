@@ -12,11 +12,11 @@ from graph_knowledge_engine.engine_core.models import (
     Span,
     Grounding,
 )
+from tests._helpers.embeddings import build_test_embedding_function
+from tests._helpers.fake_backend import build_fake_backend
 
 pytestmark = [
-    pytest.mark.ci,
     pytest.mark.core,
-    pytest.mark.integration,
 ]
 
 
@@ -56,18 +56,35 @@ def _ref(doc_id: str, excerpt: str = "") -> Span:
     )
 
 
-def make_engine(tmp_path) -> GraphKnowledgeEngine:
+def make_engine(tmp_path, *, backend_kind: str) -> GraphKnowledgeEngine:
     # Monkeypatch the engine to avoid external LLM initialization/networking in tests
     engmod.AzureChatOpenAI = _DummyLLM
     engmod.ChatGoogleGenerativeAI = _DummyLLM
-    e = GraphKnowledgeEngine(persist_directory=str(tmp_path))
+    ef = build_test_embedding_function("constant", dim=384)
+    if backend_kind == "fake":
+        e = GraphKnowledgeEngine(
+            persist_directory=str(tmp_path),
+            embedding_function=ef,
+            backend_factory=build_fake_backend,
+        )
+    else:
+        e = GraphKnowledgeEngine(
+            persist_directory=str(tmp_path), embedding_function=ef
+        )
     # Keep indexing deterministic in this primitive test: write join indexes synchronously.
     e._phase1_enable_index_jobs = False
     return e
 
 
-def test_graph_query_structural_end_to_end(tmp_path):
-    e = make_engine(tmp_path)
+@pytest.mark.parametrize(
+    "backend_kind",
+    [
+        pytest.param("fake", marks=pytest.mark.ci),
+        pytest.param("chroma", marks=pytest.mark.ci_full),
+    ],
+)
+def test_graph_query_structural_end_to_end(tmp_path, backend_kind):
+    e = make_engine(tmp_path, backend_kind=backend_kind)
 
     # 1) Real document row
     content = "Smoking causes lung cancer."
@@ -84,7 +101,7 @@ def test_graph_query_structural_end_to_end(tmp_path):
     )
     e.add_document(doc)
 
-    # 2) Real nodes (persisted into Chroma)
+    # 2) Real nodes (persisted into the selected backend)
     n_smoke = Node(
         label="Smoking",
         type="entity",
@@ -170,8 +187,15 @@ def test_graph_query_structural_end_to_end(tmp_path):
     assert causes_id in results
 
 
-def test_semantic_seed_then_expand_text(tmp_path):
-    e = make_engine(tmp_path)
+@pytest.mark.parametrize(
+    "backend_kind",
+    [
+        pytest.param("fake", marks=pytest.mark.ci),
+        pytest.param("chroma", marks=pytest.mark.ci_full),
+    ],
+)
+def test_semantic_seed_then_expand_text(tmp_path, backend_kind):
+    e = make_engine(tmp_path, backend_kind=backend_kind)
     doc = Document(
         id="D2",
         content="Smoking causes disease.",

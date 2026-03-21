@@ -12,7 +12,7 @@ from graph_knowledge_engine.engine_core.models import (
     LLMGraphExtraction,
 )
 
-pytestmark = [pytest.mark.integration]
+pytestmark = [pytest.mark.ci_full]
 
 SchemaMode = Literal["full", "lean", "flattened_lean", "flattened_full"]
 DEFAULT_SCHEMA_MODES: list[SchemaMode] = ["flattened_lean"]

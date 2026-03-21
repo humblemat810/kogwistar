@@ -1,4 +1,6 @@
 import pytest
+
+pytestmark = pytest.mark.ci
 from pydantic import ValidationError
 
 from graph_knowledge_engine.conversation.models import (
@@ -63,37 +65,39 @@ def _flatten_and(where: dict | None) -> dict:
 
 
 def _bind(eng: GraphKnowledgeEngine, *, existing_endpoints: list[dict]):
-    # Bind the real normalization + validation implementations
-    eng._normalize_conversation_edge_metadata = (
-        GraphKnowledgeEngine._normalize_conversation_edge_metadata.__get__(eng)
+    from unittest.mock import MagicMock
+    from graph_knowledge_engine.conversation.service import ConversationService
+
+    # Mock backend to support edge_endpoints_get
+    class MockBackend:
+        def edge_endpoints_get(self, *, where: dict, **kwargs):
+            w = _flatten_and(where)
+            found = []
+            for row in existing_endpoints:
+                ok = True
+                for k, v in w.items():
+                    if row.get(k) != v:
+                        ok = False
+                        break
+                if ok:
+                    found.append(row)
+            return {"ids": [f"ep_{i}" for i in range(len(found))], "metadatas": found}
+
+        def node_get(self, **kwargs):
+            return {"ids": [], "metadatas": []}
+
+        def edge_get(self, **kwargs):
+            return {"ids": [], "metadatas": [], "documents": []}
+
+    eng.backend = MockBackend()  # type: ignore
+    eng.kg_graph_type = "conversation"
+    eng.llm_tasks = MagicMock()
+
+    svc = ConversationService(
+        conversation_engine=eng,
+        knowledge_engine=eng,
     )
-    eng._validate_conversation_edge_add = (
-        GraphKnowledgeEngine._validate_conversation_edge_add.__get__(eng)
-    )
-
-    # Minimal where-and helper (matches engine semantics for Phase-1)
-    if not hasattr(eng, "_where_and"):
-
-        def _where_and(*parts):
-            terms = [p for p in parts if isinstance(p, dict) and p]
-            return {"$and": terms} if len(terms) > 1 else (terms[0] if terms else {})
-
-        eng._where_and = _where_and  # type: ignore
-
-    # Endpoint existence check is what Phase-1 validator uses (no full scans)
-    def _edge_endpoints_exists(*, where: dict) -> bool:
-        w = _flatten_and(where)
-        for row in existing_endpoints:
-            ok = True
-            for k, v in w.items():
-                if row.get(k) != v:
-                    ok = False
-                    break
-            if ok:
-                return True
-        return False
-
-    eng._edge_endpoints_exists = _edge_endpoints_exists  # type: ignore
+    return svc
 
 
 def test_conversation_engine_next_turn_outgoing_uniqueness_enforced():
@@ -116,10 +120,9 @@ def test_conversation_engine_next_turn_outgoing_uniqueness_enforced():
             "endpoint_id": "B",
         },
     ]
-    _bind(eng, existing_endpoints=existing_endpoints)
-    eng.kg_graph_type = "conversation"
+    svc = _bind(eng, existing_endpoints=existing_endpoints)
     with pytest.raises(ValueError):
-        eng._validate_conversation_edge_add(_mk_edge("A", "C"))
+        svc._validate_conversation_edge_add(_mk_edge("A", "C"))
 
 
 def test_conversation_engine_next_turn_incoming_uniqueness_enforced():
@@ -142,7 +145,6 @@ def test_conversation_engine_next_turn_incoming_uniqueness_enforced():
             "endpoint_id": "B",
         },
     ]
-    _bind(eng, existing_endpoints=existing_endpoints)
-    eng.kg_graph_type = "conversation"
+    svc = _bind(eng, existing_endpoints=existing_endpoints)
     with pytest.raises(ValueError):
-        eng._validate_conversation_edge_add(_mk_edge("C", "B"))
+        svc._validate_conversation_edge_add(_mk_edge("C", "B"))

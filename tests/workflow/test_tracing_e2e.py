@@ -3,6 +3,8 @@ import sqlite3
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
+import pytest
+
 
 from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
 from graph_knowledge_engine.engine_core.models import (
@@ -14,6 +16,8 @@ from graph_knowledge_engine.engine_core.models import (
 from graph_knowledge_engine.runtime.runtime import WorkflowRuntime
 from graph_knowledge_engine.runtime.models import RunSuccess
 from graph_knowledge_engine.runtime.models import WorkflowEdge, WorkflowNode
+
+pytestmark = [pytest.mark.e2e, pytest.mark.ci_full]
 
 
 def _span() -> Span:

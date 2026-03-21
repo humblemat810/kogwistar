@@ -5,6 +5,8 @@ import pytest
 
 from graph_knowledge_engine.engine_core.engine_sqlite import EngineSQLite
 
+pytestmark = pytest.mark.ci
+
 
 def test_sqlite_transaction_joins_active_conn_no_extra_connect(tmp_path: Path):
     persist_dir = tmp_path / "sqlite_meta"
