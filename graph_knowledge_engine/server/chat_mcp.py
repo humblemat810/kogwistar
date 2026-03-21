@@ -2,7 +2,13 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from fastmcp import FastMCP
+try:
+    from fastmcp import FastMCP
+except ModuleNotFoundError as exc:
+    raise RuntimeError(
+        "Knowledge MCP support requires the optional 'server' extra. "
+        "Install with: pip install 'kogwistar[server]'"
+    ) from exc
 
 
 def build_conversation_mcp(

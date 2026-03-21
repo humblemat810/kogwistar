@@ -26,7 +26,7 @@ From repo root:
 ```bash
 python -m venv .venv
 . ./.venv/Scripts/Activate
-pip install -e ".[chroma]"
+pip install -e ".[server,chroma]"
 ```
 
 Create `.env` (or export env vars in shell):

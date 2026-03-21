@@ -5,7 +5,8 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "kogwistar"
 dynamic = ["version"]
-description = "Knowledge engine + MCP server for graph & document querying"
+description = "Graph-native agent harness and substrate for knowledge, memory, workflow, and MCP tooling"
+keywords = ["agent harness", "agent substrate", "graph-native", "knowledge graph", "memory", "workflow", "mcp"]
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.13"
@@ -34,6 +35,7 @@ dependencies = [
 [project.optional-dependencies]
 chroma = ["chromadb>=1.0.15"]
 pgvector = ["sqlalchemy>=2.0", "pgvector>=0.3.6", "psycopg[binary]>=3.1"]
+server = ["fastmcp==3.0.0"]
 openai = ["langchain-core>=0.3.0", "langchain-openai>=0.3.0"]
 gemini = ["langchain-core>=0.3.0", "langchain-google-genai>=2.0.0"]
 ollama = ["ollama>=0.5.3", "langchain-core>=0.3.0", "langchain-ollama>=0.3.0"]
@@ -51,6 +53,7 @@ full = [
   "sqlalchemy>=2.0",
   "pgvector>=0.3.6",
   "psycopg[binary]>=3.1",
+  "fastmcp==3.0.0",
   "langchain-core>=0.3.0",
   "langchain-openai>=0.3.0",
   "langchain-google-genai>=2.0.0",

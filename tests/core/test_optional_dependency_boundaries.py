@@ -88,7 +88,7 @@ print("ok")
     assert proc.returncode == 0, proc.stderr
 
 
-def test_server_entrypoint_import_is_safe_without_optional_dependencies() -> None:
+def test_server_entrypoint_requires_server_dependency() -> None:
     code = _script_with_blocked_imports(
         blocked_roots=(
             "chromadb",
@@ -98,14 +98,17 @@ def test_server_entrypoint_import_is_safe_without_optional_dependencies() -> Non
             "langchain_openai",
             "langchain_google_genai",
             "langgraph",
+            "fastmcp",
         ),
         body="""
-import graph_knowledge_engine.server_mcp_with_admin as server
-
-assert "lazy" in repr(server.engine)
-assert "lazy" in repr(server.conversation_engine)
-assert "lazy" in repr(server.wisdom_engine)
-print("ok")
+try:
+    import graph_knowledge_engine.server_mcp_with_admin as server
+except RuntimeError as e:
+    msg = str(e)
+    assert "kogwistar[server]" in msg
+    print("ok")
+else:
+    raise AssertionError("expected missing server dependency error")
 """,
     )
     proc = _run_python(code)

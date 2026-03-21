@@ -18,8 +18,15 @@ from typing import (
 )
 
 from fastapi import HTTPException
-from fastmcp import FastMCP
-from fastmcp.tools.function_tool import FunctionTool
+
+try:
+    from fastmcp import FastMCP
+    from fastmcp.tools.function_tool import FunctionTool
+except ModuleNotFoundError as exc:
+    raise RuntimeError(
+        "Knowledge MCP support requires the optional 'server' extra. "
+        "Install with: pip install 'kogwistar[server]'"
+    ) from exc
 from pydantic import BaseModel, Field
 from starlette.types import Receive, Scope, Send
 

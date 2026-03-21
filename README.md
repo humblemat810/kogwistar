@@ -22,11 +22,13 @@ as a single substrate for AI agents.
   <img src="https://img.shields.io/badge/runtime-graph--native-purple?style=flat-square"/>
 </p>
 
-`kogwistar` is a graph/hypergraph-native agent platform.
+`kogwistar` is a graph/hypergraph-native agent harness and substrate.
 
 It treats knowledge, conversation, workflow/runtime, provenance, and future wisdom as one connected substrate.
 
 It is better understood as a graph-native memory and execution substrate than as only another GraphRAG repository.
+
+If you are looking for an agent harness, agent substrate, workflow runtime, or graph-native memory system, this repo is intentionally positioned in that category.
 
 Today the repo implements graph memory and query, workflow design/runtime, provenance and replay-oriented surfaces, CDC/event-oriented patterns, and self-hostable development paths.
 
@@ -120,19 +122,21 @@ This repo is a substrate, that means, some basic blocks are given. Specific exam
 3. Install dependencies for local work.
 4. Pick a development mode:
    - Server-style MCP app:
-     - Start the app with `knowledge-mcp` (defaults to port `28110`).
+     - Install with `pip install -e ".[server,chroma]"` and start the app with `knowledge-mcp` (defaults to port `28110`).
    - CLI-style workflow/runtime loop:
      - Use the standalone tutorial/runtime script in [QUICKSTART.md](QUICKSTART.md) under `scripts/claw_runtime_loop.py`.
      - This mode is useful for local development when you want to iterate on workflow execution, CDC flow, and event-loop behavior without running the full server surface.
 
 ## Development and Test Install
 
-- Minimal local development:
-  - `pip install -e ".[chroma,test]"`
+- Minimal engine core:
+  - `pip install -e .`
+- Lightweight local development:
+  - `pip install -e ".[server,chroma,test]"`
 - Development with LangGraph-related tests:
-  - `pip install -e ".[chroma,test,langgraph]"`
+  - `pip install -e ".[server,chroma,test,langgraph]"`
 - PostgreSQL parity/integration work:
-  - `pip install -e ".[pgvector,test]"`
+  - `pip install -e ".[server,pgvector,test]"`
 - Full local contributor setup:
   - `pip install -e ".[full,test]"`
 
@@ -152,6 +156,8 @@ This repo is a substrate, that means, some basic blocks are given. Specific exam
 
 - Base/core only:
   - `pip install -e .`
+- Server/MCP runtime:
+  - `pip install -e ".[server]"`
 - Chroma backend:
   - `pip install -e ".[chroma]"`
 - PostgreSQL + pgvector backend:
