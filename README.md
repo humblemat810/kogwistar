@@ -15,12 +15,12 @@ Build knowledge graphs, workflow runtimes, conversation memory, and provenance s
 as a single substrate for AI agents.
 </p>
 
-<!-- <p align="center">
-  <img src="https://img.shields.io/github/stars/YOURORG/kogwistar?style=flat-square"/>
-  <img src="https://img.shields.io/github/license/YOURORG/kogwistar?style=flat-square"/>
+<p align="center">
+  <img src="https://img.shields.io/github/stars/humblemat810/kogwistar?style=flat-square"/>
+  <img src="https://img.shields.io/github/license/humblemat810/kogwistar?style=flat-square"/>
   <img src="https://img.shields.io/badge/python-3.13+-blue?style=flat-square"/>
   <img src="https://img.shields.io/badge/runtime-graph--native-purple?style=flat-square"/>
-</p> -->
+</p>
 
 `kogwistar` is a graph/hypergraph-native agent platform.
 
@@ -112,9 +112,13 @@ This repo is a substrate, that means, some basic blocks are given. Specific exam
 
 ## Run (Development)
 
-1. Create and activate a Python 3.13 environment.
-2. Install dependencies for local work.
-3. Pick a development mode:
+1. Clone the repo and enter it.
+   - `git clone git@github.com:humblemat810/kogwistar.git`
+   - Or HTTPS: `git clone https://github.com/humblemat810/kogwistar.git`
+   - `cd kogwistar`
+2. Create and activate a Python 3.13 environment.
+3. Install dependencies for local work.
+4. Pick a development mode:
    - Server-style MCP app:
      - Start the app with `knowledge-mcp` (defaults to port `28110`).
    - CLI-style workflow/runtime loop:
@@ -169,8 +173,8 @@ This repo is a substrate, that means, some basic blocks are given. Specific exam
 
 - Use the package name, not the repo name, when installing with extras from a repository.
 - Examples:
-  - `pip install "kogwistar[chroma] @ git+ssh://git@github.com/<org>/<repo>.git@main"`
-  - `pip install "kogwistar[pgvector,openai] @ git+ssh://git@github.com/<org>/<repo>.git@<commit>"`
+  - `pip install "kogwistar[chroma] @ git+ssh://git@github.com/humblemat810/kogwistar.git@main"`
+  - `pip install "kogwistar[pgvector,openai] @ git+ssh://git@github.com/humblemat810/kogwistar.git@<commit>"`
 - For HTTPS-based installs, use the same direct-reference form with a token-authenticated `git+https://...` URL.
 
 ## Runtime Configuration

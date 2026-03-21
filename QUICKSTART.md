@@ -12,6 +12,15 @@ This guide is for running the backend by itself (no Designer app integration).
 
 ## 2) Local Setup (No Docker)
 
+Clone the repo and enter it:
+
+```bash
+git clone git@github.com:humblemat810/kogwistar.git
+# Or use HTTPS:
+# git clone https://github.com/humblemat810/kogwistar.git
+cd kogwistar
+```
+
 From repo root:
 
 ```bash
