@@ -14,7 +14,7 @@ This tutorial comes last on purpose. Once you have runnable intuition, the large
 ## Run or Inspect
 
 - Read [docs/LEARNING_PATH.md](../LEARNING_PATH.md) again after finishing the numbered tutorials.
-- Inspect `ZEN.md` for the author's framing and `graph_knowledge_engine/docs/` for the formal design records.
+- Inspect `ZEN.md` for the author's framing and `kogwistar/docs/` for the formal design records.
 - Revisit [11 Build a Mini GraphRAG App](./11_build_a_mini_graphrag_app.md) and [10 Event Log Replay and CDC](./10_event_log_replay_and_cdc.md) while reading the deeper architecture docs.
 
 ## Inspect The Result

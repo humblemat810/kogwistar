@@ -15,7 +15,7 @@ Modeling conversation as a graph is one of the repo's main differentiators. It a
 ## Run or Inspect
 
 - Run the companion file in VS Code to create a small conversation graph and inspect the resulting nodes.
-- Inspect `graph_knowledge_engine/conversation/service.py` for conversation creation and context assembly surfaces.
+- Inspect `kogwistar/conversation/service.py` for conversation creation and context assembly surfaces.
 - Compare the pinned-reference behavior with [RAG Level 2 - Provenance and Pinning](./level-2-provenance-pinning.md).
 
 ## Inspect The Result

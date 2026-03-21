@@ -15,7 +15,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 COPY pyproject.toml README.md LICENSE ./
-COPY graph_knowledge_engine ./graph_knowledge_engine
+COPY kogwistar ./kogwistar
 
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install --system ".[full]"

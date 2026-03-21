@@ -52,7 +52,7 @@ The distinction matters because not every low-level path carries the same guaran
 
 - Detailed comparison with adjacent products/frameworks: [docs/llm-generated-comparison.md](docs/llm-generated-comparison.md)
 - Author notes, build context, and design history: [docs/author-notes.md](docs/author-notes.md)
-- Runtime rationale: [graph_knowledge_engine/docs/ARD-custom-runtime-rationale.md](graph_knowledge_engine/docs/ARD-custom-runtime-rationale.md)
+- Runtime rationale: [kogwistar/docs/ARD-custom-runtime-rationale.md](kogwistar/docs/ARD-custom-runtime-rationale.md)
 - Local conversation walkthrough: [docs/tutorials/conversation-pipeline-basics.md](docs/tutorials/conversation-pipeline-basics.md)
 
 - Roadmap and research direction: [docs/roadmap.md](docs/roadmap.md)
@@ -103,7 +103,7 @@ The distinction matters because not every low-level path carries the same guaran
 - Distill conversation and workflow traces into a future wisdom layer.
 - Explore agents that can propose and revise their own workflow graphs under human-auditable constraints.
 - These are research directions and design seams, not completed product claims.
-  Runtime design rationale: [graph_knowledge_engine/docs/ARD-custom-runtime-rationale.md](graph_knowledge_engine/docs/ARD-custom-runtime-rationale.md)
+  Runtime design rationale: [kogwistar/docs/ARD-custom-runtime-rationale.md](kogwistar/docs/ARD-custom-runtime-rationale.md)
 - Research application note: [docs/research-applications.md](docs/research-applications.md)
 
 ## Why This Repo Exists
@@ -263,7 +263,7 @@ LangGraph focuses on execution: it provides a strong runtime model for orchestra
 Kogwistar overlaps with that execution layer, but extends the system model by treating workflow structure, conversation structure, knowledge, and provenance as first-class graph entities. Rather than representing state primarily as messages or dictionaries, it aims to unify these domains on a shared node/edge/event substrate with replay and projection semantics.
 
 The difference is not only in execution, but in what is considered part of the system’s core data model.
-[Further details](graph_knowledge_engine\docs\Differentiation_With_Langgraph.md)
+[Further details](kogwistar\docs\Differentiation_With_Langgraph.md)
 
 ## License
 

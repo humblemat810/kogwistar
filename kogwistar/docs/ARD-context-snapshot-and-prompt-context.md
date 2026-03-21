@@ -19,15 +19,15 @@ The previous implementation of ContextSnapshot only hashed `view.messages` and s
 
 The current repo implements the main elements in this ARD:
 
-- `graph_knowledge_engine/conversation/conversation_context.py`
+- `kogwistar/conversation/conversation_context.py`
   defines `PromptContext` and keeps `ConversationContextView` as a
   backwards-compatible alias.
-- `graph_knowledge_engine/conversation/service.py` persists context
+- `kogwistar/conversation/service.py` persists context
   snapshots with deterministic IDs, prompt messages,
   `llm_input_payload`, `evidence_pack_digest`, and `depends_on` edges.
-- `graph_knowledge_engine/conversation/resolvers.py` exposes a
+- `kogwistar/conversation/resolvers.py` exposes a
   `context_snapshot` workflow op.
-- `graph_knowledge_engine/conversation/agentic_answering.py` persists
+- `kogwistar/conversation/agentic_answering.py` persists
   snapshots around multiple agentic answering stages and supports
   evidence-pack rehydration.
 

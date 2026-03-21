@@ -16,7 +16,7 @@ This is the fastest proof that the repo is an actual graph engine, not just a pr
 
 - Open the companion file in VS Code and run the cells one section at a time.
 - Or run the whole file with `python scripts/tutorial_sections/01_hello_graph_engine.py`.
-- Inspect the engine primitives in `graph_knowledge_engine/engine_core/engine.py` and `graph_knowledge_engine/engine_core/models.py`.
+- Inspect the engine primitives in `kogwistar/engine_core/engine.py` and `kogwistar/engine_core/models.py`.
 
 ## Inspect The Result
 

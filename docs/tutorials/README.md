@@ -103,7 +103,7 @@ These remain supported on purpose. They are not obsolete copies of the numbered 
 | Problem | Pattern | Where It Is Implemented |
 |---|---|---|
 | Need quick confidence that retrieval works | Baseline retrieve-then-answer | `scripts/rag_tutorial_ladder.py` (`level0`) |
-| Naive top-k misses connected evidence | Seeded retrieval + bounded depth | `graph_knowledge_engine/conversation/memory_retriever.py`, `graph_knowledge_engine/conversation/knowledge_retriever.py` |
+| Naive top-k misses connected evidence | Seeded retrieval + bounded depth | `kogwistar/conversation/memory_retriever.py`, `kogwistar/conversation/knowledge_retriever.py` |
 | Hard to audit what was actually used | Pointer projection with provenance | `reference_pointer` nodes via `MemoryRetriever.pin_selected` and `KnowledgeRetriever.pin_selected` |
 | Agent loops can run forever | Event-sourced inbox/outbox + TTL guardrails | `scripts/claw_runtime_loop.py` |
 | Need live observability for graph updates | CDC bridge and websocket stream | `scripts/claw_runtime_loop.py run-cdc-bridge` |

@@ -27,23 +27,23 @@ The repo now implements substantial portions of this document, but the
 full control-plane / trace-plane / wisdom-layer split is still only
 partially realized.
 
-- `graph_knowledge_engine/conversation/agentic_answering.py` already
+- `kogwistar/conversation/agentic_answering.py` already
   routes answer generation and citation repair through `LLMTaskSet`
   rather than through concrete provider SDK classes.
-- `graph_knowledge_engine/conversation/designer.py` now defines
+- `kogwistar/conversation/designer.py` now defines
   `AgenticAnsweringWorkflowDesigner`, and
-  `graph_knowledge_engine/conversation/resolvers.py` implements
+  `kogwistar/conversation/resolvers.py` implements
   workflow ops such as `aa_prepare`, `aa_get_view_and_question`,
   `aa_retrieve_candidates`, `aa_select_used_evidence`,
   `aa_materialize_evidence_pack`, `aa_generate_answer_with_citations`,
   `aa_validate_or_repair_citations`, `aa_evaluate_answer`,
   `aa_project_pointers`, `aa_maybe_iterate`, and `aa_persist_response`.
 - Projection and pointer materialization already exist in
-  `graph_knowledge_engine/conversation/knowledge_retriever.py`,
-  `graph_knowledge_engine/conversation/memory_retriever.py`,
-  `graph_knowledge_engine/conversation/retrieval_orchestrator.py`,
-  `graph_knowledge_engine/conversation/conversation_orchestrator.py`,
-  and `graph_knowledge_engine/conversation/resolvers.py`.
+  `kogwistar/conversation/knowledge_retriever.py`,
+  `kogwistar/conversation/memory_retriever.py`,
+  `kogwistar/conversation/retrieval_orchestrator.py`,
+  `kogwistar/conversation/conversation_orchestrator.py`,
+  and `kogwistar/conversation/resolvers.py`.
 - Current projected nodes are deterministic `reference_pointer`
   conversation nodes linked with `references` edges.
 - The implementation still carries some backend hints in pointer

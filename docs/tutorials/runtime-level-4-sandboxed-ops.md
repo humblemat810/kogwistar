@@ -62,10 +62,10 @@ Expected output fields when Docker is not available:
 
 ## Relevant Surfaces
 
-- `graph_knowledge_engine.runtime.sandbox.SandboxRequest`
-- `graph_knowledge_engine.runtime.sandbox.SandboxFactory.create("docker", ...)`
-- `graph_knowledge_engine.runtime.resolvers.MappingStepResolver.register(..., is_sandboxed=True)`
-- `graph_knowledge_engine.runtime.runtime.WorkflowRuntime`
+- `kogwistar.runtime.sandbox.SandboxRequest`
+- `kogwistar.runtime.sandbox.SandboxFactory.create("docker", ...)`
+- `kogwistar.runtime.resolvers.MappingStepResolver.register(..., is_sandboxed=True)`
+- `kogwistar.runtime.runtime.WorkflowRuntime`
 
 Short example:
 

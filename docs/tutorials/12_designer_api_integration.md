@@ -13,8 +13,8 @@ Integrators need to know what can be discovered dynamically and what should rema
 
 ## Run or Inspect
 
-- Inspect `graph_knowledge_engine/conversation/designer.py` for workflow assembly helpers.
-- Inspect `graph_knowledge_engine/server/chat_service.py` and `graph_knowledge_engine/server/runtime_api.py` for externally visible runtime and conversation surfaces.
+- Inspect `kogwistar/conversation/designer.py` for workflow assembly helpers.
+- Inspect `kogwistar/server/chat_service.py` and `kogwistar/server/runtime_api.py` for externally visible runtime and conversation surfaces.
 - Compare with [06 First Workflow](./06_first_workflow.md) and [07 Branch Join Workflows](./07_branch_join_workflows.md) so the API discussion stays grounded in actual execution.
 
 ## Inspect The Result

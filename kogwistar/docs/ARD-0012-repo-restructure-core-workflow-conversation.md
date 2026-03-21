@@ -6,7 +6,7 @@
 
 ## Document History
 
-- 2026-03-08: Clarified that `core`, `workflow`, and `conversation` are architectural layer names currently mapped to `graph_knowledge_engine/engine_core/`, `graph_knowledge_engine/runtime/`, and `graph_knowledge_engine/conversation/`. Updated stale path examples and migration wording.
+- 2026-03-08: Clarified that `core`, `workflow`, and `conversation` are architectural layer names currently mapped to `kogwistar/engine_core/`, `kogwistar/runtime/`, and `kogwistar/conversation/`. Updated stale path examples and migration wording.
 - 2026-03-12: Re-evaluated against the current codebase. Updated the `GraphKnowledgeEngine` wording to reflect that the most serious god-object pressure has been reduced by namespaced subsystems and compatibility shims; the remaining issue is oversized facade/assembly surface, not a single class owning all core behavior.
 
 ------------------------------------------------------------------------
@@ -16,11 +16,11 @@
 This document defines the architectural restructuring of the repository
 into layered conceptual modules:
 
--   `core` (currently `graph_knowledge_engine/engine_core/`) --- graph
+-   `core` (currently `kogwistar/engine_core/`) --- graph
     substrate, storage, UoW, stable IDs
--   `workflow` (currently `graph_knowledge_engine/runtime/`) ---
+-   `workflow` (currently `kogwistar/runtime/`) ---
     generic workflow runtime and resolver mechanism
--   `conversation` (currently `graph_knowledge_engine/conversation/`)
+-   `conversation` (currently `kogwistar/conversation/`)
     --- conversation domain workflows and step implementations
 -   `wisdom` (future layer; no dedicated package yet) --- future
     learning/evaluation loops
@@ -83,7 +83,7 @@ Rules:
 
 Current implementation location:
 
-`graph_knowledge_engine/engine_core/`
+`kogwistar/engine_core/`
 
 Responsibilities:
 
@@ -97,11 +97,11 @@ Responsibilities:
 
 Examples:
 
-graph_knowledge_engine/engine_core/engine.py\
-graph_knowledge_engine/engine_core/models.py\
-graph_knowledge_engine/engine_core/storage_backend.py\
-graph_knowledge_engine/engine_core/chroma_backend.py\
-graph_knowledge_engine/engine_core/postgres_backend.py
+kogwistar/engine_core/engine.py\
+kogwistar/engine_core/models.py\
+kogwistar/engine_core/storage_backend.py\
+kogwistar/engine_core/chroma_backend.py\
+kogwistar/engine_core/postgres_backend.py
 
 Core must **not contain domain logic**.
 
@@ -117,7 +117,7 @@ most core behaviors.
 
 Current implementation location:
 
-`graph_knowledge_engine/runtime/`
+`kogwistar/runtime/`
 
 Responsibilities:
 
@@ -131,11 +131,11 @@ Responsibilities:
 
 Examples:
 
-graph_knowledge_engine/runtime/runtime.py\
-graph_knowledge_engine/runtime/contract.py\
-graph_knowledge_engine/runtime/design.py\
-graph_knowledge_engine/runtime/resolvers.py\
-graph_knowledge_engine/runtime/langgraph_converter.py
+kogwistar/runtime/runtime.py\
+kogwistar/runtime/contract.py\
+kogwistar/runtime/design.py\
+kogwistar/runtime/resolvers.py\
+kogwistar/runtime/langgraph_converter.py
 
 Workflow runtime must remain **domain agnostic**.
 
@@ -147,7 +147,7 @@ It must **never import conversation modules**.
 
 Current implementation location:
 
-`graph_knowledge_engine/conversation/`
+`kogwistar/conversation/`
 
 Responsibilities:
 
@@ -160,11 +160,11 @@ Responsibilities:
 
 Examples:
 
-graph_knowledge_engine/conversation/conversation_orchestrator.py\
-graph_knowledge_engine/conversation/service.py\
-graph_knowledge_engine/conversation/designer.py\
-graph_knowledge_engine/conversation/resolvers.py\
-graph_knowledge_engine/conversation/agentic_answering.py
+kogwistar/conversation/conversation_orchestrator.py\
+kogwistar/conversation/service.py\
+kogwistar/conversation/designer.py\
+kogwistar/conversation/resolvers.py\
+kogwistar/conversation/agentic_answering.py
 
 Conversation registers its operations into the workflow runtime.
 
@@ -223,8 +223,8 @@ aa_persist_response
 These operations must **not exist inside workflow modules**.
 
 Today they are implemented primarily through
-`graph_knowledge_engine/conversation/resolvers.py`,
-`graph_knowledge_engine/conversation/designer.py`, and related
+`kogwistar/conversation/resolvers.py`,
+`kogwistar/conversation/designer.py`, and related
 conversation modules. The invariant is logical placement in the
 conversation layer, not a required literal `conversation/steps/`
 directory.
@@ -307,7 +307,7 @@ Conversation APIs must eventually move into a conversation facade.
 
 Example:
 
-graph_knowledge_engine/conversation/service.py
+kogwistar/conversation/service.py
 
 Core may temporarily keep **compatibility shims** that forward to
 conversation APIs.
@@ -319,9 +319,9 @@ conversation APIs.
 Phase 1 --- Establish and preserve the conceptual split in the current
 package layout:
 
-graph_knowledge_engine/engine_core/\
-graph_knowledge_engine/runtime/\
-graph_knowledge_engine/conversation/
+kogwistar/engine_core/\
+kogwistar/runtime/\
+kogwistar/conversation/
 
 Phase 2 --- Remove workflow imports of conversation modules.
 

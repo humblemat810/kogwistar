@@ -11,13 +11,13 @@
 
 The current repo already implements a narrower version of this design:
 
-- `graph_knowledge_engine/conversation/retrieval_orchestrator.py`
+- `kogwistar/conversation/retrieval_orchestrator.py`
   coordinates one memory retrieval pass and one KG retrieval pass for a
   turn.
-- `graph_knowledge_engine/conversation/memory_retriever.py` retrieves
+- `kogwistar/conversation/memory_retriever.py` retrieves
   cross-conversation memory, extracts KG seeds from selected
   `reference_pointer` nodes, and materializes `memory_context`.
-- `graph_knowledge_engine/conversation/knowledge_retriever.py`
+- `kogwistar/conversation/knowledge_retriever.py`
   combines shallow retrieval with seeded graph expansion and pins
   deterministic `reference_pointer` nodes plus `references` edges into
   the conversation canvas.

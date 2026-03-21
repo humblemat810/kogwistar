@@ -15,7 +15,7 @@ This is where the architecture becomes serious. Instead of saying "the model saw
 ## Run or Inspect
 
 - Run the companion file to build a view with `ConversationService.get_conversation_view(...)` and persist it with `persist_context_snapshot(...)`.
-- Read `graph_knowledge_engine/docs/ARD-context-snapshot-and-prompt-context.md` for the broader design.
+- Read `kogwistar/docs/ARD-context-snapshot-and-prompt-context.md` for the broader design.
 - Inspect the snapshot-related tests in `tests/kg_conversation/test_phase2b_context_snapshot.py`.
 
 ## Inspect The Result

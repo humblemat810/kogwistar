@@ -148,7 +148,7 @@ Snapshots:
 ## Implementation Plan
 
 ### A. Remove sidecar workflow-history logic
-- Delete all workflow-history pointer/table code from [chat_service.py](/c:/Users/chanh/Documents/graphrag_v2_working_tree/graph_knowledge_engine/server/chat_service.py).
+- Delete all workflow-history pointer/table code from [chat_service.py](/c:/Users/chanh/Documents/graphrag_v2_working_tree/kogwistar/server/chat_service.py).
 - Remove:
   - `workflow_design_history.sqlite`
   - `workflow_design_history`
@@ -163,7 +163,7 @@ Snapshots:
 - Keep `BRANCH_DROPPED` as masking-only control state.
 
 ### C. Add backend-respecting projection metadata
-- Extend [engine_sqlite.py](/c:/Users/chanh/Documents/graphrag_v2_working_tree/graph_knowledge_engine/engine_core/engine_sqlite.py) and [engine_postgres_meta.py](/c:/Users/chanh/Documents/graphrag_v2_working_tree/graph_knowledge_engine/engine_core/engine_postgres_meta.py) with projection metadata tables and APIs.
+- Extend [engine_sqlite.py](/c:/Users/chanh/Documents/graphrag_v2_working_tree/kogwistar/engine_core/engine_sqlite.py) and [engine_postgres_meta.py](/c:/Users/chanh/Documents/graphrag_v2_working_tree/kogwistar/engine_core/engine_postgres_meta.py) with projection metadata tables and APIs.
 - Projection APIs must support:
   - get head/version state
   - upsert rebuilt projection rows
@@ -189,9 +189,9 @@ Snapshots:
 - Same-workflow writes/submissions must fail fast while rebuild is active.
 
 ### F. Remove sidecar server run registry
-- Replace [run_registry.py](/c:/Users/chanh/Documents/graphrag_v2_working_tree/graph_knowledge_engine/server/run_registry.py) SQLite persistence with backend-respecting meta persistence.
+- Replace [run_registry.py](/c:/Users/chanh/Documents/graphrag_v2_working_tree/kogwistar/server/run_registry.py) SQLite persistence with backend-respecting meta persistence.
 - Keep existing REST/MCP/SSE behavior and event taxonomy unchanged.
-- Update [server_mcp_with_admin.py](/c:/Users/chanh/Documents/graphrag_v2_working_tree/graph_knowledge_engine/server_mcp_with_admin.py) wiring so no `server_runs.sqlite` file is created.
+- Update [server_mcp_with_admin.py](/c:/Users/chanh/Documents/graphrag_v2_working_tree/kogwistar/server_mcp_with_admin.py) wiring so no `server_runs.sqlite` file is created.
 
 ## Test Plan
 - Lineage fold:

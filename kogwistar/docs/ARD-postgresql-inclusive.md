@@ -31,9 +31,9 @@ neutral.
 In particular, the following areas still expose Chroma-shaped collection
 surfaces and remain outside the "implemented" claim for this document:
 
-- `graph_knowledge_engine/strategies/*`
-- `graph_knowledge_engine/visualization/*`
-- `graph_knowledge_engine/graph_query.py`
+- `kogwistar/strategies/*`
+- `kogwistar/visualization/*`
+- `kogwistar/graph_query.py`
 - engine-facing typing protocols that still expose raw collections
 
 ---

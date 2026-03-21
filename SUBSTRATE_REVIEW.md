@@ -6,9 +6,9 @@ The Graph Knowledge Engine repository is a sophisticated **graph-native executio
 ## 2. Evidence for Substrate Classification (Core Primitives)
 The system's status as a substrate is reinforced by its architectural pillars:
 *   **Conversation as an Execution Surface**: Unlike standard systems where conversation is merely a logging or product layer, here it acts as a runtime model for cognition. Conversation turns are serialized as graph nodes, and `ContextSnapshots` define strict, content-addressed LLM boundary conditions. Memory and retrieval are embedded directly into the graph structure via edges.
-*   **Storage Abstraction**: The `StorageBackend` protocol (`graph_knowledge_engine/engine_core/storage_backend.py`) provides a clean interface for database parity, allowing identical execution semantics across vector-native (Chroma) and relational (Postgres) backends.
-*   **Deterministic Runtime**: The `WorkflowRuntime` (`graph_knowledge_engine/runtime/runtime.py`) manages complex DAG execution, utilizing Tarjan’s SCC for topological sorting and bitsets for join/barrier management—a high-level systems engineering approach to parallel execution.
-*   **State Integrity & Event Sourcing**: Stateful checkpointing allows workflows to suspend and resume (`resume_run`). An append-only Change Data Capture (CDC) system (`graph_knowledge_engine/cdc/oplog.py`) records every substrate mutation, providing a foundation for immutable audit trails and system-wide replayability.
+*   **Storage Abstraction**: The `StorageBackend` protocol (`kogwistar/engine_core/storage_backend.py`) provides a clean interface for database parity, allowing identical execution semantics across vector-native (Chroma) and relational (Postgres) backends.
+*   **Deterministic Runtime**: The `WorkflowRuntime` (`kogwistar/runtime/runtime.py`) manages complex DAG execution, utilizing Tarjan’s SCC for topological sorting and bitsets for join/barrier management—a high-level systems engineering approach to parallel execution.
+*   **State Integrity & Event Sourcing**: Stateful checkpointing allows workflows to suspend and resume (`resume_run`). An append-only Change Data Capture (CDC) system (`kogwistar/cdc/oplog.py`) records every substrate mutation, providing a foundation for immutable audit trails and system-wide replayability.
 *   **Rigorous Provenance**: Every knowledge primitive is anchored to its source via mandatory `Spans` and `Grounding` metadata, establishing strict referential integrity.
 
 ## 3. API Surface Map

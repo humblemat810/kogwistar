@@ -11,7 +11,7 @@ At the heart of the engine's LLM interaction is the `LLMTaskSet`. During initial
 - `answer_with_citations`: Generates answers grounded in retrieved graph data.
 - ... and others like `summarize_context`, `filter_candidates`, etc.
 
-The engine doesn't care *how* these tasks are implemented, as long as they follow the [LLMTaskSet](file:///c:/Users/chanh/Documents/graphrag_v2_working_tree/graph_knowledge_engine/llm_tasks/contracts.py) protocol.
+The engine doesn't care *how* these tasks are implemented, as long as they follow the [LLMTaskSet](file:///c:/Users/chanh/Documents/graphrag_v2_working_tree/kogwistar/llm_tasks/contracts.py) protocol.
 
 ---
 
@@ -21,7 +21,7 @@ If you want to use a provider without using a library like LangChain, you can im
 
 ```python
 import httpx
-from graph_knowledge_engine.llm_tasks import (
+from kogwistar.llm_tasks import (
     AnswerWithCitationsTaskRequest,
     AnswerWithCitationsTaskResult,
 )
@@ -77,7 +77,7 @@ You can also mix and match. For example, using Ollama with a local model like `q
 
 ```python
 from langchain_ollama import ChatOllama
-from graph_knowledge_engine.llm_tasks import (
+from kogwistar.llm_tasks import (
     SummarizeContextTaskRequest,
     SummarizeContextTaskResult,
 )
@@ -107,8 +107,8 @@ To use your custom tasks, you use `dataclasses.replace` to create a new task set
 
 ```python
 from dataclasses import replace
-from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
-from graph_knowledge_engine.llm_tasks import build_default_llm_tasks
+from kogwistar.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.llm_tasks import build_default_llm_tasks
 
 # 1. Start with defaults and override specific tasks
 custom_tasks = replace(

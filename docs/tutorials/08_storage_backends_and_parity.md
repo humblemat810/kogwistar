@@ -13,7 +13,7 @@ Advanced readers will not trust backend abstraction claims unless the repo expla
 
 ## Run or Inspect
 
-- Inspect backend implementations under `graph_knowledge_engine/engine_core/`.
+- Inspect backend implementations under `kogwistar/engine_core/`.
 - Inspect parity-oriented tests under `tests/outbox/`, `tests/pg_sql/`, and `tests/kg_conversation/`.
 - Compare this page with the persistence assumptions in [01 Hello Graph Engine](./01_hello_graph_engine.md) and the replay-oriented claims in [10 Event Log Replay and CDC](./10_event_log_replay_and_cdc.md).
 

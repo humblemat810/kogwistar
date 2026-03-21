@@ -2,7 +2,7 @@
 
 Date: 2026-02-26  
 Status: **Accepted (documenting current behavior)**  
-Scope: `graph_knowledge_engine/runtime/runtime.py` + the current conversation workflow design used by `ConversationOrchestrator.add_conversation_turn_workflow_v2(...)`.
+Scope: `kogwistar/runtime/runtime.py` + the current conversation workflow design used by `ConversationOrchestrator.add_conversation_turn_workflow_v2(...)`.
 
 Updated: 2026-03-08
 
@@ -122,6 +122,6 @@ This allows resuming with correct nesting lineage and correct barrier counters.
 
 ## References (files)
 
-- `graph_knowledge_engine/runtime/runtime.py` (token spawning + parent_token_id, join detection via `wf_join`)
-- `graph_knowledge_engine/conversation/designer.py` (conversation workflow chart and join metadata)
-- `graph_knowledge_engine/conversation/conversation_orchestrator.py` (v2 runner wiring: designer + runtime + deps injection)
+- `kogwistar/runtime/runtime.py` (token spawning + parent_token_id, join detection via `wf_join`)
+- `kogwistar/conversation/designer.py` (conversation workflow chart and join metadata)
+- `kogwistar/conversation/conversation_orchestrator.py` (v2 runner wiring: designer + runtime + deps injection)

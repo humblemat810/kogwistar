@@ -30,8 +30,8 @@ python scripts/tutorial_sections/15_historical_search_tombstone_redirect.py
 ```
 
 - Inspect engine lifecycle/read behavior in:
-  - `graph_knowledge_engine/engine_core/lifecycle.py`
-  - `graph_knowledge_engine/engine_core/subsystems/read.py`
+  - `kogwistar/engine_core/lifecycle.py`
+  - `kogwistar/engine_core/subsystems/read.py`
 
 ## Inspect The Result
 

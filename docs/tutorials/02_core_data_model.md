@@ -13,8 +13,8 @@ This is where readers stop treating the repo as "just another vector DB wrapper.
 
 ## Run or Inspect
 
-- Inspect `graph_knowledge_engine/engine_core/models.py` for `Node`, `Edge`, and provenance-bearing fields.
-- Read `graph_knowledge_engine/docs/ARD-0006-conversation.md` after this page if you want the conversation-specific extension of the same idea.
+- Inspect `kogwistar/engine_core/models.py` for `Node`, `Edge`, and provenance-bearing fields.
+- Read `kogwistar/docs/ARD-0006-conversation.md` after this page if you want the conversation-specific extension of the same idea.
 - Compare this page with [01 Hello Graph Engine](./01_hello_graph_engine.md) so the terminology stays grounded in a runnable example.
 
 ## Inspect The Result

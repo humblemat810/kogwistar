@@ -37,9 +37,9 @@ while preserving parity with v1 for linear runs.
 
 This is no longer purely a proposal:
 
-- `graph_knowledge_engine/conversation/designer.py` defines
+- `kogwistar/conversation/designer.py` defines
   `ConversationWorkflowDesigner.ensure_add_turn_flow(...)`.
-- `graph_knowledge_engine/conversation/resolvers.py` contains the step
+- `kogwistar/conversation/resolvers.py` contains the step
   implementations for backbone, retrieval, pinning, answering, and
   context snapshotting.
 - The current add-turn chart marks `answer` as `wf_join=True`, so the

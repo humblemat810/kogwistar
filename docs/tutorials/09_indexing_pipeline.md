@@ -13,7 +13,7 @@ Search and indexing are often presented as magic. In this repo they are implemen
 
 ## Run or Inspect
 
-- Inspect the indexing and CDC-related code paths in `graph_knowledge_engine/cdc/` and `tests/outbox/`.
+- Inspect the indexing and CDC-related code paths in `kogwistar/cdc/` and `tests/outbox/`.
 - Read the event and repair-oriented helpers in `scripts/claw_runtime_loop.py`.
 - Compare this page with [08 Storage Backends and Parity](./08_storage_backends_and_parity.md) so indexing is understood as a projection, not the source of truth.
 

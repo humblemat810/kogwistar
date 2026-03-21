@@ -8,6 +8,6 @@
     "python-envs.defaultPackageManager": "ms-python.python:pip",
     "python-envs.pythonProjects": [],
     "python.analysis.extraPaths": [
-        "./graph_knowledge_engine"
+        "./kogwistar"
     ]
 }

@@ -60,7 +60,7 @@ repository as of 2026-03-08.
 
 ## 3.1 A vendor-neutral LLM task contract now exists
 
-`graph_knowledge_engine/llm_tasks/contracts.py` defines the central LLM
+`kogwistar/llm_tasks/contracts.py` defines the central LLM
 boundary:
 
 - `LLMTaskSet`
@@ -73,7 +73,7 @@ This is the actual contract that core and conversation code now consume.
 
 ## 3.2 Concrete provider wiring is isolated behind an adapter module
 
-`graph_knowledge_engine/llm_tasks/default_provider.py` is the default
+`kogwistar/llm_tasks/default_provider.py` is the default
 provider adapter.
 
 It:
@@ -85,14 +85,14 @@ It:
 
 This is the correct place for vendor-aware provider logic.
 
-`graph_knowledge_engine/llm_tasks/__init__.py` still re-exports
+`kogwistar/llm_tasks/__init__.py` still re-exports
 `DefaultTaskProviderConfig` and `build_default_llm_tasks(...)` eagerly,
 but that package import does not itself import vendor SDKs at module
 scope.
 
 ## 3.3 Azure OpenAI embeddings have also been isolated behind an integration helper
 
-`graph_knowledge_engine/integrations/openai_embeddings.py` contains
+`kogwistar/integrations/openai_embeddings.py` contains
 `build_azure_embedding_fn_from_env()`.
 
 That helper imports `AzureOpenAIEmbeddings` lazily and returns `None`
@@ -106,22 +106,22 @@ the engine constructor.
 The following files now use `LLMTaskSet` instead of importing concrete
 LLM SDK classes:
 
-- `graph_knowledge_engine/engine_core/subsystems/extract.py`
-- `graph_knowledge_engine/engine_core/subsystems/ingest.py`
-- `graph_knowledge_engine/strategies/adjudicators.py`
-- `graph_knowledge_engine/conversation/filtering.py`
-- `graph_knowledge_engine/conversation/knowledge_retriever.py`
-- `graph_knowledge_engine/conversation/memory_retriever.py`
-- `graph_knowledge_engine/conversation/agentic_answering.py`
-- `graph_knowledge_engine/conversation/conversation_orchestrator.py`
-- `graph_knowledge_engine/conversation/service.py`
+- `kogwistar/engine_core/subsystems/extract.py`
+- `kogwistar/engine_core/subsystems/ingest.py`
+- `kogwistar/strategies/adjudicators.py`
+- `kogwistar/conversation/filtering.py`
+- `kogwistar/conversation/knowledge_retriever.py`
+- `kogwistar/conversation/memory_retriever.py`
+- `kogwistar/conversation/agentic_answering.py`
+- `kogwistar/conversation/conversation_orchestrator.py`
+- `kogwistar/conversation/service.py`
 
 This is the strongest evidence that core LLM behavior is now mostly
 vendor-neutral.
 
 ## 3.5 Extraction mode selection is now provider-hint based
 
-`graph_knowledge_engine/engine_core/subsystems/extract.py` no longer
+`kogwistar/engine_core/subsystems/extract.py` no longer
 uses a Gemini SDK type check to decide schema mode behavior.
 
 It now reads:
@@ -162,38 +162,38 @@ state.
 The earlier `TypeAlias` portability issue has also been addressed in
 code:
 
-- `graph_knowledge_engine/typing_interfaces.py` falls back to
+- `kogwistar/typing_interfaces.py` falls back to
   `typing_extensions.TypeAlias`
-- `graph_knowledge_engine/engine_core/engine.py` falls back to
+- `kogwistar/engine_core/engine.py` falls back to
   `typing_extensions.Self` and `TypeAlias`
 
 ## 3.8 Import safety is improved, but package roots are still heavier than they should be
 
 There are meaningful improvements:
 
-- `graph_knowledge_engine/conversation/__init__.py` uses lazy
+- `kogwistar/conversation/__init__.py` uses lazy
   `__getattr__`
-- `graph_knowledge_engine/runtime/contract.py` uses `TYPE_CHECKING` for
+- `kogwistar/runtime/contract.py` uses `TYPE_CHECKING` for
   `GraphKnowledgeEngine`
-- `graph_knowledge_engine/typing_interfaces.py` wraps Chroma type imports
+- `kogwistar/typing_interfaces.py` wraps Chroma type imports
   in `try/except`
 
 However, several package roots still import more than they should:
 
-- `graph_knowledge_engine/engine_core/__init__.py` eagerly imports
+- `kogwistar/engine_core/__init__.py` eagerly imports
   `GraphKnowledgeEngine`
-- `graph_knowledge_engine/runtime/__init__.py` eagerly imports
+- `kogwistar/runtime/__init__.py` eagerly imports
   `runtime.design`
-- `graph_knowledge_engine/runtime/design.py` still imports
+- `kogwistar/runtime/design.py` still imports
   `GraphKnowledgeEngine` directly
-- `graph_knowledge_engine/engine_core/subsystems/__init__.py` still
+- `kogwistar/engine_core/subsystems/__init__.py` still
   eagerly imports all subsystem modules
 
 These are import-boundary issues, not vendor-SDK leaks in the old sense.
 
 ## 3.9 `GraphKnowledgeEngine` is now mostly LLM-vendor-neutral, but still owns default adapter selection
 
-`graph_knowledge_engine/engine_core/engine.py` no longer imports Gemini
+`kogwistar/engine_core/engine.py` no longer imports Gemini
 or OpenAI chat SDKs directly at module scope.
 
 It does still:
@@ -212,22 +212,22 @@ boundary.
 
 The storage adapter seam exists in:
 
-- `graph_knowledge_engine/engine_core/storage_backend.py`
-- `graph_knowledge_engine/engine_core/chroma_backend.py`
-- `graph_knowledge_engine/engine_core/postgres_backend.py`
+- `kogwistar/engine_core/storage_backend.py`
+- `kogwistar/engine_core/chroma_backend.py`
+- `kogwistar/engine_core/postgres_backend.py`
 
 But Chroma-shaped surfaces still leak above that seam.
 
 Examples:
 
-- `graph_knowledge_engine/typing_interfaces.py`
-- `graph_knowledge_engine/strategies/types.py`
-- `graph_knowledge_engine/strategies/proposer.py`
-- `graph_knowledge_engine/strategies/merge_policies.py`
-- `graph_knowledge_engine/strategies/verifiers.py`
-- `graph_knowledge_engine/visualization/basic_visualization.py`
-- `graph_knowledge_engine/visualization/graph_viz.py`
-- `graph_knowledge_engine/graph_query.py`
+- `kogwistar/typing_interfaces.py`
+- `kogwistar/strategies/types.py`
+- `kogwistar/strategies/proposer.py`
+- `kogwistar/strategies/merge_policies.py`
+- `kogwistar/strategies/verifiers.py`
+- `kogwistar/visualization/basic_visualization.py`
+- `kogwistar/visualization/graph_viz.py`
+- `kogwistar/graph_query.py`
 
 These files still depend on raw collection attributes such as:
 
@@ -244,13 +244,13 @@ backend neutrality.
 
 Concrete sidecar code remains acceptable in:
 
-- `graph_knowledge_engine/server_mcp_with_admin.py`
-- `graph_knowledge_engine/ocr.py`
-- `graph_knowledge_engine/graph_navigation_agent/*`
-- `graph_knowledge_engine/diagnostic/*`
+- `kogwistar/server_mcp_with_admin.py`
+- `kogwistar/ocr.py`
+- `kogwistar/graph_navigation_agent/*`
+- `kogwistar/diagnostic/*`
 
 The main remaining sidecar packaging issue is
-`graph_knowledge_engine/server_mcp_with_admin.py`, which still:
+`kogwistar/server_mcp_with_admin.py`, which still:
 
 - imports `GraphKnowledgeEngine` directly
 - creates `engine`, `conversation_engine`, and `wisdom_engine` at module
@@ -280,8 +280,8 @@ Core modules should not depend on concrete provider SDK classes.
 Concrete provider implementations such as Gemini and OpenAI remain
 supported, but only through optional adapter modules such as:
 
-- `graph_knowledge_engine/llm_tasks/default_provider.py`
-- `graph_knowledge_engine/integrations/openai_embeddings.py`
+- `kogwistar/llm_tasks/default_provider.py`
+- `kogwistar/integrations/openai_embeddings.py`
 
 These modules are allowed to be vendor-aware. They are not the
 architecture boundary for core logic.
@@ -314,13 +314,13 @@ code still rely on Chroma-shaped collection attributes.
 
 The following are valid neutral surfaces:
 
-- `graph_knowledge_engine/llm_tasks/contracts.py`
-- `graph_knowledge_engine/llm_tasks/errors.py`
-- `graph_knowledge_engine/engine_core/storage_backend.py`
-- `graph_knowledge_engine/engine_core/subsystems/*`
-- `graph_knowledge_engine/runtime/contract.py`
-- `graph_knowledge_engine/runtime/runtime.py`
-- `graph_knowledge_engine/conversation/*`
+- `kogwistar/llm_tasks/contracts.py`
+- `kogwistar/llm_tasks/errors.py`
+- `kogwistar/engine_core/storage_backend.py`
+- `kogwistar/engine_core/subsystems/*`
+- `kogwistar/runtime/contract.py`
+- `kogwistar/runtime/runtime.py`
+- `kogwistar/conversation/*`
 
 These modules may depend on task contracts, storage contracts, and
 injected dependencies.
@@ -329,25 +329,25 @@ injected dependencies.
 
 The following may remain concrete and optional:
 
-- `graph_knowledge_engine/llm_tasks/default_provider.py`
-- `graph_knowledge_engine/integrations/openai_embeddings.py`
-- `graph_knowledge_engine/ocr.py`
-- `graph_knowledge_engine/server_mcp_with_admin.py`
-- `graph_knowledge_engine/graph_navigation_agent/*`
-- `graph_knowledge_engine/diagnostic/*`
+- `kogwistar/llm_tasks/default_provider.py`
+- `kogwistar/integrations/openai_embeddings.py`
+- `kogwistar/ocr.py`
+- `kogwistar/server_mcp_with_admin.py`
+- `kogwistar/graph_navigation_agent/*`
+- `kogwistar/diagnostic/*`
 
 ## 5.3 Transitional surfaces
 
 The following remain transitional and should be treated carefully:
 
-- `graph_knowledge_engine/engine_core/engine.py`
-- `graph_knowledge_engine/engine_core/__init__.py`
-- `graph_knowledge_engine/runtime/__init__.py`
-- `graph_knowledge_engine/runtime/design.py`
-- `graph_knowledge_engine/typing_interfaces.py`
-- `graph_knowledge_engine/strategies/*`
-- `graph_knowledge_engine/visualization/*`
-- `graph_knowledge_engine/graph_query.py`
+- `kogwistar/engine_core/engine.py`
+- `kogwistar/engine_core/__init__.py`
+- `kogwistar/runtime/__init__.py`
+- `kogwistar/runtime/design.py`
+- `kogwistar/typing_interfaces.py`
+- `kogwistar/strategies/*`
+- `kogwistar/visualization/*`
+- `kogwistar/graph_query.py`
 
 These should move toward cleaner boundaries incrementally, not through a
 wholesale rewrite.
@@ -361,13 +361,13 @@ wholesale rewrite.
 The following imports must not require concrete provider SDKs merely to
 load the module:
 
-- `graph_knowledge_engine.llm_tasks.contracts`
-- `graph_knowledge_engine.typing_interfaces`
-- `graph_knowledge_engine.runtime.contract`
-- `graph_knowledge_engine.runtime.runtime`
-- `graph_knowledge_engine.conversation.__init__`
+- `kogwistar.llm_tasks.contracts`
+- `kogwistar.typing_interfaces`
+- `kogwistar.runtime.contract`
+- `kogwistar.runtime.runtime`
+- `kogwistar.conversation.__init__`
 
-`graph_knowledge_engine.llm_tasks` may continue to re-export the default
+`kogwistar.llm_tasks` may continue to re-export the default
 provider builder, but vendor SDK imports inside that package must remain
 lazy.
 

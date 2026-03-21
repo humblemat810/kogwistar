@@ -63,7 +63,7 @@ full = [
 ]
 
 [project.scripts]
-knowledge-mcp = "graph_knowledge_engine.server_mcp_with_admin:main"
+knowledge-mcp = "kogwistar.server_mcp_with_admin:main"
 
 
 [tool.setuptools]
@@ -71,8 +71,8 @@ package-dir = {"" = "."}
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["graph_knowledge_engine*"]
+include = ["kogwistar*"]
 exclude = ["*.tests*", "*.test*", "tests*", "examples*", "diagnostic*"]
 
 [tool.setuptools.package-data]
-graph_knowledge_engine = ["templates/*.html"]
+kogwistar = ["templates/*.html"]

@@ -42,7 +42,7 @@ Expected output fields:
 
 ## LangGraph Positioning
 
-Use `graph_knowledge_engine.runtime.langgraph_converter.to_langgraph(...)` for interoperability and export.
+Use `kogwistar.runtime.langgraph_converter.to_langgraph(...)` for interoperability and export.
 
 - `execution="visual"` favors a cleaner diagram.
 - `execution="semantics"` preserves more fanout and join behavior.

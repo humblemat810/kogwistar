@@ -15,13 +15,13 @@ This appendix is designed to prevent future drift between:
 The runtime and conversation stack already implement parts of this
 appendix:
 
-- `graph_knowledge_engine/runtime/runtime.py` reserves `_deps` and
+- `kogwistar/runtime/runtime.py` reserves `_deps` and
   `_rt_join` and applies state updates via explicit `'u'`, `'a'`, and
   `'e'` operations.
-- `graph_knowledge_engine/conversation/resolvers.py` uses structured
+- `kogwistar/conversation/resolvers.py` uses structured
   state keys such as `memory`, `kg`, `memory_pin`, `kg_pin`, and
   `answer`.
-- `graph_knowledge_engine/conversation/designer.py` marks the current
+- `kogwistar/conversation/designer.py` marks the current
   conversation workflow with explicit `wf_join` metadata where join
   semantics are intended.
 

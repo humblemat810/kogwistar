@@ -49,13 +49,13 @@ python scripts/runtime_tutorial_ladder.py level4 --data-dir .gke-data/runtime-tu
 - `workflow_checkpoint` nodes: persisted snapshots, including `_rt_join` frontier state for resume.
 - `workflow_step_exec` nodes: persisted per-step execution records.
 - `workflow/wf_trace.sqlite`: SQLite trace sink for step, routing, join, checkpoint, and run lifecycle events.
-- `graph_knowledge_engine/scripts/workflow.bundle.cdc.script.hl3.html`: bundled viewer asset for CDC/graph inspection.
+- `kogwistar/scripts/workflow.bundle.cdc.script.hl3.html`: bundled viewer asset for CDC/graph inspection.
 - `/api/workflow/runs/{run_id}/events`: hosted event stream path for run events.
 
 ## Native Runtime vs LangGraph
 
 - Use the native runtime for actual execution, checkpointing, suspend/resume, and event-sourced behavior.
-- Use `graph_knowledge_engine.runtime.langgraph_converter.to_langgraph(...)` for interoperability, visualization, and semantic comparison.
+- Use `kogwistar.runtime.langgraph_converter.to_langgraph(...)` for interoperability, visualization, and semantic comparison.
 - Do not treat the converter as the authoritative implementation of pause/resume behavior.
 
 ## Glossary

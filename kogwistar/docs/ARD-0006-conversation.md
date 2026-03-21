@@ -29,10 +29,10 @@ Historically, summary gating and context building evolved incrementally and now 
 
 The current repo already implements a substantial portion of this ARD:
 
-- `graph_knowledge_engine/conversation/designer.py` defines the v2 add-turn workflow.
-- `graph_knowledge_engine/conversation/resolvers.py` implements backbone and sidecar workflow ops such as `add_user_turn`, `link_prev_turn`, `link_assistant_turn`, `memory_retrieve`, `kg_retrieve`, `memory_pin`, `kg_pin`, `answer`, and optional `context_snapshot`.
+- `kogwistar/conversation/designer.py` defines the v2 add-turn workflow.
+- `kogwistar/conversation/resolvers.py` implements backbone and sidecar workflow ops such as `add_user_turn`, `link_prev_turn`, `link_assistant_turn`, `memory_retrieve`, `kg_retrieve`, `memory_pin`, `kg_pin`, `answer`, and optional `context_snapshot`.
 - The current pointer node type is `reference_pointer`, not `kg_pointer`.
-- `graph_knowledge_engine/conversation/service.py` implements `persist_context_snapshot(...)`, and `graph_knowledge_engine/conversation/agentic_answering.py` persists snapshots around agentic answering calls.
+- `kogwistar/conversation/service.py` implements `persist_context_snapshot(...)`, and `kogwistar/conversation/agentic_answering.py` persists snapshots around agentic answering calls.
 
 
 Legacy conversation path is not guaranteed to snapshot

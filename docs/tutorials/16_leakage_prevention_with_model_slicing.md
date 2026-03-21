@@ -39,4 +39,4 @@ The companion script `scripts/tutorial_sections/16_leakage_prevention_with_model
 
 ## Next Steps
 
-Explore `graph_knowledge_engine/engine_core/models.py` to see how `Node` and `Edge` use these decorators to keep your knowledge graph secure.
+Explore `kogwistar/engine_core/models.py` to see how `Node` and `Edge` use these decorators to keep your knowledge graph secure.
