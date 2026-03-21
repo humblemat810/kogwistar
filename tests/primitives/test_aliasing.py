@@ -1,3 +1,4 @@
+import pytest
 import uuid
 
 from graph_knowledge_engine.engine_core.engine import (
@@ -10,6 +11,7 @@ from graph_knowledge_engine.engine_core.models import LLMGraphExtraction, Edge, 
 from tests._kg_factories import kg_document, kg_grounding, kg_llm_grounding_payload
 
 
+@pytest.mark.ci
 def test_base62_roundtrip_multiple_ids():
     for _ in range(10):
         value = str(uuid.uuid4())
@@ -18,6 +20,7 @@ def test_base62_roundtrip_multiple_ids():
         assert len(alias) < len(value)
 
 
+@pytest.mark.ci
 def test_alias_book_is_stable_and_delta_minimal():
     book = AliasBook()
 
@@ -45,9 +48,18 @@ def test_alias_book_is_stable_and_delta_minimal():
     assert a1_edge0.startswith("E")
 
 
-def test_de_alias_ids_in_result_session_alias(monkeypatch):
+@pytest.mark.parametrize(
+    "backend_kind",
+    [
+        pytest.param("fake", marks=pytest.mark.ci),
+        "chroma",
+    ],
+    indirect=True,
+)
+@pytest.mark.parametrize("embedding_kind", ["constant"], indirect=True)
+def test_de_alias_ids_in_result_session_alias(monkeypatch, engine):
     _ = monkeypatch
-    eng = GraphKnowledgeEngine()
+    eng = engine
     doc = kg_document(
         doc_id="doc::test_de_alias_ids_in_result_session_alias",
         content="x",
@@ -56,12 +68,29 @@ def test_de_alias_ids_in_result_session_alias(monkeypatch):
     )
     eng.write.add_document(doc)
 
-    n1 = Node(label="A", type="entity", summary="a", mentions=[kg_grounding(doc.id)])
+    n1 = Node(
+        label="A",
+        type="entity",
+        summary="a",
+        mentions=[kg_grounding(doc.id)],
+        domain_id=None,
+        canonical_entity_id=None,
+        properties=None,
+        embedding=None,
+        doc_id=None,
+        level_from_root=0,
+    )
     n2 = Node(
         label="B",
         type="entity",
         summary="b",
         mentions=[kg_grounding(doc.id, start_char=1, end_char=2, excerpt="x")],
+        domain_id=None,
+        canonical_entity_id=None,
+        properties=None,
+        embedding=None,
+        doc_id=None,
+        level_from_root=0,
     )
     eng.write.add_node(n1, doc_id=doc.id)
     eng.write.add_node(n2, doc_id=doc.id)
@@ -76,6 +105,11 @@ def test_de_alias_ids_in_result_session_alias(monkeypatch):
         source_edge_ids=[],
         target_edge_ids=[],
         mentions=[kg_grounding(doc.id)],
+        domain_id=None,
+        canonical_entity_id=None,
+        properties=None,
+        embedding=None,
+        doc_id=None,
     )
     eng.write.add_edge(e, doc_id=doc.id)
 
@@ -121,8 +155,17 @@ def test_de_alias_ids_in_result_session_alias(monkeypatch):
     assert out.edges[0].target_ids == [n2.id]
 
 
-def test_add_page_calls_common_ingest_with_auto_adjudicate(monkeypatch):
-    eng = GraphKnowledgeEngine()
+@pytest.mark.parametrize(
+    "backend_kind",
+    [
+        pytest.param("fake", marks=pytest.mark.ci),
+        "chroma",
+    ],
+    indirect=True,
+)
+@pytest.mark.parametrize("embedding_kind", ["constant"], indirect=True)
+def test_add_page_calls_common_ingest_with_auto_adjudicate(monkeypatch, engine):
+    eng = engine
     doc = kg_document(
         doc_id="doc::test_add_page_calls_common_ingest_with_auto_adjudicate",
         content="ignored here",

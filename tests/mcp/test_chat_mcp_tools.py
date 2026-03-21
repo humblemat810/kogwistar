@@ -9,7 +9,11 @@ import uuid
 
 import pytest
 
+pytestmark = pytest.mark.ci
+
 import graph_knowledge_engine.server_mcp_with_admin as server
+from graph_knowledge_engine.server import resources as server_resources
+from graph_knowledge_engine.server.auth_middleware import claims_ctx
 from graph_knowledge_engine.conversation.models import ConversationNode
 from graph_knowledge_engine.runtime.models import WorkflowCheckpointNode
 from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
@@ -91,6 +95,27 @@ def _configure_server(
         answer_runner=answer_runner,
         runtime_runner=runtime_runner,
     )
+    # Patch both the live server module and the underlying resources module.
+    # The refactor moved the real service wiring behind lazy resources, so tests
+    # need to keep the two module views in sync.
+    monkeypatch.setattr(
+        server_resources, "engine", _FixedResource(engine), raising=False
+    )
+    monkeypatch.setattr(
+        server_resources,
+        "conversation_engine",
+        _FixedResource(conversation_engine),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        server_resources, "workflow_engine", _FixedResource(workflow_engine), raising=False
+    )
+    monkeypatch.setattr(
+        server_resources, "run_registry", _FixedResource(registry), raising=False
+    )
+    monkeypatch.setattr(
+        server_resources, "chat_service", _FixedResource(service), raising=False
+    )
     monkeypatch.setattr(server, "engine", _FixedResource(engine), raising=False)
     monkeypatch.setattr(
         server,
@@ -111,11 +136,11 @@ def _claims(role: str, ns: str, sub: str | None = None):
     claims = {"role": role, "ns": ns}
     if sub is not None:
         claims["sub"] = sub
-    token = server.claims_ctx.set(claims)
+    token = claims_ctx.set(claims)
     try:
         yield
     finally:
-        server.claims_ctx.reset(token)
+        claims_ctx.reset(token)
 
 
 def _structured(result):
