@@ -2,6 +2,8 @@
 
 Use [docs/LEARNING_PATH.md](../LEARNING_PATH.md) as the main entrypoint. This page is the execution-oriented index: numbered learning-path docs, script-backed ladders, VS Code section-run companions, and legacy ladders that intentionally follow a different depth/pathway.
 
+- Environment variables: [docs/environment-variables.md](../environment-variables.md)
+
 ## Learning Path Docs
 
 - [01 Hello Graph Engine](./01_hello_graph_engine.md)
