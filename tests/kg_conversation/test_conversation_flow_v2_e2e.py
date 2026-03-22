@@ -108,9 +108,9 @@ def _add_apple_knowledge(kg_engine: GraphKnowledgeEngine, *, dim: int = 384):
         level_from_root=0,
     )
 
-    kg_engine.add_node(apple)
-    kg_engine.add_node(fruit)
-    kg_engine.add_node(sweet)
+    kg_engine.write.add_node(apple)
+    kg_engine.write.add_node(fruit)
+    kg_engine.write.add_node(sweet)
 
     # Best-effort: add edges/hyperedges if your repo exposes them in models.
     try:
@@ -154,8 +154,8 @@ def _add_apple_knowledge(kg_engine: GraphKnowledgeEngine, *, dim: int = 384):
             source_edge_ids=[],
             target_edge_ids=[],
         )
-        kg_engine.add_edge(is_a)
-        kg_engine.add_edge(has_prop)
+        kg_engine.write.add_edge(is_a)
+        kg_engine.write.add_edge(has_prop)
 
         # Hyperedge best-effort: if Edge supports multi-target, create one.
         # This remains optional and should not fail the test if the model rejects it.
@@ -182,7 +182,7 @@ def _add_apple_knowledge(kg_engine: GraphKnowledgeEngine, *, dim: int = 384):
                 source_edge_ids=[],
                 target_edge_ids=[],
             )
-            kg_engine.add_edge(hyper)
+            kg_engine.write.add_edge(hyper)
         except Exception:
             pass
     except Exception:

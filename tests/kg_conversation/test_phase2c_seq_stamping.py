@@ -90,8 +90,29 @@ class FakeBackend:
 
 
 class FakeRead:
+    def __init__(self, engine):
+        self._engine = engine
+
     def nodes_from_single_or_id_query_result(self, got, node_type=None):
         return list(got.get("objects") or [])
+
+    def get_nodes(self, ids=None, where=None, limit=None, **kwargs):
+        got = self._engine.backend.node_get(where=where, ids=ids, include=None)
+        nodes = list(got.get("objects") or [])
+        if limit is not None:
+            nodes = nodes[:limit]
+        return nodes
+
+
+class FakeWrite:
+    def __init__(self, engine):
+        self._engine = engine
+
+    def add_node(self, node, *args, **kwargs):
+        return self._engine.add_node(node, *args, **kwargs)
+
+    def add_edge(self, edge, *args, **kwargs):
+        return self._engine.add_edge(edge, *args, **kwargs)
 
 
 class FakeConversationEngine:
@@ -103,7 +124,8 @@ class FakeConversationEngine:
         self.nodes = []
         self._tail = None
         self.backend = FakeBackend(self)
-        self.read = FakeRead()
+        self.read = FakeRead(self)
+        self.write = FakeWrite(self)
 
     def _iterative_defensive_emb(self, text: str):
         # deterministic dummy embedding

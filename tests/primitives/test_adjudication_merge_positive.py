@@ -149,9 +149,9 @@ def test_deterministic_batch_merge(engine, monkeypatch):
         mentions=[Grounding(spans=[ref])],
     )
 
-    engine.add_node(a, doc_id=doc.id)
-    engine.add_node(b, doc_id=doc.id)
-    engine.add_node(c, doc_id=doc.id)
+    engine.write.add_node(a, doc_id=doc.id)
+    engine.write.add_node(b, doc_id=doc.id)
+    engine.write.add_node(c, doc_id=doc.id)
 
     pairs_payload = [
         {

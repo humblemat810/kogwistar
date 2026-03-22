@@ -880,7 +880,7 @@ class ConversationOrchestrator:
             source_edge_ids=[],
             target_edge_ids=[],
         )
-        self.conversation_engine.add_edge(seq_edge)
+        self.conversation_engine.write.add_edge(seq_edge)
         return seq_edge
 
     # ----------------------------
@@ -1032,7 +1032,7 @@ class ConversationOrchestrator:
             raise Exception("uncalculatable embeddings")
         turn_node.embedding = embedding
 
-        self.conversation_engine.add_node(turn_node, None)
+        self.conversation_engine.write.add_node(turn_node, None)
         if prev_node:
             seq_edge_id = get_id_for_conversation_turn_edge(
                 ConversationEdge.id_kind,
@@ -1156,7 +1156,7 @@ class ConversationOrchestrator:
             source_edge_ids=[],
             target_edge_ids=[],
         )
-        self.conversation_engine.add_edge(edge)
+        self.conversation_engine.write.add_edge(edge)
 
     def gen_machine_response_turns(
         self,
@@ -1298,7 +1298,7 @@ class ConversationOrchestrator:
 
         if response.response_node_id is not None:
             response_turn_node_id = response.response_node_id
-            turn_node: ConversationNode = self.conversation_engine.get_nodes(
+            turn_node: ConversationNode = self.conversation_engine.read.get_nodes(
                 [response.response_node_id]
             )[0]
 
@@ -1383,7 +1383,7 @@ class ConversationOrchestrator:
         return add_turn_result
 
     def get_chain_nodes(self, user_id, conversation_id):
-        return self.conversation_engine.get_nodes(
+        return self.conversation_engine.read.get_nodes(
             where={
                 "$and": [{"in_ui_chain": True}] + [{"user_id": user_id}]
                 if user_id
@@ -1432,7 +1432,7 @@ class ConversationOrchestrator:
         # In a real impl, better querying needed.
         # We assume we can get them by index logic or linear scan
         # For prototype, scan and filter
-        all_nodes = self.conversation_engine.get_nodes(
+        all_nodes = self.conversation_engine.read.get_nodes(
             where={"conversation_id": conversation_id}, node_type=ConversationNode
         )
         batch_ids = []
@@ -1588,7 +1588,7 @@ class ConversationOrchestrator:
             raise Exception("conversation only allowed to be on canva engine")
         # Persist
 
-        self.conversation_engine.add_node(summary_node)
+        self.conversation_engine.write.add_node(summary_node)
         new_index += 1
 
         # Edges: Summary -> Turns
@@ -1640,7 +1640,7 @@ class ConversationOrchestrator:
             source_edge_ids=[],
             target_edge_ids=[],
         )
-        self.conversation_engine.add_edge(sum_edge)
+        self.conversation_engine.write.add_edge(sum_edge)
 
         if in_conv:
             if prev_node is None:

@@ -206,7 +206,7 @@ def _success_runner(req: AnswerRunRequest) -> dict:
     assistant_text = f"Assistant reply: {req.user_text}"
     assistant_turn_node_id = f"assistant|{uuid.uuid4().hex}"
     embedding = req.conversation_engine.iterative_defensive_emb(assistant_text)
-    req.conversation_engine.add_node(
+    req.conversation_engine.write.add_node(
         ConversationNode(
             id=assistant_turn_node_id,
             label="Assistant turn",
@@ -322,7 +322,7 @@ def _seed_step(
         canonical_entity_id=None,
         embedding=None,
     )
-    conversation_engine.add_node(node)
+    conversation_engine.write.add_node(node)
 
 
 def _seed_checkpoint(
@@ -348,7 +348,7 @@ def _seed_checkpoint(
         canonical_entity_id=None,
         embedding=None,
     )
-    conversation_engine.add_node(node)
+    conversation_engine.write.add_node(node)
 
 
 def _seed_terminal_node(
@@ -380,7 +380,7 @@ def _seed_terminal_node(
         canonical_entity_id=None,
         embedding=None,
     )
-    conversation_engine.add_node(node)
+    conversation_engine.write.add_node(node)
 
 
 def test_chat_rest_submit_and_sse(monkeypatch, engine_triplet):

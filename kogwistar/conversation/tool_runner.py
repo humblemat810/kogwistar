@@ -150,7 +150,7 @@ class ToolRunner:
             domain_id=None,
             canonical_entity_id=None,
         )
-        self.engine.add_node(call_node, None)
+        self.engine.write.add_node(call_node, None)
         prev_turn_meta_summary.prev_node_char_distance_from_last_summary += len(
             call_node_content
         )
@@ -172,7 +172,7 @@ class ToolRunner:
             if (
                 tn := result.node_id_entry
             ):  # only tool that craeted nodes can be wrapped with node and edge linkages, some simple tools would not create and not use this code path
-                n: ConversationNode = self.engine.get_nodes(
+                n: ConversationNode = self.engine.read.get_nodes(
                     [tn], node_type=ConversationNode
                 )[0]
                 self_span = Span(
@@ -222,7 +222,7 @@ class ToolRunner:
                         "in_conversation": False,
                     },
                 )
-                self.engine.add_edge(e)
+                self.engine.write.add_edge(e)
         # Tool result node (tool role)
         # res_id = str(self.tool_call_id_factory())
         # last_node = self.engine.conversation.get_conversation_tail(conversation_id)
@@ -290,7 +290,7 @@ class ToolRunner:
             domain_id=None,
             canonical_entity_id=None,
         )
-        self.engine.add_node(res_node, None)
+        self.engine.write.add_node(res_node, None)
         prev_turn_meta_summary.prev_node_char_distance_from_last_summary += len(
             res_node_content
         )
@@ -343,5 +343,5 @@ class ToolRunner:
                 "in_conversation": False,
             },
         )
-        self.engine.add_edge(e)
+        self.engine.write.add_edge(e)
         return result, call_node.safe_get_id()

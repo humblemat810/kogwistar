@@ -160,9 +160,9 @@ def test_runtime_persists_completed_terminal_for_leaf_node(backend_kind):
             workflow_id=workflow_id, node_id="wf|start", op="start", start=True
         )
         leaf = _wf_node(workflow_id=workflow_id, node_id="wf|leaf", op="leaf")
-        workflow_engine.add_node(start)
-        workflow_engine.add_node(leaf)
-        workflow_engine.add_edge(
+        workflow_engine.write.add_node(start)
+        workflow_engine.write.add_node(leaf)
+        workflow_engine.write.add_edge(
             _wf_edge(
                 workflow_id=workflow_id,
                 edge_id="wf|start->leaf",

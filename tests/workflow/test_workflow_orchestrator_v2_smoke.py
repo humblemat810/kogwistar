@@ -195,10 +195,10 @@ def test_workflow_runtime_uses_default_resolver(tmp_path):
     n_end = n(f"wf|{workflow_id}|end", "end", terminal=True)
 
     for node in [n_start, n_mem, n_kg, n_ans, n_dec, n_sum, n_end]:
-        workflow_engine.add_node(node)
+        workflow_engine.write.add_node(node)
 
     # edges
-    workflow_engine.add_edge(
+    workflow_engine.write.add_edge(
         e(
             f"wf|{workflow_id}|e|start->mem",
             n_start.safe_get_id(),
@@ -206,7 +206,7 @@ def test_workflow_runtime_uses_default_resolver(tmp_path):
             pred=None,
         )
     )
-    workflow_engine.add_edge(
+    workflow_engine.write.add_edge(
         e(
             f"wf|{workflow_id}|e|mem->kg",
             n_mem.safe_get_id(),
@@ -214,7 +214,7 @@ def test_workflow_runtime_uses_default_resolver(tmp_path):
             pred=None,
         )
     )
-    workflow_engine.add_edge(
+    workflow_engine.write.add_edge(
         e(
             f"wf|{workflow_id}|e|kg->ans",
             n_kg.safe_get_id(),
@@ -222,7 +222,7 @@ def test_workflow_runtime_uses_default_resolver(tmp_path):
             pred=None,
         )
     )
-    workflow_engine.add_edge(
+    workflow_engine.write.add_edge(
         e(
             f"wf|{workflow_id}|e|ans->dec",
             n_ans.safe_get_id(),
@@ -230,7 +230,7 @@ def test_workflow_runtime_uses_default_resolver(tmp_path):
             pred=None,
         )
     )
-    workflow_engine.add_edge(
+    workflow_engine.write.add_edge(
         e(
             f"wf|{workflow_id}|e|dec->sum",
             n_dec.safe_get_id(),
@@ -240,7 +240,7 @@ def test_workflow_runtime_uses_default_resolver(tmp_path):
             is_default=False,
         )
     )
-    workflow_engine.add_edge(
+    workflow_engine.write.add_edge(
         e(
             f"wf|{workflow_id}|e|dec->end",
             n_dec.safe_get_id(),
@@ -250,7 +250,7 @@ def test_workflow_runtime_uses_default_resolver(tmp_path):
             is_default=True,
         )
     )
-    workflow_engine.add_edge(
+    workflow_engine.write.add_edge(
         e(
             f"wf|{workflow_id}|e|sum->end",
             n_sum.safe_get_id(),

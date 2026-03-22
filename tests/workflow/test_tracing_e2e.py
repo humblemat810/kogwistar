@@ -233,9 +233,9 @@ def test_tracing_routing_decision_end_to_end(tmp_path: Path):
     )
 
     for n in [n_gate, n_a, n_b, n_end]:
-        workflow_engine.add_node(n)
+        workflow_engine.write.add_node(n)
 
-    workflow_engine.add_edge(
+    workflow_engine.write.add_edge(
         _wf_edge(
             workflow_id=workflow_id,
             edge_id=f"wf|{workflow_id}|e|gate->b",
@@ -246,7 +246,7 @@ def test_tracing_routing_decision_end_to_end(tmp_path: Path):
             is_default=False,
         )
     )
-    workflow_engine.add_edge(
+    workflow_engine.write.add_edge(
         _wf_edge(
             workflow_id=workflow_id,
             edge_id=f"wf|{workflow_id}|e|gate->a|default",
@@ -257,7 +257,7 @@ def test_tracing_routing_decision_end_to_end(tmp_path: Path):
             is_default=True,
         )
     )
-    workflow_engine.add_edge(
+    workflow_engine.write.add_edge(
         _wf_edge(
             workflow_id=workflow_id,
             edge_id=f"wf|{workflow_id}|e|a->end",
@@ -390,9 +390,9 @@ def test_tracing_join_events_end_to_end(tmp_path: Path):
     )
 
     for n in [n_start, n_fork, n_a, n_b, n_join, n_end]:
-        workflow_engine.add_node(n)
+        workflow_engine.write.add_node(n)
 
-    workflow_engine.add_edge(
+    workflow_engine.write.add_edge(
         _wf_edge(
             workflow_id=workflow_id,
             edge_id=f"wf|{workflow_id}|e|start->fork",
@@ -404,7 +404,7 @@ def test_tracing_join_events_end_to_end(tmp_path: Path):
         )
     )
     # fork fanout edges: predicate edges that always match so fanout returns BOTH
-    workflow_engine.add_edge(
+    workflow_engine.write.add_edge(
         _wf_edge(
             workflow_id=workflow_id,
             edge_id=f"wf|{workflow_id}|e|fork->a",
@@ -415,7 +415,7 @@ def test_tracing_join_events_end_to_end(tmp_path: Path):
             is_default=False,
         )
     )
-    workflow_engine.add_edge(
+    workflow_engine.write.add_edge(
         _wf_edge(
             workflow_id=workflow_id,
             edge_id=f"wf|{workflow_id}|e|fork->b",
@@ -428,7 +428,7 @@ def test_tracing_join_events_end_to_end(tmp_path: Path):
     )
 
     predicate_registry = {"fork_all": lambda wf_edge_info, st, last: True}
-    workflow_engine.add_edge(
+    workflow_engine.write.add_edge(
         _wf_edge(
             workflow_id=workflow_id,
             edge_id=f"wf|{workflow_id}|e|a->join",
@@ -439,7 +439,7 @@ def test_tracing_join_events_end_to_end(tmp_path: Path):
             is_default=True,
         )
     )
-    workflow_engine.add_edge(
+    workflow_engine.write.add_edge(
         _wf_edge(
             workflow_id=workflow_id,
             edge_id=f"wf|{workflow_id}|e|b->join",
@@ -450,7 +450,7 @@ def test_tracing_join_events_end_to_end(tmp_path: Path):
             is_default=True,
         )
     )
-    workflow_engine.add_edge(
+    workflow_engine.write.add_edge(
         _wf_edge(
             workflow_id=workflow_id,
             edge_id=f"wf|{workflow_id}|e|join->end",

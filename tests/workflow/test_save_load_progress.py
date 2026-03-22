@@ -173,9 +173,9 @@ def test_runtime_checkpoint_load_and_replay(tmp_path: Path, backend_kind: str):
     )
 
     for n in [n_a, n_b, n_end]:
-        workflow_engine.add_node(n)
+        workflow_engine.write.add_node(n)
 
-    workflow_engine.add_edge(
+    workflow_engine.write.add_edge(
         _wf_edge(
             workflow_id=workflow_id,
             edge_id=f"wf|{workflow_id}|e|a->b",
@@ -186,7 +186,7 @@ def test_runtime_checkpoint_load_and_replay(tmp_path: Path, backend_kind: str):
             is_default=True,
         )
     )
-    workflow_engine.add_edge(
+    workflow_engine.write.add_edge(
         _wf_edge(
             workflow_id=workflow_id,
             edge_id=f"wf|{workflow_id}|e|b->end",
@@ -309,7 +309,7 @@ def test_runtime_resume_from_checkpoint(tmp_path: Path, backend_kind: str):
     )
 
     for n in [n_gate, n_a, n_b, n_end]:
-        workflow_engine.add_node(n)
+        workflow_engine.write.add_node(n)
 
     # gate -> b if has_done_a
     e_gate_to_b = _wf_edge(
@@ -321,7 +321,7 @@ def test_runtime_resume_from_checkpoint(tmp_path: Path, backend_kind: str):
         priority=0,
         is_default=False,
     )
-    workflow_engine.add_edge(e_gate_to_b)
+    workflow_engine.write.add_edge(e_gate_to_b)
     # gate -> a default
     e_gate_a_default = _wf_edge(
         workflow_id=workflow_id,
@@ -332,7 +332,7 @@ def test_runtime_resume_from_checkpoint(tmp_path: Path, backend_kind: str):
         priority=100,
         is_default=True,
     )
-    workflow_engine.add_edge(e_gate_a_default)
+    workflow_engine.write.add_edge(e_gate_a_default)
     e_a_gate = _wf_edge(
         workflow_id=workflow_id,
         edge_id=f"wf|{workflow_id}|e|a->gate",
@@ -343,7 +343,7 @@ def test_runtime_resume_from_checkpoint(tmp_path: Path, backend_kind: str):
         is_default=True,
     )
     # a -> gate
-    workflow_engine.add_edge(e_a_gate)
+    workflow_engine.write.add_edge(e_a_gate)
     e_b_end = _wf_edge(
         workflow_id=workflow_id,
         edge_id=f"wf|{workflow_id}|e|b->end",
@@ -354,7 +354,7 @@ def test_runtime_resume_from_checkpoint(tmp_path: Path, backend_kind: str):
         is_default=True,
     )
     # b -> end
-    workflow_engine.add_edge(e_b_end)
+    workflow_engine.write.add_edge(e_b_end)
 
     # Re-open workflow engine from disk to prove the design is actually stored.
     # The fake backend keeps the lightweight path, but it does not guarantee
@@ -480,9 +480,9 @@ def test_runtime_resume_from_checkpoint_frontier(
     )
 
     for n in [n_a, n_b, n_end]:
-        workflow_engine.add_node(n)
+        workflow_engine.write.add_node(n)
 
-    workflow_engine.add_edge(
+    workflow_engine.write.add_edge(
         _wf_edge(
             workflow_id=workflow_id,
             edge_id=f"wf|{workflow_id}|e|a->b",
@@ -493,7 +493,7 @@ def test_runtime_resume_from_checkpoint_frontier(
             is_default=True,
         )
     )
-    workflow_engine.add_edge(
+    workflow_engine.write.add_edge(
         _wf_edge(
             workflow_id=workflow_id,
             edge_id=f"wf|{workflow_id}|e|b->end",

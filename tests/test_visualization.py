@@ -94,9 +94,9 @@ def test_pretty_print_graph():
         embedding=None,
     )
 
-    engine.add_node(node_a, doc_id=doc_id)
-    engine.add_node(node_b, doc_id=doc_id)
-    engine.add_edge(edge, doc_id=doc_id)
+    engine.write.add_node(node_a, doc_id=doc_id)
+    engine.write.add_node(node_b, doc_id=doc_id)
+    engine.write.add_edge(edge, doc_id=doc_id)
     visualiser = Visualizer(engine=engine)
 
     txt = visualiser.pretty_print_graph(by_doc_id=doc_id, include_refs=True)
@@ -210,14 +210,14 @@ def test_d3_litmus_workflow_self_and_parallel():
     )
 
     # nodes
-    workflow_engine.add_node(
+    workflow_engine.write.add_node(
         _wf_node(
             workflow_id=wf_id,
             node_id="A",
             op="noop",
         )
     )
-    workflow_engine.add_node(
+    workflow_engine.write.add_node(
         _wf_node(
             workflow_id=wf_id,
             node_id="B",
@@ -226,7 +226,7 @@ def test_d3_litmus_workflow_self_and_parallel():
     )
 
     # edges
-    workflow_engine.add_edge(
+    workflow_engine.write.add_edge(
         _wf_edge(
             workflow_id=wf_id,
             edge_id="A->B-1",
@@ -238,7 +238,7 @@ def test_d3_litmus_workflow_self_and_parallel():
         )
     )
 
-    workflow_engine.add_edge(
+    workflow_engine.write.add_edge(
         _wf_edge(
             workflow_id=wf_id,
             edge_id="A->B-2",
@@ -250,7 +250,7 @@ def test_d3_litmus_workflow_self_and_parallel():
         )
     )
 
-    workflow_engine.add_edge(
+    workflow_engine.write.add_edge(
         _wf_edge(
             workflow_id=wf_id,
             edge_id="A->A",

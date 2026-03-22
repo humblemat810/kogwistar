@@ -232,8 +232,8 @@ def test_conversation_flow(
         embeddings=[[0.1] * 384],  # Dummy embedding
         metadatas=[meta],
     )
-    engine.add_node(n1)
-    engine.add_node(n2)
+    engine.write.add_node(n1)
+    engine.write.add_node(n2)
     # Mock embedding function to return same dimension
     # conversation_engine._ef = lambda x: [[0.1]*384 for _ in x]
 

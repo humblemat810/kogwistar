@@ -181,8 +181,8 @@ def test_runtime_event_sourced_cancel_reconciles_and_replay_is_stable(backend_ki
             terminal=True,
         )
         for node in (n_start, n_after, n_end):
-            workflow_engine.add_node(node)
-        workflow_engine.add_edge(
+            workflow_engine.write.add_node(node)
+        workflow_engine.write.add_edge(
             _wf_edge(
                 workflow_id=workflow_id,
                 edge_id=f"wf|{workflow_id}|e|start->after",
@@ -190,7 +190,7 @@ def test_runtime_event_sourced_cancel_reconciles_and_replay_is_stable(backend_ki
                 dst=n_after.id,
             )
         )
-        workflow_engine.add_edge(
+        workflow_engine.write.add_edge(
             _wf_edge(
                 workflow_id=workflow_id,
                 edge_id=f"wf|{workflow_id}|e|after->end",

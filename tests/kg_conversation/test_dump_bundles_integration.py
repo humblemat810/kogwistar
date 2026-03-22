@@ -144,9 +144,9 @@ def _seeded_kg_and_conversation_impl(backend_kind: str, tmp_path, request=None):
         )
         return n
 
-    kg_engine.add_node(_node("A", [1.0, 0.0, 0.0]))
-    kg_engine.add_node(_node("B", [0.9, 0.1, 0.0]))
-    kg_engine.add_node(_node("C", [0.0, 1.0, 0.0]))
+    kg_engine.write.add_node(_node("A", [1.0, 0.0, 0.0]))
+    kg_engine.write.add_node(_node("B", [0.9, 0.1, 0.0]))
+    kg_engine.write.add_node(_node("C", [0.0, 1.0, 0.0]))
 
     conv_n = ConversationNode(
         id="conv|turn|1",
@@ -169,7 +169,7 @@ def _seeded_kg_and_conversation_impl(backend_kind: str, tmp_path, request=None):
         embedding=[0.0, 2.1, 0.18],
         level_from_root=0,
     )
-    conv_engine.add_node(conv_n)
+    conv_engine.write.add_node(conv_n)
 
     kg_dir = pathlib.Path(getattr(kg_engine, "persist_directory", str(tmp_path / "kg")))
     conv_dir = pathlib.Path(

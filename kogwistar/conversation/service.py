@@ -453,9 +453,9 @@ class ConversationService:
             add_node(start_node)
         else:
             try:
-                eng.add_node(start_node, None)
+                eng.write.add_node(start_node, None)
             except TypeError:
-                eng.add_node(start_node)
+                eng.write.add_node(start_node)
         return conv_id, str(node_id)
 
     def create_conversation(
@@ -956,7 +956,7 @@ class ConversationService:
                 source_edge_ids=[],
                 target_edge_ids=[],
             )
-            eng.add_edge(edge)
+            eng.write.add_edge(edge)
 
         return sid
 
@@ -974,7 +974,7 @@ class ConversationService:
             where["run_id"] = run_id
         if stage is not None:
             where["stage"] = stage
-        snaps = self.conversation_engine.get_nodes(
+        snaps = self.conversation_engine.read.get_nodes(
             where=where,
             node_type=ConversationNode,
             limit=10_000,

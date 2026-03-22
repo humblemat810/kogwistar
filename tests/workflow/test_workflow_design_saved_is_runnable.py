@@ -123,11 +123,11 @@ def test_persisted_workflow_design_is_runnable(tmp_path):
         terminal=True,
     )
 
-    wf_engine.add_node(n_a)
-    wf_engine.add_node(n_b)
-    wf_engine.add_node(n_end)
+    wf_engine.write.add_node(n_a)
+    wf_engine.write.add_node(n_b)
+    wf_engine.write.add_node(n_end)
 
-    wf_engine.add_edge(
+    wf_engine.write.add_edge(
         _wf_edge(
             workflow_id=workflow_id,
             edge_id=f"wf|{workflow_id}|e|a->b",
@@ -138,7 +138,7 @@ def test_persisted_workflow_design_is_runnable(tmp_path):
             is_default=True,
         )
     )
-    wf_engine.add_edge(
+    wf_engine.write.add_edge(
         _wf_edge(
             workflow_id=workflow_id,
             edge_id=f"wf|{workflow_id}|e|b->end",

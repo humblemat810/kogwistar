@@ -55,7 +55,7 @@ class KnowledgeRetriever:
     def _shallow_query(
         self, *, query_embedding: List[float], max_retrieval_level
     ) -> RetrievalResult:
-        nodes = self.ref_knowledge_engine.query_nodes(
+        nodes = self.ref_knowledge_engine.read.query_nodes(
             query_embeddings=[query_embedding],
             n_results=self.shallow_n_results,
             where={
@@ -65,7 +65,7 @@ class KnowledgeRetriever:
             },
             include=["metadatas", "documents", "embeddings"],
         )[0]
-        edges = self.ref_knowledge_engine.query_edges(
+        edges = self.ref_knowledge_engine.read.query_edges(
             query_embeddings=[query_embedding],
             n_results=self.shallow_n_results,
             where={
@@ -216,13 +216,13 @@ class KnowledgeRetriever:
                 if selected_knowledge.node_ids == []:
                     nodes = []
                 else:
-                    nodes = self.ref_knowledge_engine.get_nodes(
+                    nodes = self.ref_knowledge_engine.read.get_nodes(
                         selected_knowledge.node_ids, resolve_mode="redirect"
                     )
                 if selected_knowledge.edge_ids == []:
                     edges = []
                 else:
-                    edges = self.ref_knowledge_engine.get_edges(
+                    edges = self.ref_knowledge_engine.read.get_edges(
                         selected_knowledge.edge_ids, resolve_mode="redirect"
                     )
             else:
@@ -275,7 +275,7 @@ class KnowledgeRetriever:
             )
 
             ptr_id = ptr_node.safe_get_id()
-            self.conversation_engine.add_node(ptr_node)
+            self.conversation_engine.write.add_node(ptr_node)
             pinned_pointer_node_ids.append(ptr_id)
 
             # edge_id = str(uuid.uuid4())
@@ -305,7 +305,7 @@ class KnowledgeRetriever:
                 source_edge_ids=[],
                 target_edge_ids=[],
             )
-            self.conversation_engine.add_edge(edge)
+            self.conversation_engine.write.add_edge(edge)
             pinned_edge_ids.append(edge.id)
             prev_turn_meta_summary.prev_node_char_distance_from_last_summary += len(
                 summary
@@ -342,7 +342,7 @@ class KnowledgeRetriever:
                 domain_id=None,
                 canonical_entity_id=None,
             )
-            self.conversation_engine.add_node(ptr_node)
+            self.conversation_engine.write.add_node(ptr_node)
             ptr_id = cast(str, ptr_node.id)
             pinned_pointer_node_ids.append(ptr_id)
 
@@ -369,7 +369,7 @@ class KnowledgeRetriever:
                 source_edge_ids=[],
                 target_edge_ids=[],
             )
-            self.conversation_engine.add_edge(edge)
+            self.conversation_engine.write.add_edge(edge)
             pinned_edge_ids.append(edge_id)
 
             prev_turn_meta_summary.prev_node_char_distance_from_last_summary += len(

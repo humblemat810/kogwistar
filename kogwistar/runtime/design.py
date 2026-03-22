@@ -94,13 +94,13 @@ def build_workflow_from_engine(
       edge.metadata["entity_type"] == "workflow_edge"
     """
 
-    nodes_raw = workflow_engine.get_nodes(
+    nodes_raw = workflow_engine.read.get_nodes(
         where={
             "$and": [{"entity_type": "workflow_node"}, {"workflow_id": workflow_id}]
         },
         limit=5000,
     )
-    edges_raw = workflow_engine.get_edges(
+    edges_raw = workflow_engine.read.get_edges(
         where={
             "$and": [{"entity_type": "workflow_edge"}, {"workflow_id": workflow_id}]
         },
@@ -187,14 +187,14 @@ def load_workflow_design(
       node.metadata.entity_type="workflow_node"
       edge.metadata.entity_type="workflow_edge"
     """
-    nodes_raw: list[WorkflowNode] = workflow_engine.get_nodes(
+    nodes_raw: list[WorkflowNode] = workflow_engine.read.get_nodes(
         where={
             "$and": [{"entity_type": "workflow_node"}, {"workflow_id": workflow_id}]
         },
         limit=5000,
         node_type=WorkflowNode,
     )
-    edges_raw: list[WorkflowEdge] = workflow_engine.get_edges(
+    edges_raw: list[WorkflowEdge] = workflow_engine.read.get_edges(
         where={
             "$and": [{"entity_type": "workflow_edge"}, {"workflow_id": workflow_id}]
         },

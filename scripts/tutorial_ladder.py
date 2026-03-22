@@ -386,7 +386,7 @@ def _upsert_knowledge_graph(kg_engine: GraphKnowledgeEngine) -> None:
     ]
 
     for node_id, summary, label, level in rows:
-        kg_engine.add_node(
+        kg_engine.write.add_node(
             Node(
                 id=node_id,
                 label=label,
@@ -418,7 +418,7 @@ def _upsert_knowledge_graph(kg_engine: GraphKnowledgeEngine) -> None:
     ]
     for edge_id, src, dst, rel in edge_rows:
         summary = f"{src} {rel} {dst}"
-        kg_engine.add_edge(
+        kg_engine.write.add_edge(
             Edge(
                 id=edge_id,
                 source_ids=[src],
@@ -471,7 +471,7 @@ def _upsert_memory_history(conv_engine: GraphKnowledgeEngine) -> None:
         canonical_entity_id=None,
         embedding=None,
     )
-    conv_engine.add_node(mem_summary)
+    conv_engine.write.add_node(mem_summary)
 
     ptr = ConversationNode(
         id="hist-ref-architecture",
@@ -505,8 +505,8 @@ def _upsert_memory_history(conv_engine: GraphKnowledgeEngine) -> None:
         canonical_entity_id=None,
         embedding=None,
     )
-    conv_engine.add_node(ptr)
-    conv_engine.add_edge(
+    conv_engine.write.add_node(ptr)
+    conv_engine.write.add_edge(
         ConversationEdge(
             id="hist-edge-summary-ref",
             source_ids=[mem_summary.safe_get_id()],

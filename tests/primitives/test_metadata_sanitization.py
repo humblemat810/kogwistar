@@ -66,7 +66,7 @@ def test_chroma_metadata_strips_none(engine):
         metadata={},
         level_from_root=0,
     )
-    engine.add_node(n)
+    engine.write.add_node(n)
     got = engine.backend.node_get(ids=[n.id], include=["metadatas"])
     assert got["ids"] == [n.id]
     meta = got["metadatas"][0]

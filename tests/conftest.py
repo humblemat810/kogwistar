@@ -2222,7 +2222,7 @@ def seed_conversation_graph(
         embedding=None,
         level_from_root=0,
     )
-    conversation_engine.add_node(turn0, None)
+    conversation_engine.write.add_node(turn0, None)
 
     # Turn 1 (assistant)
     t1_text = "Here are the relevant KG nodes and the conversation timeline."
@@ -2257,7 +2257,7 @@ def seed_conversation_graph(
         embedding=None,
         level_from_root=0,
     )
-    conversation_engine.add_node(turn1, None)
+    conversation_engine.write.add_node(turn1, None)
 
     # next_turn edge (TURN_000 -> TURN_001)
     next_edge = ConversationEdge(
@@ -2278,7 +2278,7 @@ def seed_conversation_graph(
         source_edge_ids=[],
         target_edge_ids=[],
     )
-    conversation_engine.add_edge(next_edge)
+    conversation_engine.write.add_edge(next_edge)
 
     # memory_context node (references memory nodes/edges if you want; keep empty here but schema-valid)
     memctx_id = "MEMCTX_001"
@@ -2316,7 +2316,7 @@ def seed_conversation_graph(
         embedding=None,
         level_from_root=0,
     )
-    conversation_engine.add_node(memctx, None)
+    conversation_engine.write.add_node(memctx, None)
 
     # summary node (system)
     summ_id = "SUMM_001"
@@ -2350,7 +2350,7 @@ def seed_conversation_graph(
         embedding=None,
         level_from_root=1,
     )
-    conversation_engine.add_node(summ, None)
+    conversation_engine.write.add_node(summ, None)
 
     # summarizes edge (summary -> turns)
     summ_edge = ConversationEdge(
@@ -2371,7 +2371,7 @@ def seed_conversation_graph(
         source_edge_ids=[],
         target_edge_ids=[],
     )
-    conversation_engine.add_edge(summ_edge)
+    conversation_engine.write.add_edge(summ_edge)
 
     # kg_ref node: points to KG node/edge (this is what your dump tool should bridge)
     kg_ref_id = "KGREF_001"
@@ -2411,7 +2411,7 @@ def seed_conversation_graph(
         embedding=None,
         level_from_root=0,
     )
-    conversation_engine.add_node(kg_ref_node, None)
+    conversation_engine.write.add_node(kg_ref_node, None)
 
     # edge: turn1 -> kg_ref (optional but useful for viz)
     ref_edge = ConversationEdge(
@@ -2432,7 +2432,7 @@ def seed_conversation_graph(
         source_edge_ids=[],
         target_edge_ids=[],
     )
-    conversation_engine.add_edge(ref_edge)
+    conversation_engine.write.add_edge(ref_edge)
     conv_id = "conv_test_1"
     user_id = "user_test_1"
 
@@ -2480,7 +2480,7 @@ def seed_conversation_graph(
     )
 
     # then upsert it into the conversation engine alongside your other seeded nodes
-    conversation_engine.add_node(kg_ref_node)
+    conversation_engine.write.add_node(kg_ref_node)
     return {
         "conversation_id": conv_id,
         "start_node_id": start_id,

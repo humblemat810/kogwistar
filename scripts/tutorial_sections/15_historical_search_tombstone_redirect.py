@@ -101,7 +101,7 @@ egg_new = _claim_node(
 )
 
 for node in (sugar_old, sugar_new, egg_old, egg_new):
-    kg_engine.add_node(node)
+    kg_engine.write.add_node(node)
 
 kg_engine.redirect_node(
     "N_SUGAR_OLD",

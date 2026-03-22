@@ -172,7 +172,7 @@ def _success_runner(req: AnswerRunRequest) -> dict:
     assistant_text = f"Assistant reply: {req.user_text}"
     assistant_turn_node_id = f"assistant|{uuid.uuid4().hex}"
     embedding = req.conversation_engine.iterative_defensive_emb(assistant_text)
-    req.conversation_engine.add_node(
+    req.conversation_engine.write.add_node(
         ConversationNode(
             id=assistant_turn_node_id,
             label="Assistant turn",
@@ -347,7 +347,7 @@ async def test_mcp_chat_submit_cancel_and_workflow_diagnostics(
         canonical_entity_id=None,
         embedding=None,
     )
-    conversation_engine.add_node(checkpoint)
+    conversation_engine.write.add_node(checkpoint)
 
     with _claims("ro", "workflow"):
         got = _structured(

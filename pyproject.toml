@@ -62,6 +62,7 @@ full = [
 ]
 
 [project.scripts]
+kogwistar = "kogwistar.cli:main"
 knowledge-mcp = "kogwistar.server_mcp_with_admin:main"
 
 

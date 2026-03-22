@@ -123,7 +123,7 @@ class MemoryRetriever:
     ) -> MemoryRetrievalResult:
         # Broad memory retrieval across same user
         where = {"user_id": user_id}
-        memory_nodes = self.conversation_engine.query_nodes(
+        memory_nodes = self.conversation_engine.read.query_nodes(
             query_embeddings=[query_embedding],
             n_results=n_results,
             where=where,
@@ -131,7 +131,7 @@ class MemoryRetriever:
             node_type=ConversationNode,
         )[0]
         where = {"user_id": user_id}
-        memory_edges = self.conversation_engine.query_edges(
+        memory_edges = self.conversation_engine.read.query_edges(
             query_embeddings=[query_embedding],
             n_results=n_results,
             where=where,
@@ -323,7 +323,7 @@ class MemoryRetriever:
             canonical_entity_id=None,
         )
 
-        self.conversation_engine.add_node(mem_node)
+        self.conversation_engine.write.add_node(mem_node)
         edge_ids: List[str] = []
         edges: List[ConversationEdge] = []
         # Turn -> MemoryContext
@@ -350,7 +350,7 @@ class MemoryRetriever:
             source_edge_ids=[],
             target_edge_ids=[],
         )
-        self.conversation_engine.add_edge(e1)
+        self.conversation_engine.write.add_edge(e1)
         edge_ids.append(e1_id)
         edges.append(e1)
         prev_turn_meta_summary.prev_node_distance_from_last_summary += 1
@@ -383,7 +383,7 @@ class MemoryRetriever:
                 source_edge_ids=[],
                 target_edge_ids=[],
             )
-            self.conversation_engine.add_edge(e)
+            self.conversation_engine.write.add_edge(e)
             edge_ids.append(e_id)
         # MemoryContext -> Sources edges
         for edge in selected_memory.edges:
@@ -411,7 +411,7 @@ class MemoryRetriever:
                 source_edge_ids=[],
                 target_edge_ids=[edge.safe_get_id()],
             )
-            self.conversation_engine.add_edge(e)
+            self.conversation_engine.write.add_edge(e)
             edge_ids.append(e_id)
             edges.append(e)
         return MemoryPinResult(

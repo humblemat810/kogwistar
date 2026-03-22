@@ -84,7 +84,7 @@ def test_node_refs_indexing(engine: GraphKnowledgeEngine):
         doc_id=None,
         metadata={},
     )
-    engine.add_node(n, doc_id=doc.id)
+    engine.write.add_node(n, doc_id=doc.id)
     engine._index_node_refs(n)
 
     assert n.id in engine.nodes_by_doc(doc.id, where={"insertion_method": "pytest-llm"})
@@ -134,7 +134,7 @@ def test_edge_refs_indexing(engine):
         embedding=None,
         doc_id=doc.id,
     )
-    engine.add_node(a, doc_id=doc.id)
+    engine.write.add_node(a, doc_id=doc.id)
     b = Node(
         label="B",
         type="entity",
@@ -147,7 +147,7 @@ def test_edge_refs_indexing(engine):
         embedding=None,
         doc_id=doc.id,
     )
-    engine.add_node(b, doc_id=doc.id)
+    engine.write.add_node(b, doc_id=doc.id)
 
     e = Edge(
         label="A->B",
@@ -166,7 +166,7 @@ def test_edge_refs_indexing(engine):
         embedding=None,
         doc_id=doc.id,
     )
-    engine.add_edge(e, doc_id=doc.id)
+    engine.write.add_edge(e, doc_id=doc.id)
     engine._index_edge_refs(e)
     doc_eids = engine.edges_by_doc(doc.id)
     assert e.id in doc_eids  # , where={"insertion_method": "pytest-llm"}
