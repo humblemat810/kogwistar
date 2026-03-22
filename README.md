@@ -5,7 +5,7 @@
 
 <h1 align="center">Kogwistar</h1>
 
-<h4 align="center">AI substrate system, from provenance to wisdom</h1>
+<h4 align="center">AI substrate system, from provenance to wisdom where execution becomes reusable memory</h4>
 
 <p align="center">
 Graph / Hypergraph-Native execution, memory and observability substrate for AI systems
@@ -30,10 +30,11 @@ It treats knowledge, conversation, workflow/runtime, provenance, and future wisd
 
 **It is better understood as a graph-native memory and execution substrate than as only another GraphRAG repository.**
 
-To **Data scientists**: This is the plug and play hypergraphrag you 
-looking for
-To **Engineers**:       This is the harness/substrate for robust systems
-To **Researchers**:    You have imaginative ways to use it
+The quickest way to understand this is the graph-native artifact demo below.
+
+To **Data scientists**: This is the plug and play hypergraphrag you looking for
+To **Engineers**:       This is the harness/substrate for robust systems  
+To **Researchers**:    You have imaginative ways to use it  
 
 Kogwistar is not an agent framework.  
 It is a substrate for building your own agent systems, with built-in guarantees around execution, memory, and provenance.
@@ -51,6 +52,30 @@ Kogwistar is both a graph-native substrate and a workflow/runtime harness, but t
 The harness is the execution layer on top of that foundation. The repository includes a native workflow/runtime engine, step orchestration, conversation and workflow execution surfaces, and MCP-facing control paths that make the graph design runnable. In that sense it overlaps with harness and orchestration frameworks, while remaining tied to the graph-native model underneath.
 
 The distinction matters because not every low-level path carries the same guarantees. The authoritative evented path is where replay, provenance, and projection semantics are strongest; lower-level primitives remain exposed for advanced builders who want custom composition or reduced ceremony. Compared with runtime-first frameworks such as LangGraph, this repo is runtime-overlapping but semantically broader: it tries to unify execution, structure, and provenance on one graph-native system model rather than treating the runtime as the only product surface.
+
+## Graph-Native Artifact Pipeline
+
+This is the clearest demo if you want to see how execution, memory, conversation, and provenance are unified in one graph.
+
+Run the full suite with:
+
+`python -m kogwistar.demo.graph_native_artifact_demo`
+
+Use `--summary-only` if you want the one-screen proof view instead of the full report.
+
+The demo runs three small scenarios:
+
+1. execution becomes memory
+2. conversation and workflow live in the same graph
+3. provenance answers “why” from stored execution history
+
+These are not separate features; they come from the same underlying graph model.
+
+The example stages raw notes, validates them, normalizes them into graph artifacts, links related notes, and commits the result into the same graph store that also holds workflow runs, step executions, and conversation turns. That makes the substrate point visible: execution is not just logged, it becomes graph memory; conversation and workflow are linked in one graph; and provenance queries can explain a result from stored history.
+
+See [docs/graph_native_artifact_demo.md](docs/graph_native_artifact_demo.md) for the short design note.
+
+If you want the closer agent-loop comparison, the older [framework_then_agent_demo](docs/framework_then_agent_demo.md) remains available as a companion example.
 
 ## Quickstart
 
