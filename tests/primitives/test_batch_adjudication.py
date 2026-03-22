@@ -4,6 +4,7 @@ import tempfile
 from pathlib import Path
 
 import pytest
+pytestmark = pytest.mark.core
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.models import (
@@ -17,15 +18,23 @@ from kogwistar.engine_core.models import (
     QUESTION_KEY,
     Span,
 )
+from tests._helpers.embeddings import build_test_embedding_function
+from tests._helpers.fake_backend import build_fake_backend
 
 
 @pytest.fixture(scope="function")
-def engine():
+def engine(backend_kind):
     root = Path.cwd() / ".tmp_pytest"
     root.mkdir(exist_ok=True)
     persist_root = Path(tempfile.mkdtemp(prefix="test_batch_adj_", dir=root))
     try:
-        yield GraphKnowledgeEngine(persist_directory=str(persist_root / "chroma"))
+        kwargs = {
+            "persist_directory": str(persist_root / "chroma"),
+            "embedding_function": build_test_embedding_function("constant", dim=384),
+        }
+        if backend_kind == "fake":
+            kwargs["backend_factory"] = build_fake_backend
+        yield GraphKnowledgeEngine(**kwargs)
     finally:
         shutil.rmtree(persist_root, ignore_errors=True)
 
@@ -70,6 +79,14 @@ def _grounding_for(doc_id: str) -> Grounding:
     )
 
 
+@pytest.mark.parametrize(
+    "backend_kind",
+    [
+        pytest.param("fake", marks=pytest.mark.ci),
+        pytest.param("chroma", marks=pytest.mark.ci_full),
+    ],
+    indirect=True,
+)
 def test_batch_adjudication_and_commit(engine, monkeypatch):
     doc = _doc()
     engine.write.add_document(doc)

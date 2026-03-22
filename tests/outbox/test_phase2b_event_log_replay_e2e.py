@@ -1,5 +1,7 @@
 import pytest
+pytestmark = pytest.mark.ci_full
 import pathlib
+pytest.importorskip("sqlalchemy")
 
 from kogwistar.engine_core.models import Node, Edge
 from kogwistar.engine_core.postgres_backend import PgVectorBackend

@@ -6,6 +6,7 @@ import pathlib
 import importlib
 
 import pytest
+pytestmark = pytest.mark.ci_full
 
 import re
 

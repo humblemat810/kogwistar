@@ -11,6 +11,7 @@
 # Adjust the import below to your module name.
 
 import pytest
+pytestmark = pytest.mark.ci
 import sys
 import pathlib
 

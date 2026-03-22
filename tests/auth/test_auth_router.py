@@ -1,4 +1,7 @@
 import pytest
+pytest.importorskip("fastapi")
+pytest.importorskip("fastmcp")
+pytest.importorskip("sqlalchemy")
 from fastapi.testclient import TestClient
 
 pytestmark = pytest.mark.ci

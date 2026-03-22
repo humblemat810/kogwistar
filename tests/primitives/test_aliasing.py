@@ -51,8 +51,8 @@ def test_alias_book_is_stable_and_delta_minimal():
 @pytest.mark.parametrize(
     "backend_kind",
     [
-        pytest.param("fake", marks=pytest.mark.ci_full),
-        "chroma",
+        pytest.param("fake", marks=pytest.mark.ci),
+        pytest.param("chroma", marks=pytest.mark.ci_full),
     ],
     indirect=True,
 )
@@ -158,8 +158,8 @@ def test_de_alias_ids_in_result_session_alias(monkeypatch, engine):
 @pytest.mark.parametrize(
     "backend_kind",
     [
-        pytest.param("fake", marks=pytest.mark.ci_full),
-        "chroma",
+        pytest.param("fake", marks=pytest.mark.ci),
+        pytest.param("chroma", marks=pytest.mark.ci_full),
     ],
     indirect=True,
 )

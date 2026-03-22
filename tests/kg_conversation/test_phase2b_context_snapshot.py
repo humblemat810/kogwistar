@@ -1,4 +1,5 @@
 import pytest
+pytestmark = pytest.mark.ci_full
 from typing import Any, Type, TypeVar
 from pydantic import BaseModel
 

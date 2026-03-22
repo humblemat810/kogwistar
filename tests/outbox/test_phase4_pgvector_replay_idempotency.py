@@ -1,4 +1,5 @@
 import pytest
+pytest.importorskip("sqlalchemy")
 
 from kogwistar.engine_core.models import Node, Edge, Grounding, Span
 from kogwistar.engine_core.postgres_backend import PgVectorBackend

@@ -1,7 +1,8 @@
+import pytest
+pytest.importorskip("sqlalchemy")
+
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql as psql
-
-import pytest
 
 from kogwistar.engine_core.postgres_backend import where_jsonb
 

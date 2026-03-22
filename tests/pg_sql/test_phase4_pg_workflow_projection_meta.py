@@ -6,6 +6,8 @@ import uuid
 from pathlib import Path
 
 import pytest
+pytestmark = pytest.mark.ci_full
+pytest.importorskip("sqlalchemy")
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.engine_postgres_meta import (

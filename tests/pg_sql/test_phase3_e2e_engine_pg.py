@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import List
 
 import pytest
+pytest.importorskip("sqlalchemy")
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core import models

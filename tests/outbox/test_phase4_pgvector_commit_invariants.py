@@ -2,6 +2,7 @@ import json
 import uuid
 
 import pytest
+pytest.importorskip("sqlalchemy")
 
 from kogwistar.engine_core.engine_postgres import PgVectorBackend
 from kogwistar.engine_core.engine_postgres_meta import (

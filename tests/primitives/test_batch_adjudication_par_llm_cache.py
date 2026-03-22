@@ -14,6 +14,8 @@ from kogwistar.engine_core.models import (
 )
 from tests._kg_factories import kg_document, kg_grounding
 
+pytestmark = pytest.mark.ci_full
+
 
 _required_env = (
     "OPENAI_DEPLOYMENT_NAME_GPT4_1",

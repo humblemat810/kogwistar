@@ -1,12 +1,31 @@
+import pytest
+pytestmark = pytest.mark.core
 import json
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.models import Node
 
+from tests._helpers.embeddings import build_test_embedding_function
+from tests._helpers.fake_backend import build_fake_backend
 from tests._kg_factories import kg_document, kg_grounding
+from tests.conftest import FakeEmbeddingFunction
 
 
-def test_default_sentence_transformer_embedder(tmp_path):
-    eng = GraphKnowledgeEngine(persist_directory=str(tmp_path / "chroma"))
+@pytest.mark.parametrize(
+    "backend_kind",
+    [
+        pytest.param("fake", marks=pytest.mark.ci),
+        pytest.param("chroma", marks=pytest.mark.ci_full),
+    ],
+    indirect=True,
+)
+def test_default_sentence_transformer_embedder(tmp_path, backend_kind):
+    kwargs = {
+        "persist_directory": str(tmp_path / "chroma"),
+        "embedding_function": FakeEmbeddingFunction(dim=8),
+    }
+    if backend_kind == "fake":
+        kwargs["backend_factory"] = build_fake_backend
+    eng = GraphKnowledgeEngine(**kwargs)
 
     # Add a doc
     text = "Chlorophyll is a pigment that absorbs light in plants."
@@ -36,7 +55,7 @@ def test_default_sentence_transformer_embedder(tmp_path):
     eng.write.add_node(n, doc_id=doc.id)
 
     got = eng.backend.node_get(ids=[n.id], include=["embeddings", "documents"])
-    assert got["embeddings"].shape[0] and len(got["embeddings"][0]) > 0  # auto-embedded
+    assert got["embeddings"] is not None and len(got["embeddings"][0]) > 0
     # Verify mention (embedding similarity included)
     out = eng.verify_mentions_for_doc(doc.id, min_ngram=4, threshold=0.3)
     assert out["updated_nodes"] >= 1
@@ -48,8 +67,22 @@ def test_default_sentence_transformer_embedder(tmp_path):
     assert "coverage" in detail
 
 
-def test_default_embedder_autoruns(tmp_path):
-    eng = GraphKnowledgeEngine(persist_directory=str(tmp_path / "chroma"))
+@pytest.mark.parametrize(
+    "backend_kind",
+    [
+        pytest.param("fake", marks=pytest.mark.ci),
+        pytest.param("chroma", marks=pytest.mark.ci_full),
+    ],
+    indirect=True,
+)
+def test_default_embedder_autoruns(tmp_path, backend_kind):
+    kwargs = {
+        "persist_directory": str(tmp_path / "chroma"),
+        "embedding_function": FakeEmbeddingFunction(dim=8),
+    }
+    if backend_kind == "fake":
+        kwargs["backend_factory"] = build_fake_backend
+    eng = GraphKnowledgeEngine(**kwargs)
     text = "Chlorophyll absorbs light."
     doc = kg_document(
         doc_id="doc::test_default_embedder_autoruns",
@@ -71,9 +104,7 @@ def test_default_embedder_autoruns(tmp_path):
     )  # embeddings=None -> auto-embed via DefaultEmbeddingFunction
 
     got = eng.backend.node_get(ids=[n.id], include=["embeddings"])
-    assert (
-        got["embeddings"] is not None and len(got["embeddings"][0]) > 0
-    )  # vector was created
+    assert got["embeddings"] is not None and len(got["embeddings"][0]) > 0
 
     # embedding similarity is also available to verifier now
     out = eng.verify_mentions_for_doc(doc.id, min_ngram=4, threshold=0.3)

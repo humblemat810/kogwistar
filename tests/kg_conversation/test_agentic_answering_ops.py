@@ -1,9 +1,12 @@
 from __future__ import annotations
+import pytest
+pytestmark = pytest.mark.ci
 
 import contextlib
 import json
 from dataclasses import dataclass
 from types import SimpleNamespace
+from pathlib import Path
 from typing import Any, Dict, Iterator, List
 
 
@@ -177,7 +180,8 @@ class _StubAgentConfig:
 class _StubAgent:
     def __init__(self):
         self.config = _StubAgentConfig()
-        self.cache_dir = None
+        self.cache_dir = str(Path.cwd() / ".tmp_pytest" / "agentic_answering_ops")
+        Path(self.cache_dir).mkdir(parents=True, exist_ok=True)
         self._project_calls: List[str] = []
 
     def _ensure_run_anchor(self, *, conversation_id: str, run_id: str) -> str:

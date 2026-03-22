@@ -1,4 +1,5 @@
 import pytest
+pytestmark = pytest.mark.ci_full
 import subprocess
 from unittest.mock import MagicMock, patch
 from kogwistar.runtime.sandbox import (

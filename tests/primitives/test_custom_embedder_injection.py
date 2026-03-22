@@ -1,3 +1,9 @@
+import pytest
+
+pytestmark = pytest.mark.core
+
+from tests._helpers.fake_backend import build_fake_backend
+
 class DummyEF:
     def name(self):
         return "DummyEF"
@@ -7,14 +13,26 @@ class DummyEF:
         return [[float(len(t)), float(t.count(" "))] for t in input]
 
 
-def test_custom_embedder(tmp_path):
+@pytest.mark.parametrize(
+    "backend_kind",
+    [
+        pytest.param("fake", marks=pytest.mark.ci),
+        pytest.param("chroma", marks=pytest.mark.ci_full),
+    ],
+    indirect=True,
+)
+def test_custom_embedder(tmp_path, backend_kind):
     # Prove we can inject our own EF into engine and it drives Chroma collections
     from kogwistar.engine_core.engine import GraphKnowledgeEngine
     from tests._kg_factories import kg_document, kg_grounding
 
-    eng = GraphKnowledgeEngine(
-        persist_directory=str(tmp_path / "chroma"), embedding_function=DummyEF()
-    )
+    kwargs = {
+        "persist_directory": str(tmp_path / "chroma"),
+        "embedding_function": DummyEF(),
+    }
+    if backend_kind == "fake":
+        kwargs["backend_factory"] = build_fake_backend
+    eng = GraphKnowledgeEngine(**kwargs)
 
     # Adding a node with embeddings=None uses DummyEF
     from kogwistar.engine_core.models import Node

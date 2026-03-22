@@ -2,6 +2,7 @@ import json
 from typing import Mapping
 
 import pytest
+pytestmark = pytest.mark.core
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.models import (
@@ -26,6 +27,8 @@ from kogwistar.llm_tasks import (
     RepairCitationsTaskResult,
     SummarizeContextTaskResult,
 )
+from tests._helpers.embeddings import build_test_embedding_function
+from tests._helpers.fake_backend import build_fake_backend
 
 
 def _span_for(doc_id: str) -> Span:
@@ -95,10 +98,24 @@ def _first_token_batch_task_set() -> LLMTaskSet:
 
 
 @pytest.fixture(scope="function")
-def engine(tmp_path):
-    return GraphKnowledgeEngine(persist_directory=str(tmp_path / "chroma"))
+def engine(tmp_path, backend_kind):
+    kwargs = {
+        "persist_directory": str(tmp_path / "chroma"),
+        "embedding_function": build_test_embedding_function("constant", dim=384),
+    }
+    if backend_kind == "fake":
+        kwargs["backend_factory"] = build_fake_backend
+    return GraphKnowledgeEngine(**kwargs)
 
 
+@pytest.mark.parametrize(
+    "backend_kind",
+    [
+        pytest.param("fake", marks=pytest.mark.ci),
+        pytest.param("chroma", marks=pytest.mark.ci_full),
+    ],
+    indirect=True,
+)
 def test_deterministic_batch_merge(engine, monkeypatch):
     doc = Document(
         id="doc-deterministic-batch-merge",

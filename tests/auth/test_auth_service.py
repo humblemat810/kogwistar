@@ -1,4 +1,5 @@
 import pytest
+pytest.importorskip("sqlalchemy")
 
 pytestmark = pytest.mark.ci_full
 from kogwistar.server.auth.db import (

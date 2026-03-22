@@ -1,6 +1,7 @@
 import os
 import pathlib
 import pytest
+pytestmark = pytest.mark.ci_full
 import requests
 from joblib import Memory
 

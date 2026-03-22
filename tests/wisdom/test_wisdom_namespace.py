@@ -1,3 +1,5 @@
+import pytest
+pytestmark = pytest.mark.ci_full
 # test_wisdom_namespace.py
 # import jwt, os
 # from fastapi.testclient import TestClient

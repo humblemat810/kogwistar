@@ -5,6 +5,7 @@ import tempfile
 from pathlib import Path
 
 import pytest
+pytestmark = pytest.mark.core
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.models import (
@@ -28,6 +29,8 @@ from kogwistar.llm_tasks import (
     RepairCitationsTaskResult,
     SummarizeContextTaskResult,
 )
+from tests._helpers.embeddings import build_test_embedding_function
+from tests._helpers.fake_backend import build_fake_backend
 
 
 _required_env = (
@@ -228,18 +231,32 @@ def _find_relation_candidate(
 
 
 @pytest.fixture(scope="function")
-def engine():
+def engine(backend_kind):
     root = Path.cwd() / ".tmp_pytest"
     root.mkdir(exist_ok=True)
     persist_root = Path(tempfile.mkdtemp(prefix="test_cross_kind_", dir=root))
     try:
-        eng = GraphKnowledgeEngine(persist_directory=str(persist_root / "chroma"))
+        kwargs = {
+            "persist_directory": str(persist_root / "chroma"),
+            "embedding_function": build_test_embedding_function("constant", dim=384),
+        }
+        if backend_kind == "fake":
+            kwargs["backend_factory"] = build_fake_backend
+        eng = GraphKnowledgeEngine(**kwargs)
         eng._test_cache_dir = persist_root / "llm_cache"  # type: ignore[attr-defined]
         yield eng
     finally:
         shutil.rmtree(persist_root, ignore_errors=True)
 
 
+@pytest.mark.parametrize(
+    "backend_kind",
+    [
+        pytest.param("fake", marks=pytest.mark.ci),
+        pytest.param("chroma", marks=pytest.mark.ci_full),
+    ],
+    indirect=True,
+)
 def test_generate_cross_kind_candidates_happy_path(engine: GraphKnowledgeEngine):
     doc, relation_node, relation_edge = _seed_reified_relation_fixture(
         engine,
@@ -278,6 +295,14 @@ def test_generate_cross_kind_candidates_happy_path(engine: GraphKnowledgeEngine)
     _assert_positive_trace(candidate, trace)
 
 
+@pytest.mark.parametrize(
+    "backend_kind",
+    [
+        pytest.param("fake", marks=pytest.mark.ci),
+        pytest.param("chroma", marks=pytest.mark.ci_full),
+    ],
+    indirect=True,
+)
 def test_generate_cross_kind_candidates_disabled_scoped_and_limit(
     engine: GraphKnowledgeEngine,
 ):
@@ -316,6 +341,14 @@ def test_generate_cross_kind_candidates_disabled_scoped_and_limit(
     assert len(candidates_limited) <= len(candidates_scoped)
 
 
+@pytest.mark.parametrize(
+    "backend_kind",
+    [
+        pytest.param("fake", marks=pytest.mark.ci),
+        pytest.param("chroma", marks=pytest.mark.ci_full),
+    ],
+    indirect=True,
+)
 @pytest.mark.skipif(
     _skip_real_llm, reason="Azure OpenAI env not set for real LLM adjudication"
 )

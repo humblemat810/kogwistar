@@ -1,9 +1,12 @@
 import shutil
 
 import pytest
+pytestmark = pytest.mark.core
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.models import Edge, Node
+from tests._helpers.embeddings import build_test_embedding_function
+from tests._helpers.fake_backend import build_fake_backend
 from tests._kg_factories import kg_document, kg_grounding
 
 
@@ -15,12 +18,26 @@ def tmp_chroma_dir(tmp_path_factory):
 
 
 @pytest.fixture(scope="function")
-def engine(tmp_chroma_dir):
-    eng = GraphKnowledgeEngine(persist_directory=tmp_chroma_dir)
+def engine(tmp_chroma_dir, backend_kind):
+    kwargs = {
+        "persist_directory": tmp_chroma_dir,
+        "embedding_function": build_test_embedding_function("constant", dim=384),
+    }
+    if backend_kind == "fake":
+        kwargs["backend_factory"] = build_fake_backend
+    eng = GraphKnowledgeEngine(**kwargs)
     assert getattr(eng, "backend", None) is not None
     return eng
 
 
+@pytest.mark.parametrize(
+    "backend_kind",
+    [
+        pytest.param("fake", marks=pytest.mark.ci),
+        pytest.param("chroma", marks=pytest.mark.ci_full),
+    ],
+    indirect=True,
+)
 def test_rollback_single_document(engine):
     doc = kg_document(
         doc_id="doc::test_rollback_single_document",
@@ -74,8 +91,22 @@ def test_rollback_single_document(engine):
     )
 
 
-def test_rollback_multiple_documents(tmp_path):
-    engine = GraphKnowledgeEngine(persist_directory=str(tmp_path / "chroma"))
+@pytest.mark.parametrize(
+    "backend_kind",
+    [
+        pytest.param("fake", marks=pytest.mark.ci),
+        pytest.param("chroma", marks=pytest.mark.ci_full),
+    ],
+    indirect=True,
+)
+def test_rollback_multiple_documents(tmp_path, backend_kind):
+    kwargs = {
+        "persist_directory": str(tmp_path / "chroma"),
+        "embedding_function": build_test_embedding_function("constant", dim=384),
+    }
+    if backend_kind == "fake":
+        kwargs["backend_factory"] = build_fake_backend
+    engine = GraphKnowledgeEngine(**kwargs)
 
     docs = [
         kg_document(

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import contextlib
 import pytest
+pytest.importorskip("fastapi")
+pytest.importorskip("fastmcp")
 import threading
 
 from kogwistar.server.chat_service import (

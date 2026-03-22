@@ -13,6 +13,9 @@ from pathlib import Path
 
 import httpx
 import pytest
+pytest.importorskip("fastapi")
+pytest.importorskip("fastmcp")
+pytest.importorskip("sqlalchemy")
 from sqlalchemy.orm import sessionmaker
 
 from kogwistar.server.auth.db import create_auth_engine

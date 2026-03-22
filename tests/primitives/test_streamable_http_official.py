@@ -7,6 +7,7 @@ import sys
 import time
 import pathlib
 import pytest
+pytestmark = pytest.mark.ci_full
 import httpx
 
 from mcp import ClientSession

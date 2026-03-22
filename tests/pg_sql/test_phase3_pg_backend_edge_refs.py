@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, Dict, List
 
 import pytest
+pytest.importorskip("sqlalchemy")
 
 from kogwistar.engine_core.postgres_backend import PgVectorBackend
 

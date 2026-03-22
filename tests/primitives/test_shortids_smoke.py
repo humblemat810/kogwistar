@@ -1,6 +1,7 @@
 import json
 import importlib
 import pytest
+pytestmark = pytest.mark.ci
 
 from kogwistar import shortids
 

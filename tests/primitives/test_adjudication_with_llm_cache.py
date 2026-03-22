@@ -16,6 +16,8 @@ from kogwistar.engine_core.models import (
 )
 from tests._kg_factories import kg_document, kg_grounding
 
+pytestmark = pytest.mark.ci_full
+
 
 # --- Skip if Azure OpenAI env is not configured (prevents CI failures) ---
 _required_env = (

@@ -3,6 +3,10 @@ import pathlib
 import re
 
 import pytest
+pytestmark = pytest.mark.ci_full
+
+pytest.importorskip("sqlalchemy")
+
 import sqlalchemy as sa
 
 from kogwistar.engine_core.chroma_backend import ChromaBackend

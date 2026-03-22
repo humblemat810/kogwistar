@@ -1,6 +1,8 @@
 import os
 
 import pytest
+pytestmark = pytest.mark.ci_full
+pytest.importorskip("sqlalchemy")
 import sqlalchemy as sa
 
 from kogwistar.engine_core.postgres_backend import (

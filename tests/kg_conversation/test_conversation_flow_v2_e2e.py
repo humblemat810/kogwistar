@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 
 import pytest
+pytestmark = pytest.mark.ci_full
 
 pytest.importorskip("chromadb")
 from chromadb.utils.embedding_functions import EmbeddingFunction

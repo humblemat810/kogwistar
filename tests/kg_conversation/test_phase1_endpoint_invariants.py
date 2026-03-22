@@ -29,7 +29,7 @@ pytestmark = pytest.mark.parametrize(
                 "dim": 384,
             },
             id="fake_backend_constant",
-            marks=pytest.mark.ci_full,
+            marks=pytest.mark.ci,
         ),
         pytest.param(
             {

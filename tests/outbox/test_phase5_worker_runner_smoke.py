@@ -2,6 +2,7 @@ import argparse
 import uuid
 
 import pytest
+pytestmark = pytest.mark.ci_full
 
 import kogwistar.workers.run_index_job_worker as worker_runner
 from kogwistar.engine_core.engine import GraphKnowledgeEngine

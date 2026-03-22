@@ -1,5 +1,6 @@
 # tests/test_node_docs_rollback.py
 import pytest
+pytestmark = pytest.mark.ci_full
 
 from kogwistar.engine_core.models import Node
 

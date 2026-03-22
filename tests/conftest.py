@@ -17,11 +17,6 @@ except Exception:  # pragma: no cover - local env may not provide it
     sitecustomize = None  # type: ignore
 _TEST_ENV = MonkeyPatch()
 _TEST_ENV.setenv("ANONYMIZED_TELEMETRY", "FALSE")
-_LOCAL_TMP_ROOT = pathlib.Path(__file__).resolve().parents[1] / ".pytest_tmp"
-_LOCAL_TMP_ROOT.mkdir(parents=True, exist_ok=True)
-tempfile.tempdir = str(_LOCAL_TMP_ROOT)
-for _tmp_env in ("TMP", "TEMP", "TMPDIR"):
-    _TEST_ENV.setenv(_tmp_env, str(_LOCAL_TMP_ROOT))
 try:
     import sqlalchemy as sa
 
@@ -37,6 +32,23 @@ try:
 except Exception:  # pragma: no cover - optional in minimal CI environments
     def load_dotenv(*args, **kwargs):  # type: ignore[no-redef]
         return False
+
+try:
+    import _pytest.pathlib as _pytest_pathlib
+    import _pytest.tmpdir as _pytest_tmpdir
+
+    _cleanup_dead_symlinks = _pytest_pathlib.cleanup_dead_symlinks
+
+    def _safe_cleanup_dead_symlinks(root):  # type: ignore[override]
+        try:
+            return _cleanup_dead_symlinks(root)
+        except PermissionError:
+            return None
+
+    _pytest_pathlib.cleanup_dead_symlinks = _safe_cleanup_dead_symlinks
+    _pytest_tmpdir.cleanup_dead_symlinks = _safe_cleanup_dead_symlinks
+except Exception:  # pragma: no cover - optional hardening for Windows temp ACLs
+    pass
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 _TEST_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -74,7 +86,6 @@ try:
         MentionVerification,
     )
     from kogwistar.llm_tasks import LLMTaskSet
-    from kogwistar.engine_core.postgres_backend import PgVectorBackend
 except Exception:  # pragma: no cover - allow lightweight test subsets on limited envs
     ConversationEdge = Any  # type: ignore[assignment]
     ConversationNode = Any  # type: ignore[assignment]
@@ -89,10 +100,14 @@ except Exception:  # pragma: no cover - allow lightweight test subsets on limite
     Grounding = Any  # type: ignore[assignment]
     MentionVerification = Any  # type: ignore[assignment]
     LLMTaskSet = Any  # type: ignore[assignment]
-    PgVectorBackend = Any  # type: ignore[assignment]
 
     def install_engine_hooks(*args, **kwargs):  # type: ignore[no-redef]
         return None
+
+try:
+    from graph_knowledge_engine.engine_core.postgres_backend import PgVectorBackend
+except Exception:  # pragma: no cover - optional in lightweight envs
+    PgVectorBackend = Any  # type: ignore[assignment]
 
 _TEST_NS = uuid.UUID("00000000-0000-0000-0000-000000000000")
 
@@ -100,6 +115,36 @@ _TEST_NS = uuid.UUID("00000000-0000-0000-0000-000000000000")
 @pytest.fixture(scope="session")
 def stable_uuid(*parts: object) -> str:
     return str(uuid.uuid5(_TEST_NS, "|".join(str(p) for p in parts)))
+
+
+class _SimpleTmpPathFactory:
+    def __init__(self) -> None:
+        self._base = pathlib.Path(
+            tempfile.mkdtemp(prefix="kogwistar_pytest_", dir=tempfile.gettempdir())
+        )
+
+    def mktemp(self, name: str, numbered: bool = True) -> pathlib.Path:
+        prefix = f"{name}_" if numbered else name
+        return pathlib.Path(
+            tempfile.mkdtemp(prefix=prefix, dir=str(self._base))
+        )
+
+    def getbasetemp(self) -> pathlib.Path:
+        return self._base
+
+
+@pytest.fixture(scope="session")
+def tmp_path_factory() -> _SimpleTmpPathFactory:
+    factory = _SimpleTmpPathFactory()
+    yield factory
+    shutil.rmtree(factory.getbasetemp(), ignore_errors=True)
+
+
+@pytest.fixture
+def tmp_path(request: pytest.FixtureRequest, tmp_path_factory: _SimpleTmpPathFactory):
+    path = tmp_path_factory.mktemp(request.node.name.replace(os.sep, "_"))
+    request.addfinalizer(lambda: shutil.rmtree(path, ignore_errors=True))
+    return path
 
 
 from pathlib import Path
@@ -435,23 +480,8 @@ def _is_manual_test_explicitly_selected(
     return False
 
 
-_EXECUTION_MARKERS = {"ci", "ci_full", "e2e", "manual"}
 _AREA_MARKERS = {"core", "workflow", "conversation"}
-# Parse the `-m` expression just enough to tell whether pytest is running the
-# cheap `ci` slice or a broader expression that also includes `ci_full`.
 _LIGHTWEIGHT_CI_MARKEXPR_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
-_INTEGRATION_DIRS = {
-    "cdc",
-    "ingestions",
-    "kg_conversation",
-    "mcp",
-    "outbox",
-    "pg_sql",
-    "runtime",
-    "server",
-    "wisdom",
-    "workflow",
-}
 _CORE_DIRS = {"cdc", "core", "ingestions", "outbox", "pg_sql", "primitives"}
 _CONVERSATION_DIRS = {"kg_conversation", "mcp", "wisdom"}
 _WORKFLOW_DIRS = {"runtime", "workflow"}
@@ -484,10 +514,6 @@ _LIGHTWEIGHT_CI_FILE_BLOCKERS = {
     "test_shortids_smoke.py",
     "test_verify_mentions.py",
 }
-_E2E_PATH_RE = re.compile(r"(^|[_\\/])e2e([_./\\-]|$)|[_\\/]test_.*_e2e(?:[_./\\-]|$)")
-# These patterns are the "do not collect in lightweight CI" guardrail.
-# If a test file imports one of these modules at collection time, `pytest -m ci`
-# should skip the file before the import can fail in a minimal environment.
 _LIGHTWEIGHT_CI_IMPORT_BLOCKERS = (
     r"^\s*(?:from|import)\s+sqlalchemy\b",
     r"^\s*(?:from|import)\s+testcontainers\b",
@@ -587,20 +613,6 @@ def _infer_area_markers(item: pytest.Item) -> list[pytest.MarkDecorator]:
     return markers
 
 
-def _infer_execution_marker(item: pytest.Item) -> pytest.MarkDecorator | None:
-    if _has_marker(item, {"ci", "ci_full"}):
-        return None
-    if "manual" in item.keywords:
-        return None
-
-    path = "/".join(_item_path_parts(item)).lower()
-    if _E2E_PATH_RE.search(path) or "integration" in path or any(
-        part in _INTEGRATION_DIRS for part in path.split("/")
-    ):
-        return pytest.mark.ci_full
-    return pytest.mark.ci
-
-
 def pytest_collection_modifyitems(
     config: pytest.Config, items: list[pytest.Item]
 ) -> None:
@@ -613,21 +625,10 @@ def pytest_collection_modifyitems(
     for item in items:
         for marker in _infer_area_markers(item):
             item.add_marker(marker)
-        if pathlib.Path(str(getattr(item, "path", item.fspath))).name in _LIGHTWEIGHT_CI_FILE_BLOCKERS:
-            item.add_marker(pytest.mark.ci_full)
-            continue
-        inferred_execution = _infer_execution_marker(item)
-        if inferred_execution is not None:
-            item.add_marker(inferred_execution)
         if "manual" in item.keywords and not _is_manual_test_explicitly_selected(
             config, item
         ):
             item.add_marker(skip_manual)
-        if not _has_marker(item, {"ci", "ci_full"}) and "manual" not in item.keywords:
-            if "e2e" in item.keywords or "integration" in item.keywords:
-                item.add_marker(pytest.mark.ci_full)
-            else:
-                item.add_marker(pytest.mark.ci)
 
     collected = []
 
@@ -650,6 +651,12 @@ def pytest_collection_modifyitems(
         json.dump(collected, f, indent=2, default=str)
 
 def pytest_configure(config):
+    temp_root = (
+        pathlib.Path(tempfile.gettempdir())
+        / f"kogwistar_pytest_tmp_{os.getpid()}_{uuid.uuid4().hex}"
+    )
+    temp_root.mkdir(parents=True, exist_ok=True)
+    config.option.basetemp = str(temp_root)
     EngineLogManager.configure(
         # EngineLogConfig(
         base_dir=Path(".logs/test"),

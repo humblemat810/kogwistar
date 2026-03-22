@@ -3,6 +3,7 @@ from __future__ import annotations
 from types import MappingProxyType
 from typing import Any, Dict, Mapping, List
 import pytest
+pytestmark = pytest.mark.ci_full
 
 from kogwistar.conversation.models import ConversationAIResponse
 from kogwistar.conversation.resolvers import default_resolver

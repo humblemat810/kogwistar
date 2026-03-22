@@ -1,6 +1,10 @@
 import json
 from pathlib import Path
 
+import pytest
+pytestmark = pytest.mark.ci_full
+pytest.importorskip("fastapi")
+
 from fastapi.testclient import TestClient
 
 

@@ -1,6 +1,8 @@
 import pathlib
 
 import pytest
+pytestmark = pytest.mark.ci_full
+pytest.importorskip("sqlalchemy")
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.postgres_backend import PgVectorBackend

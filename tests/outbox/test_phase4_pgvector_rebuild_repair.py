@@ -1,5 +1,6 @@
 import json
 import pytest
+pytest.importorskip("sqlalchemy")
 import sqlalchemy as sa
 
 from kogwistar.engine_core.models import Node, Edge, Grounding, Span

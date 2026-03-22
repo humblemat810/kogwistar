@@ -7,11 +7,11 @@ from kogwistar.engine_core.models import Edge, Grounding, Node, Span
 from kogwistar.server.run_registry import RunRegistry
 from tests.conftest import _make_engine_pair
 
-pytestmark = [pytest.mark.core, pytest.mark.ci_full]
+pytestmark = [pytest.mark.core]
 
 
 BACKEND_PARAMS = [
-    pytest.param("fake", id="fake", marks=pytest.mark.ci_full),
+    pytest.param("fake", id="fake", marks=pytest.mark.ci),
     pytest.param("chroma", id="chroma", marks=pytest.mark.ci_full),
     pytest.param("pg", id="pg", marks=pytest.mark.ci_full),
 ]
@@ -160,8 +160,13 @@ def _mk_dependency_edge(
 
 
 def _make_pair(
-    backend_kind: str, tmp_path, sa_engine, pg_schema
+    backend_kind: str, tmp_path, request
 ) -> tuple[object, object]:
+    sa_engine = None
+    pg_schema = None
+    if backend_kind == "pg":
+        sa_engine = request.getfixturevalue("sa_engine")
+        pg_schema = request.getfixturevalue("pg_schema")
     kg_engine, conversation_engine = _make_engine_pair(
         backend_kind=backend_kind,
         tmp_path=tmp_path,
@@ -186,11 +191,9 @@ def _backend_meta_for_node(node: Node) -> dict:
 
 @pytest.mark.parametrize("backend_kind", BACKEND_PARAMS)
 def test_backend_contract_collection_crud_and_where(
-    backend_kind: str, tmp_path, sa_engine, pg_schema
+    backend_kind: str, tmp_path, request
 ):
-    kg_engine, _conversation_engine = _make_pair(
-        backend_kind, tmp_path, sa_engine, pg_schema
-    )
+    kg_engine, _conversation_engine = _make_pair(backend_kind, tmp_path, request)
 
     doc_id = f"doc::{backend_kind}"
     n1 = _mk_node(
@@ -255,11 +258,9 @@ def test_backend_contract_collection_crud_and_where(
 
 @pytest.mark.parametrize("backend_kind", BACKEND_PARAMS)
 def test_backend_contract_edge_endpoint_materialization(
-    backend_kind: str, tmp_path, sa_engine, pg_schema
+    backend_kind: str, tmp_path, request
 ):
-    kg_engine, _conversation_engine = _make_pair(
-        backend_kind, tmp_path, sa_engine, pg_schema
-    )
+    kg_engine, _conversation_engine = _make_pair(backend_kind, tmp_path, request)
 
     doc_id = f"doc::{backend_kind}::edges"
     n1 = _mk_node(
@@ -292,11 +293,9 @@ def test_backend_contract_edge_endpoint_materialization(
 
 @pytest.mark.parametrize("backend_kind", BACKEND_PARAMS)
 def test_backend_contract_meta_store_and_run_registry(
-    backend_kind: str, tmp_path, sa_engine, pg_schema
+    backend_kind: str, tmp_path, request
 ):
-    _kg_engine, conversation_engine = _make_pair(
-        backend_kind, tmp_path, sa_engine, pg_schema
-    )
+    _kg_engine, conversation_engine = _make_pair(backend_kind, tmp_path, request)
     meta = conversation_engine.meta_sqlite
 
     assert meta.current_user_seq("user-a") == 0
@@ -373,11 +372,9 @@ def test_backend_contract_meta_store_and_run_registry(
 
 @pytest.mark.parametrize("backend_kind", BACKEND_PARAMS)
 def test_backend_contract_conversation_phase1_rules(
-    backend_kind: str, tmp_path, sa_engine, pg_schema
+    backend_kind: str, tmp_path, request
 ):
-    _kg_engine, conversation_engine = _make_pair(
-        backend_kind, tmp_path, sa_engine, pg_schema
-    )
+    _kg_engine, conversation_engine = _make_pair(backend_kind, tmp_path, request)
     conversation_engine._phase1_enable_index_jobs = False
     conversation_id = f"conv::{backend_kind}"
     user_id = "u-contract"

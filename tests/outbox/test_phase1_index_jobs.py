@@ -1,4 +1,6 @@
 from __future__ import annotations
+import pytest
+pytestmark = pytest.mark.ci_full
 
 import json
 import os

@@ -2,6 +2,9 @@ from __future__ import annotations
 import json
 import os
 import pytest
+pytest.importorskip("fastapi")
+pytest.importorskip("fastmcp")
+pytest.importorskip("sqlalchemy")
 from fastapi.testclient import TestClient
 from unittest.mock import AsyncMock, patch
 from sqlalchemy.orm import sessionmaker

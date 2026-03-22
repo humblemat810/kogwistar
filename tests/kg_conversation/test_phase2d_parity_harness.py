@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+pytestmark = pytest.mark.ci_full
 from typing import Any, Type, TypeVar
 
 from pydantic import BaseModel

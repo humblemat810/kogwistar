@@ -1,3 +1,9 @@
+import pytest
+pytestmark = pytest.mark.ci_full
+
+pytest.importorskip("fastapi")
+pytest.importorskip("fastmcp")
+
 from fastapi.testclient import TestClient
 
 # Import your FastAPI app

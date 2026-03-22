@@ -1,6 +1,7 @@
 import json
 
 import pytest
+pytestmark = pytest.mark.ci
 
 from kogwistar.engine_core.models import Edge, Node
 from kogwistar.graph_query import GraphQuery

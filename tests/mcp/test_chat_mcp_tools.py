@@ -8,6 +8,8 @@ from pathlib import Path
 import uuid
 
 import pytest
+pytest.importorskip("fastapi")
+pytest.importorskip("fastmcp")
 
 pytestmark = pytest.mark.ci_full
 

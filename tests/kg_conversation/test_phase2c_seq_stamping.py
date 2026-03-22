@@ -1,4 +1,6 @@
-# These imports assume the repo layout: kogwistar/*.py
+import pytest
+pytestmark = pytest.mark.ci_full
+# These imports assume the repo layout: graph_knowledge_engine/*.py
 from kogwistar.conversation.conversation_orchestrator import (
     ConversationOrchestrator,
 )

@@ -1,20 +1,33 @@
 import json
 import pytest
+pytestmark = pytest.mark.core
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.models import MentionVerification, Node
 
+from tests._helpers.fake_backend import build_fake_backend
 from tests.conftest import FakeEmbeddingFunction
 from tests._kg_factories import kg_document, kg_grounding
 
 
 @pytest.fixture
-def engine_tmp(tmp_path):
-    return GraphKnowledgeEngine(
-        persist_directory=str(tmp_path / "chroma"),
-        embedding_function=FakeEmbeddingFunction(dim=8),
-    )
+def engine_tmp(tmp_path, backend_kind):
+    kwargs = {
+        "persist_directory": str(tmp_path / "chroma"),
+        "embedding_function": FakeEmbeddingFunction(dim=8),
+    }
+    if backend_kind == "fake":
+        kwargs["backend_factory"] = build_fake_backend
+    return GraphKnowledgeEngine(**kwargs)
 
 
+@pytest.mark.parametrize(
+    "backend_kind",
+    [
+        pytest.param("fake", marks=pytest.mark.ci),
+        pytest.param("chroma", marks=pytest.mark.ci_full),
+    ],
+    indirect=True,
+)
 def test_verify_mentions_for_doc(engine_tmp):
     # 1) add a doc with known text
     text = "Photosynthesis lets plants convert light energy to chemical energy. Chlorophyll is the pigment that absorbs light."

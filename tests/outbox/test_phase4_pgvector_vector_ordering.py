@@ -1,4 +1,5 @@
 import pytest
+pytest.importorskip("sqlalchemy")
 
 from kogwistar.engine_core.engine_postgres import PgVectorBackend
 

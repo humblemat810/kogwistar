@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List
 
 import pytest
+pytestmark = pytest.mark.ci_full
 
 from kogwistar.runtime.runtime import StepContext, WorkflowRuntime
 from kogwistar.runtime.resolvers import MappingStepResolver

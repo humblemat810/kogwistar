@@ -1,3 +1,9 @@
+import pytest
+pytestmark = pytest.mark.core
+
+from graph_knowledge_engine.engine_core.engine import GraphKnowledgeEngine
+from tests._helpers.embeddings import build_test_embedding_function
+from tests._helpers.fake_backend import build_fake_backend
 
 from kogwistar.engine_core.models import (
     Grounding,
@@ -5,6 +11,17 @@ from kogwistar.engine_core.models import (
     Node,
     Span,
 )
+
+
+@pytest.fixture(scope="function")
+def engine(tmp_path, backend_kind):
+    kwargs = {
+        "persist_directory": str(tmp_path / "chroma"),
+        "embedding_function": build_test_embedding_function("constant", dim=384),
+    }
+    if backend_kind == "fake":
+        kwargs["backend_factory"] = build_fake_backend
+    return GraphKnowledgeEngine(**kwargs)
 
 
 def _ref_for(doc_id: str) -> Span:
@@ -27,6 +44,14 @@ def _ref_for(doc_id: str) -> Span:
     )
 
 
+@pytest.mark.parametrize(
+    "backend_kind",
+    [
+        pytest.param("fake", marks=pytest.mark.ci),
+        pytest.param("chroma", marks=pytest.mark.ci_full),
+    ],
+    indirect=True,
+)
 def test_chroma_metadata_strips_none(engine):
     n = Node(
         label="Entity A",

@@ -2,6 +2,9 @@ import time
 import pathlib
 
 import pytest
+pytestmark = pytest.mark.ci_full
+
+pytest.importorskip("sqlalchemy")
 
 import sqlalchemy as sa
 

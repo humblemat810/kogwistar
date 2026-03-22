@@ -1,4 +1,6 @@
 import pytest
+pytestmark = pytest.mark.ci_full
+pytest.importorskip("sqlalchemy")
 
 from kogwistar.runtime.design import build_workflow_from_engine
 

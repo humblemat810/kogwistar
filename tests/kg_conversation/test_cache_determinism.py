@@ -1,4 +1,5 @@
 import pytest
+pytestmark = pytest.mark.ci_full
 import shutil
 import os
 import pathlib

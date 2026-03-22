@@ -9,6 +9,9 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+pytest.importorskip("fastapi")
+pytest.importorskip("fastmcp")
+pytest.importorskip("sqlalchemy")
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 

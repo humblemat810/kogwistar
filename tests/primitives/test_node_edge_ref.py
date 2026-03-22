@@ -1,3 +1,7 @@
+import pytest
+
+pytestmark = pytest.mark.core
+
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.models import (
     Document,
@@ -7,6 +11,19 @@ from kogwistar.engine_core.models import (
     Node,
     Span,
 )
+from tests._helpers.embeddings import build_test_embedding_function
+from tests._helpers.fake_backend import build_fake_backend
+
+
+@pytest.fixture(scope="function")
+def engine(tmp_path, backend_kind):
+    kwargs = {
+        "persist_directory": str(tmp_path / "chroma"),
+        "embedding_function": build_test_embedding_function("constant", dim=384),
+    }
+    if backend_kind == "fake":
+        kwargs["backend_factory"] = build_fake_backend
+    return GraphKnowledgeEngine(**kwargs)
 
 
 def _mk_span(doc_id: str, method: str) -> Span:
@@ -32,6 +49,14 @@ def _mk_span(doc_id: str, method: str) -> Span:
     )
 
 
+@pytest.mark.parametrize(
+    "backend_kind",
+    [
+        pytest.param("fake", marks=pytest.mark.ci),
+        pytest.param("chroma", marks=pytest.mark.ci_full),
+    ],
+    indirect=True,
+)
 def test_node_refs_indexing(engine: GraphKnowledgeEngine):
     doc = Document(
         id="doc-node-refs",
@@ -74,6 +99,14 @@ def iter_span(n_or_e: Node | Edge):
             yield sp
 
 
+@pytest.mark.parametrize(
+    "backend_kind",
+    [
+        pytest.param("fake", marks=pytest.mark.ci),
+        pytest.param("chroma", marks=pytest.mark.ci_full),
+    ],
+    indirect=True,
+)
 def test_edge_refs_indexing(engine):
     doc = Document(
         id="doc-edge-refs",

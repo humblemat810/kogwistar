@@ -4,6 +4,7 @@ from typing import Any, Dict, List
 
 import httpx
 import pytest
+pytestmark = pytest.mark.ci_full
 import json
 import requests
 

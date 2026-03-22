@@ -11,7 +11,7 @@ import pytest
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core import models
 
-pytestmark = pytest.mark.ci
+pytestmark = pytest.mark.ci_full
 
 
 def _dummy_span(doc_id: str = "_dummy_doc") -> models.Span:

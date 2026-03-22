@@ -9,6 +9,7 @@ import uuid
 from pathlib import Path
 
 import pytest
+pytestmark = pytest.mark.ci
 
 import scripts.runtime_tutorial_ladder as runtime_tutorial_ladder
 import scripts.tutorial_ladder as tutorial_ladder

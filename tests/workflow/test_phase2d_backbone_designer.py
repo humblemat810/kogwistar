@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from kogwistar.conversation.designer import ConversationWorkflowDesigner
 import pytest
+pytestmark = pytest.mark.ci_full
 from typing import Sequence
 
 pytest.importorskip("chromadb")

@@ -30,7 +30,7 @@ def _mk_claim_node(
 @pytest.mark.parametrize(
     "backend_kind",
     [
-        pytest.param("fake", marks=pytest.mark.ci_full),
+        pytest.param("fake", marks=pytest.mark.ci),
         pytest.param("chroma", marks=pytest.mark.ci_full),
         pytest.param("pg", marks=pytest.mark.ci_full),
     ],
@@ -103,7 +103,7 @@ def test_search_nodes_as_of_redirect_cutoff(
 @pytest.mark.parametrize(
     "backend_kind",
     [
-        pytest.param("fake", marks=pytest.mark.ci_full),
+        pytest.param("fake", marks=pytest.mark.ci),
         pytest.param("chroma", marks=pytest.mark.ci_full),
         pytest.param("pg", marks=pytest.mark.ci_full),
     ],
@@ -188,7 +188,7 @@ def test_search_nodes_as_of_tombstone_and_future_effective(
 @pytest.mark.parametrize(
     "backend_kind",
     [
-        pytest.param("fake", marks=pytest.mark.ci_full),
+        pytest.param("fake", marks=pytest.mark.ci),
         pytest.param("chroma", marks=pytest.mark.ci_full),
         pytest.param("pg", marks=pytest.mark.ci_full),
     ],

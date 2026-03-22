@@ -1,3 +1,5 @@
+import pytest
+pytestmark = pytest.mark.ci_full
 import json
 
 

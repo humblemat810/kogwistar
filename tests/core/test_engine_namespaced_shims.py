@@ -6,12 +6,13 @@ from pathlib import Path
 
 import pytest
 
-pytestmark = pytest.mark.ci_full
+pytestmark = pytest.mark.ci
 
 from kogwistar.engine_core.engine import (
     GraphKnowledgeEngine,
     _SHIM_METHOD_MAP,
 )
+from tests._helpers.fake_backend import build_fake_backend
 
 
 _SHIM_CASES = [
@@ -50,7 +51,10 @@ def test_non_conversation_shims_forward_and_warn(
 ):
     test_db_dir = Path.cwd() / ".tmp_shim_tests" / str(uuid.uuid4())
     test_db_dir.mkdir(parents=True, exist_ok=True)
-    engine = GraphKnowledgeEngine(persist_directory=str(test_db_dir))
+    engine = GraphKnowledgeEngine(
+        persist_directory=str(test_db_dir),
+        backend_factory=build_fake_backend,
+    )
 
     namespace_obj = getattr(engine, ns_name)
     sentinel = object()

@@ -1,3 +1,5 @@
+import pytest
+pytestmark = pytest.mark.ci_full
 from kogwistar.conversation.models import ContextSnapshotMetadata
 from kogwistar.engine_core.models import ContextCost
 

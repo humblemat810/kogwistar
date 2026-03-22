@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import pytest
+pytest.importorskip("sqlalchemy")
+
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
-
-import pytest
 
 from kogwistar.engine_core.postgres_backend import where_jsonb
 

@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 from typing import Any, Dict, Iterable, Optional
 import pytest
+pytest.importorskip("fastapi")
+pytest.importorskip("websocket")
 import requests
 import websocket  # pip install websocket-client
 
