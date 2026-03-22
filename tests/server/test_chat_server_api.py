@@ -32,7 +32,7 @@ from kogwistar.server.chat_service import (
 )
 from kogwistar.server.run_registry import RunRegistry
 
-pytestmark = pytest.mark.ci
+pytestmark = pytest.mark.ci_full
 
 
 class FakeEmbeddingFunction:

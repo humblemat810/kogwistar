@@ -60,6 +60,7 @@ Normalized numbering and phase-series naming:
 
 ### ARD (topic + phase series)
 - `ARD-ci-marking-strategy.md`
+- `ARD-test-suite-lightweight-suite.md`
 - `ARD-p2d-conversation-workflow-v2-parity.md`
 - `ARD-p2d-appendix-a-state-retries-ordering.md`
 - `ARD-agentic-answering-system.md`

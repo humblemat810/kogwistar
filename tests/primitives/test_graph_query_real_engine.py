@@ -17,6 +17,7 @@ from tests._helpers.fake_backend import build_fake_backend
 
 pytestmark = [
     pytest.mark.core,
+    pytest.mark.ci_full,
 ]
 
 
@@ -79,7 +80,7 @@ def make_engine(tmp_path, *, backend_kind: str) -> GraphKnowledgeEngine:
 @pytest.mark.parametrize(
     "backend_kind",
     [
-        pytest.param("fake", marks=pytest.mark.ci),
+        pytest.param("fake", marks=pytest.mark.ci_full),
         pytest.param("chroma", marks=pytest.mark.ci_full),
     ],
 )
@@ -190,7 +191,7 @@ def test_graph_query_structural_end_to_end(tmp_path, backend_kind):
 @pytest.mark.parametrize(
     "backend_kind",
     [
-        pytest.param("fake", marks=pytest.mark.ci),
+        pytest.param("fake", marks=pytest.mark.ci_full),
         pytest.param("chroma", marks=pytest.mark.ci_full),
     ],
 )

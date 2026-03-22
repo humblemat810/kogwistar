@@ -9,10 +9,11 @@ python -m kogwistar.workers.run_index_job_worker \
 
 import argparse
 import os
-from typing import Optional
+from typing import Any, Optional
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
-from kogwistar.engine_core.postgres_backend import PgVectorBackend
+
+PgVectorBackend: Any | None = None
 
 from .index_job_worker import IndexJobWorker, run_forever
 
@@ -44,6 +45,14 @@ def _build_engine(args: argparse.Namespace) -> GraphKnowledgeEngine:
 
     if backend == "pg":
         import sqlalchemy as sa
+        global PgVectorBackend
+
+        if PgVectorBackend is None:
+            from graph_knowledge_engine.engine_core.postgres_backend import (
+                PgVectorBackend as _PgVectorBackend,
+            )
+
+            PgVectorBackend = _PgVectorBackend
 
         dsn = args.pg_url or os.getenv("GKE_PG_URL")
         if not dsn:

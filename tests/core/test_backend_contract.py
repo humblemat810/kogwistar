@@ -7,11 +7,11 @@ from kogwistar.engine_core.models import Edge, Grounding, Node, Span
 from kogwistar.server.run_registry import RunRegistry
 from tests.conftest import _make_engine_pair
 
-pytestmark = [pytest.mark.core, pytest.mark.ci]
+pytestmark = [pytest.mark.core, pytest.mark.ci_full]
 
 
 BACKEND_PARAMS = [
-    pytest.param("fake", id="fake", marks=pytest.mark.ci),
+    pytest.param("fake", id="fake", marks=pytest.mark.ci_full),
     pytest.param("chroma", id="chroma", marks=pytest.mark.ci_full),
     pytest.param("pg", id="pg", marks=pytest.mark.ci_full),
 ]

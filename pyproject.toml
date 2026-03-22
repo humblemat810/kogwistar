@@ -16,11 +16,8 @@ dependencies = [
   "pydantic-extension>=0.0.7",
   "pydantic>=2.6",
   "anyio>=4.0",
-  "fastapi>=0.111",
   "Jinja2>=3.1",
-  "uvicorn[standard]>=0.30",
   "mcp>=1.2",
-  "fastmcp==3.0.0",
   "httpx>=0.28.1",
   "python-jose[cryptography]>=3.3",
   "PyJWT>=2.8",
@@ -35,7 +32,7 @@ dependencies = [
 [project.optional-dependencies]
 chroma = ["chromadb>=1.0.15"]
 pgvector = ["sqlalchemy>=2.0", "pgvector>=0.3.6", "psycopg[binary]>=3.1"]
-server = ["fastmcp==3.0.0"]
+server = ["fastapi>=0.111", "uvicorn[standard]>=0.30", "fastmcp==3.0.0"]
 openai = ["langchain-core>=0.3.0", "langchain-openai>=0.3.0"]
 gemini = ["langchain-core>=0.3.0", "langchain-google-genai>=2.0.0"]
 ollama = ["ollama>=0.5.3", "langchain-core>=0.3.0", "langchain-ollama>=0.3.0"]
@@ -50,6 +47,8 @@ typecheck = ["mypy>=1.8"]
 build = ["build", "twine"]
 full = [
   "chromadb>=1.0.15",
+  "fastapi>=0.111",
+  "uvicorn[standard]>=0.30",
   "sqlalchemy>=2.0",
   "pgvector>=0.3.6",
   "psycopg[binary]>=3.1",

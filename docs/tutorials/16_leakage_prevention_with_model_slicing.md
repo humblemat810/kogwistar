@@ -37,6 +37,22 @@ The companion script `scripts/tutorial_sections/16_leakage_prevention_with_model
 3. **Validation Guards**: Showing how trying to force LLM data back into a base model raises a `ValidationError` because required internal fields are missing.
 4. **Heuristic Protection**: How the library protects you even if you forget to slice explicitly.
 
+## Run or Inspect
+
+Open `scripts/tutorial_sections/16_leakage_prevention_with_model_slicing.py` to inspect the slice definitions and schema comparison logic, or run it to see the model slicing output locally.
+
+## Inspect The Result
+
+The result should make it obvious which fields are omitted from the `llm` slice and which internal fields remain available only to the engine.
+
+## Invariant Demonstrated
+
+Sensitive engine metadata stays out of the LLM-facing schema unless it is explicitly marked for inclusion.
+
+## Next Tutorial
+
+Continue with `17_custom_llm_provider.md` to see how provider selection and model routing fit into the same pattern.
+
 ## Next Steps
 
 Explore `kogwistar/engine_core/models.py` to see how `Node` and `Edge` use these decorators to keep your knowledge graph secure.

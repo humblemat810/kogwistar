@@ -86,6 +86,7 @@ def _install_langchain_core_stubs() -> None:
             return self
 
     prompts.ChatPromptTemplate = ChatPromptTemplate
+    language_models.BaseChatModel = BaseChatModel
     chat_models.BaseChatModel = BaseChatModel
 
     sys.modules["langchain_core"] = langchain_core
@@ -170,7 +171,6 @@ def _install_gke_models_stub() -> None:
 _install_langchain_core_stubs()
 _install_gke_models_stub()
 
-from langchain_google_genai import ChatGoogleGenerativeAI
 import pytest
 
 from kogwistar.conversation.agentic_answering import (
@@ -643,6 +643,8 @@ def test_agent_with_real_llm_cached(monkeypatch, engine, conversation_engine):
     try:
         model_name = "gemini-2.5-flash"
         temperature = 0.1
+        from langchain_google_genai import ChatGoogleGenerativeAI
+
         llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=temperature)
     except:
         pass

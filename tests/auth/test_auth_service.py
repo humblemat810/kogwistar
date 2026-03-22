@@ -1,6 +1,6 @@
 import pytest
 
-pytestmark = pytest.mark.ci
+pytestmark = pytest.mark.ci_full
 from kogwistar.server.auth.db import (
     create_auth_engine,
     init_auth_db,

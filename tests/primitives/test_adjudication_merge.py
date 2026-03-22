@@ -51,7 +51,7 @@ def _load_node(engine, node_id: str) -> dict:
 @pytest.mark.parametrize(
     "backend_kind",
     [
-        pytest.param("fake", marks=pytest.mark.ci),
+    pytest.param("fake", marks=pytest.mark.ci_full),
         "chroma",
     ],
     indirect=True,
@@ -124,7 +124,7 @@ def test_adjudication_and_commit(engine):
 @pytest.mark.parametrize(
     "backend_kind",
     [
-        pytest.param("fake", marks=pytest.mark.ci),
+    pytest.param("fake", marks=pytest.mark.ci_full),
         "chroma",
     ],
     indirect=True,

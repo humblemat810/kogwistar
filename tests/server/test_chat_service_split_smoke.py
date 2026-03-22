@@ -16,7 +16,7 @@ from kogwistar.server.chat_service_workflow_design import (
 )
 from kogwistar.server.resources import _LazyResource
 
-pytestmark = pytest.mark.ci
+pytestmark = pytest.mark.ci_full
 
 
 class _Owner:

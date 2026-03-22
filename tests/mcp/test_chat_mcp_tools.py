@@ -9,7 +9,7 @@ import uuid
 
 import pytest
 
-pytestmark = pytest.mark.ci
+pytestmark = pytest.mark.ci_full
 
 import kogwistar.server_mcp_with_admin as server
 from kogwistar.server import resources as server_resources

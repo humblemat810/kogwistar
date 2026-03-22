@@ -5,8 +5,10 @@ import uuid
 import json
 import os
 import re
+import pathlib
+import tempfile
 from _pytest.monkeypatch import MonkeyPatch
-from typing import cast
+from typing import Any, cast
 import dataclasses
 
 try:
@@ -15,24 +17,33 @@ except Exception:  # pragma: no cover - local env may not provide it
     sitecustomize = None  # type: ignore
 _TEST_ENV = MonkeyPatch()
 _TEST_ENV.setenv("ANONYMIZED_TELEMETRY", "FALSE")
+_LOCAL_TMP_ROOT = pathlib.Path(__file__).resolve().parents[1] / ".pytest_tmp"
+_LOCAL_TMP_ROOT.mkdir(parents=True, exist_ok=True)
+tempfile.tempdir = str(_LOCAL_TMP_ROOT)
+for _tmp_env in ("TMP", "TEMP", "TMPDIR"):
+    _TEST_ENV.setenv(_tmp_env, str(_LOCAL_TMP_ROOT))
 try:
     import sqlalchemy as sa
 
     has_sa = True
 except Exception:  # pragma: no cover - optional for non-pg test subsets
+    sa = None  # type: ignore[assignment]
     has_sa = False
 
 
 import sys
-import pathlib
-from dotenv import load_dotenv
+try:
+    from dotenv import load_dotenv
+except Exception:  # pragma: no cover - optional in minimal CI environments
+    def load_dotenv(*args, **kwargs):  # type: ignore[no-redef]
+        return False
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 _TEST_ROOT = pathlib.Path(__file__).resolve().parents[1]
 for _env_name in (".env", ".env.test"):
     load_dotenv(_TEST_ROOT / _env_name, override=False)
 import pytest
-from typing import Any, List, Optional, Sequence, Iterator, TYPE_CHECKING
+from typing import List, Optional, Sequence, Iterator, TYPE_CHECKING
 
 if TYPE_CHECKING:
     import sqlalchemy as sa
@@ -44,47 +55,44 @@ except Exception:  # pragma: no cover - optional for langchain-dependent tests
     class Runnable:  # type: ignore
         pass
 
-
-from kogwistar.conversation.models import (
-    ConversationEdge,
-    ConversationNode,
-)
-from kogwistar.conversation.policy import install_engine_hooks
-from kogwistar.conversation.service import ConversationService
-from kogwistar.engine_core.engine import GraphKnowledgeEngine
-
-from kogwistar.engine_core.models import (
-    Edge,
-    LLMGraphExtraction,
-    LLMMergeAdjudication,
-    AdjudicationVerdict,
-    Node,
-    Span,
-    Grounding,
-    MentionVerification,
-)
-
-# Import type used for type hints in fixtures
-from kogwistar.llm_tasks import LLMTaskSet
-
 try:
+    from kogwistar.conversation.models import (
+        ConversationEdge,
+        ConversationNode,
+    )
+    from kogwistar.conversation.policy import install_engine_hooks
+    from kogwistar.conversation.service import ConversationService
+    from kogwistar.engine_core.engine import GraphKnowledgeEngine
+    from kogwistar.engine_core.models import (
+        Edge,
+        LLMGraphExtraction,
+        LLMMergeAdjudication,
+        AdjudicationVerdict,
+        Node,
+        Span,
+        Grounding,
+        MentionVerification,
+    )
+    from kogwistar.llm_tasks import LLMTaskSet
     from kogwistar.engine_core.postgres_backend import PgVectorBackend
 except Exception:  # pragma: no cover - allow lightweight test subsets on limited envs
-    # ConversationEdge = Any  # type: ignore
-    # ConversationNode = Any  # type: ignore
-    # ConversationService = Any  # type: ignore
-    # GraphKnowledgeEngine = Any  # type: ignore
-    # Edge = Any  # type: ignore
-    # LLMGraphExtraction = Any  # type: ignore
-    # LLMNode = Any  # type: ignore
-    # LLMEdge = Any  # type: ignore
-    # LLMMergeAdjudication = Any  # type: ignore
-    # AdjudicationVerdict = Any  # type: ignore
-    # Node = Any  # type: ignore
-    # Span = Any  # type: ignore
-    # Grounding = Any  # type: ignore
-    # MentionVerification = Any  # type: ignore
-    PgVectorBackend = Any  # type: ignore
+    ConversationEdge = Any  # type: ignore[assignment]
+    ConversationNode = Any  # type: ignore[assignment]
+    ConversationService = Any  # type: ignore[assignment]
+    GraphKnowledgeEngine = Any  # type: ignore[assignment]
+    Edge = Any  # type: ignore[assignment]
+    LLMGraphExtraction = Any  # type: ignore[assignment]
+    LLMMergeAdjudication = Any  # type: ignore[assignment]
+    AdjudicationVerdict = Any  # type: ignore[assignment]
+    Node = Any  # type: ignore[assignment]
+    Span = Any  # type: ignore[assignment]
+    Grounding = Any  # type: ignore[assignment]
+    MentionVerification = Any  # type: ignore[assignment]
+    LLMTaskSet = Any  # type: ignore[assignment]
+    PgVectorBackend = Any  # type: ignore[assignment]
+
+    def install_engine_hooks(*args, **kwargs):  # type: ignore[no-redef]
+        return None
 
 _TEST_NS = uuid.UUID("00000000-0000-0000-0000-000000000000")
 
@@ -429,6 +437,9 @@ def _is_manual_test_explicitly_selected(
 
 _EXECUTION_MARKERS = {"ci", "ci_full", "e2e", "manual"}
 _AREA_MARKERS = {"core", "workflow", "conversation"}
+# Parse the `-m` expression just enough to tell whether pytest is running the
+# cheap `ci` slice or a broader expression that also includes `ci_full`.
+_LIGHTWEIGHT_CI_MARKEXPR_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _INTEGRATION_DIRS = {
     "cdc",
     "ingestions",
@@ -444,7 +455,57 @@ _INTEGRATION_DIRS = {
 _CORE_DIRS = {"cdc", "core", "ingestions", "outbox", "pg_sql", "primitives"}
 _CONVERSATION_DIRS = {"kg_conversation", "mcp", "wisdom"}
 _WORKFLOW_DIRS = {"runtime", "workflow"}
+_LIGHTWEIGHT_CI_DIR_BLOCKERS = {
+    "cdc",
+    "ingestions",
+    "mcp",
+    "outbox",
+    "pg_sql",
+    "runtime",
+    "server",
+    "wisdom",
+    "workflow",
+}
+_LIGHTWEIGHT_CI_FILE_BLOCKERS = {
+    "test_adjudication_merge.py",
+    "test_adjudication_merge_positive.py",
+    "test_aliasing.py",
+    "test_batch_adjudication.py",
+    "test_custom_embedder_injection.py",
+    "test_document_rollback.py",
+    "test_edge_endpoints_rollback.py",
+    "test_embedder_default_and_verify.py",
+    "test_embeddings_optional.py",
+    "test_generate_cross_kind_candidates.py",
+    "test_metadata_sanitization.py",
+    "test_node_docs_rollback.py",
+    "test_node_edge_ref.py",
+    "test_engine_sqlite_uow_join.py",
+    "test_shortids_smoke.py",
+    "test_verify_mentions.py",
+}
 _E2E_PATH_RE = re.compile(r"(^|[_\\/])e2e([_./\\-]|$)|[_\\/]test_.*_e2e(?:[_./\\-]|$)")
+# These patterns are the "do not collect in lightweight CI" guardrail.
+# If a test file imports one of these modules at collection time, `pytest -m ci`
+# should skip the file before the import can fail in a minimal environment.
+_LIGHTWEIGHT_CI_IMPORT_BLOCKERS = (
+    r"^\s*(?:from|import)\s+sqlalchemy\b",
+    r"^\s*(?:from|import)\s+testcontainers\b",
+    r"^\s*(?:from|import)\s+websocket\b",
+    r"^\s*(?:from|import)\s+fastapi\b",
+    r"^\s*(?:from|import)\s+mcp\b",
+    "graph_knowledge_engine.engine_core.postgres_backend",
+    "graph_knowledge_engine.engine_core.engine_postgres",
+    "graph_knowledge_engine.engine_core.engine_postgres_meta",
+    "graph_knowledge_engine.engine_core.chroma_backend",
+    "graph_knowledge_engine.server.auth.",
+    "graph_knowledge_engine.server.resources",
+    "graph_knowledge_engine.server.chat_api",
+    "graph_knowledge_engine.server.runtime_api",
+    "graph_knowledge_engine.server.auth_middleware",
+    "graph_knowledge_engine.server_mcp_with_admin",
+    "graph_knowledge_engine.cdc.change_bridge",
+)
 
 
 def _item_path_parts(item: pytest.Item) -> tuple[str, ...]:
@@ -459,6 +520,44 @@ def _item_path_parts(item: pytest.Item) -> tuple[str, ...]:
 
 def _has_marker(item: pytest.Item, names: set[str]) -> bool:
     return any(name in item.keywords for name in names)
+
+
+def _is_lightweight_ci_run(config: pytest.Config) -> bool:
+    markexpr = getattr(config.option, "markexpr", "") or ""
+    if not markexpr:
+        return False
+    tokens = set(_LIGHTWEIGHT_CI_MARKEXPR_RE.findall(markexpr))
+    return "ci" in tokens and "ci_full" not in tokens
+
+
+def _path_contains_blocked_lightweight_import(collection_path: Path) -> bool:
+    try:
+        text = collection_path.read_text(encoding="utf-8")
+    except Exception:
+        return False
+
+    for pattern in _LIGHTWEIGHT_CI_IMPORT_BLOCKERS:
+        if pattern.startswith("^"):
+            if re.search(pattern, text, re.MULTILINE):
+                return True
+        elif pattern in text:
+            return True
+    return False
+
+
+def pytest_ignore_collect(collection_path: Path, config: pytest.Config) -> bool:
+    collection_path = pathlib.Path(str(collection_path))
+    if any(part.startswith(".tmp") for part in collection_path.parts):
+        return True
+    if not _is_lightweight_ci_run(config):
+        return False
+    if collection_path.suffix != ".py":
+        return False
+    if "tests" not in collection_path.parts:
+        return False
+    if any(part in _LIGHTWEIGHT_CI_DIR_BLOCKERS for part in collection_path.parts):
+        return True
+    return _path_contains_blocked_lightweight_import(collection_path)
 
 
 def _primary_test_dir(item: pytest.Item) -> str | None:
@@ -514,6 +613,9 @@ def pytest_collection_modifyitems(
     for item in items:
         for marker in _infer_area_markers(item):
             item.add_marker(marker)
+        if pathlib.Path(str(getattr(item, "path", item.fspath))).name in _LIGHTWEIGHT_CI_FILE_BLOCKERS:
+            item.add_marker(pytest.mark.ci_full)
+            continue
         inferred_execution = _infer_execution_marker(item)
         if inferred_execution is not None:
             item.add_marker(inferred_execution)
@@ -681,7 +783,12 @@ from tests._helpers.embeddings import (
     LexicalHashEmbeddingFunction,
     build_test_embedding_function,
 )
-from tests._helpers.fake_backend import build_fake_backend
+try:
+    from tests._helpers.fake_backend import build_fake_backend
+except Exception:  # pragma: no cover - allow collection without the engine stack
+    def build_fake_backend(*args, **kwargs):  # type: ignore[no-redef]
+        pytest.importorskip("pydantic")
+        raise RuntimeError("fake backend helper requires the engine stack")
 
 
 FakeEmbeddingFunction = ConstantEmbeddingFunction

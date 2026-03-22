@@ -5,7 +5,7 @@ import pytest
 
 from kogwistar.engine_core.engine_sqlite import EngineSQLite
 
-pytestmark = pytest.mark.ci
+pytestmark = pytest.mark.ci_full
 
 
 def test_sqlite_transaction_joins_active_conn_no_extra_connect(tmp_path: Path):

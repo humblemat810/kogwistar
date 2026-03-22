@@ -2,6 +2,14 @@
 
 In this tutorial, we explore how to extend the `graphrag` engine with custom LLM providers. Instead of a monolithic provider interface, the system uses a **task registry style** where individual LLM tasks are defined as pluggable callables.
 
+## What You Will Build
+
+You will build a provider-backed `LLMTaskSet` and see how the engine consumes it without caring about the underlying client library.
+
+## Why This Matters
+
+Splitting provider behavior into task callables keeps the engine deterministic, testable, and easy to swap between model vendors.
+
 ## The `LLMTaskSet` Registry
 
 At the heart of the engine's LLM interaction is the `LLMTaskSet`. During initialization, `GraphKnowledgeEngine` sets up `self.llm_tasks`, which is a collection of several core tasks:
@@ -125,3 +133,19 @@ engine = GraphKnowledgeEngine(
 ```
 
 By providing your own `LLMTaskSet`, you have complete control over every LLM interaction in the GraphRAG pipeline.
+
+## Run or Inspect
+
+Run the companion script or inspect the task registry code to see how provider-specific behavior is injected.
+
+## Inspect The Result
+
+The result should show a custom provider implementation wired into the same engine entry points used by the default tasks.
+
+## Invariant Demonstrated
+
+The engine depends on task contracts, not on a specific provider SDK or client shape.
+
+## Next Tutorial
+
+Move on to the next tutorial in the sequence to continue the provider and orchestration walkthrough.

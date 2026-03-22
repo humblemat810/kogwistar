@@ -37,7 +37,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence
 
-from kogwistar.engine_core.engine_sqlite import EngineSQLite
+try:
+    from kogwistar.engine_core.engine_sqlite import EngineSQLite
+except Exception:  # pragma: no cover - optional in lightweight environments
+    EngineSQLite = None  # type: ignore[assignment]
 from kogwistar.engine_core.storage_backend import NoopUnitOfWork
 
 
@@ -675,9 +678,12 @@ class _DummyLock:
 
 def build_fake_backend(engine: Any) -> InMemoryBackend:
     backend = InMemoryBackend(engine)
-    meta_root = Path(engine.persist_directory or ".").resolve() / "_fake_meta"
-    engine.meta_sqlite = EngineSQLite(meta_root, "meta.sqlite")
-    engine.meta_sqlite.ensure_initialized()
+    if EngineSQLite is None:
+        engine.meta_sqlite = _FakeMetaStore()
+    else:
+        meta_root = Path(engine.persist_directory or ".").resolve() / "_fake_meta"
+        engine.meta_sqlite = EngineSQLite(meta_root, "meta.sqlite")
+        engine.meta_sqlite.ensure_initialized()
     engine.collection_lock = {
         "node": _DummyLock(),
         "edge": _DummyLock(),

@@ -7,7 +7,7 @@ import pytest
 
 from kogwistar.engine_core.postgres_backend import where_jsonb
 
-pytestmark = pytest.mark.ci
+pytestmark = pytest.mark.ci_full
 
 
 def _compile(clause: sa.ClauseElement) -> str:

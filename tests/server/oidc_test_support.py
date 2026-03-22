@@ -9,7 +9,10 @@ import time
 from pathlib import Path
 from urllib.parse import urljoin
 
-import httpx
+try:
+    import httpx
+except Exception:  # pragma: no cover - optional in lightweight CI environments
+    httpx = None  # type: ignore[assignment]
 
 
 OIDC_TEST_IDENTITY = {
@@ -95,6 +98,9 @@ def docker_available() -> bool:
 
 
 def start_keycloak_container() -> dict[str, str]:
+    if httpx is None:
+        raise RuntimeError("httpx is required to probe the Keycloak container")
+
     realm_path = Path(__file__).resolve().parents[2] / "keycloak" / "realm-kge.json"
     bind_src = realm_path.resolve().as_posix()
     mount_arg = (

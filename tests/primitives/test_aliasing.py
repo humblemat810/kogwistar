@@ -11,7 +11,7 @@ from kogwistar.engine_core.models import LLMGraphExtraction, Edge, Node
 from tests._kg_factories import kg_document, kg_grounding, kg_llm_grounding_payload
 
 
-@pytest.mark.ci
+@pytest.mark.ci_full
 def test_base62_roundtrip_multiple_ids():
     for _ in range(10):
         value = str(uuid.uuid4())
@@ -20,7 +20,7 @@ def test_base62_roundtrip_multiple_ids():
         assert len(alias) < len(value)
 
 
-@pytest.mark.ci
+@pytest.mark.ci_full
 def test_alias_book_is_stable_and_delta_minimal():
     book = AliasBook()
 
@@ -51,7 +51,7 @@ def test_alias_book_is_stable_and_delta_minimal():
 @pytest.mark.parametrize(
     "backend_kind",
     [
-        pytest.param("fake", marks=pytest.mark.ci),
+        pytest.param("fake", marks=pytest.mark.ci_full),
         "chroma",
     ],
     indirect=True,
@@ -158,7 +158,7 @@ def test_de_alias_ids_in_result_session_alias(monkeypatch, engine):
 @pytest.mark.parametrize(
     "backend_kind",
     [
-        pytest.param("fake", marks=pytest.mark.ci),
+        pytest.param("fake", marks=pytest.mark.ci_full),
         "chroma",
     ],
     indirect=True,
