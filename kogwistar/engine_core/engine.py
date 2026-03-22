@@ -189,6 +189,7 @@ def _build_postgres_uow_if_needed(backend: StorageBackend):
         return NoopUnitOfWork()
     try:
         from kogwistar.engine_core.postgres_backend import (
+            PgVectorBackend,
             PostgresUnitOfWork,
         )  # type: ignore
     except Exception as e:  # pragma: no cover - import errors depend on env

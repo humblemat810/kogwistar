@@ -875,11 +875,9 @@ def run_level2b(
     kg_engine, conv_engine, workflow_engine = _ensure_seed_with_workflow(data_dir)
     provider_key = str(llm_provider or "deterministic").strip().lower()
     resolved_model_name = ""
-    
-    
-    
-    if provider_key != "deterministic":
+    llm_tasks = conv_engine.llm_tasks
 
+    if provider_key != "deterministic":
         if provider_key == "ollama":
             config = DefaultTaskProviderConfig(summarize_context_provider=provider_key,
                                     answer_with_citations_provider=provider_key,
@@ -893,8 +891,6 @@ def run_level2b(
             provider=provider_key,
             model_name=llm_model,
         )
-    # else:
-        
 
     svc = ConversationService(
         conversation_engine=conv_engine,

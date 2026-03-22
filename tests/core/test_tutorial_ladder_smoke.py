@@ -9,7 +9,7 @@ import uuid
 from pathlib import Path
 
 import pytest
-pytestmark = pytest.mark.ci
+pytestmark = pytest.mark.ci_full
 
 import scripts.runtime_tutorial_ladder as runtime_tutorial_ladder
 import scripts.tutorial_ladder as tutorial_ladder
@@ -20,24 +20,42 @@ pytest.importorskip("chromadb")
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def _run(args: list[str]) -> subprocess.CompletedProcess[str]:
+def _run(args: list[str], *, timeout: float | None = None) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        [sys.executable, *args],
+        [sys.executable, "-u", *args],
         cwd=str(ROOT),
         check=True,
         capture_output=True,
         text=True,
+        timeout=timeout,
     )
 
 
-def _run_allow_fail(args: list[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        [sys.executable, *args],
-        cwd=str(ROOT),
-        check=False,
-        capture_output=True,
-        text=True,
-    )
+def _run_allow_fail(
+    args: list[str], *, timeout: float | None = None
+) -> subprocess.CompletedProcess[str]:
+    try:
+        return subprocess.run(
+            [sys.executable, "-u", *args],
+            cwd=str(ROOT),
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        stdout = exc.stdout if isinstance(exc.stdout, str) else (exc.stdout or "")
+        stderr = exc.stderr if isinstance(exc.stderr, str) else (exc.stderr or "")
+        if not isinstance(stdout, str):
+            stdout = stdout.decode(errors="replace")
+        if not isinstance(stderr, str):
+            stderr = stderr.decode(errors="replace")
+        return subprocess.CompletedProcess(
+            args=[sys.executable, "-u", *args],
+            returncode=124,
+            stdout=stdout,
+            stderr=f"{stderr}\nTIMEOUT after {exc.timeout} seconds",
+        )
 
 
 def _extract_last_json(stdout: str) -> dict:
@@ -373,11 +391,14 @@ def test_runtime_tutorial_ladder_keeps_level4_workflow_separate():
 
 
 def test_tutorial_section_15_historical_smoke():
-    out = _extract_last_json(
-        _run(
-            ["scripts/tutorial_sections/15_historical_search_tombstone_redirect.py"]
-        ).stdout
+    result = _run_allow_fail(
+        ["scripts/tutorial_sections/15_historical_search_tombstone_redirect.py"],
+        timeout=90,
     )
+    assert (
+        result.returncode == 0
+    ), f"Historical tutorial script failed.\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    out = _extract_last_json(result.stdout)
     assert out.get("checkpoint_pass") is True
     assert "N_SUGAR_OLD" in (out.get("then_ids") or [])
     assert "N_SUGAR_NEW" in (out.get("now_ids") or [])

@@ -388,7 +388,7 @@ def ensure_workflow_seed(
         workflow_engine.write.add_node(node)
     for edge in edges:
         workflow_engine.write.add_edge(edge)
-    return _build_engines(data_dir)
+    return workflow_engine, conversation_engine
 
 
 def build_resolver() -> MappingStepResolver:
@@ -1080,7 +1080,7 @@ def ensure_sandbox_workflow_seed(
         workflow_engine.write.add_node(node)
     for edge in edges:
         workflow_engine.write.add_edge(edge)
-    return _build_engines(data_dir)
+    return workflow_engine, conversation_engine
 
 
 def build_sandbox_runtime(
