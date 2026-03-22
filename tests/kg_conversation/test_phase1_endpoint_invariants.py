@@ -195,9 +195,9 @@ def _mk_three_turns(
         role="user",
         turn_index=3,
     )
-    conversation_engine.add_node(t1)
-    conversation_engine.add_node(t2)
-    conversation_engine.add_node(t3)
+    conversation_engine.write.add_node(t1)
+    conversation_engine.write.add_node(t2)
+    conversation_engine.write.add_node(t3)
     return t1.id, t2.id, t3.id
 
 
@@ -208,7 +208,7 @@ def _seed_chain_edge(
     src: str,
     tgt: str,
 ) -> None:
-    conversation_engine.add_edge(
+    conversation_engine.write.add_edge(
         _mk_edge(
             src=src,
             tgt=tgt,
@@ -235,7 +235,7 @@ def test_next_turn_outgoing_uniqueness_enforced(phase1_engine_pair):
 
     # Adding another next_turn out of t1 must be rejected.
     with pytest.raises(ValueError):
-        conversation_engine.add_edge(
+        conversation_engine.write.add_edge(
             _mk_edge(
                 src=t1,
                 tgt=t3,
@@ -258,7 +258,7 @@ def test_next_turn_incoming_uniqueness_enforced(phase1_engine_pair):
 
     # Adding another next_turn into t2 must be rejected.
     with pytest.raises(ValueError):
-        conversation_engine.add_edge(
+        conversation_engine.write.add_edge(
             _mk_edge(
                 src=t3,
                 tgt=t2,
@@ -323,7 +323,7 @@ def test_dependency_freeze_rule_does_not_scan_all_edges(
 
     # t1 is 'used' (has outgoing next_turn). Adding dependency incoming into t1 must fail.
     with pytest.raises(ValueError):
-        conversation_engine.add_edge(
+        conversation_engine.write.add_edge(
             _mk_edge(
                 src=t3,
                 tgt=t1,

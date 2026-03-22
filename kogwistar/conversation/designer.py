@@ -63,7 +63,7 @@ class AgenticAnsweringWorkflowDesigner(BaseWorkflowDesigner):
                     "wf_version": "v2",
                 },
             )
-            self.workflow_engine.add_node(n)
+            self.workflow_engine.write.add_node(n)
 
         def add_edge(
             *,
@@ -99,7 +99,7 @@ class AgenticAnsweringWorkflowDesigner(BaseWorkflowDesigner):
                     "wf_multiplicity": multiplicity,
                 },
             )
-            self.workflow_engine.add_edge(e)
+            self.workflow_engine.write.add_edge(e)
 
         # ----------------------------
         # Backbone: start -> end
@@ -376,7 +376,7 @@ class ConversationWorkflowDesigner(BaseWorkflowDesigner):
                         Grounding(spans=[Span.from_dummy_for_workflow(workflow_id)])
                     ],
                 )
-                self.workflow_engine.add_node(n)
+                self.workflow_engine.write.add_node(n)
 
             def add_edge(
                 *,
@@ -418,7 +418,7 @@ class ConversationWorkflowDesigner(BaseWorkflowDesigner):
                         Grounding(spans=[Span.from_dummy_for_workflow(workflow_id)])
                     ],
                 )
-                self.workflow_engine.add_edge(e)
+                self.workflow_engine.write.add_edge(e)
 
             # ----------------------------
             # Backbone: start -> add_user_turn -> end

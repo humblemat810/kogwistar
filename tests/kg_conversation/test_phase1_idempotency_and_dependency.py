@@ -205,15 +205,15 @@ def test_next_turn_duplicate_is_idempotent_in_add_edge(phase1_engine_pair):
         turn_index=2,
     )
 
-    conversation_engine.add_node(t1)
-    conversation_engine.add_node(t2)
+    conversation_engine.write.add_node(t1)
+    conversation_engine.write.add_node(t2)
 
     e = _mk_next_turn_edge(conversation_id=conversation_id, src=t1.id, tgt=t2.id)
-    conversation_engine.add_edge(e)
+    conversation_engine.write.add_edge(e)
 
     # Duplicate write attempt: should NOT raise.
     e_dup = _mk_next_turn_edge(conversation_id=conversation_id, src=t1.id, tgt=t2.id)
-    conversation_engine.add_edge(e_dup)
+    conversation_engine.write.add_edge(e_dup)
 
     assert (
         _count_next_turn_edges(
@@ -242,8 +242,8 @@ def test_next_turn_duplicate_is_not_idempotent_in_add_pure_edge(phase1_engine_pa
         turn_index=2,
     )
 
-    conversation_engine.add_node(t1)
-    conversation_engine.add_node(t2)
+    conversation_engine.write.add_node(t1)
+    conversation_engine.write.add_node(t2)
 
     e = _mk_next_turn_edge(conversation_id=conversation_id, src=t1.id, tgt=t2.id)
     conversation_engine.add_pure_edge(e)
@@ -282,11 +282,11 @@ def test_dependency_freeze_rejects_new_incoming_into_used_node_without_scanning_
         turn_index=2,
     )
 
-    conversation_engine.add_node(t1)
-    conversation_engine.add_node(t2)
+    conversation_engine.write.add_node(t1)
+    conversation_engine.write.add_node(t2)
 
     # Mark t1 as 'used' by giving it an outgoing chain edge.
-    conversation_engine.add_edge(
+    conversation_engine.write.add_edge(
         _mk_next_turn_edge(conversation_id=conversation_id, src=t1.id, tgt=t2.id)
     )
 
@@ -299,6 +299,6 @@ def test_dependency_freeze_rejects_new_incoming_into_used_node_without_scanning_
 
     # New dependency INCOMING into used node t1 must be rejected.
     with pytest.raises(ValueError):
-        conversation_engine.add_edge(
+        conversation_engine.write.add_edge(
             _mk_dependency_edge(conversation_id=conversation_id, src=t2.id, tgt=t1.id)
         )

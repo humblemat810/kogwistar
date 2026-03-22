@@ -642,7 +642,7 @@ class WorkflowRuntime:
         2. The suspended step was saved in _rt_join_snapshot as pending with mask logic intact.
         """
         # Load the latest checkpoint for the run to reconstruct initial_state
-        ckpts = self.conversation_engine.get_nodes(
+        ckpts = self.conversation_engine.read.get_nodes(
             where={
                 "$and": [
                     {"entity_type": "workflow_checkpoint"},
@@ -2289,7 +2289,7 @@ class WorkflowRuntime:
         self, *, where: dict, limit: int = 1000
     ) -> list[Any]:
         try:
-            return self.conversation_engine.get_nodes(where=where, limit=limit)
+            return self.conversation_engine.read.get_nodes(where=where, limit=limit)
         except Exception as exc:
             msg = str(exc)
             if "Nothing found on disk" in msg or "hnsw segment reader" in msg:
@@ -2358,9 +2358,9 @@ class WorkflowRuntime:
             return bool(existing.get("ids"))
 
         try:
-            nodes = self.conversation_engine.get_nodes()
+            nodes = self.conversation_engine.read.get_nodes()
         except TypeError:
-            nodes = self.conversation_engine.get_nodes(where=None, limit=10_000)
+            nodes = self.conversation_engine.read.get_nodes(where=None, limit=10_000)
         except Exception:
             nodes = getattr(self.conversation_engine, "nodes", [])
         return any(
@@ -2374,9 +2374,9 @@ class WorkflowRuntime:
             return bool(existing.get("ids"))
 
         try:
-            edges = self.conversation_engine.get_edges()
+            edges = self.conversation_engine.read.get_edges()
         except TypeError:
-            edges = self.conversation_engine.get_edges(where=None, limit=10_000)
+            edges = self.conversation_engine.read.get_edges(where=None, limit=10_000)
         except Exception:
             edges = getattr(self.conversation_engine, "edges", [])
         return any(
@@ -2437,7 +2437,7 @@ class WorkflowRuntime:
             canonical_entity_id=None,
             embedding=None,
         )
-        self.conversation_engine.add_node(node)
+        self.conversation_engine.write.add_node(node)
 
         run_node_id = f"wf_run|{run_id}"
         if self._conversation_node_exists(run_node_id):
@@ -2455,7 +2455,7 @@ class WorkflowRuntime:
                     mentions=[Grounding(spans=[Span.from_dummy_for_conversation()])],
                     run_id=run_id,
                 )
-                self.conversation_engine.add_edge(edge)
+                self.conversation_engine.write.add_edge(edge)
 
         if req_node_id:
             req_edge_id = str(
@@ -2474,7 +2474,7 @@ class WorkflowRuntime:
                     mentions=[Grounding(spans=[Span.from_dummy_for_conversation()])],
                     run_id=run_id,
                 )
-                self.conversation_engine.add_edge(req_edge)
+                self.conversation_engine.write.add_edge(req_edge)
 
         if last_processed_node_id:
             cancelled_at_edge_id = str(
@@ -2498,7 +2498,7 @@ class WorkflowRuntime:
                     mentions=[Grounding(spans=[Span.from_dummy_for_conversation()])],
                     run_id=run_id,
                 )
-                self.conversation_engine.add_edge(cancelled_at_edge)
+                self.conversation_engine.write.add_edge(cancelled_at_edge)
         return node_id
 
     def _persist_completed_terminal(
@@ -2548,7 +2548,7 @@ class WorkflowRuntime:
             canonical_entity_id=None,
             embedding=None,
         )
-        self.conversation_engine.add_node(node)
+        self.conversation_engine.write.add_node(node)
 
         run_node_id = f"wf_run|{run_id}"
         if self._conversation_node_exists(run_node_id):
@@ -2566,7 +2566,7 @@ class WorkflowRuntime:
                     mentions=[Grounding(spans=[Span.from_dummy_for_conversation()])],
                     run_id=run_id,
                 )
-                self.conversation_engine.add_edge(edge)
+                self.conversation_engine.write.add_edge(edge)
         return node_id
 
     def _persist_workflow_run(
@@ -2614,7 +2614,7 @@ class WorkflowRuntime:
             canonical_entity_id=None,
             embedding=None,
         )
-        self.conversation_engine.add_node(n)
+        self.conversation_engine.write.add_node(n)
         return n
 
     # def _update_workflow_run_status(self, conversation_id: str, run_id: str, status: str) -> None:
@@ -2632,7 +2632,7 @@ class WorkflowRuntime:
     #         node.properties = props
     #     except Exception:
     #         pass
-    #     self.conversation_engine.add_node(node)
+    #     self.conversation_engine.write.add_node(node)
 
     def _persist_step_exec(
         self,
@@ -2697,7 +2697,7 @@ class WorkflowRuntime:
                 # "tail_turn_index": state["prev_turn_meta_summary"]["tail_turn_index"]
             },
         )
-        self.conversation_engine.add_node(n)
+        self.conversation_engine.write.add_node(n)
         if result.conversation_node_id:
             self_span = Span(
                 collection_page_url=f"conversation/{conversation_id}",
@@ -2735,7 +2735,7 @@ class WorkflowRuntime:
             #
             #                                },
             #                      )
-            # self.conversation_engine.add_edge(e)
+            # self.conversation_engine.write.add_edge(e)
         if last_exec_node:
             content = f"{last_exec_node.safe_get_id()} next is {n.safe_get_id()}"
             self_span = Span(
@@ -2777,7 +2777,7 @@ class WorkflowRuntime:
                     "turn_distance_from_last_summary": 0,
                 },
             )
-            self.conversation_engine.add_edge(e)
+            self.conversation_engine.write.add_edge(e)
         if result.conversation_node_id:
             content = f"{n.safe_get_id()} created {result.conversation_node_id} durign execution"
             self_span = Span(
@@ -2820,7 +2820,7 @@ class WorkflowRuntime:
                 },
             )
 
-            self.conversation_engine.add_edge(e)
+            self.conversation_engine.write.add_edge(e)
         return n
 
     def _persist_checkpoint(
@@ -2870,7 +2870,7 @@ class WorkflowRuntime:
             embedding=None,
             level_from_root=0,
         )
-        self.conversation_engine.add_node(n)
+        self.conversation_engine.write.add_node(n)
 
         if last_exec_node:
             self_span = Span(
@@ -2912,4 +2912,4 @@ class WorkflowRuntime:
                     "turn_distance_from_last_summary": 0,
                 },
             )
-            self.conversation_engine.add_edge(e)
+            self.conversation_engine.write.add_edge(e)

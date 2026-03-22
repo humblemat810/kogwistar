@@ -11,7 +11,7 @@ def load_checkpoint(*, conversation_engine: Any, run_id: str, step_seq: int) -> 
     Load a workflow checkpoint state snapshot from conversation_engine.
     """
     ckpt_id = f"wf_ckpt|{run_id}|{step_seq}"
-    nodes = conversation_engine.get_nodes(ids=[ckpt_id], limit=1)
+    nodes = conversation_engine.read.get_nodes(ids=[ckpt_id], limit=1)
     if not nodes:
         raise KeyError(f"Checkpoint not found: {ckpt_id}")
     md = nodes[0].metadata or {}
@@ -56,7 +56,7 @@ def replay_to(*, conversation_engine: Any, run_id: str, target_step_seq: int) ->
       - applying persisted step exec state_updates after that checkpoint up to target_step_seq
     """
     effective_target = int(target_step_seq)
-    cancelled = conversation_engine.get_nodes(
+    cancelled = conversation_engine.read.get_nodes(
         where={"$and": [{"entity_type": "workflow_cancelled"}, {"run_id": run_id}]},
         limit=10_000,
     )
@@ -69,7 +69,7 @@ def replay_to(*, conversation_engine: Any, run_id: str, target_step_seq: int) ->
         if accepted:
             effective_target = min(effective_target, min(accepted))
 
-    ckpts = conversation_engine.get_nodes(
+    ckpts = conversation_engine.read.get_nodes(
         where={"$and": [{"entity_type": "workflow_checkpoint"}, {"run_id": run_id}]},
         limit=10000,
     )
@@ -86,7 +86,7 @@ def replay_to(*, conversation_engine: Any, run_id: str, target_step_seq: int) ->
 
     state: State = json.loads((best.metadata or {})["state_json"])
 
-    steps = conversation_engine.get_nodes(
+    steps = conversation_engine.read.get_nodes(
         where={"$and": [{"entity_type": "workflow_step_exec"}, {"run_id": run_id}]},
         limit=200000,
     )

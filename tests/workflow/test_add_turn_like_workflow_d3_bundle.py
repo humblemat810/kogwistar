@@ -169,9 +169,9 @@ def test_add_turn_like_workflow_dump_bundles(tmp_path: Path):
     )
 
     for n in [n_start, n_mem, n_kg, n_mpin, n_kpin, n_ans, n_dec, n_sum, n_end]:
-        workflow_engine.add_node(n)
+        workflow_engine.write.add_node(n)
     # start -> n_mem
-    workflow_engine.add_edge(
+    workflow_engine.write.add_edge(
         _wf_edge(
             workflow_id=workflow_id,
             edge_id=f"wf|{workflow_id}|e|start->mem",
@@ -183,7 +183,7 @@ def test_add_turn_like_workflow_dump_bundles(tmp_path: Path):
         )
     )
     # mem -> kg
-    workflow_engine.add_edge(
+    workflow_engine.write.add_edge(
         _wf_edge(
             workflow_id=workflow_id,
             edge_id=f"wf|{workflow_id}|e|mem->kg",
@@ -196,7 +196,7 @@ def test_add_turn_like_workflow_dump_bundles(tmp_path: Path):
     )
 
     # kg -> mpin if should_pin_memory
-    workflow_engine.add_edge(
+    workflow_engine.write.add_edge(
         _wf_edge(
             workflow_id=workflow_id,
             edge_id=f"wf|{workflow_id}|e|kg->mpin",
@@ -208,7 +208,7 @@ def test_add_turn_like_workflow_dump_bundles(tmp_path: Path):
         )
     )
     # kg -> kpin if should_pin_kg
-    workflow_engine.add_edge(
+    workflow_engine.write.add_edge(
         _wf_edge(
             workflow_id=workflow_id,
             edge_id=f"wf|{workflow_id}|e|kg->kpin",
@@ -220,7 +220,7 @@ def test_add_turn_like_workflow_dump_bundles(tmp_path: Path):
         )
     )
     # default kg -> answer
-    workflow_engine.add_edge(
+    workflow_engine.write.add_edge(
         _wf_edge(
             workflow_id=workflow_id,
             edge_id=f"wf|{workflow_id}|e|kg->ans|default",
@@ -233,7 +233,7 @@ def test_add_turn_like_workflow_dump_bundles(tmp_path: Path):
     )
 
     # mpin -> ans ; kpin -> ans
-    workflow_engine.add_edge(
+    workflow_engine.write.add_edge(
         _wf_edge(
             workflow_id=workflow_id,
             edge_id=f"wf|{workflow_id}|e|mpin->ans",
@@ -244,7 +244,7 @@ def test_add_turn_like_workflow_dump_bundles(tmp_path: Path):
             is_default=True,
         )
     )
-    workflow_engine.add_edge(
+    workflow_engine.write.add_edge(
         _wf_edge(
             workflow_id=workflow_id,
             edge_id=f"wf|{workflow_id}|e|kpin->ans",
@@ -257,7 +257,7 @@ def test_add_turn_like_workflow_dump_bundles(tmp_path: Path):
     )
 
     # ans -> dec decision
-    workflow_engine.add_edge(
+    workflow_engine.write.add_edge(
         _wf_edge(
             workflow_id=workflow_id,
             edge_id=f"wf|{workflow_id}|e|ans->dec",
@@ -269,7 +269,7 @@ def test_add_turn_like_workflow_dump_bundles(tmp_path: Path):
         )
     )
     # dec -> sum if should_summarize else -> end
-    workflow_engine.add_edge(
+    workflow_engine.write.add_edge(
         _wf_edge(
             workflow_id=workflow_id,
             edge_id=f"wf|{workflow_id}|e|dec->sum",
@@ -280,7 +280,7 @@ def test_add_turn_like_workflow_dump_bundles(tmp_path: Path):
             is_default=False,
         )
     )
-    workflow_engine.add_edge(
+    workflow_engine.write.add_edge(
         _wf_edge(
             workflow_id=workflow_id,
             edge_id=f"wf|{workflow_id}|e|dec->end|default",
@@ -292,7 +292,7 @@ def test_add_turn_like_workflow_dump_bundles(tmp_path: Path):
         )
     )
     # sum -> end
-    workflow_engine.add_edge(
+    workflow_engine.write.add_edge(
         _wf_edge(
             workflow_id=workflow_id,
             edge_id=f"wf|{workflow_id}|e|sum->end",

@@ -54,7 +54,7 @@ def _create_node(
     fanout: bool = False,
     wf_join: bool = False,
 ):
-    engine.add_node(
+    engine.write.add_node(
         WorkflowNode(
             id=node_id,
             label=op,
@@ -91,7 +91,7 @@ def _create_edge(
     predicate: str | None = None,
     is_default: bool = True,
 ):
-    engine.add_edge(
+    engine.write.add_edge(
         WorkflowEdge(
             id=f"{src}->{dst}",
             label=label,

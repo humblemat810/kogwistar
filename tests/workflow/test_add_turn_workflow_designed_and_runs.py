@@ -160,11 +160,11 @@ def test_add_turn_workflow_design_and_run(tmp_path):
     all_nodes = [n_start, n_kg, n_mpin, n_kpin, n_ans, n_dec, n_sum, n_end]
     nodes_dict = {n.safe_get_id(): n for n in all_nodes}
     for n in all_nodes:
-        wf_engine.add_node(n)
+        wf_engine.write.add_node(n)
 
     # Edges:
     # memory_retrieve -> kg_retrieve
-    wf_engine.add_edge(
+    wf_engine.write.add_edge(
         _wf_edge(
             workflow_id=workflow_id,
             edge_id=f"wf|{workflow_id}|e|start->kg",
@@ -177,7 +177,7 @@ def test_add_turn_workflow_design_and_run(tmp_path):
     )
 
     # kg_retrieve -> memory_pin (if should_pin_memory)
-    wf_engine.add_edge(
+    wf_engine.write.add_edge(
         _wf_edge(
             workflow_id=workflow_id,
             edge_id=f"wf|{workflow_id}|e|kg->mpin",
@@ -189,7 +189,7 @@ def test_add_turn_workflow_design_and_run(tmp_path):
         )
     )
     # kg_retrieve -> kg_pin (if should_pin_kg)
-    wf_engine.add_edge(
+    wf_engine.write.add_edge(
         _wf_edge(
             workflow_id=workflow_id,
             edge_id=f"wf|{workflow_id}|e|kg->kpin",
@@ -201,7 +201,7 @@ def test_add_turn_workflow_design_and_run(tmp_path):
         )
     )
     # If neither pin branch matches, go to answer by default
-    wf_engine.add_edge(
+    wf_engine.write.add_edge(
         _wf_edge(
             workflow_id=workflow_id,
             edge_id=f"wf|{workflow_id}|e|kg->ans|default",
@@ -214,7 +214,7 @@ def test_add_turn_workflow_design_and_run(tmp_path):
     )
 
     # pin steps both route to answer
-    wf_engine.add_edge(
+    wf_engine.write.add_edge(
         _wf_edge(
             workflow_id=workflow_id,
             edge_id=f"wf|{workflow_id}|e|mpin->ans",
@@ -225,7 +225,7 @@ def test_add_turn_workflow_design_and_run(tmp_path):
             is_default=True,
         )
     )
-    wf_engine.add_edge(
+    wf_engine.write.add_edge(
         _wf_edge(
             workflow_id=workflow_id,
             edge_id=f"wf|{workflow_id}|e|kpin->ans",
@@ -238,7 +238,7 @@ def test_add_turn_workflow_design_and_run(tmp_path):
     )
 
     # answer -> decide_summarize
-    wf_engine.add_edge(
+    wf_engine.write.add_edge(
         _wf_edge(
             workflow_id=workflow_id,
             edge_id=f"wf|{workflow_id}|e|ans->dec",
@@ -250,7 +250,7 @@ def test_add_turn_workflow_design_and_run(tmp_path):
         )
     )
     # decide_summarize -> summarize (if should_summarize)
-    wf_engine.add_edge(
+    wf_engine.write.add_edge(
         _wf_edge(
             workflow_id=workflow_id,
             edge_id=f"wf|{workflow_id}|e|dec->sum",
@@ -262,7 +262,7 @@ def test_add_turn_workflow_design_and_run(tmp_path):
         )
     )
     # decide_summarize -> end (default)
-    wf_engine.add_edge(
+    wf_engine.write.add_edge(
         _wf_edge(
             workflow_id=workflow_id,
             edge_id=f"wf|{workflow_id}|e|dec->end|default",
@@ -274,7 +274,7 @@ def test_add_turn_workflow_design_and_run(tmp_path):
         )
     )
     # summarize -> end
-    wf_engine.add_edge(
+    wf_engine.write.add_edge(
         _wf_edge(
             workflow_id=workflow_id,
             edge_id=f"wf|{workflow_id}|e|sum->end",

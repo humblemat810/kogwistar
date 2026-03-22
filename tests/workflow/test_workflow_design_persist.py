@@ -107,8 +107,8 @@ def test_workflow_design_creation_and_persistence(
         domain_id=None,
         canonical_entity_id=None,
     )
-    wf_engine.add_node(n1)
-    wf_engine.add_node(n2)
+    wf_engine.write.add_node(n1)
+    wf_engine.write.add_node(n2)
 
     e = WorkflowEdge(
         id="wf|wf_demo|e|start|end|default",
@@ -134,7 +134,7 @@ def test_workflow_design_creation_and_persistence(
         domain_id=None,
         canonical_entity_id=None,
     )
-    wf_engine.add_edge(e)
+    wf_engine.write.add_edge(e)
 
     # Reopen: ensures persistence works
     if backend_kind == "chroma":

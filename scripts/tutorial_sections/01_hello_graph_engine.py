@@ -137,9 +137,9 @@ edges = [
 ]
 
 for node in nodes:
-    engine.add_node(node)
+    engine.write.add_node(node)
 for edge in edges:
-    engine.add_edge(edge)
+    engine.write.add_edge(edge)
 
 show(
     "seeded ids", {"node_ids": [n.id for n in nodes], "edge_ids": [e.id for e in edges]}

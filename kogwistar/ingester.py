@@ -787,7 +787,7 @@ class BaseDocumentGraphIngestor:
                 type="entity",
                 summary=ch.summary,
                 mentions=[ref],
-                doc_id=doc_id,  # will also be set by engine.add_node(doc_id=...) but harmless here
+                doc_id=doc_id,  # will also be set by engine.write.add_node(doc_id=...) but harmless here
                 # embedding = self.engine._ef(ch.summary)[0]
             )
 

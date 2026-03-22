@@ -1305,7 +1305,7 @@ class AgenticAnsweringAgent:
             domain_id=None,
             canonical_entity_id=None,
         )
-        self.conversation_engine.add_node(node)
+        self.conversation_engine.write.add_node(node)
         return rid
 
     def _persist_context_snapshot(
@@ -1431,7 +1431,7 @@ class AgenticAnsweringAgent:
             prev_turn_meta_summary.prev_node_char_distance_from_last_summary += len(
                 str(meta.get("summary"))
             )
-            self.conversation_engine.add_node(node)
+            self.conversation_engine.write.add_node(node)
 
         # Link run -> evidence
         eid = edge_id(scope=scope, rel="used_evidence", src=run_node_id, dst=pid)
@@ -1459,7 +1459,7 @@ class AgenticAnsweringAgent:
                 source_edge_ids=[],
                 target_edge_ids=[],
             )
-            self.conversation_engine.add_edge(edge)
+            self.conversation_engine.write.add_edge(edge)
         return pid
 
     def _project_kg_edge(
@@ -1549,7 +1549,7 @@ class AgenticAnsweringAgent:
                 source_edge_ids=[],
                 target_edge_ids=[],
             )
-            self.conversation_engine.add_edge(edge)
+            self.conversation_engine.write.add_edge(edge)
 
         # # Usage is recorded via a separate pointer-node so used_evidence remains node-targeted.
         # edge_ptr_nid = pointer_id(scope=scope, pointer_kind="kg_edge_ptr", target_kind="edge", target_id=kg_edge_id)
@@ -1580,7 +1580,7 @@ class AgenticAnsweringAgent:
         #         domain_id=None,
         #         canonical_entity_id=None,
         #     )
-        #     self.conversation_engine.add_node(node)
+        #     self.conversation_engine.write.add_node(node)
 
         # ue = edge_id(scope=scope, rel="used_evidence", src=run_node_id, dst=edge_ptr_nid)
         # ex_edge = self.conversation_engine.backend.edge_get(ids=[ue], include=[])
@@ -1607,7 +1607,7 @@ class AgenticAnsweringAgent:
         #         source_edge_ids=[],
         #         target_edge_ids=[],
         #     )
-        #     self.conversation_engine.add_edge(used)
+        #     self.conversation_engine.write.add_edge(used)
 
         return peid
 
@@ -1651,7 +1651,7 @@ class AgenticAnsweringAgent:
             canonical_entity_id=None,
             embedding=emb,
         )
-        self.conversation_engine.add_node(node)
+        self.conversation_engine.write.add_node(node)
         prev_turn_meta_summary.prev_node_char_distance_from_last_summary += len(content)
         prev_turn_meta_summary.prev_node_distance_from_last_summary += 1
         prev_turn_meta_summary.tail_turn_index += 1
@@ -1706,4 +1706,4 @@ class AgenticAnsweringAgent:
             source_edge_ids=[],
             target_edge_ids=[],
         )
-        self.conversation_engine.add_edge(edge)
+        self.conversation_engine.write.add_edge(edge)

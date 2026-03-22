@@ -281,7 +281,7 @@ def _add_user_turn(ctx: "StepContext") -> "StepRunResult":
     except Exception:
         pass
 
-    ce.add_node(node)
+    ce.write.add_node(node)
 
     # advance legacy distances (mirror orchestrator) if mts is mutable
 
@@ -351,8 +351,8 @@ def _link_prev_turn(ctx: "StepContext") -> "StepRunResult":
     from .conversation_orchestrator import get_id_for_conversation_turn_edge
     from .models import ConversationEdge
 
-    prev_node = ce.get_nodes([str(prev_turn_id)])[0]
-    turn_node = ce.get_nodes([turn_node_id])[0]
+    prev_node = ce.read.get_nodes([str(prev_turn_id)])[0]
+    turn_node = ce.read.get_nodes([turn_node_id])[0]
 
     edge_id = get_id_for_conversation_turn_edge(
         ConversationEdge.id_kind,
@@ -416,8 +416,8 @@ def _link_assistant_turn(ctx: "StepContext") -> "StepRunResult":
 
     from .conversation_orchestrator import get_id_for_conversation_turn_edge
 
-    user_turn = ce.get_nodes([user_turn_id])[0]
-    resp_turn = ce.get_nodes([str(response_node_id)])[0]
+    user_turn = ce.read.get_nodes([user_turn_id])[0]
+    resp_turn = ce.read.get_nodes([str(response_node_id)])[0]
 
     edge_id = get_id_for_conversation_turn_edge(
         ConversationEdge.id_kind,
@@ -947,7 +947,7 @@ def _answer(ctx: StepContext) -> StepRunResult:
                         node.embedding = normalize_embedding_vector(
                             embedding, allow_none=False
                         )
-                    ce.add_node(node)
+                    ce.write.add_node(node)
             except Exception:
                 # Keep previous behavior if fallback materialization fails for any reason.
                 pass

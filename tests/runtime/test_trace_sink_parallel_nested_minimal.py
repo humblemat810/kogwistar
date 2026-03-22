@@ -59,7 +59,7 @@ def _add_node(
             "wf_version": "v_test",
         },
     )
-    workflow_engine.add_node(n)
+    workflow_engine.write.add_node(n)
     return node_id
 
 
@@ -101,7 +101,7 @@ def _add_edge(
             "wf_version": "v_test",
         },
     )
-    workflow_engine.add_edge(e)
+    workflow_engine.write.add_edge(e)
     return edge_id
 
 

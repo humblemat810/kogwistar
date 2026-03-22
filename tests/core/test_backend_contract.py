@@ -275,10 +275,10 @@ def test_backend_contract_edge_endpoint_materialization(
         entity_type="beta",
         embedding=[0.0, 1.0, 0.0],
     )
-    kg_engine.add_node(n1)
-    kg_engine.add_node(n2)
+    kg_engine.write.add_node(n1)
+    kg_engine.write.add_node(n2)
     e1 = _mk_edge(edge_id="e1", src="n1", tgt="n2", doc_id=doc_id)
-    kg_engine.add_edge(e1)
+    kg_engine.write.add_edge(e1)
 
     endpoints = kg_engine.backend.edge_endpoints_get(
         where={"$and": [{"edge_id": "e1"}, {"doc_id": doc_id}]},
@@ -399,23 +399,23 @@ def test_backend_contract_conversation_phase1_rules(
         role="assistant",
         turn_index=3,
     )
-    conversation_engine.add_node(t1)
-    conversation_engine.add_node(t2)
-    conversation_engine.add_node(t3)
+    conversation_engine.write.add_node(t1)
+    conversation_engine.write.add_node(t2)
+    conversation_engine.write.add_node(t3)
 
     seeded = _mk_next_turn_edge(
         conversation_id=conversation_id, src=t1.id, tgt=t2.id
     )
-    conversation_engine.add_edge(seeded)
+    conversation_engine.write.add_edge(seeded)
     dup_rows = conversation_engine.backend.edge_get(where={"relation": "next_turn"})
     assert len(dup_rows["ids"]) == 1
     # Phase-1 semantics: an identical add_edge(next_turn) is idempotent, not an error.
-    conversation_engine.add_edge(
+    conversation_engine.write.add_edge(
         _mk_next_turn_edge(conversation_id=conversation_id, src=t1.id, tgt=t2.id)
     )
     dup_rows_after = conversation_engine.backend.edge_get(where={"relation": "next_turn"})
     assert len(dup_rows_after["ids"]) == 1
     with pytest.raises(ValueError):
-        conversation_engine.add_edge(
+        conversation_engine.write.add_edge(
             _mk_dependency_edge(conversation_id=conversation_id, src=t3.id, tgt=t1.id)
         )

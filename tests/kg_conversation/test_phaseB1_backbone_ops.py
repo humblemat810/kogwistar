@@ -29,6 +29,8 @@ class FakeConversationEngine:
     def __init__(self) -> None:
         self.nodes: Dict[str, Any] = {}
         self.edges: Dict[str, Any] = {}
+        self.read = _ReadShim(self)
+        self.write = _WriteShim(self)
 
     def _iterative_defensive_emb(self, _text: str):
         return [0.0, 0.1]
@@ -41,6 +43,25 @@ class FakeConversationEngine:
 
     def get_nodes(self, ids: List[str]) -> List[Any]:
         return [self.nodes[str(i)] for i in ids]
+
+
+class _ReadShim:
+    def __init__(self, engine: FakeConversationEngine) -> None:
+        self._engine = engine
+
+    def get_nodes(self, ids: List[str], **kwargs) -> List[Any]:
+        return self._engine.get_nodes(ids)
+
+
+class _WriteShim:
+    def __init__(self, engine: FakeConversationEngine) -> None:
+        self._engine = engine
+
+    def add_node(self, node: Any, *args, **kwargs) -> None:
+        self._engine.add_node(node)
+
+    def add_edge(self, edge: Any, *args, **kwargs) -> None:
+        self._engine.add_edge(edge)
 
 
 class FakeStepContext:
@@ -85,7 +106,7 @@ def _fake_add_link_to_new_turn(engine: FakeConversationEngine):
         edge.source_ids = [prev_node.id]
         edge.target_ids = [turn_node.id]
         edge.relation = "next_turn"
-        engine.add_edge(edge)
+        engine.write.add_edge(edge)
         return edge
 
     return _fn

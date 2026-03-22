@@ -613,9 +613,9 @@ class ClawRuntimeApp:
                 domain_id=None,
                 canonical_entity_id=None,
             )
-            self.knowledge_engine.add_node(n1)
-            self.knowledge_engine.add_node(n2)
-            self.knowledge_engine.add_edge(e)
+            self.knowledge_engine.write.add_node(n1)
+            self.knowledge_engine.write.add_node(n2)
+            self.knowledge_engine.write.add_edge(e)
             return {
                 "route": "output",
                 "reason": "kg-write-done",
@@ -687,9 +687,9 @@ class ClawRuntimeApp:
             ),
         ]
         for n in nodes:
-            self.workflow_engine.add_node(n)
+            self.workflow_engine.write.add_node(n)
         for e in edges:
-            self.workflow_engine.add_edge(e)
+            self.workflow_engine.write.add_edge(e)
 
     def ensure_tutorial_workflow(
         self, workflow_id: str = "wf.tutorial.blocking.v2"
@@ -719,7 +719,7 @@ class ClawRuntimeApp:
             _wf_node(workflow_id=workflow_id, node_id=n_end, op="end", terminal=True),
         ]
         for n in nodes:
-            self.workflow_engine.add_node(n)
+            self.workflow_engine.write.add_node(n)
         edges = [
             _wf_edge(
                 workflow_id=workflow_id,
@@ -774,7 +774,7 @@ class ClawRuntimeApp:
         edges[-1].metadata["wf_is_default"] = True
         edges[-1].metadata["wf_priority"] = 100
         for e in edges:
-            self.workflow_engine.add_edge(e)
+            self.workflow_engine.write.add_edge(e)
         return workflow_id
 
     def purge_doc_graph(self, *, doc_id: str) -> Dict[str, int]:
@@ -1064,9 +1064,9 @@ class ClawRuntimeApp:
         # Step 9) Persist repaired document/nodes/edges.
         self.knowledge_engine.write.add_document(document)
         for n in nodes:
-            self.knowledge_engine.add_node(n)
+            self.knowledge_engine.write.add_node(n)
         for e in edges:
-            self.knowledge_engine.add_edge(e)
+            self.knowledge_engine.write.add_edge(e)
 
         return {
             "doc_id": doc_id,
@@ -1184,7 +1184,7 @@ class ClawRuntimeApp:
                         failed_spans += 1
                 g.spans = repaired_spans
             if node_changed:
-                self.knowledge_engine.add_node(n)
+                self.knowledge_engine.write.add_node(n)
                 fixed_nodes += 1
 
         edges = self.knowledge_engine.read.get_edges(
@@ -1206,7 +1206,7 @@ class ClawRuntimeApp:
                         failed_spans += 1
                 g.spans = repaired_spans
             if edge_changed:
-                self.knowledge_engine.add_edge(e)
+                self.knowledge_engine.write.add_edge(e)
                 fixed_edges += 1
 
         return {

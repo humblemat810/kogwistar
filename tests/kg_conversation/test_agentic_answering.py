@@ -302,6 +302,40 @@ class _BackendShim:
         return self._edges.get(ids=ids, include=include)
 
 
+class _WriteShim:
+    def __init__(self, engine):
+        self._engine = engine
+
+    def add_node(self, node, *args, **kwargs):
+        return self._engine.add_node(node, *args, **kwargs)
+
+    def add_edge(self, edge, *args, **kwargs):
+        return self._engine.add_edge(edge, *args, **kwargs)
+
+
+class _ReadShim:
+    def __init__(self, backend: _BackendShim):
+        self._backend = backend
+
+    def get_nodes(self, ids=None, **kwargs):
+        if ids is not None:
+            return self._backend.node_get(ids=ids, include=["metadatas", "documents"])
+        query_embeddings = kwargs.get("query_embeddings")
+        if query_embeddings is not None:
+            limit = kwargs.get("limit") or kwargs.get("n_results") or 10
+            return self._backend.node_query(
+                query_embeddings=query_embeddings,
+                n_results=limit,
+                include=["metadatas", "documents"],
+            )
+        raise NotImplementedError("Fake read shim only supports ids or query lookups.")
+
+    def get_edges(self, ids=None, **kwargs):
+        if ids is None:
+            raise NotImplementedError("Fake read shim only supports id-based edge lookups.")
+        return self._backend.edge_get(ids=ids, include=["metadatas", "documents"])
+
+
 class FakeConversationEngine:
     def __init__(self, conversation_id: str, messages):
         self._conversation_id = conversation_id
@@ -311,6 +345,8 @@ class FakeConversationEngine:
         self.edge_collection = FakeCollection()
         self._iterative_defensive_emb = self.iterative_defensive_emb
         self.backend = _BackendShim(self.node_collection, self.edge_collection)
+        self.write = _WriteShim(self)
+        self.read = _ReadShim(self.backend)
 
     def get_conversation_view(
         self,
@@ -368,9 +404,29 @@ class FakeKnowledgeEngine:
         self.edge_collection = FakeCollection()
         self._iterative_defensive_emb = self.iterative_defensive_emb
         self.backend = _BackendShim(self.node_collection, self.edge_collection)
+        self.write = _WriteShim(self)
+        self.read = _ReadShim(self.backend)
 
     def iterative_defensive_emb(self, text: str):
         return FakeEmbedding([0.0])
+
+    def add_node(self, node, *args, **kwargs):
+        self.node_collection.add(
+            node.id,
+            metadata=getattr(node, "metadata", {}),
+            document=getattr(node, "summary", None),
+        )
+
+    def add_edge(self, edge, *args, **kwargs):
+        self.edge_collection.add(
+            edge.id,
+            metadata={
+                "relation": edge.relation,
+                "src": edge.source_ids,
+                "dst": edge.target_ids,
+            },
+            document=getattr(edge, "summary", None),
+        )
 
 
 @pytest.fixture()
