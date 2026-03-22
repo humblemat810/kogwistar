@@ -1,11 +1,10 @@
 import pathlib
 
 import pytest
-pytestmark = pytest.mark.ci_full
-pytest.importorskip("sqlalchemy")
+pytestmark = pytest.mark.core
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
-from kogwistar.engine_core.postgres_backend import PgVectorBackend
+from tests._helpers.fake_backend import build_fake_backend
 
 from kogwistar.engine_core.models import Node, Grounding, Span
 from tests.conftest import FakeEmbeddingFunction
@@ -38,23 +37,39 @@ def _mk_node(node_id: str, *, doc_id: str) -> Node:
     )
 
 
-@pytest.fixture(params=["chroma", "pg"], ids=["chroma", "pg"])
+@pytest.fixture(
+    params=[
+        pytest.param("fake", id="fake", marks=pytest.mark.ci),
+        pytest.param("chroma", id="chroma", marks=pytest.mark.ci_full),
+        pytest.param("pg", id="pg", marks=pytest.mark.ci_full),
+    ],
+    ids=["fake", "chroma", "pg"],
+)
 def e2e_engine(
     request: pytest.FixtureRequest,
     tmp_path: pathlib.Path,
-    sa_engine,  # provided by tests/conftest.py
-    pg_schema,  # provided by tests/conftest.py
 ) -> GraphKnowledgeEngine:
     """Run the same tests against both selectors; `pg` uses PgVectorBackend + PG meta."""
 
-    if request.param == "chroma":
+    if request.param == "fake":
+        persist_dir = tmp_path / "fake"
+        persist_dir.mkdir(parents=True, exist_ok=True)
+        eng = GraphKnowledgeEngine(
+            persist_directory=str(persist_dir),
+            embedding_function=TEST_EMBEDDING,
+            backend_factory=build_fake_backend,
+        )
+    elif request.param == "chroma":
         persist_dir = tmp_path / "chroma"
         persist_dir.mkdir(parents=True, exist_ok=True)
         eng = GraphKnowledgeEngine(
             persist_directory=str(persist_dir), embedding_function=TEST_EMBEDDING
         )
     else:
+        sa_engine = request.getfixturevalue("sa_engine")
+        pg_schema = request.getfixturevalue("pg_schema")
         pytest.importorskip("pgvector")
+        from kogwistar.engine_core.postgres_backend import PgVectorBackend
         backend = PgVectorBackend(engine=sa_engine, embedding_dim=3, schema=pg_schema)
         eng = GraphKnowledgeEngine(backend=backend, embedding_function=TEST_EMBEDDING)
 

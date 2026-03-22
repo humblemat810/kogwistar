@@ -678,6 +678,8 @@ class _DummyLock:
 
 def build_fake_backend(engine: Any) -> InMemoryBackend:
     backend = InMemoryBackend(engine)
+    engine.backend_kind = "fake"
+    backend.backend_kind = "fake"
     if EngineSQLite is None:
         engine.meta_sqlite = _FakeMetaStore()
     else:

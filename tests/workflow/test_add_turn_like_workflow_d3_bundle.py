@@ -15,7 +15,7 @@ from kogwistar.runtime.models import RunSuccess
 from kogwistar.runtime.models import WorkflowEdge, WorkflowNode
 import pytest
 
-pytestmark = pytest.mark.ci
+pytestmark = pytest.mark.ci_full
 
 if TYPE_CHECKING:
     pass

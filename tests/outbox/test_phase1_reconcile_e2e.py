@@ -72,7 +72,13 @@ def _mk_edge(edge_id: str, *, src: str, tgt: str, doc_id: str) -> Edge:
     )
 
 
-@pytest.fixture(params=["chroma", "pg"], ids=["chroma", "pg"])
+@pytest.fixture(
+    params=[
+        pytest.param("chroma", id="chroma", marks=pytest.mark.ci_full),
+        pytest.param("pg", id="pg", marks=pytest.mark.ci_full),
+    ],
+    ids=["chroma", "pg"],
+)
 def e2e_engine(
     request: pytest.FixtureRequest,
     tmp_path: pathlib.Path,

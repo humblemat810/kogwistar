@@ -1,12 +1,11 @@
 import pytest
-pytestmark = pytest.mark.ci_full
+pytestmark = pytest.mark.core
 import pathlib
-pytest.importorskip("sqlalchemy")
 
 from kogwistar.engine_core.models import Node, Edge
-from kogwistar.engine_core.postgres_backend import PgVectorBackend
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.models import Grounding, Span
+from tests._helpers.fake_backend import build_fake_backend
 from tests.conftest import FakeEmbeddingFunction
 
 EMBEDDING_DIM = 3
@@ -57,12 +56,17 @@ def _mk_edge(edge_id: str, src: str, tgt: str, doc_id: str) -> Edge:
     )
 
 
-@pytest.fixture(params=["chroma", "pg"], ids=["chroma", "pg"])
+@pytest.fixture(
+    params=[
+        pytest.param("fake", id="fake", marks=pytest.mark.ci),
+        pytest.param("chroma", id="chroma", marks=pytest.mark.ci_full),
+        pytest.param("pg", id="pg", marks=pytest.mark.ci_full),
+    ],
+    ids=["fake", "chroma", "pg"],
+)
 def e2e_engine(
     request: pytest.FixtureRequest,
     tmp_path: pathlib.Path,
-    sa_engine,  # provided by tests/conftest.py
-    pg_schema,  # provided by tests/conftest.py
 ) -> GraphKnowledgeEngine:
     """Run the same Phase-2 E2E usage tests against both backends.
 
@@ -72,7 +76,15 @@ def e2e_engine(
 
     Kept local to this module so Phase-1 tests stay unchanged.
     """
-    if request.param == "chroma":
+    if request.param == "fake":
+        persist_dir = tmp_path / "fake"
+        persist_dir.mkdir(parents=True, exist_ok=True)
+        eng = GraphKnowledgeEngine(
+            persist_directory=str(persist_dir),
+            embedding_function=TEST_EMBEDDING,
+            backend_factory=build_fake_backend,
+        )
+    elif request.param == "chroma":
         persist_dir = tmp_path / "chroma"
         persist_dir.mkdir(parents=True, exist_ok=True)
         eng = GraphKnowledgeEngine(
@@ -80,7 +92,11 @@ def e2e_engine(
             embedding_function=TEST_EMBEDDING,
         )
     else:
+        sa_engine = request.getfixturevalue("sa_engine")
+        pg_schema = request.getfixturevalue("pg_schema")
         pytest.importorskip("pgvector")
+        from kogwistar.engine_core.postgres_backend import PgVectorBackend
+
         backend = PgVectorBackend(engine=sa_engine, embedding_dim=3, schema=pg_schema)
         eng = GraphKnowledgeEngine(
             backend=backend,

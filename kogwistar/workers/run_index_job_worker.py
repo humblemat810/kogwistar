@@ -48,7 +48,7 @@ def _build_engine(args: argparse.Namespace) -> GraphKnowledgeEngine:
         global PgVectorBackend
 
         if PgVectorBackend is None:
-            from graph_knowledge_engine.engine_core.postgres_backend import (
+            from kogwistar.engine_core.postgres_backend import (
                 PgVectorBackend as _PgVectorBackend,
             )
 

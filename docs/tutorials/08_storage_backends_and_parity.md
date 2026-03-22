@@ -33,6 +33,21 @@ The repo now also has a backend-contract smoke suite. If you are adding or swapp
 - `chroma` and `pg` are broader coverage paths and should keep passing the same contract checks.
 - New backends should prove they satisfy the common contract before they are used by higher-level conversation, MCP, or workflow tests.
 
+### Current Fake vs Real Behavior
+
+The fake backend is intentionally close to Chroma-shaped behavior, but it is not a persistence clone.
+
+- `fake` is safe for in-process tests that only need the collection contract, read/query shapes, or deterministic orchestration.
+- `fake` does not survive a subprocess reopen the way `chroma` or `pg` do.
+- `fake` can participate in parity tests when the assertion is structural or semantic, but it may diverge on generated IDs or backend-owned trace rows.
+- Some parity cases remain real-only because the fake path does not yet reproduce the same workflow trace semantics. In this repo, that includes the stricter backbone-only conversation parity case.
+
+Practical rule:
+
+- use `fake` for lightweight CI coverage and structural parity
+- keep `chroma` and `pg` for persistence, subprocess reopen, and backend-specific trace semantics
+- when a `fake` row is added, mark it explicitly as `ci` and keep the real rows as `ci_full`
+
 ## Next Tutorial
 
 Continue to [09 Indexing Pipeline](./09_indexing_pipeline.md).

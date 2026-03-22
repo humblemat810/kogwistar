@@ -105,7 +105,7 @@ except Exception:  # pragma: no cover - allow lightweight test subsets on limite
         return None
 
 try:
-    from graph_knowledge_engine.engine_core.postgres_backend import PgVectorBackend
+    from kogwistar.engine_core.postgres_backend import PgVectorBackend
 except Exception:  # pragma: no cover - optional in lightweight envs
     PgVectorBackend = Any  # type: ignore[assignment]
 
@@ -520,17 +520,17 @@ _LIGHTWEIGHT_CI_IMPORT_BLOCKERS = (
     r"^\s*(?:from|import)\s+websocket\b",
     r"^\s*(?:from|import)\s+fastapi\b",
     r"^\s*(?:from|import)\s+mcp\b",
-    "graph_knowledge_engine.engine_core.postgres_backend",
-    "graph_knowledge_engine.engine_core.engine_postgres",
-    "graph_knowledge_engine.engine_core.engine_postgres_meta",
-    "graph_knowledge_engine.engine_core.chroma_backend",
-    "graph_knowledge_engine.server.auth.",
-    "graph_knowledge_engine.server.resources",
-    "graph_knowledge_engine.server.chat_api",
-    "graph_knowledge_engine.server.runtime_api",
-    "graph_knowledge_engine.server.auth_middleware",
-    "graph_knowledge_engine.server_mcp_with_admin",
-    "graph_knowledge_engine.cdc.change_bridge",
+    "kogwistar.engine_core.postgres_backend",
+    "kogwistar.engine_core.engine_postgres",
+    "kogwistar.engine_core.engine_postgres_meta",
+    "kogwistar.engine_core.chroma_backend",
+    "kogwistar.server.auth.",
+    "kogwistar.server.resources",
+    "kogwistar.server.chat_api",
+    "kogwistar.server.runtime_api",
+    "kogwistar.server.auth_middleware",
+    "kogwistar.server_mcp_with_admin",
+    "kogwistar.cdc.change_bridge",
 )
 
 

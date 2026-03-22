@@ -1,5 +1,5 @@
 import pytest
-pytestmark = pytest.mark.ci_full
+pytestmark = pytest.mark.core
 import json
 import uuid
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
@@ -14,6 +14,7 @@ from kogwistar.runtime.runtime import WorkflowRuntime, StepContext
 from kogwistar.runtime.resolvers import MappingStepResolver
 from kogwistar.runtime.sandbox import SandboxRequest
 from tests.conftest import FakeEmbeddingFunction
+from tests._helpers.fake_backend import build_fake_backend
 
 from kogwistar.engine_core.models import Span, Grounding
 
@@ -136,17 +137,58 @@ def _workflow_step_exec_nodes(conv_engine: GraphKnowledgeEngine, run_id: str):
     )
 
 
-def test_workflow_suspend_and_resume(tmp_path):
-    wf_engine = GraphKnowledgeEngine(
-        persist_directory=str(tmp_path / "wf"),
-        kg_graph_type="workflow",
+def _make_engine(
+    tmp_path, *, graph_type: str, backend_kind: str
+) -> GraphKnowledgeEngine:
+    if backend_kind == "fake":
+        return GraphKnowledgeEngine(
+            persist_directory=str(tmp_path),
+            kg_graph_type=graph_type,
+            embedding_function=FakeEmbeddingFunction(),
+            backend_factory=build_fake_backend,
+        )
+    return GraphKnowledgeEngine(
+        persist_directory=str(tmp_path),
+        kg_graph_type=graph_type,
         embedding_function=FakeEmbeddingFunction(),
     )
-    conv_engine = GraphKnowledgeEngine(
-        persist_directory=str(tmp_path / "conv"),
-        kg_graph_type="conversation",
-        embedding_function=FakeEmbeddingFunction(),
-    )
+
+
+BACKEND_PARAMS = [
+    pytest.param("fake", id="fake", marks=pytest.mark.ci),
+    pytest.param("chroma", id="chroma", marks=pytest.mark.ci_full),
+]
+
+
+@pytest.mark.parametrize(
+    "backend_kind",
+    BACKEND_PARAMS,
+)
+def test_workflow_suspend_and_resume(tmp_path, backend_kind):
+    if backend_kind == "fake":
+        wf_engine = GraphKnowledgeEngine(
+            persist_directory=str(tmp_path / "wf"),
+            kg_graph_type="workflow",
+            embedding_function=FakeEmbeddingFunction(),
+            backend_factory=build_fake_backend,
+        )
+        conv_engine = GraphKnowledgeEngine(
+            persist_directory=str(tmp_path / "conv"),
+            kg_graph_type="conversation",
+            embedding_function=FakeEmbeddingFunction(),
+            backend_factory=build_fake_backend,
+        )
+    else:
+        wf_engine = GraphKnowledgeEngine(
+            persist_directory=str(tmp_path / "wf"),
+            kg_graph_type="workflow",
+            embedding_function=FakeEmbeddingFunction(),
+        )
+        conv_engine = GraphKnowledgeEngine(
+            persist_directory=str(tmp_path / "conv"),
+            kg_graph_type="conversation",
+            embedding_function=FakeEmbeddingFunction(),
+        )
 
     wf_id = "test_suspend_wf"
 
@@ -254,17 +296,10 @@ def test_workflow_suspend_and_resume(tmp_path):
     assert res2.final_state.get("ended") is True
 
 
-def test_workflow_suspend_and_resume_branching(tmp_path):
-    wf_engine = GraphKnowledgeEngine(
-        persist_directory=str(tmp_path / "wf_b"),
-        kg_graph_type="workflow",
-        embedding_function=FakeEmbeddingFunction(),
-    )
-    conv_engine = GraphKnowledgeEngine(
-        persist_directory=str(tmp_path / "conv_b"),
-        kg_graph_type="conversation",
-        embedding_function=FakeEmbeddingFunction(),
-    )
+@pytest.mark.parametrize("backend_kind", BACKEND_PARAMS)
+def test_workflow_suspend_and_resume_branching(tmp_path, backend_kind):
+    wf_engine = _make_engine(tmp_path / "wf_b", graph_type="workflow", backend_kind=backend_kind)
+    conv_engine = _make_engine(tmp_path / "conv_b", graph_type="conversation", backend_kind=backend_kind)
 
     wf_id = "test_suspend_branching_wf"
 
@@ -390,17 +425,10 @@ def test_workflow_suspend_and_resume_branching(tmp_path):
     assert res2.final_state.get("ended") is True
 
 
-def test_workflow_failure_does_not_route_to_terminal(tmp_path):
-    wf_engine = GraphKnowledgeEngine(
-        persist_directory=str(tmp_path / "wf_fail"),
-        kg_graph_type="workflow",
-        embedding_function=FakeEmbeddingFunction(),
-    )
-    conv_engine = GraphKnowledgeEngine(
-        persist_directory=str(tmp_path / "conv_fail"),
-        kg_graph_type="conversation",
-        embedding_function=FakeEmbeddingFunction(),
-    )
+@pytest.mark.parametrize("backend_kind", BACKEND_PARAMS)
+def test_workflow_failure_does_not_route_to_terminal(tmp_path, backend_kind):
+    wf_engine = _make_engine(tmp_path / "wf_fail", graph_type="workflow", backend_kind=backend_kind)
+    conv_engine = _make_engine(tmp_path / "conv_fail", graph_type="conversation", backend_kind=backend_kind)
 
     wf_id = "test_failure_stops_routing"
     _create_node(wf_engine, wf_id, "n_start", "start_op", start=True)
@@ -470,17 +498,12 @@ def test_workflow_failure_does_not_route_to_terminal(tmp_path):
     assert res.final_state.get("ended") is None
 
 
-def test_workflow_failure_can_route_to_recovery_branch(tmp_path):
-    wf_engine = GraphKnowledgeEngine(
-        persist_directory=str(tmp_path / "wf_fail_route"),
-        kg_graph_type="workflow",
-        embedding_function=FakeEmbeddingFunction(),
-    )
-    conv_engine = GraphKnowledgeEngine(
-        persist_directory=str(tmp_path / "conv_fail_route"),
-        kg_graph_type="conversation",
-        embedding_function=FakeEmbeddingFunction(),
-    )
+@pytest.mark.parametrize("backend_kind", BACKEND_PARAMS)
+def test_workflow_failure_can_route_to_recovery_branch(
+    tmp_path, backend_kind
+):
+    wf_engine = _make_engine(tmp_path / "wf_fail_route", graph_type="workflow", backend_kind=backend_kind)
+    conv_engine = _make_engine(tmp_path / "conv_fail_route", graph_type="conversation", backend_kind=backend_kind)
 
     wf_id = "test_failure_routes"
     _create_node(wf_engine, wf_id, "start", "start_op", start=True)
@@ -562,17 +585,12 @@ def test_workflow_failure_can_route_to_recovery_branch(tmp_path):
     assert res.final_state.get("ended") is True
 
 
-def test_resume_run_failure_can_route_to_recovery_branch(tmp_path):
-    wf_engine = GraphKnowledgeEngine(
-        persist_directory=str(tmp_path / "wf_resume_fail"),
-        kg_graph_type="workflow",
-        embedding_function=FakeEmbeddingFunction(),
-    )
-    conv_engine = GraphKnowledgeEngine(
-        persist_directory=str(tmp_path / "conv_resume_fail"),
-        kg_graph_type="conversation",
-        embedding_function=FakeEmbeddingFunction(),
-    )
+@pytest.mark.parametrize("backend_kind", BACKEND_PARAMS)
+def test_resume_run_failure_can_route_to_recovery_branch(
+    tmp_path, backend_kind
+):
+    wf_engine = _make_engine(tmp_path / "wf_resume_fail", graph_type="workflow", backend_kind=backend_kind)
+    conv_engine = _make_engine(tmp_path / "conv_resume_fail", graph_type="conversation", backend_kind=backend_kind)
 
     wf_id = "test_resume_failure_routes"
     _create_node(wf_engine, wf_id, "start", "start_op", start=True)
@@ -680,17 +698,12 @@ def test_resume_run_failure_can_route_to_recovery_branch(tmp_path):
     assert res2.final_state.get("ended") is True
 
 
-def test_resume_run_can_resuspend_same_token_with_updated_payload(tmp_path):
-    wf_engine = GraphKnowledgeEngine(
-        persist_directory=str(tmp_path / "wf_resuspend"),
-        kg_graph_type="workflow",
-        embedding_function=FakeEmbeddingFunction(),
-    )
-    conv_engine = GraphKnowledgeEngine(
-        persist_directory=str(tmp_path / "conv_resuspend"),
-        kg_graph_type="conversation",
-        embedding_function=FakeEmbeddingFunction(),
-    )
+@pytest.mark.parametrize("backend_kind", BACKEND_PARAMS)
+def test_resume_run_can_resuspend_same_token_with_updated_payload(
+    tmp_path, backend_kind
+):
+    wf_engine = _make_engine(tmp_path / "wf_resuspend", graph_type="workflow", backend_kind=backend_kind)
+    conv_engine = _make_engine(tmp_path / "conv_resuspend", graph_type="conversation", backend_kind=backend_kind)
 
     wf_id = "test_resuspend"
     _create_node(wf_engine, wf_id, "start", "start_op", start=True)
@@ -796,17 +809,12 @@ def test_resume_run_can_resuspend_same_token_with_updated_payload(tmp_path):
     assert latest_result.get("resume_payload", {}).get("message") == "second pause"
 
 
-def test_sandbox_recoverable_error_can_suspend_then_resume_success(tmp_path):
-    wf_engine = GraphKnowledgeEngine(
-        persist_directory=str(tmp_path / "wf_sandbox_recoverable"),
-        kg_graph_type="workflow",
-        embedding_function=FakeEmbeddingFunction(),
-    )
-    conv_engine = GraphKnowledgeEngine(
-        persist_directory=str(tmp_path / "conv_sandbox_recoverable"),
-        kg_graph_type="conversation",
-        embedding_function=FakeEmbeddingFunction(),
-    )
+@pytest.mark.parametrize("backend_kind", BACKEND_PARAMS)
+def test_sandbox_recoverable_error_can_suspend_then_resume_success(
+    tmp_path, backend_kind
+):
+    wf_engine = _make_engine(tmp_path / "wf_sandbox_recoverable", graph_type="workflow", backend_kind=backend_kind)
+    conv_engine = _make_engine(tmp_path / "conv_sandbox_recoverable", graph_type="conversation", backend_kind=backend_kind)
 
     wf_id = "test_sandbox_recoverable"
     _create_node(wf_engine, wf_id, "start", "start_op", start=True)

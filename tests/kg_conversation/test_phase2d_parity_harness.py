@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import pytest
-pytestmark = pytest.mark.ci_full
+pytestmark = pytest.mark.core
+from dataclasses import replace
 from typing import Any, Type, TypeVar
 
 from pydantic import BaseModel
@@ -23,19 +24,55 @@ from kogwistar.conversation.agentic_answering import (
     AnswerWithCitations,
     AnswerEvaluation,
 )
+from kogwistar.llm_tasks.contracts import SummarizeContextTaskResult
 
 from tests.conftest import _make_engine_pair  # reuse canonical engine fixture builder
 
-from tests._helpers.conv_view import extract_conv_view, assert_views_equivalent
+from tests._helpers.conv_view import (
+    ConvGraphView,
+    extract_conv_view,
+    assert_views_equivalent,
+)
 from tests._helpers.runners import run_v1_scenario, run_v2_scenario
 
 BaseM = TypeVar("BaseM", bound=BaseModel)
+
+BACKEND_PARAMS = [
+    pytest.param("fake", id="fake", marks=pytest.mark.ci),
+    pytest.param("chroma", id="chroma", marks=pytest.mark.ci_full),
+    pytest.param("pg", id="pg", marks=pytest.mark.ci_full),
+]
+
+BACKEND_PARAMS_REAL = [
+    pytest.param("chroma", id="chroma", marks=pytest.mark.ci_full),
+    pytest.param("pg", id="pg", marks=pytest.mark.ci_full),
+]
 
 
 def _mk_span(doc_id: str) -> Span:
     sp = Span.from_dummy_for_conversation()
     sp.doc_id = doc_id
     return sp
+
+
+def _semantic_view(view: ConvGraphView) -> ConvGraphView:
+    """Normalize backend-specific IDs so fake-vs-real parity checks compare structure."""
+    return ConvGraphView(
+        ui_chain_turn_ids=view.ui_chain_turn_ids,
+        next_turn_edges=tuple((rel, src, dst) for _, rel, src, dst in view.next_turn_edges),
+        references_edges=tuple(
+            (rel, src, dst) for _, rel, src, dst in view.references_edges
+        ),
+        summarizes_edges=tuple(
+            (rel, src, dst) for _, rel, src, dst in view.summarizes_edges
+        ),
+        depends_on_edges=tuple(
+            (rel, src, dst) for _, rel, src, dst in view.depends_on_edges
+        ),
+        summary_node_ids=(f"count:{len(view.summary_node_ids)}",),
+        snapshot_node_ids=(f"count:{len(view.snapshot_node_ids)}",),
+        snapshot_costs=tuple((cc, tc) for _, cc, tc in view.snapshot_costs),
+    )
 
 
 # Avoid touching KG retrieval/materialization
@@ -122,6 +159,10 @@ def scenario_summary_snapshot(
         use_fake=True,
     )
     conv.tool_call_id_factory = stable_id
+    conv.llm_tasks = replace(
+        conv.llm_tasks,
+        summarize_context=lambda req: SummarizeContextTaskResult(text=req.full_text),
+    )
     orch = ConversationOrchestrator(
         conversation_engine=conv,
         ref_knowledge_engine=kg,
@@ -260,10 +301,16 @@ def scenario_answer_flow_snapshots(
     return conv, conversation_id
 
 
-@pytest.mark.parametrize("backend_kind", ["chroma", "pg"])
+@pytest.mark.parametrize("backend_kind", BACKEND_PARAMS)
 def test_phase2d_parity_harness_summary_snapshot(
-    backend_kind, tmp_path, sa_engine, pg_schema, monkeypatch
+    backend_kind, tmp_path, monkeypatch, request
 ):
+    if backend_kind == "pg":
+        sa_engine = request.getfixturevalue("sa_engine")
+        pg_schema = request.getfixturevalue("pg_schema")
+    else:
+        sa_engine = None
+        pg_schema = None
     conv_a, cid_a = run_v1_scenario(
         scenario_summary_snapshot,
         backend_kind=backend_kind,
@@ -283,13 +330,22 @@ def test_phase2d_parity_harness_summary_snapshot(
 
     view_a = extract_conv_view(conv_a, conversation_id=cid_a)
     view_b = extract_conv_view(conv_b, conversation_id=cid_b)
-    assert_views_equivalent(view_a, view_b)
+    if backend_kind == "fake":
+        assert _semantic_view(view_a) == _semantic_view(view_b)
+    else:
+        assert_views_equivalent(view_a, view_b)
 
 
-@pytest.mark.parametrize("backend_kind", ["chroma", "pg"])
+@pytest.mark.parametrize("backend_kind", BACKEND_PARAMS)
 def test_phase2d_parity_harness_answer_flow_snapshots(
-    backend_kind, tmp_path, sa_engine, pg_schema, monkeypatch
+    backend_kind, tmp_path, monkeypatch, request
 ):
+    if backend_kind == "pg":
+        sa_engine = request.getfixturevalue("sa_engine")
+        pg_schema = request.getfixturevalue("pg_schema")
+    else:
+        sa_engine = None
+        pg_schema = None
     conv_a, cid_a = run_v1_scenario(
         scenario_answer_flow_snapshots,
         backend_kind=backend_kind,
@@ -309,7 +365,10 @@ def test_phase2d_parity_harness_answer_flow_snapshots(
 
     view_a = extract_conv_view(conv_a, conversation_id=cid_a)
     view_b = extract_conv_view(conv_b, conversation_id=cid_b)
-    assert_views_equivalent(view_a, view_b)
+    if backend_kind == "fake":
+        assert _semantic_view(view_a) == _semantic_view(view_b)
+    else:
+        assert_views_equivalent(view_a, view_b)
 
 
 def scenario_backbone_only(
@@ -364,10 +423,16 @@ def scenario_backbone_only(
         return conv, "v2"
 
 
-@pytest.mark.parametrize("backend_kind", ["chroma", "pg"])
+@pytest.mark.parametrize("backend_kind", BACKEND_PARAMS_REAL)
 def test_phase2d_parity_harness_backbone_only(
-    backend_kind, tmp_path, sa_engine, pg_schema, monkeypatch
+    backend_kind, tmp_path, monkeypatch, request
 ):
+    if backend_kind == "pg":
+        sa_engine = request.getfixturevalue("sa_engine")
+        pg_schema = request.getfixturevalue("pg_schema")
+    else:
+        sa_engine = None
+        pg_schema = None
     conv_v1, _ = run_v1_scenario(
         scenario_backbone_only,
         backend_kind=backend_kind,

@@ -1,5 +1,5 @@
 import pytest
-pytestmark = pytest.mark.ci_full
+pytestmark = pytest.mark.core
 import json
 from pathlib import Path
 
@@ -15,6 +15,44 @@ from kogwistar.runtime.runtime import WorkflowRuntime
 from kogwistar.runtime.replay import load_checkpoint, replay_to
 from kogwistar.runtime.models import RunSuccess
 from kogwistar.runtime.models import WorkflowEdge, WorkflowNode
+from tests.conftest import FakeEmbeddingFunction
+from tests._helpers.fake_backend import build_fake_backend
+
+
+BACKEND_PARAMS = [
+    pytest.param("fake", id="fake", marks=pytest.mark.ci),
+    pytest.param("chroma", id="chroma", marks=pytest.mark.ci_full),
+]
+
+
+def _make_engine(tmp_path: Path, *, graph_type: str, backend_kind: str) -> GraphKnowledgeEngine:
+    if backend_kind == "fake":
+        return GraphKnowledgeEngine(
+            persist_directory=str(tmp_path),
+            kg_graph_type=graph_type,
+            embedding_function=FakeEmbeddingFunction(),
+            backend_factory=build_fake_backend,
+        )
+    return GraphKnowledgeEngine(
+        persist_directory=str(tmp_path),
+        kg_graph_type=graph_type,
+    )
+
+
+def _reopen_engine(tmp_path: Path, *, graph_type: str, backend_kind: str) -> GraphKnowledgeEngine:
+    return _make_engine(tmp_path, graph_type=graph_type, backend_kind=backend_kind)
+
+
+def _runtime_engine(
+    engine: GraphKnowledgeEngine,
+    tmp_path: Path,
+    *,
+    graph_type: str,
+    backend_kind: str,
+) -> GraphKnowledgeEngine:
+    if backend_kind == "fake":
+        return engine
+    return _reopen_engine(tmp_path, graph_type=graph_type, backend_kind=backend_kind)
 
 
 def _span() -> Span:
@@ -103,7 +141,8 @@ def _wf_edge(
     )
 
 
-def test_runtime_checkpoint_load_and_replay(tmp_path: Path):
+@pytest.mark.parametrize("backend_kind", BACKEND_PARAMS)
+def test_runtime_checkpoint_load_and_replay(tmp_path: Path, backend_kind: str):
     """
     End-to-end:
       1) Create workflow design (saved in workflow_engine)
@@ -116,11 +155,9 @@ def test_runtime_checkpoint_load_and_replay(tmp_path: Path):
 
     workflow_id = "wf_checkpoint_load_replay_smoke"
 
-    workflow_engine = GraphKnowledgeEngine(
-        persist_directory=str(wf_dir), kg_graph_type="workflow"
-    )
-    conversation_engine = GraphKnowledgeEngine(
-        persist_directory=str(conv_dir), kg_graph_type="conversation"
+    workflow_engine = _make_engine(wf_dir, graph_type="workflow", backend_kind=backend_kind)
+    conversation_engine = _make_engine(
+        conv_dir, graph_type="conversation", backend_kind=backend_kind
     )
 
     # ---- Build a 3-step workflow: a -> b -> end ----
@@ -186,8 +223,8 @@ def test_runtime_checkpoint_load_and_replay(tmp_path: Path):
     # IMPORTANT: set large checkpoint interval so only checkpoint at step_seq=0
     # Runtime logic: checkpoint if (step_seq % N) == 0. With N=9999 => only at 0 for a short workflow.
     rt = WorkflowRuntime(
-        workflow_engine=GraphKnowledgeEngine(
-            persist_directory=str(wf_dir), kg_graph_type="workflow"
+        workflow_engine=_runtime_engine(
+            workflow_engine, wf_dir, graph_type="workflow", backend_kind=backend_kind
         ),
         conversation_engine=conversation_engine,
         step_resolver=resolve_step,
@@ -235,7 +272,8 @@ def test_runtime_checkpoint_load_and_replay(tmp_path: Path):
     json.dumps(reconstructed)
 
 
-def test_runtime_resume_from_checkpoint(tmp_path: Path):
+@pytest.mark.parametrize("backend_kind", BACKEND_PARAMS)
+def test_runtime_resume_from_checkpoint(tmp_path: Path, backend_kind: str):
     """
     Resume semantics without needing a "start_from_step" API:
 
@@ -252,11 +290,9 @@ def test_runtime_resume_from_checkpoint(tmp_path: Path):
 
     workflow_id = "wf_resume_from_checkpoint_gate"
 
-    workflow_engine = GraphKnowledgeEngine(
-        persist_directory=str(wf_dir), kg_graph_type="workflow"
-    )
-    conversation_engine = GraphKnowledgeEngine(
-        persist_directory=str(conv_dir), kg_graph_type="conversation"
+    workflow_engine = _make_engine(wf_dir, graph_type="workflow", backend_kind=backend_kind)
+    conversation_engine = _make_engine(
+        conv_dir, graph_type="conversation", backend_kind=backend_kind
     )
 
     # ---- Build workflow design in workflow_engine (no persist() needed) ----
@@ -320,9 +356,11 @@ def test_runtime_resume_from_checkpoint(tmp_path: Path):
     # b -> end
     workflow_engine.add_edge(e_b_end)
 
-    # Re-open workflow engine from disk to prove the design is actually stored
-    workflow_engine2 = GraphKnowledgeEngine(
-        persist_directory=str(wf_dir), kg_graph_type="workflow"
+    # Re-open workflow engine from disk to prove the design is actually stored.
+    # The fake backend keeps the lightweight path, but it does not guarantee
+    # cross-instance persistence like the Chroma-backed row.
+    workflow_engine2 = _runtime_engine(
+        workflow_engine, wf_dir, graph_type="workflow", backend_kind=backend_kind
     )
 
     # predicate_registry = {
@@ -400,7 +438,10 @@ def test_runtime_resume_from_checkpoint(tmp_path: Path):
     assert "a" in final2.get("op_log", [])  # continue, must contain a from save time
 
 
-def test_runtime_resume_from_checkpoint_frontier(tmp_path: Path):
+@pytest.mark.parametrize("backend_kind", BACKEND_PARAMS)
+def test_runtime_resume_from_checkpoint_frontier(
+    tmp_path: Path, backend_kind: str
+):
     """True resume from checkpoint using runtime frontier (_rt_join).
 
     This validates that checkpoints capture a resume-able scheduler frontier,
@@ -419,11 +460,11 @@ def test_runtime_resume_from_checkpoint_frontier(tmp_path: Path):
 
     workflow_id = "wf_resume_from_checkpoint_frontier"
 
-    workflow_engine = GraphKnowledgeEngine(
-        persist_directory=str(wf_dir), kg_graph_type="workflow"
+    workflow_engine = _make_engine(
+        wf_dir, graph_type="workflow", backend_kind=backend_kind
     )
-    conversation_engine = GraphKnowledgeEngine(
-        persist_directory=str(conv_dir), kg_graph_type="conversation"
+    conversation_engine = _make_engine(
+        conv_dir, graph_type="conversation", backend_kind=backend_kind
     )
 
     # ---- Build workflow: a -> b -> end ----
@@ -482,8 +523,8 @@ def test_runtime_resume_from_checkpoint_frontier(tmp_path: Path):
         return _fn
 
     rt1 = WorkflowRuntime(
-        workflow_engine=GraphKnowledgeEngine(
-            persist_directory=str(wf_dir), kg_graph_type="workflow"
+        workflow_engine=_runtime_engine(
+            workflow_engine, wf_dir, graph_type="workflow", backend_kind=backend_kind
         ),
         conversation_engine=conversation_engine,
         step_resolver=resolve_step,
@@ -516,8 +557,8 @@ def test_runtime_resume_from_checkpoint_frontier(tmp_path: Path):
     )
 
     rt2 = WorkflowRuntime(
-        workflow_engine=GraphKnowledgeEngine(
-            persist_directory=str(wf_dir), kg_graph_type="workflow"
+        workflow_engine=_runtime_engine(
+            workflow_engine, wf_dir, graph_type="workflow", backend_kind=backend_kind
         ),
         conversation_engine=conversation_engine,
         step_resolver=resolve_step,

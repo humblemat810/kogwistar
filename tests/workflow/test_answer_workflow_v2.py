@@ -25,7 +25,7 @@ from kogwistar.llm_tasks import (
     SummarizeContextTaskResult,
 )
 
-pytestmark = pytest.mark.ci
+pytestmark = pytest.mark.ci_full
 
 
 def _fixed_llm_tasks(answer: AnswerWithCitations) -> LLMTaskSet:

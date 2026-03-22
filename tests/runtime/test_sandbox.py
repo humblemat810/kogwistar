@@ -265,7 +265,7 @@ def test_docker_sandbox_per_run_timeout_force_removes_container():
     ]
 
 
-def test_mapping_resolver_executes_sandboxed_code_with_run_context():
+def test_mapping_resolver_executes_sandboxed_code_with_run_context(tmp_path):
     class _RecordingSandbox:
         def __init__(self):
             self.calls = []
@@ -299,6 +299,7 @@ def test_mapping_resolver_executes_sandboxed_code_with_run_context():
         token_id="tok-1",
         attempt=1,
         step_seq=7,
+        cache_dir=tmp_path / "sandbox-cache",
         conversation_id="conv-1",
         turn_node_id="turn-1",
         state={"value": 1},
@@ -315,7 +316,7 @@ def test_mapping_resolver_executes_sandboxed_code_with_run_context():
     assert sandbox.calls[1][0] == "close_run"
 
 
-def test_mapping_resolver_does_not_prepare_sandbox_for_non_sandboxed_op():
+def test_mapping_resolver_does_not_prepare_sandbox_for_non_sandboxed_op(tmp_path):
     class _FailIfCalledSandbox:
         def run(self, code, state, context):
             raise AssertionError("sandbox should not run for non-sandboxed ops")
@@ -339,6 +340,7 @@ def test_mapping_resolver_does_not_prepare_sandbox_for_non_sandboxed_op():
         token_id="tok-plain",
         attempt=1,
         step_seq=1,
+        cache_dir=tmp_path / "sandbox-cache",
         conversation_id="conv-plain",
         turn_node_id="turn-plain",
         state={"value": 1},

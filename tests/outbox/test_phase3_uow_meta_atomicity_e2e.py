@@ -12,7 +12,13 @@ EMBEDDING_DIM = 3
 TEST_EMBEDDING = FakeEmbeddingFunction(dim=EMBEDDING_DIM)
 
 
-@pytest.fixture(params=["chroma", "pg"], ids=["chroma", "pg"])
+@pytest.fixture(
+    params=[
+        pytest.param("chroma", id="chroma", marks=pytest.mark.ci_full),
+        pytest.param("pg", id="pg", marks=pytest.mark.ci_full),
+    ],
+    ids=["chroma", "pg"],
+)
 def e2e_engine(request, tmp_path, sa_engine, pg_schema) -> GraphKnowledgeEngine:
     if request.param == "chroma":
         persist_dir = tmp_path / "chroma"

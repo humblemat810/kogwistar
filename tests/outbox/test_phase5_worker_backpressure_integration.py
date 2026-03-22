@@ -30,7 +30,13 @@ def _enqueue_jobs(meta, *, ns: str, n: int) -> list[str]:
     return ids
 
 
-@pytest.fixture(params=["chroma", "pg"], ids=["chroma", "pg"])
+@pytest.fixture(
+    params=[
+        pytest.param("chroma", id="chroma", marks=pytest.mark.ci_full),
+        pytest.param("pg", id="pg", marks=pytest.mark.ci_full),
+    ],
+    ids=["chroma", "pg"],
+)
 def eng(request, tmp_path, sa_engine, pg_schema) -> GraphKnowledgeEngine:
     """Backend-parametrized engine fixture for Phase 5 worker semantics."""
     if request.param == "chroma":

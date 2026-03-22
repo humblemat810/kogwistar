@@ -4,7 +4,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 import pytest
-pytestmark = pytest.mark.ci_full
+pytestmark = pytest.mark.core
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.models import Span, Grounding
@@ -16,6 +16,7 @@ import logging
 # Reuse your canonical engine factory (already parametrized in other tests)
 from kogwistar.runtime.models import WorkflowEdge, WorkflowNode
 from tests.conftest import _make_engine_pair, FakeEmbeddingFunction
+from tests._helpers.fake_backend import build_fake_backend
 import os
 
 os.environ["ANONYMIZED_TELEMETRY"] = "FALSE"
@@ -182,31 +183,55 @@ def _build_inner(workflow_engine: GraphKnowledgeEngine, workflow_id: str) -> Non
     )
 
 
-@pytest.mark.parametrize("backend_kind", ["chroma", "pg"])
+@pytest.mark.parametrize(
+    "backend_kind",
+    [
+        pytest.param("fake", id="fake", marks=pytest.mark.ci),
+        pytest.param("chroma", id="chroma", marks=pytest.mark.ci_full),
+        pytest.param("pg", id="pg", marks=pytest.mark.ci_full),
+    ],
+)
 @pytest.mark.parametrize("tags", [["a"], ["a", "b", "c", "d"]], ids=["a", "abcd"])
 @pytest.mark.parametrize("iterations", [1, 5])
 def test_trace_sink_parallel_and_nested_minimal_sync(
     backend_kind: str,
     tmp_path,
-    sa_engine,
-    pg_schema,
+    request: pytest.FixtureRequest,
     tags,
     iterations,
 ):
     # ---- engines: conversation engine varies by backend; workflow engine always local (sink is sqlite under persist_directory)
-    _kg_engine, conversation_engine = _make_engine_pair(
-        backend_kind=backend_kind,
-        tmp_path=tmp_path,
-        sa_engine=sa_engine,
-        pg_schema=pg_schema,
-        dim=8,
-        use_fake=True,
-    )
-    workflow_engine = GraphKnowledgeEngine(
-        persist_directory=str(tmp_path / "wf"),
-        kg_graph_type="workflow",
-        embedding_function=FakeEmbeddingFunction(dim=8),
-    )
+    if backend_kind == "fake":
+        _kg_engine, conversation_engine = _make_engine_pair(
+            backend_kind="fake",
+            tmp_path=tmp_path,
+            sa_engine=None,
+            pg_schema=None,
+            dim=8,
+            use_fake=True,
+        )
+        workflow_engine = GraphKnowledgeEngine(
+            persist_directory=str(tmp_path / "wf"),
+            kg_graph_type="workflow",
+            embedding_function=FakeEmbeddingFunction(dim=8),
+            backend_factory=build_fake_backend,
+        )
+    else:
+        sa_engine = request.getfixturevalue("sa_engine")
+        pg_schema = request.getfixturevalue("pg_schema")
+        _kg_engine, conversation_engine = _make_engine_pair(
+            backend_kind=backend_kind,
+            tmp_path=tmp_path,
+            sa_engine=sa_engine,
+            pg_schema=pg_schema,
+            dim=8,
+            use_fake=True,
+        )
+        workflow_engine = GraphKnowledgeEngine(
+            persist_directory=str(tmp_path / "wf"),
+            kg_graph_type="workflow",
+            embedding_function=FakeEmbeddingFunction(dim=8),
+        )
 
     outer_id = f"wf_test_outer_parallel_nested_min_sync_{backend_kind}"
     inner_id = f"wf_test_inner_parallel_nested_min_sync_{backend_kind}"

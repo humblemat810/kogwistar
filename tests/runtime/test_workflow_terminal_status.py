@@ -1,6 +1,6 @@
 from __future__ import annotations
 import pytest
-pytestmark = pytest.mark.ci_full
+pytestmark = pytest.mark.core
 
 import shutil
 import uuid
@@ -19,6 +19,7 @@ from kogwistar.runtime.models import (
     WorkflowNode,
 )
 from kogwistar.runtime.runtime import WorkflowRuntime
+from tests._helpers.fake_backend import build_fake_backend
 
 
 class FakeEmbeddingFunction:
@@ -116,21 +117,42 @@ def _wf_edge(*, workflow_id: str, edge_id: str, src: str, dst: str) -> WorkflowE
     )
 
 
-def test_runtime_persists_completed_terminal_for_leaf_node():
+@pytest.mark.parametrize(
+    "backend_kind",
+    [
+        pytest.param("fake", id="fake", marks=pytest.mark.ci),
+        pytest.param("chroma", id="chroma", marks=pytest.mark.ci_full),
+    ],
+)
+def test_runtime_persists_completed_terminal_for_leaf_node(backend_kind):
     root = Path(".tmp_runtime_completed_terminal") / str(uuid.uuid4())
     root.mkdir(parents=True, exist_ok=True)
     try:
         ef = FakeEmbeddingFunction()
-        workflow_engine = GraphKnowledgeEngine(
-            persist_directory=str(root / "wf"),
-            kg_graph_type="workflow",
-            embedding_function=ef,
-        )
-        conversation_engine = GraphKnowledgeEngine(
-            persist_directory=str(root / "conv"),
-            kg_graph_type="conversation",
-            embedding_function=ef,
-        )
+        if backend_kind == "fake":
+            workflow_engine = GraphKnowledgeEngine(
+                persist_directory=str(root / "wf"),
+                kg_graph_type="workflow",
+                embedding_function=ef,
+                backend_factory=build_fake_backend,
+            )
+            conversation_engine = GraphKnowledgeEngine(
+                persist_directory=str(root / "conv"),
+                kg_graph_type="conversation",
+                embedding_function=ef,
+                backend_factory=build_fake_backend,
+            )
+        else:
+            workflow_engine = GraphKnowledgeEngine(
+                persist_directory=str(root / "wf"),
+                kg_graph_type="workflow",
+                embedding_function=ef,
+            )
+            conversation_engine = GraphKnowledgeEngine(
+                persist_directory=str(root / "conv"),
+                kg_graph_type="conversation",
+                embedding_function=ef,
+            )
 
         workflow_id = "wf_runtime_leaf_terminal"
         conversation_id = "conv_runtime_leaf_terminal"
