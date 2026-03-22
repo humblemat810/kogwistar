@@ -30,6 +30,11 @@ It treats knowledge, conversation, workflow/runtime, provenance, and future wisd
 
 **It is better understood as a graph-native memory and execution substrate than as only another GraphRAG repository.**
 
+To **Data scientists**: This is the plug and play hypergraphrag you 
+looking for
+To **Engineers**:       This is the harness/substrate for robust systems
+To **Researchers**:    You have imaginative ways to use it
+
 If you are looking for a graph-native substrate, workflow/runtime harness, or graph-native memory system, this repo is positioned in that category. For example, it can support agent loops where workflows dynamically define and execute sub-tasks, similar to emerging recursive agent execution patterns. 
 
 Today the repo implements graph memory and query, workflow design/runtime, provenance and replay-oriented surfaces, CDC/event-oriented patterns, and self-hostable development paths.

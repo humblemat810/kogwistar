@@ -30,7 +30,7 @@ except ModuleNotFoundError as exc:
 from pydantic import BaseModel, Field
 from starlette.types import Receive, Scope, Send
 
-from kogwistar import shortids
+import kogwistar.shortids as shortids
 from kogwistar.engine_core.models import (
     AdjudicationQuestionCode,
     AdjudicationVerdict,
@@ -292,7 +292,7 @@ mcp = FastMCP("KnowledgeEngine + MCP + Admin", middleware=[RbacMiddleware()])
 
 
 def _server_chat_service():
-    from kogwistar import server_mcp_with_admin as server
+    import kogwistar.server_mcp_with_admin as server
 
     return server.chat_service.get()
 
