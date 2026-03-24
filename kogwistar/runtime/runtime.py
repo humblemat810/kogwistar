@@ -2,6 +2,7 @@ from __future__ import annotations
 from os import PathLike
 import warnings
 
+import copy
 import time
 import json
 import uuid
@@ -23,7 +24,9 @@ from kogwistar.runtime.models import (
     WorkflowCheckpointNode,
     WorkflowCompletedNode,
     WorkflowEdge,
+    WorkflowDesignArtifact,
     WorkflowNode,
+    WorkflowInvocationRequest,
     WorkflowRunNode,
     WorkflowRuntimeEdge,
     WorkflowState,
@@ -583,6 +586,124 @@ class WorkflowRuntime:
             return True
         return True
 
+    def _persist_workflow_design_artifact(
+        self, design: WorkflowDesignArtifact
+    ) -> None:
+        """Persist a workflow design artifact into the workflow engine.
+
+        The engine's write path is intentionally idempotent-friendly, so we rely on
+        stable node/edge identifiers instead of introducing a separate design store.
+        """
+
+        for node in design.nodes:
+            self.workflow_engine.write.add_node(node)
+        for edge in design.edges:
+            self.workflow_engine.write.add_edge(edge)
+
+    def _child_workflow_initial_state(
+        self,
+        *,
+        parent_state: WorkflowState,
+        invocation: WorkflowInvocationRequest,
+    ) -> WorkflowState:
+        child_state: WorkflowState = dict(parent_state)
+        child_state.pop("_rt_join", None)
+        if invocation.initial_state:
+            child_state.update(copy.deepcopy(invocation.initial_state))
+
+        deps = dict(child_state.get("_deps") or parent_state.get("_deps") or {})
+        deps["workflow_runtime"] = self
+        child_state["_deps"] = deps
+        return child_state
+
+    def _run_workflow_invocation(
+        self,
+        *,
+        invocation: WorkflowInvocationRequest,
+        parent_state: WorkflowState,
+        conversation_id: str,
+        turn_node_id: str,
+        parent_run_id: str,
+        cache_dir: str | PathLike | None = None,
+    ) -> RunResult:
+        if invocation.workflow_design is not None:
+            if str(invocation.workflow_design.workflow_id) != str(
+                invocation.workflow_id
+            ):
+                raise ValueError(
+                    "workflow_design.workflow_id must match workflow_id on the invocation"
+                )
+            self._persist_workflow_design_artifact(invocation.workflow_design)
+
+        child_state = self._child_workflow_initial_state(
+            parent_state=parent_state, invocation=invocation
+        )
+        child_run_id = invocation.run_id or str(
+            stable_id(
+                "workflow.child_run",
+                parent_run_id,
+                invocation.workflow_id,
+                invocation.result_state_key or "",
+                invocation.turn_node_id or turn_node_id,
+            )
+        )
+        return self.run(
+            workflow_id=invocation.workflow_id,
+            conversation_id=invocation.conversation_id or conversation_id,
+            turn_node_id=invocation.turn_node_id or turn_node_id,
+            initial_state=child_state,
+            run_id=child_run_id,
+            cache_dir=cache_dir,
+        )
+
+    def _apply_workflow_invocation_result(
+        self,
+        *,
+        state: WorkflowState,
+        invocation: WorkflowInvocationRequest,
+        child_result: RunResult,
+    ) -> None:
+        result_key = invocation.result_state_key or f"workflow_result::{invocation.workflow_id}"
+        child_state = dict(child_result.final_state)
+        child_state.pop("_deps", None)
+        child_state.pop("_rt_join", None)
+        state[result_key] = copy.deepcopy(child_state)
+        state[f"{result_key}__run_id"] = str(child_result.run_id)
+        state[f"{result_key}__status"] = str(child_result.status)
+        state[f"{result_key}__workflow_id"] = str(invocation.workflow_id)
+
+    def run_subworkflow(
+        self,
+        *,
+        workflow_id: str,
+        parent_state: WorkflowState,
+        conversation_id: str,
+        turn_node_id: str,
+        parent_run_id: str,
+        result_state_key: str | None = None,
+        workflow_design: WorkflowDesignArtifact | None = None,
+        initial_state: dict[str, Any] | None = None,
+        run_id: str | None = None,
+        cache_dir: str | PathLike | None = None,
+    ) -> RunResult:
+        """Public helper for explicit nested workflow execution."""
+
+        invocation = WorkflowInvocationRequest(
+            workflow_id=workflow_id,
+            initial_state=dict(initial_state or {}),
+            result_state_key=result_state_key,
+            workflow_design=workflow_design,
+            run_id=run_id,
+        )
+        return self._run_workflow_invocation(
+            invocation=invocation,
+            parent_state=parent_state,
+            conversation_id=conversation_id,
+            turn_node_id=turn_node_id,
+            parent_run_id=parent_run_id,
+            cache_dir=cache_dir,
+        )
+
     def apply_state_update(
         self,
         mute_state: WorkflowState,
@@ -715,7 +836,7 @@ class WorkflowRuntime:
         client_status = str(getattr(client_result, "status", "success"))
         if client_status != "suspended":
             next_nodes, route_decision = self._route_next(
-                edges, initial_state, client_result, wn.fanout
+                edges, initial_state, client_result, wn.fanout, nodes
             )
         rt_join = initial_state.get("_rt_join", {})
         pending = rt_join.get("pending", [])
@@ -1435,6 +1556,39 @@ class WorkflowRuntime:
                                     status = "failure"
                                 else:
                                     status = "ok"
+                                if status == "ok":
+                                    invocations = list(
+                                        getattr(res, "workflow_invocations", []) or []
+                                    )
+                                    for invocation in invocations:
+                                        child_result = self._run_workflow_invocation(
+                                            invocation=invocation,
+                                            parent_state=state,
+                                            conversation_id=str(conversation_id),
+                                            turn_node_id=str(turn_node_id),
+                                            parent_run_id=str(run_id),
+                                            cache_dir=cache_dir,
+                                        )
+                                        if child_result.status != "succeeded":
+                                            status = "failure"
+                                            res = RunFailure(
+                                                conversation_node_id=None,
+                                                status="failure",
+                                                errors=[
+                                                    "Nested workflow "
+                                                    f"{invocation.workflow_id!r} "
+                                                    f"returned status {child_result.status!r}"
+                                                ],
+                                                state_update=[],
+                                            )
+                                            break
+                                        run_state_lock = self.state_lock[str(run_id)]
+                                        with run_state_lock:
+                                            self._apply_workflow_invocation_result(
+                                                state=state,
+                                                invocation=invocation,
+                                                child_result=child_result,
+                                            )
 
                         except Exception as e:
                             status = "error"
@@ -1947,6 +2101,15 @@ class WorkflowRuntime:
                         _checkpoint_current_step()
                         continue
 
+                    if status == "failure":
+                        # Treat failure as a terminal stop for this token. The run will
+                        # still finish as a failed run once all in-flight work drains.
+                        run_failed = True
+                        _dec(mask)
+                        _persist_rt_join_runtime()
+                        _checkpoint_current_step()
+                        continue
+
                     # route
                     if wn.terminal or len(adj.get(node_id, [])) == 0:
                         # token ends here -> it will never reach any remaining joins
@@ -1962,7 +2125,7 @@ class WorkflowRuntime:
 
                     edges = adj.get(node_id, [])
                     next_nodes, route_decision = self._route_next(
-                        edges, state, run_result, wn.fanout
+                        edges, state, run_result, wn.fanout, nodes
                     )
 
                     # Trace routing decision (includes rejections) at orchestration choke point
@@ -2153,6 +2316,7 @@ class WorkflowRuntime:
         state: WorkflowState,
         last_result: StepRunResult,
         fanout: bool,
+        nodes: Optional[dict[str, WorkflowNode]] = None,
     ) -> tuple[List[str], RouteDecision]:
         """
         Waterfall routing:
@@ -2191,6 +2355,42 @@ class WorkflowRuntime:
         def _stop_on_first(e: WorkflowEdge) -> bool:
             # stop if not fanout and edge multiplicity is not 'many'
             return (not fanout) and (getattr(e, "multiplicity", "one") != "many")
+
+        def _target_aliases(target_id: str) -> set[str]:
+            aliases = {str(target_id), str(target_id).split("|")[-1]}
+            if nodes is not None:
+                target_node = nodes.get(str(target_id))
+                if target_node is not None:
+                    label = getattr(target_node, "label", None)
+                    if label:
+                        aliases.add(str(label))
+                    op = getattr(target_node, "op", None)
+                    if op:
+                        aliases.add(str(op))
+            return aliases
+
+        explicit_next = [
+            str(x) for x in (getattr(last_result, "next_step_names", []) or [])
+        ]
+        if explicit_next:
+            explicit_matches: list[str] = []
+            for alias in explicit_next:
+                matched_target = None
+                for e in edges:
+                    tgt = _first_target(e)
+                    if tgt is None:
+                        continue
+                    if alias in _target_aliases(tgt):
+                        matched_target = tgt
+                        decision.selected.append((_edge_id(e), tgt, "explicit"))
+                        break
+                decision.evaluated.append(
+                    (f"_route_next:{alias}", matched_target is not None)
+                )
+                if matched_target is not None:
+                    explicit_matches.append(str(matched_target))
+            if explicit_matches:
+                return explicit_matches, decision
 
         # (1) explicit predicates
         for e in edges:

@@ -78,8 +78,8 @@ Invoke-RestMethod `
 
 Run backend with embedded Chroma and dev auth:
 
-```powershell
-$env:AUTH_MODE="dev"
+```bash
+export AUTH_MODE=dev
 docker compose --profile chroma up -d app-chroma
 ```
 

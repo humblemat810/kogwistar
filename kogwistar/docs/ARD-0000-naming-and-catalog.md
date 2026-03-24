@@ -47,6 +47,10 @@ Normalized numbering and phase-series naming:
   - implemented context snapshot persistence and current coverage limits
   - v2 workflow/resolver parity documents now acting as governance for live code rather than pure design intent
 
+## Follow-up Performed (2026-03-23)
+- Added `ARD-wisdom-layer-and-dynamic-workflow-orchestration.md` to the catalog.
+- Updated the workflow runtime contract to support nested workflow invocation results and `_route_next` aliasing.
+
 ## Current ARD/ADR Catalog
 
 ### ADR
@@ -67,4 +71,5 @@ Normalized numbering and phase-series naming:
 - `ARD-context-snapshot-and-prompt-context.md`
 - `ARD-postgresql-inclusive.md`
 - `ARD-retrieval-orchestration.md`
+- `ARD-wisdom-layer-and-dynamic-workflow-orchestration.md`
 - `ARD-workflowruntime-token-nesting.md`

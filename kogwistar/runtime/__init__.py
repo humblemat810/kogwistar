@@ -13,6 +13,10 @@ if TYPE_CHECKING:
         WorkflowSpec,
     )
     from kogwistar.runtime.design import BaseWorkflowDesigner
+    from kogwistar.runtime.models import (
+        WorkflowDesignArtifact,
+        WorkflowInvocationRequest,
+    )
     from kogwistar.runtime.replay import load_checkpoint, replay_to
     from kogwistar.runtime.resolvers import (
         BaseResolver,
@@ -31,6 +35,8 @@ __all__ = [
     "WorkflowNodeInfo",
     "WorkflowSpec",
     "BaseWorkflowDesigner",
+    "WorkflowDesignArtifact",
+    "WorkflowInvocationRequest",
     "load_checkpoint",
     "replay_to",
     "BaseResolver",
@@ -47,6 +53,8 @@ _EXPORTS = {
     "WorkflowNodeInfo": "kogwistar.runtime.contract",
     "WorkflowSpec": "kogwistar.runtime.contract",
     "BaseWorkflowDesigner": "kogwistar.runtime.design",
+    "WorkflowDesignArtifact": "kogwistar.runtime.models",
+    "WorkflowInvocationRequest": "kogwistar.runtime.models",
     "load_checkpoint": "kogwistar.runtime.replay",
     "replay_to": "kogwistar.runtime.replay",
     "BaseResolver": "kogwistar.runtime.resolvers",

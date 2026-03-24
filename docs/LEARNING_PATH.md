@@ -1,6 +1,8 @@
 # Learning Path
 
-This repo is a graph-native RAG and workflow runtime that treats knowledge, conversations, and execution history as inspectable graph artifacts instead of opaque helper state.
+This repo is a graph-native RAG and workflow runtime that treats knowledge, conversations, execution history, and provenance as inspectable graph artifacts instead of opaque helper state.
+
+If the README uses terms like `substrate`, `harness`, `projection`, or `replay`, this page is the next stop. It explains the order in which the repo should be learned.
 
 ## Repo Map
 
@@ -9,6 +11,7 @@ This repo is a graph-native RAG and workflow runtime that treats knowledge, conv
 - Workflow runtime: branching, joins, suspend/resume, checkpoints, traces.
 - Storage and indexing: local-first persistence, replayable projections, parity across backends.
 - Integration surfaces: designer/runtime APIs, CDC viewers, contributor tests.
+- Architecture framing: see [positioning.md](./positioning.md) for the layer model and guarantees.
 
 ## Who Should Read What
 
@@ -40,6 +43,7 @@ This repo is a graph-native RAG and workflow runtime that treats knowledge, conv
 - Read the numbered Markdown pages first for the mental model.
 - Open the companion `scripts/tutorial_sections/*.py` files in VS Code when you want notebook-like execution with `# %%` cells.
 - Use [docs/tutorials/README.md](./tutorials/README.md) when you want the script-backed ladders and runtime checkpoints directly.
+- If you want the shortest path to the architecture answer, read [positioning.md](./positioning.md) before the later tutorials.
 
 ## Existing Script Ladders
 
