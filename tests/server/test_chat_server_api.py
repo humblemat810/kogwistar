@@ -1591,6 +1591,72 @@ def test_runtime_design_history_recreates_projection_and_tracks_field_semantics(
         assert int(version_four["prev_version"]) == 2
 
 
+def test_runtime_design_graph_reports_ready_materialization_status(
+    monkeypatch, engine_triplet
+):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    workflow_id = "wf.design.rest.graph_status"
+    start_id = f"wf|{workflow_id}|start"
+    end_id = f"wf|{workflow_id}|end"
+    edge_id = f"wf|{workflow_id}|e|start_end"
+    with TestClient(server.app) as client:
+        wf_rw = _token_header(client, role="rw", ns="workflow")
+        wf_ro = _token_header(client, role="ro", ns="workflow")
+        designer_id = "tester"
+
+        client.post(
+            f"/api/workflow/design/{workflow_id}/nodes",
+            json={
+                "designer_id": designer_id,
+                "node_id": start_id,
+                "label": "Start",
+                "op": "start",
+                "start": True,
+            },
+            headers=wf_rw,
+        ).raise_for_status()
+        client.post(
+            f"/api/workflow/design/{workflow_id}/nodes",
+            json={
+                "designer_id": designer_id,
+                "node_id": end_id,
+                "label": "End",
+                "op": "end",
+                "terminal": True,
+            },
+            headers=wf_rw,
+        ).raise_for_status()
+        client.post(
+            f"/api/workflow/design/{workflow_id}/edges",
+            json={
+                "designer_id": designer_id,
+                "edge_id": edge_id,
+                "src": start_id,
+                "dst": end_id,
+                "relation": "wf_next",
+                "is_default": True,
+            },
+            headers=wf_rw,
+        ).raise_for_status()
+
+        graph = client.get(
+            f"/api/workflow/design/{workflow_id}/graph",
+            params={"refresh": "true"},
+            headers=wf_ro,
+        )
+        graph.raise_for_status()
+        payload = graph.json()
+        assert payload["materialization_status"] == "ready"
+        assert payload["current_version"] == 3
+        assert [str(node.get("metadata", {}).get("wf_op")) for node in payload["nodes"]] == [
+            "start",
+            "end",
+        ]
+
+
 def test_runtime_design_projection_divergence_rows_are_replaced_from_history(
     monkeypatch, engine_triplet
 ):

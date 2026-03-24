@@ -398,9 +398,17 @@ def _link_assistant_turn(ctx: "StepContext") -> "StepRunResult":
 
     sv = ctx.state_view
     ans = sv.get("answer") or {}
-    response_node_id = (
-        (ans or {}).get("response_node_id") if isinstance(ans, dict) else None
-    )
+    response_node_id = None
+    if isinstance(ans, dict):
+        response_node_id = ans.get("response_node_id") or ans.get(
+            "assistant_turn_node_id"
+        )
+    if not response_node_id:
+        aa_res = sv.get("agentic_answering_result") or {}
+        if isinstance(aa_res, dict):
+            response_node_id = aa_res.get("assistant_turn_node_id") or aa_res.get(
+                "response_node_id"
+            )
     if not response_node_id:
         return RunSuccess(
             conversation_node_id=None,

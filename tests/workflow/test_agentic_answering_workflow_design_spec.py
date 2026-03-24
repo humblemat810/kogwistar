@@ -31,7 +31,7 @@ def test_agentic_answering_design_round_trips_and_persists(tmp_path):
     assert validated.workflow_id == workflow_id
     assert validated.start_node_id == f"wf:{workflow_id}:start"
     assert len(validated.nodes) == len(agentic_answering_expected_ops())
-    assert len(validated.edges) == 13
+    assert len(validated.edges) == 14
     assert json.loads(json.dumps(frontend_payload))
 
     workflow_engine = GraphKnowledgeEngine(

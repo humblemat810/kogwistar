@@ -5,9 +5,11 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from kogwistar.engine_core.models import Grounding, MentionVerification, Span
 from kogwistar.server.chat_service_workflow_history import (
     _WorkflowDesignHistoryMixin,
 )
+from kogwistar.runtime.models import WorkflowEdge, WorkflowNode
 
 pytestmark = pytest.mark.ci
 
@@ -196,3 +198,142 @@ def test_workflow_sync_projection_locked_no_rebuild_needed(history_context):
     # Rebuild should NOT be called
     helper._workflow_rebuild_namespace_for_state.assert_not_called()
     helper._store_workflow_projection.assert_called_once()
+
+
+def _workflow_span() -> Span:
+    return Span(
+        collection_page_url="workflow/_wf:test",
+        document_page_url="workflow/_wf:test",
+        doc_id="_wf:test",
+        insertion_method="system",
+        page_number=1,
+        start_char=0,
+        end_char=1,
+        excerpt="",
+        context_before="",
+        context_after="",
+        chunk_id=None,
+        source_cluster_id=None,
+        verification=MentionVerification(
+            method="heuristic", is_verified=False, score=None, notes=None
+        ),
+    )
+
+
+def _workflow_grounding() -> Grounding:
+    return Grounding(spans=[_workflow_span()])
+
+
+def _workflow_node(
+    *, workflow_id: str, node_id: str, op: str, start: bool = False, terminal: bool = False
+) -> WorkflowNode:
+    return WorkflowNode(
+        id=node_id,
+        label=op,
+        type="entity",
+        doc_id=node_id,
+        summary=op,
+        mentions=[_workflow_grounding()],
+        properties={},
+        metadata={
+            "entity_type": "workflow_node",
+            "workflow_id": workflow_id,
+            "wf_op": op,
+            "wf_start": start,
+            "wf_terminal": terminal,
+            "wf_fanout": False,
+            "wf_version": "v1",
+        },
+        domain_id=None,
+        canonical_entity_id=None,
+    )
+
+
+def _workflow_edge(
+    *,
+    workflow_id: str,
+    edge_id: str,
+    src: str,
+    dst: str,
+) -> WorkflowEdge:
+    return WorkflowEdge(
+        id=edge_id,
+        source_ids=[src],
+        target_ids=[dst],
+        relation="wf_next",
+        label="wf_next",
+        type="relationship",
+        summary="next",
+        doc_id=workflow_id,
+        mentions=[_workflow_grounding()],
+        properties={},
+        metadata={
+            "entity_type": "workflow_edge",
+            "workflow_id": workflow_id,
+            "wf_priority": 100,
+            "wf_is_default": True,
+            "wf_predicate": None,
+            "wf_multiplicity": "one",
+        },
+        source_edge_ids=[],
+        target_edge_ids=[],
+        domain_id=None,
+        canonical_entity_id=None,
+    )
+
+
+def test_workflow_replay_entity_range_rehydrates_workflow_types(history_context):
+    owner, helper = history_context
+    workflow_id = "wf_replay_types"
+    namespace = owner._workflow_namespace(workflow_id)
+
+    start = _workflow_node(
+        workflow_id=workflow_id,
+        node_id=f"wf|{workflow_id}|start",
+        op="start",
+        start=True,
+    )
+    end = _workflow_node(
+        workflow_id=workflow_id,
+        node_id=f"wf|{workflow_id}|end",
+        op="end",
+        terminal=True,
+    )
+    edge = _workflow_edge(
+        workflow_id=workflow_id,
+        edge_id=f"wf|{workflow_id}|e|start->end",
+        src=start.id,
+        dst=end.id,
+    )
+
+    event_log = [
+        (
+            1,
+            "node",
+            start.id,
+            "ADD",
+            json.dumps(start.model_dump(field_mode="backend", exclude={"embedding"})),
+        ),
+        (
+            2,
+            "edge",
+            edge.id,
+            "ADD",
+            json.dumps(edge.model_dump(field_mode="backend", exclude={"embedding"})),
+        ),
+    ]
+    helper._iter_entity_events = MagicMock(return_value=event_log)
+
+    owner.mock_workflow_engine._disable_event_log = False
+    owner.mock_workflow_engine._phase1_enable_index_jobs = True
+    owner.mock_workflow_engine.write.add_node = MagicMock()
+    owner.mock_workflow_engine.write.add_edge = MagicMock()
+    owner.mock_workflow_engine.backend.node_delete = MagicMock()
+    owner.mock_workflow_engine.backend.edge_delete = MagicMock()
+
+    helper._workflow_replay_entity_range(
+        namespace=namespace, from_seq=1, to_seq=2, dropped_ranges=[]
+    )
+
+    assert type(owner.mock_workflow_engine.write.add_node.call_args.args[0]).__name__ == "WorkflowNode"
+    assert type(owner.mock_workflow_engine.write.add_edge.call_args.args[0]).__name__ == "WorkflowEdge"

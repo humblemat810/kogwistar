@@ -266,3 +266,97 @@ def test_link_assistant_turn_creates_next_turn_edge():
         "conversation_edge",
     )
     assert expected_edge_id in ce.edges
+
+
+def test_link_assistant_turn_falls_back_to_agentic_answering_result():
+    ce = FakeConversationEngine()
+
+    user_turn = type("N", (), {})()
+    user_turn.id = "user1"
+    ce.add_node(user_turn)
+
+    assistant_turn = type("N", (), {})()
+    assistant_turn.id = "assist1"
+    ce.add_node(assistant_turn)
+
+    deps = {
+        "conversation_engine": ce,
+        "add_link_to_new_turn": _fake_add_link_to_new_turn(ce),
+        "prev_turn_meta_summary": type(
+            "M",
+            (),
+            {
+                "prev_node_char_distance_from_last_summary": 0,
+                "prev_node_distance_from_last_summary": 0,
+                "tail_turn_index": 0,
+            },
+        )(),
+    }
+    ctx = FakeStepContext(
+        {
+            "user_id": "u1",
+            "conversation_id": "c1",
+            "turn_node_id": "user1",
+            "turn_index": 7,
+            "self_span": None,
+            "agentic_answering_result": {"assistant_turn_node_id": "assist1"},
+            "_deps": deps,
+        }
+    )
+
+    fn = default_resolver.handlers["link_assistant_turn"]
+    res = fn(ctx)
+    assert isinstance(res, RunSuccess)
+
+    expected_edge_id = get_id_for_conversation_turn_edge(
+        ConversationEdge.id_kind,
+        "u1",
+        "c1",
+        "next_turn",
+        7,
+        ["user1"],
+        ["assist1"],
+        [],
+        [],
+        "conversation_edge",
+    )
+    assert expected_edge_id in ce.edges
+
+
+def test_link_assistant_turn_accepts_missing_span_in_agentic_helper():
+    from kogwistar.conversation.agentic_answering import AgenticAnsweringAgent
+
+    ce = FakeConversationEngine()
+    agent = AgenticAnsweringAgent(
+        conversation_engine=ce,
+        knowledge_engine=ce,
+        llm_tasks=_noop_task_set(),
+    )
+
+    prev = type("N", (), {})()
+    prev.id = "prev1"
+    ce.add_node(prev)
+
+    cur = type("N", (), {})()
+    cur.id = "cur1"
+    ce.add_node(cur)
+
+    edge = agent._add_link_to_new_turn(
+        edge_id="edge1",
+        turn_node=cur,
+        prev_node=prev,
+        conversation_id="c1",
+        span=None,
+        prev_turn_meta_summary=type(
+            "M",
+            (),
+            {
+                "prev_node_char_distance_from_last_summary": 0,
+                "prev_node_distance_from_last_summary": 0,
+                "tail_turn_index": 0,
+            },
+        )(),
+    )
+
+    assert getattr(edge, "id", None) == "edge1"
+    assert "edge1" in ce.edges

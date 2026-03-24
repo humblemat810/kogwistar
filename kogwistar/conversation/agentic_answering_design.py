@@ -101,6 +101,7 @@ def agentic_answering_expected_ops() -> tuple[str, ...]:
         "aa_project_pointers",
         "aa_maybe_iterate",
         "aa_persist_response",
+        "link_assistant_turn",
         "end",
     )
 
@@ -177,6 +178,12 @@ def build_agentic_answering_workflow_design(
             node_id=wid("persist"),
             label="Persist assistant + link run",
             op="aa_persist_response",
+        ),
+        _node(
+            workflow_id=workflow_id,
+            node_id=wid("link_asst"),
+            label="Link assistant turn",
+            op="link_assistant_turn",
         ),
         _node(
             workflow_id=workflow_id,
@@ -301,6 +308,15 @@ def build_agentic_answering_workflow_design(
             workflow_id=workflow_id,
             edge_id=wid("e13"),
             src=wid("persist"),
+            dst=wid("link_asst"),
+            relation="wf_next",
+            predicate=None,
+            is_default=True,
+        ),
+        _edge(
+            workflow_id=workflow_id,
+            edge_id=wid("e14"),
+            src=wid("link_asst"),
             dst=wid("end"),
             relation="wf_next",
             predicate=None,

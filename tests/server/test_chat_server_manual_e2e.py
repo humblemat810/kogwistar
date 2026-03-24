@@ -1,5 +1,6 @@
 from __future__ import annotations
-
+""" test_chat_server_manual_e2e.py
+"""
 import json
 import os
 import time
@@ -77,13 +78,20 @@ def _wait_for_run_terminal(
 ) -> dict[str, Any]:
     deadline = time.time() + timeout_s
     while time.time() < deadline:
-        resp = session.get(
-            f"{base_url}/api/runs/{run_id}", headers=headers, timeout=10.0
-        )
-        resp.raise_for_status()
-        payload = resp.json()
-        if payload.get("status") in {"succeeded", "failed", "cancelled"}:
-            return payload
+        try:
+            resp = session.get(
+                f"{base_url}/api/runs/{run_id}", headers=headers, timeout=(10000.0,10000.0)
+            )
+            resp.raise_for_status()
+            payload = resp.json()
+            if payload.get("status") in {"succeeded", "failed", "cancelled"}:
+                return payload
+            
+        except Exception as _e:
+            if time.time() < deadline:
+                pass
+            else:
+                raise
         time.sleep(0.5)
     raise AssertionError(f"Run {run_id} did not reach a terminal status within {timeout_s}s")
 
@@ -164,13 +172,15 @@ def _ensure_workflow_design_materialized(
 
     deadline = time.time() + timeout_s
     last_payload: dict[str, Any] | None = None
+    need_refresh = True
     while time.time() < deadline:
         resp = session.get(
             f"{base_url}/api/workflow/design/{workflow_id}/graph",
-            params={"refresh": "true"},
+            params={"refresh": "true" if need_refresh else "false"},
             headers=headers,
-            timeout=10.0,
+            timeout=1000.0,
         )
+        need_refresh = False
         if resp.status_code in {404, 409}:
             time.sleep(0.5)
             continue
@@ -238,6 +248,11 @@ def test_manual_insert_workflow_end_to_end() -> None:
     Put the breakpoint in `POST /api/conversations/{conversation_id}/turns:answer`.
     If you want to watch the consumer side of the stream, also breakpoint
     `GET /api/runs/{run_id}/events`.
+    
+    workflow_id
+        'agentic_answering.v2'
+    resolved_designer_id
+        'manual-e2e'
     """
 
     base_url = _manual_base_url()
@@ -307,8 +322,8 @@ def test_manual_login_chat_and_sse_end_to_end() -> None:
             headers=ro_headers,
             timeout=10000.0,
         )
+        assert resp.json()['materialization_status'] =='ready', "workflow prepopulation incomplete"
         resp.raise_for_status()
-        
         created = session.post(
             f"{base_url}/api/conversations",
             json={"user_id": "manual-e2e-user"},
@@ -327,7 +342,7 @@ def test_manual_login_chat_and_sse_end_to_end() -> None:
         assert submit.status_code == 202
         run_id = str(submit.json()["run_id"])
 
-        final_run = _wait_for_run_terminal(session, base_url, run_id, ro_headers)
+        final_run = _wait_for_run_terminal(session, base_url, run_id, ro_headers, timeout_s = 12000)
         assert final_run["status"] == "succeeded"
 
         transcript = session.get(

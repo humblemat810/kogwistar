@@ -37,9 +37,14 @@ class _WorkflowDesignService(_WorkflowDesignHistoryMixin):
         if not workflow_id:
             raise ValueError("workflow_id is required")
         with self._workflow_history_lock:
-            return self._workflow_sync_projection_locked(
+            state = self._workflow_sync_projection_locked(
                 workflow_id=workflow_id, materialize=False
             )
+            projection_status = self._workflow_projection_status(workflow_id=workflow_id)
+            if projection_status:
+                state = dict(state)
+                state["materialization_status"] = projection_status
+            return state
 
     def refresh_workflow_design_projection(self, *, workflow_id: str) -> dict[str, Any]:
         workflow_id = str(workflow_id or "").strip()
