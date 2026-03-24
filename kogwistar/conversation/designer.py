@@ -1,6 +1,11 @@
 from ..engine_core.models import Grounding, Span
 from ..runtime.design import BaseWorkflowDesigner
 from ..runtime.models import WorkflowEdge, WorkflowNode
+from .agentic_answering_design import (
+    agentic_answering_expected_ops,
+    build_agentic_answering_workflow_design,
+    materialize_workflow_design_artifact,
+)
 
 
 class AgenticAnsweringWorkflowDesigner(BaseWorkflowDesigner):
@@ -25,86 +30,104 @@ class AgenticAnsweringWorkflowDesigner(BaseWorkflowDesigner):
         if mode not in ("backbone", "full"):
             raise ValueError(f"Unknown mode={mode!r}; expected 'backbone' or 'full'")
 
-        # If already present and valid, return it.
-        try:
-            return self.validate(workflow_id=workflow_id)
-        except Exception:
-            pass
+        expected_ops = set(agentic_answering_expected_ops())
 
-        from ..engine_core.models import Span, Grounding
-
-        wid = lambda suffix: f"wf:{workflow_id}:{suffix}"
-        sp = Span.from_dummy_for_workflow(workflow_id)
-
-        def add_node(
-            *,
-            node_id: str,
-            label: str,
-            op: str | None,
-            start: bool = False,
-            terminal: bool = False,
-            fanout: bool = False,
-        ):
-            n = WorkflowNode(
-                id=node_id,
-                label=label,
-                type="entity",
-                doc_id=node_id,
-                summary=label,
-                properties={},
-                mentions=[Grounding(spans=[sp])],
-                metadata={
-                    "entity_type": "workflow_node",
-                    "workflow_id": workflow_id,
-                    "wf_op": op,
-                    "wf_start": start,
-                    "wf_terminal": terminal,
-                    "wf_fanout": fanout,
-                    "wf_version": "v2",
+        def _has_full_answer_flow() -> bool:
+            nodes = self.workflow_engine.read.get_nodes(
+                where={
+                    "$and": [
+                        {"entity_type": "workflow_node"},
+                        {"workflow_id": workflow_id},
+                    ]
                 },
+                limit=5000,
             )
-            self.workflow_engine.write.add_node(n)
+            ops: set[str] = set()
+            for node in nodes or []:
+                md = getattr(node, "metadata", {}) or {}
+                op = str(md.get("wf_op") or md.get("op") or "")
+                if op:
+                    ops.add(op)
+            return expected_ops.issubset(ops)
 
-        def add_edge(
-            *,
-            edge_id: str,
-            src: str,
-            dst: str,
-            relation,
-            pred: str | None,
-            priority: int = 100,
-            is_default: bool = False,
-            multiplicity: str = "one",
-        ):
-            e = WorkflowEdge(
-                id=edge_id,
-                label="wf_next",
-                type="entity",
-                doc_id=edge_id,
-                summary="wf_next",
-                properties={},
-                source_ids=[src],
-                target_ids=[dst],
-                source_edge_ids=[],  # wf no hyper graphs
-                target_edge_ids=[],  # wf no hyper graphs
-                relation=relation,
-                mentions=[Grounding(spans=[sp])],
-                metadata={
-                    "entity_type": "workflow_edge",
-                    "workflow_id": workflow_id,
-                    "wf_edge_kind": "wf_next",
-                    "wf_predicate": pred,
-                    "wf_priority": priority,
-                    "wf_is_default": is_default,
-                    "wf_multiplicity": multiplicity,
-                },
-            )
-            self.workflow_engine.write.add_edge(e)
+        # If the full workflow is already present and valid, return it.
+        if mode == "full" and _has_full_answer_flow():
+            try:
+                return self.validate(workflow_id=workflow_id)
+            except Exception:
+                pass
 
-        # ----------------------------
-        # Backbone: start -> end
-        # ----------------------------
         if mode == "backbone":
+            from ..engine_core.models import Span, Grounding
+
+            wid = lambda suffix: f"wf:{workflow_id}:{suffix}"
+            sp = Span.from_dummy_for_workflow(workflow_id)
+
+            def add_node(
+                *,
+                node_id: str,
+                label: str,
+                op: str | None,
+                start: bool = False,
+                terminal: bool = False,
+                fanout: bool = False,
+            ):
+                n = WorkflowNode(
+                    id=node_id,
+                    label=label,
+                    type="entity",
+                    doc_id=node_id,
+                    summary=label,
+                    properties={},
+                    mentions=[Grounding(spans=[sp])],
+                    metadata={
+                        "entity_type": "workflow_node",
+                        "workflow_id": workflow_id,
+                        "wf_op": op,
+                        "wf_start": start,
+                        "wf_terminal": terminal,
+                        "wf_fanout": fanout,
+                        "wf_version": "v2",
+                    },
+                )
+                self.workflow_engine.write.add_node(n)
+
+            def add_edge(
+                *,
+                edge_id: str,
+                src: str,
+                dst: str,
+                relation,
+                pred: str | None,
+                priority: int = 100,
+                is_default: bool = False,
+                multiplicity: str = "one",
+            ):
+                e = WorkflowEdge(
+                    id=edge_id,
+                    label="wf_next",
+                    type="entity",
+                    doc_id=edge_id,
+                    summary="wf_next",
+                    properties={},
+                    source_ids=[src],
+                    target_ids=[dst],
+                    source_edge_ids=[],
+                    target_edge_ids=[],
+                    relation=relation,
+                    mentions=[Grounding(spans=[sp])],
+                    metadata={
+                        "entity_type": "workflow_edge",
+                        "workflow_id": workflow_id,
+                        "wf_edge_kind": "wf_next",
+                        "wf_predicate": pred,
+                        "wf_priority": priority,
+                        "wf_is_default": is_default,
+                        "wf_multiplicity": multiplicity,
+                    },
+                )
+                self.workflow_engine.write.add_edge(e)
+
             start_id = wid("start")
             end_id = wid("end")
             add_node(
@@ -122,164 +145,13 @@ class AgenticAnsweringWorkflowDesigner(BaseWorkflowDesigner):
             )
             return self.validate(workflow_id=workflow_id)
 
-        # ----------------------------
-        # Full agentic answering workflow
-        # ----------------------------
-        add_node(node_id=wid("start"), label="Start", op="start", start=True)
-        add_node(node_id=wid("prepare"), label="Prepare", op="aa_prepare")
-        add_node(
-            node_id=wid("view"),
-            label="Get view + question",
-            op="aa_get_view_and_question",
-        )
-        add_node(
-            node_id=wid("retrieve"),
-            label="Retrieve candidates",
-            op="aa_retrieve_candidates",
-        )
-        add_node(
-            node_id=wid("select"),
-            label="Select used evidence",
-            op="aa_select_used_evidence",
-        )
-        add_node(
-            node_id=wid("materialize"),
-            label="Materialize evidence pack",
-            op="aa_materialize_evidence_pack",
-        )
-        add_node(
-            node_id=wid("answer"),
-            label="Generate answer with citations",
-            op="aa_generate_answer_with_citations",
-        )
-        add_node(
-            node_id=wid("repair"),
-            label="Validate/repair citations",
-            op="aa_validate_or_repair_citations",
-        )
-        add_node(node_id=wid("eval"), label="Evaluate answer", op="aa_evaluate_answer")
-        add_node(
-            node_id=wid("project"), label="Project pointers", op="aa_project_pointers"
-        )
-        add_node(node_id=wid("iterate"), label="Maybe iterate", op="aa_maybe_iterate")
-        add_node(
-            node_id=wid("persist"),
-            label="Persist assistant + link run",
-            op="aa_persist_response",
-        )
-        add_node(node_id=wid("end"), label="End", op="end", terminal=True)
+        # For full mode, or when the full flow is missing/partial, rebuild.
+        if mode == "full":
+            design = build_agentic_answering_workflow_design(workflow_id=workflow_id)
+            materialize_workflow_design_artifact(self.workflow_engine, design)
+            return self.validate(workflow_id=workflow_id)
 
-        # linear edges
-        add_edge(
-            edge_id=wid("e1"),
-            src=wid("start"),
-            dst=wid("prepare"),
-            relation="wf_next",
-            pred=None,
-            is_default=True,
-        )
-        add_edge(
-            edge_id=wid("e2"),
-            src=wid("prepare"),
-            dst=wid("view"),
-            relation="wf_next",
-            pred=None,
-            is_default=True,
-        )
-        add_edge(
-            edge_id=wid("e3"),
-            src=wid("view"),
-            dst=wid("retrieve"),
-            relation="wf_next",
-            pred=None,
-            is_default=True,
-        )
-        add_edge(
-            edge_id=wid("e4"),
-            src=wid("retrieve"),
-            dst=wid("select"),
-            relation="wf_next",
-            pred=None,
-            is_default=True,
-        )
-        add_edge(
-            edge_id=wid("e5"),
-            src=wid("select"),
-            dst=wid("materialize"),
-            relation="wf_next",
-            pred=None,
-            is_default=True,
-        )
-        add_edge(
-            edge_id=wid("e6"),
-            src=wid("materialize"),
-            dst=wid("answer"),
-            relation="wf_next",
-            pred=None,
-            is_default=True,
-        )
-        add_edge(
-            edge_id=wid("e7"),
-            src=wid("answer"),
-            dst=wid("repair"),
-            relation="wf_next",
-            pred=None,
-            is_default=True,
-        )
-        add_edge(
-            edge_id=wid("e8"),
-            src=wid("repair"),
-            dst=wid("eval"),
-            relation="wf_next",
-            pred=None,
-            is_default=True,
-        )
-        add_edge(
-            edge_id=wid("e9"),
-            src=wid("eval"),
-            dst=wid("project"),
-            relation="wf_next",
-            pred=None,
-            is_default=True,
-        )
-        add_edge(
-            edge_id=wid("e10"),
-            src=wid("project"),
-            dst=wid("iterate"),
-            relation="wf_next",
-            pred=None,
-            is_default=True,
-        )
-
-        # branch: iterate -> retrieve OR persist
-        add_edge(
-            edge_id=wid("e11"),
-            src=wid("iterate"),
-            dst=wid("retrieve"),
-            pred="aa_should_iterate",
-            relation="wf_conditional",
-            priority=0,
-        )
-        add_edge(
-            edge_id=wid("e12"),
-            src=wid("iterate"),
-            dst=wid("persist"),
-            pred="always",
-            priority=100,
-            relation="wf_next",
-            is_default=True,
-        )
-
-        add_edge(
-            edge_id=wid("e13"),
-            src=wid("persist"),
-            dst=wid("end"),
-            relation="wf_next",
-            pred=None,
-            is_default=True,
-        )
-
-        return self.validate(workflow_id=workflow_id)
+        raise AssertionError("unreachable")
 
 
 class ConversationWorkflowDesigner(BaseWorkflowDesigner):

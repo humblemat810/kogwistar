@@ -253,13 +253,25 @@ def validate_workflow_design(
     start, nodes, adj, rev_adj = load_workflow_design(
         workflow_engine=workflow_engine, workflow_id=workflow_id
     )
+
+    def _node_op(node: Any) -> str:
+        metadata = getattr(node, "metadata", None) or {}
+        if isinstance(metadata, dict):
+            op = metadata.get("wf_op") or metadata.get("op")
+            if op:
+                return str(op)
+        op = getattr(node, "op", None)
+        return str(op or "")
+
     # Resolver-based op validation is optional.
     # - If resolver exposes `.ops`, validate declared workflow ops against it.
     # - If resolver is only a callable (e.g. def resolve_step(op): ...), skip `.ops` validation.
     if resolver is not None:
         resolver_ops = getattr(resolver, "ops", None)
         if resolver_ops is not None:
-            if unknown_ops := (set(i.op for i in nodes.values()) - set(resolver_ops)):
+            if unknown_ops := (
+                set(_node_op(i) for i in nodes.values()) - set(resolver_ops)
+            ):
                 raise Exception(f"workflow_contains unregistered ops {unknown_ops}")
         elif not callable(resolver):
             raise Exception("resolver must be callable or expose an iterable `.ops`.")

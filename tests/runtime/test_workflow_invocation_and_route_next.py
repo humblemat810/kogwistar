@@ -463,6 +463,8 @@ def test_nested_workflow_failure_short_circuits_parent_routing(tmp_path):
 
     @resolver.register("spawn")
     def _spawn(ctx):
+        with ctx.state_write as st:
+            st["spawn_seen"] = True
         return RunSuccess(
             state_update=[("u", {"spawned": True})],
             _route_next=["end"],
@@ -503,5 +505,5 @@ def test_nested_workflow_failure_short_circuits_parent_routing(tmp_path):
     )
 
     assert rr.status == "failure"
-    assert rr.final_state["spawned"] is True
+    assert rr.final_state["spawn_seen"] is True
     assert "ended" not in rr.final_state

@@ -332,16 +332,14 @@ def create_runtime_router(
         except Exception as exc:  # noqa: BLE001
             raise _as_http_error(exc)
 
-    @router.get("/api/workflow/design/{workflow_id}/graph")
+    @router.get("/design/{workflow_id}/graph")
     def workflow_design_graph(workflow_id: str, refresh: bool = False):
         service = get_service_r()
-        return service.get().workflow_design_graph(
-            workflow_id=workflow_id, refresh=refresh
-        )
+        return service.workflow_design_graph(workflow_id=workflow_id, refresh=refresh)
 
-    @router.get("/api/workflow/catalog/ops")
+    @router.get("/catalog/ops")
     def workflow_catalog_ops():
         service = get_service_r()
-        return service.get().workflow_catalog_ops()
+        return service.workflow_catalog_ops()
 
     return router

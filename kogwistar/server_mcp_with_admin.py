@@ -1,5 +1,8 @@
 ﻿from __future__ import annotations
 
+""" server_mcp_with_admin.py
+mcp and fast rest api server for conversation service, add node edge, parsing service with authorization authentication
+"""
 import json
 import logging
 import os
@@ -73,6 +76,43 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 
+def _configure_console_logging() -> None:
+    level_name = (
+        os.getenv("KOGWISTAR_LOG_LEVEL")
+        or os.getenv("LOG_LEVEL")
+        or os.getenv("UVICORN_LOG_LEVEL")
+        or "INFO"
+    )
+    level = getattr(logging, str(level_name).upper(), logging.INFO)
+    root = logging.getLogger()
+    root.setLevel(level)
+
+    if not root.handlers:
+        handler = logging.StreamHandler()
+        handler.setLevel(level)
+        handler.setFormatter(
+            logging.Formatter(
+                "%(asctime)s %(levelname)s [%(name)s] %(message)s"
+            )
+        )
+        root.addHandler(handler)
+    else:
+        for handler in root.handlers:
+            if handler.level == logging.NOTSET or handler.level > level:
+                handler.setLevel(level)
+
+    for name in (
+        "uvicorn",
+        "uvicorn.error",
+        "uvicorn.access",
+        "workflow.trace",
+        "workflow.runtime",
+        "workflow.resolver",
+    ):
+        logging.getLogger(name).setLevel(level)
+
+    logger.info("logging configured: level=%s handlers=%d", level_name, len(root.handlers))
+
 try:
     from kogwistar.server.auth.db import get_session
     from kogwistar.server.auth.oidc import OIDCClient
@@ -104,6 +144,7 @@ mcp_app = mcp.http_app(path="/mcp")
 
 @asynccontextmanager
 async def combined_lifespan(app: FastAPI):
+    _configure_console_logging()
     if (
         get_session is not None
         and AuthService is not None
@@ -961,6 +1002,7 @@ def main() -> None:
     import os
     import uvicorn
 
+    _configure_console_logging()
     host = os.getenv("HOST", "127.0.0.1")
     port = int(os.getenv("PORT", "28110"))
     uvicorn.run(
