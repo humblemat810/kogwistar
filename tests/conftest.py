@@ -50,7 +50,6 @@ try:
 except Exception:  # pragma: no cover - optional hardening for Windows temp ACLs
     pass
 
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 _TEST_ROOT = pathlib.Path(__file__).resolve().parents[1]
 for _env_name in (".env", ".env.test"):
     load_dotenv(_TEST_ROOT / _env_name, override=False)
