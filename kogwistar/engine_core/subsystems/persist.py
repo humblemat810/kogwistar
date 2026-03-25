@@ -491,6 +491,7 @@ class PersistSubsystem(NamespaceProxy):
         self._alloc_real_ids(parsed)
         order, id2kind, id2obj = self.build_deps(parsed)
 
+        document = self._e.read.get_document(doc_id)
         span_validator = self._e.get_span_validator_of_doc_type(doc_id=doc_id)
         nl = "\n"
         for rid in order:
@@ -500,7 +501,18 @@ class PersistSubsystem(NamespaceProxy):
                 ln.mentions = self.dealias_span(ln.mentions, doc_id)
                 for g in ln.mentions:
                     for sp in g.spans:
-                        span_validator.validate_span(doc_id=doc_id, span=sp)
+                        result = span_validator.validate_span(
+                            doc_id=doc_id,
+                            span=sp,
+                            engine=self._e,
+                            doc=document
+                            if document.id == sp.doc_id
+                            else self._e.get_document(sp.doc_id),
+                        )
+                        if result["correctness"] is not True:
+                            raise Exception(
+                                f"Incorrect span occur in grounding {str(g)} span {str(sp)}"
+                            )
                 if mode == "skip-if-exists":
                     got = self._e.backend.node_get(ids=[ln.id])
                     if got.get("ids"):
@@ -516,7 +528,18 @@ class PersistSubsystem(NamespaceProxy):
                 le.mentions = self.dealias_span(le.mentions, doc_id)
                 for g in le.mentions:
                     for sp in g.spans:
-                        span_validator.validate_span(doc_id=doc_id, span=sp)
+                        result = span_validator.validate_span(
+                            doc_id=doc_id,
+                            span=sp,
+                            engine=self._e,
+                            doc=document
+                            if document.id == sp.doc_id
+                            else self._e.get_document(sp.doc_id),
+                        )
+                        if result["correctness"] is not True:
+                            raise Exception(
+                                f"Incorrect span occur in grounding {str(g)} span {str(sp)}"
+                            )
                 if mode == "skip-if-exists":
                     got = self._e.backend.edge_get(ids=[le.id])
                     if got.get("ids"):

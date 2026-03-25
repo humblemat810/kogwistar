@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from kogwistar.server.chat_service import ChatRunService
+from kogwistar.server.error_reporting import internal_http_error
 
 
 class CreateConversationIn(BaseModel):
@@ -20,7 +21,7 @@ class CreateConversationIn(BaseModel):
 class SubmitAnswerIn(BaseModel):
     user_id: str | None = None
     text: str = Field(min_length=1)
-    workflow_id: str = "agentic_answering.v2"
+    workflow_id: str = "debug.rag.v1" #<-- debug quicker use , production use "agentic_answering.v2"
 
 
 def _as_http_error(exc: Exception) -> HTTPException:
@@ -30,7 +31,7 @@ def _as_http_error(exc: Exception) -> HTTPException:
         return HTTPException(status_code=400, detail=str(exc))
     if isinstance(exc, HTTPException):
         return exc
-    return HTTPException(status_code=500, detail=str(exc))
+    return internal_http_error(exc)
 
 
 def _sse_frame(*, event_type: str, seq: int, payload: dict[str, Any]) -> str:

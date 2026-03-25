@@ -4,6 +4,9 @@ from ..runtime.models import WorkflowEdge, WorkflowNode
 from .agentic_answering_design import (
     agentic_answering_expected_ops,
     build_agentic_answering_workflow_design,
+    build_debug_rag_workflow_design,
+    debug_rag_expected_ops,
+    DEBUG_RAG_WORKFLOW_ID,
     materialize_workflow_design_artifact,
 )
 
@@ -30,7 +33,11 @@ class AgenticAnsweringWorkflowDesigner(BaseWorkflowDesigner):
         if mode not in ("backbone", "full"):
             raise ValueError(f"Unknown mode={mode!r}; expected 'backbone' or 'full'")
 
-        expected_ops = set(agentic_answering_expected_ops())
+        expected_ops = set(
+            debug_rag_expected_ops()
+            if workflow_id == DEBUG_RAG_WORKFLOW_ID
+            else agentic_answering_expected_ops()
+        )
 
         def _has_full_answer_flow() -> bool:
             nodes = self.workflow_engine.read.get_nodes(
@@ -147,7 +154,12 @@ class AgenticAnsweringWorkflowDesigner(BaseWorkflowDesigner):
 
         # For full mode, or when the full flow is missing/partial, rebuild.
         if mode == "full":
-            design = build_agentic_answering_workflow_design(workflow_id=workflow_id)
+            if workflow_id == DEBUG_RAG_WORKFLOW_ID:
+                design = build_debug_rag_workflow_design(workflow_id=workflow_id)
+            else:
+                design = build_agentic_answering_workflow_design(
+                    workflow_id=workflow_id
+                )
             materialize_workflow_design_artifact(self.workflow_engine, design)
             return self.validate(workflow_id=workflow_id)
 

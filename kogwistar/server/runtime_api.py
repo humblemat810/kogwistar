@@ -8,6 +8,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from .chat_service import WorkflowProjectionRebuildingError, ChatRunService
+from .error_reporting import internal_http_error
 
 
 class SubmitWorkflowRunIn(BaseModel):
@@ -57,7 +58,7 @@ def _as_http_error(exc: Exception) -> HTTPException:
         return HTTPException(status_code=409, detail=str(exc))
     if isinstance(exc, HTTPException):
         return exc
-    return HTTPException(status_code=500, detail=str(exc))
+    return internal_http_error(exc)
 
 
 def _sse_frame(*, event_type: str, seq: int, payload: dict[str, Any]) -> str:

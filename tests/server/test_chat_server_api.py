@@ -16,10 +16,11 @@ from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 import kogwistar.server_mcp_with_admin as server
+from kogwistar.conversation.agentic_answering_design import DEBUG_RAG_WORKFLOW_ID
 from kogwistar.conversation.models import ConversationNode
 from kogwistar.conversation.service import ConversationService
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
-from kogwistar.engine_core.models import Grounding, Span
+from kogwistar.engine_core.models import Grounding, Node, Span
 from kogwistar.runtime.design import load_workflow_design
 from kogwistar.runtime.models import (
     WorkflowCancelledNode,
@@ -383,6 +384,30 @@ def _seed_terminal_node(
     conversation_engine.write.add_node(node)
 
 
+def _seed_knowledge_node(
+    knowledge_engine,
+    *,
+    node_id: str,
+    label: str,
+    summary: str,
+):
+    node = Node(
+        id=node_id,
+        label=label,
+        type="entity",
+        summary=summary,
+        mentions=[Grounding(spans=[Span.from_dummy_for_conversation()])],
+        metadata={"level_from_root": 0, "entity_type": "kg_entity"},
+        domain_id=None,
+        canonical_entity_id=None,
+        properties={"kind": "kg_node"},
+        embedding=None,
+        doc_id=f"doc:{node_id}",
+        level_from_root=0,
+    )
+    knowledge_engine.write.add_node(node)
+
+
 def test_chat_rest_submit_and_sse(monkeypatch, engine_triplet):
     engine, conversation_engine, workflow_engine = engine_triplet
     _configure_server(
@@ -408,6 +433,8 @@ def test_chat_rest_submit_and_sse(monkeypatch, engine_triplet):
 
         final_run = _wait_for_status(client, run_id, ro_headers, {"succeeded"})
         assert final_run["assistant_turn_node_id"]
+        assert "last_step_seq" not in final_run
+        assert "step_count" not in final_run
         assert not Path(
             workflow_engine.persist_directory, "server_runs.sqlite"
         ).exists()
@@ -435,6 +462,158 @@ def test_chat_rest_submit_and_sse(monkeypatch, engine_triplet):
         )
         reopened.raise_for_status()
         assert reopened.json()["turn_count"] == 2
+
+
+def test_chat_rest_events_poll_returns_run_events(monkeypatch, engine_triplet):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _configure_server(monkeypatch, engine, conversation_engine, workflow_engine, None)
+    with TestClient(server.app) as client:
+        rw_headers = _token_header(client, role="rw", ns="conversation")
+        ro_headers = _token_header(client, role="ro", ns="conversation")
+
+        created = client.post(
+            "/api/conversations", json={"user_id": "u-poll"}, headers=rw_headers
+        )
+        created.raise_for_status()
+        conversation_id = created.json()["conversation_id"]
+
+        submit = client.post(
+            f"/api/conversations/{conversation_id}/turns:answer",
+            json={"user_id": "u-poll", "text": "poll this run"},
+            headers=rw_headers,
+        )
+        assert submit.status_code == 202
+        run_id = submit.json()["run_id"]
+
+        _wait_for_status(client, run_id, ro_headers, {"succeeded"})
+
+        polled = client.get(
+            f"/api/runs/{run_id}/events/poll?after_seq=0&limit=10",
+            headers=ro_headers,
+        )
+        polled.raise_for_status()
+        payload = polled.json()
+        assert payload["run_id"] == run_id
+        assert payload["events"]
+        assert len(payload["events"]) <= 10
+        assert payload["events"][0]["event_type"] == "run.created"
+
+
+def test_chat_rest_sse_reconnects_cleanly_after_terminal_run(monkeypatch, engine_triplet):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _configure_server(monkeypatch, engine, conversation_engine, workflow_engine, _success_runner)
+    with TestClient(server.app) as client:
+        rw_headers = _token_header(client, role="rw", ns="conversation")
+        ro_headers = _token_header(client, role="ro", ns="conversation")
+
+        created = client.post(
+            "/api/conversations", json={"user_id": "u-terminal-sse"}, headers=rw_headers
+        )
+        created.raise_for_status()
+        conversation_id = created.json()["conversation_id"]
+
+        submit = client.post(
+            f"/api/conversations/{conversation_id}/turns:answer",
+            json={"user_id": "u-terminal-sse", "text": "finish this run"},
+            headers=rw_headers,
+        )
+        assert submit.status_code == 202
+        run_id = submit.json()["run_id"]
+
+        final_run = _wait_for_status(client, run_id, ro_headers, {"succeeded"})
+        assert final_run["terminal"] is True
+
+        polled = client.get(
+            f"/api/runs/{run_id}/events/poll?after_seq=0&limit=100",
+            headers=ro_headers,
+        )
+        polled.raise_for_status()
+        events = polled.json()["events"]
+        assert events
+        last_seq = int(events[-1]["seq"])
+
+        with client.stream(
+            "GET",
+            f"/api/runs/{run_id}/events?after_seq={last_seq}",
+            headers=ro_headers,
+            timeout=5,
+        ) as resp:
+            resp.raise_for_status()
+            body = "".join(resp.iter_text())
+
+        assert body == ""
+
+
+def test_chat_rest_debug_rag_workflow_returns_seeded_knowledge(monkeypatch, engine_triplet):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _seed_knowledge_node(
+        engine,
+        node_id="kg-alpha",
+        label="Alpha node",
+        summary="Alpha summary for debug retrieval.",
+    )
+    _seed_knowledge_node(
+        engine,
+        node_id="kg-beta",
+        label="Beta node",
+        summary="Beta summary for debug retrieval.",
+    )
+    _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    with TestClient(server.app) as client:
+        rw_headers = _token_header(client, role="rw", ns="conversation")
+        ro_headers = _token_header(client, role="ro", ns="conversation")
+
+        created = client.post(
+            "/api/conversations", json={"user_id": "u-debug-rag"}, headers=rw_headers
+        )
+        created.raise_for_status()
+        conversation_id = created.json()["conversation_id"]
+
+        submit = client.post(
+            f"/api/conversations/{conversation_id}/turns:answer",
+            json={
+                "user_id": "u-debug-rag",
+                "text": "show me debug rag results",
+                "workflow_id": DEBUG_RAG_WORKFLOW_ID,
+            },
+            headers=rw_headers,
+        )
+        assert submit.status_code == 202
+        run_id = submit.json()["run_id"]
+
+        final_run = _wait_for_status(client, run_id, ro_headers, {"succeeded"})
+        assert final_run["assistant_turn_node_id"]
+
+        turns = client.get(
+            f"/api/conversations/{conversation_id}/turns", headers=ro_headers
+        )
+        turns.raise_for_status()
+        transcript = turns.json()["turns"]
+        assistant_text = transcript[-1]["content"]
+        assert "Debug RAG response" in assistant_text
+        assert "kg-alpha" in assistant_text
+
+        events = client.get(
+            f"/api/runs/{run_id}/events/poll?after_seq=0&limit=50",
+            headers=ro_headers,
+        )
+        events.raise_for_status()
+        event_names = [evt["event_type"] for evt in events.json()["events"]]
+        assert "run.stage" in event_names
+        assert "reasoning.summary" in event_names
+
+        projected = conversation_engine.get_nodes(
+            where={
+                "$and": [
+                    {"conversation_id": conversation_id},
+                    {"entity_type": "knowledge_reference"},
+                ]
+            },
+            limit=20,
+        )
+        assert projected
 
 
 def test_chat_rest_cancelled_run_persists_no_assistant(monkeypatch, engine_triplet):
@@ -471,6 +650,8 @@ def test_chat_rest_cancelled_run_persists_no_assistant(monkeypatch, engine_tripl
 
         final_run = _wait_for_status(client, run_id, ro_headers, {"cancelled"})
         assert final_run["assistant_turn_node_id"] in (None, "")
+        assert "last_step_seq" not in final_run
+        assert "step_count" not in final_run
 
         turns = client.get(
             f"/api/conversations/{conversation_id}/turns", headers=ro_headers
@@ -631,6 +812,8 @@ def test_runtime_rest_submit_and_sse(monkeypatch, engine_triplet):
         )
         assert final_run["workflow_id"] == "wf.runtime.simple"
         assert final_run["result"]["workflow_status"] == "succeeded"
+        assert "last_step_seq" not in final_run
+        assert "step_count" not in final_run
 
         events = _collect_sse_events(
             client,
@@ -690,6 +873,8 @@ def test_runtime_rest_cancel(monkeypatch, engine_triplet):
             path_template="/api/workflow/runs/{run_id}",
         )
         assert final_run["status"] == "cancelled"
+        assert "last_step_seq" not in final_run
+        assert "step_count" not in final_run
 
         cancel_nodes = conversation_engine.get_nodes(
             where={
@@ -710,7 +895,9 @@ def test_runtime_rest_cancel(monkeypatch, engine_triplet):
         assert names[-1] == "run.cancelled"
 
 
-def test_get_run_prefers_workflow_completed_terminal_node(monkeypatch, engine_triplet):
+def test_get_run_keeps_registry_status_even_if_workflow_completed_node_exists(
+    monkeypatch, engine_triplet
+):
     engine, conversation_engine, workflow_engine = engine_triplet
     service, registry = _configure_server(
         monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
@@ -722,12 +909,15 @@ def test_get_run_prefers_workflow_completed_terminal_node(monkeypatch, engine_tr
         workflow_id="wf.completed",
         user_id="u1",
         user_turn_node_id="turn-1",
+        status="running",
     )
-    registry.update_status(
-        run_id,
-        status="succeeded",
-        result={"workflow_status": "succeeded"},
-        finished=True,
+    monkeypatch.setattr(
+        service,
+        "list_steps",
+        lambda _run_id: (_ for _ in ()).throw(
+            AssertionError("get_run() must not inspect workflow steps")
+        ),
+        raising=False,
     )
     _seed_terminal_node(
         conversation_engine,
@@ -739,11 +929,15 @@ def test_get_run_prefers_workflow_completed_terminal_node(monkeypatch, engine_tr
     )
 
     run = service.get_run(run_id)
-    assert run["status"] == "succeeded"
-    assert run["terminal"] is True
+    assert run["status"] == "running"
+    assert run["terminal"] is False
+    assert "last_step_seq" not in run
+    assert "step_count" not in run
 
 
-def test_get_run_prefers_workflow_cancelled_terminal_node(monkeypatch, engine_triplet):
+def test_get_run_keeps_registry_status_even_if_workflow_cancelled_node_exists(
+    monkeypatch, engine_triplet
+):
     engine, conversation_engine, workflow_engine = engine_triplet
     service, registry = _configure_server(
         monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
@@ -755,12 +949,15 @@ def test_get_run_prefers_workflow_cancelled_terminal_node(monkeypatch, engine_tr
         workflow_id="wf.cancelled",
         user_id="u1",
         user_turn_node_id="turn-1",
+        status="running",
     )
-    registry.update_status(
-        run_id,
-        status="cancelled",
-        result={"workflow_status": "cancelled"},
-        finished=True,
+    monkeypatch.setattr(
+        service,
+        "list_steps",
+        lambda _run_id: (_ for _ in ()).throw(
+            AssertionError("get_run() must not inspect workflow steps")
+        ),
+        raising=False,
     )
     _seed_terminal_node(
         conversation_engine,
@@ -772,8 +969,10 @@ def test_get_run_prefers_workflow_cancelled_terminal_node(monkeypatch, engine_tr
     )
 
     run = service.get_run(run_id)
-    assert run["status"] == "cancelled"
-    assert run["terminal"] is True
+    assert run["status"] == "running"
+    assert run["terminal"] is False
+    assert "last_step_seq" not in run
+    assert "step_count" not in run
 
 
 def test_cancel_run_is_noop_when_run_already_terminal(monkeypatch, engine_triplet):

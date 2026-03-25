@@ -1709,6 +1709,82 @@ def _aa_project_pointers(ctx: StepContext) -> StepRunResult:
     return RunSuccess(conversation_node_id=None, state_update=state_update)
 
 
+@default_resolver.register("aa_debug_select_top_candidates")
+def _aa_debug_select_top_candidates(ctx: StepContext) -> StepRunResult:
+    agent = _aa_agent(ctx)
+    sv = ctx.state_view
+    candidates = list(sv.get("candidates") or [])
+    max_used = max(1, min(int(getattr(agent.config, "max_used", 3) or 3), 5))
+    selected_candidates = [
+        candidate
+        for candidate in candidates[:max_used]
+        if isinstance(candidate, dict) and candidate.get("id")
+    ]
+    used_node_ids = [str(candidate["id"]) for candidate in selected_candidates]
+    state_update: list[StateUpdate] = [
+        (
+            "u",
+            {
+                "selection": {
+                    "used_node_ids": used_node_ids,
+                    "strategy": "top_candidates_debug",
+                },
+                "used_node_ids": used_node_ids,
+                "selected_candidates": selected_candidates,
+            },
+        ),
+        ("a", {"op_log": f"aa_debug_select_top_candidates:{len(used_node_ids)}"}),
+    ]
+    return RunSuccess(conversation_node_id=None, state_update=state_update)
+
+
+@default_resolver.register("aa_debug_answer_from_nodes")
+def _aa_debug_answer_from_nodes(ctx: StepContext) -> StepRunResult:
+    sv = ctx.state_view
+    question = str(sv.get("question") or "")
+    selected_candidates = list(sv.get("selected_candidates") or [])
+    if not selected_candidates:
+        selected_candidates = [
+            candidate
+            for candidate in list(sv.get("candidates") or [])
+            if isinstance(candidate, dict) and candidate.get("id")
+        ][:3]
+
+    lines = ["Debug RAG response", "", f"Question: {question}", "", "Retrieved nodes:"]
+    for idx, candidate in enumerate(selected_candidates, start=1):
+        node_id = str(candidate.get("id") or "")
+        label = str(candidate.get("label") or node_id or "(unknown)")
+        summary = str(
+            candidate.get("summary") or candidate.get("doc") or "(no summary available)"
+        ).strip()
+        lines.append(f"{idx}. {label} [{node_id}]")
+        lines.append(f"   {summary}")
+
+    if not selected_candidates:
+        lines.append("No knowledge nodes were retrieved.")
+
+    answer = {
+        "text": "\n".join(lines),
+        "mode": "debug_rag",
+        "selected_node_ids": [
+            str(candidate.get("id") or "")
+            for candidate in selected_candidates
+            if candidate.get("id")
+        ],
+    }
+    evaluation = {
+        "is_sufficient": bool(selected_candidates),
+        "needs_more_info": False,
+        "missing_aspects": [] if selected_candidates else ["no_retrieval_hits"],
+        "notes": "debug_rag_no_llm",
+    }
+    state_update: list[StateUpdate] = [
+        ("u", {"answer": answer, "evaluation": evaluation}),
+        ("a", {"op_log": "aa_debug_answer_from_nodes"}),
+    ]
+    return RunSuccess(conversation_node_id=None, state_update=state_update)
+
+
 @default_resolver.register("aa_maybe_iterate")
 def _aa_maybe_iterate(ctx: StepContext) -> StepRunResult:
     sv = ctx.state_view

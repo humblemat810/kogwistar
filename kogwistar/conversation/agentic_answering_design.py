@@ -6,6 +6,7 @@ from kogwistar.engine_core.models import Grounding, Span
 from kogwistar.runtime.models import WorkflowDesignArtifact, WorkflowEdge, WorkflowNode
 
 AGENTIC_ANSWERING_WORKFLOW_ID = "agentic_answering.v2"
+DEBUG_RAG_WORKFLOW_ID = "debug.rag.v1"
 
 
 def _span(workflow_id: str) -> Span:
@@ -100,6 +101,21 @@ def agentic_answering_expected_ops() -> tuple[str, ...]:
         "aa_evaluate_answer",
         "aa_project_pointers",
         "aa_maybe_iterate",
+        "aa_persist_response",
+        "link_assistant_turn",
+        "end",
+    )
+
+
+def debug_rag_expected_ops() -> tuple[str, ...]:
+    return (
+        "start",
+        "aa_prepare",
+        "aa_get_view_and_question",
+        "aa_retrieve_candidates",
+        "aa_debug_select_top_candidates",
+        "aa_project_pointers",
+        "aa_debug_answer_from_nodes",
         "aa_persist_response",
         "link_assistant_turn",
         "end",
@@ -334,6 +350,173 @@ def build_agentic_answering_workflow_design(
         source_workflow_id=None,
         source_step_id=None,
         notes="Canonical agentic answering workflow design.",
+    )
+
+
+def build_debug_rag_workflow_design(
+    *, workflow_id: str = DEBUG_RAG_WORKFLOW_ID
+) -> WorkflowDesignArtifact:
+    wid = lambda suffix: f"wf:{workflow_id}:{suffix}"
+
+    nodes = [
+        _node(
+            workflow_id=workflow_id,
+            node_id=wid("start"),
+            label="Start",
+            op="start",
+            start=True,
+        ),
+        _node(
+            workflow_id=workflow_id,
+            node_id=wid("prepare"),
+            label="Prepare",
+            op="aa_prepare",
+        ),
+        _node(
+            workflow_id=workflow_id,
+            node_id=wid("view"),
+            label="Get view + question",
+            op="aa_get_view_and_question",
+        ),
+        _node(
+            workflow_id=workflow_id,
+            node_id=wid("retrieve"),
+            label="Retrieve candidates",
+            op="aa_retrieve_candidates",
+        ),
+        _node(
+            workflow_id=workflow_id,
+            node_id=wid("select"),
+            label="Select top candidates",
+            op="aa_debug_select_top_candidates",
+        ),
+        _node(
+            workflow_id=workflow_id,
+            node_id=wid("project"),
+            label="Project pointers",
+            op="aa_project_pointers",
+        ),
+        _node(
+            workflow_id=workflow_id,
+            node_id=wid("answer"),
+            label="Build debug answer",
+            op="aa_debug_answer_from_nodes",
+        ),
+        _node(
+            workflow_id=workflow_id,
+            node_id=wid("persist"),
+            label="Persist assistant + link run",
+            op="aa_persist_response",
+        ),
+        _node(
+            workflow_id=workflow_id,
+            node_id=wid("link_asst"),
+            label="Link assistant turn",
+            op="link_assistant_turn",
+        ),
+        _node(
+            workflow_id=workflow_id,
+            node_id=wid("end"),
+            label="End",
+            op="end",
+            terminal=True,
+        ),
+    ]
+
+    edges = [
+        _edge(
+            workflow_id=workflow_id,
+            edge_id=wid("e1"),
+            src=wid("start"),
+            dst=wid("prepare"),
+            relation="wf_next",
+            predicate=None,
+            is_default=True,
+        ),
+        _edge(
+            workflow_id=workflow_id,
+            edge_id=wid("e2"),
+            src=wid("prepare"),
+            dst=wid("view"),
+            relation="wf_next",
+            predicate=None,
+            is_default=True,
+        ),
+        _edge(
+            workflow_id=workflow_id,
+            edge_id=wid("e3"),
+            src=wid("view"),
+            dst=wid("retrieve"),
+            relation="wf_next",
+            predicate=None,
+            is_default=True,
+        ),
+        _edge(
+            workflow_id=workflow_id,
+            edge_id=wid("e4"),
+            src=wid("retrieve"),
+            dst=wid("select"),
+            relation="wf_next",
+            predicate=None,
+            is_default=True,
+        ),
+        _edge(
+            workflow_id=workflow_id,
+            edge_id=wid("e5"),
+            src=wid("select"),
+            dst=wid("project"),
+            relation="wf_next",
+            predicate=None,
+            is_default=True,
+        ),
+        _edge(
+            workflow_id=workflow_id,
+            edge_id=wid("e6"),
+            src=wid("project"),
+            dst=wid("answer"),
+            relation="wf_next",
+            predicate=None,
+            is_default=True,
+        ),
+        _edge(
+            workflow_id=workflow_id,
+            edge_id=wid("e7"),
+            src=wid("answer"),
+            dst=wid("persist"),
+            relation="wf_next",
+            predicate=None,
+            is_default=True,
+        ),
+        _edge(
+            workflow_id=workflow_id,
+            edge_id=wid("e8"),
+            src=wid("persist"),
+            dst=wid("link_asst"),
+            relation="wf_next",
+            predicate=None,
+            is_default=True,
+        ),
+        _edge(
+            workflow_id=workflow_id,
+            edge_id=wid("e9"),
+            src=wid("link_asst"),
+            dst=wid("end"),
+            relation="wf_next",
+            predicate=None,
+            is_default=True,
+        ),
+    ]
+
+    return WorkflowDesignArtifact(
+        workflow_id=workflow_id,
+        workflow_version="v2",
+        start_node_id=wid("start"),
+        nodes=nodes,
+        edges=edges,
+        source_run_id=None,
+        source_workflow_id=None,
+        source_step_id=None,
+        notes="Deterministic debug RAG workflow: retrieve knowledge, project pointers, answer without llm.",
     )
 
 
