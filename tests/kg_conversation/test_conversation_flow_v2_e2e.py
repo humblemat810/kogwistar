@@ -5,11 +5,9 @@ import pytest
 pytestmark = pytest.mark.ci_full
 
 pytest.importorskip("chromadb")
-from chromadb.utils.embedding_functions import EmbeddingFunction
-from chromadb.api.types import Embeddings
 
 from joblib import Memory
-from typing import Callable, Sequence, ParamSpec, TypeVar, cast
+from typing import Callable, ParamSpec, TypeVar, cast
 
 from kogwistar.conversation.models import (
     ConversationAIResponse,
@@ -26,13 +24,12 @@ from kogwistar.engine_core.models import (
     MentionVerification,
 )
 from kogwistar.id_provider import stable_id
-from kogwistar.engine_core.postgres_backend import PgVectorBackend
 
 
 # -----------------------
 # Minimal embedding func
 # -----------------------
-from tests.conftest import _make_engine_pair, _make_workflow_engine, FakeEmbeddingFunction
+from tests.conftest import _make_engine_pair, _make_workflow_engine
 
 
 def _mk_span(doc_id: str, excerpt: str) -> Span:

@@ -1,3 +1,4 @@
+# ruff: noqa: E402
 import pytest
 pytestmark = pytest.mark.core
 import json
@@ -431,7 +432,7 @@ def test_runtime_resume_from_checkpoint(tmp_path: Path, backend_kind: str):
         initial_state=ckpt_after_a,
         run_id=None,  # new run id; avoids id collisions in persisted nodes
     )
-    final2, run_id2 = run_result.final_state, run_result.run_id
+    final2, _run_id2 = run_result.final_state, run_result.run_id
     assert final2["result.a"]["value"] == "v_a"  # carried forward
     assert final2["result.b"]["value"] == "v_b"  # executed
     assert final2["result.end"]["value"] == "v_end"  # executed
@@ -574,7 +575,7 @@ def test_runtime_resume_from_checkpoint_frontier(
         initial_state=ckpt0,
         run_id=None,  # new run id; avoids collisions
     )
-    final2, run_id2 = run_result.final_state, run_result.run_id
+    final2, _run_id2 = run_result.final_state, run_result.run_id
     assert final2["result.a"]["value"] == "v_a"
     assert final2["result.b"]["value"] == "v_b"
     assert final2["result.end"]["value"] == "v_end"

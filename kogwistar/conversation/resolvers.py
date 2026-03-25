@@ -37,7 +37,6 @@ The orchestrator should populate `_deps` in the workflow initial_state.
 """
 
 import os
-import pathlib
 import time
 
 from ..utils.embedding_vectors import normalize_embedding_vector

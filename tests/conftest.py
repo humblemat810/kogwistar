@@ -790,9 +790,6 @@ def mcp_admin_server(tmp_path: Path) -> Iterator[dict[str, Any]]:
 
 from tests._helpers.embeddings import (
     ConstantEmbeddingFunction,
-    EmbeddingFunction,
-    Embeddings,
-    LexicalHashEmbeddingFunction,
     build_test_embedding_function,
 )
 try:

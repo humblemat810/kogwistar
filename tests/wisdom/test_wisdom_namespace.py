@@ -1,88 +1,3 @@
-import pytest
-pytestmark = pytest.mark.ci_full
-# test_wisdom_namespace.py
-# import jwt, os
-# from fastapi.testclient import TestClient
-# from kogwistar.server_mcp_with_admin import app, JWT_SECRET, JWT_ALG
-
-# client = TestClient(app)
-
-# def make_token(role="rw", ns="wisdom"):
-#     payload = {"role": role, "ns": ns}
-#     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALG)
-
-# def test_docs_and_wisdom_are_isolated(tmp_path):
-#     t_wis = make_token(ns="wisdom")
-#     t_doc = make_token(ns="docs")
-
-#     # --- store something in wisdom
-#     body = {
-#         "nodes": [{
-#             "id": "n1",
-#             "label": "Example wisdom node",
-#             "type": "entity",
-#             "summary": "Wisdom layer test",
-#         }],
-#         "edges": []
-#     }
-#     r = client.post(
-#         "/mcp/tools/wisdom.kg_upsert_graph/invoke",
-#         headers={"Authorization": f"Bearer {t_wis}"},
-#         json={"arguments": body}
-#     )
-#     assert r.status_code == 200
-#     wisdom_ids = r.json()["result"]["node_ids"]
-#     assert wisdom_ids
-
-#     # --- querying the normal engine should not see it
-#     r2 = client.post(
-#         "/mcp/tools/kg_semantic_seed_then_expand_text/invoke",
-#         headers={"Authorization": f"Bearer {t_doc}"},
-#         json={"arguments": {"text": "Wisdom layer test"}}
-#     )
-#     assert r2.status_code == 200
-#     data2 = r2.json()["result"]
-#     assert not any("Wisdom layer test" in str(data2) for _ in range(1)), "Document namespace should not see wisdom data"
-
-# def test_ns_permission_enforced():
-#     t_doc = make_token(ns="docs")  # not allowed for wisdom
-#     r = client.post(
-#         "/mcp/tools/wisdom.kg_upsert_graph/invoke",
-#         headers={"Authorization": f"Bearer {t_doc}"},
-#         json={"arguments": {"nodes": [], "edges": []}},
-#     )
-#     assert r.status_code == 200
-#     err = r.json()["error"]["message"].lower()
-#     assert "forbidden" in err
-
-
-# def test_wisdom_semantic_seed_expand_roundtrip():
-#     t_wis = make_token(ns="wisdom")
-#     body = {
-#         "nodes": [{
-#             "id": "n1",
-#             "label": "Variance Analysis",
-#             "type": "entity",
-#             "summary": "Compare expected vs observed values to locate anomalies."
-#         }],
-#         "edges": []
-#     }
-#     up = client.post(
-#         "/mcp/tools/wisdom.kg_upsert_graph/invoke",
-#         headers={"Authorization": f"Bearer {t_wis}"},
-#         json={"arguments": body}
-#     )
-#     assert up.status_code == 200
-
-#     q = client.post(
-#         "/mcp/tools/wisdom.semantic_seed_then_expand/invoke",
-#         headers={"Authorization": f"Bearer {t_wis}"},
-#         json={"arguments": {"text": "variance analysis"}}
-#     )
-#     data = q.json()["result"]
-#     assert "layers" in data
-#     assert isinstance(data["layers"], list)
-
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.models import (
@@ -90,7 +5,8 @@ from kogwistar.engine_core.models import (
     PureChromaEdge,
     PureGraph,
 )
-
+import pytest
+pytestmark = pytest.mark.ci_full
 
 def test_puregraph_persist(tmp_path):
     eng = GraphKnowledgeEngine(persist_directory=str(tmp_path))

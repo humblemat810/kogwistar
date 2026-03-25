@@ -114,7 +114,7 @@ def test_answer_workflow_v2_runs_end_to_end(
     )
     time.sleep(0.5)
     # Fixed outputs for each structured step.
-    selection = EvidenceSelection(
+    _selection = EvidenceSelection(
         used_node_ids=[],
         used_edge_ids=[],
         reasoning="test case is always simple and good.",
@@ -122,7 +122,7 @@ def test_answer_workflow_v2_runs_end_to_end(
     answer = AnswerWithCitations(
         text="dummy", reasoning="testing answer no claim needed", claims=[]
     )
-    evaluation = AnswerEvaluation(
+    _evaluation = AnswerEvaluation(
         is_sufficient=True,
         needs_more_info=False,
         missing_aspects=[],

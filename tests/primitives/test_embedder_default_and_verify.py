@@ -4,7 +4,6 @@ import json
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.models import Node
 
-from tests._helpers.embeddings import build_test_embedding_function
 from tests._helpers.fake_backend import build_fake_backend
 from tests._kg_factories import kg_document, kg_grounding
 from tests.conftest import FakeEmbeddingFunction

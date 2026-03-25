@@ -4,7 +4,7 @@ import argparse
 import json
 import warnings
 from dataclasses import dataclass, field
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Mapping, Sequence
 
 from kogwistar.runtime import MappingStepResolver, StepContext, WorkflowRuntime
 from kogwistar.runtime.models import RunSuccess

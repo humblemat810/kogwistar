@@ -126,7 +126,7 @@ def _ensure_workflow_design_materialized(
     frontend_payload = build_agentic_answering_frontend_payload(
         workflow_id=workflow_id
     )
-    payload_roundtrip = WorkflowDesignArtifact.model_validate(backend_payload)
+    _payload_roundtrip = WorkflowDesignArtifact.model_validate(backend_payload)
     expected_ops = set(agentic_answering_expected_ops())
 
     frontend_nodes = frontend_payload.get("nodes") or []
@@ -297,8 +297,7 @@ def test_manual_insert_workflow_end_to_end() -> None:
         ro_token, _ = _dev_token(session, base_url, role="ro", ns="conversation")
 
         workflow_rw_headers = _auth_headers(workflow_token)
-        rw_headers = _auth_headers(rw_token)
-        ro_headers = _auth_headers(ro_token)
+        
 
         _ensure_workflow_design_materialized(
             session,
@@ -329,24 +328,12 @@ def test_manual_login_chat_and_sse_end_to_end() -> None:
     with requests.Session() as session:
         _wait_for_health(session, base_url)
 
-        workflow_token, workflow_subject = _dev_token(
-            session, base_url, role="rw", ns="workflow"
-        )
         rw_token, _ = _dev_token(session, base_url, role="rw", ns="conversation")
         ro_token, _ = _dev_token(session, base_url, role="ro", ns="conversation")
 
-        workflow_rw_headers = _auth_headers(workflow_token)
         rw_headers = _auth_headers(rw_token)
         ro_headers = _auth_headers(ro_token)
 
-        # _ensure_workflow_design_materialized(
-        #     session,
-        #     base_url,
-        #     workflow_rw_headers,
-        #     workflow_id=AGENTIC_ANSWERING_WORKFLOW_ID,
-        #     designer_id=workflow_subject,
-        #     timeout_s=30000.0,
-        # )
         resp = session.get(
             f"{base_url}/api/workflow/design/{AGENTIC_ANSWERING_WORKFLOW_ID}/graph",
             params={"refresh": "false"},

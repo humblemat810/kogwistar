@@ -23,7 +23,7 @@ pytestmark = pytest.mark.workflow
 def test_agentic_answering_design_round_trips_and_persists(tmp_path):
     workflow_id = AGENTIC_ANSWERING_WORKFLOW_ID
 
-    design = build_agentic_answering_workflow_design(workflow_id=workflow_id)
+    _design = build_agentic_answering_workflow_design(workflow_id=workflow_id)
     backend_payload = build_agentic_answering_backend_payload(workflow_id=workflow_id)
     frontend_payload = build_agentic_answering_frontend_payload(workflow_id=workflow_id)
     validated = WorkflowDesignArtifact.model_validate(backend_payload)

@@ -1,3 +1,4 @@
+# ruff: noqa: E402
 from __future__ import annotations
 
 from kogwistar.conversation.designer import ConversationWorkflowDesigner

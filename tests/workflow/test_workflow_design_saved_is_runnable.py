@@ -1,5 +1,5 @@
 import pytest
-pytestmark = pytest.mark.ci_full
+
 import json
 
 
@@ -13,6 +13,7 @@ from kogwistar.runtime.runtime import WorkflowRuntime
 from kogwistar.runtime.models import RunSuccess
 from kogwistar.runtime.models import WorkflowEdge, WorkflowNode
 
+pytestmark = pytest.mark.ci_full
 
 def _span() -> Span:
     return Span(

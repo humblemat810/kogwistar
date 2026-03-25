@@ -109,11 +109,6 @@ def test_pretty_print_graph():
     assert "(empty)" not in txt
 
 
-from kogwistar.engine_core.models import (
-    Span,
-    Grounding,
-    MentionVerification,
-)
 
 
 def _span() -> Span:
