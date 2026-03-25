@@ -35,7 +35,7 @@ import math
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Iterable, Sequence
+from typing import Any, Sequence
 
 try:
     from kogwistar.engine_core.engine_sqlite import EngineSQLite

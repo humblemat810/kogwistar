@@ -97,6 +97,40 @@ def test_login_rejects_redirect_override_outside_dev(client):
     )
 
 
+def test_dev_token_accepts_comma_separated_namespaces(client):
+    response = client.post(
+        "/auth/dev-token",
+        json={
+            "username": "dev-user",
+            "role": "rw",
+            "ns": "docs,conversation,workflow,wisdom",
+        },
+    )
+
+    assert response.status_code == 200
+    token = response.json()["token"]
+    claims = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
+    assert isinstance(claims["ns"], list)
+    assert set(claims["ns"]) == {"docs", "conversation", "workflow", "wisdom"}
+
+
+def test_dev_token_accepts_namespace_list(client):
+    response = client.post(
+        "/auth/dev-token",
+        json={
+            "username": "dev-user",
+            "role": "rw",
+            "ns": ["docs", "conversation", "workflow", "wisdom"],
+        },
+    )
+
+    assert response.status_code == 200
+    token = response.json()["token"]
+    claims = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
+    assert isinstance(claims["ns"], list)
+    assert set(claims["ns"]) == {"docs", "conversation", "workflow", "wisdom"}
+
+
 def test_login_redirect(client):
     app.state.auth_mode = "oidc"
     # Mock OIDC client discovery

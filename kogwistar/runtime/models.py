@@ -142,6 +142,53 @@ class WorkflowEdge(Edge):
         return int(self.metadata.get("wf_priority"))
 
 
+class WorkflowDesignArtifact(BaseModel):
+    """Persistable workflow design synthesized by an LLM or planner."""
+
+    workflow_id: str
+    workflow_version: str = "v1"
+    start_node_id: str
+    nodes: list[WorkflowNode] = Field(default_factory=list)
+    edges: list[WorkflowEdge] = Field(default_factory=list)
+    source_run_id: str | None = None
+    source_workflow_id: str | None = None
+    source_step_id: str | None = None
+    notes: str | None = None
+
+    model_config = ConfigDict(populate_by_name=True, extra="allow")
+
+    @model_validator(mode="after")
+    def _validate(self) -> "WorkflowDesignArtifact":
+        node_ids = {str(n.safe_get_id()) for n in self.nodes}
+        if self.start_node_id not in node_ids:
+            raise ValueError(
+                "WorkflowDesignArtifact.start_node_id must exist in nodes"
+            )
+        for edge in self.edges:
+            src = str(edge.source_ids[0]) if getattr(edge, "source_ids", None) else None
+            dst = str(edge.target_ids[0]) if getattr(edge, "target_ids", None) else None
+            if src not in node_ids or dst not in node_ids:
+                raise ValueError(
+                    f"WorkflowDesignArtifact edge endpoints must be design nodes: {src!r} -> {dst!r}"
+                )
+        return self
+
+
+class WorkflowInvocationRequest(BaseModel):
+    """Request to execute another workflow from a step result."""
+
+    workflow_id: str
+    initial_state: dict[str, Any] = Field(default_factory=dict)
+    result_state_key: str | None = None
+    run_id: str | None = None
+    conversation_id: str | None = None
+    turn_node_id: str | None = None
+    workflow_design: WorkflowDesignArtifact | None = None
+    reuse_existing_design: bool = True
+
+    model_config = ConfigDict(populate_by_name=True, extra="allow")
+
+
 # class PrevTurnMetaSummaryDict(TypedDict):
 # prev_node_char_distance_from_last_summary: int
 # prev_node_distance_from_last_summary: int
@@ -183,19 +230,21 @@ StateUpdate = Union[StateAppendUpdate, StateOverwriteUpdate]
 
 
 class RunFailure(BaseModel):
-    conversation_node_id: Optional[str]
+    conversation_node_id: Optional[str] = None
     state_update: list[StateUpdate]  # can still update, append an error message
     update: dict[str, Any] | None = None
     errors: list[str]
-    next_step_names: list[str] = []  # empty will by default fan out all
+    next_step_names: list[str] = Field(default_factory=list, alias="_route_next")
     status: Literal["failure"] = "failure"
+
+    model_config = ConfigDict(populate_by_name=True, extra="allow")
 
 
 class RunSuspended(BaseModel):
     conversation_node_id: Optional[str] = None
     state_update: list[StateUpdate] = Field(default_factory=list)
     update: dict[str, Any] | None = None
-    next_step_names: list[str] = Field(default_factory=list)
+    next_step_names: list[str] = Field(default_factory=list, alias="_route_next")
     status: Literal["suspended"] = "suspended"
     # Recommended recoverable-error payload shape:
     # {
@@ -208,19 +257,24 @@ class RunSuspended(BaseModel):
     # }
     resume_payload: dict[str, Any] = Field(default_factory=dict)
 
+    model_config = ConfigDict(populate_by_name=True, extra="allow")
+
 
 class RunSuccess(BaseModel):
     conversation_node_id: (
         str | None
-    )  # node id of the 'entry point' of the node cluster created in a resolver step,
+    ) = None  # node id of the 'entry point' of the node cluster created in a resolver step,
     # step can create multiple node edges but at least should expose a node to connect to the main node net
     state_update: list[StateUpdate]
     # Optional native update dict (schema-driven). This does NOT replace state_update.
     # When present, WorkflowRuntime.run() applies it using state_schema and then
     # falls back unknown keys into DSL ('u') overwrite semantics.
     update: dict[str, Any] | None = None
-    next_step_names: list[str] = []  # empty will by default fan out all
+    next_step_names: list[str] = Field(default_factory=list, alias="_route_next")
+    workflow_invocations: list[WorkflowInvocationRequest] = Field(default_factory=list)
     status: Literal["success"] = "success"
+
+    model_config = ConfigDict(populate_by_name=True, extra="allow")
 
 
 StepRunResult: TypeAlias = RunSuccess | RunFailure | RunSuspended

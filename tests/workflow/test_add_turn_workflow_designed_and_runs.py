@@ -1,5 +1,4 @@
-import pytest
-pytestmark = pytest.mark.ci_full
+
 import json
 
 
@@ -18,7 +17,8 @@ from kogwistar.runtime.runtime import WorkflowRuntime
 from kogwistar.runtime.models import WorkflowEdge, WorkflowNode
 from kogwistar.runtime.contract import validate_workflow, WorkflowSpec
 from kogwistar.runtime.design import validate_workflow_design
-
+import pytest
+pytestmark = pytest.mark.ci_full
 
 def _span() -> Span:
     return Span(
@@ -158,7 +158,7 @@ def test_add_turn_workflow_design_and_run(tmp_path):
         terminal=True,
     )
     all_nodes = [n_start, n_kg, n_mpin, n_kpin, n_ans, n_dec, n_sum, n_end]
-    nodes_dict = {n.safe_get_id(): n for n in all_nodes}
+    
     for n in all_nodes:
         wf_engine.write.add_node(n)
 

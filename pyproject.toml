@@ -9,7 +9,7 @@ description = "Graph-native agent harness and substrate for knowledge, memory, w
 keywords = ["agent harness", "agent substrate", "graph-native", "knowledge graph", "memory", "workflow", "mcp"]
 readme = "README.md"
 license = { file = "LICENSE" }
-requires-python = ">=3.13"
+requires-python = ">=3.12"
 authors = [{ name = "Peter Chan", email = "humblemat@gmail.com" }]
 
 dependencies = [
@@ -76,3 +76,30 @@ exclude = ["*.tests*", "*.test*", "tests*", "examples*", "diagnostic*"]
 
 [tool.setuptools.package-data]
 kogwistar = ["templates/*.html"]
+
+[tool.pytest.ini_options]
+markers = [
+  "ci: fast pull-request-safe tests",
+  "ci_full: full integration and end-to-end tests",
+  "core: core engine tests",
+  "workflow: workflow-layer tests",
+  "conversation: conversation-layer tests",
+  "manual: manual smoke tests that require a live service",
+  "e2e: end-to-end tests against real services",
+]
+
+# [tool.ruff]
+# target-version = "py312"
+
+# [tool.ruff.lint]
+# ignore = [
+#   "E402",
+#   "E731",
+#   "E741",
+#   "E722",
+#   "F401",
+#   "F402",
+#   "F811",
+#   "F821",
+#   "F841",
+# ]

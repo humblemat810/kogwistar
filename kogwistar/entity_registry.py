@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Type
 
-from .graph_kinds import KIND_CHAT
+from .graph_kinds import KIND_CHAT, KIND_FLOW
 
 
 def default_node_type_for_graph_kind(graph_kind: str):
@@ -12,6 +12,10 @@ def default_node_type_for_graph_kind(graph_kind: str):
         from .conversation.models import ConversationNode
 
         return ConversationNode
+    if graph_kind == KIND_FLOW:
+        from .runtime.models import WorkflowNode
+
+        return WorkflowNode
     return Node
 
 
@@ -22,6 +26,10 @@ def default_edge_type_for_graph_kind(graph_kind: str):
         from .conversation.models import ConversationEdge
 
         return ConversationEdge
+    if graph_kind == KIND_FLOW:
+        from .runtime.models import WorkflowEdge
+
+        return WorkflowEdge
     return Edge
 
 

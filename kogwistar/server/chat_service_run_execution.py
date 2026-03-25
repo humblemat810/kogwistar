@@ -434,67 +434,16 @@ class _RunExecutionService(_BaseComponent):
         run = self.run_registry.get_run(run_id)
         if run is None:
             raise KeyError(f"Unknown run_id: {run_id}")
-
-        eng = self._conversation_engine()
-        ready_for_terminal = bool(
-            run.get("finished_at_ms")
-            or run.get("result") is not None
-            or run.get("error") is not None
-            or run.get("assistant_turn_node_id") is not None
-        )
-
-        if ready_for_terminal:
-            cancelled_nodes = eng.get_nodes(
-                where={
-                    "$and": [{"entity_type": "workflow_cancelled"}, {"run_id": run_id}]
-                },
-                limit=1,
-            )
-            completed_nodes = eng.get_nodes(
-                where={
-                    "$and": [{"entity_type": "workflow_completed"}, {"run_id": run_id}]
-                },
-                limit=1,
-            )
-
-            if cancelled_nodes:
-                run["status"] = "cancelled"
-                run["terminal"] = True
-            elif completed_nodes:
-                run["status"] = "succeeded"
-                run["terminal"] = True
-            else:
-                events = self.run_registry.list_events(run_id, limit=500)
-                for evt in reversed(events):
-                    etype = evt.get("event_type")
-                    if etype in {"run.completed", "workflow_run_completed"}:
-                        run["status"] = "succeeded"
-                        run["terminal"] = True
-                        break
-                    elif etype in {"run.failed", "workflow_run_failed"}:
-                        run["status"] = "failed"
-                        run["terminal"] = True
-                        break
-                    elif etype in {"run.cancelled", "workflow_run_cancelled"}:
-                        run["status"] = "cancelled"
-                        run["terminal"] = True
-                        break
-
-        steps = self.list_steps(run_id)
-        if steps:
-            run["last_step_seq"] = int(steps[-1]["step_seq"])
-            run["step_count"] = len(steps)
-        else:
-            run["last_step_seq"] = None
-            run["step_count"] = 0
         return run
 
     def list_run_events(
-        self, run_id: str, *, after_seq: int = 0
+        self, run_id: str, *, after_seq: int = 0, limit: int = 500
     ) -> list[dict[str, Any]]:
         if self.run_registry.get_run(run_id) is None:
             raise KeyError(f"Unknown run_id: {run_id}")
-        return self.run_registry.list_events(run_id, after_seq=after_seq)
+        return self.run_registry.list_events(
+            run_id, after_seq=after_seq, limit=limit
+        )
 
     def cancel_run(self, run_id: str) -> dict[str, Any]:
         run = self.run_registry.get_run(run_id)

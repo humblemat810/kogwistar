@@ -3,9 +3,7 @@ pytestmark = pytest.mark.ci_full
 import shutil
 import os
 import pathlib
-import uuid
 import dataclasses
-from dataclasses import dataclass, field
 import json
 from typing import Any
 from joblib import Memory
@@ -15,7 +13,6 @@ from kogwistar.conversation.conversation_orchestrator import ConversationOrchest
 from kogwistar.llm_tasks import AnswerWithCitationsTaskResult, LLMTaskSet
 from tests.conftest import _make_engine_pair, _make_workflow_engine, _to_stable_key
 from kogwistar.id_provider import stable_id
-from kogwistar.conversation.models import RetrievalResult
 from kogwistar.engine_core.models import Node, Grounding, Span
 
 @pytest.mark.parametrize("llm_provider_name", ["ollama"], indirect=True)

@@ -1,12 +1,9 @@
 from pathlib import Path
-from typing import Sequence
 import pytest
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.postgres_backend import PgVectorBackend
 from tests._helpers.embeddings import (
     ConstantEmbeddingFunction,
-    EmbeddingFunction,
-    Embeddings,
     build_test_embedding_function,
 )
 from tests._helpers.fake_backend import build_fake_backend

@@ -3,6 +3,10 @@ from pydantic import BaseModel
 import dotenv
 import os
 
+from langchain_core.callbacks import BaseCallbackHandler
+from typing import Any, Optional
+from uuid import UUID
+from langchain_core.messages import BaseMessage
 dotenv.load_dotenv(".env")
 
 
@@ -10,10 +14,6 @@ class MySchema(BaseModel):
     foo: str
 
 
-from langchain_core.callbacks import BaseCallbackHandler
-from typing import Any, Optional
-from uuid import UUID
-from langchain_core.messages import BaseMessage
 
 
 class cb_one(BaseCallbackHandler):

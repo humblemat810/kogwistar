@@ -24,7 +24,6 @@ from dataclasses import dataclass
 import hashlib
 import json
 import os
-import pathlib
 import re
 import time
 import base64
@@ -773,6 +772,7 @@ class AgenticAnsweringAgent:
                 "knowledge_engine": self.knowledge_engine,
                 "llm_tasks": self.llm_tasks,
                 "prev_turn_meta_summary": prev_turn_meta_summary,
+                "add_link_to_new_turn": self._add_link_to_new_turn,
             },
         }
 
@@ -1656,6 +1656,56 @@ class AgenticAnsweringAgent:
         prev_turn_meta_summary.prev_node_distance_from_last_summary += 1
         prev_turn_meta_summary.tail_turn_index += 1
         return nid, node
+
+    def _add_link_to_new_turn(
+        self,
+        edge_id,
+        turn_node,
+        prev_node,
+        conversation_id,
+        span,
+        prev_turn_meta_summary: MetaFromLastSummary,
+        causal_type: str | None = "chain",
+        clock=None,
+    ):
+        meta = {
+            "relation": "next_turn",
+            "target_id": turn_node.id,
+            "char_distance_from_last_summary": prev_turn_meta_summary.prev_node_char_distance_from_last_summary,
+            "turn_distance_from_last_summary": prev_turn_meta_summary.prev_node_distance_from_last_summary,
+            "tail_turn_index": prev_turn_meta_summary.tail_turn_index,
+            **({"causal_type": causal_type} if causal_type else {}),
+        }
+        if clock is not None:
+            meta = {
+                **meta,
+                "run_id": getattr(clock, "run_id", None),
+                "run_step_seq": getattr(clock, "run_step_seq", None),
+                "attempt_seq": getattr(clock, "attempt_seq", None),
+            }
+
+        provenance_span = span or Span.from_dummy_for_conversation()
+
+        seq_edge = ConversationEdge(
+            id=edge_id,
+            source_ids=[prev_node.id],
+            target_ids=[turn_node.id],
+            relation="next_turn",
+            label="next_turn",
+            type="relationship",
+            summary="Sequential flow",
+            doc_id=f"conv:{conversation_id}",
+            mentions=[Grounding(spans=[provenance_span])],
+            domain_id=None,
+            canonical_entity_id=None,
+            properties={"entity_type": "conversation_edge"},
+            embedding=None,
+            metadata=meta,
+            source_edge_ids=[],
+            target_edge_ids=[],
+        )
+        self.conversation_engine.write.add_edge(seq_edge)
+        return seq_edge
 
     def _link_run_to_response(
         self,

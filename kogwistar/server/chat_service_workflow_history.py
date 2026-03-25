@@ -48,8 +48,6 @@ if TYPE_CHECKING:
 else:
     SQLAlchemyRow = Any
 
-from kogwistar.engine_core.models import Edge as CoreEdge
-from kogwistar.engine_core.models import Node as CoreNode
 from kogwistar.runtime.models import WorkflowEdge, WorkflowNode
 
 from .chat_service_shared import WorkflowProjectionRebuildingError, _BaseComponent
@@ -1099,18 +1097,22 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
                 if entity_kind_s == "node":
                     if op_s in {"ADD", "REPLACE"}:
                         try:
-                            node = CoreNode.model_validate(payload)
+                            node = WorkflowNode.model_validate(payload)
                         except Exception:
-                            node = CoreNode.model_validate_json(json.dumps(payload))
+                            node = WorkflowNode.model_validate_json(
+                                json.dumps(payload)
+                            )
                         eng.write.add_node(node)
                     elif op_s in {"TOMBSTONE", "DELETE"}:
                         eng.backend.node_delete(ids=[str(entity_id)])
                 elif entity_kind_s == "edge":
                     if op_s in {"ADD", "REPLACE"}:
                         try:
-                            edge = CoreEdge.model_validate(payload)
+                            edge = WorkflowEdge.model_validate(payload)
                         except Exception:
-                            edge = CoreEdge.model_validate_json(json.dumps(payload))
+                            edge = WorkflowEdge.model_validate_json(
+                                json.dumps(payload)
+                            )
                         eng.write.add_edge(edge)
                     elif op_s in {"TOMBSTONE", "DELETE"}:
                         eng.backend.edge_delete(ids=[str(entity_id)])

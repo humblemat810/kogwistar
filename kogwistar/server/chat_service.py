@@ -330,9 +330,11 @@ class ChatRunService:
         return self._run_execution.get_run(run_id)
 
     def list_run_events(
-        self, run_id: str, *, after_seq: int = 0
+        self, run_id: str, *, after_seq: int = 0, limit: int = 500
     ) -> list[dict[str, Any]]:
-        return self._run_execution.list_run_events(run_id, after_seq=after_seq)
+        return self._run_execution.list_run_events(
+            run_id, after_seq=after_seq, limit=limit
+        )
 
     def cancel_run(self, run_id: str) -> dict[str, Any]:
         return self._run_execution.cancel_run(run_id)

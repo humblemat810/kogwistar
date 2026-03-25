@@ -24,34 +24,85 @@ Open-source substrate and harness for AI agent systems.
   <img src="https://img.shields.io/badge/runtime-graph--native-purple?style=flat-square"/>
 </p>
 
-`kogwistar` is a graph/hypergraph-native substrate with an embedded workflow/runtime harness layer.
+`kogwistar` is a graph-native memory and execution system.
 
-It treats knowledge, conversation, workflow/runtime, provenance, and future wisdom(long-term distilled knowledge) as one connected substrate.
+## What This Is
 
-**It is better understood as a graph-native memory and execution substrate than as only another GraphRAG repository.**
+- A substrate for storing knowledge, conversations, workflows, and provenance in the same graph-oriented model.
+- A runnable harness for executing workflows and replaying history.
+- A foundation for building agent systems with inspectable history and traceable answers.
 
-The quickest way to understand this is the graph-native artifact demo below.
+## What This Is Not
 
-To **Data scientists**: This is the plug and play hypergraphrag you looking for
-To **Engineers**:       This is the harness/substrate for robust systems  
-To **Researchers**:    You have imaginative ways to use it  
+- Not just another GraphRAG demo.
+- Not an agent framework with a fixed opinionated loop.
+- Not a finished enterprise product.
 
-Kogwistar is not an agent framework.  
-It is a substrate for building your own agent systems, with built-in guarantees around execution, memory, and provenance.
+See [docs/positioning.md](docs/positioning.md) for the full architectural framing and [docs/LEARNING_PATH.md](docs/LEARNING_PATH.md) for the learning order.
 
-If you are looking for a graph-native substrate, workflow/runtime harness, or graph-native memory system, this repo is positioned in that category. For example, it can support agent loops where workflows dynamically define and execute sub-tasks, similar to emerging recursive agent execution patterns. 
+## Glossary
+
+- `substrate`: the shared graph-oriented foundation for knowledge, conversation, memory, workflow, execution, and provenance.
+- `harness`: the execution layer that runs workflows on top of the substrate.
+- `provenance`: the trace back to the source data, steps, or spans behind a node or answer.
+- `replay`: rebuilding state or views from stored history.
+- `projection`: turning authoritative history into queryable views or materialized state.
+- `authoritative evented path`: the event-history-driven path that carries the strongest replay and provenance guarantees.
+
+## Example
+
+Run the graph-native artifact demo to see the full loop end to end:
+
+```bash
+python -m kogwistar.demo.graph_native_artifact_demo
+```
+
+What it does:
+
+1. takes raw notes as input
+2. validates and normalizes them into graph artifacts
+3. links related artifacts
+4. commits the result into history
+5. rebuilds usable views from that history
+6. explains results with provenance
+
+This is the quickest way to see how execution becomes memory in the same graph.
+
+See [docs/graph_native_artifact_demo.md](docs/graph_native_artifact_demo.md) for the short design note and [docs/positioning.md](docs/positioning.md) for the deeper architectural framing.
+
+If you want the closer agent-loop comparison, the older [framework_then_agent_demo](docs/framework_then_agent_demo.md) remains available as a companion example.
 
 Today the repo implements graph memory and query, workflow design/runtime, provenance and replay-oriented surfaces, CDC/event-oriented patterns, and self-hostable development paths.
 
-This repo is a substrate, that means, some basic blocks are given. Specific examples are given, and you can build your own system by composing. The substrate is designed to provide strong guarantees (such as replayability, provenance tracking, and projection), particularly along the authoritative evented path.
+This repo is a substrate with reusable building blocks, especially around replayability, provenance tracking, and projection along the authoritative evented path.
 
-## Harness and Substrate
+## Mental Model In Pseudocode
 
-Kogwistar is both a graph-native substrate and a workflow/runtime harness, but the labels apply to different layers. The substrate is the shared node/edge/event foundation: workflow structure, conversation structure, knowledge, provenance, and replayable history are modeled on the same primitives, and authoritative history can be projected back into materialized views. That is the layer the repo is trying to keep stable over time.
+If the terminology feels abstract, read this first. It is the simplest way to understand the design:
 
-The harness is the execution layer on top of that foundation. The repository includes a native workflow/runtime engine, step orchestration, conversation and workflow execution surfaces, and MCP-facing control paths that make the graph design runnable. In that sense it overlaps with harness and orchestration frameworks, while remaining tied to the graph-native model underneath.
+```text
+input = user message, document, or workflow definition
 
-The distinction matters because not every low-level path carries the same guarantees. The authoritative evented path is where replay, provenance, and projection semantics are strongest; lower-level primitives remain exposed for advanced builders who want custom composition or reduced ceremony. Compared with runtime-first frameworks such as LangGraph, this repo is runtime-overlapping but semantically broader: it tries to unify execution, structure, and provenance on one graph-native system model rather than treating the runtime as the only product surface.
+events = capture(input)
+validated = validate(events)
+graph = normalize_to_nodes_and_edges(validated)
+connected = link_related_graph_artifacts(graph)
+commit(connected)                  # writes authoritative history
+
+projection = rebuild_views_from_history()
+answer = retrieve_with_provenance(projection, question)
+```
+
+In plain words:
+
+- execution is recorded as durable history
+- durable history is projected into graph state
+- graph state can be replayed or repaired later
+- provenance links answers back to the source steps and source spans
+
+## More Details
+
+For the layer model, guarantees, and comparisons, see [docs/positioning.md](docs/positioning.md) and [docs/LEARNING_PATH.md](docs/LEARNING_PATH.md).
 
 ## Graph-Native Artifact Pipeline
 

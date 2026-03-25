@@ -3,12 +3,12 @@ from dataclasses import dataclass
 from typing import Any, Dict, List
 
 import pytest
-pytestmark = pytest.mark.ci_full
 
 from kogwistar.runtime.runtime import StepContext, WorkflowRuntime
 from kogwistar.runtime.resolvers import MappingStepResolver
 from kogwistar.runtime.models import RunSuccess
 
+pytestmark = pytest.mark.ci_full
 
 @dataclass
 class FakeNode:
@@ -216,14 +216,13 @@ def test_join_barrier_waits_for_all_arrivals(max_workers: int):
     )
 
     state: Dict[str, Any] = {}
-    run_result = rt.run(
+    _run_result = rt.run(
         workflow_id=wid,
         conversation_id="conv_test",
         turn_node_id="turn_test",
         initial_state=state,
     )
-    final_state, run_id = run_result.final_state, run_result.run_id
-    out = final_state, run_id
+    
     assert state.get("ended") is True
     events = state.get("events", [])
     names = [x[0] for x in events]

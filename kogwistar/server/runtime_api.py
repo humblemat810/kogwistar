@@ -8,6 +8,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from .chat_service import WorkflowProjectionRebuildingError, ChatRunService
+from .error_reporting import internal_http_error
 
 
 class SubmitWorkflowRunIn(BaseModel):
@@ -57,7 +58,7 @@ def _as_http_error(exc: Exception) -> HTTPException:
         return HTTPException(status_code=409, detail=str(exc))
     if isinstance(exc, HTTPException):
         return exc
-    return HTTPException(status_code=500, detail=str(exc))
+    return internal_http_error(exc)
 
 
 def _sse_frame(*, event_type: str, seq: int, payload: dict[str, Any]) -> str:
@@ -332,16 +333,14 @@ def create_runtime_router(
         except Exception as exc:  # noqa: BLE001
             raise _as_http_error(exc)
 
-    @router.get("/api/workflow/design/{workflow_id}/graph")
+    @router.get("/design/{workflow_id}/graph")
     def workflow_design_graph(workflow_id: str, refresh: bool = False):
         service = get_service_r()
-        return service.get().workflow_design_graph(
-            workflow_id=workflow_id, refresh=refresh
-        )
+        return service.workflow_design_graph(workflow_id=workflow_id, refresh=refresh)
 
-    @router.get("/api/workflow/catalog/ops")
+    @router.get("/catalog/ops")
     def workflow_catalog_ops():
         service = get_service_r()
-        return service.get().workflow_catalog_ops()
+        return service.workflow_catalog_ops()
 
     return router

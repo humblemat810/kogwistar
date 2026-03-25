@@ -313,7 +313,7 @@ def test_workflow_runtime_uses_default_resolver(tmp_path):
 
     cached_fn = cached_deco(ignore=["llm"], fn=cached_inner)
     # 3. Add Turn 1
-    res = conv_svc.add_conversation_turn(
+    _res = conv_svc.add_conversation_turn(
         user_id,
         conv_id,
         turn_id,

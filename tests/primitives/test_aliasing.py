@@ -3,7 +3,6 @@ import uuid
 
 from kogwistar.engine_core.engine import (
     AliasBook,
-    GraphKnowledgeEngine,
     base62_to_uuid,
     uuid_to_base62,
 )

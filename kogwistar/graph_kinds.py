@@ -6,6 +6,7 @@ from typing import Final
 KIND_KG: Final[str] = "knowledge"
 KIND_CHAT: Final[str] = "conversation"
 KIND_FLOW: Final[str] = "workflow"
+KIND_WISDOM: Final[str] = "wisdom"
 
 
 def normalize_graph_kind(kind: str | None) -> str:
@@ -14,6 +15,8 @@ def normalize_graph_kind(kind: str | None) -> str:
         return KIND_KG
     if raw in {KIND_FLOW, "wf"}:
         return KIND_FLOW
+    if raw in {KIND_WISDOM, "w"}:
+        return KIND_WISDOM
     if raw in {KIND_CHAT, "chat", "conv", "dialog"}:
         return KIND_CHAT
     return raw

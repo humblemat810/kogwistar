@@ -7,24 +7,20 @@ from kogwistar.engine_core.models import (
     Span,
     MentionVerification,
 )
-from typing import TYPE_CHECKING
 
 from kogwistar.runtime.runtime import State
 from kogwistar.runtime.models import StepRunResult
 from kogwistar.runtime.models import RunSuccess
 from kogwistar.runtime.models import WorkflowEdge, WorkflowNode
-import pytest
 
-pytestmark = pytest.mark.ci_full
-
-if TYPE_CHECKING:
-    pass
 
 from kogwistar.runtime.runtime import WorkflowRuntime
 
 # IMPORTANT: use your existing dumper (calls to_d3_force internally)
 from kogwistar.utils.kge_debug_dump import dump_paired_bundles  # type: ignore
+import pytest
 
+pytestmark = pytest.mark.ci_full
 
 def _span() -> Span:
     return Span(
@@ -523,7 +519,7 @@ def test_add_turn_like_workflow_dump_bundles(tmp_path: Path):
         turn_node_id="turn_manual",
         initial_state={},
     )
-    final_state, run_id = run_result.final_state, run_result.run_id
+    _final_state, run_id = run_result.final_state, run_result.run_id
     assert run_id
     assert run_result.mq.queue[2][1]["op_log"] == "memory_retrieve"
     # assert final_state["op_log"][1] == "memory_retrieve"

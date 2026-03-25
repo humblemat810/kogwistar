@@ -314,6 +314,7 @@ def test_converter_resolver_next_step_names_duplicates_repeat_downstream():
         options=options,
     )
     seen = _seen_nodes(compiled, {"__blob__": {}})
+    assert {"start", "fork", "x", "end"} <= seen
     out = compiled.invoke({"__blob__": {}})
 
     events = out["__blob__"].get("events", [])

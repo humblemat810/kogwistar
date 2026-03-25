@@ -1,13 +1,9 @@
-import os
-import pathlib
 
 import pytest
 
 from kogwistar.engine_core.models import Document
 from kogwistar.engine_core.models import (
-    LLMEdgeExtraction,
     LLMGraphExtraction,
-    LLMNodeExtraction,
     Span,
 )
 from kogwistar.llm_tasks import (

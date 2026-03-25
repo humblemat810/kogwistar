@@ -50,7 +50,6 @@ try:
 except Exception:  # pragma: no cover - optional hardening for Windows temp ACLs
     pass
 
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 _TEST_ROOT = pathlib.Path(__file__).resolve().parents[1]
 for _env_name in (".env", ".env.test"):
     load_dotenv(_TEST_ROOT / _env_name, override=False)
@@ -152,6 +151,12 @@ from pathlib import Path
 import logging
 
 logging.captureWarnings(True)
+
+import importlib.util
+print("DEBUG sys.path =", sys.path)
+print("DEBUG find_spec(kogwistar) =", importlib.util.find_spec("kogwistar"))
+print("DEBUG find_spec(kogwistar.utils) =", importlib.util.find_spec("kogwistar.utils"))
+print("DEBUG existing sys.modules['kogwistar'] =", sys.modules.get("kogwistar"))
 from kogwistar.utils.log import EngineLogManager
 
 logger = logging.getLogger(__name__)
@@ -785,9 +790,6 @@ def mcp_admin_server(tmp_path: Path) -> Iterator[dict[str, Any]]:
 
 from tests._helpers.embeddings import (
     ConstantEmbeddingFunction,
-    EmbeddingFunction,
-    Embeddings,
-    LexicalHashEmbeddingFunction,
     build_test_embedding_function,
 )
 try:

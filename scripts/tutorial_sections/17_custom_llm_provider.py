@@ -12,11 +12,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import httpx
-from langchain_ollama import ChatOllama
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.llm_tasks import (
-    LLMTaskSet,
     build_default_llm_tasks,
     AnswerWithCitationsTaskRequest,
     AnswerWithCitationsTaskResult,

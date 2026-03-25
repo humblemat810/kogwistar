@@ -81,9 +81,6 @@ def e2e_engine(
         sa_engine = request.getfixturevalue("sa_engine")
         pg_schema = request.getfixturevalue("pg_schema")
         pytest.importorskip("pgvector")
-        from kogwistar.engine_core.engine_postgres_meta import (
-            EnginePostgresMetaStore,
-        )
         from kogwistar.engine_core.postgres_backend import PgVectorBackend
 
         backend = PgVectorBackend(engine=sa_engine, embedding_dim=3, schema=pg_schema)

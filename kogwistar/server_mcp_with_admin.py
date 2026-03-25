@@ -1,13 +1,15 @@
 ﻿from __future__ import annotations
 
+""" server_mcp_with_admin.py
+mcp and fast rest api server for conversation service, add node edge, parsing service with authorization authentication
+"""
 import json
 import logging
 import os
-import sqlite3
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Optional
 
 try:
     from dotenv import load_dotenv
@@ -19,7 +21,7 @@ from fastapi import APIRouter, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from jose import jwt
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from kogwistar.engine_core.models import (
     Document,
@@ -50,6 +52,7 @@ from kogwistar.server.auth_middleware import (
     set_auth_app,
 )
 from kogwistar.server.chat_api import create_chat_router
+from kogwistar.server.error_reporting import internal_http_error
 from kogwistar.server.mcp_tools import MCPRoleMiddleware, mcp
 from kogwistar.server.mcp_tools import *  # noqa: F401,F403
 from kogwistar.server.resources import (
@@ -72,6 +75,71 @@ from kogwistar.visualization.graph_viz import to_cytoscape, to_d3_force
 load_dotenv()
 
 logger = logging.getLogger(__name__)
+request_logger = logging.getLogger("kogwistar.request")
+
+def _configure_console_logging() -> None:
+    level_name = (
+        os.getenv("KOGWISTAR_LOG_LEVEL")
+        or os.getenv("LOG_LEVEL")
+        or os.getenv("UVICORN_LOG_LEVEL")
+        or "INFO"
+    )
+    level = getattr(logging, str(level_name).upper(), logging.INFO)
+    root = logging.getLogger()
+    root.setLevel(level)
+
+    if not root.handlers:
+        handler = logging.StreamHandler()
+        handler.setLevel(level)
+        handler.setFormatter(
+            logging.Formatter(
+                "%(asctime)s %(levelname)s [%(name)s] %(message)s"
+            )
+        )
+        root.addHandler(handler)
+    else:
+        for handler in root.handlers:
+            if handler.level == logging.NOTSET or handler.level > level:
+                handler.setLevel(level)
+
+    for name in (
+        "uvicorn",
+        "uvicorn.error",
+        "uvicorn.access",
+        "kogwistar.request",
+        "workflow.trace",
+        "workflow.runtime",
+        "workflow.resolver",
+    ):
+        logging.getLogger(name).setLevel(level)
+
+    logger.info("logging configured: level=%s handlers=%d", level_name, len(root.handlers))
+
+
+def _install_request_logging(app: FastAPI) -> None:
+    @app.middleware("http")
+    async def _log_requests(request: Request, call_next):
+        started_at = time.perf_counter()
+        status_code = 500
+        try:
+            response = await call_next(request)
+            status_code = getattr(response, "status_code", 500)
+            return response
+        finally:
+            elapsed_ms = int((time.perf_counter() - started_at) * 1000)
+            sink = request_logger if request_logger.handlers or request_logger.propagate else logger
+            client = getattr(request, "client", None)
+            client_host = getattr(client, "host", "-") or "-"
+            client_port = getattr(client, "port", "-") or "-"
+            sink.info(
+                '%s:%s - "%s %s" %s (%dms)',
+                client_host,
+                client_port,
+                request.method,
+                request.url.path,
+                status_code,
+                elapsed_ms,
+            )
 
 try:
     from kogwistar.server.auth.db import get_session
@@ -104,6 +172,7 @@ mcp_app = mcp.http_app(path="/mcp")
 
 @asynccontextmanager
 async def combined_lifespan(app: FastAPI):
+    _configure_console_logging()
     if (
         get_session is not None
         and AuthService is not None
@@ -161,6 +230,7 @@ async def combined_lifespan(app: FastAPI):
 
 app = FastAPI(title="KnowledgeEngine + MCP + Admin", lifespan=combined_lifespan)
 set_auth_app(app)
+_install_request_logging(app)
 
 origins = os.getenv(
     "ALLOWED_ORIGINS", "http://localhost:5173,http://localhost:3000"
@@ -201,7 +271,27 @@ app.include_router(auth_router)
 class DevTokenInp(BaseModel):
     username: str = "dev"
     role: str = "ro"
-    ns: Literal["docs", "conversation", "workflow", "wisdom"] = "docs"
+    ns: list[str] | str = "docs"
+
+    @field_validator("ns", mode="before")
+    @classmethod
+    def _normalize_ns(cls, value):
+        allowed = {item.value for item in NameSpace}
+        if value is None or value == "":
+            return "docs"
+        if isinstance(value, str):
+            parts = [item.strip() for item in value.split(",") if item.strip()]
+        elif isinstance(value, (list, tuple, set)):
+            parts = [str(item).strip() for item in value if str(item).strip()]
+        else:
+            return value
+
+        for item in parts:
+            if item not in allowed:
+                raise ValueError(
+                    f"ns must be one or more of {sorted(allowed)}, got {item!r}"
+                )
+        return parts[0] if len(parts) == 1 else parts
 
 @app.post("/auth/dev-token")
 async def dev_token(request: Request):
@@ -845,7 +935,7 @@ async def document_upsert_tree(payload: DocumentGraphUpsert):
             doc_id=payload.doc_id,
         )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise internal_http_error(e)
     return DocumentGraphUpsertResult(
         status="ok",
         inserted_nodes=len(payload.nodes),
@@ -961,6 +1051,7 @@ def main() -> None:
     import os
     import uvicorn
 
+    _configure_console_logging()
     host = os.getenv("HOST", "127.0.0.1")
     port = int(os.getenv("PORT", "28110"))
     uvicorn.run(

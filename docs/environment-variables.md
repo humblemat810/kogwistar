@@ -36,7 +36,7 @@ tests, and optional integrations.
 | `DEV_AUTH_SUBJECT` | `kogwistar.server.auth.router` | Default developer auth subject. |
 | `DEV_AUTH_NAME` | `kogwistar.server.auth.router` | Default developer display name. |
 | `DEV_AUTH_ROLE` | `kogwistar.server.auth.router` | Default developer role. |
-| `DEV_AUTH_NS` | `kogwistar.server.auth.router` | Optional namespace override for dev auth. |
+| `DEV_AUTH_NS` | `kogwistar.server.auth.router`, `kogwistar.server_mcp_with_admin` | Dev auth namespaces. Accepts a single namespace or a comma-separated list such as `docs,conversation,workflow,wisdom`. |
 | `DEV_AUTH_SEED_JSON` | `kogwistar.server.auth.seeding` | Inline JSON seed for auth bootstrap. |
 | `DEV_AUTH_SEED_PATH` | `kogwistar.server.auth.seeding` | File path for auth bootstrap seed data. |
 | `UI_URL` | `kogwistar.server.auth.router` | UI redirect target after auth flows. |
@@ -91,3 +91,4 @@ tests, and optional integrations.
 - Keep secrets out of version control. Use `.env` only for local development.
 - `.env.example` should remain safe to commit and should contain placeholders only.
 - If you add a new environment variable, update this file and the relevant `.env.example` entry together.
+- In `AUTH_MODE=dev`, leaving `DEV_AUTH_NS` unset in the login flow defaults to all app namespaces, but explicit local debug configs may still override it to a narrower value.
