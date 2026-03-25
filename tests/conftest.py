@@ -151,6 +151,12 @@ from pathlib import Path
 import logging
 
 logging.captureWarnings(True)
+
+import importlib.util
+print("DEBUG sys.path =", sys.path)
+print("DEBUG find_spec(kogwistar) =", importlib.util.find_spec("kogwistar"))
+print("DEBUG find_spec(kogwistar.utils) =", importlib.util.find_spec("kogwistar.utils"))
+print("DEBUG existing sys.modules['kogwistar'] =", sys.modules.get("kogwistar"))
 from kogwistar.utils.log import EngineLogManager
 
 logger = logging.getLogger(__name__)

@@ -44,6 +44,85 @@ jobs:
       - name: Verify package import
         run: |
           python -c "import kogwistar; import kogwistar.utils; import kogwistar.utils.log; print(kogwistar.__file__); print(kogwistar.utils.__file__)"
+      - name: Show CI working directory and tree
+        run: |
+          echo "PWD=$(pwd)"
+          echo "GITHUB_WORKSPACE=$GITHUB_WORKSPACE"
+          python - <<'PY'
+          import os
+          import pathlib
+          root = pathlib.Path(".").resolve()
+          print("resolved root:", root)
+          for p in sorted(root.iterdir()):
+              print(" -", p.name, "(dir)" if p.is_dir() else "(file)")
+          pkg = root / "kogwistar"
+          print("\npackage dir exists:", pkg.exists(), pkg)
+          if pkg.exists():
+              for p in sorted(pkg.iterdir()):
+                  print("   *", p.name, "(dir)" if p.is_dir() else "(file)")
+          tests = root / "tests"
+          print("\ntests dir exists:", tests.exists(), tests)
+          if tests.exists():
+              for p in sorted(tests.iterdir()):
+                  print("   *", p.name, "(dir)" if p.is_dir() else "(file)")
+          PY
+
+      - name: Show Python environment
+        run: |
+          python - <<'PY'
+          import sys, site, os
+          print("executable:", sys.executable)
+          print("version:", sys.version)
+          print("cwd:", os.getcwd())
+          print("sys.path:")
+          for i, p in enumerate(sys.path):
+              print(f"  {i}: {p}")
+          print("site.getsitepackages():", getattr(site, "getsitepackages", lambda: [])())
+          print("site.getusersitepackages():", getattr(site, "getusersitepackages", lambda: None)())
+          PY
+
+      - name: Show import specs
+        run: |
+          python - <<'PY'
+          import importlib.util, sys
+          for name in [
+              "kogwistar",
+              "kogwistar.utils",
+              "kogwistar.utils.log",
+              "tests",
+              "tests.conftest",
+          ]:
+              try:
+                  spec = importlib.util.find_spec(name)
+              except Exception as e:
+                  spec = f"ERROR: {e!r}"
+              print(name, "->", spec)
+          PY
+
+      - name: Show installed package metadata
+        run: |
+          python -m pip show kogwistar || true
+          python -m pip list | grep -i kogwistar || true
+
+      - name: Import conftest directly without pytest
+        run: |
+          python - <<'PY'
+          import importlib.util
+          import pathlib
+          path = pathlib.Path("tests/conftest.py").resolve()
+          print("loading:", path)
+          spec = importlib.util.spec_from_file_location("debug_conftest", path)
+          module = importlib.util.module_from_spec(spec)
+          try:
+              spec.loader.exec_module(module)
+              print("SUCCESS: conftest loaded directly")
+          except Exception as e:
+              import traceback
+              traceback.print_exc()
+          PY
+      - name: Search for shadowing names
+        run: |
+          find . -iname "kogwistar.py" -o -type d -iname "kogwistar"
       - name: Run CI tests
         env:
           ANONYMIZED_TELEMETRY: "FALSE"
