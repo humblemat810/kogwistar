@@ -1,0 +1,92 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+    inputs:
+      full:
+        description: Run the full ci_full suite instead of the fast ci suite
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    if: github.event_name != 'schedule' && (github.event_name != 'workflow_dispatch' || inputs.full == false)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13", "3.14"]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[test,server,full]"
+
+      - name: Run CI tests
+        env:
+          ANONYMIZED_TELEMETRY: "FALSE"
+        run: python -m pytest -m ci -q
+
+  lint:
+    if: github.event_name != 'schedule' && (github.event_name != 'workflow_dispatch' || inputs.full == false)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install lint dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[lint]"
+
+      - name: Run Ruff
+        run: python -m ruff check .
+
+  ci_full:
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.full == true)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[test,server,full]"
+
+      - name: Run full CI tests
+        env:
+          ANONYMIZED_TELEMETRY: "FALSE"
+        run: python -m pytest -m ci_full -q
