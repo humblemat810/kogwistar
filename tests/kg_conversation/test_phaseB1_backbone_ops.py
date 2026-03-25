@@ -9,6 +9,16 @@ from kogwistar.conversation.models import (
     ConversationEdge,
     ConversationNode,
 )
+from kogwistar.llm_tasks import (
+    AdjudicateBatchTaskResult,
+    AdjudicatePairTaskResult,
+    AnswerWithCitationsTaskResult,
+    ExtractGraphTaskResult,
+    FilterCandidatesTaskResult,
+    LLMTaskSet,
+    RepairCitationsTaskResult,
+    SummarizeContextTaskResult,
+)
 from kogwistar.conversation.resolvers import default_resolver
 from kogwistar.runtime.models import RunSuccess
 from kogwistar.conversation.conversation_orchestrator import (
@@ -86,6 +96,30 @@ class _StateWriteTxn:
 
     def __exit__(self, exc_type, exc, tb) -> None:
         return None
+
+
+def _noop_task_set() -> LLMTaskSet:
+    return LLMTaskSet(
+        extract_graph=lambda request: ExtractGraphTaskResult(
+            raw=None, parsed_payload={}, parsing_error=None
+        ),
+        adjudicate_pair=lambda request: AdjudicatePairTaskResult(
+            verdict_payload={}, raw=None, parsing_error=None
+        ),
+        adjudicate_batch=lambda request: AdjudicateBatchTaskResult(
+            verdict_payloads=[], raw=None, parsing_error=None
+        ),
+        filter_candidates=lambda request: FilterCandidatesTaskResult(
+            node_ids=[], edge_ids=[], reasoning=""
+        ),
+        summarize_context=lambda request: SummarizeContextTaskResult(text=""),
+        answer_with_citations=lambda request: AnswerWithCitationsTaskResult(
+            answer_payload={}, raw=None, parsing_error=None
+        ),
+        repair_citations=lambda request: RepairCitationsTaskResult(
+            answer_payload={}, raw=None, parsing_error=None
+        ),
+    )
 
 
 def _fake_add_link_to_new_turn(engine: FakeConversationEngine):
