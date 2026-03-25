@@ -41,7 +41,9 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -e ".[test,server,full]"
-
+      - name: Verify package import
+        run: |
+          python -c "import kogwistar; import kogwistar.utils; import kogwistar.utils.log; print(kogwistar.__file__); print(kogwistar.utils.__file__)"
       - name: Run CI tests
         env:
           ANONYMIZED_TELEMETRY: "FALSE"
