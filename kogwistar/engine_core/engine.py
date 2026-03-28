@@ -10,6 +10,7 @@ import uuid
 import time
 
 from .utils import AliasBook
+from .async_compat import run_sync_or_awaitable
 
 from .chroma_backend import ChromaBackend
 
@@ -169,6 +170,7 @@ def _is_pgvector_backend_instance(backend: object) -> bool:
         from .postgres_backend import PgVectorBackend  # type: ignore
     except Exception:
         return False
+    backend = getattr(backend, "_target", backend)
     return isinstance(backend, PgVectorBackend)
 
 
@@ -1088,8 +1090,8 @@ class GraphKnowledgeEngine:
         # Keep a 1-string convenience to reuse in cosine checks
         # convenience: single-string embed for verifiers
         def _embed_one(text: str):
-            vecs = self._ef(
-                [text]
+            vecs = run_sync_or_awaitable(
+                self._ef([text])
             )  # DefaultEmbeddingFunction is callable(texts: List[str]) -> List[List[float]]
             return vecs[0] if vecs else None
 

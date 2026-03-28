@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from .base import NamespaceProxy
+from ..async_compat import run_sync_or_awaitable
 from ...utils.embedding_vectors import normalize_embedding_vector
 
 
@@ -24,7 +25,7 @@ class EmbedSubsystem(NamespaceProxy):
                 break
             emb_text = emb_text0[:idx] + ("..." if idx < len(emb_text0) - 1 else "")
             try:
-                embedding = self._e._ef([emb_text])[0]
+                embedding = run_sync_or_awaitable(self._e._ef([emb_text]))[0]
                 success = True
                 break
             except Exception:
@@ -35,7 +36,7 @@ class EmbedSubsystem(NamespaceProxy):
                 break
             emb_text = emb_text0[:idx] + ("..." if idx < len(emb_text0) - 1 else "")
             try:
-                embedding = self._e._ef([emb_text])[0]
+                embedding = run_sync_or_awaitable(self._e._ef([emb_text]))[0]
                 if idx >= len(emb_text0):
                     break
                 idx = int(idx * 1.6)
