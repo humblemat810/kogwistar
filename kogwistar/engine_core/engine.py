@@ -1,4 +1,5 @@
 ﻿from __future__ import annotations
+
 from contextlib import contextmanager
 import contextvars
 
@@ -38,34 +39,23 @@ from .types import (
 )
 from ..graph_kinds import normalize_graph_kind
 from .utils.aliasing import AliasBookStore
+    # """_summary_
 
-if True:
-    """_summary_
+    # sample usage:
+    # from kogwistar.strategies import candidate_proposals as CP
+    # from kogwistar.strategies import adjudicators as AJ
+    # from kogwistar.strategies import merge_policies as MP
+    # from kogwistar.strategies import verifiers as VF
+    # from kogwistar.engine_core.engine import GraphKnowledgeEngine
 
-    Raises:
-        ValueError: _description_
-        ValueError: _description_
-        ValueError: _description_
-        ValueError: _description_
-
-    Returns:
-        _type_: _description_
-        
-    sample usage:
-    from kogwistar.strategies import candidate_proposals as CP
-    from kogwistar.strategies import adjudicators as AJ
-    from kogwistar.strategies import merge_policies as MP
-    from kogwistar.strategies import verifiers as VF
-    from kogwistar.engine_core.engine import GraphKnowledgeEngine
-
-    engine = GraphKnowledgeEngine(
-        persist_directory="./chroma_db",
-        candidate_generator=CP.hybrid,         # or CP.by_vector_similarity
-        adjudicator=AJ.llm_pair,               # or AJ.rule_first_token / AJ.llm_batch in your batch path
-        merge_policy=MP.prefer_existing_canonical,
-        verifier=VF.ensemble_default,          # or VF.coverage_only / VF.strict_with_min_span
-    )
-    """
+    # engine = GraphKnowledgeEngine(
+    #     persist_directory="./chroma_db",
+    #     candidate_generator=CP.hybrid,         # or CP.by_vector_similarity
+    #     adjudicator=AJ.llm_pair,               # or AJ.rule_first_token / AJ.llm_batch in your batch path
+    #     merge_policy=MP.prefer_existing_canonical,
+    #     verifier=VF.ensemble_default,          # or VF.coverage_only / VF.strict_with_min_span
+    # )
+    # """
 from typing import TYPE_CHECKING, List, Optional, Dict, Any, Tuple, cast
 
 try:
@@ -119,8 +109,6 @@ from typing import (
 )
 import math
 
-# from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction
-# from chromadb.utils import embedding_functions
 from datetime import datetime
 from kogwistar.cdc.change_bus import ChangeBus, FastAPIChangeSink
 from kogwistar.cdc.change_event import ChangeEvent

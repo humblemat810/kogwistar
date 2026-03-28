@@ -218,6 +218,7 @@
                 "DEV_AUTH_NAME": "Dev User",
                 "DEV_AUTH_ROLE": "rw",
                 "DEV_AUTH_NS": "docs,conversation,workflow,wisdom", // need to be set for user to see chat
+                "JWT_SECRET": "dev-secret",
                 "UI_URL": "http://127.0.0.1:5173/"
             },
             "jinja": true,

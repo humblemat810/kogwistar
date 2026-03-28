@@ -130,7 +130,7 @@ If you want the closer agent-loop comparison, the older [framework_then_agent_de
 
 ## Quickstart
 
-- As this is a substrate, you can pick anywhere you immediately want to start with e.g. hypergraphrag, runtime, mcp server, conversation primitives, workflow design. As you need grows, you can compose more consisntently and coherently.
+- As this is a substrate, you can pick anywhere you immediately want to start with e.g. hypergraphrag, runtime, mcp server, conversation primitives, workflow design. As you need grows, you can compose more consistently and coherently.
 
 - Standalone setup then run simple flow in 2 minutes. (no frontend integration): [QUICKSTART.md](QUICKSTART.md)
 
@@ -141,7 +141,7 @@ If you want the closer agent-loop comparison, the older [framework_then_agent_de
 
 - Roadmap and research direction: [docs/roadmap.md](docs/roadmap.md)
 
-- Alternatively, let your AI agent read throught and set up the credential/ keys and environemnt variables for you, and run the appropriate commands.
+- Alternatively, let your AI agent read through and set up the credential/ keys and environment variables for you, and run the appropriate commands.
 
 ## Core Features
 

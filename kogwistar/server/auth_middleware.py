@@ -31,7 +31,7 @@ load_dotenv()
 
 # --- JWT config (env-driven) ---
 JWT_ALG = os.getenv("JWT_ALG", "HS256")  # HS256 (shared secret) or RS256 (public key)
-JWT_SECRET = os.getenv("JWT_SECRET", "dev-secret")  # HS256 secret OR RS256 public key
+JWT_SECRET = os.getenv("JWT_SECRET")  # HS256 secret OR RS256 public key
 JWT_ISS = os.getenv("JWT_ISS")  # optional issuer to check
 JWT_AUD = os.getenv("JWT_AUD")  # optional audience to check
 PROTECTED_PREFIXES = tuple(
