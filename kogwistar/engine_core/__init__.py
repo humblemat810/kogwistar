@@ -1,6 +1,7 @@
 """Engine-core compatibility entrypoints with safe optional imports."""
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.engine_core.async_facade import AsyncEngineFacade
 from kogwistar.engine_core.engine_sqlite import EngineSQLite, IndexJobRow
 from kogwistar.engine_core.indexing import IndexingSubsystem
 from kogwistar.engine_core.lifecycle import LifecycleSubsystem
@@ -29,6 +30,7 @@ from kogwistar.engine_core.types import (
 
 __all__ = [
     "GraphKnowledgeEngine",
+    "AsyncEngineFacade",
     "EnginePostgresConfig",
     "build_postgres_backend",
     "EnginePostgresMetaStore",

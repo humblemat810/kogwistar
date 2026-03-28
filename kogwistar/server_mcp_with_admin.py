@@ -60,6 +60,7 @@ from kogwistar.server.resources import (
     chat_service,
     conversation_engine,
     conversation_persist_directory,
+    async_engine,
     engine,
     persist_directory,
     storage_settings,
@@ -889,7 +890,7 @@ class DocumentUpsertResult(BaseModel):
 
 @app.post("/api/document")
 async def document_upsert(inp: DocumentUpsert, response_model=DocumentUpsertResult):
-    eng = engine.get()
+    eng = async_engine.get()
     if inp.doc_type == "text":
         doc = Document(
             id=inp.doc_id,
@@ -913,14 +914,14 @@ async def document_upsert(inp: DocumentUpsert, response_model=DocumentUpsertResu
         doc.metadata = {"insertion_method": inp.insertion_method}
     else:
         doc.metadata["insertion_method"] = inp.insertion_method
-    eng.write.add_document(doc)
+    await eng.write.add_document(doc)
 
 @app.post("/api/document.upsert_tree", response_model=DocumentGraphUpsertResult)
 async def document_upsert_tree(payload: DocumentGraphUpsert):
     """Upsert a generic tree with document root, use only when complete control of all backend fields are clearly known."""
-    eng = engine.get()
+    eng = async_engine.get()
     try:
-        res = eng.persist.persist_document_graph_extraction(
+        res = await eng.persist.persist_document_graph_extraction(
             parsed=GraphExtractionWithIDs(
                 nodes=[
                     Node.model_validate(n.model_dump(field_mode="backend"))

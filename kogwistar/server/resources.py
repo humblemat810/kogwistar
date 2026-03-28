@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, Callable, Generic, TypeVar
 from fastapi.templating import Jinja2Templates
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.engine_core.async_facade import AsyncEngineFacade
 from kogwistar.graph_query import GraphQuery
 from kogwistar.server.bootstrap import (
     build_graph_engine,
@@ -132,6 +133,9 @@ auth_engine_resource: _LazyResource[Engine] = _LazyResource(_init_auth, "auth_en
 
 engine: _LazyResource[GraphKnowledgeEngine] = _LazyResource(
     _build_engine, "knowledge_engine"
+)
+async_engine: _LazyResource[AsyncEngineFacade] = _LazyResource(
+    lambda: AsyncEngineFacade(engine.get()), "async_knowledge_engine"
 )
 conversation_engine: _LazyResource[GraphKnowledgeEngine] = _LazyResource(
     _build_conversation_engine, "conversation_engine"
