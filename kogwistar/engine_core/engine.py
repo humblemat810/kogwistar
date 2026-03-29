@@ -1,4 +1,5 @@
 ﻿from __future__ import annotations
+
 from contextlib import contextmanager
 import contextvars
 
@@ -9,6 +10,7 @@ import uuid
 import time
 
 from .utils import AliasBook
+from .async_compat import run_sync_or_awaitable
 
 from .chroma_backend import ChromaBackend
 
@@ -38,35 +40,24 @@ from .types import (
 )
 from ..graph_kinds import normalize_graph_kind
 from .utils.aliasing import AliasBookStore
+    # """_summary_
 
-if True:
-    """_summary_
+    # sample usage:
+    # from kogwistar.strategies import candidate_proposals as CP
+    # from kogwistar.strategies import adjudicators as AJ
+    # from kogwistar.strategies import merge_policies as MP
+    # from kogwistar.strategies import verifiers as VF
+    # from kogwistar.engine_core.engine import GraphKnowledgeEngine
 
-    Raises:
-        ValueError: _description_
-        ValueError: _description_
-        ValueError: _description_
-        ValueError: _description_
-
-    Returns:
-        _type_: _description_
-        
-    sample usage:
-    from kogwistar.strategies import candidate_proposals as CP
-    from kogwistar.strategies import adjudicators as AJ
-    from kogwistar.strategies import merge_policies as MP
-    from kogwistar.strategies import verifiers as VF
-    from kogwistar.engine_core.engine import GraphKnowledgeEngine
-
-    engine = GraphKnowledgeEngine(
-        persist_directory="./chroma_db",
-        candidate_generator=CP.hybrid,         # or CP.by_vector_similarity
-        adjudicator=AJ.llm_pair,               # or AJ.rule_first_token / AJ.llm_batch in your batch path
-        merge_policy=MP.prefer_existing_canonical,
-        verifier=VF.ensemble_default,          # or VF.coverage_only / VF.strict_with_min_span
-    )
-    """
-from typing import TYPE_CHECKING, List, Optional, Dict, Any, Tuple, cast
+    # engine = GraphKnowledgeEngine(
+    #     persist_directory="./chroma_db",
+    #     candidate_generator=CP.hybrid,         # or CP.by_vector_similarity
+    #     adjudicator=AJ.llm_pair,               # or AJ.rule_first_token / AJ.llm_batch in your batch path
+    #     merge_policy=MP.prefer_existing_canonical,
+    #     verifier=VF.ensemble_default,          # or VF.coverage_only / VF.strict_with_min_span
+    # )
+    # """
+from typing import TYPE_CHECKING, List, Optional, Dict, Any, Tuple, cast, TypeVar, ParamSpec
 
 try:
     from typing import Self, TypeAlias
@@ -114,13 +105,10 @@ from typing import (
     Sequence,
     Literal,
     Type,
-    TypeVar,
     Union,
 )
 import math
 
-# from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction
-# from chromadb.utils import embedding_functions
 from datetime import datetime
 from kogwistar.cdc.change_bus import ChangeBus, FastAPIChangeSink
 from kogwistar.cdc.change_event import ChangeEvent
@@ -148,7 +136,6 @@ if TYPE_CHECKING:
     TEdge = TypeVar("TEdge", bound=Edge)
 
 
-from typing import TypeVar, ParamSpec
 
 P = ParamSpec("P")
 R = TypeVar("R")
@@ -181,11 +168,14 @@ def _is_pgvector_backend_instance(backend: object) -> bool:
         from .postgres_backend import PgVectorBackend  # type: ignore
     except Exception:
         return False
+    backend = getattr(backend, "_target", backend)
     return isinstance(backend, PgVectorBackend)
 
 
 def _build_postgres_uow_if_needed(backend: StorageBackend):
     if not _is_pgvector_backend_instance(backend):
+        return NoopUnitOfWork()
+    if getattr(backend, "_is_async_engine", False):
         return NoopUnitOfWork()
     try:
         from kogwistar.engine_core.postgres_backend import (
@@ -1071,10 +1061,10 @@ class GraphKnowledgeEngine:
             DefaultVerifier,
             PreferExistingCanonical,
             Adjudicator,
+            VerifierConfig
         )
 
         # from .strategies.adjudicators import LLMPairAdjudicatorImpl, LLMBatchAdjudicatorImpl
-        from ..strategies.verifiers import DefaultVerifier, VerifierConfig
         from ..strategies.types import Verifier
         from kogwistar.strategies import IAdjudicator
 
@@ -1100,8 +1090,8 @@ class GraphKnowledgeEngine:
         # Keep a 1-string convenience to reuse in cosine checks
         # convenience: single-string embed for verifiers
         def _embed_one(text: str):
-            vecs = self._ef(
-                [text]
+            vecs = run_sync_or_awaitable(
+                self._ef([text])
             )  # DefaultEmbeddingFunction is callable(texts: List[str]) -> List[List[float]]
             return vecs[0] if vecs else None
 
@@ -1110,6 +1100,10 @@ class GraphKnowledgeEngine:
             if backend is not None:
                 raise ValueError("Backend factory and backend can only either be specified")
             self.backend = backend_factory(self)
+            self.meta_sqlite = EngineSQLite(
+                pathlib.Path(persist_directory or "./chroma_db"), "meta.sqlite"
+            )
+            self.meta_sqlite.ensure_initialized()
         elif backend is None or (type(backend) is str and backend == "chroma"):
             # 2) Chroma client + collections; inject embedder on vectorized collections
             ChromaClient, ChromaSettings = _import_chroma_client()
@@ -1187,11 +1181,10 @@ class GraphKnowledgeEngine:
                 raise Exception("unreacheable")
             else:
                 backend2: PgVectorBackend = backend  # let static checker happy
-                meta_postgre = EnginePostgresMetaStore(
-                    engine=backend2.engine, schema=backend2.schema
-                )
             self.backend: StorageBackend = backend
-
+            meta_postgre = EnginePostgresMetaStore(
+                engine=backend2.engine, schema=backend2.schema
+            )
             meta_postgre.ensure_initialized()
             self.meta_sqlite = meta_postgre
         else:

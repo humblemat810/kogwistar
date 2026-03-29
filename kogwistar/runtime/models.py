@@ -1,4 +1,4 @@
-from typing import Any, ClassVar, Literal, Optional, TypeAlias, TypedDict, Union
+from typing import Any, ClassVar, Literal, Optional, TypeAlias, TypedDict, Union, NotRequired
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from ..engine_core.models import Edge, Node, Span
@@ -139,7 +139,7 @@ class WorkflowEdge(Edge):
 
     @property
     def priority(self):
-        return int(self.metadata.get("wf_priority"))
+        return int(self.metadata.get("wf_priority")) # type: ignore  ok here, metadata validated at seem
 
 
 class WorkflowDesignArtifact(BaseModel):
@@ -204,23 +204,23 @@ class WorkflowInvocationRequest(BaseModel):
 class WorkflowState(TypedDict):
     conversation_id: str
     user_id: str
-    turn_node_id: str
-    turn_index: int
-    role: str
-    user_text: str
-    mem_id: str
-    self_span: Span
-    embedding: Any
-    memory: Optional[Any]
-    memory_raw: Optional[Any]
-    kg: Optional[Any]
-    memory_pin: Optional[Any]
-    kg_pin: Optional[Any]
-    answer: Optional[Any]
+    turn_node_id: NotRequired[str]
+    turn_index: NotRequired[int]
+    role: NotRequired[str]
+    user_text: NotRequired[str]
+    mem_id: NotRequired[str]
+    self_span: NotRequired[Span]
+    embedding: NotRequired[Any]
+    memory: NotRequired[Any]
+    memory_raw: NotRequired[Any]
+    kg: NotRequired[Any]
+    memory_pin: NotRequired[Any]
+    kg_pin: NotRequired[Any]
+    answer: NotRequired[Any]
     # summary: SummaryStateDict
     # prev_turn_meta_summary: PrevTurnMetaSummaryDict
-    _deps: dict[str, Any]
-    _rt_join: dict[str, Any]
+    _deps: NotRequired[dict[str, Any]]
+    _rt_join: NotRequired[dict[str, Any]]
 
 
 StateAppendUpdate = tuple[Literal["u"], Any]

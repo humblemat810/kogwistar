@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import time
+from pathlib import Path
 from typing import Any, cast, Callable
 
 from fastapi import APIRouter, HTTPException
@@ -65,6 +68,43 @@ def _sse_frame(*, event_type: str, seq: int, payload: dict[str, Any]) -> str:
     return f"id: {seq}\nevent: {event_type}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
+def _runtime_sse_debug_log(
+    *,
+    stage: str,
+    run_id: str,
+    after_seq: int | None = None,
+    last_seq: int | None = None,
+    event_type: str | None = None,
+    event_count: int | None = None,
+    terminal: bool | None = None,
+    detail: dict[str, Any] | None = None,
+) -> None:
+    log_path = str(os.getenv("KOGWISTAR_RUNTIME_SSE_DEBUG_LOG") or "").strip()
+    if not log_path:
+        return
+    path = Path(log_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload: dict[str, Any] = {
+        "ts_ms": int(time.time() * 1000),
+        "stage": stage,
+        "run_id": str(run_id),
+    }
+    if after_seq is not None:
+        payload["after_seq"] = int(after_seq)
+    if last_seq is not None:
+        payload["last_seq"] = int(last_seq)
+    if event_type is not None:
+        payload["event_type"] = str(event_type)
+    if event_count is not None:
+        payload["event_count"] = int(event_count)
+    if terminal is not None:
+        payload["terminal"] = bool(terminal)
+    if detail:
+        payload["detail"] = detail
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(payload, ensure_ascii=False) + "\n")
+
+
 def create_runtime_router(
     *,
     get_service: Callable[[], Any],
@@ -116,15 +156,23 @@ def create_runtime_router(
         require_role("ro")
         require_namespace(runtime_namespaces)
         try:
-            get_service_r().get_run(run_id)
+            await get_service_r().aget_run(run_id)
         except Exception as exc:  # noqa: BLE001
             raise _as_http_error(exc)
+        _runtime_sse_debug_log(stage="open", run_id=run_id, after_seq=after_seq)
 
         async def event_stream():
             last_seq = int(after_seq or 0)
             while True:
                 service = get_service_r()
-                events = service.list_run_events(run_id, after_seq=last_seq)
+                events = await service.alist_run_events(run_id, after_seq=last_seq)
+                _runtime_sse_debug_log(
+                    stage="batch",
+                    run_id=run_id,
+                    after_seq=after_seq,
+                    last_seq=last_seq,
+                    event_count=len(events),
+                )
                 for evt in events:
                     last_seq = int(evt["seq"])
                     payload = {
@@ -133,11 +181,33 @@ def create_runtime_router(
                         "created_at_ms": evt["created_at_ms"],
                         **(evt["payload"] or {}),
                     }
+                    _runtime_sse_debug_log(
+                        stage="yield",
+                        run_id=run_id,
+                        after_seq=after_seq,
+                        last_seq=last_seq,
+                        event_type=str(evt["event_type"]),
+                    )
                     yield _sse_frame(
                         event_type=evt["event_type"], seq=last_seq, payload=payload
                     )
-                run = service.get_run(run_id)
+                run = await service.aget_run(run_id)
+                _runtime_sse_debug_log(
+                    stage="post_batch",
+                    run_id=run_id,
+                    after_seq=after_seq,
+                    last_seq=last_seq,
+                    event_count=len(events),
+                    terminal=bool(run["terminal"]),
+                )
                 if run["terminal"] and not events:
+                    _runtime_sse_debug_log(
+                        stage="close",
+                        run_id=run_id,
+                        after_seq=after_seq,
+                        last_seq=last_seq,
+                        terminal=True,
+                    )
                     break
                 await asyncio.sleep(0.1)
 

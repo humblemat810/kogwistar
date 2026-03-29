@@ -1,18 +1,106 @@
 from __future__ import annotations
 
+import asyncio
 from contextlib import contextmanager
 from dataclasses import dataclass
 import json
 import re
+import sys
+import threading
 import time
 from typing import Any, Dict, Iterator, List, Optional
 
 import sqlalchemy as sa
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from .postgres_backend import get_active_conn, _set_active_conn
 
 
 _SCHEMA_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _run_coro_blocking(coro):
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        if sys.platform == "win32":
+            runner = asyncio.Runner(loop_factory=asyncio.SelectorEventLoop)
+            try:
+                return runner.run(coro)
+            finally:
+                runner.close()
+        return asyncio.run(coro)
+
+    box: dict[str, Any] = {}
+
+    def _worker() -> None:
+        try:
+            box["result"] = _run_coro_blocking(coro)
+        except BaseException as exc:  # pragma: no cover - thread ferry
+            box["error"] = exc
+
+    thread = threading.Thread(target=_worker, daemon=True)
+    thread.start()
+    thread.join()
+    if "error" in box:
+        raise box["error"]
+    return box.get("result")
+
+
+class _BufferedMappings:
+    def __init__(self, rows: list[Any]):
+        self._rows = rows
+
+    def all(self) -> list[dict[str, Any]]:
+        return [dict(getattr(row, "_mapping", row)) for row in self._rows]
+
+
+class _BufferedResult:
+    def __init__(self, rows: list[Any], rowcount: int | None = None):
+        self._rows = rows
+        self.rowcount = rowcount if rowcount is not None else len(rows)
+
+    def __iter__(self):
+        return iter(self._rows)
+
+    def fetchone(self):
+        return self._rows[0] if self._rows else None
+
+    def fetchall(self):
+        return list(self._rows)
+
+    def mappings(self) -> _BufferedMappings:
+        return _BufferedMappings(self._rows)
+
+
+class _AsyncConnectionAdapter:
+    def __init__(self, conn: AsyncConnection, runner: asyncio.Runner):
+        self._conn = conn
+        self._runner = runner
+
+    def invoke_sync(self, fn):
+        return self._runner.run(self._conn.run_sync(fn))
+
+    async def invoke_async(self, fn):
+        return await self._conn.run_sync(fn)
+
+    def execute(self, statement, params=None):
+        def _execute(sync_conn):
+            result = (
+                sync_conn.execute(statement)
+                if params is None
+                else sync_conn.execute(statement, params)
+            )
+            rows = result.fetchall() if result.returns_rows else []
+            return _BufferedResult(rows, getattr(result, "rowcount", None))
+
+        return self.invoke_sync(_execute)
+
+
+def _make_runner() -> asyncio.Runner:
+    if sys.platform == "win32":
+        return asyncio.Runner(loop_factory=asyncio.SelectorEventLoop)
+    return asyncio.Runner()
 
 
 @dataclass
@@ -50,7 +138,7 @@ class EnginePostgresMetaStore:
       - index_jobs(...) durable queue
     """
 
-    engine: sa.Engine
+    engine: sa.Engine | AsyncEngine
     schema: str = "public"
     global_table: str = "global_seq"
     user_table: str = "user_seq"
@@ -59,11 +147,12 @@ class EnginePostgresMetaStore:
     def __post_init__(self) -> None:
         if not _SCHEMA_RE.match(self.schema):
             raise ValueError(f"invalid schema: {self.schema!r}")
+        self._is_async_engine = isinstance(self.engine, AsyncEngine)
 
     # ----------------------------
     # Initialization
     # ----------------------------
-    def ensure_initialized(self) -> None:
+    def _bootstrap_identifiers(self) -> tuple[str, str, str, str, str]:
         schema = self.schema
         gt = (
             f'{schema}."{self.global_table}"'
@@ -75,31 +164,22 @@ class EnginePostgresMetaStore:
             if self.user_table != "user_seq"
             else f"{schema}.user_seq"
         )
+        ij = (
+            f"{schema}.{self.index_jobs_table}"
+            if self.index_jobs_table == "index_jobs"
+            else f'{schema}."{self.index_jobs_table}"'
+        )
+        ias = f"{schema}.index_applied_state"
+        return schema, gt, ut, ij, ias
 
-        with self.transaction() as conn:
-            conn.execute(sa.text(f"CREATE SCHEMA IF NOT EXISTS {schema}"))
-            conn.execute(
-                sa.text(f"CREATE TABLE IF NOT EXISTS {gt} (value BIGINT NOT NULL)")
-            )
-            conn.execute(
-                sa.text(
-                    f"INSERT INTO {gt}(value) SELECT 0 WHERE NOT EXISTS (SELECT 1 FROM {gt})"
-                )
-            )
-            conn.execute(
-                sa.text(
-                    f"CREATE TABLE IF NOT EXISTS {ut} (user_id TEXT PRIMARY KEY, value BIGINT NOT NULL)"
-                )
-            )
-
-            ij = (
-                f"{schema}.{self.index_jobs_table}"
-                if self.index_jobs_table == "index_jobs"
-                else f'{schema}."{self.index_jobs_table}"'
-            )
-
-            conn.execute(
-                sa.text(f"""
+    def _bootstrap_statements(self) -> list[str]:
+        schema, gt, ut, ij, ias = self._bootstrap_identifiers()
+        return [
+            f"CREATE SCHEMA IF NOT EXISTS {schema}",
+            f"CREATE TABLE IF NOT EXISTS {gt} (value BIGINT NOT NULL)",
+            f"INSERT INTO {gt}(value) SELECT 0 WHERE NOT EXISTS (SELECT 1 FROM {gt})",
+            f"CREATE TABLE IF NOT EXISTS {ut} (user_id TEXT PRIMARY KEY, value BIGINT NOT NULL)",
+            f"""
                 CREATE TABLE IF NOT EXISTS {ij} (
                     job_id TEXT PRIMARY KEY,
                     namespace TEXT NOT NULL DEFAULT 'default',
@@ -118,64 +198,17 @@ class EnginePostgresMetaStore:
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 )
-            """)
-            )
-            conn.execute(
-                sa.text(
-                    f"CREATE INDEX IF NOT EXISTS idx_index_jobs_status_lease ON {ij}(status, lease_until)"
-                )
-            )
-            conn.execute(
-                sa.text(
-                    f"CREATE INDEX IF NOT EXISTS idx_index_jobs_status_next_run ON {ij}(status, next_run_at)"
-                )
-            )
-            conn.execute(
-                sa.text(
-                    f"CREATE INDEX IF NOT EXISTS idx_index_jobs_entity ON {ij}(entity_kind, entity_id, index_kind)"
-                )
-            )
-            conn.execute(
-                sa.text(
-                    f"CREATE INDEX IF NOT EXISTS idx_index_jobs_namespace ON {ij}(namespace)"
-                )
-            )
-
-            # Legacy safety: ensure columns exist (no-op on fresh schemas)
-            conn.execute(
-                sa.text(
-                    f"ALTER TABLE {ij} ADD COLUMN IF NOT EXISTS namespace TEXT NOT NULL DEFAULT 'default'"
-                )
-            )
-            conn.execute(
-                sa.text(
-                    f"ALTER TABLE {ij} ADD COLUMN IF NOT EXISTS coalesce_key TEXT NOT NULL DEFAULT ''"
-                )
-            )
-
-            # Phase 5: scheduling / DLQ controls
-            conn.execute(
-                sa.text(
-                    f"ALTER TABLE {ij} ADD COLUMN IF NOT EXISTS next_run_at TIMESTAMPTZ NULL"
-                )
-            )
-            conn.execute(
-                sa.text(
-                    f"ALTER TABLE {ij} ADD COLUMN IF NOT EXISTS max_retries INTEGER NOT NULL DEFAULT 10"
-                )
-            )
-
-            # Phase 2: coalescing constraint (namespaced)
-            conn.execute(
-                sa.text(
-                    f"CREATE UNIQUE INDEX IF NOT EXISTS uq_index_jobs_pending_ns_ck ON {ij}(namespace, coalesce_key) WHERE status='PENDING'"
-                )
-            )
-
-            # Phase 2: applied fingerprints (namespaced)
-            ias = f"{schema}.index_applied_state"
-            conn.execute(
-                sa.text(f"""
+            """,
+            f"CREATE INDEX IF NOT EXISTS idx_index_jobs_status_lease ON {ij}(status, lease_until)",
+            f"CREATE INDEX IF NOT EXISTS idx_index_jobs_status_next_run ON {ij}(status, next_run_at)",
+            f"CREATE INDEX IF NOT EXISTS idx_index_jobs_entity ON {ij}(entity_kind, entity_id, index_kind)",
+            f"CREATE INDEX IF NOT EXISTS idx_index_jobs_namespace ON {ij}(namespace)",
+            f"ALTER TABLE {ij} ADD COLUMN IF NOT EXISTS namespace TEXT NOT NULL DEFAULT 'default'",
+            f"ALTER TABLE {ij} ADD COLUMN IF NOT EXISTS coalesce_key TEXT NOT NULL DEFAULT ''",
+            f"ALTER TABLE {ij} ADD COLUMN IF NOT EXISTS next_run_at TIMESTAMPTZ NULL",
+            f"ALTER TABLE {ij} ADD COLUMN IF NOT EXISTS max_retries INTEGER NOT NULL DEFAULT 10",
+            f"CREATE UNIQUE INDEX IF NOT EXISTS uq_index_jobs_pending_ns_ck ON {ij}(namespace, coalesce_key) WHERE status='PENDING'",
+            f"""
                 CREATE TABLE IF NOT EXISTS {ias} (
                     namespace TEXT NOT NULL DEFAULT 'default',
                     coalesce_key TEXT NOT NULL,
@@ -184,36 +217,20 @@ class EnginePostgresMetaStore:
                     last_job_id TEXT NULL,
                     PRIMARY KEY(namespace, coalesce_key)
                 )
-            """)
-            )
-            conn.execute(
-                sa.text(
-                    f"CREATE INDEX IF NOT EXISTS idx_index_applied_state_key ON {ias}(coalesce_key)"
-                )
-            )
-
-            # -------------------------------
-            # Phase 2b: event log foundation
-            # -------------------------------
-
-            conn.execute(
-                sa.text(f"""
+            """,
+            f"CREATE INDEX IF NOT EXISTS idx_index_applied_state_key ON {ias}(coalesce_key)",
+            f"""
             CREATE TABLE IF NOT EXISTS {schema}.namespace_seq (
                 namespace TEXT PRIMARY KEY,
                 next_seq  BIGINT NOT NULL
             )
-            """)
-            )
-            conn.execute(
-                sa.text(f"""
+            """,
+            f"""
             INSERT INTO {schema}.namespace_seq(namespace, next_seq)
             VALUES ('default', 1)
             ON CONFLICT(namespace) DO NOTHING
-            """)
-            )
-
-            conn.execute(
-                sa.text(f"""
+            """,
+            f"""
             CREATE TABLE IF NOT EXISTS {schema}.entity_events (
                 namespace    TEXT NOT NULL DEFAULT 'default',
                 seq          BIGINT NOT NULL,
@@ -226,17 +243,12 @@ class EnginePostgresMetaStore:
                 PRIMARY KEY(namespace, seq),
                 UNIQUE(event_id)
             )
-            """)
-            )
-            conn.execute(
-                sa.text(f"""
+            """,
+            f"""
             CREATE INDEX IF NOT EXISTS idx_entity_events_aggregate
             ON {schema}.entity_events(namespace, entity_kind, entity_id, seq)
-            """)
-            )
-
-            conn.execute(
-                sa.text(f"""
+            """,
+            f"""
             CREATE TABLE IF NOT EXISTS {schema}.replay_cursors (
                 namespace  TEXT NOT NULL DEFAULT 'default',
                 consumer   TEXT NOT NULL,
@@ -244,11 +256,8 @@ class EnginePostgresMetaStore:
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 PRIMARY KEY(namespace, consumer)
             )
-            """)
-            )
-
-            conn.execute(
-                sa.text(f"""
+            """,
+            f"""
             CREATE TABLE IF NOT EXISTS {schema}.workflow_design_projection_head (
                 workflow_id TEXT PRIMARY KEY,
                 current_version BIGINT NOT NULL,
@@ -260,10 +269,8 @@ class EnginePostgresMetaStore:
                 materialization_status TEXT NOT NULL,
                 updated_at_ms BIGINT NOT NULL
             )
-            """)
-            )
-            conn.execute(
-                sa.text(f"""
+            """,
+            f"""
             CREATE TABLE IF NOT EXISTS {schema}.workflow_design_projection_versions (
                 workflow_id TEXT NOT NULL,
                 version BIGINT NOT NULL,
@@ -272,10 +279,8 @@ class EnginePostgresMetaStore:
                 created_at_ms BIGINT NOT NULL,
                 PRIMARY KEY(workflow_id, version)
             )
-            """)
-            )
-            conn.execute(
-                sa.text(f"""
+            """,
+            f"""
             CREATE TABLE IF NOT EXISTS {schema}.workflow_design_projection_dropped_ranges (
                 workflow_id TEXT NOT NULL,
                 start_seq BIGINT NOT NULL,
@@ -284,10 +289,8 @@ class EnginePostgresMetaStore:
                 end_version BIGINT NOT NULL,
                 PRIMARY KEY(workflow_id, start_seq, end_seq)
             )
-            """)
-            )
-            conn.execute(
-                sa.text(f"""
+            """,
+            f"""
             CREATE TABLE IF NOT EXISTS {schema}.workflow_design_snapshots (
                 workflow_id TEXT NOT NULL,
                 version BIGINT NOT NULL,
@@ -297,10 +300,8 @@ class EnginePostgresMetaStore:
                 created_at_ms BIGINT NOT NULL,
                 PRIMARY KEY(workflow_id, version)
             )
-            """)
-            )
-            conn.execute(
-                sa.text(f"""
+            """,
+            f"""
             CREATE TABLE IF NOT EXISTS {schema}.workflow_design_version_deltas (
                 workflow_id TEXT NOT NULL,
                 version BIGINT NOT NULL,
@@ -312,10 +313,8 @@ class EnginePostgresMetaStore:
                 created_at_ms BIGINT NOT NULL,
                 PRIMARY KEY(workflow_id, version)
             )
-            """)
-            )
-            conn.execute(
-                sa.text(f"""
+            """,
+            f"""
             CREATE TABLE IF NOT EXISTS {schema}.server_runs (
                 run_id TEXT PRIMARY KEY,
                 conversation_id TEXT NOT NULL,
@@ -332,10 +331,8 @@ class EnginePostgresMetaStore:
                 started_at_ms BIGINT NULL,
                 finished_at_ms BIGINT NULL
             )
-            """)
-            )
-            conn.execute(
-                sa.text(f"""
+            """,
+            f"""
             CREATE TABLE IF NOT EXISTS {schema}.server_run_events (
                 seq BIGSERIAL PRIMARY KEY,
                 run_id TEXT NOT NULL,
@@ -343,27 +340,61 @@ class EnginePostgresMetaStore:
                 payload_json TEXT NOT NULL,
                 created_at_ms BIGINT NOT NULL
             )
-            """)
-            )
-            conn.execute(
-                sa.text(
-                    f"CREATE INDEX IF NOT EXISTS idx_server_runs_status ON {schema}.server_runs(status, updated_at_ms)"
-                )
-            )
-            conn.execute(
-                sa.text(
-                    f"CREATE INDEX IF NOT EXISTS idx_server_run_events_run_seq ON {schema}.server_run_events(run_id, seq)"
-                )
-            )
+            """,
+            f"CREATE INDEX IF NOT EXISTS idx_server_runs_status ON {schema}.server_runs(status, updated_at_ms)",
+            f"CREATE INDEX IF NOT EXISTS idx_server_run_events_run_seq ON {schema}.server_run_events(run_id, seq)",
+        ]
+
+    def _run_bootstrap(self, conn: Any) -> None:
+        for stmt in self._bootstrap_statements():
+            conn.execute(sa.text(stmt))
+
+    def ensure_initialized(self) -> None:
+        if self._is_async_engine:
+            _run_coro_blocking(self._ensure_initialized_async())
+            return
+        with self.transaction() as conn:
+            self._run_bootstrap(conn)
+
+    async def _ensure_initialized_async(self) -> None:
+        async with self.engine.begin() as conn:
+            for stmt in self._bootstrap_statements():
+                await conn.execute(sa.text(stmt))
 
     # ----------------------------
     # Transaction helpers
     # ----------------------------
     @contextmanager
-    def transaction(self) -> Iterator[sa.Connection]:
+    def transaction(self) -> Iterator[sa.Connection | _AsyncConnectionAdapter]:
         existing = get_active_conn()
         if existing is not None:
-            yield existing
+            if isinstance(existing, _AsyncConnectionAdapter):
+                yield existing
+            elif isinstance(existing, AsyncConnection):
+                runner = _make_runner()
+                try:
+                    yield _AsyncConnectionAdapter(existing, runner)
+                finally:
+                    runner.close()
+            else:
+                yield existing
+            return
+
+        if self._is_async_engine:
+            runner = _make_runner()
+            txn_ctx = self.engine.begin()
+            txn = runner.run(txn_ctx.__aenter__())
+            adapter = _AsyncConnectionAdapter(txn, runner)
+            try:
+                with _set_active_conn(adapter):
+                    yield adapter
+            except BaseException as exc:
+                runner.run(txn_ctx.__aexit__(type(exc), exc, exc.__traceback__))
+                raise
+            else:
+                runner.run(txn_ctx.__aexit__(None, None, None))
+            finally:
+                runner.close()
             return
 
         with self.engine.begin() as conn:
@@ -556,6 +587,14 @@ class EnginePostgresMetaStore:
             if self.index_jobs_table == "index_jobs"
             else f'{self.schema}."{self.index_jobs_table}"'
         )
+        namespace_sql = ""
+        params: Dict[str, Any] = {
+            "limit": int(limit),
+            "lease_seconds": int(lease_seconds),
+        }
+        if namespace is not None:
+            namespace_sql = "AND namespace = :namespace"
+            params["namespace"] = namespace
         with self.transaction() as conn:
             res = conn.execute(
                 sa.text(
@@ -567,7 +606,7 @@ class EnginePostgresMetaStore:
                             status = 'PENDING' AND (next_run_at IS NULL OR next_run_at <= NOW())
                             OR (status='DOING' AND lease_until IS NOT NULL AND lease_until < NOW())
                         )
-                        AND (:namespace IS NULL OR namespace = :namespace)
+                        {namespace_sql}
                         ORDER BY created_at ASC
                         LIMIT :limit
                         FOR UPDATE SKIP LOCKED
@@ -582,11 +621,7 @@ class EnginePostgresMetaStore:
                               j.lease_until, j.next_run_at, j.max_retries, j.retry_count, j.last_error, j.payload_json
                     """
                 ),
-                {
-                    "limit": int(limit),
-                    "lease_seconds": int(lease_seconds),
-                    "namespace": namespace,
-                },
+                params,
             )
             rows = res.mappings().all()
 

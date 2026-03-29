@@ -8,6 +8,7 @@ specialized behavior to the narrower collaborator modules.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import threading
 from typing import Any, Callable
@@ -329,11 +330,21 @@ class ChatRunService:
     def get_run(self, run_id: str) -> dict[str, Any]:
         return self._run_execution.get_run(run_id)
 
+    async def aget_run(self, run_id: str) -> dict[str, Any]:
+        return await asyncio.to_thread(self.get_run, run_id)
+
     def list_run_events(
         self, run_id: str, *, after_seq: int = 0, limit: int = 500
     ) -> list[dict[str, Any]]:
         return self._run_execution.list_run_events(
             run_id, after_seq=after_seq, limit=limit
+        )
+
+    async def alist_run_events(
+        self, run_id: str, *, after_seq: int = 0, limit: int = 500
+    ) -> list[dict[str, Any]]:
+        return await asyncio.to_thread(
+            self.list_run_events, run_id, after_seq=after_seq, limit=limit
         )
 
     def cancel_run(self, run_id: str) -> dict[str, Any]:

@@ -1,5 +1,7 @@
 from typing import Any, Dict
 
+from .async_compat import run_sync_or_awaitable
+
 
 class ChromaBackend:
     """
@@ -43,7 +45,7 @@ class ChromaBackend:
     def call(self, collection_key: str, method: str, **kwargs) -> Any:
         coll = self._c(collection_key)
         fn = getattr(coll, method)
-        return fn(**kwargs)
+        return run_sync_or_awaitable(fn(**kwargs))
 
     # --- node_index ---
     def node_index_get(self, **kwargs) -> Any:

@@ -28,6 +28,7 @@ from ..types import (
 )
 from ..utils.aliasing import AliasBook, base62_to_uuid, uuid_to_base62
 from .base import NamespaceProxy
+from ...typing_interfaces import ExtractLike
 
 # Optional: RapidFuzz
 try:
@@ -38,7 +39,7 @@ except Exception:
     _HAS_RAPIDFUZZ = False
 
 
-class ExtractSubsystem(NamespaceProxy):
+class ExtractSubsystem(NamespaceProxy, ExtractLike):
     def __init__(self, engine) -> None:
         super().__init__(engine)
 

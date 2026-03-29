@@ -31,6 +31,7 @@ __all__ = [
     "GraphKnowledgeEngine",
     "EnginePostgresConfig",
     "build_postgres_backend",
+    "build_async_postgres_backend",
     "EnginePostgresMetaStore",
     "IndexJob",
     "EngineSQLite",
@@ -40,6 +41,7 @@ __all__ = [
     "PgVectorBackend",
     "PgVectorConfig",
     "PostgresUnitOfWork",
+    "AsyncPostgresUnitOfWork",
     "ChromaBackend",
     "NoopUnitOfWork",
     "StorageBackend",
@@ -66,11 +68,12 @@ def __getattr__(name: str):
 
         return ChromaBackend
 
-    if name in {"EnginePostgresConfig", "build_postgres_backend"}:
+    if name in {"EnginePostgresConfig", "build_postgres_backend", "build_async_postgres_backend"}:
         try:
             from kogwistar.engine_core.engine_postgres import (
                 EnginePostgresConfig,
                 build_postgres_backend,
+                build_async_postgres_backend,
             )
         except Exception as e:  # pragma: no cover - optional dependency path
             raise RuntimeError(
@@ -80,6 +83,7 @@ def __getattr__(name: str):
         return {
             "EnginePostgresConfig": EnginePostgresConfig,
             "build_postgres_backend": build_postgres_backend,
+            "build_async_postgres_backend": build_async_postgres_backend,
         }[name]
 
     if name in {"EnginePostgresMetaStore", "IndexJob"}:
@@ -98,12 +102,13 @@ def __getattr__(name: str):
             "IndexJob": IndexJob,
         }[name]
 
-    if name in {"PgVectorBackend", "PgVectorConfig", "PostgresUnitOfWork"}:
+    if name in {"PgVectorBackend", "PgVectorConfig", "PostgresUnitOfWork", "AsyncPostgresUnitOfWork"}:
         try:
             from kogwistar.engine_core.postgres_backend import (
                 PgVectorBackend,
                 PgVectorConfig,
                 PostgresUnitOfWork,
+                AsyncPostgresUnitOfWork,
             )
         except Exception as e:  # pragma: no cover - optional dependency path
             raise RuntimeError(
@@ -114,6 +119,7 @@ def __getattr__(name: str):
             "PgVectorBackend": PgVectorBackend,
             "PgVectorConfig": PgVectorConfig,
             "PostgresUnitOfWork": PostgresUnitOfWork,
+            "AsyncPostgresUnitOfWork": AsyncPostgresUnitOfWork,
         }[name]
 
     raise AttributeError(name)

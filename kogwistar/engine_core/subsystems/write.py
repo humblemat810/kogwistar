@@ -14,6 +14,7 @@ from ..utils.refs import (
     node_doc_and_meta as node_doc_and_meta_util,
 )
 from .base import NamespaceProxy
+from ...typing_interfaces import WriteLike
 
 
 def _refs_fingerprint(refs) -> str:
@@ -37,7 +38,7 @@ def _refs_fingerprint(refs) -> str:
     return hashlib.blake2b(blob, digest_size=16).hexdigest()
 
 
-class WriteSubsystem(NamespaceProxy):
+class WriteSubsystem(NamespaceProxy, WriteLike):
     def __init__(self, engine) -> None:
         super().__init__(engine)
 

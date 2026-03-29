@@ -888,7 +888,7 @@ class DocumentUpsertResult(BaseModel):
     status: str
 
 @app.post("/api/document")
-async def document_upsert(inp: DocumentUpsert, response_model=DocumentUpsertResult):
+def document_upsert(inp: DocumentUpsert, response_model=DocumentUpsertResult):
     eng = engine.get()
     if inp.doc_type == "text":
         doc = Document(
@@ -914,13 +914,15 @@ async def document_upsert(inp: DocumentUpsert, response_model=DocumentUpsertResu
     else:
         doc.metadata["insertion_method"] = inp.insertion_method
     eng.write.add_document(doc)
+    return DocumentUpsertResult(status="ok")
 
 @app.post("/api/document.upsert_tree", response_model=DocumentGraphUpsertResult)
-async def document_upsert_tree(payload: DocumentGraphUpsert):
+def document_upsert_tree(payload: DocumentGraphUpsert):
     """Upsert a generic tree with document root, use only when complete control of all backend fields are clearly known."""
     eng = engine.get()
     try:
-        res = eng.persist.persist_document_graph_extraction(
+        res = eng.persist.persist_graph_extraction(
+            doc_id=payload.doc_id,
             parsed=GraphExtractionWithIDs(
                 nodes=[
                     Node.model_validate(n.model_dump(field_mode="backend"))
@@ -931,8 +933,6 @@ async def document_upsert_tree(payload: DocumentGraphUpsert):
                     for e in payload.edges
                 ],
             ),
-            # insertion_method=payload.insertion_method,
-            doc_id=payload.doc_id,
         )
     except Exception as e:
         raise internal_http_error(e)

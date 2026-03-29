@@ -239,11 +239,11 @@ class ConversationEdgeMetadata(BaseNodeMetadata):
 
     model_config = ConfigDict(extra="allow")
 
-
+ConversationRole = Literal["user", "assistant", "system", "tool"]
 class ConversationRoleMixin(BaseModel):
     """Mixin to handle conversation roles and context"""
 
-    role: None | Literal["user", "assistant", "system", "tool"] = Field(
+    role: None | ConversationRole = Field(
         None, description="Role in conversation"
     )
     turn_index: None | int = Field(None, description="Sequential turn index")

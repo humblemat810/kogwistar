@@ -4,9 +4,10 @@ from typing import Any
 
 from ..models import AdjudicationTarget, Edge, Node
 from .base import NamespaceProxy
+from ...typing_interfaces import AdjudicateLike
 
 
-class AdjudicateSubsystem(NamespaceProxy):
+class AdjudicateSubsystem(NamespaceProxy, AdjudicateLike):
     def __init__(self, engine) -> None:
         super().__init__(engine)
 

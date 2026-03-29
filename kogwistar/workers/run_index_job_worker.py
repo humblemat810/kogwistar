@@ -59,7 +59,7 @@ def _build_engine(args: argparse.Namespace) -> GraphKnowledgeEngine:
             raise SystemExit("pg backend requires --pg-url or GKE_PG_URL")
         schema = args.pg_schema or os.getenv("GKE_PG_SCHEMA") or "public"
         embedding_dim = int(
-            args.embedding_dim or os.getenv("GKE_EMBEDDING_DIM") or 1536
+            args.embedding_dim or os.getenv("GKE_EMBEDDING_DIM") or 384
         )
 
         sa_engine = sa.create_engine(dsn)

@@ -6,6 +6,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.engine_core.async_compat import (
+    run_awaitable_blocking,
+    run_sync_or_awaitable,
+)
+from kogwistar.engine_core.chroma_backend import ChromaBackend
 
 if TYPE_CHECKING:
     pass
@@ -47,9 +52,13 @@ class ServerStorageSettings:
     workflow_dir: str
     wisdom_dir: str
     index_dir: str
+    chroma_async: bool = False
+    chroma_host: str | None = None
+    chroma_port: int | None = None
     pg_url: str | None = None
     pg_schema_base: str = "gke"
-    embedding_dim: int = 1536
+    embedding_dim: int = 384
+    pg_async: bool = False
 
     def persist_directory_for(self, graph_type: GraphType) -> str:
         mapping = {
@@ -73,6 +82,15 @@ def load_server_storage_settings(
     has_shared_persist_root = bool(values.get("GKE_PERSIST_DIRECTORY"))
 
     if backend == "chroma":
+        chroma_async = str(values.get("GKE_CHROMA_ASYNC") or "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        chroma_host = values.get("GKE_CHROMA_HOST") or values.get("MCP_CHROMA_HOST")
+        chroma_port_raw = values.get("GKE_CHROMA_PORT") or values.get("MCP_CHROMA_PORT")
+        chroma_port = int(chroma_port_raw) if chroma_port_raw else None
         knowledge_dir = str(
             values.get("MCP_CHROMA_DIR")
             or values.get("GKE_KNOWLEDGE_PERSIST_DIRECTORY")
@@ -119,6 +137,9 @@ def load_server_storage_settings(
         )
         return ServerStorageSettings(
             backend=backend,
+            chroma_async=chroma_async,
+            chroma_host=None if chroma_host is None else str(chroma_host),
+            chroma_port=chroma_port,
             knowledge_dir=knowledge_dir,
             conversation_dir=conversation_dir,
             workflow_dir=workflow_dir,
@@ -129,9 +150,16 @@ def load_server_storage_settings(
     pg_url = values.get("GKE_PG_URL") or values.get("DATABASE_URL")
     if not pg_url:
         raise RuntimeError("GKE_BACKEND=pg requires GKE_PG_URL (or DATABASE_URL).")
+    pg_async = str(values.get("GKE_PG_ASYNC") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
     index_dir = str(values.get("GKE_INDEX_DIR") or os.path.join(base_persist, "index"))
     return ServerStorageSettings(
         backend=backend,
+        pg_async=pg_async,
         knowledge_dir=str(
             values.get("GKE_KNOWLEDGE_PERSIST_DIRECTORY")
             or os.path.join(base_persist, "knowledge")
@@ -151,7 +179,7 @@ def load_server_storage_settings(
         index_dir=index_dir,
         pg_url=str(pg_url),
         pg_schema_base=str(values.get("GKE_PG_SCHEMA") or "gke"),
-        embedding_dim=int(values.get("GKE_EMBEDDING_DIM") or "1536"),
+        embedding_dim=int(values.get("GKE_EMBEDDING_DIM") or "384"),
     )
 
 
@@ -173,9 +201,112 @@ def build_graph_engine(
 ) -> GraphKnowledgeEngine:
     persist_directory = settings.persist_directory_for(graph_type)
     if settings.backend == "chroma":
+        if settings.chroma_async:
+            if not settings.chroma_host or settings.chroma_port is None:
+                raise RuntimeError(
+                    "GKE_BACKEND=chroma with GKE_CHROMA_ASYNC=1 requires "
+                    "GKE_CHROMA_HOST and GKE_CHROMA_PORT."
+                )
+            import chromadb
+
+            client = run_awaitable_blocking(
+                chromadb.AsyncHttpClient(
+                    host=str(settings.chroma_host), port=int(settings.chroma_port)
+                )
+            )
+
+            def _make_backend(_engine: GraphKnowledgeEngine) -> ChromaBackend:
+                collections = {
+                    "node_index": run_awaitable_blocking(
+                        client.get_or_create_collection(
+                            name="nodes_index",
+                            metadata={"hnsw:space": "cosine"},
+                        )
+                    ),
+                    "node": run_awaitable_blocking(
+                        client.get_or_create_collection(
+                            name="nodes",
+                            metadata={"hnsw:space": "cosine"},
+                        )
+                    ),
+                    "edge": run_awaitable_blocking(
+                        client.get_or_create_collection(
+                            name="edges",
+                            metadata={"hnsw:space": "cosine"},
+                        )
+                    ),
+                    "edge_endpoints": run_awaitable_blocking(
+                        client.get_or_create_collection(
+                            name="edge_endpoints",
+                            metadata={"hnsw:space": "cosine"},
+                        )
+                    ),
+                    "document": run_awaitable_blocking(
+                        client.get_or_create_collection(
+                            name="documents",
+                            metadata={"hnsw:space": "cosine"},
+                        )
+                    ),
+                    "domain": run_awaitable_blocking(
+                        client.get_or_create_collection(
+                            name="domains",
+                            metadata={"hnsw:space": "cosine"},
+                        )
+                    ),
+                    "node_docs": run_awaitable_blocking(
+                        client.get_or_create_collection(
+                            name="node_docs",
+                            metadata={"hnsw:space": "cosine"},
+                        )
+                    ),
+                    "node_refs": run_awaitable_blocking(
+                        client.get_or_create_collection(name="node_refs")
+                    ),
+                    "edge_refs": run_awaitable_blocking(
+                        client.get_or_create_collection(name="edge_refs")
+                    ),
+                }
+                return ChromaBackend(
+                    node_index_collection=collections["node_index"],
+                    node_collection=collections["node"],
+                    edge_collection=collections["edge"],
+                    edge_endpoints_collection=collections["edge_endpoints"],
+                    document_collection=collections["document"],
+                    domain_collection=collections["domain"],
+                    node_docs_collection=collections["node_docs"],
+                    node_refs_collection=collections["node_refs"],
+                    edge_refs_collection=collections["edge_refs"],
+                )
+
+            return GraphKnowledgeEngine(
+                persist_directory=persist_directory,
+                kg_graph_type=graph_type,
+                backend_factory=_make_backend,
+            )
         return GraphKnowledgeEngine(
             persist_directory=persist_directory,
             kg_graph_type=graph_type,
+        )
+
+    if settings.pg_async:
+        from kogwistar.engine_core.engine_postgres import (
+            EnginePostgresConfig,
+            build_async_postgres_backend,
+        )
+
+        if not settings.pg_url:
+            raise RuntimeError("pg backend requires GKE_PG_URL (or DATABASE_URL).")
+        backend, _uow = build_async_postgres_backend(
+            EnginePostgresConfig(
+                dsn=settings.pg_url,
+                embedding_dim=settings.embedding_dim,
+                schema=settings.schema_for(graph_type),
+            )
+        )
+        return GraphKnowledgeEngine(
+            persist_directory=persist_directory,
+            kg_graph_type=graph_type,
+            backend=backend,
         )
 
     if sa_engine is None:

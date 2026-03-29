@@ -39,13 +39,16 @@ Index/materialization collections (non-vector):
 
 """
 
+import asyncio
+import sys
 from dataclasses import dataclass
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 import contextvars
 import json
-from typing import Any, cast, Dict, List, Optional, Sequence, Set, Tuple
+from typing import Any, AsyncIterator, cast, Dict, List, Optional, Sequence, Set, Tuple
 
 import sqlalchemy as sa
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 from sqlalchemy.dialects import postgresql as psql
 
 from ..utils.embedding_vectors import normalize_embedding_rows, normalize_embedding_vector
@@ -64,13 +67,13 @@ Json = Dict[str, Any]
 JSONB = psql.JSONB
 
 
-_pg_uow_conn: contextvars.ContextVar[sa.Connection | None] = contextvars.ContextVar(
+_pg_uow_conn: contextvars.ContextVar[Any | None] = contextvars.ContextVar(
     "gke_pg_uow_conn", default=None
 )
 
 
 @contextmanager
-def _set_active_conn(conn: sa.Connection):
+def _set_active_conn(conn: Any):
     token = _pg_uow_conn.set(conn)
     try:
         yield
@@ -78,8 +81,26 @@ def _set_active_conn(conn: sa.Connection):
         _pg_uow_conn.reset(token)
 
 
-def get_active_conn() -> sa.Connection | None:
+def get_active_conn() -> Any | None:
     return _pg_uow_conn.get()
+
+
+def _run_coro_sync(coro):
+    if sys.platform == "win32":
+        runner = asyncio.Runner(loop_factory=asyncio.SelectorEventLoop)
+        try:
+            try:
+                asyncio.get_running_loop()
+            except RuntimeError:
+                return runner.run(coro)
+            return coro
+        finally:
+            runner.close()
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    return coro
 
 
 class PostgresUnitOfWork:
@@ -100,6 +121,24 @@ class PostgresUnitOfWork:
             return
 
         with self._engine.begin() as conn:
+            with _set_active_conn(conn):
+                yield
+
+
+class AsyncPostgresUnitOfWork:
+    """Async transaction wrapper for async SQLAlchemy Postgres engines."""
+
+    def __init__(self, *, engine: AsyncEngine):
+        self._engine = engine
+
+    @asynccontextmanager
+    async def transaction(self) -> AsyncIterator[None]:
+        existing = get_active_conn()
+        if existing is not None:
+            yield
+            return
+
+        async with self._engine.begin() as conn:
             with _set_active_conn(conn):
                 yield
 
@@ -144,6 +183,9 @@ class PgCollectionFacade:
         self._t = table
         self._s = spec
 
+    def _call_async(self, fn):
+        return _run_coro_sync(self._b._run_in_async_txn(fn))
+
     def add(
         self,
         *,
@@ -154,6 +196,16 @@ class PgCollectionFacade:
     ) -> None:
         if self._s.ignore_embeddings:
             embeddings = None
+        if self._b._is_async_engine:
+            return self._call_async(
+                lambda: self._b._upsert(
+                    self._t,
+                    ids=ids,
+                    documents=documents,
+                    metadatas=metadatas,
+                    embeddings=embeddings,
+                )
+            )
         self._b._upsert(
             self._t,
             ids=ids,
@@ -183,6 +235,12 @@ class PgCollectionFacade:
         limit: int = 200,
     ) -> Dict[str, Any]:
         include = include or ["documents", "metadatas"]
+        if self._b._is_async_engine:
+            return self._call_async(
+                lambda: self._b._get_flat(
+                    self._t, ids=ids, where=where, include=include, limit=limit
+                )
+            )
         return self._b._get_flat(
             self._t, ids=ids, where=where, include=include, limit=limit
         )
@@ -190,6 +248,10 @@ class PgCollectionFacade:
     def delete(
         self, *, ids: Optional[Sequence[str]] = None, where: Optional[Json] = None
     ) -> None:
+        if self._b._is_async_engine:
+            return self._call_async(
+                lambda: self._b._delete(self._t, ids=ids, where=where)
+            )
         self._b._delete(self._t, ids=ids, where=where)
 
     def query(
@@ -204,6 +266,16 @@ class PgCollectionFacade:
             include = include or ["documents", "metadatas", "distances"]
             if query_embeddings is None:
                 raise ValueError("query_embeddings is required for vector collections")
+            if self._b._is_async_engine:
+                return self._call_async(
+                    lambda: self._b._query_vector(
+                        self._t,
+                        query_embeddings=query_embeddings,
+                        n_results=n_results,
+                        where=where,
+                        include=include,
+                    )
+                )
             return self._b._query_vector(
                 self._t,
                 query_embeddings=query_embeddings,
@@ -213,6 +285,12 @@ class PgCollectionFacade:
             )
 
         include = include or ["documents", "metadatas"]
+        if self._b._is_async_engine:
+            return self._call_async(
+                lambda: self._b._query_nonvector(
+                    self._t, where=where, n_results=n_results, include=include
+                )
+            )
         return self._b._query_nonvector(
             self._t, where=where, n_results=n_results, include=include
         )
@@ -233,6 +311,16 @@ class PgCollectionFacade:
         """
         if self._s.ignore_embeddings:
             embeddings = None
+        if self._b._is_async_engine:
+            return self._call_async(
+                lambda: self._b._update_doc_meta_embedding_merge(
+                    self._t,
+                    ids=ids,
+                    documents=documents,
+                    metadatas=metadatas,
+                    embeddings=embeddings,
+                )
+            )
         self._b._update_doc_meta_embedding_merge(
             self._t,
             ids=ids,
@@ -448,7 +536,7 @@ class PgVectorBackend:
     def __init__(
         self,
         *,
-        engine: sa.Engine,
+        engine: sa.Engine | AsyncEngine,
         embedding_dim: int,
         distance: str = "cosine",
         schema: str = "public",
@@ -468,6 +556,7 @@ class PgVectorBackend:
             ) from _pgvector_import_error
 
         self.engine = engine
+        self._is_async_engine = isinstance(engine, AsyncEngine)
         self.embedding_dim = int(embedding_dim)
         self.distance = str(self._normalize_distance(distance)).lower()
         self.schema = schema
@@ -692,31 +781,11 @@ class PgVectorBackend:
 
     def ensure_schema(self) -> None:
         """Dev convenience: create extension/schema/tables if missing."""
+        if self._is_async_engine:
+            _run_coro_sync(self._ensure_schema_async())
+            return
         with self.engine.begin() as conn:
-            conn.execute(sa.text("CREATE EXTENSION IF NOT EXISTS vector"))
-            if self.schema and self.schema != "public":
-                conn.execute(sa.text(f'CREATE SCHEMA IF NOT EXISTS "{self.schema}"'))
-            self._md.create_all(conn)
-
-            # Optional-but-useful vector indexes. We default to HNSW because it's
-            # generally strong out of the box and doesn't require ANALYZE/training.
-            #
-            # NOTE: older pgvector versions may not support HNSW; if so, users can
-            # drop these statements or switch to ivfflat.
-            ops = self._hnsw_ops_class()
-            for tbl, name in (
-                (self.nodes.name, "nodes"),
-                (self.edges.name, "edges"),
-                (self.documents.name, "documents"),
-                (self.domains.name, "domains"),
-            ):
-                idx = f"idx_{name}_embedding_hnsw"
-                conn.execute(
-                    sa.text(
-                        f'CREATE INDEX IF NOT EXISTS "{idx}" ON "{self.schema}"."{tbl}" '
-                        f"USING hnsw (embedding {ops})"
-                    )
-                )
+            self._ensure_schema_sync(conn)
 
     # ----------------------------
     # Shared helpers
@@ -735,6 +804,78 @@ class PgVectorBackend:
             return
         with self.engine.begin() as conn:
             yield conn
+
+    def _ensure_schema_sync(self, conn: sa.Connection) -> None:
+        conn.execute(sa.text("CREATE EXTENSION IF NOT EXISTS vector"))
+        if self.schema and self.schema != "public":
+            conn.execute(sa.text(f'CREATE SCHEMA IF NOT EXISTS "{self.schema}"'))
+        self._md.create_all(conn)
+
+        # Optional-but-useful vector indexes. We default to HNSW because it's
+        # generally strong out of the box and doesn't require ANALYZE/training.
+        #
+        # NOTE: older pgvector versions may not support HNSW; if so, users can
+        # drop these statements or switch to ivfflat.
+        ops = self._hnsw_ops_class()
+        for tbl, name in (
+            (self.nodes.name, "nodes"),
+            (self.edges.name, "edges"),
+            (self.documents.name, "documents"),
+            (self.domains.name, "domains"),
+        ):
+            idx = f"idx_{name}_embedding_hnsw"
+            conn.execute(
+                sa.text(
+                    f'CREATE INDEX IF NOT EXISTS "{idx}" ON "{self.schema}"."{tbl}" '
+                    f"USING hnsw (embedding {ops})"
+                )
+            )
+
+    async def _ensure_schema_async(self) -> None:
+        async with self.engine.begin() as conn:
+            await conn.run_sync(self._ensure_schema_sync)
+
+    async def _run_in_async_txn(self, fn):
+        active = get_active_conn()
+        invoke_async = getattr(active, "invoke_async", None)
+        if callable(invoke_async):
+            def _call(sync_conn):
+                token = _pg_uow_conn.set(sync_conn)
+                try:
+                    return fn()
+                finally:
+                    _pg_uow_conn.reset(token)
+
+            return await invoke_async(_call)
+        invoke_sync = getattr(active, "invoke_sync", None)
+        if callable(invoke_sync):
+            def _call(sync_conn):
+                token = _pg_uow_conn.set(sync_conn)
+                try:
+                    return fn()
+                finally:
+                    _pg_uow_conn.reset(token)
+
+            return invoke_sync(_call)
+        if isinstance(active, AsyncConnection):
+            def _call(sync_conn):
+                token = _pg_uow_conn.set(sync_conn)
+                try:
+                    return fn()
+                finally:
+                    _pg_uow_conn.reset(token)
+
+            return await active.run_sync(_call)
+
+        async with self.engine.begin() as conn:
+            def _call(sync_conn):
+                token = _pg_uow_conn.set(sync_conn)
+                try:
+                    return fn()
+                finally:
+                    _pg_uow_conn.reset(token)
+
+            return await conn.run_sync(_call)
 
     def _get_flat(
         self,
@@ -1079,7 +1220,7 @@ class PgVectorBackend:
         metadatas: Sequence[Json],
         embeddings: Optional[Sequence[Sequence[float]]] = None,
     ) -> None:
-        self._nodes_c.add(
+        return self._nodes_c.add(
             ids=ids, documents=documents, metadatas=metadatas, embeddings=embeddings
         )
 
@@ -1091,7 +1232,7 @@ class PgVectorBackend:
         metadatas: Sequence[Json],
         embeddings: Optional[Sequence[Sequence[float]]] = None,
     ) -> None:
-        self._nodes_c.upsert(
+        return self._nodes_c.upsert(
             ids=ids, documents=documents, metadatas=metadatas, embeddings=embeddings
         )
 
@@ -1108,7 +1249,7 @@ class PgVectorBackend:
     def node_delete(
         self, *, ids: Optional[Sequence[str]] = None, where: Optional[Json] = None
     ) -> None:
-        self._nodes_c.delete(ids=ids, where=where)
+        return self._nodes_c.delete(ids=ids, where=where)
 
     def node_query(
         self,
@@ -1133,7 +1274,7 @@ class PgVectorBackend:
         metadatas: Optional[Sequence[Json]] = None,
         embeddings: Optional[Sequence[Sequence[float]]] = None,
     ) -> None:
-        self._nodes_c.update(
+        return self._nodes_c.update(
             ids=ids, documents=documents, metadatas=metadatas, embeddings=embeddings
         )
 
@@ -1149,7 +1290,7 @@ class PgVectorBackend:
         metadatas: Sequence[Json],
         embeddings: Optional[Sequence[Sequence[float]]] = None,
     ) -> None:
-        self._edges_c.add(
+        return self._edges_c.add(
             ids=ids, documents=documents, metadatas=metadatas, embeddings=embeddings
         )
 
@@ -1161,7 +1302,7 @@ class PgVectorBackend:
         metadatas: Sequence[Json],
         embeddings: Optional[Sequence[Sequence[float]]] = None,
     ) -> None:
-        self._edges_c.upsert(
+        return self._edges_c.upsert(
             ids=ids, documents=documents, metadatas=metadatas, embeddings=embeddings
         )
 
@@ -1178,7 +1319,7 @@ class PgVectorBackend:
     def edge_delete(
         self, *, ids: Optional[Sequence[str]] = None, where: Optional[Json] = None
     ) -> None:
-        self._edges_c.delete(ids=ids, where=where)
+        return self._edges_c.delete(ids=ids, where=where)
 
     def edge_query(
         self,
@@ -1203,7 +1344,7 @@ class PgVectorBackend:
         metadatas: Optional[Sequence[Json]] = None,
         embeddings: Optional[Sequence[Sequence[float]]] = None,
     ) -> None:
-        self._edges_c.update(
+        return self._edges_c.update(
             ids=ids, documents=documents, metadatas=metadatas, embeddings=embeddings
         )
 
@@ -1219,7 +1360,7 @@ class PgVectorBackend:
         metadatas: Sequence[Json],
         embeddings: Optional[Sequence[Sequence[float]]] = None,
     ) -> None:
-        self._documents_c.add(
+        return self._documents_c.add(
             ids=ids, documents=documents, metadatas=metadatas, embeddings=embeddings
         )
 
@@ -1231,7 +1372,7 @@ class PgVectorBackend:
         metadatas: Sequence[Json],
         embeddings: Optional[Sequence[Sequence[float]]] = None,
     ) -> None:
-        self._documents_c.upsert(
+        return self._documents_c.upsert(
             ids=ids, documents=documents, metadatas=metadatas, embeddings=embeddings
         )
 
@@ -1248,7 +1389,7 @@ class PgVectorBackend:
     def document_delete(
         self, *, ids: Optional[Sequence[str]] = None, where: Optional[Json] = None
     ) -> None:
-        self._documents_c.delete(ids=ids, where=where)
+        return self._documents_c.delete(ids=ids, where=where)
 
     def document_query(
         self,
@@ -1273,7 +1414,7 @@ class PgVectorBackend:
         metadatas: Optional[Sequence[Json]] = None,
         embeddings: Optional[Sequence[Sequence[float]]] = None,
     ) -> None:
-        self._documents_c.update(
+        return self._documents_c.update(
             ids=ids, documents=documents, metadatas=metadatas, embeddings=embeddings
         )
 
@@ -1289,7 +1430,7 @@ class PgVectorBackend:
         metadatas: Sequence[Json],
         embeddings: Optional[Sequence[Sequence[float]]] = None,
     ) -> None:
-        self._domains_c.add(
+        return self._domains_c.add(
             ids=ids, documents=documents, metadatas=metadatas, embeddings=embeddings
         )
 
@@ -1301,7 +1442,7 @@ class PgVectorBackend:
         metadatas: Sequence[Json],
         embeddings: Optional[Sequence[Sequence[float]]] = None,
     ) -> None:
-        self._domains_c.upsert(
+        return self._domains_c.upsert(
             ids=ids, documents=documents, metadatas=metadatas, embeddings=embeddings
         )
 
@@ -1318,7 +1459,7 @@ class PgVectorBackend:
     def domain_delete(
         self, *, ids: Optional[Sequence[str]] = None, where: Optional[Json] = None
     ) -> None:
-        self._domains_c.delete(ids=ids, where=where)
+        return self._domains_c.delete(ids=ids, where=where)
 
     def domain_query(
         self,
@@ -1343,7 +1484,7 @@ class PgVectorBackend:
         metadatas: Optional[Sequence[Json]] = None,
         embeddings: Optional[Sequence[Sequence[float]]] = None,
     ) -> None:
-        self._domains_c.update(
+        return self._domains_c.update(
             ids=ids, documents=documents, metadatas=metadatas, embeddings=embeddings
         )
 
@@ -1359,7 +1500,7 @@ class PgVectorBackend:
         metadatas: Sequence[Json],
         embeddings: Any = None,
     ) -> None:
-        self._edge_endpoints_c.add(
+        return self._edge_endpoints_c.add(
             ids=ids, documents=documents, metadatas=metadatas, embeddings=None
         )
 
@@ -1371,7 +1512,7 @@ class PgVectorBackend:
         metadatas: Sequence[Json],
         embeddings: Any = None,
     ) -> None:
-        self._edge_endpoints_c.upsert(
+        return self._edge_endpoints_c.upsert(
             ids=ids, documents=documents, metadatas=metadatas, embeddings=None
         )
 
@@ -1407,14 +1548,14 @@ class PgVectorBackend:
         metadatas: Optional[Sequence[Json]] = None,
         embeddings: Optional[Sequence[Sequence[float]]] = None,
     ) -> None:
-        self._edge_endpoints_c.update(
+        return self._edge_endpoints_c.update(
             ids=ids, documents=documents, metadatas=metadatas, embeddings=embeddings
         )
 
     def edge_endpoints_delete(
         self, *, ids: Optional[Sequence[str]] = None, where: Optional[Json] = None
     ) -> None:
-        self._edge_endpoints_c.delete(ids=ids, where=where)
+        return self._edge_endpoints_c.delete(ids=ids, where=where)
 
     # ----------------------------
     # Edge refs
@@ -1428,7 +1569,7 @@ class PgVectorBackend:
         metadatas: Sequence[Json],
         embeddings: Any = None,
     ) -> None:
-        self._edge_refs_c.add(
+        return self._edge_refs_c.add(
             ids=ids, documents=documents, metadatas=metadatas, embeddings=None
         )
 
@@ -1440,7 +1581,7 @@ class PgVectorBackend:
         metadatas: Sequence[Json],
         embeddings: Any = None,
     ) -> None:
-        self._edge_refs_c.upsert(
+        return self._edge_refs_c.upsert(
             ids=ids, documents=documents, metadatas=metadatas, embeddings=None
         )
 
@@ -1474,14 +1615,14 @@ class PgVectorBackend:
         metadatas: Optional[Sequence[Json]] = None,
         embeddings: Optional[Sequence[Sequence[float]]] = None,
     ) -> None:
-        self._edge_refs_c.update(
+        return self._edge_refs_c.update(
             ids=ids, documents=documents, metadatas=metadatas, embeddings=embeddings
         )
 
     def edge_refs_delete(
         self, *, ids: Optional[Sequence[str]] = None, where: Optional[Json] = None
     ) -> None:
-        self._edge_refs_c.delete(ids=ids, where=where)
+        return self._edge_refs_c.delete(ids=ids, where=where)
 
     # ----------------------------
     # Node docs
@@ -1495,7 +1636,7 @@ class PgVectorBackend:
         metadatas: Sequence[Json],
         embeddings: Any = None,
     ) -> None:
-        self._node_docs_c.add(
+        return self._node_docs_c.add(
             ids=ids, documents=documents, metadatas=metadatas, embeddings=None
         )
 
@@ -1507,7 +1648,7 @@ class PgVectorBackend:
         metadatas: Sequence[Json],
         embeddings: Any = None,
     ) -> None:
-        self._node_docs_c.upsert(
+        return self._node_docs_c.upsert(
             ids=ids, documents=documents, metadatas=metadatas, embeddings=None
         )
 
@@ -1541,14 +1682,14 @@ class PgVectorBackend:
         metadatas: Optional[Sequence[Json]] = None,
         embeddings: Optional[Sequence[Sequence[float]]] = None,
     ) -> None:
-        self._node_docs_c.update(
+        return self._node_docs_c.update(
             ids=ids, documents=documents, metadatas=metadatas, embeddings=embeddings
         )
 
     def node_docs_delete(
         self, *, ids: Optional[Sequence[str]] = None, where: Optional[Json] = None
     ) -> None:
-        self._node_docs_c.delete(ids=ids, where=where)
+        return self._node_docs_c.delete(ids=ids, where=where)
 
     # ----------------------------
     # Node refs
@@ -1562,7 +1703,7 @@ class PgVectorBackend:
         metadatas: Sequence[Json],
         embeddings: Any = None,
     ) -> None:
-        self._node_refs_c.add(
+        return self._node_refs_c.add(
             ids=ids, documents=documents, metadatas=metadatas, embeddings=None
         )
 
@@ -1574,7 +1715,7 @@ class PgVectorBackend:
         metadatas: Sequence[Json],
         embeddings: Any = None,
     ) -> None:
-        self._node_refs_c.upsert(
+        return self._node_refs_c.upsert(
             ids=ids, documents=documents, metadatas=metadatas, embeddings=None
         )
 
@@ -1608,14 +1749,14 @@ class PgVectorBackend:
         metadatas: Optional[Sequence[Json]] = None,
         embeddings: Optional[Sequence[Sequence[float]]] = None,
     ) -> None:
-        self._node_refs_c.update(
+        return self._node_refs_c.update(
             ids=ids, documents=documents, metadatas=metadatas, embeddings=embeddings
         )
 
     def node_refs_delete(
         self, *, ids: Optional[Sequence[str]] = None, where: Optional[Json] = None
     ) -> None:
-        self._node_refs_c.delete(ids=ids, where=where)
+        return self._node_refs_c.delete(ids=ids, where=where)
 
 
 def build_postgres_backend(
@@ -1639,3 +1780,27 @@ def build_postgres_backend(
     )
     backend.ensure_schema()
     return backend, PostgresUnitOfWork(engine=engine)
+
+
+def build_async_postgres_backend(
+    cfg: PgVectorConfig,
+) -> Tuple[PgVectorBackend, AsyncPostgresUnitOfWork]:
+    """Async SQLAlchemy variant of `build_postgres_backend`."""
+
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    engine = create_async_engine(cfg.dsn, future=True)
+    backend = PgVectorBackend(
+        engine=engine,
+        embedding_dim=cfg.embedding_dim,
+        schema=cfg.schema,
+        nodes_table=cfg.nodes_table,
+        edges_table=cfg.edges_table,
+        documents_table=cfg.documents_table,
+        domains_table=cfg.domains_table,
+        edge_endpoints_table=cfg.edge_endpoints_table,
+        edge_refs_table=cfg.edge_refs_table,
+        node_docs_table=cfg.node_docs_table,
+        node_refs_table=cfg.node_refs_table,
+    )
+    return backend, AsyncPostgresUnitOfWork(engine=engine)

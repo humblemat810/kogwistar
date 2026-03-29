@@ -30,11 +30,12 @@ from ...entity_registry import (
 from ..models import Document, Edge, Node
 from ..utils.refs import ref_doc_id
 from .base import NamespaceProxy
+from ...typing_interfaces import ReadLike
 
 TNode = TypeVar("TNode", bound=Node)
 
 
-class ReadSubsystem(NamespaceProxy):
+class ReadSubsystem(NamespaceProxy, ReadLike):
     def __init__(self, engine) -> None:
         super().__init__(engine)
 
