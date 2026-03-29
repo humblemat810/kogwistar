@@ -225,6 +225,83 @@
             "justMyCode": false
         },
         {
+            "name": "server mcp with admin (dev auth async pg)",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "uvicorn",
+            "args": [
+                "kogwistar.server_mcp_with_admin:app",
+                // "--reload",
+                "--port",
+                "28110",
+                "--log-level",
+                "debug"
+            ],
+            "env": {
+                "AUTH_MODE": "dev",
+                "DEV_AUTH_EMAIL": "dev@example.com",
+                "DEV_AUTH_SUBJECT": "dev",
+                "DEV_AUTH_NAME": "Dev User",
+                "DEV_AUTH_ROLE": "rw",
+                "DEV_AUTH_NS": "docs,conversation,workflow,wisdom",
+                "JWT_SECRET": "dev-secret",
+                "UI_URL": "http://127.0.0.1:5173/",
+                "GKE_BACKEND": "pg",
+                "GKE_PG_ASYNC": "1",
+                "GKE_PG_URL": "${env:DATABASE_URL}",
+                "GKE_PERSIST_DIRECTORY": ".gke-data/async-pg",
+                "CDC_PUBLISH_ENDPOINT": "http://127.0.0.1:8787"
+            },
+            "jinja": true,
+            "justMyCode": false
+        },
+        {
+            "name": "server mcp with admin (dev auth async chroma)",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "uvicorn",
+            "args": [
+                "kogwistar.server_mcp_with_admin:app",
+                // "--reload",
+                "--port",
+                "28110",
+                "--log-level",
+                "debug"
+            ],
+            "env": {
+                "AUTH_MODE": "dev",
+                "DEV_AUTH_EMAIL": "dev@example.com",
+                "DEV_AUTH_SUBJECT": "dev",
+                "DEV_AUTH_NAME": "Dev User",
+                "DEV_AUTH_ROLE": "rw",
+                "DEV_AUTH_NS": "docs,conversation,workflow,wisdom",
+                "JWT_SECRET": "dev-secret",
+                "UI_URL": "http://127.0.0.1:5173/",
+                "GKE_BACKEND": "chroma",
+                "GKE_CHROMA_ASYNC": "1",
+                "GKE_CHROMA_HOST": "127.0.0.1",
+                "GKE_CHROMA_PORT": "8000",
+                "GKE_PERSIST_DIRECTORY": ".gke-data/async-chroma",
+                "CDC_PUBLISH_ENDPOINT": "http://127.0.0.1:8787"
+            },
+            "jinja": true,
+            "justMyCode": false
+        },
+        {
+            "name": "chroma server (env driven)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "scripts/start_chroma_server.py",
+            "console": "integratedTerminal",
+            "env": {
+                "CHROMA_HOST": "127.0.0.1",
+                "CHROMA_PORT": "8000",
+                "CHROMA_PERSIST_DIR": ".gke-data/chroma",
+                "CHROMA_LOG_DIR": ".gke-data/chroma-logs"
+            },
+            "justMyCode": false
+        },
+        {
             "name": "Diagnostic, insert and check relationship exist",
             "type": "debugpy",
             "request": "launch",

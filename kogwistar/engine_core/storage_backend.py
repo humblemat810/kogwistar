@@ -19,9 +19,9 @@ Key design points:
   the meta store (SQLite today, Postgres later).
 """
 
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
-from typing import Any, Dict, Iterator, Protocol
+from typing import Any, AsyncIterator, Dict, Iterator, Protocol
 
 JSONDict = Dict[str, Any]
 
@@ -31,10 +31,22 @@ class UnitOfWork(Protocol):
     def transaction(self) -> Iterator[None]: ...
 
 
+class AsyncUnitOfWork(Protocol):
+    @asynccontextmanager
+    async def transaction(self) -> AsyncIterator[None]: ...
+
+
 @dataclass
 class NoopUnitOfWork(UnitOfWork):
     @contextmanager
     def transaction(self) -> Iterator[None]:
+        yield
+
+
+@dataclass
+class AsyncNoopUnitOfWork(AsyncUnitOfWork):
+    @asynccontextmanager
+    async def transaction(self) -> AsyncIterator[None]:
         yield
 
 

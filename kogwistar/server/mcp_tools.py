@@ -109,6 +109,14 @@ class MCPRoleMiddleware:
             return await self.app(scope, receive, send)
 
         token = current_role.set(_decode_role_from_headers(scope))
+        path = str(scope.get("path") or "")
+        if not path.startswith("/mcp"):
+            try:
+                await self.app(scope, receive, send)
+            finally:
+                current_role.reset(token)
+            return
+
         started = {}
         body_chunks: list[bytes] = []
 

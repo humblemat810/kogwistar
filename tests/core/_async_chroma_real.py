@@ -1,5 +1,5 @@
 from __future__ import annotations
-
+# '''_async_chroma_real.py'''
 import contextlib
 import dataclasses
 import os
@@ -15,6 +15,7 @@ import httpx
 import pytest
 
 from kogwistar.engine_core.chroma_backend import ChromaBackend
+from kogwistar.engine_core.storage_backend import AsyncNoopUnitOfWork
 
 
 @dataclasses.dataclass(slots=True)
@@ -157,3 +158,7 @@ async def make_real_async_chroma_backend(
         edge_refs_collection=collections["edge_refs"],
     )
     return client, backend, collections
+
+
+def make_real_async_chroma_uow() -> AsyncNoopUnitOfWork:
+    return AsyncNoopUnitOfWork()

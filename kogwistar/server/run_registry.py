@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 from typing import Any
@@ -14,6 +15,18 @@ def _stable_json(payload: dict[str, Any] | None) -> str:
     return json.dumps(
         payload or {}, ensure_ascii=False, separators=(",", ":"), sort_keys=True
     )
+
+
+def _debug_log(record: dict[str, Any]) -> None:
+    log_path = str(os.getenv("KOGWISTAR_RUNTIME_SSE_DEBUG_LOG") or "").strip()
+    if not log_path:
+        return
+    try:
+        with open(log_path, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(record, ensure_ascii=False, default=str))
+            fh.write("\n")
+    except Exception:
+        pass
 
 
 class RunRegistry:
@@ -67,9 +80,21 @@ class RunRegistry:
         self, run_id: str, event_type: str, payload: dict[str, Any] | None = None
     ) -> dict[str, Any]:
         with self._lock:
-            return self.meta_store.append_server_run_event(
+            record = self.meta_store.append_server_run_event(
                 run_id, event_type, _stable_json(payload)
             )
+        if event_type == "sleep.tick" or event_type.startswith("run."):
+            _debug_log(
+                {
+                    "ts_ms": int(time.time() * 1000),
+                    "stage": "run_registry_append_event",
+                    "run_id": run_id,
+                    "event_type": event_type,
+                    "payload": payload,
+                    "record": record,
+                }
+            )
+        return record
 
     def update_status(
         self,

@@ -123,7 +123,6 @@ protobuf==6.33.5
 psycopg==3.3.3
 psycopg-binary==3.3.3
 psycopg-pool==3.3.0
-psycopg2==2.9.11
 py-key-value-aio==0.4.4
 pyasn1==0.6.2
 pyasn1_modules==0.4.2

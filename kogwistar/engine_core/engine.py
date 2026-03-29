@@ -177,6 +177,8 @@ def _is_pgvector_backend_instance(backend: object) -> bool:
 def _build_postgres_uow_if_needed(backend: StorageBackend):
     if not _is_pgvector_backend_instance(backend):
         return NoopUnitOfWork()
+    if getattr(backend, "_is_async_engine", False):
+        return NoopUnitOfWork()
     try:
         from kogwistar.engine_core.postgres_backend import (
             PgVectorBackend,
@@ -1100,6 +1102,10 @@ class GraphKnowledgeEngine:
             if backend is not None:
                 raise ValueError("Backend factory and backend can only either be specified")
             self.backend = backend_factory(self)
+            self.meta_sqlite = EngineSQLite(
+                pathlib.Path(persist_directory or "./chroma_db"), "meta.sqlite"
+            )
+            self.meta_sqlite.ensure_initialized()
         elif backend is None or (type(backend) is str and backend == "chroma"):
             # 2) Chroma client + collections; inject embedder on vectorized collections
             ChromaClient, ChromaSettings = _import_chroma_client()
@@ -1177,11 +1183,10 @@ class GraphKnowledgeEngine:
                 raise Exception("unreacheable")
             else:
                 backend2: PgVectorBackend = backend  # let static checker happy
-                meta_postgre = EnginePostgresMetaStore(
-                    engine=backend2.engine, schema=backend2.schema
-                )
             self.backend: StorageBackend = backend
-
+            meta_postgre = EnginePostgresMetaStore(
+                engine=backend2.engine, schema=backend2.schema
+            )
             meta_postgre.ensure_initialized()
             self.meta_sqlite = meta_postgre
         else:

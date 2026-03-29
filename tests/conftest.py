@@ -5,6 +5,7 @@ import uuid
 import json
 import os
 import re
+import asyncio
 import pathlib
 import tempfile
 from _pytest.monkeypatch import MonkeyPatch
@@ -160,6 +161,25 @@ print("DEBUG existing sys.modules['kogwistar'] =", sys.modules.get("kogwistar"))
 from kogwistar.utils.log import EngineLogManager
 
 logger = logging.getLogger(__name__)
+
+
+def _run_async_windows_safe(coro):
+    """Run an async coroutine in a loop compatible with psycopg on Windows."""
+    if sys.platform == "win32":
+        runner = asyncio.Runner(loop_factory=asyncio.SelectorEventLoop)
+        try:
+            return runner.run(coro)
+        finally:
+            runner.close()
+    return asyncio.run(coro)
+
+
+@pytest.fixture(scope="session")
+def event_loop_policy():
+    """Use a selector loop on Windows so psycopg async connections work."""
+    if sys.platform == "win32":
+        return asyncio.WindowsSelectorEventLoopPolicy()
+    return asyncio.DefaultEventLoopPolicy()
 
 
 @pytest.fixture
@@ -1123,10 +1143,12 @@ def pg_dsn(pg_container: Optional[PostgresContainer]) -> Optional[str]:
     """
     if pg_container is None:
         return None
-    url = pg_container.get_connection_url()
-    # Normalize to psycopg (optional). Comment out if you rely on psycopg2.
-    url = url.replace("postgresql://", "postgresql+psycopg://")
-    return url
+    url = sa.engine.make_url(pg_container.get_connection_url())
+    # Normalize to psycopg3 for both sync and async SQLAlchemy engines.
+    # Testcontainers may return psycopg2 URLs by default.
+    return url.set(drivername="postgresql+psycopg").render_as_string(
+        hide_password=False
+    )
 
 
 @pytest.fixture(scope="session")
@@ -1142,6 +1164,28 @@ def sa_engine(pg_dsn: Optional[str]) -> Iterator[Any]:
             engine.dispose()
         except Exception:
             logger.exception("Failed to dispose SQLAlchemy engine for pg test fixture")
+
+
+@pytest.fixture(scope="session")
+def async_sa_engine(pg_dsn: Optional[str]) -> Iterator[Any]:
+    if (not has_sa) or pg_dsn is None:
+        yield None
+        return
+    try:
+        from sqlalchemy.ext.asyncio import create_async_engine
+    except Exception:
+        yield None
+        return
+    engine = create_async_engine(pg_dsn, future=True)
+    try:
+        yield engine
+    finally:
+        try:
+            _run_async_windows_safe(engine.dispose())
+        except Exception:
+            logger.exception(
+                "Failed to dispose async SQLAlchemy engine for pg test fixture"
+            )
 
 
 @pytest.fixture()
@@ -1162,6 +1206,49 @@ def pg_schema(sa_engine) -> Iterator[Optional[str]]:
     finally:
         with sa_engine.begin() as conn:
             conn.execute(sa.text(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))
+
+
+@pytest.fixture()
+def async_pg_schema(async_sa_engine) -> Iterator[Optional[str]]:
+    """
+    Unique schema per async test, dropped afterwards.
+    """
+    if async_sa_engine is None:
+        yield None
+        return
+    schema = f"gke_async_test_{uuid.uuid4().hex}"
+
+    async def _create() -> None:
+        async with async_sa_engine.begin() as conn:
+            await conn.execute(sa.text(f'CREATE SCHEMA IF NOT EXISTS "{schema}"'))
+
+    async def _drop() -> None:
+        async with async_sa_engine.begin() as conn:
+            await conn.execute(sa.text(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))
+
+    _run_async_windows_safe(_create())
+    try:
+        yield schema
+    finally:
+        _run_async_windows_safe(_drop())
+
+
+@pytest.fixture()
+def async_pg_backend(async_sa_engine, async_pg_schema):
+    if async_sa_engine is None or async_pg_schema is None:
+        pytest.skip("async pg backend requested but async pg fixtures are unavailable")
+    from kogwistar.engine_core.postgres_backend import PgVectorBackend
+
+    return PgVectorBackend(engine=async_sa_engine, embedding_dim=3, schema=async_pg_schema)
+
+
+@pytest.fixture()
+def async_pg_uow(async_sa_engine):
+    if async_sa_engine is None:
+        pytest.skip("async pg unit-of-work requested but async pg fixtures are unavailable")
+    from kogwistar.engine_core.postgres_backend import AsyncPostgresUnitOfWork
+
+    return AsyncPostgresUnitOfWork(engine=async_sa_engine)
 
 
 class FakeLLMForAdjudication:

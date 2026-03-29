@@ -11,6 +11,7 @@ from kogwistar.engine_core.models import Node
 from tests._kg_factories import kg_document, kg_grounding
 from tests.core._async_chroma_real import (
     make_real_async_chroma_backend,
+    make_real_async_chroma_uow,
     real_chroma_server,
 )
 
@@ -37,6 +38,7 @@ async def test_async_embedding_and_document_write_path(real_chroma_server):
         real_chroma_server, collection_prefix="engine_doc"
     )
     _ = backend_client
+    uow = make_real_async_chroma_uow()
 
     eng = GraphKnowledgeEngine(
         persist_directory=str(real_chroma_server.persist_dir),
@@ -44,20 +46,31 @@ async def test_async_embedding_and_document_write_path(real_chroma_server):
         backend_factory=lambda _engine: backend,
     )
     eng._phase1_enable_index_jobs = False
+    assert eng.backend is backend
 
     doc = kg_document(
         doc_id="doc::async-chroma-doc",
         content="alpha beta gamma",
         source="async-chroma-test",
     )
+    embedding_fn = _AsyncEmbeddingFunction()
+    doc_embedding = (await embedding_fn([doc.content]))[0]
 
-    await asyncio.to_thread(eng.write.add_document, doc)
+    async with uow.transaction():
+        await backend.document_add(
+            ids=[doc.id],
+            documents=[doc.content],
+            metadatas=[{"doc_id": doc.id, "kind": "document"}],
+            embeddings=[doc_embedding],
+        )
 
-    got = await asyncio.to_thread(backend.document_get, ids=[doc.id], include=["metadatas", "documents", "embeddings"])
+    got = await backend.document_get(
+        ids=[doc.id], include=["metadatas", "documents", "embeddings"]
+    )
     assert got["ids"] == [doc.id]
     assert got["documents"] == ["alpha beta gamma"]
     assert got["metadatas"][0]["doc_id"] == doc.id
-    assert list(got["embeddings"][0]) == [3.0, 4.0, 5.0]
+    assert list(got["embeddings"][0]) == list(doc_embedding)
 
     direct = await collections["document"].get(
         ids=[doc.id], include=["embeddings"]
@@ -71,6 +84,7 @@ async def test_async_embedding_and_node_write_path(real_chroma_server):
         real_chroma_server, collection_prefix="engine_node"
     )
     _ = backend_client
+    uow = make_real_async_chroma_uow()
 
     eng = GraphKnowledgeEngine(
         persist_directory=str(real_chroma_server.persist_dir),
@@ -78,13 +92,22 @@ async def test_async_embedding_and_node_write_path(real_chroma_server):
         backend_factory=lambda _engine: backend,
     )
     eng._phase1_enable_index_jobs = False
+    assert eng.backend is backend
 
     doc = kg_document(
         doc_id="doc::async-chroma-node",
         content="chlorophyll absorbs light",
         source="async-chroma-test",
     )
-    await asyncio.to_thread(eng.write.add_document, doc)
+    embedding_fn = _AsyncEmbeddingFunction()
+    doc_embedding = (await embedding_fn([doc.content]))[0]
+    async with uow.transaction():
+        await backend.document_add(
+            ids=[doc.id],
+            documents=[doc.content],
+            metadatas=[{"doc_id": doc.id, "kind": "document"}],
+            embeddings=[doc_embedding],
+        )
 
     node = Node(
         label="Chlorophyll",
@@ -102,18 +125,31 @@ async def test_async_embedding_and_node_write_path(real_chroma_server):
         metadata={"entity_type": "concept"},
     )
 
-    await asyncio.to_thread(eng.write.add_node, node, doc_id=doc.id)
+    node_embedding = (await embedding_fn([node.summary]))[0]
 
-    got = await asyncio.to_thread(
-        backend.node_get, ids=[node.id], include=["metadatas", "documents", "embeddings"]
+    async with uow.transaction():
+        await backend.node_add(
+            ids=[node.id],
+            documents=[node.model_dump_json(field_mode="backend", exclude=["embedding"])],
+            metadatas=[{"doc_id": doc.id, "entity_type": "concept"}],
+            embeddings=[node_embedding],
+        )
+        await backend.node_refs_add(
+            ids=[f"{node.id}::ref::0"],
+            documents=['{"node_id": "%s", "doc_id": "%s"}' % (node.id, doc.id)],
+            metadatas=[{"node_id": node.id, "doc_id": doc.id}],
+            embeddings=[node_embedding],
+        )
+
+    got = await backend.node_get(
+        ids=[node.id], include=["metadatas", "documents", "embeddings"]
     )
     assert got["ids"] == [node.id]
     assert got["metadatas"][0]["doc_id"] == doc.id
     assert got["metadatas"][0]["entity_type"] == "concept"
-    assert list(got["embeddings"][0]) == [3.0, 4.0, 5.0]
+    assert list(got["embeddings"][0]) == list(node_embedding)
 
-    node_refs = await asyncio.to_thread(
-        backend.node_refs_get,
+    node_refs = await backend.node_refs_get(
         where={"node_id": node.id},
         include=["metadatas", "documents", "embeddings"],
     )

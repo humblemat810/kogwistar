@@ -19,7 +19,12 @@ from typing import Tuple
 
 import sqlalchemy as sa
 
-from .postgres_backend import PgVectorBackend, PgVectorConfig, PostgresUnitOfWork
+from .postgres_backend import (
+    AsyncPostgresUnitOfWork,
+    PgVectorBackend,
+    PgVectorConfig,
+    PostgresUnitOfWork,
+)
 
 
 @dataclass(frozen=True)
@@ -52,3 +57,30 @@ def build_postgres_backend(
     backend.ensure_schema()
 
     return backend, PostgresUnitOfWork(engine=engine)
+
+
+def build_async_postgres_backend(
+    cfg: EnginePostgresConfig,
+) -> Tuple[PgVectorBackend, AsyncPostgresUnitOfWork]:
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    max_workers = 4
+    engine = create_async_engine(
+        cfg.dsn,
+        future=True,
+        pool_size=max_workers + 2,
+        pool_timeout=10.0,
+    )
+
+    backend = PgVectorBackend(
+        engine=engine,
+        embedding_dim=cfg.embedding_dim,
+        schema=cfg.schema,
+        nodes_table=cfg.nodes_table,
+        edges_table=cfg.edges_table,
+        edge_endpoints_table=cfg.edge_endpoints_table,
+        edge_refs_table=cfg.edge_refs_table,
+        node_docs_table=cfg.node_docs_table,
+        node_refs_table=cfg.node_refs_table,
+    )
+    return backend, AsyncPostgresUnitOfWork(engine=engine)

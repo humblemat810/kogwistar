@@ -1,8 +1,13 @@
+from contextlib import asynccontextmanager
+import asyncio
+
 import pytest
 pytestmark = pytest.mark.core
 import json
+from pathlib import Path
 import uuid
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.engine_core.postgres_backend import PgVectorBackend
 from kogwistar.runtime.models import (
     RunFailure,
     RunSuccess,
@@ -15,6 +20,11 @@ from kogwistar.runtime.resolvers import MappingStepResolver
 from kogwistar.runtime.sandbox import SandboxRequest
 from tests.conftest import FakeEmbeddingFunction
 from tests._helpers.fake_backend import build_fake_backend
+from tests.core._async_chroma_real import (
+    make_real_async_chroma_backend,
+    make_real_async_chroma_uow,
+    real_chroma_server,
+)
 
 from kogwistar.engine_core.models import Span, Grounding
 
@@ -137,6 +147,63 @@ def _workflow_step_exec_nodes(conv_engine: GraphKnowledgeEngine, run_id: str):
     )
 
 
+def _runtime_entity_event_seq(engine: GraphKnowledgeEngine) -> int:
+    namespace = str(getattr(engine, "namespace", "default") or "default")
+    getter = getattr(engine.meta_sqlite, "get_latest_entity_event_seq", None)
+    if callable(getter):
+        return int(getter(namespace=namespace))
+    return sum(
+        1
+        for _ in engine.meta_sqlite.iter_entity_events(namespace=namespace, from_seq=1)
+    )
+
+
+def _log_workflow_entity_event_debug(
+    *,
+    wf_engine: GraphKnowledgeEngine,
+    wf_id: str,
+    label: str,
+    log_path: Path,
+) -> None:
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    namespace = str(getattr(wf_engine, "namespace", "default") or "default")
+    getter = getattr(wf_engine.meta_sqlite, "get_latest_entity_event_seq", None)
+    iter_events = getattr(wf_engine.meta_sqlite, "iter_entity_events", None)
+    counts: dict[str, int | None] = {"namespace": None, "workflow_id": None}
+    sample: list[dict[str, object]] = []
+    if callable(getter):
+        counts["namespace"] = int(getter(namespace=namespace))
+        counts["workflow_id"] = int(getter(namespace=wf_id))
+    if callable(iter_events):
+        for seq, entity_kind, entity_id, op, _payload in iter_events(
+            namespace=namespace, from_seq=1
+        ):
+            sample.append(
+                {
+                    "seq": int(seq),
+                    "entity_kind": str(entity_kind),
+                    "entity_id": str(entity_id),
+                    "op": str(op),
+                }
+            )
+            if len(sample) >= 5:
+                break
+    with log_path.open("a", encoding="utf-8") as f:
+        f.write(
+            json.dumps(
+                {
+                    "label": label,
+                    "engine_namespace": namespace,
+                    "workflow_id_arg": wf_id,
+                    "counts": counts,
+                    "sample": sample,
+                },
+                sort_keys=True,
+            )
+            + "\n"
+        )
+
+
 def _make_engine(
     tmp_path, *, graph_type: str, backend_kind: str
 ) -> GraphKnowledgeEngine:
@@ -158,6 +225,106 @@ BACKEND_PARAMS = [
     pytest.param("fake", id="fake", marks=pytest.mark.ci),
     pytest.param("chroma", id="chroma", marks=pytest.mark.ci_full),
 ]
+
+ASYNC_BACKEND_PARAMS = [
+    pytest.param("chroma", id="async-chroma", marks=pytest.mark.ci_full),
+    pytest.param("pg", id="async-pg", marks=pytest.mark.ci_full),
+]
+
+
+class _AsyncFakeEmbeddingFunction3D:
+    @staticmethod
+    def name() -> str:
+        return "async-fake-3d"
+
+    async def __call__(self, documents_or_texts):
+        vectors: list[list[float]] = []
+        for text in documents_or_texts:
+            base = float(len(str(text)) % 7 + 1)
+            vectors.append([base, base + 1.0, base + 2.0])
+        return vectors
+
+
+async def _create_schema_async(async_sa_engine, schema: str) -> None:
+    import sqlalchemy as sa
+
+    async with async_sa_engine.begin() as conn:
+        await conn.execute(sa.text(f'CREATE SCHEMA IF NOT EXISTS "{schema}"'))
+
+
+async def _drop_schema_async(async_sa_engine, schema: str) -> None:
+    import sqlalchemy as sa
+
+    async with async_sa_engine.begin() as conn:
+        await conn.execute(sa.text(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))
+
+
+@asynccontextmanager
+async def _async_runtime_engine_pair(backend_kind: str, request, tmp_path):
+    embedding_function = _AsyncFakeEmbeddingFunction3D()
+    if backend_kind == "chroma":
+        pytest.importorskip("chromadb")
+        server = request.getfixturevalue("real_chroma_server")
+        wf_client, wf_backend, _ = await make_real_async_chroma_backend(
+            server, collection_prefix="runtime_async_wf"
+        )
+        conv_client, conv_backend, _ = await make_real_async_chroma_backend(
+            server, collection_prefix="runtime_async_conv"
+        )
+        _ = wf_client, conv_client
+        wf_engine = GraphKnowledgeEngine(
+            persist_directory=str(server.persist_dir),
+            kg_graph_type="workflow",
+            embedding_function=embedding_function,
+            backend_factory=lambda _engine: wf_backend,
+        )
+        conv_engine = GraphKnowledgeEngine(
+            persist_directory=str(server.persist_dir),
+            kg_graph_type="conversation",
+            embedding_function=embedding_function,
+            backend_factory=lambda _engine: conv_backend,
+        )
+        yield wf_engine, conv_engine
+        return
+
+    if backend_kind == "pg":
+        pytest.importorskip("sqlalchemy")
+        async_sa_engine = request.getfixturevalue("async_sa_engine")
+        if async_sa_engine is None:
+            pytest.skip("async pg fixtures are unavailable")
+        base_schema = f"gke_async_runtime_{uuid.uuid4().hex}"
+        wf_schema = f"{base_schema}_wf"
+        conv_schema = f"{base_schema}_conv"
+        await _create_schema_async(async_sa_engine, wf_schema)
+        await _create_schema_async(async_sa_engine, conv_schema)
+        try:
+            wf_backend = PgVectorBackend(
+                engine=async_sa_engine, embedding_dim=3, schema=wf_schema
+            )
+            conv_backend = PgVectorBackend(
+                engine=async_sa_engine, embedding_dim=3, schema=conv_schema
+            )
+            await wf_backend._ensure_schema_async()
+            await conv_backend._ensure_schema_async()
+            wf_engine = GraphKnowledgeEngine(
+                persist_directory=str(tmp_path / "async_wf"),
+                kg_graph_type="workflow",
+                embedding_function=embedding_function,
+                backend=wf_backend,
+            )
+            conv_engine = GraphKnowledgeEngine(
+                persist_directory=str(tmp_path / "async_conv"),
+                kg_graph_type="conversation",
+                embedding_function=embedding_function,
+                backend=conv_backend,
+            )
+            yield wf_engine, conv_engine
+        finally:
+            await _drop_schema_async(async_sa_engine, wf_schema)
+            await _drop_schema_async(async_sa_engine, conv_schema)
+        return
+
+    raise ValueError(f"unsupported backend_kind: {backend_kind}")
 
 
 @pytest.mark.parametrize(
@@ -296,6 +463,120 @@ def test_workflow_suspend_and_resume(tmp_path, backend_kind):
     assert res2.final_state.get("ended") is True
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backend_kind", ASYNC_BACKEND_PARAMS)
+async def test_workflow_suspend_and_resume_async_backends(
+    tmp_path, backend_kind, request
+):
+    async with _async_runtime_engine_pair(backend_kind, request, tmp_path) as (
+        wf_engine,
+        conv_engine,
+    ):
+        wf_id = "test_suspend_wf_async"
+        await asyncio.to_thread(
+            _create_node, wf_engine, wf_id, "n_start", "start_op", True, False
+        )
+        await asyncio.to_thread(
+            _create_node, wf_engine, wf_id, "n_suspend", "suspend_op"
+        )
+        await asyncio.to_thread(
+            _create_node, wf_engine, wf_id, "n_end", "end_op", False, True
+        )
+        await asyncio.to_thread(
+            _create_edge, wf_engine, wf_id, "n_start", "n_suspend"
+        )
+        await asyncio.to_thread(_create_edge, wf_engine, wf_id, "n_suspend", "n_end")
+
+        resolver = MappingStepResolver()
+
+        @resolver.register("start_op")
+        def _start(ctx: StepContext):
+            return RunSuccess(
+                conversation_node_id=None, state_update=[("u", {"started": True})]
+            )
+
+        @resolver.register("suspend_op")
+        def _suspend(ctx: StepContext):
+            return RunSuspended(
+                conversation_node_id=None,
+                state_update=[],
+                resume_payload={"task": "calculate_pi"},
+            )
+
+        @resolver.register("end_op")
+        def _end(ctx: StepContext):
+            return RunSuccess(
+                conversation_node_id=None, state_update=[("u", {"ended": True})]
+            )
+
+        runtime = WorkflowRuntime(
+            workflow_engine=wf_engine,
+            conversation_engine=conv_engine,
+            step_resolver=resolver,
+            predicate_registry={},
+            checkpoint_every_n_steps=1,
+        )
+
+        run_id = f"run_{uuid.uuid4().hex}"
+        conv_id = f"conv_{uuid.uuid4().hex}"
+
+        res1 = await asyncio.to_thread(
+            runtime.run,
+            workflow_id=wf_id,
+            conversation_id=conv_id,
+            turn_node_id="turn_1",
+            initial_state={
+                "conversation_id": "test",
+                "user_id": "test",
+                "turn_node_id": "test",
+                "turn_index": 0,
+                "role": "user",
+                "user_text": "",
+                "mem_id": "test",
+            },
+            run_id=run_id,
+        )
+
+        assert res1.status == "suspended"
+        assert res1.final_state.get("started") is True
+        assert res1.final_state.get("ended") is None
+
+        ckpts = await asyncio.to_thread(
+            conv_engine.get_nodes,
+            where={"$and": [{"entity_type": "workflow_checkpoint"}, {"run_id": run_id}]},
+        )
+        assert len(ckpts) > 0
+        latest = max(
+            ckpts, key=lambda c: int(getattr(c, "metadata", {}).get("step_seq", -1))
+        )
+        state_json = latest.metadata.get("state_json", {})
+        if isinstance(state_json, str):
+            state_json = json.loads(state_json)
+        rt_join = state_json.get("_rt_join", {})
+        suspended = rt_join.get("suspended", [])
+        assert len(suspended) == 1
+        assert suspended[0][0] == "n_suspend"
+        suspended_token_id = suspended[0][2]
+
+        res2 = await asyncio.to_thread(
+            runtime.resume_run,
+            run_id=run_id,
+            suspended_node_id="n_suspend",
+            suspended_token_id=suspended_token_id,
+            client_result=RunSuccess(
+                conversation_node_id=None, state_update=[("u", {"pi": 3.14})]
+            ),
+            workflow_id=wf_id,
+            conversation_id=conv_id,
+            turn_node_id="turn_1",
+        )
+
+        assert res2.status == "succeeded"
+        assert res2.final_state.get("started") is True
+        assert res2.final_state.get("pi") == 3.14
+        assert res2.final_state.get("ended") is True
+
+
 @pytest.mark.parametrize("backend_kind", BACKEND_PARAMS)
 def test_workflow_suspend_and_resume_branching(tmp_path, backend_kind):
     wf_engine = _make_engine(tmp_path / "wf_b", graph_type="workflow", backend_kind=backend_kind)
@@ -318,6 +599,8 @@ def test_workflow_suspend_and_resume_branching(tmp_path, backend_kind):
     _create_edge(wf_engine, wf_id, "a", "join")
     _create_edge(wf_engine, wf_id, "b", "join")
     _create_edge(wf_engine, wf_id, "join", "end")
+
+    setup_seq = _runtime_entity_event_seq(conv_engine)
 
     resolver = MappingStepResolver()
 
@@ -384,6 +667,7 @@ def test_workflow_suspend_and_resume_branching(tmp_path, backend_kind):
     assert res1.status == "suspended"
     assert res1.final_state.get("b_done") is True
     assert res1.final_state.get("ended") is None
+    assert _runtime_entity_event_seq(conv_engine) > setup_seq
 
     # Check pending token
     ckpts = conv_engine.get_nodes(
@@ -423,6 +707,246 @@ def test_workflow_suspend_and_resume_branching(tmp_path, backend_kind):
     assert res2.final_state.get("a_done") is True
     assert res2.final_state.get("b_done") is True
     assert res2.final_state.get("ended") is True
+    assert _runtime_entity_event_seq(conv_engine) > setup_seq
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backend_kind", ASYNC_BACKEND_PARAMS)
+async def test_workflow_suspend_and_resume_branching_async_backends(
+    tmp_path, backend_kind, request, monkeypatch
+):
+    async with _async_runtime_engine_pair(backend_kind, request, tmp_path) as (
+        wf_engine,
+        conv_engine,
+    ):
+        wf_id = "test_suspend_branching_wf_async"
+        debug_log = (
+            Path.cwd()
+            / ".tmp_runtime_sse_debug"
+            / f"workflow_suspend_branching_async_{backend_kind}.jsonl"
+        )
+        if debug_log.exists():
+            debug_log.unlink()
+
+        await asyncio.to_thread(
+            _create_node, wf_engine, wf_id, "start", "start", True, False
+        )
+        await asyncio.to_thread(_create_node, wf_engine, wf_id, "fork", "noop", False, False, True)
+        await asyncio.to_thread(_create_node, wf_engine, wf_id, "a", "suspend_op")
+        await asyncio.to_thread(_create_node, wf_engine, wf_id, "b", "normal_b")
+        await asyncio.to_thread(
+            _create_node, wf_engine, wf_id, "join", "noop", False, False, False, True
+        )
+        await asyncio.to_thread(_create_node, wf_engine, wf_id, "end", "end", False, True)
+
+        await asyncio.to_thread(_create_edge, wf_engine, wf_id, "start", "fork")
+        await asyncio.to_thread(_create_edge, wf_engine, wf_id, "fork", "a")
+        await asyncio.to_thread(_create_edge, wf_engine, wf_id, "fork", "b")
+        await asyncio.to_thread(_create_edge, wf_engine, wf_id, "a", "join")
+        await asyncio.to_thread(_create_edge, wf_engine, wf_id, "b", "join")
+        await asyncio.to_thread(_create_edge, wf_engine, wf_id, "join", "end")
+
+        setup_seq = await asyncio.to_thread(_runtime_entity_event_seq, conv_engine)
+        await asyncio.to_thread(
+            _log_workflow_entity_event_debug,
+            wf_engine=wf_engine,
+            wf_id=wf_id,
+            label="after_setup",
+            log_path=debug_log,
+        )
+
+        def _install_event_loggers(engine, *, engine_label: str) -> None:
+            orig_append = engine._append_event_for_entity
+            orig_meta_append = engine.meta_sqlite.append_entity_event
+
+            def _log_line(payload: dict[str, object]) -> None:
+                debug_log.parent.mkdir(parents=True, exist_ok=True)
+                with debug_log.open("a", encoding="utf-8") as f:
+                    f.write(json.dumps(payload, sort_keys=True) + "\n")
+
+            def _wrap_append(*args, **kwargs):
+                _log_line(
+                    {
+                        "label": "engine_append_event",
+                        "engine": engine_label,
+                        "namespace": kwargs.get("namespace"),
+                        "entity_kind": kwargs.get("entity_kind"),
+                        "entity_id": kwargs.get("entity_id"),
+                        "op": kwargs.get("op"),
+                    }
+                )
+                try:
+                    result = orig_append(*args, **kwargs)
+                except BaseException as exc:
+                    _log_line(
+                        {
+                            "label": "engine_append_event_error",
+                            "engine": engine_label,
+                            "error": repr(exc),
+                        }
+                    )
+                    raise
+                _log_line(
+                    {
+                        "label": "engine_append_event_done",
+                        "engine": engine_label,
+                    }
+                )
+                return result
+
+            def _wrap_meta_append(*args, **kwargs):
+                _log_line(
+                    {
+                        "label": "meta_append_entity_event",
+                        "engine": engine_label,
+                        "namespace": kwargs.get("namespace"),
+                        "entity_kind": kwargs.get("entity_kind"),
+                        "entity_id": kwargs.get("entity_id"),
+                        "op": kwargs.get("op"),
+                    }
+                )
+                try:
+                    seq = orig_meta_append(*args, **kwargs)
+                except BaseException as exc:
+                    _log_line(
+                        {
+                            "label": "meta_append_entity_event_error",
+                            "engine": engine_label,
+                            "error": repr(exc),
+                        }
+                    )
+                    raise
+                _log_line(
+                    {
+                        "label": "meta_append_entity_event_done",
+                        "engine": engine_label,
+                        "seq": int(seq),
+                    }
+                )
+                return seq
+
+            monkeypatch.setattr(engine, "_append_event_for_entity", _wrap_append)
+            monkeypatch.setattr(
+                engine.meta_sqlite, "append_entity_event", _wrap_meta_append
+            )
+
+        _install_event_loggers(wf_engine, engine_label="workflow")
+        _install_event_loggers(conv_engine, engine_label="conversation")
+
+        resolver = MappingStepResolver()
+
+        @resolver.register("start")
+        def _start(ctx: StepContext):
+            return RunSuccess(
+                conversation_node_id=None, state_update=[("u", {"started": True})]
+            )
+
+        @resolver.register("noop")
+        def _noop(ctx: StepContext):
+            return RunSuccess(conversation_node_id=None, state_update=[])
+
+        @resolver.register("suspend_op")
+        def _suspend(ctx: StepContext):
+            return RunSuspended(
+                conversation_node_id=None,
+                state_update=[],
+                resume_payload={"task": "do_something"},
+            )
+
+        @resolver.register("normal_b")
+        def _normal_b(ctx: StepContext):
+            return RunSuccess(
+                conversation_node_id=None, state_update=[("u", {"b_done": True})]
+            )
+
+        @resolver.register("end")
+        def _end(ctx: StepContext):
+            return RunSuccess(
+                conversation_node_id=None, state_update=[("u", {"ended": True})]
+            )
+
+        runtime = WorkflowRuntime(
+            workflow_engine=wf_engine,
+            conversation_engine=conv_engine,
+            step_resolver=resolver,
+            predicate_registry={},
+            checkpoint_every_n_steps=1,
+        )
+
+        run_id = f"run_{uuid.uuid4().hex}"
+        conv_id = f"conv_{uuid.uuid4().hex}"
+
+        res1 = await asyncio.to_thread(
+            runtime.run,
+            workflow_id=wf_id,
+            conversation_id=conv_id,
+            turn_node_id="turn_1",
+            initial_state={
+                "conversation_id": "test",
+                "user_id": "test",
+                "turn_node_id": "test",
+                "turn_index": 0,
+                "role": "user",
+                "user_text": "",
+                "mem_id": "test",
+            },
+            run_id=run_id,
+        )
+
+        assert res1.status == "suspended"
+        assert res1.final_state.get("b_done") is True
+        assert res1.final_state.get("ended") is None
+        await asyncio.to_thread(
+            _log_workflow_entity_event_debug,
+            wf_engine=wf_engine,
+            wf_id=wf_id,
+            label="after_suspend",
+            log_path=debug_log,
+        )
+        assert await asyncio.to_thread(_runtime_entity_event_seq, conv_engine) > setup_seq
+
+        ckpts = await asyncio.to_thread(
+            conv_engine.get_nodes,
+            where={"$and": [{"entity_type": "workflow_checkpoint"}, {"run_id": run_id}]},
+        )
+        latest = max(
+            ckpts, key=lambda c: int(getattr(c, "metadata", {}).get("step_seq", -1))
+        )
+        state_json = latest.metadata.get("state_json", {})
+        if isinstance(state_json, str):
+            state_json = json.loads(state_json)
+        rt_join = state_json.get("_rt_join", {})
+        suspended = rt_join.get("suspended", [])
+
+        assert len(suspended) == 1
+        assert suspended[0][0] == "a"
+        suspended_token_id = suspended[0][2]
+
+        res2 = await asyncio.to_thread(
+            runtime.resume_run,
+            run_id=run_id,
+            suspended_node_id="a",
+            suspended_token_id=suspended_token_id,
+            client_result=RunSuccess(
+                conversation_node_id=None, state_update=[("u", {"a_done": True})]
+            ),
+            workflow_id=wf_id,
+            conversation_id=conv_id,
+            turn_node_id="turn_1",
+        )
+
+        assert res2.status == "succeeded"
+        assert res2.final_state.get("a_done") is True
+        assert res2.final_state.get("b_done") is True
+        assert res2.final_state.get("ended") is True
+        await asyncio.to_thread(
+            _log_workflow_entity_event_debug,
+            wf_engine=wf_engine,
+            wf_id=wf_id,
+            label="after_resume",
+            log_path=debug_log,
+        )
+        assert await asyncio.to_thread(_runtime_entity_event_seq, conv_engine) > setup_seq
 
 
 @pytest.mark.parametrize("backend_kind", BACKEND_PARAMS)
@@ -496,6 +1020,83 @@ def test_workflow_failure_does_not_route_to_terminal(tmp_path, backend_kind):
     assert res.status == "failure"
     assert res.final_state.get("started") is True
     assert res.final_state.get("ended") is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backend_kind", ASYNC_BACKEND_PARAMS)
+async def test_workflow_failure_does_not_route_to_terminal_async_backends(
+    tmp_path, backend_kind, request
+):
+    async with _async_runtime_engine_pair(backend_kind, request, tmp_path) as (
+        wf_engine,
+        conv_engine,
+    ):
+        wf_id = "test_failure_stops_routing_async"
+        await asyncio.to_thread(_create_node, wf_engine, wf_id, "n_start", "start_op", True, False)
+        await asyncio.to_thread(_create_node, wf_engine, wf_id, "n_exec", "python_exec")
+        await asyncio.to_thread(_create_node, wf_engine, wf_id, "n_end", "end_op", False, True)
+        await asyncio.to_thread(_create_edge, wf_engine, wf_id, "n_start", "n_exec")
+
+        class _FailingSandbox:
+            def run(self, code, state, context):
+                return RunFailure(
+                    conversation_node_id=None,
+                    state_update=[],
+                    errors=["sandbox failed"],
+                )
+
+            def close_run(self, run_id: str) -> None:
+                return None
+
+        resolver = MappingStepResolver()
+        resolver.set_sandbox(_FailingSandbox())
+
+        @resolver.register("start_op")
+        def _start(ctx: StepContext):
+            return RunSuccess(
+                conversation_node_id=None, state_update=[("u", {"started": True})]
+            )
+
+        @resolver.register("python_exec", is_sandboxed=True)
+        def _python_exec(ctx: StepContext):
+            return SandboxRequest(
+                code="result = {'state_update': [('u', {'sandbox_result': 'ok'})]}"
+            )
+
+        @resolver.register("end_op")
+        def _end(ctx: StepContext):
+            return RunSuccess(
+                conversation_node_id=None, state_update=[("u", {"ended": True})]
+            )
+
+        runtime = WorkflowRuntime(
+            workflow_engine=wf_engine,
+            conversation_engine=conv_engine,
+            step_resolver=resolver,
+            predicate_registry={},
+            checkpoint_every_n_steps=1,
+        )
+
+        res = await asyncio.to_thread(
+            runtime.run,
+            workflow_id=wf_id,
+            conversation_id=f"conv_{uuid.uuid4().hex}",
+            turn_node_id="turn_1",
+            initial_state={
+                "conversation_id": "test",
+                "user_id": "test",
+                "turn_node_id": "test",
+                "turn_index": 0,
+                "role": "user",
+                "user_text": "",
+                "mem_id": "test",
+            },
+            run_id=f"run_{uuid.uuid4().hex}",
+        )
+
+        assert res.status == "failure"
+        assert res.final_state.get("started") is True
+        assert res.final_state.get("ended") is None
 
 
 @pytest.mark.parametrize("backend_kind", BACKEND_PARAMS)

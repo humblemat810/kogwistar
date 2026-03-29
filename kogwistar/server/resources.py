@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import os
 import pathlib
 from threading import Lock
@@ -151,13 +152,45 @@ run_registry: _LazyResource[RunRegistry] = _LazyResource(
     lambda: RunRegistry(workflow_engine.get().meta_sqlite),
     "chat_run_registry",
 )
-chat_service: _LazyResource[ChatRunService] = _LazyResource(
-    lambda: ChatRunService(
+
+
+def _import_override_from_env(env_name: str) -> Callable[..., Any] | None:
+    raw = str(os.getenv(env_name) or "").strip()
+    if not raw:
+        return None
+    module_name, sep, attr_name = raw.partition(":")
+    if not sep or not module_name or not attr_name:
+        raise RuntimeError(
+            f"{env_name} must be in 'module.path:attribute_name' format"
+        )
+    module = importlib.import_module(module_name)
+    target = getattr(module, attr_name, None)
+    if not callable(target):
+        raise RuntimeError(f"{env_name} target is not callable: {raw}")
+    return target
+
+
+def _build_chat_service() -> ChatRunService:
+    answer_runner_factory = _import_override_from_env(
+        "KOGWISTAR_TEST_ANSWER_RUNNER_IMPORT"
+    )
+    runtime_runner_factory = _import_override_from_env(
+        "KOGWISTAR_TEST_RUNTIME_RUNNER_IMPORT"
+    )
+    answer_runner = answer_runner_factory() if answer_runner_factory else None
+    runtime_runner = runtime_runner_factory() if runtime_runner_factory else None
+    return ChatRunService(
         get_knowledge_engine=lambda: engine.get(),
         get_conversation_engine=lambda: conversation_engine.get(),
         get_workflow_engine=lambda: workflow_engine.get(),
         run_registry=run_registry.get(),
-    ),
+        answer_runner=answer_runner,
+        runtime_runner=runtime_runner,
+    )
+
+
+chat_service: _LazyResource[ChatRunService] = _LazyResource(
+    _build_chat_service,
     "chat_run_service",
 )
 

@@ -6,6 +6,11 @@ from kogwistar.conversation.models import ConversationEdge, ConversationNode
 from kogwistar.engine_core.models import Edge, Grounding, Node, Span
 from kogwistar.server.run_registry import RunRegistry
 from tests.conftest import _make_engine_pair
+from tests.core._async_chroma_real import (
+    make_real_async_chroma_backend,
+    make_real_async_chroma_uow,
+    real_chroma_server,
+)
 
 pytestmark = [pytest.mark.core]
 
@@ -189,6 +194,75 @@ def _backend_meta_for_node(node: Node) -> dict:
     }
 
 
+async def _assert_collection_crud_and_where_async(
+    *,
+    backend,
+    uow,
+    backend_kind: str,
+) -> None:
+    doc_id = f"doc::{backend_kind}"
+    n1 = _mk_node(
+        node_id="n1",
+        doc_id=doc_id,
+        entity_type="alpha",
+        embedding=[1.0, 0.0, 0.0],
+    )
+    n2 = _mk_node(
+        node_id="n2",
+        doc_id=doc_id,
+        entity_type="beta",
+        embedding=[0.0, 1.0, 0.0],
+    )
+    async with uow.transaction():
+        await backend.node_add(
+            ids=[n1.id, n2.id],
+            documents=[n1.summary, n2.summary],
+            metadatas=[_backend_meta_for_node(n1), _backend_meta_for_node(n2)],
+            embeddings=[n1.embedding, n2.embedding],
+        )
+
+    got = await backend.node_get(where={"doc_id": doc_id})
+    assert set(got["ids"]) == {"n1", "n2"}
+
+    got_and = await backend.node_get(
+        where={"$and": [{"doc_id": doc_id}, {"entity_type": "alpha"}]}
+    )
+    assert got_and["ids"] == ["n1"]
+
+    got_or = await backend.node_get(
+        where={"$or": [{"doc_id": "missing"}, {"doc_id": doc_id}]}
+    )
+    assert set(got_or["ids"]) == {"n1", "n2"}
+
+    q = await backend.node_query(
+        query_embeddings=[[1.0, 0.0, 0.0]],
+        n_results=1,
+        where={"doc_id": doc_id},
+        include=["metadatas"],
+    )
+    assert q["ids"][0][0] == "n1"
+    assert q["metadatas"][0][0]["entity_type"] == "alpha"
+
+    e1 = _mk_edge(edge_id="e1", src="n1", tgt="n2", doc_id=doc_id)
+    async with uow.transaction():
+        await backend.edge_add(
+            ids=[e1.id],
+            documents=[e1.summary],
+            metadatas=[e1.metadata | {"relation": e1.relation, "doc_id": doc_id}],
+            embeddings=[e1.embedding],
+        )
+    got_edge = await backend.edge_get(where={"relation": "related_to"})
+    assert got_edge["ids"] == ["e1"]
+
+    q_edge = await backend.edge_query(
+        query_embeddings=[[0.0, 0.0, 1.0]],
+        n_results=1,
+        where={"relation": "related_to"},
+        include=["metadatas"],
+    )
+    assert q_edge["ids"][0][0] == "e1"
+
+
 @pytest.mark.parametrize("backend_kind", BACKEND_PARAMS)
 def test_backend_contract_collection_crud_and_where(
     backend_kind: str, tmp_path, request
@@ -254,6 +328,30 @@ def test_backend_contract_collection_crud_and_where(
         include=["metadatas"],
     )
     assert q_edge["ids"][0][0] == "e1"
+
+
+@pytest.mark.asyncio
+async def test_backend_contract_collection_crud_and_where_async_chroma(
+    real_chroma_server,
+):
+    pytest.importorskip("chromadb")
+    _backend_client, backend, _collections = await make_real_async_chroma_backend(
+        real_chroma_server, collection_prefix="contract_async_chroma"
+    )
+    uow = make_real_async_chroma_uow()
+    await _assert_collection_crud_and_where_async(
+        backend=backend, uow=uow, backend_kind="async-chroma"
+    )
+
+
+@pytest.mark.asyncio
+async def test_backend_contract_collection_crud_and_where_async_pg(
+    async_pg_backend, async_pg_uow
+):
+    pytest.importorskip("sqlalchemy")
+    await _assert_collection_crud_and_where_async(
+        backend=async_pg_backend, uow=async_pg_uow, backend_kind="async-pg"
+    )
 
 
 @pytest.mark.parametrize("backend_kind", BACKEND_PARAMS)

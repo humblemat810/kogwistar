@@ -1,12 +1,18 @@
 from __future__ import annotations
-import pytest
-pytestmark = pytest.mark.core
 
+import asyncio
+from contextlib import asynccontextmanager
+import json
 import shutil
 import uuid
 from pathlib import Path
 
+import pytest
+
+pytestmark = pytest.mark.core
+
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.engine_core.postgres_backend import PgVectorBackend
 from kogwistar.engine_core.models import (
     Grounding,
     MentionVerification,
@@ -20,6 +26,10 @@ from kogwistar.runtime.models import (
 )
 from kogwistar.runtime.runtime import WorkflowRuntime
 from tests._helpers.fake_backend import build_fake_backend
+from tests.core._async_chroma_real import (
+    make_real_async_chroma_backend,
+    real_chroma_server,
+)
 
 
 class FakeEmbeddingFunction:
@@ -117,6 +127,107 @@ def _wf_edge(*, workflow_id: str, edge_id: str, src: str, dst: str) -> WorkflowE
     )
 
 
+ASYNC_BACKEND_PARAMS = [
+    pytest.param("chroma", id="async-chroma", marks=pytest.mark.ci_full),
+    pytest.param("pg", id="async-pg", marks=pytest.mark.ci_full),
+]
+
+
+class _AsyncFakeEmbeddingFunction3D:
+    @staticmethod
+    def name() -> str:
+        return "async-fake-3d"
+
+    async def __call__(self, documents_or_texts):
+        vectors: list[list[float]] = []
+        for text in documents_or_texts:
+            base = float(len(str(text)) % 7 + 1)
+            vectors.append([base, base + 1.0, base + 2.0])
+        return vectors
+
+
+async def _create_schema_async(async_sa_engine, schema: str) -> None:
+    import sqlalchemy as sa
+
+    async with async_sa_engine.begin() as conn:
+        await conn.execute(sa.text(f'CREATE SCHEMA IF NOT EXISTS "{schema}"'))
+
+
+async def _drop_schema_async(async_sa_engine, schema: str) -> None:
+    import sqlalchemy as sa
+
+    async with async_sa_engine.begin() as conn:
+        await conn.execute(sa.text(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))
+
+
+@asynccontextmanager
+async def _async_runtime_engine_pair(backend_kind: str, request, tmp_path):
+    embedding_function = _AsyncFakeEmbeddingFunction3D()
+    if backend_kind == "chroma":
+        pytest.importorskip("chromadb")
+        server = request.getfixturevalue("real_chroma_server")
+        wf_client, wf_backend, _ = await make_real_async_chroma_backend(
+            server, collection_prefix="terminal_async_wf"
+        )
+        conv_client, conv_backend, _ = await make_real_async_chroma_backend(
+            server, collection_prefix="terminal_async_conv"
+        )
+        _ = wf_client, conv_client
+        wf_engine = GraphKnowledgeEngine(
+            persist_directory=str(server.persist_dir),
+            kg_graph_type="workflow",
+            embedding_function=embedding_function,
+            backend_factory=lambda _engine: wf_backend,
+        )
+        conv_engine = GraphKnowledgeEngine(
+            persist_directory=str(server.persist_dir),
+            kg_graph_type="conversation",
+            embedding_function=embedding_function,
+            backend_factory=lambda _engine: conv_backend,
+        )
+        yield wf_engine, conv_engine
+        return
+
+    if backend_kind == "pg":
+        pytest.importorskip("sqlalchemy")
+        async_sa_engine = request.getfixturevalue("async_sa_engine")
+        if async_sa_engine is None:
+            pytest.skip("async pg fixtures are unavailable")
+        base_schema = f"gke_async_terminal_{uuid.uuid4().hex}"
+        wf_schema = f"{base_schema}_wf"
+        conv_schema = f"{base_schema}_conv"
+        await _create_schema_async(async_sa_engine, wf_schema)
+        await _create_schema_async(async_sa_engine, conv_schema)
+        try:
+            wf_backend = PgVectorBackend(
+                engine=async_sa_engine, embedding_dim=3, schema=wf_schema
+            )
+            conv_backend = PgVectorBackend(
+                engine=async_sa_engine, embedding_dim=3, schema=conv_schema
+            )
+            await wf_backend._ensure_schema_async()
+            await conv_backend._ensure_schema_async()
+            wf_engine = GraphKnowledgeEngine(
+                persist_directory=str(tmp_path / "async_wf_terminal"),
+                kg_graph_type="workflow",
+                embedding_function=embedding_function,
+                backend=wf_backend,
+            )
+            conv_engine = GraphKnowledgeEngine(
+                persist_directory=str(tmp_path / "async_conv_terminal"),
+                kg_graph_type="conversation",
+                embedding_function=embedding_function,
+                backend=conv_backend,
+            )
+            yield wf_engine, conv_engine
+        finally:
+            await _drop_schema_async(async_sa_engine, wf_schema)
+            await _drop_schema_async(async_sa_engine, conv_schema)
+        return
+
+    raise ValueError(f"unsupported backend_kind: {backend_kind}")
+
+
 @pytest.mark.parametrize(
     "backend_kind",
     [
@@ -210,3 +321,71 @@ def test_runtime_persists_completed_terminal_for_leaf_node(backend_kind):
         assert meta.get("last_processed_node_id") == f"wf_step|{result.run_id}|1"
     finally:
         shutil.rmtree(root, ignore_errors=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backend_kind", ASYNC_BACKEND_PARAMS)
+async def test_runtime_persists_completed_terminal_for_leaf_node_async_backends(
+    backend_kind, request, tmp_path
+):
+    async with _async_runtime_engine_pair(backend_kind, request, tmp_path) as (
+        workflow_engine,
+        conversation_engine,
+    ):
+        workflow_id = "wf_runtime_leaf_terminal_async"
+        conversation_id = "conv_runtime_leaf_terminal_async"
+        start = _wf_node(
+            workflow_id=workflow_id, node_id="wf|start", op="start", start=True
+        )
+        leaf = _wf_node(workflow_id=workflow_id, node_id="wf|leaf", op="leaf")
+        await asyncio.to_thread(workflow_engine.write.add_node, start)
+        await asyncio.to_thread(workflow_engine.write.add_node, leaf)
+        await asyncio.to_thread(
+            workflow_engine.write.add_edge,
+            _wf_edge(
+                workflow_id=workflow_id,
+                edge_id="wf|start->leaf",
+                src=start.id,
+                dst=leaf.id,
+            ),
+        )
+
+        def resolve_step(op: str):
+            def _fn(ctx):
+                return RunSuccess(
+                    conversation_node_id=None, state_update=[("a", {"last_op": op})]
+                )
+
+            return _fn
+
+        runtime = WorkflowRuntime(
+            workflow_engine=workflow_engine,
+            conversation_engine=conversation_engine,
+            step_resolver=resolve_step,
+            predicate_registry={},
+            checkpoint_every_n_steps=1,
+            max_workers=1,
+        )
+        result = await asyncio.to_thread(
+            runtime.run,
+            workflow_id=workflow_id,
+            conversation_id=conversation_id,
+            turn_node_id="turn-leaf",
+            initial_state={},
+        )
+
+        assert result.status == "succeeded"
+        completed = await asyncio.to_thread(
+            conversation_engine.get_nodes,
+            where={
+                "$and": [
+                    {"entity_type": "workflow_completed"},
+                    {"run_id": result.run_id},
+                ]
+            },
+            limit=10,
+        )
+        assert len(completed) == 1
+        assert isinstance(completed[0], WorkflowCompletedNode)
+        meta = completed[0].metadata or {}
+        assert meta.get("last_processed_node_id") == f"wf_step|{result.run_id}|1"

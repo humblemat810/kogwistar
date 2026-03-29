@@ -147,7 +147,7 @@ def create_chat_router(
         require_role("ro")
         require_namespace(conversation_namespace)
         try:
-            get_service().get_run(run_id)
+            await asyncio.to_thread(get_service().get_run, run_id)
         except Exception as exc:  # noqa: BLE001
             raise _as_http_error(exc)
 
@@ -155,7 +155,9 @@ def create_chat_router(
             last_seq = int(after_seq or 0)
             while True:
                 service = get_service()
-                events = service.list_run_events(run_id, after_seq=last_seq)
+                events = await asyncio.to_thread(
+                    service.list_run_events, run_id, after_seq=last_seq
+                )
                 for evt in events:
                     last_seq = int(evt["seq"])
                     payload = {
@@ -167,7 +169,7 @@ def create_chat_router(
                     yield _sse_frame(
                         event_type=evt["event_type"], seq=last_seq, payload=payload
                     )
-                run = service.get_run(run_id)
+                run = await asyncio.to_thread(service.get_run, run_id)
                 if run["terminal"] and not events:
                     break
                 await asyncio.sleep(0.1)
