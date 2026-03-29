@@ -946,6 +946,72 @@ def _make_engine_pair(
     raise ValueError(f"unknown backend_kind: {backend_kind!r}")
 
 
+def _make_async_engine(
+    *,
+    backend_kind: str,
+    tmp_path,
+    request: pytest.FixtureRequest,
+    dim: int = 3,
+    graph_kind: str = "knowledge",
+    embedding_kind: str | None = None,
+    embedding_function: Any | None = None,
+):
+    """Build a single GraphKnowledgeEngine against an async backend.
+
+    The helper mirrors `_make_engine_pair(...)` but targets a single engine and
+    uses the async PG / async Chroma fixtures.
+    """
+
+    ef = (
+        embedding_function
+        if embedding_function is not None
+        else build_test_embedding_function(
+            embedding_kind or "constant", dim=dim
+        )
+    )
+    persist_dir = tmp_path / graph_kind
+
+    if backend_kind == "pg":
+        async_sa_engine = request.getfixturevalue("async_sa_engine")
+        async_pg_schema = request.getfixturevalue("async_pg_schema")
+        if async_sa_engine is None or async_pg_schema is None:
+            pytest.skip(
+                "async pg backend requested but async_pg fixtures are unavailable"
+            )
+        backend = PgVectorBackend(
+            engine=async_sa_engine, embedding_dim=dim, schema=async_pg_schema
+        )
+        return GraphKnowledgeEngine(
+            persist_directory=str(persist_dir),
+            kg_graph_type=graph_kind,
+            embedding_function=ef,
+            backend=backend,
+        )
+
+    if backend_kind == "chroma":
+        try:
+            real_chroma_server = request.getfixturevalue("real_chroma_server")
+        except Exception as exc:
+            pytest.skip(f"real async chroma fixture is unavailable: {exc}")
+        from tests.core._async_chroma_real import make_real_async_chroma_backend
+
+        backend_client, backend, _collections = _run_async_windows_safe(
+            make_real_async_chroma_backend(
+                real_chroma_server,
+                collection_prefix=f"{graph_kind}_{uuid.uuid4().hex}",
+            )
+        )
+        _ = backend_client, _collections
+        return GraphKnowledgeEngine(
+            persist_directory=str(persist_dir),
+            kg_graph_type=graph_kind,
+            embedding_function=ef,
+            backend_factory=lambda _engine, backend=backend: backend,
+        )
+
+    raise ValueError(f"unknown backend_kind: {backend_kind!r}")
+
+
 def _make_workflow_engine(
     *,
     backend_kind: str,

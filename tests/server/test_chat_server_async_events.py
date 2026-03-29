@@ -24,17 +24,17 @@ pytest.importorskip("fastapi")
 pytest.importorskip("fastmcp")
 pytest.importorskip("sqlalchemy")
 
-from fastapi.testclient import TestClient
+from fastapi.testclient import TestClient  # noqa: E402
 
-import kogwistar.server_mcp_with_admin as server
-from kogwistar.conversation.models import ConversationNode
-from kogwistar.engine_core.models import Grounding, Span
-from kogwistar.runtime.models import RunSuccess
-from kogwistar.runtime.resolvers import MappingStepResolver
-from kogwistar.runtime.runtime import WorkflowRuntime
-from kogwistar.server.auth_middleware import claims_ctx
-from kogwistar.server.chat_service import AnswerRunRequest
-from kogwistar.server.chat_service import RuntimeRunRequest
+
+from kogwistar.conversation.models import ConversationNode  # noqa: E402
+from kogwistar.engine_core.models import Grounding, Span  # noqa: E402
+from kogwistar.runtime.models import RunSuccess  # noqa: E402
+from kogwistar.runtime.resolvers import MappingStepResolver  # noqa: E402
+from kogwistar.runtime.runtime import WorkflowRuntime  # noqa: E402
+from kogwistar.server.auth_middleware import claims_ctx  # noqa: E402
+from kogwistar.server.chat_service import AnswerRunRequest  # noqa: E402
+from kogwistar.server.chat_service import RuntimeRunRequest  # noqa: E402
 
 pytestmark = pytest.mark.ci_full
 

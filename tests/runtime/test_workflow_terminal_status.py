@@ -2,34 +2,36 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
-import json
 import shutil
+from typing import cast
 import uuid
 from pathlib import Path
 
 import pytest
 
+from kogwistar.typing_interfaces import EmbeddingFunctionLike
+
 pytestmark = pytest.mark.core
 
-from kogwistar.engine_core.engine import GraphKnowledgeEngine
-from kogwistar.engine_core.postgres_backend import PgVectorBackend
-from kogwistar.engine_core.models import (
-    Grounding,
-    MentionVerification,
-    Span,
-)
-from kogwistar.runtime.models import (
-    RunSuccess,
-    WorkflowCompletedNode,
-    WorkflowEdge,
-    WorkflowNode,
-)
-from kogwistar.runtime.runtime import WorkflowRuntime
-from tests._helpers.fake_backend import build_fake_backend
-from tests.core._async_chroma_real import (
-    make_real_async_chroma_backend,
-    real_chroma_server,
-)
+from kogwistar.engine_core.engine import GraphKnowledgeEngine # noqa E402
+from kogwistar.engine_core.postgres_backend import PgVectorBackend # noqa E402
+from kogwistar.engine_core.models import ( # noqa E402
+    Grounding, # noqa E402
+    MentionVerification, # noqa E402
+    Span, # noqa E402
+) # noqa E402
+from kogwistar.runtime.models import ( # noqa E402
+    RunSuccess, # noqa E402
+    WorkflowCompletedNode, # noqa E402
+    WorkflowEdge, # noqa E402
+    WorkflowNode, # noqa E402
+) # noqa E402
+from kogwistar.runtime.runtime import WorkflowRuntime # noqa E402
+from tests._helpers.fake_backend import build_fake_backend # noqa E402
+from tests.core._async_chroma_real import ( # noqa E402
+    make_real_async_chroma_backend, # noqa E402
+    real_chroma_server, # noqa E402
+) # noqa E402
 
 
 class FakeEmbeddingFunction:
@@ -239,7 +241,7 @@ def test_runtime_persists_completed_terminal_for_leaf_node(backend_kind):
     root = Path(".tmp_runtime_completed_terminal") / str(uuid.uuid4())
     root.mkdir(parents=True, exist_ok=True)
     try:
-        ef = FakeEmbeddingFunction()
+        ef = cast(EmbeddingFunctionLike, FakeEmbeddingFunction())
         if backend_kind == "fake":
             workflow_engine = GraphKnowledgeEngine(
                 persist_directory=str(root / "wf"),
@@ -277,8 +279,8 @@ def test_runtime_persists_completed_terminal_for_leaf_node(backend_kind):
             _wf_edge(
                 workflow_id=workflow_id,
                 edge_id="wf|start->leaf",
-                src=start.id,
-                dst=leaf.id,
+                src=start.safe_get_id(),
+                dst=leaf.safe_get_id(),
             )
         )
 
@@ -345,8 +347,8 @@ async def test_runtime_persists_completed_terminal_for_leaf_node_async_backends(
             _wf_edge(
                 workflow_id=workflow_id,
                 edge_id="wf|start->leaf",
-                src=start.id,
-                dst=leaf.id,
+                src=start.safe_get_id(),
+                dst=leaf.safe_get_id(),
             ),
         )
 

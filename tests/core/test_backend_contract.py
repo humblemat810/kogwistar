@@ -2,16 +2,18 @@ from __future__ import annotations
 
 import pytest
 
-from kogwistar.conversation.models import ConversationEdge, ConversationNode
+from kogwistar.conversation.models import ConversationEdge, ConversationNode, ConversationRole
 from kogwistar.engine_core.models import Edge, Grounding, Node, Span
 from kogwistar.server.run_registry import RunRegistry
 from tests.conftest import _make_engine_pair
 from tests.core._async_chroma_real import (
     make_real_async_chroma_backend,
     make_real_async_chroma_uow,
-    real_chroma_server,
+    real_chroma_server,  # noqa: F401
 )
-
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from kogwistar.engine_core.engine import GraphKnowledgeEngine
 pytestmark = [pytest.mark.core]
 
 
@@ -78,13 +80,12 @@ def _mk_edge(
         properties=None,
     )
 
-
 def _mk_turn(
     *,
     turn_id: str,
     conversation_id: str,
     user_id: str,
-    role: str,
+    role: ConversationRole,
     turn_index: int,
 ) -> ConversationNode:
     doc_id = f"conv:{conversation_id}"
@@ -166,7 +167,7 @@ def _mk_dependency_edge(
 
 def _make_pair(
     backend_kind: str, tmp_path, request
-) -> tuple[object, object]:
+) -> tuple[GraphKnowledgeEngine, GraphKnowledgeEngine]:
     sa_engine = None
     pg_schema = None
     if backend_kind == "pg":
@@ -267,6 +268,7 @@ async def _assert_collection_crud_and_where_async(
 def test_backend_contract_collection_crud_and_where(
     backend_kind: str, tmp_path, request
 ):
+    kg_engine: GraphKnowledgeEngine
     kg_engine, _conversation_engine = _make_pair(backend_kind, tmp_path, request)
 
     doc_id = f"doc::{backend_kind}"
@@ -502,18 +504,18 @@ def test_backend_contract_conversation_phase1_rules(
     conversation_engine.write.add_node(t3)
 
     seeded = _mk_next_turn_edge(
-        conversation_id=conversation_id, src=t1.id, tgt=t2.id
+        conversation_id=conversation_id, src=t1.safe_get_id(), tgt=t2.safe_get_id()
     )
     conversation_engine.write.add_edge(seeded)
     dup_rows = conversation_engine.backend.edge_get(where={"relation": "next_turn"})
     assert len(dup_rows["ids"]) == 1
     # Phase-1 semantics: an identical add_edge(next_turn) is idempotent, not an error.
     conversation_engine.write.add_edge(
-        _mk_next_turn_edge(conversation_id=conversation_id, src=t1.id, tgt=t2.id)
+        _mk_next_turn_edge(conversation_id=conversation_id, src=t1.safe_get_id(), tgt=t2.safe_get_id())
     )
     dup_rows_after = conversation_engine.backend.edge_get(where={"relation": "next_turn"})
     assert len(dup_rows_after["ids"]) == 1
     with pytest.raises(ValueError):
         conversation_engine.write.add_edge(
-            _mk_dependency_edge(conversation_id=conversation_id, src=t3.id, tgt=t1.id)
+            _mk_dependency_edge(conversation_id=conversation_id, src=t3.safe_get_id(), tgt=t1.safe_get_id())
         )

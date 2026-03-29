@@ -13,7 +13,7 @@ from tests._kg_factories import kg_document
 from tests.core._async_chroma_real import (
     make_real_async_chroma_backend,
     make_real_async_chroma_uow,
-    real_chroma_server,
+    real_chroma_server,  # noqa: F401
 )
 
 pytestmark = pytest.mark.ci_full
@@ -96,7 +96,7 @@ async def _exercise_node_round_trip_case(
 
 
 @pytest.mark.asyncio
-async def test_async_chroma_backend_round_trip(real_chroma_server):
+async def test_async_chroma_backend_round_trip(real_chroma_server): # noqa: F811
     pytest.importorskip("chromadb")
     backend_client, backend, _collections = await make_real_async_chroma_backend(
         real_chroma_server, collection_prefix="async_contract_chroma"

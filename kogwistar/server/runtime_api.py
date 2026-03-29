@@ -156,7 +156,7 @@ def create_runtime_router(
         require_role("ro")
         require_namespace(runtime_namespaces)
         try:
-            await asyncio.to_thread(get_service_r().get_run, run_id)
+            await get_service_r().aget_run(run_id)
         except Exception as exc:  # noqa: BLE001
             raise _as_http_error(exc)
         _runtime_sse_debug_log(stage="open", run_id=run_id, after_seq=after_seq)
@@ -165,9 +165,7 @@ def create_runtime_router(
             last_seq = int(after_seq or 0)
             while True:
                 service = get_service_r()
-                events = await asyncio.to_thread(
-                    service.list_run_events, run_id, after_seq=last_seq
-                )
+                events = await service.alist_run_events(run_id, after_seq=last_seq)
                 _runtime_sse_debug_log(
                     stage="batch",
                     run_id=run_id,
@@ -193,7 +191,7 @@ def create_runtime_router(
                     yield _sse_frame(
                         event_type=evt["event_type"], seq=last_seq, payload=payload
                     )
-                run = await asyncio.to_thread(service.get_run, run_id)
+                run = await service.aget_run(run_id)
                 _runtime_sse_debug_log(
                     stage="post_batch",
                     run_id=run_id,

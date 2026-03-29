@@ -12,7 +12,7 @@ from tests._kg_factories import kg_document, kg_grounding
 from tests.core._async_chroma_real import (
     make_real_async_chroma_backend,
     make_real_async_chroma_uow,
-    real_chroma_server,
+    real_chroma_server,  # noqa: F401
 )
 
 pytestmark = pytest.mark.ci
@@ -33,7 +33,7 @@ class _AsyncEmbeddingFunction:
 
 
 @pytest.mark.asyncio
-async def test_async_embedding_and_document_write_path(real_chroma_server):
+async def test_async_embedding_and_document_write_path(real_chroma_server):  # noqa: F811
     backend_client, backend, collections = await make_real_async_chroma_backend(
         real_chroma_server, collection_prefix="engine_doc"
     )
@@ -42,7 +42,7 @@ async def test_async_embedding_and_document_write_path(real_chroma_server):
 
     eng = GraphKnowledgeEngine(
         persist_directory=str(real_chroma_server.persist_dir),
-        embedding_function=_AsyncEmbeddingFunction(),
+        embedding_function=_AsyncEmbeddingFunction(), # type: ignore
         backend_factory=lambda _engine: backend,
     )
     eng._phase1_enable_index_jobs = False
@@ -88,7 +88,7 @@ async def test_async_embedding_and_node_write_path(real_chroma_server):
 
     eng = GraphKnowledgeEngine(
         persist_directory=str(real_chroma_server.persist_dir),
-        embedding_function=_AsyncEmbeddingFunction(),
+        embedding_function=_AsyncEmbeddingFunction(), # type: ignore
         backend_factory=lambda _engine: backend,
     )
     eng._phase1_enable_index_jobs = False
@@ -123,7 +123,7 @@ async def test_async_embedding_and_node_write_path(real_chroma_server):
             )
         ],
         metadata={"entity_type": "concept"},
-    )
+    ) # type: ignore
 
     node_embedding = (await embedding_fn([node.summary]))[0]
 

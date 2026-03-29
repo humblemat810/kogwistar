@@ -44,7 +44,7 @@ RESERVED_ROOT_KEYS = {
 RESERVED_PREFIXES = ("_", "__")
 
 
-def validate_initial_state(initial_state: dict):
+def validate_initial_state(initial_state: WorkflowState):
     """Validate user-provided initial workflow state.
 
     Workflow state is user-land *except* for a small set of underscore-prefixed
