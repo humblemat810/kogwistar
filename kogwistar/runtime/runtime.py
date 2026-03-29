@@ -606,14 +606,14 @@ class WorkflowRuntime:
         parent_state: WorkflowState,
         invocation: WorkflowInvocationRequest,
     ) -> WorkflowState:
-        child_state: WorkflowState = dict(parent_state)
+        child_state: WorkflowState = dict(parent_state) # type: ignore
         child_state.pop("_rt_join", None)
         if invocation.initial_state:
-            child_state.update(copy.deepcopy(invocation.initial_state))
+            child_state.update(copy.deepcopy(invocation.initial_state)) # type: ignore
 
-        deps = dict(child_state.get("_deps") or parent_state.get("_deps") or {})
-        deps["workflow_runtime"] = self
-        child_state["_deps"] = deps
+        deps = dict(child_state.get("_deps") or parent_state.get("_deps") or {}) # type: ignore
+        deps["workflow_runtime"] = self # type: ignore
+        child_state["_deps"] = deps # type: ignore
         return child_state
 
     def _run_workflow_invocation(
@@ -781,10 +781,12 @@ class WorkflowRuntime:
             ckpts, key=lambda c: int(getattr(c, "metadata", {}).get("step_seq", -1))
         )
         initial_state_raw = getattr(latest_ckpt, "metadata", {}).get("state_json", {})
+        initial_state: WorkflowState
         if isinstance(initial_state_raw, str):
-            initial_state = json.loads(initial_state_raw)
+            # TO-DO add validation
+            initial_state = json.loads(initial_state_raw) 
         elif isinstance(initial_state_raw, dict):
-            initial_state = dict(initial_state_raw)
+            initial_state = dict(initial_state_raw) # type: ignore
         else:
             raise ValueError(
                 f"Cannot resume run {run_id}: checkpoint state_json is not a dict/json string."
@@ -1357,7 +1359,7 @@ class WorkflowRuntime:
                     run_id=str(run_id),
                     token_id=str(run_id),  # root token id is run_id for now
                     step_seq=0,
-                    node_id=str(start_id) if "start_id" in locals() else "start",
+                    node_id=str(start_id) if "start_id" in locals() else "start", # type: ignore  # noqa: F821
                     attempt=1,
                     conversation_id=str(conversation_id)
                     if conversation_id is not None
@@ -1495,6 +1497,7 @@ class WorkflowRuntime:
 
                 t = threading.current_thread()
                 old_name = t.name
+                ctx = None
                 try:
                     t.name = (
                         f"rt-wf-{workflow_id}-wf-{run_id}-step-{step_seq}-{node_id}"
@@ -1604,33 +1607,39 @@ class WorkflowRuntime:
                             mq.put_nowait(res.model_dump())
                         except queue.Full as _e:
                             raise
-                        t1 = _now_ms()
-                        # step attempt complete (best-effort; never break worker)
-                        try:
-                            self.emitter.step_completed(
-                                ctx.trace_ctx,
-                                status=str(status),
-                                duration_ms=max(0, t1 - t0),
-                            )
-                        except Exception:
-                            status = "status_report_error"
-                        if status in ["error", "status_report_error"]:
-                            err_message = f"error on {node_id}, {res}"
-                            # to do, emit fail, then raise
-                            if getattr(wn, "fail_actiion", "raise") == "raise":
-                                raise Exception(err_message)
+                        if type(res) is RunFailure:
+                            pass
+                        else:
+                            t1 = _now_ms()
+                                
+                            # step attempt complete (best-effort; never break worker)
+                            try:
+                                if ctx is None:
+                                    raise ValueError('ctx is None')
+                                self.emitter.step_completed(
+                                    ctx.trace_ctx, 
+                                    status=str(status),
+                                    duration_ms=max(0, t1 - t0),
+                                )
+                            except Exception:
+                                status = "status_report_error"
+                            if status in ["error", "status_report_error"]:
+                                err_message = f"error on {node_id}, {res}"
+                                # to do, emit fail, then raise
+                                if getattr(wn, "fail_actiion", "raise") == "raise":
+                                    raise Exception(err_message)
 
-                        done_q.put(
-                            (
-                                node_id,
-                                res,
-                                max(0, t1 - t0),
-                                token_id,
-                                parent_token_id,
-                                status,
-                                mask,
+                            done_q.put(
+                                (
+                                    node_id,
+                                    res,
+                                    max(0, t1 - t0),
+                                    token_id,
+                                    parent_token_id,
+                                    status,
+                                    mask,
+                                )
                             )
-                        )
                 except Exception as _e:
                     raise
                 finally:
@@ -2776,7 +2785,7 @@ class WorkflowRuntime:
         run_id: str,
         turn_node_id: str,
         status: str,
-    ) -> bool:  # return success failure result
+    ) -> WorkflowRunNode: 
         # current engine always persist on edit, no batch persist mode needed
         from kogwistar.engine_core.models import (
             Grounding,

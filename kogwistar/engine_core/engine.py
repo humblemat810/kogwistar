@@ -57,7 +57,7 @@ from .utils.aliasing import AliasBookStore
     #     verifier=VF.ensemble_default,          # or VF.coverage_only / VF.strict_with_min_span
     # )
     # """
-from typing import TYPE_CHECKING, List, Optional, Dict, Any, Tuple, cast
+from typing import TYPE_CHECKING, List, Optional, Dict, Any, Tuple, cast, TypeVar, ParamSpec
 
 try:
     from typing import Self, TypeAlias
@@ -105,7 +105,6 @@ from typing import (
     Sequence,
     Literal,
     Type,
-    TypeVar,
     Union,
 )
 import math
@@ -137,7 +136,6 @@ if TYPE_CHECKING:
     TEdge = TypeVar("TEdge", bound=Edge)
 
 
-from typing import TypeVar, ParamSpec
 
 P = ParamSpec("P")
 R = TypeVar("R")
@@ -1063,10 +1061,10 @@ class GraphKnowledgeEngine:
             DefaultVerifier,
             PreferExistingCanonical,
             Adjudicator,
+            VerifierConfig
         )
 
         # from .strategies.adjudicators import LLMPairAdjudicatorImpl, LLMBatchAdjudicatorImpl
-        from ..strategies.verifiers import DefaultVerifier, VerifierConfig
         from ..strategies.types import Verifier
         from kogwistar.strategies import IAdjudicator
 

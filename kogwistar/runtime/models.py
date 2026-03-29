@@ -139,7 +139,7 @@ class WorkflowEdge(Edge):
 
     @property
     def priority(self):
-        return int(self.metadata.get("wf_priority"))
+        return int(self.metadata.get("wf_priority")) # type: ignore  ok here, metadata validated at seem
 
 
 class WorkflowDesignArtifact(BaseModel):
