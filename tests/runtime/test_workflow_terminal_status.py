@@ -28,6 +28,7 @@ from kogwistar.runtime.models import ( # noqa E402
 ) # noqa E402
 from kogwistar.runtime.runtime import WorkflowRuntime # noqa E402
 from tests._helpers.fake_backend import build_fake_backend # noqa E402
+from tests.conftest import _is_missing_pgvector_extension # noqa E402
 from tests.core._async_chroma_real import ( # noqa E402
     make_real_async_chroma_backend, # noqa E402
     real_chroma_server, # noqa E402
@@ -201,12 +202,17 @@ async def _async_runtime_engine_pair(backend_kind: str, request, tmp_path):
         await _create_schema_async(async_sa_engine, wf_schema)
         await _create_schema_async(async_sa_engine, conv_schema)
         try:
-            wf_backend = PgVectorBackend(
-                engine=async_sa_engine, embedding_dim=3, schema=wf_schema
-            )
-            conv_backend = PgVectorBackend(
-                engine=async_sa_engine, embedding_dim=3, schema=conv_schema
-            )
+            try:
+                wf_backend = PgVectorBackend(
+                    engine=async_sa_engine, embedding_dim=3, schema=wf_schema
+                )
+                conv_backend = PgVectorBackend(
+                    engine=async_sa_engine, embedding_dim=3, schema=conv_schema
+                )
+            except Exception as exc:
+                if _is_missing_pgvector_extension(exc):
+                    pytest.skip(f"async pg backend unavailable: {exc}")
+                raise
             await wf_backend._ensure_schema_async()
             await conv_backend._ensure_schema_async()
             wf_engine = GraphKnowledgeEngine(

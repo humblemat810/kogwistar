@@ -171,7 +171,16 @@ def _run_async_windows_safe(coro):
             return runner.run(coro)
         finally:
             runner.close()
-    return asyncio.run(coro)
+        return asyncio.run(coro)
+
+
+def _is_missing_pgvector_extension(exc: BaseException) -> bool:
+    msg = str(exc).lower()
+    return (
+        "extension \"vector\" is not available" in msg
+        or "could not open extension control file" in msg
+        or "vector.control" in msg
+    )
 
 
 @pytest.fixture(scope="session")
@@ -978,9 +987,14 @@ def _make_async_engine(
             pytest.skip(
                 "async pg backend requested but async_pg fixtures are unavailable"
             )
-        backend = PgVectorBackend(
-            engine=async_sa_engine, embedding_dim=dim, schema=async_pg_schema
-        )
+        try:
+            backend = PgVectorBackend(
+                engine=async_sa_engine, embedding_dim=dim, schema=async_pg_schema
+            )
+        except Exception as exc:
+            if _is_missing_pgvector_extension(exc):
+                pytest.skip(f"async pg backend unavailable: {exc}")
+            raise
         return GraphKnowledgeEngine(
             persist_directory=str(persist_dir),
             kg_graph_type=graph_kind,
@@ -1305,7 +1319,14 @@ def async_pg_backend(async_sa_engine, async_pg_schema):
         pytest.skip("async pg backend requested but async pg fixtures are unavailable")
     from kogwistar.engine_core.postgres_backend import PgVectorBackend
 
-    return PgVectorBackend(engine=async_sa_engine, embedding_dim=3, schema=async_pg_schema)
+    try:
+        return PgVectorBackend(
+            engine=async_sa_engine, embedding_dim=3, schema=async_pg_schema
+        )
+    except Exception as exc:
+        if _is_missing_pgvector_extension(exc):
+            pytest.skip(f"async pg backend unavailable: {exc}")
+        raise
 
 
 @pytest.fixture()

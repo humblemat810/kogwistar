@@ -16,9 +16,14 @@ from kogwistar.conversation.models import (# noqa: E402
 )
 from kogwistar.engine_core.engine import GraphKnowledgeEngine# noqa: E402
 from kogwistar.engine_core.models import Grounding, Span# noqa: E402
+from kogwistar.engine_core.postgres_backend import PgVectorBackend# noqa: E402
 from kogwistar.id_provider import stable_id# noqa: E402
 from kogwistar.llm_tasks.contracts import SummarizeContextTaskResult# noqa: E402
-from tests.conftest import _install_conversation_policy, _run_async_windows_safe # noqa: E402
+from tests.conftest import (  # noqa: E402
+    _install_conversation_policy,
+    _is_missing_pgvector_extension,
+    _run_async_windows_safe,
+)
 from tests.core._async_chroma_real import make_real_async_chroma_backend # noqa: E402
 
 pytestmark = pytest.mark.ci
@@ -53,18 +58,21 @@ def _build_pg_engine_pair(
 ) -> tuple[GraphKnowledgeEngine, GraphKnowledgeEngine]:
     async_sa_engine = request.getfixturevalue("async_sa_engine")
     async_pg_schema = request.getfixturevalue("async_pg_schema")
-    backend_cls = type(request.getfixturevalue("async_pg_backend"))
-
-    kg_backend = backend_cls(
-        engine=async_sa_engine,
-        embedding_dim=dim,
-        schema=f"{async_pg_schema}_kg",
-    )
-    conv_backend = backend_cls(
-        engine=async_sa_engine,
-        embedding_dim=dim,
-        schema=f"{async_pg_schema}_conv",
-    )
+    try:
+        kg_backend = PgVectorBackend(
+            engine=async_sa_engine,
+            embedding_dim=dim,
+            schema=f"{async_pg_schema}_kg",
+        )
+        conv_backend = PgVectorBackend(
+            engine=async_sa_engine,
+            embedding_dim=dim,
+            schema=f"{async_pg_schema}_conv",
+        )
+    except Exception as exc:
+        if _is_missing_pgvector_extension(exc):
+            pytest.skip(f"async pg backend unavailable: {exc}")
+        raise
     kg_engine = GraphKnowledgeEngine(
         persist_directory=str(tmp_path / "async_pg_kg"),
         kg_graph_type="knowledge",
