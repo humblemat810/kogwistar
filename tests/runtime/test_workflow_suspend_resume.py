@@ -1027,6 +1027,78 @@ def test_workflow_failure_does_not_route_to_terminal(tmp_path, backend_kind):
     assert res.final_state.get("ended") is None
 
 
+@pytest.mark.ci
+def test_workflow_failure_does_not_follow_plain_default_edge(tmp_path):
+    wf_engine = _make_engine(
+        tmp_path / "wf_fail_default_edge",
+        graph_type="workflow",
+        backend_kind="fake",
+    )
+    conv_engine = _make_engine(
+        tmp_path / "conv_fail_default_edge",
+        graph_type="conversation",
+        backend_kind="fake",
+    )
+
+    wf_id = "test_failure_default_edge_unmatched"
+    _create_node(wf_engine, wf_id, "n_start", "start_op", start=True)
+    _create_node(wf_engine, wf_id, "n_exec", "exec_op")
+    _create_node(wf_engine, wf_id, "n_end", "end_op", terminal=True)
+    _create_edge(wf_engine, wf_id, "n_start", "n_exec")
+    _create_edge(wf_engine, wf_id, "n_exec", "n_end", is_default=True)
+
+    resolver = MappingStepResolver()
+
+    @resolver.register("start_op")
+    def _start(ctx: StepContext):
+        return RunSuccess(
+            conversation_node_id=None, state_update=[("u", {"started": True})]
+        )
+
+    @resolver.register("exec_op")
+    def _exec(ctx: StepContext):
+        return RunFailure(
+            conversation_node_id=None,
+            state_update=[("u", {"failed_once": True})],
+            errors=["boom"],
+        )
+
+    @resolver.register("end_op")
+    def _end(ctx: StepContext):
+        return RunSuccess(
+            conversation_node_id=None, state_update=[("u", {"ended": True})]
+        )
+
+    runtime = WorkflowRuntime(
+        workflow_engine=wf_engine,
+        conversation_engine=conv_engine,
+        step_resolver=resolver,
+        predicate_registry={},
+        checkpoint_every_n_steps=1,
+    )
+
+    res = runtime.run(
+        workflow_id=wf_id,
+        conversation_id=f"conv_{uuid.uuid4().hex}",
+        turn_node_id="turn_1",
+        initial_state={
+            "conversation_id": "test",
+            "user_id": "test",
+            "turn_node_id": "test",
+            "turn_index": 0,
+            "role": "user",
+            "user_text": "",
+            "mem_id": "test",
+        },  # type: ignore
+        run_id=f"run_{uuid.uuid4().hex}",
+    )
+
+    assert res.status == "failure"
+    assert res.final_state.get("started") is True
+    assert res.final_state.get("failed_once") is True
+    assert res.final_state.get("ended") is None
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("backend_kind", ASYNC_BACKEND_PARAMS)
 async def test_workflow_failure_does_not_route_to_terminal_async_backends(

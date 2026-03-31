@@ -2087,15 +2087,6 @@ class WorkflowRuntime:
                         _checkpoint_current_step()
                         continue
 
-                    if status == "failure":
-                        # Treat failure as a terminal stop for this token. The run will
-                        # still finish as a failed run once all in-flight work drains.
-                        run_failed = True
-                        _dec(mask)
-                        _persist_rt_join_runtime()
-                        _checkpoint_current_step()
-                        continue
-
                     # route
                     if wn.terminal or len(adj.get(node_id, [])) == 0:
                         # token ends here -> it will never reach any remaining joins
@@ -2378,6 +2369,8 @@ class WorkflowRuntime:
             if explicit_matches:
                 return explicit_matches, decision
 
+        failure_only = getattr(last_result, "status", None) == "failure"
+
         # (1) explicit predicates
         for e in edges:
             e: WorkflowEdge
@@ -2422,8 +2415,12 @@ class WorkflowRuntime:
                 if not candidates:
                     candidates.append(next_node_id)
                 return candidates, decision
-        # if matched:
-        #     return (matched if fanout else matched[0:1]), decision
+
+        # Failure routing only considers explicit `_route_next` targets or
+        # predicates that inspect the failed result. If neither matched, the
+        # failure is unmatched and the token should terminate as failure.
+        if failure_only:
+            return [], decision
 
         # (2) unconditional edges (node-level decision)
         from typing import cast
