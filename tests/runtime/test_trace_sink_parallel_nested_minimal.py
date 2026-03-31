@@ -186,7 +186,7 @@ def _build_inner(workflow_engine: GraphKnowledgeEngine, workflow_id: str) -> Non
 @pytest.mark.parametrize(
     "backend_kind",
     [
-        pytest.param("fake", id="fake", marks=pytest.mark.ci),
+        pytest.param("fake", id="fake", marks=pytest.mark.ci_full),
         pytest.param("chroma", id="chroma", marks=pytest.mark.ci_full),
         pytest.param("pg", id="pg", marks=pytest.mark.ci_full),
     ],

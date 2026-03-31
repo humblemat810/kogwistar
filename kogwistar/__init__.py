@@ -6,6 +6,8 @@ from importlib import import_module
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+__version__ = "0.1.0"
+
 if TYPE_CHECKING:
     from kogwistar.conversation.conversation_orchestrator import (
         ConversationOrchestrator,

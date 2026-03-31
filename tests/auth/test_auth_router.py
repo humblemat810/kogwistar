@@ -1,8 +1,12 @@
+import os
 import pytest
 pytest.importorskip("fastapi")
 pytest.importorskip("fastmcp")
 pytest.importorskip("sqlalchemy")
 from fastapi.testclient import TestClient
+
+os.environ.setdefault("JWT_SECRET", "dev-secret")
+os.environ.setdefault("JWT_ALG", "HS256")
 
 pytestmark = pytest.mark.ci
 from kogwistar.server_mcp_with_admin import app, JWT_SECRET, JWT_ALG

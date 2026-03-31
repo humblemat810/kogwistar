@@ -141,7 +141,10 @@ class PredAlwaysTrue(BasePredicate):
 
 def dump_langgraph_image(compiled: CompiledStateGraph, name="graph"):
     graph = compiled.get_graph()
-    png_bytes = graph.draw_png()
+    try:
+        png_bytes = graph.draw_png()
+    except ImportError:
+        return
     out = Path(f"{name}.png")
     out.write_bytes(png_bytes)
 

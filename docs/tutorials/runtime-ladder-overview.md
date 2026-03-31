@@ -50,7 +50,8 @@ python scripts/runtime_tutorial_ladder.py level4 --data-dir .gke-data/runtime-tu
 - `workflow_step_exec` nodes: persisted per-step execution records.
 - `workflow/wf_trace.sqlite`: SQLite trace sink for step, routing, join, checkpoint, and run lifecycle events.
 - `kogwistar/scripts/workflow.bundle.cdc.script.hl3.html`: bundled viewer asset for CDC/graph inspection.
-- `/api/workflow/runs/{run_id}/events`: hosted event stream path for run events.
+- `/api/workflow/runs/{run_id}/events`: hosted event stream path for workflow runs.
+- `/api/runs/{run_id}/events`: conversation run event stream path used by the chat API guide.
 
 ## Native Runtime vs LangGraph
 

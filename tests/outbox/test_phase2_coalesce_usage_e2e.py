@@ -8,7 +8,7 @@ pytestmark = pytest.mark.core
 from kogwistar.engine_core.chroma_backend import ChromaBackend
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.models import Node, Grounding, Span
-from tests._helpers.fake_backend import build_fake_backend
+from tests._helpers.fake_backend import InMemoryBackend, build_fake_backend
 from tests.conftest import FakeEmbeddingFunction
 
 
@@ -93,9 +93,14 @@ def e2e_engine(
 def _assert_backend_kind(eng: GraphKnowledgeEngine) -> None:
     kind = getattr(eng, "_test_backend_kind", None)
     if kind == "pg":
+        from kogwistar.engine_core.postgres_backend import PgVectorBackend
         assert isinstance(eng.backend, PgVectorBackend)
-    else:
+    elif kind == "chroma":
         assert isinstance(eng.backend, ChromaBackend)
+    elif kind == "fake":
+        assert isinstance(eng.backend, InMemoryBackend)
+    else:
+        raise AssertionError(f"unknown test backend kind: {kind!r}")
 
 
 def test_phase2_coalescing_sample_usage(e2e_engine: GraphKnowledgeEngine):
@@ -171,7 +176,13 @@ def test_phase2_enqueue_while_doing_creates_new_pending(
     # Force J1 into DOING with a *future* lease_until to simulate an active worker.
     if hasattr(eng.meta_sqlite, "transaction"):
         with eng.meta_sqlite.transaction() as conn:
+            from kogwistar.engine_core.engine_postgres_meta import (
+                EnginePostgresMetaStore,
+            )
+
             if isinstance(eng.meta_sqlite, EnginePostgresMetaStore):
+                import sqlalchemy as sa
+
                 schema = eng.meta_sqlite.schema
                 table = getattr(eng.meta_sqlite, "index_jobs_table", "index_jobs")
                 if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", schema):

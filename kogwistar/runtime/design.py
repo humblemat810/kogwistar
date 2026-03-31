@@ -80,6 +80,30 @@ class WorkflowSpec:
     out_edges: Dict[str, List[WFEdge]]
 
 
+def _engine_get_nodes(workflow_engine: Any, **kwargs):
+    reader = getattr(workflow_engine, "read", workflow_engine)
+    getter = getattr(reader, "get_nodes", None)
+    if getter is None:
+        raise AttributeError("workflow_engine does not provide get_nodes")
+    try:
+        return getter(**kwargs)
+    except TypeError:
+        kwargs.pop("node_type", None)
+        return getter(**kwargs)
+
+
+def _engine_get_edges(workflow_engine: Any, **kwargs):
+    reader = getattr(workflow_engine, "read", workflow_engine)
+    getter = getattr(reader, "get_edges", None)
+    if getter is None:
+        raise AttributeError("workflow_engine does not provide get_edges")
+    try:
+        return getter(**kwargs)
+    except TypeError:
+        kwargs.pop("edge_type", None)
+        return getter(**kwargs)
+
+
 def build_workflow_from_engine(
     *, workflow_engine: Any, workflow_id: str
 ) -> WorkflowSpec:
@@ -94,13 +118,15 @@ def build_workflow_from_engine(
       edge.metadata["entity_type"] == "workflow_edge"
     """
 
-    nodes_raw = workflow_engine.read.get_nodes(
+    nodes_raw = _engine_get_nodes(
+        workflow_engine,
         where={
             "$and": [{"entity_type": "workflow_node"}, {"workflow_id": workflow_id}]
         },
         limit=5000,
     )
-    edges_raw = workflow_engine.read.get_edges(
+    edges_raw = _engine_get_edges(
+        workflow_engine,
         where={
             "$and": [{"entity_type": "workflow_edge"}, {"workflow_id": workflow_id}]
         },
@@ -187,14 +213,16 @@ def load_workflow_design(
       node.metadata.entity_type="workflow_node"
       edge.metadata.entity_type="workflow_edge"
     """
-    nodes_raw: list[WorkflowNode] = workflow_engine.read.get_nodes(
+    nodes_raw: list[WorkflowNode] = _engine_get_nodes(
+        workflow_engine,
         where={
             "$and": [{"entity_type": "workflow_node"}, {"workflow_id": workflow_id}]
         },
         limit=5000,
         node_type=WorkflowNode,
     )
-    edges_raw: list[WorkflowEdge] = workflow_engine.read.get_edges(
+    edges_raw: list[WorkflowEdge] = _engine_get_edges(
+        workflow_engine,
         where={
             "$and": [{"entity_type": "workflow_edge"}, {"workflow_id": workflow_id}]
         },

@@ -612,7 +612,7 @@ def _deterministic_llm_tasks(*, knowledge_key: str) -> LLMTaskSet:
 @pytest.mark.parametrize(
     "backend_kind,llm_mode",
     [
-        pytest.param("chroma", "fake", id="chroma_fake", marks=[pytest.mark.ci]),
+        pytest.param("chroma", "fake", id="chroma_fake", marks=[pytest.mark.ci_full]),
         pytest.param("pg", "fake", id="pg_fake", marks=[pytest.mark.ci_full]),
         pytest.param(
             "chroma",

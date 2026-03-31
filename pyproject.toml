@@ -1,16 +1,26 @@
 [build-system]
-requires = ["setuptools>=69", "wheel", "setuptools-scm[toml]>=8"]
+requires = ["setuptools>=69", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "kogwistar"
-dynamic = ["version"]
+version = "0.1.0"
 description = "Graph-native agent harness and substrate for knowledge, memory, workflow, and MCP tooling"
 keywords = ["agent harness", "agent substrate", "graph-native", "knowledge graph", "memory", "workflow", "mcp"]
-readme = "README.md"
+readme = { file = "README.md", content-type = "text/markdown" }
 license = { file = "LICENSE" }
 requires-python = ">=3.12"
 authors = [{ name = "Peter Chan", email = "humblemat@gmail.com" }]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Software Development :: Libraries",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+]
 
 dependencies = [
   "pydantic-extension>=0.0.7",
@@ -28,6 +38,11 @@ dependencies = [
   "requests>=2.32",
   "typing-extensions>=4.8"
 ]
+
+[project.urls]
+Homepage = "https://github.com/humblemat810/kogwistar"
+Repository = "https://github.com/humblemat810/kogwistar"
+Issues = "https://github.com/humblemat810/kogwistar/issues"
 
 [project.optional-dependencies]
 chroma = ["chromadb>=1.0.15"]
@@ -73,6 +88,7 @@ knowledge-mcp = "kogwistar.server_mcp_with_admin:main"
 
 [tool.setuptools]
 package-dir = {"" = "."}
+include-package-data = true
 
 [tool.setuptools.packages.find]
 where = ["."]
@@ -81,6 +97,9 @@ exclude = ["*.tests*", "*.test*", "tests*", "examples*", "diagnostic*"]
 
 [tool.setuptools.package-data]
 kogwistar = ["templates/*.html"]
+
+[tool.setuptools.exclude-package-data]
+kogwistar = [".env", ".env.*", "*.env", "*.env.*", "*.sqlite", "*.db", "*.pem", "*.key", "*.pfx", "*.p12", "*.crt", "*.cer"]
 
 [tool.pytest.ini_options]
 markers = [

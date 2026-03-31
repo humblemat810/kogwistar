@@ -268,27 +268,7 @@ from .telemetry import (
     bind_logger,
     BoundLoggerAdapter,
 )
-
-# ------------------------------------------------------------------
-# Shared trace sink cache (process-local)
-# ------------------------------------------------------------------
-# Multiple WorkflowRuntime instances (including nested runs) may point at the same
-# persist_directory. Creating multiple SQLiteEventSink writers for the same DB path
-# is a common source of contention. For "quick fix" safety, we share a single sink
-# instance per db_path inside this process.
-_SINK_CACHE: dict[str, SQLiteEventSink] = {}
-_SINK_CACHE_LOCK = threading.Lock()
-
-
-def _get_shared_sqlite_sink(
-    db_path: str, *, drop_when_full: bool = True
-) -> SQLiteEventSink:
-    with _SINK_CACHE_LOCK:
-        sink = _SINK_CACHE.get(db_path)
-        if sink is None:
-            sink = SQLiteEventSink(db_path=db_path, drop_when_full=drop_when_full)
-            _SINK_CACHE[db_path] = sink
-        return sink
+from kogwistar.cdc.sqlite_sink import _get_shared_sqlite_sink
 
 
 @dataclass
@@ -1607,17 +1587,14 @@ class WorkflowRuntime:
                             mq.put_nowait(res.model_dump())
                         except queue.Full as _e:
                             raise
-                        if type(res) is RunFailure:
-                            pass
-                        else:
-                            t1 = _now_ms()
-                                
+                        t1 = _now_ms()
+                        if type(res) is not RunFailure:
                             # step attempt complete (best-effort; never break worker)
                             try:
                                 if ctx is None:
-                                    raise ValueError('ctx is None')
+                                    raise ValueError("ctx is None")
                                 self.emitter.step_completed(
-                                    ctx.trace_ctx, 
+                                    ctx.trace_ctx,
                                     status=str(status),
                                     duration_ms=max(0, t1 - t0),
                                 )
@@ -1629,17 +1606,17 @@ class WorkflowRuntime:
                                 if getattr(wn, "fail_actiion", "raise") == "raise":
                                     raise Exception(err_message)
 
-                            done_q.put(
-                                (
-                                    node_id,
-                                    res,
-                                    max(0, t1 - t0),
-                                    token_id,
-                                    parent_token_id,
-                                    status,
-                                    mask,
-                                )
+                        done_q.put(
+                            (
+                                node_id,
+                                res,
+                                max(0, t1 - t0),
+                                token_id,
+                                parent_token_id,
+                                status,
+                                mask,
                             )
+                        )
                 except Exception as _e:
                     raise
                 finally:
@@ -2110,15 +2087,6 @@ class WorkflowRuntime:
                         _checkpoint_current_step()
                         continue
 
-                    if status == "failure":
-                        # Treat failure as a terminal stop for this token. The run will
-                        # still finish as a failed run once all in-flight work drains.
-                        run_failed = True
-                        _dec(mask)
-                        _persist_rt_join_runtime()
-                        _checkpoint_current_step()
-                        continue
-
                     # route
                     if wn.terminal or len(adj.get(node_id, [])) == 0:
                         # token ends here -> it will never reach any remaining joins
@@ -2401,6 +2369,8 @@ class WorkflowRuntime:
             if explicit_matches:
                 return explicit_matches, decision
 
+        failure_only = getattr(last_result, "status", None) == "failure"
+
         # (1) explicit predicates
         for e in edges:
             e: WorkflowEdge
@@ -2445,8 +2415,12 @@ class WorkflowRuntime:
                 if not candidates:
                     candidates.append(next_node_id)
                 return candidates, decision
-        # if matched:
-        #     return (matched if fanout else matched[0:1]), decision
+
+        # Failure routing only considers explicit `_route_next` targets or
+        # predicates that inspect the failed result. If neither matched, the
+        # failure is unmatched and the token should terminate as failure.
+        if failure_only:
+            return [], decision
 
         # (2) unconditional edges (node-level decision)
         from typing import cast

@@ -8,14 +8,14 @@ pytest.importorskip("chromadb")
 
 from tests.core._async_chroma_real import (
     make_real_async_chroma_backend,
-    real_chroma_server,
+    real_chroma_server,  # noqa: F401
 )
 
 pytestmark = pytest.mark.ci
 
 
 @pytest.mark.asyncio
-async def test_async_chroma_backend_crud_round_trip(real_chroma_server):
+async def test_async_chroma_backend_crud_round_trip(real_chroma_server):  # noqa: F811
     _, backend, collections = await make_real_async_chroma_backend(
         real_chroma_server, collection_prefix="backend_crud"
     )
