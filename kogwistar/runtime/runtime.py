@@ -1587,17 +1587,14 @@ class WorkflowRuntime:
                             mq.put_nowait(res.model_dump())
                         except queue.Full as _e:
                             raise
-                        if type(res) is RunFailure:
-                            pass
-                        else:
-                            t1 = _now_ms()
-                                
+                        t1 = _now_ms()
+                        if type(res) is not RunFailure:
                             # step attempt complete (best-effort; never break worker)
                             try:
                                 if ctx is None:
-                                    raise ValueError('ctx is None')
+                                    raise ValueError("ctx is None")
                                 self.emitter.step_completed(
-                                    ctx.trace_ctx, 
+                                    ctx.trace_ctx,
                                     status=str(status),
                                     duration_ms=max(0, t1 - t0),
                                 )
@@ -1609,17 +1606,17 @@ class WorkflowRuntime:
                                 if getattr(wn, "fail_actiion", "raise") == "raise":
                                     raise Exception(err_message)
 
-                            done_q.put(
-                                (
-                                    node_id,
-                                    res,
-                                    max(0, t1 - t0),
-                                    token_id,
-                                    parent_token_id,
-                                    status,
-                                    mask,
-                                )
+                        done_q.put(
+                            (
+                                node_id,
+                                res,
+                                max(0, t1 - t0),
+                                token_id,
+                                parent_token_id,
+                                status,
+                                mask,
                             )
+                        )
                 except Exception as _e:
                     raise
                 finally:

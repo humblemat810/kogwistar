@@ -5,10 +5,13 @@ import re
 import pytest
 pytestmark = pytest.mark.core
 
+import sqlalchemy as sa
+
 from kogwistar.engine_core.chroma_backend import ChromaBackend
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.engine_core.engine_postgres_meta import EnginePostgresMetaStore
 from kogwistar.engine_core.models import Node, Grounding, Span
-from tests._helpers.fake_backend import build_fake_backend
+from tests._helpers.fake_backend import InMemoryBackend, build_fake_backend
 from tests.conftest import FakeEmbeddingFunction
 
 
@@ -93,9 +96,14 @@ def e2e_engine(
 def _assert_backend_kind(eng: GraphKnowledgeEngine) -> None:
     kind = getattr(eng, "_test_backend_kind", None)
     if kind == "pg":
+        from kogwistar.engine_core.postgres_backend import PgVectorBackend
         assert isinstance(eng.backend, PgVectorBackend)
-    else:
+    elif kind == "chroma":
         assert isinstance(eng.backend, ChromaBackend)
+    elif kind == "fake":
+        assert isinstance(eng.backend, InMemoryBackend)
+    else:
+        raise AssertionError(f"unknown test backend kind: {kind!r}")
 
 
 def test_phase2_coalescing_sample_usage(e2e_engine: GraphKnowledgeEngine):

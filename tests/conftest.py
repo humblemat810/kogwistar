@@ -546,6 +546,7 @@ _LIGHTWEIGHT_CI_FILE_BLOCKERS = {
     "test_node_edge_ref.py",
     "test_engine_sqlite_uow_join.py",
     "test_shortids_smoke.py",
+    "test_conversation_flow_v2_param_e2e.py",
     "test_verify_mentions.py",
 }
 _LIGHTWEIGHT_CI_IMPORT_BLOCKERS = (
@@ -605,7 +606,11 @@ def _path_contains_blocked_lightweight_import(collection_path: Path) -> bool:
     return False
 
 
-def pytest_ignore_collect(collection_path: Path, config: pytest.Config) -> bool:
+def pytest_ignore_collect(**kwargs) -> bool:
+    collection_path = kwargs.get("collection_path", kwargs.get("path"))
+    config = kwargs.get("config")
+    if collection_path is None or config is None:
+        return False
     collection_path = pathlib.Path(str(collection_path))
     if any(part.startswith(".tmp") for part in collection_path.parts):
         return True
@@ -615,6 +620,8 @@ def pytest_ignore_collect(collection_path: Path, config: pytest.Config) -> bool:
         return False
     if "tests" not in collection_path.parts:
         return False
+    if collection_path.name in _LIGHTWEIGHT_CI_FILE_BLOCKERS:
+        return True
     if any(part in _LIGHTWEIGHT_CI_DIR_BLOCKERS for part in collection_path.parts):
         return True
     return _path_contains_blocked_lightweight_import(collection_path)

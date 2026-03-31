@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from urllib.parse import parse_qs, urlparse
 
 import httpx
@@ -9,6 +10,9 @@ pytest.importorskip("fastmcp")
 pytest.importorskip("sqlalchemy")
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import sessionmaker
+
+os.environ.setdefault("JWT_SECRET", "dev-secret")
+os.environ.setdefault("JWT_ALG", "HS256")
 
 import kogwistar.server_mcp_with_admin as server
 from kogwistar.server.auth.db import create_auth_engine, init_auth_db

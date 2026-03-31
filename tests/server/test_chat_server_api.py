@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import time
 import uuid
@@ -14,6 +15,9 @@ pytest.importorskip("fastmcp")
 pytest.importorskip("sqlalchemy")
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
+
+os.environ.setdefault("JWT_SECRET", "dev-secret")
+os.environ.setdefault("JWT_ALG", "HS256")
 
 import kogwistar.server_mcp_with_admin as server
 from kogwistar.conversation.agentic_answering_design import DEBUG_RAG_WORKFLOW_ID
