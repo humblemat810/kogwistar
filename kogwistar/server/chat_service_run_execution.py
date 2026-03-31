@@ -11,7 +11,7 @@ from kogwistar.conversation.models import (
     MetaFromLastSummary,
 )
 from kogwistar.id_provider import new_id_str
-from kogwistar.runtime.runtime import _get_shared_sqlite_sink
+from kogwistar.cdc.sqlite_sink import _get_shared_sqlite_sink
 from kogwistar.runtime.telemetry import EventEmitter
 
 from .chat_service_shared import (

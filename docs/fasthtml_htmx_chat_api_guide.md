@@ -425,6 +425,13 @@ Authorization:
 
 This returns `text/event-stream`.
 
+Client note:
+
+- This endpoint is bearer-authenticated.
+- Native browser `EventSource` cannot send an `Authorization` header.
+- If your client stores the JWT in session storage, use `fetch()` plus a streaming parser.
+- If you already have a server-side session or proxy that injects auth, `EventSource` is fine.
+
 Each event frame uses:
 
 ```text
@@ -461,32 +468,49 @@ Resume behavior:
 - Persist the last event `id`
 - Reconnect with `after_seq=<last_id>`
 
-Example SSE hookup:
+Example bearer-authenticated SSE reader:
 
 ```js
-function watchRunEvents(runId, afterSeq = 0) {
-  const es = new EventSource(`/api/runs/${runId}/events?after_seq=${afterSeq}`);
-
-  es.addEventListener("run.stage", (evt) => {
-    const data = JSON.parse(evt.data);
-    console.log("stage", data.stage);
+async function watchRunEvents(runId, token, afterSeq = 0, onEvent) {
+  const resp = await fetch(`/api/runs/${runId}/events?after_seq=${afterSeq}`, {
+    headers: { Authorization: `Bearer ${token}` },
   });
 
-  es.addEventListener("reasoning.summary", (evt) => {
-    const data = JSON.parse(evt.data);
-    console.log("summary", data.summary);
-  });
+  if (!resp.ok || !resp.body) {
+    throw new Error(`SSE request failed: ${resp.status}`);
+  }
 
-  es.addEventListener("output.delta", (evt) => {
-    const data = JSON.parse(evt.data);
-    console.log("delta", data.delta);
-  });
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let currentEventId = null;
+  let currentEventType = null;
+  let currentData = "";
 
-  es.addEventListener("run.completed", () => es.close());
-  es.addEventListener("run.failed", () => es.close());
-  es.addEventListener("run.cancelled", () => es.close());
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
 
-  return es;
+    buffer += decoder.decode(value, { stream: true });
+    const frames = buffer.split("\n\n");
+    buffer = frames.pop() ?? "";
+
+    for (const frame of frames) {
+      currentEventId = null;
+      currentEventType = null;
+      currentData = "";
+
+      for (const line of frame.split("\n")) {
+        if (line.startsWith("id: ")) currentEventId = line.slice(4);
+        if (line.startsWith("event: ")) currentEventType = line.slice(7);
+        if (line.startsWith("data: ")) currentData += line.slice(6);
+      }
+
+      if (currentEventType && currentData) {
+        onEvent(currentEventType, JSON.parse(currentData), currentEventId);
+      }
+    }
+  }
 }
 ```
 

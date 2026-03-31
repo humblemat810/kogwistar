@@ -23,7 +23,7 @@ Expected output fields:
 
 - `"trace_event_types"`: includes step lifecycle, routing, join, checkpoint, and suspension events
 - `"cdc_viewer_html"`: bundled viewer asset path
-- `"runtime_event_endpoint"`: hosted event stream path for a run
+- `"runtime_event_endpoint"`: hosted event stream path for a workflow run
 - `"langgraph"`: converter status and output summary
 - `"checkpoint_pass": true`
 
@@ -31,14 +31,14 @@ Expected output fields:
 
 - Confirm the trace event inventory includes run, step, edge, join, and checkpoint lifecycle.
 - Confirm the viewer asset path exists on disk.
-- Confirm the runtime event endpoint exposes the same run as a stream-friendly surface.
+- Confirm the runtime event endpoint exposes the workflow run as a stream-friendly surface.
 
 ## What This Level Teaches
 
 - Runtime telemetry is written to the SQLite trace sink at `workflow/wf_trace.sqlite`.
 - Useful event types include `step_attempt_started`, `edge_selected`, `join_released`, `checkpoint_saved`, and `workflow_run_completed`.
 - The script also confirms suspension by reading checkpoint frontier state, because some environments may not surface `workflow_step_suspended` in the trace sink even when the run really paused and resumed.
-- Hosted consumers can read the same run stream from `/api/workflow/runs/{run_id}/events`.
+- Hosted consumers can read the same workflow run stream from `/api/workflow/runs/{run_id}/events`.
 
 ## LangGraph Positioning
 
