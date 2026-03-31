@@ -171,7 +171,7 @@ def _run_async_windows_safe(coro):
             return runner.run(coro)
         finally:
             runner.close()
-        return asyncio.run(coro)
+    return asyncio.run(coro)
 
 
 def _is_missing_pgvector_extension(exc: BaseException) -> bool:
