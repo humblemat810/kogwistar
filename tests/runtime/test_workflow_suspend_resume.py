@@ -1885,6 +1885,98 @@ async def test_workflow_failure_can_route_to_recovery_branch_async_backends(
         assert res.final_state.get("ended") is True
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backend_kind", ASYNC_BACKEND_PARAMS)
+async def test_workflow_failure_does_not_take_default_recovery_edge_async_backends(
+    tmp_path, backend_kind, request
+):
+    async with _async_runtime_engine_pair(backend_kind, request, tmp_path) as (
+        wf_engine,
+        conv_engine,
+    ):
+        wf_id = "test_failure_default_recovery_async"
+        await asyncio.to_thread(
+            _create_node, wf_engine, wf_id, "start", "start_op", True, False
+        )
+        await asyncio.to_thread(_create_node, wf_engine, wf_id, "exec", "exec_op")
+        await asyncio.to_thread(
+            _create_node, wf_engine, wf_id, "recover", "recover_op"
+        )
+        await asyncio.to_thread(
+            _create_node, wf_engine, wf_id, "end", "end_op", False, True
+        )
+        await asyncio.to_thread(_create_edge, wf_engine, wf_id, "start", "exec")
+        await asyncio.to_thread(
+            _create_edge,
+            wf_engine,
+            wf_id,
+            "exec",
+            "recover",
+            label="recover_by_default",
+            is_default=True,
+        )
+        await asyncio.to_thread(_create_edge, wf_engine, wf_id, "recover", "end")
+
+        resolver = MappingStepResolver()
+
+        @resolver.register("start_op")
+        def _start(ctx: StepContext):
+            return RunSuccess(
+                conversation_node_id=None, state_update=[("u", {"started": True})]
+            )
+
+        @resolver.register("exec_op")
+        def _exec(ctx: StepContext):
+            return RunFailure(
+                conversation_node_id=None,
+                state_update=[("u", {"failed_once": True})],
+                errors=["boom"],
+            )
+
+        @resolver.register("recover_op")
+        def _recover(ctx: StepContext):
+            return RunSuccess(
+                conversation_node_id=None, state_update=[("u", {"recovered": True})]
+            )
+
+        @resolver.register("end_op")
+        def _end(ctx: StepContext):
+            return RunSuccess(
+                conversation_node_id=None, state_update=[("u", {"ended": True})]
+            )
+
+        runtime = WorkflowRuntime(
+            workflow_engine=wf_engine,
+            conversation_engine=conv_engine,
+            step_resolver=resolver,
+            predicate_registry={},
+            checkpoint_every_n_steps=1,
+        )
+
+        res = await asyncio.to_thread(
+            runtime.run,
+            workflow_id=wf_id,
+            conversation_id=f"conv_{uuid.uuid4().hex}",
+            turn_node_id="turn_1",
+            initial_state={
+                "conversation_id": "test",
+                "user_id": "test",
+                "turn_node_id": "test",
+                "turn_index": 0,
+                "role": "user",
+                "user_text": "",
+                "mem_id": "test",
+            },
+            run_id=f"run_{uuid.uuid4().hex}",
+        )
+
+        assert res.status == "failure"
+        assert res.final_state.get("started") is True
+        assert res.final_state.get("failed_once") is True
+        assert res.final_state.get("recovered") is None
+        assert res.final_state.get("ended") is None
+
+
 @pytest.mark.parametrize("backend_kind", BACKEND_PARAMS)
 def test_workflow_failure_can_route_to_recovery_branch(
     tmp_path, backend_kind
@@ -1970,6 +2062,96 @@ def test_workflow_failure_can_route_to_recovery_branch(
     assert res.final_state.get("failed_once") is True
     assert res.final_state.get("recovered") is True
     assert res.final_state.get("ended") is True
+
+
+@pytest.mark.parametrize("backend_kind", BACKEND_PARAMS)
+def test_workflow_failure_does_not_take_default_recovery_edge(
+    tmp_path, backend_kind
+):
+    wf_engine = _make_engine(
+        tmp_path / "wf_fail_default_recovery",
+        graph_type="workflow",
+        backend_kind=backend_kind,
+    )
+    conv_engine = _make_engine(
+        tmp_path / "conv_fail_default_recovery",
+        graph_type="conversation",
+        backend_kind=backend_kind,
+    )
+
+    wf_id = "test_failure_default_recovery"
+    _create_node(wf_engine, wf_id, "start", "start_op", start=True)
+    _create_node(wf_engine, wf_id, "exec", "exec_op")
+    _create_node(wf_engine, wf_id, "recover", "recover_op")
+    _create_node(wf_engine, wf_id, "end", "end_op", terminal=True)
+    _create_edge(wf_engine, wf_id, "start", "exec")
+    _create_edge(
+        wf_engine,
+        wf_id,
+        "exec",
+        "recover",
+        label="recover_by_default",
+        is_default=True,
+    )
+    _create_edge(wf_engine, wf_id, "recover", "end")
+
+    resolver = MappingStepResolver()
+
+    @resolver.register("start_op")
+    def _start(ctx: StepContext):
+        return RunSuccess(
+            conversation_node_id=None, state_update=[("u", {"started": True})]
+        )
+
+    @resolver.register("exec_op")
+    def _exec(ctx: StepContext):
+        return RunFailure(
+            conversation_node_id=None,
+            state_update=[("u", {"failed_once": True})],
+            errors=["boom"],
+        )
+
+    @resolver.register("recover_op")
+    def _recover(ctx: StepContext):
+        return RunSuccess(
+            conversation_node_id=None, state_update=[("u", {"recovered": True})]
+        )
+
+    @resolver.register("end_op")
+    def _end(ctx: StepContext):
+        return RunSuccess(
+            conversation_node_id=None, state_update=[("u", {"ended": True})]
+        )
+
+    runtime = WorkflowRuntime(
+        workflow_engine=wf_engine,
+        conversation_engine=conv_engine,
+        step_resolver=resolver,
+        predicate_registry={},
+        checkpoint_every_n_steps=1,
+    )
+
+    res = runtime.run(
+        workflow_id=wf_id,
+        conversation_id=f"conv_{uuid.uuid4().hex}",
+        turn_node_id="turn_1",
+        initial_state={
+            "conversation_id": "test",
+            "user_id": "test",
+            "turn_node_id": "test",
+            "turn_index": 0,
+            "role": "user",
+            "user_text": "",
+            "mem_id": "test",
+        },  # type: ignore
+        run_id=f"run_{uuid.uuid4().hex}",
+    )
+
+    assert res.status == "failure"
+    assert res.final_state.get("started") is True
+    assert res.final_state.get("failed_once") is True
+    assert res.final_state.get("recovered") is None
+    assert res.final_state.get("ended") is None
 
 
 @pytest.mark.parametrize("backend_kind", BACKEND_PARAMS)
