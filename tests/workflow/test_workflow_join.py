@@ -45,6 +45,8 @@ class FakeConversationEngine:
     def __init__(self) -> None:
         self.nodes = []
         self.edges = []
+        self.read = self
+        self.write = self
 
     def add_node(self, n):
         self.nodes.append(n)
@@ -65,6 +67,8 @@ class FakeWorkflowEngine:
     def __init__(self, nodes: List[FakeNode], edges: List[FakeEdge]) -> None:
         self._nodes = nodes
         self._edges = edges
+        self.read = self
+        self.write = self
 
     def get_nodes(self, where=None, limit=5000, **kwarg):
         # ignore where in tests

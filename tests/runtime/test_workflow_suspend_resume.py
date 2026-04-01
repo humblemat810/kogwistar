@@ -1,5 +1,6 @@
 from contextlib import asynccontextmanager
 import asyncio
+import threading
 
 import pytest
 pytestmark = pytest.mark.core
@@ -202,6 +203,169 @@ def _log_workflow_entity_event_debug(
             )
             + "\n"
         )
+
+
+def _build_branch_failure_join_workflow(
+    wf_engine: GraphKnowledgeEngine,
+    wf_id: str,
+    *,
+    route_on_failure: bool,
+) -> None:
+    _create_node(wf_engine, wf_id, "start", "start_op", start=True, fanout=True)
+    _create_node(wf_engine, wf_id, "fail", "fail_op")
+    _create_node(wf_engine, wf_id, "downstream", "downstream_op")
+    _create_node(wf_engine, wf_id, "b", "branch_b_op")
+    _create_node(wf_engine, wf_id, "join", "join_op", wf_join=True)
+    _create_node(wf_engine, wf_id, "end", "end_op", terminal=True)
+
+    _create_edge(wf_engine, wf_id, "start", "fail")
+    _create_edge(wf_engine, wf_id, "start", "b")
+    _create_edge(
+        wf_engine,
+        wf_id,
+        "fail",
+        "downstream",
+        label="recover_on_failure",
+        predicate="if_failure" if route_on_failure else "if_not_failure",
+        is_default=False,
+    )
+    _create_edge(wf_engine, wf_id, "downstream", "join")
+    _create_edge(wf_engine, wf_id, "b", "join")
+    _create_edge(wf_engine, wf_id, "join", "end")
+
+
+def _branch_failure_join_resolver():
+    class _IfFailure:
+        def __call__(self, e, state, result):
+            return getattr(result, "status", None) == "failure"
+
+    class _IfNotFailure:
+        def __call__(self, e, state, result):
+            return getattr(result, "status", None) != "failure"
+
+    resolver = MappingStepResolver()
+
+    @resolver.register("start_op")
+    def _start(ctx: StepContext):
+        return RunSuccess(
+            conversation_node_id=None, state_update=[("u", {"started": True})]
+        )
+
+    @resolver.register("fail_op")
+    def _fail(ctx: StepContext):
+        return RunFailure(
+            conversation_node_id=None,
+            state_update=[("u", {"failed_once": True})],
+            errors=["boom"],
+        )
+
+    @resolver.register("downstream_op")
+    def _downstream(ctx: StepContext):
+        return RunSuccess(
+            conversation_node_id=None,
+            state_update=[("u", {"downstream_done": True})],
+        )
+
+    @resolver.register("branch_b_op")
+    def _branch_b(ctx: StepContext):
+        return RunSuccess(
+            conversation_node_id=None,
+            state_update=[("u", {"b_done": True})],
+        )
+
+    @resolver.register("join_op")
+    def _join(ctx: StepContext):
+        return RunSuccess(
+            conversation_node_id=None,
+            state_update=[("u", {"joined": True})],
+        )
+
+    @resolver.register("end_op")
+    def _end(ctx: StepContext):
+        return RunSuccess(
+            conversation_node_id=None,
+            state_update=[("u", {"ended": True})],
+        )
+
+    return resolver, _IfFailure(), _IfNotFailure()
+
+
+def _build_deep_failure_join_workflow(
+    wf_engine: GraphKnowledgeEngine, wf_id: str
+) -> None:
+    _create_node(wf_engine, wf_id, "start", "start_op", start=True, fanout=True)
+    _create_node(wf_engine, wf_id, "b", "branch_b_op")
+    _create_node(wf_engine, wf_id, "c", "branch_c_op", fanout=True)
+    _create_node(wf_engine, wf_id, "d", "branch_d_op")
+    _create_node(wf_engine, wf_id, "e", "branch_e_op")
+    _create_node(wf_engine, wf_id, "f", "fail_op")
+    _create_node(wf_engine, wf_id, "join", "join_op", wf_join=True)
+    _create_node(wf_engine, wf_id, "end", "end_op", terminal=True)
+
+    _create_edge(wf_engine, wf_id, "start", "b")
+    _create_edge(wf_engine, wf_id, "start", "c")
+    _create_edge(wf_engine, wf_id, "c", "d")
+    _create_edge(wf_engine, wf_id, "c", "e")
+    _create_edge(wf_engine, wf_id, "b", "join")
+    _create_edge(wf_engine, wf_id, "d", "join")
+    _create_edge(wf_engine, wf_id, "e", "f")
+    _create_edge(wf_engine, wf_id, "f", "end")
+
+
+def _deep_failure_join_resolver():
+    resolver = MappingStepResolver()
+
+    @resolver.register("start_op")
+    def _start(ctx: StepContext):
+        return RunSuccess(
+            conversation_node_id=None, state_update=[("u", {"started": True})]
+        )
+
+    @resolver.register("branch_b_op")
+    def _branch_b(ctx: StepContext):
+        return RunSuccess(
+            conversation_node_id=None, state_update=[("u", {"b_done": True})]
+        )
+
+    @resolver.register("branch_c_op")
+    def _branch_c(ctx: StepContext):
+        return RunSuccess(
+            conversation_node_id=None, state_update=[("u", {"c_done": True})]
+        )
+
+    @resolver.register("branch_d_op")
+    def _branch_d(ctx: StepContext):
+        return RunSuccess(
+            conversation_node_id=None, state_update=[("u", {"d_done": True})]
+        )
+
+    @resolver.register("branch_e_op")
+    def _branch_e(ctx: StepContext):
+        return RunSuccess(
+            conversation_node_id=None, state_update=[("u", {"e_done": True})]
+        )
+
+    @resolver.register("fail_op")
+    def _fail(ctx: StepContext):
+        return RunFailure(
+            conversation_node_id=None,
+            state_update=[("u", {"failed_once": True})],
+            errors=["boom"],
+        )
+
+    @resolver.register("join_op")
+    def _join(ctx: StepContext):
+        return RunSuccess(
+            conversation_node_id=None, state_update=[("u", {"joined": True})]
+        )
+
+    @resolver.register("end_op")
+    def _end(ctx: StepContext):
+        return RunSuccess(
+            conversation_node_id=None, state_update=[("u", {"ended": True})]
+        )
+
+    return resolver
 
 
 def _make_engine(
@@ -1027,25 +1191,28 @@ def test_workflow_failure_does_not_route_to_terminal(tmp_path, backend_kind):
     assert res.final_state.get("ended") is None
 
 
-@pytest.mark.ci
-def test_workflow_failure_does_not_follow_plain_default_edge(tmp_path):
+@pytest.mark.parametrize("backend_kind", BACKEND_PARAMS)
+def test_workflow_failure_waits_for_inflight_branch_drain(tmp_path, backend_kind):
     wf_engine = _make_engine(
-        tmp_path / "wf_fail_default_edge",
-        graph_type="workflow",
-        backend_kind="fake",
+        tmp_path / "wf_fail_drain", graph_type="workflow", backend_kind=backend_kind
     )
     conv_engine = _make_engine(
-        tmp_path / "conv_fail_default_edge",
-        graph_type="conversation",
-        backend_kind="fake",
+        tmp_path / "conv_fail_drain", graph_type="conversation", backend_kind=backend_kind
     )
 
-    wf_id = "test_failure_default_edge_unmatched"
-    _create_node(wf_engine, wf_id, "n_start", "start_op", start=True)
-    _create_node(wf_engine, wf_id, "n_exec", "exec_op")
-    _create_node(wf_engine, wf_id, "n_end", "end_op", terminal=True)
-    _create_edge(wf_engine, wf_id, "n_start", "n_exec")
-    _create_edge(wf_engine, wf_id, "n_exec", "n_end", is_default=True)
+    wf_id = "test_failure_waits_for_drain"
+    _create_node(wf_engine, wf_id, "start", "start_op", start=True, fanout=True)
+    _create_node(wf_engine, wf_id, "fail", "fail_op")
+    _create_node(wf_engine, wf_id, "slow", "slow_op")
+    _create_node(wf_engine, wf_id, "end", "end_op", terminal=True)
+    _create_edge(wf_engine, wf_id, "start", "fail")
+    _create_edge(wf_engine, wf_id, "start", "slow")
+    _create_edge(wf_engine, wf_id, "slow", "end")
+
+    slow_started = threading.Event()
+    release_slow = threading.Event()
+    failure_seen = threading.Event()
+    result_box: dict[str, RunSuccess | RunFailure | None] = {"res": None}
 
     resolver = MappingStepResolver()
 
@@ -1055,12 +1222,22 @@ def test_workflow_failure_does_not_follow_plain_default_edge(tmp_path):
             conversation_node_id=None, state_update=[("u", {"started": True})]
         )
 
-    @resolver.register("exec_op")
-    def _exec(ctx: StepContext):
+    @resolver.register("fail_op")
+    def _fail(ctx: StepContext):
+        failure_seen.set()
         return RunFailure(
             conversation_node_id=None,
             state_update=[("u", {"failed_once": True})],
             errors=["boom"],
+        )
+
+    @resolver.register("slow_op")
+    def _slow(ctx: StepContext):
+        slow_started.set()
+        if not release_slow.wait(timeout=10.0):
+            raise AssertionError("slow branch was not released")
+        return RunSuccess(
+            conversation_node_id=None, state_update=[("u", {"slow_done": True})]
         )
 
     @resolver.register("end_op")
@@ -1068,6 +1245,176 @@ def test_workflow_failure_does_not_follow_plain_default_edge(tmp_path):
         return RunSuccess(
             conversation_node_id=None, state_update=[("u", {"ended": True})]
         )
+
+    runtime = WorkflowRuntime(
+        workflow_engine=wf_engine,
+        conversation_engine=conv_engine,
+        step_resolver=resolver,
+        predicate_registry={},
+        checkpoint_every_n_steps=1,
+        max_workers=4,
+    )
+
+    run_id = f"run_{uuid.uuid4().hex}"
+    conv_id = f"conv_{uuid.uuid4().hex}"
+
+    def _run() -> None:
+        result_box["res"] = runtime.run(
+            workflow_id=wf_id,
+            conversation_id=conv_id,
+            turn_node_id="turn_1",
+            initial_state={
+                "conversation_id": "test",
+                "user_id": "test",
+                "turn_node_id": "test",
+                "turn_index": 0,
+                "role": "user",
+                "user_text": "",
+                "mem_id": "test",
+            },
+            run_id=run_id,
+        )
+
+    t = threading.Thread(target=_run, name="workflow-failure-drain")
+    t.start()
+
+    assert slow_started.wait(10.0), "slow branch did not start"
+    assert failure_seen.wait(10.0), "failure branch did not run"
+    assert t.is_alive(), "run finished before the slow branch drained"
+
+    release_slow.set()
+    t.join(timeout=20.0)
+    assert not t.is_alive(), "run did not finish"
+
+    res = result_box["res"]
+    assert res is not None
+    assert res.status == "failure"
+    assert res.final_state.get("started") is True
+    assert res.final_state.get("failed_once") is True
+    assert res.final_state.get("slow_done") is True
+    assert res.final_state.get("ended") is None
+
+
+@pytest.mark.parametrize("backend_kind", BACKEND_PARAMS)
+def test_workflow_failure_then_downstream_before_join_is_routed_when_handled(
+    tmp_path, backend_kind
+):
+    wf_engine = _make_engine(
+        tmp_path / "wf_fail_handled_join", graph_type="workflow", backend_kind=backend_kind
+    )
+    conv_engine = _make_engine(
+        tmp_path / "conv_fail_handled_join",
+        graph_type="conversation",
+        backend_kind=backend_kind,
+    )
+
+    wf_id = "test_failure_then_downstream_before_join_handled"
+    _build_branch_failure_join_workflow(wf_engine, wf_id, route_on_failure=True)
+    resolver, if_failure, _if_not_failure = _branch_failure_join_resolver()
+
+    runtime = WorkflowRuntime(
+        workflow_engine=wf_engine,
+        conversation_engine=conv_engine,
+        step_resolver=resolver,
+        predicate_registry={"if_failure": if_failure},
+        checkpoint_every_n_steps=1,
+    )
+
+    res = runtime.run(
+        workflow_id=wf_id,
+        conversation_id=f"conv_{uuid.uuid4().hex}",
+        turn_node_id="turn_1",
+        initial_state={
+            "conversation_id": "test",
+            "user_id": "test",
+            "turn_node_id": "test",
+            "turn_index": 0,
+            "role": "user",
+            "user_text": "",
+            "mem_id": "test",
+        },  # type: ignore
+        run_id=f"run_{uuid.uuid4().hex}",
+    )
+
+    assert res.status == "succeeded"
+    assert res.final_state.get("started") is True
+    assert res.final_state.get("failed_once") is True
+    assert res.final_state.get("downstream_done") is True
+    assert res.final_state.get("b_done") is True
+    assert res.final_state.get("joined") is True
+    assert res.final_state.get("ended") is True
+
+
+@pytest.mark.parametrize("backend_kind", BACKEND_PARAMS)
+def test_workflow_failure_then_downstream_before_join_is_skipped_when_unhandled(
+    tmp_path, backend_kind
+):
+    wf_engine = _make_engine(
+        tmp_path / "wf_fail_unhandled_join",
+        graph_type="workflow",
+        backend_kind=backend_kind,
+    )
+    conv_engine = _make_engine(
+        tmp_path / "conv_fail_unhandled_join",
+        graph_type="conversation",
+        backend_kind=backend_kind,
+    )
+
+    wf_id = "test_failure_then_downstream_before_join_unhandled"
+    _build_branch_failure_join_workflow(wf_engine, wf_id, route_on_failure=False)
+    resolver, _if_failure, if_not_failure = _branch_failure_join_resolver()
+
+    runtime = WorkflowRuntime(
+        workflow_engine=wf_engine,
+        conversation_engine=conv_engine,
+        step_resolver=resolver,
+        predicate_registry={"if_not_failure": if_not_failure},
+        checkpoint_every_n_steps=1,
+    )
+
+    res = runtime.run(
+        workflow_id=wf_id,
+        conversation_id=f"conv_{uuid.uuid4().hex}",
+        turn_node_id="turn_1",
+        initial_state={
+            "conversation_id": "test",
+            "user_id": "test",
+            "turn_node_id": "test",
+            "turn_index": 0,
+            "role": "user",
+            "user_text": "",
+            "mem_id": "test",
+        },  # type: ignore
+        run_id=f"run_{uuid.uuid4().hex}",
+    )
+
+    assert res.status == "failure"
+    assert res.final_state.get("started") is True
+    assert res.final_state.get("failed_once") is True
+    assert res.final_state.get("downstream_done") is None
+    assert res.final_state.get("b_done") is True
+    assert res.final_state.get("joined") is None
+    assert res.final_state.get("ended") is None
+
+
+@pytest.mark.parametrize("backend_kind", BACKEND_PARAMS)
+def test_workflow_failure_allows_existing_join_to_finish_but_blocks_downstream(
+    tmp_path, backend_kind
+):
+    wf_engine = _make_engine(
+        tmp_path / "wf_deep_failure_join",
+        graph_type="workflow",
+        backend_kind=backend_kind,
+    )
+    conv_engine = _make_engine(
+        tmp_path / "conv_deep_failure_join",
+        graph_type="conversation",
+        backend_kind=backend_kind,
+    )
+
+    wf_id = "test_deep_failure_join"
+    _build_deep_failure_join_workflow(wf_engine, wf_id)
+    resolver = _deep_failure_join_resolver()
 
     runtime = WorkflowRuntime(
         workflow_engine=wf_engine,
@@ -1095,7 +1442,12 @@ def test_workflow_failure_does_not_follow_plain_default_edge(tmp_path):
 
     assert res.status == "failure"
     assert res.final_state.get("started") is True
+    assert res.final_state.get("b_done") is True
+    assert res.final_state.get("c_done") is True
+    assert res.final_state.get("d_done") is True
+    assert res.final_state.get("e_done") is True
     assert res.final_state.get("failed_once") is True
+    assert res.final_state.get("joined") is True
     assert res.final_state.get("ended") is None
 
 
@@ -1174,6 +1526,363 @@ async def test_workflow_failure_does_not_route_to_terminal_async_backends(
         assert res.status == "failure"
         assert res.final_state.get("started") is True
         assert res.final_state.get("ended") is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backend_kind", ASYNC_BACKEND_PARAMS)
+async def test_workflow_failure_waits_for_inflight_branch_drain_async_backends(
+    tmp_path, backend_kind, request
+):
+    async with _async_runtime_engine_pair(backend_kind, request, tmp_path) as (
+        wf_engine,
+        conv_engine,
+    ):
+        wf_id = "test_failure_waits_for_drain_async"
+        await asyncio.to_thread(
+            _create_node, wf_engine, wf_id, "start", "start_op", True, False, True
+        )
+        await asyncio.to_thread(_create_node, wf_engine, wf_id, "fail", "fail_op")
+        await asyncio.to_thread(_create_node, wf_engine, wf_id, "slow", "slow_op")
+        await asyncio.to_thread(_create_node, wf_engine, wf_id, "end", "end_op", False, True)
+        await asyncio.to_thread(_create_edge, wf_engine, wf_id, "start", "fail")
+        await asyncio.to_thread(_create_edge, wf_engine, wf_id, "start", "slow")
+        await asyncio.to_thread(_create_edge, wf_engine, wf_id, "slow", "end")
+
+        slow_started = threading.Event()
+        release_slow = threading.Event()
+        failure_seen = threading.Event()
+        result_box: dict[str, Any] = {"res": None}
+
+        resolver = MappingStepResolver()
+
+        @resolver.register("start_op")
+        def _start(ctx: StepContext):
+            return RunSuccess(
+                conversation_node_id=None, state_update=[("u", {"started": True})]
+            )
+
+        @resolver.register("fail_op")
+        def _fail(ctx: StepContext):
+            failure_seen.set()
+            return RunFailure(
+                conversation_node_id=None,
+                state_update=[("u", {"failed_once": True})],
+                errors=["boom"],
+            )
+
+        @resolver.register("slow_op")
+        def _slow(ctx: StepContext):
+            slow_started.set()
+            if not release_slow.wait(timeout=10.0):
+                raise AssertionError("slow branch was not released")
+            return RunSuccess(
+                conversation_node_id=None, state_update=[("u", {"slow_done": True})]
+            )
+
+        @resolver.register("end_op")
+        def _end(ctx: StepContext):
+            return RunSuccess(
+                conversation_node_id=None, state_update=[("u", {"ended": True})]
+            )
+
+        runtime = WorkflowRuntime(
+            workflow_engine=wf_engine,
+            conversation_engine=conv_engine,
+            step_resolver=resolver,
+            predicate_registry={},
+            checkpoint_every_n_steps=1,
+            max_workers=4,
+        )
+
+        run_id = f"run_{uuid.uuid4().hex}"
+        conv_id = f"conv_{uuid.uuid4().hex}"
+
+        def _run() -> None:
+            result_box["res"] = runtime.run(
+                workflow_id=wf_id,
+                conversation_id=conv_id,
+                turn_node_id="turn_1",
+                initial_state={
+                    "conversation_id": "test",
+                    "user_id": "test",
+                    "turn_node_id": "test",
+                    "turn_index": 0,
+                    "role": "user",
+                    "user_text": "",
+                    "mem_id": "test",
+                },
+                run_id=run_id,
+            )
+
+        t = threading.Thread(target=_run, name="workflow-failure-drain-async")
+        t.start()
+
+        assert await asyncio.to_thread(slow_started.wait, 10.0), "slow branch did not start"
+        assert await asyncio.to_thread(failure_seen.wait, 10.0), "failure branch did not run"
+        assert t.is_alive(), "run finished before the slow branch drained"
+
+        release_slow.set()
+        await asyncio.to_thread(t.join, 20.0)
+        assert not t.is_alive(), "run did not finish"
+
+        res = result_box["res"]
+        assert res is not None
+        assert res.status == "failure"
+        assert res.final_state.get("started") is True
+        assert res.final_state.get("failed_once") is True
+        assert res.final_state.get("slow_done") is True
+        assert res.final_state.get("ended") is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backend_kind", ASYNC_BACKEND_PARAMS)
+async def test_workflow_failure_then_downstream_before_join_is_routed_when_handled_async_backends(
+    tmp_path, backend_kind, request
+):
+    async with _async_runtime_engine_pair(backend_kind, request, tmp_path) as (
+        wf_engine,
+        conv_engine,
+    ):
+        wf_id = "test_failure_then_downstream_before_join_handled_async"
+        await asyncio.to_thread(
+            _build_branch_failure_join_workflow,
+            wf_engine,
+            wf_id,
+            route_on_failure=True,
+        )
+        resolver, if_failure, _if_not_failure = _branch_failure_join_resolver()
+
+        runtime = WorkflowRuntime(
+            workflow_engine=wf_engine,
+            conversation_engine=conv_engine,
+            step_resolver=resolver,
+            predicate_registry={"if_failure": if_failure},
+            checkpoint_every_n_steps=1,
+        )
+
+        res = await asyncio.to_thread(
+            runtime.run,
+            workflow_id=wf_id,
+            conversation_id=f"conv_{uuid.uuid4().hex}",
+            turn_node_id="turn_1",
+            initial_state={
+                "conversation_id": "test",
+                "user_id": "test",
+                "turn_node_id": "test",
+                "turn_index": 0,
+                "role": "user",
+                "user_text": "",
+                "mem_id": "test",
+            },
+            run_id=f"run_{uuid.uuid4().hex}",
+        )
+
+        assert res.status == "succeeded"
+        assert res.final_state.get("started") is True
+        assert res.final_state.get("failed_once") is True
+        assert res.final_state.get("downstream_done") is True
+        assert res.final_state.get("b_done") is True
+        assert res.final_state.get("joined") is True
+        assert res.final_state.get("ended") is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backend_kind", ASYNC_BACKEND_PARAMS)
+async def test_workflow_failure_then_downstream_before_join_is_skipped_when_unhandled_async_backends(
+    tmp_path, backend_kind, request
+):
+    async with _async_runtime_engine_pair(backend_kind, request, tmp_path) as (
+        wf_engine,
+        conv_engine,
+    ):
+        wf_id = "test_failure_then_downstream_before_join_unhandled_async"
+        await asyncio.to_thread(
+            _build_branch_failure_join_workflow,
+            wf_engine,
+            wf_id,
+            route_on_failure=False,
+        )
+        resolver, _if_failure, if_not_failure = _branch_failure_join_resolver()
+
+        runtime = WorkflowRuntime(
+            workflow_engine=wf_engine,
+            conversation_engine=conv_engine,
+            step_resolver=resolver,
+            predicate_registry={"if_not_failure": if_not_failure},
+            checkpoint_every_n_steps=1,
+        )
+
+        res = await asyncio.to_thread(
+            runtime.run,
+            workflow_id=wf_id,
+            conversation_id=f"conv_{uuid.uuid4().hex}",
+            turn_node_id="turn_1",
+            initial_state={
+                "conversation_id": "test",
+                "user_id": "test",
+                "turn_node_id": "test",
+                "turn_index": 0,
+                "role": "user",
+                "user_text": "",
+                "mem_id": "test",
+            },
+            run_id=f"run_{uuid.uuid4().hex}",
+        )
+
+        assert res.status == "failure"
+        assert res.final_state.get("started") is True
+        assert res.final_state.get("failed_once") is True
+        assert res.final_state.get("downstream_done") is None
+        assert res.final_state.get("b_done") is True
+        assert res.final_state.get("joined") is None
+        assert res.final_state.get("ended") is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backend_kind", ASYNC_BACKEND_PARAMS)
+async def test_workflow_failure_allows_existing_join_to_finish_but_blocks_downstream_async_backends(
+    tmp_path, backend_kind, request
+):
+    async with _async_runtime_engine_pair(backend_kind, request, tmp_path) as (
+        wf_engine,
+        conv_engine,
+    ):
+        wf_id = "test_deep_failure_join_async"
+        await asyncio.to_thread(_build_deep_failure_join_workflow, wf_engine, wf_id)
+        resolver = _deep_failure_join_resolver()
+
+        runtime = WorkflowRuntime(
+            workflow_engine=wf_engine,
+            conversation_engine=conv_engine,
+            step_resolver=resolver,
+            predicate_registry={},
+            checkpoint_every_n_steps=1,
+        )
+
+        res = await asyncio.to_thread(
+            runtime.run,
+            workflow_id=wf_id,
+            conversation_id=f"conv_{uuid.uuid4().hex}",
+            turn_node_id="turn_1",
+            initial_state={
+                "conversation_id": "test",
+                "user_id": "test",
+                "turn_node_id": "test",
+                "turn_index": 0,
+                "role": "user",
+                "user_text": "",
+                "mem_id": "test",
+            },
+            run_id=f"run_{uuid.uuid4().hex}",
+        )
+
+        assert res.status == "failure"
+        assert res.final_state.get("started") is True
+        assert res.final_state.get("b_done") is True
+        assert res.final_state.get("c_done") is True
+        assert res.final_state.get("d_done") is True
+        assert res.final_state.get("e_done") is True
+        assert res.final_state.get("failed_once") is True
+        assert res.final_state.get("joined") is True
+        assert res.final_state.get("ended") is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backend_kind", ASYNC_BACKEND_PARAMS)
+async def test_workflow_failure_can_route_to_recovery_branch_async_backends(
+    tmp_path, backend_kind, request
+):
+    async with _async_runtime_engine_pair(backend_kind, request, tmp_path) as (
+        wf_engine,
+        conv_engine,
+    ):
+        wf_id = "test_failure_routes_async"
+        await asyncio.to_thread(
+            _create_node, wf_engine, wf_id, "start", "start_op", True, False
+        )
+        await asyncio.to_thread(_create_node, wf_engine, wf_id, "exec", "exec_op")
+        await asyncio.to_thread(_create_node, wf_engine, wf_id, "recover", "recover_op")
+        await asyncio.to_thread(
+            _create_node, wf_engine, wf_id, "end", "end_op", False, True
+        )
+        await asyncio.to_thread(_create_edge, wf_engine, wf_id, "start", "exec")
+        await asyncio.to_thread(
+            _create_edge,
+            wf_engine,
+            wf_id,
+            "exec",
+            "recover",
+            label="recover_on_failure",
+            predicate="if_failure",
+            is_default=False,
+        )
+        await asyncio.to_thread(
+            _create_edge, wf_engine, wf_id, "exec", "end", label="finish", is_default=True
+        )
+        await asyncio.to_thread(_create_edge, wf_engine, wf_id, "recover", "end")
+
+        class _IfFailure:
+            def __call__(self, e, state, result):
+                return getattr(result, "status", None) == "failure"
+
+        resolver = MappingStepResolver()
+
+        @resolver.register("start_op")
+        def _start(ctx: StepContext):
+            return RunSuccess(
+                conversation_node_id=None, state_update=[("u", {"started": True})]
+            )
+
+        @resolver.register("exec_op")
+        def _exec(ctx: StepContext):
+            return RunFailure(
+                conversation_node_id=None,
+                state_update=[("u", {"failed_once": True})],
+                errors=["boom"],
+            )
+
+        @resolver.register("recover_op")
+        def _recover(ctx: StepContext):
+            return RunSuccess(
+                conversation_node_id=None, state_update=[("u", {"recovered": True})]
+            )
+
+        @resolver.register("end_op")
+        def _end(ctx: StepContext):
+            return RunSuccess(
+                conversation_node_id=None, state_update=[("u", {"ended": True})]
+            )
+
+        runtime = WorkflowRuntime(
+            workflow_engine=wf_engine,
+            conversation_engine=conv_engine,
+            step_resolver=resolver,
+            predicate_registry={"if_failure": _IfFailure()},
+            checkpoint_every_n_steps=1,
+        )
+
+        res = await asyncio.to_thread(
+            runtime.run,
+            workflow_id=wf_id,
+            conversation_id=f"conv_{uuid.uuid4().hex}",
+            turn_node_id="turn_1",
+            initial_state={
+                "conversation_id": "test",
+                "user_id": "test",
+                "turn_node_id": "test",
+                "turn_index": 0,
+                "role": "user",
+                "user_text": "",
+                "mem_id": "test",
+            },
+            run_id=f"run_{uuid.uuid4().hex}",
+        )
+
+        assert res.status == "succeeded"
+        assert res.final_state.get("started") is True
+        assert res.final_state.get("failed_once") is True
+        assert res.final_state.get("recovered") is True
+        assert res.final_state.get("ended") is True
 
 
 @pytest.mark.parametrize("backend_kind", BACKEND_PARAMS)
@@ -1374,6 +2083,128 @@ def test_resume_run_failure_can_route_to_recovery_branch(
     assert res2.final_state.get("resume_failed") is True
     assert res2.final_state.get("failure_routed") is True
     assert res2.final_state.get("ended") is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backend_kind", ASYNC_BACKEND_PARAMS)
+async def test_resume_run_failure_can_route_to_recovery_branch_async_backends(
+    tmp_path, backend_kind, request
+):
+    async with _async_runtime_engine_pair(backend_kind, request, tmp_path) as (
+        wf_engine,
+        conv_engine,
+    ):
+        wf_id = "test_resume_failure_routes_async"
+        await asyncio.to_thread(
+            _create_node, wf_engine, wf_id, "start", "start_op", True, False
+        )
+        await asyncio.to_thread(_create_node, wf_engine, wf_id, "gate", "suspend_op")
+        await asyncio.to_thread(_create_node, wf_engine, wf_id, "recover", "recover_op")
+        await asyncio.to_thread(_create_node, wf_engine, wf_id, "end", "end_op", False, True)
+        await asyncio.to_thread(_create_edge, wf_engine, wf_id, "start", "gate")
+        await asyncio.to_thread(
+            _create_edge,
+            wf_engine,
+            wf_id,
+            "gate",
+            "recover",
+            label="recover_on_failure",
+            predicate="if_failure",
+            is_default=False,
+        )
+        await asyncio.to_thread(
+            _create_edge, wf_engine, wf_id, "gate", "end", label="finish", is_default=True
+        )
+        await asyncio.to_thread(_create_edge, wf_engine, wf_id, "recover", "end")
+
+        class _IfFailure:
+            def __call__(self, e, state, result):
+                return getattr(result, "status", None) == "failure"
+
+        resolver = MappingStepResolver()
+
+        @resolver.register("start_op")
+        def _start(ctx: StepContext):
+            return RunSuccess(
+                conversation_node_id=None, state_update=[("u", {"started": True})]
+            )
+
+        @resolver.register("suspend_op")
+        def _suspend(ctx: StepContext):
+            return RunSuspended(
+                conversation_node_id=None,
+                state_update=[],
+                resume_payload={
+                    "type": "recoverable_error",
+                    "op": "suspend_op",
+                    "category": "missing_input",
+                    "message": "need fix",
+                    "errors": ["need fix"],
+                    "repair_payload": {"prompt": "fix it"},
+                },
+            )
+
+        @resolver.register("recover_op")
+        def _recover(ctx: StepContext):
+            return RunSuccess(
+                conversation_node_id=None, state_update=[("u", {"failure_routed": True})]
+            )
+
+        @resolver.register("end_op")
+        def _end(ctx: StepContext):
+            return RunSuccess(
+                conversation_node_id=None, state_update=[("u", {"ended": True})]
+            )
+
+        runtime = WorkflowRuntime(
+            workflow_engine=wf_engine,
+            conversation_engine=conv_engine,
+            step_resolver=resolver,
+            predicate_registry={"if_failure": _IfFailure()},
+            checkpoint_every_n_steps=1,
+        )
+
+        run_id = f"run_{uuid.uuid4().hex}"
+        conv_id = f"conv_{uuid.uuid4().hex}"
+        res1 = await asyncio.to_thread(
+            runtime.run,
+            workflow_id=wf_id,
+            conversation_id=conv_id,
+            turn_node_id="turn_1",
+            initial_state={
+                "conversation_id": "test",
+                "user_id": "test",
+                "turn_node_id": "test",
+                "turn_index": 0,
+                "role": "user",
+                "user_text": "",
+                "mem_id": "test",
+            },
+            run_id=run_id,
+        )
+        state1 = await asyncio.to_thread(_latest_checkpoint_state, conv_engine, run_id)
+        suspended_token_id = state1["_rt_join"]["suspended"][0][2]
+
+        res2 = await asyncio.to_thread(
+            runtime.resume_run,
+            run_id=run_id,
+            suspended_node_id="gate",
+            suspended_token_id=suspended_token_id,
+            client_result=RunFailure(
+                conversation_node_id=None,
+                state_update=[("u", {"resume_failed": True})],
+                errors=["still broken"],
+            ),
+            workflow_id=wf_id,
+            conversation_id=conv_id,
+            turn_node_id="turn_1",
+        )
+
+        assert res1.status == "suspended"
+        assert res2.status == "succeeded"
+        assert res2.final_state.get("resume_failed") is True
+        assert res2.final_state.get("failure_routed") is True
+        assert res2.final_state.get("ended") is True
 
 
 @pytest.mark.parametrize("backend_kind", BACKEND_PARAMS)

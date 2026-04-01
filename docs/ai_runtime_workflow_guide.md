@@ -98,6 +98,9 @@ return RunSuccess(
 - Use `RunSuspended(...)` when a client or human must resume the run later.
 - Do not raise exceptions for expected business outcomes if you want workflow-level control over the result.
 - Raised exceptions are treated as resolver/runtime failures and typically become `RunFailure`.
+- If a `RunFailure` is matched by normal routing policy, the workflow can continue through the selected recovery branch.
+- If a `RunFailure` is not matched by routing policy, the run becomes failed and the runtime stops scheduling any new work from that point.
+- Steps that were already running may still finish and apply their state updates, but queued continuations and parked join releases are not scheduled after an unmatched failure.
 
 ## Minimal Example
 
