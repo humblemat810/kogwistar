@@ -1192,7 +1192,7 @@ class WorkflowRuntime:
             _join_outstanding: list[int] = [
                 0 for _ in join_node_ids
             ]  # tokens BEFORE each join
-            _join_waiters: dict[str, list[int]] = {
+            _join_waiters: dict[str, list[tuple[int, str, str | None]]] = {
                 jid: [] for jid in join_node_ids
             }  # store per-token mask at join
 
@@ -1216,6 +1216,21 @@ class WorkflowRuntime:
             def _bit_for_join(join_id: str) -> int:
                 bi = _join_pos.get(join_id)
                 return (1 << bi) if bi is not None else 0
+
+            def _normalize_join_waiter(
+                item: Any,
+            ) -> tuple[int, str, str | None] | None:
+                if not isinstance(item, (list, tuple)):
+                    return None
+                if len(item) >= 3:
+                    return (
+                        int(item[0]),
+                        str(item[1]),
+                        (str(item[2]) if item[2] is not None else None),
+                    )
+                if len(item) == 1:
+                    return (int(item[0]), uuid.uuid4().hex, None)
+                return None
 
             def _rt_join_get() -> dict:
                 return cast(dict, state.get("_rt_join", {}))
@@ -1256,7 +1271,19 @@ class WorkflowRuntime:
                     "join_node_ids": join_node_ids,
                     "join_outstanding": list(_join_outstanding),
                     "join_waiters": {
-                        jid: list(masks) for jid, masks in _join_waiters.items()
+                        jid: [
+                            (
+                                int(mask),
+                                str(token_id),
+                                (
+                                    str(parent_token_id)
+                                    if parent_token_id is not None
+                                    else None
+                                ),
+                            )
+                            for mask, token_id, parent_token_id in waiters
+                        ]
+                        for jid, waiters in _join_waiters.items()
                     },
                     "pending": [
                         (
@@ -1309,9 +1336,14 @@ class WorkflowRuntime:
                     except Exception:
                         _join_outstanding[i] = 0
                 for jid in join_node_ids:
-                    masks = jw.get(jid, [])
-                    if isinstance(masks, list):
-                        _join_waiters[jid] = [int(x) for x in masks]
+                    items = jw.get(jid, [])
+                    if isinstance(items, list):
+                        normalized: list[tuple[int, str, str | None]] = []
+                        for item in items:
+                            norm = _normalize_join_waiter(item)
+                            if norm is not None:
+                                normalized.append(norm)
+                        _join_waiters[jid] = normalized
                 # pending tokens only; suspended tokens are restored by resume_run
                 out: list[tuple[str, int, str, str | None]] = []
                 for item in pend:
@@ -1380,6 +1412,31 @@ class WorkflowRuntime:
                 combined = sorted(pending_tokens.union(inflight_tokens))
                 suspended = sorted(suspended_tokens.values())
                 _rt_join_set(_rt_join_snapshot(combined, suspended=suspended))
+
+            def _enter_failed() -> bool:
+                nonlocal run_failed
+                if run_failed:
+                    return False
+                run_failed = True
+
+                while True:
+                    try:
+                        nid, mask, tok, parent_tok = scheduled_q.get_nowait()
+                    except queue.Empty:
+                        break
+                    pending_tokens.discard((str(nid), int(mask), str(tok), parent_tok))
+                    _dec(int(mask))
+
+                for jid in join_node_ids:
+                    waiters = list(_join_waiters.get(jid, []))
+                    if not waiters:
+                        continue
+                    _join_waiters[jid] = []
+                    for wm, _tok, _parent in waiters:
+                        _dec(int(wm))
+
+                _persist_rt_join_runtime()
+                return True
 
             def _cancel_requested() -> bool:
                 nonlocal cancel_info
@@ -1588,23 +1645,23 @@ class WorkflowRuntime:
                         except queue.Full as _e:
                             raise
                         t1 = _now_ms()
-                        if type(res) is not RunFailure:
-                            # step attempt complete (best-effort; never break worker)
-                            try:
-                                if ctx is None:
-                                    raise ValueError("ctx is None")
-                                self.emitter.step_completed(
-                                    ctx.trace_ctx,
-                                    status=str(status),
-                                    duration_ms=max(0, t1 - t0),
-                                )
-                            except Exception:
-                                status = "status_report_error"
-                            if status in ["error", "status_report_error"]:
-                                err_message = f"error on {node_id}, {res}"
-                                # to do, emit fail, then raise
-                                if getattr(wn, "fail_actiion", "raise") == "raise":
-                                    raise Exception(err_message)
+
+                        # step attempt complete (best-effort; never break worker)
+                        try:
+                            if ctx is None:
+                                raise ValueError('ctx is None')
+                            self.emitter.step_completed(
+                                ctx.trace_ctx,
+                                status=str(status),
+                                duration_ms=max(0, t1 - t0),
+                            )
+                        except Exception:
+                            status = "status_report_error"
+                        if status in ["error", "status_report_error"]:
+                            err_message = f"error on {node_id}, {res}"
+                            # to do, emit fail, then raise
+                            if getattr(wn, "fail_actiion", "raise") == "raise":
+                                raise Exception(err_message)
 
                         done_q.put(
                             (
@@ -1803,6 +1860,7 @@ class WorkflowRuntime:
 
                         # If this is a join/barrier node, it doesn't execute immediately.
                         if nid in _join_waiters:
+                            join_idx = _join_pos.get(nid)
                             join_bit = _bit_for_join(nid)
                             was_before_join = bool(mask & join_bit)
                             if was_before_join:
@@ -1839,8 +1897,7 @@ class WorkflowRuntime:
                             except Exception:
                                 pass
 
-                            _join_waiters[nid].append(mask)
-                            _persist_rt_join_runtime()
+                            _join_waiters[nid].append((mask, token_id, parent_token_id))
                             # trace: token waiting at join
                             try:
                                 join_idx = _join_pos.get(nid)
@@ -1871,60 +1928,47 @@ class WorkflowRuntime:
                             except Exception:
                                 pass
 
-                            # Release join when no more tokens are outstanding BEFORE it.
-                            # We merge all waiting tokens into ONE continuation token.
-                            join_idx = _join_pos.get(nid)
                             if _join_is_merge[nid]:
-                                if (
-                                    join_idx is not None
-                                    and _join_outstanding[join_idx] == 0
-                                ):
-                                    # trace: join released (all outstanding tokens before join have arrived)
-                                    try:
-                                        tcj = TraceContext(
-                                            run_id=str(run_id),
-                                            token_id=str(token_id),
-                                            step_seq=int(step_seq),
-                                            node_id=str(nid),
-                                            attempt=1,
-                                            conversation_id=str(conversation_id)
-                                            if conversation_id is not None
-                                            else None,
-                                            turn_node_id=str(turn_node_id)
-                                            if turn_node_id is not None
-                                            else None,
-                                        )
-                                        self.emitter.join_event(
-                                            tcj,
-                                            join_node_id=str(nid),
-                                            kind="released",
-                                            outstanding=0,
-                                        )
-                                    except Exception:
-                                        pass
-
-                                    wait_masks = _join_waiters[nid]
-                                    _join_waiters[nid] = []
-
-                                    # remove all waiter contributions (they will be merged)
-                                    for wm in wait_masks:
-                                        _dec(wm)
-
-                                    merged_mask = 0
-                                    if wait_masks:
-                                        merged_mask = wait_masks[0]
-                                        for wm in wait_masks[1:]:
-                                            merged_mask &= wm
-
-                                    # add merged token contribution
-                                    _inc(merged_mask)
-
-                                    # join can have an op, need to run through normal node ops.
+                                if join_idx is None or _join_outstanding[join_idx] != 0:
                                     _persist_rt_join_runtime()
-
-                                else:
-                                    # merge into 1, if not dec to 0, not the last to join, just continue
                                     continue
+                                waiters = list(_join_waiters.get(nid, []))
+                                if not waiters:
+                                    _persist_rt_join_runtime()
+                                    continue
+                                try:
+                                    tcj = TraceContext(
+                                        run_id=str(run_id),
+                                        token_id=str(waiters[0][1]),
+                                        step_seq=int(step_seq),
+                                        node_id=str(nid),
+                                        attempt=1,
+                                        conversation_id=str(conversation_id)
+                                        if conversation_id is not None
+                                        else None,
+                                        turn_node_id=str(turn_node_id)
+                                        if turn_node_id is not None
+                                        else None,
+                                    )
+                                    self.emitter.join_event(
+                                        tcj,
+                                        join_node_id=str(nid),
+                                        kind="released",
+                                        outstanding=0,
+                                    )
+                                except Exception:
+                                    pass
+                                _join_waiters[nid] = []
+                                merged_mask = int(waiters[0][0])
+                                token_id = str(waiters[0][1])
+                                parent_token_id = waiters[0][2]
+                                for wm, _tok, _parent in waiters:
+                                    _dec(int(wm))
+                                for wm, _tok, _parent in waiters[1:]:
+                                    merged_mask &= int(wm)
+                                _inc(int(merged_mask))
+                                mask = int(merged_mask)
+                            _persist_rt_join_runtime()
 
                         inflight_tokens.add(
                             (str(nid), int(mask), str(token_id), parent_token_id)
@@ -2090,10 +2134,10 @@ class WorkflowRuntime:
                     # route
                     if wn.terminal or len(adj.get(node_id, [])) == 0:
                         # token ends here -> it will never reach any remaining joins
+                        if status == "failure":
+                            _enter_failed()
                         _dec(mask)
                         _persist_rt_join_runtime()
-                        if status == "failure":
-                            run_failed = True
                         _checkpoint_current_step()
                         _enter_cancelling(
                             reason_node_id=str(node_id), token_id=str(token_id)
@@ -2158,11 +2202,27 @@ class WorkflowRuntime:
                     except Exception:
                         pass
 
-                    if not next_nodes:
+                    if status == "failure":
+                        handled_failure = any(
+                            reason in {"predicate", "explicit"}
+                            for _edge_id, _to_node_id, reason in getattr(
+                                route_decision, "selected", []
+                            )
+                        )
+                        if not handled_failure:
+                            next_nodes = []
+
+                    if run_failed:
                         _dec(mask)
                         _persist_rt_join_runtime()
+                        _checkpoint_current_step()
+                        continue
+
+                    if not next_nodes:
                         if status == "failure":
-                            run_failed = True
+                            _enter_failed()
+                        _dec(mask)
+                        _persist_rt_join_runtime()
 
                         if (step_seq_current % self.checkpoint_every_n_steps) == 0:
                             with self._maybe_step_uow():
