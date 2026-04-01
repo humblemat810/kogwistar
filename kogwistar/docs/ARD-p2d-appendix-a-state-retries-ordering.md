@@ -219,9 +219,12 @@ If a failure result produces a matching route:
 - continue through the selected recovery / retry / help branch
 
 If a failure result produces no route:
-- terminate the run with `status="failure"`
+- mark the run failed
+- stop scheduling any new downstream work
+- allow already-running work to drain and apply its state updates
+- do not release parked join waiters or queued continuations after that failure
 
-So `RunFailure` is neither “always hard-stop” nor “always recoverable”. The graph decides, and unmatched failure ends failed.
+So `RunFailure` is neither “always hard-stop” nor “always recoverable”. The graph decides, and unmatched failure ends failed after in-flight work drains, without spawning any new work.
 
 ### A7.5 Resume semantics for recoverable errors
 `resume_run(...)` must accept all structured result types from the external fixer:
