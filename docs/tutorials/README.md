@@ -23,6 +23,7 @@ Use [docs/LEARNING_PATH.md](../LEARNING_PATH.md) as the main entrypoint. This pa
 - [15 Historical Search With Tombstone and Redirect](./15_historical_search_tombstone_redirect.md)
 - [16 Leakage Prevention with Model Slicing](./16_leakage_prevention_with_model_slicing.md)
 - [17 Custom LLM Provider (Registry Style)](./17_custom_llm_provider.md)
+- [18 Nested Workflow Invocation](./18_nested_workflow_invocation.md)
 
 ## VS Code Companion Files
 
@@ -37,6 +38,9 @@ Open these in VS Code and use Run Cell / Run Above / Run Below for notebook-like
 - `scripts/tutorial_sections/10_event_log_replay_and_cdc.py`
 - `scripts/tutorial_sections/11_build_a_mini_graphrag_app.py`
 - `scripts/tutorial_sections/15_historical_search_tombstone_redirect.py`
+- `scripts/tutorial_sections/16_leakage_prevention_with_model_slicing.py`
+- `scripts/tutorial_sections/17_custom_llm_provider.py`
+- `scripts/tutorial_sections/18_nested_workflow_invocation.py`
 
 ## RAG Ladder: Simple RAG -> Reinforced RAG
 
