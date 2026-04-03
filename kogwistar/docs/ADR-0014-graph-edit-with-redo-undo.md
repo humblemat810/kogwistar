@@ -88,10 +88,12 @@ Field semantics:
 
 ### 8. Projection metadata and snapshots
 Backend-respecting projection metadata tables are allowed:
-- `workflow_design_projection_head`
-- `workflow_design_projection_versions`
-- `workflow_design_projection_dropped_ranges`
+- generic named projection rows keyed by `namespace + key`
 - `workflow_design_snapshots`
+
+The generic named-projection substrate is the reusable container. Case-specific fold
+logic still lives in the service layer; workflow design remains one specialized
+consumer of that generic meta facility.
 
 Projection head fields:
 - `workflow_id`
@@ -165,6 +167,7 @@ Snapshots:
 ### C. Add backend-respecting projection metadata
 - Extend [engine_sqlite.py](/c:/Users/chanh/Documents/graphrag_v2_working_tree/kogwistar/engine_core/engine_sqlite.py) and [engine_postgres_meta.py](/c:/Users/chanh/Documents/graphrag_v2_working_tree/kogwistar/engine_core/engine_postgres_meta.py) with projection metadata tables and APIs.
 - Projection APIs must support:
+  - get/replace/list/clear generic named projection rows
   - get head/version state
   - upsert rebuilt projection rows
   - clear one workflow projection

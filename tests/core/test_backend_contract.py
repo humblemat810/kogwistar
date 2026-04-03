@@ -407,6 +407,94 @@ def test_backend_contract_meta_store_and_run_registry(
     assert meta.next_global_seq() == 1
     assert meta.current_global_seq() == 1
 
+    assert meta.get_named_projection("bridge_governance", "interaction-1") is None
+    meta.replace_named_projection(
+        "bridge_governance",
+        "interaction-1",
+        {
+            "active_agents": ["agent-a", "agent-b"],
+            "latest_action": "handoff_requested",
+        },
+        last_authoritative_seq=7,
+        last_materialized_seq=6,
+        projection_schema_version=2,
+        materialization_status="rebuilding",
+    )
+    projection = meta.get_named_projection("bridge_governance", "interaction-1")
+    assert projection is not None
+    assert projection["namespace"] == "bridge_governance"
+    assert projection["key"] == "interaction-1"
+    assert projection["payload"]["active_agents"] == ["agent-a", "agent-b"]
+    assert projection["last_authoritative_seq"] == 7
+    assert projection["last_materialized_seq"] == 6
+    assert projection["projection_schema_version"] == 2
+    assert projection["materialization_status"] == "rebuilding"
+    assert isinstance(projection["updated_at_ms"], int)
+
+    meta.replace_named_projection(
+        "bridge_governance",
+        "interaction-1",
+        {
+            "active_agents": ["agent-a", "agent-b"],
+            "latest_action": "policy_approved",
+        },
+        last_authoritative_seq=8,
+        last_materialized_seq=8,
+        projection_schema_version=3,
+        materialization_status="ready",
+    )
+    meta.replace_named_projection(
+        "bridge_governance",
+        "interaction-2",
+        {"active_agents": ["agent-c"], "latest_action": "opened"},
+        last_authoritative_seq=2,
+        last_materialized_seq=2,
+        projection_schema_version=1,
+        materialization_status="ready",
+    )
+    listed = meta.list_named_projections("bridge_governance")
+    assert [item["key"] for item in listed] == ["interaction-1", "interaction-2"]
+    assert listed[0]["payload"]["latest_action"] == "policy_approved"
+    assert listed[0]["last_materialized_seq"] == 8
+    assert listed[0]["projection_schema_version"] == 3
+    meta.clear_named_projection("bridge_governance", "interaction-2")
+    assert meta.get_named_projection("bridge_governance", "interaction-2") is None
+    meta.clear_projection_namespace("bridge_governance")
+    assert meta.list_named_projections("bridge_governance") == []
+
+    meta.replace_workflow_design_projection(
+        workflow_id="wf-1",
+        head={
+            "current_version": 2,
+            "active_tip_version": 3,
+            "last_authoritative_seq": 11,
+            "last_materialized_seq": 10,
+            "projection_schema_version": 1,
+            "snapshot_schema_version": 4,
+            "materialization_status": "ready",
+        },
+        versions=[
+            {"version": 0, "prev_version": 0, "target_seq": 0, "created_at_ms": 0},
+            {"version": 2, "prev_version": 1, "target_seq": 8, "created_at_ms": 20},
+        ],
+        dropped_ranges=[
+            {"start_seq": 9, "end_seq": 10, "start_version": 2, "end_version": 3}
+        ],
+    )
+    workflow_projection = meta.get_workflow_design_projection(workflow_id="wf-1")
+    assert workflow_projection is not None
+    assert workflow_projection["current_version"] == 2
+    assert workflow_projection["active_tip_version"] == 3
+    assert workflow_projection["snapshot_schema_version"] == 4
+    assert workflow_projection["materialization_status"] == "ready"
+    assert [item["version"] for item in workflow_projection["versions"]] == [0, 2]
+    workflow_named_projection = meta.get_named_projection("workflow_design", "wf-1")
+    assert workflow_named_projection is not None
+    assert workflow_named_projection["payload"]["current_version"] == 2
+    assert workflow_named_projection["payload"]["snapshot_schema_version"] == 4
+    assert workflow_named_projection["payload"]["versions"][1]["version"] == 2
+    assert workflow_named_projection["payload"]["dropped_ranges"][0]["end_version"] == 3
+
     job_id = meta.enqueue_index_job(
         job_id="job-1",
         namespace="ns-a",
@@ -471,6 +559,9 @@ def test_backend_contract_meta_store_and_run_registry(
     )
     assert updated["status"] == "succeeded"
     assert updated["terminal"] is True
+    meta.clear_workflow_design_projection(workflow_id="wf-1")
+    assert meta.get_workflow_design_projection(workflow_id="wf-1") is None
+    assert meta.get_named_projection("workflow_design", "wf-1") is None
 
 
 @pytest.mark.parametrize("backend_kind", BACKEND_PARAMS)
