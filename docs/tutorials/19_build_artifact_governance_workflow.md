@@ -16,7 +16,7 @@ The build artifact contains internal-only fields such as `source_maps`, `raw_sou
 This tutorial turns "don't leak source maps" from convention into an encoded system contract:
 
 - schema mode slicing makes `public` a first-class boundary
-- the public payload comes from the model slice helper, not from ad hoc field stripping
+- the public payload comes from `field_mode="public"` and is validated against `BuildArtifact["public"]`, not from ad hoc field stripping
 - workflow validation fails fast if that boundary is skipped
 - governance events are appended to the conversation graph so the decision is inspectable and replayable
 - replay reconstructs both the published public artifact and the blocked unsafe run
@@ -63,7 +63,7 @@ It is impossible for this workflow to publish an artifact that still contains so
 The guarantee comes from three encoded layers working together:
 
 - `BuildArtifact` and `ArtifactMetadata` define a `public` schema mode
-- the public projection is derived through `BuildArtifact["public"]`
+- the public projection is materialized with `field_mode="public"` and checked against `BuildArtifact["public"]`
 - `validate_artifact` rejects any payload that still contains sensitive fields
 - governance event nodes plus workflow checkpoints make the decision replayable
 

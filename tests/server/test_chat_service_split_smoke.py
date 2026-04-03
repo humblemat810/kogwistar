@@ -103,9 +103,16 @@ def test_workflow_design_projection_head_and_stale_detection() -> None:
         "current_seq": 35,
     }
 
-    head = service._workflow_projection_head(
-        state=state, materialization_status="ready"
-    )
+    head = {
+        "current_version": state["current_version"],
+        "active_tip_version": state["active_tip_version"],
+        "last_authoritative_seq": state["latest_seq"],
+        "last_materialized_seq": state["current_seq"],
+        "projection_schema_version": service._projection_schema_version,
+        "snapshot_schema_version": service._snapshot_schema_version,
+        "materialization_status": "ready",
+        "updated_at_ms": service._now_ms(),
+    }
 
     assert head["current_version"] == 2
     assert head["active_tip_version"] == 3

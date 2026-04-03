@@ -635,6 +635,7 @@ class _FakeMetaStore:
     def __init__(self) -> None:
         self._user_seq: dict[str, int] = {}
         self._global_seq = 0
+        self._named_projections: dict[tuple[str, str], dict[str, Any]] = {}
 
     def ensure_initialized(self) -> None:
         return None
@@ -669,6 +670,50 @@ class _FakeMetaStore:
 
     def current_global_seq(self) -> int:
         return self._global_seq
+
+    def get_named_projection(self, namespace: str, key: str) -> dict[str, Any] | None:
+        row = self._named_projections.get((str(namespace), str(key)))
+        return copy.deepcopy(row) if row is not None else None
+
+    def replace_named_projection(
+        self,
+        namespace: str,
+        key: str,
+        payload: dict[str, Any],
+        *,
+        last_authoritative_seq: int,
+        last_materialized_seq: int,
+        projection_schema_version: int,
+        materialization_status: str,
+    ) -> None:
+        self._named_projections[(str(namespace), str(key))] = {
+            "namespace": str(namespace),
+            "key": str(key),
+            "payload": copy.deepcopy(dict(payload)),
+            "last_authoritative_seq": int(last_authoritative_seq),
+            "last_materialized_seq": int(last_materialized_seq),
+            "projection_schema_version": int(projection_schema_version),
+            "materialization_status": str(materialization_status),
+            "updated_at_ms": 0,
+        }
+
+    def list_named_projections(self, namespace: str) -> list[dict[str, Any]]:
+        rows = [
+            copy.deepcopy(row)
+            for (row_namespace, _key), row in self._named_projections.items()
+            if row_namespace == str(namespace)
+        ]
+        rows.sort(key=lambda item: str(item.get("key") or ""))
+        return rows
+
+    def clear_named_projection(self, namespace: str, key: str) -> None:
+        self._named_projections.pop((str(namespace), str(key)), None)
+
+    def clear_projection_namespace(self, namespace: str) -> None:
+        target_namespace = str(namespace)
+        for row_key in list(self._named_projections.keys()):
+            if row_key[0] == target_namespace:
+                self._named_projections.pop(row_key, None)
 
 
 class _DummyLock:

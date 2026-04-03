@@ -258,37 +258,21 @@ class EnginePostgresMetaStore:
             )
             """,
             f"""
-            CREATE TABLE IF NOT EXISTS {schema}.workflow_design_projection_head (
-                workflow_id TEXT PRIMARY KEY,
-                current_version BIGINT NOT NULL,
-                active_tip_version BIGINT NOT NULL,
+            CREATE TABLE IF NOT EXISTS {schema}.named_projections (
+                namespace TEXT NOT NULL,
+                key TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
                 last_authoritative_seq BIGINT NOT NULL,
                 last_materialized_seq BIGINT NOT NULL,
                 projection_schema_version INTEGER NOT NULL,
-                snapshot_schema_version INTEGER NOT NULL,
                 materialization_status TEXT NOT NULL,
-                updated_at_ms BIGINT NOT NULL
+                updated_at_ms BIGINT NOT NULL,
+                PRIMARY KEY(namespace, key)
             )
             """,
             f"""
-            CREATE TABLE IF NOT EXISTS {schema}.workflow_design_projection_versions (
-                workflow_id TEXT NOT NULL,
-                version BIGINT NOT NULL,
-                prev_version BIGINT NOT NULL,
-                target_seq BIGINT NOT NULL,
-                created_at_ms BIGINT NOT NULL,
-                PRIMARY KEY(workflow_id, version)
-            )
-            """,
-            f"""
-            CREATE TABLE IF NOT EXISTS {schema}.workflow_design_projection_dropped_ranges (
-                workflow_id TEXT NOT NULL,
-                start_seq BIGINT NOT NULL,
-                end_seq BIGINT NOT NULL,
-                start_version BIGINT NOT NULL,
-                end_version BIGINT NOT NULL,
-                PRIMARY KEY(workflow_id, start_seq, end_seq)
-            )
+            CREATE INDEX IF NOT EXISTS idx_named_projections_namespace
+            ON {schema}.named_projections(namespace, updated_at_ms)
             """,
             f"""
             CREATE TABLE IF NOT EXISTS {schema}.workflow_design_snapshots (
@@ -1024,75 +1008,191 @@ class EnginePostgresMetaStore:
             ).fetchone()
         return int(row[0]) if row else 0
 
+    @staticmethod
+    def _decode_named_projection_payload(raw_payload: Any) -> dict[str, Any]:
+        payload = json.loads(str(raw_payload)) if raw_payload is not None else {}
+        if not isinstance(payload, dict):
+            raise ValueError("named projection payload must deserialize to a dict")
+        return payload
+
+    def get_named_projection(self, namespace: str, key: str) -> Optional[dict[str, Any]]:
+        schema = self.schema
+        with self.transaction() as conn:
+            row = conn.execute(
+                sa.text(
+                    f"""
+                    SELECT namespace, key, payload_json,
+                           last_authoritative_seq, last_materialized_seq,
+                           projection_schema_version, materialization_status, updated_at_ms
+                    FROM {schema}.named_projections
+                    WHERE namespace = :namespace AND key = :key
+                    """
+                ),
+                {"namespace": str(namespace), "key": str(key)},
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "namespace": str(row[0]),
+            "key": str(row[1]),
+            "payload": self._decode_named_projection_payload(row[2]),
+            "last_authoritative_seq": int(row[3]),
+            "last_materialized_seq": int(row[4]),
+            "projection_schema_version": int(row[5]),
+            "materialization_status": str(row[6]),
+            "updated_at_ms": int(row[7]),
+        }
+
+    def replace_named_projection(
+        self,
+        namespace: str,
+        key: str,
+        payload: dict[str, Any],
+        *,
+        last_authoritative_seq: int,
+        last_materialized_seq: int,
+        projection_schema_version: int,
+        materialization_status: str,
+    ) -> None:
+        if not isinstance(payload, dict):
+            raise TypeError("payload must be a dict")
+        schema = self.schema
+        updated_at_ms = int(time.time() * 1000)
+        payload_json = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        with self.transaction() as conn:
+            conn.execute(
+                sa.text(
+                    f"""
+                    INSERT INTO {schema}.named_projections(
+                        namespace, key, payload_json,
+                        last_authoritative_seq, last_materialized_seq,
+                        projection_schema_version, materialization_status, updated_at_ms
+                    ) VALUES (
+                        :namespace, :key, :payload_json,
+                        :last_authoritative_seq, :last_materialized_seq,
+                        :projection_schema_version, :materialization_status, :updated_at_ms
+                    )
+                    ON CONFLICT(namespace, key) DO UPDATE SET
+                        payload_json = EXCLUDED.payload_json,
+                        last_authoritative_seq = EXCLUDED.last_authoritative_seq,
+                        last_materialized_seq = EXCLUDED.last_materialized_seq,
+                        projection_schema_version = EXCLUDED.projection_schema_version,
+                        materialization_status = EXCLUDED.materialization_status,
+                        updated_at_ms = EXCLUDED.updated_at_ms
+                    """
+                ),
+                {
+                    "namespace": str(namespace),
+                    "key": str(key),
+                    "payload_json": payload_json,
+                    "last_authoritative_seq": int(last_authoritative_seq),
+                    "last_materialized_seq": int(last_materialized_seq),
+                    "projection_schema_version": int(projection_schema_version),
+                    "materialization_status": str(materialization_status),
+                    "updated_at_ms": updated_at_ms,
+                },
+            )
+
+    def list_named_projections(self, namespace: str) -> list[dict[str, Any]]:
+        schema = self.schema
+        with self.transaction() as conn:
+            rows = conn.execute(
+                sa.text(
+                    f"""
+                    SELECT namespace, key, payload_json,
+                           last_authoritative_seq, last_materialized_seq,
+                           projection_schema_version, materialization_status, updated_at_ms
+                    FROM {schema}.named_projections
+                    WHERE namespace = :namespace
+                    ORDER BY key ASC
+                    """
+                ),
+                {"namespace": str(namespace)},
+            ).fetchall()
+        return [
+            {
+                "namespace": str(row[0]),
+                "key": str(row[1]),
+                "payload": self._decode_named_projection_payload(row[2]),
+                "last_authoritative_seq": int(row[3]),
+                "last_materialized_seq": int(row[4]),
+                "projection_schema_version": int(row[5]),
+                "materialization_status": str(row[6]),
+                "updated_at_ms": int(row[7]),
+            }
+            for row in rows
+        ]
+
+    def clear_named_projection(self, namespace: str, key: str) -> None:
+        schema = self.schema
+        with self.transaction() as conn:
+            conn.execute(
+                sa.text(
+                    f"""
+                    DELETE FROM {schema}.named_projections
+                    WHERE namespace = :namespace AND key = :key
+                    """
+                ),
+                {"namespace": str(namespace), "key": str(key)},
+            )
+
+    def clear_projection_namespace(self, namespace: str) -> None:
+        schema = self.schema
+        with self.transaction() as conn:
+            conn.execute(
+                sa.text(
+                    f"""
+                    DELETE FROM {schema}.named_projections
+                    WHERE namespace = :namespace
+                    """
+                ),
+                {"namespace": str(namespace)},
+            )
+
     def get_workflow_design_projection(
         self, *, workflow_id: str
     ) -> Optional[dict[str, Any]]:
-        schema = self.schema
-        with self.transaction() as conn:
-            head = conn.execute(
-                sa.text(
-                    f"""
-                    SELECT workflow_id, current_version, active_tip_version,
-                           last_authoritative_seq, last_materialized_seq,
-                           projection_schema_version, snapshot_schema_version,
-                           materialization_status, updated_at_ms
-                    FROM {schema}.workflow_design_projection_head
-                    WHERE workflow_id = :workflow_id
-                    """
-                ),
-                {"workflow_id": workflow_id},
-            ).fetchone()
-            if head is None:
-                return None
-            versions = conn.execute(
-                sa.text(
-                    f"""
-                    SELECT version, prev_version, target_seq, created_at_ms
-                    FROM {schema}.workflow_design_projection_versions
-                    WHERE workflow_id = :workflow_id
-                    ORDER BY version ASC
-                    """
-                ),
-                {"workflow_id": workflow_id},
-            ).fetchall()
-            dropped = conn.execute(
-                sa.text(
-                    f"""
-                    SELECT start_seq, end_seq, start_version, end_version
-                    FROM {schema}.workflow_design_projection_dropped_ranges
-                    WHERE workflow_id = :workflow_id
-                    ORDER BY start_seq ASC, end_seq ASC
-                    """
-                ),
-                {"workflow_id": workflow_id},
-            ).fetchall()
+        projection = self.get_named_projection("workflow_design", str(workflow_id))
+        if projection is None:
+            return None
+        payload = projection.get("payload") or {}
+        versions = payload.get("versions") or []
+        dropped_ranges = payload.get("dropped_ranges") or []
         return {
-            "workflow_id": str(head[0]),
-            "current_version": int(head[1]),
-            "active_tip_version": int(head[2]),
-            "last_authoritative_seq": int(head[3]),
-            "last_materialized_seq": int(head[4]),
-            "projection_schema_version": int(head[5]),
-            "snapshot_schema_version": int(head[6]),
-            "materialization_status": str(head[7]),
-            "updated_at_ms": int(head[8]),
+            "workflow_id": str(workflow_id),
+            "current_version": int(payload.get("current_version") or 0),
+            "active_tip_version": int(payload.get("active_tip_version") or 0),
+            "last_authoritative_seq": int(
+                projection.get("last_authoritative_seq") or 0
+            ),
+            "last_materialized_seq": int(projection.get("last_materialized_seq") or 0),
+            "projection_schema_version": int(
+                projection.get("projection_schema_version") or 1
+            ),
+            "snapshot_schema_version": int(payload.get("snapshot_schema_version") or 1),
+            "materialization_status": str(
+                projection.get("materialization_status") or "ready"
+            ),
+            "updated_at_ms": int(projection.get("updated_at_ms") or 0),
             "versions": [
                 {
-                    "version": int(row[0]),
-                    "prev_version": int(row[1]),
-                    "target_seq": int(row[2]),
-                    "created_at_ms": int(row[3]),
+                    "version": int(item.get("version") or 0),
+                    "prev_version": int(item.get("prev_version") or 0),
+                    "target_seq": int(item.get("target_seq") or 0),
+                    "created_at_ms": int(item.get("created_at_ms") or 0),
                 }
-                for row in versions
+                for item in versions
+                if isinstance(item, dict)
             ],
             "dropped_ranges": [
                 {
-                    "start_seq": int(row[0]),
-                    "end_seq": int(row[1]),
-                    "start_version": int(row[2]),
-                    "end_version": int(row[3]),
+                    "start_seq": int(item.get("start_seq") or 0),
+                    "end_seq": int(item.get("end_seq") or 0),
+                    "start_version": int(item.get("start_version") or 0),
+                    "end_version": int(item.get("end_version") or 0),
                 }
-                for row in dropped
+                for item in dropped_ranges
+                if isinstance(item, dict)
             ],
         }
 
@@ -1104,128 +1204,41 @@ class EnginePostgresMetaStore:
         versions: list[dict[str, Any]],
         dropped_ranges: list[dict[str, Any]],
     ) -> None:
-        schema = self.schema
-        updated_at_ms = int(head.get("updated_at_ms") or 0)
-        with self.transaction() as conn:
-            conn.execute(
-                sa.text(
-                    f"DELETE FROM {schema}.workflow_design_projection_versions WHERE workflow_id = :workflow_id"
-                ),
-                {"workflow_id": workflow_id},
-            )
-            conn.execute(
-                sa.text(
-                    f"DELETE FROM {schema}.workflow_design_projection_dropped_ranges WHERE workflow_id = :workflow_id"
-                ),
-                {"workflow_id": workflow_id},
-            )
-            conn.execute(
-                sa.text(
-                    f"""
-                    INSERT INTO {schema}.workflow_design_projection_head(
-                        workflow_id, current_version, active_tip_version,
-                        last_authoritative_seq, last_materialized_seq,
-                        projection_schema_version, snapshot_schema_version,
-                        materialization_status, updated_at_ms
-                    ) VALUES (
-                        :workflow_id, :current_version, :active_tip_version,
-                        :last_authoritative_seq, :last_materialized_seq,
-                        :projection_schema_version, :snapshot_schema_version,
-                        :materialization_status, :updated_at_ms
-                    )
-                    ON CONFLICT(workflow_id) DO UPDATE SET
-                        current_version = EXCLUDED.current_version,
-                        active_tip_version = EXCLUDED.active_tip_version,
-                        last_authoritative_seq = EXCLUDED.last_authoritative_seq,
-                        last_materialized_seq = EXCLUDED.last_materialized_seq,
-                        projection_schema_version = EXCLUDED.projection_schema_version,
-                        snapshot_schema_version = EXCLUDED.snapshot_schema_version,
-                        materialization_status = EXCLUDED.materialization_status,
-                        updated_at_ms = EXCLUDED.updated_at_ms
-                    """
-                ),
+        payload = {
+            "current_version": int(head.get("current_version") or 0),
+            "active_tip_version": int(head.get("active_tip_version") or 0),
+            "snapshot_schema_version": int(head.get("snapshot_schema_version") or 1),
+            "versions": [
                 {
-                    "workflow_id": workflow_id,
-                    "current_version": int(head.get("current_version") or 0),
-                    "active_tip_version": int(head.get("active_tip_version") or 0),
-                    "last_authoritative_seq": int(
-                        head.get("last_authoritative_seq") or 0
-                    ),
-                    "last_materialized_seq": int(
-                        head.get("last_materialized_seq") or 0
-                    ),
-                    "projection_schema_version": int(
-                        head.get("projection_schema_version") or 1
-                    ),
-                    "snapshot_schema_version": int(
-                        head.get("snapshot_schema_version") or 1
-                    ),
-                    "materialization_status": str(
-                        head.get("materialization_status") or "ready"
-                    ),
-                    "updated_at_ms": updated_at_ms,
-                },
-            )
-            for item in versions:
-                conn.execute(
-                    sa.text(
-                        f"""
-                        INSERT INTO {schema}.workflow_design_projection_versions(
-                            workflow_id, version, prev_version, target_seq, created_at_ms
-                        ) VALUES (
-                            :workflow_id, :version, :prev_version, :target_seq, :created_at_ms
-                        )
-                        """
-                    ),
-                    {
-                        "workflow_id": workflow_id,
-                        "version": int(item.get("version") or 0),
-                        "prev_version": int(item.get("prev_version") or 0),
-                        "target_seq": int(item.get("target_seq") or 0),
-                        "created_at_ms": int(item.get("created_at_ms") or 0),
-                    },
-                )
-            for item in dropped_ranges:
-                conn.execute(
-                    sa.text(
-                        f"""
-                        INSERT INTO {schema}.workflow_design_projection_dropped_ranges(
-                            workflow_id, start_seq, end_seq, start_version, end_version
-                        ) VALUES (
-                            :workflow_id, :start_seq, :end_seq, :start_version, :end_version
-                        )
-                        """
-                    ),
-                    {
-                        "workflow_id": workflow_id,
-                        "start_seq": int(item.get("start_seq") or 0),
-                        "end_seq": int(item.get("end_seq") or 0),
-                        "start_version": int(item.get("start_version") or 0),
-                        "end_version": int(item.get("end_version") or 0),
-                    },
-                )
+                    "version": int(item.get("version") or 0),
+                    "prev_version": int(item.get("prev_version") or 0),
+                    "target_seq": int(item.get("target_seq") or 0),
+                    "created_at_ms": int(item.get("created_at_ms") or 0),
+                }
+                for item in versions
+            ],
+            "dropped_ranges": [
+                {
+                    "start_seq": int(item.get("start_seq") or 0),
+                    "end_seq": int(item.get("end_seq") or 0),
+                    "start_version": int(item.get("start_version") or 0),
+                    "end_version": int(item.get("end_version") or 0),
+                }
+                for item in dropped_ranges
+            ],
+        }
+        self.replace_named_projection(
+            "workflow_design",
+            str(workflow_id),
+            payload,
+            last_authoritative_seq=int(head.get("last_authoritative_seq") or 0),
+            last_materialized_seq=int(head.get("last_materialized_seq") or 0),
+            projection_schema_version=int(head.get("projection_schema_version") or 1),
+            materialization_status=str(head.get("materialization_status") or "ready"),
+        )
 
     def clear_workflow_design_projection(self, *, workflow_id: str) -> None:
-        schema = self.schema
-        with self.transaction() as conn:
-            conn.execute(
-                sa.text(
-                    f"DELETE FROM {schema}.workflow_design_projection_versions WHERE workflow_id = :workflow_id"
-                ),
-                {"workflow_id": workflow_id},
-            )
-            conn.execute(
-                sa.text(
-                    f"DELETE FROM {schema}.workflow_design_projection_dropped_ranges WHERE workflow_id = :workflow_id"
-                ),
-                {"workflow_id": workflow_id},
-            )
-            conn.execute(
-                sa.text(
-                    f"DELETE FROM {schema}.workflow_design_projection_head WHERE workflow_id = :workflow_id"
-                ),
-                {"workflow_id": workflow_id},
-            )
+        self.clear_named_projection("workflow_design", str(workflow_id))
 
     def put_workflow_design_snapshot(
         self,

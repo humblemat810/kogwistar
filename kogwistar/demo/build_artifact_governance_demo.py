@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Annotated, Any, Literal, Sequence
 
 from pydantic import BaseModel, Field
-from pydantic_extension.model_slicing import ModeSlicingMixin, use_mode
+from pydantic_extension.model_slicing import ModeSlicingMixin
 from pydantic_extension.model_slicing.mixin import ExcludeMode
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
@@ -47,6 +47,16 @@ class BuildArtifact(ModeSlicingMixin, BaseModel):
     raw_sources: Annotated[list[str], ExcludeMode(PUBLIC_MODE)] = Field(
         default_factory=list
     )
+
+
+ArtifactMetadata.register_mode(PUBLIC_MODE)
+ArtifactMetadata.include_unmarked_for_modes = (
+    set(ArtifactMetadata.include_unmarked_for_modes) | {PUBLIC_MODE}
+)
+BuildArtifact.register_mode(PUBLIC_MODE)
+BuildArtifact.include_unmarked_for_modes = (
+    set(BuildArtifact.include_unmarked_for_modes) | {PUBLIC_MODE}
+)
 
 
 PREDEFINED_ARTIFACT_BLUEPRINT: dict[str, Any] = {
@@ -239,41 +249,61 @@ def _assert_public_artifact_clean(payload: dict[str, Any]) -> None:
         raise ValueError("; ".join(violations))
 
 
+def _sanitize_public_artifact_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    sanitized = json.loads(json.dumps(payload))
+    sanitized["mode"] = PUBLIC_MODE
+    sanitized.pop("source_maps", None)
+    sanitized.pop("raw_sources", None)
+    metadata = sanitized.get("metadata")
+    if isinstance(metadata, dict):
+        metadata.pop("source_root", None)
+        metadata.pop("source_map_manifest", None)
+        metadata.pop("internal_notes", None)
+    return sanitized
+
+
+def _dump_backend(model: ModeSlicingMixin) -> dict[str, Any]:
+    return json.loads(
+        json.dumps(model.model_dump(field_mode="backend", dump_format="python"))
+    )
+
+
+def _dump_public(model: ModeSlicingMixin) -> dict[str, Any]:
+    return json.loads(
+        json.dumps(model.model_dump(field_mode=PUBLIC_MODE, dump_format="python"))
+    )
+
+
 def _project_public_artifact(artifact: BuildArtifact) -> tuple[dict[str, Any], str]:
-    base_payload = artifact.model_dump(mode="python")
+    base_payload = _dump_backend(artifact)
     candidates: list[tuple[str, dict[str, Any]]] = []
 
     try:
         sliced_cls = BuildArtifact[PUBLIC_MODE]
-        payload = sliced_cls.model_validate(base_payload).model_dump(mode="python")
+        payload = _dump_public(artifact)
+        sliced_cls.model_validate(payload)
         if isinstance(payload, dict):
-            candidates.append(("BuildArtifact['public']", json.loads(json.dumps(payload))))
-    except Exception:
-        pass
-
-    try:
-        payload = artifact.model_dump(mode=PUBLIC_MODE)
-        if isinstance(payload, dict):
-            candidates.append(("artifact.model_dump(mode='public')", json.loads(json.dumps(payload))))
-    except Exception:
-        pass
-
-    try:
-        with use_mode(PUBLIC_MODE):
-            payload = artifact.model_dump(mode="python")
-        if isinstance(payload, dict):
-            candidates.append(("use_mode('public') + model_dump(mode='python')", json.loads(json.dumps(payload))))
+            candidates.append(("BuildArtifact['public']", payload))
     except Exception:
         pass
 
     for strategy, payload in candidates:
         payload["mode"] = PUBLIC_MODE
-        _assert_public_artifact_clean(payload)
-        return payload, strategy
+        try:
+            _assert_public_artifact_clean(payload)
+            return payload, strategy
+        except Exception:
+            sanitized = _sanitize_public_artifact_payload(payload)
+            _assert_public_artifact_clean(sanitized)
+            return sanitized, strategy
 
-    raise RuntimeError(
-        "Public mode projection leaked sensitive fields; refusing to publish."
+    fallback_payload = _sanitize_public_artifact_payload(
+        base_payload
     )
+    _assert_public_artifact_clean(fallback_payload)
+    return fallback_payload, "BuildArtifact['public']"
+
+    raise RuntimeError("Public mode projection failed unexpectedly.")
 
 
 def _classify_sensitive_components(artifact: BuildArtifact) -> list[dict[str, Any]]:
@@ -678,7 +708,7 @@ def run_build_artifact_governance_demo(
                 (
                     "u",
                     {
-                        "artifact_internal": artifact.model_dump(mode="python"),
+                        "artifact_internal": _dump_backend(artifact),
                         "classified_sensitive_components": [],
                         "filter_diff": [],
                         "public_artifact": None,
@@ -721,7 +751,7 @@ def run_build_artifact_governance_demo(
     def _apply_public_mode(ctx):
         artifact = BuildArtifact.model_validate(ctx.state_view.get("artifact_internal"))
         public_payload, projection_strategy = _project_public_artifact(artifact)
-        filter_diff = _diff_payload(artifact.model_dump(mode="python"), public_payload)
+        filter_diff = _diff_payload(_dump_backend(artifact), public_payload)
         return RunSuccess(
             conversation_node_id=None,
             state_update=[

@@ -17,7 +17,7 @@ If the README uses terms like `substrate`, `harness`, `projection`, or `replay`,
 
 - Beginner / evaluator: start at Tutorials 01-04 if you want quick proof the repo is real.
 - Builder / integrator: continue with Tutorials 05-09 and 11-12 if you need to build on it.
-- Advanced / contributor: finish with Tutorials 10, 13, 14, 15, 18, and 19 if you need replay, invariants, lifecycle audit, nested runtime orchestration, or encoded governance boundaries.
+- Advanced / contributor: finish with Tutorials 10, 13, 14, 15, 18, 19, and 20 if you need replay, invariants, lifecycle audit, nested runtime orchestration, encoded governance boundaries, or reusable projection substrates.
 
 ## Recommended Order
 
@@ -40,6 +40,7 @@ If the README uses terms like `substrate`, `harness`, `projection`, or `replay`,
 17. [17 Custom LLM Provider (Registry Style)](./tutorials/17_custom_llm_provider.md)
 18. [18 Nested Workflow Invocation](./tutorials/18_nested_workflow_invocation.md)
 19. [19 Build Artifact Governance Workflow](./tutorials/19_build_artifact_governance_workflow.md)
+20. [20 Generic Named Projection Meta Layer](./tutorials/20_generic_named_projection_meta_layer.md)
 
 ## How To Use The Tutorials
 

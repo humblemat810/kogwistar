@@ -127,6 +127,14 @@ class WorkflowProjectionRow(TypedDict, total=False):
     updated_at_ms: int
 
 
+class WorkflowProjectionPayload(TypedDict, total=False):
+    current_version: int
+    active_tip_version: int
+    snapshot_schema_version: int
+    versions: list[dict[str, Any]]
+    dropped_ranges: list[WorkflowDroppedRange]
+
+
 class WorkflowVersionDeltaRecord(TypedDict):
     workflow_id: str
     version: int
@@ -425,10 +433,29 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
         Returns:
             A projection row dict if present, else `None`.
         """
-        getter = self._workflow_meta_store().get_workflow_design_projection
+        getter = self._workflow_meta_store().get_named_projection
         if not callable(getter):
             return None
-        return getter(workflow_id=str(workflow_id))
+        row = getter(namespace="workflow_design", key=str(workflow_id))
+        if row is None:
+            return None
+        payload = row.get("payload")
+        if not isinstance(payload, dict):
+            return None
+        return {
+            "current_version": int(payload.get("current_version") or 0),
+            "active_tip_version": int(payload.get("active_tip_version") or 0),
+            "last_authoritative_seq": int(row.get("last_authoritative_seq") or 0),
+            "last_materialized_seq": int(row.get("last_materialized_seq") or 0),
+            "projection_schema_version": int(
+                row.get("projection_schema_version") or self._projection_schema_version
+            ),
+            "snapshot_schema_version": int(
+                payload.get("snapshot_schema_version") or self._snapshot_schema_version
+            ),
+            "materialization_status": str(row.get("materialization_status") or "ready"),
+            "updated_at_ms": int(row.get("updated_at_ms") or self._now_ms()),
+        }
 
     def _workflow_empty_delta(self) -> WorkflowVisibleDelta:
         """Return an empty visible-delta structure.
@@ -898,57 +925,16 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
             return True
         return False
 
-    def _workflow_projection_head(
+    def _workflow_projection_payload(
         self,
         *,
         state: WorkflowFoldState,
-        materialization_status: str = "ready",
-    ) -> WorkflowProjectionRow:
-        """Build a projection-head row from folded history state.
-
-        Args:
-            state: Folded workflow history state.
-            materialization_status: Status to persist with the head row.
-
-        Returns:
-            A projection metadata row describing the currently selected version and
-            authoritative/materialized sequence positions.
-        """
+    ) -> WorkflowProjectionPayload:
         return {
             "current_version": int(state.get("current_version") or 0),
             "active_tip_version": int(state.get("active_tip_version") or 0),
-            "last_authoritative_seq": int(state.get("latest_seq") or 0),
-            "last_materialized_seq": int(state.get("current_seq") or 0),
-            "projection_schema_version": self._projection_schema_version,
             "snapshot_schema_version": self._snapshot_schema_version,
-            "materialization_status": str(materialization_status),
-            "updated_at_ms": self._now_ms(),
-        }
-
-    def _store_workflow_projection(
-        self,
-        *,
-        workflow_id: str,
-        state: WorkflowFoldState,
-        materialization_status: str = "ready",
-    ) -> None:
-        """Persist the workflow projection head and version metadata.
-
-        This writes the projection metadata view used by the designer surface to
-        reason about the selected lineage, active versions, and dropped ranges
-        without rescanning the entire event log on every request.
-        """
-        replace = getattr(
-            self._workflow_meta_store(), "replace_workflow_design_projection", None
-        )
-        if not callable(replace):
-            return
-        replace(
-            workflow_id=workflow_id,
-            head=self._workflow_projection_head(
-                state=state, materialization_status=materialization_status
-            ),
-            versions=[
+            "versions": [
                 {
                     "version": int(item.get("version") or 0),
                     "prev_version": int(item.get("prev_version") or 0),
@@ -976,7 +962,41 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
                     for v in (state.get("selected_versions") or [])
                 }
             ],
-            dropped_ranges=list(state.get("dropped_ranges") or []),
+            "dropped_ranges": [
+                {
+                    "start_version": int(item.get("start_version") or 0),
+                    "end_version": int(item.get("end_version") or 0),
+                    "start_seq": int(item.get("start_seq") or 0),
+                    "end_seq": int(item.get("end_seq") or 0),
+                }
+                for item in state.get("dropped_ranges") or []
+            ],
+        }
+
+    def _store_workflow_projection(
+        self,
+        *,
+        workflow_id: str,
+        state: WorkflowFoldState,
+        materialization_status: str = "ready",
+    ) -> None:
+        """Persist the workflow projection head and version metadata.
+
+        This writes the projection metadata view used by the designer surface to
+        reason about the selected lineage, active versions, and dropped ranges
+        without rescanning the entire event log on every request.
+        """
+        replace = getattr(self._workflow_meta_store(), "replace_named_projection", None)
+        if not callable(replace):
+            return
+        replace(
+            "workflow_design",
+            workflow_id,
+            self._workflow_projection_payload(state=state),
+            last_authoritative_seq=int(state.get("latest_seq") or 0),
+            last_materialized_seq=int(state.get("current_seq") or 0),
+            projection_schema_version=self._projection_schema_version,
+            materialization_status=str(materialization_status),
         )
 
     def _workflow_projection_status(self, *, workflow_id: str) -> str | None:

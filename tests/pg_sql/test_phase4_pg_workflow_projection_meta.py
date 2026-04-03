@@ -51,6 +51,23 @@ def test_pg_meta_store_workflow_projection_and_server_run_tables(sa_engine, pg_s
         meta = workflow_engine.meta_sqlite
         assert isinstance(meta, EnginePostgresMetaStore)
 
+        assert meta.get_named_projection("bridge_governance", "pg-interaction") is None
+        meta.replace_named_projection(
+            "bridge_governance",
+            "pg-interaction",
+            {"status": "rebuilding", "agents": ["router", "policy"]},
+            last_authoritative_seq=5,
+            last_materialized_seq=4,
+            projection_schema_version=1,
+            materialization_status="rebuilding",
+        )
+        named = meta.get_named_projection("bridge_governance", "pg-interaction")
+        assert named is not None
+        assert named["payload"]["status"] == "rebuilding"
+        assert named["last_authoritative_seq"] == 5
+        assert named["last_materialized_seq"] == 4
+        assert named["materialization_status"] == "rebuilding"
+
         workflow_id = "wf.pg.meta"
         meta.replace_workflow_design_projection(
             workflow_id=workflow_id,
@@ -85,6 +102,15 @@ def test_pg_meta_store_workflow_projection_and_server_run_tables(sa_engine, pg_s
         assert [int(item["version"]) for item in projection["versions"]] == [0, 1, 4]
         assert projection["dropped_ranges"] == [
             {"start_seq": 4, "end_seq": 9, "start_version": 2, "end_version": 3}
+        ]
+        wrapped = meta.get_named_projection("workflow_design", workflow_id)
+        assert wrapped is not None
+        assert wrapped["payload"]["current_version"] == 4
+        assert wrapped["payload"]["snapshot_schema_version"] == 1
+        assert [int(item["version"]) for item in wrapped["payload"]["versions"]] == [
+            0,
+            1,
+            4,
         ]
 
         meta.put_workflow_design_snapshot(
@@ -193,6 +219,8 @@ def test_pg_meta_store_workflow_projection_and_server_run_tables(sa_engine, pg_s
 
         meta.clear_workflow_design_snapshots(workflow_id=workflow_id)
         meta.clear_workflow_design_deltas(workflow_id=workflow_id)
+        meta.clear_projection_namespace("bridge_governance")
+        assert meta.list_named_projections("bridge_governance") == []
         meta.clear_workflow_design_projection(workflow_id=workflow_id)
         assert (
             meta.get_workflow_design_snapshot(
@@ -207,5 +235,6 @@ def test_pg_meta_store_workflow_projection_and_server_run_tables(sa_engine, pg_s
             is None
         )
         assert meta.get_workflow_design_projection(workflow_id=workflow_id) is None
+        assert meta.get_named_projection("workflow_design", workflow_id) is None
     finally:
         shutil.rmtree(root, ignore_errors=True)
