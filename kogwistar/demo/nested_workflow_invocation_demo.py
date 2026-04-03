@@ -215,17 +215,40 @@ def run_nested_workflow_invocation_demo(
     data_dir: str | Path | None = None,
     reset_data: bool = True,
     backend_factory: Any | None = None,
+    workflow_engine: GraphKnowledgeEngine | None = None,
+    conversation_engine: GraphKnowledgeEngine | None = None,
 ) -> dict[str, Any]:
     """Golden example for predesigned and dynamically persisted sub-workflows."""
 
-    root = Path(data_dir) if data_dir is not None else Path(".gke-data/nested-workflow-demo")
-    if reset_data and root.exists():
-        shutil.rmtree(root)
-    root.mkdir(parents=True, exist_ok=True)
+    if (workflow_engine is None) != (conversation_engine is None):
+        raise ValueError(
+            "workflow_engine and conversation_engine must be provided together"
+        )
 
-    workflow_engine, conversation_engine = _build_engines(
-        data_dir=root, backend_factory=backend_factory
-    )
+    if workflow_engine is None or conversation_engine is None:
+        root = (
+            Path(data_dir)
+            if data_dir is not None
+            else Path(".gke-data/nested-workflow-demo")
+        )
+        if reset_data and root.exists():
+            shutil.rmtree(root)
+        root.mkdir(parents=True, exist_ok=True)
+
+        workflow_engine, conversation_engine = _build_engines(
+            data_dir=root, backend_factory=backend_factory
+        )
+    else:
+        if data_dir is not None:
+            root = Path(data_dir)
+        else:
+            workflow_root = Path(str(getattr(workflow_engine, "persist_directory", ".")))
+            conversation_root = Path(
+                str(getattr(conversation_engine, "persist_directory", "."))
+            )
+            root = workflow_root.parent
+            if conversation_root.parent != root:
+                root = workflow_root
 
     parent_workflow_id = "demo.parent"
     predesigned_workflow_id = "demo.child.predesigned"
