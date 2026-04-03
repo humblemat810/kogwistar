@@ -648,11 +648,20 @@ class _FakeMetaStore:
         self._user_seq[user_id] = next_value
         return next_value
 
+    def next_scoped_seq(self, scope_id: str) -> int:
+        return self.next_user_seq(scope_id)
+
     def current_user_seq(self, user_id: str) -> int:
         return self._user_seq.get(user_id, 0)
 
+    def current_scoped_seq(self, scope_id: str) -> int:
+        return self.current_user_seq(scope_id)
+
     def set_user_seq(self, user_id: str, value: int) -> None:
         self._user_seq[user_id] = int(value)
+
+    def set_scoped_seq(self, scope_id: str, value: int) -> None:
+        self.set_user_seq(scope_id, value)
 
     def next_global_seq(self) -> int:
         self._global_seq += 1

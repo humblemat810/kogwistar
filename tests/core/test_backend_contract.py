@@ -401,6 +401,9 @@ def test_backend_contract_meta_store_and_run_registry(
     assert meta.current_user_seq("user-a") == 0
     assert meta.next_user_seq("user-a") == 1
     assert meta.current_user_seq("user-a") == 1
+    assert meta.current_scoped_seq("scope-a") == 0
+    assert meta.next_scoped_seq("scope-a") == 1
+    assert meta.current_scoped_seq("scope-a") == 1
     assert meta.next_global_seq() == 1
     assert meta.current_global_seq() == 1
 

@@ -447,6 +447,9 @@ class EnginePostgresMetaStore:
             ).fetchone()
             return int(row[0])
 
+    def next_scoped_seq(self, scope_id: str) -> int:
+        return self.next_user_seq(scope_id)
+
     def current_user_seq(self, user_id: str) -> int:
         ut = f"{self.schema}.user_seq"
         with self.transaction() as conn:
@@ -455,6 +458,9 @@ class EnginePostgresMetaStore:
                 {"user_id": user_id},
             ).fetchone()
             return int(row[0]) if row else 0
+
+    def current_scoped_seq(self, scope_id: str) -> int:
+        return self.current_user_seq(scope_id)
 
     def set_user_seq(self, user_id: str, value: int) -> None:
         if value < 0:
@@ -472,6 +478,9 @@ class EnginePostgresMetaStore:
                 ),
                 {"user_id": user_id, "value": int(value)},
             )
+
+    def set_scoped_seq(self, scope_id: str, value: int) -> None:
+        self.set_user_seq(scope_id, value)
 
     # ----------------------------
     # Index jobs

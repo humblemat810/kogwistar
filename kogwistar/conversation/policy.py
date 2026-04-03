@@ -3,6 +3,11 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING, Any, Optional
 
+from kogwistar.engine_core.scoped_seq import (
+    ScopedSeqHookConfig,
+    install_scoped_seq_hooks,
+    maybe_assign_node_scoped_seq,
+)
 from kogwistar.graph_kinds import KIND_CHAT
 
 from .models import (
@@ -192,24 +197,34 @@ def validate_edge_add(engine: "GraphKnowledgeEngine", edge: ConversationEdge) ->
             )
 
 
+def _conversation_scope_id(
+    engine: "GraphKnowledgeEngine", subject: Any
+) -> str | None:
+    _ = engine
+    conv_id = getattr(subject, "conversation_id", None)
+    if conv_id is None:
+        conv_id = (getattr(subject, "metadata", {}) or {}).get("conversation_id")
+    if conv_id is None:
+        return None
+    return str(conv_id)
+
+
+def _conversation_should_stamp(
+    engine: "GraphKnowledgeEngine", subject: Any
+) -> bool:
+    _ = subject
+    return bool(getattr(engine, "kg_graph_type", None) == KIND_CHAT)
+
+
+_CONVERSATION_SEQ_HOOK_CONFIG = ScopedSeqHookConfig(
+    metadata_field="seq",
+    should_stamp_node=_conversation_should_stamp,
+    scope_id_for_node=_conversation_scope_id,
+)
+
+
 def maybe_assign_seq(engine: "GraphKnowledgeEngine", node: Any) -> None:
-    if engine.kg_graph_type != KIND_CHAT:
-        return
-    conv_id = getattr(node, "conversation_id", None)
-    if conv_id is None:
-        conv_id = (getattr(node, "metadata", {}) or {}).get("conversation_id")
-    if conv_id is None:
-        return
-    md = dict(getattr(node, "metadata", {}) or {})
-    try:
-        existing_seq = md.get("seq")
-        if existing_seq is not None and int(existing_seq) > 0:
-            return
-    except Exception:
-        pass
-    seq = engine.meta_sqlite.next_user_seq(str(conv_id))
-    md["seq"] = seq
-    node.metadata = md
+    maybe_assign_node_scoped_seq(engine, node, config=_CONVERSATION_SEQ_HOOK_CONFIG)
 
 
 def get_last_seq_node(engine: "GraphKnowledgeEngine", conversation_id, min_seq=None):
@@ -296,9 +311,11 @@ def last_summary_of_node(engine: "GraphKnowledgeEngine", node: ConversationNode)
 def install_engine_hooks(engine: "GraphKnowledgeEngine") -> None:
     if getattr(engine, "_chat_policy_hooks_ready", False):
         return
-
-    def _node_hook(node: Any) -> None:
-        maybe_assign_seq(engine, node)
+    install_scoped_seq_hooks(
+        engine,
+        _CONVERSATION_SEQ_HOOK_CONFIG,
+        ready_attr="_chat_policy_scoped_seq_hooks_ready",
+    )
 
     def _edge_hook(edge: Any) -> bool:
         if not isinstance(edge, ConversationEdge):
@@ -317,9 +334,6 @@ def install_engine_hooks(engine: "GraphKnowledgeEngine") -> None:
     def _allow_missing_doc(edge: Any) -> bool:
         return isinstance(edge, ConversationEdge)
 
-    node_hooks = getattr(engine, "pre_add_node_hooks", None)
-    if isinstance(node_hooks, list):
-        node_hooks.append(_node_hook)
     edge_hooks = getattr(engine, "pre_add_edge_hooks", None)
     if isinstance(edge_hooks, list):
         edge_hooks.append(_edge_hook)

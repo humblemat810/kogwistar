@@ -440,6 +440,12 @@ class EngineSQLite:
         with self.transaction() as conn:
             return self.next_user_seq_conn(conn, user_id)
 
+    def next_scoped_seq(self, scope_id: str) -> int:
+        """
+        Allocate the next sequence number scoped to an arbitrary scope id.
+        """
+        return self.next_user_seq(scope_id)
+
     def next_user_seq_conn(self, conn: sqlite3.Connection, user_id: str) -> int:
         """
         Allocate the next user sequence using an existing transaction.
@@ -467,6 +473,12 @@ class EngineSQLite:
             ).fetchone()
             return int(row[0]) if row else 0
 
+    def current_scoped_seq(self, scope_id: str) -> int:
+        """
+        Return the current sequence value for an arbitrary scope id.
+        """
+        return self.current_user_seq(scope_id)
+
     def set_user_seq(self, user_id: str, value: int) -> None:
         """
         Hard reset: set the counter for user_id to an exact value.
@@ -479,6 +491,12 @@ class EngineSQLite:
 
         with self.transaction() as conn:
             self.set_user_seq_conn(conn, user_id, value)
+
+    def set_scoped_seq(self, scope_id: str, value: int) -> None:
+        """
+        Hard reset: set the counter for an arbitrary scope id to an exact value.
+        """
+        self.set_user_seq(scope_id, value)
 
     def set_user_seq_conn(
         self, conn: sqlite3.Connection, user_id: str, value: int
