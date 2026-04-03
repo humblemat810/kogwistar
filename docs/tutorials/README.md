@@ -24,6 +24,7 @@ Use [docs/LEARNING_PATH.md](../LEARNING_PATH.md) as the main entrypoint. This pa
 - [16 Leakage Prevention with Model Slicing](./16_leakage_prevention_with_model_slicing.md)
 - [17 Custom LLM Provider (Registry Style)](./17_custom_llm_provider.md)
 - [18 Nested Workflow Invocation](./18_nested_workflow_invocation.md)
+- [19 Build Artifact Governance Workflow](./19_build_artifact_governance_workflow.md)
 
 ## VS Code Companion Files
 
@@ -41,6 +42,7 @@ Open these in VS Code and use Run Cell / Run Above / Run Below for notebook-like
 - `scripts/tutorial_sections/16_leakage_prevention_with_model_slicing.py`
 - `scripts/tutorial_sections/17_custom_llm_provider.py`
 - `scripts/tutorial_sections/18_nested_workflow_invocation.py`
+- `scripts/tutorial_sections/19_build_artifact_governance_workflow.py`
 
 ## RAG Ladder: Simple RAG -> Reinforced RAG
 

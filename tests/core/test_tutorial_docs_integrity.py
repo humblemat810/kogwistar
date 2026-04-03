@@ -34,6 +34,7 @@ NUMBERED_DOCS = [
     TUTORIALS_DIR / "16_leakage_prevention_with_model_slicing.md",
     TUTORIALS_DIR / "17_custom_llm_provider.md",
     TUTORIALS_DIR / "18_nested_workflow_invocation.md",
+    TUTORIALS_DIR / "19_build_artifact_governance_workflow.md",
 ]
 
 LEGACY_LEVEL_DOCS = [
@@ -61,6 +62,7 @@ COMPANION_FILES = [
     SECTIONS_DIR / "16_leakage_prevention_with_model_slicing.py",
     SECTIONS_DIR / "17_custom_llm_provider.py",
     SECTIONS_DIR / "18_nested_workflow_invocation.py",
+    SECTIONS_DIR / "19_build_artifact_governance_workflow.py",
 ]
 
 REQUIRED_TEMPLATE_HEADINGS = [
