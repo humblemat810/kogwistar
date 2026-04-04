@@ -148,6 +148,12 @@ def _workflow_step_exec_nodes(conv_engine: GraphKnowledgeEngine, run_id: str):
     )
 
 
+def _workflow_edge_by_id(conv_engine: GraphKnowledgeEngine, edge_id: str):
+    edges = conv_engine.get_edges(ids=[edge_id])
+    assert edges, f"Missing workflow edge {edge_id}"
+    return edges[0]
+
+
 def _runtime_entity_event_seq(engine: GraphKnowledgeEngine) -> int:
     namespace = str(getattr(engine, "namespace", "default") or "default")
     getter = getattr(engine.meta_sqlite, "get_latest_entity_event_seq", None)
@@ -2484,6 +2490,23 @@ def test_resume_run_can_resuspend_same_token_with_updated_payload(
     assert res1.status == "suspended"
     assert res2.status == "suspended"
     assert res2.final_state.get("retry_count") == 1
+
+    resumed_step_edge_id = (
+        f"wf_next_step_exec|{run_id}|2|last::wf_step|{run_id}|1|to::wf_step|{run_id}|2"
+    )
+    resumed_ckpt_edge_id = (
+        f"persist_checkpoint|{run_id}|2|last::wf_step|{run_id}|2|to::wf_ckpt|{run_id}|2"
+    )
+    resumed_step_edge = _workflow_edge_by_id(conv_engine, resumed_step_edge_id)
+    resumed_ckpt_edge = _workflow_edge_by_id(conv_engine, resumed_ckpt_edge_id)
+    assert resumed_step_edge.safe_get_id() == resumed_step_edge_id
+    assert resumed_step_edge.relation == "wf_next_step_exec"
+    assert resumed_step_edge.source_ids == [f"wf_step|{run_id}|1"]
+    assert resumed_step_edge.target_ids == [f"wf_step|{run_id}|2"]
+    assert resumed_ckpt_edge.safe_get_id() == resumed_ckpt_edge_id
+    assert resumed_ckpt_edge.relation == "persist_checkpoint during"
+    assert resumed_ckpt_edge.source_ids == [f"wf_ckpt|{run_id}|2"]
+    assert resumed_ckpt_edge.target_ids == [f"wf_step|{run_id}|2"]
 
     state2 = _latest_checkpoint_state(conv_engine, run_id)
     assert len((state2.get("_rt_join", {}) or {}).get("suspended", [])) == 1

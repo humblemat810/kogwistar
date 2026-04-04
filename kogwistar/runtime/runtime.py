@@ -829,6 +829,21 @@ class WorkflowRuntime:
         token_found = False
         mask_to_distribute = 0
         parent_token_id = None
+        resumed_exec_node = None
+
+        previous_exec_node_id = f"wf_step|{run_id}|{step_seq_current - 1}"
+        previous_exec_nodes = self.conversation_engine.read.get_nodes(
+            ids=[previous_exec_node_id],
+            limit=1,
+        )
+        if previous_exec_nodes:
+            previous_exec_node = previous_exec_nodes[0]
+        else:
+            fallback_exec_nodes = self.conversation_engine.read.get_nodes(
+                ids=[f"wf_run|{run_id}"],
+                limit=1,
+            )
+            previous_exec_node = fallback_exec_nodes[0] if fallback_exec_nodes else None
 
         def _extract(items, keep):
             nonlocal token_found, mask_to_distribute, parent_token_id
@@ -972,7 +987,7 @@ class WorkflowRuntime:
         initial_state["_rt_join"] = rt_join
 
         # Log the step exec for the external execution so it's recorded
-        self._persist_step_exec(
+        resumed_exec_node = self._persist_step_exec(
             conversation_id=conversation_id,
             workflow_id=workflow_id,
             run_id=run_id,
@@ -992,7 +1007,7 @@ class WorkflowRuntime:
             token_id=suspended_token_id,
             parent_token_id=parent_token_id,
             join_mask=mask_to_distribute,
-            last_exec_node=None,  # not strongly linked to previous right now
+            last_exec_node=previous_exec_node,
         )
         if (step_seq_current % self.checkpoint_every_n_steps) == 0:
             self._persist_checkpoint(
@@ -1001,7 +1016,7 @@ class WorkflowRuntime:
                 run_id=run_id,
                 step_seq=step_seq_current,
                 state=initial_state,
-                last_exec_node=None,
+                last_exec_node=resumed_exec_node,
             )
             try:
                 tc_ck = TraceContext(
