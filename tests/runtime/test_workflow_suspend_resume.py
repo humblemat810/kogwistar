@@ -2634,3 +2634,28 @@ def test_sandbox_recoverable_error_can_suspend_then_resume_success(
     assert res2.status == "succeeded"
     assert res2.final_state.get("sandbox_result") == "fixed"
     assert res2.final_state.get("ended") is True
+
+    resumed_step_edge_id = (
+        f"wf_next_step_exec|{run_id}|2|last::wf_step|{run_id}|1|to::wf_step|{run_id}|2"
+    )
+    resumed_ckpt_edge_id = (
+        f"persist_checkpoint|{run_id}|2|last::wf_step|{run_id}|2|to::wf_ckpt|{run_id}|2"
+    )
+    resumed_forward_edge_id = (
+        f"wf_next_step_exec|{run_id}|3|last::wf_step|{run_id}|2|to::wf_step|{run_id}|3"
+    )
+    resumed_step_edge = _workflow_edge_by_id(conv_engine, resumed_step_edge_id)
+    resumed_ckpt_edge = _workflow_edge_by_id(conv_engine, resumed_ckpt_edge_id)
+    resumed_forward_edge = _workflow_edge_by_id(conv_engine, resumed_forward_edge_id)
+    assert resumed_step_edge.safe_get_id() == resumed_step_edge_id
+    assert resumed_step_edge.relation == "wf_next_step_exec"
+    assert resumed_step_edge.source_ids == [f"wf_step|{run_id}|1"]
+    assert resumed_step_edge.target_ids == [f"wf_step|{run_id}|2"]
+    assert resumed_ckpt_edge.safe_get_id() == resumed_ckpt_edge_id
+    assert resumed_ckpt_edge.relation == "persist_checkpoint during"
+    assert resumed_ckpt_edge.source_ids == [f"wf_ckpt|{run_id}|2"]
+    assert resumed_ckpt_edge.target_ids == [f"wf_step|{run_id}|2"]
+    assert resumed_forward_edge.safe_get_id() == resumed_forward_edge_id
+    assert resumed_forward_edge.relation == "wf_next_step_exec"
+    assert resumed_forward_edge.source_ids == [f"wf_step|{run_id}|2"]
+    assert resumed_forward_edge.target_ids == [f"wf_step|{run_id}|3"]

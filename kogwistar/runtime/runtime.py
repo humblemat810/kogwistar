@@ -1068,7 +1068,9 @@ class WorkflowRuntime:
                 turn_node_id=turn_node_id,
                 initial_state=initial_state,
                 run_id=run_id,
-                cache_dir = cache_dir
+                cache_dir=cache_dir,
+                _resume_step_seq=int(step_seq_current) + 1,
+                _resume_last_exec_node=resumed_exec_node,
             )
 
         if new_suspended:
@@ -1143,7 +1145,9 @@ class WorkflowRuntime:
         turn_node_id: str,  # parent run may trigger another run in a node
         initial_state: WorkflowState,
         run_id: Optional[str] = None,
-        cache_dir = None
+        cache_dir = None,
+        _resume_step_seq: int | None = None,
+        _resume_last_exec_node: WorkflowStepExecNode | WorkflowRunNode | None = None,
     ) -> RunResult:
         """
         Returns (final_state, run_id).
@@ -1370,7 +1374,7 @@ class WorkflowRuntime:
             # start, nodes, adj = load_workflow_design(workflow_engine=self.workflow_engine, workflow_id=workflow_id)
 
             state: WorkflowState = initial_state
-            step_seq = 0
+            step_seq = int(_resume_step_seq) if _resume_step_seq is not None else 0
 
             # Persist workflow_run node in conversation_engine
             wf_run_root_node = self._persist_workflow_run(
@@ -1695,7 +1699,11 @@ class WorkflowRuntime:
                     t.name = old_name
 
             inflight: Dict[tuple[str, int, str], Any] = {}
-            last_exec_node = wf_run_root_node
+            last_exec_node = (
+                _resume_last_exec_node
+                if _resume_last_exec_node is not None
+                else wf_run_root_node
+            )
             with ThreadPoolExecutor(
                 max_workers=self.max_workers, thread_name_prefix=f"rt-wf-{workflow_id}"
             ) as pool:
