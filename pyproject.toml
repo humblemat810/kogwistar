@@ -111,19 +111,3 @@ markers = [
   "manual: manual smoke tests that require a live service",
   "e2e: end-to-end tests against real services",
 ]
-
-# [tool.ruff]
-# target-version = "py312"
-
-# [tool.ruff.lint]
-# ignore = [
-#   "E402",
-#   "E731",
-#   "E741",
-#   "E722",
-#   "F401",
-#   "F402",
-#   "F811",
-#   "F821",
-#   "F841",
-# ]

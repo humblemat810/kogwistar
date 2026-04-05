@@ -103,7 +103,11 @@ docker compose down
 
 ## 7) Standalone Claw-Style Runtime Loop (No Web Server, loop count capped)
 
-This uses a custom resolver + `WorkflowRuntime` wrapper script, with persistent input events in SQLite. (Note again, this is not a repo of a claw-wrapper or competitor. It is just to show that this repo is a substrate that can commodate openclaw style platforms. The is an example and it is NOT intended to be a replacement of a productional secure openclaw. This example just make use of the claw hype to gain traction.)
+This uses a custom resolver + `WorkflowRuntime` wrapper script, with persistent input events in SQLite.
+
+Treat this as a minimal substrate example for OpenClaw-style platforms, not as a finished OpenClaw wrapper or a production-ready security product. The point of this section is to show that Kogwistar can sit underneath governed agent loops, not only underneath memory or workflow demos.
+
+If you want the more concrete real-world example of that openclaw governance (not the openclaw like gateway loop implemnetation in this repo), see [`humblemat810/cloistar`](https://github.com/humblemat810/cloistar), which uses Kogwistar as the substrate for an OpenClaw governance layer.
 
 Script: `scripts/claw_runtime_loop.py`
 

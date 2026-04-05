@@ -5,14 +5,14 @@
 
 <h1 align="center">Kogwistar</h1>
 
-<h4 align="center">AI substrate system, from provenance to wisdom where execution becomes reusable memory</h4>
+<h4 align="center">AI substrate for security, governance, provenance, and reusable agent execution</h4>
 
 <p align="center">
-Graph / Hypergraph-Native execution, memory and observability substrate for AI systems
+Graph / Hypergraph-Native security, governance, memory, and observability substrate for AI systems
 </p>
 <p align="center">
-Build knowledge graphs, workflow runtimes, conversation memory, and provenance systems
-as a single substrate for AI agents. 
+Build security-aware agent backplanes, governance semantics layers, knowledge graphs,
+workflow runtimes, conversation memory, and provenance systems as a single substrate.
 </p>
 <p align="center">
 Open-source substrate and harness for AI agent systems.
@@ -24,13 +24,13 @@ Open-source substrate and harness for AI agent systems.
   <img src="https://img.shields.io/badge/runtime-graph--native-purple?style=flat-square"/>
 </p>
 
-`kogwistar` is a graph-native memory and execution system.
+`kogwistar` is a graph-native substrate for governed agent execution with memory and execution.
 
 ## What This Is
 
 - A substrate for storing knowledge, conversations, workflows, and provenance in the same graph-oriented model.
 - A runnable harness for executing workflows and replaying history.
-- A foundation for building agent systems with inspectable history and traceable answers.
+- A security- and governance-aware foundation for building agent systems with inspectable history and traceable answers.
 
 ## What This Is Not
 
@@ -39,6 +39,15 @@ Open-source substrate and harness for AI agent systems.
 - Not a finished enterprise product.
 
 See [docs/positioning.md](docs/positioning.md) for the full architectural framing and [docs/LEARNING_PATH.md](docs/LEARNING_PATH.md) for the learning order.
+
+## Real Use Case
+
+This substrate is not only about memory, conversation, or workflow in isolation.
+It can also sit underneath a security and governance layer for agent systems.
+
+A concrete example is [`humblemat810/cloistar`](https://github.com/humblemat810/cloistar), which uses Kogwistar as the substrate for an OpenClaw governance semantics layer. That repo shows a real integration shape where the substrate is used for governed tool execution, approval flows, graph-backed receipts, and bridge/runtime semantics rather than only chat memory or workflow authoring.
+
+At a lighter layer, [`humblemat810/kogwistar-chat`](https://github.com/humblemat810/kogwistar-chat) shows the same substrate supporting an application-facing chat experience. Taken together, these examples show that Kogwistar can support multiple layers of implementation, from higher-level application surfaces down to deeper governance and security semantics.
 
 ## Glossary
 
@@ -66,15 +75,15 @@ What it does:
 5. rebuilds usable views from that history
 6. explains results with provenance
 
-This is the quickest way to see how execution becomes memory in the same graph.
+This is the quickest way to see how execution becomes reusable state in the same graph.
 
 See [docs/graph_native_artifact_demo.md](docs/graph_native_artifact_demo.md) for the short design note and [docs/positioning.md](docs/positioning.md) for the deeper architectural framing.
 
 If you want the closer agent-loop comparison, the older [framework_then_agent_demo](docs/framework_then_agent_demo.md) remains available as a companion example.
 
-Today the repo implements graph memory and query, workflow design/runtime, provenance and replay-oriented surfaces, CDC/event-oriented patterns, and self-hostable development paths.
+Today the repo implements graph memory and query, workflow design/runtime, governance-oriented patterns, provenance and replay-oriented surfaces, CDC/event-oriented patterns, and self-hostable development paths.
 
-This repo is a substrate with reusable building blocks, especially around replayability, provenance tracking, and projection along the authoritative evented path.
+This repo is a substrate with reusable building blocks for replayability, provenance tracking, security boundaries, governance semantics, and projection along the authoritative evented path.
 
 ## Mental Model In Pseudocode
 
@@ -95,7 +104,7 @@ answer = retrieve_with_provenance(projection, question)
 
 In plain words:
 
-- execution is recorded as durable history
+- execution and governance decisions are recorded as durable history
 - durable history is projected into graph state
 - graph state can be replayed or repaired later
 - provenance links answers back to the source steps and source spans
@@ -106,7 +115,7 @@ For the layer model, guarantees, and comparisons, see [docs/positioning.md](docs
 
 ## Graph-Native Artifact Pipeline
 
-This is the clearest demo if you want to see how execution, memory, conversation, and provenance are unified in one graph.
+This is the clearest demo if you want to see how execution, memory, conversation, provenance, and governance-friendly structure are unified in one graph.
 
 Run the full suite with:
 
@@ -130,9 +139,11 @@ If you want the closer agent-loop comparison, the older [framework_then_agent_de
 
 ## Quickstart
 
-- As this is a substrate, you can pick anywhere you immediately want to start with e.g. hypergraphrag, runtime, mcp server, conversation primitives, workflow design. As you need grows, you can compose more consistently and coherently.
+- As this is a substrate, you can pick anywhere you immediately want to start with e.g. hypergraphrag, runtime, mcp server, conversation primitives, workflow design, or governance-oriented integration. As your needs grow, you can compose more consistently and coherently.
 
 - Standalone setup then run simple flow in 2 minutes. (no frontend integration): [QUICKSTART.md](QUICKSTART.md)
+- Application-layer example on top of this substrate: [`humblemat810/kogwistar-chat`](https://github.com/humblemat810/kogwistar-chat)
+- OpenClaw governance example built on this substrate: [`humblemat810/cloistar`](https://github.com/humblemat810/cloistar)
 
 - Detailed comparison with adjacent products/frameworks: [docs/llm-generated-comparison.md](docs/llm-generated-comparison.md)
 - Author notes, build context, and design history: [docs/author-notes.md](docs/author-notes.md)
@@ -154,19 +165,22 @@ If you want the closer agent-loop comparison, the older [framework_then_agent_de
 - Multiple storage backends, including Chroma and PostgreSQL/pgvector paths. With dual-store eventual consistency or transactional atomicity.
 - MCP/ REST tooling surface for graph query, extraction, and admin operations.
 - Visualization helpers for D3 payloads.
-- Security design, servers with RBAC, namespaces. LLM call has built-in privacy guards. Data model has slice guards to prevent data leakage.
+- Security- and governance-oriented primitives, including RBAC/namespaces, privacy guards for LLM paths, slice guards to prevent data leakage, and workflow seams that can host policy/approval logic.
 - Since everything is node and each node has provenance and embeddings, besides graph algorithms, you can trace provenence down everything and semantically search trace logs, design nodes, conversation nodes. Future conversation can semantically search past history for wisdom.
 
 ## How This Differs
 
 - Unlike typical agent products, this repo centers a unified graph/hypergraph substrate, more than only chat, skills, or tool orchestration.
 - Unlike workflow-first frameworks, it treats provenance, replay, and event history (event source) as part of the core data model rather than secondary runtime features.
+- Unlike memory-only agent stacks, it can also act as the substrate beneath a policy, approval, and governance semantics layer.
+- It can support multiple product layers on top of the same core, from application-facing chat surfaces to deeper governance backplanes.
 - Compared with local/self-hosted agent products, it emphasizes graph-native memory and workflow design seams more than channel breadth or app-registry breadth.
 - It spans retrieval, memory, runtime, and provenance concerns together, so it maps less cleanly to a single existing OSS category.
 
 ## Application Best Fit
 
 - A strong base platform for building audit-heavy systems, ranging from local personal agents to scalable AI backends.
+- A strong substrate for governed agent systems where tool execution, approvals, receipts, and replayable history all matter.
 - Best suited for use cases where provenance, replay, lifecycle-aware retrieval, and workflow history matter.
 - Designed to run efficiently on normal local machines (via SQLite/Chroma or lightweight Docker with PostgreSQL/pgvector).
 - A foundation repo, not yet a finished enterprise product.
