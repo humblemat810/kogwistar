@@ -1,4 +1,6 @@
-
+<p align="center">
+  <b>The Substrate and implementation for Karpathy's **LLM Knowledge Base** has been already here for long.</b>
+</p>
 <p align="center">
   <img src="assets/kogwistar_256.png" width="280"/>
 </p>
