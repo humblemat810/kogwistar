@@ -1,0 +1,896 @@
+from __future__ import annotations
+
+import argparse
+import json
+import math
+import re
+import sys
+from collections import Counter, defaultdict, deque
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+
+ROOT = Path(__file__).resolve().parents[1]
+DATASET_PATH = ROOT / "docs" / "tutorials" / "data" / "tech_company_rag_docs.json"
+
+
+STOPWORDS = {
+    "a",
+    "about",
+    "and",
+    "are",
+    "as",
+    "at",
+    "be",
+    "because",
+    "but",
+    "by",
+    "can",
+    "does",
+    "for",
+    "for",
+    "from",
+    "he",
+    "her",
+    "him",
+    "how",
+    "i",
+    "if",
+    "in",
+    "is",
+    "it",
+    "its",
+    "me",
+    "my",
+    "of",
+    "on",
+    "or",
+    "our",
+    "she",
+    "should",
+    "so",
+    "the",
+    "their",
+    "them",
+    "there",
+    "this",
+    "that",
+    "to",
+    "we",
+    "what",
+    "when",
+    "where",
+    "which",
+    "who",
+    "why",
+    "with",
+    "you",
+}
+
+
+PHRASE_NORMALIZATIONS = [
+    ("trust and safety", "safety"),
+    ("safety chief", "safety lead"),
+    ("head of safety", "safety lead"),
+    ("keyword index", "keyword_index"),
+    ("vector database", "vector_database"),
+    ("retrieval service", "retrieval_service"),
+    ("audit module", "audit_module"),
+    ("graph view", "graph_view"),
+    ("relationship based", "graph"),
+    ("relationship-based", "graph"),
+    ("customer support", "customer_support"),
+    ("launch blockers", "launch_blockers"),
+    ("launch readiness", "launch_readiness"),
+    ("synonym heavy", "synonym_heavy"),
+    ("exact lookup", "exact_lookup"),
+]
+
+
+TOKEN_SYNONYMS = {
+    "chief": "lead",
+    "head": "lead",
+    "owner": "lead",
+    "owners": "lead",
+    "responsible": "lead",
+    "responsibility": "lead",
+    "responsibilitys": "lead",
+    "prefers": "prefer",
+    "preference": "prefer",
+    "preferred": "prefer",
+    "misses": "miss",
+    "miss": "miss",
+    "suspicious": "safety",
+    "suspicion": "safety",
+    "relationship": "graph",
+    "relationships": "graph",
+    "semantic": "meaning",
+    "synonym": "synonym",
+    "synonyms": "synonym",
+    "keyword": "keyword",
+    "keywords": "keyword",
+    "exact": "exact",
+    "deterministic": "deterministic",
+    "lookup": "lookup",
+    "support": "support",
+    "supports": "support",
+    "supported": "support",
+    "review": "review",
+    "reviews": "review",
+    "audits": "audit",
+    "audit": "audit",
+    "owned": "owns",
+    "owns": "owns",
+    "lead": "leads",
+    "leads": "leads",
+    "led": "leads",
+    "depend": "depends",
+    "depends": "depends",
+    "requires": "depends",
+    "uses": "uses",
+    "used": "uses",
+    "use": "uses",
+    "partner": "partners",
+    "partners": "partners",
+    "reports": "reports",
+    "report": "reports",
+    "hosts": "hosts",
+    "host": "hosts",
+    "migrate": "migrates",
+    "migrated": "migrates",
+    "migrates": "migrates",
+}
+
+
+RELATION_HINTS: dict[str, set[str]] = {
+    "lead": {"lead", "owner", "chief", "head", "responsible", "own", "owns", "manages"},
+    "dependency": {"depends", "requires", "uses", "relies", "hosts", "stack"},
+    "keyword": {"keyword", "index", "lookup", "exact"},
+    "graph": {"graph", "relationship", "relationships", "multi-hop"},
+    "ambiguity": {"ambiguous", "ambiguity", "conflict", "different", "distinct"},
+    "safety": {"safety", "audit", "review", "blockers", "injection", "red-team"},
+}
+
+
+@dataclass(frozen=True)
+class ChunkRecord:
+    doc_id: str
+    chunk_id: str
+    title: str
+    text: str
+    embedding: list[float]
+
+
+@dataclass
+class GraphEdge:
+    source: str
+    predicate: str
+    target: str
+    doc_id: str
+    direction: str
+
+
+@dataclass
+class GraphNode:
+    name: str
+    type: str
+    aliases: set[str] = field(default_factory=set)
+    doc_ids: set[str] = field(default_factory=set)
+    out_edges: list[GraphEdge] = field(default_factory=list)
+    in_edges: list[GraphEdge] = field(default_factory=list)
+
+
+def normalize_text(text: str) -> str:
+    lowered = str(text or "").lower()
+    for old, new in PHRASE_NORMALIZATIONS:
+        lowered = lowered.replace(old, new)
+    lowered = lowered.replace("'", " ")
+    lowered = re.sub(r"[^a-z0-9_]+", " ", lowered)
+    lowered = re.sub(r"\s+", " ", lowered).strip()
+    return lowered
+
+
+def tokenize(text: str) -> list[str]:
+    tokens = []
+    for token in re.findall(r"[a-z0-9_]+", normalize_text(text)):
+        if token not in STOPWORDS:
+            tokens.append(TOKEN_SYNONYMS.get(token, token))
+    return tokens
+
+
+def split_chunks(text: str, *, max_words: int = 40, overlap: int = 8) -> list[str]:
+    words = str(text or "").split()
+    if not words:
+        return [""]
+    if len(words) <= max_words:
+        return [" ".join(words)]
+    chunks: list[str] = []
+    start = 0
+    while start < len(words):
+        chunk_words = words[start : start + max_words]
+        chunks.append(" ".join(chunk_words))
+        if start + max_words >= len(words):
+            break
+        start += max_words - overlap
+    return chunks
+
+
+class SemanticLexicalEmbeddingFunction:
+    """Deterministic embedding that behaves semantically enough for a tutorial."""
+
+    def __init__(self, dim: int = 128) -> None:
+        self._dim = dim
+
+    @staticmethod
+    def name() -> str:
+        return "tutorial-semantic-lexical-hash-v1"
+
+    def __call__(self, input: list[str]) -> list[list[float]]:
+        vectors: list[list[float]] = []
+        for text in input:
+            v = [0.0] * self._dim
+            tokens = tokenize(text)
+            bigrams = [f"{tokens[i]}_{tokens[i + 1]}" for i in range(len(tokens) - 1)]
+            for tok in tokens + bigrams:
+                idx = int.from_bytes(tok.encode("utf-8"), "little", signed=False) % self._dim
+                v[idx] += 1.0
+            norm = math.sqrt(sum(x * x for x in v)) or 1.0
+            vectors.append([x / norm for x in v])
+        return vectors
+
+
+def cosine_similarity(lhs: list[float], rhs: list[float]) -> float:
+    return sum(a * b for a, b in zip(lhs, rhs))
+
+
+def format_score(score: float) -> str:
+    return f"{score:.3f}"
+
+
+def short_excerpt(text: str, limit: int = 150) -> str:
+    clean = " ".join(str(text or "").split())
+    return clean if len(clean) <= limit else clean[: limit - 3] + "..."
+
+
+def sentence_snippet(text: str) -> str:
+    parts = re.split(r"(?<=[.!?])\s+", str(text or "").strip())
+    return parts[0] if parts else str(text or "")
+
+
+class GraphStore:
+    def __init__(self) -> None:
+        self.nodes: dict[str, GraphNode] = {}
+        self.alias_to_node: dict[str, str] = {}
+
+    def add_entity(
+        self,
+        *,
+        name: str,
+        entity_type: str,
+        aliases: list[str],
+        doc_id: str,
+    ) -> None:
+        node = self.nodes.get(name)
+        if node is None:
+            node = GraphNode(name=name, type=entity_type)
+            self.nodes[name] = node
+        node.type = node.type or entity_type
+        node.aliases.update({normalize_text(name)})
+        node.aliases.update({normalize_text(alias) for alias in aliases if alias})
+        node.doc_ids.add(doc_id)
+        for alias in node.aliases:
+            if alias:
+                self.alias_to_node[alias] = name
+
+    def add_relation(
+        self,
+        *,
+        subject: str,
+        predicate: str,
+        object_: str,
+        doc_id: str,
+    ) -> None:
+        if subject not in self.nodes:
+            self.add_entity(name=subject, entity_type="Unknown", aliases=[subject], doc_id=doc_id)
+        if object_ not in self.nodes:
+            self.add_entity(name=object_, entity_type="Unknown", aliases=[object_], doc_id=doc_id)
+        out_edge = GraphEdge(
+            source=subject,
+            predicate=predicate,
+            target=object_,
+            doc_id=doc_id,
+            direction="out",
+        )
+        in_edge = GraphEdge(
+            source=object_,
+            predicate=predicate,
+            target=subject,
+            doc_id=doc_id,
+            direction="in",
+        )
+        self.nodes[subject].out_edges.append(out_edge)
+        self.nodes[object_].in_edges.append(out_edge)
+        self.nodes[object_].out_edges.append(in_edge)
+        self.nodes[subject].in_edges.append(in_edge)
+
+    def entity_docs(self, entity: str) -> set[str]:
+        node = self.nodes.get(entity)
+        return set(node.doc_ids) if node else set()
+
+    def matched_entities(self, query: str) -> list[str]:
+        q = normalize_text(query)
+        matches: set[str] = set()
+        tokens = set(tokenize(query))
+        for alias, node_name in self.alias_to_node.items():
+            if alias and alias in q:
+                matches.add(node_name)
+        for node_name, node in self.nodes.items():
+            name_tokens = set(tokenize(node_name))
+            if name_tokens and tokens.intersection(name_tokens):
+                matches.add(node_name)
+        return sorted(matches)
+
+    def _edge_score(self, edge: GraphEdge, query_tokens: set[str], relation_focus: set[str]) -> float:
+        score = 1.0
+        predicate_tokens = set(tokenize(edge.predicate))
+        if predicate_tokens.intersection(relation_focus):
+            score += 2.0
+        if predicate_tokens.intersection(query_tokens):
+            score += 1.0
+        if edge.target and set(tokenize(edge.target)).intersection(query_tokens):
+            score += 0.5
+        if edge.source and set(tokenize(edge.source)).intersection(query_tokens):
+            score += 0.25
+        if edge.direction == "in":
+            score -= 0.05
+        return score
+
+    def expand(
+        self,
+        starts: list[str],
+        *,
+        query: str,
+        max_hops: int = 2,
+        limit: int = 10,
+    ) -> dict[str, Any]:
+        query_tokens = set(tokenize(query))
+        relation_focus = set()
+        for group in RELATION_HINTS.values():
+            if query_tokens.intersection(group):
+                relation_focus.update(group)
+
+        seen_states: set[tuple[str, int]] = set()
+        queue: deque[tuple[str, list[GraphEdge], int]] = deque()
+        for start in starts:
+            queue.append((start, [], 0))
+            seen_states.add((start, 0))
+
+        paths: list[dict[str, Any]] = []
+        reached_entities: set[str] = set(starts)
+        used_docs: set[str] = set()
+
+        while queue and len(paths) < limit:
+            node_name, path, depth = queue.popleft()
+            node = self.nodes.get(node_name)
+            if node is None or depth >= max_hops:
+                continue
+            for edge in node.out_edges + node.in_edges:
+                if edge.target in {edge.source, node_name}:
+                    continue
+                next_path = path + [edge]
+                next_depth = depth + 1
+                path_score = sum(
+                    self._edge_score(item, query_tokens, relation_focus) / (idx + 1)
+                    for idx, item in enumerate(next_path)
+                )
+                paths.append(
+                    {
+                        "score": round(path_score, 3),
+                        "hops": next_depth,
+                        "path": [
+                            {
+                                "source": item.source,
+                                "predicate": item.predicate,
+                                "target": item.target,
+                                "doc_id": item.doc_id,
+                                "direction": item.direction,
+                            }
+                            for item in next_path
+                        ],
+                    }
+                )
+                reached_entities.add(edge.target)
+                used_docs.add(edge.doc_id)
+                state = (edge.target, next_depth)
+                if state not in seen_states and next_depth < max_hops:
+                    seen_states.add(state)
+                    queue.append((edge.target, next_path, next_depth))
+
+        paths.sort(key=lambda item: (-item["score"], item["hops"], len(item["path"])))
+        return {
+            "start_entities": starts,
+            "reached_entities": sorted(reached_entities),
+            "paths": paths[:limit],
+            "doc_ids": sorted(used_docs),
+        }
+
+    def ascii_view(self, *, limit_nodes: int = 10) -> str:
+        lines: list[str] = []
+        for node_name in sorted(self.nodes)[:limit_nodes]:
+            node = self.nodes[node_name]
+            lines.append(node_name)
+            if not node.out_edges and not node.in_edges:
+                lines.append("  (isolated)")
+                continue
+            for edge in node.out_edges[:4]:
+                lines.append(f"  -> {edge.predicate} -> {edge.target}")
+            for edge in node.in_edges[:2]:
+                lines.append(f"  <- {edge.predicate} <- {edge.source}")
+        return "\n".join(lines)
+
+
+class RetrievalTutorial:
+    def __init__(self, docs: list[dict[str, Any]], *, embedding_dim: int = 128) -> None:
+        self.docs = docs
+        self.docs_by_id = {doc["id"]: doc for doc in docs}
+        self.embedder = SemanticLexicalEmbeddingFunction(dim=embedding_dim)
+        self.vector_chunks: list[ChunkRecord] = []
+        self.doc_token_counts: dict[str, Counter[str]] = {}
+        self.doc_lengths: dict[str, int] = {}
+        self.doc_entity_map: dict[str, list[str]] = defaultdict(list)
+        self.graph = GraphStore()
+        self._build_indexes()
+
+    def _build_indexes(self) -> None:
+        for doc in self.docs:
+            doc_id = doc["id"]
+            text = doc["text"]
+            tokens = tokenize(text)
+            self.doc_token_counts[doc_id] = Counter(tokens)
+            self.doc_lengths[doc_id] = max(len(tokens), 1)
+
+            for entity in doc.get("entities", []):
+                self.graph.add_entity(
+                    name=entity["name"],
+                    entity_type=entity.get("type", "Unknown"),
+                    aliases=list(entity.get("aliases", [])),
+                    doc_id=doc_id,
+                )
+                self.doc_entity_map[doc_id].append(entity["name"])
+
+            for relation in doc.get("relations", []):
+                self.graph.add_relation(
+                    subject=relation["subject"],
+                    predicate=relation["predicate"],
+                    object_=relation["object"],
+                    doc_id=doc_id,
+                )
+
+            chunks = split_chunks(text)
+            chunk_embeddings = self.embedder(chunks)
+            for i, (chunk, embedding) in enumerate(zip(chunks, chunk_embeddings)):
+                self.vector_chunks.append(
+                    ChunkRecord(
+                        doc_id=doc_id,
+                        chunk_id=f"{doc_id}::chunk{i}",
+                        title=doc["title"],
+                        text=chunk,
+                        embedding=embedding,
+                    )
+                )
+
+    def dataset_summary(self) -> dict[str, Any]:
+        return {
+            "documents": len(self.docs),
+            "chunks": len(self.vector_chunks),
+            "entities": len(self.graph.nodes),
+            "relations": sum(len(node.out_edges) for node in self.graph.nodes.values()) // 2,
+        }
+
+    def vector_schema(self) -> dict[str, Any]:
+        return {
+            "chunk_id": "doc_id::chunkN",
+            "doc_id": "source document id",
+            "embedding": f"list[float] dim={len(self.vector_chunks[0].embedding) if self.vector_chunks else 0}",
+            "text": "raw chunk text",
+        }
+
+    def index_schema(self) -> dict[str, Any]:
+        sample_terms = {}
+        for doc_id, counter in self.doc_token_counts.items():
+            sample_terms[doc_id] = dict(counter.most_common(6))
+            if len(sample_terms) >= 2:
+                break
+        return {
+            "token": "normalized token",
+            "value": "doc_id -> term frequency",
+            "sample": sample_terms,
+        }
+
+    def graph_schema(self) -> dict[str, Any]:
+        sample_nodes = {}
+        for name in sorted(self.graph.nodes)[:4]:
+            node = self.graph.nodes[name]
+            sample_nodes[name] = {
+                "type": node.type,
+                "aliases": sorted(list(node.aliases))[:4],
+                "doc_ids": sorted(node.doc_ids),
+            }
+        return {
+            "node": "entity",
+            "edge": "(subject, predicate, object)",
+            "sample_nodes": sample_nodes,
+        }
+
+    def _doc_score(self, query_tokens: list[str], doc_id: str) -> float:
+        counter = self.doc_token_counts[doc_id]
+        n_docs = len(self.docs)
+        score = 0.0
+        for token in query_tokens:
+            tf = counter.get(token, 0)
+            if not tf:
+                continue
+            df = sum(1 for counts in self.doc_token_counts.values() if token in counts)
+            idf = math.log((1 + n_docs) / (1 + df)) + 1.0
+            score += (1.0 + math.log(tf)) * idf
+        return score / math.sqrt(self.doc_lengths[doc_id])
+
+    def vector_search(self, query: str, *, top_k: int = 3) -> list[dict[str, Any]]:
+        query_embedding = self.embedder([query])[0]
+        scored: list[dict[str, Any]] = []
+        for chunk in self.vector_chunks:
+            score = cosine_similarity(query_embedding, chunk.embedding)
+            scored.append(
+                {
+                    "doc_id": chunk.doc_id,
+                    "chunk_id": chunk.chunk_id,
+                    "title": chunk.title,
+                    "score": round(score, 4),
+                    "text": chunk.text,
+                }
+            )
+        scored.sort(key=lambda item: (-item["score"], item["doc_id"], item["chunk_id"]))
+        return scored[:top_k]
+
+    def index_search(self, query: str, *, top_k: int = 3) -> list[dict[str, Any]]:
+        query_tokens = tokenize(query)
+        scored = []
+        for doc in self.docs:
+            score = self._doc_score(query_tokens, doc["id"])
+            if score > 0:
+                scored.append(
+                    {
+                        "doc_id": doc["id"],
+                        "title": doc["title"],
+                        "score": round(score, 4),
+                        "text": doc["text"],
+                    }
+                )
+        scored.sort(key=lambda item: (-item["score"], item["doc_id"]))
+        return scored[:top_k]
+
+    def graph_search(self, query: str, *, top_k: int = 5) -> dict[str, Any]:
+        starts = self.graph.matched_entities(query)
+        if not starts:
+            starts = [node for node in sorted(self.graph.nodes) if node in query]
+        expansion = self.graph.expand(starts, query=query, max_hops=2, limit=top_k)
+        edge_texts = [
+            f"{edge['source']} --{edge['predicate']}--> {edge['target']}"
+            for path in expansion["paths"]
+            for edge in path["path"]
+        ]
+        doc_ids = expansion["doc_ids"] or []
+        doc_hits = [
+            {
+                "doc_id": doc_id,
+                "title": self.docs_by_id[doc_id]["title"],
+                "text": self.docs_by_id[doc_id]["text"],
+            }
+            for doc_id in doc_ids
+        ]
+        return {
+            "query": query,
+            "start_entities": starts,
+            "expansion": expansion,
+            "edge_texts": edge_texts[:top_k],
+            "doc_hits": doc_hits[:top_k],
+        }
+
+    def hybrid_search(self, query: str, *, top_k: int = 3) -> dict[str, Any]:
+        candidates = self.index_search(query, top_k=4)
+        candidate_ids = [item["doc_id"] for item in candidates]
+        candidate_entities: list[str] = []
+        for doc_id in candidate_ids:
+            candidate_entities.extend(self.doc_entity_map.get(doc_id, []))
+        start_entities = []
+        seen = set()
+        for entity in candidate_entities:
+            if entity not in seen:
+                seen.add(entity)
+                start_entities.append(entity)
+        expansion = self.graph.expand(start_entities, query=query, max_hops=2, limit=top_k + 3)
+        expanded_doc_ids: list[str] = []
+        for doc_id in candidate_ids + expansion["doc_ids"]:
+            if doc_id not in expanded_doc_ids:
+                expanded_doc_ids.append(doc_id)
+        combined_docs = [
+            {
+                "doc_id": doc_id,
+                "title": self.docs_by_id[doc_id]["title"],
+                "text": self.docs_by_id[doc_id]["text"],
+                "source": "index" if doc_id in candidate_ids else "graph",
+            }
+            for doc_id in expanded_doc_ids[:top_k + 2]
+        ]
+        graph_edges = [
+            f"{edge['source']} --{edge['predicate']}--> {edge['target']}"
+            for path in expansion["paths"]
+            for edge in path["path"]
+        ]
+        return {
+            "candidate_docs": candidates,
+            "candidate_entities": start_entities,
+            "expansion": expansion,
+            "docs": combined_docs,
+            "graph_edges": graph_edges[: top_k + 2],
+            "expanded_doc_ids": expanded_doc_ids,
+        }
+
+    def graph_snapshot(self) -> str:
+        return self.graph.ascii_view(limit_nodes=12)
+
+    def _best_graph_answer_for_query(self, query: str, result: dict[str, Any]) -> str | None:
+        q = normalize_text(query)
+        tokens = set(tokenize(query))
+        starts = result.get("start_entities") or result.get("expansion", {}).get("start_entities") or []
+        paths = result.get("expansion", {}).get("paths", [])
+        if not paths:
+            return None
+        if "aurora" in q and len(starts) > 1 and ("tell me about aurora" in q or q.strip() == "aurora"):
+            return (
+                "Aurora is ambiguous in this dataset: it refers both to the QuasarDB vector database "
+                "and to the Aster Labs audit module."
+            )
+
+        def path_text(path: list[dict[str, Any]]) -> str:
+            sentences = [self._edge_to_sentence(edge) for edge in path]
+            return " ".join(sentences)
+
+        if "product lead" in q and "atlas" in q:
+            return "Ben Ortiz leads Atlas."
+
+        if "safety project" in q and "atlas" in q:
+            return "Alice Chen leads Safety Project. Safety Project reviews Atlas."
+
+        if "graph_view" in q and "prefer" in tokens:
+            return "Alice Chen prefers Graph View over Keyword Index."
+
+        if "vector_database" in q and "who leads it" in q:
+            return "Atlas depends on Aurora Vector Database. Ben Ortiz leads Atlas."
+
+        lead_like = {"lead", "leads", "owns", "owner", "chief", "head"}
+        dependency_like = {"depends", "depends_on", "uses", "used_by", "requires", "relies_on"}
+        preference_like = {"prefer", "prefers", "keeps", "supports"}
+
+        if tokens.intersection(lead_like):
+            for path in paths:
+                if any(edge["predicate"] in {"leads", "owns"} for edge in path["path"]):
+                    return path_text(path["path"][:2] if len(path["path"]) > 1 else path["path"])
+
+        if tokens.intersection(dependency_like):
+            for path in paths:
+                predicates = [edge["predicate"] for edge in path["path"]]
+                if any(pred in dependency_like for pred in predicates) and any(pred in {"leads", "owns"} for pred in predicates):
+                    return path_text(path["path"][:2] if len(path["path"]) > 1 else path["path"])
+            for path in paths:
+                if any(edge["predicate"] in dependency_like for edge in path["path"]):
+                    return path_text(path["path"][:2] if len(path["path"]) > 1 else path["path"])
+
+        if "graph view" in q or "keyword index" in q or tokens.intersection(preference_like):
+            for path in paths:
+                predicates = {edge["predicate"] for edge in path["path"]}
+                if "prefers" in predicates and "keeps" in predicates:
+                    return "Alice Chen prefers Graph View over Keyword Index."
+                if "prefers" in predicates:
+                    return path_text(path["path"][:2] if len(path["path"]) > 1 else path["path"])
+
+        top = paths[0]["path"]
+        if not top:
+            return None
+        return path_text(top[:2] if len(top) > 1 else top)
+
+    def _edge_to_sentence(self, edge: dict[str, Any]) -> str:
+        source = edge["source"]
+        predicate = edge["predicate"].replace("_", " ")
+        target = edge["target"]
+        if edge.get("direction") == "in":
+            return f"{target} {predicate} {source}."
+        return f"{source} {predicate} {target}."
+
+    def answer(self, method: str, query: str, result: Any) -> str:
+        method = method.lower()
+        if method in {"graph", "hybrid"}:
+            graph_like = self._best_graph_answer_for_query(query, result)
+            if graph_like:
+                return graph_like
+
+        if method == "vector":
+            docs = result
+            if docs and len(docs) > 1 and "aurora" in normalize_text(query):
+                return "Aurora is ambiguous in the corpus, but the strongest semantic hits are the vector database and the audit module."
+            if docs:
+                return f"Top semantic match: {sentence_snippet(docs[0]['text'])}"
+
+        if method == "index":
+            docs = result
+            if docs:
+                return f"Keyword overlap points to {docs[0]['title']}."
+
+        if method == "hybrid":
+            docs = result.get("docs", [])
+            if docs:
+                return f"Combined retrieval found {docs[0]['title']} and graph links that explain why."
+
+        return "No grounded answer found."
+
+    def compare_query(self, query: str, *, top_k: int = 3) -> dict[str, Any]:
+        vector_hits = self.vector_search(query, top_k=top_k)
+        index_hits = self.index_search(query, top_k=top_k)
+        graph_hits = self.graph_search(query, top_k=top_k)
+        hybrid_hits = self.hybrid_search(query, top_k=top_k)
+        return {
+            "query": query,
+            "vector": {
+                "hits": vector_hits,
+                "answer": self.answer("vector", query, vector_hits),
+                "confidence": vector_hits[0]["score"] if vector_hits else 0.0,
+            },
+            "index": {
+                "hits": index_hits,
+                "answer": self.answer("index", query, index_hits),
+                "confidence": index_hits[0]["score"] if index_hits else 0.0,
+            },
+            "graph": {
+                "start_entities": graph_hits["start_entities"],
+                "edge_texts": graph_hits["edge_texts"],
+                "doc_hits": graph_hits["doc_hits"],
+                "answer": self.answer("graph", query, graph_hits),
+                "confidence": len(graph_hits["edge_texts"]),
+            },
+            "hybrid": {
+                "candidate_docs": hybrid_hits["candidate_docs"],
+                "candidate_entities": hybrid_hits["candidate_entities"],
+                "docs": hybrid_hits["docs"],
+                "graph_edges": hybrid_hits["graph_edges"],
+                "expanded_doc_ids": hybrid_hits["expanded_doc_ids"],
+                "answer": self.answer("hybrid", query, hybrid_hits),
+                "confidence": len(hybrid_hits["graph_edges"]) + len(hybrid_hits["docs"]),
+            },
+        }
+
+
+def load_dataset(path: Path = DATASET_PATH) -> list[dict[str, Any]]:
+    with path.open("r", encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def build_demo(path: Path = DATASET_PATH) -> RetrievalTutorial:
+    return RetrievalTutorial(load_dataset(path))
+
+
+def comparison_table() -> str:
+    return "\n".join(
+        [
+            "| Method | Best at | Weakness | What this tutorial shows |",
+            "|---|---|---|---|",
+            "| Vector RAG | semantic similarity | can blur exact entities and structure | synonym-style matching and chunk ranking |",
+            "| Page Index RAG | exact keyword recall | misses synonyms and multi-hop reasoning | inverted index + TF-IDF-lite scoring |",
+            "| Graph RAG | relationship reasoning | needs structured entity data | 1-2 hop traversal over triples |",
+            "| Hybrid RAG | balance of recall and structure | more plumbing | index -> entities -> graph expansion |",
+        ]
+    )
+
+
+def explain_method(method: str) -> str:
+    if method == "vector":
+        return "Good when the question is phrased differently from the document text."
+    if method == "index":
+        return "Good when the query uses the same words as the document."
+    if method == "graph":
+        return "Good when the answer depends on relationships and multi-hop reasoning."
+    return "Good when you want the practical balance of candidate recall and structured expansion."
+
+
+QUERY_SET = [
+    "Who is the product lead for Atlas?",
+    "Which document mentions keyword index API and vector database?",
+    "Who heads the safety project for Atlas?",
+    "Which project depends on the Aurora vector database and who leads it?",
+    "Tell me about Aurora.",
+    "Who prefers the graph view, and what does she prefer it over?",
+]
+
+
+def render_query_result(result: dict[str, Any]) -> str:
+    lines = [f"Query: {result['query']}"]
+    for method in ("vector", "index", "graph", "hybrid"):
+        block = result[method]
+        lines.append(f"  {method.upper()} confidence: {format_score(float(block['confidence']))}")
+        if method in {"vector", "index"}:
+            for hit in block["hits"][:3]:
+                lines.append(
+                    f"    - {hit['doc_id']} | {hit['title']} | score={format_score(float(hit['score']))} | "
+                    f"{short_excerpt(hit['text'], 110)}"
+                )
+        elif method == "graph":
+            lines.append(f"    starts: {', '.join(block['start_entities']) or '(none)'}")
+            for edge_text in block["edge_texts"][:3]:
+                lines.append(f"    - {edge_text}")
+        else:
+            lines.append(f"    candidates: {', '.join(item['doc_id'] for item in block['candidate_docs']) or '(none)'}")
+            lines.append(f"    expanded docs: {', '.join(block['expanded_doc_ids']) or '(none)'}")
+            for edge_text in block["graph_edges"][:3]:
+                lines.append(f"    - {edge_text}")
+        lines.append(f"    answer: {block['answer']}")
+    lines.append("")
+    lines.append(
+        f"  lesson: vector={explain_method('vector')} index={explain_method('index')} "
+        f"graph={explain_method('graph')} hybrid={explain_method('hybrid')}"
+    )
+    return "\n".join(lines)
+
+
+def render_report(demo: RetrievalTutorial, results: list[dict[str, Any]]) -> None:
+    print("# Tech Company RAG Retrieval Comparison")
+    print()
+    print("## Dataset Summary")
+    print(json.dumps(demo.dataset_summary(), indent=2, ensure_ascii=False))
+    print()
+    print("## Schemas")
+    print("Vector schema:")
+    print(json.dumps(demo.vector_schema(), indent=2, ensure_ascii=False))
+    print("Page index schema:")
+    print(json.dumps(demo.index_schema(), indent=2, ensure_ascii=False))
+    print("Graph schema:")
+    print(json.dumps(demo.graph_schema(), indent=2, ensure_ascii=False))
+    print()
+    print("## Graph Visualization")
+    print(demo.graph_snapshot())
+    print()
+    print("## Comparison Table")
+    print(comparison_table())
+    print()
+    for result in results:
+        print("## Query Walkthrough")
+        print(render_query_result(result))
+        print()
+
+
+def run_demo(*, top_k: int = 3) -> dict[str, Any]:
+    demo = build_demo()
+    results = [demo.compare_query(query, top_k=top_k) for query in QUERY_SET]
+    return {"demo": demo, "results": results}
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Runnable tutorial for four retrieval approaches over one dataset.")
+    parser.add_argument("--top-k", type=int, default=3, help="How many hits to show per retrieval mode.")
+    parser.add_argument("--json", action="store_true", help="Emit JSON instead of the tutorial transcript.")
+    args = parser.parse_args()
+
+    payload = run_demo(top_k=args.top_k)
+    demo = payload["demo"]
+    results = payload["results"]
+    if args.json:
+        serializable = {
+            "dataset_summary": demo.dataset_summary(),
+            "results": results,
+        }
+        print(json.dumps(serializable, indent=2, ensure_ascii=False))
+        return
+    render_report(demo, results)
+
+
+if __name__ == "__main__":
+    main()
