@@ -1,3 +1,27 @@
+"""Notebook-style tutorial: one dataset, five retrieval styles.
+
+# Cell 1. Setup
+Load a small tech-company dataset and build a deterministic demo.
+
+# Cell 2. Vector Retrieval
+Chunk documents and score them with a lexical-hash embedder.
+
+# Cell 3. Vectorless Retrieval
+Show three non-vector styles:
+- lexical vectorless: page index lookup
+- structural vectorless: graph traversal
+- agentic structural vectorless: fake LLM section navigation
+
+# Cell 4. Hybrid Retrieval
+Combine keyword recall with graph expansion.
+
+# Cell 5. Walkthrough
+Print traces, answers, and comparison tables for six queries.
+
+The file is intentionally written like a notebook, but it stays a plain
+Python script so it can be run directly from the command line.
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -10,6 +34,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+
+# ============================================================================
+# %% Cell 1: Imports, Paths, And Shared Vocabulary
+# This first cell plays the role of a notebook setup block.
+# We define the dataset location and the normalization rules that every
+# retrieval path will share, so later cells can focus on retrieval logic.
+# ============================================================================
 
 ROOT = Path(__file__).resolve().parents[1]
 DATASET_PATH = ROOT / "docs" / "tutorials" / "data" / "tech_company_rag_docs.json"
@@ -152,6 +183,20 @@ RELATION_HINTS: dict[str, set[str]] = {
     "safety": {"safety", "audit", "review", "blockers", "injection", "red-team"},
 }
 
+SECTION_HEADINGS = [
+    "Overview",
+    "Ownership",
+    "Dependencies",
+    "Risks & Ambiguity",
+    "Cross-links",
+]
+
+
+# ============================================================================
+# %% Cell 2: Small Data Containers
+# Notebook-style tutorials read more clearly when the record shapes are named
+# up front. These dataclasses make the later retrieval cells easier to follow.
+# ============================================================================
 
 @dataclass(frozen=True)
 class ChunkRecord:
@@ -180,6 +225,56 @@ class GraphNode:
     out_edges: list[GraphEdge] = field(default_factory=list)
     in_edges: list[GraphEdge] = field(default_factory=list)
 
+
+@dataclass(frozen=True)
+class SectionRecord:
+    doc_id: str
+    section_id: str
+    heading: str
+    text: str
+    order: int
+    parent_section_id: str | None = None
+
+
+@dataclass(frozen=True)
+class VectorlessStructuralGraphNavigationResponse:
+    """Structured output from the fake section-planning LLM."""
+
+    doc_id: str
+    root_heading: str
+    selected_path: list[str]
+    visited_sections: list[str]
+    target_section: str
+    navigation_reason: str
+    target_entities: list[str]
+    confidence: float
+
+
+@dataclass(frozen=True)
+class FakeChatMessage:
+    """Tiny chat message record that makes the fake API look LLM-like."""
+
+    role: str
+    content: str
+
+
+@dataclass(frozen=True)
+class FakeChatCompletion:
+    """Deterministic chat-completion-shaped response for the section planner."""
+
+    model: str
+    messages: list[FakeChatMessage]
+    content: str
+    structured_output: VectorlessStructuralGraphNavigationResponse
+    temperature: float = 0.0
+    finish_reason: str = "stop"
+
+
+# ============================================================================
+# %% Cell 3: Text Normalization Helpers
+# Every retrieval style depends on a common text-processing layer.
+# Keeping that work in one "cell" makes it easier to compare the methods fairly.
+# ============================================================================
 
 def normalize_text(text: str) -> str:
     lowered = str(text or "").lower()
@@ -257,6 +352,17 @@ def sentence_snippet(text: str) -> str:
     parts = re.split(r"(?<=[.!?])\s+", str(text or "").strip())
     return parts[0] if parts else str(text or "")
 
+
+def split_sentences(text: str) -> list[str]:
+    sentences = [part.strip() for part in re.split(r"(?<=[.!?])\s+", str(text or "").strip()) if part.strip()]
+    return sentences or [str(text or "").strip()]
+
+
+# ============================================================================
+# %% Cell 4: A Tiny Graph Store
+# This is the non-Kogwistar teaching graph. It preserves entities and relations
+# so we can demonstrate graph retrieval without depending on the runtime engine.
+# ============================================================================
 
 class GraphStore:
     def __init__(self) -> None:
@@ -430,7 +536,15 @@ class GraphStore:
         return "\n".join(lines)
 
 
+# ============================================================================
+# %% Cell 5: Build The Retrieval Tutorial
+# This class acts like the notebook's main working state. Each retrieval method
+# is written as if it were a later cell operating on indexes built here.
+# ============================================================================
+
 class RetrievalTutorial:
+    """Notebook-style driver object for the plain Python retrieval demo."""
+
     def __init__(self, docs: list[dict[str, Any]], *, embedding_dim: int = 128) -> None:
         self.docs = docs
         self.docs_by_id = {doc["id"]: doc for doc in docs}
@@ -439,10 +553,14 @@ class RetrievalTutorial:
         self.doc_token_counts: dict[str, Counter[str]] = {}
         self.doc_lengths: dict[str, int] = {}
         self.doc_entity_map: dict[str, list[str]] = defaultdict(list)
+        self.section_records: list[SectionRecord] = []
+        self.doc_sections: dict[str, list[SectionRecord]] = defaultdict(list)
+        self.section_token_counts: dict[str, Counter[str]] = {}
         self.graph = GraphStore()
         self._build_indexes()
 
     def _build_indexes(self) -> None:
+        """Cell-like ingestion step that prepares all retrieval structures at once."""
         for doc in self.docs:
             doc_id = doc["id"]
             text = doc["text"]
@@ -467,6 +585,8 @@ class RetrievalTutorial:
                     doc_id=doc_id,
                 )
 
+            self._build_document_sections(doc)
+
             chunks = split_chunks(text)
             chunk_embeddings = self.embedder(chunks)
             for i, (chunk, embedding) in enumerate(zip(chunks, chunk_embeddings)):
@@ -479,6 +599,54 @@ class RetrievalTutorial:
                         embedding=embedding,
                     )
                 )
+
+    def _classify_sentence_heading(self, sentence: str) -> str:
+        tokens = set(tokenize(sentence))
+        if tokens.intersection({"lead", "owns", "owner", "chief", "head", "manages"}):
+            return "Ownership"
+        if tokens.intersection({"depends", "uses", "requires", "hosts", "stack", "pipeline"}):
+            return "Dependencies"
+        if tokens.intersection({"safety", "audit", "review", "blockers", "ambiguous", "ambiguity", "conflict", "different", "distinct"}):
+            return "Risks & Ambiguity"
+        if tokens.intersection({"graph", "keyword", "lookup", "index", "prefer", "prefers"}):
+            return "Cross-links"
+        return "Overview"
+
+    def _build_document_sections(self, doc: dict[str, Any]) -> None:
+        doc_id = doc["id"]
+        root_id = f"{doc_id}::section:root"
+        root = SectionRecord(
+            doc_id=doc_id,
+            section_id=root_id,
+            heading=doc["title"],
+            text=sentence_snippet(doc["text"]),
+            order=0,
+            parent_section_id=None,
+        )
+        self.section_records.append(root)
+        self.doc_sections[doc_id].append(root)
+        self.section_token_counts[root.section_id] = Counter(tokenize(root.heading + " " + root.text))
+
+        grouped_sentences: dict[str, list[str]] = {heading: [] for heading in SECTION_HEADINGS}
+        for sentence in split_sentences(doc["text"]):
+            heading = self._classify_sentence_heading(sentence)
+            grouped_sentences[heading].append(sentence)
+
+        for order, heading in enumerate(SECTION_HEADINGS, start=1):
+            sentences = grouped_sentences.get(heading, [])
+            if not sentences:
+                continue
+            section = SectionRecord(
+                doc_id=doc_id,
+                section_id=f"{doc_id}::section:{order}",
+                heading=heading,
+                text=" ".join(sentences),
+                order=order,
+                parent_section_id=root.section_id,
+            )
+            self.section_records.append(section)
+            self.doc_sections[doc_id].append(section)
+            self.section_token_counts[section.section_id] = Counter(tokenize(section.heading + " " + section.text))
 
     def dataset_summary(self) -> dict[str, Any]:
         return {
@@ -537,6 +705,7 @@ class RetrievalTutorial:
         return score / math.sqrt(self.doc_lengths[doc_id])
 
     def vector_search(self, query: str, *, top_k: int = 3) -> list[dict[str, Any]]:
+        """Cell: standard vector RAG over deterministic chunk embeddings."""
         query_embedding = self.embedder([query])[0]
         scored: list[dict[str, Any]] = []
         for chunk in self.vector_chunks:
@@ -554,6 +723,7 @@ class RetrievalTutorial:
         return scored[:top_k]
 
     def index_search(self, query: str, *, top_k: int = 3) -> list[dict[str, Any]]:
+        """Cell: lexical vectorless retrieval over the inverted index."""
         query_tokens = tokenize(query)
         scored = []
         for doc in self.docs:
@@ -571,6 +741,7 @@ class RetrievalTutorial:
         return scored[:top_k]
 
     def graph_search(self, query: str, *, top_k: int = 5) -> dict[str, Any]:
+        """Run structural retrieval over the extracted graph."""
         starts = self.graph.matched_entities(query)
         if not starts:
             starts = [node for node in sorted(self.graph.nodes) if node in query]
@@ -593,11 +764,166 @@ class RetrievalTutorial:
             "query": query,
             "start_entities": starts,
             "expansion": expansion,
+            "paths": expansion["paths"],
             "edge_texts": edge_texts[:top_k],
             "doc_hits": doc_hits[:top_k],
         }
 
+    def _build_section_navigation_messages(
+        self,
+        query: str,
+        *,
+        doc: dict[str, Any],
+        sections: list[SectionRecord],
+    ) -> list[FakeChatMessage]:
+        """Assemble a chat-style prompt for the fake navigation planner."""
+        section_lines = "\n".join(
+            f"- {section.heading}: {short_excerpt(section.text, 90)}" for section in sections
+        )
+        return [
+            FakeChatMessage(
+                role="system",
+                content=(
+                    "You are a navigation planner. Pick the best document subsection for the question. "
+                    "Return a structured navigation plan."
+                ),
+            ),
+            FakeChatMessage(
+                role="user",
+                content=(
+                    f"Document: {doc['title']}\n"
+                    f"Question: {query}\n"
+                    "Available sections:\n"
+                    f"{section_lines}\n"
+                    "Return: root heading, target section, reason, and entity hints."
+                ),
+            ),
+        ]
+
+    def _fake_llm_section_response(
+        self,
+        *,
+        messages: list[FakeChatMessage],
+        query: str,
+        doc: dict[str, Any],
+        root: SectionRecord,
+        candidate_sections: list[SectionRecord],
+        target_heading: str,
+        reason: str,
+    ) -> FakeChatCompletion:
+        """Cell: simulate a chat-completion round trip without a real model."""
+        chosen_section = next((section for section in candidate_sections if section.heading == target_heading), None)
+        if chosen_section is None:
+            chosen_section = candidate_sections[0] if candidate_sections else root
+        query_tokens = set(tokenize(query))
+        heading_tokens = set(tokenize(chosen_section.heading))
+        body_tokens = set(tokenize(chosen_section.text))
+        score = 0.5
+        if heading_tokens.intersection(query_tokens):
+            score += 2.0
+        score += 0.4 * len(body_tokens.intersection(query_tokens))
+        if chosen_section.heading == target_heading:
+            score += 1.5
+        if target_heading == "Overview" and chosen_section.heading == "Overview":
+            score += 0.75
+        if target_heading == "Ownership" and chosen_section.heading == "Ownership":
+            score += 0.75
+        if target_heading == "Dependencies" and chosen_section.heading == "Dependencies":
+            score += 0.75
+        if target_heading == "Risks & Ambiguity" and chosen_section.heading == "Risks & Ambiguity":
+            score += 0.75
+        if target_heading == "Cross-links" and chosen_section.heading == "Cross-links":
+            score += 0.75
+        nav = VectorlessStructuralGraphNavigationResponse(
+            doc_id=doc["id"],
+            root_heading=root.heading,
+            selected_path=[root.heading, chosen_section.heading],
+            visited_sections=[root.heading, chosen_section.heading],
+            target_section=chosen_section.heading,
+            navigation_reason=reason,
+            target_entities=self.doc_entity_map.get(doc["id"], [])[:4],
+            confidence=round(min(score / 5.0, 0.99), 3),
+        )
+        return FakeChatCompletion(
+            model="fake-section-planner-v1",
+            messages=messages,
+            content=(
+                "{"
+                f"\"root_heading\": \"{nav.root_heading}\", "
+                f"\"target_section\": \"{nav.target_section}\", "
+                f"\"reason\": \"{nav.navigation_reason}\", "
+                f"\"confidence\": {nav.confidence}"
+                "}"
+            ),
+            structured_output=nav,
+        )
+
+    def _section_navigation_target(self, query: str) -> tuple[str, str]:
+        """Choose the section heading a fake LLM would likely pick."""
+        q = normalize_text(query)
+        tokens = set(tokenize(query))
+        if "tell me about" in q or "what is" in q or "what about" in q:
+            return "Overview", "The query asks for a broad summary, so the fake agent stays near the root and overview section."
+        if tokens.intersection({"lead", "leads", "owner", "owners", "chief", "head", "manages"}):
+            return "Ownership", "The query asks who is responsible, so the fake agent traverses from root toward ownership."
+        if tokens.intersection({"depends", "uses", "requires", "hosts", "stack", "pipeline"}):
+            return "Dependencies", "The query asks about dependencies, so the fake agent follows the structural dependency branch."
+        if tokens.intersection({"safety", "audit", "review", "blockers", "ambiguous", "ambiguity", "conflict"}):
+            return "Risks & Ambiguity", "The query mentions risk, audit, or ambiguity, so the fake agent inspects the risk section."
+        if tokens.intersection({"graph", "keyword", "lookup", "index", "prefer", "prefers"}):
+            return "Cross-links", "The query references relationships or preferences, so the fake agent jumps to the cross-link section."
+        return "Overview", "No strong structural hint was found, so the fake agent defaults to the overview section."
+
+    def section_navigation_search(self, query: str, *, top_k: int = 3) -> dict[str, Any]:
+        """Cell: agentic vectorless retrieval via fake prompt -> fake response -> section choice."""
+        target_heading, reason = self._section_navigation_target(query)
+        query_tokens = set(tokenize(query))
+        scored: list[dict[str, Any]] = []
+
+        for doc in self.docs:
+            sections = self.doc_sections.get(doc["id"], [])
+            root = sections[0] if sections else None
+            candidate_sections = sections[1:] if len(sections) > 1 else []
+            if not root:
+                continue
+
+            messages = self._build_section_navigation_messages(query, doc=doc, sections=sections)
+            completion = self._fake_llm_section_response(
+                messages=messages,
+                query=query,
+                doc=doc,
+                root=root,
+                candidate_sections=candidate_sections,
+                target_heading=target_heading,
+                reason=reason,
+            )
+            navigation = completion.structured_output
+            scored.append(
+                {
+                    "doc_id": doc["id"],
+                    "title": doc["title"],
+                    "section_id": navigation.target_section,
+                    "heading": navigation.target_section,
+                    "text": next(
+                        (section.text for section in candidate_sections if section.heading == navigation.target_section),
+                        root.text,
+                    ),
+                    "score": round(navigation.confidence * 5.0, 4),
+                    "navigation": navigation,
+                    "completion": completion,
+                }
+            )
+
+        scored.sort(key=lambda item: (-item["score"], item["doc_id"], item["section_id"]))
+        return {
+            "query": query,
+            "target_heading": target_heading,
+            "reason": reason,
+            "hits": scored[:top_k],
+        }
+
     def hybrid_search(self, query: str, *, top_k: int = 3) -> dict[str, Any]:
+        """Cell: combine keyword recall with graph expansion for production-like behavior."""
         candidates = self.index_search(query, top_k=4)
         candidate_ids = [item["doc_id"] for item in candidates]
         candidate_entities: list[str] = []
@@ -632,6 +958,7 @@ class RetrievalTutorial:
             "candidate_docs": candidates,
             "candidate_entities": start_entities,
             "expansion": expansion,
+            "paths": expansion["paths"],
             "docs": combined_docs,
             "graph_edges": graph_edges[: top_k + 2],
             "expanded_doc_ids": expanded_doc_ids,
@@ -708,12 +1035,30 @@ class RetrievalTutorial:
             return f"{target} {predicate} {source}."
         return f"{source} {predicate} {target}."
 
+    def _path_trace(self, path: list[dict[str, Any]]) -> str:
+        if not path:
+            return "(no hops)"
+        parts = [path[0]["source"]]
+        for edge in path:
+            parts.append(f"--{edge['predicate']}--> {edge['target']}")
+        return " ".join(parts)
+
     def answer(self, method: str, query: str, result: Any) -> str:
         method = method.lower()
         if method in {"graph", "hybrid"}:
             graph_like = self._best_graph_answer_for_query(query, result)
             if graph_like:
                 return graph_like
+
+        if method == "section":
+            docs = result.get("hits", [])
+            if docs:
+                nav = docs[0]["navigation"]
+                section_text = docs[0]["text"]
+                return (
+                    f"Agentic section navigation chose {nav.target_section} after starting from {nav.root_heading}. "
+                    f"{sentence_snippet(section_text)}"
+                )
 
         if method == "vector":
             docs = result
@@ -735,8 +1080,10 @@ class RetrievalTutorial:
         return "No grounded answer found."
 
     def compare_query(self, query: str, *, top_k: int = 3) -> dict[str, Any]:
+        """Run every retrieval cell for one question so the outputs can be compared side by side."""
         vector_hits = self.vector_search(query, top_k=top_k)
         index_hits = self.index_search(query, top_k=top_k)
+        section_hits = self.section_navigation_search(query, top_k=top_k)
         graph_hits = self.graph_search(query, top_k=top_k)
         hybrid_hits = self.hybrid_search(query, top_k=top_k)
         return {
@@ -750,6 +1097,13 @@ class RetrievalTutorial:
                 "hits": index_hits,
                 "answer": self.answer("index", query, index_hits),
                 "confidence": index_hits[0]["score"] if index_hits else 0.0,
+            },
+            "section": {
+                "hits": section_hits["hits"],
+                "target_heading": section_hits["target_heading"],
+                "reason": section_hits["reason"],
+                "answer": self.answer("section", query, section_hits),
+                "confidence": section_hits["hits"][0]["navigation"].confidence if section_hits["hits"] else 0.0,
             },
             "graph": {
                 "start_entities": graph_hits["start_entities"],
@@ -770,6 +1124,12 @@ class RetrievalTutorial:
         }
 
 
+# ============================================================================
+# %% Cell 6: Notebook Convenience Functions
+# These helpers make the script read like the final reporting cells of a
+# teaching notebook: load data, run comparisons, and print a guided transcript.
+# ============================================================================
+
 def load_dataset(path: Path = DATASET_PATH) -> list[dict[str, Any]]:
     with path.open("r", encoding="utf-8") as handle:
         return json.load(handle)
@@ -786,6 +1146,7 @@ def comparison_table() -> str:
             "|---|---|---|---|",
             "| Vector RAG | semantic similarity | can blur exact entities and structure | synonym-style matching and chunk ranking |",
             "| Page Index RAG | exact keyword recall | misses synonyms and multi-hop reasoning | inverted index + TF-IDF-lite scoring |",
+            "| Section-aware vectorless retrieval | structure-aware document navigation | depends on a good section planner | fake agentic root -> section traversal |",
             "| Graph RAG | relationship reasoning | needs structured entity data | 1-2 hop traversal over triples |",
             "| Hybrid RAG | balance of recall and structure | more plumbing | index -> entities -> graph expansion |",
         ]
@@ -797,6 +1158,8 @@ def explain_method(method: str) -> str:
         return "Good when the question is phrased differently from the document text."
     if method == "index":
         return "Good when the query uses the same words as the document."
+    if method == "section":
+        return "Good when a fake section planner can guide you from a root heading into the right subsection."
     if method == "graph":
         return "Good when the answer depends on relationships and multi-hop reasoning."
     return "Good when you want the practical balance of candidate recall and structured expansion."
@@ -814,7 +1177,7 @@ QUERY_SET = [
 
 def render_query_result(result: dict[str, Any]) -> str:
     lines = [f"Query: {result['query']}"]
-    for method in ("vector", "index", "graph", "hybrid"):
+    for method in ("vector", "index", "section", "graph", "hybrid"):
         block = result[method]
         lines.append(f"  {method.upper()} confidence: {format_score(float(block['confidence']))}")
         if method in {"vector", "index"}:
@@ -823,20 +1186,43 @@ def render_query_result(result: dict[str, Any]) -> str:
                     f"    - {hit['doc_id']} | {hit['title']} | score={format_score(float(hit['score']))} | "
                     f"{short_excerpt(hit['text'], 110)}"
                 )
+        elif method == "section":
+            lines.append(f"    target heading: {block['target_heading']}")
+            lines.append(f"    reason: {block['reason']}")
+            for hit in block["hits"][:3]:
+                nav = hit["navigation"]
+                completion = hit["completion"]
+                lines.append(f"    model: {completion.model} | temperature={format_score(float(completion.temperature))}")
+                lines.append(f"    user message: {short_excerpt(completion.messages[-1].content, 120)}")
+                lines.append(
+                    f"    - {hit['doc_id']} | {hit['title']} | score={format_score(float(hit['score']))} | "
+                    f"path={' -> '.join(nav.selected_path)}"
+                )
+                lines.append(f"      visited: {', '.join(nav.visited_sections)}")
+                lines.append(
+                    f"      navigation: target={nav.target_section}; confidence={format_score(float(nav.confidence))}"
+                )
+                lines.append(f"      completion: {short_excerpt(completion.content, 120)}")
+                lines.append(f"      fake llm response: {nav.navigation_reason}")
+                lines.append(f"      section text: {short_excerpt(hit['text'], 110)}")
         elif method == "graph":
             lines.append(f"    starts: {', '.join(block['start_entities']) or '(none)'}")
+            for idx, path in enumerate(block.get("paths", [])[:2], start=1):
+                lines.append(f"    path {idx}: {self._path_trace(path['path'])}")
             for edge_text in block["edge_texts"][:3]:
                 lines.append(f"    - {edge_text}")
         else:
             lines.append(f"    candidates: {', '.join(item['doc_id'] for item in block['candidate_docs']) or '(none)'}")
             lines.append(f"    expanded docs: {', '.join(block['expanded_doc_ids']) or '(none)'}")
+            for idx, path in enumerate(block.get("paths", [])[:2], start=1):
+                lines.append(f"    path {idx}: {self._path_trace(path['path'])}")
             for edge_text in block["graph_edges"][:3]:
                 lines.append(f"    - {edge_text}")
         lines.append(f"    answer: {block['answer']}")
     lines.append("")
     lines.append(
         f"  lesson: vector={explain_method('vector')} index={explain_method('index')} "
-        f"graph={explain_method('graph')} hybrid={explain_method('hybrid')}"
+        f"section={explain_method('section')} graph={explain_method('graph')} hybrid={explain_method('hybrid')}"
     )
     return "\n".join(lines)
 
@@ -867,6 +1253,12 @@ def render_report(demo: RetrievalTutorial, results: list[dict[str, Any]]) -> Non
         print()
 
 
+# ============================================================================
+# %% Cell 7: Execute The Notebook
+# The CLI acts like "Run All Cells". It keeps the tutorial file runnable as a
+# normal script while preserving the notebook-style teaching flow.
+# ============================================================================
+
 def run_demo(*, top_k: int = 3) -> dict[str, Any]:
     demo = build_demo()
     results = [demo.compare_query(query, top_k=top_k) for query in QUERY_SET]
@@ -874,7 +1266,7 @@ def run_demo(*, top_k: int = 3) -> dict[str, Any]:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Runnable tutorial for four retrieval approaches over one dataset.")
+    parser = argparse.ArgumentParser(description="Runnable tutorial for five retrieval approaches over one dataset.")
     parser.add_argument("--top-k", type=int, default=3, help="How many hits to show per retrieval mode.")
     parser.add_argument("--json", action="store_true", help="Emit JSON instead of the tutorial transcript.")
     args = parser.parse_args()

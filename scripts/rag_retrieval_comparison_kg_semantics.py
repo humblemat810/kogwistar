@@ -1,3 +1,19 @@
+"""Notebook-style tutorial: the same retrieval lesson, now in KG semantics.
+
+# Cell 1. Setup
+Prepare imports, backend selection, and lightweight runtime shims.
+
+# Cell 2. Graph Models
+Use real Kogwistar models when possible, and deterministic fallbacks when not.
+
+# Cell 3. Persist Once
+Seed one backend once, then run vector, lexical, graph, and hybrid retrieval
+over that same persisted state.
+
+# Cell 4. Compare And Verify
+Run the same questions as tutorial 21 and finish with a parity check.
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -12,6 +28,12 @@ from collections import Counter, deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+# ============================================================================
+# %% Cell 1: Imports, Paths, And Backend Wiring
+# This first cell acts like notebook setup. It wires in the workspace root and
+# prepares the minimal import shims needed for tutorial environments.
+# ============================================================================
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -29,6 +51,12 @@ if "kogwistar.engine_core" not in sys.modules:
 from kogwistar.engine_core.in_memory_backend import build_in_memory_backend
 
 HAVE_REAL_GRAPH_KNOWLEDGE_ENGINE = False
+
+# ============================================================================
+# %% Cell 2: Real Kogwistar Models First, Lightweight Fallbacks Second
+# The tutorial prefers the real graph types, but still stays runnable when the
+# full optional dependency stack is unavailable.
+# ============================================================================
 
 try:
     from kogwistar.engine_core.models import Edge, Grounding, MentionVerification, Node, Span
@@ -124,6 +152,8 @@ except Exception:
             return cls(**data)
 
     class GraphQuery:
+        """Notebook-local fallback graph query helper for minimal environments."""
+
         def __init__(self, engine: Any):
             self.e = engine
 
@@ -390,7 +420,15 @@ class TutorialWrite:
         )
 
 
+# ============================================================================
+# %% Cell 3: Minimal Engine Wrappers
+# This cell wraps the promoted in-memory backend in a tutorial-friendly engine
+# shape so the rest of the notebook can read naturally.
+# ============================================================================
+
 class TutorialMemoryEngine:
+    """Notebook-friendly wrapper around the promoted in-memory backend."""
+
     def __init__(self, *, persist_directory: str, embedding_function: Any) -> None:
         self.persist_directory = persist_directory
         self._ef = embedding_function
@@ -408,6 +446,7 @@ def _normalize_backend_name(backend: str) -> str:
 
 
 def _build_engine(backend: str, *, persist_directory: str | None, embedding_function: Any):
+    """Choose the backend the same way a notebook would choose an execution path."""
     backend = _normalize_backend_name(backend)
     if backend == "memory":
         if not persist_directory:
@@ -423,7 +462,15 @@ def _build_engine(backend: str, *, persist_directory: str | None, embedding_func
     raise ValueError(f"Unknown backend {backend!r}; expected 'memory' or 'chroma'.")
 
 
+# ============================================================================
+# %% Cell 4: Build The KG Tutorial State
+# This class is the main notebook state. It seeds one backend once, then lets
+# each retrieval cell query that same persisted graph-backed corpus.
+# ============================================================================
+
 class KGSemanticsRetrievalTutorial:
+    """Notebook-style driver for the KG-semantics retrieval comparison."""
+
     def __init__(
         self,
         docs: list[dict[str, Any]],
@@ -494,6 +541,7 @@ class KGSemanticsRetrievalTutorial:
         return labels
 
     def _refresh_persisted_corpus(self) -> None:
+        """Refresh the vector and lexical views from the persisted KG state."""
         records: list[KGRecord] = []
         alias_to_node_id: dict[str, str] = {}
         entity_name_to_node_id: dict[str, str] = {}
@@ -553,6 +601,7 @@ class KGSemanticsRetrievalTutorial:
         )
 
     def _build_kg(self) -> None:
+        """Persist nodes and edges once so all retrieval styles share the same source."""
         seeded_nodes: set[str] = set()
         for doc in self.docs:
             doc_id = doc["id"]
@@ -680,6 +729,7 @@ class KGSemanticsRetrievalTutorial:
         return score / math.sqrt(self.record_lengths[record_id])
 
     def vector_search(self, query: str, *, top_k: int = 3) -> list[dict[str, Any]]:
+        """Cell: standard vector retrieval over persisted KG-backed records."""
         query_embedding = self.embedder([query])[0]
         scored: list[dict[str, Any]] = []
         for record in self.records:
@@ -699,6 +749,7 @@ class KGSemanticsRetrievalTutorial:
         return scored[:top_k]
 
     def index_search(self, query: str, *, top_k: int = 3) -> list[dict[str, Any]]:
+        """Cell: lexical vectorless retrieval over the same persisted records."""
         query_tokens = tokenize(query)
         scored = []
         for record in self.records:
@@ -718,6 +769,7 @@ class KGSemanticsRetrievalTutorial:
         return scored[:top_k]
 
     def _edge_paths(self, query: str, *, top_k: int = 5) -> dict[str, Any]:
+        """Cell helper: gather graph traversal traces from the persisted engine."""
         starts = self.graph.search_nodes(label_contains=query.split()[0], limit=8)
         if not starts:
             starts = self.graph.search_nodes(summary_contains=query.split()[0], limit=8)
@@ -751,6 +803,7 @@ class KGSemanticsRetrievalTutorial:
         }
 
     def graph_search(self, query: str, *, top_k: int = 5) -> dict[str, Any]:
+        """Cell: traverse the persisted graph state to answer relationship-heavy queries."""
         starts = self._extract_entity_labels(query)
         if not starts:
             q = normalize_text(query)
@@ -828,6 +881,7 @@ class KGSemanticsRetrievalTutorial:
         }
 
     def hybrid_search(self, query: str, *, top_k: int = 3) -> dict[str, Any]:
+        """Cell: retrieve lexically first, then expand through the graph."""
         candidates = self.index_search(query, top_k=4)
         start_entities = []
         for item in candidates:
@@ -875,6 +929,7 @@ class KGSemanticsRetrievalTutorial:
         return self.raw_answer_router.answer(method, query, result)
 
     def compare_query(self, query: str, *, top_k: int = 3) -> dict[str, Any]:
+        """Run all retrieval cells and align the answers with tutorial 21."""
         vector_hits = self.vector_search(query, top_k=top_k)
         index_hits = self.index_search(query, top_k=top_k)
         graph_hits = self.graph_search(query, top_k=top_k)
@@ -911,6 +966,7 @@ class KGSemanticsRetrievalTutorial:
         }
 
     def graph_snapshot(self) -> str:
+        """Render a small notebook-friendly ASCII view of the persisted graph."""
         lines: list[str] = []
         for node_id, payload in self._collection_rows("node")[:10]:
             node = Node.model_validate_json(payload)
@@ -928,6 +984,12 @@ class KGSemanticsRetrievalTutorial:
                 lines.append("  (isolated)")
         return "\n".join(lines)
 
+
+# ============================================================================
+# %% Cell 5: Reporting And Parity
+# These helpers are the notebook's final cells: print the walkthrough, render
+# the graph, and verify that the KG rewrite matches tutorial 21.
+# ============================================================================
 
 def render_query_result(result: dict[str, Any]) -> str:
     lines = [f"Query: {result['query']}"]
@@ -1001,6 +1063,7 @@ def render_report(kg_demo: KGSemanticsRetrievalTutorial, results: list[dict[str,
 
 
 def run_demo(*, top_k: int = 3, backend: str = "memory", persist_directory: str | None = None) -> dict[str, Any]:
+    """Run the notebook end to end and return both KG and raw baseline results."""
     docs = load_dataset()
     normalized_backend = _normalize_backend_name(backend)
     engine_persist_directory = persist_directory
@@ -1028,6 +1091,7 @@ def run_demo(*, top_k: int = 3, backend: str = "memory", persist_directory: str 
 
 
 def main() -> None:
+    """CLI entrypoint, equivalent to hitting Run All in a notebook."""
     parser = argparse.ArgumentParser(
         description="KG-semantics tutorial using a configurable persisted kogwistar engine."
     )
