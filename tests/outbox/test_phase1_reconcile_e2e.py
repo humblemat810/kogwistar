@@ -1,4 +1,5 @@
 import time
+import time
 import pathlib
 
 import pytest
@@ -17,6 +18,7 @@ from kogwistar.engine_core.engine_postgres_meta import (
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.models import Node, Edge, Grounding, Span
 from tests.conftest import FakeEmbeddingFunction
+from tests._helpers.fake_backend import InMemoryBackend, build_fake_backend
 
 # Reuse raw helpers to avoid duplicating Chroma plumbing.
 # from tests.conftest import add_node_raw, add_edge_raw
@@ -74,26 +76,35 @@ def _mk_edge(edge_id: str, *, src: str, tgt: str, doc_id: str) -> Edge:
 
 @pytest.fixture(
     params=[
+        pytest.param("fake", id="fake", marks=pytest.mark.ci),
         pytest.param("chroma", id="chroma", marks=pytest.mark.ci_full),
         pytest.param("pg", id="pg", marks=pytest.mark.ci_full),
     ],
-    ids=["chroma", "pg"],
+    ids=["fake", "chroma", "pg"],
 )
 def e2e_engine(
     request: pytest.FixtureRequest,
     tmp_path: pathlib.Path,
-    sa_engine,  # provided by tests/conftest.py
-    pg_schema,  # provided by tests/conftest.py
 ) -> GraphKnowledgeEngine:
     """Run the same E2E outbox/reconcile tests against both selectors."""
 
-    if request.param == "chroma":
+    if request.param == "fake":
+        persist_dir = tmp_path / "fake"
+        persist_dir.mkdir(parents=True, exist_ok=True)
+        eng = GraphKnowledgeEngine(
+            persist_directory=str(persist_dir),
+            embedding_function=TEST_EMBEDDING,
+            backend_factory=build_fake_backend,
+        )
+    elif request.param == "chroma":
         persist_dir = tmp_path / "chroma"
         persist_dir.mkdir(parents=True, exist_ok=True)
         eng = GraphKnowledgeEngine(
             persist_directory=str(persist_dir), embedding_function=TEST_EMBEDDING
         )
     else:
+        sa_engine = request.getfixturevalue("sa_engine")
+        pg_schema = request.getfixturevalue("pg_schema")
         # Skip cleanly if the pgvector dependency isn't available in this environment.
         pytest.importorskip("pgvector")
         backend = PgVectorBackend(engine=sa_engine, embedding_dim=3, schema=pg_schema)
@@ -112,6 +123,8 @@ def _assert_backend_kind(eng: GraphKnowledgeEngine) -> None:
     kind = getattr(eng, "_test_backend_kind", None)
     if kind == "pg":
         assert isinstance(eng.backend, PgVectorBackend)
+    elif kind == "fake":
+        assert isinstance(eng.backend, InMemoryBackend)
     else:
         assert isinstance(eng.backend, ChromaBackend)
 
@@ -125,12 +138,12 @@ def _job_by_id(eng: GraphKnowledgeEngine, job_id: str):
 
 def _make_job_runnable_now(eng: GraphKnowledgeEngine, job_id: str) -> None:
     if hasattr(eng.meta_sqlite, "transaction"):
-        with eng.meta_sqlite.transaction() as conn:
+        with eng.meta_sqlite.transaction() as txn:
             if isinstance(eng.meta_sqlite, EnginePostgresMetaStore):
                 schema = eng.meta_sqlite.schema
                 table = getattr(eng.meta_sqlite, "index_jobs_table", "index_jobs")
                 ij = f"{schema}.{table}"
-                conn.execute(
+                txn.execute(
                     sa.text(
                         f"UPDATE {ij} "
                         "SET status='PENDING', lease_until=NULL, next_run_at=NOW(), updated_at=NOW() "
@@ -139,11 +152,13 @@ def _make_job_runnable_now(eng: GraphKnowledgeEngine, job_id: str) -> None:
                     {"job_id": job_id},
                 )
             else:
-                now = eng.meta_sqlite._now_epoch()
-                conn.execute(
-                    "UPDATE index_jobs SET status='PENDING', lease_until=NULL, next_run_at=?, updated_at=? WHERE job_id=?",
-                    (now, now, job_id),
-                )
+                now = int(time.time())
+                job = txn.state.index_jobs.get(str(job_id))
+                if job is not None:
+                    job.status = "PENDING"
+                    job.lease_until = None
+                    job.next_run_at = now
+                    job.updated_at = now
 
 
 def test_reconcile_builds_all_joins_from_raw_entities(e2e_engine: GraphKnowledgeEngine):
@@ -295,8 +310,8 @@ def test_stuck_doing_job_is_stealable_after_lease_expiry(
     # Force the job into DOING with an expired lease to simulate a crashed worker.
     # (We do it at the metastore level; this is not monkeypatching runtime logic.)
     if hasattr(eng.meta_sqlite, "transaction"):
-        with eng.meta_sqlite.transaction() as conn:
-            if isinstance(eng.meta_sqlite, EnginePostgresMetaStore):
+        if isinstance(eng.meta_sqlite, EnginePostgresMetaStore):
+            with eng.meta_sqlite.transaction() as conn:
                 # PG uses per-test schema; schema-qualify the table.
                 schema = eng.meta_sqlite.schema
                 table = getattr(eng.meta_sqlite, "index_jobs_table", "index_jobs")
@@ -316,7 +331,16 @@ def test_stuck_doing_job_is_stealable_after_lease_expiry(
                     ),
                     {"secs": 10, "job_id": jid},
                 )
-            else:
+        elif hasattr(eng.meta_sqlite, "_debug_force_job_lease"):
+            # Fake/in-memory meta uses a transaction view, not a DB connection.
+            with eng.meta_sqlite.transaction() as txn:
+                job = txn.state.index_jobs.get(jid)
+                if job is not None:
+                    job.status = "DOING"
+                    job.lease_until = 0
+                    job.updated_at = int(time.time())
+        else:
+            with eng.meta_sqlite.transaction() as conn:
                 # SQLite
                 conn.execute(
                     "UPDATE index_jobs SET status='DOING', lease_until=?, updated_at=? WHERE job_id=?",

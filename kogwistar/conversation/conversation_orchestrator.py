@@ -821,12 +821,14 @@ class ConversationOrchestrator:
         try:
             from .conversation.agentic_answering import AgenticAnsweringAgent
 
-            self.agentic_answering_agent = AgenticAnsweringAgent(
+            agent_kwargs = dict(
                 conversation_engine=self.conversation_engine,
                 knowledge_engine=self.ref_knowledge_engine,
                 llm_tasks=self.llm_tasks,
-                cache_dir=agent_cache_dir,
             )
+            if agent_cache_dir is not None:
+                agent_kwargs["cache_dir"] = agent_cache_dir
+            self.agentic_answering_agent = AgenticAnsweringAgent(**agent_kwargs)
         except Exception:
             self.agentic_answering_agent = None
 
@@ -1738,13 +1740,15 @@ class ConversationOrchestrator:
             )
         ]
 
-        agent = AgenticAnsweringAgent(
+        agent_kwargs = dict(
             conversation_engine=self.conversation_engine,
             knowledge_engine=self.ref_knowledge_engine,
             llm_tasks=self.llm_tasks,
             config=AgentConfig(),
-            cache_dir = cache_dir
         )
+        if cache_dir is not None:
+            agent_kwargs["cache_dir"] = cache_dir
+        agent = AgenticAnsweringAgent(**agent_kwargs)
         out = agent.answer(
             conversation_id=conversation_id,
             prev_turn_meta_summary=prev_turn_meta_summary,

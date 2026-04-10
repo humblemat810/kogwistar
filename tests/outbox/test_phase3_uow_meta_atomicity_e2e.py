@@ -1,12 +1,12 @@
 import uuid
 import threading
 import pytest
-pytestmark = pytest.mark.ci_full
 pytest.importorskip("sqlalchemy")
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.postgres_backend import PgVectorBackend
 from tests.conftest import FakeEmbeddingFunction
+from tests._helpers.fake_backend import build_fake_backend
 
 EMBEDDING_DIM = 3
 TEST_EMBEDDING = FakeEmbeddingFunction(dim=EMBEDDING_DIM)
@@ -14,13 +14,28 @@ TEST_EMBEDDING = FakeEmbeddingFunction(dim=EMBEDDING_DIM)
 
 @pytest.fixture(
     params=[
+        pytest.param("fake", id="fake", marks=pytest.mark.ci),
         pytest.param("chroma", id="chroma", marks=pytest.mark.ci_full),
         pytest.param("pg", id="pg", marks=pytest.mark.ci_full),
     ],
-    ids=["chroma", "pg"],
+    ids=["fake", "chroma", "pg"],
 )
-def e2e_engine(request, tmp_path, sa_engine, pg_schema) -> GraphKnowledgeEngine:
-    if request.param == "chroma":
+def e2e_engine(request, tmp_path) -> GraphKnowledgeEngine:
+    sa_engine = None
+    pg_schema = None
+    if request.param == "pg":
+        sa_engine = request.getfixturevalue("sa_engine")
+        pg_schema = request.getfixturevalue("pg_schema")
+
+    if request.param == "fake":
+        persist_dir = tmp_path / "fake"
+        persist_dir.mkdir(parents=True, exist_ok=True)
+        eng = GraphKnowledgeEngine(
+            persist_directory=str(persist_dir),
+            embedding_function=TEST_EMBEDDING,
+            backend_factory=build_fake_backend,
+        )
+    elif request.param == "chroma":
         persist_dir = tmp_path / "chroma"
         persist_dir.mkdir(parents=True, exist_ok=True)
         eng = GraphKnowledgeEngine(
@@ -125,6 +140,53 @@ def test_phase3_parallel_uow_one_rollback_one_commit_isolated(e2e_engine, reques
     eng = e2e_engine
     ns1 = f"phase3_parallel_rb_{uuid.uuid4().hex}"
     ns2 = f"phase3_parallel_ok_{uuid.uuid4().hex}"
+
+    if getattr(eng, "_test_backend_kind", None) == "fake":
+        with pytest.raises(RuntimeError):
+            with eng.uow():
+                eng.meta_sqlite.append_entity_event(
+                    namespace=ns1,
+                    event_id=f"ev_{uuid.uuid4().hex}",
+                    entity_kind="node",
+                    entity_id="n_rb",
+                    op="upsert",
+                    payload_json='{"id":"n_rb","dummy":true}',
+                )
+                eng.meta_sqlite.enqueue_index_job(
+                    namespace=ns1,
+                    job_id=f"job_{uuid.uuid4().hex}",
+                    entity_kind="node",
+                    entity_id="n_rb",
+                    index_kind="node_index",
+                    op="upsert",
+                    payload_json='{"id":"n_rb"}',
+                )
+                raise RuntimeError("worker rollback")
+
+        with eng.uow():
+            eng.meta_sqlite.append_entity_event(
+                namespace=ns2,
+                event_id=f"ev_{uuid.uuid4().hex}",
+                entity_kind="node",
+                entity_id="n_ok",
+                op="upsert",
+                payload_json='{"id":"n_ok","dummy":true}',
+            )
+            eng.meta_sqlite.enqueue_index_job(
+                namespace=ns2,
+                job_id=f"job_{uuid.uuid4().hex}",
+                entity_kind="node",
+                entity_id="n_ok",
+                index_kind="node_index",
+                op="upsert",
+                payload_json='{"id":"n_ok"}',
+            )
+
+        assert _count_events(eng, ns1) == 0
+        assert _count_jobs(eng, ns1) == 0
+        assert _count_events(eng, ns2) == 1
+        assert _count_jobs(eng, ns2) == 1
+        return
 
     started_1 = threading.Event()
     started_2 = threading.Event()

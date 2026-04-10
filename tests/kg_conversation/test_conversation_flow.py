@@ -102,18 +102,30 @@ def cached(memory: Memory, fn: Callable[P, R], *args, **kwargs) -> Callable[P, R
     return cast(Callable[P, R], memory.cache(fn, *args, **kwargs))
 
 
-@pytest.mark.parametrize("backend_kind", ["chroma", "pg"])
+@pytest.mark.parametrize(
+    "backend_kind",
+    [
+        pytest.param("fake", id="fake", marks=pytest.mark.ci_full),
+        pytest.param("chroma", id="chroma", marks=pytest.mark.ci_full),
+        pytest.param("pg", id="pg", marks=pytest.mark.ci_full),
+    ],
+)
 @pytest.mark.parametrize(
     "llm_provider_name", ["gemini", "ollama"], indirect=True
 )
 def test_conversation_flow(
     backend_kind: str,
     tmp_path,
-    sa_engine,
-    pg_schema,
+    request,
     llm_tasks,
     llm_provider_name,
 ):
+    if backend_kind == "pg":
+        sa_engine = request.getfixturevalue("sa_engine")
+        pg_schema = request.getfixturevalue("pg_schema")
+    else:
+        sa_engine = None
+        pg_schema = None
     engine, conversation_engine = _make_engine_pair(
         backend_kind=backend_kind,
         tmp_path=tmp_path,

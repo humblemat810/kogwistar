@@ -71,6 +71,7 @@ class IndexJobWorker:
         durations: list[float] = []
 
         ns = self.namespace or getattr(self.engine, "namespace", "default")
+        entity_cache: dict[tuple[str, str, str], object] = {}
 
         while remaining > 0:
             # IMPORTANT: don't over-claim beyond what we can process this tick.
@@ -125,6 +126,7 @@ class IndexJobWorker:
                         index_kind=str(index_kind),
                         op=str(op),
                         namespace=ns,
+                        validated_entity_cache=entity_cache,
                     )
                     if mark_done is not None and job_id:
                         mark_done(str(job_id))

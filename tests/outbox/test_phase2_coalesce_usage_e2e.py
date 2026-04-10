@@ -175,7 +175,7 @@ def test_phase2_enqueue_while_doing_creates_new_pending(
 
     # Force J1 into DOING with a *future* lease_until to simulate an active worker.
     if hasattr(eng.meta_sqlite, "transaction"):
-        with eng.meta_sqlite.transaction() as conn:
+        with eng.meta_sqlite.transaction() as txn:
             from kogwistar.engine_core.engine_postgres_meta import (
                 EnginePostgresMetaStore,
             )
@@ -190,7 +190,7 @@ def test_phase2_enqueue_while_doing_creates_new_pending(
                 if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", table):
                     raise AssertionError(f"invalid table in test: {table!r}")
                 ij = f"{schema}.{table}"
-                conn.execute(
+                txn.execute(
                     sa.text(
                         f"UPDATE {ij} "
                         "SET status='DOING', "
@@ -201,10 +201,12 @@ def test_phase2_enqueue_while_doing_creates_new_pending(
                     {"secs": 60, "job_id": jid1},
                 )
             else:
-                conn.execute(
-                    "UPDATE index_jobs SET status='DOING', lease_until=?, updated_at=? WHERE job_id=?",
-                    (time.time() + 60.0, time.time(), jid1),
-                )
+                now = int(time.time())
+                job = txn.state.index_jobs.get(str(jid1))
+                if job is not None:
+                    job.status = "DOING"
+                    job.lease_until = now + 60
+                    job.updated_at = now
 
     # Enqueue again while J1 is DOING.
     jid2 = eng.enqueue_index_job(
