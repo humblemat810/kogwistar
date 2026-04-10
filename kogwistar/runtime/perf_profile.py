@@ -15,7 +15,10 @@ from typing import Any, Callable
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.models import Edge, Grounding, MentionVerification, Node, Span
 from kogwistar.engine_core.in_memory_backend import build_in_memory_backend
+from kogwistar.engine_core.postgres_backend import PgVectorBackend
+from kogwistar.runtime.models import WorkflowEdge, WorkflowNode
 from kogwistar.runtime.models import RunSuccess
+from kogwistar.runtime.resolvers import MappingStepResolver
 from kogwistar.runtime.runtime import WorkflowRuntime
 
 
@@ -24,9 +27,9 @@ class _ProfileEmbeddingFunction:
     def name() -> str:
         return "profile-fake-3d"
 
-    def __call__(self, texts: list[str]) -> list[list[float]]:
+    def __call__(self, input: list[str]) -> list[list[float]]:
         vectors: list[list[float]] = []
-        for text in texts:
+        for text in input:
             base = float((len(str(text)) % 7) + 1)
             vectors.append([base, base + 1.0, base + 2.0])
         return vectors
@@ -88,6 +91,73 @@ def _mk_edge(edge_id: str, *, src: str, tgt: str, doc_id: str) -> Edge:
     )
 
 
+def _mk_workflow_node(
+    *,
+    workflow_id: str,
+    node_id: str,
+    op: str | None,
+    start: bool = False,
+    terminal: bool = False,
+) -> WorkflowNode:
+    return WorkflowNode(
+        id=node_id,
+        label=node_id.split("|")[-1],
+        type="entity",
+        doc_id=node_id,
+        summary=op or node_id,
+        properties={},
+        metadata={
+            "entity_type": "workflow_node",
+            "workflow_id": workflow_id,
+            "wf_op": op or "noop",
+            "wf_start": bool(start),
+            "wf_terminal": bool(terminal),
+            "wf_fanout": False,
+            "wf_version": "v_perf",
+        },
+        mentions=[Grounding(spans=[_mk_span(f"wf:{workflow_id}")])],
+        level_from_root=0,
+        domain_id=None,
+        canonical_entity_id=None,
+        embedding=None,
+    )
+
+
+def _mk_workflow_edge(
+    *,
+    workflow_id: str,
+    edge_id: str,
+    src: str,
+    dst: str,
+) -> WorkflowEdge:
+    return WorkflowEdge(
+        id=edge_id,
+        label="wf_next",
+        type="relationship",
+        doc_id=edge_id,
+        summary="next",
+        properties={},
+        source_ids=[src],
+        target_ids=[dst],
+        source_edge_ids=[],
+        target_edge_ids=[],
+        relation="wf_next",
+        metadata={
+            "entity_type": "workflow_edge",
+            "workflow_id": workflow_id,
+            "wf_predicate": None,
+            "wf_priority": 100,
+            "wf_is_default": True,
+            "wf_multiplicity": "one",
+            "wf_version": "v_perf",
+        },
+        mentions=[Grounding(spans=[_mk_span(f"wf:{workflow_id}")])],
+        domain_id=None,
+        canonical_entity_id=None,
+        embedding=None,
+    )
+
+
 @dataclass
 class _TimingStat:
     count: int = 0
@@ -112,9 +182,11 @@ class _TimingStat:
 class TimingRecorder:
     def __init__(self) -> None:
         self._stats: dict[str, _TimingStat] = defaultdict(_TimingStat)
+        self._lock = threading.Lock()
 
     def add(self, label: str, elapsed_s: float) -> None:
-        self._stats[str(label)].add(float(elapsed_s))
+        with self._lock:
+            self._stats[str(label)].add(float(elapsed_s))
 
     @contextmanager
     def wrap_method(self, obj: Any, attr: str, *, label: str | None = None):
@@ -233,25 +305,70 @@ class SysMonitoringWallProfiler:
         return {name: stat.to_dict() for name, stat in items}
 
 
-def _build_in_memory_engine(root: Path, *, graph_type: str) -> GraphKnowledgeEngine:
-    return GraphKnowledgeEngine(
-        persist_directory=str(root),
-        kg_graph_type=graph_type,
-        embedding_function=_ProfileEmbeddingFunction(),
-        backend_factory=build_in_memory_backend,
-    )
+def _build_profile_engine(
+    root: Path,
+    *,
+    graph_type: str,
+    backend_kind: str,
+    sa_engine: Any | None = None,
+    pg_schema: str | None = None,
+) -> GraphKnowledgeEngine:
+    if backend_kind == "fake":
+        return GraphKnowledgeEngine(
+            persist_directory=str(root),
+            kg_graph_type=graph_type,
+            embedding_function=_ProfileEmbeddingFunction(),
+            backend_factory=build_in_memory_backend,
+        )
+    if backend_kind == "chroma":
+        return GraphKnowledgeEngine(
+            persist_directory=str(root),
+            kg_graph_type=graph_type,
+            embedding_function=_ProfileEmbeddingFunction(),
+        )
+    if backend_kind == "pg":
+        if sa_engine is None or pg_schema is None:
+            raise ValueError("pg backend requires sa_engine and pg_schema")
+        backend = PgVectorBackend(
+            engine=sa_engine,
+            embedding_dim=3,
+            schema=pg_schema,
+        )
+        if hasattr(backend, "ensure_schema"):
+            backend.ensure_schema()
+        return GraphKnowledgeEngine(
+            backend=backend,
+            kg_graph_type=graph_type,
+            embedding_function=_ProfileEmbeddingFunction(),
+        )
+    raise ValueError(f"unknown backend_kind: {backend_kind!r}")
 
 
 def _profile_one_scenario(
     root: Path,
     *,
+    backend_kind: str,
     iterations: int,
     fast_trace_persistence: bool,
     include_monitoring: bool,
     use_validation_cache: bool,
+    sa_engine: Any | None = None,
+    pg_schema: str | None = None,
 ) -> dict[str, Any]:
-    workflow_engine = _build_in_memory_engine(root / "wf", graph_type="workflow")
-    conversation_engine = _build_in_memory_engine(root / "conv", graph_type="conversation")
+    workflow_engine = _build_profile_engine(
+        root / "wf",
+        graph_type="workflow",
+        backend_kind=backend_kind,
+        sa_engine=sa_engine,
+        pg_schema=pg_schema,
+    )
+    conversation_engine = _build_profile_engine(
+        root / "conv",
+        graph_type="conversation",
+        backend_kind=backend_kind,
+        sa_engine=sa_engine,
+        pg_schema=pg_schema,
+    )
     workflow_engine._phase1_enable_validation_cache = bool(use_validation_cache)  # type: ignore[attr-defined]
     conversation_engine._phase1_enable_validation_cache = bool(use_validation_cache)  # type: ignore[attr-defined]
     runtime = WorkflowRuntime(
@@ -377,6 +494,273 @@ def _profile_one_scenario(
     }
 
 
+def _seed_simple_resolver_workflow(
+    workflow_engine: GraphKnowledgeEngine,
+    knowledge_engine: GraphKnowledgeEngine,
+    *,
+    workflow_id: str,
+    batch_id: str,
+) -> dict[str, str]:
+    kg_node_a = _mk_node(f"{batch_id}-kg-node-a", doc_id=f"{batch_id}-kg-doc-a")
+    kg_node_b = _mk_node(f"{batch_id}-kg-node-b", doc_id=f"{batch_id}-kg-doc-b")
+    kg_edge = _mk_edge(
+        f"{batch_id}-kg-edge",
+        src=kg_node_a.id,
+        tgt=kg_node_b.id,
+        doc_id=f"{batch_id}-kg-doc-edge",
+    )
+    knowledge_engine.write.add_node(kg_node_a)
+    knowledge_engine.write.add_node(kg_node_b)
+    knowledge_engine.write.add_edge(kg_edge)
+
+    start_id = f"wf|{workflow_id}|start"
+    retrieve_id = f"wf|{workflow_id}|retrieve"
+    write_id = f"wf|{workflow_id}|write"
+    end_id = f"wf|{workflow_id}|end"
+    for node in (
+        _mk_workflow_node(
+            workflow_id=workflow_id,
+            node_id=start_id,
+            op="start",
+            start=True,
+        ),
+        _mk_workflow_node(
+            workflow_id=workflow_id,
+            node_id=retrieve_id,
+            op="retrieve_kg",
+        ),
+        _mk_workflow_node(
+            workflow_id=workflow_id,
+            node_id=write_id,
+            op="write_turn",
+        ),
+        _mk_workflow_node(
+            workflow_id=workflow_id,
+            node_id=end_id,
+            op="finish",
+            terminal=True,
+        ),
+    ):
+        workflow_engine.write.add_node(node)
+    for edge in (
+        _mk_workflow_edge(
+            workflow_id=workflow_id,
+            edge_id=f"wf|{workflow_id}|e|start->retrieve",
+            src=start_id,
+            dst=retrieve_id,
+        ),
+        _mk_workflow_edge(
+            workflow_id=workflow_id,
+            edge_id=f"wf|{workflow_id}|e|retrieve->write",
+            src=retrieve_id,
+            dst=write_id,
+        ),
+        _mk_workflow_edge(
+            workflow_id=workflow_id,
+            edge_id=f"wf|{workflow_id}|e|write->end",
+            src=write_id,
+            dst=end_id,
+        ),
+    ):
+        workflow_engine.write.add_edge(edge)
+
+    return {
+        "kg_node_a": kg_node_a.id,
+        "kg_node_b": kg_node_b.id,
+        "kg_edge": kg_edge.id,
+        "start_node_id": start_id,
+    }
+
+
+def _profile_simple_resolver_workflow_scenario(
+    root: Path,
+    *,
+    backend_kind: str,
+    iterations: int,
+    fast_trace_persistence: bool,
+    include_monitoring: bool,
+    use_validation_cache: bool,
+    sa_engine: Any | None = None,
+    pg_schema: str | None = None,
+) -> dict[str, Any]:
+    workflow_engine = _build_profile_engine(
+        root / "wf",
+        graph_type="workflow",
+        backend_kind=backend_kind,
+        sa_engine=sa_engine,
+        pg_schema=pg_schema,
+    )
+    conversation_engine = _build_profile_engine(
+        root / "conv",
+        graph_type="conversation",
+        backend_kind=backend_kind,
+        sa_engine=sa_engine,
+        pg_schema=pg_schema,
+    )
+    knowledge_engine = _build_profile_engine(
+        root / "kg",
+        graph_type="knowledge",
+        backend_kind=backend_kind,
+        sa_engine=sa_engine,
+        pg_schema=pg_schema,
+    )
+    workflow_engine._phase1_enable_validation_cache = bool(use_validation_cache)  # type: ignore[attr-defined]
+    conversation_engine._phase1_enable_validation_cache = bool(use_validation_cache)  # type: ignore[attr-defined]
+    knowledge_engine._phase1_enable_validation_cache = bool(use_validation_cache)  # type: ignore[attr-defined]
+
+    recorder = TimingRecorder()
+    monitor = SysMonitoringWallProfiler(
+        include_files=(
+            "kogwistar/runtime/runtime.py",
+            "kogwistar/engine_core/indexing.py",
+            "kogwistar/engine_core/subsystems/write.py",
+        ),
+        include_names=(
+            "run",
+            "_persist_workflow_run",
+            "_persist_step_exec",
+            "_persist_checkpoint",
+            "add_node",
+            "add_edge",
+            "reconcile_indexes",
+            "apply_index_job",
+            "node_get",
+            "get_nodes",
+        ),
+    )
+
+    batch_id = f"resolver-{uuid.uuid4().hex}"
+    workflow_id = f"wf-resolver-{uuid.uuid4().hex}"
+    seed_started = time.perf_counter()
+    seeded = _seed_simple_resolver_workflow(
+        workflow_engine,
+        knowledge_engine,
+        workflow_id=workflow_id,
+        batch_id=batch_id,
+    )
+    seed_total_s = time.perf_counter() - seed_started
+
+    resolver = MappingStepResolver()
+
+    @resolver.register("start")
+    def _start(_ctx):
+        return RunSuccess(conversation_node_id=None, state_update=[])
+
+    @resolver.register("retrieve_kg")
+    def _retrieve(ctx):
+        deps = dict(ctx.state_view.get("_deps") or {})
+        kg = deps["knowledge_engine"]
+        nodes = kg.read.get_nodes(ids=[seeded["kg_node_a"], seeded["kg_node_b"]])
+        labels = [str(getattr(n, "label", "")) for n in (nodes or [])]
+        return RunSuccess(
+            conversation_node_id=None,
+            state_update=[
+                ("u", {"kg_hits": labels, "kg_hit_count": len(labels)}),
+            ],
+        )
+
+    @resolver.register("write_turn")
+    def _write_turn(ctx):
+        deps = dict(ctx.state_view.get("_deps") or {})
+        conv = deps["conversation_engine"]
+        conv_id = str(ctx.conversation_id)
+        run_id = str(ctx.run_id)
+        hit_count = int(ctx.state_view.get("kg_hit_count") or 0)
+        content = f"resolver wrote with {hit_count} kg hits"
+        node = Node(
+            id=f"perf-conv-node|{run_id}|{ctx.step_seq}",
+            label="Perf conversation node",
+            type="entity",
+            summary=content,
+            doc_id=f"conv:{conv_id}",
+            mentions=[Grounding(spans=[_mk_span(f"conv:{conv_id}")])],
+            metadata={
+                "entity_type": "conversation_turn",
+                "conversation_id": conv_id,
+                "in_conversation_chain": True,
+                "turn_index": int(ctx.state_view.get("turn_index") or 0),
+                "role": "assistant",
+                "level_from_root": 0,
+            },
+            embedding=None,
+            level_from_root=0,
+            domain_id=None,
+            canonical_entity_id=None,
+            properties={"kg_hits": list(ctx.state_view.get("kg_hits") or [])},
+        )
+        conv.write.add_node(node)
+        return RunSuccess(
+            conversation_node_id=node.id,
+            state_update=[("u", {"written_turn_id": node.id})],
+        )
+
+    @resolver.register("finish")
+    def _finish(_ctx):
+        return RunSuccess(conversation_node_id=None, state_update=[])
+
+    runtime = WorkflowRuntime(
+        workflow_engine=workflow_engine,
+        conversation_engine=conversation_engine,
+        step_resolver=resolver,
+        predicate_registry={},
+        checkpoint_every_n_steps=1,
+        fast_trace_persistence=fast_trace_persistence,
+    )
+
+    method_specs: list[tuple[Any, str, str]] = [
+        (runtime, "run", "runtime.run"),
+        (runtime, "_persist_workflow_run", "runtime.persist_workflow_run"),
+        (runtime, "_persist_step_exec", "runtime.persist_step_exec"),
+        (runtime, "_persist_checkpoint", "runtime.persist_checkpoint"),
+        (conversation_engine.write, "add_node", "conv.write.add_node"),
+        (conversation_engine.write, "add_edge", "conv.write.add_edge"),
+        (conversation_engine, "reconcile_indexes", "conv.index.reconcile_indexes"),
+        (conversation_engine.indexing, "apply_index_job", "conv.index.apply_index_job"),
+        (conversation_engine.backend, "node_add", "conv.backend.node_add"),
+        (conversation_engine.backend, "node_get", "conv.backend.node_get"),
+        (knowledge_engine.read, "get_nodes", "kg.read.get_nodes"),
+        (knowledge_engine.backend, "node_get", "kg.backend.node_get"),
+    ]
+
+    scenario_started = time.perf_counter()
+    with ExitStack() as stack:
+        for obj, attr, label in method_specs:
+            stack.enter_context(recorder.wrap_method(obj, attr, label=label))
+        if include_monitoring:
+            monitor.start()
+            stack.callback(monitor.stop)
+
+        for iteration in range(1, int(iterations) + 1):
+            conv_id = f"perf-conv-{iteration}-{uuid.uuid4().hex}"
+            run_id = f"perf-run-{iteration}-{uuid.uuid4().hex}"
+            runtime.run(
+                workflow_id=workflow_id,
+                conversation_id=conv_id,
+                turn_node_id=f"turn-{iteration}",
+                run_id=run_id,
+                initial_state={
+                    "conversation_id": conv_id,
+                    "user_id": "perf-user",
+                    "turn_index": iteration,
+                    "_deps": {
+                        "conversation_engine": conversation_engine,
+                        "knowledge_engine": knowledge_engine,
+                    },
+                },
+            )
+
+    total_ms = round((time.perf_counter() - scenario_started) * 1000.0, 3)
+    return {
+        "fast_trace_persistence": bool(fast_trace_persistence),
+        "iterations": int(iterations),
+        "use_validation_cache": bool(use_validation_cache),
+        "scenario_total_ms": total_ms,
+        "seed_total_ms": round(seed_total_s * 1000.0, 3),
+        "method_timings": recorder.to_dict(),
+        "monitoring_timings": monitor.to_dict() if include_monitoring else {},
+    }
+
+
 def _seed_index_job_batch(
     engine: GraphKnowledgeEngine,
     *,
@@ -441,12 +825,21 @@ def _seed_index_job_batch(
 def _profile_job_loop_scenario(
     root: Path,
     *,
+    backend_kind: str,
     mode: str,
     iterations: int,
     include_monitoring: bool,
     use_validation_cache: bool,
+    sa_engine: Any | None = None,
+    pg_schema: str | None = None,
 ) -> dict[str, Any]:
-    conversation_engine = _build_in_memory_engine(root / "conv", graph_type="conversation")
+    conversation_engine = _build_profile_engine(
+        root / "conv",
+        graph_type="conversation",
+        backend_kind=backend_kind,
+        sa_engine=sa_engine,
+        pg_schema=pg_schema,
+    )
     outer = TimingRecorder()
     inner = TimingRecorder()
     if mode in {"eager_reconcile", "apply_only"}:
@@ -570,12 +963,238 @@ def _profile_job_loop_scenario(
     }
 
 
+def _profile_job_worker_parallel_scenario(
+    root: Path,
+    *,
+    backend_kind: str,
+    iterations: int,
+    worker_count: int,
+    include_monitoring: bool,
+    use_validation_cache: bool,
+    sa_engine: Any | None = None,
+    pg_schema: str | None = None,
+) -> dict[str, Any]:
+    from ..workers.index_job_worker import IndexJobWorker
+
+    conversation_engine = _build_profile_engine(
+        root / "conv",
+        graph_type="conversation",
+        backend_kind=backend_kind,
+        sa_engine=sa_engine,
+        pg_schema=pg_schema,
+    )
+    conversation_engine._phase1_enable_validation_cache = bool(use_validation_cache)  # type: ignore[attr-defined]
+    outer = TimingRecorder()
+    inner = TimingRecorder()
+    conversation_engine.indexing._profile_hook = inner.add  # type: ignore[attr-defined]
+
+    monitor = SysMonitoringWallProfiler(
+        include_files=(
+            "kogwistar/engine_core/indexing.py",
+            "kogwistar/engine_core/in_memory_meta.py",
+            "kogwistar/engine_core/engine_sqlite.py",
+            "kogwistar/engine_core/in_memory_backend.py",
+            "kogwistar/workers/index_job_worker.py",
+        ),
+        include_names=(
+            "tick",
+            "reconcile_indexes",
+            "apply_index_job",
+            "claim_index_jobs",
+            "mark_index_job_done",
+            "bump_retry_and_requeue",
+            "get_index_applied_fingerprint",
+            "set_index_applied_fingerprint",
+            "node_get",
+            "edge_get",
+            "node_docs_get",
+            "node_refs_get",
+            "edge_refs_get",
+            "edge_endpoints_get",
+            "edge_endpoints_upsert",
+            "edge_endpoints_delete",
+            "fanout_endpoints_rows",
+            "model_validate_json",
+        ),
+    )
+
+    method_specs: list[tuple[Any, str, str]] = [
+        (IndexJobWorker, "tick", "worker.tick"),
+        (conversation_engine.meta_sqlite, "claim_index_jobs", "meta.claim_index_jobs"),
+        (conversation_engine.meta_sqlite, "mark_index_job_done", "meta.mark_index_job_done"),
+        (conversation_engine.meta_sqlite, "bump_retry_and_requeue", "meta.bump_retry_and_requeue"),
+        (conversation_engine.meta_sqlite, "get_index_applied_fingerprint", "meta.get_index_applied_fingerprint"),
+        (conversation_engine.meta_sqlite, "set_index_applied_fingerprint", "meta.set_index_applied_fingerprint"),
+        (conversation_engine.backend, "node_get", "backend.node_get"),
+        (conversation_engine.backend, "edge_get", "backend.edge_get"),
+        (conversation_engine.backend, "node_docs_get", "backend.node_docs_get"),
+        (conversation_engine.backend, "node_refs_get", "backend.node_refs_get"),
+        (conversation_engine.backend, "edge_refs_get", "backend.edge_refs_get"),
+        (conversation_engine.backend, "edge_endpoints_get", "backend.edge_endpoints_get"),
+        (conversation_engine.backend, "edge_endpoints_upsert", "backend.edge_endpoints_upsert"),
+        (conversation_engine.backend, "edge_endpoints_delete", "backend.edge_endpoints_delete"),
+        (conversation_engine.write, "fanout_endpoints_rows", "write.fanout_endpoints_rows"),
+        (conversation_engine.indexing, "apply_index_job", "index.apply_index_job"),
+    ]
+
+    namespace = conversation_engine.namespace
+    worker_errors: list[BaseException] = []
+    stop_event = threading.Event()
+    start_barrier = threading.Barrier(int(worker_count) + 1)
+    threads: list[threading.Thread] = []
+
+    def _worker_loop(worker: IndexJobWorker) -> None:
+        try:
+            start_barrier.wait(timeout=10.0)
+            while not stop_event.is_set():
+                metrics = worker.tick()
+                if metrics.claimed == 0:
+                    time.sleep(0.005)
+        except BaseException as exc:  # pragma: no cover - captured for diagnostics
+            worker_errors.append(exc)
+            stop_event.set()
+
+    for idx in range(int(worker_count)):
+        worker = IndexJobWorker(
+            engine=conversation_engine,
+            batch_size=1,
+            max_jobs_per_tick=1_000_000,
+            max_inflight=1,
+            lease_seconds=60,
+            namespace=namespace,
+        )
+        thread = threading.Thread(
+            target=_worker_loop,
+            args=(worker,),
+            name=f"perf-index-worker-{idx + 1}",
+            daemon=True,
+        )
+        threads.append(thread)
+
+    seed_total_s = 0.0
+    drain_total_s = 0.0
+
+    def _queue_counts() -> tuple[int, int]:
+        pending = len(
+            conversation_engine.meta_sqlite.list_index_jobs(
+                namespace=namespace, status="PENDING", limit=10_000
+            )
+        )
+        doing = len(
+            conversation_engine.meta_sqlite.list_index_jobs(
+                namespace=namespace, status="DOING", limit=10_000
+            )
+        )
+        return pending, doing
+
+    with ExitStack() as stack:
+        for obj, attr, label in method_specs:
+            stack.enter_context(outer.wrap_method(obj, attr, label=label))
+        if include_monitoring:
+            monitor.start()
+            stack.callback(monitor.stop)
+
+        for thread in threads:
+            thread.start()
+
+        if worker_count > 0:
+            start_barrier.wait(timeout=10.0)
+
+        for iteration in range(1, int(iterations) + 1):
+            batch_id = f"worker-{worker_count}-{iteration}-{uuid.uuid4().hex}"
+            seed_started = time.perf_counter()
+            _seed_index_job_batch(
+                conversation_engine, namespace=namespace, batch_id=batch_id
+            )
+            seed_total_s += time.perf_counter() - seed_started
+
+        drain_started = time.perf_counter()
+        stable_empty_rounds = 0
+        timeout_started = time.perf_counter()
+        while stable_empty_rounds < 2:
+            pending, doing = _queue_counts()
+            if pending == 0 and doing == 0:
+                stable_empty_rounds += 1
+            else:
+                stable_empty_rounds = 0
+            if time.perf_counter() - timeout_started > 120.0:
+                raise TimeoutError(
+                    f"worker drain did not converge for worker_count={worker_count}"
+                )
+            time.sleep(0.01)
+        drain_total_s = time.perf_counter() - drain_started
+        stop_event.set()
+
+    for thread in threads:
+        thread.join(timeout=10.0)
+        if thread.is_alive():
+            raise AssertionError(f"worker thread did not stop: {thread.name}")
+
+    if worker_errors:
+        raise AssertionError(f"worker errors: {worker_errors!r}")
+
+    wall_total_s = seed_total_s + drain_total_s
+    return {
+        "mode": "worker_parallel",
+        "worker_count": int(worker_count),
+        "iterations": int(iterations),
+        "use_validation_cache": bool(use_validation_cache),
+        "scenario_total_ms": round(drain_total_s * 1000.0, 3),
+        "seed_total_ms": round(seed_total_s * 1000.0, 3),
+        "wall_total_ms": round(wall_total_s * 1000.0, 3),
+        "method_timings": outer.to_dict(),
+        "internal_timings": inner.to_dict(),
+        "monitoring_timings": monitor.to_dict() if include_monitoring else {},
+    }
+
+
+def profile_in_memory_index_job_worker_parallel(
+    output_root: str | Path | None = None,
+    *,
+    backend_kind: str = "fake",
+    iterations: int = 1,
+    worker_count: int = 1,
+    include_monitoring: bool = False,
+    use_validation_cache: bool = True,
+    sa_engine: Any | None = None,
+    pg_schema: str | None = None,
+) -> dict[str, Any]:
+    root = (
+        Path(output_root)
+        if output_root is not None
+        else (Path.cwd() / ".tmp_perf_profiles" / f"kogwistar_worker_parallel_{uuid.uuid4().hex}")
+    )
+    root.mkdir(parents=True, exist_ok=True)
+
+    return {
+        "python": sys.version,
+        "sys_monitoring_available": bool(hasattr(sys, "monitoring")),
+        "output_root": str(root),
+        "iterations": int(iterations),
+        "scenarios": {
+            f"worker_{int(worker_count)}": _profile_job_worker_parallel_scenario(
+                root / f"worker_{int(worker_count)}",
+                backend_kind=backend_kind,
+                iterations=iterations,
+                worker_count=worker_count,
+                include_monitoring=include_monitoring,
+                use_validation_cache=use_validation_cache,
+                sa_engine=sa_engine,
+                pg_schema=pg_schema,
+            )
+        },
+    }
+
+
 def profile_in_memory_index_job_breakdown(
     output_root: str | Path | None = None,
     *,
+    backend_kind: str = "fake",
     iterations: int = 1,
     include_monitoring: bool = False,
     use_validation_cache: bool = True,
+    sa_engine: Any | None = None,
+    pg_schema: str | None = None,
 ) -> dict[str, Any]:
     root = (
         Path(output_root)
@@ -587,24 +1206,126 @@ def profile_in_memory_index_job_breakdown(
     scenarios = {
         "claim_only": _profile_job_loop_scenario(
             root / "claim_only",
+            backend_kind=backend_kind,
             mode="claim_only",
             iterations=iterations,
             include_monitoring=include_monitoring,
             use_validation_cache=use_validation_cache,
+            sa_engine=sa_engine,
+            pg_schema=pg_schema,
         ),
         "apply_only": _profile_job_loop_scenario(
             root / "apply_only",
+            backend_kind=backend_kind,
             mode="apply_only",
             iterations=iterations,
             include_monitoring=include_monitoring,
             use_validation_cache=use_validation_cache,
+            sa_engine=sa_engine,
+            pg_schema=pg_schema,
         ),
         "eager_reconcile": _profile_job_loop_scenario(
             root / "eager_reconcile",
+            backend_kind=backend_kind,
             mode="eager_reconcile",
             iterations=iterations,
             include_monitoring=include_monitoring,
             use_validation_cache=use_validation_cache,
+            sa_engine=sa_engine,
+            pg_schema=pg_schema,
+        ),
+    }
+    return {
+        "python": sys.version,
+        "sys_monitoring_available": bool(hasattr(sys, "monitoring")),
+        "output_root": str(root),
+        "iterations": int(iterations),
+        "scenarios": scenarios,
+    }
+
+
+def profile_simple_resolver_workflow_mode(
+    output_root: str | Path | None = None,
+    *,
+    backend_kind: str = "fake",
+    iterations: int = 3,
+    fast_trace_persistence: bool,
+    include_monitoring: bool = False,
+    use_validation_cache: bool = True,
+    sa_engine: Any | None = None,
+    pg_schema: str | None = None,
+) -> dict[str, Any]:
+    root = (
+        Path(output_root)
+        if output_root is not None
+        else (
+            Path.cwd()
+            / ".tmp_perf_profiles"
+            / f"kogwistar_simple_resolver_{uuid.uuid4().hex}"
+        )
+    )
+    root.mkdir(parents=True, exist_ok=True)
+
+    return {
+        "python": sys.version,
+        "sys_monitoring_available": bool(hasattr(sys, "monitoring")),
+        "output_root": str(root),
+        "iterations": int(iterations),
+        "scenarios": {
+            "optimized" if fast_trace_persistence else "baseline": _profile_simple_resolver_workflow_scenario(
+                root / ("optimized" if fast_trace_persistence else "baseline"),
+                backend_kind=backend_kind,
+                iterations=iterations,
+                fast_trace_persistence=fast_trace_persistence,
+                include_monitoring=include_monitoring,
+                use_validation_cache=use_validation_cache,
+                sa_engine=sa_engine,
+                pg_schema=pg_schema,
+            )
+        },
+    }
+
+
+def profile_simple_resolver_workflow(
+    output_root: str | Path | None = None,
+    *,
+    backend_kind: str = "fake",
+    iterations: int = 3,
+    include_monitoring: bool = False,
+    sa_engine: Any | None = None,
+    pg_schema: str | None = None,
+) -> dict[str, Any]:
+    root = (
+        Path(output_root)
+        if output_root is not None
+        else (
+            Path.cwd()
+            / ".tmp_perf_profiles"
+            / f"kogwistar_simple_resolver_compare_{uuid.uuid4().hex}"
+        )
+    )
+    root.mkdir(parents=True, exist_ok=True)
+
+    scenarios = {
+        "baseline": _profile_simple_resolver_workflow_scenario(
+            root / "baseline",
+            backend_kind=backend_kind,
+            iterations=iterations,
+            fast_trace_persistence=False,
+            include_monitoring=include_monitoring,
+            use_validation_cache=False,
+            sa_engine=sa_engine,
+            pg_schema=pg_schema,
+        ),
+        "optimized": _profile_simple_resolver_workflow_scenario(
+            root / "optimized",
+            backend_kind=backend_kind,
+            iterations=iterations,
+            fast_trace_persistence=True,
+            include_monitoring=include_monitoring,
+            use_validation_cache=True,
+            sa_engine=sa_engine,
+            pg_schema=pg_schema,
         ),
     }
     return {
@@ -619,10 +1340,13 @@ def profile_in_memory_index_job_breakdown(
 def profile_in_memory_checkpoint_write_mode(
     output_root: str | Path | None = None,
     *,
+    backend_kind: str = "fake",
     iterations: int = 5,
     fast_trace_persistence: bool,
     include_monitoring: bool = False,
     use_validation_cache: bool = True,
+    sa_engine: Any | None = None,
+    pg_schema: str | None = None,
 ) -> dict[str, Any]:
     root = (
         Path(output_root)
@@ -641,10 +1365,13 @@ def profile_in_memory_checkpoint_write_mode(
         "scenarios": {
             "fast_inline" if fast_trace_persistence else "eager_reconcile": _profile_one_scenario(
                 root / ("fast_inline" if fast_trace_persistence else "eager_reconcile"),
+                backend_kind=backend_kind,
                 iterations=iterations,
                 fast_trace_persistence=fast_trace_persistence,
                 include_monitoring=include_monitoring,
                 use_validation_cache=use_validation_cache,
+                sa_engine=sa_engine,
+                pg_schema=pg_schema,
             )
         },
     }
@@ -653,10 +1380,13 @@ def profile_in_memory_checkpoint_write_mode(
 def profile_in_memory_checkpoint_write(
     output_root: str | Path | None = None,
     *,
+    backend_kind: str = "fake",
     iterations: int = 5,
     compare_fast_path: bool = True,
     include_monitoring: bool = False,
     use_validation_cache: bool = True,
+    sa_engine: Any | None = None,
+    pg_schema: str | None = None,
 ) -> dict[str, Any]:
     root = (
         Path(output_root)
@@ -668,19 +1398,25 @@ def profile_in_memory_checkpoint_write(
     scenarios = {
         "eager_reconcile": _profile_one_scenario(
             root / "eager_reconcile",
+            backend_kind=backend_kind,
             iterations=iterations,
             fast_trace_persistence=False,
             include_monitoring=include_monitoring,
             use_validation_cache=use_validation_cache,
+            sa_engine=sa_engine,
+            pg_schema=pg_schema,
         )
     }
     if compare_fast_path:
         scenarios["fast_inline"] = _profile_one_scenario(
             root / "fast_inline",
+            backend_kind=backend_kind,
             iterations=iterations,
             fast_trace_persistence=True,
             include_monitoring=include_monitoring,
             use_validation_cache=use_validation_cache,
+            sa_engine=sa_engine,
+            pg_schema=pg_schema,
         )
     return {
         "python": sys.version,
