@@ -38,7 +38,7 @@ from tests._helpers.runners import run_v1_scenario, run_v2_scenario
 BaseM = TypeVar("BaseM", bound=BaseModel)
 
 BACKEND_PARAMS = [
-    pytest.param("fake", id="fake", marks=pytest.mark.ci),
+    pytest.param("fake", id="fake", marks=pytest.mark.ci_full),
     pytest.param("chroma", id="chroma", marks=pytest.mark.ci_full),
     pytest.param("pg", id="pg", marks=pytest.mark.ci_full),
 ]

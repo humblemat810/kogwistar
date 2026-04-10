@@ -242,7 +242,10 @@ def test_dump_paired_bundles_embeds_graph_data_and_links(
         seeded_kg_and_conversation
     )
     mod = importlib.import_module("kogwistar.utils.kge_debug_dump")
-    is_fake_backend = getattr(kg_engine, "backend_kind", None) == "fake"
+    is_fake_backend = getattr(kg_engine, "backend_kind", None) in {
+        "fake",
+        "memory",
+    }
 
 
     out_dir = tmp_path / "dump_run"

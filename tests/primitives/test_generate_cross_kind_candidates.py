@@ -344,7 +344,7 @@ def test_generate_cross_kind_candidates_disabled_scoped_and_limit(
 @pytest.mark.parametrize(
     "backend_kind",
     [
-        pytest.param("fake", marks=pytest.mark.ci),
+        pytest.param("fake", marks=pytest.mark.ci_full),
         pytest.param("chroma", marks=pytest.mark.ci_full),
     ],
     indirect=True,

@@ -60,7 +60,7 @@ def _assert_governance_demo_result(result: dict) -> None:
     assert result["details"]["safe"]["public_artifact_violations"] == []
 
 
-@pytest.mark.ci
+@pytest.mark.ci_full
 def test_build_artifact_governance_demo_prevents_source_map_leakage(tmp_path):
     result = run_build_artifact_governance_demo(
         data_dir=tmp_path / "artifact_governance_demo",

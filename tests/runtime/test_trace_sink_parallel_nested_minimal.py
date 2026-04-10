@@ -191,8 +191,20 @@ def _build_inner(workflow_engine: GraphKnowledgeEngine, workflow_id: str) -> Non
         pytest.param("pg", id="pg", marks=pytest.mark.ci_full),
     ],
 )
-@pytest.mark.parametrize("tags", [["a"], ["a", "b", "c", "d"]], ids=["a", "abcd"])
-@pytest.mark.parametrize("iterations", [1, 5])
+@pytest.mark.parametrize(
+    "tags",
+    [
+        pytest.param(["a"], id="a"),
+        pytest.param(["a", "b", "c", "d"], id="abcd", marks=pytest.mark.ci_full),
+    ],
+)
+@pytest.mark.parametrize(
+    "iterations",
+    [
+        pytest.param(1, id="1"),
+        pytest.param(5, id="5", marks=pytest.mark.ci_full),
+    ],
+)
 def test_trace_sink_parallel_and_nested_minimal_sync(
     backend_kind: str,
     tmp_path,

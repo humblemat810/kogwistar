@@ -59,6 +59,8 @@ __all__ = [
     "AdjudicateSubsystem",
     "IngestSubsystem",
     "EmbedSubsystem",
+    "InMemoryBackend",
+    "build_in_memory_backend",
 ]
 
 
@@ -67,6 +69,16 @@ def __getattr__(name: str):
         from kogwistar.engine_core.chroma_backend import ChromaBackend
 
         return ChromaBackend
+
+    if name in {"InMemoryBackend", "build_in_memory_backend"}:
+        from kogwistar.engine_core.in_memory_backend import (
+            InMemoryBackend,
+            build_in_memory_backend,
+        )
+        return {
+            "InMemoryBackend": InMemoryBackend,
+            "build_in_memory_backend": build_in_memory_backend,
+        }[name]
 
     if name in {"EnginePostgresConfig", "build_postgres_backend", "build_async_postgres_backend"}:
         try:

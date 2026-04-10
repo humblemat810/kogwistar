@@ -239,7 +239,7 @@ async def _async_runtime_engine_pair(backend_kind: str, request, tmp_path):
 @pytest.mark.parametrize(
     "backend_kind",
     [
-        pytest.param("fake", id="fake", marks=pytest.mark.ci),
+        pytest.param("fake", id="fake", marks=pytest.mark.ci_full),
         pytest.param("chroma", id="chroma", marks=pytest.mark.ci_full),
     ],
 )

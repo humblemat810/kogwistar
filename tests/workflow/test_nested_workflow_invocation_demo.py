@@ -44,7 +44,7 @@ def _assert_nested_workflow_demo_result(result: dict) -> None:
     ]
 
 
-@pytest.mark.ci
+@pytest.mark.ci_full
 def test_nested_workflow_invocation_demo_supports_predesigned_and_dynamic_children(
     tmp_path,
 ):
