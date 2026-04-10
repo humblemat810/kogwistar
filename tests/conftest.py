@@ -547,6 +547,7 @@ _LIGHTWEIGHT_CI_FILE_BLOCKERS = {
     "test_engine_sqlite_uow_join.py",
     "test_shortids_smoke.py",
     "test_conversation_flow_v2_param_e2e.py",
+    "test_conversation_flow.py",
     "test_verify_mentions.py",
 }
 _LIGHTWEIGHT_CI_IMPORT_BLOCKERS = (

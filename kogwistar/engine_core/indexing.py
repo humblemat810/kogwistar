@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
+import time
 from dataclasses import dataclass
 from typing import Any, TYPE_CHECKING
 
@@ -80,6 +81,11 @@ class IndexingSubsystem:
         )
         return str(job_id2) if job_id2 else job_id
 
+    def _profile_step(self, label: str, started_s: float) -> None:
+        hook = getattr(self, "_profile_hook", None)
+        if callable(hook):
+            hook(str(label), time.perf_counter() - float(started_s))
+
     def enqueue_index_jobs_for_node(self, node_id: str, *, op: str) -> None:
         for idx in ("node_docs", "node_refs"):
             self.enqueue_index_job(
@@ -98,6 +104,7 @@ class IndexingSubsystem:
         max_jobs: int = 100,
         lease_seconds: int = 60,
         namespace: str | None = None,
+        use_validation_cache: bool | None = None,
     ) -> int:
         """Claim runnable index jobs, apply them, and record terminal state.
 
@@ -114,9 +121,17 @@ class IndexingSubsystem:
             return 0
 
         ns = self.engine.namespace if namespace is None else namespace
+        claim_started = time.perf_counter()
         jobs = claim(limit=max_jobs, lease_seconds=lease_seconds, namespace=ns)
+        self._profile_step("reconcile.claim_index_jobs", claim_started)
 
         applied = 0
+        effective_cache = (
+            getattr(self.engine, "_phase1_enable_validation_cache", True)
+            if use_validation_cache is None
+            else bool(use_validation_cache)
+        )
+        entity_cache: dict[tuple[str, str, str], Any] | None = {} if effective_cache else None
         for job in jobs:
             # EngineSQLite returns IndexJobRow; PG meta might return dict.
             job_id = getattr(job, "job_id", None) or (
@@ -148,6 +163,7 @@ class IndexingSubsystem:
             try_rc = int(retry_count or 0)
             try_mr = int(max_retries or 10)
 
+            job_started = time.perf_counter()
             try:
                 self.apply_index_job(
                     job_id=str(job_id),
@@ -156,6 +172,7 @@ class IndexingSubsystem:
                     index_kind=str(index_kind),
                     op=str(op),
                     namespace=ns,
+                    validated_entity_cache=entity_cache,
                 )
             except Exception as e:
                 err = f"{type(e).__name__}: {e}"
@@ -168,14 +185,22 @@ class IndexingSubsystem:
                     next_retry = try_rc + 1
                     if bump is not None and next_retry < try_mr:
                         delay = min(300, 2 ** min(next_retry - 1, 8))
+                        bump_started = time.perf_counter()
                         bump(str(job_id), err, next_run_at_seconds=int(delay))
+                        self._profile_step("reconcile.bump_retry_and_requeue", bump_started)
                     elif mark_failed is not None:
+                        fail_started = time.perf_counter()
                         mark_failed(str(job_id), err, final=True)
+                        self._profile_step("reconcile.mark_index_job_failed", fail_started)
+                self._profile_step("reconcile.job_total", job_started)
                 continue
 
             mark_done = getattr(self.engine.meta_sqlite, "mark_index_job_done", None)
             if mark_done is not None and job_id:
+                done_started = time.perf_counter()
                 mark_done(str(job_id))
+                self._profile_step("reconcile.mark_index_job_done", done_started)
+            self._profile_step("reconcile.job_total", job_started)
             applied += 1
 
         return applied
@@ -210,6 +235,7 @@ class IndexingSubsystem:
         index_kind: str,
         op: str,
         namespace: str,
+        validated_entity_cache: dict[tuple[str, str, str], Any] | None = None,
     ) -> None:
         """
         Bring one derived index projection into sync with the authoritative entity.
@@ -250,12 +276,41 @@ class IndexingSubsystem:
         def _drop_none_values(row: dict[str, Any]) -> dict[str, Any]:
             return {k: v for k, v in row.items() if v is not None}
 
+        def _emit(label: str, started_s: float) -> None:
+            self._profile_step(label, started_s)
+
+        def _validated_entity(
+            *,
+            raw_json: str,
+            cache_key: tuple[str, str, str],
+            parser: Any,
+            timing_label: str,
+        ) -> Any:
+            cache = validated_entity_cache
+            if isinstance(cache, dict):
+                cached = cache.get(cache_key)
+                if cached is not None:
+                    if hasattr(cached, "model_copy"):
+                        return cached.model_copy(deep=True)
+                    return cached
+
+            started = time.perf_counter()
+            obj = parser(raw_json)
+            _emit(timing_label, started)
+            if isinstance(cache, dict):
+                cache[cache_key] = obj
+            if hasattr(obj, "model_copy"):
+                return obj.model_copy(deep=True)
+            return obj
+
         def _actual_payload() -> list[Any]:
             if entity_kind == "node":
                 if index_kind == "node_docs":
+                    started = time.perf_counter()
                     got = self.engine.backend.node_docs_get(
                         where={"node_id": entity_id}, include=["metadatas"]
                     )
+                    _emit("apply.node_docs.actual_payload_get", started)
                     doc_ids = [
                         str(md.get("doc_id"))
                         for md in (got.get("metadatas") or [])
@@ -263,9 +318,11 @@ class IndexingSubsystem:
                     ]
                     return sorted(doc_ids)
                 if index_kind == "node_refs":
+                    started = time.perf_counter()
                     got = self.engine.backend.node_refs_get(
                         where={"node_id": entity_id}, include=["metadatas"]
                     )
+                    _emit("apply.node_refs.actual_payload_get", started)
                     payload = []
                     for md in got.get("metadatas") or []:
                         meta = _as_dict(md)
@@ -284,9 +341,11 @@ class IndexingSubsystem:
                     return _stable_sort_dicts(payload)
             elif entity_kind == "edge":
                 if index_kind == "edge_refs":
+                    started = time.perf_counter()
                     got = self.engine.backend.edge_refs_get(
                         where={"edge_id": entity_id}, include=["metadatas"]
                     )
+                    _emit("apply.edge_refs.actual_payload_get", started)
                     payload = []
                     for md in got.get("metadatas") or []:
                         meta = _as_dict(md)
@@ -304,9 +363,11 @@ class IndexingSubsystem:
                         )
                     return _stable_sort_dicts(payload)
                 if index_kind == "edge_endpoints":
+                    started = time.perf_counter()
                     got = self.engine.backend.edge_endpoints_get(
                         where={"edge_id": entity_id}, include=["metadatas"]
                     )
+                    _emit("apply.edge_endpoints.actual_payload_get", started)
                     payload = []
                     for md in got.get("metadatas") or []:
                         meta = _as_dict(md)
@@ -330,6 +391,7 @@ class IndexingSubsystem:
         def _actual_fp() -> str:
             return _fp(_actual_payload())
 
+        started = time.perf_counter()
         applied_fp = (
             self.engine.meta_sqlite.get_index_applied_fingerprint(
                 namespace=namespace, coalesce_key=coalesce_key
@@ -337,92 +399,135 @@ class IndexingSubsystem:
             if callable(get_applied)
             else None
         )
+        _emit("apply.applied_fp_get", started)
 
         if entity_kind == "node":
             if index_kind == "node_docs":
                 if op == "DELETE":
+                    started = time.perf_counter()
                     self.engine.backend.node_docs_delete(where={"node_id": entity_id})
+                    _emit("apply.node_docs.delete", started)
                     if callable(set_applied):
+                        started = time.perf_counter()
                         set_applied(
                             namespace=namespace,
                             coalesce_key=coalesce_key,
                             applied_fingerprint=None,
                             last_job_id=job_id,
                         )
+                        _emit("apply.applied_fp_set", started)
                     return
 
+                started = time.perf_counter()
                 got = self.engine.backend.node_get(
                     ids=[entity_id], include=["documents", "metadatas"]
                 )
+                _emit("apply.node_docs.base_get", started)
                 docs = got.get("documents") or []
                 if not docs or not docs[0]:
                     raise Exception("document not found")
-                n = Node.model_validate_json(docs[0])
+                n = _validated_entity(
+                    raw_json=docs[0],
+                    cache_key=("node", entity_id, docs[0]),
+                    parser=Node.model_validate_json,
+                    timing_label="apply.node_docs.model_validate",
+                )
 
                 meta0 = (got.get("metadatas") or [None])[0] or {}
+                started = time.perf_counter()
                 if _is_tombstoned(meta0):
+                    _emit("apply.node_docs.tombstone_check", started)
                     self.engine.backend.node_docs_delete(where={"node_id": entity_id})
                     if callable(set_applied):
+                        started = time.perf_counter()
                         set_applied(
                             namespace=namespace,
                             coalesce_key=coalesce_key,
                             applied_fingerprint=None,
                             last_job_id=job_id,
                         )
+                        _emit("apply.applied_fp_set", started)
                     return
+                _emit("apply.node_docs.tombstone_check", started)
 
+                started = time.perf_counter()
                 desired_fp = _fp(_extract_doc_ids_from_refs(n.mentions))
+                _emit("apply.node_docs.desired_fp", started)
                 if (
                     op != "DELETE"
                     and applied_fp is not None
                     and applied_fp == desired_fp
                 ):
+                    started = time.perf_counter()
                     if _actual_fp() == desired_fp:
+                        _emit("apply.node_docs.actual_fp_check", started)
                         return
+                    _emit("apply.node_docs.actual_fp_check", started)
 
+                started = time.perf_counter()
                 self.engine.write.index_node_docs(n)
+                _emit("apply.node_docs.write", started)
                 if callable(set_applied):
+                    started = time.perf_counter()
                     set_applied(
                         namespace=namespace,
                         coalesce_key=coalesce_key,
                         applied_fingerprint=desired_fp,
                         last_job_id=job_id,
                     )
+                    _emit("apply.applied_fp_set", started)
                 return
 
             if index_kind == "node_refs":
                 if op == "DELETE":
+                    started = time.perf_counter()
                     self.engine.write.delete_node_ref_rows(entity_id)
+                    _emit("apply.node_refs.delete", started)
                     if callable(set_applied):
+                        started = time.perf_counter()
                         set_applied(
                             namespace=namespace,
                             coalesce_key=coalesce_key,
                             applied_fingerprint=None,
                             last_job_id=job_id,
                         )
+                        _emit("apply.applied_fp_set", started)
                     return
 
+                started = time.perf_counter()
                 got = self.engine.backend.node_get(
                     ids=[entity_id], include=["documents", "metadatas"]
                 )
+                _emit("apply.node_refs.base_get", started)
                 docs = got.get("documents") or []
                 if not docs or not docs[0]:
                     raise Exception("document not found")
-                n = Node.model_validate_json(docs[0])
+                n = _validated_entity(
+                    raw_json=docs[0],
+                    cache_key=("node", entity_id, docs[0]),
+                    parser=Node.model_validate_json,
+                    timing_label="apply.node_refs.model_validate",
+                )
 
                 meta0 = (got.get("metadatas") or [None])[0] or {}
+                started = time.perf_counter()
                 if _is_tombstoned(meta0):
+                    _emit("apply.node_refs.tombstone_check", started)
                     self.engine.write.delete_node_ref_rows(entity_id)
                     if callable(set_applied):
+                        started = time.perf_counter()
                         set_applied(
                             namespace=namespace,
                             coalesce_key=coalesce_key,
                             applied_fingerprint=None,
                             last_job_id=job_id,
                         )
+                        _emit("apply.applied_fp_set", started)
                     return
+                _emit("apply.node_refs.tombstone_check", started)
 
                 spans_payload: list[dict[str, Any]] = []
+                started = time.perf_counter()
                 for g in n.mentions or []:
                     for sp in getattr(g, "spans", []) or []:
                         ver = getattr(sp, "verification", None)
@@ -443,22 +548,30 @@ class IndexingSubsystem:
 
                 spans_payload = _stable_sort_dicts(spans_payload)
                 desired_fp = _fp(spans_payload)
+                _emit("apply.node_refs.desired_fp", started)
                 if (
                     op != "DELETE"
                     and applied_fp is not None
                     and applied_fp == desired_fp
                 ):
+                    started = time.perf_counter()
                     if _actual_fp() == desired_fp:
+                        _emit("apply.node_refs.actual_fp_check", started)
                         return
+                    _emit("apply.node_refs.actual_fp_check", started)
 
+                started = time.perf_counter()
                 self.engine.write.index_node_refs(n)
+                _emit("apply.node_refs.write", started)
                 if callable(set_applied):
+                    started = time.perf_counter()
                     set_applied(
                         namespace=namespace,
                         coalesce_key=coalesce_key,
                         applied_fingerprint=desired_fp,
                         last_job_id=job_id,
                     )
+                    _emit("apply.applied_fp_set", started)
                 return
 
             return
@@ -466,37 +579,54 @@ class IndexingSubsystem:
         if entity_kind == "edge":
             if index_kind == "edge_refs":
                 if op == "DELETE":
+                    started = time.perf_counter()
                     self.engine.write.delete_edge_ref_rows(entity_id)
+                    _emit("apply.edge_refs.delete", started)
                     if callable(set_applied):
+                        started = time.perf_counter()
                         set_applied(
                             namespace=namespace,
                             coalesce_key=coalesce_key,
                             applied_fingerprint=None,
                             last_job_id=job_id,
                         )
+                        _emit("apply.applied_fp_set", started)
                     return
 
+                started = time.perf_counter()
                 got = self.engine.backend.edge_get(
                     ids=[entity_id], include=["documents", "metadatas"]
                 )
+                _emit("apply.edge_refs.base_get", started)
                 docs = got.get("documents") or []
                 if not docs or not docs[0]:
                     raise Exception("document not found")
-                e = Edge.model_validate_json(docs[0])
+                e = _validated_entity(
+                    raw_json=docs[0],
+                    cache_key=("edge", entity_id, docs[0]),
+                    parser=Edge.model_validate_json,
+                    timing_label="apply.edge_refs.model_validate",
+                )
 
                 meta0 = (got.get("metadatas") or [None])[0] or {}
+                started = time.perf_counter()
                 if _is_tombstoned(meta0):
+                    _emit("apply.edge_refs.tombstone_check", started)
                     self.engine.write.delete_edge_ref_rows(entity_id)
                     if callable(set_applied):
+                        started = time.perf_counter()
                         set_applied(
                             namespace=namespace,
                             coalesce_key=coalesce_key,
                             applied_fingerprint=None,
                             last_job_id=job_id,
                         )
+                        _emit("apply.applied_fp_set", started)
                     return
+                _emit("apply.edge_refs.tombstone_check", started)
 
                 spans_payload: list[dict[str, Any]] = []
+                started = time.perf_counter()
                 for g in e.mentions or []:
                     for sp in getattr(g, "spans", []) or []:
                         ver = getattr(sp, "verification", None)
@@ -517,97 +647,136 @@ class IndexingSubsystem:
 
                 spans_payload = _stable_sort_dicts(spans_payload)
                 desired_fp = _fp(spans_payload)
+                _emit("apply.edge_refs.desired_fp", started)
                 if (
                     op != "DELETE"
                     and applied_fp is not None
                     and applied_fp == desired_fp
                 ):
+                    started = time.perf_counter()
                     if _actual_fp() == desired_fp:
+                        _emit("apply.edge_refs.actual_fp_check", started)
                         return
+                    _emit("apply.edge_refs.actual_fp_check", started)
 
+                started = time.perf_counter()
                 self.engine.write.index_edge_refs(e)
+                _emit("apply.edge_refs.write", started)
                 if callable(set_applied):
+                    started = time.perf_counter()
                     set_applied(
                         namespace=namespace,
                         coalesce_key=coalesce_key,
                         applied_fingerprint=desired_fp,
                         last_job_id=job_id,
                     )
+                    _emit("apply.applied_fp_set", started)
                 return
 
             if index_kind == "edge_endpoints":
                 if op == "DELETE":
+                    started = time.perf_counter()
                     got = self.engine.backend.edge_endpoints_get(
                         where={"edge_id": entity_id}, include=[]
                     )
+                    _emit("apply.edge_endpoints.delete_lookup", started)
                     ids = got.get("ids") or []
                     if ids:
+                        started = time.perf_counter()
                         self.engine.backend.edge_endpoints_delete(ids=ids)
+                        _emit("apply.edge_endpoints.delete", started)
                     if callable(set_applied):
+                        started = time.perf_counter()
                         set_applied(
                             namespace=namespace,
                             coalesce_key=coalesce_key,
                             applied_fingerprint=None,
                             last_job_id=job_id,
                         )
+                        _emit("apply.applied_fp_set", started)
                     return
 
+                started = time.perf_counter()
                 got = self.engine.backend.edge_get(
                     ids=[entity_id], include=["documents", "metadatas"]
                 )
+                _emit("apply.edge_endpoints.base_get", started)
                 docs = got.get("documents") or []
                 if not docs or not docs[0]:
                     raise Exception("document not found")
-                e = Edge.model_validate_json(docs[0])
+                e = _validated_entity(
+                    raw_json=docs[0],
+                    cache_key=("edge", entity_id, docs[0]),
+                    parser=Edge.model_validate_json,
+                    timing_label="apply.edge_endpoints.model_validate",
+                )
 
                 meta = (got.get("metadatas") or [None])[0] or {}
                 doc_id = meta.get("doc_id") if isinstance(meta, dict) else None
 
                 meta0 = (got.get("metadatas") or [None])[0] or {}
+                started = time.perf_counter()
                 if _is_tombstoned(meta0):
+                    _emit("apply.edge_endpoints.tombstone_check", started)
                     got2 = self.engine.backend.edge_endpoints_get(
                         where={"edge_id": entity_id}, include=[]
                     )
+                    delete_lookup_started = time.perf_counter()
                     ids2 = got2.get("ids") or []
                     if ids2:
                         self.engine.backend.edge_endpoints_delete(ids=ids2)
+                    _emit("apply.edge_endpoints.delete_existing", delete_lookup_started)
                     if callable(set_applied):
+                        started = time.perf_counter()
                         set_applied(
                             namespace=namespace,
                             coalesce_key=coalesce_key,
                             applied_fingerprint=None,
                             last_job_id=job_id,
                         )
+                        _emit("apply.applied_fp_set", started)
                     return
+                _emit("apply.edge_endpoints.tombstone_check", started)
 
+                started = time.perf_counter()
                 rows = self.engine.write.fanout_endpoints_rows(e, doc_id)
+                _emit("apply.edge_endpoints.fanout_rows", started)
                 if not rows:
                     raise Exception("endpoints not found")
                 rows = _stable_sort_dicts(rows)
                 desired_fp = _fp(rows)
+                _emit("apply.edge_endpoints.desired_fp", started)
 
                 if (
                     op != "DELETE"
                     and applied_fp is not None
                     and applied_fp == desired_fp
                 ):
+                    started = time.perf_counter()
                     if _actual_fp() == desired_fp:
+                        _emit("apply.edge_endpoints.actual_fp_check", started)
                         return
+                    _emit("apply.edge_endpoints.actual_fp_check", started)
 
+                started = time.perf_counter()
                 existing = self.engine.backend.edge_endpoints_get(
                     where={"edge_id": entity_id}, include=["metadatas"]
                 )
+                _emit("apply.edge_endpoints.existing_get", started)
                 existing_ids = {
                     str(i) for i in (existing.get("ids") or []) if i is not None
                 }
                 desired_ids = {str(r["id"]) for r in rows}
                 stale_ids = sorted(existing_ids - desired_ids)
                 if stale_ids:
+                    started = time.perf_counter()
                     self.engine.backend.edge_endpoints_delete(ids=stale_ids)
+                    _emit("apply.edge_endpoints.delete_stale", started)
 
                 ep_ids = [r["id"] for r in rows]
                 ep_docs = [json.dumps(r) for r in rows]
                 ep_metas = rows
+                started = time.perf_counter()
                 self.engine.backend.edge_endpoints_upsert(
                     ids=ep_ids,
                     documents=ep_docs,
@@ -617,11 +786,14 @@ class IndexingSubsystem:
                         for d in ep_docs
                     ],
                 )
+                _emit("apply.edge_endpoints.upsert", started)
                 if callable(set_applied):
+                    started = time.perf_counter()
                     set_applied(
                         namespace=namespace,
                         coalesce_key=coalesce_key,
                         applied_fingerprint=desired_fp,
                         last_job_id=job_id,
                     )
+                    _emit("apply.applied_fp_set", started)
                 return

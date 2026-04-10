@@ -60,6 +60,7 @@ class FakeIndexing:
         index_kind: str,
         op: str,
         namespace: str,
+        validated_entity_cache=None,
     ):
         # record that we processed this job
         self.applied.append(job_id)

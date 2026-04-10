@@ -741,9 +741,13 @@ class GraphKnowledgeEngine:
         max_jobs: int = 100,
         lease_seconds: int = 60,
         namespace: str | None = None,
+        use_validation_cache: bool | None = None,
     ) -> int:
         return self.indexing.reconcile_indexes(
-            max_jobs=max_jobs, lease_seconds=lease_seconds, namespace=namespace
+            max_jobs=max_jobs,
+            lease_seconds=lease_seconds,
+            namespace=namespace,
+            use_validation_cache=use_validation_cache,
         )
 
     def make_index_job_worker(
@@ -1100,9 +1104,10 @@ class GraphKnowledgeEngine:
             if backend is not None:
                 raise ValueError("Backend factory and backend can only either be specified")
             self.backend = backend_factory(self)
-            self.meta_sqlite = EngineSQLite(
-                pathlib.Path(persist_directory or "./chroma_db"), "meta.sqlite"
-            )
+            if not hasattr(self, "meta_sqlite"):
+                self.meta_sqlite = EngineSQLite(
+                    pathlib.Path(persist_directory or "./chroma_db"), "meta.sqlite"
+                )
             self.meta_sqlite.ensure_initialized()
         elif backend is None or (type(backend) is str and backend == "chroma"):
             # 2) Chroma client + collections; inject embedder on vectorized collections
@@ -1216,6 +1221,7 @@ class GraphKnowledgeEngine:
         # are converged via a durable outbox-style index job queue (EngineSQLite or EnginePostgresMetaStore).
         # Fast path may attempt to apply immediately; correctness relies on reconciliation.
         self._phase1_enable_index_jobs: bool = True
+        self._phase1_enable_validation_cache: bool = True
         self.embeddings: Optional[Callable[[str], Optional[List[float]]]] = (
             build_azure_embedding_fn_from_env()
         )

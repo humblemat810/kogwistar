@@ -154,6 +154,70 @@ def _workflow_edge_by_id(conv_engine: GraphKnowledgeEngine, edge_id: str):
     return edges[0]
 
 
+def test_runtime_trace_writes_disable_eager_index_reconcile_for_in_memory_backend(
+    tmp_path, monkeypatch
+):
+    wf_engine = _make_engine(tmp_path / "wf_trace_fast", graph_type="workflow", backend_kind="fake")
+    conv_engine = _make_engine(
+        tmp_path / "conv_trace_fast", graph_type="conversation", backend_kind="fake"
+    )
+    runtime = WorkflowRuntime(
+        workflow_engine=wf_engine,
+        conversation_engine=conv_engine,
+        step_resolver=MappingStepResolver(),
+        predicate_registry={},
+        checkpoint_every_n_steps=1,
+    )
+
+    assert getattr(conv_engine, "backend_kind", None) == "memory"
+    assert runtime.fast_trace_persistence is True
+    assert conv_engine._phase1_enable_index_jobs is True
+
+    seen_node_flags: list[bool] = []
+    seen_edge_flags: list[bool] = []
+
+    def _capture_node(_node, *args, **kwargs):
+        seen_node_flags.append(bool(conv_engine._phase1_enable_index_jobs))
+        return None
+
+    def _capture_edge(_edge, *args, **kwargs):
+        seen_edge_flags.append(bool(conv_engine._phase1_enable_index_jobs))
+        return None
+
+    monkeypatch.setattr(conv_engine.write, "add_node", _capture_node)
+    monkeypatch.setattr(conv_engine.write, "add_edge", _capture_edge)
+
+    run_id = f"run_{uuid.uuid4().hex}"
+    run_node = runtime._persist_workflow_run("conv-1", "wf-1", run_id, "turn-1", "running")
+    runtime._persist_step_exec(
+        conversation_id="conv-1",
+        workflow_id="wf-1",
+        run_id=run_id,
+        step_seq=1,
+        workflow_node_id="start",
+        op="start_op",
+        status="succeeded",
+        duration_ms=1,
+        result=RunSuccess(conversation_node_id=None, state_update=[]),
+        state={"conversation_id": "conv-1", "user_id": "user-1"},  # type: ignore[arg-type]
+        last_exec_node=run_node,
+    )
+    runtime._persist_checkpoint(
+        conversation_id="conv-1",
+        workflow_id="wf-1",
+        run_id=run_id,
+        step_seq=1,
+        state={"conversation_id": "conv-1", "user_id": "user-1"},  # type: ignore[arg-type]
+        last_exec_node=run_node,
+    )
+
+    assert seen_node_flags
+    assert seen_edge_flags
+    assert set(seen_node_flags) == {False}
+    assert set(seen_edge_flags) == {False}
+    assert conv_engine._phase1_enable_index_jobs is True
+
+
 def _runtime_entity_event_seq(engine: GraphKnowledgeEngine) -> int:
     namespace = str(getattr(engine, "namespace", "default") or "default")
     getter = getattr(engine.meta_sqlite, "get_latest_entity_event_seq", None)
