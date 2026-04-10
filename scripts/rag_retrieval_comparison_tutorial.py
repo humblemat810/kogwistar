@@ -259,15 +259,138 @@ class FakeChatMessage:
 
 
 @dataclass(frozen=True)
-class FakeChatCompletion:
+class FakeChatChoiceMessage:
+    """Assistant message returned by the fake chat completion."""
+
+    role: str
+    content: str
+    parsed: VectorlessStructuralGraphNavigationResponse | None = None
+
+
+@dataclass(frozen=True)
+class FakeChatChoice:
+    """Single completion choice, matching the shape of real chat APIs."""
+
+    index: int
+    message: FakeChatChoiceMessage
+    finish_reason: str = "stop"
+
+
+@dataclass(frozen=True)
+class FakeChatCompletionResponse:
     """Deterministic chat-completion-shaped response for the section planner."""
 
     model: str
     messages: list[FakeChatMessage]
-    content: str
-    structured_output: VectorlessStructuralGraphNavigationResponse
+    choices: list[FakeChatChoice]
     temperature: float = 0.0
-    finish_reason: str = "stop"
+    usage: dict[str, int] | None = None
+
+
+class FakeSectionPlannerClient:
+    """Minimal chat-completions style client for the fake navigation planner."""
+
+    def __init__(self, *, model: str = "fake-section-planner-v1") -> None:
+        self.model = model
+        self.chat = self._Chat(self)
+
+    class _Chat:
+        def __init__(self, outer: "FakeSectionPlannerClient") -> None:
+            self.completions = outer._Completions(outer)
+
+    class _Completions:
+        def __init__(self, outer: "FakeSectionPlannerClient") -> None:
+            self._outer = outer
+
+        def create(
+            self,
+            *,
+            model: str,
+            messages: list[FakeChatMessage],
+            temperature: float = 0.0,
+            response_format: Any | None = None,
+        ) -> FakeChatCompletionResponse:
+            _ = response_format
+            parsed = self._outer._plan(messages=messages)
+            assistant_message = FakeChatChoiceMessage(
+                role="assistant",
+                content=self._outer._format_completion_text(parsed),
+                parsed=parsed,
+            )
+            return FakeChatCompletionResponse(
+                model=model,
+                messages=messages,
+                choices=[FakeChatChoice(index=0, message=assistant_message)],
+                temperature=temperature,
+                usage={
+                    "prompt_tokens": sum(len(tokenize(message.content)) for message in messages),
+                    "completion_tokens": len(tokenize(assistant_message.content)),
+                    "total_tokens": sum(len(tokenize(message.content)) for message in messages)
+                    + len(tokenize(assistant_message.content)),
+                },
+            )
+
+    @staticmethod
+    def _format_completion_text(plan: VectorlessStructuralGraphNavigationResponse) -> str:
+        return (
+            "{"
+            f"\"root_heading\": \"{plan.root_heading}\", "
+            f"\"target_section\": \"{plan.target_section}\", "
+            f"\"reason\": \"{plan.navigation_reason}\", "
+            f"\"confidence\": {plan.confidence}"
+            "}"
+        )
+
+    def _plan(self, *, messages: list[FakeChatMessage]) -> VectorlessStructuralGraphNavigationResponse:
+        user_message = next((message.content for message in reversed(messages) if message.role == "user"), "")
+        lines = [line.strip() for line in user_message.splitlines() if line.strip()]
+        query_line = next((line for line in lines if line.startswith("Question:")), "Question:")
+        query = query_line.split("Question:", 1)[1].strip()
+        doc_id_line = next((line for line in lines if line.startswith("Document ID:")), "Document ID:")
+        doc_id = doc_id_line.split("Document ID:", 1)[1].strip() or "unknown"
+        sections = [line[2:].split(":", 1)[0].strip() for line in lines if line.startswith("- ")]
+        target_heading, reason = self._target_heading(query)
+        chosen = target_heading if target_heading in sections else (sections[0] if sections else "Overview")
+        score = self._score_navigation(query, chosen, target_heading)
+        return VectorlessStructuralGraphNavigationResponse(
+            doc_id=doc_id,
+            root_heading=sections[0] if sections else "Overview",
+            selected_path=[sections[0] if sections else "Overview", chosen],
+            visited_sections=[sections[0] if sections else "Overview", chosen],
+            target_section=chosen,
+            navigation_reason=reason,
+            target_entities=[],
+            confidence=score,
+        )
+
+    @staticmethod
+    def _target_heading(query: str) -> tuple[str, str]:
+        q = normalize_text(query)
+        tokens = set(tokenize(query))
+        if "tell me about" in q or "what is" in q or "what about" in q:
+            return "Overview", "The query asks for a broad summary, so the fake planner stays near the root and overview section."
+        if tokens.intersection({"lead", "leads", "owner", "owners", "chief", "head", "manages"}):
+            return "Ownership", "The query asks who is responsible, so the fake planner routes toward ownership."
+        if tokens.intersection({"depends", "uses", "requires", "hosts", "stack", "pipeline"}):
+            return "Dependencies", "The query asks about dependencies, so the fake planner routes toward dependencies."
+        if tokens.intersection({"safety", "audit", "review", "blockers", "ambiguous", "ambiguity", "conflict"}):
+            return "Risks & Ambiguity", "The query mentions risk, audit, or ambiguity, so the fake planner routes toward the risk section."
+        if tokens.intersection({"graph", "keyword", "lookup", "index", "prefer", "prefers"}):
+            return "Cross-links", "The query references relationships or preferences, so the fake planner routes toward cross-links."
+        return "Overview", "No strong structural hint was found, so the fake planner defaults to the overview section."
+
+    @staticmethod
+    def _score_navigation(query: str, chosen_heading: str, target_heading: str) -> float:
+        query_tokens = set(tokenize(query))
+        heading_tokens = set(tokenize(chosen_heading))
+        score = 0.5
+        if heading_tokens.intersection(query_tokens):
+            score += 2.0
+        if chosen_heading == target_heading:
+            score += 1.5
+        if chosen_heading == target_heading:
+            score += 0.75
+        return round(min(score / 5.0, 0.99), 3)
 
 
 # ============================================================================
@@ -549,6 +672,7 @@ class RetrievalTutorial:
         self.docs = docs
         self.docs_by_id = {doc["id"]: doc for doc in docs}
         self.embedder = SemanticLexicalEmbeddingFunction(dim=embedding_dim)
+        self.section_planner = FakeSectionPlannerClient()
         self.vector_chunks: list[ChunkRecord] = []
         self.doc_token_counts: dict[str, Counter[str]] = {}
         self.doc_lengths: dict[str, int] = {}
@@ -791,6 +915,7 @@ class RetrievalTutorial:
             FakeChatMessage(
                 role="user",
                 content=(
+                    f"Document ID: {doc['id']}\n"
                     f"Document: {doc['title']}\n"
                     f"Question: {query}\n"
                     "Available sections:\n"
@@ -800,84 +925,8 @@ class RetrievalTutorial:
             ),
         ]
 
-    def _fake_llm_section_response(
-        self,
-        *,
-        messages: list[FakeChatMessage],
-        query: str,
-        doc: dict[str, Any],
-        root: SectionRecord,
-        candidate_sections: list[SectionRecord],
-        target_heading: str,
-        reason: str,
-    ) -> FakeChatCompletion:
-        """Cell: simulate a chat-completion round trip without a real model."""
-        chosen_section = next((section for section in candidate_sections if section.heading == target_heading), None)
-        if chosen_section is None:
-            chosen_section = candidate_sections[0] if candidate_sections else root
-        query_tokens = set(tokenize(query))
-        heading_tokens = set(tokenize(chosen_section.heading))
-        body_tokens = set(tokenize(chosen_section.text))
-        score = 0.5
-        if heading_tokens.intersection(query_tokens):
-            score += 2.0
-        score += 0.4 * len(body_tokens.intersection(query_tokens))
-        if chosen_section.heading == target_heading:
-            score += 1.5
-        if target_heading == "Overview" and chosen_section.heading == "Overview":
-            score += 0.75
-        if target_heading == "Ownership" and chosen_section.heading == "Ownership":
-            score += 0.75
-        if target_heading == "Dependencies" and chosen_section.heading == "Dependencies":
-            score += 0.75
-        if target_heading == "Risks & Ambiguity" and chosen_section.heading == "Risks & Ambiguity":
-            score += 0.75
-        if target_heading == "Cross-links" and chosen_section.heading == "Cross-links":
-            score += 0.75
-        nav = VectorlessStructuralGraphNavigationResponse(
-            doc_id=doc["id"],
-            root_heading=root.heading,
-            selected_path=[root.heading, chosen_section.heading],
-            visited_sections=[root.heading, chosen_section.heading],
-            target_section=chosen_section.heading,
-            navigation_reason=reason,
-            target_entities=self.doc_entity_map.get(doc["id"], [])[:4],
-            confidence=round(min(score / 5.0, 0.99), 3),
-        )
-        return FakeChatCompletion(
-            model="fake-section-planner-v1",
-            messages=messages,
-            content=(
-                "{"
-                f"\"root_heading\": \"{nav.root_heading}\", "
-                f"\"target_section\": \"{nav.target_section}\", "
-                f"\"reason\": \"{nav.navigation_reason}\", "
-                f"\"confidence\": {nav.confidence}"
-                "}"
-            ),
-            structured_output=nav,
-        )
-
-    def _section_navigation_target(self, query: str) -> tuple[str, str]:
-        """Choose the section heading a fake LLM would likely pick."""
-        q = normalize_text(query)
-        tokens = set(tokenize(query))
-        if "tell me about" in q or "what is" in q or "what about" in q:
-            return "Overview", "The query asks for a broad summary, so the fake agent stays near the root and overview section."
-        if tokens.intersection({"lead", "leads", "owner", "owners", "chief", "head", "manages"}):
-            return "Ownership", "The query asks who is responsible, so the fake agent traverses from root toward ownership."
-        if tokens.intersection({"depends", "uses", "requires", "hosts", "stack", "pipeline"}):
-            return "Dependencies", "The query asks about dependencies, so the fake agent follows the structural dependency branch."
-        if tokens.intersection({"safety", "audit", "review", "blockers", "ambiguous", "ambiguity", "conflict"}):
-            return "Risks & Ambiguity", "The query mentions risk, audit, or ambiguity, so the fake agent inspects the risk section."
-        if tokens.intersection({"graph", "keyword", "lookup", "index", "prefer", "prefers"}):
-            return "Cross-links", "The query references relationships or preferences, so the fake agent jumps to the cross-link section."
-        return "Overview", "No strong structural hint was found, so the fake agent defaults to the overview section."
-
     def section_navigation_search(self, query: str, *, top_k: int = 3) -> dict[str, Any]:
-        """Cell: agentic vectorless retrieval via fake prompt -> fake response -> section choice."""
-        target_heading, reason = self._section_navigation_target(query)
-        query_tokens = set(tokenize(query))
+        """Cell: agentic vectorless retrieval via a chat-completion-shaped planner."""
         scored: list[dict[str, Any]] = []
 
         for doc in self.docs:
@@ -888,16 +937,15 @@ class RetrievalTutorial:
                 continue
 
             messages = self._build_section_navigation_messages(query, doc=doc, sections=sections)
-            completion = self._fake_llm_section_response(
+            completion = self.section_planner.chat.completions.create(
+                model=self.section_planner.model,
                 messages=messages,
-                query=query,
-                doc=doc,
-                root=root,
-                candidate_sections=candidate_sections,
-                target_heading=target_heading,
-                reason=reason,
+                temperature=0.0,
+                response_format=VectorlessStructuralGraphNavigationResponse,
             )
-            navigation = completion.structured_output
+            navigation = completion.choices[0].message.parsed
+            if navigation is None:
+                continue
             scored.append(
                 {
                     "doc_id": doc["id"],
@@ -905,7 +953,7 @@ class RetrievalTutorial:
                     "section_id": navigation.target_section,
                     "heading": navigation.target_section,
                     "text": next(
-                        (section.text for section in candidate_sections if section.heading == navigation.target_section),
+                        (section.text for section in sections if section.heading == navigation.target_section),
                         root.text,
                     ),
                     "score": round(navigation.confidence * 5.0, 4),
@@ -917,8 +965,8 @@ class RetrievalTutorial:
         scored.sort(key=lambda item: (-item["score"], item["doc_id"], item["section_id"]))
         return {
             "query": query,
-            "target_heading": target_heading,
-            "reason": reason,
+            "target_heading": scored[0]["navigation"].target_section if scored else "Overview",
+            "reason": scored[0]["navigation"].navigation_reason if scored else "No navigation decision was made.",
             "hits": scored[:top_k],
         }
 
