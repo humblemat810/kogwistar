@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-pytestmark = pytest.mark.ci
+pytestmark = pytest.mark.ci_full
 
 from kogwistar.demo import (
     run_conversation_workflow_demo,

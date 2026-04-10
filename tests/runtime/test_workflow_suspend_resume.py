@@ -392,7 +392,7 @@ def _make_engine(
 
 
 BACKEND_PARAMS = [
-    pytest.param("fake", id="fake", marks=pytest.mark.ci),
+    pytest.param("fake", id="fake", marks=pytest.mark.ci_full),
     pytest.param("chroma", id="chroma", marks=pytest.mark.ci_full),
 ]
 

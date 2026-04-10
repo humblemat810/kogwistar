@@ -127,7 +127,7 @@ def _wf_edge(
 @pytest.mark.parametrize(
     "backend_kind",
     [
-        pytest.param("fake", id="fake", marks=pytest.mark.ci),
+        pytest.param("fake", id="fake", marks=pytest.mark.ci_full),
         pytest.param("chroma", id="chroma", marks=pytest.mark.ci_full),
     ],
 )

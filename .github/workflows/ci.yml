@@ -126,6 +126,17 @@ jobs:
       - name: Run CI tests
         env:
           ANONYMIZED_TELEMETRY: "FALSE"
+          KOGWISTAR_LOG_LEVEL: "WARNING"
+          LOG_LEVEL: "WARNING"
+          UVICORN_LOG_LEVEL: "WARNING"
+          PYTEST_ADDOPTS: >-
+            --log-cli-level=WARNING
+            --log-level=WARNING
+            --log-disable=workflow.trace
+            --log-disable=workflow.telemetry
+            --log-disable=urllib3
+            --log-disable=urllib3.connectionpool
+            --show-capture=no
         run: python -m pytest -m ci -q
 
   lint:
@@ -170,4 +181,15 @@ jobs:
       - name: Run full CI tests
         env:
           ANONYMIZED_TELEMETRY: "FALSE"
+          KOGWISTAR_LOG_LEVEL: "WARNING"
+          LOG_LEVEL: "WARNING"
+          UVICORN_LOG_LEVEL: "WARNING"
+          PYTEST_ADDOPTS: >-
+            --log-cli-level=WARNING
+            --log-level=WARNING
+            --log-disable=workflow.trace
+            --log-disable=workflow.telemetry
+            --log-disable=urllib3
+            --log-disable=urllib3.connectionpool
+            --show-capture=no
         run: python -m pytest -m ci_full -q

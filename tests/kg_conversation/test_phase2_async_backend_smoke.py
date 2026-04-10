@@ -26,7 +26,7 @@ from tests.conftest import (  # noqa: E402
 )
 from tests.core._async_chroma_real import make_real_async_chroma_backend # noqa: E402
 
-pytestmark = pytest.mark.ci
+pytestmark = pytest.mark.ci_full
 
 
 class _AsyncSmokeEmbeddingFunction:
@@ -58,6 +58,8 @@ def _build_pg_engine_pair(
 ) -> tuple[GraphKnowledgeEngine, GraphKnowledgeEngine]:
     async_sa_engine = request.getfixturevalue("async_sa_engine")
     async_pg_schema = request.getfixturevalue("async_pg_schema")
+    if async_sa_engine is None or async_pg_schema is None:
+        pytest.skip("async pg backend requested but async_pg fixtures are unavailable")
     try:
         kg_backend = PgVectorBackend(
             engine=async_sa_engine,
