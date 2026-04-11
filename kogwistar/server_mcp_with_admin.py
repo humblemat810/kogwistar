@@ -937,7 +937,7 @@ def document_upsert_tree(payload: DocumentGraphUpsert):
     """
     eng = engine.get()
     try:
-        res = eng.persist.persist_graph_extraction(
+        res = eng.persist_document_graph_extraction(
             doc_id=payload.doc_id,
             parsed=GraphExtractionWithIDs(
                 nodes=[
