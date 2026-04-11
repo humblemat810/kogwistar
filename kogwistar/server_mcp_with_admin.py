@@ -918,7 +918,23 @@ def document_upsert(inp: DocumentUpsert, response_model=DocumentUpsertResult):
 
 @app.post("/api/document.upsert_tree", response_model=DocumentGraphUpsertResult)
 def document_upsert_tree(payload: DocumentGraphUpsert):
-    """Upsert a generic tree with document root, use only when complete control of all backend fields are clearly known."""
+    """Persist a newly parsed graph extraction for an existing document.
+
+    This endpoint accepts a graph extraction payload that represents nodes and
+    edges before backend persistence. It is intended for extraction ingest, not
+    for importing an already canonical backend graph with arbitrary stable IDs.
+
+    ID contract:
+    - This route accepts backend-shaped nodes/edges; the LLM-shaped `local_id`
+      contract is honored upstream before conversion, not by this schema.
+    - Node endpoints may reference same-batch `nn:<slug>` tokens, resolvable
+      aliases, canonical UUIDs, or the compatibility node-label fallback.
+    - Edge endpoints may reference same-batch `ne:<slug>` tokens, resolvable
+      aliases, or canonical UUIDs.
+    - Object `id` fields are more permissive than endpoint fields on this route.
+    - The canonical ingestion table lives in
+      `kogwistar/docs/ARD-postgresql-inclusive.md`.
+    """
     eng = engine.get()
     try:
         res = eng.persist.persist_graph_extraction(

@@ -688,14 +688,20 @@ class LLMMixin(ModeSlicingMixin, BaseModel):
     default_include_modes: ClassVar[set[str]] = {"llm"}
     include_unmarked_for_modes: ClassVar[set[str]] = {"llm", "llm_in"}
     id: Optional[str] = Field(
-        default=None, description="None for new object; use existing IDs to upsert"
+        default=None,
+        description=(
+            "Identifier before persistence. For new objects, prefer a temp token "
+            "such as `nn:<slug>` for nodes or `ne:<slug>` for edges. Existing "
+            "objects may use a resolvable alias or canonical UUID."
+        ),
     )
     # No embedding in LLM schema to avoid bloating the output
     local_id: Optional[str] = Field(
         None,
         description=(
-            "Optional within-output temp id for new edge, e.g., 'ne:moon', use `nn:` for new nodes (nn stand for new node, ne stand for new edge. ). "
-            "Set it when this edge is referred by other edges. "
+            "Preferred batch-local temporary identifier for a new object. Use "
+            "`nn:<slug>` for nodes and `ne:<slug>` for edges when other items in "
+            "the same payload need to refer to this object before persistence."
         ),
     )
 
@@ -872,14 +878,21 @@ class Edge(
 
 class LLMNode(LLMMixin, GraphEntityRefBase):
     """
-    Represents a node extracted by an LLM from a document.
-    Contains label, type, summary, optional domain, and properties.
-    ID is optional and will be added post-processing.
-    Node extracted by the LLM. Must include at least one ReferenceSession with precise span.
-    If this is a new node, set either:
-      - id = "nn:<slug>"  (preferred), or
-      - leave id empty and set local_id = "nn:<slug>"
-    If this references an existing node, set id to the provided alias (e.g., N3, N~abc, or UUID).
+    Represents a newly parsed node in a graph extraction payload.
+
+    This model is used before backend persistence. The server may rewrite
+    temporary tokens to internal IDs during ingestion.
+
+    ID contract:
+    - On LLM-shaped extraction payloads, prefer `local_id="nn:<slug>"`;
+      `id="nn:<slug>"` remains accepted for compatibility, and `node.local_id`
+      wins if both are present.
+    - If this references an existing node, `id` may be a resolvable alias or
+      canonical UUID.
+    - Edge node-endpoints in the same payload may refer to the same `nn:*`
+      token.
+    - The canonical ingestion table lives in
+      `kogwistar/docs/ARD-postgresql-inclusive.md`.
     """
 
     def to_flattened(self, *, span_to_id: dict[tuple, str]) -> "FlattenedLLMNode":
@@ -888,16 +901,22 @@ class LLMNode(LLMMixin, GraphEntityRefBase):
 
 class LLMEdge(LLMMixin, EdgeMixin, GraphEntityRefBase):
     """
-    Represents an edge extracted by an LLM from a document.
-    Inherits node fields and adds source/target relationships and relation type.
-    ID is optional and will be added post-processing.
-    Edge extracted by the LLM. Must include at least one ReferenceSession with precise span.
-    For a new edge, set id='ne:<slug>' or leave empty.
-    For endpoints, use existing node aliases (N#/UUID) or temp ids 'nn:<slug>'.
-    If this is a new edge, set either:
-      - id = "ne:<slug>"  (preferred), or
-      - leave id empty and set local_id = "ne:<slug>"
-    If this references an existing edge, set id to the provided alias (e.g., N3, N~abc, or UUID).
+    Represents a newly parsed edge in a graph extraction payload.
+
+    This model is used before backend persistence. The server may rewrite
+    temporary tokens to internal IDs during ingestion.
+
+    ID contract:
+    - On LLM-shaped extraction payloads, prefer `local_id="ne:<slug>"`;
+      `id="ne:<slug>"` remains accepted for compatibility, and `edge.local_id`
+      wins if both are present.
+    - Node endpoints should use resolvable node tokens, including same-batch
+      `nn:<slug>` temporary node IDs when applicable.
+    - Edge endpoints should use resolvable edge tokens, including same-batch
+      `ne:<slug>` temporary edge IDs when applicable.
+    - Existing references may use a resolvable alias or canonical UUID.
+    - The canonical ingestion table lives in
+      `kogwistar/docs/ARD-postgresql-inclusive.md`.
     """
 
     def to_flattened(self, *, span_to_id: dict[tuple, str]) -> "FlattenedLLMEdge":

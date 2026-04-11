@@ -109,6 +109,16 @@ class PersistSubsystem(NamespaceProxy):
         parsed: LLMGraphExtraction | PureGraph | GraphExtractionWithIDs,
         alias_book=None,
     ) -> None:
+        """Resolve graph-extraction identifiers into persisted backend IDs.
+
+        This resolver is meant for newly parsed extraction payloads. It accepts
+        batch-local `nn:<slug>` / `ne:<slug>` tokens, resolvable aliases,
+        canonical UUIDs, and the limited node-label fallback already used by the
+        extraction pipeline.
+
+        Same-batch `nn:*` tokens are rewritten to a shared backend ID so that
+        edges may point to nodes created in the same payload.
+        """
         if alias_book is None:
             book = self._e._alias_book(doc_id)
         else:
@@ -124,8 +134,8 @@ class PersistSubsystem(NamespaceProxy):
 
         nn2uuid: dict[str, str] = {}
         for n in parsed.nodes:
-            token = n.id or cast(str | None, getattr(n, "local_id", None))
-
+            token = cast(str | None, getattr(n, "local_id", None)) or n.id
+            
             if token is None or token == "":
                 n.id = str(uuid.uuid4())
                 continue
