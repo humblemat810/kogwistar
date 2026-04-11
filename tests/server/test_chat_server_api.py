@@ -187,6 +187,62 @@ def _collect_sse_events(
     return events
 
 
+def test_document_upsert_tree_uses_document_graph_extraction_entrypoint(
+    monkeypatch, engine_triplet
+):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+
+    captured: dict[str, object] = {}
+
+    def _fake_persist_document_graph_extraction(*, doc_id, parsed, mode="append"):
+        captured["doc_id"] = doc_id
+        captured["parsed_type"] = type(parsed).__name__
+        captured["mode"] = mode
+        captured["node_count"] = len(parsed.nodes)
+        captured["edge_count"] = len(parsed.edges)
+        return {
+            "document_id": doc_id,
+            "node_ids": [],
+            "edge_ids": [],
+            "nodes_added": 0,
+            "edges_added": 0,
+        }
+
+    monkeypatch.setattr(
+        engine,
+        "persist_document_graph_extraction",
+        _fake_persist_document_graph_extraction,
+        raising=True,
+    )
+
+    with TestClient(server.app) as client:
+        headers = _token_header(client, role="rw", ns="docs,conversation,workflow")
+        resp = client.post(
+            "/api/document.upsert_tree",
+            json={
+                "doc_id": "doc::upsert_tree_dispatch",
+                "insertion_method": "pytest",
+                "nodes": [],
+                "edges": [],
+            },
+            headers=headers,
+        )
+
+    resp.raise_for_status()
+    payload = resp.json()
+    assert payload["status"] == "ok"
+    assert captured == {
+        "doc_id": "doc::upsert_tree_dispatch",
+        "parsed_type": "GraphExtractionWithIDs",
+        "mode": "append",
+        "node_count": 0,
+        "edge_count": 0,
+    }
+
+
 def _visible_workflow_design_ids(
     workflow_engine, *, workflow_id: str
 ) -> tuple[str, set[str], set[str]]:
