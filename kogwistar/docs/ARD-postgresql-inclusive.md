@@ -159,6 +159,26 @@ Non-goal of current Profile B:
 If a producer delivers a dependent `edge` before its endpoint `node`, the edge write may fail and must be retried by the
 producer or absorbed by a staging layer. This is distinct from replay/repair of already-committed base rows.
 
+### 6.2.2 Graph ingestion ID contract
+
+| Field | Allowed input today | How it resolves | Persisted as | Notes |
+| --- | --- | --- | --- | --- |
+| `node.id` | `nn:*`, alias, UUID, or any other non-empty string | `nn:*` is rewritten to a generated backend ID; alias is de-aliased; UUID stays as-is; other strings are kept as-is | Backend ID or original string, depending on token kind | `id` is permissive for node objects |
+| `node.local_id` | `nn:*` on LLM-shaped payloads | Preferred by `resolve_llm_ids(...)` over `node.id`; backend-shaped `GraphExtractionWithIDs` is effectively `id`-centric | Not persisted directly | Preferred batch-local temp handle for LLM extraction |
+| `edge.id` | `ne:*`, alias, UUID, or any other non-empty string | `ne:*` is rewritten to a generated backend ID; alias is de-aliased; UUID stays as-is; other strings are kept as-is | Backend ID or original string, depending on token kind | `edge.local_id` wins on the LLM resolver path when both exist |
+| `edge.local_id` | `ne:*` on LLM-shaped payloads | Preferred by `resolve_llm_ids(...)` over `edge.id`; backend-shaped `GraphExtractionWithIDs` is effectively `id`-centric | Not persisted directly | Preferred batch-local temp handle for LLM extraction |
+| `source_ids` / `target_ids` | `nn:*`, alias, UUID, or node-label fallback | `nn:*` resolves through the same-batch temp map; alias de-aliases; UUID stays; otherwise it tries to match a node label in the same payload | Resolved backend node IDs | This is stricter than `node.id`; arbitrary stable strings are not accepted here unless they resolve by label |
+| `source_edge_ids` / `target_edge_ids` | `ne:*`, alias, UUID | `ne:*` resolves through the same-batch temp map; alias de-aliases; UUID stays | Resolved backend edge IDs | No label fallback here |
+
+Notes:
+- The node-label fallback is intentionally documented compatibility behavior, not a new identifier type.
+- Label fallback applies only to node endpoints, not to edge endpoints.
+- The canonical behavior matrix is pinned in `tests/primitives/test_graph_extraction_id_contract.py`.
+- `local_id` is only honored by the LLM-shaped extraction path; backend-shaped `GraphExtractionWithIDs` keeps the contract id-centric.
+- On the LLM resolver path, `local_id` now wins over `id` for both nodes and edges.
+- In today’s implementation, the LLM-shaped contract is pinned at the ID-resolution layer (`resolve_llm_ids(...)`), while backend-shaped payloads are pinned through `persist_document_graph_extraction(...)`.
+- The confirmed tests pin current behavior, not a broader intended future API. If the ingest surface is later unified, this table should be revised with the code.
+
 ### 6.3 Concurrent UoW semantics (threads/tasks)
 `engine.uow()` context is isolated per execution context (thread/task). Concurrent callers do not share the same UoW unless they explicitly reuse the same active context.
 

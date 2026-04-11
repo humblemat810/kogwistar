@@ -13,6 +13,7 @@ This note captures the failure modes we hit while wiring the FastHTML/HTMX chat 
 - `/api/document.upsert_tree` requires the document to already exist.
 - `persist_document_graph_extraction(...)` validates node and edge spans against the stored document content.
 - `persist_document_graph_extraction(...)` also resolves edge endpoints, so endpoint IDs must be structurally valid.
+- The canonical graph-ingestion ID contract table lives in `kogwistar/docs/ARD-postgresql-inclusive.md`; the matching behavior matrix is pinned in `tests/primitives/test_graph_extraction_id_contract.py`.
 - `curl` in PowerShell may not be the `curl.exe` binary you think it is.
 - `curl http://localhost:28110/...` and `curl.exe http://127.0.0.1:28110/...` can hit different listeners.
 - The request logger is separate from the app logic. A silent console does not mean the request failed.
