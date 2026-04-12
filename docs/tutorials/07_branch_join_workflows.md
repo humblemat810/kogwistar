@@ -17,7 +17,7 @@ This is the point where the runtime starts to feel like a real orchestration sub
 - Run the companion file to walk through resolver registration, trace events, and resume.
 - Or run the script-backed levels:
 
-```powershell
+```bash
 python scripts/runtime_tutorial_ladder.py level1 --data-dir .gke-data/runtime-tutorial-ladder
 python scripts/runtime_tutorial_ladder.py level2 --data-dir .gke-data/runtime-tutorial-ladder
 ```

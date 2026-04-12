@@ -29,7 +29,7 @@ Workflow design remains one compatibility consumer of this substrate, but the br
 
 Run the companion script from the repo root:
 
-```powershell
+```bash
 python scripts/tutorial_sections/20_generic_named_projection_meta_layer.py
 ```
 

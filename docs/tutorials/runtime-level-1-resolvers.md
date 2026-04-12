@@ -14,8 +14,8 @@ This level shows how the runtime becomes programmable without losing its core ex
 
 ## Quick Run
 
-```powershell
-python scripts/runtime_tutorial_ladder.py level1 `
+```bash
+python scripts/runtime_tutorial_ladder.py level1 \
   --data-dir .gke-data/runtime-tutorial-ladder
 ```
 

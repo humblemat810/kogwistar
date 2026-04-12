@@ -24,8 +24,8 @@ This tutorial uses Docker because it is concrete, inspectable, and matches the c
 
 ## Quick Run
 
-```powershell
-python scripts/runtime_tutorial_ladder.py level4 `
+```bash
+python scripts/runtime_tutorial_ladder.py level4 \
   --data-dir .gke-data/runtime-tutorial-ladder
 ```
 

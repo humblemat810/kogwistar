@@ -21,13 +21,13 @@ This single example is enough to demonstrate:
 
 ## One-Time Setup
 
-```powershell
+```bash
 python scripts/runtime_tutorial_ladder.py reset --data-dir .gke-data/runtime-tutorial-ladder
 ```
 
 ## Run Order
 
-```powershell
+```bash
 python scripts/runtime_tutorial_ladder.py level0 --data-dir .gke-data/runtime-tutorial-ladder
 python scripts/runtime_tutorial_ladder.py level1 --data-dir .gke-data/runtime-tutorial-ladder
 python scripts/runtime_tutorial_ladder.py level2 --data-dir .gke-data/runtime-tutorial-ladder

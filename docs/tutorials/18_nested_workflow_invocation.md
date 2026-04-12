@@ -21,7 +21,7 @@ This is the smallest golden example that makes the nested-workflow contract conc
 
 Run the companion script from the repo root:
 
-```powershell
+```bash
 python scripts/tutorial_sections/18_nested_workflow_invocation.py
 ```
 

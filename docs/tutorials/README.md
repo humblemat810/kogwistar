@@ -90,14 +90,14 @@ This ladder keeps one canonical workflow all the way through:
 
 ### RAG Ladder
 
-```powershell
+```bash
 python scripts/rag_tutorial_ladder.py reset --data-dir .gke-data/tutorial-ladder
 python scripts/rag_tutorial_ladder.py seed --data-dir .gke-data/tutorial-ladder
 ```
 
 ### Runtime Ladder
 
-```powershell
+```bash
 python scripts/runtime_tutorial_ladder.py reset --data-dir .gke-data/runtime-tutorial-ladder
 ```
 

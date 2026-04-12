@@ -38,13 +38,13 @@ The backend is selectable so you can use the same tutorial in two ways:
 
 Run it like this:
 
-```powershell
+```bash
 python scripts/rag_retrieval_comparison_kg_semantics.py --backend memory
 ```
 
 Optional:
 
-```powershell
+```bash
 python scripts/rag_retrieval_comparison_kg_semantics.py --backend chroma --persist-directory .gke-data/tutorials/22_rag_retrieval_comparison_kg_semantics
 python scripts/rag_retrieval_comparison_kg_semantics.py --top-k 3
 python scripts/rag_retrieval_comparison_kg_semantics.py --json
