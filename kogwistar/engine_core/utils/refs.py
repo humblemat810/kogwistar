@@ -22,6 +22,37 @@ def safe_excerpt(s: str | None, max_len: int = 200) -> str | None:
     return s
 
 
+def _is_chroma_scalar(value: Any) -> bool:
+    return isinstance(value, (str, int, float, bool))
+
+
+def _sanitize_chroma_metadata_value(value: Any) -> Any:
+    if value is None:
+        return None
+    if _is_chroma_scalar(value):
+        return value
+    if isinstance(value, list):
+        if not value:
+            return value
+        if all(_is_chroma_scalar(item) for item in value):
+            item_types = {type(item) for item in value}
+            if len(item_types) == 1:
+                return value
+        return json_or_none(value)
+    if isinstance(value, dict):
+        return json_or_none(value)
+    return str(value)
+
+
+def sanitize_chroma_metadata_dict(metadata: dict[str, Any]) -> dict[str, Any]:
+    return strip_none(
+        {
+            key: _sanitize_chroma_metadata_value(value)
+            for key, value in (metadata or {}).items()
+        }
+    )
+
+
 def ref_doc_id(ref) -> str | None:
     did = getattr(ref, "doc_id", None)
     if did:
@@ -173,13 +204,13 @@ def node_doc_and_meta(n: "Node | PureChromaNode") -> tuple[str, dict]:
         meta["mentions"] = json_or_none(
             [r.model_dump(field_mode="backend") for r in mentions]
         )
-    meta = strip_none(meta)
+    meta = sanitize_chroma_metadata_dict(meta)
     return doc, meta
 
 
 def edge_doc_and_meta(e: "Edge | PureChromaEdge") -> tuple[str, dict]:
     doc = e.model_dump_json(field_mode="backend")
-    meta = strip_none(
+    meta = sanitize_chroma_metadata_dict(
         {
             "doc_id": getattr(e, "doc_id", None),
             "relation": e.relation,
@@ -197,7 +228,7 @@ def edge_doc_and_meta(e: "Edge | PureChromaEdge") -> tuple[str, dict]:
         meta["mentions"] = json_or_none(
             [r.model_dump(field_mode="backend") for r in mentions]
         )
-    meta = strip_none(meta)
+    meta = sanitize_chroma_metadata_dict(meta)
     return doc, meta
 
 

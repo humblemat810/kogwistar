@@ -2576,7 +2576,7 @@ class Document(ModeSlicingMixin, BaseModel):
             raise Exception("unsupported type")
 
     def get_content_by_span(self, span: Span) -> str:
-        if self.type == "ocr":
+        if self.type in {"ocr", "ocr_document"}:
             return self.get_content_as_ocr_doc_by_span(span)
         elif self.type in ["text", "text_chunked"]:
             return self.get_content_as_text_doc_by_span(span)
@@ -2601,9 +2601,104 @@ class Document(ModeSlicingMixin, BaseModel):
             raise Exception("only can call method when doc is plain text type")
 
     def get_content_as_ocr_doc_by_span(self, span: Span) -> str:
-        if self.type != "ocr":
+        if self.type not in {"ocr", "ocr_document"}:
             raise Exception("only can call method when doc is ocr type")
-        return ""
+        source_map = self.source_map
+        if source_map is None:
+            import ast
+            import json
+
+            content_obj = self.content
+            if isinstance(content_obj, str):
+                try:
+                    content_obj = json.loads(content_obj)
+                except Exception:
+                    try:
+                        content_obj = ast.literal_eval(content_obj)
+                    except Exception:
+                        content_obj = None
+
+            if isinstance(content_obj, dict):
+                source_map = {}
+                for page in content_obj.values():
+                    if not isinstance(page, list):
+                        continue
+                    for page_entry in page:
+                        if not isinstance(page_entry, dict):
+                            continue
+                        page_num = page_entry.get("pdf_page_num")
+                        if page_num is None:
+                            continue
+                        for idx, cluster in enumerate(
+                            page_entry.get("OCR_text_clusters") or []
+                        ):
+                            if isinstance(cluster, dict):
+                                cluster_id = cluster.get("id") or f"p{page_num}_c{idx}"
+                                source_map[cluster_id] = cluster
+                        for idx, cluster in enumerate(
+                            page_entry.get("non_text_objects") or []
+                        ):
+                            if isinstance(cluster, dict):
+                                cluster_id = cluster.get("id") or f"p{page_num}_c{idx}"
+                                source_map[cluster_id] = cluster
+        if source_map is None:
+            raise Exception("source map must not be none when span already obtained")
+
+        def _cluster_text(cluster: Any) -> str:
+            if isinstance(cluster, dict):
+                for key in ("text", "description", "verbatim_text"):
+                    value = cluster.get(key)
+                    if value is not None:
+                        return str(value)
+                return ""
+            for key in ("text", "description", "verbatim_text"):
+                value = getattr(cluster, key, None)
+                if value is not None:
+                    return str(value)
+            return str(cluster)
+
+        cluster_id = getattr(span, "source_cluster_id", None)
+        if cluster_id is None:
+            for candidate in (
+                getattr(span, "document_page_url", None),
+                getattr(span, "collection_page_url", None),
+            ):
+                if not candidate or "#" not in candidate:
+                    continue
+                fragment = candidate.rsplit("#", 1)[-1].strip()
+                if fragment:
+                    cluster_id = fragment
+                    break
+
+        if cluster_id and cluster_id in source_map:
+            cluster_text = _cluster_text(source_map[cluster_id])
+            if span.end_char > len(cluster_text):
+                raise ValueError(
+                    f"span end_char out of bounds for OCR cluster {cluster_id}: "
+                    f"end_char={span.end_char}, cluster_len={len(cluster_text)}"
+                )
+            return cluster_text[span.start_char : span.end_char]
+
+        page_prefix = f"p{span.page_number}_"
+        page_clusters = [
+            (cluster_id, cluster)
+            for cluster_id, cluster in source_map.items()
+            if str(cluster_id).startswith(page_prefix)
+        ]
+        if page_clusters:
+            page_clusters.sort(key=lambda item: str(item[0]))
+            page_text = "\n".join(_cluster_text(cluster) for _, cluster in page_clusters)
+            if span.end_char > len(page_text):
+                raise ValueError(
+                    f"span end_char out of bounds for OCR page {span.page_number}: "
+                    f"end_char={span.end_char}, page_len={len(page_text)}"
+                )
+            return page_text[span.start_char : span.end_char]
+
+        raise KeyError(
+            "Unable to resolve OCR span content from source_map; "
+            f"source_cluster_id={cluster_id!r}, page_number={span.page_number}"
+        )
 
 
 # ========================= OCR DOC

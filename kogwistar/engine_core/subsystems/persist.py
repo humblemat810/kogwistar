@@ -26,6 +26,17 @@ class PersistSubsystem(NamespaceProxy):
     def __init__(self, engine) -> None:
         super().__init__(engine)
 
+    def _defensive_embedding(self, text: str) -> list[float]:
+        if hasattr(self._e, "iterative_defensive_emb"):
+            return self._e.iterative_defensive_emb(text)
+        if hasattr(self._e, "_iterative_defensive_emb"):
+            return self._e._iterative_defensive_emb(text)
+        if hasattr(self._e, "embed") and hasattr(
+            self._e.embed, "iterative_defensive_emb"
+        ):
+            return self._e.embed.iterative_defensive_emb(text)
+        return self._e._ef([text])[0]
+
     @staticmethod
     def _promote_llm_entity_payload(obj, *, insertion_method: str) -> dict[str, Any]:
         payload = obj.model_dump(field_mode="llm")
@@ -38,6 +49,116 @@ class PersistSubsystem(NamespaceProxy):
                 if span.get("insertion_method") is None:
                     span["insertion_method"] = insertion_method
         return payload
+
+    @staticmethod
+    def _pointer_end_char(pointer: dict[str, Any]) -> int:
+        start_char = int(pointer.get("start_char") or 0)
+        end_char = pointer.get("end_char")
+        excerpt = str(pointer.get("verbatim_text") or "")
+        if end_char in (None, -1):
+            return start_char + len(excerpt)
+        return int(end_char)
+
+    @classmethod
+    def _pointer_to_grounding(
+        cls, pointer: dict[str, Any], *, doc_id: str, insertion_method: str
+    ) -> Grounding:
+        cluster_id = str(pointer.get("source_cluster_id") or "")
+        excerpt = str(pointer.get("verbatim_text") or "")
+        start_char = int(pointer.get("start_char") or 0)
+        end_char = cls._pointer_end_char(pointer)
+        return Grounding(
+            spans=[
+                Span(
+                    collection_page_url=f"document_collection/{doc_id}",
+                    document_page_url=f"document/{doc_id}#{cluster_id}",
+                    doc_id=doc_id,
+                    insertion_method=insertion_method,
+                    page_number=1,
+                    start_char=start_char,
+                    end_char=end_char,
+                    excerpt=excerpt,
+                    context_before="",
+                    context_after="",
+                    chunk_id=None,
+                    source_cluster_id=cluster_id or None,
+                )
+            ]
+        )
+
+    @staticmethod
+    def _span_identity(span: Span) -> tuple[str | None, int, int, str]:
+        return (
+            getattr(span, "source_cluster_id", None),
+            int(getattr(span, "start_char", 0) or 0),
+            int(getattr(span, "end_char", 0) or 0),
+            str(getattr(span, "excerpt", "") or ""),
+        )
+
+    @classmethod
+    def _pointer_identity(cls, pointer: dict[str, Any]) -> tuple[str | None, int, int, str]:
+        return (
+            pointer.get("source_cluster_id"),
+            int(pointer.get("start_char") or 0),
+            cls._pointer_end_char(pointer),
+            str(pointer.get("verbatim_text") or ""),
+        )
+
+    @classmethod
+    def _normalize_ocr_entity_grounding(
+        cls, entity: Node | Edge, *, document: Document
+    ) -> Node | Edge:
+        if document.type not in {"ocr", "ocr_document"}:
+            return entity
+
+        metadata = dict(getattr(entity, "metadata", None) or {})
+        pointers = metadata.get("pointers") or []
+        if not isinstance(pointers, list) or not pointers:
+            return entity
+
+        insertion_method = (
+            next(
+                (
+                    span.insertion_method
+                    for grounding in (getattr(entity, "mentions", None) or [])
+                    for span in grounding.spans
+                    if getattr(span, "insertion_method", None)
+                ),
+                None,
+            )
+            or (document.metadata or {}).get("insertion_method")
+            or "document_parser_v1"
+        )
+        pointer_groundings = [
+            cls._pointer_to_grounding(pointer, doc_id=document.id, insertion_method=insertion_method)
+            for pointer in pointers
+            if isinstance(pointer, dict)
+        ]
+        if not pointer_groundings:
+            return entity
+
+        current_mentions = list(getattr(entity, "mentions", None) or [])
+        if not current_mentions:
+            metadata.pop("pointers", None)
+            return entity.model_copy(
+                update={"mentions": pointer_groundings, "metadata": metadata},
+                deep=True,
+            )
+
+        pointer_keys = sorted(
+            cls._pointer_identity(pointer)
+            for pointer in pointers
+            if isinstance(pointer, dict)
+        )
+        mention_keys = sorted(
+            cls._span_identity(span)
+            for grounding in current_mentions
+            for span in grounding.spans
+        )
+        if pointer_keys == mention_keys:
+            metadata.pop("pointers", None)
+            return entity.model_copy(update={"metadata": metadata}, deep=True)
+        return entity
 
     @staticmethod
     def _alloc_real_ids(parsed):
@@ -350,7 +471,7 @@ class PersistSubsystem(NamespaceProxy):
                     metadata={},
                 )
                 emb_text = f"{n.label}: {n.summary}"
-                n.embedding = self._e._ef([emb_text])[0]
+                n.embedding = self._defensive_embedding(emb_text)
                 self._e.write.add_pure_node(n)
                 node_ids.append(n.id)
             elif kind == "edge":
@@ -377,7 +498,7 @@ class PersistSubsystem(NamespaceProxy):
                     embedding=None,
                     metadata={},
                 )
-                e.embedding = self._e._ef([f"{le.label}: {le.summary}"])[0]
+                e.embedding = self._defensive_embedding(f"{le.label}: {le.summary}")
                 self._e.write.add_pure_edge(e)
                 edge_ids.append(e.id)
 
@@ -420,6 +541,7 @@ class PersistSubsystem(NamespaceProxy):
                     ),
                     context={"insertion_method": "llm_graph_extraction"},
                 )
+                ln = cast(Node, self._normalize_ocr_entity_grounding(ln, document=document))
                 ln.mentions = self.dealias_span(ln.mentions, document.id)
                 if mode == "skip-if-exists":
                     got = self._e.backend.node_get(ids=[ln.id])
@@ -443,7 +565,7 @@ class PersistSubsystem(NamespaceProxy):
                             )
                 n = ln.model_copy(deep=True)
                 emb_text = f"{n.label}: {n.summary} : {nl.join(i['context'] for i in self._e.extract_reference_contexts(ln)[:1])}"
-                n.embedding = self._e._ef([emb_text])[0]
+                n.embedding = self._defensive_embedding(emb_text)
                 self._e.write.add_node(n, doc_id=doc_id)
                 node_ids.append(n.id)
             elif kind == "edge":
@@ -454,6 +576,7 @@ class PersistSubsystem(NamespaceProxy):
                     ),
                     context={"insertion_method": "llm_graph_extraction"},
                 )
+                le = cast(Edge, self._normalize_ocr_entity_grounding(le, document=document))
                 le.mentions = self.dealias_span(le.mentions, document.id)
                 if mode == "skip-if-exists":
                     got = self._e.backend.edge_get(ids=[le.id])
@@ -476,7 +599,7 @@ class PersistSubsystem(NamespaceProxy):
                             )
                 e = le.model_copy(deep=True)
                 emb_text = f"{le.label}: {le.summary} : {nl.join(i['context'] for i in self._e.extract_reference_contexts(le)[:1])}"
-                e.embedding = self._e._ef([emb_text])[0]
+                e.embedding = self._defensive_embedding(emb_text)
                 self._e.write.add_edge(e, doc_id=doc_id)
                 edge_ids.append(e.id)
 
@@ -507,7 +630,7 @@ class PersistSubsystem(NamespaceProxy):
         for rid in order:
             kind, obj = id2kind[rid], id2obj[rid]
             if kind == "node":
-                ln: Node = obj
+                ln = cast(Node, self._normalize_ocr_entity_grounding(obj, document=document))
                 ln.mentions = self.dealias_span(ln.mentions, doc_id)
                 for g in ln.mentions:
                     for sp in g.spans:
@@ -530,11 +653,11 @@ class PersistSubsystem(NamespaceProxy):
                         continue
                 n = ln
                 emb_text = f"{n.label}: {n.summary} : {nl.join(i['context'] for i in self._e.extract_reference_contexts(ln)[:1])}"
-                n.embedding = self._e._ef([emb_text])[0]
+                n.embedding = self._defensive_embedding(emb_text)
                 self._e.write.add_node(n, doc_id=doc_id)
                 node_ids.append(n.id)
             elif kind == "edge":
-                le: Edge = obj
+                le = cast(Edge, self._normalize_ocr_entity_grounding(obj, document=document))
                 le.mentions = self.dealias_span(le.mentions, doc_id)
                 for g in le.mentions:
                     for sp in g.spans:
@@ -557,7 +680,7 @@ class PersistSubsystem(NamespaceProxy):
                         continue
                 e = le
                 emb_text = f"{le.label}: {le.summary} : {nl.join(i['context'] for i in self._e.extract_reference_contexts(le)[:1])}"
-                e.embedding = self._e._ef([emb_text])[0]
+                e.embedding = self._defensive_embedding(emb_text)
                 self._e.write.add_edge(e, doc_id=doc_id)
                 edge_ids.append(e.id)
 

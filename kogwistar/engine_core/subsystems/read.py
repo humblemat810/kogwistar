@@ -559,25 +559,17 @@ class ReadSubsystem(NamespaceProxy, ReadLike):
                         for p in pages
                         if (p[0] >= span.page_number and p[0] <= span.page_number)
                     }
-                    if span.page_number and span.page_number:
-                        if span.page_number == span.page_number:
-                            ctx_text = ""
-                            if span.start_char and span.end_char:
-                                try:
-                                    _coerce_to_referencable_text(
-                                        page_relevant[span.page_number]
-                                    )
-                                except Exception:
-                                    raise
-                                ctx_text = _coerce_to_referencable_text(
-                                    page_relevant[span.page_number]
-                                )[
-                                    max(
-                                        span.start_char - window_chars, 0
-                                    ) : span.end_char + window_chars
-                                ]
+                    page_text = page_relevant.get(span.page_number)
+                    if page_text is not None:
+                        ctx_text = ""
+                        if span.start_char is not None and span.end_char is not None:
+                            page_text = _coerce_to_referencable_text(page_text)
+                            ctx_text = page_text[
+                                max(span.start_char - window_chars, 0) : span.end_char
+                                + window_chars
+                            ]
 
-                    if ctx_text is None:
+                    if not ctx_text:
                         idx = full_doc.find(excerpt) if excerpt else -1
                         if idx < 0 and label and prefer_label_fallback:
                             idx = full_doc.find(label)

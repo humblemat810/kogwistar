@@ -1,5 +1,8 @@
 from dataclasses import dataclass
 
+import re
+import unicodedata
+
 from kogwistar.engine_core.models import (
     Span,
     Document,
@@ -401,4 +404,45 @@ class OcrDocSpanValidator(BaseDocValidator):
         doc: Document | None = None,
         engine: EngineLike | None = None,
     ):
-        raise NotImplementedError
+        result = super().validate_span(span=span, doc_id=doc_id, doc=doc, engine=engine)
+        if result["correctness"] is True:
+            return result
+
+        resolved_doc = _get_doc(doc_id, doc, engine)
+        excerpt_from_span = resolved_doc.get_content_by_span(span)
+
+        def _normalize_ocr_text(value: str) -> str:
+            text = unicodedata.normalize("NFKC", value or "")
+            replacements = {
+                "â€“": "–",
+                "â€”": "—",
+                "â€œ": "“",
+                "â€": "”",
+                "â€˜": "‘",
+                "â€™": "’",
+                "â†’": "→",
+                "Â ": " ",
+            }
+            for old, new in replacements.items():
+                text = text.replace(old, new)
+            text = re.sub(r"\s+", " ", text).strip()
+            return text
+
+        normalized_excerpt = _normalize_ocr_text(span.excerpt)
+        normalized_resolved = _normalize_ocr_text(excerpt_from_span)
+        if normalized_excerpt == normalized_resolved:
+            return {
+                **result,
+                "correctness": True,
+                "excerpt_from_start_end_index": excerpt_from_span,
+            }
+        if normalized_excerpt and (
+            normalized_excerpt in normalized_resolved
+            or normalized_resolved in normalized_excerpt
+        ):
+            return {
+                **result,
+                "correctness": True,
+                "excerpt_from_start_end_index": excerpt_from_span,
+            }
+        return result

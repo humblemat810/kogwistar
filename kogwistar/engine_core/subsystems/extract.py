@@ -739,7 +739,7 @@ class ExtractSubsystem(NamespaceProxy, ExtractLike):
         self,
         *,
         doc_id: str | None = None,
-        doc_type: Literal["text", "ocr_document"] | str | None = None,
+        doc_type: Literal["text", "ocr", "ocr_document"] | str | None = None,
         document: Document | None = None,
     ) -> BaseDocValidator:
         if (doc_id is not None) + (doc_type is not None) + (document is not None) != 1:
@@ -760,7 +760,7 @@ class ExtractSubsystem(NamespaceProxy, ExtractLike):
 
         if doc_type == "text":
             return PlainTextDocSpanValidator()
-        if doc_type == "ocr_document":
+        if doc_type in {"ocr", "ocr_document"}:
             return OcrDocSpanValidator()
         raise ValueError(f"No validator associated with document type {doc_type}")
 
