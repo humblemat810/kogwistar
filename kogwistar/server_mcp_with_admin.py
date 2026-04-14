@@ -9,7 +9,9 @@ import os
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional
+from logging.handlers import RotatingFileHandler
 
 try:
     from dotenv import load_dotenv
@@ -116,6 +118,42 @@ def _configure_console_logging() -> None:
     logger.info("logging configured: level=%s handlers=%d", level_name, len(root.handlers))
 
 
+def _install_file_logging() -> None:
+    log_path = str(
+        os.getenv("KOGWISTAR_LOG_FILE")
+        or os.getenv("KOGWISTAR_SERVER_LOG_FILE")
+        or ""
+    ).strip()
+    if not log_path:
+        return
+
+    level_name = (
+        os.getenv("KOGWISTAR_LOG_LEVEL")
+        or os.getenv("LOG_LEVEL")
+        or os.getenv("UVICORN_LOG_LEVEL")
+        or "INFO"
+    )
+    level = getattr(logging, str(level_name).upper(), logging.INFO)
+    path = Path(log_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    root = logging.getLogger()
+    if any(
+        isinstance(handler, RotatingFileHandler)
+        and getattr(handler, "baseFilename", None) == str(path.resolve())
+        for handler in root.handlers
+    ):
+        return
+
+    handler = RotatingFileHandler(path, maxBytes=10 * 1024 * 1024, backupCount=5, encoding="utf-8")
+    handler.setLevel(level)
+    handler.setFormatter(
+        logging.Formatter("%(asctime)s %(levelname)s [%(name)s] %(message)s")
+    )
+    root.addHandler(handler)
+    logger.info("file logging enabled: path=%s level=%s", path, level_name)
+
+
 def _install_request_logging(app: FastAPI) -> None:
     @app.middleware("http")
     async def _log_requests(request: Request, call_next):
@@ -173,6 +211,7 @@ mcp_app = mcp.http_app(path="/mcp")
 @asynccontextmanager
 async def combined_lifespan(app: FastAPI):
     _configure_console_logging()
+    _install_file_logging()
     if (
         get_session is not None
         and AuthService is not None

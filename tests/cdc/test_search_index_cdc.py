@@ -12,6 +12,7 @@ from kogwistar.cdc.change_event import ChangeEvent
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.search_index.models import (
     IndexingItem,
+    build_embedding_text,
     make_index_key_for_item,
 )
 
@@ -83,6 +84,38 @@ def test_search_index_cdc_and_event_sourcing(temp_engine_dir):
                 found = True
                 break
     assert found, "Event not found in meta event log"
+
+
+def test_search_index_upsert_uses_defensive_embeddings(temp_engine_dir, monkeypatch):
+    engine = GraphKnowledgeEngine(persist_directory=temp_engine_dir)
+
+    seen: dict[str, object] = {}
+
+    def fake_iterative_defensive_emb(text: str):
+        seen["text"] = text
+        return [0.25, 0.75]
+
+    def fake_node_index_upsert(**kwargs):
+        seen["upsert_kwargs"] = kwargs
+
+    monkeypatch.setattr(engine, "iterative_defensive_emb", fake_iterative_defensive_emb)
+    monkeypatch.setattr(engine.backend, "node_index_upsert", fake_node_index_upsert)
+
+    item = IndexingItem(
+        node_id="defensive-node",
+        canonical_title="Defensive Title",
+        keywords=["alpha", "beta"],
+        aliases=["DT"],
+        provision="manual",
+        doc_id="doc-defensive",
+    )
+
+    engine.search_index.upsert_entries([item])
+
+    expected_text = build_embedding_text(item)
+    assert seen["text"] == expected_text
+    assert seen["upsert_kwargs"]["documents"] == [expected_text]
+    assert seen["upsert_kwargs"]["embeddings"] == [[0.25, 0.75]]
 
 
 def test_search_index_replay(temp_engine_dir):

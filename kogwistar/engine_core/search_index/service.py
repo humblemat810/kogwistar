@@ -37,6 +37,16 @@ class SearchIndexService(NamespaceProxy):
         finally:
             conn.close()
 
+    def _defensive_embedding(self, text: str) -> list[float]:
+        """Resolve the engine's defensive embedding hook in compatibility order."""
+        if hasattr(self._e, "iterative_defensive_emb"):
+            return self._e.iterative_defensive_emb(text)
+        if hasattr(self._e, "_iterative_defensive_emb"):
+            return self._e._iterative_defensive_emb(text)
+        if hasattr(self._e, "embed") and hasattr(self._e.embed, "iterative_defensive_emb"):
+            return self._e.embed.iterative_defensive_emb(text)
+        raise AttributeError("engine has no iterative defensive embedding API")
+
     def upsert_entries(self, items: list[IndexingItem]) -> None:
 
         conn = self._connect()
@@ -46,6 +56,7 @@ class SearchIndexService(NamespaceProxy):
                 kw = " ".join(item.keywords) if item.keywords else ""
                 al = " ".join(item.aliases) if item.aliases else ""
                 index_key = make_index_key_for_item(item)
+                embedding_text = build_embedding_text(item)
 
                 cur.execute(
                     """
@@ -85,7 +96,8 @@ class SearchIndexService(NamespaceProxy):
                             "doc_id": item.doc_id,
                         }
                     ],
-                    documents=[build_embedding_text(item)],
+                    documents=[embedding_text],
+                    embeddings=[self._defensive_embedding(embedding_text)],
                 )
 
                 payload = {
