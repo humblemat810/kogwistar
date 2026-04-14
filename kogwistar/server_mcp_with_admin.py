@@ -271,6 +271,40 @@ app = FastAPI(title="KnowledgeEngine + MCP + Admin", lifespan=combined_lifespan)
 set_auth_app(app)
 _install_request_logging(app)
 
+
+def _format_http_500_detail(detail: object) -> str:
+    if isinstance(detail, dict):
+        message = str(detail.get("error") or detail.get("detail") or detail)
+        traceback_lines = detail.get("traceback")
+        if traceback_lines:
+            if isinstance(traceback_lines, list):
+                return message + "\n" + "".join(str(line) for line in traceback_lines)
+            return message + "\n" + str(traceback_lines)
+        return message
+    return str(detail)
+
+
+@app.exception_handler(HTTPException)
+async def _log_http_exception(request: Request, exc: HTTPException):
+    if exc.status_code >= 500:
+        logger.error(
+            "HTTP %s on %s %s: %s",
+            exc.status_code,
+            request.method,
+            request.url.path,
+            _format_http_500_detail(exc.detail),
+        )
+    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+
+
+@app.exception_handler(Exception)
+async def _log_unhandled_exception(request: Request, exc: Exception):
+    logger.exception(
+        "Unhandled exception on %s %s", request.method, request.url.path
+    )
+    http_exc = internal_http_error(exc)
+    return JSONResponse(status_code=http_exc.status_code, content={"detail": http_exc.detail})
+
 origins = os.getenv(
     "ALLOWED_ORIGINS", "http://localhost:5173,http://localhost:3000"
 ).split(",")
@@ -928,32 +962,35 @@ class DocumentUpsertResult(BaseModel):
 
 @app.post("/api/document")
 def document_upsert(inp: DocumentUpsert, response_model=DocumentUpsertResult):
-    eng = engine.get()
-    if inp.doc_type == "text":
-        doc = Document(
-            id=inp.doc_id,
-            content=inp.content,
-            type=inp.doc_type,
-            metadata={},  # if you want
-            embeddings=None,  # REQUIRED by Pydantic because Field(...)
-            source_map=None,  # REQUIRED by Pydantic because Field(...)
-            domain_id=None,
-            processed=False,
-        )
-    elif inp.doc_type == "ocr":
-        ocr_doc_dict = json.loads(inp.content)
-        doc = Document.from_ocr(
-            id=inp.doc_id, ocr_content=ocr_doc_dict, type=inp.doc_type
-        )
-    else:
-        raise Exception(f"Unrecognised doc type{inp.doc_type}")
+    try:
+        eng = engine.get()
+        if inp.doc_type == "text":
+            doc = Document(
+                id=inp.doc_id,
+                content=inp.content,
+                type=inp.doc_type,
+                metadata={},  # if you want
+                embeddings=None,  # REQUIRED by Pydantic because Field(...)
+                source_map=None,  # REQUIRED by Pydantic because Field(...)
+                domain_id=None,
+                processed=False,
+            )
+        elif inp.doc_type == "ocr":
+            ocr_doc_dict = json.loads(inp.content)
+            doc = Document.from_ocr(
+                id=inp.doc_id, ocr_content=ocr_doc_dict, type=inp.doc_type
+            )
+        else:
+            raise Exception(f"Unrecognised doc type{inp.doc_type}")
 
-    if doc.metadata is None:
-        doc.metadata = {"insertion_method": inp.insertion_method}
-    else:
-        doc.metadata["insertion_method"] = inp.insertion_method
-    eng.write.add_document(doc)
-    return DocumentUpsertResult(status="ok")
+        if doc.metadata is None:
+            doc.metadata = {"insertion_method": inp.insertion_method}
+        else:
+            doc.metadata["insertion_method"] = inp.insertion_method
+        eng.write.add_document(doc)
+        return DocumentUpsertResult(status="ok")
+    except Exception as e:
+        raise internal_http_error(e)
 
 @app.post("/api/document.upsert_tree", response_model=DocumentGraphUpsertResult)
 def document_upsert_tree(payload: DocumentGraphUpsert):
