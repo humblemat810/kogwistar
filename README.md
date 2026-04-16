@@ -1,6 +1,4 @@
-<p align="center">
-  <b>The Substrate and implementation for Karpathy's **LLM Knowledge Base** has been already here for long.</b>
-</p>
+
 <p align="center">
   <img src="assets/kogwistar_256.png" width="280"/>
 </p>
@@ -25,7 +23,10 @@ Open-source substrate and harness for AI agent systems.
   <img src="https://img.shields.io/badge/python-3.13+-blue?style=flat-square"/>
   <img src="https://img.shields.io/badge/runtime-graph--native-purple?style=flat-square"/>
 </p>
-
+<p align="center">
+  <b>The Substrate and implementation for Karpathy's **LLM Knowledge Base** has been already here for long. With all the foundation substrate
+  implemented, an implementation that link the susbtrate compoenent together is under construction in https://github.com/humblemat810/kogwistar-llm-wiki</b>
+</p>
 `kogwistar` is a graph-native substrate for governed agent execution with memory and execution.
 
 ## What This Is

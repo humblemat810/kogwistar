@@ -386,6 +386,25 @@ class WorkflowCancelledMetadata(BaseModel):
         return self
 
 
+class WorkflowFailedMetadata(BaseModel):
+    entity_type: str = Field("workflow_failed", description='Must be "workflow_failed"')
+    workflow_id: str
+    run_id: str
+    conversation_id: str
+    accepted_step_seq: int
+    errors: list[str] = Field(default_factory=list)
+
+    model_config = ConfigDict(extra="allow")
+
+    @model_validator(mode="after")
+    def _validate(self) -> "WorkflowFailedMetadata":
+        if self.entity_type != "workflow_failed":
+            raise ValueError(
+                "WorkflowFailedMetadata.entity_type must be 'workflow_failed'"
+            )
+        return self
+
+
 class WorkflowRuntimeEdgeMetadata(BaseModel):
     relation: str
     conversation_id: str | None = None
@@ -437,6 +456,15 @@ class WorkflowCancelledNode(Node):
     @field_validator("metadata")
     def check_metadata(cls, v):
         WorkflowCancelledMetadata.model_validate(v)
+        return v
+
+
+class WorkflowFailedNode(Node):
+    metadata: dict
+
+    @field_validator("metadata")
+    def check_metadata(cls, v):
+        WorkflowFailedMetadata.model_validate(v)
         return v
 
 
