@@ -14,11 +14,11 @@ This is the minimal proof that the runtime is real. It demonstrates that executi
 
 ## Quick Run
 
-```powershell
-python scripts/runtime_tutorial_ladder.py reset `
+```bash
+python scripts/runtime_tutorial_ladder.py reset \
   --data-dir .gke-data/runtime-tutorial-ladder
 
-python scripts/runtime_tutorial_ladder.py level0 `
+python scripts/runtime_tutorial_ladder.py level0 \
   --data-dir .gke-data/runtime-tutorial-ladder
 ```
 

@@ -21,8 +21,10 @@ from kogwistar.engine_core.models import ( # noqa E402
     Span, # noqa E402
 ) # noqa E402
 from kogwistar.runtime.models import ( # noqa E402
+    RunFailure, # noqa E402
     RunSuccess, # noqa E402
     WorkflowCompletedNode, # noqa E402
+    WorkflowFailedNode, # noqa E402
     WorkflowEdge, # noqa E402
     WorkflowNode, # noqa E402
 ) # noqa E402
@@ -327,6 +329,105 @@ def test_runtime_persists_completed_terminal_for_leaf_node(backend_kind):
         assert isinstance(completed[0], WorkflowCompletedNode)
         meta = completed[0].metadata or {}
         assert meta.get("last_processed_node_id") == f"wf_step|{result.run_id}|1"
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+@pytest.mark.parametrize(
+    "backend_kind",
+    [
+        pytest.param("fake", id="fake", marks=pytest.mark.ci_full),
+        pytest.param("chroma", id="chroma", marks=pytest.mark.ci_full),
+    ],
+)
+def test_runtime_persists_failed_terminal_for_leaf_node(backend_kind):
+    root = Path(".tmp_runtime_failed_terminal") / str(uuid.uuid4())
+    root.mkdir(parents=True, exist_ok=True)
+    try:
+        ef = cast(EmbeddingFunctionLike, FakeEmbeddingFunction())
+        if backend_kind == "fake":
+            workflow_engine = GraphKnowledgeEngine(
+                persist_directory=str(root / "wf"),
+                kg_graph_type="workflow",
+                embedding_function=ef,
+                backend_factory=build_fake_backend,
+            )
+            conversation_engine = GraphKnowledgeEngine(
+                persist_directory=str(root / "conv"),
+                kg_graph_type="conversation",
+                embedding_function=ef,
+                backend_factory=build_fake_backend,
+            )
+        else:
+            workflow_engine = GraphKnowledgeEngine(
+                persist_directory=str(root / "wf"),
+                kg_graph_type="workflow",
+                embedding_function=ef,
+            )
+            conversation_engine = GraphKnowledgeEngine(
+                persist_directory=str(root / "conv"),
+                kg_graph_type="conversation",
+                embedding_function=ef,
+            )
+
+        workflow_id = "wf_runtime_leaf_failed_terminal"
+        conversation_id = "conv_runtime_leaf_failed_terminal"
+        start = _wf_node(
+            workflow_id=workflow_id, node_id="wf|start", op="start", start=True
+        )
+        leaf = _wf_node(workflow_id=workflow_id, node_id="wf|leaf", op="leaf")
+        workflow_engine.write.add_node(start)
+        workflow_engine.write.add_node(leaf)
+        workflow_engine.write.add_edge(
+            _wf_edge(
+                workflow_id=workflow_id,
+                edge_id="wf|start->leaf",
+                src=start.safe_get_id(),
+                dst=leaf.safe_get_id(),
+            )
+        )
+
+        def resolve_step(op: str):
+            def _fn(ctx):
+                return RunFailure(
+                    conversation_node_id=None,
+                    state_update=[("a", {"failed_op": op})],
+                    errors=["boom"],
+                )
+
+            return _fn
+
+        runtime = WorkflowRuntime(
+            workflow_engine=workflow_engine,
+            conversation_engine=conversation_engine,
+            step_resolver=resolve_step,
+            predicate_registry={},
+            checkpoint_every_n_steps=1,
+            max_workers=1,
+        )
+        result = runtime.run(
+            workflow_id=workflow_id,
+            conversation_id=conversation_id,
+            turn_node_id="turn-leaf",
+            initial_state={},
+        )
+
+        assert result.status == "failure"
+        failed = conversation_engine.get_nodes(
+            where={
+                "$and": [
+                    {"entity_type": "workflow_failed"},
+                    {"run_id": result.run_id},
+                ]
+            },
+            limit=10,
+        )
+        assert len(failed) == 1
+        assert isinstance(failed[0], WorkflowFailedNode)
+        meta = failed[0].metadata or {}
+        assert meta.get("accepted_step_seq") == 0
+        assert meta.get("last_processed_node_id") == f"wf_step|{result.run_id}|0"
+        assert meta.get("errors") == ["boom"]
     finally:
         shutil.rmtree(root, ignore_errors=True)
 

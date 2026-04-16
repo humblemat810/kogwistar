@@ -14,8 +14,8 @@ Suspend/resume is one of the runtime's differentiators. This level proves the sc
 
 ## Quick Run
 
-```powershell
-python scripts/runtime_tutorial_ladder.py level2 `
+```bash
+python scripts/runtime_tutorial_ladder.py level2 \
   --data-dir .gke-data/runtime-tutorial-ladder
 ```
 

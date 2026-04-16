@@ -4,7 +4,7 @@ This demo is a small proof of the repo's substrate framing: first define a reusa
 
 Run it with:
 
-```powershell
+```bash
 python -m kogwistar.demo.framework_then_agent_demo
 python -m kogwistar.demo.framework_then_agent_demo --variant all
 ```

@@ -14,8 +14,8 @@ This level connects runtime telemetry, viewer surfaces, and external graph expor
 
 ## Quick Run
 
-```powershell
-python scripts/runtime_tutorial_ladder.py level3 `
+```bash
+python scripts/runtime_tutorial_ladder.py level3 \
   --data-dir .gke-data/runtime-tutorial-ladder
 ```
 

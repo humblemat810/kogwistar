@@ -27,7 +27,7 @@ This is the pattern you want when an output crossing a boundary must never conta
 
 Run the companion script from the repo root:
 
-```powershell
+```bash
 python scripts/tutorial_sections/19_build_artifact_governance_workflow.py
 ```
 

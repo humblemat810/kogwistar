@@ -16,7 +16,7 @@ The runtime is a core subsystem, not an accessory. This tutorial introduces it w
 
 - Run the companion file or the script-backed level:
 
-```powershell
+```bash
 python scripts/runtime_tutorial_ladder.py reset --data-dir .gke-data/runtime-tutorial-ladder
 python scripts/runtime_tutorial_ladder.py level0 --data-dir .gke-data/runtime-tutorial-ladder
 ```

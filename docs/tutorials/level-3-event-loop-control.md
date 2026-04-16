@@ -16,13 +16,13 @@ This is the RAG-side bridge into event sourcing. It shows that retrieval-oriente
 
 ## Quick Run
 
-```powershell
+```bash
 python scripts/claw_runtime_loop.py init --data-dir .gke-data/claw-loop
 
-python scripts/claw_runtime_loop.py enqueue `
-  --data-dir .gke-data/claw-loop `
-  --conversation-id conv-demo `
-  --event-type user.message `
+python scripts/claw_runtime_loop.py enqueue \
+  --data-dir .gke-data/claw-loop \
+  --conversation-id conv-demo \
+  --event-type user.message \
   --payload '{"text":"hello claw","ttl":2}'
 
 python scripts/claw_runtime_loop.py run-once --data-dir .gke-data/claw-loop
@@ -50,16 +50,16 @@ Expected behavior:
 
 ## Optional CDC Extension
 
-```powershell
+```bash
 python scripts/claw_runtime_loop.py run-cdc-bridge --host 127.0.0.1 --port 8787 --reset-oplog
 
-python scripts/claw_runtime_loop.py init `
-  --data-dir .gke-data/claw-loop `
+python scripts/claw_runtime_loop.py init \
+  --data-dir .gke-data/claw-loop \
   --cdc-publish-endpoint http://127.0.0.1:8787/ingest
 
-python scripts/claw_runtime_loop.py render-cdc-pages `
-  --data-dir .gke-data/claw-loop `
-  --out-dir .cdc_debug/pages `
+python scripts/claw_runtime_loop.py render-cdc-pages \
+  --data-dir .gke-data/claw-loop \
+  --out-dir .cdc_debug/pages \
   --cdc-ws-url ws://127.0.0.1:8787/changes/ws
 ```
 

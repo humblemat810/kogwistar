@@ -17,7 +17,7 @@ This is the first point where the repo feels like a knowledge system instead of 
 - Run the companion file in VS Code section by section.
 - Or use the script-backed ladder:
 
-```powershell
+```bash
 python scripts/rag_tutorial_ladder.py reset --data-dir .gke-data/tutorial-ladder
 python scripts/rag_tutorial_ladder.py seed --data-dir .gke-data/tutorial-ladder
 python scripts/rag_tutorial_ladder.py level0 --data-dir .gke-data/tutorial-ladder --question "How does this repo implement simple RAG?"

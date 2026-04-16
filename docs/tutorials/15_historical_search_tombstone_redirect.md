@@ -25,7 +25,7 @@ This tutorial is an audit semantics demo, not medical guidance.
   - `scripts/tutorial_sections/15_historical_search_tombstone_redirect.py`
 - Or run directly:
 
-```powershell
+```bash
 python scripts/tutorial_sections/15_historical_search_tombstone_redirect.py
 ```
 

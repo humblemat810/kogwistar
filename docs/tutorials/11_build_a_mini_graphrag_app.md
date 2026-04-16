@@ -17,7 +17,7 @@ This is the main product-intuition tutorial. It converts the separate ideas from
 - Run the companion file for a notebook-like walkthrough of reset, seed, retrieval, and pinning.
 - Or use the script-backed ladder directly:
 
-```powershell
+```bash
 python scripts/rag_tutorial_ladder.py reset --data-dir .gke-data/tutorial-ladder
 python scripts/rag_tutorial_ladder.py seed --data-dir .gke-data/tutorial-ladder
 python scripts/rag_tutorial_ladder.py level0 --data-dir .gke-data/tutorial-ladder --question "How does this repo implement simple RAG?"

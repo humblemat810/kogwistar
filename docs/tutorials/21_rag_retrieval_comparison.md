@@ -143,13 +143,13 @@ Why this matters:
 
 Run the tutorial with:
 
-```powershell
+```bash
 python scripts/rag_retrieval_comparison_tutorial.py
 ```
 
 Optional:
 
-```powershell
+```bash
 python scripts/rag_retrieval_comparison_tutorial.py --top-k 3
 python scripts/rag_retrieval_comparison_tutorial.py --json
 ```

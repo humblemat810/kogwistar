@@ -119,24 +119,24 @@ Interpretation:
 
 Run one benchmark:
 
-```powershell
-.venv\Scripts\python.exe -m pytest tests/runtime/test_in_memory_checkpoint_write_profile.py::test_manual_profile_in_memory_checkpoint_write_total_speedup[fake] -q -s --run-manual
+```bash
+.venv/bin/python -m pytest tests/runtime/test_in_memory_checkpoint_write_profile.py::test_manual_profile_in_memory_checkpoint_write_total_speedup[fake] -q -s --run-manual
 ```
 
 Run the whole manual suite:
 
-```powershell
-.venv\Scripts\python.exe -m pytest tests/runtime/test_in_memory_checkpoint_write_profile.py -q -s --run-manual
+```bash
+.venv/bin/python -m pytest tests/runtime/test_in_memory_checkpoint_write_profile.py -q -s --run-manual
 ```
 
 Try another backend:
 
-```powershell
-.venv\Scripts\python.exe -m pytest tests/runtime/test_in_memory_checkpoint_write_profile.py::test_manual_profile_in_memory_index_job_breakdown[chroma] -q -s --run-manual
+```bash
+.venv/bin/python -m pytest tests/runtime/test_in_memory_checkpoint_write_profile.py::test_manual_profile_in_memory_index_job_breakdown[chroma] -q -s --run-manual
 ```
 
-```powershell
-.venv\Scripts\python.exe -m pytest tests/runtime/test_in_memory_checkpoint_write_profile.py::test_manual_profile_in_memory_index_job_breakdown[pg] -q -s --run-manual
+```bash
+.venv/bin/python -m pytest tests/runtime/test_in_memory_checkpoint_write_profile.py::test_manual_profile_in_memory_index_job_breakdown[pg] -q -s --run-manual
 ```
 
 Notes:
