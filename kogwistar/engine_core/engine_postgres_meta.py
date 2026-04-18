@@ -14,6 +14,7 @@ import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from .postgres_backend import get_active_conn, _set_active_conn
+from ..messaging.models import ProjectedLaneMessageRow
 
 
 _SCHEMA_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -124,6 +125,30 @@ class IndexJob:
 
 
 @dataclass
+class ProjectedLaneMessage:
+    message_id: str
+    namespace: str
+    inbox_id: str
+    conversation_id: str
+    recipient_id: str
+    sender_id: str
+    msg_type: str
+    status: str
+    seq: int
+    conversation_seq: int
+    claimed_by: Optional[str] = None
+    lease_until: Optional[str] = None
+    retry_count: int = 0
+    created_at: int = 0
+    available_at: int = 0
+    run_id: Optional[str] = None
+    step_id: Optional[str] = None
+    correlation_id: Optional[str] = None
+    payload_json: Optional[str] = None
+    error_json: Optional[str] = None
+
+
+@dataclass
 class EnginePostgresMetaStore:
     """Postgres-backed replacement for EngineSQLite.
 
@@ -174,6 +199,7 @@ class EnginePostgresMetaStore:
 
     def _bootstrap_statements(self) -> list[str]:
         schema, gt, ut, ij, ias = self._bootstrap_identifiers()
+        plm = f"{schema}.projected_lane_messages"
         return [
             f"CREATE SCHEMA IF NOT EXISTS {schema}",
             f"CREATE TABLE IF NOT EXISTS {gt} (value BIGINT NOT NULL)",
@@ -219,6 +245,33 @@ class EnginePostgresMetaStore:
                 )
             """,
             f"CREATE INDEX IF NOT EXISTS idx_index_applied_state_key ON {ias}(coalesce_key)",
+            f"""
+                CREATE TABLE IF NOT EXISTS {plm} (
+                    message_id TEXT PRIMARY KEY,
+                    namespace TEXT NOT NULL DEFAULT 'default',
+                    inbox_id TEXT NOT NULL,
+                    conversation_id TEXT NOT NULL,
+                    recipient_id TEXT NOT NULL,
+                    sender_id TEXT NOT NULL,
+                    msg_type TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    seq BIGINT NOT NULL,
+                    conversation_seq BIGINT NOT NULL,
+                    claimed_by TEXT NULL,
+                    lease_until TIMESTAMPTZ NULL,
+                    retry_count INTEGER NOT NULL DEFAULT 0,
+                    created_at BIGINT NOT NULL,
+                    available_at BIGINT NOT NULL,
+                    run_id TEXT NULL,
+                    step_id TEXT NULL,
+                    correlation_id TEXT NULL,
+                    payload_json TEXT NULL,
+                    error_json TEXT NULL
+                )
+            """,
+            f"CREATE INDEX IF NOT EXISTS idx_lane_messages_namespace_inbox_seq ON {plm}(namespace, inbox_id, seq)",
+            f"CREATE INDEX IF NOT EXISTS idx_lane_messages_claim ON {plm}(namespace, inbox_id, status, available_at, lease_until)",
+            f"CREATE INDEX IF NOT EXISTS idx_lane_messages_conversation_seq ON {plm}(namespace, conversation_id, conversation_seq)",
             f"""
             CREATE TABLE IF NOT EXISTS {schema}.namespace_seq (
                 namespace TEXT PRIMARY KEY,
@@ -819,6 +872,279 @@ class EnginePostgresMetaStore:
                 )
             )
         return out
+
+    def project_lane_message(
+        self,
+        *,
+        message_id: str,
+        namespace: str,
+        inbox_id: str,
+        conversation_id: str,
+        recipient_id: str,
+        sender_id: str,
+        msg_type: str,
+        status: str,
+        created_at: int,
+        available_at: int,
+        run_id: str | None,
+        step_id: str | None,
+        correlation_id: str | None,
+        payload_json: str | None = None,
+        error_json: str | None = None,
+    ) -> None:
+        table = f"{self.schema}.projected_lane_messages"
+        with self.transaction() as conn:
+            conn.execute(
+                sa.text(
+                    f"""
+                    INSERT INTO {table}(
+                        message_id, namespace, inbox_id, conversation_id,
+                        recipient_id, sender_id, msg_type, status,
+                        seq, conversation_seq, claimed_by, lease_until,
+                        retry_count, created_at, available_at, run_id,
+                        step_id, correlation_id, payload_json, error_json
+                    )
+                    SELECT
+                        :message_id, :namespace, :inbox_id, :conversation_id,
+                        :recipient_id, :sender_id, :msg_type, :status,
+                        COALESCE((
+                            SELECT MAX(seq) + 1 FROM {table}
+                            WHERE namespace = :namespace AND inbox_id = :inbox_id
+                        ), 1),
+                        COALESCE((
+                            SELECT MAX(conversation_seq) + 1 FROM {table}
+                            WHERE namespace = :namespace AND conversation_id = :conversation_id
+                        ), 1),
+                        NULL, NULL, 0, :created_at, :available_at, :run_id,
+                        :step_id, :correlation_id, :payload_json, :error_json
+                    ON CONFLICT (message_id) DO NOTHING
+                    """
+                ),
+                {
+                    "message_id": str(message_id),
+                    "namespace": str(namespace),
+                    "inbox_id": str(inbox_id),
+                    "conversation_id": str(conversation_id),
+                    "recipient_id": str(recipient_id),
+                    "sender_id": str(sender_id),
+                    "msg_type": str(msg_type),
+                    "status": str(status),
+                    "created_at": int(created_at),
+                    "available_at": int(available_at),
+                    "run_id": run_id,
+                    "step_id": step_id,
+                    "correlation_id": correlation_id,
+                    "payload_json": payload_json,
+                    "error_json": error_json,
+                },
+            )
+
+    def update_projected_lane_message_status(
+        self,
+        *,
+        message_id: str,
+        status: str,
+        error_json: str | None = None,
+    ) -> None:
+        table = f"{self.schema}.projected_lane_messages"
+        with self.transaction() as conn:
+            conn.execute(
+                sa.text(
+                    f"""
+                    UPDATE {table}
+                    SET status = :status,
+                        error_json = COALESCE(:error_json, error_json),
+                        claimed_by = CASE WHEN :status IN ('completed','failed','cancelled') THEN NULL ELSE claimed_by END,
+                        lease_until = CASE WHEN :status IN ('completed','failed','cancelled') THEN NULL ELSE lease_until END
+                    WHERE message_id = :message_id
+                    """
+                ),
+                {
+                    "message_id": str(message_id),
+                    "status": str(status),
+                    "error_json": error_json,
+                },
+            )
+
+    def claim_projected_lane_messages(
+        self,
+        *,
+        namespace: str = "default",
+        inbox_id: str,
+        claimed_by: str,
+        limit: int = 50,
+        lease_seconds: int = 60,
+    ) -> list[ProjectedLaneMessageRow]:
+        table = f"{self.schema}.projected_lane_messages"
+        with self.transaction() as conn:
+            rows = conn.execute(
+                sa.text(
+                    f"""
+                    WITH picked AS (
+                        SELECT message_id
+                        FROM {table}
+                        WHERE namespace = :namespace
+                          AND inbox_id = :inbox_id
+                          AND (
+                            (status = 'pending' AND available_at <= EXTRACT(EPOCH FROM NOW())::BIGINT)
+                            OR
+                            (status = 'claimed' AND lease_until IS NOT NULL AND lease_until < NOW())
+                          )
+                        ORDER BY seq ASC, created_at ASC
+                        LIMIT :limit
+                        FOR UPDATE
+                    )
+                    UPDATE {table} t
+                    SET status = 'claimed',
+                        claimed_by = :claimed_by,
+                        lease_until = NOW() + (:lease_seconds || ' seconds')::interval
+                    FROM picked
+                    WHERE t.message_id = picked.message_id
+                    RETURNING t.message_id, t.namespace, t.inbox_id, t.conversation_id, t.recipient_id, t.sender_id,
+                              t.msg_type, t.status, t.seq, t.conversation_seq, t.claimed_by, t.lease_until,
+                              t.retry_count, t.created_at, t.available_at, t.run_id, t.step_id, t.correlation_id,
+                              t.payload_json, t.error_json
+                    """
+                ),
+                {
+                    "namespace": str(namespace),
+                    "inbox_id": str(inbox_id),
+                    "claimed_by": str(claimed_by),
+                    "lease_seconds": int(lease_seconds),
+                    "limit": int(limit),
+                },
+            ).mappings().all()
+        return [
+            ProjectedLaneMessageRow(
+                message_id=str(r.get("message_id")),
+                namespace=str(r.get("namespace")),
+                inbox_id=str(r.get("inbox_id")),
+                conversation_id=str(r.get("conversation_id")),
+                recipient_id=str(r.get("recipient_id")),
+                sender_id=str(r.get("sender_id")),
+                msg_type=str(r.get("msg_type")),
+                status=str(r.get("status")),
+                seq=int(r.get("seq") or 0),
+                conversation_seq=int(r.get("conversation_seq") or 0),
+                claimed_by=(str(r.get("claimed_by")) if r.get("claimed_by") is not None else None),
+                lease_until=None,
+                retry_count=int(r.get("retry_count") or 0),
+                created_at=int(r.get("created_at") or 0),
+                available_at=int(r.get("available_at") or 0),
+                run_id=(str(r.get("run_id")) if r.get("run_id") is not None else None),
+                step_id=(str(r.get("step_id")) if r.get("step_id") is not None else None),
+                correlation_id=(str(r.get("correlation_id")) if r.get("correlation_id") is not None else None),
+                payload_json=(str(r.get("payload_json")) if r.get("payload_json") is not None else None),
+                error_json=(str(r.get("error_json")) if r.get("error_json") is not None else None),
+            )
+            for r in rows
+        ]
+
+    def ack_projected_lane_message(self, *, message_id: str, claimed_by: str) -> None:
+        table = f"{self.schema}.projected_lane_messages"
+        with self.transaction() as conn:
+            conn.execute(
+                sa.text(
+                    f"""
+                    UPDATE {table}
+                    SET status = 'completed', claimed_by = NULL, lease_until = NULL
+                    WHERE message_id = :message_id
+                      AND (claimed_by IS NULL OR claimed_by = :claimed_by)
+                    """
+                ),
+                {"message_id": str(message_id), "claimed_by": str(claimed_by)},
+            )
+
+    def requeue_projected_lane_message(
+        self,
+        *,
+        message_id: str,
+        claimed_by: str,
+        error_json: str | None = None,
+        delay_seconds: int = 0,
+    ) -> None:
+        table = f"{self.schema}.projected_lane_messages"
+        with self.transaction() as conn:
+            conn.execute(
+                sa.text(
+                    f"""
+                    UPDATE {table}
+                    SET status = 'pending',
+                        claimed_by = NULL,
+                        lease_until = NULL,
+                        retry_count = retry_count + 1,
+                        available_at = EXTRACT(EPOCH FROM (NOW() + (:delay_seconds || ' seconds')::interval))::BIGINT,
+                        error_json = COALESCE(:error_json, error_json)
+                    WHERE message_id = :message_id
+                      AND (claimed_by IS NULL OR claimed_by = :claimed_by)
+                    """
+                ),
+                {
+                    "message_id": str(message_id),
+                    "claimed_by": str(claimed_by),
+                    "delay_seconds": int(delay_seconds),
+                    "error_json": error_json,
+                },
+            )
+
+    def list_projected_lane_messages(
+        self,
+        *,
+        namespace: str = "default",
+        inbox_id: str | None = None,
+        status: str | None = None,
+        limit: int = 1000,
+    ) -> list[ProjectedLaneMessageRow]:
+        table = f"{self.schema}.projected_lane_messages"
+        where = ["namespace = :namespace"]
+        params: Dict[str, Any] = {"namespace": str(namespace), "limit": int(limit)}
+        if inbox_id is not None:
+            where.append("inbox_id = :inbox_id")
+            params["inbox_id"] = str(inbox_id)
+        if status is not None:
+            where.append("status = :status")
+            params["status"] = str(status)
+        with self.transaction() as conn:
+            rows = conn.execute(
+                sa.text(
+                    f"""
+                    SELECT message_id, namespace, inbox_id, conversation_id, recipient_id, sender_id,
+                           msg_type, status, seq, conversation_seq, claimed_by, lease_until,
+                           retry_count, created_at, available_at, run_id, step_id, correlation_id,
+                           payload_json, error_json
+                    FROM {table}
+                    WHERE {' AND '.join(where)}
+                    ORDER BY inbox_id ASC, seq ASC, created_at ASC
+                    LIMIT :limit
+                    """
+                ),
+                params,
+            ).mappings().all()
+        return [
+            ProjectedLaneMessageRow(
+                message_id=str(r.get("message_id")),
+                namespace=str(r.get("namespace")),
+                inbox_id=str(r.get("inbox_id")),
+                conversation_id=str(r.get("conversation_id")),
+                recipient_id=str(r.get("recipient_id")),
+                sender_id=str(r.get("sender_id")),
+                msg_type=str(r.get("msg_type")),
+                status=str(r.get("status")),
+                seq=int(r.get("seq") or 0),
+                conversation_seq=int(r.get("conversation_seq") or 0),
+                claimed_by=(str(r.get("claimed_by")) if r.get("claimed_by") is not None else None),
+                lease_until=None,
+                retry_count=int(r.get("retry_count") or 0),
+                created_at=int(r.get("created_at") or 0),
+                available_at=int(r.get("available_at") or 0),
+                run_id=(str(r.get("run_id")) if r.get("run_id") is not None else None),
+                step_id=(str(r.get("step_id")) if r.get("step_id") is not None else None),
+                correlation_id=(str(r.get("correlation_id")) if r.get("correlation_id") is not None else None),
+                payload_json=(str(r.get("payload_json")) if r.get("payload_json") is not None else None),
+                error_json=(str(r.get("error_json")) if r.get("error_json") is not None else None),
+            )
+            for r in rows
+        ]
 
     # ----------------------------
     # Phase 2: applied fingerprints (derived index status)

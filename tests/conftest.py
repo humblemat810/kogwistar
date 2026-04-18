@@ -142,7 +142,8 @@ def tmp_path_factory() -> _SimpleTmpPathFactory:
 
 @pytest.fixture
 def tmp_path(request: pytest.FixtureRequest, tmp_path_factory: _SimpleTmpPathFactory):
-    path = tmp_path_factory.mktemp(request.node.name.replace(os.sep, "_"))
+    safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", request.node.name.replace(os.sep, "_"))
+    path = tmp_path_factory.mktemp(safe_name)
     request.addfinalizer(lambda: shutil.rmtree(path, ignore_errors=True))
     return path
 

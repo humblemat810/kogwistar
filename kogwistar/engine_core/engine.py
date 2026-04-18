@@ -803,6 +803,36 @@ class GraphKnowledgeEngine:
     def enqueue_index_job(self, *args, **kwargs) -> str:
         return self.indexing.enqueue_index_job(*args, **kwargs)
 
+    def send_lane_message(self, *args, **kwargs):
+        from kogwistar.messaging import LaneMessagingService
+
+        return LaneMessagingService(self).send_message(*args, **kwargs)
+
+    def update_lane_message_status(self, *args, **kwargs) -> None:
+        from kogwistar.messaging import LaneMessagingService
+
+        return LaneMessagingService(self).update_message_status(*args, **kwargs)
+
+    def claim_projected_lane_messages(self, *args, **kwargs):
+        from kogwistar.messaging import LaneMessagingService
+
+        return LaneMessagingService(self).claim_pending(*args, **kwargs)
+
+    def ack_projected_lane_message(self, *args, **kwargs) -> None:
+        from kogwistar.messaging import LaneMessagingService
+
+        return LaneMessagingService(self).ack(*args, **kwargs)
+
+    def requeue_projected_lane_message(self, *args, **kwargs) -> None:
+        from kogwistar.messaging import LaneMessagingService
+
+        return LaneMessagingService(self).requeue(*args, **kwargs)
+
+    def list_projected_lane_messages(self, *args, **kwargs):
+        from kogwistar.messaging import LaneMessagingService
+
+        return LaneMessagingService(self).list_projected(*args, **kwargs)
+
     def enqueue_index_jobs_for_node(self, node_id: str, *, op: str) -> None:
         return self.indexing.enqueue_index_jobs_for_node(node_id, op=op)
 

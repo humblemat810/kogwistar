@@ -10,6 +10,8 @@ from datetime import datetime, timezone
 from typing import Any, Iterator, Optional
 
 from .engine_sqlite import IndexJobRow
+from .meta_lane_messages import LaneMessageMetaStoreMixin
+from ..messaging.models import ProjectedLaneMessageRow
 
 
 _active_in_memory_meta_txn: contextvars.ContextVar["_TxnView | None"] = contextvars.ContextVar(
@@ -97,6 +99,54 @@ class _WorkflowDeltaRow:
 
 
 @dataclass
+class _ProjectedLaneMessageState:
+    message_id: str
+    namespace: str
+    inbox_id: str
+    conversation_id: str
+    recipient_id: str
+    sender_id: str
+    msg_type: str
+    status: str
+    seq: int
+    conversation_seq: int
+    claimed_by: str | None
+    lease_until: int | None
+    retry_count: int
+    created_at: int
+    available_at: int
+    run_id: str | None
+    step_id: str | None
+    correlation_id: str | None
+    payload_json: str | None
+    error_json: str | None
+
+    def as_row(self) -> ProjectedLaneMessageRow:
+        return ProjectedLaneMessageRow(
+            message_id=self.message_id,
+            namespace=self.namespace,
+            inbox_id=self.inbox_id,
+            conversation_id=self.conversation_id,
+            recipient_id=self.recipient_id,
+            sender_id=self.sender_id,
+            msg_type=self.msg_type,
+            status=self.status,
+            seq=self.seq,
+            conversation_seq=self.conversation_seq,
+            claimed_by=self.claimed_by,
+            lease_until=self.lease_until,
+            retry_count=self.retry_count,
+            created_at=self.created_at,
+            available_at=self.available_at,
+            run_id=self.run_id,
+            step_id=self.step_id,
+            correlation_id=self.correlation_id,
+            payload_json=self.payload_json,
+            error_json=self.error_json,
+        )
+
+
+@dataclass
 class _ServerRunRow:
     run_id: str
     conversation_id: str
@@ -129,6 +179,7 @@ class _MetaState:
     user_seq: dict[str, int] = field(default_factory=dict)
     namespace_next_seq: dict[str, int] = field(default_factory=dict)
     index_jobs: dict[str, _JobState] = field(default_factory=dict)
+    lane_messages: dict[str, _ProjectedLaneMessageState] = field(default_factory=dict)
     applied_fingerprints: dict[tuple[str, str], tuple[str | None, str | None, int]] = field(
         default_factory=dict
     )
@@ -184,7 +235,7 @@ class _InMemoryMetaConnection:
         raise NotImplementedError(f"In-memory meta connect() does not support SQL: {sql!r}")
 
 
-class InMemoryMetaStore:
+class InMemoryMetaStore(LaneMessageMetaStoreMixin):
     """Lock-backed in-memory metastore with EngineSQLite-like behavior."""
 
     def __init__(self) -> None:
@@ -422,6 +473,64 @@ class InMemoryMetaStore:
             out.append(job)
         out.sort(key=lambda item: item.created_at)
         return [job.as_row() for job in out[: int(limit)]]
+
+    def _lane_message_get_row(self, *, message_id: str) -> ProjectedLaneMessageRow | None:
+        with self._lock:
+            row = self._state.lane_messages.get(str(message_id))
+            if row is None:
+                return None
+            return row.as_row()
+
+    def _lane_message_insert_row(self, *, row: ProjectedLaneMessageRow) -> None:
+        with self.transaction() as txn:
+            txn.state.lane_messages[str(row.message_id)] = _ProjectedLaneMessageState(
+                message_id=str(row.message_id),
+                namespace=str(row.namespace),
+                inbox_id=str(row.inbox_id),
+                conversation_id=str(row.conversation_id),
+                recipient_id=str(row.recipient_id),
+                sender_id=str(row.sender_id),
+                msg_type=str(row.msg_type),
+                status=str(row.status),
+                seq=int(row.seq),
+                conversation_seq=int(row.conversation_seq),
+                claimed_by=None if row.claimed_by is None else str(row.claimed_by),
+                lease_until=None if row.lease_until is None else int(row.lease_until),
+                retry_count=int(row.retry_count),
+                created_at=int(row.created_at),
+                available_at=int(row.available_at),
+                run_id=None if row.run_id is None else str(row.run_id),
+                step_id=None if row.step_id is None else str(row.step_id),
+                correlation_id=None if row.correlation_id is None else str(row.correlation_id),
+                payload_json=row.payload_json,
+                error_json=row.error_json,
+            )
+
+    def _lane_message_update_row(self, *, row: ProjectedLaneMessageRow) -> None:
+        self._lane_message_insert_row(row=row)
+
+    def _lane_message_list_rows(
+        self,
+        *,
+        namespace: str = "default",
+        inbox_id: str | None = None,
+        status: str | None = None,
+        conversation_id: str | None = None,
+    ) -> list[ProjectedLaneMessageRow]:
+        with self._lock:
+            rows = list(self._state.lane_messages.values())
+        out: list[ProjectedLaneMessageRow] = []
+        for row in rows:
+            if row.namespace != str(namespace):
+                continue
+            if inbox_id is not None and row.inbox_id != str(inbox_id):
+                continue
+            if conversation_id is not None and row.conversation_id != str(conversation_id):
+                continue
+            if status is not None and row.status != str(status):
+                continue
+            out.append(row.as_row())
+        return out
 
     def get_index_applied_fingerprint(
         self, *, namespace: str = "default", coalesce_key: str
