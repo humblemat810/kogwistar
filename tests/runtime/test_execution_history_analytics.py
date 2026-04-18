@@ -6,7 +6,7 @@ import pytest
 
 pytestmark = pytest.mark.core
 
-from kogwistar.runtime.analytics import summarize_execution_failure_patterns
+from kogwistar.workflow.analytics import summarize_execution_failure_patterns
 
 
 @dataclass

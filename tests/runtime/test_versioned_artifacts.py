@@ -8,7 +8,7 @@ import pytest
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine, scoped_namespace
 from kogwistar.engine_core.models import Grounding, Node, Span
-from kogwistar.runtime.artifacts import write_versioned_artifact
+from kogwistar.maintenance.artifacts import write_versioned_artifact
 from tests._helpers.fake_backend import build_fake_backend
 
 
