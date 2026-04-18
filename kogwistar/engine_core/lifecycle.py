@@ -129,6 +129,12 @@ class LifecycleSubsystem(NamespaceProxy):
         return ok
 
     def redirect_node(self, from_id: str, to_id: str, **kw) -> bool:
+        """Supersede ``from_id`` with ``to_id`` while preserving lookup continuity.
+
+        The source node becomes tombstoned, but its ``redirect_to_id`` points at the
+        replacement node. Read paths using ``resolve_mode="redirect"`` will follow
+        that link so callers can keep resolving the old id to the new active record.
+        """
         if from_id == to_id:
             return False
 
@@ -179,6 +185,7 @@ class LifecycleSubsystem(NamespaceProxy):
         return ok
 
     def redirect_edge(self, from_id: str, to_id: str, **kw) -> bool:
+        """Supersede ``from_id`` with ``to_id`` while preserving lookup continuity."""
         if from_id == to_id:
             return False
 

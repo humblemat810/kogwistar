@@ -26,6 +26,10 @@ if TYPE_CHECKING:
         ExecutionFailurePattern,
         summarize_execution_failure_patterns,
     )
+    from kogwistar.runtime.artifacts import (
+        VersionedArtifactWriteResult,
+        write_versioned_artifact,
+    )
     from kogwistar.runtime.runtime import (
         RouteDecision,
         RunResult,
@@ -47,6 +51,8 @@ __all__ = [
     "MappingStepResolver",
     "ExecutionFailurePattern",
     "summarize_execution_failure_patterns",
+    "VersionedArtifactWriteResult",
+    "write_versioned_artifact",
     "RouteDecision",
     "RunResult",
     "StepContext",
@@ -67,6 +73,8 @@ _EXPORTS = {
     "MappingStepResolver": "kogwistar.runtime.resolvers",
     "ExecutionFailurePattern": "kogwistar.runtime.analytics",
     "summarize_execution_failure_patterns": "kogwistar.runtime.analytics",
+    "VersionedArtifactWriteResult": "kogwistar.runtime.artifacts",
+    "write_versioned_artifact": "kogwistar.runtime.artifacts",
     "RouteDecision": "kogwistar.runtime.runtime",
     "RunResult": "kogwistar.runtime.runtime",
     "StepContext": "kogwistar.runtime.runtime",
