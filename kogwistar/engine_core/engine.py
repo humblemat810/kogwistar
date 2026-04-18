@@ -2,6 +2,7 @@
 
 from contextlib import contextmanager
 import contextvars
+import threading
 
 import pathlib
 import uuid
@@ -388,6 +389,79 @@ def engine_context(fn):
             return fn(self, *args, **kwargs)
 
     return wrapper
+
+
+class _NamespacedEngineProxy:
+    """Copy-on-Write namespace view over a ``GraphKnowledgeEngine``."""
+
+    def __init__(self, real_engine: Any, namespace: str) -> None:
+        object.__setattr__(self, "_real", real_engine)
+        object.__setattr__(self, "_ns", namespace)
+
+    def __getattribute__(self, name: str) -> Any:
+        if name in ("_real", "_ns"):
+            return object.__getattribute__(self, name)
+        if name == "namespace":
+            return object.__getattribute__(self, "_ns")
+        return getattr(object.__getattribute__(self, "_real"), name)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        if name == "namespace":
+            object.__setattr__(self, "_ns", value)
+        elif name in ("_real", "_ns"):
+            object.__setattr__(self, name, value)
+        else:
+            setattr(object.__getattribute__(self, "_real"), name, value)
+
+
+_ENGINE_NS_LOCKS: dict[int, threading.RLock] = {}
+_ENGINE_NS_LOCKS_META = threading.Lock()
+
+
+def _get_engine_ns_lock(engine: Any) -> threading.RLock:
+    eid = id(engine)
+    with _ENGINE_NS_LOCKS_META:
+        if eid not in _ENGINE_NS_LOCKS:
+            _ENGINE_NS_LOCKS[eid] = threading.RLock()
+        return _ENGINE_NS_LOCKS[eid]
+
+
+_SUBSYSTEMS_WITH_E = (
+    "read",
+    "write",
+    "extract",
+    "persist",
+    "rollback",
+    "adjudicate",
+    "ingest",
+    "embed",
+    "lifecycle",
+)
+
+
+@contextmanager
+def scoped_namespace(engine: Any, namespace: str):
+    """Temporarily scope a graph engine to a namespace without mutating it."""
+    proxy = _NamespacedEngineProxy(engine, namespace)
+    rebindings: list[tuple[Any, str, Any]] = []
+    for sub_name in _SUBSYSTEMS_WITH_E:
+        sub = getattr(engine, sub_name, None)
+        if sub is not None and hasattr(sub, "_e"):
+            rebindings.append((sub, "_e", sub._e))
+
+    indexing = getattr(engine, "indexing", None)
+    if indexing is not None and hasattr(indexing, "engine"):
+        rebindings.append((indexing, "engine", indexing.engine))
+
+    lock = _get_engine_ns_lock(engine)
+    with lock:
+        for obj, attr, _ in rebindings:
+            setattr(obj, attr, proxy)
+        try:
+            yield
+        finally:
+            for obj, attr, old_val in rebindings:
+                setattr(obj, attr, old_val)
 
 
 class GraphKnowledgeEngine:

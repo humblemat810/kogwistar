@@ -11,6 +11,7 @@ pytestmark = pytest.mark.ci
 from kogwistar.engine_core.engine import (
     GraphKnowledgeEngine,
     _SHIM_METHOD_MAP,
+    scoped_namespace,
 )
 from tests._helpers.fake_backend import build_fake_backend
 
@@ -82,3 +83,27 @@ def test_shim_map_does_not_include_conversation_methods():
     assert "_get_conversation_tail" not in _SHIM_METHOD_MAP
     assert "create_conversation_primitive" not in _SHIM_METHOD_MAP
     assert "respond_to_utterance" not in _SHIM_METHOD_MAP
+
+
+def test_scoped_namespace_rebinds_engine_views():
+    test_db_dir = Path.cwd() / ".tmp_shim_tests" / str(uuid.uuid4())
+    test_db_dir.mkdir(parents=True, exist_ok=True)
+    engine = GraphKnowledgeEngine(
+        persist_directory=str(test_db_dir),
+        backend_factory=build_fake_backend,
+    )
+
+    original_namespace = engine.namespace
+    scoped = "ws:demo:conv_bg"
+
+    with scoped_namespace(engine, scoped):
+        assert engine.namespace == original_namespace
+        assert engine.read._e.namespace == scoped
+        assert engine.write._e.namespace == scoped
+        assert engine.indexing.engine.namespace == scoped
+
+    assert engine.namespace == original_namespace
+    assert engine.read._e.namespace == original_namespace
+    assert engine.write._e.namespace == original_namespace
+    assert engine.indexing.engine.namespace == original_namespace
+    shutil.rmtree(test_db_dir, ignore_errors=True)
