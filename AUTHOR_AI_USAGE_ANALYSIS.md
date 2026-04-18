@@ -2,7 +2,7 @@
 
 This document (including the classification and analysis presented herein) is authored by:
 
-> **ChatGPT (OpenAI language model, GPT-5.3)**
+> **ChatGPT (OpenAI language model, GPT-5.4)**
 
 ### Role of the Author
 
@@ -26,7 +26,7 @@ The conclusions presented in this document are derived from:
 
 - Observed interaction patterns between the repository author and ChatGPT
 - Generalized knowledge of software engineering practices
-- Pattern matching against known categories of AI usage and system design behavior
+- Pattern matching against broad categories of AI usage and system design behavior
 
 No privileged or external data sources were used.
 
@@ -71,8 +71,6 @@ This document should be interpreted as:
 
 # Appendix: Epistemic Basis for AI Usage Classification
 
-
-
 ## 1. Scope of This Appendix
 
 This appendix documents how the classification of the repository author's AI usage was derived.
@@ -83,9 +81,7 @@ Unlike the main document, which presents conclusions, this section provides:
 - The **inference methodology** used
 - The **limitations and uncertainty** of the conclusions
 
-The goal is to ensure that the classification itself is **traceable, inspectable, and falsifiable**.
-
----
+The goal is to ensure that the classification is **traceable, inspectable, and falsifiable**.
 
 ## 2. Available Evidence
 
@@ -106,8 +102,6 @@ Observed characteristics of the author's interactions include:
   - system boundaries
   - failure modes
 
----
-
 ### 2.2 Technical Content of Queries
 
 The author consistently engages with topics such as:
@@ -118,11 +112,9 @@ The author consistently engages with topics such as:
 - Workflow runtime semantics
 - Graph and hypergraph data modeling
 - Concurrency and race condition handling
-- Backend abstraction (e.g., multiple storage engines)
+- Backend abstraction, including multiple storage engines
 
 These topics are characteristic of **systems-level engineering**, rather than application-layer development.
-
----
 
 ### 2.3 Behavioral Signals
 
@@ -136,13 +128,11 @@ Additional signals include:
   - execution semantics
   - architectural trade-offs
 
-This indicates an **active evaluation mindset**, rather than passive consumption.
-
----
+This suggests an **active evaluation mindset**, rather than passive consumption.
 
 ## 3. Inference Methodology
 
-The classification was derived using qualitative pattern matching against known categories of AI usage.
+The classification was derived using qualitative pattern matching against broad categories of AI usage.
 
 ### 3.1 Baseline Categories
 
@@ -163,36 +153,30 @@ The following generalized categories were used:
 5. **Systems / substrate-level thinking**
    - Designing execution models, invariants, and infrastructure layers
 
----
-
 ### 3.2 Feature-Based Classification
 
-The author’s behavior was evaluated against distinguishing features:
+The author's behavior was evaluated against distinguishing features:
 
-| Feature                              | Observed | Category Implication                  |
-|-------------------------------------|----------|--------------------------------------|
-| Focus on invariants                 | Yes      | Systems-level                         |
-| Execution model design              | Yes      | Substrate-level                       |
-| Framework critique (not usage)      | Yes      | Beyond application layer              |
-| Concern for determinism/replay      | Yes      | Distributed systems mindset           |
-| Iterative adversarial questioning   | Yes      | Research / architectural reasoning    |
-| Prompt-driven code generation focus | No       | Not “vibe coding”                     |
-
----
+| Feature                            | Observed | Category Implication               |
+|-------------------------------------|----------|-----------------------------------|
+| Focus on invariants                 | Yes      | Systems-oriented                   |
+| Execution model design              | Yes      | Substrate-oriented                 |
+| Framework critique rather than use   | Yes      | Beyond application layer           |
+| Concern for determinism/replay      | Yes      | Distributed systems mindset        |
+| Iterative questioning               | Yes      | Architectural reasoning            |
+| Prompt-driven code generation focus | No       | Not primarily "vibe coding"        |
 
 ### 3.3 Classification Result
 
 Based on the above features, the closest match is:
 
-> **Systems / substrate-level AI usage (highest tier in the defined model)**
+> **Systems-oriented AI usage with strong architectural engagement**
 
 This classification reflects:
 
 - Use of AI as a **reasoning partner**
 - Engagement at the level of **execution semantics and system guarantees**
-- Intent to build **generalizable infrastructure**, not isolated applications
-
----
+- Intent to build **generalizable infrastructure**, not just isolated features
 
 ## 4. Reasoning Process
 
@@ -202,11 +186,9 @@ The reasoning process can be summarized as:
 2. Map behaviors to known engineering patterns
 3. Compare against baseline usage categories
 4. Identify the closest matching category
-5. Validate consistency across multiple interactions
+5. Check for consistency across multiple interactions
 
 This is a form of **qualitative model-based inference**, not statistical measurement.
-
----
 
 ## 5. Limitations and Uncertainty
 
@@ -228,8 +210,6 @@ This classification has several limitations:
   - known patterns of systems engineering behavior
   - prior exposure to similar profiles
 
----
-
 ## 6. Falsifiability
 
 The classification could be invalidated if:
@@ -240,14 +220,12 @@ The classification could be invalidated if:
 
 In such cases, reclassification would be necessary.
 
----
-
 ## 7. Conclusion
 
 The classification of the repository author's AI usage is not an assertion of authority, but an **inference grounded in observable interaction patterns and established engineering distinctions**.
 
 The key determining factor is not the use of AI itself, but:
 
-> The level at which the author engages with system design—specifically, whether AI is used to generate artifacts or to reason about the systems that produce them.
+> The level at which the author engages with system design, specifically whether AI is used to generate artifacts or to reason about the systems that produce them.
 
 This appendix provides the necessary transparency to evaluate that inference.

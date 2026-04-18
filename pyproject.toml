@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "kogwistar"
-version = "0.1.0"
+version = "0.2.0"
 description = "Graph-native agent harness and substrate for knowledge, memory, workflow, and MCP tooling"
 keywords = ["agent harness", "agent substrate", "graph-native", "knowledge graph", "memory", "workflow", "mcp"]
 readme = { file = "README.md", content-type = "text/markdown" }
