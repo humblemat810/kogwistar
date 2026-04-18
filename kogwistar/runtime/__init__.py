@@ -22,6 +22,10 @@ if TYPE_CHECKING:
         BaseResolver,
         MappingStepResolver,
     )
+    from kogwistar.runtime.analytics import (
+        ExecutionFailurePattern,
+        summarize_execution_failure_patterns,
+    )
     from kogwistar.runtime.runtime import (
         RouteDecision,
         RunResult,
@@ -41,6 +45,8 @@ __all__ = [
     "replay_to",
     "BaseResolver",
     "MappingStepResolver",
+    "ExecutionFailurePattern",
+    "summarize_execution_failure_patterns",
     "RouteDecision",
     "RunResult",
     "StepContext",
@@ -59,6 +65,8 @@ _EXPORTS = {
     "replay_to": "kogwistar.runtime.replay",
     "BaseResolver": "kogwistar.runtime.resolvers",
     "MappingStepResolver": "kogwistar.runtime.resolvers",
+    "ExecutionFailurePattern": "kogwistar.runtime.analytics",
+    "summarize_execution_failure_patterns": "kogwistar.runtime.analytics",
     "RouteDecision": "kogwistar.runtime.runtime",
     "RunResult": "kogwistar.runtime.runtime",
     "StepContext": "kogwistar.runtime.runtime",
