@@ -102,6 +102,8 @@ class _Engine:
     backend: _Backend
 
     def __init__(self, _backend=None):
+        self.read = self
+        self.write = self
         self.edges = []
         self.nodes = []
         if _backend:
@@ -266,6 +268,47 @@ def test_edge_projection_allows_dangling_endpoints() -> None:
         "Edge projection should not auto-create endpoint pointer nodes"
     )
     assert pid_edge in [i.id for i in engine.get_edges()]
+
+
+def test_projected_kg_node_is_pointer_only_and_kg_targeted() -> None:
+    """Invariant: conversation projection of KG nodes must stay pointer-only."""
+    from kogwistar.conversation.agentic_answering import AgenticAnsweringAgent
+
+    assert hasattr(AgenticAnsweringAgent, "_project_kg_node"), (
+        "Missing AgenticAnsweringAgent._project_kg_node. "
+        "Project KG nodes into conversation as pointer nodes only."
+    )
+
+    agent = object.__new__(AgenticAnsweringAgent)
+    agent.conversation_engine = _Engine(_Backend())
+    agent.knowledge_engine = _Engine(_Backend())
+
+    kg_node_id = "KG_NODE_POINTER_1"
+    agent.knowledge_engine.backend.nodes[kg_node_id] = {
+        "metadata": {
+            "label": "KG Node",
+            "summary": "Durable knowledge node",
+            "type": "entity",
+            "canonical_entity_id": kg_node_id,
+        }
+    }
+
+    run_node_id = "RUN3"
+    pid_node = agent._project_kg_node(
+        conversation_id="conv3",
+        run_node_id=run_node_id,
+        kg_node_id=kg_node_id,
+        provenance_span=_span(),
+        prev_turn_meta_summary=MetaFromLastSummary(0, 0, 0),
+    )
+
+    nodes = agent.conversation_engine.get_nodes()
+    assert pid_node in [i.id for i in nodes]
+    stored = [i for i in nodes if i.id == pid_node][0]
+    assert stored.type == "reference_pointer"
+    assert stored.properties["target_namespace"] == "kg"
+    assert stored.properties["target_id"] == kg_node_id
+    assert stored.properties["refers_to_collection"] == "nodes"
 
 
 def test_evidence_pack_digest_includes_edges_if_supported() -> None:

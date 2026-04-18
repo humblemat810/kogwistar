@@ -119,3 +119,72 @@ def test_write_execution_wisdom_artifacts_groups_repeated_failures():
         assert wisdom_nodes[0].metadata["failure_count"] == 2
     finally:
         shutil.rmtree(test_db_dir, ignore_errors=True)
+
+
+def test_write_execution_wisdom_artifacts_reads_source_and_writes_target():
+    source_engine, source_db_dir = _make_engine()
+    target_engine, target_db_dir = _make_engine()
+    source_namespace = "ws:demo:conv:bg"
+    target_namespace = "ws:demo:wisdom"
+
+    try:
+        with scoped_namespace(source_engine, source_namespace):
+            source_engine.write.add_node(
+                _step_exec("src-1", step_op="route", status="failure", run_id="run-a")
+            )
+            source_engine.write.add_node(
+                _step_exec("src-2", step_op="route", status="error", run_id="run-b")
+            )
+
+        result = write_execution_wisdom_artifacts(
+            source_engine,
+            target_engine=target_engine,
+            source_namespace=source_namespace,
+            target_namespace=target_namespace,
+            source_where={"entity_type": "workflow_step_exec"},
+            min_failure_signals=2,
+            match_where_for_pattern=lambda pattern: {
+                "workspace_id": "demo",
+                "artifact_kind": "execution_wisdom",
+                "step_op": pattern.step_op,
+            },
+            build_node_for_pattern=lambda pattern, existing, created_at_ms: Node(
+                id=f"{pattern.step_op}-{created_at_ms}",
+                label=f"execution_failure_pattern:{pattern.step_op}",
+                type="entity",
+                summary="Repeated failure pattern",
+                mentions=_mentions(),
+                metadata={
+                    "workspace_id": "demo",
+                    "artifact_kind": "execution_wisdom",
+                    "step_op": pattern.step_op,
+                    "failure_count": len(pattern.failure_nodes),
+                    "evidence_run_ids": list(pattern.run_ids),
+                    "created_at_ms": created_at_ms,
+                    "replaces_ids": [str(node.id) for node in existing],
+                },
+            ),
+        )
+
+        assert len(result) == 1
+        assert result[0].step_op == "route"
+        assert result[0].failure_count == 2
+
+        with scoped_namespace(source_engine, source_namespace):
+            source_nodes = source_engine.read.get_nodes(
+                where={"entity_type": "workflow_step_exec"}
+            )
+            assert len(source_nodes) == 2
+            assert source_engine.read.get_nodes(
+                where={"artifact_kind": "execution_wisdom"}
+            ) == []
+
+        with scoped_namespace(target_engine, target_namespace):
+            wisdom_nodes = target_engine.read.get_nodes(
+                where={"workspace_id": "demo", "artifact_kind": "execution_wisdom"}
+            )
+        assert len(wisdom_nodes) == 1
+        assert wisdom_nodes[0].metadata["failure_count"] == 2
+    finally:
+        shutil.rmtree(source_db_dir, ignore_errors=True)
+        shutil.rmtree(target_db_dir, ignore_errors=True)
