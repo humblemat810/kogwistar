@@ -28,6 +28,11 @@ This map lists real user-facing diagnostics / operator entrypoints. Names below 
 - `workflow.blocked_runs`
 - `workflow.process_timeline`
 - `workflow.operator_dashboard`
+- `workflow.visibility_snapshot`
+- `workflow.scheduler_timeline`
+- `workflow.budget_snapshot`
+- `workflow.budget_history`
+- `workflow.tool_audit`
 
 ## Service / Daemon
 
@@ -47,6 +52,7 @@ This map lists real user-facing diagnostics / operator entrypoints. Names below 
 - `workflow.message_orphans_repair`
 - `workflow.dead_letters`
 - `workflow.dead_letter_replay`
+- `syscall.v1.audit`
 
 ## Capability Kernel
 

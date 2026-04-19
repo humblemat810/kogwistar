@@ -1089,6 +1089,81 @@ def test_runtime_rest_cancel(monkeypatch, engine_triplet):
         assert names[-1] == "run.cancelled"
 
 
+def test_view_layer_hardening_endpoints(monkeypatch, engine_triplet):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service, _registry = _configure_server(
+        monkeypatch,
+        engine,
+        conversation_engine,
+        workflow_engine,
+        _success_runner,
+        runtime_runner=_runtime_success_runner,
+    )
+    service.cost_ledger.add_event(kind="token", amount=7, source="test")
+    service.cost_ledger.add_event(kind="time", amount=11, source="test")
+
+    conversation_engine.write.add_node(
+        ConversationNode(
+            user_id="tester",
+            id="tool-call-1",
+            label="tool_call:list_transcript",
+            type="entity",
+            doc_id="tool-call-1",
+            summary="Calling tool list_transcript",
+            role="assistant",
+            turn_index=1,
+            conversation_id="conv-tools",
+            mentions=[],
+            properties={"tool_name": "list_transcript"},
+            metadata={"entity_type": "tool_call", "tool_name": "list_transcript"},
+            domain_id=None,
+            canonical_entity_id=None,
+        )
+    )
+    conversation_engine.write.add_node(
+        ConversationNode(
+            user_id="tester",
+            id="tool-result-1",
+            label="tool_result:list_transcript",
+            type="entity",
+            doc_id="tool-result-1",
+            summary="[]",
+            role="tool",
+            turn_index=1,
+            conversation_id="conv-tools",
+            mentions=[],
+            properties={"tool_name": "list_transcript", "result_json": "[]"},
+            metadata={"entity_type": "tool_result", "tool_name": "list_transcript"},
+            domain_id=None,
+            canonical_entity_id=None,
+        )
+    )
+
+    with TestClient(server.app) as client:
+        wf_ro = _token_header(client, role="ro", ns="workflow")
+        vis = client.get("/api/workflow/visibility", headers=wf_ro)
+        vis.raise_for_status()
+        assert vis.json()["namespaces"]["execution_namespace"] == "workflow"
+
+        budget = client.get("/api/workflow/budget/history", headers=wf_ro)
+        budget.raise_for_status()
+        assert budget.json()["cost_ledger"]["event_count"] == 2
+        assert len(budget.json()["events"]) == 2
+
+        sched = client.get("/api/workflow/scheduler/timeline", headers=wf_ro)
+        sched.raise_for_status()
+        assert "events" in sched.json()
+
+        audit = client.get(
+            "/api/workflow/tools/audit",
+            params={"conversation_id": "conv-tools"},
+            headers=wf_ro,
+        )
+        audit.raise_for_status()
+        items = audit.json()["items"]
+        assert {item["entity_type"] for item in items} == {"tool_call", "tool_result"}
+
+
 def test_get_run_keeps_registry_status_even_if_workflow_completed_node_exists(
     monkeypatch, engine_triplet
 ):

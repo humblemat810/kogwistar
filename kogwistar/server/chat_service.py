@@ -33,6 +33,7 @@ from .chat_service_shared import (
 from .capability_kernel import CapabilityKernel, DEFAULT_CAPABILITY_SPECS
 from .auth_middleware import (
     can_access_security_scope,
+    describe_storage_security_mapping,
     get_current_agent_id,
     get_current_capabilities,
     get_current_role,
@@ -605,6 +606,27 @@ class ChatRunService:
                 "cpu_millicores": None,
                 "memory_mb": None,
             },
+        }
+
+    def visibility_snapshot(self) -> dict[str, Any]:
+        self._require_capability(
+            "read_security_scope",
+            ["read_security_scope", "project_view"],
+            approval_message="Reading visibility snapshot requires read_security_scope capability",
+        )
+        scope = self._scope_snapshot()
+        mapping = describe_storage_security_mapping()
+        return {
+            "current_subject": self._capability_subject(),
+            "current_role": get_current_role(),
+            "current_capabilities": list(self._effective_capabilities()),
+            "namespaces": {
+                "storage_namespace": scope["storage_namespace"],
+                "execution_namespace": scope["execution_namespace"],
+            },
+            "security_scope": scope["security_scope"],
+            "storage_security_mapping": mapping,
+            "can_access_public": can_access_security_scope("public", shared=True),
         }
 
     def capability_snapshot(self) -> dict[str, Any]:
@@ -1275,6 +1297,81 @@ class ChatRunService:
         if not callable(list_events):
             return []
         return list_events(str(run_id), after_seq=int(after_seq), limit=int(limit))
+
+    def list_scheduler_timeline(
+        self, *, run_id: str | None = None, limit: int = 200
+    ) -> list[dict[str, Any]]:
+        self._require_capability(
+            "project_view",
+            ["project_view"],
+            approval_message="Reading scheduler timeline requires project_view capability",
+        )
+        return self.scheduler.timeline(run_id=run_id, limit=limit)
+
+    def budget_snapshot(self) -> dict[str, Any]:
+        self._require_capability(
+            "project_view",
+            ["project_view", "read_security_scope"],
+            approval_message="Reading budget snapshot requires project_view capability",
+        )
+        return {
+            "cost_ledger": self.cost_ledger.snapshot(),
+            "budget_model": {
+                "token_kind": "token",
+                "time_kind": "ms",
+                "storage_kind": "bytes",
+            },
+        }
+
+    def budget_history(self, *, limit: int = 200) -> dict[str, Any]:
+        self._require_capability(
+            "project_view",
+            ["project_view", "read_security_scope"],
+            approval_message="Reading budget history requires project_view capability",
+        )
+        return {
+            "cost_ledger": self.cost_ledger.snapshot(),
+            "events": self.cost_ledger.history(limit=limit),
+        }
+
+    def list_tool_audit(
+        self, *, conversation_id: str | None = None, limit: int = 200
+    ) -> dict[str, Any]:
+        self._require_capability(
+            "project_view",
+            ["project_view", "read_graph"],
+            approval_message="Reading tool audit trail requires project_view capability",
+        )
+        engine = self._conversation_engine()
+        nodes: list[Any] = []
+        for entity_type in ("tool_call", "tool_result"):
+            where: dict[str, Any] = {"entity_type": entity_type}
+            if conversation_id:
+                where["conversation_id"] = str(conversation_id)
+            nodes.extend(engine.read.get_nodes(where=where, limit=int(limit)))
+        items: list[dict[str, Any]] = []
+        for node in nodes[: int(limit)]:
+            md = dict(getattr(node, "metadata", {}) or {})
+            if not can_access_security_scope(
+                str(md.get("security_scope") or ""),
+                shared=bool(md.get("shared_scope") or md.get("shared_inbox")),
+            ):
+                continue
+            items.append(
+                {
+                    "node_id": str(getattr(node, "id", "") or ""),
+                    "entity_type": str(md.get("entity_type") or ""),
+                    "tool_name": str(md.get("tool_name") or ""),
+                    "conversation_id": str(getattr(node, "conversation_id", "") or ""),
+                    "turn_index": getattr(node, "turn_index", None),
+                    "summary": getattr(node, "summary", ""),
+                    "properties": dict(getattr(node, "properties", {}) or {}),
+                }
+            )
+        return {
+            "conversation_id": conversation_id,
+            "items": items[: int(limit)],
+        }
 
 
 __all__ = [

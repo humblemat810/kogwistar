@@ -244,6 +244,7 @@ Before later slices build on these primitives, acceptance coverage must exist fo
 - [x] lane-message assisting projections can be rebuilt/migrated safely
 - [x] operator views do not become a second truth source
 - [x] audit trails and projections can be rebuilt without mutating history
+- [x] visibility / auditing semantics are centralized in one shared doc
 
 ---
 

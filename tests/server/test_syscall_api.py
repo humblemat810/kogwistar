@@ -240,3 +240,23 @@ def test_syscall_request_approval_branches(monkeypatch, engine_triplet):
         revoked_payload = revoked.json()
         assert revoked_payload["status"] == "ok"
         assert revoked_payload["result"]["status"] == "revoked"
+
+
+def test_syscall_audit_endpoint_records_dispatches(monkeypatch, engine_triplet):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _runtime_success_runner
+    )
+    with TestClient(server.app) as client:
+        headers = _token_header(
+            client,
+            role="rw",
+            ns="workflow",
+            capabilities="approve_action,project_view,read_security_scope",
+        )
+        client.get("/api/syscall/v1", headers=headers).raise_for_status()
+        audit = client.get("/api/syscall/v1/audit", headers=headers)
+        audit.raise_for_status()
+        payload = audit.json()
+        assert payload["version"] == "v1"
+        assert payload["events"]

@@ -45,3 +45,9 @@ class CostLedger:
             "total_amount": total_amount,
             "by_kind": by_kind,
         }
+
+    def history(self, *, limit: int | None = None) -> list[dict[str, object]]:
+        rows = list(self.events)
+        if limit is not None:
+            rows = rows[-max(0, int(limit)) :]
+        return rows

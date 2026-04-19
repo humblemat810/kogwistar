@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from typing import Any, Callable
 
 from fastapi import APIRouter, HTTPException
@@ -120,6 +121,7 @@ def create_syscall_router(
 ):
     router = APIRouter(prefix="/api/syscall", tags=["syscall"])
     get_service_r = lambda: get_service()  # noqa: E731
+    audit_log: list[dict[str, Any]] = []
 
     @router.get("/v1")
     def list_syscalls() -> dict[str, Any]:
@@ -139,11 +141,18 @@ def create_syscall_router(
             ],
         }
 
+    @router.get("/v1/audit")
+    def list_syscall_audit(limit: int = 200) -> dict[str, Any]:
+        require_role("ro")
+        require_namespace(workflow_namespaces)
+        return {"version": "v1", "events": audit_log[-max(0, int(limit)) :]}
+
     @router.post("/v1/{op}")
     def dispatch(op: str, inp: SyscallRequest):
         service: ChatRunService = get_service_r()
         version = str(inp.version or "v1")
         op = str(op or inp.op or "").strip().lower()
+        started_at = int(time.time() * 1000)
         try:
             if op == "spawn_process":
                 require_role("rw")
@@ -159,12 +168,23 @@ def create_syscall_router(
                     token_budget=args.get("token_budget"),
                     time_budget_ms=args.get("time_budget_ms"),
                 )
-                return _ok(version, op, payload)
+                resp = _ok(version, op, payload)
+                audit_log.append(
+                    {
+                        "ts_ms": started_at,
+                        "version": version,
+                        "op": op,
+                        "status": "ok",
+                    }
+                )
+                return resp
             if op == "terminate_process":
                 require_role("rw")
                 require_namespace(workflow_namespaces)
                 payload = service.cancel_run(str(inp.args["run_id"]))
-                return _ok(version, op, payload)
+                resp = _ok(version, op, payload)
+                audit_log.append({"ts_ms": started_at, "version": version, "op": op, "status": "ok"})
+                return resp
             if op == "send_message":
                 require_role("rw")
                 require_namespace(conversation_namespace)
@@ -179,7 +199,9 @@ def create_syscall_router(
                 require_role("ro")
                 require_namespace(conversation_namespace)
                 payload = service.list_transcript(str(inp.args["conversation_id"]))
-                return _ok(version, op, {"conversation_id": inp.args["conversation_id"], "messages": payload})
+                resp = _ok(version, op, {"conversation_id": inp.args["conversation_id"], "messages": payload})
+                audit_log.append({"ts_ms": started_at, "version": version, "op": op, "status": "ok"})
+                return resp
             if op == "mount_memory":
                 require_role("ro")
                 require_namespace(conversation_namespace)
@@ -188,17 +210,23 @@ def create_syscall_router(
                     run_id=inp.args.get("run_id"),
                     stage=inp.args.get("stage"),
                 )
-                return _ok(version, op, payload)
+                resp = _ok(version, op, payload)
+                audit_log.append({"ts_ms": started_at, "version": version, "op": op, "status": "ok"})
+                return resp
             if op == "project_view":
                 require_role("ro")
                 require_namespace(workflow_namespaces)
                 payload = service.resource_snapshot()
-                return _ok(version, op, payload)
+                resp = _ok(version, op, payload)
+                audit_log.append({"ts_ms": started_at, "version": version, "op": op, "status": "ok"})
+                return resp
             if op == "invoke_tool":
                 require_role("rw")
                 require_namespace(conversation_namespace)
                 payload = _invoke_builtin_tool(service, inp.args)
-                return _ok(version, op, payload)
+                resp = _ok(version, op, payload)
+                audit_log.append({"ts_ms": started_at, "version": version, "op": op, "status": "ok"})
+                return resp
             if op == "checkpoint":
                 require_role("ro")
                 require_namespace(workflow_namespaces)
@@ -206,7 +234,9 @@ def create_syscall_router(
                     str(inp.args["run_id"]),
                     int(inp.args["step_seq"]),
                 )
-                return _ok(version, op, payload)
+                resp = _ok(version, op, payload)
+                audit_log.append({"ts_ms": started_at, "version": version, "op": op, "status": "ok"})
+                return resp
             if op == "resume":
                 require_role("rw")
                 require_namespace(workflow_namespaces)
@@ -227,10 +257,23 @@ def create_syscall_router(
                 payload = _request_approval(service, inp.args)
                 status = str(payload.get("status") or "requested")
                 if status == "blocked":
-                    return _blocked(version, op, str(payload.get("reason") or "blocked"))
-                return _ok(version, op, payload)
+                    resp = _blocked(version, op, str(payload.get("reason") or "blocked"))
+                    audit_log.append({"ts_ms": started_at, "version": version, "op": op, "status": "blocked"})
+                    return resp
+                resp = _ok(version, op, payload)
+                audit_log.append({"ts_ms": started_at, "version": version, "op": op, "status": "ok"})
+                return resp
             raise KeyError(f"unknown syscall op: {op}")
         except Exception as exc:  # noqa: BLE001
+            audit_log.append(
+                {
+                    "ts_ms": started_at,
+                    "version": version,
+                    "op": op,
+                    "status": "error",
+                    "error": str(exc),
+                }
+            )
             raise _as_http_error(exc)
 
     return router

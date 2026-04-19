@@ -51,6 +51,7 @@ class RunScheduler:
         self._dispatch_not_before = 0.0
         self._dispatch_window_s = 0.02
         self._dead_letter: list[dict[str, Any]] = []
+        self._timeline: list[dict[str, Any]] = []
         self._paused: set[str] = set()
         self._pause_requested: set[str] = set()
         self._thr = threading.Thread(
@@ -85,7 +86,25 @@ class RunScheduler:
                 retry_count = int(maybe.get("retry_count", retry_count) or retry_count or 0)
                 max_retries = int(maybe.get("max_retries", max_retries) or max_retries or 0)
         with self._cv:
+            self._timeline.append(
+                {
+                    "ts_ms": int(time.time() * 1000),
+                    "event": "submit",
+                    "run_id": run_id,
+                    "priority_class": cls,
+                    "retry_count": max(0, int(retry_count or 0)),
+                    "max_retries": max(0, int(max_retries or 0)),
+                }
+            )
             if run_id in self._paused or run_id in self._pause_requested:
+                self._timeline.append(
+                    {
+                        "ts_ms": int(time.time() * 1000),
+                        "event": "deferred",
+                        "run_id": run_id,
+                        "reason": "paused",
+                    }
+                )
                 return {
                     "run_id": run_id,
                     "priority_class": cls,
@@ -98,6 +117,14 @@ class RunScheduler:
                 cls, 0
             )
             if class_cap is not None and class_inflight >= class_cap:
+                self._timeline.append(
+                    {
+                        "ts_ms": int(time.time() * 1000),
+                        "event": "deferred",
+                        "run_id": run_id,
+                        "reason": "class_concurrency_limit",
+                    }
+                )
                 return {
                     "run_id": run_id,
                     "priority_class": cls,
@@ -106,6 +133,14 @@ class RunScheduler:
                     "reason": "class_concurrency_limit",
                 }
             if len(self._queue) >= self.max_queue:
+                self._timeline.append(
+                    {
+                        "ts_ms": int(time.time() * 1000),
+                        "event": "rejected" if pr >= _PRIORITY_RANK["background"] else "deferred",
+                        "run_id": run_id,
+                        "reason": "queue_full",
+                    }
+                )
                 if pr >= _PRIORITY_RANK["background"]:
                     return {
                         "run_id": run_id,
@@ -122,6 +157,15 @@ class RunScheduler:
                     "reason": "queue_full",
                 }
             self._seq += 1
+            self._timeline.append(
+                {
+                    "ts_ms": int(time.time() * 1000),
+                    "event": "queued",
+                    "run_id": run_id,
+                    "priority_class": cls,
+                    "queue_size": len(self._queue) + 1,
+                }
+            )
             heapq.heappush(
                 self._queue,
                 _QueuedRun(
@@ -153,6 +197,13 @@ class RunScheduler:
     def request_pause(self, run_id: str) -> dict[str, Any]:
         with self._cv:
             self._pause_requested.add(run_id)
+            self._timeline.append(
+                {
+                    "ts_ms": int(time.time() * 1000),
+                    "event": "pause_requested",
+                    "run_id": run_id,
+                }
+            )
             self._cv.notify_all()
             return {"run_id": run_id, "pause_state": "requested"}
 
@@ -160,6 +211,13 @@ class RunScheduler:
         with self._cv:
             self._paused.add(run_id)
             self._pause_requested.discard(run_id)
+            self._timeline.append(
+                {
+                    "ts_ms": int(time.time() * 1000),
+                    "event": "paused",
+                    "run_id": run_id,
+                }
+            )
             self._cv.notify_all()
             return {"run_id": run_id, "pause_state": "paused"}
 
@@ -167,6 +225,13 @@ class RunScheduler:
         with self._cv:
             self._paused.discard(run_id)
             self._pause_requested.discard(run_id)
+            self._timeline.append(
+                {
+                    "ts_ms": int(time.time() * 1000),
+                    "event": "resumed",
+                    "run_id": run_id,
+                }
+            )
             self._cv.notify_all()
             return {"run_id": run_id, "pause_state": "resumed"}
 
@@ -194,6 +259,14 @@ class RunScheduler:
                     continue
                 item = self._queue.pop(item_idx)
                 heapq.heapify(self._queue)
+                self._timeline.append(
+                    {
+                        "ts_ms": int(time.time() * 1000),
+                        "event": "dispatch",
+                        "run_id": item.run_id,
+                        "priority_class": item.priority_class,
+                    }
+                )
                 self._active += 1
                 self._queued_by_class[item.priority_class] = max(
                     0, self._queued_by_class.get(item.priority_class, 0) - 1
@@ -226,6 +299,16 @@ class RunScheduler:
                             self._queued_by_class[item.priority_class] = (
                                 self._queued_by_class.get(item.priority_class, 0) + 1
                             )
+                            self._timeline.append(
+                                {
+                                    "ts_ms": int(time.time() * 1000),
+                                    "event": "retry_scheduled",
+                                    "run_id": item.run_id,
+                                    "priority_class": item.priority_class,
+                                    "retry_count": item.retry_count + 1,
+                                    "backoff_s": delay,
+                                }
+                            )
                         else:
                             self._dead_letter.append(
                                 {
@@ -234,6 +317,15 @@ class RunScheduler:
                                     "error": str(exc),
                                     "retry_count": item.retry_count,
                                     "max_retries": item.max_retries,
+                                }
+                            )
+                            self._timeline.append(
+                                {
+                                    "ts_ms": int(time.time() * 1000),
+                                    "event": "dead_letter",
+                                    "run_id": item.run_id,
+                                    "priority_class": item.priority_class,
+                                    "retry_count": item.retry_count,
                                 }
                             )
                         self._cv.notify_all()
@@ -271,6 +363,13 @@ class RunScheduler:
                 "paused_count": len(self._paused),
                 "pause_requested_count": len(self._pause_requested),
             }
+
+    def timeline(self, *, run_id: str | None = None, limit: int = 200) -> list[dict[str, Any]]:
+        with self._cv:
+            rows = list(self._timeline)
+        if run_id:
+            rows = [row for row in rows if str(row.get("run_id") or "") == str(run_id)]
+        return rows[-max(0, int(limit)) :]
 
     def _pick_runnable_index(self) -> int | None:
         for idx, item in enumerate(self._queue):
