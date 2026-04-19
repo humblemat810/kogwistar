@@ -963,11 +963,13 @@ def test_runtime_rest_submit_and_sse(monkeypatch, engine_triplet):
                 "workflow_id": "wf.runtime.simple",
                 "conversation_id": conversation_id,
                 "initial_state": {"counter": 1},
+                "priority_class": "batch",
             },
             headers=wf_rw,
         )
         assert submit.status_code == 202
         run_id = submit.json()["run_id"]
+        assert submit.json()["priority_class"] == "batch"
 
         final_run = _wait_for_status(
             client,

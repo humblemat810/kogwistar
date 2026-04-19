@@ -62,6 +62,7 @@ class RuntimeRunRequest:
     registry: RunRegistry
     publish: Callable[[str, dict[str, Any] | None], dict[str, Any]]
     is_cancel_requested: Callable[[], bool]
+    priority_class: str = "foreground"
 
 
 @dataclass
@@ -110,6 +111,7 @@ class ChatRunServiceOwner(Protocol):
     answer_runner: Callable[[AnswerRunRequest], dict[str, Any]]
     runtime_runner: Callable[[RuntimeRunRequest], dict[str, Any]]
     resume_runner: Callable[[RuntimeResumeRequest], dict[str, Any]]
+    scheduler: Any
     _workflow_history_lock: threading.Lock
 
     def _knowledge_engine(self) -> Any: ...

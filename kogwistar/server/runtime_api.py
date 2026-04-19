@@ -20,6 +20,7 @@ class SubmitWorkflowRunIn(BaseModel):
     turn_node_id: str | None = None
     user_id: str | None = None
     initial_state: dict[str, Any] = Field(default_factory=dict)
+    priority_class: str = "foreground"
 
 
 class UpsertWorkflowNodeIn(BaseModel):
@@ -144,6 +145,7 @@ def create_runtime_router(
                 turn_node_id=inp.turn_node_id,
                 user_id=effective_user_id,
                 initial_state=inp.initial_state,
+                priority_class=inp.priority_class,
             )
             return JSONResponse(status_code=202, content=payload)
         except Exception as exc:  # noqa: BLE001

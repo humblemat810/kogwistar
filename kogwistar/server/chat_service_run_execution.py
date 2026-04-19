@@ -242,6 +242,7 @@ class _RunExecutionService(_BaseComponent):
         initial_state: dict[str, Any] | None = None,
         turn_node_id: str | None = None,
         user_id: str | None = None,
+        priority_class: str = "foreground",
     ) -> dict[str, Any]:
         workflow_id = str(workflow_id or "").strip()
         if not workflow_id:
@@ -299,20 +300,22 @@ class _RunExecutionService(_BaseComponent):
                 run_id, event_type, payload
             ),
             is_cancel_requested=lambda: self.run_registry.is_cancel_requested(run_id),
+            priority_class=str(priority_class or "foreground"),
         )
-        thread = threading.Thread(
-            target=self._run_workflow,
-            args=(req,),
-            daemon=True,
-            name=f"workflow-run-{run_id}",
+        sched = self._owner.scheduler.submit(
+            run_id=run_id,
+            priority_class=str(priority_class or "foreground"),
+            start_fn=lambda: self._run_workflow(req),
         )
-        thread.start()
         return {
             "run_id": run_id,
             "conversation_id": conversation_id,
             "workflow_id": workflow_id,
             "turn_node_id": resolved_turn_node_id,
             "status": "queued",
+            "priority_class": str(priority_class or "foreground"),
+            "admission": sched.get("admission", "accepted"),
+            **({"reason": sched["reason"]} if "reason" in sched else {}),
         }
 
     def _run_workflow(self, req: RuntimeRunRequest) -> None:

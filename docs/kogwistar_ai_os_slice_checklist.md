@@ -489,22 +489,22 @@ This is the step from workflow execution into process runtime.
 Kogwistar gains AI-layer scheduling policy, even if low-level CPU control stays with Linux.
 
 ### Add
-- [ ] Priority classes:
-  - [ ] foreground
-  - [ ] background
-  - [ ] latency-sensitive
-  - [ ] batch
-- [ ] Admission control
-- [ ] Concurrency limits per tenant / process class
-- [ ] Retry/backoff policy
-- [ ] Queue fairness policy
-- [ ] Dead-letter handling for failed work
-- [ ] Optional policy hooks for external scheduler integration
+- [x] Priority classes:
+  - [x] foreground
+  - [x] background
+  - [x] latency-sensitive
+  - [x] batch
+- [x] Admission control
+- [x] Concurrency limits per tenant / process class
+- [x] Retry/backoff policy
+- [x] Queue fairness policy
+- [x] Dead-letter handling for failed work
+- [x] Optional policy hooks for external scheduler integration
 
 ### Done when
-- [ ] Kogwistar can decide what should run first
-- [ ] Kogwistar can defer, throttle, or reject work at the AI layer
-- [ ] Different workload classes behave differently by policy
+- [x] Kogwistar can decide what should run first
+- [x] Kogwistar can defer, throttle, or reject work at the AI layer
+- [x] Different workload classes behave differently by policy
 
 ### Why it matters
 You do not need hardware scheduling to have meaningful OS scheduling.

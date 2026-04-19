@@ -36,6 +36,7 @@ from .auth_middleware import (
     get_storage_namespace,
 )
 from .chat_service_workflow_design import _WorkflowDesignService
+from .run_scheduler import RunScheduler
 from .run_registry import RunRegistry
 
 
@@ -67,6 +68,7 @@ class ChatRunService:
         self._get_workflow_engine = get_workflow_engine
         self.run_registry = run_registry
         self._workflow_history_lock = threading.Lock()
+        self.scheduler = RunScheduler(max_active=2)
 
         self._workflow_design = _WorkflowDesignService(self)
         self._conversation_queries = _ConversationQueryService(self)
@@ -325,6 +327,7 @@ class ChatRunService:
         initial_state: dict[str, Any] | None = None,
         turn_node_id: str | None = None,
         user_id: str | None = None,
+        priority_class: str = "foreground",
     ) -> dict[str, Any]:
         return self._run_execution.submit_workflow_run(
             workflow_id=workflow_id,
@@ -332,6 +335,7 @@ class ChatRunService:
             initial_state=initial_state,
             turn_node_id=turn_node_id,
             user_id=user_id,
+            priority_class=priority_class,
         )
 
     def get_run(self, run_id: str) -> dict[str, Any]:
