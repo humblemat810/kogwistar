@@ -48,8 +48,8 @@ def get_jwt_aud() -> str | None:
 
 # Backward-compatible module exports. Do not use for runtime decisions.
 JWT_ALG = get_jwt_alg()
-JWT_SECRET = get_jwt_secret()
-JWT_ISS = get_jwt_iss()
+JWT_SECRET = get_jwt_secret() or "dev-secret"
+JWT_ISS = get_jwt_iss() or "local"
 JWT_AUD = get_jwt_aud()
 PROTECTED_PREFIXES = tuple(
     (os.getenv("JWT_PROTECTED_PATHS") or "/mcp,/admin").split(",")

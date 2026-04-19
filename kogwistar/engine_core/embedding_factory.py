@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import os
+import importlib
 from typing import Any, Sequence, cast
 
 import numpy as np
@@ -199,6 +200,23 @@ def get_embedding_function(
       EMBEDDING_PROVIDER  — one of: ollama, openai, azure, google  (default: ollama)
       EMBEDDING_MODEL     — provider-specific model name
     """
+    test_override = str(
+        os.getenv("KOGWISTAR_TEST_EMBEDDING_FUNCTION_IMPORT") or ""
+    ).strip()
+    if test_override:
+        module_name, sep, attr_name = test_override.partition(":")
+        if not sep or not module_name or not attr_name:
+            raise ValueError(
+                "KOGWISTAR_TEST_EMBEDDING_FUNCTION_IMPORT must be "
+                "'module.path:attribute_name'"
+            )
+        module = importlib.import_module(module_name)
+        target = getattr(module, attr_name, None)
+        if not callable(target):
+            raise ValueError(
+                "KOGWISTAR_TEST_EMBEDDING_FUNCTION_IMPORT target is not callable"
+            )
+        return target()
     provider = provider or os.getenv("EMBEDDING_PROVIDER", "ollama")
     model = model or os.getenv("EMBEDDING_MODEL")
 
