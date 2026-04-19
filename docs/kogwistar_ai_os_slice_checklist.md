@@ -427,25 +427,27 @@ This is the kernel boundary for an AI OS.
 ### Goal
 Expose a minimal, stable API surface that other runtimes and agents can target.
 
+Status: done.
+
 ### Add
-- [ ] Core syscall-like operations, e.g.:
-  - [ ] `spawn_process`
-  - [ ] `terminate_process`
-  - [ ] `send_message`
-  - [ ] `receive_message`
-  - [ ] `mount_memory`
-  - [ ] `project_view`
-  - [ ] `invoke_tool`
-  - [ ] `checkpoint`
-  - [ ] `resume`
-  - [ ] `request_approval`
-- [ ] Clear success / failure / blocked contracts
-- [ ] Stable request/response schemas
-- [ ] Versioning strategy for syscall surface
+- [x] Core syscall-like operations, e.g.:
+  - [x] `spawn_process`
+  - [x] `terminate_process`
+  - [x] `send_message`
+  - [x] `receive_message`
+  - [x] `mount_memory`
+  - [x] `project_view`
+  - [x] `invoke_tool`
+  - [x] `checkpoint`
+  - [x] `resume`
+  - [x] `request_approval`
+- [x] Clear success / failure / blocked contracts
+- [x] Stable request/response schemas
+- [x] Versioning strategy for syscall surface
 
 ### Done when
-- [ ] A simple external runtime can target Kogwistar through this surface
-- [ ] The operations feel like system primitives, not app-specific helpers
+- [x] A simple external runtime can target Kogwistar through this surface
+- [x] The operations feel like system primitives, not app-specific helpers
 
 ### Why it matters
 An operating system needs a usable system surface, not only internal modules.
@@ -665,7 +667,8 @@ This is essential if Kogwistar is serious about evented, replayable system behav
 2. [x] Slice 2 — Universal Process Model
 3. [ ] Slice 3 — Namespaces and Isolation
 4. [x] Slice 4 — Capability Kernel / Permissions
-5. [ ] Slice 11 — Operator Views / System Introspection (internal/admin-only first)
+5. [x] Slice 5 — System Call Surface
+6. [ ] Slice 11 — Operator Views / System Introspection (internal/admin-only first)
 
 ## Mid-term order
 6. [ ] Slice 6 — Checkpoint / Suspend / Resume
@@ -676,7 +679,6 @@ This is essential if Kogwistar is serious about evented, replayable system behav
 ## Later OS-hardening order
 10. [ ] Slice 10 — Service / Daemon Model
 11. [ ] Slice 12 — Recovery / Repair Utilities
-12. [ ] Slice 5 — System Call Surface
 
 Note: Slice 5 can start earlier as an experimental API, but it should not be called stable too soon.
 

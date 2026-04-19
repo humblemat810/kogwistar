@@ -53,6 +53,7 @@ from kogwistar.server.auth_middleware import (
     set_auth_app,
 )
 from kogwistar.server.chat_api import create_chat_router
+from kogwistar.server.syscall_api import create_syscall_router
 from kogwistar.server.error_reporting import internal_http_error
 from kogwistar.server.mcp_tools import MCPRoleMiddleware, mcp
 from kogwistar.server.mcp_tools import *  # noqa: F401,F403
@@ -264,6 +265,16 @@ app.include_router(
         require_workflow_access=require_workflow_access,
         runtime_namespaces={NameSpace.WORKFLOW.value},
         get_subject=get_current_subject,
+        get_user_id=get_current_user_id,
+    )
+)
+app.include_router(
+    create_syscall_router(
+        get_service=lambda: chat_service.get(),
+        require_role=require_role,
+        require_namespace=require_namespace,
+        conversation_namespace=NameSpace.CONVERSATION.value,
+        workflow_namespaces={NameSpace.CONVERSATION.value, NameSpace.WORKFLOW.value},
         get_user_id=get_current_user_id,
     )
 )
