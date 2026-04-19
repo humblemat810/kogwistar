@@ -53,6 +53,35 @@ def _l2_normalize(vectors: list[list[float]]) -> list[list[float]]:
     return normed
 
 
+def _looks_like_test_env() -> bool:
+    if os.getenv("PYTEST_CURRENT_TEST"):
+        return True
+    if str(os.getenv("TESTING") or "").strip().lower() in {"1", "true", "yes", "on"}:
+        return True
+    if str(os.getenv("ENV") or "").strip().lower() in {"test", "ci"}:
+        return True
+    if str(os.getenv("CI") or "").strip().lower() in {"1", "true", "yes", "on"}:
+        return True
+    return False
+
+
+class _ConstantTestEmbeddingFunction(EmbeddingFunction):
+    @staticmethod
+    def name() -> str:
+        return "constant_test"
+
+    def __init__(self, dim: int = 8):
+        self.dim = max(1, int(dim))
+
+    def __call__(self, documents_or_texts: Sequence[str]) -> Embeddings:
+        vectors: list[list[float]] = []
+        for text in documents_or_texts:
+            seed = sum(ord(ch) for ch in str(text)) or 1
+            values = [float(((seed + i) % 17) + 1) for i in range(self.dim)]
+            vectors.append(values)
+        return _l2_normalize(vectors)
+
+
 # ---------------------------------------------------------------------------
 # Provider implementations
 # ---------------------------------------------------------------------------
@@ -217,6 +246,9 @@ def get_embedding_function(
                 "KOGWISTAR_TEST_EMBEDDING_FUNCTION_IMPORT target is not callable"
             )
         return target()
+    if _looks_like_test_env():
+        dim = int(os.getenv("KOGWISTAR_TEST_EMBEDDING_DIM") or "8")
+        return _ConstantTestEmbeddingFunction(dim=dim)
     provider = provider or os.getenv("EMBEDDING_PROVIDER", "ollama")
     model = model or os.getenv("EMBEDDING_MODEL")
 

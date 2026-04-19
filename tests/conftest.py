@@ -18,6 +18,8 @@ except Exception:  # pragma: no cover - local env may not provide it
     sitecustomize = None  # type: ignore
 _TEST_ENV = MonkeyPatch()
 _TEST_ENV.setenv("ANONYMIZED_TELEMETRY", "FALSE")
+_TEST_ENV.setenv("JWT_SECRET", "dev-secret")
+_TEST_ENV.setenv("JWT_ALG", "HS256")
 try:
     import sqlalchemy as sa
 

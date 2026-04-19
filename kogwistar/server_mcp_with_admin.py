@@ -196,11 +196,14 @@ async def combined_lifespan(app: FastAPI):
         auth_mode = str(auth_mode).strip().lower()
         app.state.auth_mode = auth_mode
         if getattr(app.state, "auth_service", None) is None:
+            jwt_secret = get_jwt_secret()
+            if not jwt_secret:
+                raise RuntimeError("JWT secret is required")
             app.state.auth_service = AuthService(
                 session=get_session(),
-                jwt_secret=get_jwt_secret() or JWT_SECRET,
+                jwt_secret=jwt_secret,
                 jwt_alg=get_jwt_alg(),
-                jwt_iss=get_jwt_iss() or JWT_ISS,
+                jwt_iss=get_jwt_iss(),
                 jwt_aud=get_jwt_aud(),
             )
         if getattr(app.state, "oidc_clients", None) is None:
@@ -328,7 +331,9 @@ async def dev_token(request: Request):
     inp = DevTokenInp.model_validate((await request.json()))
     if inp.role not in ROLE_ORDER:
         raise HTTPException(400, f"role must be one of {list(ROLE_ORDER)}")
-    jwt_secret = get_jwt_secret() or JWT_SECRET
+    jwt_secret = get_jwt_secret()
+    if not jwt_secret:
+        raise HTTPException(status_code=500, detail="JWT secret is not configured")
     payload = {
         "sub": inp.username,
         "ns": inp.ns,
@@ -336,7 +341,7 @@ async def dev_token(request: Request):
         "capabilities": inp.capabilities,
         "iat": int(time.time()),
         "exp": int((datetime.now(timezone.utc) + timedelta(hours=4)).timestamp()),
-        "iss": get_jwt_iss() or JWT_ISS or "local",
+        "iss": get_jwt_iss() or "local",
         "aud": get_jwt_aud() or None,
     }
     payload = {k: v for k, v in payload.items() if v is not None}

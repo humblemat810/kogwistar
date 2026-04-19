@@ -18,8 +18,11 @@ class AuthService:
         jwt_aud: Optional[str] = None,
     ):
         self.repo = AuthRepository(session)
-        self.jwt_secret = jwt_secret
-        self.jwt_alg = jwt_alg
+        resolved_secret = jwt_secret
+        if not resolved_secret:
+            raise RuntimeError("JWT secret is required")
+        self.jwt_secret = resolved_secret
+        self.jwt_alg = jwt_alg or "HS256"
         self.jwt_iss = jwt_iss
         self.jwt_aud = jwt_aud
 
