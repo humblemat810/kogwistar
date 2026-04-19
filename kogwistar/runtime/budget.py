@@ -21,6 +21,44 @@ class BudgetEvent:
 
 
 @dataclass
+class RateBudgetWindow:
+    limit: int = 0
+    used: int = 0
+    window_ms: int = 0
+    window_started_ms: int = 0
+
+    def refresh(self, *, now_ms: int) -> None:
+        if self.window_ms and self.window_started_ms and now_ms - self.window_started_ms >= self.window_ms:
+            self.window_started_ms = now_ms
+            self.used = 0
+
+    def remaining(self, *, now_ms: int) -> int:
+        self.refresh(now_ms=now_ms)
+        return max(0, int(self.limit) - int(self.used))
+
+    def debit(self, amount: int, *, now_ms: int) -> None:
+        self.refresh(now_ms=now_ms)
+        if amount < 0:
+            raise ValueError("amount must be >= 0")
+        if self.limit and self.used + amount > self.limit:
+            raise BudgetExhaustedError(
+                f"rate budget exhausted: used={self.used} total={self.limit}"
+            )
+        self.used += amount
+
+    def next_refresh_ms(self) -> int | None:
+        if not self.window_ms or not self.window_started_ms:
+            return None
+        return int(self.window_started_ms + self.window_ms)
+
+    def is_pinned_until_refresh(self, *, now_ms: int) -> bool:
+        next_refresh = self.next_refresh_ms()
+        if next_refresh is None:
+            return False
+        return int(now_ms) < int(next_refresh)
+
+
+@dataclass
 class BudgetLedger:
     total: int
     used: int = 0
@@ -103,6 +141,28 @@ class StateBackedBudgetLedger:
     def time_used_ms(self) -> int:
         return int(self.state.get("time_used_ms", 0) or 0)
 
+    @property
+    def rate_limit(self) -> int:
+        return int(self.state.get("rate_limit", 0) or 0)
+
+    @property
+    def rate_used(self) -> int:
+        return int(self.state.get("rate_used", 0) or 0)
+
+    @property
+    def rate_window_ms(self) -> int:
+        return int(self.state.get("rate_window_ms", 0) or 0)
+
+    @property
+    def rate_window_started_ms(self) -> int:
+        return int(self.state.get("rate_window_started_ms", 0) or 0)
+
+    @property
+    def rate_window_ready_ms(self) -> int | None:
+        if not self.rate_limit or not self.rate_window_ms or not self.rate_window_started_ms:
+            return None
+        return int(self.rate_window_started_ms + self.rate_window_ms)
+
     def debit(
         self,
         amount: int | float,
@@ -130,6 +190,17 @@ class StateBackedBudgetLedger:
             raise BudgetExhaustedError(
                 f"budget exhausted: used={self.used} total={self.total}"
             )
+        now_ms = int(self.state.get("now_ms", 0) or 0)
+        if self.rate_limit:
+            window = RateBudgetWindow(
+                limit=self.rate_limit,
+                used=self.rate_used,
+                window_ms=self.rate_window_ms,
+                window_started_ms=self.rate_window_started_ms or now_ms,
+            )
+            window.debit(amount, now_ms=now_ms or window.window_started_ms)
+            self.state["rate_used"] = window.used
+            self.state["rate_window_started_ms"] = window.window_started_ms
         self.state["token_used"] = next_used
         self.events.append(
             BudgetEvent(
@@ -207,3 +278,18 @@ class StateBackedBudgetLedger:
                 meta={"reason": reason},
             )
         )
+
+    def should_suspend_for_budget(self) -> bool:
+        if self.total and self.used >= self.total:
+            return True
+        if self.time_budget_ms and self.time_used_ms >= self.time_budget_ms:
+            return True
+        if self.rate_limit and self.rate_used >= self.rate_limit:
+            return True
+        return False
+
+    def is_pinned_until_refresh(self, *, now_ms: int) -> bool:
+        ready_ms = self.rate_window_ready_ms
+        if ready_ms is None:
+            return False
+        return bool(self.rate_limit and self.rate_used >= self.rate_limit and now_ms < ready_ms)

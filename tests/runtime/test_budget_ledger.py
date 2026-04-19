@@ -121,3 +121,42 @@ def test_cost_ledger_can_ingest_canonical_budget_event() -> None:
     event = adapt_budget_events({"usage": {"total_cost": 3}}, run_id="run-2")[0]
     ledger.ingest(event)
     assert ledger.snapshot()["total_amount"] == 3
+
+
+def test_rate_window_exhaustion_can_suspend_budget() -> None:
+    state = {
+        "token_budget": 10,
+        "token_used": 0,
+        "time_budget_ms": 50,
+        "time_used_ms": 0,
+        "rate_limit": 2,
+        "rate_used": 0,
+        "rate_window_ms": 1000,
+        "rate_window_started_ms": 100,
+        "budget_kind": "token",
+        "budget_scope": "run",
+        "now_ms": 100,
+    }
+    ledger = StateBackedBudgetLedger(state)
+    ledger.debit(2, reason="step", run_id="run-1")
+    assert ledger.should_suspend_for_budget() is True
+
+
+def test_rate_window_refresh_allows_more_debit() -> None:
+    state = {
+        "token_budget": 10,
+        "token_used": 0,
+        "time_budget_ms": 50,
+        "time_used_ms": 0,
+        "rate_limit": 2,
+        "rate_used": 2,
+        "rate_window_ms": 1000,
+        "rate_window_started_ms": 100,
+        "budget_kind": "token",
+        "budget_scope": "run",
+        "now_ms": 1200,
+    }
+    ledger = StateBackedBudgetLedger(state)
+    ledger.debit(1, reason="step", run_id="run-1")
+    assert state["rate_used"] == 1
+    assert ledger.should_suspend_for_budget() is False

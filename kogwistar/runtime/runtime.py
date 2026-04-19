@@ -2117,6 +2117,27 @@ class WorkflowRuntime:
                                     budget_ledger.ingest(evt)
                                 except Exception:
                                     pass
+                        if getattr(budget_ledger, "should_suspend_for_budget", None):
+                            try:
+                                if budget_ledger.should_suspend_for_budget():
+                                    budget_state = state.get("budget")
+                                    if isinstance(budget_state, dict):
+                                        ready_ms = getattr(
+                                            budget_ledger,
+                                            "rate_window_ready_ms",
+                                            None,
+                                        )
+                                        if ready_ms is not None:
+                                            budget_state["budget_wait_until_ms"] = int(
+                                                ready_ms
+                                            )
+                                            budget_state["budget_wait_reason"] = (
+                                                "rate_window"
+                                            )
+                                    status = "suspended"
+                                    run_suspended = True
+                            except Exception:
+                                pass
 
                     inflight.pop((node_id, mask, str(token_id)), None)
                     inflight_tokens.discard(

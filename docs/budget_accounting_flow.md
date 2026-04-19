@@ -20,19 +20,19 @@ BudgetEvent
 
 ```text
 Provider response / tool result
-   │
+   |
    v
 Provider adapter
-   │
-   ├─ maps provider usage schema
-   ├─ normalizes into BudgetEvent list
-   └─ preserves raw metadata in meta
+   |
+   |- maps provider usage schema
+   |- normalizes into BudgetEvent list
+   `- preserves raw metadata in meta
    v
 BudgetLedger / CostLedger
-   │
-   ├─ debits run budget
-   ├─ records canonical events
-   └─ raises BudgetExhaustedError when exhausted
+   |
+   |- debits run budget
+   |- records canonical events
+   `- raises BudgetExhaustedError when exhausted
 ```
 
 ## Rule
@@ -42,3 +42,5 @@ BudgetLedger / CostLedger
 - no provider format becomes core truth
 - persisted `state["budget"]` is authoritative budget state
 - `_deps["budget_ledger"]` is a state-backed helper, not second truth
+- rate windows use lazy refresh on read/debit; no cron is required unless paused runs must auto-wake
+- runtime-token pinning is branch-aware: one suspended branch can wait while sibling branches finish, then resume after refresh
