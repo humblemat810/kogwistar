@@ -46,6 +46,7 @@ from kogwistar.server.auth_middleware import (
     NameSpace,
     get_current_subject,
     get_current_user_id,
+    require_capability,
     require_namespace,
     require_role,
     require_workflow_access,
@@ -272,6 +273,7 @@ class DevTokenInp(BaseModel):
     username: str = "dev"
     role: str = "ro"
     ns: list[str] | str = "docs"
+    capabilities: list[str] | str | None = None
 
     @field_validator("ns", mode="before")
     @classmethod
@@ -293,6 +295,19 @@ class DevTokenInp(BaseModel):
                 )
         return parts[0] if len(parts) == 1 else parts
 
+    @field_validator("capabilities", mode="before")
+    @classmethod
+    def _normalize_caps(cls, value):
+        if value is None or value == "":
+            return None
+        if isinstance(value, str):
+            parts = [item.strip() for item in value.split(",") if item.strip()]
+        elif isinstance(value, (list, tuple, set)):
+            parts = [str(item).strip() for item in value if str(item).strip()]
+        else:
+            return value
+        return parts[0] if len(parts) == 1 else parts
+
 @app.post("/auth/dev-token")
 async def dev_token(request: Request):
     inp = DevTokenInp.model_validate((await request.json()))
@@ -302,6 +317,7 @@ async def dev_token(request: Request):
         "sub": inp.username,
         "ns": inp.ns,
         "role": inp.role,
+        "capabilities": inp.capabilities,
         "iat": int(time.time()),
         "exp": int((datetime.now(timezone.utc) + timedelta(hours=4)).timestamp()),
         "iss": JWT_ISS or "local",
@@ -461,6 +477,7 @@ def _designer_runtime_capabilities() -> dict[str, Any]:
 def designer_capabilities():
     require_role("ro")
     require_namespace({NameSpace.WORKFLOW})
+    require_capability("workflow.design.inspect")
 
     node_schema = WorkflowNodeMetadata.model_json_schema()
     edge_schema = WorkflowEdgeMetadata.model_json_schema()

@@ -651,8 +651,8 @@ This is essential if Kogwistar is serious about evented, replayable system behav
 ## Near-term order
 1. [x] Slice 1 — Lane Messaging / Native IPC
 2. [x] Slice 2 — Universal Process Model
-3. [ ] Slice 3 — Namespaces and Isolation
-4. [ ] Slice 4 — Capability Kernel / Permissions
+3. [x] Slice 3 — Namespaces and Isolation
+4. [x] Slice 4 — Capability Kernel / Permissions
 5. [x] Slice 11 — Operator Views / System Introspection (internal/admin-only first)
 
 ## Mid-term order

@@ -58,6 +58,7 @@ DEFAULT_NAMESPACE = NameSpace.DOCS.value
 DEFAULT_STORAGE_NAMESPACE = "default"
 DEFAULT_EXECUTION_NAMESPACE = "default"
 DEFAULT_SECURITY_SCOPE = "public"
+DEFAULT_CAPABILITIES: frozenset[str] = frozenset()
 
 
 # Context var to expose claims in any handler/tool
@@ -254,6 +255,21 @@ def get_security_scope() -> str:
     return ns[0] if ns else DEFAULT_SECURITY_SCOPE
 
 
+def get_current_capabilities() -> set[str]:
+    claims = claims_ctx.get() or {}
+    caps = claims.get("capabilities") or claims.get("caps") or []
+    if isinstance(caps, str):
+        raw_items = [caps]
+    else:
+        raw_items = list(caps)
+    out = {
+        str(item).strip().lower()
+        for item in raw_items
+        if str(item).strip() and str(item).strip() != "*"
+    }
+    return out
+
+
 def get_current_subject() -> str | None:
     claims = claims_ctx.get() or {}
     sub = str(claims.get("sub") or "").strip()
@@ -315,6 +331,20 @@ def require_security_scope(expected: set[str] | str):
     )
 
 
+def require_capability(expected: set[str] | str):
+    if isinstance(expected, set):
+        allowed = {str(item).strip().lower() for item in expected if str(item).strip()}
+    else:
+        allowed = {str(expected).strip().lower()}
+    actual = get_current_capabilities()
+    if "*" in allowed or not allowed.isdisjoint(actual):
+        return next(iter(actual & allowed), None) if actual else None
+    raise HTTPException(
+        status_code=403,
+        detail=f"Forbidden: capabilities {sorted(actual)} do not permit access to {sorted(allowed)}",
+    )
+
+
 _auth_app = None
 
 
@@ -366,8 +396,10 @@ __all__ = [
     "get_security_scope",
     "get_current_subject",
     "get_current_user_id",
+    "get_current_capabilities",
     "require_namespace",
     "require_security_scope",
+    "require_capability",
     "_normalize_namespaces",
     "set_auth_app",
     "require_workflow_access",
