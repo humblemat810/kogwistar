@@ -644,18 +644,20 @@ Operating systems need operator ergonomics, not only correctness.
 ### Goal
 The system can repair projections, recover failed queues, and reconcile durable state.
 
+Status: done.
+
 ### Add
-- [ ] Rebuild inbox projections from authoritative graph/events
-- [ ] Rebuild process table projections
-- [ ] Repair orphaned claimed messages / leases
-- [ ] Replay selected process histories
-- [ ] Dead-letter inspection and replay
-- [ ] Migration safety tools for schema evolution
+- [x] Rebuild inbox projections from authoritative graph/events
+- [x] Rebuild process table projections
+- [x] Repair orphaned claimed messages / leases
+- [x] Replay selected process histories
+- [x] Dead-letter inspection and replay
+- [x] Migration safety tools for schema evolution
 
 ### Done when
-- [ ] Operators can recover from projection corruption
-- [ ] The system is resilient to partial failures
-- [ ] “Authoritative truth vs serving projection” is operationally real
+- [x] Operators can recover from projection corruption
+- [x] The system is resilient to partial failures
+- [x] “Authoritative truth vs serving projection” is operationally real
 
 ### Why it matters
 This is essential if Kogwistar is serious about evented, replayable system behavior.
@@ -680,7 +682,7 @@ This is essential if Kogwistar is serious about evented, replayable system behav
 
 ## Later OS-hardening order
 10. [x] Slice 10 — Service / Daemon Model
-11. [ ] Slice 12 — Recovery / Repair Utilities
+11. [x] Slice 12 — Recovery / Repair Utilities
 
 Note: Slice 5 can start earlier as an experimental API, but it should not be called stable too soon.
 

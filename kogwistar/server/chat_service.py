@@ -1070,6 +1070,91 @@ class ChatRunService:
         out = [row for row in rows if str(row.get("status") or "") in blocked_statuses]
         return out[: int(limit)]
 
+    def repair_service_projection(self, service_id: str) -> dict[str, Any]:
+        self._require_capability(
+            "service.manage",
+            ["service.manage"],
+            approval_message="Repairing service projection requires service.manage capability",
+        )
+        self.service_supervisor._rebuild_projection(service_id)
+        return {"service_id": service_id, "projection": self.get_service(service_id)}
+
+    def repair_service_projections(self, *, limit: int = 10_000) -> dict[str, Any]:
+        self._require_capability(
+            "service.manage",
+            ["service.manage"],
+            approval_message="Repairing service projections requires service.manage capability",
+        )
+        repaired = []
+        for row in self.service_supervisor.list_services(limit=limit):
+            service_id = str(row.get("service_id") or "")
+            if not service_id:
+                continue
+            self.service_supervisor._rebuild_projection(service_id)
+            repaired.append(service_id)
+        return {"repaired_service_ids": repaired}
+
+    def repair_orphaned_claimed_messages(
+        self,
+        *,
+        inbox_id: str | None = None,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        self._require_capability(
+            "project_view",
+            ["project_view"],
+            approval_message="Repairing claimed messages requires project_view capability",
+        )
+        meta_store = self._execution_meta_store()
+        list_fn = getattr(meta_store, "list_projected_lane_messages", None)
+        update_fn = getattr(meta_store, "update_projected_lane_message_status", None)
+        if not callable(list_fn) or not callable(update_fn):
+            return {"repaired_message_ids": []}
+        scope = self._scope_snapshot()["storage_namespace"]
+        rows = list_fn(namespace=scope, inbox_id=inbox_id, status="claimed")
+        repaired: list[str] = []
+        now = now_ms()
+        for row in rows:
+            lease_until = int(getattr(row, "lease_until", 0) or 0)
+            if lease_until and lease_until > now:
+                continue
+            update_fn(message_id=row.message_id, status="pending")
+            repaired.append(str(row.message_id))
+            if len(repaired) >= int(limit):
+                break
+        return {"repaired_message_ids": repaired}
+
+    def replay_run_history(
+        self, run_id: str, *, after_seq: int = 0, limit: int = 200
+    ) -> dict[str, Any]:
+        self._require_capability(
+            "workflow.run.read",
+            ["workflow.run.read"],
+            approval_message="Replaying run history requires workflow.run.read capability",
+        )
+        events = self.list_process_timeline(run_id=run_id, after_seq=after_seq, limit=limit)
+        return {"run_id": run_id, "events": events, "event_count": len(events)}
+
+    def dead_letter_snapshot(self, *, limit: int = 100) -> dict[str, Any]:
+        self._require_capability(
+            "project_view",
+            ["project_view"],
+            approval_message="Reading dead letters requires project_view capability",
+        )
+        return {"runs": self.scheduler.dead_letter()[: int(limit)], "limit": int(limit)}
+
+    def replay_dead_letter(self, run_id: str) -> dict[str, Any]:
+        self._require_capability(
+            "service.manage",
+            ["service.manage"],
+            approval_message="Replaying dead letters requires service.manage capability",
+        )
+        dead = [row for row in self.scheduler.dead_letter() if str(row.get("run_id") or "") == str(run_id)]
+        if not dead:
+            return {"run_id": run_id, "replayed": False}
+        self.scheduler.resume(run_id)
+        return {"run_id": run_id, "replayed": True, "dead_letter": dead[0]}
+
     def message_queue_snapshot(self, *, inbox_id: str | None = None) -> dict[str, Any]:
         self._require_capability(
             "project_view",
@@ -1163,6 +1248,7 @@ class ChatRunService:
             "blocked_runs": self.list_blocked_runs(limit=limit),
             "blocked_flow_graph": self.blocked_flow_graph(limit=limit),
             "message_queue": self.message_queue_snapshot(),
+            "dead_letters": self.dead_letter_snapshot(limit=limit),
             "capabilities": self.capability_snapshot(),
             "resources": {
                 "scheduler": self.scheduler.snapshot(),

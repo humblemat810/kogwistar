@@ -290,6 +290,74 @@ def build_workflow_mcp(
             "events": get_service().list_service_events(service_id, limit=limit),
         }
 
+    @tool_roles({role_rw})
+    @require_ns({ns_workflow})
+    @mcp.tool(name="workflow.service_repair")
+    def workflow_service_repair(service_id: str) -> dict[str, Any]:
+        return get_service().repair_service_projection(service_id)
+
+    @tool_roles({role_rw})
+    @require_ns({ns_workflow})
+    @mcp.tool(name="workflow.services_repair")
+    def workflow_services_repair(limit: int = 10_000) -> dict[str, Any]:
+        return get_service().repair_service_projections(limit=limit)
+
+    @tool_roles({role_rw})
+    @require_ns({ns_workflow})
+    @mcp.tool(name="workflow.message_orphans_repair")
+    def workflow_message_orphans_repair(
+        inbox_id: str | None = None, limit: int = 100
+    ) -> dict[str, Any]:
+        return get_service().repair_orphaned_claimed_messages(
+            inbox_id=inbox_id, limit=limit
+        )
+
+    @tool_roles({role_ro, role_rw})
+    @require_ns({ns_workflow})
+    @mcp.tool(name="workflow.dead_letters")
+    def workflow_dead_letters(limit: int = 100) -> dict[str, Any]:
+        return get_service().dead_letter_snapshot(limit=limit)
+
+    @tool_roles({role_rw})
+    @require_ns({ns_workflow})
+    @mcp.tool(name="workflow.dead_letter_replay")
+    def workflow_dead_letter_replay(run_id: str) -> dict[str, Any]:
+        return get_service().replay_dead_letter(run_id)
+
+    @tool_roles({role_rw})
+    @require_ns({ns_workflow})
+    @mcp.tool(name="workflow.service_repair")
+    def workflow_service_repair(service_id: str) -> dict[str, Any]:
+        return get_service().repair_service_projection(service_id)
+
+    @tool_roles({role_rw})
+    @require_ns({ns_workflow})
+    @mcp.tool(name="workflow.services_repair")
+    def workflow_services_repair(limit: int = 10_000) -> dict[str, Any]:
+        return get_service().repair_service_projections(limit=limit)
+
+    @tool_roles({role_rw})
+    @require_ns({ns_workflow})
+    @mcp.tool(name="workflow.message_orphans_repair")
+    def workflow_message_orphans_repair(
+        inbox_id: str | None = None, limit: int = 100
+    ) -> dict[str, Any]:
+        return get_service().repair_orphaned_claimed_messages(
+            inbox_id=inbox_id, limit=limit
+        )
+
+    @tool_roles({role_ro, role_rw})
+    @require_ns({ns_workflow})
+    @mcp.tool(name="workflow.dead_letters")
+    def workflow_dead_letters(limit: int = 100) -> dict[str, Any]:
+        return get_service().dead_letter_snapshot(limit=limit)
+
+    @tool_roles({role_rw})
+    @require_ns({ns_workflow})
+    @mcp.tool(name="workflow.dead_letter_replay")
+    def workflow_dead_letter_replay(run_id: str) -> dict[str, Any]:
+        return get_service().replay_dead_letter(run_id)
+
     @tool_roles({role_ro, role_rw})
     @require_ns({ns_workflow})
     @mcp.tool(name="workflow.capabilities_snapshot")

@@ -13,6 +13,7 @@ from .graph_native_artifact_demo import (
 from .named_projection_governance_demo import run_named_projection_governance_demo
 from .nested_workflow_invocation_demo import run_nested_workflow_invocation_demo
 from .provenance_quickstart import run_provenance_quickstart
+from .recovery_repair_demo import run_recovery_repair_demo
 from .scheduler_priority_demo import run_scheduler_priority_demo
 from .operator_views_demo import run_operator_views_demo
 from .service_daemon_demo import run_service_daemon_demo
@@ -29,6 +30,7 @@ __all__ = [
     "run_operator_views_demo",
     "run_provenance_reasoning_demo",
     "run_provenance_quickstart",
+    "run_recovery_repair_demo",
     "run_scheduler_priority_demo",
     "run_service_daemon_demo",
     "run_unified_substrate_demo_suite",
