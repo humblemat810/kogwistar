@@ -5,6 +5,8 @@ from kogwistar.typing_interfaces import EngineLike
 from typing import Iterable
 
 from .models import ConversationNode
+from .policy import can_access_memory_metadata
+from ..server.auth_middleware import get_current_agent_id
 import json
 
 Role: TypeAlias = Literal["system", "user", "assistant", "tool"]
@@ -568,12 +570,16 @@ class ContextSources:
         include_summaries: bool = True,
         include_memory_context: bool = True,
         include_pinned_kg_refs: bool = True,
+        security_scope: str | None = None,
+        agent_id: str | None = None,
     ) -> None:
         self.engine = conversation_engine
         self.tail_turns = tail_turns
         self.include_summaries = include_summaries
         self.include_memory_context = include_memory_context
         self.include_pinned_kg_refs = include_pinned_kg_refs
+        self.security_scope = security_scope
+        self.agent_id = agent_id
 
     def gather(self, *, conversation_id: str, purpose: str):
         # Phase 1: load nodes
@@ -794,6 +800,13 @@ class ContextSources:
             n = by_id.get(mid)
             if n is None:
                 continue
+            md = dict(getattr(n, "metadata", {}) or {})
+            if not can_access_memory_metadata(
+                md,
+                current_security_scope=self.security_scope,
+                current_agent_id=self.agent_id or get_current_agent_id(),
+            ):
+                continue
             items.append(
                 ContextItem(
                     kind="memory_context",
@@ -822,6 +835,13 @@ class ContextSources:
         for pid in sorted(edge_sel.ptr_ids):
             n = by_id.get(pid)
             if n is None:
+                continue
+            md = dict(getattr(n, "metadata", {}) or {})
+            if not can_access_memory_metadata(
+                md,
+                current_security_scope=self.security_scope,
+                current_agent_id=self.agent_id or get_current_agent_id(),
+            ):
                 continue
             props = getattr(n, "properties", {}) or {}
             refers_to = props.get("refers_to_id")

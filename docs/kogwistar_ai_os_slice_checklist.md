@@ -361,24 +361,24 @@ This is the foundation for “agent OS” language. A system without a process m
 ### Goal
 Kogwistar can isolate memory, communication, and process visibility between tenants / agents / workspaces without overloading existing namespace terms.
 
-Status: in progress.
+Status: done.
 
 ### Add
-- [ ] Explicit distinction between:
+- [x] Explicit distinction between:
   - [x] storage namespace
   - [x] execution namespace
   - [x] security scope
-- [ ] Security scope model for tenant / workspace / project isolation
-- [ ] Agent-private memory areas
-- [ ] Shared memory areas
-- [ ] Cross-scope projection / pin / ref rules
+- [x] Security scope model for tenant / workspace / project isolation
+- [x] Agent-private memory areas
+- [x] Shared memory areas
+- [x] Cross-scope projection / pin / ref rules
 - [x] Message routing restrictions across security scopes
 - [x] Default visibility rules for reads/writes
-- [ ] Clear mapping rules between storage partitioning and security scope
+- [x] Clear mapping rules between storage partitioning and security scope
 
 ### Done when
-- [ ] An agent can have private state not globally visible
-- [ ] Shared memory can be explicit, not accidental
+- [x] An agent can have private state not globally visible
+- [x] Shared memory can be explicit, not accidental
 - [x] Cross-tenant leakage is structurally harder
 - [x] Message delivery respects security scope boundaries
 - [x] Existing storage namespace semantics remain intact

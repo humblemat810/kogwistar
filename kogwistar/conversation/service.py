@@ -48,6 +48,7 @@ from kogwistar.engine_core.models import (
 )
 from kogwistar.id_provider import stable_id
 from kogwistar.runtime import WorkflowRuntime
+from kogwistar.server.auth_middleware import get_current_agent_id, get_security_scope
 
 if TYPE_CHECKING:
     from kogwistar.engine_core.engine import GraphKnowledgeEngine
@@ -601,6 +602,8 @@ class ConversationService:
             include_summaries=include_summaries,
             include_memory_context=include_memory_context,
             include_pinned_kg_refs=include_pinned_kg_refs,
+            security_scope=get_security_scope(),
+            agent_id=get_current_agent_id(),
         )
         items: list[ContextItem] = sources.gather(
             conversation_id=conversation_id, purpose=purpose

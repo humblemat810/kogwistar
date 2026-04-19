@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, Mapping, Optional
 
 from kogwistar.engine_core.scoped_seq import (
     ScopedSeqHookConfig,
@@ -195,6 +195,103 @@ def validate_edge_add(engine: "GraphKnowledgeEngine", edge: ConversationEdge) ->
             raise ValueError(
                 f"Cannot add dependency incoming edge into already-used node {tgt}"
             )
+
+
+def normalize_memory_visibility(value: Any) -> str:
+    vis = str(value or "private").strip().lower()
+    return "shared" if vis == "shared" else "private"
+
+
+def can_access_memory_metadata(
+    metadata: Mapping[str, Any],
+    *,
+    current_security_scope: str | None = None,
+    current_agent_id: str | None = None,
+) -> bool:
+    visibility = normalize_memory_visibility(metadata.get("visibility"))
+    has_owner_agent = bool(
+        str(metadata.get("owner_agent_id") or metadata.get("agent_id") or "").strip()
+    )
+    if visibility == "shared":
+        if has_owner_agent:
+            current_agent = str(current_agent_id or "").strip().lower()
+            owner_agent = str(
+                metadata.get("owner_agent_id") or metadata.get("agent_id") or ""
+            ).strip().lower()
+            if current_agent and owner_agent and current_agent == owner_agent:
+                return True
+
+            shared_agents = metadata.get("shared_with_agents")
+            if isinstance(shared_agents, str):
+                agent_values = {shared_agents.strip().lower()}
+            elif isinstance(shared_agents, (list, tuple, set)):
+                agent_values = {
+                    str(item).strip().lower() for item in shared_agents if str(item).strip()
+                }
+            else:
+                agent_values = set()
+            if current_agent and current_agent in agent_values:
+                return True
+
+            current_scope = str(current_security_scope or "").strip().lower()
+            shared_with = metadata.get("shared_with")
+            if isinstance(shared_with, str):
+                shared_values = {shared_with.strip().lower()}
+            elif isinstance(shared_with, (list, tuple, set)):
+                shared_values = {
+                    str(item).strip().lower()
+                    for item in shared_with
+                    if str(item).strip()
+                }
+            else:
+                shared_values = set()
+            if current_scope and current_scope in shared_values:
+                return True
+
+        return True
+
+    current_agent = str(current_agent_id or "").strip().lower()
+    current_scope = str(current_security_scope or "").strip().lower()
+    owner_agent = str(
+        metadata.get("owner_agent_id") or metadata.get("agent_id") or ""
+    ).strip().lower()
+    if owner_agent and current_agent and owner_agent == current_agent:
+        return True
+
+    shared_agents = metadata.get("shared_with_agents")
+    if isinstance(shared_agents, str):
+        agent_values = {shared_agents.strip().lower()}
+    elif isinstance(shared_agents, (list, tuple, set)):
+        agent_values = {
+            str(item).strip().lower() for item in shared_agents if str(item).strip()
+        }
+    else:
+        agent_values = set()
+    if current_agent and current_agent in agent_values:
+        return True
+
+    shared_with = metadata.get("shared_with")
+    if isinstance(shared_with, str):
+        shared_values = {shared_with.strip().lower()}
+    elif isinstance(shared_with, (list, tuple, set)):
+        shared_values = {
+            str(item).strip().lower() for item in shared_with if str(item).strip()
+        }
+    else:
+        shared_values = set()
+    if current_scope and current_scope in shared_values:
+        return True
+
+    owner_scope = str(
+        metadata.get("security_scope") or metadata.get("owner_security_scope") or ""
+    ).strip().lower()
+    if has_owner_agent:
+        return False
+    if not owner_scope:
+        return True
+    if not current_scope:
+        return True
+    return owner_scope == current_scope
 
 
 def _conversation_scope_id(

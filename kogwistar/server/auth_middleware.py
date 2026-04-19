@@ -251,8 +251,45 @@ def get_security_scope() -> str:
     ).strip().lower()
     if scope and scope != "*":
         return scope
+    parts = get_security_scope_parts()
+    if parts["path"]:
+        return parts["path"]
     ns = sorted(get_current_namespaces())
     return ns[0] if ns else DEFAULT_SECURITY_SCOPE
+
+
+def get_security_scope_parts() -> dict[str, str]:
+    claims = claims_ctx.get() or {}
+    tenant = str(claims.get("tenant") or "").strip().lower()
+    workspace = str(claims.get("workspace") or "").strip().lower()
+    project = str(claims.get("project") or "").strip().lower()
+    explicit = str(claims.get("security_scope") or "").strip().lower()
+    if explicit and explicit != "*":
+        return {
+            "tenant": tenant,
+            "workspace": workspace,
+            "project": project,
+            "path": explicit,
+        }
+    parts = [part for part in (tenant, workspace, project) if part]
+    return {
+        "tenant": tenant,
+        "workspace": workspace,
+        "project": project,
+        "path": "/".join(parts),
+    }
+
+
+def describe_storage_security_mapping() -> dict[str, str]:
+    return {
+        "storage_namespace": get_storage_namespace(),
+        "execution_namespace": get_execution_namespace(),
+        "security_scope": get_security_scope(),
+        "security_scope_path": get_security_scope_parts()["path"],
+        "tenant": get_security_scope_parts()["tenant"],
+        "workspace": get_security_scope_parts()["workspace"],
+        "project": get_security_scope_parts()["project"],
+    }
 
 
 def get_current_capabilities() -> set[str]:
@@ -279,6 +316,18 @@ def get_current_subject() -> str | None:
 def get_current_user_id() -> str | None:
     claims = claims_ctx.get() or {}
     return claims.get("user_id")
+
+
+def get_current_agent_id() -> str | None:
+    claims = claims_ctx.get() or {}
+    agent_id = str(
+        claims.get("agent_id")
+        or claims.get("actor_id")
+        or claims.get("sub")
+        or claims.get("user_id")
+        or ""
+    ).strip()
+    return agent_id or None
 
 
 def _normalize_namespaces(
@@ -427,9 +476,12 @@ __all__ = [
     "get_storage_namespace",
     "get_execution_namespace",
     "get_security_scope",
+    "get_security_scope_parts",
+    "describe_storage_security_mapping",
     "get_current_subject",
     "get_current_user_id",
     "get_current_capabilities",
+    "get_current_agent_id",
     "require_namespace",
     "require_security_scope",
     "can_access_security_scope",
