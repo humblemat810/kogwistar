@@ -656,7 +656,7 @@ This is essential if Kogwistar is serious about evented, replayable system behav
 5. [x] Slice 11 — Operator Views / System Introspection (internal/admin-only first)
 
 ## Mid-term order
-6. [ ] Slice 6 — Checkpoint / Suspend / Resume
+6. [x] Slice 6 — Checkpoint / Suspend / Resume
 7. [ ] Slice 7 — Policy-Driven Scheduler
 8. [ ] Slice 8 — Resource Accounting and Budgets
 9. [ ] Slice 9 — Tool / Device Subsystem

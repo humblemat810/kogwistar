@@ -50,6 +50,16 @@ class DesignActorIn(BaseModel):
     designer_id: str = Field(min_length=1)
 
 
+class ResumeRunIn(BaseModel):
+    suspended_node_id: str = Field(min_length=1)
+    suspended_token_id: str = Field(min_length=1)
+    client_result: dict[str, Any] = Field(default_factory=dict)
+    workflow_id: str = Field(min_length=1)
+    conversation_id: str = Field(min_length=1)
+    turn_node_id: str = Field(min_length=1)
+    user_id: str | None = None
+
+
 def _as_http_error(exc: Exception) -> HTTPException:
     if isinstance(exc, KeyError):
         return HTTPException(status_code=404, detail=str(exc))
@@ -269,6 +279,35 @@ def create_runtime_router(
         require_namespace(runtime_namespaces)
         try:
             return get_service_r().replay_run(run_id, target_step_seq)
+        except Exception as exc:  # noqa: BLE001
+            raise _as_http_error(exc)
+
+    @router.get("/runs/{run_id}/resume-contract")
+    def get_workflow_resume_contract(run_id: str):
+        require_role("ro")
+        require_namespace(runtime_namespaces)
+        try:
+            return get_service_r().resume_contract(run_id)
+        except Exception as exc:  # noqa: BLE001
+            raise _as_http_error(exc)
+
+    @router.post("/runs/{run_id}/resume")
+    def resume_workflow_run(run_id: str, inp: ResumeRunIn):
+        require_role("rw")
+        require_namespace(runtime_namespaces)
+        if require_workflow_access:
+            require_workflow_access(inp.workflow_id, "rw")
+        try:
+            return get_service_r().resume_run(
+                run_id=run_id,
+                suspended_node_id=inp.suspended_node_id,
+                suspended_token_id=inp.suspended_token_id,
+                client_result=inp.client_result,
+                workflow_id=inp.workflow_id,
+                conversation_id=inp.conversation_id,
+                turn_node_id=inp.turn_node_id,
+                user_id=inp.user_id,
+            )
         except Exception as exc:  # noqa: BLE001
             raise _as_http_error(exc)
 

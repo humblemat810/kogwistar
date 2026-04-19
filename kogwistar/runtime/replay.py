@@ -17,6 +17,11 @@ def load_checkpoint(*, conversation_engine: Any, run_id: str, step_seq: int) -> 
     md = nodes[0].metadata or {}
     if md.get("entity_type") != "workflow_checkpoint":
         raise ValueError("Node is not a workflow_checkpoint")
+    schema_version = int(md.get("checkpoint_schema_version") or 0)
+    if schema_version not in {0, 1}:
+        raise ValueError(
+            f"Cannot load checkpoint {ckpt_id}: incompatible checkpoint_schema_version={schema_version}"
+        )
     return json.loads(md["state_json"])
 
 
@@ -84,7 +89,13 @@ def replay_to(*, conversation_engine: Any, run_id: str, target_step_seq: int) ->
     if best is None:
         raise ValueError(f"No checkpoint <= {effective_target} for run_id={run_id}")
 
-    state: State = json.loads((best.metadata or {})["state_json"])
+    best_md = best.metadata or {}
+    schema_version = int(best_md.get("checkpoint_schema_version") or 0)
+    if schema_version not in {0, 1}:
+        raise ValueError(
+            f"Cannot replay run {run_id}: incompatible checkpoint_schema_version={schema_version}"
+        )
+    state: State = json.loads(best_md["state_json"])
 
     steps = conversation_engine.read.get_nodes(
         where={"$and": [{"entity_type": "workflow_step_exec"}, {"run_id": run_id}]},

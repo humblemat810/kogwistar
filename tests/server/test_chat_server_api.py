@@ -918,6 +918,17 @@ def test_chat_debug_endpoints_namespace_and_workflow_viz(monkeypatch, engine_tri
         replay.raise_for_status()
         assert replay.json()["state"]["counter"] == 2
 
+        resume_contract = client.get(
+            f"/api/runs/{run_id}/resume-contract", headers=workflow_headers
+        )
+        resume_contract.raise_for_status()
+        contract = resume_contract.json()
+        assert contract["run_id"] == run_id
+        assert contract["latest_checkpoint_step_seq"] == 0
+        assert contract["checkpoint_schema_version"] == 1
+        assert "checkpoint_schema_version" in contract["persisted_keys"]
+        assert "_rt_join" in contract["ephemeral_keys"]
+
         viz = client.get("/api/viz/d3.json?graph_type=workflow")
         viz.raise_for_status()
         payload = viz.json()

@@ -64,6 +64,24 @@ class RuntimeRunRequest:
     is_cancel_requested: Callable[[], bool]
 
 
+@dataclass
+class RuntimeResumeRequest:
+    run_id: str
+    suspended_node_id: str
+    suspended_token_id: str
+    client_result: dict[str, Any]
+    workflow_id: str
+    conversation_id: str
+    turn_node_id: str
+    user_id: str | None
+    knowledge_engine: Any
+    conversation_engine: Any
+    workflow_engine: Any
+    registry: RunRegistry
+    publish: Callable[[str, dict[str, Any] | None], dict[str, Any]]
+    is_cancel_requested: Callable[[], bool]
+
+
 def json_safe(value: Any) -> Any:
     return json.loads(json.dumps(value, ensure_ascii=False, default=str))
 
@@ -91,6 +109,7 @@ class ChatRunServiceOwner(Protocol):
     run_registry: RunRegistry
     answer_runner: Callable[[AnswerRunRequest], dict[str, Any]]
     runtime_runner: Callable[[RuntimeRunRequest], dict[str, Any]]
+    resume_runner: Callable[[RuntimeResumeRequest], dict[str, Any]]
     _workflow_history_lock: threading.Lock
 
     def _knowledge_engine(self) -> Any: ...

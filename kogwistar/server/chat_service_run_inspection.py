@@ -19,6 +19,35 @@ from .chat_service_shared import _BaseComponent
 class _RunInspectionService(_BaseComponent):
     """Owns step/checkpoint lookup and replay helpers."""
 
+    def resume_contract(self, run_id: str) -> dict[str, Any]:
+        nodes = self._workflow_nodes(entity_type="workflow_checkpoint", run_id=run_id)
+        checkpoints = self.list_checkpoints(run_id)
+        latest = checkpoints[-1] if checkpoints else None
+        state = latest.get("state") if isinstance(latest, dict) else None
+        latest_node = None
+        if nodes:
+            latest_node = max(
+                nodes, key=lambda n: int((getattr(n, "metadata", {}) or {}).get("step_seq", -1))
+            )
+        resume_keys = {
+            "run_id": run_id,
+            "latest_checkpoint_step_seq": None if latest is None else latest.get("step_seq"),
+            "checkpoint_schema_version": None
+            if latest_node is None
+            else int((getattr(latest_node, "metadata", {}) or {}).get("checkpoint_schema_version", 0)),
+            "persisted_keys": [
+                "run_id",
+                "workflow_id",
+                "step_seq",
+                "state_json",
+                "checkpoint_schema_version",
+            ],
+            "ephemeral_keys": ["_deps", "_rt_join", "_rt"],
+            "compatible": bool(checkpoints),
+            "state_keys": sorted(state.keys()) if isinstance(state, dict) else [],
+        }
+        return resume_keys
+
     def _workflow_nodes(self, *, entity_type: str, run_id: str) -> list[Any]:
         try:
             return self._conversation_engine().get_nodes(

@@ -321,4 +321,34 @@ def build_workflow_mcp(
     def workflow_run_replay(run_id: str, target_step_seq: int) -> dict[str, Any]:
         return get_service().replay_run(run_id, target_step_seq)
 
+    @tool_roles({role_ro, role_rw})
+    @require_ns({ns_workflow})
+    @mcp.tool(name="workflow.run_resume_contract")
+    def workflow_run_resume_contract(run_id: str) -> dict[str, Any]:
+        return get_service().resume_contract(run_id)
+
+    @tool_roles({role_rw})
+    @require_ns({ns_workflow})
+    @mcp.tool(name="workflow.run_resume")
+    def workflow_run_resume(
+        run_id: str,
+        suspended_node_id: str,
+        suspended_token_id: str,
+        client_result: dict[str, Any],
+        workflow_id: str,
+        conversation_id: str,
+        turn_node_id: str,
+        user_id: str | None = None,
+    ) -> dict[str, Any]:
+        return get_service().resume_run(
+            run_id=run_id,
+            suspended_node_id=suspended_node_id,
+            suspended_token_id=suspended_token_id,
+            client_result=client_result,
+            workflow_id=workflow_id,
+            conversation_id=conversation_id,
+            turn_node_id=turn_node_id,
+            user_id=user_id,
+        )
+
     return mcp

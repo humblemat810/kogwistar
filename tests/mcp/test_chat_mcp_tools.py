@@ -366,6 +366,44 @@ def test_chat_run_service_process_table_uses_claim_scope_not_backend_namespace(
     assert row["security_scope"] == "tenant-a"
 
 
+def test_chat_run_service_resume_contract_exposes_checkpoint_metadata(
+    monkeypatch, engine_triplet
+):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    conversation_engine.write.add_node(
+        WorkflowCheckpointNode(
+            id="wf_ckpt|run-resume-1|0",
+            label="Checkpoint 0",
+            type="entity",
+            doc_id="wf_ckpt|run-resume-1|0",
+            summary="checkpoint",
+            mentions=[Grounding(spans=[Span.from_dummy_for_conversation()])],
+            properties={},
+            metadata={
+                "entity_type": "workflow_checkpoint",
+                "run_id": "run-resume-1",
+                "workflow_id": "wf-resume-1",
+                "step_seq": 0,
+                "checkpoint_schema_version": 1,
+                "state_json": "{\"foo\": \"bar\"}",
+            },
+            level_from_root=0,
+            domain_id=None,
+            canonical_entity_id=None,
+            embedding=None,
+        )
+    )
+    contract = service.resume_contract("run-resume-1")
+    assert contract["run_id"] == "run-resume-1"
+    assert contract["latest_checkpoint_step_seq"] == 0
+    assert contract["checkpoint_schema_version"] == 1
+    assert "checkpoint_schema_version" in contract["persisted_keys"]
+    assert "_rt_join" in contract["ephemeral_keys"]
+
+
 @pytest.mark.asyncio
 async def test_mcp_chat_submit_cancel_and_workflow_diagnostics(
     monkeypatch, engine_triplet

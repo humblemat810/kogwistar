@@ -24,6 +24,7 @@ from .chat_service_shared import (
     AnswerRunRequest,
     RunCancelledError,
     RuntimeRunRequest,
+    RuntimeResumeRequest,
     WorkflowProjectionRebuildingError,
     json_safe,
     now_ms,
@@ -367,6 +368,42 @@ class ChatRunService:
 
     def replay_run(self, run_id: str, target_step_seq: int) -> dict[str, Any]:
         return self._run_inspection.replay_run(run_id, target_step_seq)
+
+    def resume_contract(self, run_id: str) -> dict[str, Any]:
+        return self._run_inspection.resume_contract(run_id)
+
+    def resume_run(
+        self,
+        *,
+        run_id: str,
+        suspended_node_id: str,
+        suspended_token_id: str,
+        client_result: dict[str, Any],
+        workflow_id: str,
+        conversation_id: str,
+        turn_node_id: str,
+        user_id: str | None = None,
+    ) -> dict[str, Any]:
+        return self._run_execution._default_resume_runner(
+            RuntimeResumeRequest(
+                run_id=run_id,
+                suspended_node_id=suspended_node_id,
+                suspended_token_id=suspended_token_id,
+                client_result=client_result,
+                workflow_id=workflow_id,
+                conversation_id=conversation_id,
+                turn_node_id=turn_node_id,
+                user_id=user_id,
+                knowledge_engine=self._knowledge_engine(),
+                conversation_engine=self._conversation_engine(),
+                workflow_engine=self._workflow_engine(),
+                registry=self.run_registry,
+                publish=lambda event_type, payload=None: self._publish(
+                    run_id, event_type, payload
+                ),
+                is_cancel_requested=lambda: self.run_registry.is_cancel_requested(run_id),
+            )
+        )
 
     def workflow_design_graph(
         self, workflow_id: str, refresh: bool = False

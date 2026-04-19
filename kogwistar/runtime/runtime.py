@@ -433,6 +433,7 @@ from threading import Lock
 
 
 class WorkflowRuntime:
+    CHECKPOINT_SCHEMA_VERSION = 1
     """
     Core engine for executing graph-based **workflow designs**.
 
@@ -2905,6 +2906,20 @@ class WorkflowRuntime:
                 doc_id=f"conv:{conversation_id}",
             )
         )
+        metadata = {
+            "entity_type": "workflow_failed",
+            "workflow_id": workflow_id,
+            "run_id": run_id,
+            "conversation_id": conversation_id,
+            "accepted_step_seq": int(accepted_step_seq),
+            "last_processed_node_id": (
+                str(last_processed_node_id) if last_processed_node_id else None
+            ),
+            "level_from_root": 0,
+        }
+        if safe_errors:
+            metadata["errors"] = safe_errors
+
         node = WorkflowFailedNode(
             id=node_id,
             label="Workflow failed",
@@ -2913,18 +2928,7 @@ class WorkflowRuntime:
             summary=excerpt,
             mentions=[Grounding(spans=[span])],
             properties={"entity_type": "workflow_failed"},
-            metadata={
-                "entity_type": "workflow_failed",
-                "workflow_id": workflow_id,
-                "run_id": run_id,
-                "conversation_id": conversation_id,
-                "accepted_step_seq": int(accepted_step_seq),
-                "errors": safe_errors,
-                "last_processed_node_id": (
-                    str(last_processed_node_id) if last_processed_node_id else None
-                ),
-                "level_from_root": 0,
-            },
+            metadata=metadata,
             level_from_root=0,
             domain_id=None,
             canonical_entity_id=None,
@@ -3270,6 +3274,7 @@ class WorkflowRuntime:
                 "run_id": run_id,
                 "workflow_id": workflow_id,
                 "step_seq": step_seq,
+                "checkpoint_schema_version": self.CHECKPOINT_SCHEMA_VERSION,
                 "state_json": state_json,
                 "level_from_root": 0,
                 "conversation_id": conversation_id,

@@ -13,11 +13,13 @@ from kogwistar.conversation.models import (
 from kogwistar.id_provider import new_id_str
 from kogwistar.cdc.sqlite_sink import _get_shared_sqlite_sink
 from kogwistar.runtime.telemetry import EventEmitter
+from kogwistar.runtime.replay import load_checkpoint
 
 from .chat_service_shared import (
     AnswerRunRequest,
     RunCancelledError,
     RuntimeRunRequest,
+    RuntimeResumeRequest,
     _BaseComponent,
 )
 from .run_registry import RunRegistryTraceBridge
@@ -427,6 +429,64 @@ class _RunExecutionService(_BaseComponent):
             "workflow_status": str(
                 getattr(run_result, "status", "succeeded") or "succeeded"
             ),
+            "final_state": final_state,
+        }
+
+    def _default_resume_runner(self, req: RuntimeResumeRequest) -> dict[str, Any]:
+        from kogwistar.conversation.resolvers import default_resolver
+        from kogwistar.runtime.models import RunFailure, RunSuccess, RunSuspended
+        from kogwistar.runtime.runtime import WorkflowRuntime
+
+        def predicate_always(_workflow_info, _state, _last_result):
+            return True
+
+        step_seq = int(req.client_result.get("step_seq", 0) or 0)
+        initial_state = dict(
+            load_checkpoint(
+                conversation_engine=req.conversation_engine,
+                run_id=req.run_id,
+                step_seq=step_seq,
+            )
+        )
+        deps = initial_state.get("_deps")
+        if not isinstance(deps, dict):
+            deps = {}
+        deps.setdefault("conversation_engine", req.conversation_engine)
+        deps.setdefault("knowledge_engine", req.knowledge_engine)
+        deps.setdefault("ref_knowledge_engine", req.knowledge_engine)
+        deps.setdefault("workflow_engine", req.workflow_engine)
+        deps.setdefault("agentic_workflow_engine", req.workflow_engine)
+        initial_state["_deps"] = deps
+        runtime = WorkflowRuntime(
+            workflow_engine=req.workflow_engine,
+            conversation_engine=req.conversation_engine,
+            step_resolver=default_resolver,
+            predicate_registry={"always": predicate_always},
+            checkpoint_every_n_steps=1,
+            max_workers=1,
+            cancel_requested=lambda _rid: req.is_cancel_requested(),
+        )
+        kind = str(req.client_result.get("status") or "success")
+        model_map = {
+            "success": RunSuccess,
+            "failure": RunFailure,
+            "suspended": RunSuspended,
+        }
+        model = model_map.get(kind, RunSuccess)
+        client_result = model.model_validate(req.client_result)
+        run_result = runtime.resume_run(
+            run_id=req.run_id,
+            suspended_node_id=req.suspended_node_id,
+            suspended_token_id=req.suspended_token_id,
+            client_result=client_result,
+            workflow_id=req.workflow_id,
+            conversation_id=req.conversation_id,
+            turn_node_id=req.turn_node_id,
+        )
+        final_state = self._json_safe(dict(getattr(run_result, "final_state", {}) or {}))
+        final_state.pop("_deps", None)
+        return {
+            "workflow_status": str(getattr(run_result, "status", "succeeded") or "succeeded"),
             "final_state": final_state,
         }
 
