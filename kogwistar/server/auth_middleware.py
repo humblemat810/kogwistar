@@ -30,10 +30,27 @@ if TYPE_CHECKING:
 load_dotenv()
 
 # --- JWT config (env-driven) ---
-JWT_ALG = os.getenv("JWT_ALG", "HS256")  # HS256 (shared secret) or RS256 (public key)
-JWT_SECRET = os.getenv("JWT_SECRET")  # HS256 secret OR RS256 public key
-JWT_ISS = os.getenv("JWT_ISS")  # optional issuer to check
-JWT_AUD = os.getenv("JWT_AUD")  # optional audience to check
+def get_jwt_alg() -> str:
+    return os.getenv("JWT_ALG", "HS256")
+
+
+def get_jwt_secret() -> str | None:
+    return os.getenv("JWT_SECRET")
+
+
+def get_jwt_iss() -> str | None:
+    return os.getenv("JWT_ISS")
+
+
+def get_jwt_aud() -> str | None:
+    return os.getenv("JWT_AUD")
+
+
+# Backward-compatible module exports. Do not use for runtime decisions.
+JWT_ALG = get_jwt_alg()
+JWT_SECRET = get_jwt_secret()
+JWT_ISS = get_jwt_iss()
+JWT_AUD = get_jwt_aud()
 PROTECTED_PREFIXES = tuple(
     (os.getenv("JWT_PROTECTED_PATHS") or "/mcp,/admin").split(",")
 )
@@ -82,14 +99,20 @@ def verify_jwt(token: str) -> dict:
     - RS256: set JWT_ALG=RS256 and JWT_SECRET=<PEM public key string>
     Optionally set JWT_ISS and/or JWT_AUD for issuer/audience checks.
     """
+    jwt_alg = get_jwt_alg()
+    jwt_secret = get_jwt_secret()
+    jwt_iss = get_jwt_iss()
+    jwt_aud = get_jwt_aud()
+    if not jwt_secret:
+        raise HTTPException(status_code=500, detail="JWT secret is not configured")
     try:
-        options = {"verify_aud": bool(JWT_AUD)}
+        options = {"verify_aud": bool(jwt_aud)}
         claims = jwt.decode(
             token,
-            JWT_SECRET,
-            algorithms=[JWT_ALG],
-            audience=JWT_AUD,
-            issuer=JWT_ISS,
+            jwt_secret,
+            algorithms=[jwt_alg],
+            audience=jwt_aud,
+            issuer=jwt_iss,
             options=options,
         )
         return claims
@@ -104,7 +127,10 @@ def _decode_role_from_headers(scope: Scope) -> str:
         if not auth.startswith("Bearer "):
             return Role.RO.value
         token = auth.split(" ", 1)[1]
-        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
+        jwt_secret = get_jwt_secret()
+        if not jwt_secret:
+            return Role.RO.value
+        payload = jwt.decode(token, jwt_secret, algorithms=[get_jwt_alg()])
         role = payload.get("role", Role.RO.value)
         return role if role in (Role.RO.value, Role.RW.value) else Role.RO.value
     except Exception:
@@ -463,6 +489,10 @@ __all__ = [
     "JWT_SECRET",
     "JWT_ISS",
     "JWT_AUD",
+    "get_jwt_alg",
+    "get_jwt_secret",
+    "get_jwt_iss",
+    "get_jwt_aud",
     "PROTECTED_PREFIXES",
     "Role",
     "NameSpace",

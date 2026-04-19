@@ -841,6 +841,17 @@ except Exception:  # pragma: no cover - allow collection without the engine stac
 FakeEmbeddingFunction = ConstantEmbeddingFunction
 
 
+def build_default_test_embedding_function():
+    dim = int(os.getenv("KOGWISTAR_TEST_EMBEDDING_DIM", "8"))
+    return FakeEmbeddingFunction(dim=dim)
+
+
+_TEST_ENV.setenv(
+    "KOGWISTAR_TEST_EMBEDDING_FUNCTION_IMPORT",
+    "tests.conftest:build_default_test_embedding_function",
+)
+
+
 @pytest.fixture(scope="session")
 def backend_kind(request) -> str:
     """Default backend kind for test engines.

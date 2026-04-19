@@ -44,6 +44,10 @@ from kogwistar.server.auth_middleware import (
     DevStreamGuardMiddleware,
     JWTProtectMiddleware,
     NameSpace,
+    get_jwt_alg,
+    get_jwt_aud,
+    get_jwt_iss,
+    get_jwt_secret,
     get_current_subject,
     get_current_user_id,
     require_capability,
@@ -194,10 +198,10 @@ async def combined_lifespan(app: FastAPI):
         if getattr(app.state, "auth_service", None) is None:
             app.state.auth_service = AuthService(
                 session=get_session(),
-                jwt_secret=JWT_SECRET,
-                jwt_alg=JWT_ALG,
-                jwt_iss=JWT_ISS,
-                jwt_aud=JWT_AUD,
+                jwt_secret=get_jwt_secret(),
+                jwt_alg=get_jwt_alg(),
+                jwt_iss=get_jwt_iss(),
+                jwt_aud=get_jwt_aud(),
             )
         if getattr(app.state, "oidc_clients", None) is None:
             app.state.oidc_clients = {}
@@ -324,6 +328,9 @@ async def dev_token(request: Request):
     inp = DevTokenInp.model_validate((await request.json()))
     if inp.role not in ROLE_ORDER:
         raise HTTPException(400, f"role must be one of {list(ROLE_ORDER)}")
+    jwt_secret = get_jwt_secret()
+    if not jwt_secret:
+        raise HTTPException(status_code=500, detail="JWT secret is not configured")
     payload = {
         "sub": inp.username,
         "ns": inp.ns,
@@ -331,11 +338,11 @@ async def dev_token(request: Request):
         "capabilities": inp.capabilities,
         "iat": int(time.time()),
         "exp": int((datetime.now(timezone.utc) + timedelta(hours=4)).timestamp()),
-        "iss": JWT_ISS or "local",
-        "aud": JWT_AUD or None,
+        "iss": get_jwt_iss() or "local",
+        "aud": get_jwt_aud() or None,
     }
     payload = {k: v for k, v in payload.items() if v is not None}
-    token = jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALG)
+    token = jwt.encode(payload, jwt_secret, algorithm=get_jwt_alg())
     return {"token": token}
 
 def _designer_resolver_candidates(service: Any) -> list[Any]:

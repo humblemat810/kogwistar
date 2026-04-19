@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import importlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
@@ -42,6 +43,22 @@ def _derive_index_dir_from_knowledge_dir(knowledge_dir: str) -> str:
         return str(path / "index")
     leaf = path.name or "knowledge"
     return str(path.parent / "index" / leaf)
+
+
+def _import_callable_from_env(env_name: str):
+    raw = str(os.getenv(env_name) or "").strip()
+    if not raw:
+        return None
+    module_name, sep, attr_name = raw.partition(":")
+    if not sep or not module_name or not attr_name:
+        raise RuntimeError(
+            f"{env_name} must be in 'module.path:attribute_name' format"
+        )
+    module = importlib.import_module(module_name)
+    target = getattr(module, attr_name, None)
+    if not callable(target):
+        raise RuntimeError(f"{env_name} target is not callable: {raw}")
+    return target
 
 
 @dataclass(frozen=True)
@@ -200,6 +217,10 @@ def build_graph_engine(
     sa_engine: Any | None = None,
 ) -> GraphKnowledgeEngine:
     persist_directory = settings.persist_directory_for(graph_type)
+    embedding_factory = _import_callable_from_env(
+        "KOGWISTAR_TEST_EMBEDDING_FUNCTION_IMPORT"
+    )
+    embedding_function = embedding_factory() if embedding_factory else None
     if settings.backend == "chroma":
         if settings.chroma_async:
             if not settings.chroma_host or settings.chroma_port is None:
@@ -281,11 +302,13 @@ def build_graph_engine(
             return GraphKnowledgeEngine(
                 persist_directory=persist_directory,
                 kg_graph_type=graph_type,
+                embedding_function=embedding_function,
                 backend_factory=_make_backend,
             )
         return GraphKnowledgeEngine(
             persist_directory=persist_directory,
             kg_graph_type=graph_type,
+            embedding_function=embedding_function,
         )
 
     if settings.pg_async:
@@ -306,6 +329,7 @@ def build_graph_engine(
         return GraphKnowledgeEngine(
             persist_directory=persist_directory,
             kg_graph_type=graph_type,
+            embedding_function=embedding_function,
             backend=backend,
         )
 
@@ -321,5 +345,6 @@ def build_graph_engine(
     return GraphKnowledgeEngine(
         persist_directory=persist_directory,
         kg_graph_type=graph_type,
+        embedding_function=embedding_function,
         backend=backend,
     )
