@@ -8,6 +8,12 @@ from typing import Any
 from kogwistar.engine_core.engine import scoped_namespace
 from kogwistar.engine_core.models import Edge, Grounding, Node, Span
 from kogwistar.id_provider import stable_id
+from kogwistar.server.auth_middleware import (
+    can_access_security_scope,
+    claims_ctx,
+    get_security_scope,
+    require_security_scope_access,
+)
 
 from .models import LaneMessageSendResult, ProjectedLaneMessageRow
 
@@ -59,8 +65,23 @@ class LaneMessagingService:
         correlation_id: str | None = None,
         reply_to: str | None = None,
         priority: int = 0,
+        security_scope: str | None = None,
+        shared_scope: bool = False,
+        shared_inbox: bool = False,
     ) -> LaneMessageSendResult:
-        namespace = str(getattr(self.engine, "namespace", "default") or "default")
+        claims = claims_ctx.get() or {}
+        namespace = str(
+            claims.get("storage_ns")
+            or getattr(self.engine, "namespace", "default")
+            or "default"
+        )
+        effective_scope = str(security_scope or get_security_scope()).strip().lower()
+        shared_flag = bool(shared_scope or shared_inbox)
+        require_security_scope_access(
+            effective_scope,
+            shared=shared_flag,
+            action="send message into",
+        )
         message_id = f"msg:{uuid.uuid4()}"
         correlation = correlation_id or f"corr:{uuid.uuid4()}"
         now_epoch = _now_epoch()
@@ -93,6 +114,10 @@ class LaneMessagingService:
                     "reply_to_message_id": reply_to,
                     "run_id": run_id,
                     "step_id": step_id,
+                    "security_scope": effective_scope,
+                    "shared_scope": shared_flag,
+                    "shared_inbox": bool(shared_inbox),
+                    "visibility": "shared" if shared_flag else "private",
                     "payload": payload,
                     "created_at": created_at,
                     "updated_at": created_at,
@@ -300,8 +325,24 @@ class LaneMessagingService:
         list_fn = getattr(self.engine.meta_sqlite, "list_projected_lane_messages", None)
         if not callable(list_fn):
             return []
-        namespace = str(getattr(self.engine, "namespace", "default") or "default")
-        return list_fn(namespace=namespace, inbox_id=inbox_id, status=status)
+        claims = claims_ctx.get() or {}
+        namespace = str(
+            claims.get("storage_ns")
+            or getattr(self.engine, "namespace", "default")
+            or "default"
+        )
+        rows = list_fn(namespace=namespace, inbox_id=inbox_id, status=status)
+        return [row for row in rows if self._row_visible(row)]
+
+    def _row_visible(self, row: ProjectedLaneMessageRow) -> bool:
+        nodes = self.engine.read.get_nodes(ids=[row.message_id])
+        if not nodes:
+            return False
+        md = dict(getattr(nodes[0], "metadata", {}) or {})
+        return can_access_security_scope(
+            str(md.get("security_scope") or ""),
+            shared=bool(md.get("shared_scope") or md.get("shared_inbox")),
+        )
 
     def _ensure_anchor_nodes(
         self,

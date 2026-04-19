@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from kogwistar.server.auth_middleware import (
+    can_access_security_scope,
     claims_ctx,
     get_execution_namespace,
     get_current_capabilities,
@@ -11,6 +12,7 @@ from kogwistar.server.auth_middleware import (
     require_namespace,
     require_capability,
     require_security_scope,
+    require_security_scope_access,
 )
 
 
@@ -65,5 +67,24 @@ def test_capability_helpers_use_claim_capabilities():
         assert require_capability({"workflow.run.read", "workflow.run.write"}) == "workflow.run.read"
         with pytest.raises(Exception):
             require_capability("workflow.admin")
+    finally:
+        claims_ctx.reset(token)
+
+
+def test_security_scope_access_requires_match_or_explicit_share():
+    token = claims_ctx.set({"ns": "conversation", "security_scope": "tenant-a"})
+    try:
+        assert can_access_security_scope("tenant-a") is True
+        assert can_access_security_scope("tenant-b") is False
+        assert can_access_security_scope("tenant-b", shared=True) is True
+        assert require_security_scope_access("tenant-a") == "tenant-a"
+        with pytest.raises(Exception):
+            require_security_scope_access("tenant-b")
+        assert (
+            require_security_scope_access(
+                "tenant-b", shared=True, action="read message from"
+            )
+            == "tenant-a"
+        )
     finally:
         claims_ctx.reset(token)

@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any, Callable, Optional, TypeVar, Tuple
 
 
 from .models import ConversationEdge
+from .tool_registry import ToolReceipt
 
 
 from .models import BaseToolResult, ConversationNode
@@ -52,6 +53,7 @@ class ToolRunner:
     ) -> None:
         self.engine = conversation_engine
         self.tool_call_id_factory: Callable[..., str] = tool_call_id_factory
+        self.last_receipt: ToolReceipt | None = None
 
     def join_tool_node_to_turn(
         self,
@@ -344,4 +346,18 @@ class ToolRunner:
             },
         )
         self.engine.write.add_edge(e)
+        self.last_receipt = ToolReceipt(
+            tool_id=call_node.safe_get_id(),
+            tool_name=tool_name,
+            kind="side_effecting" if bool(getattr(result, "node_id_entry", None)) else "pure/query",
+            capability=str(kwargs.get("capability") or ""),
+            status="completed",
+            input={"args": args, "kwargs": kwargs},
+            output={"result_json": _safe_json(getattr(result, "__dict__", result))},
+            side_effects=(
+                [str(getattr(result, "node_id_entry"))]
+                if getattr(result, "node_id_entry", None)
+                else []
+            ),
+        )
         return result, call_node.safe_get_id()

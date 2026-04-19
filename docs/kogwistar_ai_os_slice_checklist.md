@@ -365,23 +365,23 @@ Status: in progress.
 
 ### Add
 - [ ] Explicit distinction between:
-  - [ ] storage namespace
-  - [ ] execution namespace
-  - [ ] security scope
+  - [x] storage namespace
+  - [x] execution namespace
+  - [x] security scope
 - [ ] Security scope model for tenant / workspace / project isolation
 - [ ] Agent-private memory areas
 - [ ] Shared memory areas
 - [ ] Cross-scope projection / pin / ref rules
-- [ ] Message routing restrictions across security scopes
-- [ ] Default visibility rules for reads/writes
+- [x] Message routing restrictions across security scopes
+- [x] Default visibility rules for reads/writes
 - [ ] Clear mapping rules between storage partitioning and security scope
 
 ### Done when
 - [ ] An agent can have private state not globally visible
 - [ ] Shared memory can be explicit, not accidental
-- [ ] Cross-tenant leakage is structurally harder
-- [ ] Message delivery respects security scope boundaries
-- [ ] Existing storage namespace semantics remain intact
+- [x] Cross-tenant leakage is structurally harder
+- [x] Message delivery respects security scope boundaries
+- [x] Existing storage namespace semantics remain intact
 
 ### Why it matters
 OS language implies memory and communication isolation.
@@ -393,6 +393,8 @@ OS language implies memory and communication isolation.
 ### Goal
 Actions are governed by explicit capabilities rather than only external policy layers.
 
+Status: in progress.
+
 ### Add
 - [ ] Capability model for processes / agents / workers
 - [ ] Capability types, e.g.:
@@ -403,8 +405,8 @@ Actions are governed by explicit capabilities rather than only external policy l
   - [ ] invoke_tool
   - [ ] read_security_scope
   - [ ] project_view
-  - [ ] approve_action
-- [ ] Capability checks at execution boundaries
+- [ ] approve_action
+- [x] Capability checks at execution boundaries
 - [ ] Deny / allow / require-approval outcomes
 - [ ] Capability inheritance for child processes
 - [ ] Capability revocation support
@@ -455,28 +457,30 @@ An operating system needs a usable system surface, not only internal modules.
 ### Goal
 Processes can pause and continue later with durable continuity by reusing existing runtime checkpoint truth.
 
+Status: in progress.
+
 ### Add
-- [ ] Formalized checkpoint contract over existing runtime truth
-- [ ] Explicit persisted vs ephemeral state rules
-- [ ] Explicit resume identity / key contract
-- [ ] Suspend semantics
-- [ ] Resume semantics
+- [x] Formalized checkpoint contract over existing runtime truth
+- [x] Explicit persisted vs ephemeral state rules
+- [x] Explicit resume identity / key contract
+- [x] Suspend semantics
+- [x] Resume semantics
 - [ ] Waiting reasons:
   - [ ] approval wait
   - [ ] message wait
   - [ ] schedule delay
   - [ ] external callback wait
   - [ ] dependency wait
-- [ ] Restart / resume from durable state
-- [ ] Replay compatibility rules
-- [ ] Design-change compatibility rules
+- [x] Restart / resume from durable state
+- [x] Replay compatibility rules
+- [x] Design-change compatibility rules
 
 ### Done when
-- [ ] A process can pause without losing semantic continuity
-- [ ] A worker can resume work after restart
+- [x] A process can pause without losing semantic continuity
+- [x] A worker can resume work after restart
 - [ ] Approval-blocked flows can resume correctly later
-- [ ] Invalid-after-design-change resumes fail safely and inspectably
-- [ ] Persisted vs ephemeral boundaries are test-covered
+- [x] Invalid-after-design-change resumes fail safely and inspectably
+- [x] Persisted vs ephemeral boundaries are test-covered
 
 ### Why it matters
 This is the step from workflow execution into process runtime.
@@ -487,6 +491,8 @@ This is the step from workflow execution into process runtime.
 
 ### Goal
 Kogwistar gains AI-layer scheduling policy, even if low-level CPU control stays with Linux.
+
+Status: done.
 
 ### Add
 - [x] Priority classes:
@@ -516,6 +522,8 @@ You do not need hardware scheduling to have meaningful OS scheduling.
 ### Goal
 Processes and tenants have measurable budgets and usage records.
 
+Status: done.
+
 ### Add
 - [x] Token budget tracking
 - [x] Tool/API cost tracking
@@ -540,11 +548,13 @@ An OS allocates and constrains resources, even if enforcement is delegated downw
 ### Goal
 Tools become first-class managed resources, similar to drivers/devices at the AI layer.
 
+Status: in progress.
+
 ### Add
-- [ ] Tool registry with stable identities
-- [ ] Tool capability requirements
-- [ ] Uniform invocation receipt model
-- [ ] Tool side-effect logging
+- [x] Tool registry with stable identities
+- [x] Tool capability requirements
+- [x] Uniform invocation receipt model
+- [x] Tool side-effect logging
 - [ ] Sync vs async tool contract support
 - [ ] Tool classes:
   - [ ] pure/query tool
@@ -601,19 +611,21 @@ This is how “agent 1 always running” becomes real.
 ### Goal
 Kogwistar becomes operable like a system, not just inspectable by ad hoc graph queries.
 
+Status: in progress.
+
 ### Add
-- [ ] Process table view
+- [x] Process table view
 - [ ] Inbox/outbox view
 - [ ] Queue depth and failed message views
 - [ ] Waiting / blocked-on graph
 - [ ] Capability inspection view
 - [ ] Service health dashboard
 - [ ] Budget / quota dashboard
-- [ ] Event timeline / trace explorer
-- [ ] Internal/admin-only visibility guard for early versions
+- [x] Event timeline / trace explorer
+- [x] Internal/admin-only visibility guard for early versions
 
 ### Done when
-- [ ] An operator can answer “what is happening now?” quickly
+- [x] An operator can answer “what is happening now?” quickly
 - [ ] Stuck flows can be located without code diving
 - [ ] System state is legible
 - [ ] Early operator surfaces are not accidentally user-facing before isolation/capabilities land
@@ -651,13 +663,13 @@ This is essential if Kogwistar is serious about evented, replayable system behav
 ## Near-term order
 1. [x] Slice 1 — Lane Messaging / Native IPC
 2. [x] Slice 2 — Universal Process Model
-3. [x] Slice 3 — Namespaces and Isolation
-4. [x] Slice 4 — Capability Kernel / Permissions
-5. [x] Slice 11 — Operator Views / System Introspection (internal/admin-only first)
+3. [ ] Slice 3 — Namespaces and Isolation
+4. [ ] Slice 4 — Capability Kernel / Permissions
+5. [ ] Slice 11 — Operator Views / System Introspection (internal/admin-only first)
 
 ## Mid-term order
-6. [x] Slice 6 — Checkpoint / Suspend / Resume
-7. [ ] Slice 7 — Policy-Driven Scheduler
+6. [ ] Slice 6 — Checkpoint / Suspend / Resume
+7. [x] Slice 7 — Policy-Driven Scheduler
 8. [x] Slice 8 — Resource Accounting and Budgets
 9. [ ] Slice 9 — Tool / Device Subsystem
 
@@ -674,13 +686,13 @@ Note: Slice 5 can start earlier as an experimental API, but it should not be cal
 
 Kogwistar starts to have a credible claim once these are present together:
 
-- [ ] lane messaging / IPC
-- [ ] process model
+- [x] lane messaging / IPC
+- [x] process model
 - [ ] namespaces / isolation
 - [ ] capability checks
-- [ ] checkpoint / resume
+- [x] checkpoint / resume
 - [ ] service supervision
-- [ ] operator views
+- [x] operator views
 
 Without all of them, it is still better described as a strong substrate / harness.
 

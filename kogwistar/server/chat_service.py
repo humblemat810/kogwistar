@@ -31,6 +31,7 @@ from .chat_service_shared import (
     workflow_namespace,
 )
 from .auth_middleware import (
+    can_access_security_scope,
     get_execution_namespace,
     get_security_scope,
     get_storage_namespace,
@@ -547,7 +548,19 @@ class ChatRunService:
             inbox_id=inbox_id,
             status=status,
         )
-        rows = rows[: int(limit)]
+        visible_rows = []
+        for row in rows:
+            nodes = self._conversation_engine().read.get_nodes(ids=[row.message_id])
+            if not nodes:
+                continue
+            md = dict(getattr(nodes[0], "metadata", {}) or {})
+            if not can_access_security_scope(
+                str(md.get("security_scope") or ""),
+                shared=bool(md.get("shared_scope") or md.get("shared_inbox")),
+            ):
+                continue
+            visible_rows.append((row, md))
+        visible_rows = visible_rows[: int(limit)]
         scope = self._scope_snapshot()
         return [
             {
@@ -568,11 +581,13 @@ class ChatRunService:
                 "run_id": row.run_id,
                 "step_id": row.step_id,
                 "correlation_id": row.correlation_id,
+                "message_security_scope": str(md.get("security_scope") or ""),
+                "visibility": str(md.get("visibility") or "private"),
                 "storage_namespace": scope["storage_namespace"],
                 "execution_namespace": scope["execution_namespace"],
                 "security_scope": scope["security_scope"],
             }
-            for row in rows
+            for row, md in visible_rows
         ]
 
     def list_blocked_runs(self, *, limit: int = 100) -> list[dict[str, Any]]:

@@ -331,6 +331,39 @@ def require_security_scope(expected: set[str] | str):
     )
 
 
+def can_access_security_scope(
+    target_scope: str | None,
+    *,
+    shared: bool = False,
+) -> bool:
+    actual = get_security_scope()
+    target = str(target_scope or "").strip().lower()
+    if shared:
+        return True
+    if not target or target == "*":
+        return True
+    return actual == target
+
+
+def require_security_scope_access(
+    target_scope: str | None,
+    *,
+    shared: bool = False,
+    action: str = "access",
+) -> str:
+    actual = get_security_scope()
+    target = str(target_scope or "").strip().lower()
+    if can_access_security_scope(target, shared=shared):
+        return actual
+    raise HTTPException(
+        status_code=403,
+        detail=(
+            f"Forbidden: security scope '{actual}' cannot {action} target scope "
+            f"'{target or '*'}' without explicit sharing"
+        ),
+    )
+
+
 def require_capability(expected: set[str] | str):
     if isinstance(expected, set):
         allowed = {str(item).strip().lower() for item in expected if str(item).strip()}
@@ -399,6 +432,8 @@ __all__ = [
     "get_current_capabilities",
     "require_namespace",
     "require_security_scope",
+    "can_access_security_scope",
+    "require_security_scope_access",
     "require_capability",
     "_normalize_namespaces",
     "set_auth_app",

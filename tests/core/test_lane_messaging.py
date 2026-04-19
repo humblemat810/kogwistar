@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine, scoped_namespace
+from kogwistar.server.auth_middleware import claims_ctx
 from tests._helpers.fake_backend import build_fake_backend
 
 
@@ -137,4 +138,66 @@ def test_projected_lane_message_claim_ack_and_requeue():
             assert retry_row.status == "pending"
             assert retry_row.retry_count == 1
     finally:
+        shutil.rmtree(test_db_dir, ignore_errors=True)
+
+
+def test_lane_message_cross_scope_send_denied_without_explicit_sharing():
+    engine, test_db_dir = _make_engine()
+    namespace = "ws:demo:conv:bg"
+    token = claims_ctx.set({"ns": "conversation", "security_scope": "tenant-a"})
+    try:
+        with scoped_namespace(engine, namespace):
+            with pytest.raises(Exception):
+                engine.send_lane_message(
+                    conversation_id="conv-demo",
+                    inbox_id="inbox:worker:maintenance",
+                    sender_id="lane:foreground",
+                    recipient_id="lane:worker:maintenance",
+                    msg_type="request.maintenance",
+                    payload={"request_node_id": "req-1"},
+                    security_scope="tenant-b",
+                )
+    finally:
+        claims_ctx.reset(token)
+        shutil.rmtree(test_db_dir, ignore_errors=True)
+
+
+def test_lane_message_cross_scope_read_denied_unless_explicit_shared():
+    engine, test_db_dir = _make_engine()
+    namespace = "ws:demo:conv:bg"
+    sender_token = claims_ctx.set({"ns": "conversation", "security_scope": "tenant-a"})
+    try:
+        with scoped_namespace(engine, namespace):
+            private_msg = engine.send_lane_message(
+                conversation_id="conv-demo",
+                inbox_id="inbox:worker:maintenance",
+                sender_id="lane:foreground",
+                recipient_id="lane:worker:maintenance",
+                msg_type="request.private",
+                payload={"request_node_id": "req-private"},
+                security_scope="tenant-a",
+            )
+            shared_msg = engine.send_lane_message(
+                conversation_id="conv-demo",
+                inbox_id="inbox:worker:maintenance",
+                sender_id="lane:foreground",
+                recipient_id="lane:worker:maintenance",
+                msg_type="request.shared",
+                payload={"request_node_id": "req-shared"},
+                security_scope="tenant-a",
+                shared_scope=True,
+            )
+    finally:
+        claims_ctx.reset(sender_token)
+    reader_token = claims_ctx.set({"ns": "conversation", "security_scope": "tenant-b"})
+    try:
+        with scoped_namespace(engine, namespace):
+            visible = engine.list_projected_lane_messages(
+                inbox_id="inbox:worker:maintenance"
+            )
+            ids = [row.message_id for row in visible]
+            assert private_msg.message_id not in ids
+            assert shared_msg.message_id in ids
+    finally:
+        claims_ctx.reset(reader_token)
         shutil.rmtree(test_db_dir, ignore_errors=True)

@@ -404,6 +404,61 @@ def test_chat_run_service_resume_contract_exposes_checkpoint_metadata(
     assert "_rt_join" in contract["ephemeral_keys"]
 
 
+def test_chat_run_service_operator_inbox_respects_security_scope(
+    monkeypatch, engine_triplet
+):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    token_send = claims_ctx.set(
+        {
+            "ns": "conversation",
+            "storage_ns": "conversation",
+            "execution_ns": "conversation",
+            "security_scope": "tenant-a",
+        }
+    )
+    try:
+        conversation_engine.send_lane_message(
+            conversation_id="conv-scope-msg",
+            inbox_id="inbox:ops",
+            sender_id="lane:a",
+            recipient_id="lane:b",
+            msg_type="request.private",
+            payload={"hello": "world"},
+            security_scope="tenant-a",
+        )
+        conversation_engine.send_lane_message(
+            conversation_id="conv-scope-msg",
+            inbox_id="inbox:ops",
+            sender_id="lane:a",
+            recipient_id="lane:b",
+            msg_type="request.shared",
+            payload={"hello": "shared"},
+            security_scope="tenant-a",
+            shared_scope=True,
+        )
+    finally:
+        claims_ctx.reset(token_send)
+
+    token_read = claims_ctx.set(
+        {
+            "ns": "workflow",
+            "storage_ns": "conversation",
+            "execution_ns": "conversation",
+            "security_scope": "tenant-b",
+        }
+    )
+    try:
+        rows = service.list_operator_inbox(inbox_id="inbox:ops", limit=10)
+    finally:
+        claims_ctx.reset(token_read)
+    assert len(rows) == 1
+    assert rows[0]["msg_type"] == "request.shared"
+    assert rows[0]["visibility"] == "shared"
+
+
 @pytest.mark.asyncio
 async def test_mcp_chat_submit_cancel_and_workflow_diagnostics(
     monkeypatch, engine_triplet
