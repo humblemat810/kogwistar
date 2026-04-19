@@ -26,9 +26,10 @@ class ToolReceipt:
     tool_id: str
     tool_name: str
     kind: str
-    capability: str
-    status: str
-    input: dict[str, Any]
+    capability: str = ""
+    status: str = "completed"
+    input: dict[str, Any] = field(default_factory=dict)
+    execution_mode: str = "inline"
     output: dict[str, Any] | None = None
     error: str | None = None
     side_effects: list[str] = field(default_factory=list)
@@ -48,8 +49,21 @@ class ToolRegistry:
     def get(self, tool_id: str) -> ToolDefinition | None:
         return self._tools.get(tool_id)
 
-    def list(self) -> list[ToolDefinition]:
-        return list(self._tools.values())
+    def list(
+        self,
+        *,
+        kind: str | None = None,
+        supports_async: bool | None = None,
+        provider: str | None = None,
+    ) -> list[ToolDefinition]:
+        out = list(self._tools.values())
+        if kind is not None:
+            out = [tool for tool in out if tool.kind == kind]
+        if supports_async is not None:
+            out = [tool for tool in out if bool(tool.supports_async) == bool(supports_async)]
+        if provider is not None:
+            out = [tool for tool in out if tool.provider == provider]
+        return out
 
     def requires(self, tool_id: str) -> ToolRequirement | None:
         tool = self.get(tool_id)

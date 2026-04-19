@@ -193,28 +193,28 @@ Invalid-after-design-change resume must fail loudly and inspectably, not silentl
 Before later slices build on these primitives, acceptance coverage must exist for:
 
 ### Messaging
-- [ ] duplicate delivery is tolerated correctly
-- [ ] lease expiry and lease steal behave correctly
-- [ ] ack / requeue are idempotent
-- [ ] per-inbox ordering remains correct
-- [ ] recovery after worker crash preserves message truth
-- [ ] assisting projections rebuild correctly from authoritative truth
+- [x] duplicate delivery is tolerated correctly
+- [x] lease expiry and lease steal behave correctly
+- [x] ack / requeue are idempotent
+- [x] per-inbox ordering remains correct
+- [x] recovery after worker crash preserves message truth
+- [x] assisting projections rebuild correctly from authoritative truth
 
 ### Isolation / visibility
-- [ ] cross-security-scope message send deny
-- [ ] cross-security-scope read deny
-- [ ] shared-memory / shared-inbox cases work only when explicit
+- [x] cross-security-scope message send deny
+- [x] cross-security-scope read deny
+- [x] shared-memory / shared-inbox cases work only when explicit
 
 ### Checkpoint / resume
-- [ ] resume after restart works when compatible
-- [ ] invalid-after-design-change resume fails safely
-- [ ] join/fanout restore behaves correctly
-- [ ] persisted vs ephemeral state boundary is honored
+- [x] resume after restart works when compatible
+- [x] invalid-after-design-change resume fails safely
+- [x] join/fanout restore behaves correctly
+- [x] persisted vs ephemeral state boundary is honored
 
 ### Migration / compatibility
-- [ ] workflow/runtime artifacts remain compatible with the process projection model
-- [ ] lane-message assisting projections can be rebuilt/migrated safely
-- [ ] operator views do not become a second truth source
+- [x] workflow/runtime artifacts remain compatible with the process projection model
+- [x] lane-message assisting projections can be rebuilt/migrated safely
+- [x] operator views do not become a second truth source
 
 ---
 
@@ -550,25 +550,25 @@ An OS allocates and constrains resources, even if enforcement is delegated downw
 ### Goal
 Tools become first-class managed resources, similar to drivers/devices at the AI layer.
 
-Status: in progress.
+Status: done.
 
 ### Add
 - [x] Tool registry with stable identities
 - [x] Tool capability requirements
 - [x] Uniform invocation receipt model
 - [x] Tool side-effect logging
-- [ ] Sync vs async tool contract support
-- [ ] Tool classes:
-  - [ ] pure/query tool
-  - [ ] side-effecting tool
-  - [ ] long-running tool
-  - [ ] human approval tool
-- [ ] Tool execution as process or child-process entity
+- [x] Sync vs async tool contract support
+- [x] Tool classes:
+  - [x] pure/query tool
+  - [x] side-effecting tool
+  - [x] long-running tool
+  - [x] human approval tool
+- [x] Tool execution as process or child-process entity
 
 ### Done when
-- [ ] Tool invocations are auditable and governable
-- [ ] Tool behavior is not opaque to the substrate
-- [ ] Long-running tools integrate with checkpoint/message flow
+- [x] Tool invocations are auditable and governable
+- [x] Tool behavior is not opaque to the substrate
+- [x] Long-running tools integrate with checkpoint/message flow
 
 ### Why it matters
 For an AI OS, tools are the equivalent of devices and drivers.
@@ -674,7 +674,7 @@ This is essential if Kogwistar is serious about evented, replayable system behav
 6. [x] Slice 6 — Checkpoint / Suspend / Resume
 7. [x] Slice 7 — Policy-Driven Scheduler
 8. [x] Slice 8 — Resource Accounting and Budgets
-9. [ ] Slice 9 — Tool / Device Subsystem
+9. [x] Slice 9 — Tool / Device Subsystem
 
 ## Later OS-hardening order
 10. [ ] Slice 10 — Service / Daemon Model
@@ -696,7 +696,7 @@ Kogwistar starts to have a credible claim once these are present together:
 - [ ] service supervision
 - [x] operator views
 
-Without all of them, it is still better described as a strong substrate / harness.
+Without the remaining service supervision / recovery utilities, it is still better described as a strong substrate / harness.
 
 With them, “agent OS” becomes a structurally defensible description.
 

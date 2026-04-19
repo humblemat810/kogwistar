@@ -2,7 +2,7 @@
 
 Tools are first-class resources, not opaque helper functions.
 
-This slice uses a small three-part shape:
+This slice uses a four-part shape:
 
 - `ToolDefinition`
   - stable identity
@@ -20,6 +20,7 @@ This slice uses a small three-part shape:
   - output
   - status
   - side-effects
+  - execution mode
 
 ## What It Means
 
@@ -35,15 +36,17 @@ That is the first step toward device-like tool governance.
 ## Current Limits
 
 - registry is still light and in-process
-- sync vs async contract is only modeled, not fully enforced
-- long-running tool execution still rides existing conversation/workflow runtime paths
+- sync vs async contract is enforced at runner boundary
+- subworkflow tools can be wrapped as child-process style executions
+- long-running / human-approval tools are governed by receipt kind + capability path
 
 ## Smoke Shape
 
-The current smoke case only proves registry behavior:
+The current smoke shape now proves registry + runner behavior:
 
 ```text
 register -> resolve requirement -> revoke
+sync tool -> async tool -> side-effecting tool -> subworkflow tool
 ```
 
 That keeps the slice small while preserving the right abstraction seam.
