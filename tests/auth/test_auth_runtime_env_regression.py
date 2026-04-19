@@ -14,6 +14,5 @@ def test_jwt_constants_have_dev_fallback_when_env_missing(monkeypatch):
     auth_middleware = importlib.import_module("kogwistar.server.auth_middleware")
     auth_middleware = importlib.reload(auth_middleware)
 
-    assert auth_middleware.JWT_SECRET == "dev-secret"
+    assert auth_middleware.JWT_SECRET is None
     assert auth_middleware.JWT_ALG == "HS256"
-
