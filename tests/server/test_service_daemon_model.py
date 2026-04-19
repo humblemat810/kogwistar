@@ -580,3 +580,37 @@ def test_service_runtime_api_round_trip(monkeypatch, engine_triplet):
         names = [evt["event_type"] for evt in events.json()["events"]]
         assert "service.heartbeat" in names
         assert "service.triggered" in names
+
+
+def test_service_operator_dashboard_round_trip(monkeypatch, engine_triplet):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service, _registry = _configure_server(
+        monkeypatch,
+        engine,
+        conversation_engine,
+        workflow_engine,
+        _runtime_success_runner,
+        runtime_runner=_runtime_success_runner,
+    )
+    created = _create_conversation(service)
+    _build_minimal_workflow(service, workflow_id="wf.service.dashboard")
+    _attach_fake_service_spawn(service, statuses=["succeeded"])
+
+    with _service_claims():
+        service.declare_service(
+            service_id="svc.dashboard.demo",
+            service_kind="daemon",
+            target_kind="workflow",
+            target_ref="wf.service.dashboard",
+            target_config={"conversation_id": created["conversation_id"]},
+            enabled=True,
+            autostart=True,
+        )
+        service.service_supervisor.bootstrap()
+        dashboard = service.operator_dashboard(limit=20)
+        assert "process_table" in dashboard
+        assert "message_queue" in dashboard
+        assert "blocked_runs" in dashboard
+        assert "capabilities" in dashboard
+        assert "resources" in dashboard
+        assert dashboard["resources"]["services"]["total_services"] >= 1

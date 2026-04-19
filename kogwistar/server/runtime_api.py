@@ -410,6 +410,15 @@ def create_runtime_router(
         except Exception as exc:  # noqa: BLE001
             raise _as_http_error(exc)
 
+    @router.get("/operator/dashboard")
+    def get_operator_dashboard(limit: int = 100):
+        require_role("ro")
+        require_namespace(runtime_namespaces)
+        try:
+            return get_service_r().operator_dashboard(limit=limit)
+        except Exception as exc:  # noqa: BLE001
+            raise _as_http_error(exc)
+
     @router.post("/capabilities/approve")
     def approve_capability(inp: CapabilityApproveIn):
         require_role("rw")

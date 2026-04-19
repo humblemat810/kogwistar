@@ -610,7 +610,7 @@ class ChatRunService:
     def capability_snapshot(self) -> dict[str, Any]:
         self._require_capability(
             "project_view",
-            ["project_view", "read_security_scope"],
+            ["project_view"],
             approval_message="Inspecting capabilities requires project_view capability",
         )
         return self.capability_kernel.snapshot() | {
@@ -1005,7 +1005,7 @@ class ChatRunService:
     ) -> list[dict[str, Any]]:
         self._require_capability(
             "project_view",
-            ["project_view", "read_security_scope"],
+            ["project_view"],
             approval_message="Reading operator inbox requires project_view capability",
         )
         meta_store = self._execution_meta_store()
@@ -1069,6 +1069,112 @@ class ChatRunService:
         blocked_statuses = {"blocked", "waiting", "suspended", "cancelling"}
         out = [row for row in rows if str(row.get("status") or "") in blocked_statuses]
         return out[: int(limit)]
+
+    def message_queue_snapshot(self, *, inbox_id: str | None = None) -> dict[str, Any]:
+        self._require_capability(
+            "project_view",
+            ["project_view"],
+            approval_message="Reading queue snapshot requires project_view capability",
+        )
+        meta_store = self._execution_meta_store()
+        list_fn = getattr(meta_store, "list_projected_lane_messages", None)
+        if not callable(list_fn):
+            return {"total": 0, "by_status": {}, "by_inbox": {}, "failed": []}
+        scope = self._scope_snapshot()["storage_namespace"]
+        rows = list_fn(namespace=scope, inbox_id=inbox_id, status=None)
+        by_status: dict[str, int] = {}
+        by_inbox: dict[str, int] = {}
+        failed: list[dict[str, Any]] = []
+        for row in rows:
+            status_val = str(getattr(row, "status", "") or "")
+            inbox_val = str(getattr(row, "inbox_id", "") or "")
+            by_status[status_val] = by_status.get(status_val, 0) + 1
+            by_inbox[inbox_val] = by_inbox.get(inbox_val, 0) + 1
+            if status_val == "failed":
+                failed.append(
+                    {
+                        "message_id": getattr(row, "message_id", None),
+                        "inbox_id": inbox_val,
+                        "conversation_id": getattr(row, "conversation_id", None),
+                        "correlation_id": getattr(row, "correlation_id", None),
+                    }
+                )
+        return {
+            "total": len(rows),
+            "by_status": by_status,
+            "by_inbox": by_inbox,
+            "failed": failed[:20],
+        }
+
+    def blocked_flow_graph(self, *, limit: int = 100) -> dict[str, Any]:
+        self._require_capability(
+            "project_view",
+            ["project_view"],
+            approval_message="Reading blocked flow graph requires project_view capability",
+        )
+        blocked = self.list_blocked_runs(limit=limit)
+        nodes = [
+            {
+                "id": row.get("process_id"),
+                "kind": row.get("process_kind"),
+                "status": row.get("status"),
+                "workflow_id": row.get("workflow_id"),
+                "conversation_id": row.get("conversation_id"),
+            }
+            for row in blocked
+        ]
+        return {
+            "nodes": nodes,
+            "edges": [],
+            "blocked_count": len(nodes),
+        }
+
+    def operator_dashboard(self, *, limit: int = 100) -> dict[str, Any]:
+        self._require_capability(
+            "project_view",
+            ["project_view"],
+            approval_message="Reading operator dashboard requires project_view capability",
+        )
+        def _dir_size(path: str | None) -> int:
+            import os
+
+            if not path:
+                return 0
+            total = 0
+            for root, _dirs, files in os.walk(path):
+                for name in files:
+                    try:
+                        total += os.path.getsize(os.path.join(root, name))
+                    except OSError:
+                        continue
+            return total
+
+        engines = [
+            self._knowledge_engine(),
+            self._conversation_engine(),
+            self._workflow_engine(),
+        ]
+        storage_usage_bytes = 0
+        for eng in engines:
+            storage_usage_bytes += _dir_size(str(getattr(eng, "persist_directory", "") or ""))
+        return {
+            "process_table": self.list_process_table(limit=limit),
+            "operator_inbox": self.list_operator_inbox(limit=limit),
+            "blocked_runs": self.list_blocked_runs(limit=limit),
+            "blocked_flow_graph": self.blocked_flow_graph(limit=limit),
+            "message_queue": self.message_queue_snapshot(),
+            "capabilities": self.capability_snapshot(),
+            "resources": {
+                "scheduler": self.scheduler.snapshot(),
+                "runs": self.run_registry.snapshot(),
+                "services": {
+                    "total_services": len(self.service_supervisor.list_services(limit=10_000)),
+                    "by_health": self._service_counts_by_health(),
+                },
+                "storage_usage_bytes": storage_usage_bytes,
+                "cost_ledger": self.cost_ledger.snapshot(),
+            },
+        }
 
     def list_process_timeline(
         self, *, run_id: str, after_seq: int = 0, limit: int = 200

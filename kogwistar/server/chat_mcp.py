@@ -193,6 +193,12 @@ def build_workflow_mcp(
             ),
         }
 
+    @tool_roles({role_ro, role_rw})
+    @require_ns({ns_workflow})
+    @mcp.tool(name="workflow.operator_dashboard")
+    def workflow_operator_dashboard(limit: int = 100) -> dict[str, Any]:
+        return get_service().operator_dashboard(limit=limit)
+
     @tool_roles({role_rw})
     @require_ns({ns_workflow})
     @mcp.tool(name="workflow.service_declare")

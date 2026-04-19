@@ -615,24 +615,24 @@ This is how “agent 1 always running” becomes real.
 ### Goal
 Kogwistar becomes operable like a system, not just inspectable by ad hoc graph queries.
 
-Status: in progress.
+Status: done.
 
 ### Add
 - [x] Process table view
-- [ ] Inbox/outbox view
-- [ ] Queue depth and failed message views
-- [ ] Waiting / blocked-on graph
-- [ ] Capability inspection view
-- [ ] Service health dashboard
-- [ ] Budget / quota dashboard
+- [x] Inbox/outbox view
+- [x] Queue depth and failed message views
+- [x] Waiting / blocked-on graph
+- [x] Capability inspection view
+- [x] Service health dashboard
+- [x] Budget / quota dashboard
 - [x] Event timeline / trace explorer
 - [x] Internal/admin-only visibility guard for early versions
 
 ### Done when
 - [x] An operator can answer “what is happening now?” quickly
-- [ ] Stuck flows can be located without code diving
-- [ ] System state is legible
-- [ ] Early operator surfaces are not accidentally user-facing before isolation/capabilities land
+- [x] Stuck flows can be located without code diving
+- [x] System state is legible
+- [x] Early operator surfaces are not accidentally user-facing before isolation/capabilities land
 
 ### Why it matters
 Operating systems need operator ergonomics, not only correctness.
@@ -670,7 +670,7 @@ This is essential if Kogwistar is serious about evented, replayable system behav
 3. [ ] Slice 3 — Namespaces and Isolation
 4. [x] Slice 4 — Capability Kernel / Permissions
 5. [x] Slice 5 — System Call Surface
-6. [ ] Slice 11 — Operator Views / System Introspection (internal/admin-only first)
+6. [x] Slice 11 — Operator Views / System Introspection (internal/admin-only first)
 
 ## Mid-term order
 6. [x] Slice 6 — Checkpoint / Suspend / Resume
