@@ -21,6 +21,8 @@ class SubmitWorkflowRunIn(BaseModel):
     user_id: str | None = None
     initial_state: dict[str, Any] = Field(default_factory=dict)
     priority_class: str = "foreground"
+    token_budget: int | None = None
+    time_budget_ms: int | None = None
 
 
 class UpsertWorkflowNodeIn(BaseModel):
@@ -59,6 +61,12 @@ class ResumeRunIn(BaseModel):
     conversation_id: str = Field(min_length=1)
     turn_node_id: str = Field(min_length=1)
     user_id: str | None = None
+
+
+class ResourceSnapshotOut(BaseModel):
+    scheduler: dict[str, Any]
+    runs: dict[str, Any]
+    budget_model: dict[str, Any]
 
 
 def _as_http_error(exc: Exception) -> HTTPException:
@@ -146,6 +154,8 @@ def create_runtime_router(
                 user_id=effective_user_id,
                 initial_state=inp.initial_state,
                 priority_class=inp.priority_class,
+                token_budget=inp.token_budget,
+                time_budget_ms=inp.time_budget_ms,
             )
             return JSONResponse(status_code=202, content=payload)
         except Exception as exc:  # noqa: BLE001
@@ -239,6 +249,15 @@ def create_runtime_router(
         try:
             payload = get_service_r().cancel_run(run_id)
             return JSONResponse(status_code=202, content=payload)
+        except Exception as exc:  # noqa: BLE001
+            raise _as_http_error(exc)
+
+    @router.get("/resources")
+    def get_resource_snapshot():
+        require_role("ro")
+        require_namespace(runtime_namespaces)
+        try:
+            return get_service_r().resource_snapshot()
         except Exception as exc:  # noqa: BLE001
             raise _as_http_error(exc)
 

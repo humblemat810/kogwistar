@@ -517,18 +517,18 @@ You do not need hardware scheduling to have meaningful OS scheduling.
 Processes and tenants have measurable budgets and usage records.
 
 ### Add
-- [ ] Token budget tracking
-- [ ] Tool/API cost tracking
-- [ ] Active run count limits
-- [ ] Message queue depth metrics
-- [ ] Storage usage accounting
-- [ ] Time budget / timeout classes
-- [ ] Optional CPU/memory policy integration fields for host infra
+- [x] Token budget tracking
+- [x] Tool/API cost tracking
+- [x] Active run count limits
+- [x] Message queue depth metrics
+- [x] Storage usage accounting
+- [x] Time budget / timeout classes
+- [x] Optional CPU/memory policy integration fields for host infra
 
 ### Done when
-- [ ] The system can say who consumed what
-- [ ] Policies can use budgets to allow, throttle, or stop work
-- [ ] Operators can inspect current resource pressure
+- [x] The system can say who consumed what
+- [x] Policies can use budgets to allow, throttle, or stop work
+- [x] Operators can inspect current resource pressure
 
 ### Why it matters
 An OS allocates and constrains resources, even if enforcement is delegated downward.
@@ -658,7 +658,7 @@ This is essential if Kogwistar is serious about evented, replayable system behav
 ## Mid-term order
 6. [x] Slice 6 — Checkpoint / Suspend / Resume
 7. [ ] Slice 7 — Policy-Driven Scheduler
-8. [ ] Slice 8 — Resource Accounting and Budgets
+8. [x] Slice 8 — Resource Accounting and Budgets
 9. [ ] Slice 9 — Tool / Device Subsystem
 
 ## Later OS-hardening order

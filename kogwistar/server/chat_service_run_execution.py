@@ -243,6 +243,8 @@ class _RunExecutionService(_BaseComponent):
         turn_node_id: str | None = None,
         user_id: str | None = None,
         priority_class: str = "foreground",
+        token_budget: int | None = None,
+        time_budget_ms: int | None = None,
     ) -> dict[str, Any]:
         workflow_id = str(workflow_id or "").strip()
         if not workflow_id:
@@ -301,6 +303,8 @@ class _RunExecutionService(_BaseComponent):
             ),
             is_cancel_requested=lambda: self.run_registry.is_cancel_requested(run_id),
             priority_class=str(priority_class or "foreground"),
+            token_budget=token_budget,
+            time_budget_ms=time_budget_ms,
         )
         sched = self._owner.scheduler.submit(
             run_id=run_id,
@@ -314,6 +318,8 @@ class _RunExecutionService(_BaseComponent):
             "turn_node_id": resolved_turn_node_id,
             "status": "queued",
             "priority_class": str(priority_class or "foreground"),
+            "token_budget": token_budget,
+            "time_budget_ms": time_budget_ms,
             "admission": sched.get("admission", "accepted"),
             **({"reason": sched["reason"]} if "reason" in sched else {}),
         }
@@ -392,12 +398,27 @@ class _RunExecutionService(_BaseComponent):
 
     def _default_runtime_runner(self, req: RuntimeRunRequest) -> dict[str, Any]:
         from kogwistar.conversation.resolvers import default_resolver
+        from kogwistar.runtime.budget import StateBackedBudgetLedger
         from kogwistar.runtime.runtime import WorkflowRuntime
 
         def predicate_always(_workflow_info, _state, _last_result):
             return True
 
         initial_state = dict(req.initial_state or {})
+        budget_state = initial_state.get("budget")
+        if not isinstance(budget_state, dict):
+            budget_state = {}
+        if getattr(req, "token_budget", None) is not None:
+            budget_state.setdefault("token_budget", int(req.token_budget or 0))
+        if getattr(req, "time_budget_ms", None) is not None:
+            budget_state.setdefault("time_budget_ms", int(req.time_budget_ms or 0))
+        budget_state.setdefault("token_used", int(budget_state.get("token_used", 0) or 0))
+        budget_state.setdefault("time_used_ms", int(budget_state.get("time_used_ms", 0) or 0))
+        budget_state.setdefault("cost_budget", float(budget_state.get("cost_budget", 0.0) or 0.0))
+        budget_state.setdefault("cost_used", float(budget_state.get("cost_used", 0.0) or 0.0))
+        budget_state.setdefault("budget_kind", str(budget_state.get("budget_kind") or "token"))
+        budget_state.setdefault("budget_scope", str(budget_state.get("budget_scope") or "run"))
+        initial_state["budget"] = budget_state
         deps = initial_state.get("_deps")
         if not isinstance(deps, dict):
             deps = {}
@@ -406,6 +427,8 @@ class _RunExecutionService(_BaseComponent):
         deps.setdefault("ref_knowledge_engine", req.knowledge_engine)
         deps.setdefault("workflow_engine", req.workflow_engine)
         deps.setdefault("agentic_workflow_engine", req.workflow_engine)
+        if budget_state:
+            deps.setdefault("budget_ledger", StateBackedBudgetLedger(budget_state))
         initial_state["_deps"] = deps
 
         runtime = WorkflowRuntime(
@@ -433,10 +456,12 @@ class _RunExecutionService(_BaseComponent):
                 getattr(run_result, "status", "succeeded") or "succeeded"
             ),
             "final_state": final_state,
+            "budget": final_state.get("budget", budget_state),
         }
 
     def _default_resume_runner(self, req: RuntimeResumeRequest) -> dict[str, Any]:
         from kogwistar.conversation.resolvers import default_resolver
+        from kogwistar.runtime.budget import StateBackedBudgetLedger
         from kogwistar.runtime.models import RunFailure, RunSuccess, RunSuspended
         from kogwistar.runtime.runtime import WorkflowRuntime
 
@@ -451,6 +476,20 @@ class _RunExecutionService(_BaseComponent):
                 step_seq=step_seq,
             )
         )
+        budget_state = initial_state.get("budget")
+        if not isinstance(budget_state, dict):
+            budget_state = {}
+        if getattr(req, "token_budget", None) is not None:
+            budget_state.setdefault("token_budget", int(req.token_budget or 0))
+        if getattr(req, "time_budget_ms", None) is not None:
+            budget_state.setdefault("time_budget_ms", int(req.time_budget_ms or 0))
+        budget_state.setdefault("token_used", int(budget_state.get("token_used", 0) or 0))
+        budget_state.setdefault("time_used_ms", int(budget_state.get("time_used_ms", 0) or 0))
+        budget_state.setdefault("cost_budget", float(budget_state.get("cost_budget", 0.0) or 0.0))
+        budget_state.setdefault("cost_used", float(budget_state.get("cost_used", 0.0) or 0.0))
+        budget_state.setdefault("budget_kind", str(budget_state.get("budget_kind") or "token"))
+        budget_state.setdefault("budget_scope", str(budget_state.get("budget_scope") or "run"))
+        initial_state["budget"] = budget_state
         deps = initial_state.get("_deps")
         if not isinstance(deps, dict):
             deps = {}
@@ -459,6 +498,8 @@ class _RunExecutionService(_BaseComponent):
         deps.setdefault("ref_knowledge_engine", req.knowledge_engine)
         deps.setdefault("workflow_engine", req.workflow_engine)
         deps.setdefault("agentic_workflow_engine", req.workflow_engine)
+        if budget_state:
+            deps.setdefault("budget_ledger", StateBackedBudgetLedger(budget_state))
         initial_state["_deps"] = deps
         runtime = WorkflowRuntime(
             workflow_engine=req.workflow_engine,
@@ -491,6 +532,7 @@ class _RunExecutionService(_BaseComponent):
         return {
             "workflow_status": str(getattr(run_result, "status", "succeeded") or "succeeded"),
             "final_state": final_state,
+            "budget": final_state.get("budget", budget_state),
         }
 
     def get_run(self, run_id: str) -> dict[str, Any]:

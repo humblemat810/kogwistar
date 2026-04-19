@@ -258,6 +258,20 @@ class RunScheduler:
         with self._cv:
             return list(self._dead_letter)
 
+    def snapshot(self) -> dict[str, Any]:
+        with self._cv:
+            return {
+                "max_active": self.max_active,
+                "max_queue": self.max_queue,
+                "active": self._active,
+                "queued": len(self._queue),
+                "active_by_class": dict(self._active_by_class),
+                "queued_by_class": dict(self._queued_by_class),
+                "dead_letter_count": len(self._dead_letter),
+                "paused_count": len(self._paused),
+                "pause_requested_count": len(self._pause_requested),
+            }
+
     def _pick_runnable_index(self) -> int | None:
         for idx, item in enumerate(self._queue):
             if item.run_id in self._paused or item.run_id in self._pause_requested:

@@ -997,6 +997,30 @@ def test_runtime_rest_submit_and_sse(monkeypatch, engine_triplet):
         assert names[-1] == "run.completed"
 
 
+def test_runtime_resource_snapshot_reports_pressure(monkeypatch, engine_triplet):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _configure_server(
+        monkeypatch,
+        engine,
+        conversation_engine,
+        workflow_engine,
+        _success_runner,
+        runtime_runner=_runtime_success_runner,
+    )
+    with TestClient(server.app) as client:
+        wf_ro = _token_header(client, role="ro", ns="workflow")
+        snapshot = client.get("/api/workflow/resources", headers=wf_ro)
+        snapshot.raise_for_status()
+        payload = snapshot.json()
+        assert "scheduler" in payload
+        assert "runs" in payload
+        assert "budget_model" in payload
+        assert "cost_ledger" in payload
+        assert "storage_usage_bytes" in payload
+        assert "policy_infra" in payload
+        assert payload["scheduler"]["max_active"] >= 1
+
+
 def test_runtime_rest_cancel(monkeypatch, engine_triplet):
     engine, conversation_engine, workflow_engine = engine_triplet
     _configure_server(

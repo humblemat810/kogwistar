@@ -162,6 +162,20 @@ class RunRegistry:
             return False
         return bool(run["cancel_requested"])
 
+    def snapshot(self) -> dict[str, Any]:
+        runs = list(self.meta_store.list_server_runs(limit=10_000))
+        counts: dict[str, int] = {}
+        for run in runs:
+            status = str(run.get("status") or "unknown")
+            counts[status] = counts.get(status, 0) + 1
+        return {
+            "total_runs": len(runs),
+            "by_status": counts,
+            "terminal_runs": sum(
+                1 for run in runs if str(run.get("status") or "") in self.TERMINAL_STATUSES
+            ),
+        }
+
 
 class RunRegistryTraceBridge:
     _STAGES: dict[str, tuple[str, str]] = {

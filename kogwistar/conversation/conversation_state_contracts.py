@@ -21,6 +21,17 @@ class SummaryStateModel(BaseModel):
     summary_node_id: Optional[str] = None
 
 
+class BudgetStateModel(BaseModel):
+    token_budget: int = 0
+    token_used: int = 0
+    time_budget_ms: int = 0
+    time_used_ms: int = 0
+    cost_budget: float = 0.0
+    cost_used: float = 0.0
+    budget_kind: str = "token"
+    budget_scope: str = "run"
+
+
 class WorkflowStateModel(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -46,6 +57,7 @@ class WorkflowStateModel(BaseModel):
     # answer_raw: Optional[Any] = None # not serializable, not used
 
     summary: SummaryStateModel = Field(default_factory=SummaryStateModel)
+    budget: BudgetStateModel = Field(default_factory=BudgetStateModel)
     prev_turn_meta_summary: PrevTurnMetaSummaryModel
     _deps: dict[str, Any]
 
@@ -63,6 +75,17 @@ class ConversationSummaryStateDict(TypedDict):
     should_summarize: bool
     did_summarize: bool
     summary_node_id: Optional[str]
+
+
+class ConversationBudgetStateDict(TypedDict):
+    token_budget: int
+    token_used: int
+    time_budget_ms: int
+    time_used_ms: int
+    cost_budget: float
+    cost_used: float
+    budget_kind: str
+    budget_scope: str
 
 
 # ---- Persisted / checkpointed state (JSON-friendly) ----
@@ -92,6 +115,7 @@ class ConversationWorkflowState(WorkflowState):
     # # answer_raw: Optional[Any]
 
     summary: ConversationSummaryStateDict
+    budget: ConversationBudgetStateDict
     prev_turn_meta_summary: ConversationPrevTurnMetaSummaryDict
     # _deps:dict
     # _rt_join:dict

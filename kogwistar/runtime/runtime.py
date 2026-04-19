@@ -33,6 +33,8 @@ from kogwistar.runtime.models import (
     WorkflowState,
     WorkflowStepExecNode,
 )
+from kogwistar.runtime.budget import StateBackedBudgetLedger
+from kogwistar.runtime.budget_adapters import adapt_budget_events
 
 from .design import validate_workflow_design, Predicate
 from .serialize import try_serialize_with_ref
@@ -2078,6 +2080,43 @@ class WorkflowRuntime:
                                 state_update=run_result.state_update,
                                 update=getattr(run_result, "update", None),
                             )
+
+                    budget_ledger = None
+                    deps = state.get("_deps")
+                    if isinstance(deps, dict):
+                        budget_ledger = deps.get("budget_ledger")
+                    if isinstance(budget_ledger, StateBackedBudgetLedger):
+                        try:
+                            budget_ledger.debit_time(
+                                max(0, dur_ms),
+                                reason=f"step:{node_id}",
+                                run_id=str(run_id),
+                            )
+                        except Exception:
+                            pass
+                        try:
+                            result_payload = dict(
+                                run_result.model_dump(exclude_none=True)
+                            )
+                        except Exception:
+                            result_payload = {}
+                        usage_payload = None
+                        if isinstance(result_payload.get("usage"), dict):
+                            usage_payload = {"usage": result_payload.get("usage")}
+                        elif isinstance(result_payload.get("usage_metadata"), dict):
+                            usage_payload = {
+                                "usage": result_payload.get("usage_metadata")
+                            }
+                        if usage_payload is not None:
+                            for evt in adapt_budget_events(
+                                usage_payload,
+                                run_id=str(run_id),
+                                scope="step",
+                            ):
+                                try:
+                                    budget_ledger.ingest(evt)
+                                except Exception:
+                                    pass
 
                     inflight.pop((node_id, mask, str(token_id)), None)
                     inflight_tokens.discard(

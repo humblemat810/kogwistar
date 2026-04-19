@@ -38,6 +38,7 @@ from .auth_middleware import (
 from .chat_service_workflow_design import _WorkflowDesignService
 from .run_scheduler import RunScheduler
 from .run_registry import RunRegistry
+from kogwistar.runtime.cost_ledger import CostLedger
 
 
 class ChatRunService:
@@ -74,6 +75,7 @@ class ChatRunService:
         self._conversation_queries = _ConversationQueryService(self)
         self._run_execution = _RunExecutionService(self)
         self._run_inspection = _RunInspectionService(self)
+        self.cost_ledger = CostLedger(workspace_id="chat-service")
 
         self.answer_runner = answer_runner or self._run_execution._default_answer_runner
         self.runtime_runner = (
@@ -328,6 +330,8 @@ class ChatRunService:
         turn_node_id: str | None = None,
         user_id: str | None = None,
         priority_class: str = "foreground",
+        token_budget: int | None = None,
+        time_budget_ms: int | None = None,
     ) -> dict[str, Any]:
         return self._run_execution.submit_workflow_run(
             workflow_id=workflow_id,
@@ -336,6 +340,8 @@ class ChatRunService:
             turn_node_id=turn_node_id,
             user_id=user_id,
             priority_class=priority_class,
+            token_budget=token_budget,
+            time_budget_ms=time_budget_ms,
         )
 
     def get_run(self, run_id: str) -> dict[str, Any]:
@@ -360,6 +366,45 @@ class ChatRunService:
 
     def cancel_run(self, run_id: str) -> dict[str, Any]:
         return self._run_execution.cancel_run(run_id)
+
+    def resource_snapshot(self) -> dict[str, Any]:
+        def _dir_size(path: str | None) -> int:
+            import os
+
+            if not path:
+                return 0
+            total = 0
+            for root, _dirs, files in os.walk(path):
+                for name in files:
+                    try:
+                        total += os.path.getsize(os.path.join(root, name))
+                    except OSError:
+                        continue
+            return total
+
+        engines = [
+            self._knowledge_engine(),
+            self._conversation_engine(),
+            self._workflow_engine(),
+        ]
+        storage_usage_bytes = 0
+        for eng in engines:
+            storage_usage_bytes += _dir_size(str(getattr(eng, "persist_directory", "") or ""))
+        return {
+            "scheduler": self.scheduler.snapshot(),
+            "runs": self.run_registry.snapshot(),
+            "storage_usage_bytes": storage_usage_bytes,
+            "cost_ledger": self.cost_ledger.snapshot(),
+            "budget_model": {
+                "token_kind": "token",
+                "time_kind": "ms",
+                "storage_kind": "bytes",
+            },
+            "policy_infra": {
+                "cpu_millicores": None,
+                "memory_mb": None,
+            },
+        }
 
     def list_steps(self, run_id: str) -> list[dict[str, Any]]:
         return self._run_inspection.list_steps(run_id)

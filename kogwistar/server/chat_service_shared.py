@@ -63,6 +63,8 @@ class RuntimeRunRequest:
     publish: Callable[[str, dict[str, Any] | None], dict[str, Any]]
     is_cancel_requested: Callable[[], bool]
     priority_class: str = "foreground"
+    token_budget: int | None = None
+    time_budget_ms: int | None = None
 
 
 @dataclass
@@ -81,6 +83,8 @@ class RuntimeResumeRequest:
     registry: RunRegistry
     publish: Callable[[str, dict[str, Any] | None], dict[str, Any]]
     is_cancel_requested: Callable[[], bool]
+    token_budget: int | None = None
+    time_budget_ms: int | None = None
 
 
 def json_safe(value: Any) -> Any:
