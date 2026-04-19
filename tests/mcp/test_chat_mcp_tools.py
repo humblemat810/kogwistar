@@ -331,6 +331,41 @@ def test_chat_run_service_execution_meta_comes_from_conversation_engine(
     assert service.run_registry.meta_store is conversation_engine.meta_sqlite
 
 
+def test_chat_run_service_process_table_uses_claim_scope_not_backend_namespace(
+    monkeypatch, engine_triplet
+):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    conversation_engine.namespace = "backend-tenant"
+    service.run_registry.create_run(
+        run_id="run-scope-1",
+        conversation_id="conv-scope-1",
+        workflow_id="wf-scope-1",
+        user_id="user-scope-1",
+        user_turn_node_id="turn-scope-1",
+        status="running",
+    )
+    token = claims_ctx.set(
+        {
+            "ns": "conversation",
+            "storage_ns": "store-tenant",
+            "execution_ns": "exec-tenant",
+            "security_scope": "tenant-a",
+        }
+    )
+    try:
+        rows = service.list_process_table(limit=10)
+    finally:
+        claims_ctx.reset(token)
+    assert rows
+    row = rows[0]
+    assert row["namespace"] == "exec-tenant"
+    assert row["storage_namespace"] == "store-tenant"
+    assert row["security_scope"] == "tenant-a"
+
+
 @pytest.mark.asyncio
 async def test_mcp_chat_submit_cancel_and_workflow_diagnostics(
     monkeypatch, engine_triplet

@@ -55,6 +55,9 @@ class NameSpace(str, Enum):
 ROLE_ORDER = {"ro": 0, "rw": 1}  # read-only < read-write
 DEFAULT_ROLE = "ro"
 DEFAULT_NAMESPACE = NameSpace.DOCS.value
+DEFAULT_STORAGE_NAMESPACE = "default"
+DEFAULT_EXECUTION_NAMESPACE = "default"
+DEFAULT_SECURITY_SCOPE = "public"
 
 
 # Context var to expose claims in any handler/tool
@@ -219,6 +222,38 @@ def get_current_namespaces() -> set[str]:
     return {ns for ns in raw_list if ns in allowed_values}
 
 
+def get_storage_namespace() -> str:
+    claims = claims_ctx.get() or {}
+    scope = str(claims.get("storage_ns") or "").strip().lower()
+    if scope:
+        return scope
+    ns = sorted(get_current_namespaces())
+    return ns[0] if ns else DEFAULT_STORAGE_NAMESPACE
+
+
+def get_execution_namespace() -> str:
+    claims = claims_ctx.get() or {}
+    scope = str(claims.get("execution_ns") or "").strip().lower()
+    if scope:
+        return scope
+    ns = sorted(get_current_namespaces())
+    return ns[0] if ns else DEFAULT_EXECUTION_NAMESPACE
+
+
+def get_security_scope() -> str:
+    claims = claims_ctx.get() or {}
+    scope = str(
+        claims.get("security_scope")
+        or claims.get("tenant")
+        or claims.get("scope")
+        or ""
+    ).strip().lower()
+    if scope and scope != "*":
+        return scope
+    ns = sorted(get_current_namespaces())
+    return ns[0] if ns else DEFAULT_SECURITY_SCOPE
+
+
 def get_current_subject() -> str | None:
     claims = claims_ctx.get() or {}
     sub = str(claims.get("sub") or "").strip()
@@ -263,6 +298,20 @@ def require_namespace(expected: set[NameSpace] | NameSpace | set[str] | str):
     raise HTTPException(
         status_code=403,
         detail=f"Forbidden: namespaces {actuals} do not permit access to {allowed}",
+    )
+
+
+def require_security_scope(expected: set[str] | str):
+    if isinstance(expected, set):
+        allowed = {str(item).lower() for item in expected if str(item).strip()}
+    else:
+        allowed = {str(expected).lower()}
+    actual = get_security_scope()
+    if actual in allowed or "*" in allowed:
+        return actual
+    raise HTTPException(
+        status_code=403,
+        detail=f"Forbidden: security scope '{actual}' does not permit access to {allowed}",
     )
 
 
@@ -312,9 +361,13 @@ __all__ = [
     "get_current_role",
     "require_role",
     "get_current_namespaces",
+    "get_storage_namespace",
+    "get_execution_namespace",
+    "get_security_scope",
     "get_current_subject",
     "get_current_user_id",
     "require_namespace",
+    "require_security_scope",
     "_normalize_namespaces",
     "set_auth_app",
     "require_workflow_access",

@@ -29,6 +29,11 @@ from .chat_service_shared import (
     now_ms,
     workflow_namespace,
 )
+from .auth_middleware import (
+    get_execution_namespace,
+    get_security_scope,
+    get_storage_namespace,
+)
 from .chat_service_workflow_design import _WorkflowDesignService
 from .run_registry import RunRegistry
 
@@ -378,6 +383,14 @@ class ChatRunService:
             raise AttributeError("conversation_engine does not expose meta_sqlite")
         return meta_store
 
+    @staticmethod
+    def _scope_snapshot() -> dict[str, str]:
+        return {
+            "storage_namespace": get_storage_namespace(),
+            "execution_namespace": get_execution_namespace(),
+            "security_scope": get_security_scope(),
+        }
+
     def list_process_table(
         self,
         *,
@@ -397,6 +410,7 @@ class ChatRunService:
                 limit=limit,
             )
         out: list[dict[str, Any]] = []
+        scope = self._scope_snapshot()
         for run in runs:
             run_id = str(run.get("run_id") or "")
             events = []
@@ -424,7 +438,9 @@ class ChatRunService:
                     "last_event_type": None if last_event is None else last_event.get("event_type"),
                     "last_event_seq": None if last_event is None else last_event.get("seq"),
                     "owner": run.get("user_id"),
-                    "namespace": str(getattr(self._conversation_engine(), "namespace", "default") or "default"),
+                    "namespace": scope["execution_namespace"],
+                    "storage_namespace": scope["storage_namespace"],
+                    "security_scope": scope["security_scope"],
                 }
             )
         return out
@@ -441,13 +457,12 @@ class ChatRunService:
         if not callable(list_fn):
             return []
         rows = list_fn(
-            namespace=str(
-                getattr(self._conversation_engine(), "namespace", "default") or "default"
-            ),
+            namespace=self._scope_snapshot()["storage_namespace"],
             inbox_id=inbox_id,
             status=status,
         )
         rows = rows[: int(limit)]
+        scope = self._scope_snapshot()
         return [
             {
                 "message_id": row.message_id,
@@ -467,6 +482,9 @@ class ChatRunService:
                 "run_id": row.run_id,
                 "step_id": row.step_id,
                 "correlation_id": row.correlation_id,
+                "storage_namespace": scope["storage_namespace"],
+                "execution_namespace": scope["execution_namespace"],
+                "security_scope": scope["security_scope"],
             }
             for row in rows
         ]

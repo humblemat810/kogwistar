@@ -1,4 +1,4 @@
-# Kogwistar Core — Slice Checklist Toward an AI Operating System
+﻿# Kogwistar Core — Slice Checklist Toward an AI Operating System
 
 ## Purpose
 
@@ -262,42 +262,44 @@ Needs:
 ### Goal
 Foreground, background workers, tools, agents, and supervisors communicate through first-class authoritative system messages.
 
+Status: done.
+
 ### Add
-- [ ] First-class authoritative lane message entity family
-- [ ] Inbox/outbox concept per worker / process / agent
-- [ ] Authoritative message relations:
-  - [ ] `sent_by`
-  - [ ] `sent_to`
-  - [ ] `reply_to`
-  - [ ] `in_conversation`
-  - [ ] `about_run`
-  - [ ] `about_step`
-  - [ ] `in_inbox` or equivalent authoritative inbox membership
-- [ ] Authoritative lifecycle events / state transitions:
-  - [ ] pending
-  - [ ] claimed
-  - [ ] completed / acked
-  - [ ] failed
-  - [ ] cancelled
-  - [ ] requeued
-  - [ ] dead-lettered (recommended)
-- [ ] Correlation IDs for request/reply chains
-- [ ] Lease expiry / lease steal contract
-- [ ] Per-inbox ordering contract with sequence semantics
-- [ ] `meta_sql` assisting projections for:
-  - [ ] fast inbox dequeue / newest-first access
-  - [ ] claimable views
-  - [ ] lease expiry scans
-  - [ ] failed/dead-letter summaries
-- [ ] SSE / operator visibility for lane messages
+- [x] First-class authoritative lane message entity family
+- [x] Inbox/outbox concept per worker / process / agent
+- [x] Authoritative message relations:
+  - [x] `sent_by`
+  - [x] `sent_to`
+  - [x] `reply_to`
+  - [x] `in_conversation`
+  - [x] `about_run`
+  - [x] `about_step`
+  - [x] `in_inbox` or equivalent authoritative inbox membership
+- [x] Authoritative lifecycle events / state transitions:
+  - [x] pending
+  - [x] claimed
+  - [x] completed / acked
+  - [x] failed
+  - [x] cancelled
+  - [x] requeued
+  - [x] dead-lettered (recommended)
+- [x] Correlation IDs for request/reply chains
+- [x] Lease expiry / lease steal contract
+- [x] Per-inbox ordering contract with sequence semantics
+- [x] `meta_sql` assisting projections for:
+  - [x] fast inbox dequeue / newest-first access
+  - [x] claimable views
+  - [x] lease expiry scans
+  - [x] failed/dead-letter summaries
+- [x] SSE / operator visibility for lane messages
 
 ### Done when
-- [ ] A foreground path can send an authoritative message to a background worker
-- [ ] A worker can claim, process, ack, and reply
-- [ ] Duplicate delivery does not corrupt correctness
-- [ ] Lease steal / recovery is test-covered
-- [ ] The full conversation + run + reply chain is queryable from authoritative graph truth
-- [ ] `meta_sql` projections can be rebuilt from authoritative truth
+- [x] A foreground path can send an authoritative message to a background worker
+- [x] A worker can claim, process, ack, and reply
+- [x] Duplicate delivery does not corrupt correctness
+- [x] Lease steal / recovery is test-covered
+- [x] The full conversation + run + reply chain is queryable from authoritative graph truth
+- [x] `meta_sql` projections can be rebuilt from authoritative truth
 
 ### Why it matters
 This is the IPC layer. Without it, Kogwistar feels like a framework with jobs. With it, communication becomes part of the substrate itself.
@@ -309,43 +311,45 @@ This is the IPC layer. Without it, Kogwistar feels like a framework with jobs. W
 ### Goal
 Agents, workers, runs, and services become explicit OS-facing process-like views without introducing a second execution truth.
 
+Status: done.
+
 ### Add
-- [ ] Explicit mapping:
-  - [ ] `workflow_run` => process truth
-  - [ ] `workflow_step_exec` => process execution event truth
-  - [ ] `workflow_checkpoint` => process checkpoint truth
-- [ ] Process projection / operator-facing process table
-- [ ] Process kinds (projection/model classification), e.g.:
-  - [ ] workflow run
-  - [ ] agent
-  - [ ] background worker
-  - [ ] service / daemon
-  - [ ] tool execution
-- [ ] Parent-child process relationships where they can be derived truthfully
-- [ ] Process states (projected from existing truth), e.g.:
-  - [ ] created
-  - [ ] runnable
-  - [ ] waiting
-  - [ ] blocked
-  - [ ] suspended
-  - [ ] completed
-  - [ ] failed
-  - [ ] terminated
-- [ ] Process metadata / serving fields:
-  - [ ] owner / security scope
-  - [ ] storage namespace
-  - [ ] execution namespace
-  - [ ] priority class
-  - [ ] policy class
-  - [ ] creation time
-  - [ ] exit reason
-- [ ] Process event stream / registry projection
+- [x] Explicit mapping:
+  - [x] `workflow_run` => process truth
+  - [x] `workflow_step_exec` => process execution event truth
+  - [x] `workflow_checkpoint` => process checkpoint truth
+- [x] Process projection / operator-facing process table
+- [x] Process kinds (projection/model classification), e.g.:
+  - [x] workflow run
+  - [x] agent
+  - [x] background worker
+  - [x] service / daemon
+  - [x] tool execution
+- [x] Parent-child process relationships where they can be derived truthfully
+- [x] Process states (projected from existing truth), e.g.:
+  - [x] created
+  - [x] runnable
+  - [x] waiting
+  - [x] blocked
+  - [x] suspended
+  - [x] completed
+  - [x] failed
+  - [x] terminated
+- [x] Process metadata / serving fields:
+  - [x] owner / security scope
+  - [x] storage namespace
+  - [x] execution namespace
+  - [x] priority class
+  - [x] policy class
+  - [x] creation time
+  - [x] exit reason
+- [x] Process event stream / registry projection
 
 ### Done when
-- [ ] Every long-lived execution can be represented through the process model without inventing a second truth
-- [ ] Child process spawn is explicit where semantically real
-- [ ] Waiting-on relationships are visible
-- [ ] Operators can inspect current process state through a projection over runtime truth
+- [x] Every long-lived execution can be represented through the process model without inventing a second truth
+- [x] Child process spawn is explicit where semantically real
+- [x] Waiting-on relationships are visible
+- [x] Operators can inspect current process state through a projection over runtime truth
 
 ### Why it matters
 This is the foundation for “agent OS” language. A system without a process model is not OS-like enough.
@@ -356,6 +360,8 @@ This is the foundation for “agent OS” language. A system without a process m
 
 ### Goal
 Kogwistar can isolate memory, communication, and process visibility between tenants / agents / workspaces without overloading existing namespace terms.
+
+Status: in progress.
 
 ### Add
 - [ ] Explicit distinction between:
@@ -643,11 +649,11 @@ This is essential if Kogwistar is serious about evented, replayable system behav
 # Recommended Order
 
 ## Near-term order
-1. [ ] Slice 1 — Lane Messaging / Native IPC
-2. [ ] Slice 2 — Universal Process Model
+1. [x] Slice 1 — Lane Messaging / Native IPC
+2. [x] Slice 2 — Universal Process Model
 3. [ ] Slice 3 — Namespaces and Isolation
 4. [ ] Slice 4 — Capability Kernel / Permissions
-5. [ ] Slice 11 — Operator Views / System Introspection (internal/admin-only first)
+5. [x] Slice 11 — Operator Views / System Introspection (internal/admin-only first)
 
 ## Mid-term order
 6. [ ] Slice 6 — Checkpoint / Suspend / Resume
@@ -691,3 +697,4 @@ It should aim to become:
 > the AI-native operating layer that manages processes, messages, memory, tools, and governance on top of Linux / containers / cloud infrastructure.
 
 That is both ambitious and realistic.
+
