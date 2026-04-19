@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from .postgres_backend import get_active_conn, _set_active_conn
 from ..messaging.models import ProjectedLaneMessageRow
+from .meta_lane_messages import LaneMessageMetaStoreMixin
 
 
 _SCHEMA_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -149,7 +150,7 @@ class ProjectedLaneMessage:
 
 
 @dataclass
-class EnginePostgresMetaStore:
+class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
     """Postgres-backed replacement for EngineSQLite.
 
     Responsibilities:

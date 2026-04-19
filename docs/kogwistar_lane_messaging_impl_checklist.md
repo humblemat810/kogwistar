@@ -3,8 +3,25 @@
 Status: In progress
 Audience: Local coding agents and human maintainers
 Companion: `kogwistar_lane_messaging_ard.md`
+Review guide: `visibility_viewing_auditing.md`
 
 ---
+
+## 0. Background
+
+This checklist is the execution companion for the lane-messaging ARD. It exists to keep implementation on the right abstraction layer while still letting us ship incrementally.
+
+The intended boundary is:
+
+- `core` owns lane messaging semantics
+- the metastore abstraction owns projection behavior
+- concrete stores own storage primitives only
+- `meta_sqlite` remains the abstraction slot even when storage is in-memory or Postgres-backed
+- graph-native message nodes remain authoritative truth
+- queue mechanics remain rebuildable projections
+- `llm-wiki` request/reply flow must stay compatible during migration
+
+If any checklist item points at the wrong layer, fix the checklist or ARD first instead of encoding the wrong boundary in code.
 
 ## 1. Goal
 
@@ -17,6 +34,26 @@ The system should:
 - allow foreground and background workers to communicate through the same conversation namespace
 - keep queue mechanics in projections rather than in hot-path graph traversal
 - preserve rebuildability if list pointers or serving indexes are lost
+
+---
+
+## 2. Execution Contract
+
+### Must Keep True
+
+- message truth lives in graph-native entities and authoritative events
+- projection truth lives in the metastore abstraction layer
+- backend choice must not change lane semantics
+- visibility, audit, and repair surfaces must describe the same truth
+- application integrations should depend on one stable contract
+
+### Must Not Happen
+
+- backend-specific semantic forks
+- direct dependence on concrete store classes for lane semantics
+- silent rebuild gaps that cannot be audited
+- queue mechanics that are only recoverable by raw graph scan
+- docs that misstate the ownership boundary
 
 ---
 
@@ -197,6 +234,7 @@ Tasks:
   - [x] `list_projected_lane_messages(...)`
 - [x] ensure engine methods route through entity event writes rather than direct ad hoc graph edits
 - [x] add metastore-level projection helpers for pending message queries
+- [x] concrete metastore classes share lane-message projection mixin instead of owning projection semantics individually
 
 Notes:
 
@@ -211,7 +249,8 @@ Tasks:
 - [x] define canonical edge/property set for lane messages
 - [x] keep message membership authoritative at creation time
 - [x] avoid creating a half-valid message that only becomes real after later linked-list mutation
-- [ ] decide whether explicit `MESSAGE_*` semantic event taxonomy should be exposed directly instead of staying implicit inside generic entity events plus node replacement
+- [x] keep `MESSAGE_*` semantic intent implicit for now inside generic entity events plus node replacement; do not split another top-level event stream unless a future slice needs it
+- [x] keep `llm-wiki` request/reply path compatible while lane messaging contract evolves
 
 ### 5.3 Projection layer
 
@@ -221,6 +260,7 @@ Tasks:
 - [x] assign monotonic inbox-local `seq`
 - [x] assign monotonic conversation-local `conversation_seq`
 - [x] maintain pending/claimable view
+- [x] keep projection rebuildable from authoritative truth
 - [ ] optionally materialize `prev` / `next`
 - [ ] optionally maintain inbox or conversation tail shortcuts
 
@@ -252,12 +292,57 @@ Notes:
 
 - This is the place for quick search of newest messages.
 - SQLite, in-memory, and Postgres support are now implemented through the metastore layer.
+- in-memory, SQLite, and Postgres should keep the same lane-message projection contract through the shared mixin/base layer.
 
 ### 5.4 Runtime integration
 
 Tasks:
 
 - [x] keep `StepContext.publish()` as same-process orchestration only
+
+## 6. Execution Checklist
+
+### Phase 1 - Core ownership
+
+- [ ] confirm core lane messaging API is the only semantic entrypoint
+- [ ] move any projection semantics out of concrete stores
+- [ ] keep `meta_sqlite` as abstraction slot for projections
+- [ ] audit shared base / mixin layers for repeated projection behavior
+
+### Phase 2 - Projection contract
+
+- [ ] define exact projection fields for pending, claimable, retryable, and dead-letter states
+- [ ] make projection rebuild deterministic from graph/event truth
+- [ ] add repair path for queue projections without rewriting authoritative message truth
+- [ ] ensure inbox and conversation ordering rules are documented and tested
+
+### Phase 3 - App compatibility
+
+- [ ] keep `llm-wiki` request/reply behavior stable
+- [ ] pin a sample integration against the new stable contract
+- [ ] keep existing public request/reply paths compatible during migration
+- [ ] add migration notes for any renamed or split messaging surface
+
+### Phase 4 - Docs alignment
+
+- [ ] update this checklist as implementation lands
+- [ ] update `kogwistar_lane_messaging_ard.md` if semantics move
+- [ ] update `visibility_viewing_auditing.md` if new views or audit surfaces appear
+- [ ] update `STATUS.md` once the contract becomes stable
+
+### Phase 5 - Test the contract
+
+- [ ] core lane messaging contract tests
+- [ ] metastore projection rebuild tests
+- [ ] backend parity tests for in-memory, SQLite, Postgres
+- [ ] `llm-wiki` orchestration regression tests
+- [ ] visibility / audit smoke tests for send, claim, retry, dead-letter
+
+### Phase 6 - Rollout
+
+- [ ] keep old path alive until new contract is pinned
+- [ ] do not cut over backend-specific semantics before parity is proven
+- [ ] promote new lane messaging contract only after app integration passes
 - [ ] optionally add `StepContext.send_lane_message(...)` for durable cross-lane delivery
 - [x] keep current in-memory queue semantics for same-run, same-process orchestration
 - [x] do not silently repurpose the existing `queue.Queue` as cross-process IPC

@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Iterator, List, Optional
 
 from ..messaging.models import ProjectedLaneMessageRow
+from .meta_lane_messages import LaneMessageMetaStoreMixin
 
 _active_sqlite_conn: contextvars.ContextVar[sqlite3.Connection | None] = (
     contextvars.ContextVar("gke_sqlite_active_conn", default=None)
@@ -97,7 +98,7 @@ class ProjectedLaneMessageSqlRow:
         )
 
 
-class EngineSQLite:
+class EngineSQLite(LaneMessageMetaStoreMixin):
     """
     Lightweight SQLite helper for engine persistence.
 
