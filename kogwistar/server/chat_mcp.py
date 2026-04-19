@@ -199,6 +199,36 @@ def build_workflow_mcp(
     def workflow_operator_dashboard(limit: int = 100) -> dict[str, Any]:
         return get_service().operator_dashboard(limit=limit)
 
+    @tool_roles({role_ro, role_rw})
+    @require_ns({ns_workflow})
+    @mcp.tool(name="workflow.visibility_snapshot")
+    def workflow_visibility_snapshot() -> dict[str, Any]:
+        return get_service().visibility_snapshot()
+
+    @tool_roles({role_ro, role_rw})
+    @require_ns({ns_workflow})
+    @mcp.tool(name="workflow.scheduler_timeline")
+    def workflow_scheduler_timeline(run_id: str | None = None, limit: int = 200) -> dict[str, Any]:
+        return {"run_id": run_id, "events": get_service().list_scheduler_timeline(run_id=run_id, limit=limit)}
+
+    @tool_roles({role_ro, role_rw})
+    @require_ns({ns_workflow})
+    @mcp.tool(name="workflow.budget_snapshot")
+    def workflow_budget_snapshot() -> dict[str, Any]:
+        return get_service().budget_snapshot()
+
+    @tool_roles({role_ro, role_rw})
+    @require_ns({ns_workflow})
+    @mcp.tool(name="workflow.budget_history")
+    def workflow_budget_history(limit: int = 200) -> dict[str, Any]:
+        return get_service().budget_history(limit=limit)
+
+    @tool_roles({role_ro, role_rw})
+    @require_ns({ns_workflow})
+    @mcp.tool(name="workflow.tool_audit")
+    def workflow_tool_audit(conversation_id: str | None = None, limit: int = 200) -> dict[str, Any]:
+        return get_service().list_tool_audit(conversation_id=conversation_id, limit=limit)
+
     @tool_roles({role_rw})
     @require_ns({ns_workflow})
     @mcp.tool(name="workflow.service_declare")

@@ -120,6 +120,10 @@ class _ProjectedLaneMessageState:
     correlation_id: str | None
     payload_json: str | None
     error_json: str | None
+    prev_message_id: str | None = None
+    next_message_id: str | None = None
+    inbox_tail_message_id: str | None = None
+    conversation_tail_message_id: str | None = None
 
     def as_row(self) -> ProjectedLaneMessageRow:
         return ProjectedLaneMessageRow(
@@ -143,6 +147,10 @@ class _ProjectedLaneMessageState:
             correlation_id=self.correlation_id,
             payload_json=self.payload_json,
             error_json=self.error_json,
+            prev_message_id=self.prev_message_id,
+            next_message_id=self.next_message_id,
+            inbox_tail_message_id=self.inbox_tail_message_id,
+            conversation_tail_message_id=self.conversation_tail_message_id,
         )
 
 

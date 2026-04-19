@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from .postgres_backend import get_active_conn, _set_active_conn
 from ..messaging.models import ProjectedLaneMessageRow
+from .meta_lane_messages import LaneMessageMetaStoreMixin
 
 
 _SCHEMA_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -146,10 +147,14 @@ class ProjectedLaneMessage:
     correlation_id: Optional[str] = None
     payload_json: Optional[str] = None
     error_json: Optional[str] = None
+    prev_message_id: Optional[str] = None
+    next_message_id: Optional[str] = None
+    inbox_tail_message_id: Optional[str] = None
+    conversation_tail_message_id: Optional[str] = None
 
 
 @dataclass
-class EnginePostgresMetaStore:
+class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
     """Postgres-backed replacement for EngineSQLite.
 
     Responsibilities:
@@ -266,7 +271,11 @@ class EnginePostgresMetaStore:
                     step_id TEXT NULL,
                     correlation_id TEXT NULL,
                     payload_json TEXT NULL,
-                    error_json TEXT NULL
+                    error_json TEXT NULL,
+                    prev_message_id TEXT NULL,
+                    next_message_id TEXT NULL,
+                    inbox_tail_message_id TEXT NULL,
+                    conversation_tail_message_id TEXT NULL
                 )
             """,
             f"CREATE INDEX IF NOT EXISTS idx_lane_messages_namespace_inbox_seq ON {plm}(namespace, inbox_id, seq)",
@@ -902,7 +911,9 @@ class EnginePostgresMetaStore:
                         recipient_id, sender_id, msg_type, status,
                         seq, conversation_seq, claimed_by, lease_until,
                         retry_count, created_at, available_at, run_id,
-                        step_id, correlation_id, payload_json, error_json
+                        step_id, correlation_id, payload_json, error_json,
+                        prev_message_id, next_message_id,
+                        inbox_tail_message_id, conversation_tail_message_id
                     )
                     SELECT
                         :message_id, :namespace, :inbox_id, :conversation_id,
@@ -916,7 +927,8 @@ class EnginePostgresMetaStore:
                             WHERE namespace = :namespace AND conversation_id = :conversation_id
                         ), 1),
                         NULL, NULL, 0, :created_at, :available_at, :run_id,
-                        :step_id, :correlation_id, :payload_json, :error_json
+                        :step_id, :correlation_id, :payload_json, :error_json,
+                        NULL, NULL, NULL, NULL
                     ON CONFLICT (message_id) DO NOTHING
                     """
                 ),
@@ -1003,7 +1015,9 @@ class EnginePostgresMetaStore:
                     RETURNING t.message_id, t.namespace, t.inbox_id, t.conversation_id, t.recipient_id, t.sender_id,
                               t.msg_type, t.status, t.seq, t.conversation_seq, t.claimed_by, t.lease_until,
                               t.retry_count, t.created_at, t.available_at, t.run_id, t.step_id, t.correlation_id,
-                              t.payload_json, t.error_json
+                              t.payload_json, t.error_json,
+                              t.prev_message_id, t.next_message_id,
+                              t.inbox_tail_message_id, t.conversation_tail_message_id
                     """
                 ),
                 {
@@ -1036,6 +1050,10 @@ class EnginePostgresMetaStore:
                 correlation_id=(str(r.get("correlation_id")) if r.get("correlation_id") is not None else None),
                 payload_json=(str(r.get("payload_json")) if r.get("payload_json") is not None else None),
                 error_json=(str(r.get("error_json")) if r.get("error_json") is not None else None),
+                prev_message_id=(str(r.get("prev_message_id")) if r.get("prev_message_id") is not None else None),
+                next_message_id=(str(r.get("next_message_id")) if r.get("next_message_id") is not None else None),
+                inbox_tail_message_id=(str(r.get("inbox_tail_message_id")) if r.get("inbox_tail_message_id") is not None else None),
+                conversation_tail_message_id=(str(r.get("conversation_tail_message_id")) if r.get("conversation_tail_message_id") is not None else None),
             )
             for r in rows
         ]
@@ -1111,7 +1129,9 @@ class EnginePostgresMetaStore:
                     SELECT message_id, namespace, inbox_id, conversation_id, recipient_id, sender_id,
                            msg_type, status, seq, conversation_seq, claimed_by, lease_until,
                            retry_count, created_at, available_at, run_id, step_id, correlation_id,
-                           payload_json, error_json
+                           payload_json, error_json,
+                           prev_message_id, next_message_id,
+                           inbox_tail_message_id, conversation_tail_message_id
                     FROM {table}
                     WHERE {' AND '.join(where)}
                     ORDER BY inbox_id ASC, seq ASC, created_at ASC
@@ -1142,6 +1162,10 @@ class EnginePostgresMetaStore:
                 correlation_id=(str(r.get("correlation_id")) if r.get("correlation_id") is not None else None),
                 payload_json=(str(r.get("payload_json")) if r.get("payload_json") is not None else None),
                 error_json=(str(r.get("error_json")) if r.get("error_json") is not None else None),
+                prev_message_id=(str(r.get("prev_message_id")) if r.get("prev_message_id") is not None else None),
+                next_message_id=(str(r.get("next_message_id")) if r.get("next_message_id") is not None else None),
+                inbox_tail_message_id=(str(r.get("inbox_tail_message_id")) if r.get("inbox_tail_message_id") is not None else None),
+                conversation_tail_message_id=(str(r.get("conversation_tail_message_id")) if r.get("conversation_tail_message_id") is not None else None),
             )
             for r in rows
         ]

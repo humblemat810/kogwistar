@@ -80,6 +80,11 @@ class ResourceSnapshotOut(BaseModel):
     budget_model: dict[str, Any]
 
 
+class ToolAuditOut(BaseModel):
+    conversation_id: str | None = None
+    items: list[dict[str, Any]]
+
+
 class ServiceTriggerSpecIn(BaseModel):
     type: str = Field(min_length=1)
     enabled: bool = True
@@ -300,6 +305,71 @@ def create_runtime_router(
         require_namespace(runtime_namespaces)
         try:
             return get_service_r().resource_snapshot()
+        except Exception as exc:  # noqa: BLE001
+            raise _as_http_error(exc)
+
+    @router.get("/visibility")
+    def get_visibility_snapshot():
+        require_role("ro")
+        require_namespace(runtime_namespaces)
+        try:
+            return get_service_r().visibility_snapshot()
+        except Exception as exc:  # noqa: BLE001
+            raise _as_http_error(exc)
+
+    @router.get("/scheduler/timeline")
+    def get_scheduler_timeline(run_id: str | None = None, limit: int = 200):
+        require_role("ro")
+        require_namespace(runtime_namespaces)
+        try:
+            return {
+                "run_id": run_id,
+                "events": get_service_r().list_scheduler_timeline(
+                    run_id=run_id, limit=limit
+                ),
+            }
+        except Exception as exc:  # noqa: BLE001
+            raise _as_http_error(exc)
+
+    @router.get("/budget")
+    def get_budget_snapshot():
+        require_role("ro")
+        require_namespace(runtime_namespaces)
+        try:
+            return get_service_r().budget_snapshot()
+        except Exception as exc:  # noqa: BLE001
+            raise _as_http_error(exc)
+
+    @router.get("/budget/history")
+    def get_budget_history(limit: int = 200):
+        require_role("ro")
+        require_namespace(runtime_namespaces)
+        try:
+            return get_service_r().budget_history(limit=limit)
+        except Exception as exc:  # noqa: BLE001
+            raise _as_http_error(exc)
+
+    @router.get("/lane/progress")
+    def get_lane_message_progress(
+        run_id: str | None = None, conversation_id: str | None = None, limit: int = 200
+    ):
+        require_role("ro")
+        require_namespace(runtime_namespaces)
+        try:
+            return get_service_r().lane_message_progress(
+                run_id=run_id, conversation_id=conversation_id, limit=limit
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise _as_http_error(exc)
+
+    @router.get("/tools/audit")
+    def get_tool_audit(conversation_id: str | None = None, limit: int = 200):
+        require_role("ro")
+        require_namespace(runtime_namespaces)
+        try:
+            return get_service_r().list_tool_audit(
+                conversation_id=conversation_id, limit=limit
+            )
         except Exception as exc:  # noqa: BLE001
             raise _as_http_error(exc)
 

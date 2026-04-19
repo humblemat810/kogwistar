@@ -269,6 +269,22 @@ def build_parser() -> argparse.ArgumentParser:
         _add_base_url(cap_snap)
         cap_snap.add_argument("--subject", default=None)
 
+        vis = ns.add_parser("workflow.visibility_snapshot")
+        _add_base_url(vis)
+        sched = ns.add_parser("workflow.scheduler_timeline")
+        _add_base_url(sched)
+        sched.add_argument("--run-id", default=None)
+        sched.add_argument("--limit", type=int, default=200)
+        budget = ns.add_parser("workflow.budget_snapshot")
+        _add_base_url(budget)
+        budget_hist = ns.add_parser("workflow.budget_history")
+        _add_base_url(budget_hist)
+        budget_hist.add_argument("--limit", type=int, default=200)
+        tool_audit = ns.add_parser("workflow.tool_audit")
+        _add_base_url(tool_audit)
+        tool_audit.add_argument("--conversation-id", default=None)
+        tool_audit.add_argument("--limit", type=int, default=200)
+
     conversation = api_sub.add_parser("conversation", help="Conversation HTTP wrappers")
     conversation_sub = conversation.add_subparsers(dest="conversation_command", required=True)
     _conversation(conversation_sub)
@@ -370,6 +386,21 @@ def main(argv: list[str] | None = None) -> int:
                 return 0
             if w == "workflow.operator_dashboard":
                 _print_json(_request_json(method="GET", url=f"{base}/api/workflow/operator/dashboard", params={"limit": args.limit}))
+                return 0
+            if w == "workflow.visibility_snapshot":
+                _print_json(_request_json(method="GET", url=f"{base}/api/workflow/visibility"))
+                return 0
+            if w == "workflow.scheduler_timeline":
+                _print_json(_request_json(method="GET", url=f"{base}/api/workflow/scheduler/timeline", params={"run_id": args.run_id, "limit": args.limit}))
+                return 0
+            if w == "workflow.budget_snapshot":
+                _print_json(_request_json(method="GET", url=f"{base}/api/workflow/budget"))
+                return 0
+            if w == "workflow.budget_history":
+                _print_json(_request_json(method="GET", url=f"{base}/api/workflow/budget/history", params={"limit": args.limit}))
+                return 0
+            if w == "workflow.tool_audit":
+                _print_json(_request_json(method="GET", url=f"{base}/api/workflow/tools/audit", params={"conversation_id": args.conversation_id, "limit": args.limit}))
                 return 0
             if w == "workflow.service_list":
                 _print_json(_request_json(method="GET", url=f"{base}/api/workflow/services", params={"limit": args.limit}))

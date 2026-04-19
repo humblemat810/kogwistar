@@ -7,12 +7,13 @@ import pytest
 pytestmark = pytest.mark.ci
 
 
-def test_jwt_constants_have_dev_fallback_when_env_missing(monkeypatch):
-    monkeypatch.delenv("JWT_SECRET", raising=False)
-    monkeypatch.delenv("JWT_ALG", raising=False)
+def test_jwt_constants_follow_runtime_env_and_repo_dotenv(monkeypatch):
+    monkeypatch.setenv("JWT_SECRET", "dev-secret")
+    monkeypatch.setenv("JWT_ALG", "HS256")
 
     auth_middleware = importlib.import_module("kogwistar.server.auth_middleware")
     auth_middleware = importlib.reload(auth_middleware)
 
-    assert auth_middleware.JWT_SECRET is None
+    # Constants should reflect runtime env, not an internal hardcoded fallback.
+    assert auth_middleware.JWT_SECRET == "dev-secret"
     assert auth_middleware.JWT_ALG == "HS256"

@@ -3,8 +3,25 @@
 Status: In progress
 Audience: Local coding agents and human maintainers
 Companion: `kogwistar_lane_messaging_ard.md`
+Review guide: `visibility_viewing_auditing.md`
 
 ---
+
+## 0. Background
+
+This checklist is the execution companion for the lane-messaging ARD. It exists to keep implementation on the right abstraction layer while still letting us ship incrementally.
+
+The intended boundary is:
+
+- `core` owns lane messaging semantics
+- the metastore abstraction owns projection behavior
+- concrete stores own storage primitives only
+- `meta_sqlite` remains the abstraction slot even when storage is in-memory or Postgres-backed
+- graph-native message nodes remain authoritative truth
+- queue mechanics remain rebuildable projections
+- sample integration must stay compatible during migration
+
+If any checklist item points at the wrong layer, fix the checklist or ARD first instead of encoding the wrong boundary in code.
 
 ## 1. Goal
 
@@ -17,6 +34,26 @@ The system should:
 - allow foreground and background workers to communicate through the same conversation namespace
 - keep queue mechanics in projections rather than in hot-path graph traversal
 - preserve rebuildability if list pointers or serving indexes are lost
+
+---
+
+## 2. Execution Contract
+
+### Must Keep True
+
+- message truth lives in graph-native entities and authoritative events
+- projection truth lives in the metastore abstraction layer
+- backend choice must not change lane semantics
+- visibility, audit, and repair surfaces must describe the same truth
+- application integrations should depend on one stable contract
+
+### Must Not Happen
+
+- backend-specific semantic forks
+- direct dependence on concrete store classes for lane semantics
+- silent rebuild gaps that cannot be audited
+- queue mechanics that are only recoverable by raw graph scan
+- docs that misstate the ownership boundary
 
 ---
 
@@ -197,6 +234,7 @@ Tasks:
   - [x] `list_projected_lane_messages(...)`
 - [x] ensure engine methods route through entity event writes rather than direct ad hoc graph edits
 - [x] add metastore-level projection helpers for pending message queries
+- [x] concrete metastore classes share lane-message projection mixin instead of owning projection semantics individually
 
 Notes:
 
@@ -211,7 +249,8 @@ Tasks:
 - [x] define canonical edge/property set for lane messages
 - [x] keep message membership authoritative at creation time
 - [x] avoid creating a half-valid message that only becomes real after later linked-list mutation
-- [ ] decide whether explicit `MESSAGE_*` semantic event taxonomy should be exposed directly instead of staying implicit inside generic entity events plus node replacement
+- [x] keep `MESSAGE_*` semantic intent implicit for now inside generic entity events plus node replacement; do not split another top-level event stream unless a future slice needs it
+- [x] keep `llm-wiki` request/reply path compatible while lane messaging contract evolves
 
 ### 5.3 Projection layer
 
@@ -221,8 +260,9 @@ Tasks:
 - [x] assign monotonic inbox-local `seq`
 - [x] assign monotonic conversation-local `conversation_seq`
 - [x] maintain pending/claimable view
-- [ ] optionally materialize `prev` / `next`
-- [ ] optionally maintain inbox or conversation tail shortcuts
+- [x] keep projection rebuildable from authoritative truth
+- [x] optionally materialize `prev` / `next`
+- [x] optionally maintain inbox or conversation tail shortcuts
 
 Suggested projection fields:
 
@@ -252,13 +292,61 @@ Notes:
 
 - This is the place for quick search of newest messages.
 - SQLite, in-memory, and Postgres support are now implemented through the metastore layer.
+- in-memory, SQLite, and Postgres should keep the same lane-message projection contract through the shared mixin/base layer.
+- The current contract is intentionally minimal: `send / claim / ack / requeue / list / rebuild`.
+- `prev` / `next` and tail shortcuts remain optional future projection optimizations, not required for the stable contract.
 
 ### 5.4 Runtime integration
 
 Tasks:
 
 - [x] keep `StepContext.publish()` as same-process orchestration only
-- [ ] optionally add `StepContext.send_lane_message(...)` for durable cross-lane delivery
+
+## 6. Execution Checklist
+
+### Phase 1 - Core ownership
+
+- [x] confirm core lane messaging API is the only semantic entrypoint
+- [x] move any projection semantics out of concrete stores
+- [x] keep `meta_sqlite` as abstraction slot for projections
+- [x] audit shared base / mixin layers for repeated projection behavior
+
+### Phase 2 - Projection contract
+
+- [x] define exact projection fields for pending, claimable, retryable, and dead-letter states
+- [x] make projection rebuild deterministic from graph/event truth
+- [x] add repair path for queue projections without rewriting authoritative message truth
+- [x] ensure inbox and conversation ordering rules are documented and tested
+
+### Phase 3 - App compatibility
+
+- [x] pin a sample contract-compliant object against the new stable contract
+- [x] pin a sample integration against the new stable contract
+- [ ] add migration notes for any renamed or split messaging surface
+
+### Phase 4 - Docs alignment
+
+- [x] update this checklist as implementation lands
+- [ ] update `kogwistar_lane_messaging_ard.md` if semantics move
+- [x] update `visibility_viewing_auditing.md` if new views or audit surfaces appear
+- [ ] update `STATUS.md` once the contract becomes stable
+
+### Phase 5 - Test the contract
+
+- [x] core lane messaging contract tests
+- [x] sample contract fixture test
+- [x] metastore projection rebuild tests
+- [x] backend parity tests for in-memory, SQLite, Postgres
+- [x] visibility smoke test for send, claim, retry
+- [x] visibility / audit smoke tests for send, claim, retry, dead-letter
+
+### Phase 6 - Rollout
+
+- [x] keep old path alive until new contract is pinned
+- [x] do not cut over backend-specific semantics before parity is proven
+- [x] promote new lane messaging contract only after app integration passes
+- [x] add `StepContext.send_lane_message(...)` for durable cross-lane delivery
+- [x] add `StepContext.emit_lane_message_event(...)` for lifecycle mirroring hooks
 - [x] keep current in-memory queue semantics for same-run, same-process orchestration
 - [x] do not silently repurpose the existing `queue.Queue` as cross-process IPC
 
@@ -286,14 +374,14 @@ Notes:
 
 Tasks:
 
-- [ ] mirror meaningful lane message state into run registry events when useful
+- [x] mirror meaningful lane message state into run registry events when useful
 - example event names:
   - `worker.requested`
   - `worker.claimed`
   - `worker.progress`
   - `worker.result`
   - `worker.failed`
-- [ ] expose lane message progress to UI/SSE without requiring raw graph fetch each time
+- [x] expose lane message progress to UI/SSE without requiring raw graph fetch each time
 
 Notes:
 
@@ -389,236 +477,52 @@ class LaneMessagingService:
         error: dict | None = None,
         delay_seconds: int = 0,
     ) -> None: ...
+
+    def dead_letter(
+        self,
+        *,
+        message_id: str,
+        claimed_by: str,
+        error: dict | None = None,
+    ) -> None: ...
+
+    def list_projected(
+        self,
+        *,
+        inbox_id: str | None = None,
+        status: str | None = None,
+    ) -> list[ProjectedLaneMessage]: ...
 ```
 
----
+Stable contract:
 
-## 8. Migration plan
+- `send_message(...)`
+- `claim_pending(...)`
+- `ack(...)`
+- `requeue(...)`
+- `dead_letter(...)`
+- `list_projected(...)`
 
-### Phase 1 - minimal end-to-end
+Rules:
 
-Deliver the smallest usable path.
-
-- [x] message node + semantic edges
-- [x] projected pending table/index
-- [x] background worker can claim and reply
-- [x] no linked-list materialization yet
-- [ ] run registry emits worker progress events
-
-Success criteria:
-
-- foreground sends durable message
-- worker claims it
-- worker emits reply message
-- UI / run event feed can show lifecycle
-
-### Phase 2 - conversation ordering
-
-- [x] add conversation-local sequence projection
-- [x] add inbox-local sequence projection
-- [x] expose latest message queries
-- [ ] optionally add derived `prev` / `next`
-
-### Phase 3 - advanced coordination
-
-- [ ] cancellations
-- [ ] timeouts
-- [ ] supervisor lane
-- [ ] approval / governance lane messages
-- [x] routing rules and priority
-- [ ] dead-letter handling
+- message truth lives in graph/entity events
+- projection truth lives in metastore abstraction
+- concrete stores only provide storage primitives
+- `meta_sqlite` remains slot name, not semantic owner
+- same contract must work across in-memory, SQLite, Postgres
 
 ---
 
-## 9. Test plan
+## 8. Checklist
 
-### 9.1 Unit tests
-
-#### Message creation
-
-- [x] create lane message writes expected node properties
-- [x] message creation attaches required semantic edges
-- [x] message is queryable by conversation and inbox immediately after authoritative write
-
-#### Projection
-
-- [x] projected row appears after message creation
-- [x] inbox seq increments monotonically
-- [x] conversation seq increments monotonically
-- [x] latest-message query returns expected result
-
-#### Claim / ack
-
-- [x] one worker claims pending message successfully
-- [x] second worker cannot claim an already leased message
-- [x] ack marks message completed
-- [x] expired lease allows reclaim
-
-#### Retry
-
-- [x] requeue increments retry count
-- [x] delayed retry respects `available_at`
-- [ ] dead-letter or terminal-failed behavior works if implemented
-
-#### Reply linkage
-
-- [x] worker reply creates a new message node
-- [x] reply preserves correlation id
-- [x] reply attaches `reply_to`
-
-### 9.2 Integration tests
-
-#### Foreground to worker round-trip
-
-1. create conversation
-2. send message from foreground to worker inbox
-3. worker loop claims projected message
-4. worker processes and emits reply
-5. reply becomes visible in same conversation
-6. run registry/SSE-facing events reflect progress
-
-Current status:
-
-- [x] steps 1-5 are pinned for the `llm-wiki` maintenance request/reply path
-- [ ] step 6 is still missing
-
-#### Recovery / rebuild
-
-- [ ] delete or corrupt linked-list pointers
-- [ ] rebuild projections
-- [ ] verify ordering still reconstructs from authoritative message membership + sequence facts
-
-#### Multi-sender concurrency
-
-- [ ] multiple foreground senders send to same inbox
-- [ ] projected sequence remains total and stable
-- [ ] no lost messages
-
-#### Worker crash / restart
-
-- [ ] worker claims message
-- [ ] worker crashes before ack
-- [ ] lease expires
-- [ ] another worker reclaims safely
-
-### 9.3 End-to-end tests worth having
-
-- [ ] chat-triggered background summarization via lane message
-- [ ] workflow step requests async document parse via lane message
-- [ ] governance/approval uses same messaging substrate with different lane actors
-
----
-
-## 10. Non-goals for first slice
-
-Do not require these in the first implementation:
-
-- fully general actor system semantics
-- priority scheduling across all worker classes
-- distributed cross-backend exactly-once guarantees
-- complex graph traversal as worker inbox scanning
-- rich linked-list editing in hot path
-
----
-
-## 11. Key design rules for local agents
-
-1. Entity event is the authoritative write path.
-2. Message membership is authoritative at creation time.
-3. Queue mechanics belong in projections.
-4. Workers consume projected pending items, not raw graph scans.
-5. Linked-list pointers are derived convenience, not sole truth.
-6. Reply is a new message node, not mutation of the old one into a response.
-7. Use correlation IDs and reply links consistently.
-8. Keep same-process runtime publish separate from durable cross-process messaging.
-
----
-
-## 12. Recommended first coding slice
-
-If only one slice is implemented now, do this:
-
-- [x] add `send_lane_message()` using entity event-backed message node creation
-- [x] add projected pending lane message table/index in meta sqlite
-- [x] add claim/ack/requeue APIs
-- [x] update one background worker to consume that projection or mirror into it
-- [x] emit reply messages into the same conversation
-- [ ] mirror worker lifecycle into run registry events
-
-This is the smallest slice that makes the system materially more OS-like.
-
----
-
-## 13. Acceptance checklist
-
-- [x] foreground can send durable message into a conversation-linked worker inbox
-- [x] authoritative write is append/event based
-- [x] message is semantically complete on creation
-- [x] projected pending index supports fast claim
-- [x] worker can ack/requeue safely
-- [x] reply is represented as a new message node
-- [x] correlation / reply linkage is preserved
-- [ ] run registry or SSE can show worker lifecycle
-- [ ] linked-list materialization, if added, is rebuildable
-- [ ] recovery tests pass when projection is rebuilt
-
----
-
-## 14. Landed slice notes
-
-The current implementation now exists in core and is wired into one `llm-wiki`
-foreground/background flow.
-
-### Core landed
-
-- `kogwistar.messaging` provides:
-  - `LaneMessagingService`
-  - projected row/result models
-- engine facade methods now expose:
-  - `send_lane_message(...)`
-  - `update_lane_message_status(...)`
-  - `claim_projected_lane_messages(...)`
-  - `ack_projected_lane_message(...)`
-  - `requeue_projected_lane_message(...)`
-  - `list_projected_lane_messages(...)`
-- in-memory, SQLite, and Postgres meta stores now project lane-message queue rows
-- message nodes are written with semantic edges:
-  - `in_conversation`
-  - `in_inbox`
-  - `sent_by`
-  - `sent_to`
-  - optional `reply_to`
-  - optional `about_run`
-  - optional `about_step`
-
-### `llm-wiki` landed
-
-- maintenance request creation now emits a durable foreground-to-worker lane message
-- maintenance worker completion/failure now emits a reply lane message back to foreground
-- reply messages preserve `reply_to_message_id` and `correlation_id`
-- the original request message status is updated on completion/failure
-
-### Tests landed
-
-- core lane-messaging creation and projection tests
-- meta-store contract coverage for in-memory and SQLite projections
-- `llm-wiki` orchestration test pinning request/reply round-trip semantics
-
-### Remaining gaps and ideas to revisit
-
-- explicit run-registry / SSE surfacing is still missing
-- a durable runtime-facing `StepContext.send_lane_message(...)` API is still missing
-- linked-list materialization and rebuild tests are still intentionally deferred
-- only one `llm-wiki` worker flow is migrated so far
-- Postgres projection support is implemented but still needs focused behavioral test coverage
-
----
-
-## 15. Final guidance
-
-Do not try to make a pure graph linked list solve both semantics and queue mechanics at once.
-
-Use the graph to express meaning.
-Use projections to express operational speed and leasing.
-
-That balance is the most robust path for Kogwistar.
+- [x] core lane messaging contract tests
+- [x] sample contract fixture test
+- [x] metastore projection rebuild tests
+- [x] backend parity tests for in-memory, SQLite, Postgres
+- [x] visibility smoke test for send, claim, retry, dead-letter
+- [x] `StepContext.send_lane_message(...)`
+- [x] `StepContext.emit_lane_message_event(...)`
+- [x] run registry / SSE can show worker lifecycle
+- [x] recovery tests pass when projection is rebuilt
+- [x] linked-list materialization, if added, is rebuildable
+- [ ] promotion after app integration passes

@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Iterator, List, Optional
 
 from ..messaging.models import ProjectedLaneMessageRow
+from .meta_lane_messages import LaneMessageMetaStoreMixin
 
 _active_sqlite_conn: contextvars.ContextVar[sqlite3.Connection | None] = (
     contextvars.ContextVar("gke_sqlite_active_conn", default=None)
@@ -71,6 +72,10 @@ class ProjectedLaneMessageSqlRow:
     correlation_id: str | None
     payload_json: str | None
     error_json: str | None
+    prev_message_id: str | None = None
+    next_message_id: str | None = None
+    inbox_tail_message_id: str | None = None
+    conversation_tail_message_id: str | None = None
 
     def as_row(self) -> ProjectedLaneMessageRow:
         return ProjectedLaneMessageRow(
@@ -94,10 +99,14 @@ class ProjectedLaneMessageSqlRow:
             correlation_id=self.correlation_id,
             payload_json=self.payload_json,
             error_json=self.error_json,
+            prev_message_id=self.prev_message_id,
+            next_message_id=self.next_message_id,
+            inbox_tail_message_id=self.inbox_tail_message_id,
+            conversation_tail_message_id=self.conversation_tail_message_id,
         )
 
 
-class EngineSQLite:
+class EngineSQLite(LaneMessageMetaStoreMixin):
     """
     Lightweight SQLite helper for engine persistence.
 
@@ -208,7 +217,11 @@ class EngineSQLite:
                     step_id TEXT,
                     correlation_id TEXT,
                     payload_json TEXT,
-                    error_json TEXT
+                    error_json TEXT,
+                    prev_message_id TEXT,
+                    next_message_id TEXT,
+                    inbox_tail_message_id TEXT,
+                    conversation_tail_message_id TEXT
                 )
                 """
             )
@@ -884,8 +897,10 @@ class EngineSQLite:
                     recipient_id, sender_id, msg_type, status,
                     seq, conversation_seq, claimed_by, lease_until,
                     retry_count, created_at, available_at, run_id,
-                    step_id, correlation_id, payload_json, error_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, 0, ?, ?, ?, ?, ?, ?, ?)
+                    step_id, correlation_id, payload_json, error_json,
+                    prev_message_id, next_message_id,
+                    inbox_tail_message_id, conversation_tail_message_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     str(message_id),
@@ -905,6 +920,10 @@ class EngineSQLite:
                     None if correlation_id is None else str(correlation_id),
                     payload_json,
                     error_json,
+                    None,
+                    None,
+                    None,
+                    None,
                 ),
             )
 
@@ -926,6 +945,34 @@ class EngineSQLite:
                 WHERE message_id = ?
                 """,
                 (str(status), error_json, str(status), str(status), str(message_id)),
+            )
+
+    def update_projected_lane_message_links(
+        self,
+        *,
+        message_id: str,
+        prev_message_id: str | None = None,
+        next_message_id: str | None = None,
+        inbox_tail_message_id: str | None = None,
+        conversation_tail_message_id: str | None = None,
+    ) -> None:
+        with self.transaction() as conn:
+            conn.execute(
+                """
+                UPDATE projected_lane_messages
+                SET prev_message_id = ?,
+                    next_message_id = ?,
+                    inbox_tail_message_id = ?,
+                    conversation_tail_message_id = ?
+                WHERE message_id = ?
+                """,
+                (
+                    prev_message_id,
+                    next_message_id,
+                    inbox_tail_message_id,
+                    conversation_tail_message_id,
+                    str(message_id),
+                ),
             )
 
     def claim_projected_lane_messages(
@@ -976,7 +1023,8 @@ class EngineSQLite:
                 SELECT message_id, namespace, inbox_id, conversation_id, recipient_id, sender_id,
                        msg_type, status, seq, conversation_seq, claimed_by, lease_until,
                        retry_count, created_at, available_at, run_id, step_id, correlation_id,
-                       payload_json, error_json
+                       payload_json, error_json, prev_message_id, next_message_id,
+                       inbox_tail_message_id, conversation_tail_message_id
                 FROM projected_lane_messages
                 WHERE message_id IN ({placeholders})
                 ORDER BY seq ASC
@@ -1005,6 +1053,10 @@ class EngineSQLite:
                 correlation_id=None if row[17] is None else str(row[17]),
                 payload_json=None if row[18] is None else str(row[18]),
                 error_json=None if row[19] is None else str(row[19]),
+                prev_message_id=None if row[20] is None else str(row[20]),
+                next_message_id=None if row[21] is None else str(row[21]),
+                inbox_tail_message_id=None if row[22] is None else str(row[22]),
+                conversation_tail_message_id=None if row[23] is None else str(row[23]),
             ).as_row()
             for row in got
         ]
@@ -1071,7 +1123,8 @@ class EngineSQLite:
                 SELECT message_id, namespace, inbox_id, conversation_id, recipient_id, sender_id,
                        msg_type, status, seq, conversation_seq, claimed_by, lease_until,
                        retry_count, created_at, available_at, run_id, step_id, correlation_id,
-                       payload_json, error_json
+                       payload_json, error_json, prev_message_id, next_message_id,
+                       inbox_tail_message_id, conversation_tail_message_id
                 FROM projected_lane_messages
                 WHERE {' AND '.join(where)}
                 ORDER BY inbox_id ASC, seq ASC, created_at ASC
@@ -1101,6 +1154,10 @@ class EngineSQLite:
                 correlation_id=None if row[17] is None else str(row[17]),
                 payload_json=None if row[18] is None else str(row[18]),
                 error_json=None if row[19] is None else str(row[19]),
+                prev_message_id=None if row[20] is None else str(row[20]),
+                next_message_id=None if row[21] is None else str(row[21]),
+                inbox_tail_message_id=None if row[22] is None else str(row[22]),
+                conversation_tail_message_id=None if row[23] is None else str(row[23]),
             ).as_row()
             for row in rows
         ]
