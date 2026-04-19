@@ -193,6 +193,35 @@ def build_workflow_mcp(
             ),
         }
 
+    @tool_roles({role_ro, role_rw})
+    @require_ns({ns_workflow})
+    @mcp.tool(name="workflow.capabilities_snapshot")
+    def workflow_capabilities_snapshot() -> dict[str, Any]:
+        return get_service().capability_snapshot()
+
+    @tool_roles({role_rw})
+    @require_ns({ns_workflow})
+    @mcp.tool(name="workflow.capability_approve")
+    def workflow_capability_approve(
+        action: str,
+        capabilities: list[str] | str,
+        subject: str | None = None,
+    ) -> dict[str, Any]:
+        return get_service().capability_approve(
+            action=action, capabilities=capabilities, subject=subject
+        )
+
+    @tool_roles({role_rw})
+    @require_ns({ns_workflow})
+    @mcp.tool(name="workflow.capability_revoke")
+    def workflow_capability_revoke(
+        capability: str,
+        subject: str | None = None,
+    ) -> dict[str, Any]:
+        return get_service().capability_revoke(
+            capability=capability, subject=subject
+        )
+
     @tool_roles({role_rw})
     @require_ns({ns_workflow})
     @mcp.tool(name="workflow.design_node_upsert")

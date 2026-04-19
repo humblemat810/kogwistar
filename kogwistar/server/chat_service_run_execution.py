@@ -305,6 +305,8 @@ class _RunExecutionService(_BaseComponent):
             priority_class=str(priority_class or "foreground"),
             token_budget=token_budget,
             time_budget_ms=time_budget_ms,
+            capabilities=tuple(self._owner._effective_capabilities()),
+            capability_subject=self._owner._capability_subject(),
         )
         sched = self._owner.scheduler.submit(
             run_id=run_id,
@@ -427,6 +429,11 @@ class _RunExecutionService(_BaseComponent):
         deps.setdefault("ref_knowledge_engine", req.knowledge_engine)
         deps.setdefault("workflow_engine", req.workflow_engine)
         deps.setdefault("agentic_workflow_engine", req.workflow_engine)
+        deps.setdefault("capabilities", list(getattr(req, "capabilities", ()) or ()))
+        deps.setdefault(
+            "capability_subject",
+            getattr(req, "capability_subject", None) or self._owner._capability_subject(),
+        )
         if budget_state:
             deps.setdefault("budget_ledger", StateBackedBudgetLedger(budget_state))
         initial_state["_deps"] = deps
@@ -498,6 +505,11 @@ class _RunExecutionService(_BaseComponent):
         deps.setdefault("ref_knowledge_engine", req.knowledge_engine)
         deps.setdefault("workflow_engine", req.workflow_engine)
         deps.setdefault("agentic_workflow_engine", req.workflow_engine)
+        deps.setdefault("capabilities", list(getattr(req, "capabilities", ()) or ()))
+        deps.setdefault(
+            "capability_subject",
+            getattr(req, "capability_subject", None) or self._owner._capability_subject(),
+        )
         if budget_state:
             deps.setdefault("budget_ledger", StateBackedBudgetLedger(budget_state))
         initial_state["_deps"] = deps

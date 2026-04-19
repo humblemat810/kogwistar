@@ -30,9 +30,16 @@ from .chat_service_shared import (
     now_ms,
     workflow_namespace,
 )
+from .capability_kernel import CapabilityKernel, DEFAULT_CAPABILITY_SPECS
 from .auth_middleware import (
     can_access_security_scope,
+    get_current_agent_id,
+    get_current_capabilities,
+    get_current_role,
     get_execution_namespace,
+    get_current_subject,
+    get_current_user_id,
+    has_explicit_capabilities_claim,
     get_security_scope,
     get_storage_namespace,
 )
@@ -77,6 +84,9 @@ class ChatRunService:
         self._run_execution = _RunExecutionService(self)
         self._run_inspection = _RunInspectionService(self)
         self.cost_ledger = CostLedger(workspace_id="chat-service")
+        self.capability_kernel = CapabilityKernel()
+        for spec in DEFAULT_CAPABILITY_SPECS:
+            self.capability_kernel.register(spec)
 
         self.answer_runner = answer_runner or self._run_execution._default_answer_runner
         self.runtime_runner = (
@@ -98,6 +108,91 @@ class ChatRunService:
             knowledge_engine=self._knowledge_engine(),
             workflow_engine=self._workflow_engine(),
         )
+
+    def _capability_subject(self) -> str:
+        return (
+            get_current_subject()
+            or get_current_user_id()
+            or get_current_agent_id()
+            or "anonymous"
+        )
+
+    def _legacy_capability_grants(self) -> set[str]:
+        role = str(get_current_role() or "ro").lower()
+        if role == "rw":
+            return {spec.name for spec in self.capability_kernel.list_specs()}
+        return {
+            "read_graph",
+            "read_security_scope",
+            "project_view",
+            "workflow.design.inspect",
+            "workflow.run.read",
+        }
+
+    def _effective_capabilities(self) -> tuple[str, ...]:
+        caps = get_current_capabilities()
+        if caps or has_explicit_capabilities_claim():
+            base_caps: tuple[str, ...] = tuple(sorted(caps))
+        else:
+            base_caps = tuple(sorted(self._legacy_capability_grants()))
+        return self.capability_kernel.materialize_capabilities(
+            subject=self._capability_subject(),
+            parent_capabilities=base_caps,
+        )
+
+    def _require_capability(
+        self,
+        action: str,
+        required: str | list[str] | set[str] | tuple[str, ...],
+        *,
+        approval_message: str | None = None,
+    ) -> dict[str, Any]:
+        decision = self.capability_kernel.require(
+            subject=self._capability_subject(),
+            action=action,
+            required=required,
+            parent_capabilities=self._effective_capabilities(),
+            approval_message=approval_message,
+        )
+        return {
+            "ts_ms": decision.ts_ms,
+            "subject": decision.subject,
+            "action": decision.action,
+            "required": list(decision.required),
+            "granted": list(decision.granted),
+            "outcome": decision.outcome,
+            "reason": decision.reason,
+            "parent_capabilities": list(decision.parent_capabilities),
+        }
+
+    def approve_action(
+        self,
+        *,
+        subject: str | None = None,
+        action: str,
+        capabilities: str | list[str] | tuple[str, ...],
+    ) -> dict[str, Any]:
+        owner = str(subject or self._capability_subject()).strip().lower()
+        self.capability_kernel.grant(
+            subject=owner, action=action, capabilities=capabilities
+        )
+        return self.capability_snapshot()
+
+    def revoke_capability(
+        self,
+        *,
+        subject: str | None = None,
+        capability: str,
+    ) -> dict[str, Any]:
+        owner = str(subject or self._capability_subject()).strip().lower()
+        self.capability_kernel.revoke(subject=owner, capability=capability)
+        return self.capability_snapshot()
+
+    def capability_snapshot(self) -> dict[str, Any]:
+        snap = self.capability_kernel.snapshot()
+        snap["current_subject"] = self._capability_subject()
+        snap["effective_capabilities"] = list(self._effective_capabilities())
+        return snap
 
     def _publish(
         self, run_id: str, event_type: str, payload: dict[str, Any] | None = None
@@ -144,9 +239,19 @@ class ChatRunService:
         )
 
     def workflow_design_history(self, *, workflow_id: str) -> dict[str, Any]:
+        self._require_capability(
+            "workflow.design.inspect",
+            ["workflow.design.inspect"],
+            approval_message="Inspecting workflow design requires workflow.design.inspect capability",
+        )
         return self._workflow_design.workflow_design_history(workflow_id=workflow_id)
 
     def refresh_workflow_design_projection(self, *, workflow_id: str) -> dict[str, Any]:
+        self._require_capability(
+            "workflow.design.inspect",
+            ["workflow.design.inspect"],
+            approval_message="Refreshing workflow design projection requires workflow.design.inspect capability",
+        )
         return self._workflow_design.refresh_workflow_design_projection(
             workflow_id=workflow_id
         )
@@ -166,6 +271,11 @@ class ChatRunService:
         actor_sub: str | None = None,
         source: str = "rest",
     ) -> dict[str, Any]:
+        self._require_capability(
+            "workflow.design.write",
+            ["workflow.design.write", "write_graph"],
+            approval_message="Upserting workflow nodes requires workflow.design.write capability",
+        )
         return self._workflow_design.workflow_design_upsert_node(
             workflow_id=workflow_id,
             designer_id=designer_id,
@@ -197,6 +307,11 @@ class ChatRunService:
         actor_sub: str | None = None,
         source: str = "rest",
     ) -> dict[str, Any]:
+        self._require_capability(
+            "workflow.design.write",
+            ["workflow.design.write", "write_graph"],
+            approval_message="Upserting workflow edges requires workflow.design.write capability",
+        )
         return self._workflow_design.workflow_design_upsert_edge(
             workflow_id=workflow_id,
             designer_id=designer_id,
@@ -222,6 +337,11 @@ class ChatRunService:
         actor_sub: str | None = None,
         source: str = "rest",
     ) -> dict[str, Any]:
+        self._require_capability(
+            "workflow.design.write",
+            ["workflow.design.write", "write_graph"],
+            approval_message="Deleting workflow nodes requires workflow.design.write capability",
+        )
         return self._workflow_design.workflow_design_delete_node(
             workflow_id=workflow_id,
             node_id=node_id,
@@ -239,6 +359,11 @@ class ChatRunService:
         actor_sub: str | None = None,
         source: str = "rest",
     ) -> dict[str, Any]:
+        self._require_capability(
+            "workflow.design.write",
+            ["workflow.design.write", "write_graph"],
+            approval_message="Deleting workflow edges requires workflow.design.write capability",
+        )
         return self._workflow_design.workflow_design_delete_edge(
             workflow_id=workflow_id,
             edge_id=edge_id,
@@ -255,6 +380,11 @@ class ChatRunService:
         actor_sub: str | None = None,
         source: str = "rest",
     ) -> dict[str, Any]:
+        self._require_capability(
+            "workflow.design.write",
+            ["workflow.design.write", "approve_action"],
+            approval_message="Undoing workflow design requires workflow.design.write capability",
+        )
         return self._workflow_design.workflow_design_undo(
             workflow_id=workflow_id,
             designer_id=designer_id,
@@ -270,6 +400,11 @@ class ChatRunService:
         actor_sub: str | None = None,
         source: str = "rest",
     ) -> dict[str, Any]:
+        self._require_capability(
+            "workflow.design.write",
+            ["workflow.design.write", "approve_action"],
+            approval_message="Redoing workflow design requires workflow.design.write capability",
+        )
         return self._workflow_design.workflow_design_redo(
             workflow_id=workflow_id,
             designer_id=designer_id,
@@ -284,6 +419,11 @@ class ChatRunService:
         conversation_id: str | None = None,
         start_node_id: str | None = None,
     ) -> dict[str, Any]:
+        self._require_capability(
+            "create_conversation",
+            ["spawn_process"],
+            approval_message="Creating conversation requires spawn_process capability",
+        )
         return self._conversation_queries.create_conversation(
             user_id=user_id,
             conversation_id=conversation_id,
@@ -291,9 +431,19 @@ class ChatRunService:
         )
 
     def get_conversation(self, conversation_id: str) -> dict[str, Any]:
+        self._require_capability(
+            "read_conversation",
+            ["read_graph"],
+            approval_message="Reading conversation requires read_graph capability",
+        )
         return self._conversation_queries.get_conversation(conversation_id)
 
     def list_transcript(self, conversation_id: str) -> list[dict[str, Any]]:
+        self._require_capability(
+            "read_conversation",
+            ["read_graph"],
+            approval_message="Reading transcript requires read_graph capability",
+        )
         return self._conversation_queries.list_transcript(conversation_id)
 
     def latest_snapshot(
@@ -303,6 +453,11 @@ class ChatRunService:
         run_id: str | None = None,
         stage: str | None = None,
     ) -> dict[str, Any]:
+        self._require_capability(
+            "project_view",
+            ["project_view"],
+            approval_message="Reading snapshot requires project_view capability",
+        )
         return self._conversation_queries.latest_snapshot(
             conversation_id, run_id=run_id, stage=stage
         )
@@ -315,6 +470,11 @@ class ChatRunService:
         text: str,
         workflow_id: str = "agentic_answering.v2",
     ) -> dict[str, Any]:
+        self._require_capability(
+            "send_message",
+            ["send_message"],
+            approval_message="Sending message requires send_message capability",
+        )
         return self._run_execution.submit_turn_for_answer(
             conversation_id=conversation_id,
             user_id=user_id,
@@ -334,6 +494,11 @@ class ChatRunService:
         token_budget: int | None = None,
         time_budget_ms: int | None = None,
     ) -> dict[str, Any]:
+        self._require_capability(
+            "spawn_process",
+            ["spawn_process", "workflow.run.write"],
+            approval_message="Submitting workflow run requires spawn_process and workflow.run.write capabilities",
+        )
         return self._run_execution.submit_workflow_run(
             workflow_id=workflow_id,
             conversation_id=conversation_id,
@@ -346,6 +511,11 @@ class ChatRunService:
         )
 
     def get_run(self, run_id: str) -> dict[str, Any]:
+        self._require_capability(
+            "workflow.run.read",
+            ["workflow.run.read"],
+            approval_message="Reading run requires workflow.run.read capability",
+        )
         return self._run_execution.get_run(run_id)
 
     async def aget_run(self, run_id: str) -> dict[str, Any]:
@@ -354,6 +524,11 @@ class ChatRunService:
     def list_run_events(
         self, run_id: str, *, after_seq: int = 0, limit: int = 500
     ) -> list[dict[str, Any]]:
+        self._require_capability(
+            "workflow.run.read",
+            ["workflow.run.read"],
+            approval_message="Reading run events requires workflow.run.read capability",
+        )
         return self._run_execution.list_run_events(
             run_id, after_seq=after_seq, limit=limit
         )
@@ -366,9 +541,19 @@ class ChatRunService:
         )
 
     def cancel_run(self, run_id: str) -> dict[str, Any]:
+        self._require_capability(
+            "workflow.run.write",
+            ["workflow.run.write"],
+            approval_message="Cancelling run requires workflow.run.write capability",
+        )
         return self._run_execution.cancel_run(run_id)
 
     def resource_snapshot(self) -> dict[str, Any]:
+        self._require_capability(
+            "read_security_scope",
+            ["read_security_scope", "project_view"],
+            approval_message="Reading resource snapshot requires read_security_scope capability",
+        )
         def _dir_size(path: str | None) -> int:
             import os
 
@@ -407,19 +592,86 @@ class ChatRunService:
             },
         }
 
+    def capability_snapshot(self) -> dict[str, Any]:
+        self._require_capability(
+            "project_view",
+            ["project_view", "read_security_scope"],
+            approval_message="Inspecting capabilities requires project_view capability",
+        )
+        return self.capability_kernel.snapshot() | {
+            "current_subject": self._capability_subject(),
+            "effective_capabilities": list(self._effective_capabilities()),
+        }
+
+    def capability_approve(
+        self,
+        *,
+        action: str,
+        capabilities: str | list[str] | tuple[str, ...],
+        subject: str | None = None,
+    ) -> dict[str, Any]:
+        self._require_capability(
+            "approve_action",
+            ["approve_action"],
+            approval_message="Approving capability requires approve_action capability",
+        )
+        return self.approve_action(
+            subject=subject or self._capability_subject(),
+            action=action,
+            capabilities=capabilities,
+        )
+
+    def capability_revoke(
+        self,
+        *,
+        capability: str,
+        subject: str | None = None,
+    ) -> dict[str, Any]:
+        self._require_capability(
+            "approve_action",
+            ["approve_action"],
+            approval_message="Revoking capability requires approve_action capability",
+        )
+        return self.revoke_capability(subject=subject, capability=capability)
+
     def list_steps(self, run_id: str) -> list[dict[str, Any]]:
+        self._require_capability(
+            "workflow.run.read",
+            ["workflow.run.read"],
+            approval_message="Reading workflow steps requires workflow.run.read capability",
+        )
         return self._run_inspection.list_steps(run_id)
 
     def list_checkpoints(self, run_id: str) -> list[dict[str, Any]]:
+        self._require_capability(
+            "workflow.run.read",
+            ["workflow.run.read"],
+            approval_message="Reading workflow checkpoints requires workflow.run.read capability",
+        )
         return self._run_inspection.list_checkpoints(run_id)
 
     def get_checkpoint(self, run_id: str, step_seq: int) -> dict[str, Any]:
+        self._require_capability(
+            "workflow.run.read",
+            ["workflow.run.read"],
+            approval_message="Reading workflow checkpoint requires workflow.run.read capability",
+        )
         return self._run_inspection.get_checkpoint(run_id, step_seq)
 
     def replay_run(self, run_id: str, target_step_seq: int) -> dict[str, Any]:
+        self._require_capability(
+            "workflow.run.read",
+            ["workflow.run.read"],
+            approval_message="Replaying workflow run requires workflow.run.read capability",
+        )
         return self._run_inspection.replay_run(run_id, target_step_seq)
 
     def resume_contract(self, run_id: str) -> dict[str, Any]:
+        self._require_capability(
+            "workflow.run.read",
+            ["workflow.run.read"],
+            approval_message="Reading resume contract requires workflow.run.read capability",
+        )
         return self._run_inspection.resume_contract(run_id)
 
     def resume_run(
@@ -434,6 +686,11 @@ class ChatRunService:
         turn_node_id: str,
         user_id: str | None = None,
     ) -> dict[str, Any]:
+        self._require_capability(
+            "workflow.run.write",
+            ["workflow.run.write", "approve_action"],
+            approval_message="Resuming workflow run requires workflow.run.write capability",
+        )
         return self._run_execution._default_resume_runner(
             RuntimeResumeRequest(
                 run_id=run_id,
@@ -452,15 +709,27 @@ class ChatRunService:
                     run_id, event_type, payload
                 ),
                 is_cancel_requested=lambda: self.run_registry.is_cancel_requested(run_id),
+                capabilities=tuple(self._effective_capabilities()),
+                capability_subject=self._capability_subject(),
             )
         )
 
     def workflow_design_graph(
         self, workflow_id: str, refresh: bool = False
     ) -> dict[str, object]:
+        self._require_capability(
+            "read_graph",
+            ["read_graph", "workflow.design.inspect"],
+            approval_message="Reading workflow graph requires read_graph capability",
+        )
         return self._workflow_design.workflow_design_graph(workflow_id, refresh)
 
     def workflow_catalog_ops(self) -> list[dict[str, object]]:
+        self._require_capability(
+            "workflow.design.inspect",
+            ["workflow.design.inspect"],
+            approval_message="Inspecting workflow catalog requires workflow.design.inspect capability",
+        )
         return self._workflow_design.workflow_catalog_ops()
 
     def _execution_meta_store(self) -> Any:
@@ -486,6 +755,11 @@ class ChatRunService:
         conversation_id: str | None = None,
         limit: int = 100,
     ) -> list[dict[str, Any]]:
+        self._require_capability(
+            "project_view",
+            ["project_view", "workflow.run.read"],
+            approval_message="Reading process table requires project_view capability",
+        )
         meta_store = self._execution_meta_store()
         list_runs = getattr(meta_store, "list_server_runs", None)
         runs = []
@@ -539,6 +813,11 @@ class ChatRunService:
         status: str | None = None,
         limit: int = 200,
     ) -> list[dict[str, Any]]:
+        self._require_capability(
+            "project_view",
+            ["project_view", "read_security_scope"],
+            approval_message="Reading operator inbox requires project_view capability",
+        )
         meta_store = self._execution_meta_store()
         list_fn = getattr(meta_store, "list_projected_lane_messages", None)
         if not callable(list_fn):
@@ -591,6 +870,11 @@ class ChatRunService:
         ]
 
     def list_blocked_runs(self, *, limit: int = 100) -> list[dict[str, Any]]:
+        self._require_capability(
+            "project_view",
+            ["project_view", "workflow.run.read"],
+            approval_message="Reading blocked runs requires project_view capability",
+        )
         rows = self.list_process_table(limit=limit)
         blocked_statuses = {"blocked", "waiting", "suspended", "cancelling"}
         out = [row for row in rows if str(row.get("status") or "") in blocked_statuses]
@@ -599,6 +883,11 @@ class ChatRunService:
     def list_process_timeline(
         self, *, run_id: str, after_seq: int = 0, limit: int = 200
     ) -> list[dict[str, Any]]:
+        self._require_capability(
+            "workflow.run.read",
+            ["workflow.run.read"],
+            approval_message="Reading process timeline requires workflow.run.read capability",
+        )
         meta_store = self._execution_meta_store()
         list_events = getattr(meta_store, "list_server_run_events", None)
         if not callable(list_events):

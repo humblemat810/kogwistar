@@ -393,29 +393,29 @@ OS language implies memory and communication isolation.
 ### Goal
 Actions are governed by explicit capabilities rather than only external policy layers.
 
-Status: in progress.
+Status: done.
 
 ### Add
-- [ ] Capability model for processes / agents / workers
-- [ ] Capability types, e.g.:
-  - [ ] read_graph
-  - [ ] write_graph
-  - [ ] send_message
-  - [ ] spawn_process
-  - [ ] invoke_tool
-  - [ ] read_security_scope
-  - [ ] project_view
-- [ ] approve_action
+- [x] Capability model for processes / agents / workers
+- [x] Capability types, e.g.:
+  - [x] read_graph
+  - [x] write_graph
+  - [x] send_message
+  - [x] spawn_process
+  - [x] invoke_tool
+  - [x] read_security_scope
+  - [x] project_view
+- [x] approve_action
 - [x] Capability checks at execution boundaries
-- [ ] Deny / allow / require-approval outcomes
-- [ ] Capability inheritance for child processes
-- [ ] Capability revocation support
-- [ ] Audit trail for capability decisions
+- [x] Deny / allow / require-approval outcomes
+- [x] Capability inheritance for child processes
+- [x] Capability revocation support
+- [x] Audit trail for capability decisions
 
 ### Done when
-- [ ] Any significant action can be capability-checked
-- [ ] Capability denials are durable and inspectable
-- [ ] Child processes do not automatically get everything
+- [x] Any significant action can be capability-checked
+- [x] Capability denials are durable and inspectable
+- [x] Child processes do not automatically get everything
 
 ### Why it matters
 This is the kernel boundary for an AI OS.
@@ -664,7 +664,7 @@ This is essential if Kogwistar is serious about evented, replayable system behav
 1. [x] Slice 1 — Lane Messaging / Native IPC
 2. [x] Slice 2 — Universal Process Model
 3. [ ] Slice 3 — Namespaces and Isolation
-4. [ ] Slice 4 — Capability Kernel / Permissions
+4. [x] Slice 4 — Capability Kernel / Permissions
 5. [ ] Slice 11 — Operator Views / System Introspection (internal/admin-only first)
 
 ## Mid-term order

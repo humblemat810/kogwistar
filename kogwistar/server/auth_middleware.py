@@ -307,6 +307,11 @@ def get_current_capabilities() -> set[str]:
     return out
 
 
+def has_explicit_capabilities_claim() -> bool:
+    claims = claims_ctx.get() or {}
+    return "capabilities" in claims or "caps" in claims
+
+
 def get_current_subject() -> str | None:
     claims = claims_ctx.get() or {}
     sub = str(claims.get("sub") or "").strip()
@@ -481,6 +486,7 @@ __all__ = [
     "get_current_subject",
     "get_current_user_id",
     "get_current_capabilities",
+    "has_explicit_capabilities_claim",
     "get_current_agent_id",
     "require_namespace",
     "require_security_scope",

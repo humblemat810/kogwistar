@@ -63,6 +63,17 @@ class ResumeRunIn(BaseModel):
     user_id: str | None = None
 
 
+class CapabilityApproveIn(BaseModel):
+    action: str = Field(min_length=1)
+    capabilities: list[str] | str = Field(default_factory=list)
+    subject: str | None = None
+
+
+class CapabilityRevokeIn(BaseModel):
+    capability: str = Field(min_length=1)
+    subject: str | None = None
+
+
 class ResourceSnapshotOut(BaseModel):
     scheduler: dict[str, Any]
     runs: dict[str, Any]
@@ -258,6 +269,42 @@ def create_runtime_router(
         require_namespace(runtime_namespaces)
         try:
             return get_service_r().resource_snapshot()
+        except Exception as exc:  # noqa: BLE001
+            raise _as_http_error(exc)
+
+    @router.get("/capabilities")
+    def get_capabilities_snapshot():
+        require_role("ro")
+        require_namespace(runtime_namespaces)
+        try:
+            return get_service_r().capability_snapshot()
+        except Exception as exc:  # noqa: BLE001
+            raise _as_http_error(exc)
+
+    @router.post("/capabilities/approve")
+    def approve_capability(inp: CapabilityApproveIn):
+        require_role("rw")
+        require_namespace(runtime_namespaces)
+        try:
+            payload = get_service_r().capability_approve(
+                action=inp.action,
+                capabilities=inp.capabilities,
+                subject=inp.subject,
+            )
+            return JSONResponse(status_code=202, content=payload)
+        except Exception as exc:  # noqa: BLE001
+            raise _as_http_error(exc)
+
+    @router.post("/capabilities/revoke")
+    def revoke_capability(inp: CapabilityRevokeIn):
+        require_role("rw")
+        require_namespace(runtime_namespaces)
+        try:
+            payload = get_service_r().capability_revoke(
+                capability=inp.capability,
+                subject=inp.subject,
+            )
+            return JSONResponse(status_code=202, content=payload)
         except Exception as exc:  # noqa: BLE001
             raise _as_http_error(exc)
 

@@ -14,6 +14,7 @@ import json
 import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, Optional, TypeVar, Tuple
+from fastapi import HTTPException
 
 
 from .models import ConversationEdge
@@ -23,6 +24,7 @@ from .tool_registry import ToolReceipt
 from .models import BaseToolResult, ConversationNode
 from ..engine_core.models import Grounding, MentionVerification, Span
 from .policy import get_chat_tail
+from ..server.auth_middleware import get_current_capabilities, has_explicit_capabilities_claim
 
 if TYPE_CHECKING:
     from .models import MetaFromLastSummary
@@ -87,6 +89,22 @@ class ToolRunner:
         orchestrator: ConversationOrchestrator | None = None,
     ) -> Tuple[T, str]:
         """Execute a tool handler and record tool_call/tool_result nodes."""
+        required_capability = str(kwargs.get("capability") or "").strip().lower()
+        if required_capability:
+            current_caps = get_current_capabilities()
+            if not current_caps and not has_explicit_capabilities_claim():
+                current_caps = {
+                    "invoke_tool",
+                    required_capability,
+                }
+            if required_capability not in current_caps and "invoke_tool" not in current_caps:
+                raise HTTPException(
+                    status_code=403,
+                    detail=(
+                        f"Forbidden: tool '{tool_name}' requires capability "
+                        f"'{required_capability}'"
+                    ),
+                )
         try:
             last_node = get_chat_tail(self.engine, conversation_id=conversation_id)
         except Exception as _e:
