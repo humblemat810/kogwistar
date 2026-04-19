@@ -266,3 +266,78 @@ def test_run_scheduler_preemptive_pause_is_request_only() -> None:
     assert out["pause_state"] == "requested"
     assert seen == ["started"]
     release.set()
+
+
+def test_run_scheduler_high_priority_can_finish_before_low_after_cooperative_block() -> None:
+    sched = RunScheduler(max_active=1, max_queue=8)
+    timeline: list[str] = []
+    order: list[str] = []
+    timeline_lock = threading.Lock()
+    switch_lock = threading.Lock()
+    allow_low_finish = False
+
+    low_started = threading.Event()
+    low_paused = threading.Event()
+    high_finished = threading.Event()
+    low_finished = threading.Event()
+
+    def _record(event: str) -> None:
+        with timeline_lock:
+            timeline.append(event)
+
+    def _read_switch() -> bool:
+        with switch_lock:
+            return allow_low_finish
+
+    def _write_switch(value: bool) -> None:
+        nonlocal allow_low_finish
+        with switch_lock:
+            allow_low_finish = value
+
+    def _low_run() -> None:
+        _record("low.started")
+        low_started.set()
+        if not _read_switch():
+            _record("low.blocked")
+            sched.mark_paused("low-run")
+            low_paused.set()
+            return
+        _record("low.resumed")
+        order.append("low")
+        _record("low.finished")
+        low_finished.set()
+
+    def _high_run() -> None:
+        _record("high.started")
+        order.append("high")
+        _record("high.finished")
+        high_finished.set()
+
+    low_submit = sched.submit(
+        run_id="low-run",
+        priority_class="background",
+        start_fn=_low_run,
+    )
+    assert low_submit["admission"] == "accepted"
+    assert low_started.wait(timeout=5.0)
+    assert low_paused.wait(timeout=5.0)
+
+    high_submit = sched.submit(
+        run_id="high-run",
+        priority_class="latency-sensitive",
+        start_fn=_high_run,
+    )
+    assert high_submit["admission"] == "accepted"
+    assert high_finished.wait(timeout=5.0)
+
+    _write_switch(True)
+    sched.resume("low-run")
+    low_resume = sched.submit(
+        run_id="low-run",
+        priority_class="background",
+        start_fn=_low_run,
+    )
+    assert low_resume["admission"] == "accepted"
+    assert low_finished.wait(timeout=5.0)
+    assert order == ["high", "low"]
+    assert timeline.index("low.blocked") < timeline.index("high.started")
