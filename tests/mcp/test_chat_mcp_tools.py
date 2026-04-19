@@ -92,7 +92,7 @@ def _configure_server(
     answer_runner,
     runtime_runner=None,
 ):
-    registry = RunRegistry(workflow_engine.meta_sqlite)
+    registry = RunRegistry(conversation_engine.meta_sqlite)
     service = ChatRunService(
         get_knowledge_engine=lambda: engine,
         get_conversation_engine=lambda: conversation_engine,
@@ -266,7 +266,69 @@ async def test_mcp_chat_tool_visibility_by_namespace(monkeypatch, engine_triplet
         assert "workflow.design_undo" not in names
         assert "workflow.run_checkpoint_get" in names
         assert "workflow.run_replay" in names
+        assert "workflow.process_table" in names
+        assert "workflow.operator_inbox" in names
+        assert "workflow.blocked_runs" in names
+        assert "workflow.process_timeline" in names
         assert "conversation.ask" not in names
+
+
+@pytest.mark.asyncio
+async def test_mcp_workflow_process_views(monkeypatch, engine_triplet):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+
+    service.run_registry.create_run(
+        run_id="run-process-1",
+        conversation_id="conv-1",
+        workflow_id="wf-1",
+        user_id="user-1",
+        user_turn_node_id="turn-1",
+        status="running",
+    )
+    service.run_registry.append_event(
+        "run-process-1", "run.stage", {"stage": "execute"}
+    )
+    service.run_registry.update_status(
+        "run-process-1",
+        status="suspended",
+        started=True,
+    )
+
+    with _claims("ro", "workflow"):
+        processes = _structured(
+            await server.mcp.call_tool("workflow.process_table", {"limit": 10})
+        )["processes"]
+        assert processes
+        assert processes[0]["process_id"] == "run-process-1"
+        assert processes[0]["process_kind"] == "workflow_run"
+
+        blocked = _structured(
+            await server.mcp.call_tool("workflow.blocked_runs", {"limit": 10})
+        )["processes"]
+        assert any(item["process_id"] == "run-process-1" for item in blocked)
+
+        timeline = _structured(
+            await server.mcp.call_tool(
+                "workflow.process_timeline", {"run_id": "run-process-1", "limit": 10}
+            )
+        )
+        assert timeline["run_id"] == "run-process-1"
+        assert timeline["events"]
+
+
+def test_chat_run_service_execution_meta_comes_from_conversation_engine(
+    monkeypatch, engine_triplet
+):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+
+    assert service._execution_meta_store() is conversation_engine.meta_sqlite
+    assert service.run_registry.meta_store is conversation_engine.meta_sqlite
 
 
 @pytest.mark.asyncio

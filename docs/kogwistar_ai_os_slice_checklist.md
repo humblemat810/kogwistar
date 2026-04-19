@@ -21,6 +21,203 @@ The goal is to make Kogwistar the native environment for:
 
 ---
 
+## Core Invariants
+
+These invariants must hold across all slices.
+
+### 1. Process truth reuses existing runtime truth
+
+Do **not** introduce a second execution truth.
+
+- `workflow_run` = authoritative process truth
+- `workflow_step_exec` = authoritative process execution event truth
+- `workflow_checkpoint` = authoritative process checkpoint truth
+- any future “process table” is a **projection** over existing runtime truth
+
+Implication:
+- no separate top-level `process` entity as a second authoritative execution record
+- “process” is an OS-facing model layered on existing runtime truth
+
+### 2. Lane messages are first-class authoritative graph entities
+
+Lane/system messages are **authoritative graph entities**, not mere serving projections.
+
+Authoritative truth includes:
+- message existence
+- sender / recipient / inbox membership
+- conversation linkage
+- reply linkage
+- run / step linkage when applicable
+- lifecycle transitions as authoritative events
+
+`meta_sql` stores only **assisting projections**, such as:
+- per-inbox sequence indexes
+- claimable / leased message views
+- newest/latest lookup helpers
+- operator query helpers
+- unread / failed / dead-letter summaries
+
+Implication:
+- `meta_sql` MUST NOT become hidden message truth
+- graph/event truth must remain sufficient to rebuild assisting projections
+
+### 3. IPC truth is graph/event-authoritative; serving views are derived
+
+Lane-message correctness must not depend on serving projection freshness.
+
+Workers consume from authoritative message truth and/or authoritative lifecycle state, aided by `meta_sql` indexes.
+
+Derived views may include:
+- inbox newest-first views
+- queue depth summaries
+- operator dashboards
+- SSE-friendly serving projections
+
+Derived views MUST be disposable and rebuildable.
+
+### 4. Namespace meanings are distinct
+
+Do **not** overload one namespace concept for all purposes.
+
+There are three separate meanings:
+
+- **storage namespace**
+  - existing storage / view partitioning (`scoped_namespace`-style concept)
+- **execution namespace**
+  - runtime / branch-safe execution scoping
+- **security scope**
+  - tenant / visibility / permission boundary
+
+Implication:
+- storage partitioning is not automatically a security boundary
+- execution branch scoping is not automatically a tenant boundary
+
+### 5. Checkpoint truth already exists and must be reused
+
+Do **not** reinvent checkpoint/resume from scratch.
+
+The OS-facing checkpoint/resume model must layer on the existing runtime checkpoint truth.
+
+What must be formalized instead:
+- persisted vs ephemeral state
+- resume keys
+- compatibility rules across design/runtime evolution
+
+### 6. Operator surfaces must not outrun visibility controls
+
+Until isolation / capabilities are implemented, operator views are **admin/internal only**.
+
+Implication:
+- early dashboards / SSE / inspection surfaces must be clearly labeled internal
+- default public/user-facing introspection should wait for visibility filtering
+
+---
+
+## IPC Contract (Authoritative)
+
+This contract must be written down before implementation continues.
+
+### Delivery semantics
+- at-least-once delivery
+- duplicate delivery is possible under retry / lease expiry / recovery
+- consumers/handlers MUST be idempotent
+
+### Ordering semantics
+- ordering guarantee is **per inbox**, not global
+- per-inbox order is represented by authoritative sequence semantics
+- assisting projections may materialize the order for fast scans
+
+### Claim / lease semantics
+- messages may be claimed with a lease
+- leases may expire
+- expired leases may be stolen / reclaimed
+- lease steal must be explicit and auditable
+
+### Lifecycle semantics
+At minimum:
+- pending
+- claimed
+- completed / acked
+- failed
+- cancelled
+- requeued
+- dead-lettered (recommended)
+
+### Recovery semantics
+- authoritative message truth must allow projection rebuild
+- orphaned claims must be repairable
+- duplicate redelivery after crash/restart must be expected
+
+### Truth boundary
+- authoritative: message entities + authoritative lifecycle events
+- assisting projection: dequeue indexes, seq scans, dashboards, convenience views
+
+---
+
+## Checkpoint / Resume Contract (Authoritative)
+
+Checkpoint/resume slices must respect existing runtime truth.
+
+### Persisted vs ephemeral
+This boundary must be explicit.
+
+Persisted examples:
+- run identity
+- token state
+- suspended location
+- join/barrier/runtime coordination state that must survive restart
+- checkpoint payloads needed for semantic continuity
+
+Ephemeral examples:
+- injected runtime deps
+- process-local helper objects
+- in-memory caches that can be reconstructed
+
+### Resume keys
+Resume requires explicit keys/identity sufficient to continue safely.
+At minimum, define and preserve the existing runtime resume identity contract.
+
+### Compatibility rules
+When workflow design or runtime shape changes:
+- either old checkpoints are migrated explicitly
+- or they are marked non-resumable explicitly
+- silent best-effort resume is not acceptable when semantics changed incompatibly
+
+### Failure mode requirement
+Invalid-after-design-change resume must fail loudly and inspectably, not silently drift.
+
+---
+
+## Acceptance Matrix (Must Exist Early)
+
+Before later slices build on these primitives, acceptance coverage must exist for:
+
+### Messaging
+- [ ] duplicate delivery is tolerated correctly
+- [ ] lease expiry and lease steal behave correctly
+- [ ] ack / requeue are idempotent
+- [ ] per-inbox ordering remains correct
+- [ ] recovery after worker crash preserves message truth
+- [ ] assisting projections rebuild correctly from authoritative truth
+
+### Isolation / visibility
+- [ ] cross-security-scope message send deny
+- [ ] cross-security-scope read deny
+- [ ] shared-memory / shared-inbox cases work only when explicit
+
+### Checkpoint / resume
+- [ ] resume after restart works when compatible
+- [ ] invalid-after-design-change resume fails safely
+- [ ] join/fanout restore behaves correctly
+- [ ] persisted vs ephemeral state boundary is honored
+
+### Migration / compatibility
+- [ ] workflow/runtime artifacts remain compatible with the process projection model
+- [ ] lane-message assisting projections can be rebuilt/migrated safely
+- [ ] operator views do not become a second truth source
+
+---
+
 ## Maturity Model
 
 ### Stage 0 — Strong substrate
@@ -35,7 +232,7 @@ Already broadly present in direction:
 ### Stage 1 — OS-shaped substrate
 Needs:
 - first-class messaging across lanes
-- process identity and lifecycle
+- process identity and lifecycle projection
 - operator views
 - namespace / isolation semantics
 
@@ -43,7 +240,7 @@ Needs:
 Needs:
 - capability kernel
 - service supervision
-- checkpoint / resume / recovery model
+- checkpoint / resume / recovery contract formalization
 - policy-driven scheduling and quotas
 - stable syscall-like API surface
 
@@ -63,54 +260,69 @@ Needs:
 ## Slice 1 — Lane Messaging / Native IPC
 
 ### Goal
-Foreground, background workers, tools, agents, and supervisors communicate through first-class system messages.
+Foreground, background workers, tools, agents, and supervisors communicate through first-class authoritative system messages.
 
 ### Add
-- [ ] Message node type for lane/system messages
+- [ ] First-class authoritative lane message entity family
 - [ ] Inbox/outbox concept per worker / process / agent
-- [ ] Message edges:
+- [ ] Authoritative message relations:
   - [ ] `sent_by`
   - [ ] `sent_to`
   - [ ] `reply_to`
   - [ ] `in_conversation`
   - [ ] `about_run`
   - [ ] `about_step`
-- [ ] Durable message lifecycle states:
+  - [ ] `in_inbox` or equivalent authoritative inbox membership
+- [ ] Authoritative lifecycle events / state transitions:
   - [ ] pending
   - [ ] claimed
-  - [ ] completed
+  - [ ] completed / acked
   - [ ] failed
   - [ ] cancelled
-- [ ] Projection for fast inbox dequeue / newest-first access
+  - [ ] requeued
+  - [ ] dead-lettered (recommended)
 - [ ] Correlation IDs for request/reply chains
+- [ ] Lease expiry / lease steal contract
+- [ ] Per-inbox ordering contract with sequence semantics
+- [ ] `meta_sql` assisting projections for:
+  - [ ] fast inbox dequeue / newest-first access
+  - [ ] claimable views
+  - [ ] lease expiry scans
+  - [ ] failed/dead-letter summaries
 - [ ] SSE / operator visibility for lane messages
 
 ### Done when
-- [ ] A foreground path can send a message to a background worker
-- [ ] A worker can claim, process, and reply
-- [ ] The full conversation + run + reply chain is queryable
-- [ ] Recovery is possible from durable state
+- [ ] A foreground path can send an authoritative message to a background worker
+- [ ] A worker can claim, process, ack, and reply
+- [ ] Duplicate delivery does not corrupt correctness
+- [ ] Lease steal / recovery is test-covered
+- [ ] The full conversation + run + reply chain is queryable from authoritative graph truth
+- [ ] `meta_sql` projections can be rebuilt from authoritative truth
 
 ### Why it matters
-This is the IPC layer. Without it, Kogwistar feels like a framework with jobs. With it, it starts feeling like a system.
+This is the IPC layer. Without it, Kogwistar feels like a framework with jobs. With it, communication becomes part of the substrate itself.
 
 ---
 
 ## Slice 2 — Universal Process Model
 
 ### Goal
-Agents, workers, runs, and services become explicit process-like entities rather than ad hoc runtime concepts.
+Agents, workers, runs, and services become explicit OS-facing process-like views without introducing a second execution truth.
 
 ### Add
-- [ ] Process node type
-- [ ] Process kinds:
+- [ ] Explicit mapping:
+  - [ ] `workflow_run` => process truth
+  - [ ] `workflow_step_exec` => process execution event truth
+  - [ ] `workflow_checkpoint` => process checkpoint truth
+- [ ] Process projection / operator-facing process table
+- [ ] Process kinds (projection/model classification), e.g.:
   - [ ] workflow run
   - [ ] agent
   - [ ] background worker
   - [ ] service / daemon
   - [ ] tool execution
-- [ ] Parent-child process relationships
-- [ ] Process states:
+- [ ] Parent-child process relationships where they can be derived truthfully
+- [ ] Process states (projected from existing truth), e.g.:
   - [ ] created
   - [ ] runnable
   - [ ] waiting
@@ -119,9 +331,10 @@ Agents, workers, runs, and services become explicit process-like entities rather
   - [ ] completed
   - [ ] failed
   - [ ] terminated
-- [ ] Process metadata:
-  - [ ] owner / tenant
-  - [ ] namespace
+- [ ] Process metadata / serving fields:
+  - [ ] owner / security scope
+  - [ ] storage namespace
+  - [ ] execution namespace
   - [ ] priority class
   - [ ] policy class
   - [ ] creation time
@@ -129,10 +342,10 @@ Agents, workers, runs, and services become explicit process-like entities rather
 - [ ] Process event stream / registry projection
 
 ### Done when
-- [ ] Every long-lived execution can be represented as a process entity
-- [ ] Child process spawn is explicit
+- [ ] Every long-lived execution can be represented through the process model without inventing a second truth
+- [ ] Child process spawn is explicit where semantically real
 - [ ] Waiting-on relationships are visible
-- [ ] Operators can inspect current process state
+- [ ] Operators can inspect current process state through a projection over runtime truth
 
 ### Why it matters
 This is the foundation for “agent OS” language. A system without a process model is not OS-like enough.
@@ -142,22 +355,27 @@ This is the foundation for “agent OS” language. A system without a process m
 ## Slice 3 — Namespaces and Isolation
 
 ### Goal
-Kogwistar can isolate memory, communication, and process visibility between tenants / agents / workspaces.
+Kogwistar can isolate memory, communication, and process visibility between tenants / agents / workspaces without overloading existing namespace terms.
 
 ### Add
-- [ ] Namespace model for graph regions
-- [ ] Tenant / workspace / project scopes
+- [ ] Explicit distinction between:
+  - [ ] storage namespace
+  - [ ] execution namespace
+  - [ ] security scope
+- [ ] Security scope model for tenant / workspace / project isolation
 - [ ] Agent-private memory areas
 - [ ] Shared memory areas
-- [ ] Cross-namespace projection / pin / ref rules
-- [ ] Message routing restrictions across namespaces
+- [ ] Cross-scope projection / pin / ref rules
+- [ ] Message routing restrictions across security scopes
 - [ ] Default visibility rules for reads/writes
+- [ ] Clear mapping rules between storage partitioning and security scope
 
 ### Done when
 - [ ] An agent can have private state not globally visible
 - [ ] Shared memory can be explicit, not accidental
 - [ ] Cross-tenant leakage is structurally harder
-- [ ] Message delivery respects namespace boundaries
+- [ ] Message delivery respects security scope boundaries
+- [ ] Existing storage namespace semantics remain intact
 
 ### Why it matters
 OS language implies memory and communication isolation.
@@ -177,7 +395,7 @@ Actions are governed by explicit capabilities rather than only external policy l
   - [ ] send_message
   - [ ] spawn_process
   - [ ] invoke_tool
-  - [ ] read_namespace
+  - [ ] read_security_scope
   - [ ] project_view
   - [ ] approve_action
 - [ ] Capability checks at execution boundaries
@@ -229,10 +447,12 @@ An operating system needs a usable system surface, not only internal modules.
 ## Slice 6 — Checkpoint / Suspend / Resume
 
 ### Goal
-Processes can pause and continue later with durable continuity.
+Processes can pause and continue later with durable continuity by reusing existing runtime checkpoint truth.
 
 ### Add
-- [ ] Checkpoint model for process state
+- [ ] Formalized checkpoint contract over existing runtime truth
+- [ ] Explicit persisted vs ephemeral state rules
+- [ ] Explicit resume identity / key contract
 - [ ] Suspend semantics
 - [ ] Resume semantics
 - [ ] Waiting reasons:
@@ -243,11 +463,14 @@ Processes can pause and continue later with durable continuity.
   - [ ] dependency wait
 - [ ] Restart / resume from durable state
 - [ ] Replay compatibility rules
+- [ ] Design-change compatibility rules
 
 ### Done when
 - [ ] A process can pause without losing semantic continuity
 - [ ] A worker can resume work after restart
 - [ ] Approval-blocked flows can resume correctly later
+- [ ] Invalid-after-design-change resumes fail safely and inspectably
+- [ ] Persisted vs ephemeral boundaries are test-covered
 
 ### Why it matters
 This is the step from workflow execution into process runtime.
@@ -381,11 +604,13 @@ Kogwistar becomes operable like a system, not just inspectable by ad hoc graph q
 - [ ] Service health dashboard
 - [ ] Budget / quota dashboard
 - [ ] Event timeline / trace explorer
+- [ ] Internal/admin-only visibility guard for early versions
 
 ### Done when
 - [ ] An operator can answer “what is happening now?” quickly
 - [ ] Stuck flows can be located without code diving
 - [ ] System state is legible
+- [ ] Early operator surfaces are not accidentally user-facing before isolation/capabilities land
 
 ### Why it matters
 Operating systems need operator ergonomics, not only correctness.
@@ -420,9 +645,9 @@ This is essential if Kogwistar is serious about evented, replayable system behav
 ## Near-term order
 1. [ ] Slice 1 — Lane Messaging / Native IPC
 2. [ ] Slice 2 — Universal Process Model
-3. [ ] Slice 11 — Operator Views / System Introspection
-4. [ ] Slice 3 — Namespaces and Isolation
-5. [ ] Slice 4 — Capability Kernel / Permissions
+3. [ ] Slice 3 — Namespaces and Isolation
+4. [ ] Slice 4 — Capability Kernel / Permissions
+5. [ ] Slice 11 — Operator Views / System Introspection (internal/admin-only first)
 
 ## Mid-term order
 6. [ ] Slice 6 — Checkpoint / Suspend / Resume
@@ -466,4 +691,3 @@ It should aim to become:
 > the AI-native operating layer that manages processes, messages, memory, tools, and governance on top of Linux / containers / cloud infrastructure.
 
 That is both ambitious and realistic.
-

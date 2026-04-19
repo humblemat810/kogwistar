@@ -149,7 +149,7 @@ wisdom_gq: _LazyResource[GraphQuery] = _LazyResource(
     lambda: GraphQuery(wisdom_engine.get()), "wisdom_graph_query"
 )
 run_registry: _LazyResource[RunRegistry] = _LazyResource(
-    lambda: RunRegistry(workflow_engine.get().meta_sqlite),
+    lambda: RunRegistry(conversation_engine.get().meta_sqlite),
     "chat_run_registry",
 )
 

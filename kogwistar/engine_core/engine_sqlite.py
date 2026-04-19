@@ -1792,6 +1792,62 @@ class EngineSQLite:
             "terminal": status in {"succeeded", "failed", "cancelled"},
         }
 
+    def list_server_runs(
+        self,
+        *,
+        status: str | None = None,
+        workflow_id: str | None = None,
+        conversation_id: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        sql = [
+            "SELECT run_id, conversation_id, workflow_id, user_id, user_turn_node_id,",
+            "       assistant_turn_node_id, status, cancel_requested, result_json,",
+            "       error_json, created_at_ms, updated_at_ms, started_at_ms, finished_at_ms",
+            "FROM server_runs",
+        ]
+        clauses: list[str] = []
+        params: list[Any] = []
+        if status is not None:
+            clauses.append("status = ?")
+            params.append(str(status))
+        if workflow_id is not None:
+            clauses.append("workflow_id = ?")
+            params.append(str(workflow_id))
+        if conversation_id is not None:
+            clauses.append("conversation_id = ?")
+            params.append(str(conversation_id))
+        if clauses:
+            sql.append("WHERE " + " AND ".join(clauses))
+        sql.append("ORDER BY created_at_ms DESC, run_id DESC")
+        sql.append("LIMIT ?")
+        params.append(int(limit))
+        with self.connect() as conn:
+            rows = conn.execute("\n".join(sql), tuple(params)).fetchall()
+        out = []
+        for row in rows:
+            status_val = str(row[6])
+            out.append(
+                {
+                    "run_id": str(row[0]),
+                    "conversation_id": str(row[1]),
+                    "workflow_id": str(row[2]),
+                    "user_id": None if row[3] is None else str(row[3]),
+                    "user_turn_node_id": None if row[4] is None else str(row[4]),
+                    "assistant_turn_node_id": None if row[5] is None else str(row[5]),
+                    "status": status_val,
+                    "cancel_requested": bool(int(row[7] or 0)),
+                    "result": self._decode_run_json(row[8]),
+                    "error": self._decode_run_json(row[9]),
+                    "created_at_ms": int(row[10]),
+                    "updated_at_ms": int(row[11]),
+                    "started_at_ms": None if row[12] is None else int(row[12]),
+                    "finished_at_ms": None if row[13] is None else int(row[13]),
+                    "terminal": status_val in {"succeeded", "failed", "cancelled"},
+                }
+            )
+        return out
+
     def list_server_run_events(
         self, run_id: str, *, after_seq: int = 0, limit: int = 500
     ) -> list[dict[str, Any]]:

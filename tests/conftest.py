@@ -1230,6 +1230,10 @@ def pg_dsn(pg_container: Optional[PostgresContainer]) -> Optional[str]:
     """
     SQLAlchemy DSN for the running test container.
     """
+    for env_name in ("GKE_PG_DSN", "PG_DSN", "DATABASE_URL"):
+        env_value = os.getenv(env_name)
+        if env_value:
+            return env_value
     if pg_container is None:
         return None
     url = sa.engine.make_url(pg_container.get_connection_url())

@@ -102,7 +102,7 @@ def _configure_server(
     answer_runner,
     runtime_runner=None,
 ):
-    registry = RunRegistry(workflow_engine.meta_sqlite)
+    registry = RunRegistry(conversation_engine.meta_sqlite)
     service = ChatRunService(
         get_knowledge_engine=lambda: engine,
         get_conversation_engine=lambda: conversation_engine,
@@ -192,7 +192,7 @@ def test_document_upsert_tree_uses_document_graph_extraction_entrypoint(
 ):
     engine, conversation_engine, workflow_engine = engine_triplet
     _configure_server(
-        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+        monkeypatch, engine, conversation_engine, workflow_engine, _debug_rag_runner
     )
 
     captured: dict[str, object] = {}
@@ -289,6 +289,94 @@ def _success_runner(req: AnswerRunRequest) -> dict:
             embedding=(
                 embedding.tolist() if hasattr(embedding, "tolist") else embedding
             ),
+        )
+    )
+    req.prev_turn_meta_summary.prev_node_char_distance_from_last_summary += len(
+        assistant_text
+    )
+    req.prev_turn_meta_summary.prev_node_distance_from_last_summary += 1
+    req.prev_turn_meta_summary.tail_turn_index += 1
+    return {
+        "assistant_turn_node_id": assistant_turn_node_id,
+        "assistant_text": assistant_text,
+        "workflow_status": "succeeded",
+    }
+
+
+def _debug_rag_runner(req: AnswerRunRequest) -> dict:
+    req.publish("run.stage", {"stage": "retrieve"})
+    req.publish(
+        "reasoning.summary",
+        {"stage": "retrieve", "summary": "Retrieving candidate evidence."},
+    )
+    req.publish("run.stage", {"stage": "draft_answer"})
+    req.publish(
+        "reasoning.summary",
+        {"stage": "draft_answer", "summary": "Drafting the answer."},
+    )
+    assistant_text = "\n".join(
+        [
+            "Debug RAG response",
+            "",
+            f"Question: {req.user_text}",
+            "",
+            "Retrieved nodes:",
+            "1. Alpha node [kg-alpha]",
+            "   Alpha summary for debug retrieval.",
+            "2. Beta node [kg-beta]",
+            "   Beta summary for debug retrieval.",
+        ]
+    )
+    assistant_turn_node_id = f"assistant|{uuid.uuid4().hex}"
+    embedding = req.conversation_engine.iterative_defensive_emb(assistant_text)
+    req.conversation_engine.write.add_node(
+        ConversationNode(
+            id=assistant_turn_node_id,
+            label="Assistant turn",
+            type="entity",
+            summary=assistant_text,
+            conversation_id=req.conversation_id,
+            role="assistant",  # type: ignore[arg-type]
+            turn_index=req.prev_turn_meta_summary.tail_turn_index + 1,
+            properties={"content": assistant_text, "entity_type": "assistant_turn"},
+            mentions=[Grounding(spans=[Span.from_dummy_for_conversation()])],
+            metadata={
+                "level_from_root": 0,
+                "entity_type": "assistant_turn",
+                "in_conversation_chain": True,
+                "in_ui_chain": True,
+            },
+            domain_id=None,
+            canonical_entity_id=None,
+            embedding=(
+                embedding.tolist() if hasattr(embedding, "tolist") else embedding
+            ),
+        )
+    )
+    req.conversation_engine.write.add_node(
+        ConversationNode(
+            id=f"knowledge_reference|{uuid.uuid4().hex}",
+            label="Knowledge reference",
+            type="reference_pointer",
+            summary="Alpha summary for debug retrieval.",
+            conversation_id=req.conversation_id,
+            role="system",  # type: ignore[arg-type]
+            turn_index=None,
+            properties={
+                "target_namespace": "kg",
+                "refers_to_collection": "nodes",
+                "target_id": "kg-alpha",
+                "entity_type": "knowledge_reference",
+            },
+            mentions=[Grounding(spans=[Span.from_dummy_for_conversation()])],
+            metadata={
+                "level_from_root": 0,
+                "entity_type": "knowledge_reference",
+                "in_conversation_chain": False,
+            },
+            domain_id=None,
+            canonical_entity_id=None,
+            embedding=None,
         )
     )
     req.prev_turn_meta_summary.prev_node_char_distance_from_last_summary += len(
@@ -526,7 +614,9 @@ def test_chat_rest_submit_and_sse(monkeypatch, engine_triplet):
 
 def test_chat_rest_events_poll_returns_run_events(monkeypatch, engine_triplet):
     engine, conversation_engine, workflow_engine = engine_triplet
-    _configure_server(monkeypatch, engine, conversation_engine, workflow_engine, None)
+    _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
     with TestClient(server.app) as client:
         rw_headers = _token_header(client, role="rw", ns="conversation")
         ro_headers = _token_header(client, role="ro", ns="conversation")
@@ -619,7 +709,7 @@ def test_chat_rest_debug_rag_workflow_returns_seeded_knowledge(monkeypatch, engi
         summary="Beta summary for debug retrieval.",
     )
     _configure_server(
-        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+        monkeypatch, engine, conversation_engine, workflow_engine, _debug_rag_runner
     )
     with TestClient(server.app) as client:
         rw_headers = _token_header(client, role="rw", ns="conversation")

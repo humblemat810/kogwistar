@@ -559,6 +559,10 @@ def test_backend_contract_meta_store_and_run_registry(
     )
     assert updated["status"] == "succeeded"
     assert updated["terminal"] is True
+    runs = meta.list_server_runs(limit=10)
+    assert [row["run_id"] for row in runs] == ["run-1"]
+    assert runs[0]["workflow_id"] == "wf-1"
+    assert runs[0]["terminal"] is True
     meta.clear_workflow_design_projection(workflow_id="wf-1")
     assert meta.get_workflow_design_projection(workflow_id="wf-1") is None
     assert meta.get_named_projection("workflow_design", "wf-1") is None

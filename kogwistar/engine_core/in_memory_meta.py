@@ -951,6 +951,26 @@ class InMemoryMetaStore(LaneMessageMetaStoreMixin):
             "terminal": status in {"succeeded", "failed", "cancelled"},
         }
 
+    def list_server_runs(
+        self,
+        *,
+        status: str | None = None,
+        workflow_id: str | None = None,
+        conversation_id: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = list(self._state.server_runs.values())
+        if status is not None:
+            rows = [row for row in rows if str(row.status) == str(status)]
+        if workflow_id is not None:
+            rows = [row for row in rows if str(row.workflow_id) == str(workflow_id)]
+        if conversation_id is not None:
+            rows = [row for row in rows if str(row.conversation_id) == str(conversation_id)]
+        rows.sort(key=lambda row: (int(row.created_at_ms), str(row.run_id)))
+        rows = rows[: int(limit)]
+        return [self.get_server_run(str(row.run_id)) for row in rows if self.get_server_run(str(row.run_id)) is not None]
+
     def list_server_run_events(
         self, run_id: str, *, after_seq: int = 0, limit: int = 500
     ) -> list[dict[str, Any]]:

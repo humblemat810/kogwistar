@@ -1828,6 +1828,66 @@ class EnginePostgresMetaStore:
             "terminal": status in {"succeeded", "failed", "cancelled"},
         }
 
+    def list_server_runs(
+        self,
+        *,
+        status: str | None = None,
+        workflow_id: str | None = None,
+        conversation_id: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        schema = self.schema
+        clauses = []
+        params: dict[str, Any] = {"limit": int(limit)}
+        if status is not None:
+            clauses.append("status = :status")
+            params["status"] = str(status)
+        if workflow_id is not None:
+            clauses.append("workflow_id = :workflow_id")
+            params["workflow_id"] = str(workflow_id)
+        if conversation_id is not None:
+            clauses.append("conversation_id = :conversation_id")
+            params["conversation_id"] = str(conversation_id)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self.transaction() as conn:
+            rows = conn.execute(
+                sa.text(
+                    f"""
+                    SELECT run_id, conversation_id, workflow_id, user_id, user_turn_node_id,
+                           assistant_turn_node_id, status, cancel_requested, result_json,
+                           error_json, created_at_ms, updated_at_ms, started_at_ms, finished_at_ms
+                    FROM {schema}.server_runs
+                    {where}
+                    ORDER BY created_at_ms DESC, run_id DESC
+                    LIMIT :limit
+                    """
+                ),
+                params,
+            ).fetchall()
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            status_val = str(row[6])
+            out.append(
+                {
+                    "run_id": str(row[0]),
+                    "conversation_id": str(row[1]),
+                    "workflow_id": str(row[2]),
+                    "user_id": None if row[3] is None else str(row[3]),
+                    "user_turn_node_id": None if row[4] is None else str(row[4]),
+                    "assistant_turn_node_id": None if row[5] is None else str(row[5]),
+                    "status": status_val,
+                    "cancel_requested": bool(int(row[7] or 0)),
+                    "result": self._decode_run_json(row[8]),
+                    "error": self._decode_run_json(row[9]),
+                    "created_at_ms": int(row[10]),
+                    "updated_at_ms": int(row[11]),
+                    "started_at_ms": None if row[12] is None else int(row[12]),
+                    "finished_at_ms": None if row[13] is None else int(row[13]),
+                    "terminal": status_val in {"succeeded", "failed", "cancelled"},
+                }
+            )
+        return out
+
     def list_server_run_events(
         self, run_id: str, *, after_seq: int = 0, limit: int = 500
     ) -> list[dict[str, Any]]:

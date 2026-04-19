@@ -15,6 +15,7 @@ from typing import Any, Callable
 
 from kogwistar.conversation.models import ConversationNode
 from kogwistar.conversation.service import ConversationService
+from kogwistar.engine_core.models import Node
 
 from .chat_service_conversation_queries import _ConversationQueryService
 from .chat_service_run_execution import _RunExecutionService
@@ -369,6 +370,121 @@ class ChatRunService:
 
     def workflow_catalog_ops(self) -> list[dict[str, object]]:
         return self._workflow_design.workflow_catalog_ops()
+
+    def _execution_meta_store(self) -> Any:
+        conversation_engine = self._conversation_engine()
+        meta_store = getattr(conversation_engine, "meta_sqlite", None)
+        if meta_store is None:
+            raise AttributeError("conversation_engine does not expose meta_sqlite")
+        return meta_store
+
+    def list_process_table(
+        self,
+        *,
+        status: str | None = None,
+        workflow_id: str | None = None,
+        conversation_id: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        meta_store = self._execution_meta_store()
+        list_runs = getattr(meta_store, "list_server_runs", None)
+        runs = []
+        if callable(list_runs):
+            runs = list_runs(
+                status=status,
+                workflow_id=workflow_id,
+                conversation_id=conversation_id,
+                limit=limit,
+            )
+        out: list[dict[str, Any]] = []
+        for run in runs:
+            run_id = str(run.get("run_id") or "")
+            events = []
+            list_events = getattr(meta_store, "list_server_run_events", None)
+            if callable(list_events):
+                events = list_events(run_id, after_seq=0, limit=50)
+            last_event = events[-1] if events else None
+            status_val = str(run.get("status") or "")
+            out.append(
+                {
+                    "process_id": run_id,
+                    "process_kind": "workflow_run",
+                    "status": status_val,
+                    "workflow_id": run.get("workflow_id"),
+                    "conversation_id": run.get("conversation_id"),
+                    "user_id": run.get("user_id"),
+                    "user_turn_node_id": run.get("user_turn_node_id"),
+                    "assistant_turn_node_id": run.get("assistant_turn_node_id"),
+                    "created_at_ms": run.get("created_at_ms"),
+                    "updated_at_ms": run.get("updated_at_ms"),
+                    "started_at_ms": run.get("started_at_ms"),
+                    "finished_at_ms": run.get("finished_at_ms"),
+                    "terminal": bool(run.get("terminal")),
+                    "event_count": len(events),
+                    "last_event_type": None if last_event is None else last_event.get("event_type"),
+                    "last_event_seq": None if last_event is None else last_event.get("seq"),
+                    "owner": run.get("user_id"),
+                    "namespace": str(getattr(self._conversation_engine(), "namespace", "default") or "default"),
+                }
+            )
+        return out
+
+    def list_operator_inbox(
+        self,
+        *,
+        inbox_id: str | None = None,
+        status: str | None = None,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        meta_store = self._execution_meta_store()
+        list_fn = getattr(meta_store, "list_projected_lane_messages", None)
+        if not callable(list_fn):
+            return []
+        rows = list_fn(
+            namespace=str(
+                getattr(self._conversation_engine(), "namespace", "default") or "default"
+            ),
+            inbox_id=inbox_id,
+            status=status,
+        )
+        rows = rows[: int(limit)]
+        return [
+            {
+                "message_id": row.message_id,
+                "inbox_id": row.inbox_id,
+                "conversation_id": row.conversation_id,
+                "recipient_id": row.recipient_id,
+                "sender_id": row.sender_id,
+                "msg_type": row.msg_type,
+                "status": row.status,
+                "seq": row.seq,
+                "conversation_seq": row.conversation_seq,
+                "claimed_by": row.claimed_by,
+                "lease_until": row.lease_until,
+                "retry_count": row.retry_count,
+                "created_at": row.created_at,
+                "available_at": row.available_at,
+                "run_id": row.run_id,
+                "step_id": row.step_id,
+                "correlation_id": row.correlation_id,
+            }
+            for row in rows
+        ]
+
+    def list_blocked_runs(self, *, limit: int = 100) -> list[dict[str, Any]]:
+        rows = self.list_process_table(limit=limit)
+        blocked_statuses = {"blocked", "waiting", "suspended", "cancelling"}
+        out = [row for row in rows if str(row.get("status") or "") in blocked_statuses]
+        return out[: int(limit)]
+
+    def list_process_timeline(
+        self, *, run_id: str, after_seq: int = 0, limit: int = 200
+    ) -> list[dict[str, Any]]:
+        meta_store = self._execution_meta_store()
+        list_events = getattr(meta_store, "list_server_run_events", None)
+        if not callable(list_events):
+            return []
+        return list_events(str(run_id), after_seq=int(after_seq), limit=int(limit))
 
 
 __all__ = [

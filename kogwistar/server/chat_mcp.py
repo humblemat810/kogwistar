@@ -144,6 +144,55 @@ def build_workflow_mcp(
             "events": events,
         }
 
+    @tool_roles({role_ro, role_rw})
+    @require_ns({ns_workflow})
+    @mcp.tool(name="workflow.process_table")
+    def workflow_process_table(
+        status: str | None = None,
+        workflow_id: str | None = None,
+        conversation_id: str | None = None,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        return {
+            "processes": get_service().list_process_table(
+                status=status,
+                workflow_id=workflow_id,
+                conversation_id=conversation_id,
+                limit=limit,
+            )
+        }
+
+    @tool_roles({role_ro, role_rw})
+    @require_ns({ns_workflow})
+    @mcp.tool(name="workflow.operator_inbox")
+    def workflow_operator_inbox(
+        inbox_id: str | None = None, status: str | None = None, limit: int = 200
+    ) -> dict[str, Any]:
+        return {
+            "messages": get_service().list_operator_inbox(
+                inbox_id=inbox_id, status=status, limit=limit
+            )
+        }
+
+    @tool_roles({role_ro, role_rw})
+    @require_ns({ns_workflow})
+    @mcp.tool(name="workflow.blocked_runs")
+    def workflow_blocked_runs(limit: int = 100) -> dict[str, Any]:
+        return {"processes": get_service().list_blocked_runs(limit=limit)}
+
+    @tool_roles({role_ro, role_rw})
+    @require_ns({ns_workflow})
+    @mcp.tool(name="workflow.process_timeline")
+    def workflow_process_timeline(
+        run_id: str, after_seq: int = 0, limit: int = 200
+    ) -> dict[str, Any]:
+        return {
+            "run_id": run_id,
+            "events": get_service().list_process_timeline(
+                run_id=run_id, after_seq=after_seq, limit=limit
+            ),
+        }
+
     @tool_roles({role_rw})
     @require_ns({ns_workflow})
     @mcp.tool(name="workflow.design_node_upsert")
