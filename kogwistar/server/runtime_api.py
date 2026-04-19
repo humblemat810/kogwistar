@@ -349,6 +349,19 @@ def create_runtime_router(
         except Exception as exc:  # noqa: BLE001
             raise _as_http_error(exc)
 
+    @router.get("/lane/progress")
+    def get_lane_message_progress(
+        run_id: str | None = None, conversation_id: str | None = None, limit: int = 200
+    ):
+        require_role("ro")
+        require_namespace(runtime_namespaces)
+        try:
+            return get_service_r().lane_message_progress(
+                run_id=run_id, conversation_id=conversation_id, limit=limit
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise _as_http_error(exc)
+
     @router.get("/tools/audit")
     def get_tool_audit(conversation_id: str | None = None, limit: int = 200):
         require_role("ro")

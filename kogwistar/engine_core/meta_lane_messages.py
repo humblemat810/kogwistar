@@ -65,6 +65,10 @@ class LaneMessageMetaStoreMixin:
             namespace=str(namespace),
             conversation_id=str(conversation_id),
         )
+        inbox_tail = max(inbox_rows, key=lambda item: (item.seq, item.created_at), default=None)
+        conversation_tail = max(
+            conversation_rows, key=lambda item: (item.conversation_seq, item.created_at), default=None
+        )
         row = ProjectedLaneMessageRow(
             message_id=str(message_id),
             namespace=str(namespace),
@@ -86,6 +90,10 @@ class LaneMessageMetaStoreMixin:
             correlation_id=None if correlation_id is None else str(correlation_id),
             payload_json=payload_json,
             error_json=error_json,
+            prev_message_id=None if inbox_tail is None else str(inbox_tail.message_id),
+            next_message_id=None,
+            inbox_tail_message_id=str(message_id),
+            conversation_tail_message_id=str(message_id),
         )
         self._lane_message_insert_row(row=row)
 
@@ -174,6 +182,26 @@ class LaneMessageMetaStoreMixin:
                 lease_until=None,
                 retry_count=int(row.retry_count) + 1,
                 available_at=self._lane_message_now_epoch() + max(0, int(delay_seconds)),
+                error_json=row.error_json if error_json is None else str(error_json),
+            )
+        )
+
+    def dead_letter_projected_lane_message(
+        self,
+        *,
+        message_id: str,
+        claimed_by: str,
+        error_json: str | None = None,
+    ) -> None:
+        row = self._lane_message_get_row(message_id=str(message_id))
+        if row is None or row.claimed_by != str(claimed_by):
+            return
+        self._lane_message_update_row(
+            row=replace(
+                row,
+                status="dead-letter",
+                claimed_by=None,
+                lease_until=None,
                 error_json=row.error_json if error_json is None else str(error_json),
             )
         )

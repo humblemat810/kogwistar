@@ -316,6 +316,25 @@ class LaneMessagingService:
                 delay_seconds=int(delay_seconds),
             )
 
+    def dead_letter(
+        self,
+        *,
+        message_id: str,
+        claimed_by: str,
+        error: dict[str, Any] | None = None,
+    ) -> None:
+        dead_letter = getattr(self.engine.meta_sqlite, "dead_letter_projected_lane_message", None)
+        if callable(dead_letter):
+            dead_letter(
+                message_id=message_id,
+                claimed_by=claimed_by,
+                error_json=(
+                    json.dumps(error, sort_keys=True, separators=(",", ":"))
+                    if error is not None
+                    else None
+                ),
+            )
+
     def list_projected(
         self,
         *,

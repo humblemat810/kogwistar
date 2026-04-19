@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine, scoped_namespace
+from kogwistar.messaging.service import LaneMessagingService
 from kogwistar.server.auth_middleware import claims_ctx
 from tests._helpers.fake_backend import build_fake_backend
 
@@ -200,4 +201,103 @@ def test_lane_message_cross_scope_read_denied_unless_explicit_shared():
             assert shared_msg.message_id in ids
     finally:
         claims_ctx.reset(reader_token)
+        shutil.rmtree(test_db_dir, ignore_errors=True)
+
+
+def test_lane_message_request_reply_round_trip_preserves_contract():
+    engine, test_db_dir = _make_engine()
+    namespace = "ws:demo:conv:bg"
+
+    try:
+        with scoped_namespace(engine, namespace):
+            request = engine.send_lane_message(
+                conversation_id="conv-demo",
+                inbox_id="inbox:worker:maintenance",
+                sender_id="lane:foreground",
+                recipient_id="lane:worker:maintenance",
+                msg_type="request.maintenance",
+                payload={"request_node_id": "req-1"},
+                correlation_id="corr-1",
+            )
+            reply = engine.send_lane_message(
+                conversation_id="conv-demo",
+                inbox_id="inbox:foreground",
+                sender_id="lane:worker:maintenance",
+                recipient_id="lane:foreground",
+                msg_type="reply.maintenance",
+                payload={"result": "ok"},
+                correlation_id="corr-1",
+                reply_to=request.message_id,
+            )
+
+            request_nodes = engine.read.get_nodes(
+                where={
+                    "$and": [
+                        {"artifact_kind": "lane_message"},
+                        {"message_id": request.message_id},
+                    ]
+                }
+            )
+            reply_nodes = engine.read.get_nodes(
+                where={
+                    "$and": [
+                        {"artifact_kind": "lane_message"},
+                        {"message_id": reply.message_id},
+                    ]
+                }
+            )
+            assert len(request_nodes) == 1
+            assert len(reply_nodes) == 1
+            assert request_nodes[0].metadata["status"] == "pending"
+            assert reply_nodes[0].metadata["reply_to_message_id"] == request.message_id
+            assert reply_nodes[0].metadata["correlation_id"] == "corr-1"
+
+            worker_rows = engine.list_projected_lane_messages(
+                inbox_id="inbox:worker:maintenance"
+            )
+            foreground_rows = engine.list_projected_lane_messages(
+                inbox_id="inbox:foreground"
+            )
+            assert [row.message_id for row in worker_rows] == [request.message_id]
+            assert [row.message_id for row in foreground_rows] == [reply.message_id]
+            assert foreground_rows[0].reply_to_message_id == request.message_id
+            assert foreground_rows[0].correlation_id == "corr-1"
+    finally:
+        shutil.rmtree(test_db_dir, ignore_errors=True)
+
+
+def test_lane_message_sample_integration_pins_stable_contract():
+    engine, test_db_dir = _make_engine()
+    namespace = "ws:demo:conv:bg"
+    service = LaneMessagingService(engine)
+
+    try:
+        with scoped_namespace(engine, namespace):
+            sent = service.send_message(
+                conversation_id="conv-integration",
+                inbox_id="inbox:worker:integration",
+                sender_id="lane:foreground",
+                recipient_id="lane:worker:integration",
+                msg_type="request.integration",
+                payload={"step": "one"},
+                correlation_id="corr-integration",
+            )
+            listed = service.list_projected(inbox_id="inbox:worker:integration")
+            assert [row.message_id for row in listed] == [sent.message_id]
+
+            claimed = service.claim_pending(
+                inbox_id="inbox:worker:integration",
+                claimed_by="worker-integration",
+                limit=1,
+                lease_seconds=30,
+            )
+            assert claimed[0].message_id == sent.message_id
+
+            service.ack(
+                message_id=sent.message_id,
+                claimed_by="worker-integration",
+            )
+            after_ack = service.list_projected(inbox_id="inbox:worker:integration")
+            assert after_ack[0].status == "completed"
+    finally:
         shutil.rmtree(test_db_dir, ignore_errors=True)

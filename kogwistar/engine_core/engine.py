@@ -828,6 +828,11 @@ class GraphKnowledgeEngine:
 
         return LaneMessagingService(self).requeue(*args, **kwargs)
 
+    def dead_letter_projected_lane_message(self, *args, **kwargs) -> None:
+        from kogwistar.messaging import LaneMessagingService
+
+        return LaneMessagingService(self).dead_letter(*args, **kwargs)
+
     def list_projected_lane_messages(self, *args, **kwargs):
         from kogwistar.messaging import LaneMessagingService
 

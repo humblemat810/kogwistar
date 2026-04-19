@@ -134,6 +134,19 @@ def test_lane_message_metastore_classes_share_common_mixin():
     assert issubclass(EnginePostgresMetaStore, LaneMessageMetaStoreMixin)
 
 
+def test_lane_message_contract_sample_fixture_is_compliant(
+    lane_message_contract_sample,
+):
+    send_result = lane_message_contract_sample["send_result"]
+    projected_row = lane_message_contract_sample["projected_row"]
+    assert send_result.message_id == projected_row.message_id
+    assert projected_row.status == "pending"
+    assert projected_row.seq == 1
+    assert projected_row.conversation_seq == 1
+    assert projected_row.correlation_id == "corr-sample"
+    assert projected_row.payload_json == '{"sample":true}'
+
+
 def _sqlite_meta(tmp_path: Path) -> EngineSQLite:
     meta = EngineSQLite(tmp_path / "sqlite_meta")
     meta.ensure_initialized()

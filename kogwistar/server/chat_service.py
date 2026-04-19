@@ -1373,6 +1373,47 @@ class ChatRunService:
             "items": items[: int(limit)],
         }
 
+    def lane_message_progress(
+        self,
+        *,
+        run_id: str | None = None,
+        conversation_id: str | None = None,
+        limit: int = 200,
+    ) -> dict[str, Any]:
+        self._require_capability(
+            "project_view",
+            ["project_view", "workflow.run.read"],
+            approval_message="Reading lane message progress requires project_view capability",
+        )
+        items: list[dict[str, Any]] = []
+        if run_id:
+            items.extend(self.run_registry.list_events(str(run_id), limit=limit))
+        if conversation_id:
+            engine = self._conversation_engine()
+            nodes = engine.read.get_nodes(
+                where={
+                    "$and": [
+                        {"artifact_kind": "lane_message"},
+                        {"conversation_id": str(conversation_id)},
+                    ]
+                },
+                limit=int(limit),
+            )
+            for node in nodes:
+                md = dict(getattr(node, "metadata", {}) or {})
+                items.append(
+                    {
+                        "event_type": f"worker.{str(md.get('status') or 'unknown')}",
+                        "message_id": str(getattr(node, "id", "") or ""),
+                        "conversation_id": str(md.get("conversation_id") or ""),
+                        "inbox_id": str(md.get("inbox_id") or ""),
+                        "status": str(md.get("status") or ""),
+                        "msg_type": str(md.get("msg_type") or ""),
+                        "correlation_id": md.get("correlation_id"),
+                    }
+                )
+        return {"items": items[: int(limit)], "total": len(items)}
+
 
 __all__ = [
     "AnswerRunRequest",

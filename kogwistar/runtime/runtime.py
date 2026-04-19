@@ -306,6 +306,10 @@ class StepContext:
     message_queue: "queue.Queue[Dict[str, Json]]" = field(
         repr=False, default_factory=queue.Queue
     )
+    lane_message_sender: Callable[..., Any] | None = field(repr=False, default=None)
+    lane_message_event_sink: Callable[[dict[str, Json]], Any] | None = field(
+        repr=False, default=None
+    )
     events: EventEmitter | None = field(repr=False, default=None)
 
     # Accept `state=` in __init__ but don't store it as a field
@@ -333,6 +337,22 @@ class StepContext:
 
     def publish(self, msg: Dict[str, Json]) -> None:
         self.message_queue.put(msg)
+
+    def send_lane_message(self, **kwargs: Json) -> Any:
+        sender = self.lane_message_sender
+        if not callable(sender):
+            raise RuntimeError(
+                "lane message sender not configured; durable cross-lane delivery unavailable"
+            )
+        return sender(**kwargs)
+
+    def emit_lane_message_event(self, event: dict[str, Json]) -> None:
+        sink = self.lane_message_event_sink
+        if not callable(sink):
+            raise RuntimeError(
+                "lane message event sink not configured; lifecycle mirroring unavailable"
+            )
+        sink(event)
 
     def drain(self, max_items: int = 200) -> List[Dict[str, Json]]:
         raise Exception(

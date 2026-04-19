@@ -26,6 +26,10 @@ class ProjectedLaneMessageRow:
     correlation_id: str | None
     payload_json: str | None = None
     error_json: str | None = None
+    prev_message_id: str | None = None
+    next_message_id: str | None = None
+    inbox_tail_message_id: str | None = None
+    conversation_tail_message_id: str | None = None
 
 
 @dataclass(frozen=True)
