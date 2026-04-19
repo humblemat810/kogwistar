@@ -74,6 +74,7 @@ Derived views may include:
 - SSE-friendly serving projections
 
 Derived views MUST be disposable and rebuildable.
+Audit events MUST remain first-class and independently queryable.
 
 ### 4. Namespace meanings are distinct
 
@@ -110,6 +111,7 @@ Until isolation / capabilities are implemented, operator views are **admin/inter
 Implication:
 - early dashboards / SSE / inspection surfaces must be clearly labeled internal
 - default public/user-facing introspection should wait for visibility filtering
+- every operator surface must declare its view class: read / operator / audit / repair
 
 ---
 
@@ -204,17 +206,44 @@ Before later slices build on these primitives, acceptance coverage must exist fo
 - [x] cross-security-scope message send deny
 - [x] cross-security-scope read deny
 - [x] shared-memory / shared-inbox cases work only when explicit
+- [x] view classes stay separated by contract
+- [x] denied access is auditable
 
 ### Checkpoint / resume
 - [x] resume after restart works when compatible
 - [x] invalid-after-design-change resume fails safely
 - [x] join/fanout restore behaves correctly
 - [x] persisted vs ephemeral state boundary is honored
+- [x] checkpoint / replay / resume state is inspectable
+- [x] resume contract is auditable without exposing hidden mutable state
+
+### Scheduler / budget / tool visibility
+- [x] scheduler decisions are visible as policy + state
+- [x] paused / deferred / resumed runs are visible
+- [x] runtime token/time/cost debit is auditable
+- [x] tool call/result/side-effect pairs are inspectable
+
+### Tool / device
+- [x] tool runner records tool_call / tool_result truth correctly
+- [x] side-effecting tool nodes are only linked when node exists
+- [x] async-vs-sync tool handlers are enforced correctly
+
+### Service / daemon
+- [x] service lifecycle truth is graph-native, not only meta_sqlite
+- [x] heartbeat TTL -> healthy/degraded computed without hidden “auto-tick” on read paths
+- [x] restart policy honors backoff and max_restarts
+- [x] trigger contract converges schedule/message/graph/external into one path
+
+### Recovery / repair
+- [x] operator can list dead-letters and replay safely
+- [x] orphaned claims/leaks repairable without mutating authoritative truth incorrectly
+- [x] projections can be rebuilt from authoritative truth (no second truth)
 
 ### Migration / compatibility
 - [x] workflow/runtime artifacts remain compatible with the process projection model
 - [x] lane-message assisting projections can be rebuilt/migrated safely
 - [x] operator views do not become a second truth source
+- [x] audit trails and projections can be rebuilt without mutating history
 
 ---
 
@@ -569,6 +598,7 @@ Status: done.
 - [x] Tool invocations are auditable and governable
 - [x] Tool behavior is not opaque to the substrate
 - [x] Long-running tools integrate with checkpoint/message flow
+- [x] Tool visibility exists in operator/audit surfaces
 
 ### Why it matters
 For an AI OS, tools are the equivalent of devices and drivers.
@@ -604,6 +634,7 @@ Always-on agents and workers become managed services.
 - [x] A long-running agent can be declared and supervised
 - [x] Crashed services can be restarted with policy
 - [x] Health is visible to operators
+- [x] Service lifecycle events are visible in audit/projection views
 
 ### Why it matters
 This is how “agent 1 always running” becomes real.
@@ -669,7 +700,7 @@ This is essential if Kogwistar is serious about evented, replayable system behav
 ## Near-term order
 1. [x] Slice 1 — Lane Messaging / Native IPC
 2. [x] Slice 2 — Universal Process Model
-3. [ ] Slice 3 — Namespaces and Isolation
+3. [x] Slice 3 — Namespaces and Isolation
 4. [x] Slice 4 — Capability Kernel / Permissions
 5. [x] Slice 5 — System Call Surface
 6. [x] Slice 11 — Operator Views / System Introspection (internal/admin-only first)
@@ -697,12 +728,21 @@ Kogwistar starts to have a credible claim once these are present together:
 - [x] namespaces / isolation
 - [x] capability checks
 - [x] checkpoint / resume
+- [x] tool / device subsystem
+- [x] budgets / resource accounting (runtime token + time/cost ledger)
 - [x] service supervision
 - [x] operator views
+- [x] visibility / auditing surfaces
 
 Without the remaining recovery utilities, it is still better described as a strong substrate / harness.
 
 With them, “agent OS” becomes a structurally defensible description.
+
+---
+
+# Semantic Dedup Matrix
+
+See `docs/semantic_dedup_matrix.md` for: which doc is canonical truth vs tutorial/demo/operator runbook.
 
 ---
 
