@@ -459,7 +459,7 @@ An operating system needs a usable system surface, not only internal modules.
 ### Goal
 Processes can pause and continue later with durable continuity by reusing existing runtime checkpoint truth.
 
-Status: in progress.
+Status: done.
 
 ### Add
 - [x] Formalized checkpoint contract over existing runtime truth
@@ -467,12 +467,12 @@ Status: in progress.
 - [x] Explicit resume identity / key contract
 - [x] Suspend semantics
 - [x] Resume semantics
-- [ ] Waiting reasons:
-  - [ ] approval wait
-  - [ ] message wait
-  - [ ] schedule delay
-  - [ ] external callback wait
-  - [ ] dependency wait
+- [x] Waiting reasons:
+  - [x] approval wait
+  - [x] message wait
+  - [x] schedule delay
+  - [x] external callback wait
+  - [x] dependency wait
 - [x] Restart / resume from durable state
 - [x] Replay compatibility rules
 - [x] Design-change compatibility rules
@@ -480,7 +480,7 @@ Status: in progress.
 ### Done when
 - [x] A process can pause without losing semantic continuity
 - [x] A worker can resume work after restart
-- [ ] Approval-blocked flows can resume correctly later
+- [x] Approval-blocked flows can resume correctly later
 - [x] Invalid-after-design-change resumes fail safely and inspectably
 - [x] Persisted vs ephemeral boundaries are test-covered
 
@@ -671,7 +671,7 @@ This is essential if Kogwistar is serious about evented, replayable system behav
 6. [ ] Slice 11 — Operator Views / System Introspection (internal/admin-only first)
 
 ## Mid-term order
-6. [ ] Slice 6 — Checkpoint / Suspend / Resume
+6. [x] Slice 6 — Checkpoint / Suspend / Resume
 7. [x] Slice 7 — Policy-Driven Scheduler
 8. [x] Slice 8 — Resource Accounting and Budgets
 9. [ ] Slice 9 — Tool / Device Subsystem

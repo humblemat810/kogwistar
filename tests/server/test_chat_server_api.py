@@ -928,6 +928,8 @@ def test_chat_debug_endpoints_namespace_and_workflow_viz(monkeypatch, engine_tri
         assert contract["checkpoint_schema_version"] == 1
         assert "checkpoint_schema_version" in contract["persisted_keys"]
         assert "_rt_join" in contract["ephemeral_keys"]
+        assert "approval" in contract["supported_wait_reasons"]
+        assert "rate_window" in contract["supported_wait_reasons"]
 
         viz = client.get("/api/viz/d3.json?graph_type=workflow")
         viz.raise_for_status()

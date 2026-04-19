@@ -2134,6 +2134,8 @@ class WorkflowRuntime:
                                             budget_state["budget_wait_reason"] = (
                                                 "rate_window"
                                             )
+                                    if isinstance(state, dict):
+                                        state["wait_reason"] = "rate_window"
                                     status = "suspended"
                                     run_suspended = True
                             except Exception:
@@ -2225,6 +2227,9 @@ class WorkflowRuntime:
                         # When suspended, the token is parked here pending external resume.
                         # We DO NOT decrement the join obligations because the token still exists
                         # and will eventually reach downstream joins once resumed.
+                        wait_reason = getattr(run_result, "wait_reason", None)
+                        if wait_reason:
+                            state["wait_reason"] = str(wait_reason)
                         _persist_rt_join_runtime()
                         _checkpoint_current_step()
 
