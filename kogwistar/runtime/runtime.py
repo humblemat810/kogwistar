@@ -33,6 +33,8 @@ from kogwistar.runtime.models import (
     WorkflowState,
     WorkflowStepExecNode,
 )
+from kogwistar.runtime.budget import StateBackedBudgetLedger
+from kogwistar.runtime.budget_adapters import adapt_budget_events
 
 from .design import validate_workflow_design, Predicate
 from .serialize import try_serialize_with_ref
@@ -433,6 +435,7 @@ from threading import Lock
 
 
 class WorkflowRuntime:
+    CHECKPOINT_SCHEMA_VERSION = 1
     """
     Core engine for executing graph-based **workflow designs**.
 
@@ -2078,6 +2081,66 @@ class WorkflowRuntime:
                                 update=getattr(run_result, "update", None),
                             )
 
+                    budget_ledger = None
+                    deps = state.get("_deps")
+                    if isinstance(deps, dict):
+                        budget_ledger = deps.get("budget_ledger")
+                    if isinstance(budget_ledger, StateBackedBudgetLedger):
+                        try:
+                            budget_ledger.debit_time(
+                                max(0, dur_ms),
+                                reason=f"step:{node_id}",
+                                run_id=str(run_id),
+                            )
+                        except Exception:
+                            pass
+                        try:
+                            result_payload = dict(
+                                run_result.model_dump(exclude_none=True)
+                            )
+                        except Exception:
+                            result_payload = {}
+                        usage_payload = None
+                        if isinstance(result_payload.get("usage"), dict):
+                            usage_payload = {"usage": result_payload.get("usage")}
+                        elif isinstance(result_payload.get("usage_metadata"), dict):
+                            usage_payload = {
+                                "usage": result_payload.get("usage_metadata")
+                            }
+                        if usage_payload is not None:
+                            for evt in adapt_budget_events(
+                                usage_payload,
+                                run_id=str(run_id),
+                                scope="step",
+                            ):
+                                try:
+                                    budget_ledger.ingest(evt)
+                                except Exception:
+                                    pass
+                        if getattr(budget_ledger, "should_suspend_for_budget", None):
+                            try:
+                                if budget_ledger.should_suspend_for_budget():
+                                    budget_state = state.get("budget")
+                                    if isinstance(budget_state, dict):
+                                        ready_ms = getattr(
+                                            budget_ledger,
+                                            "rate_window_ready_ms",
+                                            None,
+                                        )
+                                        if ready_ms is not None:
+                                            budget_state["budget_wait_until_ms"] = int(
+                                                ready_ms
+                                            )
+                                            budget_state["budget_wait_reason"] = (
+                                                "rate_window"
+                                            )
+                                    if isinstance(state, dict):
+                                        state["wait_reason"] = "rate_window"
+                                    status = "suspended"
+                                    run_suspended = True
+                            except Exception:
+                                pass
+
                     inflight.pop((node_id, mask, str(token_id)), None)
                     inflight_tokens.discard(
                         (str(node_id), int(mask), str(token_id), parent_token_id)
@@ -2164,6 +2227,9 @@ class WorkflowRuntime:
                         # When suspended, the token is parked here pending external resume.
                         # We DO NOT decrement the join obligations because the token still exists
                         # and will eventually reach downstream joins once resumed.
+                        wait_reason = getattr(run_result, "wait_reason", None)
+                        if wait_reason:
+                            state["wait_reason"] = str(wait_reason)
                         _persist_rt_join_runtime()
                         _checkpoint_current_step()
 
@@ -2905,6 +2971,20 @@ class WorkflowRuntime:
                 doc_id=f"conv:{conversation_id}",
             )
         )
+        metadata = {
+            "entity_type": "workflow_failed",
+            "workflow_id": workflow_id,
+            "run_id": run_id,
+            "conversation_id": conversation_id,
+            "accepted_step_seq": int(accepted_step_seq),
+            "last_processed_node_id": (
+                str(last_processed_node_id) if last_processed_node_id else None
+            ),
+            "level_from_root": 0,
+        }
+        if safe_errors:
+            metadata["errors"] = safe_errors
+
         node = WorkflowFailedNode(
             id=node_id,
             label="Workflow failed",
@@ -2913,18 +2993,7 @@ class WorkflowRuntime:
             summary=excerpt,
             mentions=[Grounding(spans=[span])],
             properties={"entity_type": "workflow_failed"},
-            metadata={
-                "entity_type": "workflow_failed",
-                "workflow_id": workflow_id,
-                "run_id": run_id,
-                "conversation_id": conversation_id,
-                "accepted_step_seq": int(accepted_step_seq),
-                "errors": safe_errors,
-                "last_processed_node_id": (
-                    str(last_processed_node_id) if last_processed_node_id else None
-                ),
-                "level_from_root": 0,
-            },
+            metadata=metadata,
             level_from_root=0,
             domain_id=None,
             canonical_entity_id=None,
@@ -3270,6 +3339,7 @@ class WorkflowRuntime:
                 "run_id": run_id,
                 "workflow_id": workflow_id,
                 "step_seq": step_seq,
+                "checkpoint_schema_version": self.CHECKPOINT_SCHEMA_VERSION,
                 "state_json": state_json,
                 "level_from_root": 0,
                 "conversation_id": conversation_id,

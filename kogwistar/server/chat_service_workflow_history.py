@@ -201,7 +201,7 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
             design-control history.
         """        
         try:
-            return self._workflow_engine().get_nodes(
+            return self._workflow_engine().read.get_nodes(
                 where={
                     "$and": [
                         {"entity_type": "workflow_node"},
@@ -231,7 +231,7 @@ class _WorkflowDesignHistoryMixin(_BaseComponent):
             The current visible workflow edges in the workflow namespace.
         """
         try:
-            return self._workflow_engine().get_edges(
+            return self._workflow_engine().read.get_edges(
                 where={
                     "$and": [
                         {"entity_type": "workflow_edge"},

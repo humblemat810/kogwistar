@@ -37,6 +37,12 @@ if TYPE_CHECKING:
     )
     from kogwistar.conversation.service import ConversationService
     from kogwistar.conversation.tool_runner import ToolRunner
+    from kogwistar.conversation.tool_registry import (
+        ToolDefinition,
+        ToolReceipt,
+        ToolRegistry,
+        ToolRequirement,
+    )
 
 __all__ = [
     "AgenticAnsweringAgent",
@@ -52,6 +58,10 @@ __all__ = [
     "RetrievalOrchestrator",
     "ConversationService",
     "ToolRunner",
+    "ToolDefinition",
+    "ToolReceipt",
+    "ToolRegistry",
+    "ToolRequirement",
 ]
 
 
@@ -110,4 +120,18 @@ def __getattr__(name: str):
         from kogwistar.conversation.tool_runner import ToolRunner
 
         return ToolRunner
+    if name in ("ToolDefinition", "ToolReceipt", "ToolRegistry", "ToolRequirement"):
+        from kogwistar.conversation.tool_registry import (
+            ToolDefinition,
+            ToolReceipt,
+            ToolRegistry,
+            ToolRequirement,
+        )
+
+        return {
+            "ToolDefinition": ToolDefinition,
+            "ToolReceipt": ToolReceipt,
+            "ToolRegistry": ToolRegistry,
+            "ToolRequirement": ToolRequirement,
+        }[name]
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

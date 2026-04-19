@@ -92,7 +92,7 @@ def _configure_server(
     answer_runner,
     runtime_runner=None,
 ):
-    registry = RunRegistry(workflow_engine.meta_sqlite)
+    registry = RunRegistry(conversation_engine.meta_sqlite)
     service = ChatRunService(
         get_knowledge_engine=lambda: engine,
         get_conversation_engine=lambda: conversation_engine,
@@ -266,7 +266,280 @@ async def test_mcp_chat_tool_visibility_by_namespace(monkeypatch, engine_triplet
         assert "workflow.design_undo" not in names
         assert "workflow.run_checkpoint_get" in names
         assert "workflow.run_replay" in names
+        assert "workflow.process_table" in names
+        assert "workflow.operator_inbox" in names
+        assert "workflow.blocked_runs" in names
+        assert "workflow.process_timeline" in names
         assert "conversation.ask" not in names
+
+
+@pytest.mark.asyncio
+async def test_mcp_workflow_process_views(monkeypatch, engine_triplet):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+
+    service.run_registry.create_run(
+        run_id="run-process-1",
+        conversation_id="conv-1",
+        workflow_id="wf-1",
+        user_id="user-1",
+        user_turn_node_id="turn-1",
+        status="running",
+    )
+    service.run_registry.append_event(
+        "run-process-1", "run.stage", {"stage": "execute"}
+    )
+    service.run_registry.update_status(
+        "run-process-1",
+        status="suspended",
+        started=True,
+    )
+
+    with _claims("ro", "workflow"):
+        processes = _structured(
+            await server.mcp.call_tool("workflow.process_table", {"limit": 10})
+        )["processes"]
+        assert processes
+        assert processes[0]["process_id"] == "run-process-1"
+        assert processes[0]["process_kind"] == "workflow_run"
+
+        blocked = _structured(
+            await server.mcp.call_tool("workflow.blocked_runs", {"limit": 10})
+        )["processes"]
+        assert any(item["process_id"] == "run-process-1" for item in blocked)
+
+        timeline = _structured(
+            await server.mcp.call_tool(
+                "workflow.process_timeline", {"run_id": "run-process-1", "limit": 10}
+            )
+        )
+        assert timeline["run_id"] == "run-process-1"
+        assert timeline["events"]
+
+
+@pytest.mark.asyncio
+async def test_mcp_workflow_service_tools_round_trip(monkeypatch, engine_triplet):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service = _configure_server(
+        monkeypatch,
+        engine,
+        conversation_engine,
+        workflow_engine,
+        _runtime_success_runner,
+        runtime_runner=_runtime_success_runner,
+    )
+
+    with _claims("rw", "workflow", sub="svc-mcp"):
+        claims = claims_ctx.get() or {}
+        claims["capabilities"] = [
+            "spawn_process",
+            "workflow.run.read",
+            "workflow.run.write",
+            "project_view",
+            "service.manage",
+            "service.inspect",
+            "service.heartbeat",
+        ]
+        created = service.create_conversation(user_id="svc-mcp-user")
+
+    with _claims("rw", "workflow", sub="svc-mcp"):
+        claims = claims_ctx.get() or {}
+        claims["capabilities"] = [
+            "service.manage",
+            "service.inspect",
+            "service.heartbeat",
+            "project_view",
+            "spawn_process",
+            "workflow.run.read",
+            "workflow.run.write",
+        ]
+        declared = _structured(
+            await server.mcp.call_tool(
+                "workflow.service_declare",
+                {
+                    "service_id": "svc.mcp.demo",
+                    "service_kind": "daemon",
+                    "target_kind": "workflow",
+                    "target_ref": "wf.service.mcp",
+                    "target_config": {"conversation_id": created["conversation_id"]},
+                },
+            )
+        )
+        assert declared["service_id"] == "svc.mcp.demo"
+
+        heartbeat = _structured(
+            await server.mcp.call_tool(
+                "workflow.service_heartbeat",
+                {
+                    "service_id": "svc.mcp.demo",
+                    "instance_id": "mcp-1",
+                    "payload": {"beat": 1},
+                },
+            )
+        )
+        assert heartbeat["health_status"] == "healthy"
+
+        listed = _structured(
+            await server.mcp.call_tool("workflow.service_list", {"limit": 20})
+        )["services"]
+        assert any(item["service_id"] == "svc.mcp.demo" for item in listed)
+
+        triggered = _structured(
+            await server.mcp.call_tool(
+                "workflow.service_trigger",
+                {"service_id": "svc.mcp.demo", "trigger_type": "external event"},
+            )
+        )
+        assert triggered["current_child_run_id"]
+
+        events = _structured(
+            await server.mcp.call_tool(
+                "workflow.service_events", {"service_id": "svc.mcp.demo", "limit": 50}
+            )
+        )["events"]
+        assert any(evt["event_type"] == "service.triggered" for evt in events)
+
+
+def test_chat_run_service_execution_meta_comes_from_conversation_engine(
+    monkeypatch, engine_triplet
+):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+
+    assert service._execution_meta_store() is conversation_engine.meta_sqlite
+    assert service.run_registry.meta_store is conversation_engine.meta_sqlite
+
+
+def test_chat_run_service_process_table_uses_claim_scope_not_backend_namespace(
+    monkeypatch, engine_triplet
+):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    conversation_engine.namespace = "backend-tenant"
+    service.run_registry.create_run(
+        run_id="run-scope-1",
+        conversation_id="conv-scope-1",
+        workflow_id="wf-scope-1",
+        user_id="user-scope-1",
+        user_turn_node_id="turn-scope-1",
+        status="running",
+    )
+    token = claims_ctx.set(
+        {
+            "ns": "conversation",
+            "storage_ns": "store-tenant",
+            "execution_ns": "exec-tenant",
+            "security_scope": "tenant-a",
+        }
+    )
+    try:
+        rows = service.list_process_table(limit=10)
+    finally:
+        claims_ctx.reset(token)
+    assert rows
+    row = rows[0]
+    assert row["namespace"] == "exec-tenant"
+    assert row["storage_namespace"] == "store-tenant"
+    assert row["security_scope"] == "tenant-a"
+
+
+def test_chat_run_service_resume_contract_exposes_checkpoint_metadata(
+    monkeypatch, engine_triplet
+):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    conversation_engine.write.add_node(
+        WorkflowCheckpointNode(
+            id="wf_ckpt|run-resume-1|0",
+            label="Checkpoint 0",
+            type="entity",
+            doc_id="wf_ckpt|run-resume-1|0",
+            summary="checkpoint",
+            mentions=[Grounding(spans=[Span.from_dummy_for_conversation()])],
+            properties={},
+            metadata={
+                "entity_type": "workflow_checkpoint",
+                "run_id": "run-resume-1",
+                "workflow_id": "wf-resume-1",
+                "step_seq": 0,
+                "checkpoint_schema_version": 1,
+                "state_json": "{\"foo\": \"bar\"}",
+            },
+            level_from_root=0,
+            domain_id=None,
+            canonical_entity_id=None,
+            embedding=None,
+        )
+    )
+    contract = service.resume_contract("run-resume-1")
+    assert contract["run_id"] == "run-resume-1"
+    assert contract["latest_checkpoint_step_seq"] == 0
+    assert contract["checkpoint_schema_version"] == 1
+    assert "checkpoint_schema_version" in contract["persisted_keys"]
+    assert "_rt_join" in contract["ephemeral_keys"]
+
+
+def test_chat_run_service_operator_inbox_respects_security_scope(
+    monkeypatch, engine_triplet
+):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    token_send = claims_ctx.set(
+        {
+            "ns": "conversation",
+            "storage_ns": "conversation",
+            "execution_ns": "conversation",
+            "security_scope": "tenant-a",
+        }
+    )
+    try:
+        conversation_engine.send_lane_message(
+            conversation_id="conv-scope-msg",
+            inbox_id="inbox:ops",
+            sender_id="lane:a",
+            recipient_id="lane:b",
+            msg_type="request.private",
+            payload={"hello": "world"},
+            security_scope="tenant-a",
+        )
+        conversation_engine.send_lane_message(
+            conversation_id="conv-scope-msg",
+            inbox_id="inbox:ops",
+            sender_id="lane:a",
+            recipient_id="lane:b",
+            msg_type="request.shared",
+            payload={"hello": "shared"},
+            security_scope="tenant-a",
+            shared_scope=True,
+        )
+    finally:
+        claims_ctx.reset(token_send)
+
+    token_read = claims_ctx.set(
+        {
+            "ns": "workflow",
+            "storage_ns": "conversation",
+            "execution_ns": "conversation",
+            "security_scope": "tenant-b",
+        }
+    )
+    try:
+        rows = service.list_operator_inbox(inbox_id="inbox:ops", limit=10)
+    finally:
+        claims_ctx.reset(token_read)
+    assert len(rows) == 1
+    assert rows[0]["msg_type"] == "request.shared"
+    assert rows[0]["visibility"] == "shared"
 
 
 @pytest.mark.asyncio

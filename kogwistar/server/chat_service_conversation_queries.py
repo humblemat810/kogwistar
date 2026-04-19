@@ -26,7 +26,7 @@ class _ConversationQueryService(_BaseComponent):
     def _conversation_nodes(self, conversation_id: str) -> list[ConversationNode]:
         nodes: list[ConversationNode] = cast(
             list[ConversationNode],
-            self._conversation_engine().get_nodes(
+            self._conversation_engine().read.get_nodes(
                 where={"conversation_id": conversation_id},
                 node_type=ConversationNode,
                 limit=10_000,
@@ -51,7 +51,7 @@ class _ConversationQueryService(_BaseComponent):
     def list_conversations_for_user(self, user_id: str) -> list[dict[str, Any]]:
         starts = cast(
             list[ConversationNode],
-            self._conversation_engine().get_nodes(
+            self._conversation_engine().read.get_nodes(
                 where={
                     "$and": [
                         {"entity_type": "conversation_start"},

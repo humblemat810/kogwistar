@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import os
+import importlib
 from typing import Any, Sequence, cast
 
 import numpy as np
@@ -50,6 +51,35 @@ def _l2_normalize(vectors: list[list[float]]) -> list[list[float]]:
         norm_val = float(np.linalg.norm(r))
         normed.append(r.tolist() if norm_val == 0.0 else (r / norm_val).tolist())
     return normed
+
+
+def _looks_like_test_env() -> bool:
+    if os.getenv("PYTEST_CURRENT_TEST"):
+        return True
+    if str(os.getenv("TESTING") or "").strip().lower() in {"1", "true", "yes", "on"}:
+        return True
+    if str(os.getenv("ENV") or "").strip().lower() in {"test", "ci"}:
+        return True
+    if str(os.getenv("CI") or "").strip().lower() in {"1", "true", "yes", "on"}:
+        return True
+    return False
+
+
+class _ConstantTestEmbeddingFunction(EmbeddingFunction):
+    @staticmethod
+    def name() -> str:
+        return "constant_test"
+
+    def __init__(self, dim: int = 8):
+        self.dim = max(1, int(dim))
+
+    def __call__(self, documents_or_texts: Sequence[str]) -> Embeddings:
+        vectors: list[list[float]] = []
+        for text in documents_or_texts:
+            seed = sum(ord(ch) for ch in str(text)) or 1
+            values = [float(((seed + i) % 17) + 1) for i in range(self.dim)]
+            vectors.append(values)
+        return _l2_normalize(vectors)
 
 
 # ---------------------------------------------------------------------------
@@ -199,6 +229,26 @@ def get_embedding_function(
       EMBEDDING_PROVIDER  — one of: ollama, openai, azure, google  (default: ollama)
       EMBEDDING_MODEL     — provider-specific model name
     """
+    test_override = str(
+        os.getenv("KOGWISTAR_TEST_EMBEDDING_FUNCTION_IMPORT") or ""
+    ).strip()
+    if test_override:
+        module_name, sep, attr_name = test_override.partition(":")
+        if not sep or not module_name or not attr_name:
+            raise ValueError(
+                "KOGWISTAR_TEST_EMBEDDING_FUNCTION_IMPORT must be "
+                "'module.path:attribute_name'"
+            )
+        module = importlib.import_module(module_name)
+        target = getattr(module, attr_name, None)
+        if not callable(target):
+            raise ValueError(
+                "KOGWISTAR_TEST_EMBEDDING_FUNCTION_IMPORT target is not callable"
+            )
+        return target()
+    if _looks_like_test_env():
+        dim = int(os.getenv("KOGWISTAR_TEST_EMBEDDING_DIM") or "8")
+        return _ConstantTestEmbeddingFunction(dim=dim)
     provider = provider or os.getenv("EMBEDDING_PROVIDER", "ollama")
     model = model or os.getenv("EMBEDDING_MODEL")
 

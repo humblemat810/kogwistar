@@ -56,18 +56,23 @@ def _mint_dev_token(auth_service: AuthService) -> str:
     display_name = os.getenv("DEV_AUTH_NAME", "Dev User")
     role = os.getenv("DEV_AUTH_ROLE", "ro")
     ns_raw = os.getenv("DEV_AUTH_NS")
+    caps_raw = os.getenv("DEV_AUTH_CAPABILITIES")
     if ns_raw:
         ns = ns_raw.split(",") if "," in ns_raw else ns_raw
     else:
         # Default to all namespaces in dev mode to satisfy all apps/tests
         ns = ["docs", "conversation", "workflow", "wisdom"]
+    if caps_raw:
+        capabilities = caps_raw.split(",") if "," in caps_raw else caps_raw
+    else:
+        capabilities = None
     user_id = auth_service.resolve_user_from_external(
         issuer="dev",
         subject=subject,
         email=email,
         display_name=display_name,
     )
-    return auth_service.mint_token(user_id, role=role, ns=ns)
+    return auth_service.mint_token(user_id, role=role, ns=ns, capabilities=capabilities)
 
 
 @router.get("/login")

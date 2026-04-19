@@ -44,14 +44,20 @@ from kogwistar.server.auth_middleware import (
     DevStreamGuardMiddleware,
     JWTProtectMiddleware,
     NameSpace,
+    get_jwt_alg,
+    get_jwt_aud,
+    get_jwt_iss,
+    get_jwt_secret,
     get_current_subject,
     get_current_user_id,
+    require_capability,
     require_namespace,
     require_role,
     require_workflow_access,
     set_auth_app,
 )
 from kogwistar.server.chat_api import create_chat_router
+from kogwistar.server.syscall_api import create_syscall_router
 from kogwistar.server.error_reporting import internal_http_error
 from kogwistar.server.mcp_tools import MCPRoleMiddleware, mcp
 from kogwistar.server.mcp_tools import *  # noqa: F401,F403
@@ -190,12 +196,15 @@ async def combined_lifespan(app: FastAPI):
         auth_mode = str(auth_mode).strip().lower()
         app.state.auth_mode = auth_mode
         if getattr(app.state, "auth_service", None) is None:
+            jwt_secret = get_jwt_secret()
+            if not jwt_secret:
+                raise RuntimeError("JWT secret is required")
             app.state.auth_service = AuthService(
                 session=get_session(),
-                jwt_secret=JWT_SECRET,
-                jwt_alg=JWT_ALG,
-                jwt_iss=JWT_ISS,
-                jwt_aud=JWT_AUD,
+                jwt_secret=jwt_secret,
+                jwt_alg=get_jwt_alg(),
+                jwt_iss=get_jwt_iss(),
+                jwt_aud=get_jwt_aud(),
             )
         if getattr(app.state, "oidc_clients", None) is None:
             app.state.oidc_clients = {}
@@ -266,12 +275,23 @@ app.include_router(
         get_user_id=get_current_user_id,
     )
 )
+app.include_router(
+    create_syscall_router(
+        get_service=lambda: chat_service.get(),
+        require_role=require_role,
+        require_namespace=require_namespace,
+        conversation_namespace=NameSpace.CONVERSATION.value,
+        workflow_namespaces={NameSpace.CONVERSATION.value, NameSpace.WORKFLOW.value},
+        get_user_id=get_current_user_id,
+    )
+)
 app.include_router(auth_router)
 
 class DevTokenInp(BaseModel):
     username: str = "dev"
     role: str = "ro"
     ns: list[str] | str = "docs"
+    capabilities: list[str] | str | None = None
 
     @field_validator("ns", mode="before")
     @classmethod
@@ -293,22 +313,39 @@ class DevTokenInp(BaseModel):
                 )
         return parts[0] if len(parts) == 1 else parts
 
+    @field_validator("capabilities", mode="before")
+    @classmethod
+    def _normalize_caps(cls, value):
+        if value is None or value == "":
+            return None
+        if isinstance(value, str):
+            parts = [item.strip() for item in value.split(",") if item.strip()]
+        elif isinstance(value, (list, tuple, set)):
+            parts = [str(item).strip() for item in value if str(item).strip()]
+        else:
+            return value
+        return parts[0] if len(parts) == 1 else parts
+
 @app.post("/auth/dev-token")
 async def dev_token(request: Request):
     inp = DevTokenInp.model_validate((await request.json()))
     if inp.role not in ROLE_ORDER:
         raise HTTPException(400, f"role must be one of {list(ROLE_ORDER)}")
+    jwt_secret = get_jwt_secret()
+    if not jwt_secret:
+        raise HTTPException(status_code=500, detail="JWT secret is not configured")
     payload = {
         "sub": inp.username,
         "ns": inp.ns,
         "role": inp.role,
+        "capabilities": inp.capabilities,
         "iat": int(time.time()),
         "exp": int((datetime.now(timezone.utc) + timedelta(hours=4)).timestamp()),
-        "iss": JWT_ISS or "local",
-        "aud": JWT_AUD or None,
+        "iss": get_jwt_iss() or "local",
+        "aud": get_jwt_aud() or None,
     }
     payload = {k: v for k, v in payload.items() if v is not None}
-    token = jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALG)
+    token = jwt.encode(payload, jwt_secret, algorithm=get_jwt_alg())
     return {"token": token}
 
 def _designer_resolver_candidates(service: Any) -> list[Any]:
@@ -461,6 +498,7 @@ def _designer_runtime_capabilities() -> dict[str, Any]:
 def designer_capabilities():
     require_role("ro")
     require_namespace({NameSpace.WORKFLOW})
+    require_capability("workflow.design.inspect")
 
     node_schema = WorkflowNodeMetadata.model_json_schema()
     edge_schema = WorkflowEdgeMetadata.model_json_schema()

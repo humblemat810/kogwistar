@@ -30,10 +30,27 @@ if TYPE_CHECKING:
 load_dotenv()
 
 # --- JWT config (env-driven) ---
-JWT_ALG = os.getenv("JWT_ALG", "HS256")  # HS256 (shared secret) or RS256 (public key)
-JWT_SECRET = os.getenv("JWT_SECRET")  # HS256 secret OR RS256 public key
-JWT_ISS = os.getenv("JWT_ISS")  # optional issuer to check
-JWT_AUD = os.getenv("JWT_AUD")  # optional audience to check
+def get_jwt_alg() -> str:
+    return os.getenv("JWT_ALG", "HS256")
+
+
+def get_jwt_secret() -> str | None:
+    return os.getenv("JWT_SECRET")
+
+
+def get_jwt_iss() -> str | None:
+    return os.getenv("JWT_ISS")
+
+
+def get_jwt_aud() -> str | None:
+    return os.getenv("JWT_AUD")
+
+
+# Backward-compatible module exports. Do not use for runtime decisions.
+JWT_ALG = get_jwt_alg()
+JWT_SECRET = get_jwt_secret()
+JWT_ISS = get_jwt_iss()
+JWT_AUD = get_jwt_aud()
 PROTECTED_PREFIXES = tuple(
     (os.getenv("JWT_PROTECTED_PATHS") or "/mcp,/admin").split(",")
 )
@@ -55,6 +72,10 @@ class NameSpace(str, Enum):
 ROLE_ORDER = {"ro": 0, "rw": 1}  # read-only < read-write
 DEFAULT_ROLE = "ro"
 DEFAULT_NAMESPACE = NameSpace.DOCS.value
+DEFAULT_STORAGE_NAMESPACE = "default"
+DEFAULT_EXECUTION_NAMESPACE = "default"
+DEFAULT_SECURITY_SCOPE = "public"
+DEFAULT_CAPABILITIES: frozenset[str] = frozenset()
 
 
 # Context var to expose claims in any handler/tool
@@ -78,14 +99,20 @@ def verify_jwt(token: str) -> dict:
     - RS256: set JWT_ALG=RS256 and JWT_SECRET=<PEM public key string>
     Optionally set JWT_ISS and/or JWT_AUD for issuer/audience checks.
     """
+    jwt_alg = get_jwt_alg()
+    jwt_secret = get_jwt_secret()
+    jwt_iss = get_jwt_iss()
+    jwt_aud = get_jwt_aud()
+    if not jwt_secret:
+        raise HTTPException(status_code=500, detail="JWT secret is not configured")
     try:
-        options = {"verify_aud": bool(JWT_AUD)}
+        options = {"verify_aud": bool(jwt_aud)}
         claims = jwt.decode(
             token,
-            JWT_SECRET,
-            algorithms=[JWT_ALG],
-            audience=JWT_AUD,
-            issuer=JWT_ISS,
+            jwt_secret,
+            algorithms=[jwt_alg],
+            audience=jwt_aud,
+            issuer=jwt_iss,
             options=options,
         )
         return claims
@@ -100,7 +127,10 @@ def _decode_role_from_headers(scope: Scope) -> str:
         if not auth.startswith("Bearer "):
             return Role.RO.value
         token = auth.split(" ", 1)[1]
-        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
+        jwt_secret = get_jwt_secret()
+        if not jwt_secret:
+            return Role.RO.value
+        payload = jwt.decode(token, jwt_secret, algorithms=[get_jwt_alg()])
         role = payload.get("role", Role.RO.value)
         return role if role in (Role.RO.value, Role.RW.value) else Role.RO.value
     except Exception:
@@ -219,6 +249,95 @@ def get_current_namespaces() -> set[str]:
     return {ns for ns in raw_list if ns in allowed_values}
 
 
+def get_storage_namespace() -> str:
+    claims = claims_ctx.get() or {}
+    scope = str(claims.get("storage_ns") or "").strip().lower()
+    if scope:
+        return scope
+    ns = sorted(get_current_namespaces())
+    return ns[0] if ns else DEFAULT_STORAGE_NAMESPACE
+
+
+def get_execution_namespace() -> str:
+    claims = claims_ctx.get() or {}
+    scope = str(claims.get("execution_ns") or "").strip().lower()
+    if scope:
+        return scope
+    ns = sorted(get_current_namespaces())
+    return ns[0] if ns else DEFAULT_EXECUTION_NAMESPACE
+
+
+def get_security_scope() -> str:
+    claims = claims_ctx.get() or {}
+    scope = str(
+        claims.get("security_scope")
+        or claims.get("tenant")
+        or claims.get("scope")
+        or ""
+    ).strip().lower()
+    if scope and scope != "*":
+        return scope
+    parts = get_security_scope_parts()
+    if parts["path"]:
+        return parts["path"]
+    ns = sorted(get_current_namespaces())
+    return ns[0] if ns else DEFAULT_SECURITY_SCOPE
+
+
+def get_security_scope_parts() -> dict[str, str]:
+    claims = claims_ctx.get() or {}
+    tenant = str(claims.get("tenant") or "").strip().lower()
+    workspace = str(claims.get("workspace") or "").strip().lower()
+    project = str(claims.get("project") or "").strip().lower()
+    explicit = str(claims.get("security_scope") or "").strip().lower()
+    if explicit and explicit != "*":
+        return {
+            "tenant": tenant,
+            "workspace": workspace,
+            "project": project,
+            "path": explicit,
+        }
+    parts = [part for part in (tenant, workspace, project) if part]
+    return {
+        "tenant": tenant,
+        "workspace": workspace,
+        "project": project,
+        "path": "/".join(parts),
+    }
+
+
+def describe_storage_security_mapping() -> dict[str, str]:
+    return {
+        "storage_namespace": get_storage_namespace(),
+        "execution_namespace": get_execution_namespace(),
+        "security_scope": get_security_scope(),
+        "security_scope_path": get_security_scope_parts()["path"],
+        "tenant": get_security_scope_parts()["tenant"],
+        "workspace": get_security_scope_parts()["workspace"],
+        "project": get_security_scope_parts()["project"],
+    }
+
+
+def get_current_capabilities() -> set[str]:
+    claims = claims_ctx.get() or {}
+    caps = claims.get("capabilities") or claims.get("caps") or []
+    if isinstance(caps, str):
+        raw_items = [caps]
+    else:
+        raw_items = list(caps)
+    out = {
+        str(item).strip().lower()
+        for item in raw_items
+        if str(item).strip() and str(item).strip() != "*"
+    }
+    return out
+
+
+def has_explicit_capabilities_claim() -> bool:
+    claims = claims_ctx.get() or {}
+    return "capabilities" in claims or "caps" in claims
+
+
 def get_current_subject() -> str | None:
     claims = claims_ctx.get() or {}
     sub = str(claims.get("sub") or "").strip()
@@ -228,6 +347,18 @@ def get_current_subject() -> str | None:
 def get_current_user_id() -> str | None:
     claims = claims_ctx.get() or {}
     return claims.get("user_id")
+
+
+def get_current_agent_id() -> str | None:
+    claims = claims_ctx.get() or {}
+    agent_id = str(
+        claims.get("agent_id")
+        or claims.get("actor_id")
+        or claims.get("sub")
+        or claims.get("user_id")
+        or ""
+    ).strip()
+    return agent_id or None
 
 
 def _normalize_namespaces(
@@ -266,6 +397,67 @@ def require_namespace(expected: set[NameSpace] | NameSpace | set[str] | str):
     )
 
 
+def require_security_scope(expected: set[str] | str):
+    if isinstance(expected, set):
+        allowed = {str(item).lower() for item in expected if str(item).strip()}
+    else:
+        allowed = {str(expected).lower()}
+    actual = get_security_scope()
+    if actual in allowed or "*" in allowed:
+        return actual
+    raise HTTPException(
+        status_code=403,
+        detail=f"Forbidden: security scope '{actual}' does not permit access to {allowed}",
+    )
+
+
+def can_access_security_scope(
+    target_scope: str | None,
+    *,
+    shared: bool = False,
+) -> bool:
+    actual = get_security_scope()
+    target = str(target_scope or "").strip().lower()
+    if shared:
+        return True
+    if not target or target == "*":
+        return True
+    return actual == target
+
+
+def require_security_scope_access(
+    target_scope: str | None,
+    *,
+    shared: bool = False,
+    action: str = "access",
+) -> str:
+    actual = get_security_scope()
+    target = str(target_scope or "").strip().lower()
+    if can_access_security_scope(target, shared=shared):
+        return actual
+    raise HTTPException(
+        status_code=403,
+        detail=(
+            f"Forbidden: security scope '{actual}' cannot {action} target scope "
+            f"'{target or '*'}' without explicit sharing"
+        ),
+    )
+
+
+def require_capability(expected: set[str] | str):
+    if isinstance(expected, set):
+        allowed = {str(item).strip().lower() for item in expected if str(item).strip()}
+    else:
+        allowed = {str(expected).strip().lower()}
+    actual = get_current_capabilities()
+    if "*" in allowed or not allowed.isdisjoint(actual):
+        return next(iter(actual & allowed), None) if actual else None
+    raise HTTPException(
+        status_code=403,
+        detail=f"Forbidden: capabilities {sorted(actual)} do not permit access to {sorted(allowed)}",
+    )
+
+
 _auth_app = None
 
 
@@ -297,6 +489,10 @@ __all__ = [
     "JWT_SECRET",
     "JWT_ISS",
     "JWT_AUD",
+    "get_jwt_alg",
+    "get_jwt_secret",
+    "get_jwt_iss",
+    "get_jwt_aud",
     "PROTECTED_PREFIXES",
     "Role",
     "NameSpace",
@@ -312,9 +508,21 @@ __all__ = [
     "get_current_role",
     "require_role",
     "get_current_namespaces",
+    "get_storage_namespace",
+    "get_execution_namespace",
+    "get_security_scope",
+    "get_security_scope_parts",
+    "describe_storage_security_mapping",
     "get_current_subject",
     "get_current_user_id",
+    "get_current_capabilities",
+    "has_explicit_capabilities_claim",
+    "get_current_agent_id",
     "require_namespace",
+    "require_security_scope",
+    "can_access_security_scope",
+    "require_security_scope_access",
+    "require_capability",
     "_normalize_namespaces",
     "set_auth_app",
     "require_workflow_access",

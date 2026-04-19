@@ -102,7 +102,7 @@ def _configure_server(
     answer_runner,
     runtime_runner=None,
 ):
-    registry = RunRegistry(workflow_engine.meta_sqlite)
+    registry = RunRegistry(conversation_engine.meta_sqlite)
     service = ChatRunService(
         get_knowledge_engine=lambda: engine,
         get_conversation_engine=lambda: conversation_engine,
@@ -135,12 +135,17 @@ def _configure_server(
 
 
 def _token_header(
-    client: TestClient, *, role: str, ns: str, username: str = "tester"
+    client: TestClient,
+    *,
+    role: str,
+    ns: str,
+    username: str = "tester",
+    capabilities: str | None = None,
 ) -> dict[str, str]:
-    resp = client.post(
-        "/auth/dev-token",
-        json={"username": username, "role": role, "ns": ns},
-    )
+    payload = {"username": username, "role": role, "ns": ns}
+    if capabilities is not None:
+        payload["capabilities"] = capabilities
+    resp = client.post("/auth/dev-token", json=payload)
     resp.raise_for_status()
     token = resp.json()["token"]
     return {"Authorization": f"Bearer {token}"}
@@ -192,7 +197,7 @@ def test_document_upsert_tree_uses_document_graph_extraction_entrypoint(
 ):
     engine, conversation_engine, workflow_engine = engine_triplet
     _configure_server(
-        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+        monkeypatch, engine, conversation_engine, workflow_engine, _debug_rag_runner
     )
 
     captured: dict[str, object] = {}
@@ -289,6 +294,94 @@ def _success_runner(req: AnswerRunRequest) -> dict:
             embedding=(
                 embedding.tolist() if hasattr(embedding, "tolist") else embedding
             ),
+        )
+    )
+    req.prev_turn_meta_summary.prev_node_char_distance_from_last_summary += len(
+        assistant_text
+    )
+    req.prev_turn_meta_summary.prev_node_distance_from_last_summary += 1
+    req.prev_turn_meta_summary.tail_turn_index += 1
+    return {
+        "assistant_turn_node_id": assistant_turn_node_id,
+        "assistant_text": assistant_text,
+        "workflow_status": "succeeded",
+    }
+
+
+def _debug_rag_runner(req: AnswerRunRequest) -> dict:
+    req.publish("run.stage", {"stage": "retrieve"})
+    req.publish(
+        "reasoning.summary",
+        {"stage": "retrieve", "summary": "Retrieving candidate evidence."},
+    )
+    req.publish("run.stage", {"stage": "draft_answer"})
+    req.publish(
+        "reasoning.summary",
+        {"stage": "draft_answer", "summary": "Drafting the answer."},
+    )
+    assistant_text = "\n".join(
+        [
+            "Debug RAG response",
+            "",
+            f"Question: {req.user_text}",
+            "",
+            "Retrieved nodes:",
+            "1. Alpha node [kg-alpha]",
+            "   Alpha summary for debug retrieval.",
+            "2. Beta node [kg-beta]",
+            "   Beta summary for debug retrieval.",
+        ]
+    )
+    assistant_turn_node_id = f"assistant|{uuid.uuid4().hex}"
+    embedding = req.conversation_engine.iterative_defensive_emb(assistant_text)
+    req.conversation_engine.write.add_node(
+        ConversationNode(
+            id=assistant_turn_node_id,
+            label="Assistant turn",
+            type="entity",
+            summary=assistant_text,
+            conversation_id=req.conversation_id,
+            role="assistant",  # type: ignore[arg-type]
+            turn_index=req.prev_turn_meta_summary.tail_turn_index + 1,
+            properties={"content": assistant_text, "entity_type": "assistant_turn"},
+            mentions=[Grounding(spans=[Span.from_dummy_for_conversation()])],
+            metadata={
+                "level_from_root": 0,
+                "entity_type": "assistant_turn",
+                "in_conversation_chain": True,
+                "in_ui_chain": True,
+            },
+            domain_id=None,
+            canonical_entity_id=None,
+            embedding=(
+                embedding.tolist() if hasattr(embedding, "tolist") else embedding
+            ),
+        )
+    )
+    req.conversation_engine.write.add_node(
+        ConversationNode(
+            id=f"knowledge_reference|{uuid.uuid4().hex}",
+            label="Knowledge reference",
+            type="reference_pointer",
+            summary="Alpha summary for debug retrieval.",
+            conversation_id=req.conversation_id,
+            role="system",  # type: ignore[arg-type]
+            turn_index=None,
+            properties={
+                "target_namespace": "kg",
+                "refers_to_collection": "nodes",
+                "target_id": "kg-alpha",
+                "entity_type": "knowledge_reference",
+            },
+            mentions=[Grounding(spans=[Span.from_dummy_for_conversation()])],
+            metadata={
+                "level_from_root": 0,
+                "entity_type": "knowledge_reference",
+                "in_conversation_chain": False,
+            },
+            domain_id=None,
+            canonical_entity_id=None,
+            embedding=None,
         )
     )
     req.prev_turn_meta_summary.prev_node_char_distance_from_last_summary += len(
@@ -526,7 +619,9 @@ def test_chat_rest_submit_and_sse(monkeypatch, engine_triplet):
 
 def test_chat_rest_events_poll_returns_run_events(monkeypatch, engine_triplet):
     engine, conversation_engine, workflow_engine = engine_triplet
-    _configure_server(monkeypatch, engine, conversation_engine, workflow_engine, None)
+    _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
     with TestClient(server.app) as client:
         rw_headers = _token_header(client, role="rw", ns="conversation")
         ro_headers = _token_header(client, role="ro", ns="conversation")
@@ -619,7 +714,7 @@ def test_chat_rest_debug_rag_workflow_returns_seeded_knowledge(monkeypatch, engi
         summary="Beta summary for debug retrieval.",
     )
     _configure_server(
-        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+        monkeypatch, engine, conversation_engine, workflow_engine, _debug_rag_runner
     )
     with TestClient(server.app) as client:
         rw_headers = _token_header(client, role="rw", ns="conversation")
@@ -823,6 +918,19 @@ def test_chat_debug_endpoints_namespace_and_workflow_viz(monkeypatch, engine_tri
         replay.raise_for_status()
         assert replay.json()["state"]["counter"] == 2
 
+        resume_contract = client.get(
+            f"/api/runs/{run_id}/resume-contract", headers=workflow_headers
+        )
+        resume_contract.raise_for_status()
+        contract = resume_contract.json()
+        assert contract["run_id"] == run_id
+        assert contract["latest_checkpoint_step_seq"] == 0
+        assert contract["checkpoint_schema_version"] == 1
+        assert "checkpoint_schema_version" in contract["persisted_keys"]
+        assert "_rt_join" in contract["ephemeral_keys"]
+        assert "approval" in contract["supported_wait_reasons"]
+        assert "rate_window" in contract["supported_wait_reasons"]
+
         viz = client.get("/api/viz/d3.json?graph_type=workflow")
         viz.raise_for_status()
         payload = viz.json()
@@ -857,11 +965,13 @@ def test_runtime_rest_submit_and_sse(monkeypatch, engine_triplet):
                 "workflow_id": "wf.runtime.simple",
                 "conversation_id": conversation_id,
                 "initial_state": {"counter": 1},
+                "priority_class": "batch",
             },
             headers=wf_rw,
         )
         assert submit.status_code == 202
         run_id = submit.json()["run_id"]
+        assert submit.json()["priority_class"] == "batch"
 
         final_run = _wait_for_status(
             client,
@@ -887,6 +997,30 @@ def test_runtime_rest_submit_and_sse(monkeypatch, engine_triplet):
         assert "run.stage" in names
         assert "reasoning.summary" in names
         assert names[-1] == "run.completed"
+
+
+def test_runtime_resource_snapshot_reports_pressure(monkeypatch, engine_triplet):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _configure_server(
+        monkeypatch,
+        engine,
+        conversation_engine,
+        workflow_engine,
+        _success_runner,
+        runtime_runner=_runtime_success_runner,
+    )
+    with TestClient(server.app) as client:
+        wf_ro = _token_header(client, role="ro", ns="workflow")
+        snapshot = client.get("/api/workflow/resources", headers=wf_ro)
+        snapshot.raise_for_status()
+        payload = snapshot.json()
+        assert "scheduler" in payload
+        assert "runs" in payload
+        assert "budget_model" in payload
+        assert "cost_ledger" in payload
+        assert "storage_usage_bytes" in payload
+        assert "policy_infra" in payload
+        assert payload["scheduler"]["max_active"] >= 1
 
 
 def test_runtime_rest_cancel(monkeypatch, engine_triplet):
@@ -2287,11 +2421,17 @@ def test_designer_capabilities_endpoint(monkeypatch, engine_triplet):
     with TestClient(server.app) as client:
         docs_ro = _token_header(client, role="ro", ns="docs")
         wf_ro = _token_header(client, role="ro", ns="workflow")
+        wf_cap = _token_header(
+            client,
+            role="ro",
+            ns="workflow",
+            capabilities="workflow.design.inspect",
+        )
 
         forbidden = client.get("/designer/capabilities", headers=docs_ro)
         assert forbidden.status_code == 403
 
-        resp = client.get("/designer/capabilities", headers=wf_ro)
+        resp = client.get("/designer/capabilities", headers=wf_cap)
         resp.raise_for_status()
         payload = resp.json()
 
@@ -2322,6 +2462,29 @@ def test_designer_capabilities_endpoint(monkeypatch, engine_triplet):
         assert "wf_multiplicity" in edge_props
 
 
+def test_designer_capabilities_requires_explicit_capability(monkeypatch, engine_triplet):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+
+    with TestClient(server.app) as client:
+        wf_ro = _token_header(client, role="ro", ns="workflow")
+        with_cap = _token_header(
+            client,
+            role="ro",
+            ns="workflow",
+            capabilities="workflow.design.inspect",
+        )
+
+        forbidden = client.get("/designer/capabilities", headers=wf_ro)
+        assert forbidden.status_code == 403
+
+        resp = client.get("/designer/capabilities", headers=with_cap)
+        resp.raise_for_status()
+        assert resp.json()["schema_version"] == "workflow-designer-capabilities/v1"
+
+
 def test_designer_capabilities_falls_back_to_default_resolver(
     monkeypatch, engine_triplet
 ):
@@ -2331,7 +2494,12 @@ def test_designer_capabilities_falls_back_to_default_resolver(
     )
 
     with TestClient(server.app) as client:
-        wf_ro = _token_header(client, role="ro", ns="workflow")
+        wf_ro = _token_header(
+            client,
+            role="ro",
+            ns="workflow",
+            capabilities="workflow.design.inspect",
+        )
 
         resp = client.get("/designer/capabilities", headers=wf_ro)
         resp.raise_for_status()

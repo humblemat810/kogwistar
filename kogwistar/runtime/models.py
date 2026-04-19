@@ -246,6 +246,7 @@ class RunSuspended(BaseModel):
     update: dict[str, Any] | None = None
     next_step_names: list[str] = Field(default_factory=list, alias="_route_next")
     status: Literal["suspended"] = "suspended"
+    wait_reason: str | None = None
     # Recommended recoverable-error payload shape:
     # {
     #   "type": "recoverable_error",

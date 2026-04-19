@@ -18,6 +18,8 @@ except Exception:  # pragma: no cover - local env may not provide it
     sitecustomize = None  # type: ignore
 _TEST_ENV = MonkeyPatch()
 _TEST_ENV.setenv("ANONYMIZED_TELEMETRY", "FALSE")
+_TEST_ENV.setenv("JWT_SECRET", "dev-secret")
+_TEST_ENV.setenv("JWT_ALG", "HS256")
 try:
     import sqlalchemy as sa
 
@@ -142,7 +144,8 @@ def tmp_path_factory() -> _SimpleTmpPathFactory:
 
 @pytest.fixture
 def tmp_path(request: pytest.FixtureRequest, tmp_path_factory: _SimpleTmpPathFactory):
-    path = tmp_path_factory.mktemp(request.node.name.replace(os.sep, "_"))
+    safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", request.node.name.replace(os.sep, "_"))
+    path = tmp_path_factory.mktemp(safe_name)
     request.addfinalizer(lambda: shutil.rmtree(path, ignore_errors=True))
     return path
 
@@ -840,6 +843,17 @@ except Exception:  # pragma: no cover - allow collection without the engine stac
 FakeEmbeddingFunction = ConstantEmbeddingFunction
 
 
+def build_default_test_embedding_function():
+    dim = int(os.getenv("KOGWISTAR_TEST_EMBEDDING_DIM", "8"))
+    return FakeEmbeddingFunction(dim=dim)
+
+
+_TEST_ENV.setenv(
+    "KOGWISTAR_TEST_EMBEDDING_FUNCTION_IMPORT",
+    "tests.conftest:build_default_test_embedding_function",
+)
+
+
 @pytest.fixture(scope="session")
 def backend_kind(request) -> str:
     """Default backend kind for test engines.
@@ -1229,6 +1243,10 @@ def pg_dsn(pg_container: Optional[PostgresContainer]) -> Optional[str]:
     """
     SQLAlchemy DSN for the running test container.
     """
+    for env_name in ("GKE_PG_DSN", "PG_DSN", "DATABASE_URL"):
+        env_value = os.getenv(env_name)
+        if env_value:
+            return env_value
     if pg_container is None:
         return None
     url = sa.engine.make_url(pg_container.get_connection_url())

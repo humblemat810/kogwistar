@@ -130,7 +130,7 @@ def _create_edge(
 
 
 def _latest_checkpoint_state(conv_engine: GraphKnowledgeEngine, run_id: str) -> dict:
-    ckpts = conv_engine.get_nodes(
+    ckpts = conv_engine.read.get_nodes(
         where={"$and": [{"entity_type": "workflow_checkpoint"}, {"run_id": run_id}]}
     )
     latest = max(

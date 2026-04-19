@@ -144,6 +144,249 @@ def build_workflow_mcp(
             "events": events,
         }
 
+    @tool_roles({role_ro, role_rw})
+    @require_ns({ns_workflow})
+    @mcp.tool(name="workflow.process_table")
+    def workflow_process_table(
+        status: str | None = None,
+        workflow_id: str | None = None,
+        conversation_id: str | None = None,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        return {
+            "processes": get_service().list_process_table(
+                status=status,
+                workflow_id=workflow_id,
+                conversation_id=conversation_id,
+                limit=limit,
+            )
+        }
+
+    @tool_roles({role_ro, role_rw})
+    @require_ns({ns_workflow})
+    @mcp.tool(name="workflow.operator_inbox")
+    def workflow_operator_inbox(
+        inbox_id: str | None = None, status: str | None = None, limit: int = 200
+    ) -> dict[str, Any]:
+        return {
+            "messages": get_service().list_operator_inbox(
+                inbox_id=inbox_id, status=status, limit=limit
+            )
+        }
+
+    @tool_roles({role_ro, role_rw})
+    @require_ns({ns_workflow})
+    @mcp.tool(name="workflow.blocked_runs")
+    def workflow_blocked_runs(limit: int = 100) -> dict[str, Any]:
+        return {"processes": get_service().list_blocked_runs(limit=limit)}
+
+    @tool_roles({role_ro, role_rw})
+    @require_ns({ns_workflow})
+    @mcp.tool(name="workflow.process_timeline")
+    def workflow_process_timeline(
+        run_id: str, after_seq: int = 0, limit: int = 200
+    ) -> dict[str, Any]:
+        return {
+            "run_id": run_id,
+            "events": get_service().list_process_timeline(
+                run_id=run_id, after_seq=after_seq, limit=limit
+            ),
+        }
+
+    @tool_roles({role_ro, role_rw})
+    @require_ns({ns_workflow})
+    @mcp.tool(name="workflow.operator_dashboard")
+    def workflow_operator_dashboard(limit: int = 100) -> dict[str, Any]:
+        return get_service().operator_dashboard(limit=limit)
+
+    @tool_roles({role_rw})
+    @require_ns({ns_workflow})
+    @mcp.tool(name="workflow.service_declare")
+    def workflow_service_declare(
+        service_id: str,
+        service_kind: str,
+        target_kind: str,
+        target_ref: str,
+        target_config: dict[str, Any] | None = None,
+        enabled: bool = True,
+        autostart: bool = False,
+        restart_policy: dict[str, Any] | None = None,
+        heartbeat_ttl_ms: int = 60_000,
+        trigger_specs: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        return get_service().declare_service(
+            service_id=service_id,
+            service_kind=service_kind,
+            target_kind=target_kind,
+            target_ref=target_ref,
+            target_config=target_config or {},
+            enabled=enabled,
+            autostart=autostart,
+            restart_policy=restart_policy or {},
+            heartbeat_ttl_ms=heartbeat_ttl_ms,
+            trigger_specs=trigger_specs or [],
+        )
+
+    @tool_roles({role_ro, role_rw})
+    @require_ns({ns_workflow})
+    @mcp.tool(name="workflow.service_list")
+    def workflow_service_list(limit: int = 200) -> dict[str, Any]:
+        return {"services": get_service().list_services(limit=limit)}
+
+    @tool_roles({role_ro, role_rw})
+    @require_ns({ns_workflow})
+    @mcp.tool(name="workflow.service_get")
+    def workflow_service_get(service_id: str) -> dict[str, Any]:
+        return get_service().get_service(service_id)
+
+    @tool_roles({role_rw})
+    @require_ns({ns_workflow})
+    @mcp.tool(name="workflow.service_enable")
+    def workflow_service_enable(service_id: str) -> dict[str, Any]:
+        return get_service().enable_service(service_id)
+
+    @tool_roles({role_rw})
+    @require_ns({ns_workflow})
+    @mcp.tool(name="workflow.service_disable")
+    def workflow_service_disable(service_id: str) -> dict[str, Any]:
+        return get_service().disable_service(service_id)
+
+    @tool_roles({role_rw})
+    @require_ns({ns_workflow})
+    @mcp.tool(name="workflow.service_heartbeat")
+    def workflow_service_heartbeat(
+        service_id: str,
+        instance_id: str,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return get_service().record_service_heartbeat(
+            service_id,
+            instance_id=instance_id,
+            payload=payload or {},
+        )
+
+    @tool_roles({role_rw})
+    @require_ns({ns_workflow})
+    @mcp.tool(name="workflow.service_trigger")
+    def workflow_service_trigger(
+        service_id: str,
+        trigger_type: str,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return get_service().trigger_service(
+            service_id,
+            trigger_type=trigger_type,
+            payload=payload or {},
+        )
+
+    @tool_roles({role_ro, role_rw})
+    @require_ns({ns_workflow})
+    @mcp.tool(name="workflow.service_events")
+    def workflow_service_events(
+        service_id: str, limit: int = 500
+    ) -> dict[str, Any]:
+        return {
+            "service_id": service_id,
+            "events": get_service().list_service_events(service_id, limit=limit),
+        }
+
+    @tool_roles({role_rw})
+    @require_ns({ns_workflow})
+    @mcp.tool(name="workflow.service_repair")
+    def workflow_service_repair(service_id: str) -> dict[str, Any]:
+        return get_service().repair_service_projection(service_id)
+
+    @tool_roles({role_rw})
+    @require_ns({ns_workflow})
+    @mcp.tool(name="workflow.services_repair")
+    def workflow_services_repair(limit: int = 10_000) -> dict[str, Any]:
+        return get_service().repair_service_projections(limit=limit)
+
+    @tool_roles({role_rw})
+    @require_ns({ns_workflow})
+    @mcp.tool(name="workflow.message_orphans_repair")
+    def workflow_message_orphans_repair(
+        inbox_id: str | None = None, limit: int = 100
+    ) -> dict[str, Any]:
+        return get_service().repair_orphaned_claimed_messages(
+            inbox_id=inbox_id, limit=limit
+        )
+
+    @tool_roles({role_ro, role_rw})
+    @require_ns({ns_workflow})
+    @mcp.tool(name="workflow.dead_letters")
+    def workflow_dead_letters(limit: int = 100) -> dict[str, Any]:
+        return get_service().dead_letter_snapshot(limit=limit)
+
+    @tool_roles({role_rw})
+    @require_ns({ns_workflow})
+    @mcp.tool(name="workflow.dead_letter_replay")
+    def workflow_dead_letter_replay(run_id: str) -> dict[str, Any]:
+        return get_service().replay_dead_letter(run_id)
+
+    @tool_roles({role_rw})
+    @require_ns({ns_workflow})
+    @mcp.tool(name="workflow.service_repair")
+    def workflow_service_repair(service_id: str) -> dict[str, Any]:
+        return get_service().repair_service_projection(service_id)
+
+    @tool_roles({role_rw})
+    @require_ns({ns_workflow})
+    @mcp.tool(name="workflow.services_repair")
+    def workflow_services_repair(limit: int = 10_000) -> dict[str, Any]:
+        return get_service().repair_service_projections(limit=limit)
+
+    @tool_roles({role_rw})
+    @require_ns({ns_workflow})
+    @mcp.tool(name="workflow.message_orphans_repair")
+    def workflow_message_orphans_repair(
+        inbox_id: str | None = None, limit: int = 100
+    ) -> dict[str, Any]:
+        return get_service().repair_orphaned_claimed_messages(
+            inbox_id=inbox_id, limit=limit
+        )
+
+    @tool_roles({role_ro, role_rw})
+    @require_ns({ns_workflow})
+    @mcp.tool(name="workflow.dead_letters")
+    def workflow_dead_letters(limit: int = 100) -> dict[str, Any]:
+        return get_service().dead_letter_snapshot(limit=limit)
+
+    @tool_roles({role_rw})
+    @require_ns({ns_workflow})
+    @mcp.tool(name="workflow.dead_letter_replay")
+    def workflow_dead_letter_replay(run_id: str) -> dict[str, Any]:
+        return get_service().replay_dead_letter(run_id)
+
+    @tool_roles({role_ro, role_rw})
+    @require_ns({ns_workflow})
+    @mcp.tool(name="workflow.capabilities_snapshot")
+    def workflow_capabilities_snapshot() -> dict[str, Any]:
+        return get_service().capability_snapshot()
+
+    @tool_roles({role_rw})
+    @require_ns({ns_workflow})
+    @mcp.tool(name="workflow.capability_approve")
+    def workflow_capability_approve(
+        action: str,
+        capabilities: list[str] | str,
+        subject: str | None = None,
+    ) -> dict[str, Any]:
+        return get_service().capability_approve(
+            action=action, capabilities=capabilities, subject=subject
+        )
+
+    @tool_roles({role_rw})
+    @require_ns({ns_workflow})
+    @mcp.tool(name="workflow.capability_revoke")
+    def workflow_capability_revoke(
+        capability: str,
+        subject: str | None = None,
+    ) -> dict[str, Any]:
+        return get_service().capability_revoke(
+            capability=capability, subject=subject
+        )
+
     @tool_roles({role_rw})
     @require_ns({ns_workflow})
     @mcp.tool(name="workflow.design_node_upsert")
@@ -271,5 +514,35 @@ def build_workflow_mcp(
     @mcp.tool(name="workflow.run_replay")
     def workflow_run_replay(run_id: str, target_step_seq: int) -> dict[str, Any]:
         return get_service().replay_run(run_id, target_step_seq)
+
+    @tool_roles({role_ro, role_rw})
+    @require_ns({ns_workflow})
+    @mcp.tool(name="workflow.run_resume_contract")
+    def workflow_run_resume_contract(run_id: str) -> dict[str, Any]:
+        return get_service().resume_contract(run_id)
+
+    @tool_roles({role_rw})
+    @require_ns({ns_workflow})
+    @mcp.tool(name="workflow.run_resume")
+    def workflow_run_resume(
+        run_id: str,
+        suspended_node_id: str,
+        suspended_token_id: str,
+        client_result: dict[str, Any],
+        workflow_id: str,
+        conversation_id: str,
+        turn_node_id: str,
+        user_id: str | None = None,
+    ) -> dict[str, Any]:
+        return get_service().resume_run(
+            run_id=run_id,
+            suspended_node_id=suspended_node_id,
+            suspended_token_id=suspended_token_id,
+            client_result=client_result,
+            workflow_id=workflow_id,
+            conversation_id=conversation_id,
+            turn_node_id=turn_node_id,
+            user_id=user_id,
+        )
 
     return mcp

@@ -1,6 +1,6 @@
 from __future__ import annotations
 import pytest
-pytestmark = pytest.mark.ci_full
+pytestmark = pytest.mark.ci
 
 from dataclasses import dataclass
 from typing import Any, Dict, List

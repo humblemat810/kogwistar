@@ -13,11 +13,13 @@ from kogwistar.conversation.models import (
 from kogwistar.id_provider import new_id_str
 from kogwistar.cdc.sqlite_sink import _get_shared_sqlite_sink
 from kogwistar.runtime.telemetry import EventEmitter
+from kogwistar.runtime.replay import load_checkpoint
 
 from .chat_service_shared import (
     AnswerRunRequest,
     RunCancelledError,
     RuntimeRunRequest,
+    RuntimeResumeRequest,
     _BaseComponent,
 )
 from .run_registry import RunRegistryTraceBridge
@@ -240,6 +242,9 @@ class _RunExecutionService(_BaseComponent):
         initial_state: dict[str, Any] | None = None,
         turn_node_id: str | None = None,
         user_id: str | None = None,
+        priority_class: str = "foreground",
+        token_budget: int | None = None,
+        time_budget_ms: int | None = None,
     ) -> dict[str, Any]:
         workflow_id = str(workflow_id or "").strip()
         if not workflow_id:
@@ -297,20 +302,28 @@ class _RunExecutionService(_BaseComponent):
                 run_id, event_type, payload
             ),
             is_cancel_requested=lambda: self.run_registry.is_cancel_requested(run_id),
+            priority_class=str(priority_class or "foreground"),
+            token_budget=token_budget,
+            time_budget_ms=time_budget_ms,
+            capabilities=tuple(self._owner._effective_capabilities()),
+            capability_subject=self._owner._capability_subject(),
         )
-        thread = threading.Thread(
-            target=self._run_workflow,
-            args=(req,),
-            daemon=True,
-            name=f"workflow-run-{run_id}",
+        sched = self._owner.scheduler.submit(
+            run_id=run_id,
+            priority_class=str(priority_class or "foreground"),
+            start_fn=lambda: self._run_workflow(req),
         )
-        thread.start()
         return {
             "run_id": run_id,
             "conversation_id": conversation_id,
             "workflow_id": workflow_id,
             "turn_node_id": resolved_turn_node_id,
             "status": "queued",
+            "priority_class": str(priority_class or "foreground"),
+            "token_budget": token_budget,
+            "time_budget_ms": time_budget_ms,
+            "admission": sched.get("admission", "accepted"),
+            **({"reason": sched["reason"]} if "reason" in sched else {}),
         }
 
     def _run_workflow(self, req: RuntimeRunRequest) -> None:
@@ -387,12 +400,27 @@ class _RunExecutionService(_BaseComponent):
 
     def _default_runtime_runner(self, req: RuntimeRunRequest) -> dict[str, Any]:
         from kogwistar.conversation.resolvers import default_resolver
+        from kogwistar.runtime.budget import StateBackedBudgetLedger
         from kogwistar.runtime.runtime import WorkflowRuntime
 
         def predicate_always(_workflow_info, _state, _last_result):
             return True
 
         initial_state = dict(req.initial_state or {})
+        budget_state = initial_state.get("budget")
+        if not isinstance(budget_state, dict):
+            budget_state = {}
+        if getattr(req, "token_budget", None) is not None:
+            budget_state.setdefault("token_budget", int(req.token_budget or 0))
+        if getattr(req, "time_budget_ms", None) is not None:
+            budget_state.setdefault("time_budget_ms", int(req.time_budget_ms or 0))
+        budget_state.setdefault("token_used", int(budget_state.get("token_used", 0) or 0))
+        budget_state.setdefault("time_used_ms", int(budget_state.get("time_used_ms", 0) or 0))
+        budget_state.setdefault("cost_budget", float(budget_state.get("cost_budget", 0.0) or 0.0))
+        budget_state.setdefault("cost_used", float(budget_state.get("cost_used", 0.0) or 0.0))
+        budget_state.setdefault("budget_kind", str(budget_state.get("budget_kind") or "token"))
+        budget_state.setdefault("budget_scope", str(budget_state.get("budget_scope") or "run"))
+        initial_state["budget"] = budget_state
         deps = initial_state.get("_deps")
         if not isinstance(deps, dict):
             deps = {}
@@ -401,6 +429,13 @@ class _RunExecutionService(_BaseComponent):
         deps.setdefault("ref_knowledge_engine", req.knowledge_engine)
         deps.setdefault("workflow_engine", req.workflow_engine)
         deps.setdefault("agentic_workflow_engine", req.workflow_engine)
+        deps.setdefault("capabilities", list(getattr(req, "capabilities", ()) or ()))
+        deps.setdefault(
+            "capability_subject",
+            getattr(req, "capability_subject", None) or self._owner._capability_subject(),
+        )
+        if budget_state:
+            deps.setdefault("budget_ledger", StateBackedBudgetLedger(budget_state))
         initial_state["_deps"] = deps
 
         runtime = WorkflowRuntime(
@@ -428,6 +463,88 @@ class _RunExecutionService(_BaseComponent):
                 getattr(run_result, "status", "succeeded") or "succeeded"
             ),
             "final_state": final_state,
+            "budget": final_state.get("budget", budget_state),
+        }
+
+    def _default_resume_runner(self, req: RuntimeResumeRequest) -> dict[str, Any]:
+        from kogwistar.conversation.resolvers import default_resolver
+        from kogwistar.runtime.budget import StateBackedBudgetLedger
+        from kogwistar.runtime.models import RunFailure, RunSuccess, RunSuspended
+        from kogwistar.runtime.runtime import WorkflowRuntime
+
+        def predicate_always(_workflow_info, _state, _last_result):
+            return True
+
+        step_seq = int(req.client_result.get("step_seq", 0) or 0)
+        initial_state = dict(
+            load_checkpoint(
+                conversation_engine=req.conversation_engine,
+                run_id=req.run_id,
+                step_seq=step_seq,
+            )
+        )
+        budget_state = initial_state.get("budget")
+        if not isinstance(budget_state, dict):
+            budget_state = {}
+        if getattr(req, "token_budget", None) is not None:
+            budget_state.setdefault("token_budget", int(req.token_budget or 0))
+        if getattr(req, "time_budget_ms", None) is not None:
+            budget_state.setdefault("time_budget_ms", int(req.time_budget_ms or 0))
+        budget_state.setdefault("token_used", int(budget_state.get("token_used", 0) or 0))
+        budget_state.setdefault("time_used_ms", int(budget_state.get("time_used_ms", 0) or 0))
+        budget_state.setdefault("cost_budget", float(budget_state.get("cost_budget", 0.0) or 0.0))
+        budget_state.setdefault("cost_used", float(budget_state.get("cost_used", 0.0) or 0.0))
+        budget_state.setdefault("budget_kind", str(budget_state.get("budget_kind") or "token"))
+        budget_state.setdefault("budget_scope", str(budget_state.get("budget_scope") or "run"))
+        initial_state["budget"] = budget_state
+        deps = initial_state.get("_deps")
+        if not isinstance(deps, dict):
+            deps = {}
+        deps.setdefault("conversation_engine", req.conversation_engine)
+        deps.setdefault("knowledge_engine", req.knowledge_engine)
+        deps.setdefault("ref_knowledge_engine", req.knowledge_engine)
+        deps.setdefault("workflow_engine", req.workflow_engine)
+        deps.setdefault("agentic_workflow_engine", req.workflow_engine)
+        deps.setdefault("capabilities", list(getattr(req, "capabilities", ()) or ()))
+        deps.setdefault(
+            "capability_subject",
+            getattr(req, "capability_subject", None) or self._owner._capability_subject(),
+        )
+        if budget_state:
+            deps.setdefault("budget_ledger", StateBackedBudgetLedger(budget_state))
+        initial_state["_deps"] = deps
+        runtime = WorkflowRuntime(
+            workflow_engine=req.workflow_engine,
+            conversation_engine=req.conversation_engine,
+            step_resolver=default_resolver,
+            predicate_registry={"always": predicate_always},
+            checkpoint_every_n_steps=1,
+            max_workers=1,
+            cancel_requested=lambda _rid: req.is_cancel_requested(),
+        )
+        kind = str(req.client_result.get("status") or "success")
+        model_map = {
+            "success": RunSuccess,
+            "failure": RunFailure,
+            "suspended": RunSuspended,
+        }
+        model = model_map.get(kind, RunSuccess)
+        client_result = model.model_validate(req.client_result)
+        run_result = runtime.resume_run(
+            run_id=req.run_id,
+            suspended_node_id=req.suspended_node_id,
+            suspended_token_id=req.suspended_token_id,
+            client_result=client_result,
+            workflow_id=req.workflow_id,
+            conversation_id=req.conversation_id,
+            turn_node_id=req.turn_node_id,
+        )
+        final_state = self._json_safe(dict(getattr(run_result, "final_state", {}) or {}))
+        final_state.pop("_deps", None)
+        return {
+            "workflow_status": str(getattr(run_result, "status", "succeeded") or "succeeded"),
+            "final_state": final_state,
+            "budget": final_state.get("budget", budget_state),
         }
 
     def get_run(self, run_id: str) -> dict[str, Any]:

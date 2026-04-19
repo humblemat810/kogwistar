@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator, List, Optional
 
+from ..messaging.models import ProjectedLaneMessageRow
 
 _active_sqlite_conn: contextvars.ContextVar[sqlite3.Connection | None] = (
     contextvars.ContextVar("gke_sqlite_active_conn", default=None)
@@ -46,6 +47,54 @@ class IndexJobRow:
     payload_json: Optional[str]
     created_at: int
     updated_at: int
+
+
+@dataclass(frozen=True)
+class ProjectedLaneMessageSqlRow:
+    message_id: str
+    namespace: str
+    inbox_id: str
+    conversation_id: str
+    recipient_id: str
+    sender_id: str
+    msg_type: str
+    status: str
+    seq: int
+    conversation_seq: int
+    claimed_by: str | None
+    lease_until: int | None
+    retry_count: int
+    created_at: int
+    available_at: int
+    run_id: str | None
+    step_id: str | None
+    correlation_id: str | None
+    payload_json: str | None
+    error_json: str | None
+
+    def as_row(self) -> ProjectedLaneMessageRow:
+        return ProjectedLaneMessageRow(
+            message_id=self.message_id,
+            namespace=self.namespace,
+            inbox_id=self.inbox_id,
+            conversation_id=self.conversation_id,
+            recipient_id=self.recipient_id,
+            sender_id=self.sender_id,
+            msg_type=self.msg_type,
+            status=self.status,
+            seq=self.seq,
+            conversation_seq=self.conversation_seq,
+            claimed_by=self.claimed_by,
+            lease_until=self.lease_until,
+            retry_count=self.retry_count,
+            created_at=self.created_at,
+            available_at=self.available_at,
+            run_id=self.run_id,
+            step_id=self.step_id,
+            correlation_id=self.correlation_id,
+            payload_json=self.payload_json,
+            error_json=self.error_json,
+        )
 
 
 class EngineSQLite:
@@ -136,6 +185,41 @@ class EngineSQLite:
             )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_index_jobs_namespace ON index_jobs(namespace)"
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS projected_lane_messages (
+                    message_id TEXT PRIMARY KEY,
+                    namespace TEXT NOT NULL DEFAULT 'default',
+                    inbox_id TEXT NOT NULL,
+                    conversation_id TEXT NOT NULL,
+                    recipient_id TEXT NOT NULL,
+                    sender_id TEXT NOT NULL,
+                    msg_type TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    seq INTEGER NOT NULL,
+                    conversation_seq INTEGER NOT NULL,
+                    claimed_by TEXT,
+                    lease_until INTEGER,
+                    retry_count INTEGER NOT NULL DEFAULT 0,
+                    created_at INTEGER NOT NULL,
+                    available_at INTEGER NOT NULL,
+                    run_id TEXT,
+                    step_id TEXT,
+                    correlation_id TEXT,
+                    payload_json TEXT,
+                    error_json TEXT
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_lane_messages_namespace_inbox_seq ON projected_lane_messages(namespace, inbox_id, seq)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_lane_messages_claim ON projected_lane_messages(namespace, inbox_id, status, available_at, lease_until)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_lane_messages_conversation_seq ON projected_lane_messages(namespace, conversation_id, conversation_seq)"
             )
 
             # Phase 2: coalescing + fingerprints
@@ -755,6 +839,270 @@ class EngineSQLite:
                 updated_at=int(r[15]),
             )
             for r in rows
+        ]
+
+    def project_lane_message(
+        self,
+        *,
+        message_id: str,
+        namespace: str,
+        inbox_id: str,
+        conversation_id: str,
+        recipient_id: str,
+        sender_id: str,
+        msg_type: str,
+        status: str,
+        created_at: int,
+        available_at: int,
+        run_id: str | None,
+        step_id: str | None,
+        correlation_id: str | None,
+        payload_json: str | None = None,
+        error_json: str | None = None,
+    ) -> None:
+        with self.transaction() as conn:
+            (next_seq,) = conn.execute(
+                """
+                SELECT COALESCE(MAX(seq), 0) + 1
+                FROM projected_lane_messages
+                WHERE namespace = ? AND inbox_id = ?
+                """,
+                (str(namespace), str(inbox_id)),
+            ).fetchone()
+            (next_conversation_seq,) = conn.execute(
+                """
+                SELECT COALESCE(MAX(conversation_seq), 0) + 1
+                FROM projected_lane_messages
+                WHERE namespace = ? AND conversation_id = ?
+                """,
+                (str(namespace), str(conversation_id)),
+            ).fetchone()
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO projected_lane_messages(
+                    message_id, namespace, inbox_id, conversation_id,
+                    recipient_id, sender_id, msg_type, status,
+                    seq, conversation_seq, claimed_by, lease_until,
+                    retry_count, created_at, available_at, run_id,
+                    step_id, correlation_id, payload_json, error_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, 0, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(message_id),
+                    str(namespace),
+                    str(inbox_id),
+                    str(conversation_id),
+                    str(recipient_id),
+                    str(sender_id),
+                    str(msg_type),
+                    str(status),
+                    int(next_seq),
+                    int(next_conversation_seq),
+                    int(created_at),
+                    int(available_at),
+                    None if run_id is None else str(run_id),
+                    None if step_id is None else str(step_id),
+                    None if correlation_id is None else str(correlation_id),
+                    payload_json,
+                    error_json,
+                ),
+            )
+
+    def update_projected_lane_message_status(
+        self,
+        *,
+        message_id: str,
+        status: str,
+        error_json: str | None = None,
+    ) -> None:
+        with self.transaction() as conn:
+            conn.execute(
+                """
+                UPDATE projected_lane_messages
+                SET status = ?,
+                    error_json = COALESCE(?, error_json),
+                    claimed_by = CASE WHEN ? IN ('completed', 'failed', 'cancelled') THEN NULL ELSE claimed_by END,
+                    lease_until = CASE WHEN ? IN ('completed', 'failed', 'cancelled') THEN NULL ELSE lease_until END
+                WHERE message_id = ?
+                """,
+                (str(status), error_json, str(status), str(status), str(message_id)),
+            )
+
+    def claim_projected_lane_messages(
+        self,
+        *,
+        namespace: str = "default",
+        inbox_id: str,
+        claimed_by: str,
+        limit: int = 50,
+        lease_seconds: int = 60,
+    ) -> list[ProjectedLaneMessageRow]:
+        if int(limit) <= 0:
+            return []
+        now = self._now_epoch()
+        lease_until = now + int(lease_seconds)
+        with self.transaction() as conn:
+            rows = conn.execute(
+                """
+                SELECT message_id
+                FROM projected_lane_messages
+                WHERE namespace = ?
+                  AND inbox_id = ?
+                  AND (
+                    (status = 'pending' AND available_at <= ?)
+                    OR
+                    (status = 'claimed' AND lease_until IS NOT NULL AND lease_until < ?)
+                  )
+                ORDER BY seq ASC, created_at ASC
+                LIMIT ?
+                """,
+                (str(namespace), str(inbox_id), int(now), int(now), int(limit)),
+            ).fetchall()
+            ids = [str(row[0]) for row in rows]
+            if not ids:
+                return []
+            for message_id in ids:
+                conn.execute(
+                    """
+                    UPDATE projected_lane_messages
+                    SET status = 'claimed', claimed_by = ?, lease_until = ?
+                    WHERE message_id = ?
+                    """,
+                    (str(claimed_by), int(lease_until), message_id),
+                )
+            placeholders = ",".join("?" for _ in ids)
+            got = conn.execute(
+                f"""
+                SELECT message_id, namespace, inbox_id, conversation_id, recipient_id, sender_id,
+                       msg_type, status, seq, conversation_seq, claimed_by, lease_until,
+                       retry_count, created_at, available_at, run_id, step_id, correlation_id,
+                       payload_json, error_json
+                FROM projected_lane_messages
+                WHERE message_id IN ({placeholders})
+                ORDER BY seq ASC
+                """,
+                tuple(ids),
+            ).fetchall()
+        return [
+            ProjectedLaneMessageSqlRow(
+                message_id=str(row[0]),
+                namespace=str(row[1]),
+                inbox_id=str(row[2]),
+                conversation_id=str(row[3]),
+                recipient_id=str(row[4]),
+                sender_id=str(row[5]),
+                msg_type=str(row[6]),
+                status=str(row[7]),
+                seq=int(row[8]),
+                conversation_seq=int(row[9]),
+                claimed_by=None if row[10] is None else str(row[10]),
+                lease_until=None if row[11] is None else int(row[11]),
+                retry_count=int(row[12]),
+                created_at=int(row[13]),
+                available_at=int(row[14]),
+                run_id=None if row[15] is None else str(row[15]),
+                step_id=None if row[16] is None else str(row[16]),
+                correlation_id=None if row[17] is None else str(row[17]),
+                payload_json=None if row[18] is None else str(row[18]),
+                error_json=None if row[19] is None else str(row[19]),
+            ).as_row()
+            for row in got
+        ]
+
+    def ack_projected_lane_message(self, *, message_id: str, claimed_by: str) -> None:
+        with self.transaction() as conn:
+            conn.execute(
+                """
+                UPDATE projected_lane_messages
+                SET status = 'completed', claimed_by = NULL, lease_until = NULL
+                WHERE message_id = ? AND (claimed_by IS NULL OR claimed_by = ?)
+                """,
+                (str(message_id), str(claimed_by)),
+            )
+
+    def requeue_projected_lane_message(
+        self,
+        *,
+        message_id: str,
+        claimed_by: str,
+        error_json: str | None = None,
+        delay_seconds: int = 0,
+    ) -> None:
+        now = self._now_epoch()
+        with self.transaction() as conn:
+            conn.execute(
+                """
+                UPDATE projected_lane_messages
+                SET status = 'pending',
+                    claimed_by = NULL,
+                    lease_until = NULL,
+                    retry_count = retry_count + 1,
+                    available_at = ?,
+                    error_json = COALESCE(?, error_json)
+                WHERE message_id = ? AND (claimed_by IS NULL OR claimed_by = ?)
+                """,
+                (
+                    int(now + max(0, int(delay_seconds))),
+                    error_json,
+                    str(message_id),
+                    str(claimed_by),
+                ),
+            )
+
+    def list_projected_lane_messages(
+        self,
+        *,
+        namespace: str = "default",
+        inbox_id: str | None = None,
+        status: str | None = None,
+        limit: int = 1000,
+    ) -> list[ProjectedLaneMessageRow]:
+        where: list[str] = ["namespace = ?"]
+        params: list[Any] = [str(namespace)]
+        if inbox_id is not None:
+            where.append("inbox_id = ?")
+            params.append(str(inbox_id))
+        if status is not None:
+            where.append("status = ?")
+            params.append(str(status))
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT message_id, namespace, inbox_id, conversation_id, recipient_id, sender_id,
+                       msg_type, status, seq, conversation_seq, claimed_by, lease_until,
+                       retry_count, created_at, available_at, run_id, step_id, correlation_id,
+                       payload_json, error_json
+                FROM projected_lane_messages
+                WHERE {' AND '.join(where)}
+                ORDER BY inbox_id ASC, seq ASC, created_at ASC
+                LIMIT ?
+                """,
+                tuple(params + [int(limit)]),
+            ).fetchall()
+        return [
+            ProjectedLaneMessageSqlRow(
+                message_id=str(row[0]),
+                namespace=str(row[1]),
+                inbox_id=str(row[2]),
+                conversation_id=str(row[3]),
+                recipient_id=str(row[4]),
+                sender_id=str(row[5]),
+                msg_type=str(row[6]),
+                status=str(row[7]),
+                seq=int(row[8]),
+                conversation_seq=int(row[9]),
+                claimed_by=None if row[10] is None else str(row[10]),
+                lease_until=None if row[11] is None else int(row[11]),
+                retry_count=int(row[12]),
+                created_at=int(row[13]),
+                available_at=int(row[14]),
+                run_id=None if row[15] is None else str(row[15]),
+                step_id=None if row[16] is None else str(row[16]),
+                correlation_id=None if row[17] is None else str(row[17]),
+                payload_json=None if row[18] is None else str(row[18]),
+                error_json=None if row[19] is None else str(row[19]),
+            ).as_row()
+            for row in rows
         ]
 
     # ------------------------------------------------------------------
@@ -1443,6 +1791,62 @@ class EngineSQLite:
             "finished_at_ms": None if row[13] is None else int(row[13]),
             "terminal": status in {"succeeded", "failed", "cancelled"},
         }
+
+    def list_server_runs(
+        self,
+        *,
+        status: str | None = None,
+        workflow_id: str | None = None,
+        conversation_id: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        sql = [
+            "SELECT run_id, conversation_id, workflow_id, user_id, user_turn_node_id,",
+            "       assistant_turn_node_id, status, cancel_requested, result_json,",
+            "       error_json, created_at_ms, updated_at_ms, started_at_ms, finished_at_ms",
+            "FROM server_runs",
+        ]
+        clauses: list[str] = []
+        params: list[Any] = []
+        if status is not None:
+            clauses.append("status = ?")
+            params.append(str(status))
+        if workflow_id is not None:
+            clauses.append("workflow_id = ?")
+            params.append(str(workflow_id))
+        if conversation_id is not None:
+            clauses.append("conversation_id = ?")
+            params.append(str(conversation_id))
+        if clauses:
+            sql.append("WHERE " + " AND ".join(clauses))
+        sql.append("ORDER BY created_at_ms DESC, run_id DESC")
+        sql.append("LIMIT ?")
+        params.append(int(limit))
+        with self.connect() as conn:
+            rows = conn.execute("\n".join(sql), tuple(params)).fetchall()
+        out = []
+        for row in rows:
+            status_val = str(row[6])
+            out.append(
+                {
+                    "run_id": str(row[0]),
+                    "conversation_id": str(row[1]),
+                    "workflow_id": str(row[2]),
+                    "user_id": None if row[3] is None else str(row[3]),
+                    "user_turn_node_id": None if row[4] is None else str(row[4]),
+                    "assistant_turn_node_id": None if row[5] is None else str(row[5]),
+                    "status": status_val,
+                    "cancel_requested": bool(int(row[7] or 0)),
+                    "result": self._decode_run_json(row[8]),
+                    "error": self._decode_run_json(row[9]),
+                    "created_at_ms": int(row[10]),
+                    "updated_at_ms": int(row[11]),
+                    "started_at_ms": None if row[12] is None else int(row[12]),
+                    "finished_at_ms": None if row[13] is None else int(row[13]),
+                    "terminal": status_val in {"succeeded", "failed", "cancelled"},
+                }
+            )
+        return out
 
     def list_server_run_events(
         self, run_id: str, *, after_seq: int = 0, limit: int = 500

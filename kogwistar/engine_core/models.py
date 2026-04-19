@@ -460,7 +460,7 @@ class Grounding(ModeSlicingMixin, BaseModel):
         List[Span], FrontendField(), BackendField(), DtoField(), LLMField()
     ] = Field(
         ...,
-        min_items=1,
+        min_length=1,
         description="One or more locatable span across chunks/text-clusters supporting this entity",
     )
 
@@ -521,7 +521,7 @@ class GraphEntityExtractionBase(GraphEntityBase):
         List[Grounding], FrontendField(), BackendField(), DtoField(), LLMField()
     ] = Field(
         ...,
-        min_items=1,
+        min_length=1,
         description="Mentioning of the idea across possibly multiple paragraphs",
     )
 
@@ -564,7 +564,7 @@ class GraphEntityRefBase(GraphEntityBase):
         List[Grounding], FrontendField(), BackendField(), DtoField(), LLMField()
     ] = Field(
         ...,
-        min_items=1,
+        min_length=1,
         description="Mentioning of the idea across possibly multiple paragraphs/ data sources",
     )
 
@@ -941,7 +941,7 @@ class LLMNodeExtraction(LLMNode):
         DtoField(),
         LLMField(),
     ] = Field(
-        min_items=1, description="One or more locatable mentions supporting this entity"
+        min_length=1, description="One or more locatable mentions supporting this entity"
     )  # type: ignore
 
 
@@ -955,7 +955,7 @@ class LLMEdgeExtraction(LLMEdge):
         DtoField(),
         LLMField(),
     ] = Field(
-        min_items=1, description="One or more locatable mentions supporting this entity"
+        min_length=1, description="One or more locatable mentions supporting this entity"
     )  # type: ignore
 
 
@@ -1100,7 +1100,7 @@ class FlattenedGrounding(ModeSlicingMixin, BaseModel):
         List[str], FrontendField(), BackendField(), DtoField(), LLMField()
     ] = Field(
         ...,
-        min_items=1,
+        min_length=1,
         description="One or more root-level span ids supporting this grounding",
     )
 
@@ -1142,7 +1142,7 @@ class FlattenedLLMNode(LLMMixin, GraphEntityBase):
         LLMField(),
     ] = Field(
         ...,
-        min_items=1,
+        min_length=1,
         description="One or more grouped evidence supports for this node",
     )
 
@@ -1197,7 +1197,7 @@ class FlattenedLLMEdge(LLMMixin, EdgeMixin, GraphEntityBase):
         LLMField(),
     ] = Field(
         ...,
-        min_items=1,
+        min_length=1,
         description="One or more grouped evidence supports for this edge",
     )
 

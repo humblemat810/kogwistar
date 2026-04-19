@@ -18,8 +18,11 @@ class AuthService:
         jwt_aud: Optional[str] = None,
     ):
         self.repo = AuthRepository(session)
-        self.jwt_secret = jwt_secret
-        self.jwt_alg = jwt_alg
+        resolved_secret = jwt_secret
+        if not resolved_secret:
+            raise RuntimeError("JWT secret is required")
+        self.jwt_secret = resolved_secret
+        self.jwt_alg = jwt_alg or "HS256"
         self.jwt_iss = jwt_iss
         self.jwt_aud = jwt_aud
 
@@ -57,7 +60,11 @@ class AuthService:
         return user.user_id
 
     def mint_token(
-        self, user_id: str, role: Optional[str] = None, ns: Any = None
+        self,
+        user_id: str,
+        role: Optional[str] = None,
+        ns: Any = None,
+        capabilities: Any = None,
     ) -> str:
         user = self.repo.get_user(user_id)
         if not user:
@@ -70,12 +77,16 @@ class AuthService:
         # Handle string list in global_ns (e.g. "docs,workflow")
         if isinstance(final_ns, str) and "," in final_ns:
             final_ns = [x.strip() for x in final_ns.split(",")]
+        final_caps = capabilities
+        if isinstance(final_caps, str) and "," in final_caps:
+            final_caps = [x.strip() for x in final_caps.split(",")]
 
         payload = {
             "sub": user.email,
             "user_id": user.user_id,
             "role": final_role,
             "ns": final_ns,
+            "capabilities": final_caps,
             "iat": int(time.time()),
             "exp": int((datetime.now(timezone.utc) + timedelta(hours=4)).timestamp()),
             "iss": self.jwt_iss or "local",

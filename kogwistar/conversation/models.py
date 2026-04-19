@@ -446,6 +446,9 @@ class MemoryRetrievalResult(BaseToolResult):
 class MemoryPinResult(BaseToolResult):
     memory_context_node: ConversationNode
     pinned_edges: List[ConversationEdge]
+    visibility: str = "private"
+    security_scope: str | None = None
+    shared_with: tuple[str, ...] = ()
 
 
 class FilteringResult(BaseModel):
