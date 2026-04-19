@@ -577,31 +577,33 @@ For an AI OS, tools are the equivalent of devices and drivers.
 
 ## Slice 10 — Service / Daemon Model
 
+Status: done.
+
 ### Goal
 Always-on agents and workers become managed services.
 
 ### Add
-- [ ] Service node / definition model
-- [ ] Service lifecycle:
-  - [ ] enabled
-  - [ ] starting
-  - [ ] healthy
-  - [ ] degraded
-  - [ ] restarting
-  - [ ] stopped
-- [ ] Restart policy
-- [ ] Health check / heartbeat model
-- [ ] Auto-start policy
-- [ ] Trigger sources:
-  - [ ] schedule
-  - [ ] message arrival
-  - [ ] graph change
-  - [ ] external event
+- [x] Service node / definition model
+- [x] Service lifecycle:
+  - [x] enabled
+  - [x] starting
+  - [x] healthy
+  - [x] degraded
+  - [x] restarting
+  - [x] stopped
+- [x] Restart policy
+- [x] Health check / heartbeat model
+- [x] Auto-start policy
+- [x] Trigger sources:
+  - [x] schedule
+  - [x] message arrival
+  - [x] graph change
+  - [x] external event
 
 ### Done when
-- [ ] A long-running agent can be declared and supervised
-- [ ] Crashed services can be restarted with policy
-- [ ] Health is visible to operators
+- [x] A long-running agent can be declared and supervised
+- [x] Crashed services can be restarted with policy
+- [x] Health is visible to operators
 
 ### Why it matters
 This is how “agent 1 always running” becomes real.
@@ -677,7 +679,7 @@ This is essential if Kogwistar is serious about evented, replayable system behav
 9. [x] Slice 9 — Tool / Device Subsystem
 
 ## Later OS-hardening order
-10. [ ] Slice 10 — Service / Daemon Model
+10. [x] Slice 10 — Service / Daemon Model
 11. [ ] Slice 12 — Recovery / Repair Utilities
 
 Note: Slice 5 can start earlier as an experimental API, but it should not be called stable too soon.
@@ -690,13 +692,13 @@ Kogwistar starts to have a credible claim once these are present together:
 
 - [x] lane messaging / IPC
 - [x] process model
-- [ ] namespaces / isolation
-- [ ] capability checks
+- [x] namespaces / isolation
+- [x] capability checks
 - [x] checkpoint / resume
-- [ ] service supervision
+- [x] service supervision
 - [x] operator views
 
-Without the remaining service supervision / recovery utilities, it is still better described as a strong substrate / harness.
+Without the remaining recovery utilities, it is still better described as a strong substrate / harness.
 
 With them, “agent OS” becomes a structurally defensible description.
 

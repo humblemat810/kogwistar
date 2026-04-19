@@ -46,6 +46,7 @@ from .auth_middleware import (
 from .chat_service_workflow_design import _WorkflowDesignService
 from .run_scheduler import RunScheduler
 from .run_registry import RunRegistry
+from .service_daemon import ServiceSupervisor
 from kogwistar.runtime.cost_ledger import CostLedger
 
 
@@ -87,11 +88,21 @@ class ChatRunService:
         self.capability_kernel = CapabilityKernel()
         for spec in DEFAULT_CAPABILITY_SPECS:
             self.capability_kernel.register(spec)
+        self.service_supervisor = ServiceSupervisor(
+            get_workflow_engine=self._get_workflow_engine,
+            get_conversation_engine=self._get_conversation_engine,
+            run_registry=self.run_registry,
+            spawn_workflow_run=lambda **kwargs: self._run_execution.submit_workflow_run(
+                **kwargs
+            ),
+            scope_snapshot=self._scope_snapshot,
+        )
 
         self.answer_runner = answer_runner or self._run_execution._default_answer_runner
         self.runtime_runner = (
             runtime_runner or self._run_execution._default_runtime_runner
         )
+        self.service_supervisor.bootstrap()
 
     def _knowledge_engine(self) -> Any:
         return self._get_knowledge_engine()
@@ -579,6 +590,10 @@ class ChatRunService:
         return {
             "scheduler": self.scheduler.snapshot(),
             "runs": self.run_registry.snapshot(),
+            "services": {
+                "total_services": len(self.service_supervisor.list_services(limit=10_000)),
+                "by_health": self._service_counts_by_health(),
+            },
             "storage_usage_bytes": storage_usage_bytes,
             "cost_ledger": self.cost_ledger.snapshot(),
             "budget_model": {
@@ -747,6 +762,123 @@ class ChatRunService:
             "security_scope": get_security_scope(),
         }
 
+    def _service_counts_by_health(self) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for row in self.service_supervisor.list_services(limit=10_000):
+            health = str(row.get("health_status") or "unknown")
+            counts[health] = counts.get(health, 0) + 1
+        return counts
+
+    def declare_service(
+        self,
+        *,
+        service_id: str,
+        service_kind: str,
+        target_kind: str,
+        target_ref: str,
+        target_config: dict[str, Any] | None = None,
+        enabled: bool = True,
+        autostart: bool = False,
+        restart_policy: dict[str, Any] | None = None,
+        heartbeat_ttl_ms: int = 60_000,
+        trigger_specs: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        self._require_capability(
+            "service.manage",
+            ["service.manage"],
+            approval_message="Declaring service requires service.manage capability",
+        )
+        return self.service_supervisor.declare_service(
+            service_id=service_id,
+            service_kind=service_kind,
+            target_kind=target_kind,
+            target_ref=target_ref,
+            target_config=target_config,
+            enabled=enabled,
+            autostart=autostart,
+            restart_policy=restart_policy,
+            heartbeat_ttl_ms=heartbeat_ttl_ms,
+            trigger_specs=trigger_specs,
+        )
+
+    def get_service(self, service_id: str) -> dict[str, Any]:
+        self._require_capability(
+            "service.inspect",
+            ["service.inspect", "project_view"],
+            approval_message="Inspecting service requires service.inspect capability",
+        )
+        return self.service_supervisor.get_service(service_id)
+
+    def list_services(self, *, limit: int = 200) -> list[dict[str, Any]]:
+        self._require_capability(
+            "service.inspect",
+            ["service.inspect", "project_view"],
+            approval_message="Listing services requires service.inspect capability",
+        )
+        return self.service_supervisor.list_services(limit=limit)
+
+    def enable_service(self, service_id: str) -> dict[str, Any]:
+        self._require_capability(
+            "service.manage",
+            ["service.manage"],
+            approval_message="Enabling service requires service.manage capability",
+        )
+        return self.service_supervisor.enable_service(service_id)
+
+    def disable_service(self, service_id: str) -> dict[str, Any]:
+        self._require_capability(
+            "service.manage",
+            ["service.manage"],
+            approval_message="Disabling service requires service.manage capability",
+        )
+        return self.service_supervisor.disable_service(service_id)
+
+    def record_service_heartbeat(
+        self,
+        service_id: str,
+        *,
+        instance_id: str,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        self._require_capability(
+            "service.heartbeat",
+            ["service.heartbeat", "service.manage"],
+            approval_message="Recording service heartbeat requires service.heartbeat capability",
+        )
+        return self.service_supervisor.record_service_heartbeat(
+            service_id,
+            instance_id=instance_id,
+            payload=payload,
+        )
+
+    def trigger_service(
+        self,
+        service_id: str,
+        *,
+        trigger_type: str,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        self._require_capability(
+            "service.manage",
+            ["service.manage"],
+            approval_message="Triggering service requires service.manage capability",
+        )
+        return self.service_supervisor.trigger_service(
+            service_id,
+            trigger_type=trigger_type,
+            payload=payload,
+        )
+
+    def list_service_events(
+        self, service_id: str, *, limit: int = 500
+    ) -> list[dict[str, Any]]:
+        self._require_capability(
+            "service.inspect",
+            ["service.inspect", "project_view"],
+            approval_message="Reading service events requires service.inspect capability",
+        )
+        return self.service_supervisor.list_service_events(service_id, limit=limit)
+
     def list_process_table(
         self,
         *,
@@ -804,6 +936,64 @@ class ChatRunService:
                     "security_scope": scope["security_scope"],
                 }
             )
+        for service in self.service_supervisor.list_services(limit=limit):
+            child_run_id = str(service.get("current_child_run_id") or "")
+            if workflow_id and str(service.get("target_ref") or "") != str(workflow_id):
+                continue
+            if conversation_id:
+                target_cfg = dict(service.get("target_config") or {})
+                if str(target_cfg.get("conversation_id") or "") != str(conversation_id):
+                    continue
+            service_status = str(service.get("lifecycle_status") or "")
+            if status and service_status != str(status):
+                continue
+            out.append(
+                {
+                    "process_id": str(service.get("service_id") or ""),
+                    "process_kind": "service",
+                    "status": service_status,
+                    "workflow_id": service.get("target_ref")
+                    if str(service.get("target_kind") or "") == "workflow"
+                    else None,
+                    "conversation_id": dict(service.get("target_config") or {}).get(
+                        "conversation_id"
+                    ),
+                    "user_id": None,
+                    "user_turn_node_id": None,
+                    "assistant_turn_node_id": None,
+                    "created_at_ms": service.get("created_at_ms"),
+                    "updated_at_ms": service.get("updated_at_ms"),
+                    "started_at_ms": service.get("current_child_started_at_ms"),
+                    "finished_at_ms": None,
+                    "terminal": not bool(service.get("enabled")),
+                    "event_count": len(
+                        self.service_supervisor.list_service_events(
+                            str(service.get("service_id") or ""), limit=200
+                        )
+                    ),
+                    "last_event_type": None,
+                    "last_event_seq": None,
+                    "owner": None,
+                    "namespace": service.get("execution_namespace"),
+                    "storage_namespace": service.get("storage_namespace"),
+                    "security_scope": service.get("security_scope"),
+                    "service_kind": service.get("service_kind"),
+                    "health_status": service.get("health_status"),
+                    "last_heartbeat_ms": service.get("last_heartbeat_ms"),
+                    "restart_count": service.get("restart_count"),
+                    "last_trigger_type": service.get("last_trigger_type"),
+                    "current_child_run_id": child_run_id or None,
+                    "current_child_status": service.get("current_child_status"),
+                }
+            )
+        out.sort(
+            key=lambda row: (
+                int(row.get("updated_at_ms") or 0),
+                str(row.get("process_kind") or ""),
+                str(row.get("process_id") or ""),
+            ),
+            reverse=True,
+        )
         return out
 
     def list_operator_inbox(

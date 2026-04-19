@@ -193,6 +193,97 @@ def build_workflow_mcp(
             ),
         }
 
+    @tool_roles({role_rw})
+    @require_ns({ns_workflow})
+    @mcp.tool(name="workflow.service_declare")
+    def workflow_service_declare(
+        service_id: str,
+        service_kind: str,
+        target_kind: str,
+        target_ref: str,
+        target_config: dict[str, Any] | None = None,
+        enabled: bool = True,
+        autostart: bool = False,
+        restart_policy: dict[str, Any] | None = None,
+        heartbeat_ttl_ms: int = 60_000,
+        trigger_specs: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        return get_service().declare_service(
+            service_id=service_id,
+            service_kind=service_kind,
+            target_kind=target_kind,
+            target_ref=target_ref,
+            target_config=target_config or {},
+            enabled=enabled,
+            autostart=autostart,
+            restart_policy=restart_policy or {},
+            heartbeat_ttl_ms=heartbeat_ttl_ms,
+            trigger_specs=trigger_specs or [],
+        )
+
+    @tool_roles({role_ro, role_rw})
+    @require_ns({ns_workflow})
+    @mcp.tool(name="workflow.service_list")
+    def workflow_service_list(limit: int = 200) -> dict[str, Any]:
+        return {"services": get_service().list_services(limit=limit)}
+
+    @tool_roles({role_ro, role_rw})
+    @require_ns({ns_workflow})
+    @mcp.tool(name="workflow.service_get")
+    def workflow_service_get(service_id: str) -> dict[str, Any]:
+        return get_service().get_service(service_id)
+
+    @tool_roles({role_rw})
+    @require_ns({ns_workflow})
+    @mcp.tool(name="workflow.service_enable")
+    def workflow_service_enable(service_id: str) -> dict[str, Any]:
+        return get_service().enable_service(service_id)
+
+    @tool_roles({role_rw})
+    @require_ns({ns_workflow})
+    @mcp.tool(name="workflow.service_disable")
+    def workflow_service_disable(service_id: str) -> dict[str, Any]:
+        return get_service().disable_service(service_id)
+
+    @tool_roles({role_rw})
+    @require_ns({ns_workflow})
+    @mcp.tool(name="workflow.service_heartbeat")
+    def workflow_service_heartbeat(
+        service_id: str,
+        instance_id: str,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return get_service().record_service_heartbeat(
+            service_id,
+            instance_id=instance_id,
+            payload=payload or {},
+        )
+
+    @tool_roles({role_rw})
+    @require_ns({ns_workflow})
+    @mcp.tool(name="workflow.service_trigger")
+    def workflow_service_trigger(
+        service_id: str,
+        trigger_type: str,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return get_service().trigger_service(
+            service_id,
+            trigger_type=trigger_type,
+            payload=payload or {},
+        )
+
+    @tool_roles({role_ro, role_rw})
+    @require_ns({ns_workflow})
+    @mcp.tool(name="workflow.service_events")
+    def workflow_service_events(
+        service_id: str, limit: int = 500
+    ) -> dict[str, Any]:
+        return {
+            "service_id": service_id,
+            "events": get_service().list_service_events(service_id, limit=limit),
+        }
+
     @tool_roles({role_ro, role_rw})
     @require_ns({ns_workflow})
     @mcp.tool(name="workflow.capabilities_snapshot")

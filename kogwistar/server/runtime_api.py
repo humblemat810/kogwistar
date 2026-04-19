@@ -80,6 +80,37 @@ class ResourceSnapshotOut(BaseModel):
     budget_model: dict[str, Any]
 
 
+class ServiceTriggerSpecIn(BaseModel):
+    type: str = Field(min_length=1)
+    enabled: bool = True
+    selector: dict[str, Any] = Field(default_factory=dict)
+    debounce_ms: int = 0
+    cooldown_ms: int = 0
+
+
+class ServiceDeclareIn(BaseModel):
+    service_id: str = Field(min_length=1)
+    service_kind: str = "daemon"
+    target_kind: str = "workflow"
+    target_ref: str = Field(min_length=1)
+    target_config: dict[str, Any] = Field(default_factory=dict)
+    enabled: bool = True
+    autostart: bool = False
+    restart_policy: dict[str, Any] = Field(default_factory=dict)
+    heartbeat_ttl_ms: int = 60_000
+    trigger_specs: list[ServiceTriggerSpecIn] = Field(default_factory=list)
+
+
+class ServiceHeartbeatIn(BaseModel):
+    instance_id: str = Field(min_length=1)
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class ServiceTriggerIn(BaseModel):
+    trigger_type: str = Field(min_length=1)
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
 def _as_http_error(exc: Exception) -> HTTPException:
     if isinstance(exc, KeyError):
         return HTTPException(status_code=404, detail=str(exc))
@@ -269,6 +300,104 @@ def create_runtime_router(
         require_namespace(runtime_namespaces)
         try:
             return get_service_r().resource_snapshot()
+        except Exception as exc:  # noqa: BLE001
+            raise _as_http_error(exc)
+
+    @router.post("/services")
+    def declare_service(inp: ServiceDeclareIn):
+        require_role("rw")
+        require_namespace(runtime_namespaces)
+        try:
+            return get_service_r().declare_service(
+                service_id=inp.service_id,
+                service_kind=inp.service_kind,
+                target_kind=inp.target_kind,
+                target_ref=inp.target_ref,
+                target_config=inp.target_config,
+                enabled=inp.enabled,
+                autostart=inp.autostart,
+                restart_policy=inp.restart_policy,
+                heartbeat_ttl_ms=inp.heartbeat_ttl_ms,
+                trigger_specs=[
+                    spec.model_dump(mode="python") for spec in inp.trigger_specs
+                ],
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise _as_http_error(exc)
+
+    @router.get("/services")
+    def list_services(limit: int = 200):
+        require_role("ro")
+        require_namespace(runtime_namespaces)
+        try:
+            return {"services": get_service_r().list_services(limit=limit)}
+        except Exception as exc:  # noqa: BLE001
+            raise _as_http_error(exc)
+
+    @router.get("/services/{service_id}")
+    def get_service(service_id: str):
+        require_role("ro")
+        require_namespace(runtime_namespaces)
+        try:
+            return get_service_r().get_service(service_id)
+        except Exception as exc:  # noqa: BLE001
+            raise _as_http_error(exc)
+
+    @router.post("/services/{service_id}/enable")
+    def enable_service(service_id: str):
+        require_role("rw")
+        require_namespace(runtime_namespaces)
+        try:
+            return get_service_r().enable_service(service_id)
+        except Exception as exc:  # noqa: BLE001
+            raise _as_http_error(exc)
+
+    @router.post("/services/{service_id}/disable")
+    def disable_service(service_id: str):
+        require_role("rw")
+        require_namespace(runtime_namespaces)
+        try:
+            return get_service_r().disable_service(service_id)
+        except Exception as exc:  # noqa: BLE001
+            raise _as_http_error(exc)
+
+    @router.post("/services/{service_id}/heartbeat")
+    def record_service_heartbeat(service_id: str, inp: ServiceHeartbeatIn):
+        require_role("rw")
+        require_namespace(runtime_namespaces)
+        try:
+            return get_service_r().record_service_heartbeat(
+                service_id,
+                instance_id=inp.instance_id,
+                payload=inp.payload,
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise _as_http_error(exc)
+
+    @router.post("/services/{service_id}/trigger")
+    def trigger_service(service_id: str, inp: ServiceTriggerIn):
+        require_role("rw")
+        require_namespace(runtime_namespaces)
+        try:
+            return get_service_r().trigger_service(
+                service_id,
+                trigger_type=inp.trigger_type,
+                payload=inp.payload,
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise _as_http_error(exc)
+
+    @router.get("/services/{service_id}/events")
+    def get_service_events(service_id: str, limit: int = 500):
+        require_role("ro")
+        require_namespace(runtime_namespaces)
+        try:
+            return {
+                "service_id": service_id,
+                "events": get_service_r().list_service_events(
+                    service_id, limit=limit
+                ),
+            }
         except Exception as exc:  # noqa: BLE001
             raise _as_http_error(exc)
 

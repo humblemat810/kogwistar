@@ -193,4 +193,7 @@ DEFAULT_CAPABILITY_SPECS = [
     CapabilitySpec("workflow.design.write", "Mutate workflow design", action_kind="write"),
     CapabilitySpec("workflow.run.read", "Read workflow run", action_kind="read"),
     CapabilitySpec("workflow.run.write", "Create or mutate workflow run", action_kind="write"),
+    CapabilitySpec("service.inspect", "Inspect service state", action_kind="read"),
+    CapabilitySpec("service.manage", "Manage service lifecycle", action_kind="write"),
+    CapabilitySpec("service.heartbeat", "Record service heartbeat", action_kind="write"),
 ]

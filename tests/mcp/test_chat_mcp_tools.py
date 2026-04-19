@@ -319,6 +319,89 @@ async def test_mcp_workflow_process_views(monkeypatch, engine_triplet):
         assert timeline["events"]
 
 
+@pytest.mark.asyncio
+async def test_mcp_workflow_service_tools_round_trip(monkeypatch, engine_triplet):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service = _configure_server(
+        monkeypatch,
+        engine,
+        conversation_engine,
+        workflow_engine,
+        _runtime_success_runner,
+        runtime_runner=_runtime_success_runner,
+    )
+
+    with _claims("rw", "workflow", sub="svc-mcp"):
+        claims = claims_ctx.get() or {}
+        claims["capabilities"] = [
+            "spawn_process",
+            "workflow.run.read",
+            "workflow.run.write",
+            "project_view",
+            "service.manage",
+            "service.inspect",
+            "service.heartbeat",
+        ]
+        created = service.create_conversation(user_id="svc-mcp-user")
+
+    with _claims("rw", "workflow", sub="svc-mcp"):
+        claims = claims_ctx.get() or {}
+        claims["capabilities"] = [
+            "service.manage",
+            "service.inspect",
+            "service.heartbeat",
+            "project_view",
+            "spawn_process",
+            "workflow.run.read",
+            "workflow.run.write",
+        ]
+        declared = _structured(
+            await server.mcp.call_tool(
+                "workflow.service_declare",
+                {
+                    "service_id": "svc.mcp.demo",
+                    "service_kind": "daemon",
+                    "target_kind": "workflow",
+                    "target_ref": "wf.service.mcp",
+                    "target_config": {"conversation_id": created["conversation_id"]},
+                },
+            )
+        )
+        assert declared["service_id"] == "svc.mcp.demo"
+
+        heartbeat = _structured(
+            await server.mcp.call_tool(
+                "workflow.service_heartbeat",
+                {
+                    "service_id": "svc.mcp.demo",
+                    "instance_id": "mcp-1",
+                    "payload": {"beat": 1},
+                },
+            )
+        )
+        assert heartbeat["health_status"] == "healthy"
+
+        listed = _structured(
+            await server.mcp.call_tool("workflow.service_list", {"limit": 20})
+        )["services"]
+        assert any(item["service_id"] == "svc.mcp.demo" for item in listed)
+
+        triggered = _structured(
+            await server.mcp.call_tool(
+                "workflow.service_trigger",
+                {"service_id": "svc.mcp.demo", "trigger_type": "external event"},
+            )
+        )
+        assert triggered["current_child_run_id"]
+
+        events = _structured(
+            await server.mcp.call_tool(
+                "workflow.service_events", {"service_id": "svc.mcp.demo", "limit": 50}
+            )
+        )["events"]
+        assert any(evt["event_type"] == "service.triggered" for evt in events)
+
+
 def test_chat_run_service_execution_meta_comes_from_conversation_engine(
     monkeypatch, engine_triplet
 ):
