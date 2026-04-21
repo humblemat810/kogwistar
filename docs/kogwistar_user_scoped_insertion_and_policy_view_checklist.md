@@ -1,6 +1,6 @@
 # Kogwistar Core - User-Scoped Insertion and ACL-Graph View Checklist
 
-Status: In progress. Phase 1 complete; Phase 2 partial; later phases pending.
+Status: In progress. Phase 1 complete; Phase 2 complete; later phases pending.
 Audience: Local coding agents and human maintainers
 Companion: `docs/kogwistar_user_scoped_insertion_and_policy_view_ard.md`
 
@@ -144,7 +144,7 @@ known truth_graph + entity_id
 - [x] route normal engine reads through ACL-aware subsystem when `acl_enabled=True`
 - [x] route normal engine writes through ACL-aware subsystem when `acl_enabled=True`
 - [x] route all answer-facing graph reads through ACL-filtered entrypoints
-- [ ] prevent raw graph traversal in answer and navigator flows
+- [x] prevent raw graph traversal in answer and navigator flows
 - [x] ensure ranking does not use hidden nodes or edges
 - [x] ensure explanations do not cite hidden structure
 - [x] pin navigator workflow order: interpret, security context, ACL context, anchors, traverse, rank, evidence, answer
@@ -160,7 +160,10 @@ Phase 2 now has ACL-aware normal read/write when `GraphKnowledgeEngine(..., acl_
 In that mode, normal `read` filters through persisted ACL truth and normal `write` materializes node, edge, grounding, and span ACL records.
 Raw `raw_read` and `raw_write` remain available for internal, operator, rebuild, and policy-resolution paths.
 Answer-facing candidate retrieval, evidence pack materialization, and KG projection now route through ACL-aware read surfaces.
-Full navigator traversal enforcement and broader raw-traversal封鎖 remain pending.
+Full navigator traversal enforcement now routes through ACL-aware reads on acl-enabled engines.
+Legacy raw fallbacks remain only for non-ACL engines and internal repair paths.
+
+Phase 4 now has a first envelope slice: lane messages carry an ACL context blob in truth-node metadata, preserving principal, scope, purpose, source graph, and visibility intent across background propagation.
 
 ### Phase 3 - Derived artifact safety
 
@@ -178,7 +181,7 @@ Derived-artifact ACL data should live in ACL truth as versioned ACL records, not
 
 ### Phase 4 - Background propagation
 
-- [ ] add principal, security scope, and ACL context to lane-message payload or envelope
+- [x] add principal, security scope, and ACL context to lane-message payload or envelope
 - [x] ensure worker and service handlers preserve that context
 - [x] ensure background-created user-visible artifacts inherit correct ACL
 - [ ] keep global maintenance flows separate from user-visible derivation flows where needed
@@ -247,3 +250,4 @@ Derived-artifact ACL data should live in ACL truth as versioned ACL records, not
 - If implementation pressure pushes ACL semantics into in-memory-only helper objects, stop and rewire into graph-native persisted truth.
 - If read filtering happens after traversal or ranking, treat slice as incomplete.
 - If background jobs lose principal context, treat user-visible outputs as unsafe by default.
+

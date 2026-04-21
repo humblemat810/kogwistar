@@ -46,6 +46,11 @@ def test_send_lane_message_creates_graph_objects_and_projection():
             assert messages[0].id == result.message_id
             assert messages[0].metadata["status"] == "pending"
             assert messages[0].metadata["conversation_id"] == "conv-demo"
+            acl_context = messages[0].metadata["acl_context"]
+            assert acl_context["purpose"] == "lane_message"
+            assert acl_context["source_graph"] == "conversation"
+            assert acl_context["source_entity_id"] == result.message_id
+            assert acl_context["visibility"] == "private"
 
             anchors = engine.read.get_nodes(where={"artifact_kind": "lane_inbox"})
             assert len(anchors) == 1

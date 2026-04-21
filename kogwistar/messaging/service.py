@@ -7,6 +7,7 @@ from typing import Any
 
 from kogwistar.engine_core.engine import scoped_namespace
 from kogwistar.engine_core.models import Edge, Grounding, Node, Span
+from kogwistar.acl import current_acl_context
 from kogwistar.id_provider import stable_id
 from kogwistar.server.auth_middleware import (
     can_access_security_scope,
@@ -95,6 +96,14 @@ class LaneMessagingService:
                 recipient_id=recipient_id,
             )
             created_by = str(sender_id).strip()
+            acl_context = current_acl_context(
+                acl_enabled=bool(getattr(self.engine, "acl_enabled", False)),
+                purpose="lane_message",
+                source_graph="conversation",
+                source_entity_id=message_id,
+                visibility="shared" if shared_flag else "private",
+                owner_id=sender_id,
+            )
 
             message_node = Node(
                 id=message_id,
@@ -119,6 +128,7 @@ class LaneMessagingService:
                     "shared_scope": shared_flag,
                     "shared_inbox": bool(shared_inbox),
                     "visibility": "shared" if shared_flag else "private",
+                    "acl_context": acl_context.to_dict(),
                     "payload": payload,
                     "created_at": created_at,
                     "updated_at": created_at,

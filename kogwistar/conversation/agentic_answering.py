@@ -898,8 +898,8 @@ class AgenticAnsweringAgent:
         out: list[dict[str, Any]] = []
         for node in res:
             if isinstance(node, str):
-                got = self.knowledge_engine.backend.node_get(
-                    ids=[node], include=["documents", "metadatas"]
+                got = _engine_get_nodes(
+                    self.knowledge_engine, ids=[node], include=["documents", "metadatas"]
                 )
                 if not got.get("ids"):
                     continue
@@ -1793,8 +1793,8 @@ class AgenticAnsweringAgent:
         eid = edge_id(
             scope=scope, rel="generated", src=run_node_id, dst=response_node_id
         )
-        ex = self.conversation_engine.backend.edge_get(ids=[eid], include=[])
-        if ex.get("ids"):
+        ex = _engine_get_edges(self.conversation_engine, ids=[eid], include=[])
+        if _has_result_items(ex):
             return
 
         if type(provenance_span) is Span:
