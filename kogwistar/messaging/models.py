@@ -8,6 +8,7 @@ from typing import Any
 class ProjectedLaneMessageRow:
     message_id: str
     namespace: str
+    purpose: str
     inbox_id: str
     conversation_id: str
     recipient_id: str

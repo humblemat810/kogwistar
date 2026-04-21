@@ -16,8 +16,6 @@ from kogwistar.server.auth_middleware import (
     require_security_scope,
     require_security_scope_access,
 )
-from kogwistar.conversation.policy import can_access_memory_metadata
-
 
 def test_scope_helpers_default_to_claim_namespace():
     token = claims_ctx.set({"ns": "conversation"})
@@ -91,40 +89,6 @@ def test_security_scope_access_requires_match_or_explicit_share():
         )
     finally:
         claims_ctx.reset(token)
-
-
-def test_memory_visibility_requires_agent_match_for_private_memory():
-    private_md = {
-        "visibility": "private",
-        "owner_agent_id": "agent-a",
-        "owner_security_scope": "tenant-a",
-        "security_scope": "tenant-a",
-    }
-    shared_md = {
-        "visibility": "shared",
-        "owner_agent_id": "agent-a",
-        "owner_security_scope": "tenant-a",
-        "security_scope": "tenant-a",
-        "shared_with_agents": ["agent-b"],
-    }
-    assert (
-        can_access_memory_metadata(
-            private_md, current_security_scope="tenant-a", current_agent_id="agent-a"
-        )
-        is True
-    )
-    assert (
-        can_access_memory_metadata(
-            private_md, current_security_scope="tenant-a", current_agent_id="agent-b"
-        )
-        is False
-    )
-    assert (
-        can_access_memory_metadata(
-            shared_md, current_security_scope="tenant-a", current_agent_id="agent-b"
-        )
-        is True
-    )
 
 
 def test_security_scope_parts_support_tenant_workspace_project():

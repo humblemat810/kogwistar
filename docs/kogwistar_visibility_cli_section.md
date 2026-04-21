@@ -8,6 +8,7 @@ All slices MUST expose their observable state through this common model.
 - Visibility is a **projection**, never authoritative truth.
 - All CLI / MCP / REST inspection must be **reconstructible from events + graph truth**.
 - There is **one unified operator surface**, not per-slice custom tools.
+- ACL-controlled visibility must come from persisted ACL truth, not from CLI-only or in-memory-only filters.
 - All visibility must respect:
   - `security_scope`
   - `execution_namespace`

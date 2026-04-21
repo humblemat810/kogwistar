@@ -26,6 +26,7 @@ class LaneMessageMetaStoreMixin:
         self,
         *,
         namespace: str | None = None,
+        purpose: str | None = None,
         inbox_id: str | None = None,
         conversation_id: str | None = None,
         status: str | None = None,
@@ -41,6 +42,7 @@ class LaneMessageMetaStoreMixin:
         *,
         message_id: str,
         namespace: str,
+        purpose: str = "user_visible",
         inbox_id: str,
         conversation_id: str,
         recipient_id: str,
@@ -72,6 +74,7 @@ class LaneMessageMetaStoreMixin:
         row = ProjectedLaneMessageRow(
             message_id=str(message_id),
             namespace=str(namespace),
+            purpose=str(purpose or "user_visible"),
             inbox_id=str(inbox_id),
             conversation_id=str(conversation_id),
             recipient_id=str(recipient_id),
@@ -152,7 +155,7 @@ class LaneMessageMetaStoreMixin:
 
     def ack_projected_lane_message(self, *, message_id: str, claimed_by: str) -> None:
         row = self._lane_message_get_row(message_id=str(message_id))
-        if row is None or row.claimed_by != str(claimed_by):
+        if row is None or (row.claimed_by is not None and row.claimed_by != str(claimed_by)):
             return
         self._lane_message_update_row(
             row=replace(
@@ -172,7 +175,7 @@ class LaneMessageMetaStoreMixin:
         delay_seconds: int = 0,
     ) -> None:
         row = self._lane_message_get_row(message_id=str(message_id))
-        if row is None or row.claimed_by != str(claimed_by):
+        if row is None or (row.claimed_by is not None and row.claimed_by != str(claimed_by)):
             return
         self._lane_message_update_row(
             row=replace(
@@ -194,7 +197,7 @@ class LaneMessageMetaStoreMixin:
         error_json: str | None = None,
     ) -> None:
         row = self._lane_message_get_row(message_id=str(message_id))
-        if row is None or row.claimed_by != str(claimed_by):
+        if row is None or (row.claimed_by is not None and row.claimed_by != str(claimed_by)):
             return
         self._lane_message_update_row(
             row=replace(
@@ -210,11 +213,13 @@ class LaneMessageMetaStoreMixin:
         self,
         *,
         namespace: str = "default",
+        purpose: str | None = None,
         inbox_id: str | None = None,
         status: str | None = None,
     ) -> list[ProjectedLaneMessageRow]:
         rows = self._lane_message_list_rows(
             namespace=str(namespace),
+            purpose=purpose,
             inbox_id=inbox_id,
             status=status,
         )

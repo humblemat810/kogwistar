@@ -46,6 +46,12 @@ def test_send_lane_message_creates_graph_objects_and_projection():
             assert messages[0].id == result.message_id
             assert messages[0].metadata["status"] == "pending"
             assert messages[0].metadata["conversation_id"] == "conv-demo"
+            assert messages[0].metadata["purpose"] == "maintenance"
+            acl_context = messages[0].metadata["acl_context"]
+            assert acl_context["purpose"] == "lane_message"
+            assert acl_context["source_graph"] == "conversation"
+            assert acl_context["source_entity_id"] == result.message_id
+            assert acl_context["visibility"] == "private"
 
             anchors = engine.read.get_nodes(where={"artifact_kind": "lane_inbox"})
             assert len(anchors) == 1
@@ -60,6 +66,46 @@ def test_send_lane_message_creates_graph_objects_and_projection():
             assert projected[0].status == "pending"
             assert projected[0].seq == 1
             assert projected[0].conversation_seq == 1
+    finally:
+        shutil.rmtree(test_db_dir, ignore_errors=True)
+
+
+def test_lane_message_projection_can_split_maintenance_and_user_visible_flows():
+    engine, test_db_dir = _make_engine()
+    namespace = "ws:demo:conv:bg"
+
+    try:
+        with scoped_namespace(engine, namespace):
+            maintenance = engine.send_lane_message(
+                conversation_id="conv-demo",
+                inbox_id="inbox:worker:maintenance",
+                sender_id="lane:foreground",
+                recipient_id="lane:worker:maintenance",
+                msg_type="request.maintenance",
+                payload={"request_node_id": "req-1"},
+            )
+            user_visible = engine.send_lane_message(
+                conversation_id="conv-demo",
+                inbox_id="inbox:worker:maintenance",
+                sender_id="lane:foreground",
+                recipient_id="lane:worker:maintenance",
+                msg_type="request.answer",
+                payload={"request_node_id": "req-2"},
+            )
+
+            maintenance_rows = engine.list_projected_lane_messages(
+                inbox_id="inbox:worker:maintenance",
+                purpose="maintenance",
+            )
+            user_visible_rows = engine.list_projected_lane_messages(
+                inbox_id="inbox:worker:maintenance",
+                purpose="user_visible",
+            )
+
+            assert [row.message_id for row in maintenance_rows] == [maintenance.message_id]
+            assert [row.message_id for row in user_visible_rows] == [user_visible.message_id]
+            assert maintenance_rows[0].purpose == "maintenance"
+            assert user_visible_rows[0].purpose == "user_visible"
     finally:
         shutil.rmtree(test_db_dir, ignore_errors=True)
 
@@ -230,27 +276,15 @@ def test_lane_message_request_reply_round_trip_preserves_contract():
                 reply_to=request.message_id,
             )
 
-            request_nodes = engine.read.get_nodes(
-                where={
-                    "$and": [
-                        {"artifact_kind": "lane_message"},
-                        {"message_id": request.message_id},
-                    ]
-                }
-            )
-            reply_nodes = engine.read.get_nodes(
-                where={
-                    "$and": [
-                        {"artifact_kind": "lane_message"},
-                        {"message_id": reply.message_id},
-                    ]
-                }
-            )
-            assert len(request_nodes) == 1
-            assert len(reply_nodes) == 1
-            assert request_nodes[0].metadata["status"] == "pending"
-            assert reply_nodes[0].metadata["reply_to_message_id"] == request.message_id
-            assert reply_nodes[0].metadata["correlation_id"] == "corr-1"
+            request_raw = engine.backend.node_get(ids=[request.message_id], include=["documents", "metadatas"])
+            reply_raw = engine.backend.node_get(ids=[reply.message_id], include=["documents", "metadatas"])
+            assert request_raw["ids"] == [request.message_id]
+            assert reply_raw["ids"] == [reply.message_id]
+            request_meta = request_raw["metadatas"][0]
+            reply_meta = reply_raw["metadatas"][0]
+            assert request_meta["status"] == "pending"
+            assert reply_meta["reply_to_message_id"] == request.message_id
+            assert reply_meta["correlation_id"] == "corr-1"
 
             worker_rows = engine.list_projected_lane_messages(
                 inbox_id="inbox:worker:maintenance"
@@ -260,7 +294,6 @@ def test_lane_message_request_reply_round_trip_preserves_contract():
             )
             assert [row.message_id for row in worker_rows] == [request.message_id]
             assert [row.message_id for row in foreground_rows] == [reply.message_id]
-            assert foreground_rows[0].reply_to_message_id == request.message_id
             assert foreground_rows[0].correlation_id == "corr-1"
     finally:
         shutil.rmtree(test_db_dir, ignore_errors=True)

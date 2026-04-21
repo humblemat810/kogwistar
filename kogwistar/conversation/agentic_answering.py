@@ -95,6 +95,51 @@ def context_messages_hash(messages: Sequence[Any]) -> str:
     return snapshot_hash({"messages": norm})
 
 
+def _engine_query_nodes(
+    engine: Any,
+    *,
+    query_embeddings: list[list[float]],
+    n_results: int,
+    where: dict[str, Any] | None,
+    include: list[str],
+):
+    reader = getattr(engine, "read", None)
+    if getattr(engine, "acl_enabled", False) and reader is not None and hasattr(reader, "query_nodes"):
+        return reader.query_nodes(
+            query_embeddings=query_embeddings,
+            n_results=n_results,
+            where=where,
+            include=include,
+            node_type=ConversationNode,
+        )[0]
+    return engine.backend.node_query(
+        query_embeddings=query_embeddings,
+        n_results=n_results,
+        where=where,
+        include=include,
+    )
+
+
+def _engine_get_nodes(engine: Any, *, ids: list[str], include: list[str]):
+    reader = getattr(engine, "read", None)
+    if getattr(engine, "acl_enabled", False) and reader is not None and hasattr(reader, "get_nodes"):
+        return reader.get_nodes(ids=ids, include=include, node_type=ConversationNode)
+    return engine.backend.node_get(ids=ids, include=include)
+
+
+def _engine_get_edges(engine: Any, *, ids: list[str], include: list[str]):
+    reader = getattr(engine, "read", None)
+    if getattr(engine, "acl_enabled", False) and reader is not None and hasattr(reader, "get_edges"):
+        return reader.get_edges(ids=ids, include=include, edge_type=ConversationEdge)
+    return engine.backend.edge_get(ids=ids, include=include)
+
+
+def _has_result_items(result: Any) -> bool:
+    if isinstance(result, dict):
+        return bool(result.get("ids"))
+    return bool(result)
+
+
 def deterministic_id(prefix: str, fingerprint: dict, bits: int = 96) -> str:
     """Generate a stable, collision-resistant ID based on a payload fingerprint.
     
@@ -842,24 +887,40 @@ class AgenticAnsweringAgent:
             emb = self.knowledge_engine._iterative_defensive_emb(question)
         else:
             raise AttributeError("knowledge engine has no defensive embedding API")
-        # Always go through the backend interface (so PG/Chroma backends behave identically)
-        res = self.knowledge_engine.backend.node_query(
+        # ACL-enabled path should flow through engine read; raw read stays inside engine.read when disabled.
+        res = _engine_query_nodes(
+            self.knowledge_engine,
             query_embeddings=[emb],
             n_results=self.config.max_candidates,
             where={"level_from_root": {"$lte": self.config.max_retrieval_level}},
             include=["documents", "metadatas"],
         )
-        ids = (res.get("ids") or [[]])[0]
-        metas = (res.get("metadatas") or [[]])[0]
-        docs = (res.get("documents") or [[]])[0]
         out: list[dict[str, Any]] = []
-        for i, mid in enumerate(ids):
+        for node in res:
+            if isinstance(node, str):
+                got = _engine_get_nodes(
+                    self.knowledge_engine, ids=[node], include=["documents", "metadatas"]
+                )
+                if not got.get("ids"):
+                    continue
+                docs = (got.get("documents") or [None])[0]
+                metas = got.get("metadatas") or [{}]
+                meta = dict(metas[0] if metas else {})
+                out.append(
+                    {
+                        "id": str(node),
+                        "label": meta.get("label"),
+                        "summary": meta.get("summary"),
+                        "doc": docs if isinstance(docs, str) else "",
+                    }
+                )
+                continue
             out.append(
                 {
-                    "id": str(mid),
-                    "label": (metas[i] or {}).get("label"),
-                    "summary": (metas[i] or {}).get("summary"),
-                    "doc": docs[i],
+                    "id": str(node.safe_get_id()),
+                    "label": (getattr(node, "metadata", {}) or {}).get("label"),
+                    "summary": (getattr(node, "metadata", {}) or {}).get("summary"),
+                    "doc": getattr(node, "summary", None) or "",
                 }
             )
         out.sort(key=lambda x: str(x.get("id")))
@@ -919,12 +980,20 @@ class AgenticAnsweringAgent:
         edge_ids = list(edge_ids or [])
 
         for nid in node_ids:
-            got = agent.knowledge_engine.backend.node_get(
-                ids=[nid], include=["documents", "metadatas"]
+            got = _engine_get_nodes(
+                agent.knowledge_engine, ids=[nid], include=["documents", "metadatas"]
             )
-            docs = (got.get("documents") or [None])[0]
-            metas = got.get("metadatas") or [{}]
-            meta = metas[0] if metas else {}
+            if not _has_result_items(got):
+                continue
+            if isinstance(got, dict):
+                docs = (got.get("documents") or [None])[0]
+                metas = got.get("metadatas") or [{}]
+                meta = dict(metas[0] if metas else {})
+                text_source = docs if isinstance(docs, str) else ""
+            else:
+                node = got[0]
+                meta = dict(getattr(node, "metadata", {}) or {})
+                text_source = str(getattr(node, "summary", "") or "")
 
             label = meta.get("label") or meta.get("title") or ""
             summary: str = str(meta.get("summary") or "")
@@ -934,14 +1003,12 @@ class AgenticAnsweringAgent:
             # - deep: include doc text if available, else summary
             if (
                 (depth or "shallow") == "deep"
-                and isinstance(docs, str)
-                and docs.strip()
+                and isinstance(text_source, str)
+                and text_source.strip()
             ):
-                text = docs.strip()
+                text = text_source.strip()
             else:
-                text = summary.strip() or (
-                    docs.strip() if isinstance(docs, str) else ""
-                )
+                text = summary.strip() or text_source.strip()
 
             if not text:
                 text = ""
@@ -1013,13 +1080,16 @@ class AgenticAnsweringAgent:
 
         # Materialize edges as compact hints. No endpoint expansion here.
         for eid in edge_ids:
-            got = agent.knowledge_engine.backend.edge_get(
-                ids=[eid], include=["metadatas"]
+            got = _engine_get_edges(
+                agent.knowledge_engine, ids=[eid], include=["metadatas"]
             )
-            if not got.get("ids"):
+            if not got:
                 continue
-            metas = got.get("metadatas") or [{}]
-            meta = metas[0] if metas else {}
+            if isinstance(got, dict):
+                metas = got.get("metadatas") or [{}]
+                meta = dict(metas[0] if metas else {})
+            else:
+                meta = dict(getattr(got[0], "metadata", {}) or {})
             pack["edges"].append(
                 {
                     "id": eid,
@@ -1282,8 +1352,8 @@ class AgenticAnsweringAgent:
         rid = pointer_id(
             scope=scope, pointer_kind="agent_run", target_kind="run", target_id=run_id
         )
-        existing = self.conversation_engine.backend.node_get(ids=[rid], include=[])
-        if existing.get("ids"):
+        existing = _engine_get_nodes(self.conversation_engine, ids=[rid], include=[])
+        if _has_result_items(existing):
             return rid
 
         sp = Span.from_dummy_for_conversation()
@@ -1388,12 +1458,13 @@ class AgenticAnsweringAgent:
         )
 
         # If exists, still ensure run->evidence edge exists (idempotent)
-        existing = self.conversation_engine.backend.node_get(ids=[pid], include=[])
-        if not existing.get("ids"):
-            kg = self.knowledge_engine.backend.node_get(
-                ids=[kg_node_id], include=["metadatas"]
-            )
-            meta = (kg.get("metadatas") or [{}])[0] or {}
+        existing = _engine_get_nodes(self.conversation_engine, ids=[pid], include=[])
+        if not _has_result_items(existing):
+            kg = _engine_get_nodes(self.knowledge_engine, ids=[kg_node_id], include=["metadatas"])
+            if isinstance(kg, dict):
+                meta = dict((kg.get("metadatas") or [{}])[0] or {})
+            else:
+                meta = dict((getattr(kg[0], "metadata", {}) or {}) if kg else {})
             snap = {
                 "entity_id": kg_node_id,
                 "label": meta.get("label"),
@@ -1435,8 +1506,8 @@ class AgenticAnsweringAgent:
 
         # Link run -> evidence
         eid = edge_id(scope=scope, rel="used_evidence", src=run_node_id, dst=pid)
-        ex_edge = self.conversation_engine.backend.edge_get(ids=[eid], include=[])
-        if not ex_edge.get("ids"):
+        ex_edge = _engine_get_edges(self.conversation_engine, ids=[eid], include=[])
+        if not _has_result_items(ex_edge):
             edge = ConversationEdge(
                 id=eid,
                 source_ids=[run_node_id],
@@ -1490,15 +1561,16 @@ class AgenticAnsweringAgent:
         )
 
         # Fetch KG edge metadata once (also used for the usage-pointer node summary).
-        eg = self.knowledge_engine.backend.edge_get(
-            ids=[kg_edge_id], include=["metadatas"]
-        )
-        if not eg.get("ids"):
+        eg = _engine_get_edges(self.knowledge_engine, ids=[kg_edge_id], include=["metadatas"])
+        if not _has_result_items(eg):
             raise ValueError(f"KG edge not found: {kg_edge_id}")
-        meta = (eg.get("metadatas") or [{}])[0] or {}
+        if isinstance(eg, dict):
+            meta = dict((eg.get("metadatas") or [{}])[0] or {})
+        else:
+            meta = dict(getattr(eg[0], "metadata", {}) or {})
 
-        existing = self.conversation_engine.backend.edge_get(ids=[peid], include=[])
-        if not existing.get("ids"):
+        existing = _engine_get_edges(self.conversation_engine, ids=[peid], include=[])
+        if not _has_result_items(existing):
             kg_src_ids = list(meta.get("source_ids") or [])
             kg_tgt_ids = list(meta.get("target_ids") or [])
 
@@ -1721,8 +1793,8 @@ class AgenticAnsweringAgent:
         eid = edge_id(
             scope=scope, rel="generated", src=run_node_id, dst=response_node_id
         )
-        ex = self.conversation_engine.backend.edge_get(ids=[eid], include=[])
-        if ex.get("ids"):
+        ex = _engine_get_edges(self.conversation_engine, ids=[eid], include=[])
+        if _has_result_items(ex):
             return
 
         if type(provenance_span) is Span:

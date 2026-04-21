@@ -7,6 +7,7 @@ from typing import Any
 
 from kogwistar.engine_core.engine import scoped_namespace
 from kogwistar.engine_core.models import Edge, Grounding, Node, Span
+from kogwistar.acl import current_acl_context
 from kogwistar.id_provider import stable_id
 from kogwistar.server.auth_middleware import (
     can_access_security_scope,
@@ -47,6 +48,15 @@ def _message_span(conversation_id: str, *, insertion_method: str, excerpt: str) 
     )
 
 
+def _infer_message_purpose(msg_type: str, purpose: str | None) -> str:
+    if purpose:
+        return str(purpose)
+    lowered = str(msg_type or "").lower()
+    if "maintenance" in lowered or "repair" in lowered or "rebuild" in lowered:
+        return "maintenance"
+    return "user_visible"
+
+
 class LaneMessagingService:
     def __init__(self, engine: Any) -> None:
         self.engine = engine
@@ -65,6 +75,7 @@ class LaneMessagingService:
         correlation_id: str | None = None,
         reply_to: str | None = None,
         priority: int = 0,
+        purpose: str | None = None,
         security_scope: str | None = None,
         shared_scope: bool = False,
         shared_inbox: bool = False,
@@ -77,6 +88,7 @@ class LaneMessagingService:
         )
         effective_scope = str(security_scope or get_security_scope()).strip().lower()
         shared_flag = bool(shared_scope or shared_inbox)
+        effective_purpose = _infer_message_purpose(msg_type, purpose)
         require_security_scope_access(
             effective_scope,
             shared=shared_flag,
@@ -93,6 +105,15 @@ class LaneMessagingService:
                 inbox_id=inbox_id,
                 sender_id=sender_id,
                 recipient_id=recipient_id,
+            )
+            created_by = str(sender_id).strip()
+            acl_context = current_acl_context(
+                acl_enabled=bool(getattr(self.engine, "acl_enabled", False)),
+                purpose="lane_message",
+                source_graph="conversation",
+                source_entity_id=message_id,
+                visibility="shared" if shared_flag else "private",
+                owner_id=sender_id,
             )
 
             message_node = Node(
@@ -118,6 +139,8 @@ class LaneMessagingService:
                     "shared_scope": shared_flag,
                     "shared_inbox": bool(shared_inbox),
                     "visibility": "shared" if shared_flag else "private",
+                    "purpose": effective_purpose,
+                    "acl_context": acl_context.to_dict(),
                     "payload": payload,
                     "created_at": created_at,
                     "updated_at": created_at,
@@ -127,6 +150,17 @@ class LaneMessagingService:
                 },
             )
             self.engine.write.add_node(message_node)
+            record_acl = getattr(self.engine, "record_acl", None)
+            if callable(record_acl):
+                record_acl(
+                    truth_graph="conversation",
+                    entity_id=message_id,
+                    version=1,
+                    mode="shared" if shared_flag else "private",
+                    created_by=created_by,
+                    owner_id=sender_id,
+                    security_scope=effective_scope,
+                )
 
             self._add_semantic_edge(
                 edge_id=str(stable_id("lane_message_edge", message_id, "in_conversation", anchors["conversation"].id)),
@@ -186,6 +220,7 @@ class LaneMessagingService:
             project(
                 message_id=message_id,
                 namespace=namespace,
+                purpose=effective_purpose,
                 inbox_id=inbox_id,
                 conversation_id=conversation_id,
                 recipient_id=recipient_id,
@@ -340,6 +375,7 @@ class LaneMessagingService:
         *,
         inbox_id: str | None = None,
         status: str | None = None,
+        purpose: str | None = None,
     ) -> list[ProjectedLaneMessageRow]:
         list_fn = getattr(self.engine.meta_sqlite, "list_projected_lane_messages", None)
         if not callable(list_fn):
@@ -350,7 +386,7 @@ class LaneMessagingService:
             or getattr(self.engine, "namespace", "default")
             or "default"
         )
-        rows = list_fn(namespace=namespace, inbox_id=inbox_id, status=status)
+        rows = list_fn(namespace=namespace, inbox_id=inbox_id, status=status, purpose=purpose)
         return [row for row in rows if self._row_visible(row)]
 
     def _row_visible(self, row: ProjectedLaneMessageRow) -> bool:

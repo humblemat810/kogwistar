@@ -254,6 +254,7 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
                 CREATE TABLE IF NOT EXISTS {plm} (
                     message_id TEXT PRIMARY KEY,
                     namespace TEXT NOT NULL DEFAULT 'default',
+                    purpose TEXT NOT NULL DEFAULT 'user_visible',
                     inbox_id TEXT NOT NULL,
                     conversation_id TEXT NOT NULL,
                     recipient_id TEXT NOT NULL,
@@ -278,6 +279,7 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
                     conversation_tail_message_id TEXT NULL
                 )
             """,
+            f"ALTER TABLE {plm} ADD COLUMN IF NOT EXISTS purpose TEXT NOT NULL DEFAULT 'user_visible'",
             f"CREATE INDEX IF NOT EXISTS idx_lane_messages_namespace_inbox_seq ON {plm}(namespace, inbox_id, seq)",
             f"CREATE INDEX IF NOT EXISTS idx_lane_messages_claim ON {plm}(namespace, inbox_id, status, available_at, lease_until)",
             f"CREATE INDEX IF NOT EXISTS idx_lane_messages_conversation_seq ON {plm}(namespace, conversation_id, conversation_seq)",
@@ -887,6 +889,7 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
         *,
         message_id: str,
         namespace: str,
+        purpose: str = "user_visible",
         inbox_id: str,
         conversation_id: str,
         recipient_id: str,
@@ -907,7 +910,7 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
                 sa.text(
                     f"""
                     INSERT INTO {table}(
-                        message_id, namespace, inbox_id, conversation_id,
+                        message_id, namespace, purpose, inbox_id, conversation_id,
                         recipient_id, sender_id, msg_type, status,
                         seq, conversation_seq, claimed_by, lease_until,
                         retry_count, created_at, available_at, run_id,
@@ -916,7 +919,7 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
                         inbox_tail_message_id, conversation_tail_message_id
                     )
                     SELECT
-                        :message_id, :namespace, :inbox_id, :conversation_id,
+                        :message_id, :namespace, :purpose, :inbox_id, :conversation_id,
                         :recipient_id, :sender_id, :msg_type, :status,
                         COALESCE((
                             SELECT MAX(seq) + 1 FROM {table}
@@ -928,14 +931,21 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
                         ), 1),
                         NULL, NULL, 0, :created_at, :available_at, :run_id,
                         :step_id, :correlation_id, :payload_json, :error_json,
-                        NULL, NULL, NULL, NULL
+                        (
+                            SELECT message_id FROM {table}
+                            WHERE namespace = :namespace AND inbox_id = :inbox_id
+                            ORDER BY seq DESC, created_at DESC
+                            LIMIT 1
+                        ),
+                        NULL, :message_id, :message_id
                     ON CONFLICT (message_id) DO NOTHING
                     """
                 ),
                 {
-                    "message_id": str(message_id),
-                    "namespace": str(namespace),
-                    "inbox_id": str(inbox_id),
+                        "message_id": str(message_id),
+                        "namespace": str(namespace),
+                        "purpose": str(purpose or "user_visible"),
+                        "inbox_id": str(inbox_id),
                     "conversation_id": str(conversation_id),
                     "recipient_id": str(recipient_id),
                     "sender_id": str(sender_id),
@@ -1012,7 +1022,7 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
                         lease_until = NOW() + (:lease_seconds || ' seconds')::interval
                     FROM picked
                     WHERE t.message_id = picked.message_id
-                    RETURNING t.message_id, t.namespace, t.inbox_id, t.conversation_id, t.recipient_id, t.sender_id,
+                    RETURNING t.message_id, t.namespace, t.purpose, t.inbox_id, t.conversation_id, t.recipient_id, t.sender_id,
                               t.msg_type, t.status, t.seq, t.conversation_seq, t.claimed_by, t.lease_until,
                               t.retry_count, t.created_at, t.available_at, t.run_id, t.step_id, t.correlation_id,
                               t.payload_json, t.error_json,
@@ -1032,6 +1042,7 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
             ProjectedLaneMessageRow(
                 message_id=str(r.get("message_id")),
                 namespace=str(r.get("namespace")),
+                purpose=str(r.get("purpose") or "user_visible"),
                 inbox_id=str(r.get("inbox_id")),
                 conversation_id=str(r.get("conversation_id")),
                 recipient_id=str(r.get("recipient_id")),
@@ -1109,6 +1120,7 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
         self,
         *,
         namespace: str = "default",
+        purpose: str | None = None,
         inbox_id: str | None = None,
         status: str | None = None,
         limit: int = 1000,
@@ -1116,6 +1128,9 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
         table = f"{self.schema}.projected_lane_messages"
         where = ["namespace = :namespace"]
         params: Dict[str, Any] = {"namespace": str(namespace), "limit": int(limit)}
+        if purpose is not None:
+            where.append("purpose = :purpose")
+            params["purpose"] = str(purpose)
         if inbox_id is not None:
             where.append("inbox_id = :inbox_id")
             params["inbox_id"] = str(inbox_id)
@@ -1126,7 +1141,7 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
             rows = conn.execute(
                 sa.text(
                     f"""
-                    SELECT message_id, namespace, inbox_id, conversation_id, recipient_id, sender_id,
+                    SELECT message_id, namespace, purpose, inbox_id, conversation_id, recipient_id, sender_id,
                            msg_type, status, seq, conversation_seq, claimed_by, lease_until,
                            retry_count, created_at, available_at, run_id, step_id, correlation_id,
                            payload_json, error_json,
@@ -1144,6 +1159,7 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
             ProjectedLaneMessageRow(
                 message_id=str(r.get("message_id")),
                 namespace=str(r.get("namespace")),
+                purpose=str(r.get("purpose") or "user_visible"),
                 inbox_id=str(r.get("inbox_id")),
                 conversation_id=str(r.get("conversation_id")),
                 recipient_id=str(r.get("recipient_id")),
