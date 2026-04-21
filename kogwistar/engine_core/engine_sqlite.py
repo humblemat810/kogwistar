@@ -905,6 +905,17 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
                 """,
                 (str(namespace), str(conversation_id)),
             ).fetchone()
+            prev = conn.execute(
+                """
+                SELECT message_id
+                FROM projected_lane_messages
+                WHERE namespace = ? AND inbox_id = ?
+                ORDER BY seq DESC, created_at DESC
+                LIMIT 1
+                """,
+                (str(namespace), str(inbox_id)),
+            ).fetchone()
+            prev_message_id = None if prev is None else str(prev[0])
             conn.execute(
                 """
                 INSERT OR IGNORE INTO projected_lane_messages(
@@ -915,7 +926,7 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
                     step_id, correlation_id, payload_json, error_json,
                     prev_message_id, next_message_id,
                     inbox_tail_message_id, conversation_tail_message_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     str(message_id),
@@ -936,11 +947,10 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
                     None if correlation_id is None else str(correlation_id),
                     payload_json,
                     error_json,
+                    prev_message_id,
                     None,
-                    None,
-                    None,
-                    None,
-                    None,
+                    str(message_id),
+                    str(message_id),
                 ),
             )
 

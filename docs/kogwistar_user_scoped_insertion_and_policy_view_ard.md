@@ -92,16 +92,25 @@ Core already provides:
 
 This is strong foundation for later visibility semantics.
 
-### 2.3 Important correction - current ACL prototype is not yet graph-native
+### 2.3 Important correction - ACL graph is now graph-native and repairable
 
-Current repository code has an ACL prototype surface, but it is not yet the real target architecture:
+Current repository code now has a graph-native ACL family rather than a toy overlay:
 
-- `GraphKnowledgeEngine.acl_graph` still exists as an in-memory helper and compatibility surface
-- `record_acl(...)` and `decide_acl(...)` now have a first graph-native persisted path through engine-backed ACL record nodes
-- ACL facts are now written as first-class ACL record nodes in engine-backed graph storage
-- current design is therefore no longer helper-only, but it is still not yet the final dedicated ACL graph family
+- `GraphKnowledgeEngine.acl_graph` remains a compatibility/projection surface
+- `record_acl(...)` and `decide_acl(...)` use persisted ACL record nodes as authoritative truth
+- ACL facts are written as first-class ACL record nodes in engine-backed graph storage
+- ACL graph can be rebuilt from persisted ACL truth when the in-memory helper needs repair
+- `ACLGraph` has two loader kinds:
+  - `record_loader` loads versioned ACL records for one target lookup
+  - `target_loader` reverse-looks up owning entity ids for one target item key
+- `ACLGraph(cache_enabled=False)` is no-cache mode: each lookup goes back to canonical truth and does not retain `_records` or `_target_index`
+- `prefetch_target_items(...)` and neighborhood prefetch are cache-warming helpers only; they must never become authorization authority
+- write or tombstone invalidation must clear all cached ACL grains for the affected entity and its reverse index entries
+- ACL-aware read may do one narrow event repair on `no_acl_record`, then retry once; this is recovery, not new authority
+- startup repair, when enabled, must stay bounded and event-driven; it should not full-scan every backend row on boot
+- if cache behavior is ever unclear, canonical truth in ACL nodes and edges wins, not the in-memory helper view
 
-This means current code has crossed into graph-native persisted ACL truth, but it still needs further cleanup to become the final dedicated ACL graph family.
+This means current code has crossed into graph-native persisted ACL truth, and the remaining work is mainly projection/operability hardening rather than architectural replacement.
 
 ### 2.2 What Core does not fully guarantee yet
 
@@ -571,6 +580,8 @@ Effective visibility acceleration may use projections, but:
 - knowledge truth and ACL truth remain canonical
 - projections must be disposable and rebuildable
 - repair paths must not require redefining history
+- ACL target index is the effective projection/index family for target-item lookup
+- ACL graph helper state can be rebuilt from persisted ACL truth
 
 ### 4.6 Keep user-facing sharing language legible
 
@@ -996,6 +1007,7 @@ See companion checklist for phase-by-phase execution plan.
 ### 11.5 Rebuild and repair
 
 - deleting effective visibility projection rows allows correct rebuild from authoritative truth
+- ACL graph helper state can be rebuilt from persisted ACL truth
 - policy changes recompute visibility correctly
 - repair does not mutate authoritative history incorrectly
 

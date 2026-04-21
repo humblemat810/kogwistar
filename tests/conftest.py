@@ -884,6 +884,7 @@ def _make_engine_pair(
     use_fake: bool = False,
     embedding_kind: str | None = None,
     embedding_function: Any | None = None,
+    **engine_kwargs,
 ):
     """Build `(kg_engine, conv_engine)` for a chosen backend and embedding.
 
@@ -914,12 +915,14 @@ def _make_engine_pair(
             kg_graph_type="knowledge",
             embedding_function=ef,
             backend_factory=build_fake_backend,
+            **engine_kwargs,
         )
         conv_engine = GraphKnowledgeEngine(
             persist_directory=str(tmp_path / "conv"),
             kg_graph_type="conversation",
             embedding_function=ef,
             backend_factory=build_fake_backend,
+            **engine_kwargs,
         )
         _install_conversation_policy(conv_engine)
         return kg_engine, conv_engine
@@ -930,11 +933,13 @@ def _make_engine_pair(
                 persist_directory=str(tmp_path / "kg"),
                 kg_graph_type="knowledge",
                 embedding_function=ef,
+                **engine_kwargs,
             )
             conv_engine = GraphKnowledgeEngine(
                 persist_directory=str(tmp_path / "conv"),
                 kg_graph_type="conversation",
                 embedding_function=ef,
+                **engine_kwargs,
             )
         except Exception as exc:
             if embedding_function is None and str(embedding_kind or "").lower() in {
@@ -964,12 +969,14 @@ def _make_engine_pair(
             kg_graph_type="knowledge",
             embedding_function=ef,
             backend=kg_backend,
+            **engine_kwargs,
         )
         conv_engine = GraphKnowledgeEngine(
             persist_directory=str(tmp_path / "conv_meta"),
             kg_graph_type="conversation",
             embedding_function=ef,
             backend=conv_backend,
+            **engine_kwargs,
         )
         _install_conversation_policy(conv_engine)
         return kg_engine, conv_engine

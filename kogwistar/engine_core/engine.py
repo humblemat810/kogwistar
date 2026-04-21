@@ -1200,6 +1200,8 @@ class GraphKnowledgeEngine:
         default_task_provider_config: DefaultTaskProviderConfig | None = None,
         cache_dir: os.PathLike|str|None = None,
         acl_enabled: bool = False,
+        acl_cache_enabled: bool = True,
+        acl_startup_repair_limit: int = 0,
     ):
         """
         embedding_function: callable(texts: List[str]) -> List[List[float]].
@@ -1213,7 +1215,7 @@ class GraphKnowledgeEngine:
         self.persist_directory = persist_directory
         self.namespace = namespace
         self.acl_enabled = acl_enabled
-        self.acl_graph = ACLGraph()
+        self.acl_graph = ACLGraph(cache_enabled=acl_cache_enabled)
         self.extraction_schema_mode: ExtractionSchemaMode = extraction_schema_mode
         self.offset_repair_scorer: OffsetRepairScorer | None = offset_repair_scorer
         self.cache_dir = cache_dir or self.persist_directory
@@ -1454,6 +1456,8 @@ class GraphKnowledgeEngine:
         self.adjudicate = AdjudicateSubsystem(self)
         self.ingest = IngestSubsystem(self)
         self.embed = EmbedSubsystem(self)
+        if self.acl_enabled and int(acl_startup_repair_limit or 0) > 0:
+            self.repair_acl_records_from_events(limit=int(acl_startup_repair_limit))
 
         # Initialize the search index subsystem if persistence directory is set.
         # For pure in-memory or alternative setups you might handle pathing differently,
@@ -1491,6 +1495,18 @@ class GraphKnowledgeEngine:
 
     def get_edge_acl_checked(self, *args, **kwargs):
         return self.acl.get_edge_acl_checked(*args, **kwargs)
+
+    def rebuild_acl_graph_from_truth(self, **kwargs):
+        return self.acl.rebuild_acl_graph_from_truth(**kwargs)
+
+    def prefetch_acl_neighborhood(self, **kwargs):
+        return self.acl.prefetch_acl_neighborhood(**kwargs)
+
+    def repair_missing_default_acls(self, **kwargs):
+        return self.acl.repair_missing_default_acls(**kwargs)
+
+    def repair_acl_records_from_events(self, **kwargs):
+        return self.acl.repair_acl_records_from_events(**kwargs)
 
     def _emit_change(
         self,

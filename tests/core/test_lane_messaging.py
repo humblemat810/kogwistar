@@ -70,6 +70,46 @@ def test_send_lane_message_creates_graph_objects_and_projection():
         shutil.rmtree(test_db_dir, ignore_errors=True)
 
 
+def test_lane_message_projection_can_split_maintenance_and_user_visible_flows():
+    engine, test_db_dir = _make_engine()
+    namespace = "ws:demo:conv:bg"
+
+    try:
+        with scoped_namespace(engine, namespace):
+            maintenance = engine.send_lane_message(
+                conversation_id="conv-demo",
+                inbox_id="inbox:worker:maintenance",
+                sender_id="lane:foreground",
+                recipient_id="lane:worker:maintenance",
+                msg_type="request.maintenance",
+                payload={"request_node_id": "req-1"},
+            )
+            user_visible = engine.send_lane_message(
+                conversation_id="conv-demo",
+                inbox_id="inbox:worker:maintenance",
+                sender_id="lane:foreground",
+                recipient_id="lane:worker:maintenance",
+                msg_type="request.answer",
+                payload={"request_node_id": "req-2"},
+            )
+
+            maintenance_rows = engine.list_projected_lane_messages(
+                inbox_id="inbox:worker:maintenance",
+                purpose="maintenance",
+            )
+            user_visible_rows = engine.list_projected_lane_messages(
+                inbox_id="inbox:worker:maintenance",
+                purpose="user_visible",
+            )
+
+            assert [row.message_id for row in maintenance_rows] == [maintenance.message_id]
+            assert [row.message_id for row in user_visible_rows] == [user_visible.message_id]
+            assert maintenance_rows[0].purpose == "maintenance"
+            assert user_visible_rows[0].purpose == "user_visible"
+    finally:
+        shutil.rmtree(test_db_dir, ignore_errors=True)
+
+
 def test_projected_lane_message_claim_ack_and_requeue():
     engine, test_db_dir = _make_engine()
     namespace = "ws:demo:conv:bg"

@@ -1,6 +1,6 @@
 # Kogwistar Core - User-Scoped Insertion and ACL-Graph View Checklist
 
-Status: In progress. Phase 1 complete; Phase 2 complete; later phases pending.
+Status: In progress. Phase 1 complete; Phase 2 complete; Phase 4 complete; Phase 5 complete; Phase 3 still partial.
 Audience: Local coding agents and human maintainers
 Companion: `docs/kogwistar_user_scoped_insertion_and_policy_view_ard.md`
 
@@ -163,8 +163,10 @@ Answer-facing candidate retrieval, evidence pack materialization, and KG project
 Full navigator traversal enforcement now routes through ACL-aware reads on acl-enabled engines.
 Legacy raw fallbacks remain only for non-ACL engines and internal repair paths.
 
-Phase 4 now has a first envelope slice: lane messages carry an ACL context blob in truth-node metadata, preserving principal, scope, purpose, source graph, and visibility intent across background propagation.
-User-visible and maintenance lane messages now carry a `purpose` field so projection and review can separate maintenance flows from user-visible derivations.
+Phase 4 now has the background envelope slice and the flow split slice: lane messages carry an ACL context blob in truth-node metadata, preserving principal, scope, purpose, source graph, and visibility intent across background propagation.
+User-visible and maintenance lane messages carry a `purpose` field, and projection surfaces can filter by `purpose` so maintenance flows stay separate from user-visible derivations.
+
+Phase 5 now has the first repair slice: ACL graph truth can be rebuilt from persisted ACL record nodes, ACL-aware read can retry once after a narrow `no_acl_record` repair, and startup repair can stay bounded by recent entity events instead of full scans. The ACL target index acts as the effective projection/index family for target-item lookup.
 
 ### Phase 3 - Derived artifact safety
 
@@ -185,17 +187,20 @@ Derived-artifact ACL data should live in ACL truth as versioned ACL records, not
 - [x] add principal, security scope, and ACL context to lane-message payload or envelope
 - [x] ensure worker and service handlers preserve that context
 - [x] ensure background-created user-visible artifacts inherit correct ACL
-- [ ] keep global maintenance flows separate from user-visible derivation flows where needed
+- [x] keep global maintenance flows separate from user-visible derivation flows where needed
 
 ### Phase 5 - Projections, repair, and operability
 
-- [ ] define effective ACL projection shape or index family
-- [ ] ensure projection rebuild from authoritative truth
-- [ ] add repair path for stale or dropped ACL projection rows
-- [ ] expose operator-safe inspection surfaces for ACL and effective visibility state
-- [ ] document operator-only versus user-facing ACL surfaces
+- [x] define effective ACL projection shape or index family
+- [x] ensure projection rebuild from authoritative truth
+- [x] add repair path for stale or dropped ACL projection rows
+- [x] expose operator-safe inspection surfaces for ACL and effective visibility state
+- [x] document operator-only versus user-facing ACL surfaces
+- [x] document ACLGraph loader contract: `record_loader` for ACL record lookup, `target_loader` for reverse target-item lookup
+- [x] document no-cache mode and cache invalidation rules for ACLGraph
+- [x] document that prefetch is cache warming only, never authorization authority
 
----
+--- 
 
 ## 4. Acceptance Checklist
 
@@ -225,7 +230,7 @@ Derived-artifact ACL data should live in ACL truth as versioned ACL records, not
 
 ### Background work
 
-- [ ] lane message carries principal, scope, and ACL context
+- [x] lane message carries principal, scope, and ACL context
 - [x] background-generated artifact inherits correct ACL semantics
 
 ### Rebuild and repair

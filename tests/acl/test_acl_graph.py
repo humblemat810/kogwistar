@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import json
+import threading
+
 import pytest
 
-from kogwistar.acl.graph import ACLGraph, ACLRecord
+from kogwistar.acl.graph import ACLGraph, ACLRecord, ACLTarget
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.engine_core.subsystems import ACLAwareReadSubsystem, ACLAwareWriteSubsystem
 from kogwistar.engine_core.subsystems.acl import ACLSubsystem
 from kogwistar.engine_core.models import Edge, Grounding, Node, Span
 from kogwistar.server.auth_middleware import claims_ctx
+from tests.conftest import _make_engine_pair
 from tests._helpers.fake_backend import build_fake_backend
 
 
@@ -207,6 +212,51 @@ def test_engine_acl_helpers_round_trip_from_persisted_graph_truth():
     assert len(persisted_acl_nodes) == 1
 
 
+def test_engine_can_rebuild_acl_graph_from_persisted_truth():
+    engine = GraphKnowledgeEngine(
+        persist_directory=None,
+        backend_factory=build_fake_backend,
+        kg_graph_type="conversation",
+    )
+    engine.record_acl(
+        truth_graph="conversation",
+        entity_id="node-200",
+        version=1,
+        mode="shared",
+        created_by="user-a",
+        owner_id="user-a",
+        shared_with_principals=["user-b"],
+    )
+    engine.record_acl(
+        grain="span",
+        truth_graph="conversation",
+        entity_id="node-200",
+        target_item_id="sp:200",
+        version=1,
+        mode="private",
+        created_by="user-a",
+        owner_id="user-a",
+    )
+    engine.acl_graph = ACLGraph()
+
+    rebuilt = engine.rebuild_acl_graph_from_truth()
+    node_record = engine.acl_graph.latest_record(
+        grain="node",
+        truth_graph="conversation",
+        entity_id="node-200",
+    )
+    span_ids = engine.acl_graph.entity_ids_for_target_item(
+        truth_graph="conversation",
+        grain="span",
+        target_item_id="sp:200",
+    )
+
+    assert rebuilt["rebuilt_record_count"] == 2
+    assert node_record is not None
+    assert node_record.mode == "shared"
+    assert span_ids == ("node-200",)
+
+
 def test_acl_grain_mapping_supports_document_grounding_span_node_edge_and_artifact():
     acl = ACLGraph()
     grains = ("document", "grounding", "span", "node", "edge", "artifact")
@@ -380,6 +430,562 @@ def test_acl_same_span_item_can_have_distinct_node_level_acl():
         grain="span",
         target_item_id="sp:shared",
     ) == ("node-1", "node-2")
+
+
+def test_acl_graph_lazy_cache_hits_and_lru_eviction():
+    acl = ACLGraph(max_record_cache_size=1, max_target_cache_size=1)
+    record_calls: list[tuple[str, str | None, str, str | None]] = []
+    target_calls: list[tuple[str, str, str]] = []
+    record_store = {
+        ("knowledge", "node", "node-1", None): (
+            ACLRecord(
+                target=ACLTarget(
+                    truth_graph="knowledge",
+                    entity_id="node-1",
+                    grain="node",
+                ),
+                version=1,
+                mode="private",
+                owner_id="user-a",
+            ),
+        ),
+        ("knowledge", "node", "node-2", None): (
+            ACLRecord(
+                target=ACLTarget(
+                    truth_graph="knowledge",
+                    entity_id="node-2",
+                    grain="node",
+                ),
+                version=1,
+                mode="shared",
+                owner_id="user-a",
+            ),
+        ),
+    }
+    target_store = {
+        ("knowledge", "span", "sp:1"): ("node-1", "node-2"),
+    }
+
+    def record_loader(
+        *,
+        truth_graph: str,
+        grain: str | None,
+        entity_id: str,
+        target_item_id: str | None,
+    ):
+        record_calls.append((truth_graph, grain, entity_id, target_item_id))
+        return record_store.get((truth_graph, grain, entity_id, target_item_id), ())
+
+    def target_loader(*, truth_graph: str, grain: str, target_item_id: str):
+        target_calls.append((truth_graph, grain, target_item_id))
+        return target_store.get((truth_graph, grain, target_item_id), ())
+
+    acl = ACLGraph(max_record_cache_size=1, max_target_cache_size=1)
+    acl.bind_loaders(record_loader=record_loader, target_loader=target_loader)
+
+    first = acl.latest_record(
+        grain="node",
+        truth_graph="knowledge",
+        entity_id="node-1",
+    )
+    second = acl.latest_record(
+        grain="node",
+        truth_graph="knowledge",
+        entity_id="node-1",
+    )
+    ids_first = acl.entity_ids_for_target_item(
+        truth_graph="knowledge",
+        grain="span",
+        target_item_id="sp:1",
+    )
+    ids_second = acl.entity_ids_for_target_item(
+        truth_graph="knowledge",
+        grain="span",
+        target_item_id="sp:1",
+    )
+    acl.latest_record(
+        grain="node",
+        truth_graph="knowledge",
+        entity_id="node-2",
+    )
+    third = acl.latest_record(
+        grain="node",
+        truth_graph="knowledge",
+        entity_id="node-1",
+    )
+
+    assert first is not None
+    assert second is not None
+    assert first.version == 1
+    assert second.version == 1
+    assert ids_first == ("node-1", "node-2")
+    assert ids_second == ("node-1", "node-2")
+    assert third is not None
+    assert third.version == 1
+    assert record_calls.count(("knowledge", "node", "node-1", None)) == 2
+    assert record_calls.count(("knowledge", "node", "node-2", None)) == 1
+    assert target_calls.count(("knowledge", "span", "sp:1")) == 1
+
+
+def test_acl_graph_no_cache_mode_always_reads_loader_and_keeps_view_empty():
+    acl = ACLGraph(cache_enabled=False)
+    record_calls: list[tuple[str, str | None, str, str | None]] = []
+    target_calls: list[tuple[str, str, str]] = []
+    record = ACLRecord(
+        target=ACLTarget(
+            truth_graph="knowledge",
+            entity_id="node-1",
+            grain="node",
+        ),
+        version=1,
+        mode="private",
+        owner_id="user-a",
+    )
+
+    def record_loader(
+        *,
+        truth_graph: str,
+        grain: str | None,
+        entity_id: str,
+        target_item_id: str | None,
+    ):
+        record_calls.append((truth_graph, grain, entity_id, target_item_id))
+        return (record,)
+
+    def target_loader(*, truth_graph: str, grain: str, target_item_id: str):
+        target_calls.append((truth_graph, grain, target_item_id))
+        return ("node-1",)
+
+    acl.bind_loaders(record_loader=record_loader, target_loader=target_loader)
+
+    first = acl.latest_record(grain="node", truth_graph="knowledge", entity_id="node-1")
+    second = acl.latest_record(grain="node", truth_graph="knowledge", entity_id="node-1")
+    ids_first = acl.entity_ids_for_target_item(
+        truth_graph="knowledge",
+        grain="span",
+        target_item_id="sp:1",
+    )
+    ids_second = acl.entity_ids_for_target_item(
+        truth_graph="knowledge",
+        grain="span",
+        target_item_id="sp:1",
+    )
+
+    assert first is record
+    assert second is record
+    assert ids_first == ("node-1",)
+    assert ids_second == ("node-1",)
+    assert record_calls == [
+        ("knowledge", "node", "node-1", None),
+        ("knowledge", "node", "node-1", None),
+    ]
+    assert target_calls == [
+        ("knowledge", "span", "sp:1"),
+        ("knowledge", "span", "sp:1"),
+    ]
+    assert acl.iter_records() == ()
+
+
+def test_acl_graph_invalidate_clears_all_grains_for_entity_and_refreshes_target_index():
+    acl = ACLGraph(max_record_cache_size=4, max_target_cache_size=4)
+    record_store = {
+        ("knowledge", "node", "node-1", None): ACLRecord(
+            target=ACLTarget(
+                truth_graph="knowledge",
+                entity_id="node-1",
+                grain="node",
+            ),
+            version=1,
+            mode="private",
+            owner_id="user-a",
+        ),
+        ("knowledge", "span", "node-1", "sp:1"): ACLRecord(
+            target=ACLTarget(
+                truth_graph="knowledge",
+                entity_id="node-1",
+                grain="span",
+                target_item_id="sp:1",
+            ),
+            version=1,
+            mode="shared",
+            owner_id="user-a",
+        ),
+    }
+    target_store = {
+        ("knowledge", "span", "sp:1"): ("node-1",),
+    }
+    record_calls: list[tuple[str, str | None, str, str | None]] = []
+    target_calls: list[tuple[str, str, str]] = []
+
+    def record_loader(
+        *,
+        truth_graph: str,
+        grain: str | None,
+        entity_id: str,
+        target_item_id: str | None,
+    ):
+        record_calls.append((truth_graph, grain, entity_id, target_item_id))
+        return (record_store[(truth_graph, grain, entity_id, target_item_id)],)
+
+    def target_loader(*, truth_graph: str, grain: str, target_item_id: str):
+        target_calls.append((truth_graph, grain, target_item_id))
+        return target_store[(truth_graph, grain, target_item_id)]
+
+    acl.bind_loaders(record_loader=record_loader, target_loader=target_loader)
+
+    node_before = acl.latest_record(grain="node", truth_graph="knowledge", entity_id="node-1")
+    span_before = acl.latest_record(
+        grain="span",
+        truth_graph="knowledge",
+        entity_id="node-1",
+        target_item_id="sp:1",
+    )
+    target_before = acl.entity_ids_for_target_item(
+        truth_graph="knowledge",
+        grain="span",
+        target_item_id="sp:1",
+    )
+
+    record_store[("knowledge", "node", "node-1", None)] = ACLRecord(
+        target=ACLTarget(
+            truth_graph="knowledge",
+            entity_id="node-1",
+            grain="node",
+        ),
+        version=2,
+        mode="shared",
+        owner_id="user-a",
+        shared_with_principals=("user-b",),
+    )
+    record_store[("knowledge", "span", "node-1", "sp:1")] = ACLRecord(
+        target=ACLTarget(
+            truth_graph="knowledge",
+            entity_id="node-1",
+            grain="span",
+            target_item_id="sp:1",
+        ),
+        version=2,
+        mode="private",
+        owner_id="user-a",
+    )
+    target_store[("knowledge", "span", "sp:1")] = ("node-1", "node-2")
+
+    node_stale = acl.latest_record(grain="node", truth_graph="knowledge", entity_id="node-1")
+    span_stale = acl.latest_record(
+        grain="span",
+        truth_graph="knowledge",
+        entity_id="node-1",
+        target_item_id="sp:1",
+    )
+    target_stale = acl.entity_ids_for_target_item(
+        truth_graph="knowledge",
+        grain="span",
+        target_item_id="sp:1",
+    )
+
+    acl.invalidate(truth_graph="knowledge", entity_id="node-1")
+
+    node_fresh = acl.latest_record(grain="node", truth_graph="knowledge", entity_id="node-1")
+    span_fresh = acl.latest_record(
+        grain="span",
+        truth_graph="knowledge",
+        entity_id="node-1",
+        target_item_id="sp:1",
+    )
+    target_fresh = acl.entity_ids_for_target_item(
+        truth_graph="knowledge",
+        grain="span",
+        target_item_id="sp:1",
+    )
+
+    assert node_before is not None and node_before.version == 1
+    assert span_before is not None and span_before.version == 1
+    assert target_before == ("node-1",)
+    assert node_stale is not None and node_stale.version == 1
+    assert span_stale is not None and span_stale.version == 1
+    assert target_stale == ("node-1",)
+    assert node_fresh is not None and node_fresh.version == 2
+    assert span_fresh is not None and span_fresh.version == 2
+    assert target_fresh == ("node-1", "node-2")
+    assert record_calls.count(("knowledge", "node", "node-1", None)) == 2
+    assert record_calls.count(("knowledge", "span", "node-1", "sp:1")) == 2
+    assert target_calls.count(("knowledge", "span", "sp:1")) == 2
+
+
+def test_acl_graph_concurrent_read_and_invalidate_remain_consistent():
+    acl = ACLGraph(max_record_cache_size=4, max_target_cache_size=4)
+    store_lock = threading.Lock()
+    record_store = {
+        ("knowledge", "node", "node-1", None): ACLRecord(
+            target=ACLTarget(
+                truth_graph="knowledge",
+                entity_id="node-1",
+                grain="node",
+            ),
+            version=1,
+            mode="private",
+            owner_id="user-a",
+        ),
+    }
+
+    def record_loader(
+        *,
+        truth_graph: str,
+        grain: str | None,
+        entity_id: str,
+        target_item_id: str | None,
+    ):
+        with store_lock:
+            return (record_store[(truth_graph, grain, entity_id, target_item_id)],)
+
+    acl.bind_loaders(record_loader=record_loader)
+
+    errors: list[BaseException] = []
+    barrier = threading.Barrier(2)
+
+    def reader() -> None:
+        try:
+            barrier.wait()
+            for _ in range(200):
+                record = acl.latest_record(
+                    grain="node",
+                    truth_graph="knowledge",
+                    entity_id="node-1",
+                )
+                assert record is not None
+        except BaseException as exc:  # pragma: no cover - thread capture
+            errors.append(exc)
+
+    def writer() -> None:
+        try:
+            barrier.wait()
+            for version in range(2, 5):
+                with store_lock:
+                    record_store[("knowledge", "node", "node-1", None)] = ACLRecord(
+                        target=ACLTarget(
+                            truth_graph="knowledge",
+                            entity_id="node-1",
+                            grain="node",
+                        ),
+                        version=version,
+                        mode="shared" if version % 2 == 0 else "private",
+                        owner_id="user-a",
+                    )
+                acl.invalidate(truth_graph="knowledge", entity_id="node-1")
+                latest = acl.latest_record(
+                    grain="node",
+                    truth_graph="knowledge",
+                    entity_id="node-1",
+                )
+                assert latest is not None
+        except BaseException as exc:  # pragma: no cover - thread capture
+            errors.append(exc)
+
+    t1 = threading.Thread(target=reader)
+    t2 = threading.Thread(target=writer)
+    t1.start()
+    t2.start()
+    t1.join()
+    t2.join()
+
+    final = acl.latest_record(grain="node", truth_graph="knowledge", entity_id="node-1")
+    assert not errors
+    assert final is not None
+    assert final.version == 4
+
+
+def test_acl_graph_tombstone_write_invalidates_stale_cached_record():
+    acl = ACLGraph(max_record_cache_size=4, max_target_cache_size=4)
+    record_store = {
+        ("knowledge", "node", "node-1", None): ACLRecord(
+            target=ACLTarget(
+                truth_graph="knowledge",
+                entity_id="node-1",
+                grain="node",
+            ),
+            version=1,
+            mode="shared",
+            owner_id="user-a",
+        )
+    }
+    loader_calls: list[tuple[str, str | None, str, str | None]] = []
+
+    def record_loader(
+        *,
+        truth_graph: str,
+        grain: str | None,
+        entity_id: str,
+        target_item_id: str | None,
+    ):
+        loader_calls.append((truth_graph, grain, entity_id, target_item_id))
+        return (record_store[(truth_graph, grain, entity_id, target_item_id)],)
+
+    acl.bind_loaders(record_loader=record_loader)
+
+    before = acl.latest_record(grain="node", truth_graph="knowledge", entity_id="node-1")
+    assert before is not None
+    assert before.version == 1
+
+    record_store[("knowledge", "node", "node-1", None)] = ACLRecord(
+        target=ACLTarget(
+            truth_graph="knowledge",
+            entity_id="node-1",
+            grain="node",
+        ),
+        version=2,
+        mode="private",
+        owner_id="user-a",
+        tombstoned=True,
+        supersedes_version=1,
+    )
+    acl.invalidate(truth_graph="knowledge", entity_id="node-1")
+
+    after = acl.latest_record(grain="node", truth_graph="knowledge", entity_id="node-1")
+    decision = acl.decide(
+        grain="node",
+        truth_graph="knowledge",
+        entity_id="node-1",
+        principal_id="user-b",
+    )
+
+    assert after is not None
+    assert after.version == 2
+    assert after.tombstoned is True
+    assert decision.visible is False
+    assert decision.reason == "tombstoned"
+    assert loader_calls.count(("knowledge", "node", "node-1", None)) == 2
+
+
+def test_acl_prefetch_neighborhood_warms_seed_and_neighbor_items():
+    engine = GraphKnowledgeEngine(
+        persist_directory=None,
+        backend_factory=build_fake_backend,
+        kg_graph_type="knowledge",
+    )
+    engine.record_acl(
+        grain="node",
+        truth_graph="knowledge",
+        entity_id="node-a",
+        version=1,
+        mode="shared",
+        owner_id="user-a",
+        shared_with_principals=["user-b"],
+    )
+    engine.record_acl(
+        grain="span",
+        truth_graph="knowledge",
+        entity_id="node-a",
+        target_item_id="sp:shared",
+        version=1,
+        mode="shared",
+        owner_id="user-a",
+        shared_with_principals=["user-b"],
+    )
+    engine.record_acl(
+        grain="node",
+        truth_graph="knowledge",
+        entity_id="node-b",
+        version=1,
+        mode="private",
+        owner_id="user-a",
+    )
+    engine.record_acl(
+        grain="span",
+        truth_graph="knowledge",
+        entity_id="node-b",
+        target_item_id="sp:shared",
+        version=1,
+        mode="private",
+        owner_id="user-a",
+    )
+
+    record_loader = engine.acl_graph._record_loader
+    target_loader = engine.acl_graph._target_loader
+    assert record_loader is not None
+    assert target_loader is not None
+    record_calls: list[tuple[str, str | None, str, str | None]] = []
+    target_calls: list[tuple[str, str, str]] = []
+
+    def wrapped_record_loader(
+        *,
+        truth_graph: str,
+        grain: str | None,
+        entity_id: str,
+        target_item_id: str | None,
+    ):
+        record_calls.append((truth_graph, grain, entity_id, target_item_id))
+        return record_loader(
+            truth_graph=truth_graph,
+            grain=grain,
+            entity_id=entity_id,
+            target_item_id=target_item_id,
+        )
+
+    def wrapped_target_loader(*, truth_graph: str, grain: str, target_item_id: str):
+        target_calls.append((truth_graph, grain, target_item_id))
+        return target_loader(
+            truth_graph=truth_graph,
+            grain=grain,
+            target_item_id=target_item_id,
+        )
+
+    engine.acl_graph.clear()
+    engine.acl_graph.bind_loaders(
+        record_loader=wrapped_record_loader,
+        target_loader=wrapped_target_loader,
+    )
+
+    warmed = engine.prefetch_acl_neighborhood(
+        truth_graph="knowledge",
+        entity_id="node-a",
+        target_item_ids=["sp:shared", "sp:other"],
+        max_items=1,
+    )
+
+    assert warmed["warmed_items"] == ("sp:shared",)
+    assert warmed["warmed_neighbor_entity_ids"] == ("node-b",)
+    assert record_calls == [
+        ("knowledge", "node", "node-a", None),
+        ("knowledge", "span", "node-a", "sp:shared"),
+        ("knowledge", "node", "node-b", None),
+    ]
+    assert target_calls == [("knowledge", "span", "sp:shared")]
+
+
+def test_engine_acl_no_cache_mode_reads_canonical_truth_each_time():
+    engine = GraphKnowledgeEngine(
+        persist_directory=None,
+        backend_factory=build_fake_backend,
+        kg_graph_type="knowledge",
+        acl_cache_enabled=False,
+    )
+    engine.record_acl(
+        grain="node",
+        truth_graph="knowledge",
+        entity_id="node-no-cache",
+        version=1,
+        mode="private",
+        owner_id="user-a",
+    )
+
+    first = engine.decide_acl(
+        grain="node",
+        truth_graph="knowledge",
+        entity_id="node-no-cache",
+        principal_id="user-b",
+    )
+    second = engine.decide_acl(
+        grain="node",
+        truth_graph="knowledge",
+        entity_id="node-no-cache",
+        principal_id="user-b",
+    )
+
+    assert first.visible is False
+    assert first.reason == "private"
+    assert second.visible is False
+    assert second.reason == "private"
+    assert engine.acl_graph.iter_records() == ()
 
 
 def test_engine_acl_can_target_specific_span_item_for_node_and_edge():
@@ -927,3 +1533,289 @@ def test_acl_enabled_engine_makes_normal_read_write_acl_aware():
         "node",
         "span",
     ]
+
+
+@pytest.mark.parametrize("backend_kind", ["fake", "chroma", "pg"], indirect=True)
+def test_acl_smoke_across_fake_chroma_and_pg_backends(
+    backend_kind: str, tmp_path, request
+):
+    sa_engine = None
+    pg_schema = None
+    if backend_kind == "pg":
+        try:
+            sa_engine = request.getfixturevalue("sa_engine")
+            pg_schema = request.getfixturevalue("pg_schema")
+        except Exception as exc:
+            pytest.skip(f"pg backend requested but fixtures are unavailable: {exc}")
+
+    kg_engine, _conversation_engine = _make_engine_pair(
+        backend_kind=backend_kind,
+        tmp_path=tmp_path,
+        sa_engine=sa_engine,
+        pg_schema=pg_schema,
+        dim=3,
+        embedding_kind="constant",
+    )
+    kg_engine.acl_enabled = True
+    kg_engine.read = ACLAwareReadSubsystem(kg_engine, kg_engine.raw_read)
+    kg_engine.write = ACLAwareWriteSubsystem(kg_engine, kg_engine.raw_write)
+
+    node = _mk_node(node_id=f"node-acl-smoke-{backend_kind}", doc_id=f"doc::{backend_kind}")
+    node.metadata.update(
+        {
+            "visibility": "shared",
+            "owner_agent_id": "agent-a",
+            "shared_with_agents": ["agent-b"],
+            "security_scope": "tenant-a",
+        }
+    )
+
+    token_write = claims_ctx.set(
+        {"agent_id": "agent-a", "security_scope": "tenant-a", "ns": "knowledge"}
+    )
+    try:
+        kg_engine.write.add_node(node)
+    finally:
+        claims_ctx.reset(token_write)
+
+    grounding_ids, span_ids = kg_engine.acl.usage_ids_for_item(node)
+    assert grounding_ids and span_ids
+
+    acl_rows = kg_engine.raw_read.get_nodes(
+        node_type=Node,
+        where={
+            "$and": [
+                {"entity_type": "acl_record"},
+                {"acl_truth_graph": "knowledge"},
+                {"acl_target_entity_id": node.id},
+            ]
+        },
+    )
+    assert sorted(row.metadata["acl_target_grain"] for row in acl_rows) == [
+        "grounding",
+        "node",
+        "span",
+    ]
+
+    token_read_ok = claims_ctx.set(
+        {"agent_id": "agent-b", "security_scope": "tenant-a", "ns": "knowledge"}
+    )
+    try:
+        visible_nodes = kg_engine.read.get_nodes(ids=[node.id])
+        assert [row.id for row in visible_nodes] == [node.id]
+        assert kg_engine.decide_acl_node_read(
+            item_grain="span",
+            truth_graph="knowledge",
+            entity_id=node.id,
+            grounding_item_ids=grounding_ids,
+            target_item_ids=span_ids,
+            principal_id="agent-b",
+            security_scope="tenant-a",
+        ).visible is True
+    finally:
+        claims_ctx.reset(token_read_ok)
+
+    token_read_bad = claims_ctx.set(
+        {"agent_id": "agent-c", "security_scope": "tenant-a", "ns": "knowledge"}
+    )
+    try:
+        assert kg_engine.read.get_nodes(ids=[node.id]) == []
+        assert (
+            kg_engine.decide_acl_node_read(
+                item_grain="span",
+                truth_graph="knowledge",
+                entity_id=node.id,
+                grounding_item_ids=grounding_ids,
+                target_item_ids=span_ids,
+                principal_id="agent-c",
+                security_scope="tenant-a",
+            ).visible
+            is False
+        )
+    finally:
+        claims_ctx.reset(token_read_bad)
+
+
+@pytest.mark.parametrize("backend_kind", ["chroma", "pg"], indirect=True)
+def test_acl_mid_write_failure_is_atomic_or_repairable_by_backend(
+    backend_kind: str, tmp_path, request, monkeypatch
+):
+    sa_engine = None
+    pg_schema = None
+    if backend_kind == "pg":
+        try:
+            sa_engine = request.getfixturevalue("sa_engine")
+            pg_schema = request.getfixturevalue("pg_schema")
+        except Exception as exc:
+            pytest.skip(f"pg backend requested but fixtures are unavailable: {exc}")
+
+    kg_engine, _conversation_engine = _make_engine_pair(
+        backend_kind=backend_kind,
+        tmp_path=tmp_path,
+        sa_engine=sa_engine,
+        pg_schema=pg_schema,
+        dim=3,
+        embedding_kind="constant",
+    )
+    kg_engine.acl_enabled = True
+    kg_engine.read = ACLAwareReadSubsystem(kg_engine, kg_engine.raw_read)
+    kg_engine.write = ACLAwareWriteSubsystem(kg_engine, kg_engine.raw_write)
+
+    node = _mk_node(
+        node_id=f"node-acl-fail-{backend_kind}",
+        doc_id=f"doc::fail::{backend_kind}",
+    )
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("acl write boom")
+
+    monkeypatch.setattr(kg_engine.acl, "record_default_acl_for_item", _boom)
+
+    token_write = claims_ctx.set(
+        {"agent_id": "agent-a", "security_scope": "tenant-a", "ns": "knowledge"}
+    )
+    try:
+        with pytest.raises(RuntimeError, match="acl write boom"):
+            kg_engine.write.add_node(node)
+    finally:
+        claims_ctx.reset(token_write)
+
+    truth_nodes = kg_engine.raw_read.get_nodes(node_type=Node, ids=[node.id])
+    acl_rows = kg_engine.raw_read.get_nodes(
+        node_type=Node,
+        where={
+            "$and": [
+                {"entity_type": "acl_record"},
+                {"acl_target_entity_id": node.id},
+            ]
+        },
+    )
+    entity_events = list(
+        kg_engine.meta_sqlite.iter_entity_events(namespace=kg_engine.namespace)
+    )
+    acl_events = []
+    for _seq, entity_kind, _entity_id, op, payload_json in entity_events:
+        if entity_kind != "node" or op != "ADD":
+            continue
+        payload = json.loads(payload_json)
+        metadata = payload.get("metadata") or {}
+        if (
+            metadata.get("entity_type") == "acl_record"
+            and metadata.get("acl_target_entity_id") == node.id
+        ):
+            acl_events.append(payload)
+
+    if backend_kind == "pg":
+        assert truth_nodes == []
+        assert acl_rows == []
+        assert acl_events == []
+        repair = kg_engine.repair_acl_records_from_events(limit=256)
+        assert repair["repaired_acl_records"] == 0
+        return
+
+    assert [row.id for row in truth_nodes] == [node.id]
+    assert acl_rows == []
+    assert sorted(event["metadata"]["acl_target_grain"] for event in acl_events) == [
+        "grounding",
+        "node",
+        "span",
+    ]
+
+    token_read = claims_ctx.set(
+        {"agent_id": "agent-a", "security_scope": "tenant-a", "ns": "knowledge"}
+    )
+    try:
+        assert [row.id for row in kg_engine.read.get_nodes(ids=[node.id])] == [node.id]
+        repaired_acl_rows = kg_engine.raw_read.get_nodes(
+            node_type=Node,
+            where={
+                "$and": [
+                    {"entity_type": "acl_record"},
+                    {"acl_target_entity_id": node.id},
+                ]
+            },
+        )
+        assert sorted(row.metadata["acl_target_grain"] for row in repaired_acl_rows) == [
+            "grounding",
+            "node",
+            "span",
+        ]
+    finally:
+        claims_ctx.reset(token_read)
+
+
+def test_acl_startup_bounded_event_repair_rehydrates_acl_rows(tmp_path, monkeypatch):
+    kg_engine, _conversation_engine = _make_engine_pair(
+        backend_kind="chroma",
+        tmp_path=tmp_path,
+        sa_engine=None,
+        pg_schema=None,
+        dim=3,
+        embedding_kind="constant",
+        acl_enabled=True,
+        acl_startup_repair_limit=0,
+    )
+
+    node = _mk_node(node_id="node-acl-startup-repair", doc_id="doc::startup::repair")
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("acl write boom")
+
+    monkeypatch.setattr(kg_engine.acl, "record_default_acl_for_item", _boom)
+
+    token_write = claims_ctx.set(
+        {"agent_id": "agent-a", "security_scope": "tenant-a", "ns": "knowledge"}
+    )
+    try:
+        with pytest.raises(RuntimeError, match="acl write boom"):
+            kg_engine.write.add_node(node)
+    finally:
+        claims_ctx.reset(token_write)
+
+    assert kg_engine.raw_read.get_nodes(node_type=Node, ids=[node.id])
+    assert (
+        kg_engine.raw_read.get_nodes(
+            node_type=Node,
+            where={
+                "$and": [
+                    {"entity_type": "acl_record"},
+                    {"acl_target_entity_id": node.id},
+                ]
+            },
+        )
+        == []
+    )
+
+    kg_engine2, _conversation_engine2 = _make_engine_pair(
+        backend_kind="chroma",
+        tmp_path=tmp_path,
+        sa_engine=None,
+        pg_schema=None,
+        dim=3,
+        embedding_kind="constant",
+        acl_enabled=True,
+        acl_startup_repair_limit=256,
+    )
+
+    repaired_acl_rows = kg_engine2.raw_read.get_nodes(
+        node_type=Node,
+        where={
+            "$and": [
+                {"entity_type": "acl_record"},
+                {"acl_target_entity_id": node.id},
+            ]
+        },
+    )
+    assert sorted(row.metadata["acl_target_grain"] for row in repaired_acl_rows) == [
+        "grounding",
+        "node",
+        "span",
+    ]
+
+    token_read = claims_ctx.set(
+        {"agent_id": "agent-a", "security_scope": "tenant-a", "ns": "knowledge"}
+    )
+    try:
+        assert [row.id for row in kg_engine2.read.get_nodes(ids=[node.id])] == [node.id]
+    finally:
+        claims_ctx.reset(token_read)

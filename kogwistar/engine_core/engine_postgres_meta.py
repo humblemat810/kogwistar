@@ -254,6 +254,7 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
                 CREATE TABLE IF NOT EXISTS {plm} (
                     message_id TEXT PRIMARY KEY,
                     namespace TEXT NOT NULL DEFAULT 'default',
+                    purpose TEXT NOT NULL DEFAULT 'user_visible',
                     inbox_id TEXT NOT NULL,
                     conversation_id TEXT NOT NULL,
                     recipient_id TEXT NOT NULL,
@@ -278,6 +279,7 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
                     conversation_tail_message_id TEXT NULL
                 )
             """,
+            f"ALTER TABLE {plm} ADD COLUMN IF NOT EXISTS purpose TEXT NOT NULL DEFAULT 'user_visible'",
             f"CREATE INDEX IF NOT EXISTS idx_lane_messages_namespace_inbox_seq ON {plm}(namespace, inbox_id, seq)",
             f"CREATE INDEX IF NOT EXISTS idx_lane_messages_claim ON {plm}(namespace, inbox_id, status, available_at, lease_until)",
             f"CREATE INDEX IF NOT EXISTS idx_lane_messages_conversation_seq ON {plm}(namespace, conversation_id, conversation_seq)",
@@ -929,7 +931,13 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
                         ), 1),
                         NULL, NULL, 0, :created_at, :available_at, :run_id,
                         :step_id, :correlation_id, :payload_json, :error_json,
-                        NULL, NULL, NULL, NULL
+                        (
+                            SELECT message_id FROM {table}
+                            WHERE namespace = :namespace AND inbox_id = :inbox_id
+                            ORDER BY seq DESC, created_at DESC
+                            LIMIT 1
+                        ),
+                        NULL, :message_id, :message_id
                     ON CONFLICT (message_id) DO NOTHING
                     """
                 ),
