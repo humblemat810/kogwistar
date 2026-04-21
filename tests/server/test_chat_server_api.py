@@ -2369,6 +2369,7 @@ def test_runtime_loader_uses_only_active_branch_nodes_and_edges(
     assert edge_old_id not in edge_ids
 
 
+@pytest.mark.ci
 def test_runtime_design_snapshot_restore_matches_full_replay(
     monkeypatch, engine_triplet
 ):

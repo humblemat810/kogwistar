@@ -177,6 +177,39 @@ def test_in_memory_meta_named_projection_and_workflow_design_helpers() -> None:
     assert meta.get_workflow_design_projection(workflow_id="wf-1") is None
 
 
+def test_in_memory_meta_workflow_snapshot_selection_prefers_version_over_timestamp(
+    monkeypatch,
+) -> None:
+    meta = InMemoryMetaStore()
+    timestamps = iter([9_999, 1])
+    monkeypatch.setattr("kogwistar.engine_core.in_memory_meta._now_ms", lambda: next(timestamps))
+
+    meta.put_workflow_design_snapshot(
+        workflow_id="wf-1",
+        version=1,
+        seq=10,
+        payload_json='{"nodes":[{"id":"v1"}]}',
+        schema_version=4,
+    )
+    meta.put_workflow_design_snapshot(
+        workflow_id="wf-1",
+        version=2,
+        seq=20,
+        payload_json='{"nodes":[{"id":"v2"}]}',
+        schema_version=4,
+    )
+
+    snapshot = meta.get_workflow_design_snapshot(
+        workflow_id="wf-1",
+        max_version=2,
+        schema_version=4,
+    )
+    assert snapshot is not None
+    assert snapshot["version"] == 2
+    assert snapshot["seq"] == 20
+    assert snapshot["created_at_ms"] == 1
+
+
 def test_in_memory_meta_retry_and_run_cancel_contract() -> None:
     meta = InMemoryMetaStore()
 
