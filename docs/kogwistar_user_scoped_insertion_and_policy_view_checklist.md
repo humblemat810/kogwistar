@@ -164,6 +164,7 @@ Full navigator traversal enforcement now routes through ACL-aware reads on acl-e
 Legacy raw fallbacks remain only for non-ACL engines and internal repair paths.
 
 Phase 4 now has a first envelope slice: lane messages carry an ACL context blob in truth-node metadata, preserving principal, scope, purpose, source graph, and visibility intent across background propagation.
+User-visible and maintenance lane messages now carry a `purpose` field so projection and review can separate maintenance flows from user-visible derivations.
 
 ### Phase 3 - Derived artifact safety
 

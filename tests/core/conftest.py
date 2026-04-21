@@ -21,6 +21,7 @@ def lane_message_contract_sample() -> dict[str, object]:
         "projected_row": ProjectedLaneMessageRow(
             message_id="msg-sample",
             namespace="ns-sample",
+            purpose="user_visible",
             inbox_id="inbox:worker:sample",
             conversation_id="conv-sample",
             recipient_id="lane:worker:sample",

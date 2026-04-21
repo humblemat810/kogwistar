@@ -60,6 +60,7 @@ def test_lane_message_projection_contract(meta_factory, tmp_path):
     listed = meta.list_projected_lane_messages(namespace="ns-a", inbox_id="inbox:worker:index")
     assert [row.seq for row in listed] == [1, 2]
     assert [row.conversation_seq for row in listed] == [1, 2]
+    assert all(row.purpose == "user_visible" for row in listed)
 
     claimed = meta.claim_projected_lane_messages(
         namespace="ns-a",
@@ -143,6 +144,7 @@ def test_lane_message_contract_sample_fixture_is_compliant(
     assert projected_row.status == "pending"
     assert projected_row.seq == 1
     assert projected_row.conversation_seq == 1
+    assert projected_row.purpose == "user_visible"
     assert projected_row.correlation_id == "corr-sample"
     assert projected_row.payload_json == '{"sample":true}'
 

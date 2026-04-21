@@ -33,10 +33,11 @@ def _rebuild_lane_projection_from_truth(engine: GraphKnowledgeEngine, *, namespa
         md = dict(getattr(node, "metadata", {}) or {})
         if str(md.get("namespace") or "") != str(namespace):
             continue
-        meta.project_lane_message(
-            message_id=str(getattr(node, "id", "") or ""),
-            namespace=namespace,
-            inbox_id=str(md.get("inbox_id") or ""),
+            meta.project_lane_message(
+                message_id=str(getattr(node, "id", "") or ""),
+                namespace=namespace,
+                purpose=str(md.get("purpose") or "user_visible"),
+                inbox_id=str(md.get("inbox_id") or ""),
             conversation_id=str(md.get("conversation_id") or ""),
             recipient_id=str(md.get("recipient_id") or ""),
             sender_id=str(md.get("sender_id") or ""),
@@ -54,7 +55,7 @@ def _rebuild_lane_projection_from_truth(engine: GraphKnowledgeEngine, *, namespa
 
 def test_lane_message_projection_can_be_rebuilt_from_authoritative_truth():
     engine, test_db_dir = _make_engine()
-    namespace = "ws:demo:conv:bg"
+    namespace = "default"
 
     try:
         with scoped_namespace(engine, namespace):
@@ -88,6 +89,8 @@ def test_lane_message_projection_can_be_rebuilt_from_authoritative_truth():
             by_id = {row.message_id: row for row in rows}
             assert by_id[first.message_id].status == "pending"
             assert by_id[second.message_id].status == "pending"
+            assert by_id[first.message_id].purpose == "maintenance"
+            assert by_id[second.message_id].purpose == "maintenance"
             assert by_id[first.message_id].seq == 1
             assert by_id[second.message_id].seq == 2
             assert by_id[first.message_id].inbox_tail_message_id == first.message_id

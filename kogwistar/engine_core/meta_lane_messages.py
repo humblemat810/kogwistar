@@ -26,6 +26,7 @@ class LaneMessageMetaStoreMixin:
         self,
         *,
         namespace: str | None = None,
+        purpose: str | None = None,
         inbox_id: str | None = None,
         conversation_id: str | None = None,
         status: str | None = None,
@@ -41,6 +42,7 @@ class LaneMessageMetaStoreMixin:
         *,
         message_id: str,
         namespace: str,
+        purpose: str = "user_visible",
         inbox_id: str,
         conversation_id: str,
         recipient_id: str,
@@ -72,6 +74,7 @@ class LaneMessageMetaStoreMixin:
         row = ProjectedLaneMessageRow(
             message_id=str(message_id),
             namespace=str(namespace),
+            purpose=str(purpose or "user_visible"),
             inbox_id=str(inbox_id),
             conversation_id=str(conversation_id),
             recipient_id=str(recipient_id),
@@ -210,11 +213,13 @@ class LaneMessageMetaStoreMixin:
         self,
         *,
         namespace: str = "default",
+        purpose: str | None = None,
         inbox_id: str | None = None,
         status: str | None = None,
     ) -> list[ProjectedLaneMessageRow]:
         rows = self._lane_message_list_rows(
             namespace=str(namespace),
+            purpose=purpose,
             inbox_id=inbox_id,
             status=status,
         )

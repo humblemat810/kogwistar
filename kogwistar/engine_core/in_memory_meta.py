@@ -102,6 +102,7 @@ class _WorkflowDeltaRow:
 class _ProjectedLaneMessageState:
     message_id: str
     namespace: str
+    purpose: str
     inbox_id: str
     conversation_id: str
     recipient_id: str
@@ -129,6 +130,7 @@ class _ProjectedLaneMessageState:
         return ProjectedLaneMessageRow(
             message_id=self.message_id,
             namespace=self.namespace,
+            purpose=self.purpose,
             inbox_id=self.inbox_id,
             conversation_id=self.conversation_id,
             recipient_id=self.recipient_id,
@@ -494,6 +496,7 @@ class InMemoryMetaStore(LaneMessageMetaStoreMixin):
             txn.state.lane_messages[str(row.message_id)] = _ProjectedLaneMessageState(
                 message_id=str(row.message_id),
                 namespace=str(row.namespace),
+                purpose=str(getattr(row, "purpose", "user_visible") or "user_visible"),
                 inbox_id=str(row.inbox_id),
                 conversation_id=str(row.conversation_id),
                 recipient_id=str(row.recipient_id),
@@ -512,6 +515,10 @@ class InMemoryMetaStore(LaneMessageMetaStoreMixin):
                 correlation_id=None if row.correlation_id is None else str(row.correlation_id),
                 payload_json=row.payload_json,
                 error_json=row.error_json,
+                prev_message_id=row.prev_message_id,
+                next_message_id=row.next_message_id,
+                inbox_tail_message_id=row.inbox_tail_message_id,
+                conversation_tail_message_id=row.conversation_tail_message_id,
             )
 
     def _lane_message_update_row(self, *, row: ProjectedLaneMessageRow) -> None:
@@ -521,6 +528,7 @@ class InMemoryMetaStore(LaneMessageMetaStoreMixin):
         self,
         *,
         namespace: str = "default",
+        purpose: str | None = None,
         inbox_id: str | None = None,
         status: str | None = None,
         conversation_id: str | None = None,
@@ -530,6 +538,8 @@ class InMemoryMetaStore(LaneMessageMetaStoreMixin):
         out: list[ProjectedLaneMessageRow] = []
         for row in rows:
             if row.namespace != str(namespace):
+                continue
+            if purpose is not None and row.purpose != str(purpose):
                 continue
             if inbox_id is not None and row.inbox_id != str(inbox_id):
                 continue

@@ -54,6 +54,7 @@ class IndexJobRow:
 class ProjectedLaneMessageSqlRow:
     message_id: str
     namespace: str
+    purpose: str
     inbox_id: str
     conversation_id: str
     recipient_id: str
@@ -81,6 +82,7 @@ class ProjectedLaneMessageSqlRow:
         return ProjectedLaneMessageRow(
             message_id=self.message_id,
             namespace=self.namespace,
+            purpose=self.purpose,
             inbox_id=self.inbox_id,
             conversation_id=self.conversation_id,
             recipient_id=self.recipient_id,
@@ -200,6 +202,7 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
                 CREATE TABLE IF NOT EXISTS projected_lane_messages (
                     message_id TEXT PRIMARY KEY,
                     namespace TEXT NOT NULL DEFAULT 'default',
+                    purpose TEXT NOT NULL DEFAULT 'user_visible',
                     inbox_id TEXT NOT NULL,
                     conversation_id TEXT NOT NULL,
                     recipient_id TEXT NOT NULL,
@@ -266,6 +269,17 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
             if "max_retries" not in cols:
                 conn.execute(
                     "ALTER TABLE index_jobs ADD COLUMN max_retries INTEGER NOT NULL DEFAULT 10"
+                )
+
+            cols = [
+                r[1]
+                for r in conn.execute(
+                    "PRAGMA table_info(projected_lane_messages)"
+                ).fetchall()
+            ]
+            if "purpose" not in cols:
+                conn.execute(
+                    "ALTER TABLE projected_lane_messages ADD COLUMN purpose TEXT NOT NULL DEFAULT 'user_visible'"
                 )
 
             # Unique pending job per (namespace, coalesce_key) (partial unique index)
@@ -859,6 +873,7 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
         *,
         message_id: str,
         namespace: str,
+        purpose: str = "user_visible",
         inbox_id: str,
         conversation_id: str,
         recipient_id: str,
@@ -893,18 +908,19 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
             conn.execute(
                 """
                 INSERT OR IGNORE INTO projected_lane_messages(
-                    message_id, namespace, inbox_id, conversation_id,
+                    message_id, namespace, purpose, inbox_id, conversation_id,
                     recipient_id, sender_id, msg_type, status,
                     seq, conversation_seq, claimed_by, lease_until,
                     retry_count, created_at, available_at, run_id,
                     step_id, correlation_id, payload_json, error_json,
                     prev_message_id, next_message_id,
                     inbox_tail_message_id, conversation_tail_message_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     str(message_id),
                     str(namespace),
+                    str(purpose or "user_visible"),
                     str(inbox_id),
                     str(conversation_id),
                     str(recipient_id),
@@ -920,6 +936,7 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
                     None if correlation_id is None else str(correlation_id),
                     payload_json,
                     error_json,
+                    None,
                     None,
                     None,
                     None,
@@ -1020,7 +1037,7 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
             placeholders = ",".join("?" for _ in ids)
             got = conn.execute(
                 f"""
-                SELECT message_id, namespace, inbox_id, conversation_id, recipient_id, sender_id,
+                SELECT message_id, namespace, purpose, inbox_id, conversation_id, recipient_id, sender_id,
                        msg_type, status, seq, conversation_seq, claimed_by, lease_until,
                        retry_count, created_at, available_at, run_id, step_id, correlation_id,
                        payload_json, error_json, prev_message_id, next_message_id,
@@ -1035,28 +1052,29 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
             ProjectedLaneMessageSqlRow(
                 message_id=str(row[0]),
                 namespace=str(row[1]),
-                inbox_id=str(row[2]),
-                conversation_id=str(row[3]),
-                recipient_id=str(row[4]),
-                sender_id=str(row[5]),
-                msg_type=str(row[6]),
-                status=str(row[7]),
-                seq=int(row[8]),
-                conversation_seq=int(row[9]),
-                claimed_by=None if row[10] is None else str(row[10]),
-                lease_until=None if row[11] is None else int(row[11]),
-                retry_count=int(row[12]),
-                created_at=int(row[13]),
-                available_at=int(row[14]),
-                run_id=None if row[15] is None else str(row[15]),
-                step_id=None if row[16] is None else str(row[16]),
-                correlation_id=None if row[17] is None else str(row[17]),
-                payload_json=None if row[18] is None else str(row[18]),
-                error_json=None if row[19] is None else str(row[19]),
-                prev_message_id=None if row[20] is None else str(row[20]),
-                next_message_id=None if row[21] is None else str(row[21]),
-                inbox_tail_message_id=None if row[22] is None else str(row[22]),
-                conversation_tail_message_id=None if row[23] is None else str(row[23]),
+                purpose=str(row[2] or "user_visible"),
+                inbox_id=str(row[3]),
+                conversation_id=str(row[4]),
+                recipient_id=str(row[5]),
+                sender_id=str(row[6]),
+                msg_type=str(row[7]),
+                status=str(row[8]),
+                seq=int(row[9]),
+                conversation_seq=int(row[10]),
+                claimed_by=None if row[11] is None else str(row[11]),
+                lease_until=None if row[12] is None else int(row[12]),
+                retry_count=int(row[13]),
+                created_at=int(row[14]),
+                available_at=int(row[15]),
+                run_id=None if row[16] is None else str(row[16]),
+                step_id=None if row[17] is None else str(row[17]),
+                correlation_id=None if row[18] is None else str(row[18]),
+                payload_json=None if row[19] is None else str(row[19]),
+                error_json=None if row[20] is None else str(row[20]),
+                prev_message_id=None if row[21] is None else str(row[21]),
+                next_message_id=None if row[22] is None else str(row[22]),
+                inbox_tail_message_id=None if row[23] is None else str(row[23]),
+                conversation_tail_message_id=None if row[24] is None else str(row[24]),
             ).as_row()
             for row in got
         ]
@@ -1105,12 +1123,16 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
         self,
         *,
         namespace: str = "default",
+        purpose: str | None = None,
         inbox_id: str | None = None,
         status: str | None = None,
         limit: int = 1000,
     ) -> list[ProjectedLaneMessageRow]:
         where: list[str] = ["namespace = ?"]
         params: list[Any] = [str(namespace)]
+        if purpose is not None:
+            where.append("purpose = ?")
+            params.append(str(purpose))
         if inbox_id is not None:
             where.append("inbox_id = ?")
             params.append(str(inbox_id))
@@ -1120,7 +1142,7 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
         with self.connect() as conn:
             rows = conn.execute(
                 f"""
-                SELECT message_id, namespace, inbox_id, conversation_id, recipient_id, sender_id,
+                SELECT message_id, namespace, purpose, inbox_id, conversation_id, recipient_id, sender_id,
                        msg_type, status, seq, conversation_seq, claimed_by, lease_until,
                        retry_count, created_at, available_at, run_id, step_id, correlation_id,
                        payload_json, error_json, prev_message_id, next_message_id,
@@ -1136,28 +1158,29 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
             ProjectedLaneMessageSqlRow(
                 message_id=str(row[0]),
                 namespace=str(row[1]),
-                inbox_id=str(row[2]),
-                conversation_id=str(row[3]),
-                recipient_id=str(row[4]),
-                sender_id=str(row[5]),
-                msg_type=str(row[6]),
-                status=str(row[7]),
-                seq=int(row[8]),
-                conversation_seq=int(row[9]),
-                claimed_by=None if row[10] is None else str(row[10]),
-                lease_until=None if row[11] is None else int(row[11]),
-                retry_count=int(row[12]),
-                created_at=int(row[13]),
-                available_at=int(row[14]),
-                run_id=None if row[15] is None else str(row[15]),
-                step_id=None if row[16] is None else str(row[16]),
-                correlation_id=None if row[17] is None else str(row[17]),
-                payload_json=None if row[18] is None else str(row[18]),
-                error_json=None if row[19] is None else str(row[19]),
-                prev_message_id=None if row[20] is None else str(row[20]),
-                next_message_id=None if row[21] is None else str(row[21]),
-                inbox_tail_message_id=None if row[22] is None else str(row[22]),
-                conversation_tail_message_id=None if row[23] is None else str(row[23]),
+                purpose=str(row[2] or "user_visible"),
+                inbox_id=str(row[3]),
+                conversation_id=str(row[4]),
+                recipient_id=str(row[5]),
+                sender_id=str(row[6]),
+                msg_type=str(row[7]),
+                status=str(row[8]),
+                seq=int(row[9]),
+                conversation_seq=int(row[10]),
+                claimed_by=None if row[11] is None else str(row[11]),
+                lease_until=None if row[12] is None else int(row[12]),
+                retry_count=int(row[13]),
+                created_at=int(row[14]),
+                available_at=int(row[15]),
+                run_id=None if row[16] is None else str(row[16]),
+                step_id=None if row[17] is None else str(row[17]),
+                correlation_id=None if row[18] is None else str(row[18]),
+                payload_json=None if row[19] is None else str(row[19]),
+                error_json=None if row[20] is None else str(row[20]),
+                prev_message_id=None if row[21] is None else str(row[21]),
+                next_message_id=None if row[22] is None else str(row[22]),
+                inbox_tail_message_id=None if row[23] is None else str(row[23]),
+                conversation_tail_message_id=None if row[24] is None else str(row[24]),
             ).as_row()
             for row in rows
         ]
