@@ -429,6 +429,8 @@ class ACLSubsystem(NamespaceProxy):
             properties={
                 "shared_with_principals": list(record.shared_with_principals),
                 "shared_with_groups": list(record.shared_with_groups),
+                "source_ids": list(record.source_ids),
+                "derivation_type": record.derivation_type,
                 "target_item_id": target_item,
             },
             embedding=None,
@@ -504,6 +506,8 @@ class ACLSubsystem(NamespaceProxy):
             security_scope=metadata.get("security_scope"),
             shared_with_principals=tuple(properties.get("shared_with_principals") or ()),
             shared_with_groups=tuple(properties.get("shared_with_groups") or ()),
+            source_ids=tuple(properties.get("source_ids") or ()),
+            derivation_type=properties.get("derivation_type"),
             tombstoned=bool(metadata.get("tombstoned")),
             supersedes_version=metadata.get("supersedes_version"),
         )
@@ -622,6 +626,8 @@ class ACLSubsystem(NamespaceProxy):
         security_scope: str | None = None,
         shared_with_principals: Sequence[str] = (),
         shared_with_groups: Sequence[str] = (),
+        source_ids: Sequence[str] = (),
+        derivation_type: str | None = None,
         supersedes_version: int | None = None,
         tombstoned: bool = False,
     ) -> ACLRecord:
@@ -646,6 +652,8 @@ class ACLSubsystem(NamespaceProxy):
                 security_scope=security_scope,
                 shared_with_principals=tuple(shared_with_principals),
                 shared_with_groups=tuple(shared_with_groups),
+                source_ids=tuple(source_ids),
+                derivation_type=derivation_type,
                 supersedes_version=supersedes_version,
                 tombstoned=tombstoned,
             )
@@ -679,6 +687,8 @@ class ACLSubsystem(NamespaceProxy):
                             "security_scope": security_scope,
                             "shared_with_principals": list(shared_with_principals),
                             "shared_with_groups": list(shared_with_groups),
+                            "source_ids": list(source_ids),
+                            "derivation_type": derivation_type,
                             "supersedes_version": supersedes_version,
                             "tombstoned": tombstoned,
                         }
@@ -841,6 +851,8 @@ class ACLSubsystem(NamespaceProxy):
                 security_scope=record.security_scope,
                 shared_with_principals=record.shared_with_principals,
                 shared_with_groups=record.shared_with_groups,
+                source_ids=record.source_ids,
+                derivation_type=record.derivation_type,
                 supersedes_version=record.supersedes_version,
                 tombstoned=record.tombstoned,
             )
@@ -1209,6 +1221,17 @@ class ACLAwareReadSubsystem(NamespaceProxy):
             )
             if not decision.visible:
                 return False
+        endpoint_ids = tuple(
+            str(item)
+            for item in tuple(getattr(edge, "source_ids", ()) or ())
+            + tuple(getattr(edge, "target_ids", ()) or ())
+            if str(item)
+        )
+        if endpoint_ids:
+            endpoint_nodes = self._raw.get_nodes(node_type=Node, ids=list(endpoint_ids))
+            for endpoint in endpoint_nodes:
+                if not self._node_visible(endpoint):
+                    return False
         return True
 
     def get_nodes(self, *args, **kwargs):

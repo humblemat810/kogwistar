@@ -1,6 +1,6 @@
 # Kogwistar Core - User-Scoped Insertion and ACL-Graph View Checklist
 
-Status: In progress. Phase 1 complete; Phase 2 complete; Phase 4 complete; Phase 5 complete; Phase 3 still partial.
+Status: In progress. Phase 1 complete; Phase 2 complete; Phase 3 complete; Phase 4 complete; Phase 5 complete; acceptance slice mostly green.
 Audience: Local coding agents and human maintainers
 Companion: `docs/kogwistar_user_scoped_insertion_and_policy_view_ard.md`
 
@@ -177,7 +177,7 @@ Phase 5 now has the first repair slice: ACL graph truth can be rebuilt from pers
 
 ### Phase 3 Note
 
-Current code already has a working first-pass persisted ACL path and tests, but Phase 3 is still partial because full truth-graph traversal, retrieval path enforcement, and background propagation are not yet wired to persisted ACL graph truth everywhere.
+Current code already has a working persisted ACL path and tests.
 Derived-artifact ACL data should live in ACL truth as versioned ACL records, not as authority inside truth-node metadata.
 - [x] engine owns a first graph-native persisted ACL record path
 - [x] engine exposes ACL record write and decide helper entrypoints
@@ -206,38 +206,38 @@ Derived-artifact ACL data should live in ACL truth as versioned ACL records, not
 
 ### Insertion
 
-- [ ] inserting as user A records creator, owner, and knowledge truth facts
-- [x] inserting as user A records ACL facts in persisted ACL graph
-- [ ] insert in scope A does not silently expose entity in scope B
-- [x] ACL mutation is auditable
+- [x] inserting as user A records creator, owner, and knowledge truth facts (`test_acceptance_insert_records_creator_owner_scope_and_truth_facts`)
+- [x] inserting as user A records ACL facts in persisted ACL graph (`test_acceptance_insert_records_creator_owner_scope_and_truth_facts`)
+- [x] insert in scope A does not silently expose entity in scope B (`test_acceptance_scope_isolation_and_user_specific_visible_sets`)
+- [x] ACL mutation is auditable (`test_acl_graph_tombstone_write_invalidates_stale_cached_record`, `test_acl_mid_write_failure_is_atomic_or_repairable_by_backend`)
 
 ### Read and view
 
-- [ ] user A sees visible entity set A
-- [ ] user B sees visible entity set B
-- [ ] hidden nodes do not appear in counts, topology, or path summaries
-- [ ] filtered traversal never ranks hidden artifacts
-- [ ] answer assembly exposes answer, evidence, paths, confidence, and uncertainty only from visible sources
-- [x] node read can require node ACL plus all grounding and span-usage ACLs to pass
-- [x] node-specific span usage can require node ACL, grounding ACL, and span-usage ACL to pass
-- [x] partial ACL recording denies user-facing node read when node, grounding, or span ACL is missing
-- [x] ACL-enabled engine normal read hides unauthorized nodes while raw read remains available for internal use
+- [x] user A sees visible entity set A (`test_acceptance_scope_isolation_and_user_specific_visible_sets`)
+- [x] user B sees visible entity set B (`test_acceptance_scope_isolation_and_user_specific_visible_sets`)
+- [x] hidden nodes do not appear in counts, topology, or path summaries (`test_acceptance_hidden_nodes_do_not_leak_topology_paths_or_ranking`)
+- [x] filtered traversal never ranks hidden artifacts (`test_acceptance_hidden_nodes_do_not_leak_topology_paths_or_ranking`)
+- [x] answer assembly exposes answer, evidence, paths, confidence, and uncertainty only from visible sources (`test_acceptance_answer_assembly_uses_visible_sources_only`)
+- [x] node read can require node ACL plus all grounding and span-usage ACLs to pass (`test_engine_acl_node_read_requires_all_underlying_span_usages`, `test_engine_acl_node_read_denies_when_node_acl_is_missing`, `test_engine_acl_node_read_denies_when_grounding_acl_is_missing`, `test_engine_acl_node_read_denies_when_span_acl_is_missing`, `test_engine_node_read_uses_persisted_acl_graph_for_node_grounding_and_span`)
+- [x] node-specific span usage can require node ACL, grounding ACL, and span-usage ACL to pass (`test_acl_span_grain_targets_specific_span_item`, `test_engine_get_node_acl_checked_denies_partial_coverage_and_keeps_raw_read`)
+- [x] partial ACL recording denies user-facing node read when node, grounding, or span ACL is missing (`test_acl_mid_write_failure_is_atomic_or_repairable_by_backend`, `test_acl_startup_bounded_event_repair_rehydrates_acl_rows`)
+- [x] ACL-enabled engine normal read hides unauthorized nodes while raw read remains available for internal use (`test_acceptance_scope_isolation_and_user_specific_visible_sets`, `test_acceptance_hidden_nodes_do_not_leak_topology_paths_or_ranking`)
 
 ### Derived artifacts
 
-- [ ] derived artifact from mixed-visible sources is not exposed to unauthorized user
-- [ ] derived artifact records source linkage and ACL mode
+- [x] derived artifact from mixed-visible sources is not exposed to unauthorized user (`test_acceptance_derived_artifact_mixed_sources_records_linkage_and_acl_mode`)
+- [x] derived artifact records source linkage and ACL mode (`test_acceptance_derived_artifact_mixed_sources_records_linkage_and_acl_mode`)
 
 ### Background work
 
-- [x] lane message carries principal, scope, and ACL context
-- [x] background-generated artifact inherits correct ACL semantics
+- [x] lane message carries principal, scope, and ACL context (`test_lane_message_projection_contract`, `test_lane_message_projection_rebuild_is_backend_parity`, `test_lane_message_contract_sample_fixture_is_compliant`)
+- [x] background-generated artifact inherits correct ACL semantics (`test_acceptance_derived_artifact_mixed_sources_records_linkage_and_acl_mode`)
 
 ### Rebuild and repair
 
-- [ ] effective visibility projection can rebuild from authoritative truth
-- [ ] ACL changes recompute effective visibility correctly
-- [ ] repair path does not mutate authoritative history incorrectly
+- [x] effective visibility projection can rebuild from authoritative truth (`test_engine_can_rebuild_acl_graph_from_persisted_truth`, `test_acl_startup_bounded_event_repair_rehydrates_acl_rows`)
+- [x] ACL changes recompute effective visibility correctly (`test_acl_graph_tombstone_write_invalidates_stale_cached_record`, `test_acceptance_scope_isolation_and_user_specific_visible_sets`)
+- [x] repair path does not mutate authoritative history incorrectly (`test_acl_mid_write_failure_is_atomic_or_repairable_by_backend`, `test_acl_startup_bounded_event_repair_rehydrates_acl_rows`)
 
 ---
 
@@ -245,8 +245,8 @@ Derived-artifact ACL data should live in ACL truth as versioned ACL records, not
 
 - [x] create this checklist
 - [x] keep ARD and checklist aligned if semantics move
-- [ ] update related operator or visibility docs when new surfaces appear
-- [ ] update status or roadmap docs once first slice stabilizes
+- [x] update related operator or visibility docs when new surfaces appear
+- [x] update status or roadmap docs once first slice stabilizes
 
 ---
 

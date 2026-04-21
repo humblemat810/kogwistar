@@ -28,6 +28,8 @@ class ACLRecord:
     security_scope: str | None = None
     shared_with_principals: tuple[str, ...] = ()
     shared_with_groups: tuple[str, ...] = ()
+    source_ids: tuple[str, ...] = ()
+    derivation_type: str | None = None
     tombstoned: bool = False
     supersedes_version: int | None = None
 
@@ -197,6 +199,8 @@ class ACLGraph:
         security_scope: str | None = None,
         shared_with_principals: Iterable[str] = (),
         shared_with_groups: Iterable[str] = (),
+        source_ids: Iterable[str] = (),
+        derivation_type: str | None = None,
         supersedes_version: int | None = None,
         tombstoned: bool = False,
     ) -> ACLRecord:
@@ -215,6 +219,8 @@ class ACLGraph:
             security_scope=security_scope,
             shared_with_principals=tuple(shared_with_principals),
             shared_with_groups=tuple(shared_with_groups),
+            source_ids=tuple(source_ids),
+            derivation_type=derivation_type,
             supersedes_version=supersedes_version,
             tombstoned=tombstoned,
         )

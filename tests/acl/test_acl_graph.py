@@ -12,6 +12,7 @@ from kogwistar.engine_core.subsystems.acl import ACLSubsystem
 from kogwistar.engine_core.models import Edge, Grounding, Node, Span
 from kogwistar.server.auth_middleware import claims_ctx
 from tests.conftest import _make_engine_pair
+from tests._helpers.embeddings import build_test_embedding_function
 from tests._helpers.fake_backend import build_fake_backend
 
 
@@ -57,6 +58,28 @@ def _mk_edge(*, edge_id: str, src: str, tgt: str, doc_id: str) -> Edge:
         canonical_entity_id=None,
         properties=None,
     )
+
+
+def _mk_acl_fake_engine(tmp_path) -> GraphKnowledgeEngine:
+    return GraphKnowledgeEngine(
+        persist_directory=str(tmp_path / "acl_acceptance"),
+        backend_factory=build_fake_backend,
+        kg_graph_type="knowledge",
+        embedding_function=build_test_embedding_function("constant", dim=3),
+        acl_enabled=True,
+    )
+
+
+def _visible_node_ids(engine: GraphKnowledgeEngine, *, agent_id: str, scope: str) -> set[str]:
+    token = claims_ctx.set({"agent_id": agent_id, "security_scope": scope, "ns": "knowledge"})
+    try:
+        return {
+            node.id
+            for node in engine.read.get_nodes(node_type=Node)
+            if str((node.metadata or {}).get("entity_type") or "") != "acl_record"
+        }
+    finally:
+        claims_ctx.reset(token)
 
 
 def test_acl_latest_record_supersedes_previous_state():
@@ -210,6 +233,242 @@ def test_engine_acl_helpers_round_trip_from_persisted_graph_truth():
     assert decision.visible is False
     assert decision.reason == "private"
     assert len(persisted_acl_nodes) == 1
+
+
+def test_acceptance_insert_records_creator_owner_scope_and_truth_facts(tmp_path):
+    engine = _mk_acl_fake_engine(tmp_path)
+    node = _mk_node(node_id="accept-insert-a", doc_id="doc::accept::insert")
+    node.metadata.update(
+        {
+            "visibility": "scope",
+            "owner_agent_id": "agent-a",
+            "security_scope": "tenant-a",
+        }
+    )
+
+    token = claims_ctx.set({"agent_id": "agent-a", "security_scope": "tenant-a", "ns": "knowledge"})
+    try:
+        engine.write.add_node(node)
+    finally:
+        claims_ctx.reset(token)
+
+    truth_nodes = engine.raw_read.get_nodes(node_type=Node, ids=[node.id])
+    acl_rows = engine.raw_read.get_nodes(
+        node_type=Node,
+        where={
+            "$and": [
+                {"entity_type": "acl_record"},
+                {"acl_target_entity_id": node.id},
+            ]
+        },
+    )
+    node_acl = [row for row in acl_rows if row.metadata["acl_target_grain"] == "node"][0]
+
+    assert [row.id for row in truth_nodes] == [node.id]
+    assert node_acl.metadata["created_by"] == "agent-a"
+    assert node_acl.metadata["owner_id"] == "agent-a"
+    assert node_acl.metadata["security_scope"] == "tenant-a"
+    assert node_acl.metadata["acl_mode"] == "scope"
+
+
+def test_acceptance_scope_isolation_and_user_specific_visible_sets(tmp_path):
+    engine = _mk_acl_fake_engine(tmp_path)
+    node_a = _mk_node(node_id="accept-visible-a-private", doc_id="doc::visible::a")
+    node_a.metadata.update({"visibility": "private", "owner_agent_id": "agent-a"})
+    node_shared = _mk_node(node_id="accept-visible-shared", doc_id="doc::visible::shared")
+    node_shared.metadata.update(
+        {
+            "visibility": "shared",
+            "owner_agent_id": "agent-a",
+            "shared_with_agents": ["agent-b"],
+            "security_scope": "tenant-a",
+        }
+    )
+    node_b = _mk_node(node_id="accept-visible-b-private", doc_id="doc::visible::b")
+    node_b.metadata.update({"visibility": "private", "owner_agent_id": "agent-b"})
+    node_scope_a = _mk_node(node_id="accept-scope-a", doc_id="doc::visible::scope")
+    node_scope_a.metadata.update(
+        {
+            "visibility": "scope",
+            "owner_agent_id": "agent-a",
+            "security_scope": "tenant-a",
+        }
+    )
+
+    for agent, scope, node in (
+        ("agent-a", "tenant-a", node_a),
+        ("agent-a", "tenant-a", node_shared),
+        ("agent-b", "tenant-b", node_b),
+        ("agent-a", "tenant-a", node_scope_a),
+    ):
+        token = claims_ctx.set({"agent_id": agent, "security_scope": scope, "ns": "knowledge"})
+        try:
+            engine.write.add_node(node)
+        finally:
+            claims_ctx.reset(token)
+
+    assert _visible_node_ids(engine, agent_id="agent-a", scope="tenant-a") == {
+        node_a.id,
+        node_shared.id,
+        node_scope_a.id,
+    }
+    assert _visible_node_ids(engine, agent_id="agent-b", scope="tenant-a") == {
+        node_b.id,
+        node_shared.id,
+        node_scope_a.id,
+    }
+    assert _visible_node_ids(engine, agent_id="agent-b", scope="tenant-b") == {
+        node_b.id,
+        node_shared.id,
+    }
+
+
+def test_acceptance_hidden_nodes_do_not_leak_topology_paths_or_ranking(tmp_path):
+    engine = _mk_acl_fake_engine(tmp_path)
+    visible = _mk_node(node_id="accept-topology-visible", doc_id="doc::topology::visible")
+    visible.metadata.update({"visibility": "shared", "owner_agent_id": "agent-a", "shared_with_agents": ["agent-b"]})
+    hidden = _mk_node(node_id="accept-topology-hidden", doc_id="doc::topology::hidden")
+    hidden.metadata.update({"visibility": "private", "owner_agent_id": "agent-a"})
+    edge = _mk_edge(
+        edge_id="accept-topology-edge",
+        src=visible.id,
+        tgt=hidden.id,
+        doc_id="doc::topology::edge",
+    )
+    edge.metadata.update({"visibility": "shared", "owner_agent_id": "agent-a", "shared_with_agents": ["agent-b"]})
+
+    token = claims_ctx.set({"agent_id": "agent-a", "security_scope": "tenant-a", "ns": "knowledge"})
+    try:
+        engine.write.add_node(visible)
+        engine.write.add_node(hidden)
+        engine.write.add_edge(edge)
+    finally:
+        claims_ctx.reset(token)
+
+    token = claims_ctx.set({"agent_id": "agent-b", "security_scope": "tenant-a", "ns": "knowledge"})
+    try:
+        visible_nodes = engine.read.get_nodes(node_type=Node)
+        visible_edges = engine.read.get_edges(edge_type=Edge)
+        ranked_ids = [node.id for node in sorted(visible_nodes, key=lambda item: item.summary)]
+        topology = [(edge.source_ids, edge.target_ids) for edge in visible_edges]
+        path_summaries = [edge.summary for edge in visible_edges]
+    finally:
+        claims_ctx.reset(token)
+
+    assert [node.id for node in visible_nodes] == [visible.id]
+    assert hidden.id not in ranked_ids
+    assert topology == []
+    assert path_summaries == []
+
+
+def test_acceptance_answer_assembly_uses_visible_sources_only(tmp_path):
+    engine = _mk_acl_fake_engine(tmp_path)
+    visible = _mk_node(node_id="accept-answer-visible", doc_id="doc::answer::visible")
+    visible.summary = "visible answer evidence"
+    visible.metadata.update({"visibility": "shared", "owner_agent_id": "agent-a", "shared_with_agents": ["agent-b"]})
+    hidden = _mk_node(node_id="accept-answer-hidden", doc_id="doc::answer::hidden")
+    hidden.summary = "hidden answer evidence"
+    hidden.metadata.update({"visibility": "private", "owner_agent_id": "agent-a"})
+
+    token = claims_ctx.set({"agent_id": "agent-a", "security_scope": "tenant-a", "ns": "knowledge"})
+    try:
+        engine.write.add_node(visible)
+        engine.write.add_node(hidden)
+    finally:
+        claims_ctx.reset(token)
+
+    def assemble_answer() -> dict[str, object]:
+        nodes = engine.read.get_nodes(node_type=Node)
+        return {
+            "answer": " ".join(node.summary for node in nodes),
+            "evidence": [node.id for node in nodes],
+            "confidence": len(nodes),
+            "uncertainty": [] if nodes else ["no visible evidence"],
+        }
+
+    token = claims_ctx.set({"agent_id": "agent-b", "security_scope": "tenant-a", "ns": "knowledge"})
+    try:
+        assembled = assemble_answer()
+    finally:
+        claims_ctx.reset(token)
+
+    assert assembled["answer"] == "visible answer evidence"
+    assert assembled["evidence"] == [visible.id]
+    assert hidden.id not in assembled["evidence"]
+
+
+def test_acceptance_derived_artifact_mixed_sources_records_linkage_and_acl_mode(tmp_path):
+    engine = _mk_acl_fake_engine(tmp_path)
+    public_source = _mk_node(node_id="accept-derived-public-source", doc_id="doc::derived::public")
+    public_source.metadata.update({"visibility": "public", "owner_agent_id": "agent-a"})
+    private_source = _mk_node(node_id="accept-derived-private-source", doc_id="doc::derived::private")
+    private_source.metadata.update({"visibility": "private", "owner_agent_id": "agent-a"})
+    artifact_id = "accept-derived-artifact"
+
+    token = claims_ctx.set({"agent_id": "agent-a", "security_scope": "tenant-a", "ns": "knowledge"})
+    try:
+        engine.write.add_node(public_source)
+        engine.write.add_node(private_source)
+        source_records = [
+            engine.acl._latest_persisted_acl_record(
+                grain="node",
+                truth_graph="knowledge",
+                entity_id=public_source.id,
+            ),
+            engine.acl._latest_persisted_acl_record(
+                grain="node",
+                truth_graph="knowledge",
+                entity_id=private_source.id,
+            ),
+        ]
+        strictest_mode = engine.acl_graph.strictest_source_mode(
+            [record for record in source_records if record is not None]
+        )
+        engine.record_acl(
+            grain="artifact",
+            truth_graph="knowledge",
+            entity_id=artifact_id,
+            version=1,
+            mode=strictest_mode,
+            created_by="agent-a",
+            owner_id="agent-a",
+            source_ids=[public_source.id, private_source.id],
+            derivation_type="summary",
+        )
+    finally:
+        claims_ctx.reset(token)
+
+    denied = engine.decide_acl(
+        grain="artifact",
+        truth_graph="knowledge",
+        entity_id=artifact_id,
+        principal_id="agent-b",
+        security_scope="tenant-a",
+    )
+    owner_allowed = engine.decide_acl(
+        grain="artifact",
+        truth_graph="knowledge",
+        entity_id=artifact_id,
+        principal_id="agent-a",
+        security_scope="tenant-a",
+    )
+    acl_rows = engine.raw_read.get_nodes(
+        node_type=Node,
+        where={
+            "$and": [
+                {"entity_type": "acl_record"},
+                {"acl_target_entity_id": artifact_id},
+            ]
+        },
+    )
+
+    assert denied.visible is False
+    assert denied.reason == "private"
+    assert owner_allowed.visible is True
+    assert acl_rows[0].metadata["acl_target_grain"] == "artifact"
+    assert acl_rows[0].metadata["acl_mode"] == "private"
+    assert acl_rows[0].properties["source_ids"] == [public_source.id, private_source.id]
+    assert acl_rows[0].properties["derivation_type"] == "summary"
 
 
 def test_engine_can_rebuild_acl_graph_from_persisted_truth():
