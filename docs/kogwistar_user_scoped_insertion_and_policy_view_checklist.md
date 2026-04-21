@@ -140,15 +140,15 @@ known truth_graph + entity_id
 ### Phase 2 - Read-path enforcement
 
 - [x] define effective ACL context contract
-- [ ] identify all user-facing retrieval, traversal, and query entrypoints
+- [x] identify all user-facing retrieval, traversal, and query entrypoints
 - [x] route normal engine reads through ACL-aware subsystem when `acl_enabled=True`
 - [x] route normal engine writes through ACL-aware subsystem when `acl_enabled=True`
-- [ ] route all answer-facing graph reads through ACL-filtered entrypoints
+- [x] route all answer-facing graph reads through ACL-filtered entrypoints
 - [ ] prevent raw graph traversal in answer and navigator flows
-- [ ] ensure ranking does not use hidden nodes or edges
-- [ ] ensure explanations do not cite hidden structure
+- [x] ensure ranking does not use hidden nodes or edges
+- [x] ensure explanations do not cite hidden structure
 - [x] pin navigator workflow order: interpret, security context, ACL context, anchors, traverse, rank, evidence, answer
-- [ ] add explicit-public ACL short-circuit path for cheap navigation after required ACL levels are resolved
+- [x] add explicit-public ACL short-circuit path for cheap navigation after required ACL levels are resolved
 - [x] add ACL-aware user-facing node read entrypoint that requires principal, security scope, node id, grounding usage ids, and span usage ids
 - [x] keep raw graph read/write available as `raw_read` and `raw_write` for internal, operator, rebuild, or policy-resolution paths
 - [x] define query/read contract that evidence use must pass node ACL, relevant grounding ACL, and node-specific span-usage ACL
@@ -159,7 +159,8 @@ known truth_graph + entity_id
 Phase 2 now has ACL-aware normal read/write when `GraphKnowledgeEngine(..., acl_enabled=True)`.
 In that mode, normal `read` filters through persisted ACL truth and normal `write` materializes node, edge, grounding, and span ACL records.
 Raw `raw_read` and `raw_write` remain available for internal, operator, rebuild, and policy-resolution paths.
-Full answer-facing traversal enforcement, hidden-structure suppression, and explicit-public short-circuit routing are still pending.
+Answer-facing candidate retrieval, evidence pack materialization, and KG projection now route through ACL-aware read surfaces.
+Full navigator traversal enforcement and broader raw-traversal封鎖 remain pending.
 
 ### Phase 3 - Derived artifact safety
 
