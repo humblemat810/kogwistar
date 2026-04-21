@@ -94,6 +94,7 @@ class LaneMessagingService:
                 sender_id=sender_id,
                 recipient_id=recipient_id,
             )
+            created_by = str(sender_id).strip()
 
             message_node = Node(
                 id=message_id,
@@ -127,6 +128,17 @@ class LaneMessagingService:
                 },
             )
             self.engine.write.add_node(message_node)
+            record_acl = getattr(self.engine, "record_acl", None)
+            if callable(record_acl):
+                record_acl(
+                    truth_graph="conversation",
+                    entity_id=message_id,
+                    version=1,
+                    mode="shared" if shared_flag else "private",
+                    created_by=created_by,
+                    owner_id=sender_id,
+                    security_scope=effective_scope,
+                )
 
             self._add_semantic_edge(
                 edge_id=str(stable_id("lane_message_edge", message_id, "in_conversation", anchors["conversation"].id)),

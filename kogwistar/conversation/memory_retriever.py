@@ -5,7 +5,6 @@ from typing import Callable, List, Optional, cast
 
 from kogwistar.llm_tasks import LLMTaskSet
 
-from .policy import can_access_memory_metadata, normalize_memory_visibility
 from .models import ConversationEdge
 from .models import RetrievalResult
 from .models import ConversationNode, MetaFromLastSummary, Node, Edge, FilteringResult
@@ -15,6 +14,11 @@ from ..engine_core.models import Grounding, Span
 
 from .models import MemoryRetrievalResult, MemoryPinResult
 from ..server.auth_middleware import get_current_agent_id, get_security_scope
+
+
+def _normalize_visibility_mode(value: object) -> str:
+    vis = str(value or "private").strip().lower()
+    return "shared" if vis == "shared" else "private"
 
 
 def is_node_memory_context(node: ConversationNode):
@@ -149,25 +153,6 @@ class MemoryRetriever:
 
         memory_nodes.sort(key=lambda x: _rank(x))
         memory_edges.sort(key=lambda x: _rank(x))
-        current_agent_id = get_current_agent_id()
-        memory_nodes = [
-            n
-            for n in memory_nodes
-            if can_access_memory_metadata(
-                dict(getattr(n, "metadata", {}) or {}),
-                current_security_scope=get_security_scope(),
-                current_agent_id=current_agent_id,
-            )
-        ]
-        memory_edges = [
-            e
-            for e in memory_edges
-            if can_access_memory_metadata(
-                dict(getattr(e, "metadata", {}) or {}),
-                current_security_scope=get_security_scope(),
-                current_agent_id=current_agent_id,
-            )
-        ]
         candidates = RetrievalResult(memory_nodes, memory_edges)
         # # Optional type preference reorder (soft heuristic, no filtering)
         # if candidate_ids and candidate_metas:
@@ -319,7 +304,7 @@ class MemoryRetriever:
         if not selected_memory or not memory_context_text:
             return None
 
-        effective_visibility = normalize_memory_visibility(visibility)
+        effective_visibility = _normalize_visibility_mode(visibility)
         effective_scope = str(
             security_scope or get_security_scope() or ""
         ).strip().lower()
@@ -334,6 +319,16 @@ class MemoryRetriever:
             for item in (shared_with_agents or ())
             if str(item).strip()
         )
+        edge_acl_metadata = {
+            "visibility": effective_visibility,
+            "security_scope": effective_scope,
+            "owner_security_scope": effective_scope,
+            "owner_agent_id": effective_agent,
+            "agent_id": effective_agent,
+            "shared_scope": effective_visibility == "shared",
+            "shared_with": list(shared_values),
+            "shared_with_agents": list(shared_agent_values),
+        }
         mem_node_id = mem_id  # or str(uuid.uuid4())
         mem_node = ConversationNode(
             id=mem_node_id,
@@ -373,6 +368,18 @@ class MemoryRetriever:
         )
 
         self.conversation_engine.write.add_node(mem_node)
+        record_acl = getattr(self.conversation_engine, "record_acl", None)
+        if callable(record_acl) and not getattr(self.conversation_engine, "acl_enabled", False):
+            record_acl(
+                truth_graph="conversation",
+                entity_id=mem_node.safe_get_id(),
+                version=1,
+                mode=effective_visibility,
+                created_by=effective_agent or user_id,
+                owner_id=effective_agent or user_id,
+                security_scope=effective_scope or None,
+                shared_with_principals=shared_values,
+            )
         edge_ids: List[str] = []
         edges: List[ConversationEdge] = []
         # Turn -> MemoryContext
@@ -395,6 +402,7 @@ class MemoryRetriever:
                 "char_distance_from_last_summary": prev_turn_meta_summary.prev_node_char_distance_from_last_summary,
                 "turn_distance_from_last_summary": prev_turn_meta_summary.prev_node_distance_from_last_summary,
                 "tail_turn_index": prev_turn_meta_summary.tail_turn_index,
+                **edge_acl_metadata,
             },
             source_edge_ids=[],
             target_edge_ids=[],
@@ -428,6 +436,7 @@ class MemoryRetriever:
                     "char_distance_from_last_summary": prev_turn_meta_summary.prev_node_char_distance_from_last_summary,
                     "turn_distance_from_last_summary": prev_turn_meta_summary.prev_node_distance_from_last_summary,
                     "tail_turn_index": prev_turn_meta_summary.tail_turn_index,
+                    **edge_acl_metadata,
                 },
                 source_edge_ids=[],
                 target_edge_ids=[],
@@ -456,6 +465,7 @@ class MemoryRetriever:
                     "char_distance_from_last_summary": prev_turn_meta_summary.prev_node_char_distance_from_last_summary,
                     "turn_distance_from_last_summary": prev_turn_meta_summary.prev_node_distance_from_last_summary,
                     "tail_turn_index": prev_turn_meta_summary.tail_turn_index,
+                    **edge_acl_metadata,
                 },
                 source_edge_ids=[],
                 target_edge_ids=[edge.safe_get_id()],

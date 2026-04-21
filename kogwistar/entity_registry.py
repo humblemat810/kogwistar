@@ -37,11 +37,13 @@ def _resolve_class_name(class_name: str):
     from .engine_core import models as core_models
     from .conversation import models as chat_models
     from .runtime import models as runtime_models
+    from .acl import models as acl_models
 
     return (
         getattr(core_models, class_name, None)
         or getattr(chat_models, class_name, None)
         or getattr(runtime_models, class_name, None)
+        or getattr(acl_models, class_name, None)
     )
 
 

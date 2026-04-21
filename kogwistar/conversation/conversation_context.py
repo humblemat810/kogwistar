@@ -4,9 +4,7 @@ from typing import Any, Literal, Self, Sequence, TypeAlias
 from kogwistar.typing_interfaces import EngineLike
 from typing import Iterable
 
-from .models import ConversationNode
-from .policy import can_access_memory_metadata
-from ..server.auth_middleware import get_current_agent_id
+from .models import ConversationEdge, ConversationNode
 import json
 
 Role: TypeAlias = Literal["system", "user", "assistant", "tool"]
@@ -583,10 +581,11 @@ class ContextSources:
 
     def gather(self, *, conversation_id: str, purpose: str):
         # Phase 1: load nodes
-        ids, docs, metas = self._load_node_rows(conversation_id)
-
-        # Phase 2: decode nodes
-        by_id, meta_by_id = self._decode_nodes(ids, docs, metas)
+        if getattr(self.engine, "acl_enabled", False):
+            by_id, meta_by_id = self._load_acl_visible_nodes(conversation_id)
+        else:
+            ids, docs, metas = self._load_node_rows(conversation_id)
+            by_id, meta_by_id = self._decode_nodes(ids, docs, metas)
 
         # Phase 3: compute turn ids & summary id
         tail_turn_ids = self._select_tail_turn_ids(by_id, meta_by_id)
@@ -620,6 +619,23 @@ class ContextSources:
         docs = got.get("documents") or []
         metas = got.get("metadatas") or []
         return ids, docs, metas
+
+    def _load_acl_visible_nodes(
+        self, conversation_id: str
+    ) -> tuple[dict[str, ConversationNode], dict[str, dict]]:
+        nodes = self.engine.read.get_nodes(
+            where={"conversation_id": conversation_id},
+            include=["documents", "metadatas", "embeddings"],
+            node_type=ConversationNode,
+            limit=20000,
+        )
+        by_id: dict[str, ConversationNode] = {}
+        meta_by_id: dict[str, dict] = {}
+        for node in nodes:
+            node_id = str(node.safe_get_id())
+            by_id[node_id] = node
+            meta_by_id[node_id] = dict(getattr(node, "metadata", {}) or {})
+        return by_id, meta_by_id
 
     # -------------------------
     # Phase 2
@@ -716,6 +732,40 @@ class ContextSources:
                 memctx_ids, ptr_ids, edge_ids_for_memctx, edge_ids_for_ptr
             )
 
+        if getattr(self.engine, "acl_enabled", False):
+            edges = self.engine.read.get_edges(
+                where={"doc_id": f"conv:{conversation_id}"},
+                include=["documents", "metadatas", "embeddings"],
+                edge_type=ConversationEdge,
+                limit=20000,
+            )
+            tail_turn_set = set(tail_turn_ids)
+            for edge in edges:
+                rel = str(getattr(edge, "relation", "") or "")
+                src = (getattr(edge, "source_ids", None) or [None])[0]
+                if src is None or src not in tail_turn_set:
+                    continue
+
+                tids = [
+                    str(target_id)
+                    for target_id in (getattr(edge, "target_ids", None) or [])
+                    if target_id is not None
+                ]
+                if not tids:
+                    continue
+
+                edge_id = str(edge.safe_get_id())
+                if rel == "has_memory_context" and self.include_memory_context:
+                    memctx_ids.update(tids)
+                    edge_ids_for_memctx.add(edge_id)
+                elif rel == "references" and self.include_pinned_kg_refs:
+                    ptr_ids.update(tids)
+                    edge_ids_for_ptr.add(edge_id)
+
+            return _EdgeSelection(
+                memctx_ids, ptr_ids, edge_ids_for_memctx, edge_ids_for_ptr
+            )
+
         egot = self.engine.backend.edge_get(
             where={"doc_id": f"conv:{conversation_id}"},
             include=["metadatas"],
@@ -800,13 +850,6 @@ class ContextSources:
             n = by_id.get(mid)
             if n is None:
                 continue
-            md = dict(getattr(n, "metadata", {}) or {})
-            if not can_access_memory_metadata(
-                md,
-                current_security_scope=self.security_scope,
-                current_agent_id=self.agent_id or get_current_agent_id(),
-            ):
-                continue
             items.append(
                 ContextItem(
                     kind="memory_context",
@@ -835,13 +878,6 @@ class ContextSources:
         for pid in sorted(edge_sel.ptr_ids):
             n = by_id.get(pid)
             if n is None:
-                continue
-            md = dict(getattr(n, "metadata", {}) or {})
-            if not can_access_memory_metadata(
-                md,
-                current_security_scope=self.security_scope,
-                current_agent_id=self.agent_id or get_current_agent_id(),
-            ):
                 continue
             props = getattr(n, "properties", {}) or {}
             refers_to = props.get("refers_to_id")

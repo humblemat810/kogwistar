@@ -20,13 +20,14 @@ from tests._helpers.fake_backend import build_fake_backend
 pytestmark = pytest.mark.core
 
 
-def _make_engine() -> tuple[GraphKnowledgeEngine, Path]:
-    test_db_dir = Path.cwd() / ".tmp_memory_visibility" / str(uuid.uuid4())
+def _make_engine(*, acl_enabled: bool = True) -> tuple[GraphKnowledgeEngine, Path]:
+    test_db_dir = Path.cwd() / ".tmp_acl_visibility" / str(uuid.uuid4())
     test_db_dir.mkdir(parents=True, exist_ok=True)
     engine = GraphKnowledgeEngine(
         persist_directory=str(test_db_dir),
         backend_factory=build_fake_backend,
         kg_graph_type="conversation",
+        acl_enabled=acl_enabled,
     )
     return engine, test_db_dir
 
@@ -45,6 +46,7 @@ def _mk_turn_node(*, conversation_id: str, user_id: str, turn_id: str, turn_inde
             "conversation_id": conversation_id,
             "user_id": user_id,
             "level_from_root": 0,
+            "visibility": "public",
         },
         role="user",
         turn_index=turn_index,
@@ -207,6 +209,8 @@ def _pin_reference(
             "security_scope": security_scope,
             "owner_agent_id": agent_id,
             "agent_id": agent_id,
+            "shared_with_agents": shared_with_agents or [],
+            "shared_with": [],
         },
         source_edge_ids=[],
         target_edge_ids=[],
@@ -218,7 +222,7 @@ def _pin_reference(
     return ref
 
 
-def test_private_memory_hidden_from_other_agent():
+def test_private_acl_memory_hidden_from_other_agent():
     engine, test_db_dir = _make_engine()
     try:
         service = ConversationService.from_engine(engine, knowledge_engine=engine)
@@ -265,7 +269,7 @@ def test_private_memory_hidden_from_other_agent():
         shutil.rmtree(test_db_dir, ignore_errors=True)
 
 
-def test_shared_memory_visible_to_explicit_agent():
+def test_shared_acl_memory_visible_to_explicit_agent():
     engine, test_db_dir = _make_engine()
     try:
         service = ConversationService.from_engine(engine, knowledge_engine=engine)
@@ -316,7 +320,7 @@ def test_shared_memory_visible_to_explicit_agent():
         shutil.rmtree(test_db_dir, ignore_errors=True)
 
 
-def test_private_pinned_ref_hidden_from_other_agent():
+def test_private_acl_pinned_ref_hidden_from_other_agent():
     engine, test_db_dir = _make_engine()
     try:
         service = ConversationService.from_engine(engine, knowledge_engine=engine)
@@ -363,7 +367,7 @@ def test_private_pinned_ref_hidden_from_other_agent():
         shutil.rmtree(test_db_dir, ignore_errors=True)
 
 
-def test_shared_pinned_ref_visible_to_explicit_agent():
+def test_shared_acl_pinned_ref_visible_to_explicit_agent():
     engine, test_db_dir = _make_engine()
     try:
         service = ConversationService.from_engine(engine, knowledge_engine=engine)
@@ -407,5 +411,94 @@ def test_shared_pinned_ref_visible_to_explicit_agent():
             item.node_id == ref.id and item.kind == "pinned_kg_ref"
             for item in view.items
         )
+    finally:
+        shutil.rmtree(test_db_dir, ignore_errors=True)
+
+
+def test_acl_enabled_context_sources_use_engine_acl_for_pinned_refs():
+    engine, test_db_dir = _make_engine(acl_enabled=True)
+    try:
+        conversation_id = "conv-acl-context-ref"
+        user_id = "user-1"
+        turn_id = f"turn:{uuid.uuid4()}"
+        ref_id = f"ref:{uuid.uuid4()}"
+
+        turn = _mk_turn_node(
+            conversation_id=conversation_id,
+            user_id=user_id,
+            turn_id=turn_id,
+            turn_index=0,
+        )
+        turn.metadata.update(
+            {
+                "visibility": "public",
+                "security_scope": "tenant-a",
+                "owner_agent_id": "agent-a",
+            }
+        )
+        ref = _mk_reference_node(
+            conversation_id=conversation_id,
+            user_id=user_id,
+            ref_id=ref_id,
+            refers_to_id=f"kg:{uuid.uuid4()}",
+            visibility="private",
+            security_scope="tenant-a",
+            agent_id="agent-a",
+        )
+        edge = ConversationEdge(
+            id=f"{turn_id}::ref::{ref_id}",
+            source_ids=[turn_id],
+            target_ids=[ref_id],
+            relation="references",
+            label="references",
+            type="relationship",
+            summary="turn references pointer",
+            doc_id=f"conv:{conversation_id}",
+            mentions=[
+                Grounding(spans=[Span.from_dummy_for_conversation(conversation_id)])
+            ],
+            domain_id=None,
+            canonical_entity_id=None,
+            properties={"entity_type": "conversation_edge"},
+            embedding=None,
+            metadata={
+                "entity_type": "conversation_edge",
+                "conversation_id": conversation_id,
+                "visibility": "public",
+                "security_scope": "tenant-a",
+                "owner_agent_id": "agent-a",
+                "agent_id": "agent-a",
+            },
+            source_edge_ids=[],
+            target_edge_ids=[],
+        )
+
+        token_a = claims_ctx.set(
+            {"ns": "conversation", "security_scope": "tenant-a", "agent_id": "agent-a"}
+        )
+        try:
+            engine.add_node(turn)
+            engine.add_node(ref)
+            engine.add_edge(edge)
+        finally:
+            claims_ctx.reset(token_a)
+
+        token_b = claims_ctx.set(
+            {"ns": "conversation", "security_scope": "tenant-a", "agent_id": "agent-b"}
+        )
+        try:
+            view = ContextSources(
+                conversation_engine=engine,
+                include_summaries=False,
+                include_memory_context=False,
+                include_pinned_kg_refs=True,
+                security_scope="tenant-a",
+                agent_id="agent-b",
+            ).gather(conversation_id=conversation_id, purpose="answer")
+        finally:
+            claims_ctx.reset(token_b)
+
+        assert engine.raw_read.get_nodes(ids=[ref_id])[0].id == ref_id
+        assert all(item.node_id != ref_id for item in view)
     finally:
         shutil.rmtree(test_db_dir, ignore_errors=True)

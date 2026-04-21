@@ -22,6 +22,9 @@ from ..workers.index_job_worker import IndexJobWorker
 from ..utils.log import bind_log_context
 from .indexing import IndexingSubsystem
 from .subsystems import (
+    ACLSubsystem,
+    ACLAwareReadSubsystem,
+    ACLAwareWriteSubsystem,
     AdjudicateSubsystem,
     EmbedSubsystem,
     ExtractSubsystem,
@@ -41,6 +44,7 @@ from .types import (
 )
 from ..graph_kinds import normalize_graph_kind
 from .utils.aliasing import AliasBookStore
+from ..acl.graph import ACLGraph
     # """_summary_
 
     # sample usage:
@@ -622,6 +626,45 @@ class GraphKnowledgeEngine:
             resolve_mode=resolve_mode,
         )
 
+    def get_node_acl_checked(
+        self,
+        node_id: str,
+        *,
+        grounding_item_ids: Sequence[str] = (),
+        target_item_ids: Sequence[str] = (),
+        principal_id: str,
+        principal_groups: Sequence[str] = (),
+        security_scope: str | None = None,
+        node_type: Type[Node] | None = None,
+        include: None | list[str] = None,
+        resolve_mode: Literal[
+            "active_only", "redirect", "include_tombstones"
+        ] = "active_only",
+    ) -> Node:
+        nodes = self.read.get_nodes(
+            ids=[node_id],
+            node_type=node_type,
+            include=include,
+            resolve_mode=resolve_mode,
+        )
+        if not nodes:
+            raise ValueError(f"no node found for id = {node_id}")
+        decision = self.acl.decide_acl_node_read(
+            item_grain="span",
+            truth_graph=self.kg_graph_type,
+            entity_id=node_id,
+            grounding_item_ids=tuple(grounding_item_ids),
+            target_item_ids=tuple(target_item_ids),
+            principal_id=principal_id,
+            principal_groups=tuple(principal_groups),
+            security_scope=security_scope,
+        )
+        if not decision.visible:
+            raise PermissionError(
+                f"ACL denied node {node_id}: {decision.reason}"
+            )
+        return nodes[0]
+
     def query_nodes(
         self,
         *args,
@@ -731,6 +774,41 @@ class GraphKnowledgeEngine:
             include=include,
             resolve_mode=resolve_mode,
         )
+
+    def get_edge_acl_checked(
+        self,
+        edge_id: str,
+        *,
+        principal_id: str,
+        principal_groups: Sequence[str] = (),
+        security_scope: str | None = None,
+        edge_type: Type[Edge] | None = None,
+        include: None | list[str] = None,
+        resolve_mode: Literal[
+            "active_only", "redirect", "include_tombstones"
+        ] = "active_only",
+    ) -> Edge:
+        edges = self.read.get_edges(
+            ids=[edge_id],
+            edge_type=edge_type,
+            include=include,
+            resolve_mode=resolve_mode,
+        )
+        if not edges:
+            raise ValueError(f"no edge found for id = {edge_id}")
+        decision = self.acl.decide_acl(
+            grain="edge",
+            truth_graph=self.kg_graph_type,
+            entity_id=edge_id,
+            principal_id=principal_id,
+            principal_groups=tuple(principal_groups),
+            security_scope=security_scope,
+        )
+        if not decision.visible:
+            raise PermissionError(
+                f"ACL denied edge {edge_id}: {decision.reason}"
+            )
+        return edges[0]
 
     def all_nodes_for_doc(self, doc_id: str) -> List[Node]:
         return self.get_nodes(self._nodes_by_doc(doc_id))
@@ -1120,7 +1198,8 @@ class GraphKnowledgeEngine:
         offset_repair_scorer: OffsetRepairScorer | None = None,
         llm_tasks: LLMTaskSet | None = None,
         default_task_provider_config: DefaultTaskProviderConfig | None = None,
-        cache_dir: os.PathLike|str|None = None
+        cache_dir: os.PathLike|str|None = None,
+        acl_enabled: bool = False,
     ):
         """
         embedding_function: callable(texts: List[str]) -> List[List[float]].
@@ -1133,6 +1212,8 @@ class GraphKnowledgeEngine:
         self.kg_graph_type = normalize_graph_kind(kg_graph_type)
         self.persist_directory = persist_directory
         self.namespace = namespace
+        self.acl_enabled = acl_enabled
+        self.acl_graph = ACLGraph()
         self.extraction_schema_mode: ExtractionSchemaMode = extraction_schema_mode
         self.offset_repair_scorer: OffsetRepairScorer | None = offset_repair_scorer
         self.cache_dir = cache_dir or self.persist_directory
@@ -1199,6 +1280,7 @@ class GraphKnowledgeEngine:
         ef = embedding_function or get_embedding_function()
         self.embedding_length_limit = 512
         self._ef: EmbeddingFunctionLike = ef  # embedding_function or ef #embedding_functions.DefaultEmbeddingFunction()
+        self.acl_graph = getattr(self, "acl_graph", ACLGraph())
 
         # Keep a 1-string convenience to reuse in cosine checks
         # convenience: single-string embed for verifiers
@@ -1357,9 +1439,16 @@ class GraphKnowledgeEngine:
             self.cached_embed = cast(Callable[[str], Iterable[float]], cached_embed)
 
         # Namespaced subsystem APIs (new source-of-truth surface).
-        self.read = ReadSubsystem(self)
-        self.write = WriteSubsystem(self)
+        self.raw_read = ReadSubsystem(self)
+        self.raw_write = WriteSubsystem(self)
+        self.read = self.raw_read
+        self.write = self.raw_write
+
         self.extract = ExtractSubsystem(self)
+        self.acl = ACLSubsystem(self)
+        if self.acl_enabled:
+            self.read = ACLAwareReadSubsystem(self, self.raw_read)
+            self.write = ACLAwareWriteSubsystem(self, self.raw_write)
         self.persist = PersistSubsystem(self)
         self.rollback = RollbackSubsystem(self)
         self.adjudicate = AdjudicateSubsystem(self)
@@ -1381,6 +1470,27 @@ class GraphKnowledgeEngine:
             pass  # fall back to memory or consider handling PG specifically if index.db isn't used there
 
         self.search_index = SearchIndexService(self, index_db_path=idx_db_path)
+
+    def acl_entity_ids_for_target_item(self, **kwargs):
+        return self.acl.acl_entity_ids_for_target_item(**kwargs)
+
+    def record_acl(self, **kwargs):
+        return self.acl.record_acl(**kwargs)
+
+    def decide_acl(self, **kwargs):
+        return self.acl.decide_acl(**kwargs)
+
+    def decide_acl_usage(self, **kwargs):
+        return self.acl.decide_acl_usage(**kwargs)
+
+    def decide_acl_node_read(self, **kwargs):
+        return self.acl.decide_acl_node_read(**kwargs)
+
+    def get_node_acl_checked(self, *args, **kwargs):
+        return self.acl.get_node_acl_checked(*args, **kwargs)
+
+    def get_edge_acl_checked(self, *args, **kwargs):
+        return self.acl.get_edge_acl_checked(*args, **kwargs)
 
     def _emit_change(
         self,
@@ -1532,7 +1642,7 @@ class GraphKnowledgeEngine:
 
     @engine_context
     def add_node(self, node: Node, doc_id: Optional[str] = None):
-        return self.write._add_node_impl(node, doc_id=doc_id)
+        return self.write.add_node(node, doc_id=doc_id)
 
     def _fanout_endpoints_rows(self, edge: Edge, doc_id: str | None):
         return self.write.fanout_endpoints_rows(edge, doc_id)
@@ -1542,7 +1652,7 @@ class GraphKnowledgeEngine:
 
     @engine_context
     def add_edge(self, edge: Edge, doc_id: Optional[str] = None):
-        return self.write._add_edge_impl(edge, doc_id=doc_id)
+        return self.write.add_edge(edge, doc_id=doc_id)
 
     @engine_context
     def add_document(self, document: Document):

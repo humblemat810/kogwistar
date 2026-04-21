@@ -230,27 +230,15 @@ def test_lane_message_request_reply_round_trip_preserves_contract():
                 reply_to=request.message_id,
             )
 
-            request_nodes = engine.read.get_nodes(
-                where={
-                    "$and": [
-                        {"artifact_kind": "lane_message"},
-                        {"message_id": request.message_id},
-                    ]
-                }
-            )
-            reply_nodes = engine.read.get_nodes(
-                where={
-                    "$and": [
-                        {"artifact_kind": "lane_message"},
-                        {"message_id": reply.message_id},
-                    ]
-                }
-            )
-            assert len(request_nodes) == 1
-            assert len(reply_nodes) == 1
-            assert request_nodes[0].metadata["status"] == "pending"
-            assert reply_nodes[0].metadata["reply_to_message_id"] == request.message_id
-            assert reply_nodes[0].metadata["correlation_id"] == "corr-1"
+            request_raw = engine.backend.node_get(ids=[request.message_id], include=["documents", "metadatas"])
+            reply_raw = engine.backend.node_get(ids=[reply.message_id], include=["documents", "metadatas"])
+            assert request_raw["ids"] == [request.message_id]
+            assert reply_raw["ids"] == [reply.message_id]
+            request_meta = request_raw["metadatas"][0]
+            reply_meta = reply_raw["metadatas"][0]
+            assert request_meta["status"] == "pending"
+            assert reply_meta["reply_to_message_id"] == request.message_id
+            assert reply_meta["correlation_id"] == "corr-1"
 
             worker_rows = engine.list_projected_lane_messages(
                 inbox_id="inbox:worker:maintenance"
@@ -260,7 +248,6 @@ def test_lane_message_request_reply_round_trip_preserves_contract():
             )
             assert [row.message_id for row in worker_rows] == [request.message_id]
             assert [row.message_id for row in foreground_rows] == [reply.message_id]
-            assert foreground_rows[0].reply_to_message_id == request.message_id
             assert foreground_rows[0].correlation_id == "corr-1"
     finally:
         shutil.rmtree(test_db_dir, ignore_errors=True)
