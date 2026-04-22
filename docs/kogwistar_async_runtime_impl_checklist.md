@@ -73,11 +73,11 @@ Test evidence:
 
 Acceptance tests:
 
-- [x] sync and async runtimes load the same `WorkflowSpec` -> `test_sync_and_async_runtime_accept_same_workflow_graph_model`
-- [x] sync and async runtimes produce equivalent terminal status for a linear workflow -> `test_async_runtime_linear_terminal_status_equivalent_to_sync`
-- [x] sync and async runtimes produce equivalent state for branching and joins -> `test_async_runtime_branch_join_status_and_state_equivalent_to_sync`
-- [x] async runtime can execute sync resolvers through an adapter -> `test_async_adapter_accepts_sync_handler`
-- [x] async runtime can execute native async resolvers -> `test_async_adapter_accepts_async_handler`
+- [x] sync and async runtimes load the same `WorkflowSpec` -> `test_async_runtime_side_by_side_node_edge_and_terminal_parity`
+- [x] sync and async runtimes produce equivalent terminal status for a linear workflow -> `test_async_runtime_native_scheduler_linear_success`, `test_async_runtime_side_by_side_node_edge_and_terminal_parity`
+- [x] sync and async runtimes produce equivalent state for branching and joins -> `test_async_runtime_native_scheduler_join_merge_runs_once`, `test_async_runtime_native_scheduler_fanout_appends`
+- [x] async runtime can execute sync resolvers through an adapter -> `test_async_runtime_sync_handler_callability`
+- [x] async runtime can execute native async resolvers -> `test_async_runtime_async_handler_callability`
 
 ---
 
@@ -96,11 +96,11 @@ Acceptance tests:
 
 Acceptance tests:
 
-- [x] registered sync op appears in async op set -> `test_default_sync_ops_equal_default_async_ops`
-- [x] registered async op appears in async op set -> `test_registered_async_op_appears_in_async_op_set`
-- [x] missing op behavior matches sync runtime -> `test_missing_op_behavior_matches_sync_resolver`
-- [x] exception-to-`RunFailure` behavior matches sync runtime -> `test_exception_to_runfailure_matches_sync_resolver`
-- [x] legacy `update` warning behavior is either preserved or intentionally retired with docs -> `test_async_resolver_legacy_update_warning_preserved`
+- [x] registered sync op appears in async op set -> `test_sync_runtime_default_ops_equal`, `test_async_runtime_default_ops_equal`
+- [x] registered async op appears in async op set -> `test_async_runtime_registered_op_appears_in_op_set`
+- [x] missing op behavior matches sync runtime -> `test_async_runtime_missing_op_behavior`
+- [x] exception-to-`RunFailure` behavior matches sync runtime -> `test_async_runtime_exception_to_runfailure`
+- [x] legacy `update` warning behavior is either preserved or intentionally retired with docs -> `test_async_runtime_legacy_update_warning_preserved`
 - [x] async runtime runs two independent awaited handlers concurrently -> `test_async_resolver_runs_two_awaited_handlers_concurrently`
 - [x] `_deps` is available during live execution but omitted from checkpoints -> `test_async_resolver_deps_available_in_handler`, `test_async_runtime_deps_live_but_omitted_from_checkpoint_payload`
 
@@ -108,7 +108,7 @@ Acceptance tests:
 
 ## Phase 3 - Async Scheduler Core
 
-Phase 3 status: completed. `AsyncWorkflowRuntime` now has an experimental native async scheduler path (`experimental_native_scheduler=True`) for linear/branch/fanout/route-next plus first-slice join-merge behavior. It is task-based and thread-free by default for step execution; any extra threading must be explicit inside resolver or handler code. Checkpoint/resume and cancellation durability are covered for this slice via sync delegation and native persistence hooks. Contract file last verified green at `40 passed`.
+Phase 3 status: completed. `AsyncWorkflowRuntime` now has an experimental native async scheduler path (`experimental_native_scheduler=True`) for linear/branch/fanout/route-next plus first-slice join-merge behavior. It is task-based and thread-free by default for step execution; any extra threading must be explicit inside resolver or handler code. Checkpoint/resume and cancellation durability are covered for this slice via sync delegation and native persistence hooks. Contract file last verified green at `36 passed`.
 
 - [x] implement `AsyncWorkflowRuntime`
 - [x] replace thread worker scheduling with task-based scheduling -> `test_async_resolver_runs_sync_handlers_inline_without_to_thread`, `test_async_runtime_native_scheduler_sync_handlers_run_inline_without_to_thread`
@@ -173,7 +173,7 @@ Phase 3 progress notes:
 
 Acceptance tests:
 
-- [x] sync and async runtimes produce identical final state for the same deterministic workflow -> `test_async_runtime_linear_terminal_status_equivalent_to_sync`, `test_async_runtime_branch_join_status_and_state_equivalent_to_sync`, `test_async_runtime_native_scheduler_uses_shared_state_merge_semantics`
+- [x] sync and async runtimes produce identical final state for the same deterministic workflow -> `test_async_runtime_native_scheduler_linear_success`, `test_async_runtime_native_scheduler_join_merge_runs_once`, `test_async_runtime_native_scheduler_uses_shared_state_merge_semantics`, `test_async_runtime_side_by_side_node_edge_and_terminal_parity`
 - [x] replay of async checkpoints yields the same state as live async execution -> `test_replay_state_reducer_matches_sync_runtime_merge_semantics`
 - [x] async checkpoint restore resumes from the same next pending node as sync restore -> `test_async_runtime_resume_run_delegates_to_sync_resume`, `test_async_runtime_run_with_resume_markers_delegates_to_sync_run`, `test_resume_run_failure_can_route_to_recovery_branch_async_backends`
 - [x] changing `created_at_ms` does not change replay result -> `test_replay_ignores_created_at_ms_and_orders_by_step_seq`
@@ -269,7 +269,7 @@ Acceptance tests:
 - [x] reuse `EventEmitter` semantics or provide async equivalent
 - [x] preserve workflow trace node and edge shape -> `test_async_runtime_side_by_side_node_edge_and_terminal_parity`
 - [x] preserve `WorkflowRunNode`, `WorkflowStepExecNode`, and checkpoint artifacts -> `test_async_runtime_side_by_side_node_edge_and_terminal_parity`, `test_replay_to_is_read_only_and_does_not_append_new_history`
-- [x] preserve trace fast-path behavior where safe -> `test_runtime_trace_writes_disable_eager_index_reconcile_for_in_memory_backend`, `test_async_runtime_trace_fast_path_configuration_matches_sync_runtime`
+- [x] preserve trace fast-path behavior where safe -> `test_runtime_trace_writes_disable_eager_index_reconcile_for_in_memory_backend`, `test_sync_runtime_trace_fast_path_configuration`, `test_async_runtime_trace_fast_path_configuration`
 - [x] ensure nested async runtimes do not duplicate trace sinks -> `test_async_runtime_native_scheduler_nested_invocation_reuses_trace_emitter`
 - [x] ensure task durations and status reporting are best-effort and non-fatal -> `test_async_runtime_native_scheduler_trace_emitter_failure_is_best_effort`
 - [x] add structured async task lifecycle events -> `test_async_runtime_native_scheduler_emits_trace_events_with_expected_metadata`
@@ -319,8 +319,8 @@ Notes:
 - [x] accepted graph node side-effect parity -> `test_async_runtime_side_by_side_node_edge_and_terminal_parity`
 - [x] accepted graph edge side-effect parity -> `test_async_runtime_side_by_side_node_edge_and_terminal_parity`
 - [x] linear workflow parity -> `test_async_runtime_native_scheduler_linear_success`
-- [x] branching parity -> `test_async_runtime_branch_join_status_and_state_equivalent_to_sync`, `test_async_runtime_side_by_side_node_edge_and_terminal_parity`
-- [x] join/barrier parity -> `test_async_runtime_native_scheduler_join_merge_runs_once`, `test_async_runtime_branch_join_status_and_state_equivalent_to_sync`
+- [x] branching parity -> `test_async_runtime_native_scheduler_fanout_appends`, `test_async_runtime_side_by_side_node_edge_and_terminal_parity`
+- [x] join/barrier parity -> `test_async_runtime_native_scheduler_join_merge_runs_once`
 - [x] fanout parity -> `test_async_runtime_native_scheduler_fanout_appends`, `test_async_runtime_native_scheduler_respects_many_multiplicity`
 - [x] route-next parity -> `test_async_runtime_native_scheduler_route_next_and_priority`
 - [x] suspend/resume parity -> `test_async_runtime_suspend_and_resume_roundtrip`, `test_async_runtime_resume_run_delegates_to_sync_resume`, `test_async_runtime_run_with_resume_markers_delegates_to_sync_run`
@@ -375,6 +375,19 @@ Sync/Async test-mapping policy:
 - Prefer a test-local docstring on each async semantic test that names its sync mirror.
 - Add a meta-test that reads the first docstring line for each mapped sync/async case and fails on missing mirror text.
 - Add a naming-convention test so mapped sync cases stay `test_...` and mapped async cases stay `test_async_...`.
+- For the bijection subset, use paired filenames `test_sync_runtime_bijection_contract.py` and `test_async_runtime_bijection_contract.py`, with suffix-matched test names.
+- For the bijection subset, enforce exact file basenames plus one-to-one `test_sync_runtime_*` <-> `test_async_runtime_*` case-name suffix mapping.
+- Bijection subset should grow by moving or mirroring the easiest 1:1 semantic cases first, not by broad many-to-one coverage.
+- `Moved from path::test_name` means an exact test case was moved; the source test must be removed in the same change.
+- `Refactored from path::test_name` means the source test remains because it covers additional semantics; the source file and source test must still exist.
+- `New sync mirror ...` / `New async mirror ...` means no suitable existing source test existed at that granularity.
+- Sync-side bijection tests must not claim `Moved from` or `Refactored from` an async-runtime test. Use a sync source when one exists; otherwise use `New sync mirror ...`.
+- Async-side bijection tests may claim `Moved from tests/runtime/test_async_runtime_contract.py::...` only when the old async source test is removed.
+- `test_runtime_bijection_moved_from_sources_are_removed` enforces that every `Moved from` source test no longer exists.
+- `test_runtime_bijection_refactored_from_sources_remain` enforces that every `Refactored from` source test still exists.
+- `test_runtime_bijection_sync_provenance_is_not_async_source` enforces that sync-side provenance does not point at async tests.
+- Case-by-case refactor plan, current bijection table, candidate backlog, and waiver ledger live in `docs/kogwistar_async_runtime_bijection_refactor_plan.md`.
+
 - For each waived mapping, record:
   - sync test id/path
   - waiver reason (why no direct async equivalent)

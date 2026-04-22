@@ -44,171 +44,6 @@ def test_async_runtime_exported():
     assert ExportedAsyncResolver is AsyncMappingStepResolver
 
 
-def test_async_runtime_auto_transaction_mode_defaults_to_none_for_non_pg_backend(
-    monkeypatch,
-):
-    class _ConversationEngine:
-        backend = object()
-
-    monkeypatch.setattr(
-        "kogwistar.engine_core.postgres_backend.PgVectorBackend",
-        type("_PgVectorBackend", (), {}),
-    )
-
-    rt = AsyncWorkflowRuntime(
-        workflow_engine=object(),
-        conversation_engine=_ConversationEngine(),
-        step_resolver=AsyncMappingStepResolver(),
-        predicate_registry={},
-        trace=False,
-        experimental_native_scheduler=True,
-    )
-
-    assert rt.sync_runtime.transaction_mode == "none"
-
-
-def test_async_runtime_auto_transaction_mode_uses_step_for_pg_backend(monkeypatch):
-    class _PgVectorBackend:
-        pass
-
-    class _ConversationEngine:
-        backend = _PgVectorBackend()
-
-    monkeypatch.setattr(
-        "kogwistar.engine_core.postgres_backend.PgVectorBackend",
-        _PgVectorBackend,
-    )
-
-    rt = AsyncWorkflowRuntime(
-        workflow_engine=object(),
-        conversation_engine=_ConversationEngine(),
-        step_resolver=AsyncMappingStepResolver(),
-        predicate_registry={},
-        trace=False,
-        experimental_native_scheduler=True,
-    )
-
-    assert rt.sync_runtime.transaction_mode == "step"
-
-
-def test_default_sync_ops_equal_default_async_ops():
-    from kogwistar.conversation.resolvers import default_resolver
-
-    async_resolver = AsyncMappingStepResolver(
-        handlers=dict(default_resolver.handlers),
-        default=default_resolver.default,
-    )
-    assert set(default_resolver.ops) == set(async_resolver.ops)
-
-
-def test_async_adapter_accepts_sync_handler():
-    def _sync(_ctx):
-        return RunSuccess(conversation_node_id=None, state_update=[("u", {"k": "v"})])
-
-    wrapped = _as_sync_step_fn(_sync)
-    out = wrapped(_DummyCtx())
-    assert isinstance(out, RunSuccess)
-    assert out.state_update == [("u", {"k": "v"})]
-
-
-def test_async_adapter_accepts_async_handler():
-    async def _async(_ctx):
-        await asyncio.sleep(0.001)
-        return RunSuccess(
-            conversation_node_id=None,
-            state_update=[("u", {"async_key": "ok"})],
-        )
-
-    wrapped = _as_sync_step_fn(_async)
-    out = wrapped(_DummyCtx())
-    assert isinstance(out, RunSuccess)
-    assert out.state_update == [("u", {"async_key": "ok"})]
-
-
-def test_missing_op_behavior_matches_sync_resolver():
-    sync_resolver = MappingStepResolver()
-    async_resolver = AsyncMappingStepResolver()
-
-    with pytest.raises(KeyError):
-        sync_resolver.resolve("missing")
-    with pytest.raises(KeyError):
-        async_resolver.resolve_async("missing")
-
-
-def test_sync_runtime_rejects_async_handler_by_runfailure():
-    sync_resolver = MappingStepResolver()
-
-    class _AwaitableResult:
-        def __await__(self):
-            async def _coro():
-                return RunSuccess(conversation_node_id=None, state_update=[])
-
-            return _coro().__await__()
-
-    @sync_resolver.register("async_in_sync")
-    def _async_like_handler(_ctx):
-        return _AwaitableResult()
-
-    out = sync_resolver.resolve("async_in_sync")(_DummyCtx())
-    assert isinstance(out, RunFailure)
-    assert any("Resolver must return StepRunResult" in e for e in out.errors)
-
-
-def test_exception_to_runfailure_matches_sync_resolver():
-    sync_resolver = MappingStepResolver()
-    async_resolver = AsyncMappingStepResolver()
-
-    @sync_resolver.register("boom")
-    def _boom_sync(_ctx):
-        raise RuntimeError("sync boom")
-
-    @async_resolver.register("boom")
-    def _boom_async(_ctx):
-        raise RuntimeError("async boom")
-
-    sync_out = sync_resolver.resolve("boom")(_DummyCtx())
-    async_out = asyncio.run(async_resolver.resolve_async("boom")(_DummyCtx()))
-    assert isinstance(sync_out, RunFailure)
-    assert isinstance(async_out, RunFailure)
-    assert any("sync boom" in e for e in sync_out.errors)
-    assert any("async boom" in e for e in async_out.errors)
-
-
-def test_registered_async_op_appears_in_async_op_set():
-    async_resolver = AsyncMappingStepResolver()
-
-    @async_resolver.register("async_op")
-    async def _async_ok(_ctx):
-        return RunSuccess(conversation_node_id=None, state_update=[("u", {"k": "ok"})])
-
-    assert "async_op" in async_resolver.ops
-    out = asyncio.run(async_resolver.resolve_async("async_op")(_DummyCtx()))
-    assert isinstance(out, RunSuccess)
-    assert out.state_update == [("u", {"k": "ok"})]
-
-
-def test_async_resolver_preserves_sandboxed_behavior():
-    async_resolver = AsyncMappingStepResolver()
-
-    class _FakeSandbox:
-        def run(self, code, state, context):
-            return RunSuccess(
-                conversation_node_id=None,
-                state_update=[("u", {"sandbox_code": code, "sandbox_ctx_op": context.get("op")})],
-            )
-
-    async_resolver.set_sandbox(_FakeSandbox())
-    async_resolver.sandboxed_ops.add("py")
-
-    @async_resolver.register("py")
-    async def _sandboxed(_ctx):
-        return "result = {'state_update': []}"
-
-    out = asyncio.run(async_resolver.resolve_async("py")(_DummyCtx()))
-    assert isinstance(out, RunSuccess)
-    assert out.state_update[0][1]["sandbox_ctx_op"] == "op1"
-
-
 def test_async_resolver_runs_sync_handlers_inline_without_to_thread(monkeypatch):
     async_resolver = AsyncMappingStepResolver()
 
@@ -401,71 +236,6 @@ def test_async_resolver_deps_available_in_handler():
     assert out.state_update == [("u", {"x": 7})]
 
 
-def test_async_resolver_legacy_update_warning_preserved():
-    async_resolver = AsyncMappingStepResolver()
-
-    @async_resolver.register("legacy")
-    async def _legacy(_ctx):
-        return RunSuccess(conversation_node_id=None, state_update=[], update={"k": 1})
-
-    with pytest.warns(RuntimeWarning, match="legacy update detected"):
-        out = asyncio.run(async_resolver.resolve_async("legacy")(_DummyCtx()))
-    assert isinstance(out, RunSuccess)
-
-
-def test_async_runtime_step_context_and_result_contract(monkeypatch):
-    class _FakeWorkflowRuntime:
-        def __init__(self, **kwargs):
-            self.workflow_engine = kwargs["workflow_engine"]
-            self.conversation_engine = kwargs["conversation_engine"]
-            self.step_resolver = kwargs["step_resolver"]
-
-        def run(self, **kwargs):
-            return kwargs
-
-    monkeypatch.setattr("kogwistar.runtime.async_runtime.WorkflowRuntime", _FakeWorkflowRuntime)
-    async_runtime = AsyncWorkflowRuntime(
-        workflow_engine=object(),
-        conversation_engine=object(),
-        step_resolver=lambda _op: (lambda _ctx: RunSuccess(conversation_node_id=None, state_update=[])),
-        predicate_registry={},
-        trace=False,
-    )
-    assert async_runtime.step_context_type is StepContext
-    assert async_runtime.step_result_type is not None
-    assert async_runtime.terminal_status_values == {
-        "succeeded",
-        "failed",
-        "cancelled",
-        "suspended",
-    }
-
-
-def test_sync_and_async_runtime_accept_same_workflow_graph_model(monkeypatch):
-    class _FakeWorkflowRuntime:
-        def __init__(self, **kwargs):
-            self.workflow_engine = kwargs["workflow_engine"]
-            self.conversation_engine = kwargs["conversation_engine"]
-            self.step_resolver = kwargs["step_resolver"]
-
-        def run(self, **kwargs):
-            return kwargs
-
-    monkeypatch.setattr("kogwistar.runtime.async_runtime.WorkflowRuntime", _FakeWorkflowRuntime)
-    workflow_engine = {"graph_model": "WorkflowSpec-like"}
-    conversation_engine = {"graph_model": "ConversationGraph"}
-    sync_resolver = MappingStepResolver()
-    async_runtime = AsyncWorkflowRuntime(
-        workflow_engine=workflow_engine,
-        conversation_engine=conversation_engine,
-        step_resolver=sync_resolver,
-        predicate_registry={},
-        trace=False,
-    )
-    assert async_runtime.sync_runtime.workflow_engine is workflow_engine
-    assert async_runtime.sync_runtime.conversation_engine is conversation_engine
-
-
 def test_async_runtime_preserves_nested_ops_and_state_schema_in_adapter():
     resolver = MappingStepResolver()
     resolver.nested_ops.add("answer")
@@ -491,6 +261,50 @@ def test_async_runtime_adapter_forwards_close_sandbox_run():
     adapter = _SyncResolverAdapter(resolver)
     adapter.close_sandbox_run("run-123")
     assert resolver.closed == ["run-123"]
+
+
+def test_sync_runtime_rejects_async_handler_by_runfailure():
+    sync_resolver = MappingStepResolver()
+
+    class _AwaitableResult:
+        def __await__(self):
+            async def _coro():
+                return RunSuccess(conversation_node_id=None, state_update=[])
+
+            return _coro().__await__()
+
+    @sync_resolver.register("async_in_sync")
+    def _async_like_handler(_ctx):
+        return _AwaitableResult()
+
+    out = sync_resolver.resolve("async_in_sync")(_DummyCtx())
+    assert isinstance(out, RunFailure)
+    assert any("Resolver must return StepRunResult" in e for e in out.errors)
+
+
+def test_sync_and_async_runtime_accept_same_workflow_graph_model(monkeypatch):
+    class _FakeWorkflowRuntime:
+        def __init__(self, **kwargs):
+            self.workflow_engine = kwargs["workflow_engine"]
+            self.conversation_engine = kwargs["conversation_engine"]
+            self.step_resolver = kwargs["step_resolver"]
+
+        def run(self, **kwargs):
+            return kwargs
+
+    monkeypatch.setattr("kogwistar.runtime.async_runtime.WorkflowRuntime", _FakeWorkflowRuntime)
+    workflow_engine = {"graph_model": "WorkflowSpec-like"}
+    conversation_engine = {"graph_model": "ConversationGraph"}
+    sync_resolver = MappingStepResolver()
+    async_runtime = AsyncWorkflowRuntime(
+        workflow_engine=workflow_engine,
+        conversation_engine=conversation_engine,
+        step_resolver=sync_resolver,
+        predicate_registry={},
+        trace=False,
+    )
+    assert async_runtime.sync_runtime.workflow_engine is workflow_engine
+    assert async_runtime.sync_runtime.conversation_engine is conversation_engine
 
 
 def test_async_runtime_linear_terminal_status_equivalent_to_sync(monkeypatch):
@@ -3217,55 +3031,3 @@ async def test_async_runtime_native_scheduler_nested_invocation_reuses_trace_emi
     assert out.status == "succeeded"
     assert out.final_state["done"] is True
     assert seen == [("spawn", True), ("child", True)]
-
-
-def test_async_runtime_trace_fast_path_configuration_matches_sync_runtime():
-    """Sync mirror: fast-path trace config in `tests/runtime/test_trace_sink_parallel_nested_minimal.py`."""
-    from pathlib import Path
-
-    root = Path.cwd() / ".tmp_trace_fast_check"
-    captured: dict[str, object] = {}
-
-    class _FakeWorkflowRuntime:
-        def __init__(self, **kwargs):
-            captured.update(kwargs)
-            self.transaction_mode = kwargs.get("transaction_mode")
-            self.fast_trace_persistence = bool(
-                kwargs.get("fast_trace_persistence")
-                if kwargs.get("fast_trace_persistence") is not None
-                else kwargs.get("trace", False)
-                and getattr(kwargs.get("conversation_engine"), "backend_kind", None)
-                == "memory"
-            )
-
-    class _ConversationEngine:
-        backend_kind = "memory"
-
-        def __init__(self):
-            self.persist_directory = str(root / "conv-trace-fast")
-            self._phase1_enable_index_jobs = True
-
-    class _WorkflowEngine:
-        backend_kind = "memory"
-
-        def __init__(self):
-            self.persist_directory = str(root / "wf-trace-fast")
-
-    monkeypatch = pytest.MonkeyPatch()
-    monkeypatch.setattr(
-        "kogwistar.runtime.async_runtime.WorkflowRuntime", _FakeWorkflowRuntime
-    )
-    try:
-        rt = AsyncWorkflowRuntime(
-            workflow_engine=_WorkflowEngine(),
-            conversation_engine=_ConversationEngine(),
-            step_resolver=AsyncMappingStepResolver(),
-            predicate_registry={},
-            trace=True,
-            experimental_native_scheduler=True,
-        )
-    finally:
-        monkeypatch.undo()
-
-    assert rt.sync_runtime.fast_trace_persistence is True
-    assert captured["trace"] is True
