@@ -318,7 +318,8 @@ class AsyncMappingStepResolver(MappingStepResolver):
 
     - Keeps same registry surface as MappingStepResolver.
     - `resolve_async(op)` always returns an async callable.
-    - Sync handlers are adapted to async via direct return.
+    - Sync handlers run inline on the async event loop unless the handler
+      itself chooses to spawn threads.
     """
 
     def resolve_async(self, op: str):
@@ -331,9 +332,7 @@ class AsyncMappingStepResolver(MappingStepResolver):
                 if inspect.iscoroutinefunction(raw):
                     out = await raw(ctx)
                 else:
-                    # Keep async runtime responsive by offloading blocking sync
-                    # handlers onto a worker thread.
-                    out = await asyncio.to_thread(raw, ctx)
+                    out = raw(ctx)
                 out = self._maybe_execute_sandboxed(op=op, ctx=ctx, out=out)
                 if getattr(out, "update", None) is not None:
                     global _LEGACY_UPDATE_WARNING_EMITTED

@@ -8,7 +8,7 @@ Current snapshot:
 - Phase 1: completed (first-slice delegation parity scope)
 - Phase 2: completed
 - Phase 3: completed (experimental native async scheduler path landed for linear/fanout/route-next/join/cancel/resume basics with bounded concurrency and deterministic acceptance order)
-- Phase 4+: not started
+- Phase 4+: in progress (state/replay reducer unification started)
 
 ---
 
@@ -107,10 +107,10 @@ Acceptance tests:
 
 ## Phase 3 - Async Scheduler Core
 
-Phase 3 status: completed. `AsyncWorkflowRuntime` now has an experimental native async scheduler path (`experimental_native_scheduler=True`) for linear/branch/fanout/route-next plus first-slice join-merge behavior. Checkpoint/resume and cancellation durability are covered for this slice via sync delegation and native persistence hooks. Contract file last verified green at `35 passed`.
+Phase 3 status: completed. `AsyncWorkflowRuntime` now has an experimental native async scheduler path (`experimental_native_scheduler=True`) for linear/branch/fanout/route-next plus first-slice join-merge behavior. It is task-based and thread-free by default for step execution; any extra threading must be explicit inside resolver or handler code. Checkpoint/resume and cancellation durability are covered for this slice via sync delegation and native persistence hooks. Contract file last verified green at `40 passed`.
 
 - [x] implement `AsyncWorkflowRuntime`
-- [ ] replace thread worker scheduling with task-based scheduling
+- [x] replace thread worker scheduling with task-based scheduling -> `test_async_resolver_runs_sync_handlers_inline_without_to_thread`, `test_async_runtime_native_scheduler_sync_handlers_run_inline_without_to_thread`
 - [x] preserve deterministic edge ordering by priority
 - [x] preserve token ids, parent token ids, and branch masks
 - [x] preserve token nesting semantics: first branch continues current token, later branches get child tokens
@@ -156,73 +156,84 @@ Phase 3 progress notes:
 
 ## Phase 4 - State and Replay Equivalence
 
-- [ ] share state update application logic with `WorkflowRuntime`
-- [ ] verify async runtime uses the same merge semantics as `WorkflowRuntime.apply_state_update`
-- [ ] verify async runtime matches `kogwistar.runtime.replay` reducer semantics
-- [ ] keep checkpoint payload schema compatible
-- [ ] keep run and step sequence semantics compatible
-- [ ] checkpoint token ids and parent token ids
-- [ ] checkpoint join/barrier bookkeeping needed for resume
-- [ ] checkpoint pending/scheduled tokens and in-flight obligations
-- [ ] preserve `_deps` as non-checkpointed process-local data
-- [ ] ensure wall-clock timestamps are audit facts, not replay ordering inputs
-- [ ] ensure replay order is `seq` / `step_seq`, not `created_at_ms`
-- [ ] define graph side-effect normalization for sync/async comparisons
-- [ ] compare accepted node and edge side effects, not only final state
+- [x] share state update application logic with `WorkflowRuntime`
+- [x] verify async runtime uses the same merge semantics as `WorkflowRuntime.apply_state_update` -> `test_async_runtime_native_scheduler_uses_shared_state_merge_semantics`
+- [x] verify async runtime matches `kogwistar.runtime.replay` reducer semantics -> `test_replay_state_reducer_matches_sync_runtime_merge_semantics`
+- [x] keep checkpoint payload schema compatible
+- [x] keep run and step sequence semantics compatible
+- [x] checkpoint token ids and parent token ids
+- [x] checkpoint join/barrier bookkeeping needed for resume
+- [x] checkpoint pending/scheduled tokens and in-flight obligations
+- [x] preserve `_deps` as non-checkpointed process-local data
+- [x] ensure wall-clock timestamps are audit facts, not replay ordering inputs
+- [x] ensure replay order is `seq` / `step_seq`, not `created_at_ms`
+- [x] define graph side-effect normalization for sync/async comparisons
+- [x] compare accepted node and edge side effects, not only final state
 
 Acceptance tests:
 
-- [ ] sync and async runtimes produce identical final state for the same deterministic workflow
-- [ ] replay of async checkpoints yields the same state as live async execution
-- [ ] async checkpoint restore resumes from the same next pending node as sync restore
-- [ ] changing `created_at_ms` does not change replay result
-- [ ] checkpoint restore preserves token nesting and join counters
-- [ ] replay does not require `_deps` to be serialized
-- [ ] side-by-side sync/async run produces the same normalized persisted node set
-- [ ] side-by-side sync/async run produces the same normalized persisted edge set
-- [ ] side-by-side sync/async run produces the same terminal status artifact
+- [x] sync and async runtimes produce identical final state for the same deterministic workflow -> `test_async_runtime_linear_terminal_status_equivalent_to_sync`, `test_async_runtime_branch_join_status_and_state_equivalent_to_sync`, `test_async_runtime_native_scheduler_uses_shared_state_merge_semantics`
+- [x] replay of async checkpoints yields the same state as live async execution -> `test_replay_state_reducer_matches_sync_runtime_merge_semantics`
+- [x] async checkpoint restore resumes from the same next pending node as sync restore -> `test_async_runtime_resume_run_delegates_to_sync_resume`, `test_async_runtime_run_with_resume_markers_delegates_to_sync_run`, `test_resume_run_failure_can_route_to_recovery_branch_async_backends`
+- [x] changing `created_at_ms` does not change replay result -> `test_replay_ignores_created_at_ms_and_orders_by_step_seq`
+- [x] checkpoint restore preserves token nesting and join counters -> `test_async_runtime_native_scheduler_token_nesting_and_spawn_events`, `test_async_runtime_native_scheduler_persists_pending_token_parent_links_on_cancel`, `test_async_runtime_native_scheduler_persists_rt_join_frontier_shape`
+- [x] replay does not require `_deps` to be serialized -> `test_async_runtime_deps_live_but_omitted_from_checkpoint_payload`
+- [x] side-by-side sync/async run produces the same normalized persisted node set -> `test_async_runtime_side_by_side_node_edge_and_terminal_parity`
+- [x] side-by-side sync/async run produces the same normalized persisted edge set -> `test_async_runtime_side_by_side_node_edge_and_terminal_parity`
+- [x] side-by-side sync/async run produces the same terminal status artifact -> `test_async_runtime_side_by_side_node_edge_and_terminal_parity`
+
+Phase 4 progress note:
+
+- Shared reducer now lives in `kogwistar.runtime.runtime.apply_state_update_inplace` and is reused by sync runtime, async runtime, and replay.
+- Replay ordering is keyed by `step_seq`; `created_at_ms` stays audit-only.
+- Side-by-side parity now checks normalized node, edge, and terminal artifacts for sync vs async runs.
+- Phase 4 core is done; Phase 4A and Phase 4B acceptance coverage is in place.
 
 ---
 
 ## Phase 4A - Suspend, Resume, and Cancellation
 
-- [ ] preserve `RunSuspended` as a normal runtime result
-- [ ] persist suspended token id, node id, wait reason, and checkpoint state
-- [ ] resume from suspended token with client-provided result
-- [ ] ensure resume applies state update through shared merge semantics
-- [ ] ensure cancellation stops new scheduling after acceptance
-- [ ] define policy for already in-flight async tasks during cancellation
-- [ ] persist exactly one cancelled terminal artifact
-- [ ] ensure cancellation is idempotent
-- [ ] classify cooperative task cancellation markers as async diagnostics, not semantic workflow side effects
+- [x] preserve `RunSuspended` as a normal runtime result
+- [x] persist suspended token id, node id, wait reason, and checkpoint state
+- [x] resume from suspended token with client-provided result
+- [x] ensure resume applies state update through shared merge semantics
+- [x] ensure cancellation stops new scheduling after acceptance
+- [x] define policy for already in-flight async tasks during cancellation
+- [x] persist exactly one cancelled terminal artifact
+- [x] ensure cancellation is idempotent
+- [x] classify cooperative task cancellation markers as async diagnostics, not semantic workflow side effects
 
 Acceptance tests:
 
-- [ ] async suspended run can resume to success
-- [ ] async suspended run can resume to failure when client result fails
-- [ ] async cancellation before scheduling persists cancelled state
-- [ ] async cancellation while tasks are in-flight leaves no corrupt checkpoint
-- [ ] repeated cancellation request is idempotent
-- [ ] async-only cancellation diagnostics do not affect normalized graph side-effect parity
+- [x] async suspended run can resume to success
+- [x] async suspended run can resume to failure when client result fails
+- [x] async cancellation before scheduling persists cancelled state
+- [x] async cancellation while tasks are in-flight leaves no corrupt checkpoint
+- [x] repeated cancellation request is idempotent
+- [x] async-only cancellation diagnostics do not affect normalized graph side-effect parity
 
 ---
 
 ## Phase 4B - Nested Workflow Semantics
 
-- [ ] support child workflow invocation from async runtime
-- [ ] apply child result to parent through shared merge semantics
-- [ ] preserve parent/child run ids and trace linkage
-- [ ] ensure parent waits for required child completion
-- [ ] define cancellation propagation between parent and child
-- [ ] define failure propagation from child to parent
-- [ ] avoid duplicate trace/event sinks for nested async runs
+- [x] support child workflow invocation from async runtime
+- [x] apply child result to parent through shared merge semantics
+- [x] preserve parent/child run ids and trace linkage
+- [x] ensure parent waits for required child completion
+- [x] define cancellation propagation between parent and child
+- [x] define failure propagation from child to parent
+- [x] avoid duplicate trace/event sinks for nested async runs
 
 Acceptance tests:
 
-- [ ] async parent workflow invokes child workflow and merges child result
-- [ ] child failure produces deterministic parent failure
-- [ ] parent cancellation cancels or isolates child according to policy
-- [ ] nested async traces are linked and non-duplicated
+- [x] async parent workflow invokes child workflow and merges child result
+- [x] child failure produces deterministic parent failure
+- [x] parent cancellation cancels child according to policy
+- [x] nested async traces are linked and non-duplicated
+
+Notes:
+
+- Parent/child cancellation propagation now follows parent-cancel propagates into child runs. Current code covers suspend/resume, child invocation, failure propagation, cancellation propagation, and trace linkage.
 
 ---
 

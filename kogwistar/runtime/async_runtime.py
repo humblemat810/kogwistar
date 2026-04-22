@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import inspect
 import queue
 import uuid
 from typing import Any, Awaitable, Callable, TypeAlias
 
+from ..id_provider import stable_id
 from .models import RunFailure, StepRunResult, WorkflowState
 from .executor import TerminalStatus, WorkflowExecutor
 from .runtime import (
+    apply_state_update_inplace,
     RunResult,
     StepContext,
     WorkflowRuntime,
@@ -19,6 +22,11 @@ from .design import validate_workflow_design
 
 SyncStepFn: TypeAlias = Callable[[StepContext], StepRunResult]
 AsyncStepFn: TypeAlias = Callable[[StepContext], Awaitable[StepRunResult]]
+
+
+_CANCEL_REQUESTED_CTX: contextvars.ContextVar[Callable[[str], bool] | None] = (
+    contextvars.ContextVar("kogwistar_async_cancel_requested", default=None)
+)
 
 
 def _as_sync_step_fn(fn: Callable[[StepContext], Any]) -> SyncStepFn:
@@ -177,9 +185,88 @@ class AsyncWorkflowRuntime(WorkflowExecutor):
             return fn
 
         async def _wrapped(ctx: StepContext):
-            return await asyncio.to_thread(fn, ctx)
+            return fn(ctx)
 
         return _wrapped
+
+    def _child_workflow_initial_state(
+        self,
+        *,
+        parent_state: WorkflowState,
+        invocation: Any,
+    ) -> WorkflowState:
+        return self._sync_runtime._child_workflow_initial_state(  # type: ignore[attr-defined]
+            parent_state=parent_state,
+            invocation=invocation,
+        )
+
+    def _apply_workflow_invocation_result(
+        self,
+        *,
+        state: WorkflowState,
+        invocation: Any,
+        child_result: RunResult,
+    ) -> None:
+        self._sync_runtime._apply_workflow_invocation_result(  # type: ignore[attr-defined]
+            state=state,
+            invocation=invocation,
+            child_result=child_result,
+        )
+
+    async def _run_workflow_invocation_async(
+        self,
+        *,
+        invocation: Any,
+        parent_state: WorkflowState,
+        conversation_id: str,
+        turn_node_id: str,
+        parent_run_id: str,
+        cache_dir: str | None = None,
+    ) -> RunResult:
+        if getattr(invocation, "workflow_design", None) is not None:
+            wf_design = getattr(invocation, "workflow_design")
+            if str(getattr(wf_design, "workflow_id", "")) != str(
+                getattr(invocation, "workflow_id", "")
+            ):
+                raise ValueError(
+                    "workflow_design.workflow_id must match workflow_id on the invocation"
+                )
+            self._sync_runtime._persist_workflow_design_artifact(wf_design)  # type: ignore[attr-defined]
+
+        child_state = self._child_workflow_initial_state(
+            parent_state=parent_state,
+            invocation=invocation,
+        )
+        child_run_id = getattr(invocation, "run_id", None) or str(
+            stable_id(
+                "workflow.child_run",
+                parent_run_id,
+                str(getattr(invocation, "workflow_id", "")),
+                str(getattr(invocation, "result_state_key", "") or ""),
+                str(getattr(invocation, "turn_node_id", "") or turn_node_id),
+            )
+        )
+        inherited_cancel = _CANCEL_REQUESTED_CTX.get() or self.cancel_requested
+
+        def _child_cancel_requested(child_id: str) -> bool:
+            parent_cancelled = bool(inherited_cancel and inherited_cancel(parent_run_id))
+            child_cancelled = bool(inherited_cancel and inherited_cancel(child_id))
+            return parent_cancelled or child_cancelled
+
+        token = _CANCEL_REQUESTED_CTX.set(_child_cancel_requested)
+        try:
+            return await self.run(
+                workflow_id=str(getattr(invocation, "workflow_id", "")),
+                conversation_id=str(
+                    getattr(invocation, "conversation_id", None) or conversation_id
+                ),
+                turn_node_id=str(getattr(invocation, "turn_node_id", None) or turn_node_id),
+                initial_state=child_state,
+                run_id=child_run_id,
+                cache_dir=cache_dir,
+            )
+        finally:
+            _CANCEL_REQUESTED_CTX.reset(token)
 
     @staticmethod
     def _edge_priority(edge: Any) -> int:
@@ -310,6 +397,11 @@ class AsyncWorkflowRuntime(WorkflowExecutor):
         accepted_step_seq = -1
         next_accept_seq = 0
         ready_by_launch_seq: dict[int, tuple[int, int, str, str, str | None, StepRunResult]] = {}
+        last_exec_node: Any | None = None
+        cancel_requested = _CANCEL_REQUESTED_CTX.get() or self.cancel_requested
+
+        def _cancel_requested() -> bool:
+            return bool(cancel_requested and cancel_requested(str(run_id)))
 
         async def _run_one(item: tuple[int, int, str, str, str | None]):
             nonlocal seq
@@ -338,21 +430,12 @@ class AsyncWorkflowRuntime(WorkflowExecutor):
             return launch_seq, step_seq, mask, node_id, token_id, parent_token_id, out
 
         def _apply_run_result(target_state: WorkflowState, result: StepRunResult) -> None:
-            update_payload = getattr(result, "update", None)
-            state_updates = list(getattr(result, "state_update", []) or [])
-            if update_payload:
-                target_state.update(dict(update_payload))
-            for mode, payload in state_updates:
-                if mode == "u":
-                    target_state.update(dict(payload))
-                elif mode == "a":
-                    for key, value in dict(payload).items():
-                        target_state.setdefault(key, []).append(value)
-                elif mode == "e":
-                    for key, values in dict(payload).items():
-                        target_state.setdefault(key, []).extend(list(values))
-                else:
-                    target_state.update(dict(payload))
+            apply_state_update_inplace(
+                target_state,
+                list(getattr(result, "state_update", []) or []),
+                getattr(result, "update", None),
+                state_schema=getattr(self._resolver_adapter, "_state_schema", None),
+            )
 
         def _persist_rt_join_snapshot() -> None:
             state["_rt_join"] = {
@@ -389,6 +472,18 @@ class AsyncWorkflowRuntime(WorkflowExecutor):
                 ],
             }
 
+        def _persist_step_exec_compat(**kwargs: Any) -> Any:
+            persist = getattr(self._sync_runtime, "_persist_step_exec", None)
+            if callable(persist):
+                return persist(**kwargs)
+            return None
+
+        def _persist_checkpoint_compat(**kwargs: Any) -> Any:
+            persist = getattr(self._sync_runtime, "_persist_checkpoint", None)
+            if callable(persist):
+                return persist(**kwargs)
+            return None
+
         async def _cancel_and_drain_inflight(tasks: set[asyncio.Task]) -> None:
             if not tasks:
                 return
@@ -399,11 +494,11 @@ class AsyncWorkflowRuntime(WorkflowExecutor):
             inflight_records.clear()
 
         while pending or inflight:
-            if self.cancel_requested and self.cancel_requested(run_id):
+            if _cancel_requested():
                 status = "cancelled"
+                _persist_rt_join_snapshot()
                 pending.clear()
                 await _cancel_and_drain_inflight(inflight)
-                _persist_rt_join_snapshot()
                 break
 
             while pending and len(inflight) < max(1, int(self.max_workers)):
@@ -417,11 +512,11 @@ class AsyncWorkflowRuntime(WorkflowExecutor):
 
             done, inflight = await asyncio.wait(inflight, return_when=asyncio.FIRST_COMPLETED)
 
-            if self.cancel_requested and self.cancel_requested(run_id):
+            if _cancel_requested():
                 status = "cancelled"
+                _persist_rt_join_snapshot()
                 pending.clear()
                 await _cancel_and_drain_inflight(inflight)
-                _persist_rt_join_snapshot()
                 break
 
             completed: list[tuple[int, int, int, str, str, str | None, StepRunResult]] = []
@@ -434,7 +529,7 @@ class AsyncWorkflowRuntime(WorkflowExecutor):
                 except asyncio.CancelledError:
                     continue
                 except Exception as exc:
-                    status = "failed"
+                    status = "failure"
                     pending.clear()
                     await _cancel_and_drain_inflight(inflight)
                     completed.append(
@@ -465,13 +560,124 @@ class AsyncWorkflowRuntime(WorkflowExecutor):
                     continue
                 accepted_step_seq = max(accepted_step_seq, int(_step_seq))
                 last_processed_node_id = str(node_id)
+                step_exec_node: Any | None = last_exec_node
+                child_failed = False
+
+                invocations = list(getattr(out, "workflow_invocations", []) or [])
+                for invocation in invocations:
+                    child_result = await self._run_workflow_invocation_async(
+                        invocation=invocation,
+                        parent_state=state,
+                        conversation_id=str(conversation_id),
+                        turn_node_id=str(turn_node_id),
+                        parent_run_id=str(run_id),
+                        cache_dir=cache_dir,
+                    )
+                    child_status = str(getattr(child_result, "status", None))
+                    if child_status != "succeeded":
+                        if child_status == "cancelled" and _cancel_requested():
+                            status = "cancelled"
+                            out = RunFailure(
+                                conversation_node_id=None,
+                                status="failure",
+                                errors=["Run cancelled"],
+                                state_update=[],
+                            )
+                        else:
+                            status = "failure"
+                            out = RunFailure(
+                                conversation_node_id=None,
+                                status="failure",
+                                errors=[
+                                    "Nested workflow "
+                                    f"{getattr(invocation, 'workflow_id', '')!r} "
+                                    f"returned status {child_status!r}"
+                                ],
+                                state_update=[],
+                            )
+                        pending.clear()
+                        await _cancel_and_drain_inflight(inflight)
+                        child_failed = True
+                        break
+                    self._apply_workflow_invocation_result(
+                        state=state,
+                        invocation=invocation,
+                        child_result=child_result,
+                    )
+                if status != "succeeded":
+                    _persist_rt_join_snapshot()
+                    step_exec_node = _persist_step_exec_compat(
+                        conversation_id=str(conversation_id),
+                        workflow_id=str(workflow_id),
+                        run_id=str(run_id),
+                        step_seq=int(_step_seq),
+                        workflow_node_id=str(node_id),
+                        op=str(nodes[node_id].op),
+                        status=(
+                            "suspended"
+                            if getattr(out, "status", None) == "suspended"
+                            else "failure"
+                            if getattr(out, "status", None) == "failure"
+                            else "ok"
+                        ),
+                        duration_ms=0,
+                        result=out,
+                        state=state,
+                        token_id=str(token_id),
+                        parent_token_id=parent_token_id,
+                        join_mask=int(mask),
+                        last_exec_node=last_exec_node,
+                    )
+                    if child_failed:
+                        _persist_checkpoint_compat(
+                            conversation_id=str(conversation_id),
+                            workflow_id=str(workflow_id),
+                            run_id=str(run_id),
+                            step_seq=int(_step_seq),
+                            state=state,
+                            last_exec_node=step_exec_node,
+                        )
+                    break
+
                 _apply_run_result(state, out)
 
+                step_exec_node = _persist_step_exec_compat(
+                    conversation_id=str(conversation_id),
+                    workflow_id=str(workflow_id),
+                    run_id=str(run_id),
+                    step_seq=int(_step_seq),
+                    workflow_node_id=str(node_id),
+                    op=str(nodes[node_id].op),
+                    status=(
+                        "suspended"
+                        if getattr(out, "status", None) == "suspended"
+                        else "failure"
+                        if getattr(out, "status", None) == "failure"
+                        else "ok"
+                    ),
+                    duration_ms=0,
+                    result=out,
+                    state=state,
+                    token_id=str(token_id),
+                    parent_token_id=parent_token_id,
+                    join_mask=int(mask),
+                    last_exec_node=last_exec_node,
+                )
+                last_exec_node = step_exec_node
+
                 if getattr(out, "status", None) == "failure":
-                    status = "failed"
+                    status = "failure"
                     pending.clear()
                     await _cancel_and_drain_inflight(inflight)
                     _persist_rt_join_snapshot()
+                    _persist_checkpoint_compat(
+                        conversation_id=str(conversation_id),
+                        workflow_id=str(workflow_id),
+                        run_id=str(run_id),
+                        step_seq=int(_step_seq),
+                        state=state,
+                        last_exec_node=step_exec_node,
+                    )
                     break
 
                 if getattr(out, "status", None) == "suspended":
@@ -480,11 +686,27 @@ class AsyncWorkflowRuntime(WorkflowExecutor):
                     pending.clear()
                     await _cancel_and_drain_inflight(inflight)
                     _persist_rt_join_snapshot()
+                    _persist_checkpoint_compat(
+                        conversation_id=str(conversation_id),
+                        workflow_id=str(workflow_id),
+                        run_id=str(run_id),
+                        step_seq=int(_step_seq),
+                        state=state,
+                        last_exec_node=step_exec_node,
+                    )
                     break
 
                 md = getattr(nodes[node_id], "metadata", {}) or {}
                 if bool(md.get("wf_terminal", False)):
                     _persist_rt_join_snapshot()
+                    _persist_checkpoint_compat(
+                        conversation_id=str(conversation_id),
+                        workflow_id=str(workflow_id),
+                        run_id=str(run_id),
+                        step_seq=int(_step_seq),
+                        state=state,
+                        last_exec_node=step_exec_node,
+                    )
                     continue
 
                 next_edges = self._select_next_edges(
@@ -535,6 +757,14 @@ class AsyncWorkflowRuntime(WorkflowExecutor):
                     pending.append((dispatch_seq, int(next_mask), str(dst), str(next_token), next_parent))
 
                 _persist_rt_join_snapshot()
+            _persist_checkpoint_compat(
+                    conversation_id=str(conversation_id),
+                    workflow_id=str(workflow_id),
+                    run_id=str(run_id),
+                    step_seq=int(_step_seq),
+                    state=state,
+                    last_exec_node=step_exec_node,
+                )
 
             if status != "succeeded":
                 break
@@ -560,7 +790,8 @@ class AsyncWorkflowRuntime(WorkflowExecutor):
                         )
                     except Exception:
                         pass
-        _persist_rt_join_snapshot()
+        if status != "cancelled":
+            _persist_rt_join_snapshot()
 
         return RunResult(run_id=run_id, final_state=state, mq=mq, status=status)
 

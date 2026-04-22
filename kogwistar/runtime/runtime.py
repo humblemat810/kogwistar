@@ -81,6 +81,47 @@ def validate_initial_state(initial_state: WorkflowState):
             )
 
 
+def apply_state_update_inplace(
+    mute_state: WorkflowState,
+    state_update: list[tuple[str, dict[str, Any]]] | list[StateUpdate],
+    update: dict | None = None,
+    *,
+    state_schema: dict[str, Any] | None = None,
+):
+    """Apply runtime state delta in place.
+
+    Single reducer for sync runtime, async runtime, and replay.
+    """
+    if update and state_update:
+        raise Exception("Either update or state_update can be used")
+
+    for update_item in state_update:  # CR style state api
+        update_item: tuple[str, dict[str, Any]] | StateUpdate
+        if update_item[0] == "a":  # append
+            append_dict: dict = update_item[1]
+            for k, v in append_dict.items():
+                mute_state.setdefault(k, []).append(v)
+        elif update_item[0] == "u":  # update by overwrite
+            update_dict: dict = update_item[1]
+            for k, v in update_dict.items():
+                mute_state[k] = v
+        elif update_item[0] == "e":  # update by extending list
+            update_dict: dict = update_item[1]
+            for k, v in update_dict.items():
+                mute_state.setdefault(k, []).extend(v)
+    if update:  # legacy api
+        schema = state_schema or {}
+        for k, v in update.items():
+            if op := schema.get(k):
+                pass
+            else:
+                op = "u"
+            if op == "a":
+                mute_state.setdefault(k, []).extend(v)
+            else:  # u
+                mute_state[k] = v
+
+
 # ------------------------------------------------------------------
 # Join/barrier support (capability tracking via MAY-reach bitsets)
 # ------------------------------------------------------------------
@@ -734,37 +775,12 @@ class WorkflowRuntime:
         state_update: list[tuple[str, dict[str, Any]]] | list[StateUpdate],
         update: dict | None = None,
     ):
-        # inplace update state
-        if update and state_update:
-            raise Exception("Either update or state_update can be used")
-
-        for update_item in state_update:  # CR style state api
-            update_item: tuple[str, dict[str, Any]] | StateUpdate
-            if update_item[0] == "a":  # append
-                append_dict: dict = update_item[1]
-                for k, v in append_dict.items():
-                    mute_state.setdefault(k, []).append(v)
-            elif update_item[0] == "u":  # update by overwrite
-                update_dict: dict = update_item[1]
-                for k, v in update_dict.items():
-                    mute_state[k] = v
-            elif update_item[0] == "e":  # update by extending list
-                update_dict: dict = update_item[1]
-                for k, v in update_dict.items():
-                    mute_state.setdefault(k, []).extend(v)
-        if update:  # legacy api
-            state_schema = getattr(self.step_resolver, "_state_schema", None)
-            if state_schema is None:
-                state_schema = {}  # will make everything default to just update
-            for k, v in update.items():
-                if op := state_schema.get(k):
-                    pass
-                else:
-                    op = "u"
-                if op == "a":
-                    mute_state.setdefault(k, []).extend(v)
-                else:  # u
-                    mute_state[k] = v
+        apply_state_update_inplace(
+            mute_state,
+            state_update,
+            update,
+            state_schema=getattr(self.step_resolver, "_state_schema", None),
+        )
 
     def resume_run(
         self,

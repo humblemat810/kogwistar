@@ -157,13 +157,18 @@ def test_async_resolver_preserves_sandboxed_behavior():
     assert out.state_update[0][1]["sandbox_ctx_op"] == "op1"
 
 
-def test_async_resolver_offloads_blocking_sync_handlers():
+def test_async_resolver_runs_sync_handlers_inline_without_to_thread(monkeypatch):
     async_resolver = AsyncMappingStepResolver()
 
     @async_resolver.register("slow")
     def _slow(_ctx):
         time.sleep(0.20)
         return RunSuccess(conversation_node_id=None, state_update=[])
+
+    def _boom(*args, **kwargs):
+        raise AssertionError("async resolver must not call to_thread for sync handlers")
+
+    monkeypatch.setattr(asyncio, "to_thread", _boom)
 
     async def _run_two():
         fn = async_resolver.resolve_async("slow")
@@ -175,7 +180,7 @@ def test_async_resolver_offloads_blocking_sync_handlers():
     r1, r2, dt = asyncio.run(_run_two())
     assert isinstance(r1, RunSuccess)
     assert isinstance(r2, RunSuccess)
-    assert dt < 0.35
+    assert dt >= 0.35
 
 
 def test_async_resolver_runs_two_awaited_handlers_concurrently():
@@ -197,6 +202,127 @@ def test_async_resolver_runs_two_awaited_handlers_concurrently():
     assert isinstance(r1, RunSuccess)
     assert isinstance(r2, RunSuccess)
     assert dt < 0.30
+
+
+def test_async_runtime_native_scheduler_sync_handlers_run_inline_without_to_thread(monkeypatch):
+    from pathlib import Path
+    import tempfile
+    import uuid
+
+    from kogwistar.engine_core.engine import GraphKnowledgeEngine
+    from kogwistar.engine_core.models import Grounding, Span
+    from kogwistar.runtime.models import WorkflowEdge, WorkflowNode
+    from tests.conftest import FakeEmbeddingFunction
+    from tests._helpers.fake_backend import build_fake_backend
+
+    def _g():
+        return Grounding(spans=[Span.from_dummy_for_conversation()])
+
+    def _wf_node(*, workflow_id: str, node_id: str, op: str, start: bool = False, terminal: bool = False) -> WorkflowNode:
+        return WorkflowNode(
+            id=node_id,
+            label=node_id,
+            type="entity",
+            doc_id=node_id,
+            summary=op,
+            mentions=[_g()],
+            properties={},
+            metadata={
+                "entity_type": "workflow_node",
+                "workflow_id": workflow_id,
+                "wf_op": op,
+                "wf_start": start,
+                "wf_terminal": terminal,
+                "wf_version": "v1",
+            },
+            domain_id=None,
+            canonical_entity_id=None,
+            level_from_root=0,
+            embedding=None,
+        )
+
+    def _wf_edge(*, workflow_id: str, edge_id: str, src: str, dst: str) -> WorkflowEdge:
+        return WorkflowEdge(
+            id=edge_id,
+            source_ids=[src],
+            target_ids=[dst],
+            relation="wf_next",
+            label="wf_next",
+            type="relationship",
+            summary="next",
+            doc_id=workflow_id,
+            mentions=[_g()],
+            properties={},
+            metadata={
+                "entity_type": "workflow_edge",
+                "workflow_id": workflow_id,
+                "wf_priority": 100,
+                "wf_is_default": True,
+                "wf_predicate": None,
+                "wf_multiplicity": "one",
+            },
+            source_edge_ids=[],
+            target_edge_ids=[],
+            domain_id=None,
+            canonical_entity_id=None,
+        )
+
+    root = Path(tempfile.gettempdir()) / f"phase3_inline_sync_{uuid.uuid4().hex}"
+    root.mkdir(parents=True, exist_ok=True)
+    ef = FakeEmbeddingFunction(dim=3)
+    workflow_engine = GraphKnowledgeEngine(
+        persist_directory=str(root / "wf"),
+        kg_graph_type="workflow",
+        embedding_function=ef,
+        backend_factory=build_fake_backend,
+    )
+    conversation_engine = GraphKnowledgeEngine(
+        persist_directory=str(root / "conv"),
+        kg_graph_type="conversation",
+        embedding_function=ef,
+        backend_factory=build_fake_backend,
+    )
+
+    workflow_id = "wf-inline-sync"
+    start = _wf_node(workflow_id=workflow_id, node_id="wf|start", op="start", start=True)
+    leaf = _wf_node(workflow_id=workflow_id, node_id="wf|leaf", op="leaf", terminal=True)
+    workflow_engine.write.add_node(start)
+    workflow_engine.write.add_node(leaf)
+    workflow_engine.write.add_edge(
+        _wf_edge(
+            workflow_id=workflow_id,
+            edge_id="wf|start->leaf",
+            src=start.safe_get_id(),
+            dst=leaf.safe_get_id(),
+        )
+    )
+
+    def _boom(*args, **kwargs):
+        raise AssertionError("async runtime must not call to_thread for sync handlers")
+
+    monkeypatch.setattr(asyncio, "to_thread", _boom)
+
+    rt = AsyncWorkflowRuntime(
+        workflow_engine=workflow_engine,
+        conversation_engine=conversation_engine,
+        step_resolver=lambda op: (lambda _ctx: RunSuccess(conversation_node_id=None, state_update=[("u", {"last_op": op})])),
+        predicate_registry={},
+        checkpoint_every_n_steps=1,
+        max_workers=1,
+        experimental_native_scheduler=True,
+    )
+
+    out = asyncio.run(
+        rt.run(
+            workflow_id=workflow_id,
+            conversation_id="conv-inline",
+            turn_node_id="turn-1",
+            initial_state={},
+            run_id="run-inline",
+        )
+    )
+    assert out.status == "succeeded"
+    assert out.final_state["last_op"] == "leaf"
 
 
 def test_async_resolver_state_schema_metadata_available():
@@ -536,6 +662,86 @@ def test_async_runtime_native_scheduler_linear_success(monkeypatch):
     assert out.final_state["done"] is True
 
 
+def test_async_runtime_native_scheduler_uses_shared_state_merge_semantics(monkeypatch):
+    class _FakeWorkflowRuntime:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def run(self, **kwargs):
+            return RunResult(
+                run_id=str(kwargs.get("run_id") or "sync-run"),
+                final_state=dict(kwargs.get("initial_state") or {}),
+                mq=queue.Queue(),
+                status="succeeded",
+            )
+
+    class _Node:
+        def __init__(self, nid, op, terminal=False, fanout=False):
+            self.id = nid
+            self.op = op
+            self.metadata = {"wf_terminal": terminal, "wf_fanout": fanout}
+
+    class _Edge:
+        def __init__(self, dst):
+            self.target_ids = [dst]
+            self.metadata = {
+                "wf_priority": 100,
+                "wf_is_default": True,
+                "wf_multiplicity": "one",
+                "wf_predicate": None,
+            }
+
+    def _fake_validate(*, workflow_engine, workflow_id, predicate_registry, resolver):
+        start = _Node("start", "start", terminal=False, fanout=False)
+        end = _Node("end", "end", terminal=True, fanout=False)
+        return start, {"start": start, "end": end}, {"start": [_Edge("end")], "end": []}
+
+    monkeypatch.setattr("kogwistar.runtime.async_runtime.WorkflowRuntime", _FakeWorkflowRuntime)
+    monkeypatch.setattr("kogwistar.runtime.async_runtime.validate_workflow_design", _fake_validate)
+
+    resolver = AsyncMappingStepResolver()
+
+    @resolver.register("start")
+    async def _start(_ctx):
+        return RunSuccess(
+            conversation_node_id=None,
+            state_update=[
+                ("u", {"plain": "step-1"}),
+                ("a", {"events": "step-1"}),
+            ],
+        )
+
+    @resolver.register("end")
+    async def _end(_ctx):
+        return RunSuccess(
+            conversation_node_id=None,
+            state_update=[
+                ("u", {"plain": "step-2"}),
+                ("a", {"events": "step-2"}),
+            ],
+        )
+
+    rt = AsyncWorkflowRuntime(
+        workflow_engine=object(),
+        conversation_engine=object(),
+        step_resolver=resolver,
+        predicate_registry={},
+        trace=False,
+        experimental_native_scheduler=True,
+    )
+    out = asyncio.run(
+        rt.run(
+            workflow_id="wf-native-merge",
+            conversation_id="c1",
+            turn_node_id="t1",
+            initial_state={},
+        )
+    )
+    assert out.status == "succeeded"
+    assert out.final_state["plain"] == "step-2"
+    assert out.final_state["events"] == ["step-1", "step-2"]
+
+
 def test_async_runtime_native_scheduler_fanout_appends(monkeypatch):
     class _FakeWorkflowRuntime:
         def __init__(self, **kwargs):
@@ -680,7 +886,7 @@ def test_async_runtime_native_scheduler_cancellation_drains_inflight(monkeypatch
         finally:
             inflight_counter["n"] -= 1
 
-    cancel_requested = {"flag": False}
+    cancel_requested = {"flag": 0}
 
     def _cancel(run_id: str) -> bool:
         return cancel_requested["flag"]
@@ -1274,6 +1480,1014 @@ def test_async_runtime_native_scheduler_persists_rt_join_frontier_shape(monkeypa
     out = asyncio.run(_run())
     rt_join = out.final_state.get("_rt_join") or {}
     assert set(rt_join.keys()) >= {"join_node_ids", "join_outstanding", "join_waiters", "pending", "suspended"}
+
+
+def test_async_runtime_native_scheduler_persists_pending_token_parent_links_on_cancel(monkeypatch):
+    class _FakeWorkflowRuntime:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def run(self, **kwargs):
+            return RunResult(
+                run_id=str(kwargs.get("run_id") or "sync-run"),
+                final_state=dict(kwargs.get("initial_state") or {}),
+                mq=queue.Queue(),
+                status="succeeded",
+            )
+
+    class _Node:
+        def __init__(self, nid, op, terminal=False, fanout=False):
+            self.id = nid
+            self.op = op
+            self.metadata = {"wf_terminal": terminal, "wf_fanout": fanout}
+
+    class _Edge:
+        def __init__(self, dst):
+            self.target_ids = [dst]
+            self.metadata = {
+                "wf_priority": 100,
+                "wf_is_default": True,
+                "wf_multiplicity": "one",
+                "wf_predicate": None,
+            }
+
+    def _fake_validate(*, workflow_engine, workflow_id, predicate_registry, resolver):
+        start = _Node("start", "start", terminal=False, fanout=True)
+        a = _Node("a", "a", terminal=False, fanout=False)
+        b = _Node("b", "b", terminal=False, fanout=False)
+        return start, {"start": start, "a": a, "b": b}, {"start": [_Edge("a"), _Edge("b")], "a": [], "b": []}
+
+    monkeypatch.setattr("kogwistar.runtime.async_runtime.WorkflowRuntime", _FakeWorkflowRuntime)
+    monkeypatch.setattr("kogwistar.runtime.async_runtime.validate_workflow_design", _fake_validate)
+
+    resolver = AsyncMappingStepResolver()
+    cancel_requested = {"flag": False}
+
+    @resolver.register("start")
+    async def _start(_ctx):
+        return RunSuccess(conversation_node_id=None, state_update=[])
+
+    @resolver.register("a")
+    async def _a(_ctx):
+        return RunSuccess(conversation_node_id=None, state_update=[])
+
+    @resolver.register("b")
+    async def _b(_ctx):
+        return RunSuccess(conversation_node_id=None, state_update=[])
+
+    def _cancel(_run_id: str) -> bool:
+        cancel_requested["flag"] = cancel_requested["flag"] + 1
+        return cancel_requested["flag"] >= 3
+
+    rt = AsyncWorkflowRuntime(
+        workflow_engine=object(),
+        conversation_engine=object(),
+        step_resolver=resolver,
+        predicate_registry={},
+        trace=False,
+        experimental_native_scheduler=True,
+        cancel_requested=_cancel,
+    )
+    out = asyncio.run(
+        rt.run(
+            workflow_id="wf-native-pending-links",
+            conversation_id="c1",
+            turn_node_id="t1",
+            initial_state={},
+        )
+    )
+    rt_join = out.final_state.get("_rt_join") or {}
+    pending = list(rt_join.get("pending") or [])
+    assert out.status == "cancelled"
+    assert len(pending) == 2
+    assert pending[0][0] == "a"
+    assert pending[0][3] is None
+    assert pending[1][0] == "b"
+    assert pending[1][3] == pending[0][2]
+
+
+@pytest.mark.parametrize("terminal_case", ["success", "failure"])
+def test_async_runtime_side_by_side_node_edge_and_terminal_parity(terminal_case):
+    from pathlib import Path
+    import tempfile
+    import uuid
+
+    from kogwistar.engine_core.engine import GraphKnowledgeEngine
+    from kogwistar.engine_core.models import Grounding, Span
+    from kogwistar.runtime.models import WorkflowCompletedNode, WorkflowEdge, WorkflowFailedNode, WorkflowNode
+    from kogwistar.runtime.runtime import WorkflowRuntime
+    from kogwistar.typing_interfaces import EmbeddingFunctionLike
+    from tests.conftest import FakeEmbeddingFunction
+    from tests._helpers.fake_backend import build_fake_backend
+
+    def _g():
+        return Grounding(spans=[Span.from_dummy_for_conversation()])
+
+    def _wf_node(*, workflow_id: str, node_id: str, op: str, start: bool = False, terminal: bool = False) -> WorkflowNode:
+        return WorkflowNode(
+            id=node_id,
+            label=node_id,
+            type="entity",
+            doc_id=node_id,
+            summary=op,
+            mentions=[_g()],
+            properties={},
+            metadata={
+                "entity_type": "workflow_node",
+                "workflow_id": workflow_id,
+                "wf_op": op,
+                "wf_start": start,
+                "wf_terminal": terminal,
+                "wf_version": "v1",
+            },
+            domain_id=None,
+            canonical_entity_id=None,
+            level_from_root=0,
+            embedding=None,
+        )
+
+    def _wf_edge(*, workflow_id: str, edge_id: str, src: str, dst: str) -> WorkflowEdge:
+        return WorkflowEdge(
+            id=edge_id,
+            source_ids=[src],
+            target_ids=[dst],
+            relation="wf_next",
+            label="wf_next",
+            type="relationship",
+            summary="next",
+            doc_id=workflow_id,
+            mentions=[_g()],
+            properties={},
+            metadata={
+                "entity_type": "workflow_edge",
+                "workflow_id": workflow_id,
+                "wf_priority": 100,
+                "wf_is_default": True,
+                "wf_predicate": None,
+                "wf_multiplicity": "one",
+            },
+            source_edge_ids=[],
+            target_edge_ids=[],
+            domain_id=None,
+            canonical_entity_id=None,
+        )
+
+    def _norm_nodes(conv_engine, run_id: str):
+        nodes = conv_engine.get_nodes(
+            where={"$and": [{"run_id": run_id}]},
+            limit=10_000,
+        )
+        out = []
+        for n in nodes:
+            md = dict(getattr(n, "metadata", {}) or {})
+            et = md.get("entity_type")
+            if et not in {
+                "workflow_run",
+                "workflow_step_exec",
+                "workflow_checkpoint",
+                "workflow_completed",
+                "workflow_failed",
+                "workflow_cancelled",
+            }:
+                continue
+            md.pop("created_at_ms", None)
+            md.pop("duration_ms", None)
+            md.pop("summary", None)
+            md.pop("mentions", None)
+            out.append((str(getattr(n, "id", "")), et, md))
+        return sorted(out)
+
+    def _norm_edges(conv_engine, run_id: str):
+        edges = conv_engine.get_edges(limit=10_000)
+        out = []
+        for e in edges:
+            md = dict(getattr(e, "metadata", {}) or {})
+            if md.get("run_id") != run_id:
+                continue
+            md.pop("created_at_ms", None)
+            out.append(
+                (
+                    str(getattr(e, "id", "")),
+                    str(getattr(e, "relation", "")),
+                    tuple(getattr(e, "source_ids", []) or []),
+                    tuple(getattr(e, "target_ids", []) or []),
+                    md,
+                )
+            )
+        return sorted(out)
+
+    root = Path(tempfile.gettempdir()) / f"phase4_side_by_side_{terminal_case}_{uuid.uuid4().hex}"
+    root.mkdir(parents=True, exist_ok=True)
+    ef = FakeEmbeddingFunction(dim=3)
+    sync_wf = GraphKnowledgeEngine(
+        persist_directory=str(root / "sync_wf"),
+        kg_graph_type="workflow",
+        embedding_function=ef,
+        backend_factory=build_fake_backend,
+    )
+    sync_conv = GraphKnowledgeEngine(
+        persist_directory=str(root / "sync_conv"),
+        kg_graph_type="conversation",
+        embedding_function=ef,
+        backend_factory=build_fake_backend,
+    )
+    async_wf = GraphKnowledgeEngine(
+        persist_directory=str(root / "async_wf"),
+        kg_graph_type="workflow",
+        embedding_function=ef,
+        backend_factory=build_fake_backend,
+    )
+    async_conv = GraphKnowledgeEngine(
+        persist_directory=str(root / "async_conv"),
+        kg_graph_type="conversation",
+        embedding_function=ef,
+        backend_factory=build_fake_backend,
+    )
+
+    workflow_id = f"wf-parity-{terminal_case}"
+    start = _wf_node(workflow_id=workflow_id, node_id="wf|start", op="start", start=True)
+    leaf = _wf_node(
+        workflow_id=workflow_id,
+        node_id="wf|leaf",
+        op="leaf",
+        terminal=True,
+    )
+    for eng in (sync_wf, async_wf):
+        eng.write.add_node(start)
+        eng.write.add_node(leaf)
+        eng.write.add_edge(
+            _wf_edge(
+                workflow_id=workflow_id,
+                edge_id="wf|start->leaf",
+                src=start.safe_get_id(),
+                dst=leaf.safe_get_id(),
+            )
+        )
+
+    def _resolve(op: str):
+        def _fn(_ctx):
+            if terminal_case == "failure":
+                return RunFailure(
+                    conversation_node_id=None,
+                    state_update=[("u", {"last_op": op})],
+                    errors=["boom"],
+                )
+            return RunSuccess(
+                conversation_node_id=None,
+                state_update=[("u", {"last_op": op})],
+            )
+
+        return _fn
+
+    sync_runtime = WorkflowRuntime(
+        workflow_engine=sync_wf,
+        conversation_engine=sync_conv,
+        step_resolver=_resolve,
+        predicate_registry={},
+        checkpoint_every_n_steps=1,
+        max_workers=1,
+    )
+    async_runtime = AsyncWorkflowRuntime(
+        workflow_engine=async_wf,
+        conversation_engine=async_conv,
+        step_resolver=_resolve,
+        predicate_registry={},
+        checkpoint_every_n_steps=1,
+        max_workers=1,
+    )
+    run_id = f"run-parity-{terminal_case}"
+    sync_out = sync_runtime.run(
+        workflow_id=workflow_id,
+        conversation_id="conv-parity",
+        turn_node_id="turn-1",
+        initial_state={},
+        run_id=run_id,
+    )
+    async_out = asyncio.run(
+        async_runtime.run(
+            workflow_id=workflow_id,
+            conversation_id="conv-parity",
+            turn_node_id="turn-1",
+            initial_state={},
+            run_id=run_id,
+        )
+    )
+
+    assert sync_out.status == async_out.status
+    assert sync_out.final_state == async_out.final_state
+    assert _norm_nodes(sync_conv, run_id) == _norm_nodes(async_conv, run_id)
+    assert _norm_edges(sync_conv, run_id) == _norm_edges(async_conv, run_id)
+
+    terminal_kind = "workflow_completed" if terminal_case == "success" else "workflow_failed"
+    sync_terminal = sync_conv.get_nodes(
+        where={"$and": [{"entity_type": terminal_kind}, {"run_id": run_id}]},
+        limit=10,
+    )
+    async_terminal = async_conv.get_nodes(
+        where={"$and": [{"entity_type": terminal_kind}, {"run_id": run_id}]},
+        limit=10,
+    )
+    assert len(sync_terminal) == len(async_terminal) == 1
+    assert isinstance(sync_terminal[0], WorkflowCompletedNode if terminal_case == "success" else WorkflowFailedNode)
+    assert isinstance(async_terminal[0], WorkflowCompletedNode if terminal_case == "success" else WorkflowFailedNode)
+
+
+@pytest.mark.parametrize("client_status", ["success", "failure"])
+def test_async_runtime_suspend_and_resume_roundtrip(client_status):
+    from pathlib import Path
+    import tempfile
+    import uuid
+
+    from kogwistar.engine_core.engine import GraphKnowledgeEngine
+    from kogwistar.engine_core.models import Grounding, Span
+    from kogwistar.runtime.models import RunFailure, RunSuspended, RunSuccess, WorkflowEdge, WorkflowNode
+    from tests.conftest import FakeEmbeddingFunction
+    from tests._helpers.fake_backend import build_fake_backend
+
+    def _g():
+        return Grounding(spans=[Span.from_dummy_for_conversation()])
+
+    def _wf_node(*, workflow_id: str, node_id: str, op: str, start: bool = False, terminal: bool = False) -> WorkflowNode:
+        return WorkflowNode(
+            id=node_id,
+            label=node_id,
+            type="entity",
+            doc_id=node_id,
+            summary=op,
+            mentions=[_g()],
+            properties={},
+            metadata={
+                "entity_type": "workflow_node",
+                "workflow_id": workflow_id,
+                "wf_op": op,
+                "wf_start": start,
+                "wf_terminal": terminal,
+                "wf_version": "v1",
+            },
+            domain_id=None,
+            canonical_entity_id=None,
+            level_from_root=0,
+            embedding=None,
+        )
+
+    def _wf_edge(*, workflow_id: str, edge_id: str, src: str, dst: str) -> WorkflowEdge:
+        return WorkflowEdge(
+            id=edge_id,
+            source_ids=[src],
+            target_ids=[dst],
+            relation="wf_next",
+            label="wf_next",
+            type="relationship",
+            summary="next",
+            doc_id=workflow_id,
+            mentions=[_g()],
+            properties={},
+            metadata={
+                "entity_type": "workflow_edge",
+                "workflow_id": workflow_id,
+                "wf_priority": 100,
+                "wf_is_default": True,
+                "wf_predicate": None,
+                "wf_multiplicity": "one",
+            },
+            source_edge_ids=[],
+            target_edge_ids=[],
+            domain_id=None,
+            canonical_entity_id=None,
+        )
+
+    root = Path(tempfile.gettempdir()) / f"phase4_suspend_resume_{client_status}_{uuid.uuid4().hex}"
+    root.mkdir(parents=True, exist_ok=True)
+    ef = FakeEmbeddingFunction(dim=3)
+    workflow_engine = GraphKnowledgeEngine(
+        persist_directory=str(root / "wf"),
+        kg_graph_type="workflow",
+        embedding_function=ef,
+        backend_factory=build_fake_backend,
+    )
+    conversation_engine = GraphKnowledgeEngine(
+        persist_directory=str(root / "conv"),
+        kg_graph_type="conversation",
+        embedding_function=ef,
+        backend_factory=build_fake_backend,
+    )
+
+    workflow_id = f"wf-suspend-{client_status}"
+    workflow_engine.write.add_node(_wf_node(workflow_id=workflow_id, node_id="wf|start", op="start", start=True))
+    workflow_engine.write.add_node(_wf_node(workflow_id=workflow_id, node_id="wf|gate", op="gate"))
+    workflow_engine.write.add_node(_wf_node(workflow_id=workflow_id, node_id="wf|end", op="end", terminal=True))
+    workflow_engine.write.add_edge(_wf_edge(workflow_id=workflow_id, edge_id="wf|start->gate", src="wf|start", dst="wf|gate"))
+    workflow_engine.write.add_edge(_wf_edge(workflow_id=workflow_id, edge_id="wf|gate->end", src="wf|gate", dst="wf|end"))
+
+    rt = AsyncWorkflowRuntime(
+        workflow_engine=workflow_engine,
+        conversation_engine=conversation_engine,
+        step_resolver=lambda op: (
+            lambda _ctx: (
+                RunSuccess(conversation_node_id=None, state_update=[("u", {"started": True})])
+                if op == "start"
+                else RunSuspended(
+                    conversation_node_id=None,
+                    state_update=[],
+                    wait_reason="await_client",
+                    resume_payload={"kind": "need_client"},
+                )
+                if op == "gate"
+                else RunSuccess(conversation_node_id=None, state_update=[("u", {"ended": True})])
+            )
+        ),
+        predicate_registry={},
+        checkpoint_every_n_steps=1,
+        max_workers=1,
+        experimental_native_scheduler=True,
+    )
+
+    run_id = f"run-suspend-{client_status}"
+    out1 = asyncio.run(
+        rt.run(
+            workflow_id=workflow_id,
+            conversation_id="conv-suspend",
+            turn_node_id="turn-1",
+            initial_state={},
+            run_id=run_id,
+        )
+    )
+    assert out1.status == "suspended"
+    assert out1.final_state.get("started") is True
+    suspended = (out1.final_state.get("_rt_join", {}) or {}).get("suspended", [])
+    assert len(suspended) == 1
+    suspended_token_id = suspended[0][2]
+
+    client_result = (
+        RunFailure(conversation_node_id=None, state_update=[], errors=["client fail"])
+        if client_status == "failure"
+        else RunSuccess(conversation_node_id=None, state_update=[("u", {"resumed": True})])
+    )
+    out2 = asyncio.run(
+        rt.resume_run(
+            run_id=run_id,
+            suspended_node_id="wf|gate",
+            suspended_token_id=suspended_token_id,
+            client_result=client_result,
+            workflow_id=workflow_id,
+            conversation_id="conv-suspend",
+            turn_node_id="turn-1",
+        )
+    )
+    if client_status == "failure":
+        assert out2.status == "failure"
+        assert out2.final_state.get("resumed") is None
+    else:
+        assert out2.status == "succeeded"
+        assert out2.final_state.get("resumed") is True
+        assert out2.final_state.get("ended") is True
+
+
+def test_async_runtime_nested_workflow_invocation_matches_sync():
+    from pathlib import Path
+    import tempfile
+    import uuid
+
+    from kogwistar.engine_core.engine import GraphKnowledgeEngine
+    from kogwistar.engine_core.models import Grounding, Span
+    from kogwistar.runtime.models import RunSuccess, WorkflowEdge, WorkflowInvocationRequest, WorkflowNode
+    from kogwistar.runtime.runtime import WorkflowRuntime
+    from tests.conftest import FakeEmbeddingFunction
+    from tests._helpers.fake_backend import build_fake_backend
+
+    def _g():
+        return Grounding(spans=[Span.from_dummy_for_conversation()])
+
+    def _wf_node(*, workflow_id: str, node_id: str, op: str, start: bool = False, terminal: bool = False) -> WorkflowNode:
+        return WorkflowNode(
+            id=node_id,
+            label=node_id,
+            type="entity",
+            doc_id=node_id,
+            summary=op,
+            mentions=[_g()],
+            properties={},
+            metadata={
+                "entity_type": "workflow_node",
+                "workflow_id": workflow_id,
+                "wf_op": op,
+                "wf_start": start,
+                "wf_terminal": terminal,
+                "wf_version": "v1",
+            },
+            domain_id=None,
+            canonical_entity_id=None,
+            level_from_root=0,
+            embedding=None,
+        )
+
+    def _wf_edge(*, workflow_id: str, edge_id: str, src: str, dst: str) -> WorkflowEdge:
+        return WorkflowEdge(
+            id=edge_id,
+            source_ids=[src],
+            target_ids=[dst],
+            relation="wf_next",
+            label="wf_next",
+            type="relationship",
+            summary="next",
+            doc_id=workflow_id,
+            mentions=[_g()],
+            properties={},
+            metadata={
+                "entity_type": "workflow_edge",
+                "workflow_id": workflow_id,
+                "wf_priority": 100,
+                "wf_is_default": True,
+                "wf_predicate": None,
+                "wf_multiplicity": "one",
+            },
+            source_edge_ids=[],
+            target_edge_ids=[],
+            domain_id=None,
+            canonical_entity_id=None,
+        )
+
+    root = Path(tempfile.gettempdir()) / f"phase4_nested_{uuid.uuid4().hex}"
+    root.mkdir(parents=True, exist_ok=True)
+    ef = FakeEmbeddingFunction(dim=3)
+    sync_wf = GraphKnowledgeEngine(
+        persist_directory=str(root / "sync_wf"),
+        kg_graph_type="workflow",
+        embedding_function=ef,
+        backend_factory=build_fake_backend,
+    )
+    sync_conv = GraphKnowledgeEngine(
+        persist_directory=str(root / "sync_conv"),
+        kg_graph_type="conversation",
+        embedding_function=ef,
+        backend_factory=build_fake_backend,
+    )
+    async_wf = GraphKnowledgeEngine(
+        persist_directory=str(root / "async_wf"),
+        kg_graph_type="workflow",
+        embedding_function=ef,
+        backend_factory=build_fake_backend,
+    )
+    async_conv = GraphKnowledgeEngine(
+        persist_directory=str(root / "async_conv"),
+        kg_graph_type="conversation",
+        embedding_function=ef,
+        backend_factory=build_fake_backend,
+    )
+
+    parent_wf = "wf-parent"
+    child_wf = "wf-child"
+    for eng in (sync_wf, async_wf):
+        eng.write.add_node(_wf_node(workflow_id=parent_wf, node_id="p|start", op="spawn", start=True))
+        eng.write.add_node(_wf_node(workflow_id=parent_wf, node_id="p|end", op="end", terminal=True))
+        eng.write.add_edge(_wf_edge(workflow_id=parent_wf, edge_id="p|start->end", src="p|start", dst="p|end"))
+        eng.write.add_node(_wf_node(workflow_id=child_wf, node_id="c|start", op="child", start=True, terminal=True))
+
+    def _resolver(op: str):
+        def _fn(_ctx):
+            if op == "spawn":
+                return RunSuccess(
+                    conversation_node_id=None,
+                    state_update=[("u", {"parent_seen": True})],
+                    workflow_invocations=[
+                        WorkflowInvocationRequest(
+                            workflow_id=child_wf,
+                            result_state_key="child_result",
+                            run_id="child-run",
+                        )
+                    ],
+                )
+            return RunSuccess(
+                conversation_node_id=None,
+                state_update=[("u", {"child_value": 7})],
+            )
+
+        return _fn
+
+    sync_rt = WorkflowRuntime(
+        workflow_engine=sync_wf,
+        conversation_engine=sync_conv,
+        step_resolver=_resolver,
+        predicate_registry={},
+        checkpoint_every_n_steps=1,
+        max_workers=1,
+    )
+    async_rt = AsyncWorkflowRuntime(
+        workflow_engine=async_wf,
+        conversation_engine=async_conv,
+        step_resolver=_resolver,
+        predicate_registry={},
+        checkpoint_every_n_steps=1,
+        max_workers=1,
+        experimental_native_scheduler=True,
+    )
+    run_id = "run-nested"
+    sync_out = sync_rt.run(
+        workflow_id=parent_wf,
+        conversation_id="conv-nested",
+        turn_node_id="turn-1",
+        initial_state={},
+        run_id=run_id,
+    )
+    async_out = asyncio.run(
+        async_rt.run(
+            workflow_id=parent_wf,
+            conversation_id="conv-nested",
+            turn_node_id="turn-1",
+            initial_state={},
+            run_id=run_id,
+        )
+    )
+    assert sync_out.status == async_out.status == "succeeded"
+    assert sync_out.final_state == async_out.final_state
+    assert sync_out.final_state["parent_seen"] is True
+    assert sync_out.final_state["child_result"]["child_value"] == 7
+
+
+def test_async_runtime_nested_workflow_child_failure_fails_parent():
+    from pathlib import Path
+    import tempfile
+    import uuid
+
+    from kogwistar.engine_core.engine import GraphKnowledgeEngine
+    from kogwistar.engine_core.models import Grounding, Span
+    from kogwistar.runtime.models import RunFailure, RunSuccess, WorkflowEdge, WorkflowInvocationRequest, WorkflowNode
+    from kogwistar.runtime.runtime import WorkflowRuntime
+    from tests.conftest import FakeEmbeddingFunction
+    from tests._helpers.fake_backend import build_fake_backend
+
+    def _g():
+        return Grounding(spans=[Span.from_dummy_for_conversation()])
+
+    def _wf_node(*, workflow_id: str, node_id: str, op: str, start: bool = False, terminal: bool = False) -> WorkflowNode:
+        return WorkflowNode(
+            id=node_id,
+            label=node_id,
+            type="entity",
+            doc_id=node_id,
+            summary=op,
+            mentions=[_g()],
+            properties={},
+            metadata={
+                "entity_type": "workflow_node",
+                "workflow_id": workflow_id,
+                "wf_op": op,
+                "wf_start": start,
+                "wf_terminal": terminal,
+                "wf_version": "v1",
+            },
+            domain_id=None,
+            canonical_entity_id=None,
+            level_from_root=0,
+            embedding=None,
+        )
+
+    def _wf_edge(*, workflow_id: str, edge_id: str, src: str, dst: str) -> WorkflowEdge:
+        return WorkflowEdge(
+            id=edge_id,
+            source_ids=[src],
+            target_ids=[dst],
+            relation="wf_next",
+            label="wf_next",
+            type="relationship",
+            summary="next",
+            doc_id=workflow_id,
+            mentions=[_g()],
+            properties={},
+            metadata={
+                "entity_type": "workflow_edge",
+                "workflow_id": workflow_id,
+                "wf_priority": 100,
+                "wf_is_default": True,
+                "wf_predicate": None,
+                "wf_multiplicity": "one",
+            },
+            source_edge_ids=[],
+            target_edge_ids=[],
+            domain_id=None,
+            canonical_entity_id=None,
+        )
+
+    root = Path(tempfile.gettempdir()) / f"phase4_nested_fail_{uuid.uuid4().hex}"
+    root.mkdir(parents=True, exist_ok=True)
+    ef = FakeEmbeddingFunction(dim=3)
+    sync_wf = GraphKnowledgeEngine(
+        persist_directory=str(root / "sync_wf"),
+        kg_graph_type="workflow",
+        embedding_function=ef,
+        backend_factory=build_fake_backend,
+    )
+    sync_conv = GraphKnowledgeEngine(
+        persist_directory=str(root / "sync_conv"),
+        kg_graph_type="conversation",
+        embedding_function=ef,
+        backend_factory=build_fake_backend,
+    )
+    async_wf = GraphKnowledgeEngine(
+        persist_directory=str(root / "async_wf"),
+        kg_graph_type="workflow",
+        embedding_function=ef,
+        backend_factory=build_fake_backend,
+    )
+    async_conv = GraphKnowledgeEngine(
+        persist_directory=str(root / "async_conv"),
+        kg_graph_type="conversation",
+        embedding_function=ef,
+        backend_factory=build_fake_backend,
+    )
+
+    parent_wf = "wf-parent"
+    child_wf = "wf-child"
+    for eng in (sync_wf, async_wf):
+        eng.write.add_node(_wf_node(workflow_id=parent_wf, node_id="p|start", op="spawn", start=True))
+        eng.write.add_node(_wf_node(workflow_id=parent_wf, node_id="p|end", op="end", terminal=True))
+        eng.write.add_edge(_wf_edge(workflow_id=parent_wf, edge_id="p|start->end", src="p|start", dst="p|end"))
+        eng.write.add_node(_wf_node(workflow_id=child_wf, node_id="c|start", op="child", start=True, terminal=True))
+
+    def _resolver(op: str):
+        def _fn(_ctx):
+            if op == "spawn":
+                return RunSuccess(
+                    conversation_node_id=None,
+                    state_update=[("u", {"parent_seen": True})],
+                    workflow_invocations=[
+                        WorkflowInvocationRequest(
+                            workflow_id=child_wf,
+                            result_state_key="child_result",
+                            run_id="child-run",
+                        )
+                    ],
+                )
+            return RunFailure(
+                conversation_node_id=None,
+                status="failure",
+                errors=["child boom"],
+                state_update=[],
+            )
+
+        return _fn
+
+    sync_rt = WorkflowRuntime(
+        workflow_engine=sync_wf,
+        conversation_engine=sync_conv,
+        step_resolver=_resolver,
+        predicate_registry={},
+        checkpoint_every_n_steps=1,
+        max_workers=1,
+    )
+    async_rt = AsyncWorkflowRuntime(
+        workflow_engine=async_wf,
+        conversation_engine=async_conv,
+        step_resolver=_resolver,
+        predicate_registry={},
+        checkpoint_every_n_steps=1,
+        max_workers=1,
+        experimental_native_scheduler=True,
+    )
+    run_id = "run-nested-fail"
+    sync_out = sync_rt.run(
+        workflow_id=parent_wf,
+        conversation_id="conv-nested",
+        turn_node_id="turn-1",
+        initial_state={},
+        run_id=run_id,
+    )
+    async_out = asyncio.run(
+        async_rt.run(
+            workflow_id=parent_wf,
+            conversation_id="conv-nested",
+            turn_node_id="turn-1",
+            initial_state={},
+            run_id=run_id,
+        )
+    )
+    assert sync_out.status == async_out.status == "failure"
+    assert sync_out.final_state == async_out.final_state
+
+
+def test_async_runtime_parent_cancellation_propagates_to_child():
+    from pathlib import Path
+    import tempfile
+    import uuid
+
+    from kogwistar.engine_core.engine import GraphKnowledgeEngine
+    from kogwistar.engine_core.models import Grounding, Span
+    from kogwistar.runtime.models import RunSuccess, WorkflowEdge, WorkflowInvocationRequest, WorkflowNode
+    from tests.conftest import FakeEmbeddingFunction
+    from tests._helpers.fake_backend import build_fake_backend
+
+    def _g():
+        return Grounding(spans=[Span.from_dummy_for_conversation()])
+
+    def _wf_node(*, workflow_id: str, node_id: str, op: str, start: bool = False, terminal: bool = False) -> WorkflowNode:
+        return WorkflowNode(
+            id=node_id,
+            label=node_id,
+            type="entity",
+            doc_id=node_id,
+            summary=op,
+            mentions=[_g()],
+            properties={},
+            metadata={
+                "entity_type": "workflow_node",
+                "workflow_id": workflow_id,
+                "wf_op": op,
+                "wf_start": start,
+                "wf_terminal": terminal,
+                "wf_version": "v1",
+            },
+            domain_id=None,
+            canonical_entity_id=None,
+            level_from_root=0,
+            embedding=None,
+        )
+
+    def _wf_edge(*, workflow_id: str, edge_id: str, src: str, dst: str) -> WorkflowEdge:
+        return WorkflowEdge(
+            id=edge_id,
+            source_ids=[src],
+            target_ids=[dst],
+            relation="wf_next",
+            label="wf_next",
+            type="relationship",
+            summary="next",
+            doc_id=workflow_id,
+            mentions=[_g()],
+            properties={},
+            metadata={
+                "entity_type": "workflow_edge",
+                "workflow_id": workflow_id,
+                "wf_priority": 100,
+                "wf_is_default": True,
+                "wf_predicate": None,
+                "wf_multiplicity": "one",
+            },
+            source_edge_ids=[],
+            target_edge_ids=[],
+            domain_id=None,
+            canonical_entity_id=None,
+        )
+
+    root = Path(tempfile.gettempdir()) / f"phase4_parent_cancel_{uuid.uuid4().hex}"
+    root.mkdir(parents=True, exist_ok=True)
+    ef = FakeEmbeddingFunction(dim=3)
+    async_wf = GraphKnowledgeEngine(
+        persist_directory=str(root / "async_wf"),
+        kg_graph_type="workflow",
+        embedding_function=ef,
+        backend_factory=build_fake_backend,
+    )
+    async_conv = GraphKnowledgeEngine(
+        persist_directory=str(root / "async_conv"),
+        kg_graph_type="conversation",
+        embedding_function=ef,
+        backend_factory=build_fake_backend,
+    )
+
+    parent_wf = "wf-parent"
+    child_wf = "wf-child"
+    async_wf.write.add_node(_wf_node(workflow_id=parent_wf, node_id="p|start", op="spawn", start=True))
+    async_wf.write.add_node(_wf_node(workflow_id=parent_wf, node_id="p|end", op="end", terminal=True))
+    async_wf.write.add_edge(_wf_edge(workflow_id=parent_wf, edge_id="p|start->end", src="p|start", dst="p|end"))
+    async_wf.write.add_node(_wf_node(workflow_id=child_wf, node_id="c|start", op="child", start=True))
+    async_wf.write.add_node(_wf_node(workflow_id=child_wf, node_id="c|end", op="child-end", terminal=True))
+    async_wf.write.add_edge(_wf_edge(workflow_id=child_wf, edge_id="c|start->end", src="c|start", dst="c|end"))
+
+    child_started = asyncio.Event()
+    cancel_flags = {"parent-run": False}
+    seen_runs: list[str] = []
+
+    def _cancel(run_id: str) -> bool:
+        seen_runs.append(str(run_id))
+        return bool(cancel_flags.get(str(run_id), False))
+
+    def _resolver(op: str):
+        async def _spawn(_ctx):
+            return RunSuccess(
+                conversation_node_id=None,
+                state_update=[],
+                workflow_invocations=[
+                    WorkflowInvocationRequest(
+                        workflow_id=child_wf,
+                        result_state_key="child_result",
+                        run_id="child-run",
+                    )
+                ],
+            )
+
+        async def _child(_ctx):
+            child_started.set()
+            await asyncio.sleep(0.15)
+            return RunSuccess(conversation_node_id=None, state_update=[("u", {"child_started": True})])
+
+        async def _child_end(_ctx):
+            return RunSuccess(conversation_node_id=None, state_update=[("u", {"child_ended": True})])
+
+        return {"spawn": _spawn, "child": _child, "child-end": _child_end}[op]
+
+    rt = AsyncWorkflowRuntime(
+        workflow_engine=async_wf,
+        conversation_engine=async_conv,
+        step_resolver=_resolver,
+        predicate_registry={},
+        checkpoint_every_n_steps=1,
+        max_workers=1,
+        experimental_native_scheduler=True,
+        cancel_requested=_cancel,
+    )
+
+    async def _run():
+        async def _flip():
+            await child_started.wait()
+            await asyncio.sleep(0.02)
+            cancel_flags["parent-run"] = True
+
+        flipper = asyncio.create_task(_flip())
+        try:
+            return await rt.run(
+                workflow_id=parent_wf,
+                conversation_id="conv-parent-cancel",
+                turn_node_id="turn-1",
+                initial_state={},
+                run_id="parent-run",
+            )
+        finally:
+            await flipper
+
+    out = asyncio.run(_run())
+    assert out.status == "cancelled"
+    assert "parent-run" in seen_runs
+    assert "child-run" in seen_runs
+
+
+def test_async_runtime_native_scheduler_cancel_idempotent_terminal_persistence(monkeypatch):
+    class _FakeWorkflowRuntime:
+        def __init__(self, **kwargs):
+            self.persisted = []
+
+        def run(self, **kwargs):
+            return RunResult(
+                run_id=str(kwargs.get("run_id") or "sync-run"),
+                final_state=dict(kwargs.get("initial_state") or {}),
+                mq=queue.Queue(),
+                status="succeeded",
+            )
+
+        def _persist_cancelled_terminal(self, **kwargs):
+            self.persisted.append(kwargs)
+
+    class _Node:
+        def __init__(self, nid, op, terminal=False, fanout=False):
+            self.id = nid
+            self.op = op
+            self.metadata = {"wf_terminal": terminal, "wf_fanout": fanout}
+
+    class _Edge:
+        def __init__(self, dst):
+            self.target_ids = [dst]
+            self.metadata = {"wf_priority": 100, "wf_is_default": True, "wf_multiplicity": "one", "wf_predicate": None}
+
+    def _fake_validate(*, workflow_engine, workflow_id, predicate_registry, resolver):
+        start = _Node("start", "start", terminal=False, fanout=False)
+        end = _Node("end", "end", terminal=True, fanout=False)
+        return start, {"start": start, "end": end}, {"start": [_Edge("end")], "end": []}
+
+    monkeypatch.setattr("kogwistar.runtime.async_runtime.WorkflowRuntime", _FakeWorkflowRuntime)
+    monkeypatch.setattr("kogwistar.runtime.async_runtime.validate_workflow_design", _fake_validate)
+
+    resolver = AsyncMappingStepResolver()
+
+    @resolver.register("start")
+    async def _start(_ctx):
+        return RunSuccess(conversation_node_id=None, state_update=[])
+
+    cancel_requested = {"flag": True, "checks": 0}
+
+    def _cancel(_run_id: str) -> bool:
+        cancel_requested["checks"] += 1
+        return cancel_requested["flag"]
+
+    rt = AsyncWorkflowRuntime(
+        workflow_engine=object(),
+        conversation_engine=object(),
+        step_resolver=resolver,
+        predicate_registry={},
+        trace=False,
+        experimental_native_scheduler=True,
+        cancel_requested=_cancel,
+    )
+
+    out = asyncio.run(
+        rt.run(
+            workflow_id="wf-native-cancel-idempotent",
+            conversation_id="c1",
+            turn_node_id="t1",
+            initial_state={},
+        )
+    )
+    assert out.status == "cancelled"
+    assert cancel_requested["checks"] >= 1
+    assert len(getattr(rt.sync_runtime, "persisted", [])) == 1
 
 
 def test_async_runtime_resume_run_delegates_to_sync_resume(monkeypatch):
