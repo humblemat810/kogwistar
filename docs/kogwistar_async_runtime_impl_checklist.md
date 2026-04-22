@@ -139,19 +139,7 @@ Acceptance tests:
 
 Phase 3 progress notes:
 
-- Implemented:
-  - Experimental native async scheduling loop using `asyncio` tasks and semaphore concurrency limits.
-  - Deterministic acceptance order for completed tasks by local step sequence in the current first slice.
-  - Next-edge selection with predicate/default/fanout plus `route-next` filtering, with priority-first ordering.
-  - Native-path cancellation now drains in-flight tasks to avoid orphan task leakage on terminal exit.
-  - Token nesting first slice: first routed branch keeps token id; later fanout branches mint child token ids.
-  - Token spawn events are emitted (`type=token.spawn`) with parent/child token linkage for observability.
-  - First-slice join merge support (`wf_join`/`join` op) with static incoming-edge quorum and single downstream continuation.
-  - `wf_terminal` metadata now short-circuits routing in native async path.
-  - Native `_rt_join` snapshot now carries `join_node_ids`, `join_outstanding`, `join_waiters`, `pending`, and `suspended`.
-  - `wf_multiplicity="many"` now keeps multiple routed edges even when `wf_fanout` is false.
-  - `resume_run(...)` now delegates to sync runtime resume path, and native `run(... _resume_*)` markers also delegate to sync runtime to preserve checkpoint resume semantics in this slice.
-  - Native cancellation now writes cancelled terminal persistence through sync runtime persistence hook when available.
+- Native async scheduler landed: bounded concurrency, join/barrier, route-next parity, cancellation/resume hooks, token nesting, and deterministic acceptance order.
 
 ---
 
@@ -307,10 +295,7 @@ Acceptance tests:
 
 Notes:
 
-- Callers can pick runtime by passing `runtime_kind="async"` to workflow submission.
-- Service owners can set `default_runtime_kind="async"` when they want async as local default.
-- Existing `runtime_runner` injection remains supported for tests and demos.
-- Async selection is opt-in; sync stays default until later parity gates say otherwise.
+- Async selection is opt-in; sync stays default.
 
 ---
 
@@ -346,26 +331,31 @@ Graph side-effect parity applies to accepted semantic artifacts: run nodes, step
 
 ## Phase 9 - CI Coverage
 
-- [ ] add lightweight `ci` tests for contract and import boundaries
-- [ ] add `core` tests for resolver compatibility and state reducer parity
-- [ ] add `workflow` tests for runtime execution parity
-- [ ] add `ci_full` tests for backend-specific durability and Chroma/Postgres behavior
-- [ ] add a small smoke test that proves `default_sync_ops == default_async_ops`
-- [ ] avoid making slow backend tests the only guard for semantic parity
-- [ ] add a small CI test proving timestamp fields do not affect replay ordering
-- [ ] add a small CI test proving `_deps` stays out of checkpoints
-- [ ] add side-by-side sync/async graph side-effect parity tests with normalized volatile fields
-- [ ] maintain a sync-to-async test mapping rule: each sync runtime semantic test should have an async counterpart or be explicitly waived with rationale
+- [x] add lightweight `ci` tests for contract and import boundaries
+- [x] add `core` tests for resolver compatibility and state reducer parity
+- [x] add `workflow` tests for runtime execution parity
+- [x] add `ci_full` tests for backend-specific durability and Chroma/Postgres behavior
+- [x] add a small smoke test that proves `default_sync_ops == default_async_ops`
+- [x] avoid making slow backend tests the only guard for semantic parity
+- [x] add a small CI test proving timestamp fields do not affect replay ordering
+- [x] add a small CI test proving `_deps` stays out of checkpoints
+- [x] add side-by-side sync/async graph side-effect parity tests with normalized volatile fields
+- [x] maintain a sync-to-async test mapping rule: each sync runtime semantic test should have an async counterpart or be explicitly waived with rationale
 
-Suggested initial tests:
+Current CI guards:
 
 - [x] `tests/runtime/test_async_runtime_contract.py`
-- [ ] `tests/runtime/test_async_runtime_parity.py`
-- [ ] `tests/runtime/test_async_runtime_replay.py`
-- [ ] `tests/runtime/test_async_runtime_backend_durability.py`
-- [ ] `tests/runtime/test_async_runtime_suspend_resume.py`
-- [ ] `tests/runtime/test_async_runtime_nested.py`
-- [ ] `tests/runtime/test_async_runtime_graph_side_effect_parity.py`
+- [x] `tests/runtime/test_async_runtime_mapping_docstrings.py`
+- [x] `tests/runtime/test_runtime_parity_bridge_contract.py`
+- [x] `tests/runtime/test_backend_e2e_smoke_matrix.py`
+- [x] `tests/runtime/test_workflow_terminal_status.py`
+- [x] `tests/runtime/test_checkpoint_resume_contract.py`
+- [x] `tests/runtime/test_sync_runtime_bijection_contract.py`
+- [x] `tests/runtime/test_async_runtime_bijection_contract.py`
+- [x] `tests/runtime/test_workflow_suspend_resume.py`
+- [x] `tests/runtime/test_resume_wait_reasons.py`
+- [x] `tests/workflow/test_workflow_join.py`
+- [x] `tests/workflow/test_save_load_progress.py`
 
 Sync/Async test-mapping policy:
 
@@ -428,4 +418,4 @@ Sync/Async test-mapping policy:
 
 Recent note (2026-04-22):
 
-- Fixed lazy-export gap in `kogwistar.runtime.__init__` so `kogwistar.runtime.async_runtime` is resolvable as a submodule attribute (required by monkeypatch string paths in async contract tests).
+- `kogwistar.runtime.async_runtime` stays resolvable for monkeypatch and import-path tests.
