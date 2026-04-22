@@ -251,6 +251,21 @@ def test_in_memory_meta_retry_and_run_cancel_contract() -> None:
     assert run["status"] == "cancelling"
 
 
+def test_in_memory_meta_new_store_has_no_recovery_memory() -> None:
+    first = InMemoryMetaStore()
+    first.append_entity_event(
+        namespace="ns-a",
+        event_id="evt-1",
+        entity_kind="node",
+        entity_id="n-1",
+        op="ADD",
+        payload_json='{"hello":"world"}',
+    )
+
+    second = InMemoryMetaStore()
+    assert list(second.iter_entity_events(namespace="ns-a", from_seq=1)) == []
+
+
 def test_fake_backend_uses_diskless_in_memory_meta_store() -> None:
     root = Path(".tmp_in_memory_meta_store_test")
     shutil.rmtree(root, ignore_errors=True)

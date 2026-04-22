@@ -193,3 +193,48 @@ def test_replay_ignores_created_at_ms_and_orders_by_step_seq():
     eng = _DummyEngine([checkpoint, step_late, step_early])
     state = replay_to(conversation_engine=eng, run_id="run-1", target_step_seq=2)
     assert state["ops"] == ["early", "late"]
+
+
+def test_replay_to_is_read_only_and_does_not_append_new_history():
+    checkpoint = _ckpt(0)
+    step = WorkflowStepExecNode(
+        id="wf_step|run-1|1",
+        label="step",
+        type="entity",
+        doc_id="wf_step|run-1|1",
+        summary="step",
+        mentions=[Grounding(spans=[Span.from_dummy_for_conversation()])],
+        properties={},
+        metadata={
+            "entity_type": "workflow_step_exec",
+            "run_id": "run-1",
+            "workflow_id": "wf-1",
+            "workflow_node_id": "node-1",
+            "step_seq": 1,
+            "op": "append",
+            "status": "ok",
+            "duration_ms": 1,
+            "result_json": json.dumps(
+                {"state_update": [("a", {"ops": "append"})], "conversation_node_id": None}
+            ),
+        },
+        level_from_root=0,
+        domain_id=None,
+        canonical_entity_id=None,
+        embedding=None,
+    )
+
+    class _Write:
+        def __getattr__(self, name):
+            raise AssertionError(f"replay_to must not call write.{name}")
+
+    eng = type(
+        "_Eng",
+        (),
+        {
+            "read": _DummyEngine([checkpoint, step]).read,
+            "write": _Write(),
+        },
+    )()
+    state = replay_to(conversation_engine=eng, run_id="run-1", target_step_seq=1)
+    assert state["ops"] == ["append"]

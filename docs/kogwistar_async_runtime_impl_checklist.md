@@ -239,27 +239,27 @@ Notes:
 
 ## Phase 5 - Backend-Aware Durability
 
-- [ ] define async runtime write unit boundaries
-- [ ] preserve Postgres strong transaction behavior where the backend supports it
-- [ ] preserve Chroma event-first eventual repair behavior
-- [ ] preserve in-memory semantics without pretending crash recovery exists
-- [ ] share transaction policy decisions with sync runtime where possible
-- [ ] make per-step commit behavior explicit
-- [ ] ensure event log and index jobs are not duplicated during replay/rebuild
-- [ ] test mid-step failure behavior by backend family
-- [ ] ensure unit-of-work state is task-local for concurrent async steps
-- [ ] ensure nested UoW in the same task joins the outer scope
-- [ ] ensure rollback in one async task does not roll back another task's committed scope
+- [x] define async runtime write unit boundaries
+- [x] preserve Postgres strong transaction behavior where the backend supports it -> `test_pg_transaction_rollback_power_out_simulation`, `test_async_pg_backend_transaction_rollback`, `test_async_pg_engine_uow_rolls_back_writes_together`
+- [x] preserve Chroma event-first eventual repair behavior -> `test_phase3_chroma_replay_repairs_missing_vector_state`, `test_phase3b_chroma_replay_repair_overwrites_tampered_row`
+- [x] preserve in-memory semantics without pretending crash recovery exists
+- [x] share transaction policy decisions with sync runtime where possible -> `test_async_runtime_auto_transaction_mode_defaults_to_none_for_non_pg_backend`, `test_async_runtime_auto_transaction_mode_uses_step_for_pg_backend`
+- [x] make per-step commit behavior explicit -> `test_async_runtime_native_scheduler_uses_step_uow_boundary`, `test_async_postgres_uow_nested_transaction_joins_outer_scope`
+- [x] ensure event log and index jobs are not duplicated during replay/rebuild -> `test_phase3b_replay_does_not_emit_new_entity_events_normal_or_repair`, `test_pgvector_replay_is_idempotent_no_new_events`
+- [x] test mid-step failure behavior by backend family -> `test_pg_transaction_rollback_power_out_simulation`, `test_async_pg_backend_transaction_rollback`, `test_phase3_chroma_replay_repairs_missing_vector_state`
+- [x] ensure unit-of-work state is task-local for concurrent async steps
+- [x] ensure nested UoW in the same task joins the outer scope
+- [x] ensure rollback in one async task does not roll back another task's committed scope -> `test_async_postgres_uow_rollback_in_one_task_does_not_touch_other_commit`
 
 Acceptance tests:
 
-- [ ] Postgres-backed async step commit is atomic or rolls back cleanly
-- [ ] Chroma-backed async step failure is repairable from event truth
-- [ ] in-memory backend documents volatile recovery limits
-- [ ] async replay does not append new authoritative history
-- [ ] async runtime respects backend unit-of-work boundaries
-- [ ] concurrent async UoWs are isolated by task context
-- [ ] nested async UoW joins inside one task
+- [x] Postgres-backed async step commit is atomic or rolls back cleanly -> `test_async_pg_backend_invariants`, `test_async_pg_backend_transaction_rollback`, `test_async_pg_engine_uow_rolls_back_writes_together`
+- [x] Chroma-backed async step failure is repairable from event truth -> `test_phase3_chroma_replay_repairs_missing_vector_state`, `test_phase3b_chroma_replay_repair_overwrites_tampered_row`
+- [x] in-memory backend documents volatile recovery limits -> `test_in_memory_meta_new_store_has_no_recovery_memory`
+- [x] async replay does not append new authoritative history -> `test_replay_to_is_read_only_and_does_not_append_new_history`
+- [x] async runtime respects backend unit-of-work boundaries -> `test_async_runtime_native_scheduler_uses_step_uow_boundary`, `test_async_pg_engine_uow_rolls_back_writes_together`
+- [x] concurrent async UoWs are isolated by task context -> `test_async_postgres_uow_task_local_context_isolated_across_tasks`
+- [x] nested async UoW joins inside one task -> `test_async_postgres_uow_nested_transaction_joins_outer_scope`
 
 ---
 
@@ -385,7 +385,7 @@ Sync/Async test-mapping policy:
 - [ ] suspend, resume, cancellation, and nested workflow behavior match sync runtime or are explicitly documented as first-slice gaps
 - [ ] existing workflows have identical normalized graph node/edge side effects under sync and async runtimes
 - [ ] async-only cooperative cancellation diagnostics are excluded from semantic side-effect parity
-- [ ] async task-local UoW isolation is tested
+- [x] async task-local UoW isolation is tested
 - [ ] LangGraph parity claims are limited to semantics mode
 - [ ] sync runtime remains stable while async runtime lands incrementally
 

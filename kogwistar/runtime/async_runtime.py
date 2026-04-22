@@ -5,6 +5,7 @@ import contextvars
 import inspect
 import queue
 import uuid
+from contextlib import nullcontext
 from typing import Any, Awaitable, Callable, TypeAlias
 
 from ..id_provider import stable_id
@@ -425,8 +426,23 @@ class AsyncWorkflowRuntime(WorkflowExecutor):
                 cache_dir=cache_dir,
             )
             fn = self._resolve_async_step_fn(str(node.op))
+            should_step_uow = getattr(self._sync_runtime, "_should_step_uow", None)
+            maybe_step_uow = getattr(self._sync_runtime, "_maybe_step_uow", None)
+            try:
+                use_step_uow = bool(
+                    callable(should_step_uow)
+                    and should_step_uow(str(node.op), state)
+                )
+            except Exception:
+                use_step_uow = False
+            uow_ctx = (
+                maybe_step_uow()
+                if use_step_uow and callable(maybe_step_uow)
+                else nullcontext()
+            )
             async with sem:
-                out = await fn(ctx)
+                with uow_ctx:
+                    out = await fn(ctx)
             return launch_seq, step_seq, mask, node_id, token_id, parent_token_id, out
 
         def _apply_run_result(target_state: WorkflowState, result: StepRunResult) -> None:
@@ -758,13 +774,13 @@ class AsyncWorkflowRuntime(WorkflowExecutor):
 
                 _persist_rt_join_snapshot()
             _persist_checkpoint_compat(
-                    conversation_id=str(conversation_id),
-                    workflow_id=str(workflow_id),
-                    run_id=str(run_id),
-                    step_seq=int(_step_seq),
-                    state=state,
-                    last_exec_node=step_exec_node,
-                )
+                conversation_id=str(conversation_id),
+                workflow_id=str(workflow_id),
+                run_id=str(run_id),
+                step_seq=int(accepted_step_seq if accepted_step_seq >= 0 else 0),
+                state=state,
+                last_exec_node=last_exec_node,
+            )
 
             if status != "succeeded":
                 break
