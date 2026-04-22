@@ -17,7 +17,7 @@ Use exact words consistently:
 - `Moved from path::test_name`: exact test case moved into a bijection file. Source test must be deleted in same patch.
 - `Refactored from path::test_name`: only bijection slice extracted. Source test must remain because it owns broader semantics.
 - `New sync mirror ...` / `New async mirror ...`: no source test existed at the right granularity.
-- `Waived`: no 1:1 bijection mapping yet; record why and name replacement guard.
+- `Waived`: no 1:1 bijection mapping yet; always record concrete why and name replacement guard.
 
 Never:
 
@@ -26,6 +26,7 @@ Never:
 - Point sync-side provenance at async-runtime source.
 - Move broad integration/backend/replay/server tests wholesale into bijection.
 - Add only one side of a bijection suffix.
+- Write `waived` without concrete rationale and replacement guard.
 
 Done means:
 
@@ -96,12 +97,12 @@ These are high-signal, low-cost smoke tests that are not yet in the current bije
 
 | Priority | Missing smoke | Why useful | Proposed action |
 | --- | --- | --- | --- |
-| P0 | Resolver state-schema metadata smoke | Catches sync/async resolver metadata drift without running workflow graph. | Move/refactor `test_async_resolver_state_schema_metadata_available`; add sync mirror with suffix `state_schema_metadata_available`. |
+| P0 | Resolver state-schema metadata smoke | Catches sync/async resolver metadata drift without running workflow graph. | Done; keep bijection pair. |
 | P0 | Live `_deps` handler smoke | Catches DI/process-local state contract before checkpoint complexity. | Done; keep bijection pair. |
-| P0 | StepContext lane-message delegation smoke | `StepContext` is shared runtime surface; cheap and not backend-bound. | Move/refactor `test_step_context_send_lane_message_delegates_to_sender`; add async mirror with suffix `step_context_send_lane_message_delegates`. |
-| P0 | StepContext lane-message missing-sender smoke | Guards failure shape for shared context helpers. | Move/refactor `test_step_context_send_lane_message_requires_sender`; add async mirror with suffix `step_context_send_lane_message_requires_sender`. |
-| P0 | StepContext lane-event delegation smoke | Shared progress/event helper; useful for server progress compatibility. | Move/refactor `test_step_context_emit_lane_message_event_delegates_to_sink`; add async mirror with suffix `step_context_emit_lane_message_event_delegates`. |
-| P0 | StepContext lane-event missing-sink smoke | Guards failure shape for shared event helper. | Move/refactor `test_step_context_emit_lane_message_event_requires_sink`; add async mirror with suffix `step_context_emit_lane_message_event_requires_sink`. |
+| P0 | StepContext lane-message delegation smoke | `StepContext` is shared runtime surface; cheap and not backend-bound. | Done; keep bijection pair. |
+| P0 | StepContext lane-message missing-sender smoke | Guards failure shape for shared context helpers. | Done; keep bijection pair. |
+| P0 | StepContext lane-event delegation smoke | Shared progress/event helper; useful for server progress compatibility. | Done; keep bijection pair. |
+| P0 | StepContext lane-event missing-sink smoke | Guards failure shape for shared event helper. | Done; keep bijection pair. |
 | P1 | Sync runtime rejects awaitable handler smoke | Prevents accidentally making sync runtime async-capable by hidden await. | Keep as sync contract / waiver; do not force into bijection. |
 | P1 | Async adapter `close_sandbox_run` forwarding smoke | Protects sandbox cleanup path when async facade delegates to sync runtime. | Done; keep bijection pair. |
 | P1 | Non-sandboxed op does not prepare sandbox | Small resolver policy smoke, now bijection-ready. | Done; keep as current bijection subset. |
@@ -113,34 +114,35 @@ These are high-signal, low-cost smoke tests that are not yet in the current bije
 
 These look like small async-side contract cases. Inspect before moving.
 
-- [ ] `tests/runtime/test_async_runtime_contract.py::test_async_resolver_runs_sync_handlers_inline_without_to_thread` -> `sync_handlers_inline_without_to_thread` | likely waive
-- [ ] `tests/runtime/test_async_runtime_contract.py::test_async_resolver_runs_two_awaited_handlers_concurrently` -> `awaited_handlers_concurrently` | async-only; likely waive
-- [ ] `tests/runtime/test_async_runtime_contract.py::test_async_resolver_state_schema_metadata_available` -> `state_schema_metadata_available` | move async + implement sync mirror
-- [ ] `tests/runtime/test_async_runtime_contract.py::test_async_resolver_deps_available_in_handler` -> `deps_available_in_handler` | move async + implement sync mirror if exact
+- [x] `tests/runtime/test_async_runtime_contract.py::test_async_resolver_runs_sync_handlers_inline_without_to_thread` -> `sync_handlers_inline_without_to_thread` | waived; async-only thread-free scheduler invariant
+- [x] `tests/runtime/test_async_runtime_contract.py::test_async_resolver_runs_two_awaited_handlers_concurrently` -> `awaited_handlers_concurrently` | waived; async-only awaited concurrency invariant, because sync runtime has no concurrent awaited-task analogue
+- [x] `tests/runtime/test_async_runtime_contract.py::test_async_resolver_state_schema_metadata_available` -> `state_schema_metadata_available` | moved into bijection pair
+- [x] `tests/runtime/test_async_runtime_contract.py::test_async_resolver_deps_available_in_handler` -> `deps_available_in_handler` | moved into bijection pair
 
 ### Move sync + implement async mirror
 
 These are sync-side baseline cases likely worth bijection triage.
 
-- [ ] `tests/runtime/test_resume_wait_reasons.py::test_wait_reason_can_suspend_and_resume` -> `wait_reason_suspend_resume` | refactor from sync source; source retained for resume wait-reason integration
-- [ ] `tests/runtime/test_trace_sink_parallel_nested_minimal.py::test_trace_sink_parallel_and_nested_minimal_sync` -> `trace_sink_parallel_nested_minimal` | refactor; source retained for trace sink integration
-- [ ] `tests/runtime/test_workflow_terminal_status.py::test_runtime_persists_completed_terminal_for_leaf_node` -> `persists_completed_terminal_for_leaf_node` | refactor; source retained for backend-param terminal persistence
-- [ ] `tests/runtime/test_workflow_terminal_status.py::test_runtime_persists_failed_terminal_for_leaf_node` -> `persists_failed_terminal_for_leaf_node` | refactor; source retained for backend-param terminal persistence
-- [ ] `tests/runtime/test_checkpoint_resume_contract.py::test_load_checkpoint_accepts_current_schema` -> `load_checkpoint_accepts_current_schema` | likely waive
-- [ ] `tests/runtime/test_checkpoint_resume_contract.py::test_load_checkpoint_rejects_future_schema` -> `load_checkpoint_rejects_future_schema` | likely waive
-- [ ] `tests/runtime/test_checkpoint_resume_contract.py::test_replay_rejects_future_schema` -> `replay_rejects_future_schema` | likely waive
-- [ ] `tests/runtime/test_checkpoint_resume_contract.py::test_replay_ignores_created_at_ms_and_orders_by_step_seq` -> `replay_orders_by_step_seq` | refactor/waive
-- [ ] `tests/runtime/test_checkpoint_resume_contract.py::test_replay_to_is_read_only_and_does_not_append_new_history` -> `replay_read_only_no_new_history` | refactor/waive
+- [x] `tests/runtime/test_resume_wait_reasons.py::test_wait_reason_can_suspend_and_resume` -> `wait_reason_suspend_resume` | reclassified to parity bridge; source retained for resume wait-reason integration
+- [x] `tests/runtime/test_trace_sink_parallel_nested_minimal.py::test_trace_sink_parallel_and_nested_minimal_sync` -> `trace_sink_parallel_nested_minimal` | reclassified to parity bridge; source retained for trace sink integration
+- [x] `tests/runtime/test_workflow_terminal_status.py::test_runtime_persists_completed_terminal_for_leaf_node` -> `persists_completed_terminal_for_leaf_node` | reclassified to backend acceptance/backend-family matrix; source retained for backend-param terminal persistence
+- [x] `tests/runtime/test_workflow_terminal_status.py::test_runtime_persists_failed_terminal_for_leaf_node` -> `persists_failed_terminal_for_leaf_node` | reclassified to backend acceptance/backend-family matrix; source retained and async backend counterpart added
+  - async backend counterparts now pass for both `async-chroma` and `async-pg`
+- [x] `tests/runtime/test_checkpoint_resume_contract.py::test_load_checkpoint_accepts_current_schema` -> `load_checkpoint_accepts_current_schema` | waived, because this is schema-version acceptance guard for checkpoint loader, not sync-vs-async runtime semantic split
+- [x] `tests/runtime/test_checkpoint_resume_contract.py::test_load_checkpoint_rejects_future_schema` -> `load_checkpoint_rejects_future_schema` | waived, because this is schema-version rejection guard for checkpoint loader, not sync-vs-async runtime semantic split
+- [x] `tests/runtime/test_checkpoint_resume_contract.py::test_replay_rejects_future_schema` -> `replay_rejects_future_schema` | waived, because this is replay schema safety guard, not runtime-kind semantic split
+- [x] `tests/runtime/test_checkpoint_resume_contract.py::test_replay_ignores_created_at_ms_and_orders_by_step_seq` -> `replay_orders_by_step_seq` | reclassified to acceptance mapping retained; source retained and mapped to async frontier-shape acceptance
+- [x] `tests/runtime/test_checkpoint_resume_contract.py::test_replay_to_is_read_only_and_does_not_append_new_history` -> `replay_read_only_no_new_history` | reclassified to acceptance mapping retained; source retained and mapped to async resume delegation acceptance
 - [x] `tests/runtime/test_sandbox.py::test_mapping_resolver_does_not_prepare_sandbox_for_non_sandboxed_op` -> `non_sandboxed_op_does_not_prepare_sandbox` | moved into bijection pair
-- [ ] `tests/runtime/test_step_context_lane_message.py::test_step_context_send_lane_message_delegates_to_sender` -> `step_context_send_lane_message_delegates` | move/refactor sync + async mirror if StepContext shared
-- [ ] `tests/runtime/test_step_context_lane_message.py::test_step_context_send_lane_message_requires_sender` -> `step_context_send_lane_message_requires_sender` | move/refactor sync + async mirror if StepContext shared
-- [ ] `tests/runtime/test_step_context_lane_message_events.py::test_step_context_emit_lane_message_event_delegates_to_sink` -> `step_context_emit_lane_message_event_delegates` | move/refactor sync + async mirror if StepContext shared
-- [ ] `tests/runtime/test_step_context_lane_message_events.py::test_step_context_emit_lane_message_event_requires_sink` -> `step_context_emit_lane_message_event_requires_sink` | move/refactor sync + async mirror if StepContext shared
-- [ ] `tests/workflow/test_workflow_join.py::test_join_barrier_waits_for_all_arrivals` -> `join_barrier_waits_for_all_arrivals` | refactor; source retained for thread-worker sync join integration
-- [ ] `tests/workflow/test_workflow_join.py::test_join_does_not_wait_for_branch_that_can_no_longer_reach_it` -> `join_unreachable_branch_not_required` | refactor; source retained for reachability semantics
-- [ ] `tests/workflow/test_save_load_progress.py::test_runtime_checkpoint_load_and_replay` -> `checkpoint_load_and_replay` | refactor/waive; source retained for save/load progress
-- [ ] `tests/workflow/test_save_load_progress.py::test_runtime_resume_from_checkpoint` -> `resume_from_checkpoint` | refactor; source retained for save/load progress
-- [ ] `tests/workflow/test_save_load_progress.py::test_runtime_resume_from_checkpoint_frontier` -> `resume_from_checkpoint_frontier` | refactor; source retained for frontier semantics
+- [x] `tests/runtime/test_step_context_lane_message.py::test_step_context_send_lane_message_delegates_to_sender` -> `step_context_send_lane_message_delegates` | moved into bijection pair
+- [x] `tests/runtime/test_step_context_lane_message.py::test_step_context_send_lane_message_requires_sender` -> `step_context_send_lane_message_requires_sender` | moved into bijection pair
+- [x] `tests/runtime/test_step_context_lane_message_events.py::test_step_context_emit_lane_message_event_delegates_to_sink` -> `step_context_emit_lane_message_event_delegates` | moved into bijection pair
+- [x] `tests/runtime/test_step_context_lane_message_events.py::test_step_context_emit_lane_message_event_requires_sink` -> `step_context_emit_lane_message_event_requires_sink` | moved into bijection pair
+- [x] `tests/workflow/test_workflow_join.py::test_join_barrier_waits_for_all_arrivals` -> `join_barrier_waits_for_all_arrivals` | reclassified to parity bridge; source retained for thread-worker sync join integration
+- [x] `tests/workflow/test_workflow_join.py::test_join_does_not_wait_for_branch_that_can_no_longer_reach_it` -> `join_unreachable_branch_not_required` | reclassified to acceptance/parity backlog; source retained for reachability semantics
+- [x] `tests/workflow/test_save_load_progress.py::test_runtime_checkpoint_load_and_replay` -> `checkpoint_load_and_replay` | reclassified to parity-bridge backlog; source retained for save/load progress
+- [x] `tests/workflow/test_save_load_progress.py::test_runtime_resume_from_checkpoint` -> `resume_from_checkpoint` | reclassified to parity-bridge backlog; source retained for save/load progress
+- [x] `tests/workflow/test_save_load_progress.py::test_runtime_resume_from_checkpoint_frontier` -> `resume_from_checkpoint_frontier` | reclassified to parity-bridge backlog; source retained for frontier semantics
 
 ### Keep as acceptance or integration tests, not bijection subset
 
@@ -193,12 +195,12 @@ These are intentionally broader than one bijection semantic case.
 
 Goal: pin the runtime slice across all backend families with one small end-to-end smoke per family. Keep these outside bijection unless a tiny contract can be extracted.
 
-- [ ] `memory` backend E2E smoke on sync runtime
-- [ ] `memory` backend E2E smoke on async runtime
-- [ ] `chroma` backend E2E smoke on sync runtime
-- [ ] `chroma` backend E2E smoke on async runtime
-- [ ] `pg` backend E2E smoke on sync runtime
-- [ ] `pg` backend E2E smoke on async runtime
+- [x] `memory` backend E2E smoke on sync runtime
+- [x] `memory` backend E2E smoke on async runtime
+- [x] `chroma` backend E2E smoke on sync runtime
+- [x] `chroma` backend E2E smoke on async runtime
+- [x] `pg` backend E2E smoke on sync runtime
+- [x] `pg` backend E2E smoke on async runtime
 
 Suggested invariant for each row:
 
@@ -211,21 +213,22 @@ Suggested invariant for each row:
 
 These are not 1:1 bijection cases. One test should exercise sync, then async, and assert the same visible invariant. Keep them in a third contract file family, e.g. `tests/runtime/test_runtime_parity_bridge_contract.py`.
 
-- [ ] `nested_workflow_synthesized_design_is_persisted_and_used`
-- [ ] `nested_workflow_child_failure_fails_parent`
-- [ ] `workflow_runtime_native_update_schema_applies_known_and_falls_back_unknown`
-- [ ] `runtime_checkpoint_load_and_replay`
-- [ ] `runtime_resume_from_checkpoint`
-- [ ] `runtime_resume_from_checkpoint_frontier`
-- [ ] `workflow_suspend_and_resume_roundtrip`
-- [ ] `workflow_suspend_and_resume_branching_roundtrip`
-- [ ] `parent_cancellation_propagates_to_child`
+- [x] `nested_workflow_synthesized_design_is_persisted_and_used`
+- [x] `nested_workflow_child_failure_fails_parent`
+- [x] `workflow_runtime_native_update_schema_applies_known_and_falls_back_unknown`
+- [x] `runtime_checkpoint_load_and_replay`
+- [x] `runtime_resume_from_checkpoint`
+- [x] `runtime_resume_from_checkpoint_frontier`
+- [x] `workflow_suspend_and_resume_roundtrip`
+- [x] `wait_reason_suspend_resume`
+- [x] `workflow_suspend_and_resume_branching_roundtrip`
+- [x] `parent_cancellation_propagates_to_child`
 - [x] `route_next_shared_semantics`
-- [ ] `join_barrier_waits_for_all_arrivals`
-- [ ] `join_unreachable_branch_not_required`
-- [ ] `trace_sink_parallel_nested_minimal`
-- [ ] `runtime_trace_events_metadata_shape`
-- [ ] `side_by_side_node_edge_and_terminal_parity`
+- [x] `join_barrier_waits_for_all_arrivals`
+- [x] `join_unreachable_branch_not_required`
+- [x] `trace_sink_parallel_nested_minimal`
+- [x] `runtime_trace_events_metadata_shape`
+- [x] `side_by_side_node_edge_and_terminal_parity`
 
 Rule:
 
@@ -272,16 +275,17 @@ These are strongest current candidates, with source and invariant.
 | `nested_workflow_synthesized_design_is_persisted_and_used` | `tests/runtime/test_workflow_invocation_and_route_next.py::test_nested_workflow_synthesized_design_is_persisted_and_used`, `tests/runtime/test_async_runtime_contract.py::test_async_runtime_nested_workflow_invocation_matches_sync` | synthesized child workflow design persists and child result is reused identically |
 | `nested_workflow_child_failure_fails_parent` | `tests/runtime/test_workflow_invocation_and_route_next.py::test_nested_workflow_failure_short_circuits_parent_routing`, `tests/runtime/test_async_runtime_contract.py::test_async_runtime_nested_workflow_child_failure_fails_parent` | child failure short-circuits parent and normalized final state matches |
 | `workflow_runtime_native_update_schema_applies_known_and_falls_back_unknown` | `tests/workflow/test_workflow_native_update.py::test_workflow_runtime_native_update_schema_applies_known_and_falls_back_unknown`, `tests/runtime/test_async_runtime_contract.py::test_async_runtime_native_scheduler_uses_shared_state_merge_semantics` | known schema merges and unknown keys fall back compatibly |
-| `runtime_checkpoint_load_and_replay` | `tests/workflow/test_save_load_progress.py::test_runtime_checkpoint_load_and_replay` plus async equivalent to add | checkpoint payload and replayed state match after normalization |
-| `runtime_resume_from_checkpoint` | `tests/workflow/test_save_load_progress.py::test_runtime_resume_from_checkpoint` plus async equivalent to add | resumed run skips already-completed work and lands same final state |
-| `runtime_resume_from_checkpoint_frontier` | `tests/workflow/test_save_load_progress.py::test_runtime_resume_from_checkpoint_frontier` plus async equivalent to add | resumed frontier shape and terminal result match |
+| `runtime_checkpoint_load_and_replay` | `tests/workflow/test_save_load_progress.py::test_runtime_checkpoint_load_and_replay`, `tests/runtime/test_runtime_parity_bridge_contract.py::test_runtime_parity_bridge_checkpoint_load_and_replay` | checkpoint payload and replayed state match after normalization |
+| `runtime_resume_from_checkpoint` | `tests/workflow/test_save_load_progress.py::test_runtime_resume_from_checkpoint`, `tests/runtime/test_runtime_parity_bridge_contract.py::test_runtime_parity_bridge_resume_from_checkpoint` | resumed run skips already-completed work and lands same final state |
+| `runtime_resume_from_checkpoint_frontier` | `tests/workflow/test_save_load_progress.py::test_runtime_resume_from_checkpoint_frontier`, `tests/runtime/test_runtime_parity_bridge_contract.py::test_runtime_parity_bridge_resume_from_checkpoint_frontier` | resumed frontier shape and terminal result match |
 | `workflow_suspend_and_resume_roundtrip` | `tests/runtime/test_workflow_suspend_resume.py::test_workflow_suspend_and_resume`, `tests/runtime/test_async_runtime_contract.py::test_async_runtime_suspend_and_resume_roundtrip` | suspend checkpoint then resume yields same normalized status/final_state |
+| `wait_reason_suspend_resume` | `tests/runtime/test_resume_wait_reasons.py::test_wait_reason_can_suspend_and_resume`, `tests/runtime/test_runtime_parity_bridge_contract.py::test_runtime_parity_bridge_wait_reason_suspend_resume` | wait_reason, suspended token shape, and resumed terminal state normalize equal |
 | `workflow_suspend_and_resume_branching_roundtrip` | `tests/runtime/test_workflow_suspend_resume.py::test_workflow_suspend_and_resume_branching`, async equivalent to add or extract | suspended branch/join frontier resumes to same semantic result |
 | `parent_cancellation_propagates_to_child` | `tests/runtime/test_async_runtime_contract.py::test_async_runtime_parent_cancellation_propagates_to_child` plus sync bridge source to extract | parent cancel reaches child and final cancelled state normalizes equal |
 | `route_next_shared_semantics` | `tests/runtime/test_runtime_parity_bridge_contract.py::test_runtime_parity_bridge_route_next_shared_semantics` | sync rich `_route_next` and async native scheduler choose same routes for explicit alias, fanout, and default fallback |
-| `join_barrier_waits_for_all_arrivals` | `tests/workflow/test_workflow_join.py::test_join_barrier_waits_for_all_arrivals`, `tests/runtime/test_async_runtime_contract.py::test_async_runtime_native_scheduler_join_merge_runs_once` | join releases once after all required arrivals |
+| `join_barrier_waits_for_all_arrivals` | `tests/workflow/test_workflow_join.py::test_join_barrier_waits_for_all_arrivals`, `tests/runtime/test_async_runtime_contract.py::test_async_runtime_native_scheduler_join_merge_runs_once`, `tests/runtime/test_runtime_parity_bridge_contract.py::test_runtime_parity_bridge_join_barrier_waits_for_all_arrivals` | join releases once after all required arrivals |
 | `join_unreachable_branch_not_required` | `tests/workflow/test_workflow_join.py::test_join_does_not_wait_for_branch_that_can_no_longer_reach_it`, `tests/runtime/test_async_runtime_contract.py::test_async_runtime_native_scheduler_without_join_executes_once_per_token` | join does not wait on branch outside reachable join region |
-| `trace_sink_parallel_nested_minimal` | `tests/runtime/test_trace_sink_parallel_nested_minimal.py::test_trace_sink_parallel_and_nested_minimal_sync`, `tests/runtime/test_async_runtime_contract.py::test_async_runtime_native_scheduler_emits_trace_events_with_expected_metadata` | normalized trace event shape and nested metadata remain compatible |
+| `trace_sink_parallel_nested_minimal` | `tests/runtime/test_trace_sink_parallel_nested_minimal.py::test_trace_sink_parallel_and_nested_minimal_sync`, `tests/runtime/test_async_runtime_contract.py::test_async_runtime_native_scheduler_emits_trace_events_with_expected_metadata`, `tests/runtime/test_runtime_parity_bridge_contract.py::test_runtime_parity_bridge_trace_sink_parallel_nested_minimal` | normalized trace event shape and nested metadata remain compatible |
 | `runtime_trace_events_metadata_shape` | `tests/workflow/test_tracing_e2e.py::*`, `tests/runtime/test_async_runtime_contract.py::test_async_runtime_native_scheduler_emits_trace_events_with_expected_metadata` | trace event metadata contract stays compatible across runtimes |
 | `side_by_side_node_edge_and_terminal_parity` | `tests/runtime/test_async_runtime_contract.py::test_async_runtime_side_by_side_node_edge_and_terminal_parity` with sync source extraction | normalized conversation node/edge side effects and terminal nodes match |
 
@@ -289,26 +293,29 @@ These are strongest current candidates, with source and invariant.
 
 Start here. Highest signal, lowest ambiguity.
 
-- [ ] `nested_workflow_synthesized_design_is_persisted_and_used`
-- [ ] `workflow_suspend_and_resume_roundtrip`
-- [ ] `join_barrier_waits_for_all_arrivals`
-- [ ] `workflow_runtime_native_update_schema_applies_known_and_falls_back_unknown`
-- [ ] `trace_sink_parallel_nested_minimal`
+- [x] `nested_workflow_synthesized_design_is_persisted_and_used`
+- [x] `workflow_suspend_and_resume_roundtrip`
+- [x] `wait_reason_suspend_resume`
+- [x] `join_barrier_waits_for_all_arrivals`
+- [x] `workflow_runtime_native_update_schema_applies_known_and_falls_back_unknown`
+- [x] `trace_sink_parallel_nested_minimal`
 
 ### Bridgeable But Keep Existing Acceptance Too
 
 Do not delete source acceptance when first bridging these.
+All items in this section are now checked. Next bridge targets live in parity backlog, mainly checkpoint/resume and frontier/cancellation gaps.
 
-- [ ] `runtime_checkpoint_load_and_replay`
-- [ ] `runtime_resume_from_checkpoint`
-- [ ] `runtime_resume_from_checkpoint_frontier`
-- [ ] `workflow_suspend_and_resume_branching_roundtrip`
-- [ ] `side_by_side_node_edge_and_terminal_parity`
-- [ ] `parent_cancellation_propagates_to_child`
+- [x] `runtime_checkpoint_load_and_replay`
+- [x] `runtime_resume_from_checkpoint`
+- [x] `runtime_resume_from_checkpoint_frontier`
+- [x] `workflow_suspend_and_resume_branching_roundtrip`
+- [x] `side_by_side_node_edge_and_terminal_parity`
+- [x] `parent_cancellation_propagates_to_child`
 
 ### Not Bridge First
 
 These are related, but first bridge would be too distorted or too async-specific.
+They are bridgeable only after extracting shared scheduler hooks or timing normalizers. Until then, keep them as async-focused acceptance guards.
 
 - `test_async_runtime_native_scheduler_enforces_max_concurrent_tasks`
 - `test_async_runtime_native_scheduler_applies_completed_tasks_in_step_order`
@@ -334,10 +341,19 @@ These appeared in runtime/workflow scans but are not first candidates for sync/a
 ## Waiver Ledger
 
 Use this table when a runtime semantic case cannot be bijected 1:1.
+Each waiver entry must answer three things:
+
+- why exact bijection is wrong or premature
+- which existing test remains replacement guard
+- what regression risk stays if that guard is weakened
 
 | Source case | Waiver reason | Replacement guard | Risk |
 | --- | --- | --- | --- |
 | `tests/runtime/test_async_runtime_contract.py::test_async_resolver_runs_two_awaited_handlers_concurrently` | Async-only concurrency; sync runtime cannot mirror awaited-task concurrency. | `test_async_resolver_runs_two_awaited_handlers_concurrently` | Async scheduler may regress without async-specific guard. |
+| `tests/runtime/test_async_runtime_contract.py::test_async_resolver_runs_sync_handlers_inline_without_to_thread` | Async-only thread-free scheduler contract; sync runtime has no awaited handler lane to mirror. | `test_async_runtime_native_scheduler_sync_handlers_run_inline_without_to_thread` | Hidden thread offload may regress if async-only guard is removed. |
+| `tests/runtime/test_checkpoint_resume_contract.py::test_load_checkpoint_accepts_current_schema` | Schema compatibility guard, not runtime-kind semantic split. | `test_load_checkpoint_accepts_current_schema` | Future schema acceptance could regress silently. |
+| `tests/runtime/test_checkpoint_resume_contract.py::test_load_checkpoint_rejects_future_schema` | Schema compatibility guard, not runtime-kind semantic split. | `test_load_checkpoint_rejects_future_schema` | Future schema rejection could regress silently. |
+| `tests/runtime/test_checkpoint_resume_contract.py::test_replay_rejects_future_schema` | Schema compatibility guard, not runtime-kind semantic split. | `test_replay_rejects_future_schema` | Replay may accept unsupported schema and corrupt behavior. |
 | `tests/runtime/test_async_runtime_contract.py::test_async_runtime_native_scheduler_enforces_max_concurrent_tasks` | Async-only semaphore policy. | Same test. | Async overload behavior may regress. |
 | `tests/runtime/test_async_runtime_contract.py::test_async_runtime_native_scheduler_applies_completed_tasks_in_step_order` | Async-only race acceptance-order policy. | Same test. | Nondeterministic state merge if removed. |
 
@@ -345,8 +361,10 @@ Use this table when a runtime semantic case cannot be bijected 1:1.
 
 Refresh candidate inventory before each refactor batch:
 
-```powershell
+```bash
 rg -n "^def test_" tests/runtime tests/workflow tests/server | rg "runtime|workflow|resume|cancel|trace|checkpoint|replay|resolver|sandbox|join|fanout|route|transaction|uow|async"
 ```
+
+It scans test defs, then filters names by runtime/workflow semantic keywords, so each refactor batch starts from fresh candidate list.
 
 Then update this file case-by-case before moving tests.

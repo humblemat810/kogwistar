@@ -5,6 +5,7 @@ import json
 from typing import Any, Sequence, cast
 
 from ...cdc.change_event import EntityRefModel
+from ..async_compat import run_awaitable_blocking
 from ..models import Document, Domain, Edge, Node, PureChromaEdge, PureChromaNode
 from ..utils.metadata import json_or_none, strip_none
 from ...utils.embedding_vectors import normalize_embedding_vector
@@ -158,14 +159,14 @@ class WriteSubsystem(NamespaceProxy, WriteLike):
         node.embedding = normalize_embedding_vector(node.embedding, allow_none=False)
         meta["_class_name"] = type(node).__name__
 
-        self._e.backend.node_add(
+        run_awaitable_blocking(self._e.backend.node_add(
             ids=[node.safe_get_id()],
             documents=[doc],
             embeddings=[node.embedding]
             if node.embedding is not None
             else [self._e.embed.iterative_defensive_emb(str(doc))],
             metadatas=[meta],
-        )
+        ))
 
         try:
             payload = node.model_dump(field_mode="backend", exclude=["embedding"])
@@ -227,14 +228,14 @@ class WriteSubsystem(NamespaceProxy, WriteLike):
 
         doc = edge.model_dump_json(field_mode="backend", exclude=["embedding"])
         base_metadata = [self.enrich_edge_meta(edge)]
-        self._e.backend.edge_add(
+        run_awaitable_blocking(self._e.backend.edge_add(
             ids=[edge.safe_get_id()],
             documents=[str(doc)],
             embeddings=[edge.embedding]
             if edge.embedding is not None
             else [self._e.embed.iterative_defensive_emb(str(doc))],
             metadatas=base_metadata,
-        )
+        ))
 
         try:
             payload = edge.model_dump(field_mode="backend", exclude=["embedding"])
@@ -258,14 +259,14 @@ class WriteSubsystem(NamespaceProxy, WriteLike):
                 ep_ids = [r["id"] for r in rows]
                 ep_docs = [json.dumps(r) for r in rows]
                 ep_metas: list[dict] = rows
-                self._e.backend.edge_endpoints_add(
+                run_awaitable_blocking(self._e.backend.edge_endpoints_add(
                     ids=ep_ids,
                     documents=ep_docs,
                     metadatas=ep_metas,
                     embeddings=[
                         self._e.embed.iterative_defensive_emb(str(d)) for d in ep_docs
                     ],
-                )
+                ))
 
         self._e._emit_change(
             op="edge.upsert",
@@ -284,7 +285,7 @@ class WriteSubsystem(NamespaceProxy, WriteLike):
         doc, meta = node_doc_and_meta_util(node)
         if meta.get("doc_id"):
             meta.pop("doc_id")
-        self._e.backend.node_add(
+        run_awaitable_blocking(self._e.backend.node_add(
             ids=[node.id],
             documents=[doc],
             embeddings=[
@@ -295,7 +296,7 @@ class WriteSubsystem(NamespaceProxy, WriteLike):
                 )
             ],
             metadatas=[meta],
-        )
+        ))
 
     def add_pure_edge(self, edge: PureChromaEdge):
         """Low-level edge add without endpoint fanout or duplicate checks."""
@@ -313,7 +314,7 @@ class WriteSubsystem(NamespaceProxy, WriteLike):
 
         doc = edge.model_dump_json(field_mode="backend", exclude=["embedding"])
         base_metadata = [self.enrich_edge_meta(edge)]
-        self._e.backend.edge_add(
+        run_awaitable_blocking(self._e.backend.edge_add(
             ids=[edge.id],
             documents=[str(doc)],
             embeddings=[
@@ -324,7 +325,7 @@ class WriteSubsystem(NamespaceProxy, WriteLike):
                 )
             ],
             metadatas=base_metadata,
-        )
+        ))
 
     def add_document(self, document: Document):
         if document.embeddings is None:
@@ -334,7 +335,7 @@ class WriteSubsystem(NamespaceProxy, WriteLike):
         document.embeddings = normalize_embedding_vector(
             document.embeddings, allow_none=False
         )
-        self._e.backend.document_add(
+        run_awaitable_blocking(self._e.backend.document_add(
             ids=[document.id],
             documents=[str(document.content)],
             embeddings=[cast(Sequence[float], document.embeddings)]
@@ -356,7 +357,7 @@ class WriteSubsystem(NamespaceProxy, WriteLike):
                     }
                 )
             ],
-        )
+        ))
         self._e._emit_change(
             op="doc.upsert",
             entity=EntityRefModel(

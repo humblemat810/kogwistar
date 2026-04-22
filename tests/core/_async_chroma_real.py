@@ -14,7 +14,7 @@ from typing import Any
 import httpx
 import pytest
 
-from kogwistar.engine_core.chroma_backend import ChromaBackend
+from kogwistar.engine_core.chroma_backend import AsyncChromaBackend
 from kogwistar.engine_core.storage_backend import AsyncNoopUnitOfWork
 
 
@@ -125,7 +125,7 @@ def real_chroma_server(tmp_path: Path):
 
 async def make_real_async_chroma_backend(
     server: RealChromaServer, *, collection_prefix: str
-) -> tuple[Any, ChromaBackend, dict[str, Any]]:
+) -> tuple[Any, AsyncChromaBackend, dict[str, Any]]:
     import chromadb
 
     client = await chromadb.AsyncHttpClient(host=server.host, port=server.port)
@@ -146,7 +146,7 @@ async def make_real_async_chroma_backend(
             name=collection_name
         )
 
-    backend = ChromaBackend(
+    backend = AsyncChromaBackend(
         node_index_collection=collections["node_index"],
         node_collection=collections["node"],
         edge_collection=collections["edge"],

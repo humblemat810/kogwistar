@@ -38,7 +38,7 @@ from kogwistar.runtime.budget_adapters import adapt_budget_events
 
 from .design import validate_workflow_design, Predicate
 from .serialize import try_serialize_with_ref
-from .routing import compute_route_next
+from .base_runtime import BaseRuntime
 
 RESERVED_ROOT_KEYS = {
     "_deps",
@@ -496,7 +496,7 @@ def _make_runtime_edge(
 from threading import Lock
 
 
-class WorkflowRuntime:
+class WorkflowRuntime(BaseRuntime):
     CHECKPOINT_SCHEMA_VERSION = 1
     """
     Core engine for executing graph-based **workflow designs**.
@@ -615,15 +615,7 @@ class WorkflowRuntime:
         return nullcontext()
 
     def _close_sandbox_run(self, run_id: str) -> None:
-        close_run = getattr(self.step_resolver, "close_sandbox_run", None)
-        if callable(close_run):
-            try:
-                close_run(str(run_id))
-            except Exception:
-                logging.getLogger("workflow.runtime").exception(
-                    "Failed to clean up sandbox resources for run %s",
-                    run_id,
-                )
+        super()._close_sandbox_run(run_id)
 
     def _should_step_uow(self, op: str, state: WorkflowState) -> bool:
         """Best-effort guard to avoid holding a step UoW across nested workflow execution.
@@ -655,16 +647,8 @@ class WorkflowRuntime:
     def _persist_workflow_design_artifact(
         self, design: WorkflowDesignArtifact
     ) -> None:
-        """Persist a workflow design artifact into the workflow engine.
-
-        The engine's write path is intentionally idempotent-friendly, so we rely on
-        stable node/edge identifiers instead of introducing a separate design store.
-        """
-
-        for node in design.nodes:
-            self.workflow_engine.write.add_node(node)
-        for edge in design.edges:
-            self.workflow_engine.write.add_edge(edge)
+        """Persist a workflow design artifact into the workflow engine."""
+        super()._persist_workflow_design_artifact(design)
 
     def _child_workflow_initial_state(
         self,
@@ -672,15 +656,10 @@ class WorkflowRuntime:
         parent_state: WorkflowState,
         invocation: WorkflowInvocationRequest,
     ) -> WorkflowState:
-        child_state: WorkflowState = dict(parent_state) # type: ignore
-        child_state.pop("_rt_join", None)
-        if invocation.initial_state:
-            child_state.update(copy.deepcopy(invocation.initial_state)) # type: ignore
-
-        deps = dict(child_state.get("_deps") or parent_state.get("_deps") or {}) # type: ignore
-        deps["workflow_runtime"] = self # type: ignore
-        child_state["_deps"] = deps # type: ignore
-        return child_state
+        return super()._child_workflow_initial_state(
+            parent_state=parent_state,
+            invocation=invocation,
+        )
 
     def _run_workflow_invocation(
         self,
@@ -729,14 +708,11 @@ class WorkflowRuntime:
         invocation: WorkflowInvocationRequest,
         child_result: RunResult,
     ) -> None:
-        result_key = invocation.result_state_key or f"workflow_result::{invocation.workflow_id}"
-        child_state = dict(child_result.final_state)
-        child_state.pop("_deps", None)
-        child_state.pop("_rt_join", None)
-        state[result_key] = copy.deepcopy(child_state)
-        state[f"{result_key}__run_id"] = str(child_result.run_id)
-        state[f"{result_key}__status"] = str(child_result.status)
-        state[f"{result_key}__workflow_id"] = str(invocation.workflow_id)
+        super()._apply_workflow_invocation_result(
+            state=state,
+            invocation=invocation,
+            child_result=child_result,
+        )
 
     def run_subworkflow(
         self,
@@ -2542,9 +2518,9 @@ class WorkflowRuntime:
         NOTE: This function is pure with respect to tracing; the caller is responsible
         for emitting RouteDecision into the trace sink.
         """
-        computed = compute_route_next(
+        computed = self._compute_route_next_shared(
             edges=list(edges),
-            state=dict(state),
+            state=state,
             last_result=last_result,
             fanout=fanout,
             predicate_registry=self.predicate_registry,

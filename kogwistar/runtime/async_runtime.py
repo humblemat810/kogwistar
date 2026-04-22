@@ -12,16 +12,17 @@ from typing import Any, Awaitable, Callable, TypeAlias
 from ..id_provider import stable_id
 from .models import RunFailure, StepRunResult, WorkflowState
 from .executor import TerminalStatus, WorkflowExecutor
+from .base_runtime import BaseRuntime
 from .runtime import (
     apply_state_update_inplace,
     RunResult,
     StepContext,
     WorkflowRuntime,
     _compute_may_reach_join_bitsets,
+    _iter_bits,
     validate_initial_state,
 )
 from .design import validate_workflow_design
-from .routing import compute_route_next
 
 SyncStepFn: TypeAlias = Callable[[StepContext], StepRunResult]
 AsyncStepFn: TypeAlias = Callable[[StepContext], Awaitable[StepRunResult]]
@@ -70,7 +71,7 @@ class _SyncResolverAdapter:
         return _as_sync_step_fn(self._resolver(op))
 
 
-class AsyncWorkflowRuntime(WorkflowExecutor):
+class AsyncWorkflowRuntime(BaseRuntime, WorkflowExecutor):
     """Async facade preserving WorkflowRuntime semantics for first async slice.
 
     Current implementation delegates scheduling/state semantics to the existing
@@ -96,9 +97,13 @@ class AsyncWorkflowRuntime(WorkflowExecutor):
         experimental_native_scheduler: bool = False,
     ) -> None:
         self._raw_step_resolver = step_resolver
+        self.step_resolver = step_resolver
         self._predicate_registry = predicate_registry
+        self.predicate_registry = predicate_registry
         self._workflow_engine = workflow_engine
         self._conversation_engine = conversation_engine
+        self.workflow_engine = workflow_engine
+        self.conversation_engine = conversation_engine
         self.max_workers = max_workers
         self.cancel_requested = cancel_requested
         self.experimental_native_scheduler = bool(experimental_native_scheduler)
@@ -198,7 +203,7 @@ class AsyncWorkflowRuntime(WorkflowExecutor):
         parent_state: WorkflowState,
         invocation: Any,
     ) -> WorkflowState:
-        return self._sync_runtime._child_workflow_initial_state(  # type: ignore[attr-defined]
+        return super()._child_workflow_initial_state(
             parent_state=parent_state,
             invocation=invocation,
         )
@@ -210,7 +215,7 @@ class AsyncWorkflowRuntime(WorkflowExecutor):
         invocation: Any,
         child_result: RunResult,
     ) -> None:
-        self._sync_runtime._apply_workflow_invocation_result(  # type: ignore[attr-defined]
+        super()._apply_workflow_invocation_result(
             state=state,
             invocation=invocation,
             child_result=child_result,
@@ -234,7 +239,7 @@ class AsyncWorkflowRuntime(WorkflowExecutor):
                 raise ValueError(
                     "workflow_design.workflow_id must match workflow_id on the invocation"
                 )
-            self._sync_runtime._persist_workflow_design_artifact(wf_design)  # type: ignore[attr-defined]
+            self._persist_workflow_design_artifact(wf_design)
 
         child_state = self._child_workflow_initial_state(
             parent_state=parent_state,
@@ -272,14 +277,6 @@ class AsyncWorkflowRuntime(WorkflowExecutor):
             _CANCEL_REQUESTED_CTX.reset(token)
 
     @staticmethod
-    def _edge_priority(edge: Any) -> int:
-        md = getattr(edge, "metadata", {}) or {}
-        try:
-            return int(md.get("wf_priority", 100))
-        except Exception:
-            return 100
-
-    @staticmethod
     def _select_next_edges(
         node: Any,
         edges: list[Any],
@@ -292,13 +289,14 @@ class AsyncWorkflowRuntime(WorkflowExecutor):
         if not edges:
             return []
         fanout = bool((getattr(node, "metadata", {}) or {}).get("wf_fanout", False))
-        computed = compute_route_next(
-            edges=sorted(list(edges), key=AsyncWorkflowRuntime._edge_priority),
-            state=dict(state),
+        computed = BaseRuntime._compute_route_next_shared(
+            edges=list(edges),
+            state=state,
             last_result=result,
             fanout=fanout,
             predicate_registry=predicate_registry,
             nodes=nodes,
+            sort_edges=True,
         )
         return list(computed.selected_edges)
 
@@ -324,24 +322,23 @@ class AsyncWorkflowRuntime(WorkflowExecutor):
             resolver=self._raw_step_resolver,
         )
 
-        incoming: dict[str, int] = {str(nid): 0 for nid in nodes.keys()}
-        for _src, edges in adj.items():
-            for e in list(edges or []):
-                dst = str((getattr(e, "target_ids", None) or [None])[0] or "")
-                if dst:
-                    incoming[dst] = int(incoming.get(dst, 0)) + 1
-
         join_merge_nodes: set[str] = set()
-        join_expected: dict[str, int] = {}
         join_waiters: dict[str, list[tuple[int, str, str | None]]] = {}
+        join_is_merge: dict[str, bool] = {}
         for nid, node in nodes.items():
             md = getattr(node, "metadata", {}) or {}
             is_join = bool(md.get("wf_join", False)) or str(getattr(node, "op", "")) == "join"
-            if not is_join or not bool(md.get("wf_join_is_merge", True)):
+            if not is_join:
                 continue
             sid = str(nid)
+            join_is_merge[sid] = bool(
+                md.get("wf_join_is_merge")
+                if md.get("wf_join_is_merge") is not None
+                else True
+            )
+            if not join_is_merge[sid]:
+                continue
             join_merge_nodes.add(sid)
-            join_expected[sid] = max(1, int(incoming.get(sid, 0)))
             join_waiters[sid] = []
 
         join_node_ids = sorted(join_merge_nodes)
@@ -354,21 +351,124 @@ class AsyncWorkflowRuntime(WorkflowExecutor):
             if join_node_ids
             else {str(nid): 0 for nid in nodes.keys()}
         )
+        join_pos = {jid: idx for idx, jid in enumerate(join_node_ids)}
+        join_outstanding: list[int] = [0 for _ in join_node_ids]
+
+        def _inc(mask: int) -> None:
+            for bi in _iter_bits(int(mask)):
+                join_outstanding[bi] += 1
+
+        def _dec(mask: int) -> None:
+            for bi in _iter_bits(int(mask)):
+                join_outstanding[bi] -= 1
+                if join_outstanding[bi] < 0:
+                    join_outstanding[bi] = 0
+
+        def _mask_without_join(mask: int, join_id: str) -> int:
+            bi = join_pos.get(str(join_id))
+            if bi is None:
+                return int(mask)
+            return int(mask) & ~(1 << bi)
+
+        def _bit_for_join(join_id: str) -> int:
+            bi = join_pos.get(str(join_id))
+            return (1 << bi) if bi is not None else 0
+
+        def _normalize_join_waiter(
+            item: Any,
+        ) -> tuple[int, str, str | None] | None:
+            if not isinstance(item, (list, tuple)) or len(item) < 3:
+                return None
+            try:
+                mask = int(item[0])
+                token_id = str(item[1])
+                parent = None if item[2] is None else str(item[2])
+                return mask, token_id, parent
+            except Exception:
+                return None
+
+        def _normalize_rt_token(
+            item: Any,
+        ) -> tuple[str, int, str, str | None] | None:
+            if not isinstance(item, (list, tuple)) or len(item) < 4:
+                return None
+            try:
+                node_id = str(item[0])
+                mask = int(item[1])
+                token_id = str(item[2])
+                parent = None if item[3] is None else str(item[3])
+                return node_id, mask, token_id, parent
+            except Exception:
+                return None
+
+        def _rt_join_restore() -> list[tuple[str, int, str, str | None]] | None:
+            payload = state.get("_rt_join", {})
+            if not isinstance(payload, dict) or not payload:
+                return None
+            if payload.get("join_node_ids") != join_node_ids:
+                return None
+            join_outstanding_payload = payload.get("join_outstanding")
+            join_waiters_payload = payload.get("join_waiters")
+            pending_payload = payload.get("pending")
+            if (
+                not isinstance(join_outstanding_payload, list)
+                or not isinstance(join_waiters_payload, dict)
+                or not isinstance(pending_payload, list)
+            ):
+                return None
+            for i in range(min(len(join_outstanding), len(join_outstanding_payload))):
+                try:
+                    join_outstanding[i] = int(join_outstanding_payload[i])
+                except Exception:
+                    join_outstanding[i] = 0
+            for join_id in join_node_ids:
+                items = join_waiters_payload.get(join_id, [])
+                if not isinstance(items, list):
+                    continue
+                normalized: list[tuple[int, str, str | None]] = []
+                for item in items:
+                    norm = _normalize_join_waiter(item)
+                    if norm is not None:
+                        normalized.append(norm)
+                join_waiters[join_id] = normalized
+            restored: list[tuple[str, int, str, str | None]] = []
+            for item in pending_payload:
+                norm = _normalize_rt_token(item)
+                if norm is not None:
+                    restored.append(norm)
+            return restored
 
         sem = asyncio.Semaphore(max(1, int(self.max_workers)))
-        pending: list[tuple[int, int, str, str, str | None]] = [
-            (0, int(may_reach_join.get(str(start.id), 0)), str(start.id), str(uuid.uuid4()), None)
-        ]
+        restored_pending = _rt_join_restore()
+        if restored_pending:
+            pending: list[tuple[int, int, str, str, str | None]] = [
+                (index, int(mask), str(node_id), str(token_id), parent_token_id)
+                for index, (node_id, mask, token_id, parent_token_id) in enumerate(
+                    restored_pending
+                )
+            ]
+        else:
+            start_mask = int(may_reach_join.get(str(start.id), 0))
+            _inc(start_mask)
+            pending = [
+                (
+                    0,
+                    start_mask,
+                    str(start.id),
+                    str(uuid.uuid4()),
+                    None,
+                )
+            ]
         inflight: set[asyncio.Task] = set()
         inflight_records: dict[asyncio.Task, tuple[int, int, str, str, str | None]] = {}
         suspended_tokens: dict[str, tuple[str, int, str, str | None]] = {}
         seq = 0
         dispatch_seq = 0
         status: TerminalStatus = "succeeded"
+        run_suspended = False
+        failure_errors: list[str] = []
         last_processed_node_id: str | None = None
         accepted_step_seq = -1
-        next_accept_seq = 0
-        ready_by_launch_seq: dict[int, tuple[int, int, str, str, str | None, StepRunResult]] = {}
         last_exec_node: Any | None = None
         cancel_requested = _CANCEL_REQUESTED_CTX.get() or self.cancel_requested
 
@@ -451,7 +551,16 @@ class AsyncWorkflowRuntime(WorkflowExecutor):
                                 )
                             except Exception:
                                 pass
-            return launch_seq, step_seq, mask, node_id, token_id, parent_token_id, out
+            return (
+                launch_seq,
+                step_seq,
+                mask,
+                node_id,
+                token_id,
+                parent_token_id,
+                out,
+                float(time.perf_counter()),
+            )
 
         def _apply_run_result(target_state: WorkflowState, result: StepRunResult) -> None:
             apply_state_update_inplace(
@@ -464,7 +573,7 @@ class AsyncWorkflowRuntime(WorkflowExecutor):
         def _persist_rt_join_snapshot() -> None:
             state["_rt_join"] = {
                 "join_node_ids": list(join_node_ids),
-                "join_outstanding": [len(join_waiters.get(jid, [])) for jid in join_node_ids],
+                "join_outstanding": list(join_outstanding),
                 "join_waiters": {
                     jid: [
                         (
@@ -508,6 +617,21 @@ class AsyncWorkflowRuntime(WorkflowExecutor):
                 return persist(**kwargs)
             return None
 
+        def _maybe_persist_checkpoint(
+            *, step_seq: int, state: WorkflowState, last_exec_node: Any | None
+        ) -> None:
+            interval = max(1, int(getattr(self._sync_runtime, "checkpoint_every_n_steps", 1)))
+            if (int(step_seq) % interval) != 0:
+                return
+            _persist_checkpoint_compat(
+                conversation_id=str(conversation_id),
+                workflow_id=str(workflow_id),
+                run_id=str(run_id),
+                step_seq=int(step_seq),
+                state=state,
+                last_exec_node=last_exec_node,
+            )
+
         async def _cancel_and_drain_inflight(tasks: set[asyncio.Task]) -> None:
             if not tasks:
                 return
@@ -543,7 +667,9 @@ class AsyncWorkflowRuntime(WorkflowExecutor):
                 await _cancel_and_drain_inflight(inflight)
                 break
 
-            completed: list[tuple[int, int, int, str, str, str | None, StepRunResult]] = []
+            completed: list[
+                tuple[int, int, int, str, str, str | None, StepRunResult, float]
+            ] = []
             for task in done:
                 item = inflight_records.pop(task, None)
                 if task.cancelled() or item is None:
@@ -554,6 +680,7 @@ class AsyncWorkflowRuntime(WorkflowExecutor):
                     continue
                 except Exception as exc:
                     status = "failure"
+                    failure_errors = [str(exc)]
                     pending.clear()
                     await _cancel_and_drain_inflight(inflight)
                     completed.append(
@@ -569,17 +696,15 @@ class AsyncWorkflowRuntime(WorkflowExecutor):
                                 state_update=[],
                                 errors=[str(exc)],
                             ),
+                            float(time.perf_counter()),
                         )
                     )
                     break
 
-            for item in completed:
-                launch_seq = int(item[0])
-                ready_by_launch_seq[launch_seq] = item
+            completed.sort(key=lambda item: float(item[7]))
 
-            while next_accept_seq in ready_by_launch_seq:
-                _launch_seq, _step_seq, mask, node_id, token_id, parent_token_id, out = ready_by_launch_seq.pop(next_accept_seq)
-                next_accept_seq += 1
+            for item in completed:
+                _launch_seq, _step_seq, mask, node_id, token_id, parent_token_id, out, _completed_at = item
                 if not node_id:
                     continue
                 accepted_step_seq = max(accepted_step_seq, int(_step_seq))
@@ -601,6 +726,7 @@ class AsyncWorkflowRuntime(WorkflowExecutor):
                     if child_status != "succeeded":
                         if child_status == "cancelled" and _cancel_requested():
                             status = "cancelled"
+                            failure_errors = ["Run cancelled"]
                             out = RunFailure(
                                 conversation_node_id=None,
                                 status="failure",
@@ -609,14 +735,15 @@ class AsyncWorkflowRuntime(WorkflowExecutor):
                             )
                         else:
                             status = "failure"
+                            failure_errors = [
+                                "Nested workflow "
+                                f"{getattr(invocation, 'workflow_id', '')!r} "
+                                f"returned status {child_status!r}"
+                            ]
                             out = RunFailure(
                                 conversation_node_id=None,
                                 status="failure",
-                                errors=[
-                                    "Nested workflow "
-                                    f"{getattr(invocation, 'workflow_id', '')!r} "
-                                    f"returned status {child_status!r}"
-                                ],
+                                errors=list(failure_errors),
                                 state_update=[],
                             )
                         pending.clear()
@@ -653,10 +780,7 @@ class AsyncWorkflowRuntime(WorkflowExecutor):
                         last_exec_node=last_exec_node,
                     )
                     if child_failed:
-                        _persist_checkpoint_compat(
-                            conversation_id=str(conversation_id),
-                            workflow_id=str(workflow_id),
-                            run_id=str(run_id),
+                        _maybe_persist_checkpoint(
                             step_seq=int(_step_seq),
                             state=state,
                             last_exec_node=step_exec_node,
@@ -691,13 +815,12 @@ class AsyncWorkflowRuntime(WorkflowExecutor):
 
                 if getattr(out, "status", None) == "failure":
                     status = "failure"
+                    failure_errors = [str(err) for err in (getattr(out, "errors", []) or [])]
                     pending.clear()
                     await _cancel_and_drain_inflight(inflight)
+                    _dec(int(mask))
                     _persist_rt_join_snapshot()
-                    _persist_checkpoint_compat(
-                        conversation_id=str(conversation_id),
-                        workflow_id=str(workflow_id),
-                        run_id=str(run_id),
+                    _maybe_persist_checkpoint(
                         step_seq=int(_step_seq),
                         state=state,
                         last_exec_node=step_exec_node,
@@ -705,28 +828,24 @@ class AsyncWorkflowRuntime(WorkflowExecutor):
                     break
 
                 if getattr(out, "status", None) == "suspended":
-                    status = "suspended"
+                    run_suspended = True
+                    wait_reason = getattr(out, "wait_reason", None)
+                    if wait_reason:
+                        state["wait_reason"] = str(wait_reason)
                     suspended_tokens[str(token_id)] = (str(node_id), int(mask), str(token_id), parent_token_id)
-                    pending.clear()
-                    await _cancel_and_drain_inflight(inflight)
                     _persist_rt_join_snapshot()
-                    _persist_checkpoint_compat(
-                        conversation_id=str(conversation_id),
-                        workflow_id=str(workflow_id),
-                        run_id=str(run_id),
+                    _maybe_persist_checkpoint(
                         step_seq=int(_step_seq),
                         state=state,
                         last_exec_node=step_exec_node,
                     )
-                    break
+                    continue
 
                 md = getattr(nodes[node_id], "metadata", {}) or {}
                 if bool(md.get("wf_terminal", False)):
+                    _dec(int(mask))
                     _persist_rt_join_snapshot()
-                    _persist_checkpoint_compat(
-                        conversation_id=str(conversation_id),
-                        workflow_id=str(workflow_id),
-                        run_id=str(run_id),
+                    _maybe_persist_checkpoint(
                         step_seq=int(_step_seq),
                         state=state,
                         last_exec_node=step_exec_node,
@@ -741,6 +860,17 @@ class AsyncWorkflowRuntime(WorkflowExecutor):
                     self._predicate_registry,
                     nodes=nodes,
                 )
+                if not next_edges:
+                    _dec(int(mask))
+                    _persist_rt_join_snapshot()
+                    _maybe_persist_checkpoint(
+                        step_seq=int(_step_seq),
+                        state=state,
+                        last_exec_node=step_exec_node,
+                    )
+                    continue
+
+                prioritize_next = str(node_id) in join_merge_nodes
                 for idx, e in enumerate(next_edges):
                     dst = str((getattr(e, "target_ids", None) or [None])[0])
                     if not dst:
@@ -749,6 +879,7 @@ class AsyncWorkflowRuntime(WorkflowExecutor):
                     next_token = token_id if idx == 0 else str(uuid.uuid4())
                     next_parent = None if idx == 0 else token_id
                     next_mask = int(may_reach_join.get(dst, 0))
+                    prioritize_dispatch = bool(prioritize_next)
 
                     if idx > 0:
                         try:
@@ -764,28 +895,54 @@ class AsyncWorkflowRuntime(WorkflowExecutor):
                         except queue.Full:
                             pass
 
+                    if idx == 0:
+                        leaving = int(mask) & ~int(next_mask)
+                        if leaving:
+                            _dec(leaving)
+                        gained = int(next_mask) & ~int(mask)
+                        if gained:
+                            _inc(gained)
+                    else:
+                        _inc(int(next_mask))
+
                     if dst in join_merge_nodes:
+                        join_bit = _bit_for_join(dst)
+                        if int(next_mask) & join_bit:
+                            _dec(join_bit)
+                            next_mask = _mask_without_join(int(next_mask), dst)
                         waiters = join_waiters.setdefault(dst, [])
                         waiters.append((int(next_mask), str(next_token), next_parent))
                         _persist_rt_join_snapshot()
-                        if len(waiters) < int(join_expected.get(dst, 1)):
+                        join_idx = join_pos.get(dst)
+                        if join_idx is None or join_outstanding[join_idx] != 0:
                             continue
                         merged_mask = int(waiters[0][0])
                         next_token, next_parent = waiters[0][1], waiters[0][2]
+                        for wm, _tok, _parent in waiters:
+                            _dec(int(wm))
                         for wm, _tok, _parent in waiters[1:]:
                             merged_mask &= int(wm)
+                        _inc(int(merged_mask))
                         waiters.clear()
-                        next_mask = merged_mask
+                        next_mask = int(merged_mask)
+                        prioritize_dispatch = True
                         _persist_rt_join_snapshot()
 
                     dispatch_seq += 1
-                    pending.append((dispatch_seq, int(next_mask), str(dst), str(next_token), next_parent))
+                    pending_item = (
+                        dispatch_seq,
+                        int(next_mask),
+                        str(dst),
+                        str(next_token),
+                        next_parent,
+                    )
+                    if prioritize_dispatch:
+                        pending.insert(0, pending_item)
+                    else:
+                        pending.append(pending_item)
 
                 _persist_rt_join_snapshot()
-            _persist_checkpoint_compat(
-                conversation_id=str(conversation_id),
-                workflow_id=str(workflow_id),
-                run_id=str(run_id),
+            _maybe_persist_checkpoint(
                 step_seq=int(accepted_step_seq if accepted_step_seq >= 0 else 0),
                 state=state,
                 last_exec_node=last_exec_node,
@@ -793,6 +950,15 @@ class AsyncWorkflowRuntime(WorkflowExecutor):
 
             if status != "succeeded":
                 break
+
+        if status == "succeeded" and run_suspended and suspended_tokens:
+            status = "suspended"
+
+        last_exec_node_id = (
+            str(last_exec_node.safe_get_id())
+            if last_exec_node is not None and hasattr(last_exec_node, "safe_get_id")
+            else last_processed_node_id
+        )
 
         if status != "succeeded":
             await _cancel_and_drain_inflight(inflight)
@@ -807,14 +973,54 @@ class AsyncWorkflowRuntime(WorkflowExecutor):
                             accepted_step_seq=int(accepted_step_seq),
                             cancel_info={
                                 "source": "native_async",
-                                "node_id": last_processed_node_id,
+                                "node_id": last_exec_node_id,
                                 "seq": accepted_step_seq,
                                 "watermark": None,
                             },
-                            last_processed_node_id=last_processed_node_id,
+                            last_processed_node_id=last_exec_node_id,
                         )
                     except Exception:
                         pass
+            elif status == "failure":
+                persist_failed = getattr(self._sync_runtime, "_persist_failed_terminal", None)
+                if callable(persist_failed):
+                    try:
+                        persist_failed(
+                            conversation_id=str(conversation_id),
+                            workflow_id=str(workflow_id),
+                            run_id=str(run_id),
+                            accepted_step_seq=int(accepted_step_seq),
+                            errors=list(failure_errors),
+                            last_processed_node_id=last_exec_node_id,
+                        )
+                    except Exception:
+                        pass
+            elif status == "suspended":
+                persist_suspended = getattr(self._sync_runtime, "_persist_suspended_terminal", None)
+                if callable(persist_suspended):
+                    try:
+                        persist_suspended(
+                            conversation_id=str(conversation_id),
+                            workflow_id=str(workflow_id),
+                            run_id=str(run_id),
+                            accepted_step_seq=int(accepted_step_seq),
+                            last_processed_node_id=last_exec_node_id,
+                        )
+                    except Exception:
+                        pass
+        else:
+            persist_completed = getattr(self._sync_runtime, "_persist_completed_terminal", None)
+            if callable(persist_completed):
+                try:
+                    persist_completed(
+                        conversation_id=str(conversation_id),
+                        workflow_id=str(workflow_id),
+                        run_id=str(run_id),
+                        accepted_step_seq=int(accepted_step_seq),
+                        last_processed_node_id=last_exec_node_id,
+                    )
+                except Exception:
+                    pass
         if status != "cancelled":
             _persist_rt_join_snapshot()
 

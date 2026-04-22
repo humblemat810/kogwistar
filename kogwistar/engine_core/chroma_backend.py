@@ -1,6 +1,6 @@
 from typing import Any, Dict
 
-from .async_compat import run_sync_or_awaitable
+from .async_compat import run_awaitable_blocking
 
 
 class ChromaBackend:
@@ -45,7 +45,7 @@ class ChromaBackend:
     def call(self, collection_key: str, method: str, **kwargs) -> Any:
         coll = self._c(collection_key)
         fn = getattr(coll, method)
-        return run_sync_or_awaitable(fn(**kwargs))
+        return run_awaitable_blocking(fn(**kwargs))
 
     # --- node_index ---
     def node_index_get(self, **kwargs) -> Any:
@@ -217,3 +217,181 @@ class ChromaBackend:
 
     def edge_refs_delete(self, **kwargs) -> Any:
         return self.call("edge_refs", "delete", **kwargs)
+
+
+class AsyncChromaBackend(ChromaBackend):
+    async def call(self, collection_key: str, method: str, **kwargs) -> Any:
+        coll = self._c(collection_key)
+        fn = getattr(coll, method)
+        return await fn(**kwargs)
+
+    # --- node_index ---
+    async def node_index_get(self, **kwargs) -> Any:
+        return await self.call("node_index", "get", **kwargs)
+
+    async def node_index_query(self, **kwargs) -> Any:
+        return await self.call("node_index", "query", **kwargs)
+
+    async def node_index_add(self, **kwargs) -> Any:
+        return await self.call("node_index", "add", **kwargs)
+
+    async def node_index_upsert(self, **kwargs) -> Any:
+        return await self.call("node_index", "upsert", **kwargs)
+
+    async def node_index_update(self, **kwargs) -> Any:
+        return await self.call("node_index", "update", **kwargs)
+
+    async def node_index_delete(self, **kwargs) -> Any:
+        return await self.call("node_index", "delete", **kwargs)
+
+    # --- nodes ---
+    async def node_get(self, **kwargs) -> Any:
+        return await self.call("node", "get", **kwargs)
+
+    async def node_query(self, **kwargs) -> Any:
+        return await self.call("node", "query", **kwargs)
+
+    async def node_add(self, **kwargs) -> Any:
+        return await self.call("node", "add", **kwargs)
+
+    async def node_upsert(self, **kwargs) -> Any:
+        return await self.call("node", "upsert", **kwargs)
+
+    async def node_update(self, **kwargs) -> Any:
+        return await self.call("node", "update", **kwargs)
+
+    async def node_delete(self, **kwargs) -> Any:
+        return await self.call("node", "delete", **kwargs)
+
+    # --- edges ---
+    async def edge_get(self, **kwargs) -> Any:
+        return await self.call("edge", "get", **kwargs)
+
+    async def edge_query(self, **kwargs) -> Any:
+        return await self.call("edge", "query", **kwargs)
+
+    async def edge_add(self, **kwargs) -> Any:
+        return await self.call("edge", "add", **kwargs)
+
+    async def edge_upsert(self, **kwargs) -> Any:
+        return await self.call("edge", "upsert", **kwargs)
+
+    async def edge_update(self, **kwargs) -> Any:
+        return await self.call("edge", "update", **kwargs)
+
+    async def edge_delete(self, **kwargs) -> Any:
+        return await self.call("edge", "delete", **kwargs)
+
+    # --- edge_endpoints ---
+    async def edge_endpoints_get(self, **kwargs) -> Any:
+        return await self.call("edge_endpoints", "get", **kwargs)
+
+    async def edge_endpoints_query(self, **kwargs) -> Any:
+        return await self.call("edge_endpoints", "query", **kwargs)
+
+    async def edge_endpoints_add(self, **kwargs) -> Any:
+        return await self.call("edge_endpoints", "add", **kwargs)
+
+    async def edge_endpoints_upsert(self, **kwargs) -> Any:
+        return await self.call("edge_endpoints", "upsert", **kwargs)
+
+    async def edge_endpoints_update(self, **kwargs) -> Any:
+        return await self.call("edge_endpoints", "update", **kwargs)
+
+    async def edge_endpoints_delete(self, **kwargs) -> Any:
+        return await self.call("edge_endpoints", "delete", **kwargs)
+
+    # --- documents ---
+    async def document_get(self, **kwargs) -> Any:
+        return await self.call("document", "get", **kwargs)
+
+    async def document_query(self, **kwargs) -> Any:
+        return await self.call("document", "query", **kwargs)
+
+    async def document_add(self, **kwargs) -> Any:
+        return await self.call("document", "add", **kwargs)
+
+    async def document_upsert(self, **kwargs) -> Any:
+        return await self.call("document", "upsert", **kwargs)
+
+    async def document_update(self, **kwargs) -> Any:
+        return await self.call("document", "update", **kwargs)
+
+    async def document_delete(self, **kwargs) -> Any:
+        return await self.call("document", "delete", **kwargs)
+
+    # --- domains ---
+    async def domain_get(self, **kwargs) -> Any:
+        return await self.call("domain", "get", **kwargs)
+
+    async def domain_query(self, **kwargs) -> Any:
+        return await self.call("domain", "query", **kwargs)
+
+    async def domain_add(self, **kwargs) -> Any:
+        return await self.call("domain", "add", **kwargs)
+
+    async def domain_upsert(self, **kwargs) -> Any:
+        return await self.call("domain", "upsert", **kwargs)
+
+    async def domain_update(self, **kwargs) -> Any:
+        return await self.call("domain", "update", **kwargs)
+
+    async def domain_delete(self, **kwargs) -> Any:
+        return await self.call("domain", "delete", **kwargs)
+
+    # --- node_docs ---
+    async def node_docs_get(self, **kwargs) -> Any:
+        return await self.call("node_docs", "get", **kwargs)
+
+    async def node_docs_query(self, **kwargs) -> Any:
+        return await self.call("node_docs", "query", **kwargs)
+
+    async def node_docs_add(self, **kwargs) -> Any:
+        return await self.call("node_docs", "add", **kwargs)
+
+    async def node_docs_upsert(self, **kwargs) -> Any:
+        return await self.call("node_docs", "upsert", **kwargs)
+
+    async def node_docs_update(self, **kwargs) -> Any:
+        return await self.call("node_docs", "update", **kwargs)
+
+    async def node_docs_delete(self, **kwargs) -> Any:
+        return await self.call("node_docs", "delete", **kwargs)
+
+    # --- node_refs ---
+    async def node_refs_get(self, **kwargs) -> Any:
+        return await self.call("node_refs", "get", **kwargs)
+
+    async def node_refs_query(self, **kwargs) -> Any:
+        return await self.call("node_refs", "query", **kwargs)
+
+    async def node_refs_add(self, **kwargs) -> Any:
+        return await self.call("node_refs", "add", **kwargs)
+
+    async def node_refs_upsert(self, **kwargs) -> Any:
+        return await self.call("node_refs", "upsert", **kwargs)
+
+    async def node_refs_update(self, **kwargs) -> Any:
+        return await self.call("node_refs", "update", **kwargs)
+
+    async def node_refs_delete(self, **kwargs) -> Any:
+        return await self.call("node_refs", "delete", **kwargs)
+
+    # --- edge_refs ---
+    async def edge_refs_get(self, **kwargs) -> Any:
+        return await self.call("edge_refs", "get", **kwargs)
+
+    async def edge_refs_query(self, **kwargs) -> Any:
+        return await self.call("edge_refs", "query", **kwargs)
+
+    async def edge_refs_add(self, **kwargs) -> Any:
+        return await self.call("edge_refs", "add", **kwargs)
+
+    async def edge_refs_upsert(self, **kwargs) -> Any:
+        return await self.call("edge_refs", "upsert", **kwargs)
+
+    async def edge_refs_update(self, **kwargs) -> Any:
+        return await self.call("edge_refs", "update", **kwargs)
+
+    async def edge_refs_delete(self, **kwargs) -> Any:
+        return await self.call("edge_refs", "delete", **kwargs)

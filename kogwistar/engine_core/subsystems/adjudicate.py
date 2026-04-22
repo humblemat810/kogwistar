@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from ..async_compat import run_awaitable_blocking
 from ..models import AdjudicationTarget, Edge, Node
 from .base import NamespaceProxy
 from ...typing_interfaces import AdjudicateLike
@@ -42,20 +43,24 @@ class AdjudicateSubsystem(NamespaceProxy, AdjudicateLike):
 
     def fetch_target(self, t: AdjudicationTarget) -> Node | Edge:
         if t.kind == "node":
-            got = self._e.backend.node_get(ids=[t.id], include=["documents"])
+            got = run_awaitable_blocking(
+                self._e.backend.node_get(ids=[t.id], include=["documents"])
+            )
             if docs := got.get("documents"):
                 return Node.model_validate_json(docs[0])
             raise ValueError(f"Node {t.id} not found")
-        got = self._e.backend.edge_get(ids=[t.id], include=["documents"])
+        got = run_awaitable_blocking(
+            self._e.backend.edge_get(ids=[t.id], include=["documents"])
+        )
         if docs := got.get("documents"):
             return Edge.model_validate_json(docs[0])
         raise ValueError(f"Edge {t.id} not found")
 
     def classify_endpoint_id(self, rid: str) -> str:
-        hit = self._e.backend.node_get(ids=[rid])
+        hit = run_awaitable_blocking(self._e.backend.node_get(ids=[rid]))
         if (hit.get("ids") or [None])[0] == rid:
             return "node"
-        hit = self._e.backend.edge_get(ids=[rid])
+        hit = run_awaitable_blocking(self._e.backend.edge_get(ids=[rid]))
         if (hit.get("ids") or [None])[0] == rid:
             return "edge"
         raise ValueError(f"Unknown endpoint id {rid!r} (not a node or edge)")
@@ -97,7 +102,9 @@ class AdjudicateSubsystem(NamespaceProxy, AdjudicateLike):
     def choose_anchor(self, node_ids: list[str]) -> str:
         if not node_ids:
             raise ValueError("No nodes to anchor")
-        nodes = self._e.backend.node_get(ids=node_ids, include=["documents"])
+        nodes = run_awaitable_blocking(
+            self._e.backend.node_get(ids=node_ids, include=["documents"])
+        )
         for nid, ndoc in zip(nodes.get("ids") or [], nodes.get("documents") or []):
             n = Node.model_validate_json(ndoc)
             if n.canonical_entity_id:
