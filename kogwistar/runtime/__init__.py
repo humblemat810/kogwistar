@@ -19,8 +19,19 @@ if TYPE_CHECKING:
     )
     from kogwistar.runtime.replay import load_checkpoint, replay_to
     from kogwistar.runtime.resolvers import (
+        AsyncMappingStepResolver,
         BaseResolver,
         MappingStepResolver,
+    )
+    from kogwistar.runtime.async_runtime import (
+        AsyncStepFn,
+        AsyncWorkflowRuntime,
+        SyncStepFn,
+    )
+    from kogwistar.runtime.executor import (
+        RunRequest,
+        TerminalStatus,
+        WorkflowExecutor,
     )
     from kogwistar.workflow.analytics import (
         ExecutionFailurePattern,
@@ -67,6 +78,13 @@ __all__ = [
     "replay_to",
     "BaseResolver",
     "MappingStepResolver",
+    "AsyncMappingStepResolver",
+    "SyncStepFn",
+    "AsyncStepFn",
+    "AsyncWorkflowRuntime",
+    "WorkflowExecutor",
+    "RunRequest",
+    "TerminalStatus",
     "ExecutionFailurePattern",
     "summarize_execution_failure_patterns",
     "WorkflowStepExecutionStats",
@@ -97,6 +115,13 @@ _EXPORTS = {
     "replay_to": "kogwistar.runtime.replay",
     "BaseResolver": "kogwistar.runtime.resolvers",
     "MappingStepResolver": "kogwistar.runtime.resolvers",
+    "AsyncMappingStepResolver": "kogwistar.runtime.resolvers",
+    "SyncStepFn": "kogwistar.runtime.async_runtime",
+    "AsyncStepFn": "kogwistar.runtime.async_runtime",
+    "AsyncWorkflowRuntime": "kogwistar.runtime.async_runtime",
+    "WorkflowExecutor": "kogwistar.runtime.executor",
+    "RunRequest": "kogwistar.runtime.executor",
+    "TerminalStatus": "kogwistar.runtime.executor",
     "ExecutionFailurePattern": "kogwistar.workflow.analytics",
     "summarize_execution_failure_patterns": "kogwistar.workflow.analytics",
     "WorkflowStepExecutionStats": "kogwistar.workflow.analytics",
@@ -115,8 +140,15 @@ _EXPORTS = {
     "WorkflowRuntime": "kogwistar.runtime.runtime",
 }
 
+_SUBMODULE_EXPORTS = {
+    "async_runtime": "kogwistar.runtime.async_runtime",
+}
+
 
 def __getattr__(name: str):
+    submodule_name = _SUBMODULE_EXPORTS.get(name)
+    if submodule_name is not None:
+        return import_module(submodule_name)
     module_name = _EXPORTS.get(name)
     if module_name is None:
         raise AttributeError(name)
