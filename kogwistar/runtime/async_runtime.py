@@ -21,6 +21,7 @@ from .runtime import (
     validate_initial_state,
 )
 from .design import validate_workflow_design
+from .routing import compute_route_next
 
 SyncStepFn: TypeAlias = Callable[[StepContext], StepRunResult]
 AsyncStepFn: TypeAlias = Callable[[StepContext], Awaitable[StepRunResult]]
@@ -279,58 +280,27 @@ class AsyncWorkflowRuntime(WorkflowExecutor):
             return 100
 
     @staticmethod
-    def _select_next_edges(node: Any, edges: list[Any], state: WorkflowState, result: StepRunResult, predicate_registry: dict[str, Any]) -> list[Any]:
+    def _select_next_edges(
+        node: Any,
+        edges: list[Any],
+        state: WorkflowState,
+        result: StepRunResult,
+        predicate_registry: dict[str, Any],
+        *,
+        nodes: dict[str, Any] | None = None,
+    ) -> list[Any]:
         if not edges:
             return []
-        edges = sorted(list(edges), key=AsyncWorkflowRuntime._edge_priority)
         fanout = bool((getattr(node, "metadata", {}) or {}).get("wf_fanout", False))
-        route_names = list(getattr(result, "next_step_names", []) or [])
-        if route_names:
-            routed = [
-                e
-                for e in edges
-                if str(getattr(e, "label", "")) in set(str(n) for n in route_names)
-            ]
-            if routed:
-                if fanout:
-                    return routed
-                many = [
-                    e
-                    for e in routed
-                    if (getattr(e, "metadata", {}) or {}).get("wf_multiplicity")
-                    == "many"
-                ]
-                if many:
-                    return many
-                return [routed[0]]
-        matched: list[Any] = []
-        defaults: list[Any] = []
-        for edge in edges:
-            md = getattr(edge, "metadata", {}) or {}
-            pred_name = md.get("wf_predicate")
-            if pred_name is None:
-                if bool(md.get("wf_is_default", False)):
-                    defaults.append(edge)
-                continue
-            pred = predicate_registry.get(str(pred_name))
-            if pred is None:
-                continue
-            try:
-                ok = bool(pred(edge, state, result))
-            except Exception:
-                ok = False
-            if ok:
-                matched.append(edge)
-        picked = matched if matched else defaults
-        if not picked:
-            return []
-        if fanout:
-            return picked
-        # Non-fanout: still allow explicit "many" edge fanout.
-        many = [e for e in picked if (getattr(e, "metadata", {}) or {}).get("wf_multiplicity") == "many"]
-        if many:
-            return many
-        return [picked[0]]
+        computed = compute_route_next(
+            edges=sorted(list(edges), key=AsyncWorkflowRuntime._edge_priority),
+            state=dict(state),
+            last_result=result,
+            fanout=fanout,
+            predicate_registry=predicate_registry,
+            nodes=nodes,
+        )
+        return list(computed.selected_edges)
 
     async def _run_native_async(
         self,
@@ -769,6 +739,7 @@ class AsyncWorkflowRuntime(WorkflowExecutor):
                     state,
                     out,
                     self._predicate_registry,
+                    nodes=nodes,
                 )
                 for idx, e in enumerate(next_edges):
                     dst = str((getattr(e, "target_ids", None) or [None])[0])

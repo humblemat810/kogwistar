@@ -316,36 +316,3 @@ def test_mapping_resolver_executes_sandboxed_code_with_run_context(tmp_path):
     assert sandbox.calls[1][0] == "close_run"
 
 
-def test_mapping_resolver_does_not_prepare_sandbox_for_non_sandboxed_op(tmp_path):
-    class _FailIfCalledSandbox:
-        def run(self, code, state, context):
-            raise AssertionError("sandbox should not run for non-sandboxed ops")
-
-        def close_run(self, run_id: str) -> None:
-            return None
-
-    resolver = MappingStepResolver()
-    resolver.set_sandbox(_FailIfCalledSandbox())
-
-    @resolver.register("normal_op")
-    def _normal(ctx):
-        return RunSuccess(conversation_node_id=None, state_update=[("u", {"ok": True})])
-
-    fn = resolver.resolve("normal_op")
-    ctx = StepContext(
-        run_id="run-plain",
-        workflow_id="wf-plain",
-        workflow_node_id="node-plain",
-        op="normal_op",
-        token_id="tok-plain",
-        attempt=1,
-        step_seq=1,
-        cache_dir=tmp_path / "sandbox-cache",
-        conversation_id="conv-plain",
-        turn_node_id="turn-plain",
-        state={"value": 1},
-    )
-
-    res = fn(ctx)
-    assert isinstance(res, RunSuccess)
-    assert res.state_update == [("u", {"ok": True})]

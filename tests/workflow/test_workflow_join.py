@@ -142,7 +142,7 @@ def _e(
 @pytest.mark.parametrize("max_workers", [1, 2])
 def test_join_barrier_waits_for_all_arrivals(max_workers: int):
     """
-    Async mirror: `tests/runtime/test_async_runtime_contract.py::test_async_runtime_branch_join_status_and_state_equivalent_to_sync`.
+    Async mirror: `tests/runtime/test_async_runtime_bijection_contract.py::test_async_runtime_branch_join_status_and_state_equivalent`.
     Graph:
         start -> fork -> a -> join -> end
                      -> b -> join

@@ -12,8 +12,8 @@ MAPPINGS = [
     (
         "tests.workflow.test_workflow_join",
         "test_join_barrier_waits_for_all_arrivals",
-        "tests.runtime.test_async_runtime_contract",
-        "test_async_runtime_branch_join_status_and_state_equivalent_to_sync",
+        "tests.runtime.test_async_runtime_bijection_contract",
+        "test_async_runtime_branch_join_status_and_state_equivalent",
     ),
     (
         "tests.workflow.test_workflow_join",
@@ -26,12 +26,6 @@ MAPPINGS = [
         "test_nested_joins_human_debug",
         "tests.runtime.test_async_runtime_contract",
         "test_async_runtime_native_scheduler_token_nesting_and_spawn_events",
-    ),
-    (
-        "tests.workflow.test_workflow_native_update",
-        "test_workflow_runtime_native_update_schema_applies_known_and_falls_back_unknown",
-        "tests.runtime.test_async_runtime_contract",
-        "test_async_runtime_native_scheduler_uses_shared_state_merge_semantics",
     ),
     (
         "tests.runtime.test_checkpoint_resume_contract",
@@ -95,12 +89,6 @@ MAPPINGS = [
     ),
     (
         "tests.runtime.test_workflow_invocation_and_route_next",
-        "test_route_next_alias_can_fan_out_multiple_branches",
-        "tests.runtime.test_async_runtime_contract",
-        "test_async_runtime_native_scheduler_route_next_and_priority",
-    ),
-    (
-        "tests.runtime.test_workflow_invocation_and_route_next",
         "test_nested_workflow_failure_short_circuits_parent_routing",
         "tests.runtime.test_async_runtime_contract",
         "test_async_runtime_nested_workflow_child_failure_fails_parent",
@@ -131,11 +119,16 @@ def test_sync_async_mapping_docstrings_have_first_line_pairs(
     async_first = async_doc.splitlines()[0]
     sync_file = sync_mod.replace(".", "/") + ".py"
     async_file = async_mod.replace(".", "/") + ".py"
+    allowed_sync_files = {sync_file}
+    if async_mod.endswith("test_async_runtime_bijection_contract"):
+        allowed_sync_files.add(
+            "tests/runtime/test_sync_runtime_bijection_contract.py"
+        )
 
     assert sync_first.startswith("Async mirror:"), sync_first
     assert async_first.startswith("Sync mirror:"), async_first
     assert async_file in sync_first, sync_first
-    assert sync_file in async_first, async_first
+    assert any(path in async_first for path in allowed_sync_files), async_first
 
 
 @pytest.mark.parametrize("sync_mod,sync_name,async_mod,async_name", MAPPINGS)

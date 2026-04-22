@@ -229,6 +229,16 @@ StateOverwriteUpdate = tuple[Literal["a"], Any]
 StateUpdate = Union[StateAppendUpdate, StateOverwriteUpdate]
 
 
+def get_route_next_names(result: Any) -> list[str]:
+    try:
+        route_names = getattr(result, "_route_next")
+    except Exception:
+        route_names = None
+    if route_names is None:
+        route_names = getattr(result, "next_step_names", None)
+    return [str(x) for x in (route_names or [])]
+
+
 class RunFailure(BaseModel):
     conversation_node_id: Optional[str] = None
     state_update: list[StateUpdate]  # can still update, append an error message
@@ -238,6 +248,10 @@ class RunFailure(BaseModel):
     status: Literal["failure"] = "failure"
 
     model_config = ConfigDict(populate_by_name=True, extra="allow")
+
+    @property
+    def _route_next(self) -> list[str]:
+        return list(self.next_step_names)
 
 
 class RunSuspended(BaseModel):
@@ -260,6 +274,10 @@ class RunSuspended(BaseModel):
 
     model_config = ConfigDict(populate_by_name=True, extra="allow")
 
+    @property
+    def _route_next(self) -> list[str]:
+        return list(self.next_step_names)
+
 
 class RunSuccess(BaseModel):
     conversation_node_id: (
@@ -276,6 +294,10 @@ class RunSuccess(BaseModel):
     status: Literal["success"] = "success"
 
     model_config = ConfigDict(populate_by_name=True, extra="allow")
+
+    @property
+    def _route_next(self) -> list[str]:
+        return list(self.next_step_names)
 
 
 StepRunResult: TypeAlias = RunSuccess | RunFailure | RunSuspended

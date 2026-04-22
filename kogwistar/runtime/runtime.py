@@ -38,6 +38,7 @@ from kogwistar.runtime.budget_adapters import adapt_budget_events
 
 from .design import validate_workflow_design, Predicate
 from .serialize import try_serialize_with_ref
+from .routing import compute_route_next
 
 RESERVED_ROOT_KEYS = {
     "_deps",
@@ -2531,7 +2532,7 @@ class WorkflowRuntime:
              - Select the first matching edge unless fanout/multiplicity allows multiple.
 
           2) If no predicate edges match, evaluate unconditional edges (e.predicate == None)
-             using BasePredicate (node-level "next_step_names" decision).
+             using BasePredicate (node-level "_route_next" decision).
 
           3) If still nothing matches, pick any is_default edge.
 
@@ -2541,156 +2542,18 @@ class WorkflowRuntime:
         NOTE: This function is pure with respect to tracing; the caller is responsible
         for emitting RouteDecision into the trace sink.
         """
-        matched: List[tuple[WorkflowEdge, str]] = []
-        decision = RouteDecision(evaluated=[], selected=[])
-
-        def _edge_id(e: WorkflowEdge) -> str:
-            return str(
-                getattr(e, "id", None)
-                or getattr(e, "edge_id", None)
-                or f"{getattr(e, 'predicate', None)}->{(getattr(e, 'target_ids', None) or [''])[0]}"
-            )
-
-        def _first_target(e: WorkflowEdge) -> Optional[str]:
-            tids = getattr(e, "target_ids", None) or []
-            if not tids:
-                return None
-            return str(tids[0])
-
-        def _stop_on_first(e: WorkflowEdge) -> bool:
-            # stop if not fanout and edge multiplicity is not 'many'
-            return (not fanout) and (getattr(e, "multiplicity", "one") != "many")
-
-        def _target_aliases(target_id: str) -> set[str]:
-            aliases = {str(target_id), str(target_id).split("|")[-1]}
-            if nodes is not None:
-                target_node = nodes.get(str(target_id))
-                if target_node is not None:
-                    label = getattr(target_node, "label", None)
-                    if label:
-                        aliases.add(str(label))
-                    op = getattr(target_node, "op", None)
-                    if op:
-                        aliases.add(str(op))
-            return aliases
-
-        explicit_next = [
-            str(x) for x in (getattr(last_result, "next_step_names", []) or [])
-        ]
-        if explicit_next:
-            explicit_matches: list[str] = []
-            for alias in explicit_next:
-                matched_target = None
-                for e in edges:
-                    tgt = _first_target(e)
-                    if tgt is None:
-                        continue
-                    if alias in _target_aliases(tgt):
-                        matched_target = tgt
-                        decision.selected.append((_edge_id(e), tgt, "explicit"))
-                        break
-                decision.evaluated.append(
-                    (f"_route_next:{alias}", matched_target is not None)
-                )
-                if matched_target is not None:
-                    explicit_matches.append(str(matched_target))
-            if explicit_matches:
-                return explicit_matches, decision
-
-        failure_only = getattr(last_result, "status", None) == "failure"
-
-        # (1) explicit predicates
-        for e in edges:
-            e: WorkflowEdge
-            if getattr(e, "predicate", None) is None:
-                continue
-            tgt = _first_target(e)
-            if tgt is None:
-                continue
-            pred_name = str(getattr(e, "predicate", ""))
-            pred = self.predicate_registry.get(pred_name)
-            if pred is None:
-                # record missing predicate as rejection (False)
-                decision.evaluated.append((f"{_edge_id(e)}:{pred_name}", False))
-                continue
-
-            workflow_info = WorkflowEdgeInfo.from_workflow_edge(e)
-            try:
-                ok = bool(pred(workflow_info, state, last_result))
-            except Exception:
-                ok = False
-
-            decision.evaluated.append((f"{_edge_id(e)}:{pred_name}", ok))
-            if ok:
-                matched.append((e, tgt))
-                decision.selected.append((_edge_id(e), tgt, "predicate"))
-
-        def get_edge_priority(edge: tuple[WorkflowEdge, str]):
-            return edge[0].priority
-
-        matched.sort(key=get_edge_priority, reverse=True)
-
-        candidates = []
-        for e, next_node_id in matched:
-            if _stop_on_first(e):
-                if not candidates:
-                    candidates.append(next_node_id)
-                return candidates, decision
-            elif fanout:
-                candidates.append(next_node_id)
-            else:
-                # default unknown just add and return
-                if not candidates:
-                    candidates.append(next_node_id)
-                return candidates, decision
-
-        # Failure routing only considers explicit `_route_next` targets or
-        # predicates that inspect the failed result. If neither matched, the
-        # failure is unmatched and the token should terminate as failure.
-        if failure_only:
-            return [], decision
-
-        # (2) unconditional edges (node-level decision)
-        from typing import cast
-        from .contract import BasePredicate
-
-        node_decider = cast(Predicate, BasePredicate())
-        for e in edges:
-            if getattr(e, "predicate", None) is not None:
-                continue  # skip as it is processed in earlier loo
-            tgt = _first_target(e)
-            if tgt is None:
-                continue
-
-            workflow_info = WorkflowEdgeInfo.from_workflow_edge(e)
-            try:
-                ok = bool(node_decider(workflow_info, state, last_result))
-            except Exception:
-                ok = False
-
-            # Record unconditional evaluations too (use a synthetic name)
-            decision.evaluated.append((f"{_edge_id(e)}:<base>", ok))
-            if ok:
-                matched.append((e, tgt))
-                decision.selected.append((_edge_id(e), tgt, "base"))
-                if _stop_on_first(e):
-                    return [i[1] for i in matched[0:1]], decision
-
-        if matched:
-            return ([i[1] for i in (matched if fanout else matched[0:1])]), decision
-
-        # (3) default edge
-        for e in edges:
-            if bool(getattr(e, "is_default", False)):
-                tids = [str(x) for x in (getattr(e, "target_ids", None) or [])]
-                if not tids:
-                    continue
-                picked = tids if fanout else tids[0:1]
-                # record default selection once
-                decision.selected.append((_edge_id(e), picked[0], "default"))
-                return picked, decision
-
-        return [], decision
+        computed = compute_route_next(
+            edges=list(edges),
+            state=dict(state),
+            last_result=last_result,
+            fanout=fanout,
+            predicate_registry=self.predicate_registry,
+            nodes=nodes,
+        )
+        return computed.next_node_ids, RouteDecision(
+            evaluated=list(computed.evaluated),
+            selected=list(computed.selected),
+        )
 
     # --------------------
     # Persistence helpers (conversation_engine)

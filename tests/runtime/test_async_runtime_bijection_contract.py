@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import asyncio
+import queue
+from dataclasses import dataclass
 
 import pytest
 
 from kogwistar.conversation.resolvers import default_resolver
 from kogwistar.runtime import AsyncMappingStepResolver, AsyncWorkflowRuntime, MappingStepResolver
+from kogwistar.runtime.async_runtime import _SyncResolverAdapter
 from kogwistar.runtime.replay import _apply_state_update
 from kogwistar.runtime.models import RunFailure, RunSuccess
-from kogwistar.runtime.runtime import StepContext, WorkflowRuntime
+from kogwistar.runtime.runtime import RunResult, StepContext, WorkflowRuntime
 
 pytestmark = [pytest.mark.ci]
 
@@ -22,6 +25,56 @@ def test_async_runtime_default_ops_equal():
         default=default_resolver.default,
     )
     assert set(default_resolver.ops) == set(async_resolver.ops)
+
+
+def test_async_runtime_exported():
+    """Sync mirror: `tests/runtime/test_sync_runtime_bijection_contract.py::test_sync_runtime_exported`.
+    Moved from `tests/runtime/test_async_runtime_contract.py::test_async_runtime_exported`.
+    """
+    from kogwistar.runtime import AsyncMappingStepResolver as ExportedAsyncResolver
+    from kogwistar.runtime import AsyncWorkflowRuntime as Exported
+
+    assert Exported is AsyncWorkflowRuntime
+    assert ExportedAsyncResolver is AsyncMappingStepResolver
+
+
+def test_async_runtime_adapter_forwards_close_sandbox_run():
+    """Sync mirror: `tests/runtime/test_sync_runtime_bijection_contract.py::test_sync_runtime_adapter_forwards_close_sandbox_run`.
+    Moved from `tests/runtime/test_async_runtime_contract.py::test_async_runtime_adapter_forwards_close_sandbox_run`.
+    """
+
+    class _Resolver:
+        def __init__(self):
+            self.closed: list[str] = []
+
+        def __call__(self, _op: str):
+            return lambda _ctx: RunSuccess(conversation_node_id=None, state_update=[])
+
+        def close_sandbox_run(self, run_id: str) -> None:
+            self.closed.append(run_id)
+
+    resolver = _Resolver()
+    adapter = _SyncResolverAdapter(resolver)
+    adapter.close_sandbox_run("run-123")
+    assert resolver.closed == ["run-123"]
+
+
+def test_async_runtime_accept_same_workflow_graph_model():
+    """Sync mirror: `tests/runtime/test_sync_runtime_bijection_contract.py::test_sync_runtime_accept_same_workflow_graph_model`.
+    Moved from `tests/runtime/test_async_runtime_contract.py::test_sync_and_async_runtime_accept_same_workflow_graph_model`.
+    """
+    workflow_engine = {"graph_model": "WorkflowSpec-like"}
+    conversation_engine = {"graph_model": "ConversationGraph"}
+    sync_resolver = MappingStepResolver()
+    async_runtime = AsyncWorkflowRuntime(
+        workflow_engine=workflow_engine,
+        conversation_engine=conversation_engine,
+        step_resolver=sync_resolver,
+        predicate_registry={},
+        trace=False,
+    )
+    assert async_runtime.sync_runtime.workflow_engine is workflow_engine
+    assert async_runtime.sync_runtime.conversation_engine is conversation_engine
 
 
 def test_async_runtime_state_merge_semantics():
@@ -72,6 +125,310 @@ def test_async_runtime_step_context_and_result_contract():
     )
     assert result.status == "success"
     assert result.state_update == [("u", {"ok": True})]
+
+
+def test_async_runtime_state_schema_metadata_available():
+    """Sync mirror: `tests/runtime/test_sync_runtime_bijection_contract.py::test_sync_runtime_state_schema_metadata_available`.
+    Moved from `tests/runtime/test_async_runtime_contract.py::test_async_resolver_state_schema_metadata_available`.
+    """
+    async_resolver = AsyncMappingStepResolver()
+    async_resolver.set_state_schema({"events": "a", "answer": "u"})
+    assert async_resolver.describe_state() == {"events": "a", "answer": "u"}
+
+
+def test_async_runtime_deps_available_in_handler():
+    """Sync mirror: `tests/runtime/test_sync_runtime_bijection_contract.py::test_sync_runtime_deps_available_in_handler`.
+    Moved from `tests/runtime/test_async_runtime_contract.py::test_async_resolver_deps_available_in_handler`.
+    """
+    async_resolver = AsyncMappingStepResolver()
+
+    class _DepsCtx:
+        state_view = {"_deps": {"x": 7}}
+
+    @async_resolver.register("use_deps")
+    async def _use_deps(ctx):
+        return RunSuccess(
+            conversation_node_id=None,
+            state_update=[("u", {"x": ctx.state_view["_deps"]["x"]})],
+        )
+
+    out = asyncio.run(async_resolver.resolve_async("use_deps")(_DepsCtx()))
+    assert isinstance(out, RunSuccess)
+    assert out.state_update == [("u", {"x": 7})]
+
+
+def test_async_runtime_deps_live_but_omitted_from_checkpoint_payload(monkeypatch):
+    """Sync mirror: `tests/runtime/test_sync_runtime_bijection_contract.py::test_sync_runtime_deps_live_but_omitted_from_checkpoint_payload`.
+    Moved from `tests/runtime/test_async_runtime_contract.py::test_async_runtime_deps_live_but_omitted_from_checkpoint_payload`.
+    """
+    class _FakeWorkflowRuntime:
+        def __init__(self, **kwargs):
+            self.step_resolver = kwargs["step_resolver"]
+
+        def run(self, **kwargs):
+            initial_state = dict(kwargs.get("initial_state") or {})
+            checkpoint_state = {k: v for k, v in initial_state.items() if k != "_deps"}
+
+            class _Ctx:
+                state_view = initial_state
+
+            live_result = self.step_resolver("use_deps")(_Ctx())
+            live_out = asyncio.run(live_result) if asyncio.iscoroutine(live_result) else live_result
+            return type(
+                "_Out",
+                (),
+                {
+                    "status": "succeeded",
+                    "final_state": {
+                        "live_x": live_out.state_update[0][1]["x"],
+                        "checkpoint_state": checkpoint_state,
+                    },
+                },
+            )()
+
+    resolver = MappingStepResolver()
+
+    @resolver.register("use_deps")
+    def _use_deps(ctx):
+        return RunSuccess(
+            conversation_node_id=None,
+            state_update=[("u", {"x": ctx.state_view["_deps"]["x"]})],
+        )
+
+    rt = _FakeWorkflowRuntime(step_resolver=resolver)
+    out = rt.run(initial_state={"_deps": {"x": 9}, "keep": 1})
+    assert out.status == "succeeded"
+    assert out.final_state["live_x"] == 9
+    assert "_deps" not in out.final_state["checkpoint_state"]
+    assert out.final_state["checkpoint_state"]["keep"] == 1
+
+
+def test_async_runtime_linear_terminal_status_equivalent(monkeypatch):
+    """Sync mirror: `tests/runtime/test_sync_runtime_bijection_contract.py::test_sync_runtime_linear_terminal_status_equivalent`.
+    Moved from `tests/runtime/test_async_runtime_contract.py::test_async_runtime_linear_terminal_status_equivalent_to_sync`.
+    """
+
+    class _FakeWorkflowRuntime:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def run(self, **kwargs):
+            state = dict(kwargs.get("initial_state") or {})
+            state["path"] = "linear"
+            return RunResult(
+                run_id=str(kwargs.get("run_id") or "run-linear"),
+                final_state=state,
+                mq=queue.Queue(),
+                status="succeeded",
+            )
+
+    monkeypatch.setattr("kogwistar.runtime.async_runtime.WorkflowRuntime", _FakeWorkflowRuntime)
+    rt = AsyncWorkflowRuntime(
+        workflow_engine=object(),
+        conversation_engine=object(),
+        step_resolver=lambda _op: (lambda _ctx: RunSuccess(conversation_node_id=None, state_update=[])),
+        predicate_registry={},
+        trace=False,
+    )
+    sync_out = rt.run_sync(
+        workflow_id="wf-linear",
+        conversation_id="c1",
+        turn_node_id="t1",
+        initial_state={"k": "v"},
+        run_id="r-linear",
+    )
+    async_out = asyncio.run(
+        rt.run(
+            workflow_id="wf-linear",
+            conversation_id="c1",
+            turn_node_id="t1",
+            initial_state={"k": "v"},
+            run_id="r-linear",
+        )
+    )
+    assert async_out.status == sync_out.status == "succeeded"
+    assert async_out.final_state == sync_out.final_state
+
+
+def test_async_runtime_branch_join_status_and_state_equivalent(monkeypatch):
+    """Sync mirror: `tests/runtime/test_sync_runtime_bijection_contract.py::test_sync_runtime_branch_join_status_and_state_equivalent`.
+    Moved from `tests/runtime/test_async_runtime_contract.py::test_async_runtime_branch_join_status_and_state_equivalent_to_sync`.
+    """
+
+    class _FakeWorkflowRuntime:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def run(self, **kwargs):
+            state = dict(kwargs.get("initial_state") or {})
+            branch_values = list(state.get("branch_values") or [])
+            state["joined_total"] = sum(int(v) for v in branch_values)
+            state["path"] = "branch_join"
+            return RunResult(
+                run_id=str(kwargs.get("run_id") or "run-branch-join"),
+                final_state=state,
+                mq=queue.Queue(),
+                status="succeeded",
+            )
+
+    monkeypatch.setattr("kogwistar.runtime.async_runtime.WorkflowRuntime", _FakeWorkflowRuntime)
+    rt = AsyncWorkflowRuntime(
+        workflow_engine=object(),
+        conversation_engine=object(),
+        step_resolver=lambda _op: (lambda _ctx: RunSuccess(conversation_node_id=None, state_update=[])),
+        predicate_registry={},
+        trace=False,
+    )
+    initial = {"branch_values": [2, 3, 5]}
+    sync_out = rt.run_sync(
+        workflow_id="wf-branch-join",
+        conversation_id="c1",
+        turn_node_id="t1",
+        initial_state=initial,
+        run_id="r-branch-join",
+    )
+    async_out = asyncio.run(
+        rt.run(
+            workflow_id="wf-branch-join",
+            conversation_id="c1",
+            turn_node_id="t1",
+            initial_state=initial,
+            run_id="r-branch-join",
+        )
+    )
+    assert async_out.status == sync_out.status == "succeeded"
+    assert async_out.final_state == sync_out.final_state
+    assert async_out.final_state["joined_total"] == 10
+
+
+def test_async_runtime_route_next_alias_can_fan_out_multiple_branches():
+    """Sync mirror: `tests/runtime/test_sync_runtime_bijection_contract.py::test_sync_runtime_route_next_alias_can_fan_out_multiple_branches`.
+    Moved from `tests/runtime/test_workflow_invocation_and_route_next.py::test_route_next_alias_can_fan_out_multiple_branches`.
+    """
+    @dataclass
+    class _Node:
+        id: str
+        label: str
+        op: str
+        metadata: dict
+
+    @dataclass
+    class _Edge:
+        id: str
+        label: str
+        source_ids: list[str]
+        target_ids: list[str]
+        metadata: dict
+
+        def safe_get_id(self):
+            return self.id
+
+        @property
+        def priority(self):
+            return int(self.metadata.get("wf_priority", 100))
+
+        @property
+        def multiplicity(self):
+            return str(self.metadata.get("wf_multiplicity", "one"))
+
+        @property
+        def is_default(self):
+            return bool(self.metadata.get("wf_is_default", False))
+
+        @property
+        def predicate(self):
+            return self.metadata.get("wf_predicate")
+
+    node = _Node(id="start", label="start", op="start", metadata={"wf_fanout": True})
+    edges = [
+        _Edge(
+            id="e-left",
+            label="go_left",
+            source_ids=["start"],
+            target_ids=["n|left"],
+            metadata={"wf_priority": 100, "wf_multiplicity": "many", "wf_is_default": False, "wf_predicate": None},
+        ),
+        _Edge(
+            id="e-right",
+            label="go_right",
+            source_ids=["start"],
+            target_ids=["n|right"],
+            metadata={"wf_priority": 100, "wf_multiplicity": "many", "wf_is_default": False, "wf_predicate": None},
+        ),
+    ]
+    picked = AsyncWorkflowRuntime._select_next_edges(
+        node,
+        edges,
+        {},
+        RunSuccess(conversation_node_id=None, state_update=[], _route_next=["go_left", "n|right"]),
+        {},
+    )
+    assert [edge.id for edge in picked] == ["e-left", "e-right"]
+
+    pred_node = _Node(id="start", label="start", op="start", metadata={"wf_fanout": False})
+    pred_edges = [
+        _Edge(
+            id="e-pred",
+            label="pred_path",
+            source_ids=["start"],
+            target_ids=["n|left"],
+            metadata={"wf_priority": 100, "wf_multiplicity": "one", "wf_is_default": False, "wf_predicate": "if_true"},
+        ),
+        _Edge(
+            id="e-default",
+            label="default_path",
+            source_ids=["start"],
+            target_ids=["n|fallback"],
+            metadata={"wf_priority": 100, "wf_multiplicity": "one", "wf_is_default": True, "wf_predicate": "if_false"},
+        ),
+    ]
+    picked = AsyncWorkflowRuntime._select_next_edges(
+        pred_node,
+        pred_edges,
+        {},
+        RunSuccess(conversation_node_id=None, state_update=[]),
+        {},
+    )
+    assert [edge.id for edge in picked] == ["e-default"]
+
+
+def test_async_runtime_native_update_schema_applies_known_and_falls_back_unknown():
+    """Sync mirror: `tests/runtime/test_sync_runtime_bijection_contract.py::test_sync_runtime_native_update_schema_applies_known_and_falls_back_unknown`.
+    Moved from `tests/workflow/test_workflow_native_update.py::test_workflow_runtime_native_update_schema_applies_known_and_falls_back_unknown`.
+    """
+    class _FakeWorkflowRuntime:
+        def run(self, **kwargs):
+            state = dict(kwargs.get("initial_state") or {})
+            state["op_log"] = ["x"]
+            state["dyn"] = 1
+            return RunResult(
+                run_id=str(kwargs.get("run_id") or "run-native"),
+                final_state=state,
+                mq=queue.Queue(),
+                status="succeeded",
+            )
+
+    monkeypatch = None
+    rt = AsyncWorkflowRuntime(
+        workflow_engine=object(),
+        conversation_engine=object(),
+        step_resolver=lambda _op: (lambda _ctx: RunSuccess(conversation_node_id=None, state_update=[])),
+        predicate_registry={},
+        trace=False,
+    )
+    # Swap sync runtime used by async facade to our fake one.
+    rt._sync_runtime = _FakeWorkflowRuntime()
+    out = asyncio.run(
+        rt.run(
+            workflow_id="wf_native_update",
+            conversation_id="c1",
+            turn_node_id="t1",
+            initial_state={},
+            run_id="run-native",
+        )
+    )
+    assert out.final_state["op_log"] == ["x"]
+    assert out.final_state["dyn"] == 1
 
 
 def test_async_runtime_step_context_send_lane_message_delegates_to_sender(tmp_path):
@@ -497,6 +854,46 @@ def test_async_runtime_preserves_sandboxed_behavior():
     out = asyncio.run(resolver.resolve_async("py")(ctx))
     assert isinstance(out, RunSuccess)
     assert out.state_update[0][1]["sandbox_ctx_op"] == "py"
+
+
+def test_async_runtime_non_sandboxed_op_does_not_prepare_sandbox(tmp_path):
+    """Sync mirror: `tests/runtime/test_sync_runtime_bijection_contract.py::test_sync_runtime_non_sandboxed_op_does_not_prepare_sandbox`.
+    Moved from `tests/runtime/test_sandbox.py::test_mapping_resolver_does_not_prepare_sandbox_for_non_sandboxed_op`.
+    """
+    class _FailIfCalledSandbox:
+        def run(self, code, state, context):
+            raise AssertionError("sandbox should not run for non-sandboxed ops")
+
+        def close_run(self, run_id: str) -> None:
+            return None
+
+    resolver = AsyncMappingStepResolver()
+    resolver.set_sandbox(_FailIfCalledSandbox())
+
+    @resolver.register("normal_op")
+    def _normal(ctx):
+        return RunSuccess(conversation_node_id=None, state_update=[("u", {"ok": True})])
+
+    out = asyncio.run(
+        resolver.resolve_async("normal_op")(
+            type(
+                "_Ctx",
+                (),
+                {
+                    "conversation_id": "conv-async-bijection",
+                    "workflow_id": "wf-async-bijection",
+                    "workflow_node_id": "node-async-bijection",
+                    "run_id": "run-async-bijection",
+                    "token_id": "tok-async-bijection",
+                    "attempt": 1,
+                    "step_seq": 1,
+                    "state_view": {"value": 1},
+                },
+            )()
+        )
+    )
+    assert isinstance(out, RunSuccess)
+    assert out.state_update == [("u", {"ok": True})]
 
 
 def test_async_runtime_legacy_update_warning_preserved():

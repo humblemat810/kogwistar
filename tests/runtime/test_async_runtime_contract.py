@@ -36,14 +36,6 @@ class _DummyCtx:
     state_view = {}
 
 
-def test_async_runtime_exported():
-    from kogwistar.runtime import AsyncWorkflowRuntime as Exported
-    from kogwistar.runtime import AsyncMappingStepResolver as ExportedAsyncResolver
-
-    assert Exported is AsyncWorkflowRuntime
-    assert ExportedAsyncResolver is AsyncMappingStepResolver
-
-
 def test_async_resolver_runs_sync_handlers_inline_without_to_thread(monkeypatch):
     async_resolver = AsyncMappingStepResolver()
 
@@ -212,30 +204,6 @@ def test_async_runtime_native_scheduler_sync_handlers_run_inline_without_to_thre
     assert out.final_state["last_op"] == "leaf"
 
 
-def test_async_resolver_state_schema_metadata_available():
-    async_resolver = AsyncMappingStepResolver()
-    async_resolver.set_state_schema({"events": "a", "answer": "u"})
-    assert async_resolver.describe_state() == {"events": "a", "answer": "u"}
-
-
-def test_async_resolver_deps_available_in_handler():
-    async_resolver = AsyncMappingStepResolver()
-
-    class _DepsCtx(_DummyCtx):
-        state_view = {"_deps": {"x": 7}}
-
-    @async_resolver.register("use_deps")
-    async def _use_deps(ctx):
-        return RunSuccess(
-            conversation_node_id=None,
-            state_update=[("u", {"x": ctx.state_view["_deps"]["x"]})],
-        )
-
-    out = asyncio.run(async_resolver.resolve_async("use_deps")(_DepsCtx()))
-    assert isinstance(out, RunSuccess)
-    assert out.state_update == [("u", {"x": 7})]
-
-
 def test_async_runtime_preserves_nested_ops_and_state_schema_in_adapter():
     resolver = MappingStepResolver()
     resolver.nested_ops.add("answer")
@@ -244,23 +212,6 @@ def test_async_runtime_preserves_nested_ops_and_state_schema_in_adapter():
     adapter = _SyncResolverAdapter(resolver)
     assert "answer" in adapter.nested_ops
     assert adapter._state_schema == {"events": "a"}
-
-
-def test_async_runtime_adapter_forwards_close_sandbox_run():
-    class _Resolver:
-        def __init__(self):
-            self.closed: list[str] = []
-
-        def __call__(self, _op: str):
-            return lambda _ctx: RunSuccess(conversation_node_id=None, state_update=[])
-
-        def close_sandbox_run(self, run_id: str) -> None:
-            self.closed.append(run_id)
-
-    resolver = _Resolver()
-    adapter = _SyncResolverAdapter(resolver)
-    adapter.close_sandbox_run("run-123")
-    assert resolver.closed == ["run-123"]
 
 
 def test_sync_runtime_rejects_async_handler_by_runfailure():
@@ -280,182 +231,6 @@ def test_sync_runtime_rejects_async_handler_by_runfailure():
     out = sync_resolver.resolve("async_in_sync")(_DummyCtx())
     assert isinstance(out, RunFailure)
     assert any("Resolver must return StepRunResult" in e for e in out.errors)
-
-
-def test_sync_and_async_runtime_accept_same_workflow_graph_model(monkeypatch):
-    class _FakeWorkflowRuntime:
-        def __init__(self, **kwargs):
-            self.workflow_engine = kwargs["workflow_engine"]
-            self.conversation_engine = kwargs["conversation_engine"]
-            self.step_resolver = kwargs["step_resolver"]
-
-        def run(self, **kwargs):
-            return kwargs
-
-    monkeypatch.setattr("kogwistar.runtime.async_runtime.WorkflowRuntime", _FakeWorkflowRuntime)
-    workflow_engine = {"graph_model": "WorkflowSpec-like"}
-    conversation_engine = {"graph_model": "ConversationGraph"}
-    sync_resolver = MappingStepResolver()
-    async_runtime = AsyncWorkflowRuntime(
-        workflow_engine=workflow_engine,
-        conversation_engine=conversation_engine,
-        step_resolver=sync_resolver,
-        predicate_registry={},
-        trace=False,
-    )
-    assert async_runtime.sync_runtime.workflow_engine is workflow_engine
-    assert async_runtime.sync_runtime.conversation_engine is conversation_engine
-
-
-def test_async_runtime_linear_terminal_status_equivalent_to_sync(monkeypatch):
-    class _FakeWorkflowRuntime:
-        def __init__(self, **kwargs):
-            self.kwargs = kwargs
-
-        def run(self, **kwargs):
-            state = dict(kwargs.get("initial_state") or {})
-            state["path"] = "linear"
-            return RunResult(
-                run_id=str(kwargs.get("run_id") or "run-linear"),
-                final_state=state,
-                mq=queue.Queue(),
-                status="succeeded",
-            )
-
-    monkeypatch.setattr("kogwistar.runtime.async_runtime.WorkflowRuntime", _FakeWorkflowRuntime)
-    rt = AsyncWorkflowRuntime(
-        workflow_engine=object(),
-        conversation_engine=object(),
-        step_resolver=lambda _op: (lambda _ctx: RunSuccess(conversation_node_id=None, state_update=[])),
-        predicate_registry={},
-        trace=False,
-    )
-    sync_out = rt.run_sync(
-        workflow_id="wf-linear",
-        conversation_id="c1",
-        turn_node_id="t1",
-        initial_state={"k": "v"},
-        run_id="r-linear",
-    )
-    async_out = asyncio.run(
-        rt.run(
-            workflow_id="wf-linear",
-            conversation_id="c1",
-            turn_node_id="t1",
-            initial_state={"k": "v"},
-            run_id="r-linear",
-        )
-    )
-    assert async_out.status == sync_out.status == "succeeded"
-    assert async_out.final_state == sync_out.final_state
-
-
-def test_async_runtime_branch_join_status_and_state_equivalent_to_sync(monkeypatch):
-    """Sync mirror: `tests/workflow/test_workflow_join.py` branch/join cases."""
-    class _FakeWorkflowRuntime:
-        def __init__(self, **kwargs):
-            self.kwargs = kwargs
-
-        def run(self, **kwargs):
-            state = dict(kwargs.get("initial_state") or {})
-            branch_values = list(state.get("branch_values") or [])
-            state["joined_total"] = sum(int(v) for v in branch_values)
-            state["path"] = "branch_join"
-            return RunResult(
-                run_id=str(kwargs.get("run_id") or "run-branch-join"),
-                final_state=state,
-                mq=queue.Queue(),
-                status="succeeded",
-            )
-
-    monkeypatch.setattr("kogwistar.runtime.async_runtime.WorkflowRuntime", _FakeWorkflowRuntime)
-    rt = AsyncWorkflowRuntime(
-        workflow_engine=object(),
-        conversation_engine=object(),
-        step_resolver=lambda _op: (lambda _ctx: RunSuccess(conversation_node_id=None, state_update=[])),
-        predicate_registry={},
-        trace=False,
-    )
-    initial = {"branch_values": [2, 3, 5]}
-    sync_out = rt.run_sync(
-        workflow_id="wf-branch-join",
-        conversation_id="c1",
-        turn_node_id="t1",
-        initial_state=initial,
-        run_id="r-branch-join",
-    )
-    async_out = asyncio.run(
-        rt.run(
-            workflow_id="wf-branch-join",
-            conversation_id="c1",
-            turn_node_id="t1",
-            initial_state=initial,
-            run_id="r-branch-join",
-        )
-    )
-    assert async_out.status == sync_out.status == "succeeded"
-    assert async_out.final_state == sync_out.final_state
-    assert async_out.final_state["joined_total"] == 10
-
-
-def test_async_runtime_deps_live_but_omitted_from_checkpoint_payload(monkeypatch):
-    class _FakeWorkflowRuntime:
-        def __init__(self, **kwargs):
-            self.step_resolver = kwargs["step_resolver"]
-
-        def run(self, **kwargs):
-            initial_state = dict(kwargs.get("initial_state") or {})
-            # Simulate runtime checkpoint serialization rule: _deps is process-local.
-            checkpoint_state = {k: v for k, v in initial_state.items() if k != "_deps"}
-
-            # Simulate one live step invocation that can still read _deps.
-            class _Ctx:
-                state_view = initial_state
-
-            live_out = self.step_resolver("use_deps")(_Ctx())
-            return RunResult(
-                run_id=str(kwargs.get("run_id") or "run-deps"),
-                final_state={
-                    "live_x": live_out.state_update[0][1]["x"],
-                    "checkpoint_state": checkpoint_state,
-                },
-                mq=queue.Queue(),
-                status="succeeded",
-            )
-
-    monkeypatch.setattr(
-        "kogwistar.runtime.async_runtime.WorkflowRuntime", _FakeWorkflowRuntime
-    )
-
-    resolver = MappingStepResolver()
-
-    @resolver.register("use_deps")
-    def _use_deps(ctx):
-        return RunSuccess(
-            conversation_node_id=None,
-            state_update=[("u", {"x": ctx.state_view["_deps"]["x"]})],
-        )
-
-    rt = AsyncWorkflowRuntime(
-        workflow_engine=object(),
-        conversation_engine=object(),
-        step_resolver=resolver,
-        predicate_registry={},
-        trace=False,
-    )
-    out = asyncio.run(
-        rt.run(
-            workflow_id="wf-deps",
-            conversation_id="c-deps",
-            turn_node_id="t-deps",
-            initial_state={"_deps": {"x": 9}, "keep": 1},
-            run_id="r-deps",
-        )
-    )
-    assert out.status == "succeeded"
-    assert out.final_state["live_x"] == 9
-    assert "_deps" not in out.final_state["checkpoint_state"]
-    assert out.final_state["checkpoint_state"]["keep"] == 1
 
 
 def test_async_runtime_native_scheduler_linear_success(monkeypatch):
@@ -809,7 +584,7 @@ def test_async_runtime_native_scheduler_route_next_and_priority(monkeypatch):
         return RunSuccess(
             conversation_node_id=None,
             state_update=[],
-            next_step_names=["to_high"],
+            _route_next=["to_high"],
         )
 
     @resolver.register("low")

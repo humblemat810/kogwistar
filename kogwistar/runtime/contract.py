@@ -36,7 +36,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Tuple
 
-from .models import StepRunResult, WorkflowEdge, WorkflowState
+from .models import StepRunResult, WorkflowEdge, WorkflowState, get_route_next_names
 
 if TYPE_CHECKING:
     from ..engine_core.engine import GraphKnowledgeEngine
@@ -102,8 +102,9 @@ class BasePredicate:
     def __call__(
         self, e: WorkflowEdgeInfo, state: WorkflowState, result: StepRunResult
     ):
-        if result.next_step_names:
-            return e.name in result.next_step_names
+        route_names = get_route_next_names(result)
+        if route_names:
+            return e.name in route_names
         else:
             return True  # always true if step does not specify next step names
 
