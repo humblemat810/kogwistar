@@ -82,6 +82,130 @@ def test_sync_runtime_step_context_and_result_contract():
     assert result.state_update == [("u", {"ok": True})]
 
 
+def test_sync_runtime_step_context_send_lane_message_delegates_to_sender(tmp_path):
+    """Sync mirror: `tests/runtime/test_async_runtime_bijection_contract.py::test_async_runtime_step_context_send_lane_message_delegates_to_sender`.
+    Moved from `tests/runtime/test_step_context_lane_message.py::test_step_context_send_lane_message_delegates_to_sender`.
+    """
+    calls = []
+
+    def _sender(**kwargs):
+        calls.append(kwargs)
+        return {"message_id": "msg-1"}
+
+    ctx = StepContext(
+        run_id="run-1",
+        workflow_id="wf-1",
+        workflow_node_id="node-1",
+        op="op-1",
+        token_id="tok-1",
+        attempt=1,
+        step_seq=1,
+        cache_dir=tmp_path,
+        conversation_id="conv-1",
+        turn_node_id="turn-1",
+        state={"x": 1},
+        lane_message_sender=_sender,
+    )
+
+    result = ctx.send_lane_message(
+        conversation_id="conv-1",
+        inbox_id="inbox:worker:demo",
+        sender_id="lane:foreground",
+        recipient_id="lane:worker:demo",
+        msg_type="request.demo",
+        payload={"hello": "world"},
+    )
+
+    assert result == {"message_id": "msg-1"}
+    assert calls and calls[0]["msg_type"] == "request.demo"
+
+
+def test_sync_runtime_step_context_send_lane_message_requires_sender(tmp_path):
+    """Sync mirror: `tests/runtime/test_async_runtime_bijection_contract.py::test_async_runtime_step_context_send_lane_message_requires_sender`.
+    Moved from `tests/runtime/test_step_context_lane_message.py::test_step_context_send_lane_message_requires_sender`.
+    """
+    ctx = StepContext(
+        run_id="run-1",
+        workflow_id="wf-1",
+        workflow_node_id="node-1",
+        op="op-1",
+        token_id="tok-1",
+        attempt=1,
+        step_seq=1,
+        cache_dir=tmp_path,
+        conversation_id="conv-1",
+        turn_node_id="turn-1",
+        state={"x": 1},
+    )
+
+    try:
+        ctx.send_lane_message(
+            conversation_id="conv-1",
+            inbox_id="inbox:worker:demo",
+            sender_id="lane:foreground",
+            recipient_id="lane:worker:demo",
+            msg_type="request.demo",
+            payload={"hello": "world"},
+        )
+        raise AssertionError("expected RuntimeError")
+    except RuntimeError as exc:
+        assert "lane message sender not configured" in str(exc)
+
+
+def test_sync_runtime_step_context_emit_lane_message_event_delegates_to_sink(tmp_path):
+    """Sync mirror: `tests/runtime/test_async_runtime_bijection_contract.py::test_async_runtime_step_context_emit_lane_message_event_delegates_to_sink`.
+    Moved from `tests/runtime/test_step_context_lane_message_events.py::test_step_context_emit_lane_message_event_delegates_to_sink`.
+    """
+    calls = []
+
+    def _sink(event):
+        calls.append(event)
+
+    ctx = StepContext(
+        run_id="run-1",
+        workflow_id="wf-1",
+        workflow_node_id="node-1",
+        op="op-1",
+        token_id="tok-1",
+        attempt=1,
+        step_seq=1,
+        cache_dir=tmp_path,
+        conversation_id="conv-1",
+        turn_node_id="turn-1",
+        state={"x": 1},
+        lane_message_event_sink=_sink,
+    )
+
+    ctx.emit_lane_message_event({"event_type": "worker.requested", "run_id": "run-1"})
+
+    assert calls == [{"event_type": "worker.requested", "run_id": "run-1"}]
+
+
+def test_sync_runtime_step_context_emit_lane_message_event_requires_sink(tmp_path):
+    """Sync mirror: `tests/runtime/test_async_runtime_bijection_contract.py::test_async_runtime_step_context_emit_lane_message_event_requires_sink`.
+    Moved from `tests/runtime/test_step_context_lane_message_events.py::test_step_context_emit_lane_message_event_requires_sink`.
+    """
+    ctx = StepContext(
+        run_id="run-1",
+        workflow_id="wf-1",
+        workflow_node_id="node-1",
+        op="op-1",
+        token_id="tok-1",
+        attempt=1,
+        step_seq=1,
+        cache_dir=tmp_path,
+        conversation_id="conv-1",
+        turn_node_id="turn-1",
+        state={"x": 1},
+    )
+
+    try:
+        ctx.emit_lane_message_event({"event_type": "worker.requested", "run_id": "run-1"})
+        raise AssertionError("expected RuntimeError")
+    except RuntimeError as exc:
+        assert "event sink not configured" in str(exc)
+
+
 def test_sync_runtime_preserves_nested_ops_and_state_schema_in_adapter():
     """Sync mirror: `tests/runtime/test_async_runtime_bijection_contract.py::test_async_runtime_preserves_nested_ops_and_state_schema_in_adapter`.
     New sync mirror for the resolver metadata bijection pair.

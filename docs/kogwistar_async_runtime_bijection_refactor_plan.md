@@ -53,24 +53,31 @@ Done means:
 
 ## Current Bijection Subset
 
-These cases are already in `test_sync_runtime_bijection_contract.py` and `test_async_runtime_bijection_contract.py`.
+These cases are already done in `test_sync_runtime_bijection_contract.py` and `test_async_runtime_bijection_contract.py`.
 
-| Suffix | Sync case | Async case | Sync provenance | Async provenance | Source action |
-| --- | --- | --- | --- | --- | --- |
-| `default_ops_equal` | `test_sync_runtime_default_ops_equal` | `test_async_runtime_default_ops_equal` | New sync mirror | Moved from `tests/runtime/test_async_runtime_contract.py::test_default_sync_ops_equal_default_async_ops` | Old async source removed. |
-| `state_merge_semantics` | `test_sync_runtime_state_merge_semantics` | `test_async_runtime_state_merge_semantics` | Refactored from `tests/runtime/test_checkpoint_resume_contract.py::test_replay_state_reducer_matches_sync_runtime_merge_semantics` | Refactored from `tests/runtime/test_async_runtime_contract.py::test_async_runtime_native_scheduler_uses_shared_state_merge_semantics` | Both sources retained. |
-| `step_context_and_result_contract` | `test_sync_runtime_step_context_and_result_contract` | `test_async_runtime_step_context_and_result_contract` | New sync mirror | Moved from `tests/runtime/test_async_runtime_contract.py::test_async_runtime_step_context_and_result_contract` | Old async source removed. |
-| `preserves_nested_ops_and_state_schema_in_adapter` | `test_sync_runtime_preserves_nested_ops_and_state_schema_in_adapter` | `test_async_runtime_preserves_nested_ops_and_state_schema_in_adapter` | New sync mirror | Refactored from `tests/runtime/test_async_runtime_contract.py::test_async_runtime_preserves_nested_ops_and_state_schema_in_adapter` | Async source retained. |
-| `trace_fast_path_configuration` | `test_sync_runtime_trace_fast_path_configuration` | `test_async_runtime_trace_fast_path_configuration` | Refactored from `tests/runtime/test_workflow_suspend_resume.py::test_runtime_trace_writes_disable_eager_index_reconcile_for_in_memory_backend` | Moved from `tests/runtime/test_async_runtime_contract.py::test_async_runtime_trace_fast_path_configuration_matches_sync_runtime` | Sync source retained; old async source removed. |
-| `auto_transaction_mode_defaults_to_none_for_non_pg_backend` | `test_sync_runtime_auto_transaction_mode_defaults_to_none_for_non_pg_backend` | `test_async_runtime_auto_transaction_mode_defaults_to_none_for_non_pg_backend` | New sync mirror | Moved from `tests/runtime/test_async_runtime_contract.py::test_async_runtime_auto_transaction_mode_defaults_to_none_for_non_pg_backend` | Old async source removed. |
-| `auto_transaction_mode_uses_step_for_pg_backend` | `test_sync_runtime_auto_transaction_mode_uses_step_for_pg_backend` | `test_async_runtime_auto_transaction_mode_uses_step_for_pg_backend` | New sync mirror | Moved from `tests/runtime/test_async_runtime_contract.py::test_async_runtime_auto_transaction_mode_uses_step_for_pg_backend` | Old async source removed. |
-| `missing_op_behavior` | `test_sync_runtime_missing_op_behavior` | `test_async_runtime_missing_op_behavior` | New sync mirror | Moved from `tests/runtime/test_async_runtime_contract.py::test_missing_op_behavior_matches_sync_resolver` | Old async source removed. |
-| `exception_to_runfailure` | `test_sync_runtime_exception_to_runfailure` | `test_async_runtime_exception_to_runfailure` | New sync mirror | Moved from `tests/runtime/test_async_runtime_contract.py::test_exception_to_runfailure_matches_sync_resolver` | Old async source removed. |
-| `async_handler_callability` | `test_sync_runtime_async_handler_callability` | `test_async_runtime_async_handler_callability` | New sync mirror | Moved from `tests/runtime/test_async_runtime_contract.py::test_async_adapter_accepts_async_handler` | Old async source removed. |
-| `sync_handler_callability` | `test_sync_runtime_sync_handler_callability` | `test_async_runtime_sync_handler_callability` | New sync mirror | Moved from `tests/runtime/test_async_runtime_contract.py::test_async_adapter_accepts_sync_handler` | Old async source removed. |
-| `registered_op_appears_in_op_set` | `test_sync_runtime_registered_op_appears_in_op_set` | `test_async_runtime_registered_op_appears_in_op_set` | New sync mirror | Moved from `tests/runtime/test_async_runtime_contract.py::test_registered_async_op_appears_in_async_op_set` | Old async source removed. |
-| `preserves_sandboxed_behavior` | `test_sync_runtime_preserves_sandboxed_behavior` | `test_async_runtime_preserves_sandboxed_behavior` | Refactored from `tests/runtime/test_sandbox.py::test_mapping_resolver_executes_sandboxed_code_with_run_context` | Moved from `tests/runtime/test_async_runtime_contract.py::test_async_resolver_preserves_sandboxed_behavior` | Sync source retained; old async source removed. |
-| `legacy_update_warning_preserved` | `test_sync_runtime_legacy_update_warning_preserved` | `test_async_runtime_legacy_update_warning_preserved` | New sync mirror | Moved from `tests/runtime/test_async_runtime_contract.py::test_async_resolver_legacy_update_warning_preserved` | Old async source removed. |
+- [x] `default_ops_equal`: `test_sync_runtime_default_ops_equal` / `test_async_runtime_default_ops_equal`
+- [x] `state_merge_semantics`: `test_sync_runtime_state_merge_semantics` / `test_async_runtime_state_merge_semantics`
+- [x] `step_context_and_result_contract`: `test_sync_runtime_step_context_and_result_contract` / `test_async_runtime_step_context_and_result_contract`
+- [x] `preserves_nested_ops_and_state_schema_in_adapter`: `test_sync_runtime_preserves_nested_ops_and_state_schema_in_adapter` / `test_async_runtime_preserves_nested_ops_and_state_schema_in_adapter`
+- [x] `trace_fast_path_configuration`: `test_sync_runtime_trace_fast_path_configuration` / `test_async_runtime_trace_fast_path_configuration`
+- [x] `auto_transaction_mode_defaults_to_none_for_non_pg_backend`: `test_sync_runtime_auto_transaction_mode_defaults_to_none_for_non_pg_backend` / `test_async_runtime_auto_transaction_mode_defaults_to_none_for_non_pg_backend`
+- [x] `auto_transaction_mode_uses_step_for_pg_backend`: `test_sync_runtime_auto_transaction_mode_uses_step_for_pg_backend` / `test_async_runtime_auto_transaction_mode_uses_step_for_pg_backend`
+- [x] `missing_op_behavior`: `test_sync_runtime_missing_op_behavior` / `test_async_runtime_missing_op_behavior`
+- [x] `exception_to_runfailure`: `test_sync_runtime_exception_to_runfailure` / `test_async_runtime_exception_to_runfailure`
+- [x] `async_handler_callability`: `test_sync_runtime_async_handler_callability` / `test_async_runtime_async_handler_callability`
+- [x] `sync_handler_callability`: `test_sync_runtime_sync_handler_callability` / `test_async_runtime_sync_handler_callability`
+- [x] `registered_op_appears_in_op_set`: `test_sync_runtime_registered_op_appears_in_op_set` / `test_async_runtime_registered_op_appears_in_op_set`
+- [x] `preserves_sandboxed_behavior`: `test_sync_runtime_preserves_sandboxed_behavior` / `test_async_runtime_preserves_sandboxed_behavior`
+- [x] `legacy_update_warning_preserved`: `test_sync_runtime_legacy_update_warning_preserved` / `test_async_runtime_legacy_update_warning_preserved`
+
+Move next:
+
+- [ ] `state_schema_metadata_available`: `test_sync_runtime_state_schema_metadata_available` / `test_async_runtime_state_schema_metadata_available`
+- [ ] `deps_available_in_handler`: `test_sync_runtime_deps_available_in_handler` / `test_async_runtime_deps_available_in_handler`
+- [ ] `step_context_send_lane_message_delegates`: `test_sync_runtime_step_context_send_lane_message_delegates_to_sender` / `test_async_runtime_step_context_send_lane_message_delegates_to_sender`
+- [ ] `step_context_send_lane_message_requires_sender`: `test_sync_runtime_step_context_send_lane_message_requires_sender` / `test_async_runtime_step_context_send_lane_message_requires_sender`
+- [ ] `step_context_emit_lane_message_event_delegates`: `test_sync_runtime_step_context_emit_lane_message_event_delegates_to_sink` / `test_async_runtime_step_context_emit_lane_message_event_delegates_to_sink`
+- [ ] `step_context_emit_lane_message_event_requires_sink`: `test_sync_runtime_step_context_emit_lane_message_event_requires_sink` / `test_async_runtime_step_context_emit_lane_message_event_requires_sink`
 
 ## Candidate Case Backlog
 
@@ -99,49 +106,45 @@ These are high-signal, low-cost smoke tests that are not yet in the current bije
 
 These look like small async-side contract cases. Inspect before moving.
 
-| Source case | Proposed suffix | Initial action |
-| --- | --- | --- |
-| `tests/runtime/test_async_runtime_contract.py::test_async_runtime_exported` | `runtime_exported` | Move async if exact; add sync import/export mirror if useful, else waive as async-only public API. |
-| `tests/runtime/test_async_runtime_contract.py::test_async_resolver_runs_sync_handlers_inline_without_to_thread` | `sync_handlers_inline_without_to_thread` | Probably async-only thread-free diagnostic; likely waive, not bijection. |
-| `tests/runtime/test_async_runtime_contract.py::test_async_resolver_runs_two_awaited_handlers_concurrently` | `awaited_handlers_concurrently` | Async-only concurrency; waive from sync bijection. |
-| `tests/runtime/test_async_runtime_contract.py::test_async_resolver_state_schema_metadata_available` | `state_schema_metadata_available` | Move async + implement sync mirror. |
-| `tests/runtime/test_async_runtime_contract.py::test_async_resolver_deps_available_in_handler` | `deps_available_in_handler` | Move async + implement sync mirror if exact. |
-| `tests/runtime/test_async_runtime_contract.py::test_async_runtime_adapter_forwards_close_sandbox_run` | `adapter_forwards_close_sandbox_run` | Move async + implement sync mirror or refactor from sandbox close semantics. |
-| `tests/runtime/test_async_runtime_contract.py::test_sync_runtime_rejects_async_handler_by_runfailure` | `rejects_async_handler_by_runfailure` | Move sync-like case to sync bijection + implement async mirror or mark sync-only rejection. |
-| `tests/runtime/test_async_runtime_contract.py::test_sync_and_async_runtime_accept_same_workflow_graph_model` | `accept_same_workflow_graph_model` | Refactor into bijection; source may remain if broader runtime constructor behavior. |
-| `tests/runtime/test_async_runtime_contract.py::test_async_runtime_linear_terminal_status_equivalent_to_sync` | `linear_terminal_status_equivalent` | Move/refactor async; add sync mirror or rely on existing side-by-side parity if too fake-runtime specific. |
-| `tests/runtime/test_async_runtime_contract.py::test_async_runtime_branch_join_status_and_state_equivalent_to_sync` | `branch_join_status_and_state_equivalent` | Move/refactor async; add sync mirror or keep as parity acceptance. |
-| `tests/runtime/test_async_runtime_contract.py::test_async_runtime_deps_live_but_omitted_from_checkpoint_payload` | `deps_live_not_checkpointed` | Refactor; source likely retained for checkpoint semantics. |
+- [ ] `tests/runtime/test_async_runtime_contract.py::test_async_runtime_exported` -> `runtime_exported` | move async if exact; add sync import/export mirror if useful, else waive
+- [ ] `tests/runtime/test_async_runtime_contract.py::test_async_resolver_runs_sync_handlers_inline_without_to_thread` -> `sync_handlers_inline_without_to_thread` | likely waive
+- [ ] `tests/runtime/test_async_runtime_contract.py::test_async_resolver_runs_two_awaited_handlers_concurrently` -> `awaited_handlers_concurrently` | async-only; likely waive
+- [ ] `tests/runtime/test_async_runtime_contract.py::test_async_resolver_state_schema_metadata_available` -> `state_schema_metadata_available` | move async + implement sync mirror
+- [ ] `tests/runtime/test_async_runtime_contract.py::test_async_resolver_deps_available_in_handler` -> `deps_available_in_handler` | move async + implement sync mirror if exact
+- [ ] `tests/runtime/test_async_runtime_contract.py::test_async_runtime_adapter_forwards_close_sandbox_run` -> `adapter_forwards_close_sandbox_run` | move async + implement sync mirror or refactor from sandbox close semantics
+- [ ] `tests/runtime/test_async_runtime_contract.py::test_sync_runtime_rejects_async_handler_by_runfailure` -> `rejects_async_handler_by_runfailure` | move sync-like case to sync bijection + implement async mirror or mark sync-only rejection
+- [ ] `tests/runtime/test_async_runtime_contract.py::test_sync_and_async_runtime_accept_same_workflow_graph_model` -> `accept_same_workflow_graph_model` | refactor into bijection; source may remain if broader runtime constructor behavior
+- [ ] `tests/runtime/test_async_runtime_contract.py::test_async_runtime_linear_terminal_status_equivalent_to_sync` -> `linear_terminal_status_equivalent` | move/refactor async; add sync mirror or rely on existing side-by-side parity if too fake-runtime specific
+- [ ] `tests/runtime/test_async_runtime_contract.py::test_async_runtime_branch_join_status_and_state_equivalent_to_sync` -> `branch_join_status_and_state_equivalent` | move/refactor async; add sync mirror or keep as parity acceptance
+- [ ] `tests/runtime/test_async_runtime_contract.py::test_async_runtime_deps_live_but_omitted_from_checkpoint_payload` -> `deps_live_not_checkpointed` | refactor; source likely retained for checkpoint semantics
 
 ### Move sync + implement async mirror
 
 These are sync-side baseline cases likely worth bijection triage.
 
-| Source case | Proposed suffix | Initial action |
-| --- | --- | --- |
-| `tests/runtime/test_resume_wait_reasons.py::test_wait_reason_can_suspend_and_resume` | `wait_reason_suspend_resume` | Refactor from sync source; source retained for resume wait-reason integration. |
-| `tests/runtime/test_trace_sink_parallel_nested_minimal.py::test_trace_sink_parallel_and_nested_minimal_sync` | `trace_sink_parallel_nested_minimal` | Refactor; source retained for trace sink integration. |
-| `tests/runtime/test_workflow_terminal_status.py::test_runtime_persists_completed_terminal_for_leaf_node` | `persists_completed_terminal_for_leaf_node` | Refactor; source retained for backend-param terminal persistence. |
-| `tests/runtime/test_workflow_terminal_status.py::test_runtime_persists_failed_terminal_for_leaf_node` | `persists_failed_terminal_for_leaf_node` | Refactor; source retained for backend-param terminal persistence. |
-| `tests/runtime/test_checkpoint_resume_contract.py::test_load_checkpoint_accepts_current_schema` | `load_checkpoint_accepts_current_schema` | Likely replay/checkpoint contract, not runtime bijection; maybe waive. |
-| `tests/runtime/test_checkpoint_resume_contract.py::test_load_checkpoint_rejects_future_schema` | `load_checkpoint_rejects_future_schema` | Likely replay/checkpoint contract, not runtime bijection; maybe waive. |
-| `tests/runtime/test_checkpoint_resume_contract.py::test_replay_rejects_future_schema` | `replay_rejects_future_schema` | Likely replay-only; waive or acceptance coverage. |
-| `tests/runtime/test_checkpoint_resume_contract.py::test_replay_ignores_created_at_ms_and_orders_by_step_seq` | `replay_orders_by_step_seq` | Refactor/waive; source retained for replay. |
-| `tests/runtime/test_checkpoint_resume_contract.py::test_replay_to_is_read_only_and_does_not_append_new_history` | `replay_read_only_no_new_history` | Refactor/waive; source retained for event history semantics. |
-| `tests/runtime/test_sandbox.py::test_mapping_resolver_does_not_prepare_sandbox_for_non_sandboxed_op` | `non_sandboxed_op_does_not_prepare_sandbox` | Move/refactor sync + implement async mirror if async resolver supports same sandbox metadata. |
-| `tests/runtime/test_step_context_lane_message.py::test_step_context_send_lane_message_delegates_to_sender` | `step_context_send_lane_message_delegates` | Move/refactor sync + async mirror if StepContext shared. |
-| `tests/runtime/test_step_context_lane_message.py::test_step_context_send_lane_message_requires_sender` | `step_context_send_lane_message_requires_sender` | Move/refactor sync + async mirror if StepContext shared. |
-| `tests/runtime/test_step_context_lane_message_events.py::test_step_context_emit_lane_message_event_delegates_to_sink` | `step_context_emit_lane_message_event_delegates` | Move/refactor sync + async mirror if StepContext shared. |
-| `tests/runtime/test_step_context_lane_message_events.py::test_step_context_emit_lane_message_event_requires_sink` | `step_context_emit_lane_message_event_requires_sink` | Move/refactor sync + async mirror if StepContext shared. |
-| `tests/runtime/test_workflow_invocation_and_route_next.py::test_nested_workflow_synthesized_design_is_persisted_and_used` | `nested_workflow_synthesized_design` | Refactor; source retained for persistence/design semantics. |
-| `tests/runtime/test_workflow_invocation_and_route_next.py::test_route_next_alias_can_fan_out_multiple_branches` | `route_next_alias_fanout` | Refactor into async mirror; source retained for sync route-next integration. |
-| `tests/runtime/test_workflow_invocation_and_route_next.py::test_nested_workflow_failure_short_circuits_parent_routing` | `nested_failure_short_circuits_parent` | Refactor; source retained for nested routing integration. |
-| `tests/workflow/test_workflow_native_update.py::test_workflow_runtime_native_update_schema_applies_known_and_falls_back_unknown` | `native_update_schema_known_and_unknown` | Refactor; source retained for native update schema. |
-| `tests/workflow/test_workflow_join.py::test_join_barrier_waits_for_all_arrivals` | `join_barrier_waits_for_all_arrivals` | Refactor; source retained for thread-worker sync join integration. |
-| `tests/workflow/test_workflow_join.py::test_join_does_not_wait_for_branch_that_can_no_longer_reach_it` | `join_unreachable_branch_not_required` | Refactor; source retained for reachability semantics. |
-| `tests/workflow/test_save_load_progress.py::test_runtime_checkpoint_load_and_replay` | `checkpoint_load_and_replay` | Refactor/waive; source retained for save/load progress. |
-| `tests/workflow/test_save_load_progress.py::test_runtime_resume_from_checkpoint` | `resume_from_checkpoint` | Refactor; source retained for save/load progress. |
-| `tests/workflow/test_save_load_progress.py::test_runtime_resume_from_checkpoint_frontier` | `resume_from_checkpoint_frontier` | Refactor; source retained for frontier semantics. |
+- [ ] `tests/runtime/test_resume_wait_reasons.py::test_wait_reason_can_suspend_and_resume` -> `wait_reason_suspend_resume` | refactor from sync source; source retained for resume wait-reason integration
+- [ ] `tests/runtime/test_trace_sink_parallel_nested_minimal.py::test_trace_sink_parallel_and_nested_minimal_sync` -> `trace_sink_parallel_nested_minimal` | refactor; source retained for trace sink integration
+- [ ] `tests/runtime/test_workflow_terminal_status.py::test_runtime_persists_completed_terminal_for_leaf_node` -> `persists_completed_terminal_for_leaf_node` | refactor; source retained for backend-param terminal persistence
+- [ ] `tests/runtime/test_workflow_terminal_status.py::test_runtime_persists_failed_terminal_for_leaf_node` -> `persists_failed_terminal_for_leaf_node` | refactor; source retained for backend-param terminal persistence
+- [ ] `tests/runtime/test_checkpoint_resume_contract.py::test_load_checkpoint_accepts_current_schema` -> `load_checkpoint_accepts_current_schema` | likely waive
+- [ ] `tests/runtime/test_checkpoint_resume_contract.py::test_load_checkpoint_rejects_future_schema` -> `load_checkpoint_rejects_future_schema` | likely waive
+- [ ] `tests/runtime/test_checkpoint_resume_contract.py::test_replay_rejects_future_schema` -> `replay_rejects_future_schema` | likely waive
+- [ ] `tests/runtime/test_checkpoint_resume_contract.py::test_replay_ignores_created_at_ms_and_orders_by_step_seq` -> `replay_orders_by_step_seq` | refactor/waive
+- [ ] `tests/runtime/test_checkpoint_resume_contract.py::test_replay_to_is_read_only_and_does_not_append_new_history` -> `replay_read_only_no_new_history` | refactor/waive
+- [ ] `tests/runtime/test_sandbox.py::test_mapping_resolver_does_not_prepare_sandbox_for_non_sandboxed_op` -> `non_sandboxed_op_does_not_prepare_sandbox` | move/refactor sync + async mirror if resolver supports same sandbox metadata
+- [ ] `tests/runtime/test_step_context_lane_message.py::test_step_context_send_lane_message_delegates_to_sender` -> `step_context_send_lane_message_delegates` | move/refactor sync + async mirror if StepContext shared
+- [ ] `tests/runtime/test_step_context_lane_message.py::test_step_context_send_lane_message_requires_sender` -> `step_context_send_lane_message_requires_sender` | move/refactor sync + async mirror if StepContext shared
+- [ ] `tests/runtime/test_step_context_lane_message_events.py::test_step_context_emit_lane_message_event_delegates_to_sink` -> `step_context_emit_lane_message_event_delegates` | move/refactor sync + async mirror if StepContext shared
+- [ ] `tests/runtime/test_step_context_lane_message_events.py::test_step_context_emit_lane_message_event_requires_sink` -> `step_context_emit_lane_message_event_requires_sink` | move/refactor sync + async mirror if StepContext shared
+- [ ] `tests/runtime/test_workflow_invocation_and_route_next.py::test_nested_workflow_synthesized_design_is_persisted_and_used` -> `nested_workflow_synthesized_design` | refactor; source retained for persistence/design semantics
+- [ ] `tests/runtime/test_workflow_invocation_and_route_next.py::test_route_next_alias_can_fan_out_multiple_branches` -> `route_next_alias_fanout` | refactor; source retained for sync route-next integration
+- [ ] `tests/runtime/test_workflow_invocation_and_route_next.py::test_nested_workflow_failure_short_circuits_parent_routing` -> `nested_failure_short_circuits_parent` | refactor; source retained for nested routing integration
+- [ ] `tests/workflow/test_workflow_native_update.py::test_workflow_runtime_native_update_schema_applies_known_and_falls_back_unknown` -> `native_update_schema_known_and_unknown` | refactor; source retained for native update schema
+- [ ] `tests/workflow/test_workflow_join.py::test_join_barrier_waits_for_all_arrivals` -> `join_barrier_waits_for_all_arrivals` | refactor; source retained for thread-worker sync join integration
+- [ ] `tests/workflow/test_workflow_join.py::test_join_does_not_wait_for_branch_that_can_no_longer_reach_it` -> `join_unreachable_branch_not_required` | refactor; source retained for reachability semantics
+- [ ] `tests/workflow/test_save_load_progress.py::test_runtime_checkpoint_load_and_replay` -> `checkpoint_load_and_replay` | refactor/waive; source retained for save/load progress
+- [ ] `tests/workflow/test_save_load_progress.py::test_runtime_resume_from_checkpoint` -> `resume_from_checkpoint` | refactor; source retained for save/load progress
+- [ ] `tests/workflow/test_save_load_progress.py::test_runtime_resume_from_checkpoint_frontier` -> `resume_from_checkpoint_frontier` | refactor; source retained for frontier semantics
 
 ### Keep as acceptance or integration tests, not bijection subset
 
