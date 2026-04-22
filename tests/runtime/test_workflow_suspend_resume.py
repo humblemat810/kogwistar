@@ -571,6 +571,7 @@ async def _async_runtime_engine_pair(backend_kind: str, request, tmp_path):
     BACKEND_PARAMS,
 )
 def test_workflow_suspend_and_resume(tmp_path, backend_kind):
+    """Async mirror: `tests/runtime/test_async_runtime_contract.py::test_async_runtime_suspend_and_resume_roundtrip`."""
     if backend_kind == "fake":
         wf_engine = GraphKnowledgeEngine(
             persist_directory=str(tmp_path / "wf"),
@@ -818,6 +819,7 @@ async def test_workflow_suspend_and_resume_async_backends(
 
 @pytest.mark.parametrize("backend_kind", BACKEND_PARAMS)
 def test_workflow_suspend_and_resume_branching(tmp_path, backend_kind):
+    """Async mirror: `tests/runtime/test_async_runtime_contract.py::test_async_runtime_suspend_and_resume_roundtrip`."""
     wf_engine = _make_engine(tmp_path / "wf_b", graph_type="workflow", backend_kind=backend_kind)
     conv_engine = _make_engine(tmp_path / "conv_b", graph_type="conversation", backend_kind=backend_kind)
 
@@ -2228,6 +2230,7 @@ def test_workflow_failure_does_not_take_default_recovery_edge(
 def test_resume_run_failure_can_route_to_recovery_branch(
     tmp_path, backend_kind
 ):
+    """Async mirror: `tests/runtime/test_async_runtime_contract.py::test_async_runtime_parent_cancellation_propagates_to_child`."""
     wf_engine = _make_engine(tmp_path / "wf_resume_fail", graph_type="workflow", backend_kind=backend_kind)
     conv_engine = _make_engine(tmp_path / "conv_resume_fail", graph_type="conversation", backend_kind=backend_kind)
 
@@ -2463,6 +2466,7 @@ async def test_resume_run_failure_can_route_to_recovery_branch_async_backends(
 def test_resume_run_can_resuspend_same_token_with_updated_payload(
     tmp_path, backend_kind
 ):
+    """Async mirror: `tests/runtime/test_async_runtime_contract.py::test_async_runtime_run_with_resume_markers_delegates_to_sync_run`."""
     wf_engine = _make_engine(tmp_path / "wf_resuspend", graph_type="workflow", backend_kind=backend_kind)
     conv_engine = _make_engine(tmp_path / "conv_resuspend", graph_type="conversation", backend_kind=backend_kind)
 
@@ -2591,6 +2595,7 @@ def test_resume_run_can_resuspend_same_token_with_updated_payload(
 def test_sandbox_recoverable_error_can_suspend_then_resume_success(
     tmp_path, backend_kind
 ):
+    """Async mirror: `tests/runtime/test_async_runtime_contract.py::test_async_runtime_suspend_and_resume_roundtrip`."""
     wf_engine = _make_engine(tmp_path / "wf_sandbox_recoverable", graph_type="workflow", backend_kind=backend_kind)
     conv_engine = _make_engine(tmp_path / "conv_sandbox_recoverable", graph_type="conversation", backend_kind=backend_kind)
 

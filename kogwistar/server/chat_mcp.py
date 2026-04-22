@@ -104,6 +104,7 @@ def build_workflow_mcp(
         initial_state: dict[str, Any] | None = None,
         turn_node_id: str | None = None,
         user_id: str | None = None,
+        runtime_kind: str = "sync",
     ) -> dict[str, Any]:
         if require_workflow_access:
             require_workflow_access(workflow_id, "rw")
@@ -116,6 +117,7 @@ def build_workflow_mcp(
             initial_state=initial_state or {},
             turn_node_id=turn_node_id,
             user_id=effective_user_id,
+            runtime_kind=runtime_kind,
         )
 
     @tool_roles({role_ro, role_rw})

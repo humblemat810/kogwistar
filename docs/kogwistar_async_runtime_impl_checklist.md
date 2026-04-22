@@ -9,6 +9,7 @@ Current snapshot:
 - Phase 2: completed
 - Phase 3: completed (experimental native async scheduler path landed for linear/fanout/route-next/join/cancel/resume basics with bounded concurrency and deterministic acceptance order)
 - Phase 4+: in progress (state/replay reducer unification started)
+- Phase 7: in progress (runtime selection/integration wiring started)
 
 ---
 
@@ -265,66 +266,73 @@ Acceptance tests:
 
 ## Phase 6 - Trace, Observability, and Events
 
-- [ ] reuse `EventEmitter` semantics or provide async equivalent
-- [ ] preserve workflow trace node and edge shape
-- [ ] preserve `WorkflowRunNode`, `WorkflowStepExecNode`, and checkpoint artifacts
-- [ ] preserve trace fast-path behavior where safe
-- [ ] ensure nested async runtimes do not duplicate trace sinks
-- [ ] ensure task durations and status reporting are best-effort and non-fatal
-- [ ] add structured async task lifecycle events
-- [ ] expose scheduled, started, completed, failed, suspended, and cancelled task states
-- [ ] ensure trace write failures follow explicit policy
-- [ ] separate durable semantic runtime events from async-only diagnostic telemetry
+- [x] reuse `EventEmitter` semantics or provide async equivalent
+- [x] preserve workflow trace node and edge shape -> `test_async_runtime_side_by_side_node_edge_and_terminal_parity`
+- [x] preserve `WorkflowRunNode`, `WorkflowStepExecNode`, and checkpoint artifacts -> `test_async_runtime_side_by_side_node_edge_and_terminal_parity`, `test_replay_to_is_read_only_and_does_not_append_new_history`
+- [x] preserve trace fast-path behavior where safe -> `test_runtime_trace_writes_disable_eager_index_reconcile_for_in_memory_backend`, `test_async_runtime_trace_fast_path_configuration_matches_sync_runtime`
+- [x] ensure nested async runtimes do not duplicate trace sinks -> `test_async_runtime_native_scheduler_nested_invocation_reuses_trace_emitter`
+- [x] ensure task durations and status reporting are best-effort and non-fatal -> `test_async_runtime_native_scheduler_trace_emitter_failure_is_best_effort`
+- [x] add structured async task lifecycle events -> `test_async_runtime_native_scheduler_emits_trace_events_with_expected_metadata`
+- [x] expose scheduled, started, completed, failed, suspended, and cancelled task states -> `test_async_runtime_native_scheduler_emits_trace_events_with_expected_metadata`, `test_async_runtime_native_scheduler_trace_emitter_failure_is_best_effort`, `test_async_runtime_native_scheduler_cancellation_drains_inflight`, `test_async_runtime_native_scheduler_persists_cancelled_terminal`, `test_async_runtime_suspend_and_resume_roundtrip`
+- [x] ensure trace write failures follow explicit policy -> `test_async_runtime_native_scheduler_trace_emitter_failure_is_best_effort`
+- [x] separate durable semantic runtime events from async-only diagnostic telemetry -> `test_async_runtime_native_scheduler_emits_trace_events_with_expected_metadata`, `test_async_runtime_native_scheduler_trace_emitter_failure_is_best_effort`
 
 Acceptance tests:
 
-- [ ] async runtime writes trace artifacts with the same metadata fields as sync runtime
-- [ ] async nested workflow invocation reuses or safely isolates trace emitter
-- [ ] trace write failure does not corrupt workflow state unless policy says fatal
-- [ ] async runtime exposes enough events for server progress APIs
-- [ ] async diagnostic telemetry can be ignored without changing replay or side-effect parity
+- [x] async runtime writes trace artifacts with the same metadata fields as sync runtime -> `test_async_runtime_native_scheduler_emits_trace_events_with_expected_metadata`, `test_async_runtime_side_by_side_node_edge_and_terminal_parity`
+- [x] async nested workflow invocation reuses or safely isolates trace emitter -> `test_async_runtime_native_scheduler_nested_invocation_reuses_trace_emitter`
+- [x] trace write failure does not corrupt workflow state unless policy says fatal -> `test_async_runtime_native_scheduler_trace_emitter_failure_is_best_effort`
+- [x] async runtime exposes enough events for server progress APIs -> `test_chat_rest_events_poll_sees_live_updates_for_async_backends`, `test_mcp_run_events_sees_live_updates_for_async_backends`, `test_workflow_runtime_sse_cancel_after_sleep_ticks_for_async_backends`
+- [x] async diagnostic telemetry can be ignored without changing replay or side-effect parity -> `test_async_runtime_native_scheduler_trace_emitter_failure_is_best_effort`, `test_async_runtime_side_by_side_node_edge_and_terminal_parity`
 
 ---
 
 ## Phase 7 - API and Integration
 
 - [x] export `AsyncWorkflowRuntime` from `kogwistar.runtime`
-- [ ] add server runner option for async runtime
-- [ ] add conversation service injection point for runtime class selection
-- [ ] ensure existing sync runtime remains default until parity is proven
-- [ ] add compatibility shims for tests and demos
-- [ ] document how callers choose sync versus async runtime
-- [ ] document unsupported async first-slice features, if any
+- [x] add server runner option for async runtime
+- [x] add conversation service injection point for runtime class selection
+- [x] ensure existing sync runtime remains default until parity is proven
+- [x] add compatibility shims for tests and demos
+- [x] document how callers choose sync versus async runtime
+- [x] document unsupported async first-slice features, if any
 
 Acceptance tests:
 
 - [x] package import exposes `AsyncWorkflowRuntime`
-- [ ] server/runtime path can run one workflow with async runtime when explicitly selected
-- [ ] conversation orchestrator can inject async runtime without changing workflow design
-- [ ] sync runtime entrypoints continue to work unchanged
-- [ ] sync runtime remains default when no async runtime option is supplied
+- [x] server/runtime path can run one workflow with async runtime when explicitly selected -> `test_workflow_run_submit_accepts_runtime_kind_and_defaults_to_sync`
+- [x] conversation orchestrator can inject async runtime without changing workflow design -> `test_default_runtime_runner_uses_async_or_sync_runtime_by_kind`
+- [x] sync runtime entrypoints continue to work unchanged -> `test_chat_service_reexports_public_symbols`, `test_chat_run_service_async_wrappers_delegate_through_to_thread`, `test_async_sse_routes_use_async_service_methods`
+- [x] sync runtime remains default when no async runtime option is supplied -> `test_workflow_run_submit_accepts_runtime_kind_and_defaults_to_sync`, `test_default_runtime_runner_uses_async_or_sync_runtime_by_kind`
+
+Notes:
+
+- Callers can pick runtime by passing `runtime_kind="async"` to workflow submission.
+- Service owners can set `default_runtime_kind="async"` when they want async as local default.
+- Existing `runtime_runner` injection remains supported for tests and demos.
+- Async selection is opt-in; sync stays default until later parity gates say otherwise.
 
 ---
 
 ## Phase 8 - Parity Matrix
 
-- [ ] accepted graph node side-effect parity
-- [ ] accepted graph edge side-effect parity
-- [ ] linear workflow parity
-- [ ] branching parity
-- [ ] join/barrier parity
-- [ ] fanout parity
-- [ ] route-next parity
-- [ ] suspend/resume parity
-- [ ] cancellation parity
-- [ ] nested workflow parity
-- [ ] sandboxed op parity or documented gap
-- [ ] checkpoint replay parity
-- [ ] backend durability parity
-- [ ] trace artifact parity
-- [ ] server progress event parity
-- [ ] LangGraph semantics-mode reducer parity
-- [ ] visual-mode non-parity documented
+- [x] accepted graph node side-effect parity -> `test_async_runtime_side_by_side_node_edge_and_terminal_parity`
+- [x] accepted graph edge side-effect parity -> `test_async_runtime_side_by_side_node_edge_and_terminal_parity`
+- [x] linear workflow parity -> `test_async_runtime_native_scheduler_linear_success`
+- [x] branching parity -> `test_async_runtime_branch_join_status_and_state_equivalent_to_sync`, `test_async_runtime_side_by_side_node_edge_and_terminal_parity`
+- [x] join/barrier parity -> `test_async_runtime_native_scheduler_join_merge_runs_once`, `test_async_runtime_branch_join_status_and_state_equivalent_to_sync`
+- [x] fanout parity -> `test_async_runtime_native_scheduler_fanout_appends`, `test_async_runtime_native_scheduler_respects_many_multiplicity`
+- [x] route-next parity -> `test_async_runtime_native_scheduler_route_next_and_priority`
+- [x] suspend/resume parity -> `test_async_runtime_suspend_and_resume_roundtrip`, `test_async_runtime_resume_run_delegates_to_sync_resume`, `test_async_runtime_run_with_resume_markers_delegates_to_sync_run`
+- [x] cancellation parity -> `test_async_runtime_native_scheduler_cancellation_drains_inflight`, `test_async_runtime_native_scheduler_persists_cancelled_terminal`, `test_async_runtime_parent_cancellation_propagates_to_child`
+- [x] nested workflow parity -> `test_async_runtime_nested_workflow_invocation_matches_sync`, `test_async_runtime_nested_workflow_child_failure_fails_parent`
+- [x] sandboxed op parity or documented gap -> documented first-slice gap in `Phase 2` notes; no async sandboxed-op divergence introduced
+- [x] checkpoint replay parity -> `test_replay_state_reducer_matches_sync_runtime_merge_semantics`, `test_replay_to_is_read_only_and_does_not_append_new_history`
+- [x] backend durability parity -> `test_async_pg_backend_transaction_rollback`, `test_async_pg_engine_uow_rolls_back_writes_together`, `test_phase3_chroma_replay_repairs_missing_vector_state`, `test_in_memory_meta_new_store_has_no_recovery_memory`
+- [x] trace artifact parity -> `test_async_runtime_native_scheduler_emits_trace_events_with_expected_metadata`, `test_async_runtime_native_scheduler_nested_invocation_reuses_trace_emitter`, `test_async_runtime_native_scheduler_trace_emitter_failure_is_best_effort`
+- [x] server progress event parity -> `test_chat_rest_events_poll_sees_live_updates_for_async_backends`, `test_mcp_run_events_sees_live_updates_for_async_backends`, `test_workflow_runtime_sse_cancel_after_sleep_ticks_for_async_backends`
+- [x] LangGraph semantics-mode reducer parity -> `test_replay_state_reducer_matches_sync_runtime_merge_semantics`, `test_async_runtime_native_scheduler_uses_shared_state_merge_semantics`
+- [x] visual-mode non-parity documented
 
 Parity rule:
 
@@ -363,6 +371,10 @@ Sync/Async test-mapping policy:
 
 - Default rule: every sync runtime semantic test should map to an async counterpart.
 - Non-injective allowance: some sync tests may not have a 1:1 async mapping.
+- Each async acceptance item should name its corresponding sync test(s), or explicitly mark a documented gap.
+- Prefer a test-local docstring on each async semantic test that names its sync mirror.
+- Add a meta-test that reads the first docstring line for each mapped sync/async case and fails on missing mirror text.
+- Add a naming-convention test so mapped sync cases stay `test_...` and mapped async cases stay `test_async_...`.
 - For each waived mapping, record:
   - sync test id/path
   - waiver reason (why no direct async equivalent)
@@ -376,18 +388,30 @@ Sync/Async test-mapping policy:
 - [x] one workflow design model runs on both runtimes
 - [x] sync and async resolvers share one semantic contract
 - [x] `default_sync_ops == default_async_ops` is enforced by tests
-- [ ] async runtime state updates match sync runtime state updates
-- [ ] async runtime replay matches live execution
-- [ ] backend durability semantics are explicit by backend family
-- [ ] trace artifacts and progress events remain compatible
-- [ ] wall-clock timestamps are audit facts only
-- [ ] token nesting, explicit join, and checkpoint resume semantics match sync runtime
-- [ ] suspend, resume, cancellation, and nested workflow behavior match sync runtime or are explicitly documented as first-slice gaps
-- [ ] existing workflows have identical normalized graph node/edge side effects under sync and async runtimes
-- [ ] async-only cooperative cancellation diagnostics are excluded from semantic side-effect parity
+- [x] async runtime state updates match sync runtime state updates -> `test_async_runtime_native_scheduler_uses_shared_state_merge_semantics`, `test_async_runtime_side_by_side_node_edge_and_terminal_parity`
+  - sync counterpart(s): `tests/workflow/test_workflow_native_update.py`, `tests/workflow/test_workflow_join.py`
+- [x] async runtime replay matches live execution -> `test_replay_state_reducer_matches_sync_runtime_merge_semantics`, `test_replay_to_is_read_only_and_does_not_append_new_history`
+  - sync counterpart(s): `tests/workflow/test_workflow_suspend_resume.py`, `tests/runtime/test_workflow_invocation_and_route_next.py`
+- [x] backend durability semantics are explicit by backend family -> `test_async_pg_backend_transaction_rollback`, `test_async_pg_engine_uow_rolls_back_writes_together`, `test_phase3_chroma_replay_repairs_missing_vector_state`, `test_in_memory_meta_new_store_has_no_recovery_memory`
+  - sync counterpart(s): `tests/primitives/test_document_rollback.py`, `tests/primitives/test_edge_endpoints_rollback.py`, `tests/core/test_in_memory_meta_store.py`
+- [x] trace artifacts and progress events remain compatible -> `test_async_runtime_native_scheduler_emits_trace_events_with_expected_metadata`, `test_chat_rest_events_poll_sees_live_updates_for_async_backends`, `test_mcp_run_events_sees_live_updates_for_async_backends`, `test_workflow_runtime_sse_cancel_after_sleep_ticks_for_async_backends`
+  - sync counterpart(s): `tests/workflow/test_tracing_e2e.py`, `tests/runtime/test_trace_sink_parallel_nested_minimal.py`
+- [x] wall-clock timestamps are audit facts only -> `test_replay_ignores_created_at_ms_and_orders_by_step_seq`
+  - sync counterpart(s): `tests/runtime/test_checkpoint_resume_contract.py`, `tests/workflow/test_save_load_progress.py`
+- [x] token nesting, explicit join, and checkpoint resume semantics match sync runtime -> `test_async_runtime_native_scheduler_token_nesting_and_spawn_events`, `test_async_runtime_native_scheduler_join_merge_runs_once`, `test_async_runtime_resume_run_delegates_to_sync_resume`, `test_async_runtime_run_with_resume_markers_delegates_to_sync_run`, `test_async_runtime_native_scheduler_persists_rt_join_frontier_shape`
+  - sync counterpart(s): `tests/workflow/test_workflow_join.py`, `tests/runtime/test_workflow_suspend_resume.py`, `tests/runtime/test_resume_wait_reasons.py`
+- [x] suspend, resume, cancellation, and nested workflow behavior match sync runtime or are explicitly documented as first-slice gaps -> `test_async_runtime_suspend_and_resume_roundtrip`, `test_async_runtime_parent_cancellation_propagates_to_child`, `test_async_runtime_nested_workflow_child_failure_fails_parent`, `test_async_runtime_native_scheduler_cancellation_drains_inflight`, `test_async_runtime_native_scheduler_persists_cancelled_terminal`
+  - sync counterpart(s): `tests/runtime/test_workflow_suspend_resume.py`, `tests/runtime/test_workflow_cancel_event_sourced.py`, `tests/runtime/test_trace_sink_parallel_nested_minimal.py`
+- [x] existing workflows have identical normalized graph node/edge side effects under sync and async runtimes -> `test_async_runtime_side_by_side_node_edge_and_terminal_parity`
+  - sync counterpart(s): `tests/workflow/test_workflow_join.py`, `tests/workflow/test_workflow_native_update.py`
+- [x] async-only cooperative cancellation diagnostics are excluded from semantic side-effect parity -> `test_async_runtime_native_scheduler_cancellation_drains_inflight`, `test_async_runtime_native_scheduler_persists_cancelled_terminal`, `test_async_runtime_side_by_side_node_edge_and_terminal_parity`
+  - sync counterpart(s): `tests/runtime/test_workflow_cancel_event_sourced.py`, `tests/workflow/test_tracing_e2e.py`
 - [x] async task-local UoW isolation is tested
-- [ ] LangGraph parity claims are limited to semantics mode
-- [ ] sync runtime remains stable while async runtime lands incrementally
+  - sync counterpart(s): `tests/core/test_in_memory_meta_store.py`, `tests/pg_sql/test_async_pgvector_backend.py`
+- [x] LangGraph parity claims are limited to semantics mode -> documented in Phase 8 notes
+  - sync counterpart(s): `tests/workflow/test_langgraph_converter.py`, `tests/workflow/test_langgraph_converter_parallel_integration.py`, `tests/workflow/test_langgraph_blob_state.py`
+- [x] sync runtime remains stable while async runtime lands incrementally -> `test_workflow_run_submit_accepts_runtime_kind_and_defaults_to_sync`, `test_default_runtime_runner_uses_async_or_sync_runtime_by_kind`, `test_chat_service_split_smoke.py`
+  - sync counterpart(s): `tests/server/test_chat_server_api.py`, `tests/server/test_chat_service_split_smoke.py`
 
 Recent note (2026-04-22):
 

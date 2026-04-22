@@ -86,6 +86,7 @@ def test_replay_rejects_future_schema():
 
 
 def test_replay_state_reducer_matches_sync_runtime_merge_semantics():
+    """Async mirror: `tests/runtime/test_async_runtime_contract.py::test_async_runtime_native_scheduler_uses_shared_state_merge_semantics`."""
     runtime = WorkflowRuntime.__new__(WorkflowRuntime)
     runtime.step_resolver = type("_Resolver", (), {"_state_schema": {}})()
 
@@ -113,6 +114,7 @@ def test_replay_state_reducer_matches_sync_runtime_merge_semantics():
 
 
 def test_replay_ignores_created_at_ms_and_orders_by_step_seq():
+    """Async mirror: `tests/runtime/test_async_runtime_contract.py::test_async_runtime_native_scheduler_persists_rt_join_frontier_shape`."""
     checkpoint = WorkflowCheckpointNode(
         id="wf_ckpt|run-1|0",
         label="checkpoint",
@@ -196,6 +198,7 @@ def test_replay_ignores_created_at_ms_and_orders_by_step_seq():
 
 
 def test_replay_to_is_read_only_and_does_not_append_new_history():
+    """Async mirror: `tests/runtime/test_async_runtime_contract.py::test_async_runtime_resume_run_delegates_to_sync_resume`."""
     checkpoint = _ckpt(0)
     step = WorkflowStepExecNode(
         id="wf_step|run-1|1",

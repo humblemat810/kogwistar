@@ -73,6 +73,7 @@ class ChatRunService:
         run_registry: RunRegistry,
         answer_runner: Callable[[AnswerRunRequest], dict[str, Any]] | None = None,
         runtime_runner: Callable[[RuntimeRunRequest], dict[str, Any]] | None = None,
+        default_runtime_kind: str = "sync",
     ) -> None:
         self._get_knowledge_engine = get_knowledge_engine
         self._get_conversation_engine = get_conversation_engine
@@ -86,6 +87,7 @@ class ChatRunService:
         self._run_execution = _RunExecutionService(self)
         self._run_inspection = _RunInspectionService(self)
         self.cost_ledger = CostLedger(workspace_id="chat-service")
+        self.default_runtime_kind = str(default_runtime_kind or "sync").strip().lower()
         self.capability_kernel = CapabilityKernel()
         for spec in DEFAULT_CAPABILITY_SPECS:
             self.capability_kernel.register(spec)
@@ -505,6 +507,7 @@ class ChatRunService:
         priority_class: str = "foreground",
         token_budget: int | None = None,
         time_budget_ms: int | None = None,
+        runtime_kind: str | None = None,
     ) -> dict[str, Any]:
         self._require_capability(
             "spawn_process",
@@ -520,6 +523,7 @@ class ChatRunService:
             priority_class=priority_class,
             token_budget=token_budget,
             time_budget_ms=time_budget_ms,
+            runtime_kind=runtime_kind,
         )
 
     def get_run(self, run_id: str) -> dict[str, Any]:

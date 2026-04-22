@@ -162,6 +162,7 @@ def _build_engine_pair(tmp_path):
 
 
 def test_nested_workflow_synthesized_design_is_persisted_and_used(tmp_path):
+    """Async mirror: `tests/runtime/test_async_runtime_contract.py::test_async_runtime_nested_workflow_invocation_matches_sync`."""
     workflow_engine, conversation_engine = _build_engine_pair(tmp_path)
 
     parent_id = "wf_parent_spawn_child"
@@ -298,6 +299,7 @@ def test_nested_workflow_synthesized_design_is_persisted_and_used(tmp_path):
 
 
 def test_route_next_alias_can_fan_out_multiple_branches(tmp_path):
+    """Async mirror: `tests/runtime/test_async_runtime_contract.py::test_async_runtime_native_scheduler_route_next_and_priority`."""
     workflow_engine, conversation_engine = _build_engine_pair(tmp_path)
 
     workflow_id = "wf_route_next_fanout"
@@ -399,6 +401,7 @@ def test_route_next_alias_can_fan_out_multiple_branches(tmp_path):
 
 
 def test_nested_workflow_failure_short_circuits_parent_routing(tmp_path):
+    """Async mirror: `tests/runtime/test_async_runtime_contract.py::test_async_runtime_nested_workflow_child_failure_fails_parent`."""
     workflow_engine, conversation_engine = _build_engine_pair(tmp_path)
 
     parent_id = "wf_parent_nested_failure"

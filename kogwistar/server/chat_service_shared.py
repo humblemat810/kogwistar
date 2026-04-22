@@ -67,6 +67,7 @@ class RuntimeRunRequest:
     time_budget_ms: int | None = None
     capabilities: tuple[str, ...] = ()
     capability_subject: str | None = None
+    runtime_kind: str = "sync"
 
 
 @dataclass
@@ -119,6 +120,7 @@ class ChatRunServiceOwner(Protocol):
     answer_runner: Callable[[AnswerRunRequest], dict[str, Any]]
     runtime_runner: Callable[[RuntimeRunRequest], dict[str, Any]]
     resume_runner: Callable[[RuntimeResumeRequest], dict[str, Any]]
+    default_runtime_kind: str
     scheduler: Any
     _workflow_history_lock: threading.Lock
 

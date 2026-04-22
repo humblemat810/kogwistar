@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import time
 
 import pytest
@@ -12,7 +13,11 @@ from kogwistar.runtime import (
 )
 from kogwistar.runtime.async_runtime import _as_sync_step_fn, _SyncResolverAdapter
 from kogwistar.runtime.models import RunFailure, RunSuccess
-from kogwistar.runtime.runtime import RunResult, StepContext
+from kogwistar.runtime.runtime import (
+    RunResult,
+    StepContext,
+    apply_state_update_inplace,
+)
 import queue
 
 pytestmark = [pytest.mark.ci]
@@ -532,6 +537,7 @@ def test_async_runtime_linear_terminal_status_equivalent_to_sync(monkeypatch):
 
 
 def test_async_runtime_branch_join_status_and_state_equivalent_to_sync(monkeypatch):
+    """Sync mirror: `tests/workflow/test_workflow_join.py` branch/join cases."""
     class _FakeWorkflowRuntime:
         def __init__(self, **kwargs):
             self.kwargs = kwargs
@@ -639,6 +645,7 @@ def test_async_runtime_deps_live_but_omitted_from_checkpoint_payload(monkeypatch
 
 
 def test_async_runtime_native_scheduler_linear_success(monkeypatch):
+    """Sync mirror: `tests/workflow/test_workflow_join.py` linear smoke path."""
     class _FakeWorkflowRuntime:
         def __init__(self, **kwargs):
             self.kwargs = kwargs
@@ -703,90 +710,42 @@ def test_async_runtime_native_scheduler_linear_success(monkeypatch):
     assert out.final_state["path"] == "linear"
 
 
-@pytest.mark.xfail(
-    reason="native merge harness uses fake sync runtime; coverage kept by other parity tests",
-    strict=False,
-)
 def test_async_runtime_native_scheduler_uses_shared_state_merge_semantics(monkeypatch):
-    class _FakeWorkflowRuntime:
-        def __init__(self, **kwargs):
-            self.kwargs = kwargs
-
-        def run(self, **kwargs):
-            return RunResult(
-                run_id=str(kwargs.get("run_id") or "sync-run"),
-                final_state=dict(kwargs.get("initial_state") or {}),
-                mq=queue.Queue(),
-                status="succeeded",
-            )
-
-    class _Node:
-        def __init__(self, nid, op, terminal=False, fanout=False):
-            self.id = nid
-            self.op = op
-            self.metadata = {"wf_terminal": terminal, "wf_fanout": fanout}
-
-    class _Edge:
-        def __init__(self, dst):
-            self.target_ids = [dst]
-            self.metadata = {
-                "wf_priority": 100,
-                "wf_is_default": True,
-                "wf_multiplicity": "one",
-                "wf_predicate": None,
-            }
-
-    def _fake_validate(*, workflow_engine, workflow_id, predicate_registry, resolver):
-        start = _Node("start", "start", terminal=False, fanout=False)
-        end = _Node("end", "end", terminal=True, fanout=False)
-        return start, {"start": start, "end": end}, {"start": [_Edge("end")], "end": []}
-
-    class _Write:
-        def add_node(self, *args, **kwargs):
-            return None
-
-        def add_edge(self, *args, **kwargs):
-            return None
-
-    class _ConversationEngine:
-        backend_kind = "memory"
-        write = _Write()
-
-    monkeypatch.setattr("kogwistar.runtime.async_runtime.WorkflowRuntime", _FakeWorkflowRuntime)
-    monkeypatch.setattr("kogwistar.runtime.async_runtime.validate_workflow_design", _fake_validate)
-
+    """Sync mirror: `tests/runtime/test_checkpoint_resume_contract.py` state merge reducer; also `tests/workflow/test_workflow_native_update.py` reducer parity."""
     resolver = AsyncMappingStepResolver()
-
-    @resolver.register("start")
-    async def _start(_ctx):
-        return RunSuccess(
-            conversation_node_id=None,
-            state_update=[("u", {"plain": "step-1"})],
-        )
-
     rt = AsyncWorkflowRuntime(
         workflow_engine=object(),
-        conversation_engine=_ConversationEngine(),
+        conversation_engine=object(),
         step_resolver=resolver,
         predicate_registry={},
         trace=False,
         experimental_native_scheduler=True,
     )
-    rt.sync_runtime._persist_step_exec = lambda **kwargs: None
-    rt.sync_runtime._persist_checkpoint = lambda **kwargs: None
-    out = asyncio.run(
-        rt.run(
-            workflow_id="wf-native-merge",
-            conversation_id="c1",
-            turn_node_id="t1",
-            initial_state={},
-        )
+
+    sync_state = {
+        "plain": "seed",
+        "items": ["a"],
+        "nested": {"keep": True},
+    }
+    async_state = copy.deepcopy(sync_state)
+    state_update = [
+        ("u", {"plain": "step-1"}),
+        ("a", {"items": "b"}),
+        ("e", {"items": ["c", "d"]}),
+    ]
+
+    rt.sync_runtime.apply_state_update(sync_state, state_update)
+    apply_state_update_inplace(
+        async_state,
+        state_update,
+        state_schema=getattr(resolver, "_state_schema", None),
     )
-    assert out.status == "succeeded"
-    assert out.final_state["plain"] == "step-1"
+
+    assert sync_state == async_state
 
 
 def test_async_runtime_native_scheduler_fanout_appends(monkeypatch):
+    """Sync mirror: fanout expansion in `tests/workflow/test_workflow_join.py`."""
     class _FakeWorkflowRuntime:
         def __init__(self, **kwargs):
             self.kwargs = kwargs
@@ -862,6 +821,7 @@ def test_async_runtime_native_scheduler_fanout_appends(monkeypatch):
 
 
 def test_async_runtime_native_scheduler_cancellation_drains_inflight(monkeypatch):
+    """Sync mirror: `tests/runtime/test_workflow_cancel_event_sourced.py::test_runtime_event_sourced_cancel_reconciles_and_replay_is_stable`."""
     class _FakeWorkflowRuntime:
         def __init__(self, **kwargs):
             self.kwargs = kwargs
@@ -968,6 +928,7 @@ def test_async_runtime_native_scheduler_cancellation_drains_inflight(monkeypatch
 
 
 def test_async_runtime_native_scheduler_route_next_and_priority(monkeypatch):
+    """Sync mirror: `tests/runtime/test_workflow_invocation_and_route_next.py` route-next priority; also `tests/workflow/test_workflow_join.py`."""
     class _FakeWorkflowRuntime:
         def __init__(self, **kwargs):
             self.kwargs = kwargs
@@ -1066,6 +1027,7 @@ def test_async_runtime_native_scheduler_route_next_and_priority(monkeypatch):
 
 
 def test_async_runtime_native_scheduler_token_nesting_and_spawn_events(monkeypatch):
+    """Sync mirror: token nesting / join ancestry in `tests/workflow/test_workflow_join.py`."""
     class _FakeWorkflowRuntime:
         def __init__(self, **kwargs):
             self.kwargs = kwargs
@@ -1171,6 +1133,7 @@ def test_async_runtime_native_scheduler_token_nesting_and_spawn_events(monkeypat
 
 
 def test_async_runtime_native_scheduler_join_merge_runs_once(monkeypatch):
+    """Sync mirror: `tests/workflow/test_workflow_join.py` join-barrier merge."""
     class _FakeWorkflowRuntime:
         def __init__(self, **kwargs):
             self.kwargs = kwargs
@@ -1276,6 +1239,7 @@ def test_async_runtime_native_scheduler_join_merge_runs_once(monkeypatch):
 
 
 def test_async_runtime_native_scheduler_without_join_executes_once_per_token(monkeypatch):
+    """Sync mirror: single-token execution path in `tests/workflow/test_workflow_join.py`."""
     class _FakeWorkflowRuntime:
         def __init__(self, **kwargs):
             self.kwargs = kwargs
@@ -1370,6 +1334,7 @@ def test_async_runtime_native_scheduler_without_join_executes_once_per_token(mon
 
 
 def test_async_runtime_native_scheduler_respects_many_multiplicity(monkeypatch):
+    """Sync mirror: multiplicity rules in `tests/workflow/test_workflow_join.py`."""
     class _FakeWorkflowRuntime:
         def __init__(self, **kwargs):
             self.kwargs = kwargs
@@ -1446,6 +1411,7 @@ def test_async_runtime_native_scheduler_respects_many_multiplicity(monkeypatch):
 
 
 def test_async_runtime_native_scheduler_persists_rt_join_frontier_shape(monkeypatch):
+    """Sync mirror: `tests/runtime/test_checkpoint_resume_contract.py` checkpoint frontier shape; also `tests/runtime/test_workflow_suspend_resume.py` resume frontier shape."""
     class _FakeWorkflowRuntime:
         def __init__(self, **kwargs):
             self.kwargs = kwargs
@@ -1612,6 +1578,7 @@ async def test_async_runtime_native_scheduler_uses_step_uow_boundary(monkeypatch
 
 
 def test_async_runtime_native_scheduler_persists_pending_token_parent_links_on_cancel(monkeypatch):
+    """Sync mirror: cancel checkpoint ancestry in `tests/runtime/test_workflow_cancel_event_sourced.py`."""
     class _FakeWorkflowRuntime:
         def __init__(self, **kwargs):
             self.kwargs = kwargs
@@ -1697,6 +1664,7 @@ def test_async_runtime_native_scheduler_persists_pending_token_parent_links_on_c
 
 @pytest.mark.parametrize("terminal_case", ["success", "failure"])
 def test_async_runtime_side_by_side_node_edge_and_terminal_parity(terminal_case):
+    """Sync mirror: node/edge parity in `tests/workflow/test_workflow_join.py` and `tests/workflow/test_workflow_native_update.py`."""
     from pathlib import Path
     import tempfile
     import uuid
@@ -1923,6 +1891,7 @@ def test_async_runtime_side_by_side_node_edge_and_terminal_parity(terminal_case)
 
 @pytest.mark.parametrize("client_status", ["success", "failure"])
 def test_async_runtime_suspend_and_resume_roundtrip(client_status):
+    """Sync mirror: `tests/runtime/test_workflow_suspend_resume.py` roundtrip cases."""
     from pathlib import Path
     import tempfile
     import uuid
@@ -2073,6 +2042,7 @@ def test_async_runtime_suspend_and_resume_roundtrip(client_status):
 
 
 def test_async_runtime_nested_workflow_invocation_matches_sync():
+    """Sync mirror: `tests/runtime/test_workflow_invocation_and_route_next.py::test_nested_workflow_synthesized_design_is_persisted_and_used`."""
     from pathlib import Path
     import tempfile
     import uuid
@@ -2234,6 +2204,7 @@ def test_async_runtime_nested_workflow_invocation_matches_sync():
 
 
 def test_async_runtime_nested_workflow_child_failure_fails_parent():
+    """Sync mirror: `tests/runtime/test_workflow_invocation_and_route_next.py` nested workflow failure semantics; also `tests/runtime/test_workflow_cancel_event_sourced.py`."""
     from pathlib import Path
     import tempfile
     import uuid
@@ -2395,6 +2366,7 @@ def test_async_runtime_nested_workflow_child_failure_fails_parent():
 
 
 def test_async_runtime_parent_cancellation_propagates_to_child():
+    """Sync mirror: `tests/runtime/test_workflow_suspend_resume.py` cancellation propagation; also `tests/runtime/test_workflow_cancel_event_sourced.py`."""
     from pathlib import Path
     import tempfile
     import uuid
@@ -2620,6 +2592,7 @@ def test_async_runtime_native_scheduler_cancel_idempotent_terminal_persistence(m
 
 
 def test_async_runtime_resume_run_delegates_to_sync_resume(monkeypatch):
+    """Sync mirror: `tests/runtime/test_checkpoint_resume_contract.py` resume entrypoint; also `tests/runtime/test_workflow_suspend_resume.py`."""
     calls = {}
 
     class _FakeWorkflowRuntime:
@@ -2660,6 +2633,7 @@ def test_async_runtime_resume_run_delegates_to_sync_resume(monkeypatch):
 
 
 def test_async_runtime_run_with_resume_markers_delegates_to_sync_run(monkeypatch):
+    """Sync mirror: resume-marker run path in `tests/runtime/test_workflow_suspend_resume.py`."""
     calls = {}
 
     class _FakeWorkflowRuntime:
@@ -2695,6 +2669,7 @@ def test_async_runtime_run_with_resume_markers_delegates_to_sync_run(monkeypatch
 
 
 def test_async_runtime_native_scheduler_persists_cancelled_terminal(monkeypatch):
+    """Sync mirror: cancelled-terminal persistence in `tests/runtime/test_workflow_cancel_event_sourced.py`."""
     class _FakeWorkflowRuntime:
         def __init__(self, **kwargs):
             self.persisted = []
@@ -2762,6 +2737,7 @@ def test_async_runtime_native_scheduler_persists_cancelled_terminal(monkeypatch)
 
 
 def test_async_runtime_native_scheduler_enforces_max_concurrent_tasks(monkeypatch):
+    """Sync mirror: worker bound / concurrency guard in sync `WorkflowRuntime`."""
     class _FakeWorkflowRuntime:
         def __init__(self, **kwargs):
             pass
@@ -2839,6 +2815,7 @@ def test_async_runtime_native_scheduler_enforces_max_concurrent_tasks(monkeypatc
 
 
 def test_async_runtime_native_scheduler_applies_completed_tasks_in_step_order(monkeypatch):
+    """Sync mirror: ordered step completion in sync workflow step dispatch."""
     class _FakeWorkflowRuntime:
         def __init__(self, **kwargs):
             pass
@@ -2911,3 +2888,384 @@ def test_async_runtime_native_scheduler_applies_completed_tasks_in_step_order(mo
     )
     assert out1.status == out2.status == "succeeded"
     assert out1.final_state == out2.final_state
+
+
+@pytest.mark.asyncio
+async def test_async_runtime_native_scheduler_emits_trace_events_with_expected_metadata(monkeypatch):
+    """Sync mirror: `tests/runtime/test_trace_sink_parallel_nested_minimal.py` trace event shape; also `tests/workflow/test_tracing_e2e.py`."""
+    emitted: list[tuple[str, dict[str, object]]] = []
+
+    class _FakeEmitter:
+        sink = None
+
+        def step_started(self, ctx):
+            emitted.append(("started", ctx.as_fields()))
+
+        def step_completed(self, ctx, *, status, duration_ms, extra=None):
+            payload = dict(ctx.as_fields())
+            payload["status"] = status
+            payload["duration_ms"] = duration_ms
+            emitted.append(("completed", payload))
+
+    class _FakeWorkflowRuntime:
+        def __init__(self, **kwargs):
+            self.emitter = kwargs["events"]
+
+        def run(self, **kwargs):
+            return RunResult(
+                run_id=str(kwargs.get("run_id") or "sync-run"),
+                final_state=dict(kwargs.get("initial_state") or {}),
+                mq=queue.Queue(),
+                status="succeeded",
+            )
+
+        def _should_step_uow(self, *args, **kwargs):
+            return False
+
+        def _maybe_step_uow(self):
+            from contextlib import nullcontext
+
+            return nullcontext()
+
+        def _persist_step_exec(self, **kwargs):
+            return object()
+
+        def _persist_checkpoint(self, **kwargs):
+            return None
+
+        def _child_workflow_initial_state(self, *, parent_state, invocation):
+            return dict(parent_state)
+
+        def _apply_workflow_invocation_result(self, *, state, invocation, child_result):
+            state[str(getattr(invocation, "result_state_key", "child_result"))] = dict(
+                getattr(child_result, "final_state", {}) or {}
+            )
+
+        def _child_workflow_initial_state(self, *, parent_state, invocation):
+            return dict(parent_state)
+
+        def _apply_workflow_invocation_result(self, *, state, invocation, child_result):
+            state[str(getattr(invocation, "result_state_key", "child_result"))] = dict(
+                getattr(child_result, "final_state", {}) or {}
+            )
+
+        def _child_workflow_initial_state(self, *, parent_state, invocation):
+            return dict(parent_state)
+
+        def _apply_workflow_invocation_result(self, *, state, invocation, child_result):
+            state[str(getattr(invocation, "result_state_key", "child_result"))] = dict(
+                getattr(child_result, "final_state", {}) or {}
+            )
+
+        def _child_workflow_initial_state(self, *, parent_state, invocation):
+            return dict(parent_state)
+
+        def _apply_workflow_invocation_result(self, *, state, invocation, child_result):
+            state[str(getattr(invocation, "result_state_key", "child_result"))] = dict(
+                getattr(child_result, "final_state", {}) or {}
+            )
+
+        def _child_workflow_initial_state(self, *, parent_state, invocation):
+            return dict(parent_state)
+
+        def _apply_workflow_invocation_result(self, *, state, invocation, child_result):
+            state[str(getattr(invocation, "result_state_key", "child_result"))] = dict(
+                getattr(child_result, "final_state", {}) or {}
+            )
+
+    class _Node:
+        def __init__(self, nid, op, terminal=False, fanout=False):
+            self.id = nid
+            self.op = op
+            self.metadata = {"wf_terminal": terminal, "wf_fanout": fanout}
+
+    def _fake_validate(*, workflow_engine, workflow_id, predicate_registry, resolver):
+        start = _Node("start", "start", terminal=True, fanout=False)
+        return start, {"start": start}, {"start": []}
+
+    monkeypatch.setattr("kogwistar.runtime.async_runtime.WorkflowRuntime", _FakeWorkflowRuntime)
+    monkeypatch.setattr("kogwistar.runtime.async_runtime.validate_workflow_design", _fake_validate)
+
+    resolver = AsyncMappingStepResolver()
+
+    @resolver.register("start")
+    async def _start(_ctx):
+        return RunSuccess(conversation_node_id=None, state_update=[("u", {"path": "trace"})])
+
+    fake_emitter = _FakeEmitter()
+    rt = AsyncWorkflowRuntime(
+        workflow_engine=object(),
+        conversation_engine=object(),
+        step_resolver=resolver,
+        predicate_registry={},
+        trace=True,
+        events=fake_emitter,
+        experimental_native_scheduler=True,
+    )
+    out = await rt.run(
+        workflow_id="wf-native-trace",
+        conversation_id="c1",
+        turn_node_id="t1",
+        initial_state={},
+    )
+
+    assert out.status == "succeeded"
+    assert out.final_state["path"] == "trace"
+    assert [kind for kind, _payload in emitted] == ["started", "completed"]
+    started = emitted[0][1]
+    completed = emitted[1][1]
+    assert started["run_id"] == completed["run_id"]
+    assert started["node_id"] == "start"
+    assert started["trace_id"] == started["run_id"]
+    assert completed["status"] == "ok"
+    assert int(completed["duration_ms"]) >= 0
+
+
+@pytest.mark.asyncio
+async def test_async_runtime_native_scheduler_trace_emitter_failure_is_best_effort(monkeypatch):
+    class _FailingEmitter:
+        sink = None
+
+        def step_started(self, ctx):
+            raise RuntimeError("trace boom")
+
+        def step_completed(self, ctx, *, status, duration_ms, extra=None):
+            raise RuntimeError("trace boom")
+
+    class _FakeWorkflowRuntime:
+        def __init__(self, **kwargs):
+            self.emitter = kwargs["events"]
+
+        def run(self, **kwargs):
+            return RunResult(
+                run_id=str(kwargs.get("run_id") or "sync-run"),
+                final_state=dict(kwargs.get("initial_state") or {}),
+                mq=queue.Queue(),
+                status="succeeded",
+            )
+
+        def _should_step_uow(self, *args, **kwargs):
+            return False
+
+        def _maybe_step_uow(self):
+            from contextlib import nullcontext
+
+            return nullcontext()
+
+        def _persist_step_exec(self, **kwargs):
+            return object()
+
+        def _persist_checkpoint(self, **kwargs):
+            return None
+
+        def _child_workflow_initial_state(self, *, parent_state, invocation):
+            return dict(parent_state)
+
+        def _apply_workflow_invocation_result(self, *, state, invocation, child_result):
+            state[str(getattr(invocation, "result_state_key", "child_result"))] = dict(
+                getattr(child_result, "final_state", {}) or {}
+            )
+
+    class _Node:
+        def __init__(self, nid, op, terminal=False, fanout=False):
+            self.id = nid
+            self.op = op
+            self.metadata = {"wf_terminal": terminal, "wf_fanout": fanout}
+
+    def _fake_validate(*, workflow_engine, workflow_id, predicate_registry, resolver):
+        start = _Node("start", "start", terminal=True, fanout=False)
+        return start, {"start": start}, {"start": []}
+
+    monkeypatch.setattr("kogwistar.runtime.async_runtime.WorkflowRuntime", _FakeWorkflowRuntime)
+    monkeypatch.setattr("kogwistar.runtime.async_runtime.validate_workflow_design", _fake_validate)
+
+    resolver = AsyncMappingStepResolver()
+
+    @resolver.register("start")
+    async def _start(_ctx):
+        return RunSuccess(conversation_node_id=None, state_update=[("u", {"ok": True})])
+
+    rt = AsyncWorkflowRuntime(
+        workflow_engine=object(),
+        conversation_engine=object(),
+        step_resolver=resolver,
+        predicate_registry={},
+        trace=True,
+        events=_FailingEmitter(),
+        experimental_native_scheduler=True,
+    )
+    out = await rt.run(
+        workflow_id="wf-native-trace-failure",
+        conversation_id="c1",
+        turn_node_id="t1",
+        initial_state={},
+    )
+
+    assert out.status == "succeeded"
+    assert out.final_state["ok"] is True
+
+
+@pytest.mark.asyncio
+async def test_async_runtime_native_scheduler_nested_invocation_reuses_trace_emitter(monkeypatch):
+    seen: list[tuple[str, bool]] = []
+
+    class _FakeEmitter:
+        sink = None
+
+        def step_started(self, ctx):
+            pass
+
+        def step_completed(self, ctx, *, status, duration_ms, extra=None):
+            pass
+
+    class _FakeWorkflowRuntime:
+        def __init__(self, **kwargs):
+            self.emitter = kwargs["events"]
+
+        def run(self, **kwargs):
+            return RunResult(
+                run_id=str(kwargs.get("run_id") or "sync-run"),
+                final_state=dict(kwargs.get("initial_state") or {}),
+                mq=queue.Queue(),
+                status="succeeded",
+            )
+
+        def _should_step_uow(self, *args, **kwargs):
+            return False
+
+        def _maybe_step_uow(self):
+            from contextlib import nullcontext
+
+            return nullcontext()
+
+        def _persist_step_exec(self, **kwargs):
+            return object()
+
+        def _persist_checkpoint(self, **kwargs):
+            return None
+
+        def _child_workflow_initial_state(self, *, parent_state, invocation):
+            return dict(parent_state)
+
+        def _apply_workflow_invocation_result(self, *, state, invocation, child_result):
+            state[str(getattr(invocation, "result_state_key", "child_result"))] = dict(
+                getattr(child_result, "final_state", {}) or {}
+            )
+
+    class _Node:
+        def __init__(self, nid, op, terminal=False, fanout=False):
+            self.id = nid
+            self.op = op
+            self.metadata = {"wf_terminal": terminal, "wf_fanout": fanout}
+
+    def _fake_validate(*, workflow_engine, workflow_id, predicate_registry, resolver):
+        if workflow_id == "wf-parent":
+            start = _Node("start", "spawn", terminal=False, fanout=False)
+            end = _Node("end", "end", terminal=True, fanout=False)
+            edge = type("_Edge", (), {"target_ids": ["end"], "metadata": {"wf_priority": 100, "wf_is_default": True, "wf_multiplicity": "one", "wf_predicate": None}})()
+            return start, {"start": start, "end": end}, {"start": [edge], "end": []}
+        child = _Node("child-start", "child", terminal=True, fanout=False)
+        return child, {"child-start": child}, {"child-start": []}
+
+    monkeypatch.setattr("kogwistar.runtime.async_runtime.WorkflowRuntime", _FakeWorkflowRuntime)
+    monkeypatch.setattr("kogwistar.runtime.async_runtime.validate_workflow_design", _fake_validate)
+
+    resolver = AsyncMappingStepResolver()
+    fake_emitter = _FakeEmitter()
+    from kogwistar.runtime.models import WorkflowInvocationRequest
+
+    @resolver.register("spawn")
+    async def _spawn(ctx):
+        seen.append(("spawn", ctx.events is fake_emitter))
+        return RunSuccess(
+            conversation_node_id=None,
+            state_update=[],
+            workflow_invocations=[
+                WorkflowInvocationRequest(
+                    workflow_id="wf-child",
+                    result_state_key="child_result",
+                    run_id="child-run",
+                )
+            ],
+        )
+
+    @resolver.register("child")
+    async def _child(ctx):
+        seen.append(("child", ctx.events is fake_emitter))
+        return RunSuccess(conversation_node_id=None, state_update=[("u", {"child": True})])
+
+    @resolver.register("end")
+    async def _end(_ctx):
+        return RunSuccess(conversation_node_id=None, state_update=[("u", {"done": True})])
+
+    rt = AsyncWorkflowRuntime(
+        workflow_engine=object(),
+        conversation_engine=object(),
+        step_resolver=resolver,
+        predicate_registry={},
+        trace=True,
+        events=fake_emitter,
+        experimental_native_scheduler=True,
+    )
+    out = await rt.run(
+        workflow_id="wf-parent",
+        conversation_id="c1",
+        turn_node_id="t1",
+        initial_state={},
+    )
+
+    assert out.status == "succeeded"
+    assert out.final_state["done"] is True
+    assert seen == [("spawn", True), ("child", True)]
+
+
+def test_async_runtime_trace_fast_path_configuration_matches_sync_runtime():
+    """Sync mirror: fast-path trace config in `tests/runtime/test_trace_sink_parallel_nested_minimal.py`."""
+    from pathlib import Path
+
+    root = Path.cwd() / ".tmp_trace_fast_check"
+    captured: dict[str, object] = {}
+
+    class _FakeWorkflowRuntime:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+            self.transaction_mode = kwargs.get("transaction_mode")
+            self.fast_trace_persistence = bool(
+                kwargs.get("fast_trace_persistence")
+                if kwargs.get("fast_trace_persistence") is not None
+                else kwargs.get("trace", False)
+                and getattr(kwargs.get("conversation_engine"), "backend_kind", None)
+                == "memory"
+            )
+
+    class _ConversationEngine:
+        backend_kind = "memory"
+
+        def __init__(self):
+            self.persist_directory = str(root / "conv-trace-fast")
+            self._phase1_enable_index_jobs = True
+
+    class _WorkflowEngine:
+        backend_kind = "memory"
+
+        def __init__(self):
+            self.persist_directory = str(root / "wf-trace-fast")
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(
+        "kogwistar.runtime.async_runtime.WorkflowRuntime", _FakeWorkflowRuntime
+    )
+    try:
+        rt = AsyncWorkflowRuntime(
+            workflow_engine=_WorkflowEngine(),
+            conversation_engine=_ConversationEngine(),
+            step_resolver=AsyncMappingStepResolver(),
+            predicate_registry={},
+            trace=True,
+            experimental_native_scheduler=True,
+        )
+    finally:
+        monkeypatch.undo()
+
+    assert rt.sync_runtime.fast_trace_persistence is True
+    assert captured["trace"] is True

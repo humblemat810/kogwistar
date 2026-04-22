@@ -23,6 +23,7 @@ class SubmitWorkflowRunIn(BaseModel):
     priority_class: str = "foreground"
     token_budget: int | None = None
     time_budget_ms: int | None = None
+    runtime_kind: str = "sync"
 
 
 class UpsertWorkflowNodeIn(BaseModel):
@@ -203,6 +204,7 @@ def create_runtime_router(
                 priority_class=inp.priority_class,
                 token_budget=inp.token_budget,
                 time_budget_ms=inp.time_budget_ms,
+                runtime_kind=inp.runtime_kind,
             )
             return JSONResponse(status_code=202, content=payload)
         except Exception as exc:  # noqa: BLE001

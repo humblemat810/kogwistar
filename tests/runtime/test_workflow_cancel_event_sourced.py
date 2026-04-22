@@ -132,6 +132,7 @@ def _wf_edge(
     ],
 )
 def test_runtime_event_sourced_cancel_reconciles_and_replay_is_stable(backend_kind):
+    """Async mirror: `tests/runtime/test_async_runtime_contract.py::test_async_runtime_native_scheduler_cancellation_drains_inflight`."""
     root = Path(".tmp_runtime_cancel_event_sourced") / str(uuid.uuid4())
     root.mkdir(parents=True, exist_ok=True)
     try:

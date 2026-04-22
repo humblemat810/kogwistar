@@ -142,6 +142,7 @@ def _e(
 @pytest.mark.parametrize("max_workers", [1, 2])
 def test_join_barrier_waits_for_all_arrivals(max_workers: int):
     """
+    Async mirror: `tests/runtime/test_async_runtime_contract.py::test_async_runtime_branch_join_status_and_state_equivalent_to_sync`.
     Graph:
         start -> fork -> a -> join -> end
                      -> b -> join
@@ -244,6 +245,7 @@ def test_join_barrier_waits_for_all_arrivals(max_workers: int):
 
 def test_join_does_not_wait_for_branch_that_can_no_longer_reach_it():
     """
+    Async mirror: `tests/runtime/test_async_runtime_contract.py::test_async_runtime_native_scheduler_without_join_executes_once_per_token`.
     Graph:
         start -> fork -> a -> end_a (terminal)
                      -> b -> join -> end
@@ -334,6 +336,7 @@ def test_join_does_not_wait_for_branch_that_can_no_longer_reach_it():
 
 def test_nested_joins_human_debug(capsys):
     """
+    Async mirror: `tests/runtime/test_async_runtime_contract.py::test_async_runtime_native_scheduler_token_nesting_and_spawn_events`.
     Graph (nested joins):
         start -> fork1 -> a -> join1 -> fork2 -> c -> join2 -> end
                      -> b -> join1          -> d -> join2

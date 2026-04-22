@@ -148,6 +148,7 @@ class PredAlwaysTrue(BasePredicate):
 
 
 def test_workflow_runtime_native_update_schema_applies_known_and_falls_back_unknown():
+    """Async mirror: `tests/runtime/test_async_runtime_contract.py::test_async_runtime_native_scheduler_uses_shared_state_merge_semantics`."""
     wid = "wf_native_update"
     nodes = [
         _n("start", workflow_id=wid, op="do", start=True),

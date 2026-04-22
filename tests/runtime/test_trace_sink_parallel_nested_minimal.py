@@ -212,6 +212,7 @@ def test_trace_sink_parallel_and_nested_minimal_sync(
     tags,
     iterations,
 ):
+    """Async mirror: `tests/runtime/test_async_runtime_contract.py::test_async_runtime_native_scheduler_emits_trace_events_with_expected_metadata`."""
     # ---- engines: conversation engine varies by backend; workflow engine always local (sink is sqlite under persist_directory)
     if backend_kind == "fake":
         _kg_engine, conversation_engine = _make_engine_pair(

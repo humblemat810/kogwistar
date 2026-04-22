@@ -167,6 +167,7 @@ def create_syscall_router(
                     priority_class=str(args.get("priority_class") or "foreground"),
                     token_budget=args.get("token_budget"),
                     time_budget_ms=args.get("time_budget_ms"),
+                    runtime_kind=args.get("runtime_kind"),
                 )
                 resp = _ok(version, op, payload)
                 audit_log.append(

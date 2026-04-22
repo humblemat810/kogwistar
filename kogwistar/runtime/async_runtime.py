@@ -4,6 +4,7 @@ import asyncio
 import contextvars
 import inspect
 import queue
+import time
 import uuid
 from contextlib import nullcontext
 from typing import Any, Awaitable, Callable, TypeAlias
@@ -410,6 +411,7 @@ class AsyncWorkflowRuntime(WorkflowExecutor):
             node = nodes[node_id]
             step_seq = seq
             seq += 1
+            trace_emitter = getattr(self._sync_runtime, "emitter", None)
             ctx = StepContext(
                 run_id=run_id,
                 workflow_id=str(workflow_id),
@@ -422,7 +424,7 @@ class AsyncWorkflowRuntime(WorkflowExecutor):
                 turn_node_id=str(turn_node_id),
                 state=state,
                 message_queue=mq,
-                events=None,
+                events=trace_emitter,
                 cache_dir=cache_dir,
             )
             fn = self._resolve_async_step_fn(str(node.op))
@@ -440,9 +442,45 @@ class AsyncWorkflowRuntime(WorkflowExecutor):
                 if use_step_uow and callable(maybe_step_uow)
                 else nullcontext()
             )
+            started_at = time.perf_counter()
+            trace_status = "ok"
+            if trace_emitter is not None:
+                step_started = getattr(trace_emitter, "step_started", None)
+                if callable(step_started):
+                    try:
+                        step_started(ctx.trace_ctx)
+                    except Exception:
+                        pass
             async with sem:
-                with uow_ctx:
-                    out = await fn(ctx)
+                try:
+                    with uow_ctx:
+                        out = await fn(ctx)
+                except Exception as exc:
+                    trace_status = "failure"
+                    out = RunFailure(
+                        conversation_node_id=None,
+                        status="failure",
+                        errors=[str(exc)],
+                        state_update=[],
+                    )
+                finally:
+                    if trace_emitter is not None:
+                        step_completed = getattr(trace_emitter, "step_completed", None)
+                        if callable(step_completed):
+                            out_status = str(getattr(out, "status", trace_status) or trace_status)
+                            if out_status in {"success", "succeeded"}:
+                                out_status = "ok"
+                            try:
+                                step_completed(
+                                    ctx.trace_ctx,
+                                    status=out_status,
+                                    duration_ms=max(
+                                        0,
+                                        int((time.perf_counter() - started_at) * 1000),
+                                    ),
+                                )
+                            except Exception:
+                                pass
             return launch_seq, step_seq, mask, node_id, token_id, parent_token_id, out
 
         def _apply_run_result(target_state: WorkflowState, result: StepRunResult) -> None:
