@@ -12,16 +12,18 @@ from typing import Any, Awaitable, Callable, TypeAlias
 from ..id_provider import stable_id
 from .models import RunFailure, StepRunResult, WorkflowState
 from .executor import TerminalStatus, WorkflowExecutor
-from .base_runtime import BaseRuntime
+from .base_runtime import BaseRuntime, apply_state_update_inplace, validate_initial_state
 from .runtime import (
-    apply_state_update_inplace,
     RunResult,
     StepContext,
-    WorkflowRuntime,
+    WorkflowRuntime as ThreadedWorkflowRuntime,
     _compute_may_reach_join_bitsets,
     _iter_bits,
-    validate_initial_state,
 )
+
+# Compatibility anchor for tests and internal helper wiring.
+WorkflowRuntime = ThreadedWorkflowRuntime
+
 from .design import validate_workflow_design
 
 SyncStepFn: TypeAlias = Callable[[StepContext], StepRunResult]
@@ -72,12 +74,7 @@ class _SyncResolverAdapter:
 
 
 class AsyncWorkflowRuntime(BaseRuntime, WorkflowExecutor):
-    """Async facade preserving WorkflowRuntime semantics for first async slice.
-
-    Current implementation delegates scheduling/state semantics to the existing
-    WorkflowRuntime, while allowing async step handlers through resolver
-    adaptation.
-    """
+    """Async workflow runtime backed by the native asyncio scheduler."""
 
     def __init__(
         self,
@@ -94,7 +91,7 @@ class AsyncWorkflowRuntime(BaseRuntime, WorkflowExecutor):
         sink: Any | None = None,
         cancel_requested: Callable[[str], bool] | None = None,
         fast_trace_persistence: bool | None = None,
-        experimental_native_scheduler: bool = False,
+        experimental_native_scheduler: bool = True,
     ) -> None:
         self._raw_step_resolver = step_resolver
         self.step_resolver = step_resolver
@@ -107,6 +104,8 @@ class AsyncWorkflowRuntime(BaseRuntime, WorkflowExecutor):
         self.max_workers = max_workers
         self.cancel_requested = cancel_requested
         self.experimental_native_scheduler = bool(experimental_native_scheduler)
+        if not self.experimental_native_scheduler:
+            raise ValueError("AsyncWorkflowRuntime only supports the native async scheduler")
         self._resolver_adapter = _SyncResolverAdapter(step_resolver)
 
         self._sync_runtime = WorkflowRuntime(
@@ -134,7 +133,7 @@ class AsyncWorkflowRuntime(BaseRuntime, WorkflowExecutor):
         }
 
     @property
-    def sync_runtime(self) -> WorkflowRuntime:
+    def sync_runtime(self) -> ThreadedWorkflowRuntime:
         return self._sync_runtime
 
     async def run(
@@ -150,37 +149,16 @@ class AsyncWorkflowRuntime(BaseRuntime, WorkflowExecutor):
         _resume_last_exec_node: Any | None = None,
     ) -> RunResult:
         if _resume_step_seq is not None or _resume_last_exec_node is not None:
-            return self._sync_runtime.run(
-                workflow_id=workflow_id,
-                conversation_id=conversation_id,
-                turn_node_id=turn_node_id,
-                initial_state=initial_state,
-                run_id=run_id,
-                cache_dir=cache_dir,
-                _resume_step_seq=_resume_step_seq,
-                _resume_last_exec_node=_resume_last_exec_node,
+            raise NotImplementedError(
+                "AsyncWorkflowRuntime does not support resume-marker delegation"
             )
-        if self.experimental_native_scheduler:
-            return await self._run_native_async(
-                workflow_id=workflow_id,
-                conversation_id=conversation_id,
-                turn_node_id=turn_node_id,
-                initial_state=initial_state,
-                run_id=run_id,
-                cache_dir=cache_dir,
-            )
-        # First async slice keeps exact sync runtime semantics and avoids
-        # introducing scheduler differences yet; this call is intentionally
-        # direct (blocking) until async scheduler core lands.
-        return self._sync_runtime.run(
+        return await self._run_native_async(
             workflow_id=workflow_id,
             conversation_id=conversation_id,
             turn_node_id=turn_node_id,
             initial_state=initial_state,
             run_id=run_id,
             cache_dir=cache_dir,
-            _resume_step_seq=_resume_step_seq,
-            _resume_last_exec_node=_resume_last_exec_node,
         )
 
     def _resolve_async_step_fn(self, op: str):
@@ -1038,15 +1016,8 @@ class AsyncWorkflowRuntime(BaseRuntime, WorkflowExecutor):
         _resume_step_seq: int | None = None,
         _resume_last_exec_node: Any | None = None,
     ) -> RunResult:
-        return self._sync_runtime.run(
-            workflow_id=workflow_id,
-            conversation_id=conversation_id,
-            turn_node_id=turn_node_id,
-            initial_state=initial_state,
-            run_id=run_id,
-            cache_dir=cache_dir,
-            _resume_step_seq=_resume_step_seq,
-            _resume_last_exec_node=_resume_last_exec_node,
+        raise NotImplementedError(
+            "AsyncWorkflowRuntime.run_sync() is removed; use async run()"
         )
 
     async def resume_run(
@@ -1061,13 +1032,6 @@ class AsyncWorkflowRuntime(BaseRuntime, WorkflowExecutor):
         turn_node_id: str,
         cache_dir: str | None = None,
     ) -> RunResult:
-        return self._sync_runtime.resume_run(
-            run_id=run_id,
-            suspended_node_id=suspended_node_id,
-            suspended_token_id=suspended_token_id,
-            client_result=client_result,
-            workflow_id=workflow_id,
-            conversation_id=conversation_id,
-            turn_node_id=turn_node_id,
-            cache_dir=cache_dir,
+        raise NotImplementedError(
+            "AsyncWorkflowRuntime.resume_run() is removed; use native async scheduling only"
         )

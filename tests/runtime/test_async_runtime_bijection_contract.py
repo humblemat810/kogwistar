@@ -222,15 +222,52 @@ def test_async_runtime_linear_terminal_status_equivalent(monkeypatch):
                 status="succeeded",
             )
 
-    monkeypatch.setattr("kogwistar.runtime.async_runtime.WorkflowRuntime", _FakeWorkflowRuntime)
+    @dataclass
+    class _Node:
+        id: str
+        op: str
+        metadata: dict
+
+    def _fake_validate(*, workflow_engine, workflow_id, predicate_registry, resolver):
+        start = _Node(
+            id="wf-linear:start",
+            op="start",
+            metadata={"wf_terminal": True},
+        )
+        return start, {start.id: start}, {start.id: []}
+
+    class _Write:
+        def add_node(self, _node):
+            return None
+
+        def add_edge(self, _edge):
+            return None
+
+    class _Engine:
+        write = _Write()
+
+    resolver = AsyncMappingStepResolver()
+
+    @resolver.register("start")
+    async def _start(_ctx):
+        return RunSuccess(
+            conversation_node_id=None,
+            state_update=[("u", {"path": "linear"})],
+        )
+
+    monkeypatch.setattr(
+        "kogwistar.runtime.async_runtime.validate_workflow_design",
+        _fake_validate,
+    )
     rt = AsyncWorkflowRuntime(
-        workflow_engine=object(),
-        conversation_engine=object(),
-        step_resolver=lambda _op: (lambda _ctx: RunSuccess(conversation_node_id=None, state_update=[])),
+        workflow_engine=_Engine(),
+        conversation_engine=_Engine(),
+        step_resolver=resolver,
         predicate_registry={},
         trace=False,
+        experimental_native_scheduler=True,
     )
-    sync_out = rt.run_sync(
+    sync_out = _FakeWorkflowRuntime().run(
         workflow_id="wf-linear",
         conversation_id="c1",
         turn_node_id="t1",
@@ -247,7 +284,10 @@ def test_async_runtime_linear_terminal_status_equivalent(monkeypatch):
         )
     )
     assert async_out.status == sync_out.status == "succeeded"
-    assert async_out.final_state == sync_out.final_state
+    async_user_state = {
+        k: v for k, v in async_out.final_state.items() if k != "_rt_join"
+    }
+    assert async_user_state == sync_out.final_state
 
 
 def test_async_runtime_branch_join_status_and_state_equivalent(monkeypatch):
@@ -262,6 +302,8 @@ def test_async_runtime_branch_join_status_and_state_equivalent(monkeypatch):
         def run(self, **kwargs):
             state = dict(kwargs.get("initial_state") or {})
             branch_values = list(state.get("branch_values") or [])
+            for value in branch_values:
+                state[f"b{value}"] = int(value)
             state["joined_total"] = sum(int(v) for v in branch_values)
             state["path"] = "branch_join"
             return RunResult(
@@ -271,16 +313,141 @@ def test_async_runtime_branch_join_status_and_state_equivalent(monkeypatch):
                 status="succeeded",
             )
 
-    monkeypatch.setattr("kogwistar.runtime.async_runtime.WorkflowRuntime", _FakeWorkflowRuntime)
+    @dataclass
+    class _Node:
+        id: str
+        op: str
+        metadata: dict
+
+    @dataclass
+    class _Edge:
+        id: str
+        source_ids: list[str]
+        target_ids: list[str]
+        metadata: dict
+
+    def _edge(edge_id: str, src: str, dst: str, *, many: bool = False) -> _Edge:
+        return _Edge(
+            id=edge_id,
+            source_ids=[src],
+            target_ids=[dst],
+            metadata={
+                "wf_priority": 100,
+                "wf_is_default": True,
+                "wf_multiplicity": "many" if many else "one",
+                "wf_predicate": None,
+            },
+        )
+
+    def _fake_validate(*, workflow_engine, workflow_id, predicate_registry, resolver):
+        nodes = {
+            "wf-branch-join:start": _Node(
+                id="wf-branch-join:start",
+                op="start",
+                metadata={"wf_fanout": True},
+            ),
+            "wf-branch-join:b2": _Node(
+                id="wf-branch-join:b2",
+                op="b2",
+                metadata={},
+            ),
+            "wf-branch-join:b3": _Node(
+                id="wf-branch-join:b3",
+                op="b3",
+                metadata={},
+            ),
+            "wf-branch-join:b5": _Node(
+                id="wf-branch-join:b5",
+                op="b5",
+                metadata={},
+            ),
+            "wf-branch-join:join": _Node(
+                id="wf-branch-join:join",
+                op="join",
+                metadata={"wf_join": True, "wf_join_is_merge": True},
+            ),
+            "wf-branch-join:end": _Node(
+                id="wf-branch-join:end",
+                op="end",
+                metadata={"wf_terminal": True},
+            ),
+        }
+        adj = {
+            "wf-branch-join:start": [
+                _edge("e-start-b2", "wf-branch-join:start", "wf-branch-join:b2", many=True),
+                _edge("e-start-b3", "wf-branch-join:start", "wf-branch-join:b3", many=True),
+                _edge("e-start-b5", "wf-branch-join:start", "wf-branch-join:b5", many=True),
+            ],
+            "wf-branch-join:b2": [
+                _edge("e-b2-join", "wf-branch-join:b2", "wf-branch-join:join"),
+            ],
+            "wf-branch-join:b3": [
+                _edge("e-b3-join", "wf-branch-join:b3", "wf-branch-join:join"),
+            ],
+            "wf-branch-join:b5": [
+                _edge("e-b5-join", "wf-branch-join:b5", "wf-branch-join:join"),
+            ],
+            "wf-branch-join:join": [
+                _edge("e-join-end", "wf-branch-join:join", "wf-branch-join:end"),
+            ],
+            "wf-branch-join:end": [],
+        }
+        return nodes["wf-branch-join:start"], nodes, adj
+
+    class _Write:
+        def add_node(self, _node):
+            return None
+
+        def add_edge(self, _edge):
+            return None
+
+    class _Engine:
+        write = _Write()
+
+    resolver = AsyncMappingStepResolver()
+
+    @resolver.register("start")
+    async def _start(_ctx):
+        return RunSuccess(conversation_node_id=None, state_update=[])
+
+    for op, value in (("b2", 2), ("b3", 3), ("b5", 5)):
+
+        @resolver.register(op)
+        async def _branch(_ctx, op=op, value=value):
+            return RunSuccess(
+                conversation_node_id=None,
+                state_update=[("u", {op: value})],
+            )
+
+    @resolver.register("join")
+    async def _join(ctx):
+        total = sum(int(ctx.state_view.get(op, 0)) for op in ("b2", "b3", "b5"))
+        return RunSuccess(
+            conversation_node_id=None,
+            state_update=[("u", {"joined_total": total})],
+        )
+
+    @resolver.register("end")
+    async def _end(_ctx):
+        return RunSuccess(
+            conversation_node_id=None,
+            state_update=[("u", {"path": "branch_join"})],
+        )
+
+    monkeypatch.setattr(
+        "kogwistar.runtime.async_runtime.validate_workflow_design",
+        _fake_validate,
+    )
     rt = AsyncWorkflowRuntime(
-        workflow_engine=object(),
-        conversation_engine=object(),
-        step_resolver=lambda _op: (lambda _ctx: RunSuccess(conversation_node_id=None, state_update=[])),
+        workflow_engine=_Engine(),
+        conversation_engine=_Engine(),
+        step_resolver=resolver,
         predicate_registry={},
         trace=False,
+        experimental_native_scheduler=True,
     )
     initial = {"branch_values": [2, 3, 5]}
-    sync_out = rt.run_sync(
+    sync_out = _FakeWorkflowRuntime().run(
         workflow_id="wf-branch-join",
         conversation_id="c1",
         turn_node_id="t1",
@@ -297,8 +464,11 @@ def test_async_runtime_branch_join_status_and_state_equivalent(monkeypatch):
         )
     )
     assert async_out.status == sync_out.status == "succeeded"
-    assert async_out.final_state == sync_out.final_state
-    assert async_out.final_state["joined_total"] == 10
+    async_user_state = {
+        k: v for k, v in async_out.final_state.items() if k != "_rt_join"
+    }
+    assert async_user_state == sync_out.final_state
+    assert async_user_state["joined_total"] == 10
 
 
 def test_async_runtime_route_next_alias_can_fan_out_multiple_branches():
@@ -392,32 +562,57 @@ def test_async_runtime_route_next_alias_can_fan_out_multiple_branches():
     assert [edge.id for edge in picked] == ["e-default"]
 
 
-def test_async_runtime_native_update_schema_applies_known_and_falls_back_unknown():
+def test_async_runtime_native_update_schema_applies_known_and_falls_back_unknown(monkeypatch):
     """Sync mirror: `tests/runtime/test_sync_runtime_bijection_contract.py::test_sync_runtime_native_update_schema_applies_known_and_falls_back_unknown`.
     Moved from `tests/workflow/test_workflow_native_update.py::test_workflow_runtime_native_update_schema_applies_known_and_falls_back_unknown`.
     """
-    class _FakeWorkflowRuntime:
-        def run(self, **kwargs):
-            state = dict(kwargs.get("initial_state") or {})
-            state["op_log"] = ["x"]
-            state["dyn"] = 1
-            return RunResult(
-                run_id=str(kwargs.get("run_id") or "run-native"),
-                final_state=state,
-                mq=queue.Queue(),
-                status="succeeded",
-            )
+    @dataclass
+    class _Node:
+        id: str
+        op: str
+        metadata: dict
 
-    monkeypatch = None
+    def _fake_validate(*, workflow_engine, workflow_id, predicate_registry, resolver):
+        start = _Node(
+            id="wf_native_update:start",
+            op="start",
+            metadata={"wf_terminal": True},
+        )
+        return start, {start.id: start}, {start.id: []}
+
+    monkeypatch.setattr(
+        "kogwistar.runtime.async_runtime.validate_workflow_design",
+        _fake_validate,
+    )
+
+    class _Write:
+        def add_node(self, _node):
+            return None
+
+        def add_edge(self, _edge):
+            return None
+
+    class _Engine:
+        write = _Write()
+
+    resolver = AsyncMappingStepResolver()
+    resolver.set_state_schema({"op_log": "a"})
+
+    @resolver.register("start")
+    async def _start(_ctx):
+        return RunSuccess(
+            conversation_node_id=None,
+            state_update=[],
+            update={"op_log": ["x"], "dyn": 1},
+        )
+
     rt = AsyncWorkflowRuntime(
-        workflow_engine=object(),
-        conversation_engine=object(),
-        step_resolver=lambda _op: (lambda _ctx: RunSuccess(conversation_node_id=None, state_update=[])),
+        workflow_engine=_Engine(),
+        conversation_engine=_Engine(),
+        step_resolver=resolver,
         predicate_registry={},
         trace=False,
     )
-    # Swap sync runtime used by async facade to our fake one.
-    rt._sync_runtime = _FakeWorkflowRuntime()
     out = asyncio.run(
         rt.run(
             workflow_id="wf_native_update",

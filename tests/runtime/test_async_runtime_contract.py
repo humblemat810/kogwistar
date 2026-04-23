@@ -204,6 +204,36 @@ def test_async_runtime_native_scheduler_sync_handlers_run_inline_without_to_thre
     assert out.final_state["last_op"] == "leaf"
 
 
+def test_async_runtime_rejects_disabled_native_scheduler():
+    with pytest.raises(ValueError, match="native async scheduler"):
+        AsyncWorkflowRuntime(
+            workflow_engine=object(),
+            conversation_engine=object(),
+            step_resolver=lambda _op: (lambda _ctx: RunSuccess(conversation_node_id=None, state_update=[])),
+            predicate_registry={},
+            trace=False,
+            experimental_native_scheduler=False,
+        )
+
+
+def test_async_runtime_run_sync_is_not_supported():
+    rt = AsyncWorkflowRuntime(
+        workflow_engine=object(),
+        conversation_engine=object(),
+        step_resolver=lambda _op: (lambda _ctx: RunSuccess(conversation_node_id=None, state_update=[])),
+        predicate_registry={},
+        trace=False,
+    )
+
+    with pytest.raises(NotImplementedError, match="run_sync"):
+        rt.run_sync(
+            workflow_id="wf-1",
+            conversation_id="c-1",
+            turn_node_id="t-1",
+            initial_state={},
+        )
+
+
 def test_async_runtime_preserves_nested_ops_and_state_schema_in_adapter():
     resolver = MappingStepResolver()
     resolver.nested_ops.add("answer")
@@ -821,6 +851,135 @@ def test_async_runtime_native_scheduler_join_merge_runs_once(monkeypatch):
             initial_state={},
         )
     )
+    assert out.status == "succeeded"
+    assert sorted(out.final_state.get("parts", [])) == ["a", "b"]
+    assert out.final_state["join_calls"] == 1
+    assert out.final_state["done"] is True
+
+
+def test_async_runtime_native_scheduler_fanout_merge_join_does_not_deadlock(
+    monkeypatch,
+):
+    class _FakeWorkflowRuntime:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def apply_state_update(self, state, result):
+            for mode, payload in result.state_update:
+                if mode == "u":
+                    state.update(payload)
+                elif mode == "a":
+                    for k, v in payload.items():
+                        state.setdefault(k, []).append(v)
+
+    class _Node:
+        def __init__(self, nid, op, terminal=False, fanout=False, wf_join=False):
+            self.id = nid
+            self.op = op
+            self.metadata = {
+                "wf_terminal": terminal,
+                "wf_fanout": fanout,
+                "wf_join": wf_join,
+            }
+
+    class _Edge:
+        def __init__(self, dst):
+            self.target_ids = [dst]
+            self.metadata = {
+                "wf_priority": 100,
+                "wf_is_default": True,
+                "wf_multiplicity": "one",
+                "wf_predicate": None,
+            }
+
+    def _fake_validate(*, workflow_engine, workflow_id, predicate_registry, resolver):
+        start = _Node("start", "start", fanout=False)
+        fork = _Node("fork", "fork", fanout=True)
+        a = _Node("a", "a")
+        b = _Node("b", "b")
+        join = _Node("join", "join", wf_join=True)
+        end = _Node("end", "end", terminal=True)
+        return (
+            start,
+            {
+                "start": start,
+                "fork": fork,
+                "a": a,
+                "b": b,
+                "join": join,
+                "end": end,
+            },
+            {
+                "start": [_Edge("fork")],
+                "fork": [_Edge("a"), _Edge("b")],
+                "a": [_Edge("join")],
+                "b": [_Edge("join")],
+                "join": [_Edge("end")],
+                "end": [],
+            },
+        )
+
+    monkeypatch.setattr(
+        "kogwistar.runtime.async_runtime.WorkflowRuntime", _FakeWorkflowRuntime
+    )
+    monkeypatch.setattr(
+        "kogwistar.runtime.async_runtime.validate_workflow_design", _fake_validate
+    )
+
+    resolver = AsyncMappingStepResolver()
+
+    @resolver.register("start")
+    async def _start(_ctx):
+        return RunSuccess(conversation_node_id=None, state_update=[])
+
+    @resolver.register("fork")
+    async def _fork(_ctx):
+        return RunSuccess(conversation_node_id=None, state_update=[])
+
+    @resolver.register("a")
+    async def _a(_ctx):
+        await asyncio.sleep(0)
+        return RunSuccess(conversation_node_id=None, state_update=[("a", {"parts": "a"})])
+
+    @resolver.register("b")
+    async def _b(_ctx):
+        await asyncio.sleep(0)
+        return RunSuccess(conversation_node_id=None, state_update=[("a", {"parts": "b"})])
+
+    @resolver.register("join")
+    async def _join(ctx):
+        return RunSuccess(
+            conversation_node_id=None,
+            state_update=[
+                ("u", {"join_calls": int(ctx.state_view.get("join_calls", 0)) + 1})
+            ],
+        )
+
+    @resolver.register("end")
+    async def _end(_ctx):
+        return RunSuccess(conversation_node_id=None, state_update=[("u", {"done": True})])
+
+    rt = AsyncWorkflowRuntime(
+        workflow_engine=object(),
+        conversation_engine=object(),
+        step_resolver=resolver,
+        predicate_registry={},
+        trace=False,
+    )
+
+    async def _run():
+        return await asyncio.wait_for(
+            rt.run(
+                workflow_id="wf-native-join-no-deadlock",
+                conversation_id="c1",
+                turn_node_id="t1",
+                initial_state={},
+                run_id="run-native-join-no-deadlock",
+            ),
+            timeout=2.0,
+        )
+
+    out = asyncio.run(_run())
     assert out.status == "succeeded"
     assert sorted(out.final_state.get("parts", [])) == ["a", "b"]
     assert out.final_state["join_calls"] == 1
@@ -1610,24 +1769,18 @@ def test_async_runtime_suspend_and_resume_roundtrip(client_status):
         if client_status == "failure"
         else RunSuccess(conversation_node_id=None, state_update=[("u", {"resumed": True})])
     )
-    out2 = asyncio.run(
-        rt.resume_run(
-            run_id=run_id,
-            suspended_node_id="wf|gate",
-            suspended_token_id=suspended_token_id,
-            client_result=client_result,
-            workflow_id=workflow_id,
-            conversation_id="conv-suspend",
-            turn_node_id="turn-1",
+    with pytest.raises(NotImplementedError, match="resume_run"):
+        asyncio.run(
+            rt.resume_run(
+                run_id=run_id,
+                suspended_node_id="wf|gate",
+                suspended_token_id=suspended_token_id,
+                client_result=client_result,
+                workflow_id=workflow_id,
+                conversation_id="conv-suspend",
+                turn_node_id="turn-1",
+            )
         )
-    )
-    if client_status == "failure":
-        assert out2.status == "failure"
-        assert out2.final_state.get("resumed") is None
-    else:
-        assert out2.status == "succeeded"
-        assert out2.final_state.get("resumed") is True
-        assert out2.final_state.get("ended") is True
 
 
 def test_async_runtime_nested_workflow_invocation_matches_sync():
@@ -2180,23 +2333,7 @@ def test_async_runtime_native_scheduler_cancel_idempotent_terminal_persistence(m
     assert len(getattr(rt.sync_runtime, "persisted", [])) == 1
 
 
-def test_async_runtime_resume_run_delegates_to_sync_resume(monkeypatch):
-    """Sync mirror: `tests/runtime/test_checkpoint_resume_contract.py` resume entrypoint; also `tests/runtime/test_workflow_suspend_resume.py`."""
-    calls = {}
-
-    class _FakeWorkflowRuntime:
-        def __init__(self, **kwargs):
-            pass
-
-        def run(self, **kwargs):
-            calls["run"] = kwargs
-            return RunResult(run_id="run-sync", final_state={"ok": True}, mq=queue.Queue(), status="succeeded")
-
-        def resume_run(self, **kwargs):
-            calls["resume"] = kwargs
-            return RunResult(run_id="run-resume", final_state={"resumed": True}, mq=queue.Queue(), status="succeeded")
-
-    monkeypatch.setattr("kogwistar.runtime.async_runtime.WorkflowRuntime", _FakeWorkflowRuntime)
+def test_async_runtime_resume_run_is_not_supported():
     rt = AsyncWorkflowRuntime(
         workflow_engine=object(),
         conversation_engine=object(),
@@ -2205,35 +2342,21 @@ def test_async_runtime_resume_run_delegates_to_sync_resume(monkeypatch):
         trace=False,
     )
 
-    out = asyncio.run(
-        rt.resume_run(
-            run_id="run-1",
-            suspended_node_id="node-x",
-            suspended_token_id="tok-x",
-            client_result=RunSuccess(conversation_node_id=None, state_update=[]),
-            workflow_id="wf-1",
-            conversation_id="c-1",
-            turn_node_id="t-1",
+    with pytest.raises(NotImplementedError, match="resume_run"):
+        asyncio.run(
+            rt.resume_run(
+                run_id="run-1",
+                suspended_node_id="node-x",
+                suspended_token_id="tok-x",
+                client_result=RunSuccess(conversation_node_id=None, state_update=[]),
+                workflow_id="wf-1",
+                conversation_id="c-1",
+                turn_node_id="t-1",
+            )
         )
-    )
-    assert out.status == "succeeded"
-    assert calls["resume"]["suspended_node_id"] == "node-x"
-    assert calls["resume"]["suspended_token_id"] == "tok-x"
 
 
-def test_async_runtime_run_with_resume_markers_delegates_to_sync_run(monkeypatch):
-    """Sync mirror: resume-marker run path in `tests/runtime/test_workflow_suspend_resume.py`."""
-    calls = {}
-
-    class _FakeWorkflowRuntime:
-        def __init__(self, **kwargs):
-            pass
-
-        def run(self, **kwargs):
-            calls["run"] = kwargs
-            return RunResult(run_id="run-sync", final_state={"ok": True}, mq=queue.Queue(), status="succeeded")
-
-    monkeypatch.setattr("kogwistar.runtime.async_runtime.WorkflowRuntime", _FakeWorkflowRuntime)
+def test_async_runtime_run_with_resume_markers_is_not_supported():
     rt = AsyncWorkflowRuntime(
         workflow_engine=object(),
         conversation_engine=object(),
@@ -2242,19 +2365,18 @@ def test_async_runtime_run_with_resume_markers_delegates_to_sync_run(monkeypatch
         trace=False,
         experimental_native_scheduler=True,
     )
-    out = asyncio.run(
-        rt.run(
-            workflow_id="wf-1",
-            conversation_id="c-1",
-            turn_node_id="t-1",
-            initial_state={},
-            _resume_step_seq=7,
-            _resume_last_exec_node=object(),
+
+    with pytest.raises(NotImplementedError, match="resume-marker"):
+        asyncio.run(
+            rt.run(
+                workflow_id="wf-1",
+                conversation_id="c-1",
+                turn_node_id="t-1",
+                initial_state={},
+                _resume_step_seq=7,
+                _resume_last_exec_node=object(),
+            )
         )
-    )
-    assert out.status == "succeeded"
-    assert calls["run"]["_resume_step_seq"] == 7
-    assert calls["run"]["_resume_last_exec_node"] is not None
 
 
 def test_async_runtime_native_scheduler_persists_cancelled_terminal(monkeypatch):

@@ -1,6 +1,5 @@
 from __future__ import annotations
 from os import PathLike
-import warnings
 
 import copy
 import time
@@ -38,89 +37,13 @@ from kogwistar.runtime.budget_adapters import adapt_budget_events
 
 from .design import validate_workflow_design, Predicate
 from .serialize import try_serialize_with_ref
-from .base_runtime import BaseRuntime
-
-RESERVED_ROOT_KEYS = {
-    "_deps",
-    "_rt_join",
-}
-
-RESERVED_PREFIXES = ("_", "__")
-
-
-def validate_initial_state(initial_state: WorkflowState):
-    """Validate user-provided initial workflow state.
-
-    Workflow state is user-land *except* for a small set of underscore-prefixed
-    keys that are reserved for runtime/DI plumbing.
-
-    Allowed underscore keys:
-      - _deps    : injected dependencies (non-serializable; must not be checkpointed)
-      - _rt_join : runtime-owned join/barrier bookkeeping (checkpoint/resume)
-
-    All other keys starting with '_' are reserved and will be rejected.
-
-    Note: when underscore keys are present, we emit a RuntimeWarning to make the
-    use of advanced/internal features explicit (helps debugging).
-    """
-    allowed_underscore = {"_deps", "_rt_join"}
-
-    for key in initial_state:
-        if key in allowed_underscore:
-            warnings.warn(
-                f"Using advanced underscore state key '{key}'. This key is reserved for runtime/DI plumbing.",
-                RuntimeWarning,
-                stacklevel=2,
-            )
-            continue
-
-        # _deps and _rt_join are the only allowed reserved runtime keys.
-
-        if key.startswith(RESERVED_PREFIXES):
-            raise ValueError(
-                f"Keys starting with '_' or '__' are reserved. Invalid key: '{key}'"
-            )
-
-
-def apply_state_update_inplace(
-    mute_state: WorkflowState,
-    state_update: list[tuple[str, dict[str, Any]]] | list[StateUpdate],
-    update: dict | None = None,
-    *,
-    state_schema: dict[str, Any] | None = None,
-):
-    """Apply runtime state delta in place.
-
-    Single reducer for sync runtime, async runtime, and replay.
-    """
-    if update and state_update:
-        raise Exception("Either update or state_update can be used")
-
-    for update_item in state_update:  # CR style state api
-        update_item: tuple[str, dict[str, Any]] | StateUpdate
-        if update_item[0] == "a":  # append
-            append_dict: dict = update_item[1]
-            for k, v in append_dict.items():
-                mute_state.setdefault(k, []).append(v)
-        elif update_item[0] == "u":  # update by overwrite
-            update_dict: dict = update_item[1]
-            for k, v in update_dict.items():
-                mute_state[k] = v
-        elif update_item[0] == "e":  # update by extending list
-            update_dict: dict = update_item[1]
-            for k, v in update_dict.items():
-                mute_state.setdefault(k, []).extend(v)
-    if update:  # legacy api
-        schema = state_schema or {}
-        for k, v in update.items():
-            if op := schema.get(k):
-                pass
-            else:
-                op = "u"
-            if op == "a":
-                mute_state.setdefault(k, []).extend(v)
-            else:  # u
-                mute_state[k] = v
+from .base_runtime import (
+    BaseRuntime,
+    RESERVED_PREFIXES,
+    RESERVED_ROOT_KEYS,
+    apply_state_update_inplace,
+    validate_initial_state,
+)
 
 
 # ------------------------------------------------------------------
@@ -3181,6 +3104,7 @@ class WorkflowRuntime(BaseRuntime):
                     },
                 )
                 self.conversation_engine.write.add_edge(e)
+
             if result.conversation_node_id:
                 content = f"{n.safe_get_id()} created {result.conversation_node_id} durign execution"
                 self_span = Span(
