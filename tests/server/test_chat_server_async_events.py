@@ -97,6 +97,7 @@ def _reload_real_server_app(
         monkeypatch.setenv("GKE_BACKEND", "pg")
         monkeypatch.setenv("GKE_PG_ASYNC", "1")
         monkeypatch.setenv("GKE_PG_URL", str(pg_dsn))
+        monkeypatch.setenv("KOGWISTAR_TEST_EMBEDDING_DIM", "384")
     else:
         raise ValueError(f"unknown backend_kind: {backend_kind!r}")
 
@@ -977,6 +978,7 @@ def _real_server_base_url(
         env["GKE_BACKEND"] = "pg"
         env["GKE_PG_ASYNC"] = "1"
         env["GKE_PG_URL"] = str(pg_dsn)
+        env["KOGWISTAR_TEST_EMBEDDING_DIM"] = "384"
     else:
         raise ValueError(f"unknown backend_kind: {backend_kind!r}")
 

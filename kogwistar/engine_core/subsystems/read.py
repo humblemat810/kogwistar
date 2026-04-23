@@ -27,6 +27,7 @@ from ...entity_registry import (
     pick_edge_type,
     pick_node_type,
 )
+from ..async_compat import run_awaitable_blocking
 from ..models import Document, Edge, Node
 from ..utils.refs import ref_doc_id
 from .base import NamespaceProxy
@@ -56,12 +57,12 @@ class ReadSubsystem(NamespaceProxy, ReadLike):
         if not node_type:
             node_type = default_node_type_for_graph_kind(self._e.kg_graph_type)
 
-        got = self._e.backend.node_get(
+        got = run_awaitable_blocking(self._e.backend.node_get(
             ids=ids,
             include=include,
             where=where,
             limit=limit,
-        )
+        ))
         nodes = self.nodes_from_single_or_id_query_result(got, node_type=node_type)
         nodes = self._e._resolve_redirect_chain(
             initial_items=nodes,
@@ -90,12 +91,12 @@ class ReadSubsystem(NamespaceProxy, ReadLike):
         if not edge_type:
             edge_type = default_edge_type_for_graph_kind(self._e.kg_graph_type)
 
-        got = self._e.backend.edge_get(
+        got = run_awaitable_blocking(self._e.backend.edge_get(
             ids=ids,
             include=include,
             where=where,
             limit=limit,
-        )
+        ))
         edges = self.edges_from_single_or_id_query_result(
             got, edge_type=edge_type, include=include
         )
@@ -111,7 +112,7 @@ class ReadSubsystem(NamespaceProxy, ReadLike):
         return self._e._filter_items_by_resolve_mode(edges, resolve_mode)
 
     def get_document(self, doc_id: str) -> Document:
-        doc_get_result = self._e.backend.document_get(ids=[doc_id])
+        doc_get_result = run_awaitable_blocking(self._e.backend.document_get(ids=[doc_id]))
         if len(doc_get_result["ids"]) == 0:
             raise ValueError(f"no document found for doc id = {doc_id}")
         metadatas = doc_get_result["metadatas"]
@@ -161,12 +162,12 @@ class ReadSubsystem(NamespaceProxy, ReadLike):
             normalize_embedding_rows(query_embeddings, allow_empty=False),
         )
 
-        got = self._e.backend.node_query(
+        got = run_awaitable_blocking(self._e.backend.node_query(
             query_embeddings=query_embeddings,
             *args,
             include=include,
             **kwargs,
-        )
+        ))
         return self.nodes_from_query_result(got, node_type=node_type)
 
     def _coerce_ts_utc(self, raw: Any) -> datetime | None:
@@ -302,13 +303,13 @@ class ReadSubsystem(NamespaceProxy, ReadLike):
         if as_of is None:
             raise ValueError(f"Invalid as_of_ts: {as_of_ts!r}")
 
-        got = self._e.backend.node_query(
+        got = run_awaitable_blocking(self._e.backend.node_query(
             query_embeddings=query_embeddings,
             include=include,
             n_results=n_results,
             where=where,
             **kwargs,
-        )
+        ))
         batches = self.nodes_from_query_result(got, node_type=node_type)
         candidates = [node for batch in batches for node in batch] if batches else []
         cache = {str(node.safe_get_id()): node for node in candidates}
@@ -352,12 +353,12 @@ class ReadSubsystem(NamespaceProxy, ReadLike):
             normalize_embedding_rows(query_embeddings, allow_empty=False),
         )
 
-        got = self._e.backend.edge_query(
+        got = run_awaitable_blocking(self._e.backend.edge_query(
             query_embeddings=query_embeddings,
             *args,
             include=include,
             **kwargs,
-        )
+        ))
         return self.edges_from_query_result(got, edge_type=edge_type)
 
     def nodes_from_single_or_id_query_result(
@@ -509,12 +510,12 @@ class ReadSubsystem(NamespaceProxy, ReadLike):
         if isinstance(node_or_id, GraphEntityRefBase):
             obj = node_or_id
         else:
-            got = self._e.backend.node_get(ids=[node_or_id], include=["documents"])
+            got = run_awaitable_blocking(self._e.backend.node_get(ids=[node_or_id], include=["documents"]))
             doc_list = got.get("documents") or []
             if doc_list:
                 obj = Node.model_validate_json(doc_list[0])
             else:
-                got = self._e.backend.edge_get(ids=[node_or_id], include=["documents"])
+                got = run_awaitable_blocking(self._e.backend.edge_get(ids=[node_or_id], include=["documents"]))
                 edoc_list = got.get("documents") or []
                 if not edoc_list:
                     raise ValueError(f"Unknown node/edge id: {node_or_id}")
@@ -636,15 +637,15 @@ class ReadSubsystem(NamespaceProxy, ReadLike):
                 doc_id=doc_id,
             )
         if hasattr(self._e, "node_docs_collection"):
-            rows = self._e.backend.node_docs_get(
+            rows = run_awaitable_blocking(self._e.backend.node_docs_get(
                 where={"doc_id": doc_id}, include=["metadatas"]
-            )
+            ))
             result = set()
             for m in rows.get("metadatas") or []:
                 if m and m.get("node_id"):
                     result.add(m.get("node_id"))
             return sorted(result)
-        got = self._e.backend.node_get(where={"doc_id": doc_id})
+        got = run_awaitable_blocking(self._e.backend.node_get(where={"doc_id": doc_id}))
         return got.get("ids") or []
 
     def edge_ids_by_doc(
@@ -656,9 +657,9 @@ class ReadSubsystem(NamespaceProxy, ReadLike):
                 insertion_method=insertion_method,
                 doc_id=doc_id,
             )
-        eps = self._e.backend.edge_endpoints_get(
+        eps = run_awaitable_blocking(self._e.backend.edge_endpoints_get(
             where={"doc_id": doc_id}, include=["metadatas"]
-        )
+        ))
         result = set()
         for m in eps.get("metadatas") or []:
             if m and m.get("edge_id"):
@@ -671,7 +672,7 @@ class ReadSubsystem(NamespaceProxy, ReadLike):
             if not where
             else {"$and": [{"doc_id": doc_id}] + [{k: v} for k, v in where.items()]}
         )
-        rows = self._e.backend.edge_refs_get(where=where, include=["documents"])
+        rows = run_awaitable_blocking(self._e.backend.edge_refs_get(where=where, include=["documents"]))
         return list({json.loads(d)["edge_id"] for d in (rows.get("documents") or [])})
 
     def list_edges_with_ref_filter(
@@ -680,7 +681,7 @@ class ReadSubsystem(NamespaceProxy, ReadLike):
         ids = self.edges_by_doc(doc_id, where)
         if not ids:
             return []
-        got = self._e.backend.edge_get(ids=ids, include=["documents"])
+        got = run_awaitable_blocking(self._e.backend.edge_get(ids=ids, include=["documents"]))
         return [Edge.model_validate_json(js) for js in (got.get("documents") or [])]
 
     def nodes_by_doc(self, doc_id: str, *, where: dict | None = None) -> list[str]:
@@ -689,7 +690,7 @@ class ReadSubsystem(NamespaceProxy, ReadLike):
             if not where
             else {"$and": [{"doc_id": doc_id}] + [{k: v} for k, v in where.items()]}
         )
-        rows = self._e.backend.node_refs_get(where=where, include=["documents"])
+        rows = run_awaitable_blocking(self._e.backend.node_refs_get(where=where, include=["documents"]))
         return list({json.loads(d)["node_id"] for d in (rows.get("documents") or [])})
 
     def list_nodes_with_ref_filter(
@@ -698,7 +699,7 @@ class ReadSubsystem(NamespaceProxy, ReadLike):
         ids = self.nodes_by_doc(doc_id, where=where)
         if not ids:
             return []
-        got = self._e.backend.node_get(ids=ids, include=["documents"])
+        got = run_awaitable_blocking(self._e.backend.node_get(ids=ids, include=["documents"]))
         return [Node.model_validate_json(js) for js in (got.get("documents") or [])]
 
     def ids_with_insertion_method(
@@ -727,27 +728,21 @@ class ReadSubsystem(NamespaceProxy, ReadLike):
         if ids:
             where[key] = {"$in": list(ids)}
 
-        get_refs = (
-            self._e.backend.node_refs_get
-            if kind == "node"
-            else self._e.backend.edge_refs_get
-        )
-        rows = get_refs(where=where, include=["metadatas"])
+        get_refs = self._e.backend.node_refs_get if kind == "node" else self._e.backend.edge_refs_get
+        rows = run_awaitable_blocking(get_refs(where=where, include=["metadatas"]))
         picked = {
             str(m.get(key)) for m in (rows.get("metadatas") or []) if m and m.get(key)
         }
         if picked:
             return sorted(picked)
 
-        get_primary = (
-            self._e.backend.node_get if kind == "node" else self._e.backend.edge_get
-        )
+        get_primary = self._e.backend.node_get if kind == "node" else self._e.backend.edge_get
         if ids:
-            got = get_primary(ids=list(ids), include=["documents"])
+            got = run_awaitable_blocking(get_primary(ids=list(ids), include=["documents"]))
             documents = got.get("documents") or []
             entity_ids = got.get("ids") or []
         else:
-            got = get_primary(include=["documents"])
+            got = run_awaitable_blocking(get_primary(include=["documents"]))
             documents = got.get("documents") or []
             entity_ids = got.get("ids") or []
 

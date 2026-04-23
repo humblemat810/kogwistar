@@ -12,6 +12,7 @@ import time
 
 from .utils import AliasBook
 from .async_compat import run_sync_or_awaitable
+from .async_compat import run_awaitable_blocking
 
 from .chroma_backend import ChromaBackend
 
@@ -45,6 +46,21 @@ from .types import (
 from ..graph_kinds import normalize_graph_kind
 from .utils.aliasing import AliasBookStore
 from ..acl.graph import ACLGraph
+
+
+class _BackendCallBridge:
+    def __init__(self, backend):
+        self._backend = backend
+
+    def __getattr__(self, name: str):
+        attr = getattr(self._backend, name)
+        if not callable(attr):
+            return attr
+
+        def _call(*args, **kwargs):
+            return run_awaitable_blocking(attr(*args, **kwargs))
+
+        return _call
     # """_summary_
 
     # sample usage:
@@ -1296,7 +1312,7 @@ class GraphKnowledgeEngine:
         if backend_factory is not None:
             if backend is not None:
                 raise ValueError("Backend factory and backend can only either be specified")
-            self.backend = backend_factory(self)
+            self.backend = _BackendCallBridge(backend_factory(self))
             if not hasattr(self, "meta_sqlite"):
                 self.meta_sqlite = EngineSQLite(
                     pathlib.Path(persist_directory or "./chroma_db"), "meta.sqlite"
@@ -1357,7 +1373,7 @@ class GraphKnowledgeEngine:
                 "edge_refs"
             )
             # Backend adapter (Phase 1: Chroma)
-            self.backend: StorageBackend = ChromaBackend(
+            self.backend: StorageBackend = _BackendCallBridge(ChromaBackend(
                 node_index_collection=self.node_index_collection,
                 node_collection=self.node_collection,
                 edge_collection=self.edge_collection,
@@ -1367,7 +1383,7 @@ class GraphKnowledgeEngine:
                 node_docs_collection=self.node_docs_collection,
                 node_refs_collection=self.node_refs_collection,
                 edge_refs_collection=self.edge_refs_collection,
-            )
+            ))
             self.meta_sqlite = EngineSQLite(
                 pathlib.Path(persist_directory or "./chroma_db"), "meta.sqlite"
             )
@@ -1379,7 +1395,7 @@ class GraphKnowledgeEngine:
                 raise Exception("unreacheable")
             else:
                 backend2: PgVectorBackend = backend  # let static checker happy
-            self.backend: StorageBackend = backend
+            self.backend: StorageBackend = _BackendCallBridge(backend)
             meta_postgre = EnginePostgresMetaStore(
                 engine=backend2.engine, schema=backend2.schema
             )

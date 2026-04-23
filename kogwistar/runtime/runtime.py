@@ -1470,6 +1470,32 @@ class WorkflowRuntime(BaseRuntime):
                 Tuple[str, StepRunResult, int, str, str | None, str, int]
             ] = queue.Queue()
 
+            # Tiny scheduler-only critical section:
+            # keep it on in-memory bookkeeping only. Never hold this across DB I/O,
+            # resolver/user code, queue blocking, or any await-like wait.
+            work_cond = threading.Condition()
+            work_counter = 0
+
+            def _work_add(count: int = 1) -> None:
+                nonlocal work_counter
+                if count <= 0:
+                    return
+                with work_cond:
+                    work_counter += count
+                    work_cond.notify_all()
+
+            def _work_done(count: int = 1) -> None:
+                nonlocal work_counter
+                if count <= 0:
+                    return
+                with work_cond:
+                    work_counter = max(0, work_counter - count)
+                    work_cond.notify_all()
+
+            def _work_snapshot() -> int:
+                with work_cond:
+                    return work_counter
+
             def _persist_rt_join_runtime() -> None:
                 # Persist both pending + inflight as pending-on-resume (idempotent).
                 # Suspended tokens are stored separately so they are parked, not re-scheduled.
@@ -1490,12 +1516,14 @@ class WorkflowRuntime(BaseRuntime):
                         break
                     pending_tokens.discard((str(nid), int(mask), str(tok), parent_tok))
                     _dec(int(mask))
+                    _work_done(1)
 
                 for jid in join_node_ids:
                     waiters = list(_join_waiters.get(jid, []))
                     if not waiters:
                         continue
                     _join_waiters[jid] = []
+                    _work_done(len(waiters))
                     for wm, _tok, _parent in waiters:
                         _dec(int(wm))
 
@@ -1536,6 +1564,7 @@ class WorkflowRuntime(BaseRuntime):
                         pending_tokens.discard(
                             (str(nid), int(mask), str(tok), parent_tok)
                         )
+                        _work_done(1)
                     except queue.Empty:
                         break
                 _persist_rt_join_runtime()
@@ -1572,6 +1601,7 @@ class WorkflowRuntime(BaseRuntime):
                     t = (str(nid), int(mask), str(token_id), parent_token_id)
                     pending_tokens.add(t)
                     scheduled_q.put(t)
+                _work_add(len(restored))
                 _persist_rt_join_runtime()
             else:
                 start_mask = int(_may_reach_join.get(start_id, 0))
@@ -1584,6 +1614,7 @@ class WorkflowRuntime(BaseRuntime):
                 )
                 pending_tokens.add(t)
                 scheduled_q.put(t)
+                _work_add(1)
                 _persist_rt_join_runtime()
 
             def worker(
@@ -1738,6 +1769,8 @@ class WorkflowRuntime(BaseRuntime):
                                 mask,
                             )
                         )
+                        with work_cond:
+                            work_cond.notify_all()
                 except Exception as _e:
                     raise
                 finally:
@@ -1801,8 +1834,8 @@ class WorkflowRuntime(BaseRuntime):
                         )
                     if (
                         not cancel_pending
+                        and _work_snapshot() == 0
                         and not inflight
-                        and not pending_tokens
                         and scheduled_q.empty()
                         and done_q.empty()
                     ):
@@ -2041,6 +2074,9 @@ class WorkflowRuntime(BaseRuntime):
                                 except Exception:
                                     pass
                                 _join_waiters[nid] = []
+                                # N join arrivals collapse into one executable token.
+                                # Keep one outstanding work item for the released join step.
+                                _work_done(max(0, len(waiters) - 1))
                                 merged_mask = int(waiters[0][0])
                                 token_id = str(waiters[0][1])
                                 parent_token_id = waiters[0][2]
@@ -2071,10 +2107,17 @@ class WorkflowRuntime(BaseRuntime):
                             cache_dir=cache_dir,
                         )
 
-                    try:
-                        done_task = done_q.get(timeout=0.05)
-                    except queue.Empty:
+                    if done_q.empty():
+                        with work_cond:
+                            work_cond.wait_for(
+                                lambda: cancel_pending
+                                or (not done_q.empty())
+                                or _work_snapshot() == 0,
+                                timeout=0.05,
+                            )
+                    if done_q.empty():
                         continue
+                    done_task = done_q.get_nowait()
                     (
                         node_id,
                         run_result,
@@ -2274,6 +2317,7 @@ class WorkflowRuntime(BaseRuntime):
                         _dec(mask)
                         _persist_rt_join_runtime()
                         _checkpoint_current_step()
+                        _work_done(1)
                         continue
 
                     # route
@@ -2287,6 +2331,7 @@ class WorkflowRuntime(BaseRuntime):
                         _enter_cancelling(
                             reason_node_id=str(node_id), token_id=str(token_id)
                         )
+                        _work_done(1)
                         continue
 
                     edges = adj.get(node_id, [])
@@ -2361,6 +2406,7 @@ class WorkflowRuntime(BaseRuntime):
                         _dec(mask)
                         _persist_rt_join_runtime()
                         _checkpoint_current_step()
+                        _work_done(1)
                         continue
 
                     if not next_nodes:
@@ -2401,6 +2447,7 @@ class WorkflowRuntime(BaseRuntime):
                         _enter_cancelling(
                             reason_node_id=str(node_id), token_id=str(token_id)
                         )
+                        _work_done(1)
                         continue
 
                     # continuation token
@@ -2429,6 +2476,7 @@ class WorkflowRuntime(BaseRuntime):
                                 _persist_rt_join_runtime()
 
                             pending_tokens.add(t)
+                            _work_add(1)
                             scheduled_q.put(t)
                             _persist_rt_join_runtime()
                             first = False
@@ -2483,6 +2531,7 @@ class WorkflowRuntime(BaseRuntime):
                             _inc(nxt_mask)
 
                             pending_tokens.add(t)
+                            _work_add(1)
                             scheduled_q.put(t)
                             _persist_rt_join_runtime()
 
@@ -2490,6 +2539,7 @@ class WorkflowRuntime(BaseRuntime):
                     _enter_cancelling(
                         reason_node_id=str(node_id), token_id=str(token_id)
                     )
+                    _work_done(1)
             raise Exception("unreacheable")
 
     def _route_next(

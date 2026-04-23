@@ -40,6 +40,7 @@ Index/materialization collections (non-vector):
 """
 
 import asyncio
+import threading
 import sys
 from dataclasses import dataclass
 from contextlib import asynccontextmanager, contextmanager
@@ -93,14 +94,40 @@ def _run_coro_sync(coro):
                 asyncio.get_running_loop()
             except RuntimeError:
                 return runner.run(coro)
-            return coro
+            box: dict[str, Any] = {}
+
+            def _worker() -> None:
+                try:
+                    box["result"] = _run_coro_sync(coro)
+                except BaseException as exc:  # pragma: no cover - thread ferry
+                    box["error"] = exc
+
+            thread = threading.Thread(target=_worker, daemon=True)
+            thread.start()
+            thread.join()
+            if "error" in box:
+                raise box["error"]
+            return box.get("result")
         finally:
             runner.close()
     try:
         asyncio.get_running_loop()
     except RuntimeError:
         return asyncio.run(coro)
-    return coro
+    box: dict[str, Any] = {}
+
+    def _worker() -> None:
+        try:
+            box["result"] = _run_coro_sync(coro)
+        except BaseException as exc:  # pragma: no cover - thread ferry
+            box["error"] = exc
+
+    thread = threading.Thread(target=_worker, daemon=True)
+    thread.start()
+    thread.join()
+    if "error" in box:
+        raise box["error"]
+    return box.get("result")
 
 
 class PostgresUnitOfWork:

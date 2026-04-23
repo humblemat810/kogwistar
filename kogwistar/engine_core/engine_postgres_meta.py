@@ -81,7 +81,7 @@ class _AsyncConnectionAdapter:
         self._runner = runner
 
     def invoke_sync(self, fn):
-        return self._runner.run(self._conn.run_sync(fn))
+        return _run_coro_blocking(self._conn.run_sync(fn))
 
     async def invoke_async(self, fn):
         return await self._conn.run_sync(fn)
@@ -430,18 +430,21 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
 
         if self._is_async_engine:
             runner = _make_runner()
-            txn_ctx = self.engine.begin()
-            txn = runner.run(txn_ctx.__aenter__())
-            adapter = _AsyncConnectionAdapter(txn, runner)
+            conn_ctx = self.engine.connect()
+            conn = _run_coro_blocking(conn_ctx.__aenter__())
+            txn = conn.begin()
+            _run_coro_blocking(txn.start())
+            adapter = _AsyncConnectionAdapter(conn, runner)
             try:
                 with _set_active_conn(adapter):
                     yield adapter
             except BaseException as exc:
-                runner.run(txn_ctx.__aexit__(type(exc), exc, exc.__traceback__))
+                _run_coro_blocking(txn.rollback())
                 raise
             else:
-                runner.run(txn_ctx.__aexit__(None, None, None))
+                _run_coro_blocking(txn.commit())
             finally:
+                _run_coro_blocking(conn.close())
                 runner.close()
             return
 

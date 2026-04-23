@@ -61,11 +61,10 @@ def build_postgres_backend(
 
 def build_async_postgres_backend(
     cfg: EnginePostgresConfig,
-) -> Tuple[PgVectorBackend, AsyncPostgresUnitOfWork]:
-    from sqlalchemy.ext.asyncio import create_async_engine
+) -> Tuple[PgVectorBackend, PostgresUnitOfWork]:
 
     max_workers = 4
-    engine = create_async_engine(
+    engine = sa.create_engine(
         cfg.dsn,
         future=True,
         pool_size=max_workers + 2,
@@ -83,4 +82,4 @@ def build_async_postgres_backend(
         node_docs_table=cfg.node_docs_table,
         node_refs_table=cfg.node_refs_table,
     )
-    return backend, AsyncPostgresUnitOfWork(engine=engine)
+    return backend, PostgresUnitOfWork(engine=engine)
