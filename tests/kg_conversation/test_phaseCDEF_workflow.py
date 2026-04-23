@@ -13,6 +13,7 @@ from kogwistar.runtime.models import RunSuccess
 class FakeConversationEngine:
     def __init__(self) -> None:
         self.nodes: Dict[str, Any] = {}
+        self.write = self
 
     def _iterative_defensive_emb(self, _text: str):
         return [0.0, 0.1]

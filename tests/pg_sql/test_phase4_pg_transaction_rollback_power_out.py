@@ -24,6 +24,8 @@ def test_pg_transaction_rollback_power_out_simulation(sa_engine, pg_schema):
     # dsn = _pg_dsn()
     # if not dsn:
     #     pytest.skip("Set GKE_PG_DSN (or PG_DSN/DATABASE_URL) to run Postgres E2E tests")
+    if sa_engine is None or pg_schema is None:
+        pytest.skip("Postgres test container unavailable")
     backend = PgVectorBackend(engine=sa_engine, embedding_dim=3, schema=pg_schema)
     # backend = build_postgres_backend(PgVectorConfig(url=pg_url))
     # schema = f"gke_test_{uuid.uuid4().hex[:8]}"

@@ -57,7 +57,6 @@ def replay_oplog_to_bridge(
     bridge_url = bridge_url.rstrip("/")
     ingest_url = f"{bridge_url}/ingest"
 
-    session = requests.Session()
     stats = ReplayStats()
 
     sent = skipped = failed = 0
@@ -90,21 +89,22 @@ def replay_oplog_to_bridge(
                 continue
 
         try:
-            r = session.post(ingest_url, json=ev, timeout=timeout_s)
-            if r.status_code >= 400:
-                failed += 1
-                if verbose:
-                    print(
-                        f"[fail] seq={seq} status={r.status_code} body={r.text[:200]}",
-                        file=sys.stderr,
-                    )
-                if stop_on_error:
-                    break
-            else:
-                sent += 1
-                emitted += 1
-                if verbose and (sent <= 5 or sent % 1000 == 0):
-                    print(f"[sent] seq={seq} op={ev.get('op')}")
+            with requests.Session() as session:
+                r = session.post(ingest_url, json=ev, timeout=timeout_s)
+                if r.status_code >= 400:
+                    failed += 1
+                    if verbose:
+                        print(
+                            f"[fail] seq={seq} status={r.status_code} body={r.text[:200]}",
+                            file=sys.stderr,
+                        )
+                    if stop_on_error:
+                        break
+                else:
+                    sent += 1
+                    emitted += 1
+                    if verbose and (sent <= 5 or sent % 1000 == 0):
+                        print(f"[sent] seq={seq} op={ev.get('op')}")
         except Exception as e:
             failed += 1
             if verbose:

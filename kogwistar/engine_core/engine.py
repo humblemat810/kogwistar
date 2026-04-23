@@ -12,6 +12,7 @@ import time
 
 from .utils import AliasBook
 from .async_compat import run_sync_or_awaitable
+from .async_compat import run_awaitable_blocking
 
 from .chroma_backend import ChromaBackend
 
@@ -45,6 +46,21 @@ from .types import (
 from ..graph_kinds import normalize_graph_kind
 from .utils.aliasing import AliasBookStore
 from ..acl.graph import ACLGraph
+
+
+class _BackendCallBridge:
+    def __init__(self, backend):
+        self._backend = backend
+
+    def __getattr__(self, name: str):
+        attr = getattr(self._backend, name)
+        if not callable(attr):
+            return attr
+
+        def _call(*args, **kwargs):
+            return run_awaitable_blocking(attr(*args, **kwargs))
+
+        return _call
     # """_summary_
 
     # sample usage:
@@ -291,7 +307,9 @@ def _backend_update_record_lifecycle(
     upd_fn = getattr(backend, f"{kind}_update", None)
     if get_fn is None or upd_fn is None:
         raise AttributeError(f"backend missing {kind}_get/{kind}_update")
-    got = get_fn(ids=[record_id], include=["documents", "metadatas", "embeddings"])
+    got = run_awaitable_blocking(
+        get_fn(ids=[record_id], include=["documents", "metadatas", "embeddings"])
+    )
     ids = got.get("ids") or []
     if not ids:
         return False
@@ -308,11 +326,13 @@ def _backend_update_record_lifecycle(
 
     new_meta = _merge_meta(meta if isinstance(meta, dict) else {}, lifecycle_patch)
     doc = json.dumps(base, ensure_ascii=False)
-    upd_fn(
+    run_awaitable_blocking(
+        upd_fn(
         ids=[record_id],
         documents=[json.dumps(base, ensure_ascii=False)],
         metadatas=[new_meta],
         embeddings=[embedding],
+        )
     )
     return True
 
@@ -1577,7 +1597,7 @@ class GraphKnowledgeEngine:
 
     def check_document_exist(self, document_id: str | list[str]):
         doc_ids = [document_id] if type(document_id) is str else document_id
-        got = self.backend.document_get(ids=doc_ids, include=[])
+        got = run_awaitable_blocking(self.backend.document_get(ids=doc_ids, include=[]))
         return set(got["ids"]).union(set(document_id))
 
     def _fetch_document_text(self, document_id: str) -> str:
@@ -1708,10 +1728,10 @@ class GraphKnowledgeEngine:
         return self.read.list_edges_with_ref_filter(doc_id, where=where)
 
     def nodes_by_ids(self, node_ids):
-        return self.backend.node_get(ids=node_ids)
+        return run_awaitable_blocking(self.backend.node_get(ids=node_ids))
 
     def edges_by_ids(self, edge_ids):
-        return self.backend.edge_get(ids=edge_ids)
+        return run_awaitable_blocking(self.backend.edge_get(ids=edge_ids))
 
     def nodes_by_doc(self, doc_id: str, *, where: Optional[dict] = None) -> list[str]:
         return self.read.nodes_by_doc(doc_id, where=where)
@@ -1738,10 +1758,14 @@ class GraphKnowledgeEngine:
     # Vector queries
     # ----------------------------
     def vector_search_nodes(self, embedding: List[float], top_k: int = 5):
-        return self.backend.node_query(query_embeddings=[embedding], n_results=top_k)
+        return run_awaitable_blocking(
+            self.backend.node_query(query_embeddings=[embedding], n_results=top_k)
+        )
 
     def vector_search_edges(self, embedding: List[float], top_k: int = 5):
-        return self.backend.edge_query(query_embeddings=[embedding], n_results=top_k)
+        return run_awaitable_blocking(
+            self.backend.edge_query(query_embeddings=[embedding], n_results=top_k)
+        )
 
     def _choose_anchor(self, node_ids: list[str]) -> str:
         return self.adjudicate.choose_anchor(node_ids)

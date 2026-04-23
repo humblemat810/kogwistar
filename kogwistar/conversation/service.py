@@ -154,6 +154,7 @@ class ConversationService:
             label="Workflow cancel request",
             type="entity",
             summary=f"workflow cancel requested for run_id={run_id}",
+            doc_id=f"conv:{conversation_id}",
             conversation_id=conversation_id,
             role="system",
             turn_index=None,
@@ -162,6 +163,7 @@ class ConversationService:
             mentions=[Grounding(spans=[Span.from_dummy_for_conversation()])],
             metadata={
                 "entity_type": "workflow_cancel_request",
+                "doc_id": f"conv:{conversation_id}",
                 "run_id": run_id,
                 "workflow_id": workflow_id,
                 "conversation_id": conversation_id,
@@ -255,6 +257,7 @@ class ConversationService:
             label="Workflow cancelled",
             type="entity",
             summary=f"workflow cancelled run_id={run_id}",
+            doc_id=f"conv:{conversation_id}",
             conversation_id=conversation_id,
             role="system",
             turn_index=None,

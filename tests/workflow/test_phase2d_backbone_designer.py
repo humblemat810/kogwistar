@@ -4,23 +4,9 @@ from __future__ import annotations
 from kogwistar.conversation.designer import ConversationWorkflowDesigner
 import pytest
 pytestmark = pytest.mark.ci_full
-from typing import Sequence
 
 pytest.importorskip("chromadb")
-from chromadb.utils.embedding_functions import EmbeddingFunction
-from chromadb.api.types import Embeddings
-
-
-class FakeEmbeddingFunction(EmbeddingFunction):
-    @staticmethod
-    def name() -> str:
-        return "default"
-
-    def __init__(self, dim: int = 384):
-        self._dim = dim
-
-    def __call__(self, documents_or_texts: Sequence[str]) -> Embeddings:
-        return [[0.01] * self._dim for _ in documents_or_texts]
+from tests._helpers.embeddings import ConstantEmbeddingFunction
 
 
 @pytest.mark.parametrize("backend_kind", ["chroma", "pg"])
@@ -36,7 +22,7 @@ def test_phase2d_conversation_designer_ensure_backbone(
     workflow_engine = GraphKnowledgeEngine(
         persist_directory=str(wf_dir),
         kg_graph_type="workflow",
-        embedding_function=FakeEmbeddingFunction(dim=3),
+        embedding_function=ConstantEmbeddingFunction(dim=3),
     )
 
     designer = ConversationWorkflowDesigner(

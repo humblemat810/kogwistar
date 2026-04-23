@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import pytest
+
 from kogwistar.runtime.budget_adapters import adapt_budget_events
+
+pytestmark = [pytest.mark.ci, pytest.mark.runtime]
 
 
 def test_generic_usage_adapter_maps_usage_to_canonical_events() -> None:

@@ -1,6 +1,40 @@
 from typing import Any, Dict
 
-from .async_compat import run_sync_or_awaitable
+from .async_compat import run_awaitable_blocking
+
+
+class _AwaitableValue:
+    def __init__(self, value: Any):
+        self._value = value
+
+    def __await__(self):
+        async def _done():
+            return self._value
+
+        return _done().__await__()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._value, name)
+
+    def __bool__(self) -> bool:
+        return bool(self._value)
+
+    def __repr__(self) -> str:
+        return repr(self._value)
+
+
+class _AwaitableDict(dict):
+    def __await__(self):
+        async def _done():
+            return self
+
+        return _done().__await__()
+
+
+def _awaitable_result(value: Any) -> Any:
+    if isinstance(value, dict):
+        return _AwaitableDict(value)
+    return _AwaitableValue(value)
 
 
 class ChromaBackend:
@@ -45,7 +79,7 @@ class ChromaBackend:
     def call(self, collection_key: str, method: str, **kwargs) -> Any:
         coll = self._c(collection_key)
         fn = getattr(coll, method)
-        return run_sync_or_awaitable(fn(**kwargs))
+        return _awaitable_result(run_awaitable_blocking(fn(**kwargs)))
 
     # --- node_index ---
     def node_index_get(self, **kwargs) -> Any:
@@ -217,3 +251,7 @@ class ChromaBackend:
 
     def edge_refs_delete(self, **kwargs) -> Any:
         return self.call("edge_refs", "delete", **kwargs)
+
+
+class AsyncChromaBackend(ChromaBackend):
+    pass

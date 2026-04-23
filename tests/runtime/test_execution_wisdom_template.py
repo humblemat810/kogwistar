@@ -12,7 +12,7 @@ from kogwistar.wisdom.template import write_execution_wisdom_artifacts
 from tests._helpers.fake_backend import build_fake_backend
 
 
-pytestmark = pytest.mark.core
+pytestmark = [pytest.mark.core, pytest.mark.runtime]
 
 
 def _make_engine() -> tuple[GraphKnowledgeEngine, Path]:

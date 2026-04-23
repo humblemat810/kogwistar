@@ -2576,7 +2576,7 @@ class Document(ModeSlicingMixin, BaseModel):
             raise Exception("unsupported type")
 
     def get_content_by_span(self, span: Span) -> str:
-        if self.type == "ocr":
+        if self.type in ["ocr", "ocr_document"]:
             return self.get_content_as_ocr_doc_by_span(span)
         elif self.type in ["text", "text_chunked"]:
             return self.get_content_as_text_doc_by_span(span)
@@ -2601,9 +2601,11 @@ class Document(ModeSlicingMixin, BaseModel):
             raise Exception("only can call method when doc is plain text type")
 
     def get_content_as_ocr_doc_by_span(self, span: Span) -> str:
-        if self.type != "ocr":
+        if self.type not in ["ocr", "ocr_document"]:
             raise Exception("only can call method when doc is ocr type")
-        return ""
+        if isinstance(self.content, str):
+            return self.content[span.start_char : span.end_char]
+        return span.excerpt
 
 
 # ========================= OCR DOC

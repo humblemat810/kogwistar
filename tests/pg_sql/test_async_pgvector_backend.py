@@ -241,6 +241,75 @@ async def test_async_pg_backend_transaction_rollback(
 
 
 @pytest.mark.asyncio
+async def test_async_pg_backend_nested_transaction_joins_outer_scope(
+    async_pg_backend, async_pg_uow
+):
+    backend = async_pg_backend
+    outer_id = "async_nested_outer_node"
+    inner_id = "async_nested_inner_node"
+
+    with pytest.raises(RuntimeError):
+        async with async_pg_uow.transaction():
+            await backend.node_add(
+                ids=[outer_id],
+                documents=["outer-doc"],
+                metadatas=[{"name": "outer"}],
+                embeddings=[[1.0, 0.0, 0.0]],
+            )
+            async with async_pg_uow.transaction():
+                await backend.node_add(
+                    ids=[inner_id],
+                    documents=["inner-doc"],
+                    metadatas=[{"name": "inner"}],
+                    embeddings=[[0.0, 1.0, 0.0]],
+                )
+            raise RuntimeError("boom")
+
+    assert (await backend.node_get(ids=[outer_id]))["ids"] == []
+    assert (await backend.node_get(ids=[inner_id]))["ids"] == []
+
+
+@pytest.mark.asyncio
+async def test_async_pg_backend_concurrent_task_local_uow_isolation(
+    async_pg_backend, async_pg_uow
+):
+    backend = async_pg_backend
+    first_ready = asyncio.Event()
+    second_done = asyncio.Event()
+    first_id = "async_task_local_first"
+    second_id = "async_task_local_second"
+
+    async def _first_worker():
+        with pytest.raises(RuntimeError):
+            async with async_pg_uow.transaction():
+                await backend.node_add(
+                    ids=[first_id],
+                    documents=["first-doc"],
+                    metadatas=[{"name": "first"}],
+                    embeddings=[[1.0, 0.0, 0.0]],
+                )
+                first_ready.set()
+                await second_done.wait()
+                raise RuntimeError("first boom")
+
+    async def _second_worker():
+        await first_ready.wait()
+        async with async_pg_uow.transaction():
+            await backend.node_add(
+                ids=[second_id],
+                documents=["second-doc"],
+                metadatas=[{"name": "second"}],
+                embeddings=[[0.0, 1.0, 0.0]],
+            )
+        second_done.set()
+
+    await asyncio.gather(_first_worker(), _second_worker())
+
+    assert (await backend.node_get(ids=[first_id]))["ids"] == []
+    assert (await backend.node_get(ids=[second_id]))["ids"] == [second_id]
+
+
+@pytest.mark.asyncio
 async def test_async_pg_engine_uow_rolls_back_writes_together(
     async_pg_backend, async_pg_uow, tmp_path
 ):

@@ -13,7 +13,9 @@ import httpx
 from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
 
-ROOT = pathlib.Path(__file__).resolve().parents[1]
+ROOT = pathlib.Path(__file__).resolve().parents[2]
+CALL_TIMEOUT_S = 10
+TEST_TIMEOUT_S = 40
 
 
 def _free_port():
@@ -83,15 +85,17 @@ def _preseed_chroma_dir(persist_dir: str):
         doc_id=doc.id,
     )
     eng.write.add_edge(e_causes, doc_id=doc.id)
+    return n_smoke.id
 
 
 @pytest.mark.asyncio
 async def test_streamable_http_e2e(tmp_path):
     chroma_dir = str(tmp_path / "chroma")
-    _preseed_chroma_dir(chroma_dir)  # <-- seed BEFORE starting the server
+    seed_node_id = _preseed_chroma_dir(chroma_dir)  # seed BEFORE starting the server
 
     port = _free_port()
     env = {**os.environ, "PYTHONUNBUFFERED": "1", "MCP_CHROMA_DIR": chroma_dir}
+    creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
     srv = subprocess.Popen(
         [
             sys.executable,
@@ -106,56 +110,64 @@ async def test_streamable_http_e2e(tmp_path):
         ],
         cwd=str(ROOT),
         env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        creationflags=creationflags,
     )
     try:
-        await _wait(f"http://127.0.0.1:{port}/mcp", timeout=100)
+        await asyncio.wait_for(_wait(f"http://127.0.0.1:{port}/mcp", timeout=30), timeout=35)
 
-        async with streamablehttp_client(f"http://127.0.0.1:{port}/mcp") as (
-            read,
-            write,
-            _,
-        ):
-            async with ClientSession(read, write) as session:
-                await session.initialize()  # SDK negotiates protocol
+        async def _exercise() -> None:
+            async with streamablehttp_client(f"http://127.0.0.1:{port}/mcp") as (
+                read,
+                write,
+                _,
+            ):
+                async with ClientSession(read, write) as session:
+                    await asyncio.wait_for(session.initialize(), timeout=CALL_TIMEOUT_S)
 
-                tools = await session.list_tools()
-                names = {t.name for t in tools.tools}
-                assert {
-                    "kg_shortest_path",
-                    "kg_find_edges",
-                    "kg_semantic_seed_then_expand_text",
-                    "kg_k_hop",
-                    "kg_neighbors",
-                } <= names
+                    tools = await asyncio.wait_for(session.list_tools(), timeout=CALL_TIMEOUT_S)
+                    names = {t.name for t in tools.tools}
+                    assert {
+                        "kg_shortest_path",
+                        "kg_find_edges",
+                        "kg_semantic_seed_then_expand_text",
+                        "kg_k_hop",
+                        "kg_neighbors",
+                    } <= names
 
-                # Prefer a non-embedding call for CI determinism:
-                # res = await session.call_tool(
-                #     "kg_query",
-                #     arguments={"inp": {"op": "find_edges",
-                #                "args": {"relation": "causes", "doc_id": "D1"}}}
-                # )
-                # find_edges
-                import json
-                from server_mcp import FindEdgesOut, KHopOut
+                    # Prefer a non-embedding call for CI determinism.
+                    import json
+                    from server_mcp import FindEdgesOut, KHopOut
 
-                res = await session.call_tool(
-                    "kg_find_edges", arguments={"relation": "causes", "doc_id": "D1"}
-                )
-                assert (res.content[0].type == "json") or (
-                    res.content[0].type == "text" and json.loads(res.content[0].text)
-                )
-                FindEdgesOut.model_validate_json(res.content[0].text)
+                    res = await asyncio.wait_for(
+                        session.call_tool(
+                            "kg_find_edges",
+                            arguments={"relation": "causes", "doc_id": "D1"},
+                        ),
+                        timeout=CALL_TIMEOUT_S,
+                    )
+                    assert (res.content[0].type == "json") or (
+                        res.content[0].type == "text" and json.loads(res.content[0].text)
+                    )
+                    FindEdgesOut.model_validate_json(res.content[0].text)
 
-                # k_hop
-                res = await session.call_tool(
-                    "kg_k_hop", arguments={"start_ids": ["A"], "k": 2}
-                )
-                assert (res.content[0].type == "json") or (
-                    res.content[0].type == "text" and json.loads(res.content[0].text)
-                )
-                KHopOut.model_validate_json(res.content[0].text)
+                    res = await asyncio.wait_for(
+                        session.call_tool(
+                            "kg_k_hop",
+                            arguments={"start_ids": [seed_node_id], "k": 2, "doc_id": "D1"},
+                        ),
+                        timeout=CALL_TIMEOUT_S,
+                    )
+                    assert (res.content[0].type == "json") or (
+                        res.content[0].type == "text" and json.loads(res.content[0].text)
+                    )
+                    hop = KHopOut.model_validate_json(res.content[0].text)
+                    assert any(layer.nodes or layer.edges for layer in hop.layers), (
+                        f"kg_k_hop returned empty layers for seed {seed_node_id!r}"
+                    )
+
+        await asyncio.wait_for(_exercise(), timeout=TEST_TIMEOUT_S)
     finally:
         srv.terminate()
         try:

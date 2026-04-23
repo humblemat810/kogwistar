@@ -13,8 +13,7 @@ import re
 # import pytest
 # from kogwistar.engine_core.engine import GraphKnowledgeEngine
 # from kogwistar.engine_core.postgres_backend import PgVectorBackend
-from kogwistar.conversation.models import ConversationNode
-from tests.conftest import _make_engine_pair
+from tests.graph_seed_helpers import seed_kg_and_conversation_bundle_for_backend
 
 
 def _minimal_bundle_template() -> str:
@@ -33,151 +32,11 @@ window.__EMBEDDED_DATA__ = {{ embedded_data | safe if embedded_data is defined e
 window.__BUNDLE_META__ = {{ bundle_meta | safe if bundle_meta is defined else "null" }};
 </script></body></html>
 """
-
-
 # def _fake_ef_dim(dim: int):
 #     def _ef(texts):
 #         return [[0.0] * dim for _ in texts]
 #     _ef.name = "_fake_ef_dim"
 #     return _ef
-
-
-# def _make_engine_pair(*, backend_kind: str, tmp_path, sa_engine, pg_schema: str, dim: int = 3):
-#     """
-#     Build (kg_engine, conv_engine) for either chroma or the pg-backed path.
-#     """
-#     # ef = _fake_ef_dim(dim)
-
-#     if backend_kind == "chroma":
-#         kg_engine = GraphKnowledgeEngine(persist_directory=str(tmp_path / "kg"), kg_graph_type="knowledge"
-#                                         #  , embedding_function=ef
-#                                          )
-#         conv_engine = GraphKnowledgeEngine(persist_directory=str(tmp_path / "conv"), kg_graph_type="conversation"
-#                                         #    , embedding_function=ef
-#                                            )
-#         return kg_engine, conv_engine
-
-#     if backend_kind == "pg":
-#         if sa_engine is None or pg_schema is None:
-#             pytest.skip("pg backend requested but sa_engine/pg_schema fixtures not available")
-#         kg_schema = f"{pg_schema}_kg"
-#         conv_schema = f"{pg_schema}_conv"
-#         kg_backend = PgVectorBackend(engine=sa_engine, embedding_dim=dim, schema=kg_schema)
-#         conv_backend = PgVectorBackend(engine=sa_engine, embedding_dim=dim, schema=conv_schema)
-#         kg_engine = GraphKnowledgeEngine(persist_directory=str(tmp_path / "kg_meta"), kg_graph_type="knowledge",
-#                                         #  embedding_function=ef,
-#                                          backend=kg_backend)
-#         conv_engine = GraphKnowledgeEngine(persist_directory=str(tmp_path / "conv_meta"), kg_graph_type="conversation",
-#                                         #    embedding_function=ef,
-#                                            backend=conv_backend)
-#         return kg_engine, conv_engine
-
-#     raise ValueError(f"unknown backend_kind: {backend_kind!r}")
-
-
-def _seeded_kg_and_conversation_impl(backend_kind: str, tmp_path, request=None):
-    """
-    Build a seeded KG + conversation pair for the requested backend.
-    """
-    if backend_kind == "pg":
-        if request is None:
-            raise ValueError("request is required for pg backend setup")
-        sa_engine = request.getfixturevalue("sa_engine")
-        pg_schema = request.getfixturevalue("pg_schema")
-    else:
-        sa_engine = None
-        pg_schema = None
-
-    kg_engine, conv_engine = _make_engine_pair(
-        backend_kind=backend_kind,
-        tmp_path=tmp_path,
-        sa_engine=sa_engine,
-        pg_schema=pg_schema,
-        dim=3,
-    )
-
-    from kogwistar.engine_core.models import (
-        Node,
-        Grounding,
-        Span,
-        MentionVerification,
-    )
-
-    conv_id = "test-conv-seeded_kg_and_conversation"
-    t0_text = "show me what happened in the graph engine"
-
-    def _span():
-        return Span(
-            collection_page_url="test",
-            document_page_url="test",
-            doc_id="seed",
-            insertion_method="pytest-seed",
-            page_number=1,
-            start_char=0,
-            end_char=1,
-            excerpt=t0_text,
-            context_before="",
-            context_after="",
-            chunk_id=None,
-            source_cluster_id=None,
-            verification=MentionVerification(
-                method="human", is_verified=True, score=1.0, notes="seed"
-            ),
-        )
-
-    g = Grounding(spans=[_span()])
-
-    def _node(i: str, emb):
-        n = Node(
-            id=i,
-            label=i,
-            type="entity",
-            doc_id="KG_DOC",
-            summary=i,
-            mentions=[g],
-            properties={},
-            metadata={"name": i},
-            domain_id=None,
-            canonical_entity_id=None,
-            embedding=emb,
-            level_from_root=0,
-        )
-        return n
-
-    kg_engine.write.add_node(_node("A", [1.0, 0.0, 0.0]))
-    kg_engine.write.add_node(_node("B", [0.9, 0.1, 0.0]))
-    kg_engine.write.add_node(_node("C", [0.0, 1.0, 0.0]))
-
-    conv_n = ConversationNode(
-        id="conv|turn|1",
-        label="turn1",
-        type="entity",
-        doc_id="CONV_DOC",
-        summary="turn1",
-        mentions=[g],
-        properties={"refers_to_id": "A"},
-        domain_id=None,
-        canonical_entity_id=None,
-        metadata={
-            "entity_type": "conversation_turn",
-            "level_from_root": 0,
-            "in_conversation_chain": True,
-        },
-        role="user",  # type: ignore
-        turn_index=0,
-        conversation_id=conv_id,
-        embedding=[0.0, 2.1, 0.18],
-        level_from_root=0,
-    )
-    conv_engine.write.add_node(conv_n)
-
-    kg_dir = pathlib.Path(getattr(kg_engine, "persist_directory", str(tmp_path / "kg")))
-    conv_dir = pathlib.Path(
-        getattr(conv_engine, "persist_directory", str(tmp_path / "conv"))
-    )
-    kg_seed = {"node_ids": ["A", "B", "C"]}
-    conv_seed = {"node_ids": ["conv|turn|1"]}
-    return kg_engine, conv_engine, kg_seed, conv_seed, kg_dir, conv_dir
 
 
 @pytest.fixture(
@@ -192,7 +51,18 @@ def seeded_kg_and_conversation(request, tmp_path):
     Override the global fixture with a parametrized version so the same tests
     run against fake, chroma, and pg backends.
     """
-    return _seeded_kg_and_conversation_impl(request.param, tmp_path, request=request)
+    data = seed_kg_and_conversation_bundle_for_backend(
+        backend_kind=request.param,
+        tmp_path=tmp_path,
+        request=request,
+        kg_doc_id="KG_DOC",
+        user_id="user_test_1",
+        conversation_id="test-conv-seeded_kg_and_conversation",
+        start_node_id="CONV_START_001",
+        dim=3,
+        legacy_bundle=True,
+    )
+    return data
 
 
 @pytest.fixture(
@@ -210,7 +80,18 @@ def seeded_kg_and_conversation_real(request, tmp_path):
     not suitable for the subprocess branch of this test. We still keep the fake
     case here by exercising the bundle writer in-process.
     """
-    return _seeded_kg_and_conversation_impl(request.param, tmp_path, request=request)
+    data = seed_kg_and_conversation_bundle_for_backend(
+        backend_kind=request.param,
+        tmp_path=tmp_path,
+        request=request,
+        kg_doc_id="KG_DOC",
+        user_id="user_test_1",
+        conversation_id="test-conv-seeded_kg_and_conversation",
+        start_node_id="CONV_START_001",
+        dim=3,
+        legacy_bundle=True,
+    )
+    return data
 
 
 # Regex-based extraction is used instead of string slicing because:
@@ -317,7 +198,16 @@ def test_cli_pair_real_persisted(
     backend_kind: str,
 ):
     kg_engine, conv_engine, kg_seed, conv_seed, kg_dir, conv_dir = (
-        _seeded_kg_and_conversation_impl(backend_kind, tmp_path)
+        seed_kg_and_conversation_bundle_for_backend(
+            backend_kind=backend_kind,
+            tmp_path=tmp_path,
+            kg_doc_id="KG_DOC",
+            user_id="user_test_1",
+            conversation_id="test-conv-seeded_kg_and_conversation",
+            start_node_id="CONV_START_001",
+            dim=3,
+            legacy_bundle=True,
+        )
     )
 
     # The CLI creates engines from persist dirs, so we pass the same dirs.

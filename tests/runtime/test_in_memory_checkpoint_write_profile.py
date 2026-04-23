@@ -14,7 +14,7 @@ from kogwistar.runtime.perf_profile import (
 )
 
 
-pytestmark = [pytest.mark.manual, pytest.mark.core]
+pytestmark = [pytest.mark.manual, pytest.mark.core, pytest.mark.runtime]
 
 
 def _profile_backend_args(request, backend_kind: str) -> dict[str, object]:

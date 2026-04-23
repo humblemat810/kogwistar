@@ -1,9 +1,11 @@
 import os
 import pathlib
+import importlib.util
 import pytest
 pytestmark = pytest.mark.ci_full
 import requests
 from joblib import Memory
+from tests._helpers.embeddings import build_test_embedding_function
 
 # Project imports (adjust if your package name/layout differs)
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
@@ -17,6 +19,13 @@ from kogwistar.ingester import (
 # ----------------------------
 _CACHE_DIR = os.getenv("INGESTER_TEST_CACHE", ".ingester_test_cache")
 memory = Memory(_CACHE_DIR, verbose=0)
+
+
+def _test_embedding_function():
+    dim = int(os.getenv("KOGWISTAR_TEST_EMBEDDING_DIM", "384"))
+    kind = str(os.getenv("KOGWISTAR_TEST_EMBEDDING_KIND", "lexical_hash")).strip().lower()
+    ef = build_test_embedding_function(kind, dim=dim)
+    return ef
 
 
 @memory.cache
@@ -44,11 +53,50 @@ def _has_azure_openai():
     )
 
 
-@pytest.mark.skipif(
-    not _has_azure_openai(),
-    reason="Azure OpenAI env vars not set; skipping long LLM test.",
+def _has_ollama():
+    return importlib.util.find_spec("langchain_ollama") is not None and bool(
+        os.getenv("OLLAMA_HOST") or os.getenv("OLLAMA_BASE_URL") or os.getenv("OLLAMA_URL")
+    )
+
+
+def _build_ollama_ingester_llm():
+    if not _has_ollama():
+        pytest.skip("Need local Ollama for default long-doc ingester test.")
+    from langchain_ollama import ChatOllama
+
+    model_name = os.getenv("INGESTER_OLLAMA_MODEL", "gemma4:e2b")
+    return ChatOllama(
+        model=model_name,
+        temperature=0.1,
+    )
+
+
+def _build_azure_ingester_llm():
+    if not _has_azure_openai():
+        pytest.skip("Azure OpenAI env vars not set for manual long-doc ingester test.")
+    from langchain_openai import AzureChatOpenAI
+
+    return AzureChatOpenAI(
+        deployment_name=os.getenv("OPENAI_DEPLOYMENT_NAME_GPT4_1"),
+        model_name=os.getenv("OPENAI_MODEL_NAME_GPT4_1"),
+        azure_endpoint=os.getenv("OPENAI_DEPLOYMENT_ENDPOINT_GPT4_1"),
+        openai_api_key=os.getenv("OPENAI_API_KEY_GPT4_1"),
+        api_version="2024-08-01-preview",
+        openai_api_type="azure",
+        temperature=0.1,
+    )
+
+
+@pytest.mark.parametrize(
+    "provider_kind",
+    [
+        pytest.param("ollama", id="ollama", marks=pytest.mark.slow),
+        pytest.param("azure", id="azure", marks=pytest.mark.manual),
+    ],
 )
-def test_sidecar_ingester_on_long_document(tmp_path: pathlib.Path):
+def test_sidecar_ingester_on_long_document(
+    tmp_path: pathlib.Path, provider_kind: str, monkeypatch: pytest.MonkeyPatch
+):
     """
     Integration test:
       - download & cache a long doc
@@ -65,26 +113,27 @@ def test_sidecar_ingester_on_long_document(tmp_path: pathlib.Path):
 
     # 2) Engine in a temporary, isolated Chroma directory
     persist_dir = tmp_path / "db"
-    persist_dir = os.path.join(".", "doc_chroma")
     os.makedirs(persist_dir, exist_ok=True)
-    engine = GraphKnowledgeEngine(persist_directory=str(persist_dir))
-
-    # 3) Side-car ingester uses its own explicit model instance.
-    from langchain_openai import AzureChatOpenAI
-
-    ingester_llm = AzureChatOpenAI(
-        deployment_name=os.getenv("OPENAI_DEPLOYMENT_NAME_GPT4_1"),
-        model_name=os.getenv("OPENAI_MODEL_NAME_GPT4_1"),
-        azure_endpoint=os.getenv("OPENAI_DEPLOYMENT_ENDPOINT_GPT4_1"),
-        openai_api_key=os.getenv("OPENAI_API_KEY_GPT4_1"),
-        api_version="2024-08-01-preview",
-        openai_api_type="azure",
-        temperature=0.1,
+    engine = GraphKnowledgeEngine(
+        persist_directory=str(persist_dir),
+        embedding_function=_test_embedding_function(),
     )
+
+    # 3) Side-car ingester uses local Ollama by default; Azure is manual-only.
+    if provider_kind == "ollama":
+        monkeypatch.setenv("OLLAMA_HOST", os.getenv("OLLAMA_HOST", "http://localhost:11434"))
+        monkeypatch.setenv(
+            "INGESTER_OLLAMA_MODEL", os.getenv("INGESTER_OLLAMA_MODEL", "gemma4:e2b")
+        )
+        ingester_llm = _build_ollama_ingester_llm()
+    elif provider_kind == "azure":
+        ingester_llm = _build_azure_ingester_llm()
+    else:
+        raise AssertionError(f"unknown provider_kind={provider_kind!r}")
     ingester = PagewiseSummaryIngestor(
         engine=engine, llm=ingester_llm, cache_dir=str(os.path.join(".", ".llm_cache"))
     )
-    partial_doc = full_text[:50000]
+    partial_doc = full_text[:20000] if provider_kind == "ollama" else full_text[:50000]
     # 4) Create the document row
     doc_id = "doc-test_sidecar"
     doc = Document(
@@ -136,6 +185,6 @@ def test_sidecar_ingester_on_long_document(tmp_path: pathlib.Path):
 
     # 9) Print a compact note to help debug locally (pytest -s)
     print(
-        f"[ingester] doc={doc_id} nodes={len(nodes)} edges={len(edges)} "
+        f"[ingester] provider={provider_kind} doc={doc_id} nodes={len(nodes)} edges={len(edges)} "
         f"final={final_nodes[0].id if final_nodes else 'n/a'}"
     )

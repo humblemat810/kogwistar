@@ -5,13 +5,21 @@ from kogwistar.engine_core.models import (
     PureChromaEdge,
     PureGraph,
 )
+from tests._helpers.embeddings import ConstantEmbeddingFunction
 import pytest
 pytestmark = pytest.mark.ci_full
 
 def test_puregraph_persist(tmp_path):
-    eng = GraphKnowledgeEngine(persist_directory=str(tmp_path))
+    eng = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path),
+        embedding_function=ConstantEmbeddingFunction(dim=384),
+    )
     node = PureChromaNode(
-        domain_id="wisdom-math", label="T", type="entity", summary="x"
+        id="nn:wisdom-node-1",
+        domain_id="wisdom-math",
+        label="T",
+        type="entity",
+        summary="x",
     )
     edge = PureChromaEdge(
         domain_id="wisdom-math",

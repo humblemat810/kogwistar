@@ -1,6 +1,5 @@
 from __future__ import annotations
 from os import PathLike
-import warnings
 
 import copy
 import time
@@ -38,47 +37,14 @@ from kogwistar.runtime.budget_adapters import adapt_budget_events
 
 from .design import validate_workflow_design, Predicate
 from .serialize import try_serialize_with_ref
-
-RESERVED_ROOT_KEYS = {
-    "_deps",
-    "_rt_join",
-}
-
-RESERVED_PREFIXES = ("_", "__")
-
-
-def validate_initial_state(initial_state: WorkflowState):
-    """Validate user-provided initial workflow state.
-
-    Workflow state is user-land *except* for a small set of underscore-prefixed
-    keys that are reserved for runtime/DI plumbing.
-
-    Allowed underscore keys:
-      - _deps    : injected dependencies (non-serializable; must not be checkpointed)
-      - _rt_join : runtime-owned join/barrier bookkeeping (checkpoint/resume)
-
-    All other keys starting with '_' are reserved and will be rejected.
-
-    Note: when underscore keys are present, we emit a RuntimeWarning to make the
-    use of advanced/internal features explicit (helps debugging).
-    """
-    allowed_underscore = {"_deps", "_rt_join"}
-
-    for key in initial_state:
-        if key in allowed_underscore:
-            warnings.warn(
-                f"Using advanced underscore state key '{key}'. This key is reserved for runtime/DI plumbing.",
-                RuntimeWarning,
-                stacklevel=2,
-            )
-            continue
-
-        # _deps and _rt_join are the only allowed reserved runtime keys.
-
-        if key.startswith(RESERVED_PREFIXES):
-            raise ValueError(
-                f"Keys starting with '_' or '__' are reserved. Invalid key: '{key}'"
-            )
+from ..engine_core.async_compat import run_awaitable_blocking
+from .base_runtime import (
+    BaseRuntime,
+    RESERVED_PREFIXES,
+    RESERVED_ROOT_KEYS,
+    apply_state_update_inplace,
+    validate_initial_state,
+)
 
 
 # ------------------------------------------------------------------
@@ -454,7 +420,7 @@ def _make_runtime_edge(
 from threading import Lock
 
 
-class WorkflowRuntime:
+class WorkflowRuntime(BaseRuntime):
     CHECKPOINT_SCHEMA_VERSION = 1
     """
     Core engine for executing graph-based **workflow designs**.
@@ -573,15 +539,7 @@ class WorkflowRuntime:
         return nullcontext()
 
     def _close_sandbox_run(self, run_id: str) -> None:
-        close_run = getattr(self.step_resolver, "close_sandbox_run", None)
-        if callable(close_run):
-            try:
-                close_run(str(run_id))
-            except Exception:
-                logging.getLogger("workflow.runtime").exception(
-                    "Failed to clean up sandbox resources for run %s",
-                    run_id,
-                )
+        super()._close_sandbox_run(run_id)
 
     def _should_step_uow(self, op: str, state: WorkflowState) -> bool:
         """Best-effort guard to avoid holding a step UoW across nested workflow execution.
@@ -613,16 +571,8 @@ class WorkflowRuntime:
     def _persist_workflow_design_artifact(
         self, design: WorkflowDesignArtifact
     ) -> None:
-        """Persist a workflow design artifact into the workflow engine.
-
-        The engine's write path is intentionally idempotent-friendly, so we rely on
-        stable node/edge identifiers instead of introducing a separate design store.
-        """
-
-        for node in design.nodes:
-            self.workflow_engine.write.add_node(node)
-        for edge in design.edges:
-            self.workflow_engine.write.add_edge(edge)
+        """Persist a workflow design artifact into the workflow engine."""
+        super()._persist_workflow_design_artifact(design)
 
     def _child_workflow_initial_state(
         self,
@@ -630,15 +580,10 @@ class WorkflowRuntime:
         parent_state: WorkflowState,
         invocation: WorkflowInvocationRequest,
     ) -> WorkflowState:
-        child_state: WorkflowState = dict(parent_state) # type: ignore
-        child_state.pop("_rt_join", None)
-        if invocation.initial_state:
-            child_state.update(copy.deepcopy(invocation.initial_state)) # type: ignore
-
-        deps = dict(child_state.get("_deps") or parent_state.get("_deps") or {}) # type: ignore
-        deps["workflow_runtime"] = self # type: ignore
-        child_state["_deps"] = deps # type: ignore
-        return child_state
+        return super()._child_workflow_initial_state(
+            parent_state=parent_state,
+            invocation=invocation,
+        )
 
     def _run_workflow_invocation(
         self,
@@ -687,14 +632,11 @@ class WorkflowRuntime:
         invocation: WorkflowInvocationRequest,
         child_result: RunResult,
     ) -> None:
-        result_key = invocation.result_state_key or f"workflow_result::{invocation.workflow_id}"
-        child_state = dict(child_result.final_state)
-        child_state.pop("_deps", None)
-        child_state.pop("_rt_join", None)
-        state[result_key] = copy.deepcopy(child_state)
-        state[f"{result_key}__run_id"] = str(child_result.run_id)
-        state[f"{result_key}__status"] = str(child_result.status)
-        state[f"{result_key}__workflow_id"] = str(invocation.workflow_id)
+        super()._apply_workflow_invocation_result(
+            state=state,
+            invocation=invocation,
+            child_result=child_result,
+        )
 
     def run_subworkflow(
         self,
@@ -734,37 +676,12 @@ class WorkflowRuntime:
         state_update: list[tuple[str, dict[str, Any]]] | list[StateUpdate],
         update: dict | None = None,
     ):
-        # inplace update state
-        if update and state_update:
-            raise Exception("Either update or state_update can be used")
-
-        for update_item in state_update:  # CR style state api
-            update_item: tuple[str, dict[str, Any]] | StateUpdate
-            if update_item[0] == "a":  # append
-                append_dict: dict = update_item[1]
-                for k, v in append_dict.items():
-                    mute_state.setdefault(k, []).append(v)
-            elif update_item[0] == "u":  # update by overwrite
-                update_dict: dict = update_item[1]
-                for k, v in update_dict.items():
-                    mute_state[k] = v
-            elif update_item[0] == "e":  # update by extending list
-                update_dict: dict = update_item[1]
-                for k, v in update_dict.items():
-                    mute_state.setdefault(k, []).extend(v)
-        if update:  # legacy api
-            state_schema = getattr(self.step_resolver, "_state_schema", None)
-            if state_schema is None:
-                state_schema = {}  # will make everything default to just update
-            for k, v in update.items():
-                if op := state_schema.get(k):
-                    pass
-                else:
-                    op = "u"
-                if op == "a":
-                    mute_state.setdefault(k, []).extend(v)
-                else:  # u
-                    mute_state[k] = v
+        apply_state_update_inplace(
+            mute_state,
+            state_update,
+            update,
+            state_schema=getattr(self.step_resolver, "_state_schema", None),
+        )
 
     def resume_run(
         self,
@@ -1477,6 +1394,32 @@ class WorkflowRuntime:
                 Tuple[str, StepRunResult, int, str, str | None, str, int]
             ] = queue.Queue()
 
+            # Tiny scheduler-only critical section:
+            # keep it on in-memory bookkeeping only. Never hold this across DB I/O,
+            # resolver/user code, queue blocking, or any await-like wait.
+            work_cond = threading.Condition()
+            work_counter = 0
+
+            def _work_add(count: int = 1) -> None:
+                nonlocal work_counter
+                if count <= 0:
+                    return
+                with work_cond:
+                    work_counter += count
+                    work_cond.notify_all()
+
+            def _work_done(count: int = 1) -> None:
+                nonlocal work_counter
+                if count <= 0:
+                    return
+                with work_cond:
+                    work_counter = max(0, work_counter - count)
+                    work_cond.notify_all()
+
+            def _work_snapshot() -> int:
+                with work_cond:
+                    return work_counter
+
             def _persist_rt_join_runtime() -> None:
                 # Persist both pending + inflight as pending-on-resume (idempotent).
                 # Suspended tokens are stored separately so they are parked, not re-scheduled.
@@ -1497,12 +1440,14 @@ class WorkflowRuntime:
                         break
                     pending_tokens.discard((str(nid), int(mask), str(tok), parent_tok))
                     _dec(int(mask))
+                    _work_done(1)
 
                 for jid in join_node_ids:
                     waiters = list(_join_waiters.get(jid, []))
                     if not waiters:
                         continue
                     _join_waiters[jid] = []
+                    _work_done(len(waiters))
                     for wm, _tok, _parent in waiters:
                         _dec(int(wm))
 
@@ -1543,6 +1488,7 @@ class WorkflowRuntime:
                         pending_tokens.discard(
                             (str(nid), int(mask), str(tok), parent_tok)
                         )
+                        _work_done(1)
                     except queue.Empty:
                         break
                 _persist_rt_join_runtime()
@@ -1579,6 +1525,7 @@ class WorkflowRuntime:
                     t = (str(nid), int(mask), str(token_id), parent_token_id)
                     pending_tokens.add(t)
                     scheduled_q.put(t)
+                _work_add(len(restored))
                 _persist_rt_join_runtime()
             else:
                 start_mask = int(_may_reach_join.get(start_id, 0))
@@ -1591,6 +1538,7 @@ class WorkflowRuntime:
                 )
                 pending_tokens.add(t)
                 scheduled_q.put(t)
+                _work_add(1)
                 _persist_rt_join_runtime()
 
             def worker(
@@ -1745,6 +1693,8 @@ class WorkflowRuntime:
                                 mask,
                             )
                         )
+                        with work_cond:
+                            work_cond.notify_all()
                 except Exception as _e:
                     raise
                 finally:
@@ -1808,8 +1758,47 @@ class WorkflowRuntime:
                         )
                     if (
                         not cancel_pending
+                        and run_suspended
                         and not inflight
-                        and not pending_tokens
+                        and scheduled_q.empty()
+                        and done_q.empty()
+                    ):
+                        # Join waiters can remain parked behind a suspended branch.
+                        # They are persisted in _rt_join and should not keep the run alive.
+                        _persist_rt_join_runtime()
+                        try:
+                            tc_done = TraceContext(
+                                run_id=str(run_id),
+                                token_id=str(run_id),
+                                step_seq=int(step_seq),
+                                node_id="run",
+                                attempt=1,
+                                conversation_id=str(conversation_id)
+                                if conversation_id is not None
+                                else None,
+                                turn_node_id=str(turn_node_id)
+                                if turn_node_id is not None
+                                else None,
+                            )
+                            self.emitter.emit(
+                                type="workflow_run_suspended",
+                                ctx=tc_done,
+                                payload={"workflow_id": str(workflow_id)},
+                            )
+                        except Exception:
+                            pass
+                        self._close_sandbox_run(run_id)
+                        self.state_lock.pop(run_id, None)
+                        return RunResult(
+                            final_state=state,
+                            run_id=run_id,
+                            mq=mq,
+                            status="suspended",
+                        )
+                    if (
+                        not cancel_pending
+                        and _work_snapshot() == 0
+                        and not inflight
                         and scheduled_q.empty()
                         and done_q.empty()
                     ):
@@ -2048,6 +2037,9 @@ class WorkflowRuntime:
                                 except Exception:
                                     pass
                                 _join_waiters[nid] = []
+                                # N join arrivals collapse into one executable token.
+                                # Keep one outstanding work item for the released join step.
+                                _work_done(max(0, len(waiters) - 1))
                                 merged_mask = int(waiters[0][0])
                                 token_id = str(waiters[0][1])
                                 parent_token_id = waiters[0][2]
@@ -2078,10 +2070,22 @@ class WorkflowRuntime:
                             cache_dir=cache_dir,
                         )
 
-                    try:
-                        done_task = done_q.get(timeout=0.05)
-                    except queue.Empty:
+                    if done_q.empty():
+                        with work_cond:
+                            work_cond.wait_for(
+                                lambda: cancel_pending
+                                or (not done_q.empty())
+                                or _work_snapshot() == 0
+                                or (
+                                    run_suspended
+                                    and not inflight
+                                    and scheduled_q.empty()
+                                ),
+                                timeout=0.05,
+                            )
+                    if done_q.empty():
                         continue
+                    done_task = done_q.get_nowait()
                     (
                         node_id,
                         run_result,
@@ -2252,6 +2256,8 @@ class WorkflowRuntime:
                             state["wait_reason"] = str(wait_reason)
                         _persist_rt_join_runtime()
                         _checkpoint_current_step()
+                        # Token is parked, not active work anymore.
+                        _work_done(1)
 
                         # Emit specific suspension payload for client ingestion
                         if hasattr(run_result, "resume_payload"):
@@ -2281,6 +2287,7 @@ class WorkflowRuntime:
                         _dec(mask)
                         _persist_rt_join_runtime()
                         _checkpoint_current_step()
+                        _work_done(1)
                         continue
 
                     # route
@@ -2294,6 +2301,7 @@ class WorkflowRuntime:
                         _enter_cancelling(
                             reason_node_id=str(node_id), token_id=str(token_id)
                         )
+                        _work_done(1)
                         continue
 
                     edges = adj.get(node_id, [])
@@ -2368,6 +2376,7 @@ class WorkflowRuntime:
                         _dec(mask)
                         _persist_rt_join_runtime()
                         _checkpoint_current_step()
+                        _work_done(1)
                         continue
 
                     if not next_nodes:
@@ -2408,6 +2417,7 @@ class WorkflowRuntime:
                         _enter_cancelling(
                             reason_node_id=str(node_id), token_id=str(token_id)
                         )
+                        _work_done(1)
                         continue
 
                     # continuation token
@@ -2436,6 +2446,7 @@ class WorkflowRuntime:
                                 _persist_rt_join_runtime()
 
                             pending_tokens.add(t)
+                            _work_add(1)
                             scheduled_q.put(t)
                             _persist_rt_join_runtime()
                             first = False
@@ -2490,6 +2501,7 @@ class WorkflowRuntime:
                             _inc(nxt_mask)
 
                             pending_tokens.add(t)
+                            _work_add(1)
                             scheduled_q.put(t)
                             _persist_rt_join_runtime()
 
@@ -2497,6 +2509,7 @@ class WorkflowRuntime:
                     _enter_cancelling(
                         reason_node_id=str(node_id), token_id=str(token_id)
                     )
+                    _work_done(1)
             raise Exception("unreacheable")
 
     def _route_next(
@@ -2515,7 +2528,7 @@ class WorkflowRuntime:
              - Select the first matching edge unless fanout/multiplicity allows multiple.
 
           2) If no predicate edges match, evaluate unconditional edges (e.predicate == None)
-             using BasePredicate (node-level "next_step_names" decision).
+             using BasePredicate (node-level "_route_next" decision).
 
           3) If still nothing matches, pick any is_default edge.
 
@@ -2525,156 +2538,18 @@ class WorkflowRuntime:
         NOTE: This function is pure with respect to tracing; the caller is responsible
         for emitting RouteDecision into the trace sink.
         """
-        matched: List[tuple[WorkflowEdge, str]] = []
-        decision = RouteDecision(evaluated=[], selected=[])
-
-        def _edge_id(e: WorkflowEdge) -> str:
-            return str(
-                getattr(e, "id", None)
-                or getattr(e, "edge_id", None)
-                or f"{getattr(e, 'predicate', None)}->{(getattr(e, 'target_ids', None) or [''])[0]}"
-            )
-
-        def _first_target(e: WorkflowEdge) -> Optional[str]:
-            tids = getattr(e, "target_ids", None) or []
-            if not tids:
-                return None
-            return str(tids[0])
-
-        def _stop_on_first(e: WorkflowEdge) -> bool:
-            # stop if not fanout and edge multiplicity is not 'many'
-            return (not fanout) and (getattr(e, "multiplicity", "one") != "many")
-
-        def _target_aliases(target_id: str) -> set[str]:
-            aliases = {str(target_id), str(target_id).split("|")[-1]}
-            if nodes is not None:
-                target_node = nodes.get(str(target_id))
-                if target_node is not None:
-                    label = getattr(target_node, "label", None)
-                    if label:
-                        aliases.add(str(label))
-                    op = getattr(target_node, "op", None)
-                    if op:
-                        aliases.add(str(op))
-            return aliases
-
-        explicit_next = [
-            str(x) for x in (getattr(last_result, "next_step_names", []) or [])
-        ]
-        if explicit_next:
-            explicit_matches: list[str] = []
-            for alias in explicit_next:
-                matched_target = None
-                for e in edges:
-                    tgt = _first_target(e)
-                    if tgt is None:
-                        continue
-                    if alias in _target_aliases(tgt):
-                        matched_target = tgt
-                        decision.selected.append((_edge_id(e), tgt, "explicit"))
-                        break
-                decision.evaluated.append(
-                    (f"_route_next:{alias}", matched_target is not None)
-                )
-                if matched_target is not None:
-                    explicit_matches.append(str(matched_target))
-            if explicit_matches:
-                return explicit_matches, decision
-
-        failure_only = getattr(last_result, "status", None) == "failure"
-
-        # (1) explicit predicates
-        for e in edges:
-            e: WorkflowEdge
-            if getattr(e, "predicate", None) is None:
-                continue
-            tgt = _first_target(e)
-            if tgt is None:
-                continue
-            pred_name = str(getattr(e, "predicate", ""))
-            pred = self.predicate_registry.get(pred_name)
-            if pred is None:
-                # record missing predicate as rejection (False)
-                decision.evaluated.append((f"{_edge_id(e)}:{pred_name}", False))
-                continue
-
-            workflow_info = WorkflowEdgeInfo.from_workflow_edge(e)
-            try:
-                ok = bool(pred(workflow_info, state, last_result))
-            except Exception:
-                ok = False
-
-            decision.evaluated.append((f"{_edge_id(e)}:{pred_name}", ok))
-            if ok:
-                matched.append((e, tgt))
-                decision.selected.append((_edge_id(e), tgt, "predicate"))
-
-        def get_edge_priority(edge: tuple[WorkflowEdge, str]):
-            return edge[0].priority
-
-        matched.sort(key=get_edge_priority, reverse=True)
-
-        candidates = []
-        for e, next_node_id in matched:
-            if _stop_on_first(e):
-                if not candidates:
-                    candidates.append(next_node_id)
-                return candidates, decision
-            elif fanout:
-                candidates.append(next_node_id)
-            else:
-                # default unknown just add and return
-                if not candidates:
-                    candidates.append(next_node_id)
-                return candidates, decision
-
-        # Failure routing only considers explicit `_route_next` targets or
-        # predicates that inspect the failed result. If neither matched, the
-        # failure is unmatched and the token should terminate as failure.
-        if failure_only:
-            return [], decision
-
-        # (2) unconditional edges (node-level decision)
-        from typing import cast
-        from .contract import BasePredicate
-
-        node_decider = cast(Predicate, BasePredicate())
-        for e in edges:
-            if getattr(e, "predicate", None) is not None:
-                continue  # skip as it is processed in earlier loo
-            tgt = _first_target(e)
-            if tgt is None:
-                continue
-
-            workflow_info = WorkflowEdgeInfo.from_workflow_edge(e)
-            try:
-                ok = bool(node_decider(workflow_info, state, last_result))
-            except Exception:
-                ok = False
-
-            # Record unconditional evaluations too (use a synthetic name)
-            decision.evaluated.append((f"{_edge_id(e)}:<base>", ok))
-            if ok:
-                matched.append((e, tgt))
-                decision.selected.append((_edge_id(e), tgt, "base"))
-                if _stop_on_first(e):
-                    return [i[1] for i in matched[0:1]], decision
-
-        if matched:
-            return ([i[1] for i in (matched if fanout else matched[0:1])]), decision
-
-        # (3) default edge
-        for e in edges:
-            if bool(getattr(e, "is_default", False)):
-                tids = [str(x) for x in (getattr(e, "target_ids", None) or [])]
-                if not tids:
-                    continue
-                picked = tids if fanout else tids[0:1]
-                # record default selection once
-                decision.selected.append((_edge_id(e), picked[0], "default"))
-                return picked, decision
-
-        return [], decision
+        computed = self._compute_route_next_shared(
+            edges=list(edges),
+            state=state,
+            last_result=last_result,
+            fanout=fanout,
+            predicate_registry=self.predicate_registry,
+            nodes=nodes,
+        )
+        return computed.next_node_ids, RouteDecision(
+            evaluated=list(computed.evaluated),
+            selected=list(computed.selected),
+        )
 
     # --------------------
     # Persistence helpers (conversation_engine)
@@ -2749,7 +2624,7 @@ class WorkflowRuntime:
     def _conversation_node_exists(self, node_id: str) -> bool:
         backend = self._conversation_backend()
         if backend is not None:
-            existing = backend.node_get(ids=[node_id], include=[])
+            existing = run_awaitable_blocking(backend.node_get(ids=[node_id], include=[]))
             return bool(existing.get("ids"))
 
         try:
@@ -2765,7 +2640,7 @@ class WorkflowRuntime:
     def _conversation_edge_exists(self, edge_id: str) -> bool:
         backend = self._conversation_backend()
         if backend is not None:
-            existing = backend.edge_get(ids=[edge_id], include=[])
+            existing = run_awaitable_blocking(backend.edge_get(ids=[edge_id], include=[]))
             return bool(existing.get("ids"))
 
         try:
@@ -3097,6 +2972,7 @@ class WorkflowRuntime:
             properties={},
             metadata={
                 "entity_type": "workflow_run",
+                "doc_id": f"wf_run|{run_id}",
                 "workflow_id": workflow_id,
                 "workflow_version": "v1",
                 "run_id": run_id,
@@ -3276,6 +3152,7 @@ class WorkflowRuntime:
                     },
                 )
                 self.conversation_engine.write.add_edge(e)
+
             if result.conversation_node_id:
                 content = f"{n.safe_get_id()} created {result.conversation_node_id} durign execution"
                 self_span = Span(

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any, Literal
 
+from ..async_compat import run_awaitable_blocking
 from ..models import Edge, Node
 from ..utils.metadata import json_or_none, strip_none
 from ..utils.refs import extract_doc_ids_from_refs
@@ -53,12 +54,12 @@ class RollbackSubsystem(NamespaceProxy):
         return cleaned
 
     def _delete_node_derived_rows(self, node_id: str) -> None:
-        self._e.backend.node_docs_delete(where={"node_id": node_id})
-        self._e.backend.node_refs_delete(where={"node_id": node_id})
+        run_awaitable_blocking(self._e.backend.node_docs_delete(where={"node_id": node_id}))
+        run_awaitable_blocking(self._e.backend.node_refs_delete(where={"node_id": node_id}))
 
     def _delete_edge_derived_rows(self, edge_id: str) -> None:
-        self._e.backend.edge_endpoints_delete(where={"edge_id": edge_id})
-        self._e.backend.edge_refs_delete(where={"edge_id": edge_id})
+        run_awaitable_blocking(self._e.backend.edge_endpoints_delete(where={"edge_id": edge_id}))
+        run_awaitable_blocking(self._e.backend.edge_refs_delete(where={"edge_id": edge_id}))
 
     def _replacement_node(self, node: Node, mentions) -> Node:
         payload = node.model_dump(field_mode="backend", exclude={"id", "embedding"})
@@ -94,7 +95,7 @@ class RollbackSubsystem(NamespaceProxy):
     def _load_nodes(self, node_ids: list[str]) -> list[Node]:
         if not node_ids:
             return []
-        got = self._e.backend.node_get(ids=node_ids, include=["documents"])
+        got = run_awaitable_blocking(self._e.backend.node_get(ids=node_ids, include=["documents"]))
         out: list[Node] = []
         for doc in got.get("documents") or []:
             if doc:
@@ -102,7 +103,7 @@ class RollbackSubsystem(NamespaceProxy):
         return out
 
     def _load_edge(self, edge_id: str) -> Edge | None:
-        got = self._e.backend.edge_get(ids=[edge_id], include=["documents"])
+        got = run_awaitable_blocking(self._e.backend.edge_get(ids=[edge_id], include=["documents"]))
         docs = got.get("documents") or []
         if not docs or not docs[0]:
             return None
@@ -111,12 +112,12 @@ class RollbackSubsystem(NamespaceProxy):
     def _edge_ids_for_endpoint(
         self, endpoint_id: str, endpoint_type: Literal["node", "edge"]
     ) -> set[str]:
-        rows = self._e.backend.edge_endpoints_get(
+        rows = run_awaitable_blocking(self._e.backend.edge_endpoints_get(
             where={
                 "$and": [{"endpoint_id": endpoint_id}, {"endpoint_type": endpoint_type}]
             },
             include=["metadatas"],
-        )
+        ))
         edge_ids: set[str] = set()
         for metadata in rows.get("metadatas") or []:
             if metadata and metadata.get("edge_id"):
@@ -132,9 +133,9 @@ class RollbackSubsystem(NamespaceProxy):
         repairs cascade through downstream edge endpoints so rollback converges the
         graph instead of leaving broken references behind.
         """
-        node_rows = self._e.backend.node_docs_get(
+        node_rows = run_awaitable_blocking(self._e.backend.node_docs_get(
             where={"doc_id": document_id}, include=["metadatas"]
-        )
+        ))
         affected_node_ids = sorted(
             {
                 str(metadata["node_id"])
@@ -296,11 +297,11 @@ class RollbackSubsystem(NamespaceProxy):
                 edge_queue.extend(sorted(downstream))
 
         doc_ids = set(
-            self._e.backend.document_get(where={"doc_id": document_id})["ids"]
+            run_awaitable_blocking(self._e.backend.document_get(where={"doc_id": document_id}))["ids"]
         )
-        self._e.backend.document_delete(where={"doc_id": document_id})
+        run_awaitable_blocking(self._e.backend.document_delete(where={"doc_id": document_id}))
         doc_ids_after = set(
-            self._e.backend.document_get(where={"doc_id": document_id})["ids"]
+            run_awaitable_blocking(self._e.backend.document_get(where={"doc_id": document_id}))["ids"]
         )
         return {
             "rolled_back_doc_id": document_id,
@@ -371,13 +372,13 @@ class RollbackSubsystem(NamespaceProxy):
 
         def _save_node(d: dict):
             nid = d["id"]
-            prior = self._e.backend.node_get(ids=[nid], include=["metadatas"])
+            prior = run_awaitable_blocking(self._e.backend.node_get(ids=[nid], include=["metadatas"]))
             meta = (prior.get("metadatas") or [None])[0] or {}
-            self._e.backend.node_update(
+            run_awaitable_blocking(self._e.backend.node_update(
                 ids=[nid],
                 documents=[json.dumps(d, ensure_ascii=False)],
                 metadatas=[dict(meta)],
-            )
+            ))
             try:
                 self._e.write.index_node_docs(Node.model_validate(d))
             except Exception:
@@ -385,26 +386,26 @@ class RollbackSubsystem(NamespaceProxy):
 
         def _save_edge(d: dict):
             eid = d["id"]
-            prior = self._e.backend.edge_get(ids=[eid], include=["metadatas"])
+            prior = run_awaitable_blocking(self._e.backend.edge_get(ids=[eid], include=["metadatas"]))
             meta = (prior.get("metadatas") or [None])[0] or {}
-            self._e.backend.edge_update(
+            run_awaitable_blocking(self._e.backend.edge_update(
                 ids=[eid],
                 documents=[json.dumps(d, ensure_ascii=False)],
                 metadatas=[dict(meta)],
-            )
+            ))
 
         node_ids = set()
         try:
-            nd = self._e.backend.node_docs_get(
+            nd = run_awaitable_blocking(self._e.backend.node_docs_get(
                 where={"doc_id": doc_id}, include=["metadatas"]
-            )
+            ))
             for m in nd.get("metadatas") or []:
                 if m and m.get("node_id"):
                     node_ids.add(m["node_id"])
             summary["deleted_node_doc_rows"] = len(nd.get("ids") or [])
         except Exception:
             try:
-                q = self._e.backend.node_get(where={"doc_id": doc_id})
+                q = run_awaitable_blocking(self._e.backend.node_get(where={"doc_id": doc_id}))
                 for nid in q.get("ids") or []:
                     node_ids.add(nid)
             except Exception:
@@ -412,16 +413,16 @@ class RollbackSubsystem(NamespaceProxy):
 
         edge_ids = set()
         try:
-            ee = self._e.backend.edge_endpoints_get(
+            ee = run_awaitable_blocking(self._e.backend.edge_endpoints_get(
                 where={"doc_id": doc_id}, include=["metadatas"]
-            )
+            ))
             for m in ee.get("metadatas") or []:
                 if m and m.get("edge_id"):
                     edge_ids.add(m["edge_id"])
             summary["deleted_edge_endpoints"] = len(ee.get("ids") or [])
         except Exception:
             try:
-                q = self._e.backend.edge_get(where={"doc_id": doc_id})
+                q = run_awaitable_blocking(self._e.backend.edge_get(where={"doc_id": doc_id}))
                 for eid in q.get("ids") or []:
                     edge_ids.add(eid)
             except Exception:
@@ -449,21 +450,21 @@ class RollbackSubsystem(NamespaceProxy):
                     summary["updated_nodes"] += 1
                 else:
                     try:
-                        self._e.backend.node_delete(ids=[nid])
+                        run_awaitable_blocking(self._e.backend.node_delete(ids=[nid]))
                     except Exception:
                         pass
                     try:
-                        self._e.backend.node_docs_delete(
+                        run_awaitable_blocking(self._e.backend.node_docs_delete(
                             where={"node_id": nid, "doc_id": doc_id}
-                        )
+                        ))
                     except Exception:
                         pass
                     summary["deleted_nodes"] += 1
             else:
                 try:
-                    self._e.backend.node_docs_delete(
+                    run_awaitable_blocking(self._e.backend.node_docs_delete(
                         where={"node_id": nid, "doc_id": doc_id}
-                    )
+                    ))
                 except Exception:
                     pass
 
@@ -483,9 +484,9 @@ class RollbackSubsystem(NamespaceProxy):
                     keep.append(r)
 
             try:
-                self._e.backend.edge_endpoints_delete(
+                run_awaitable_blocking(self._e.backend.edge_endpoints_delete(
                     where={"edge_id": eid, "doc_id": doc_id}
-                )
+                ))
             except Exception:
                 pass
 
@@ -497,31 +498,31 @@ class RollbackSubsystem(NamespaceProxy):
                     summary["updated_edges"] += 1
                 else:
                     try:
-                        self._e.backend.edge_delete(ids=[eid])
+                        run_awaitable_blocking(self._e.backend.edge_delete(ids=[eid]))
                     except Exception:
                         pass
                     try:
-                        self._e.backend.edge_endpoints_delete(where={"edge_id": eid})
+                        run_awaitable_blocking(self._e.backend.edge_endpoints_delete(where={"edge_id": eid}))
                     except Exception:
                         pass
                     summary["deleted_edges"] += 1
 
         try:
-            self._e.backend.node_docs_delete(where={"doc_id": doc_id})
+            run_awaitable_blocking(self._e.backend.node_docs_delete(where={"doc_id": doc_id}))
         except Exception:
             pass
         try:
-            self._e.backend.edge_endpoints_delete(where={"doc_id": doc_id})
+            run_awaitable_blocking(self._e.backend.edge_endpoints_delete(where={"doc_id": doc_id}))
         except Exception:
             pass
 
         return summary
 
     def prune_node_from_edges(self, node_id: str):
-        eps = self._e.backend.edge_endpoints_get(
+        eps = run_awaitable_blocking(self._e.backend.edge_endpoints_get(
             where={"$and": [{"endpoint_id": node_id}, {"endpoint_type": "node"}]},
             include=["documents"],
-        )
+        ))
         if not eps["ids"]:
             return {"deleted_edges": set(), "updated_edges": set()}
         if eps_doc := eps["documents"]:
@@ -529,9 +530,9 @@ class RollbackSubsystem(NamespaceProxy):
         else:
             raise Exception("Document loss")
         edge_ids = list({json.loads(doc)["edge_id"] for doc in eps_doc})
-        edges = self._e.backend.edge_get(
+        edges = run_awaitable_blocking(self._e.backend.edge_get(
             ids=edge_ids, include=["documents", "metadatas"]
-        )
+        ))
 
         removed_edge_ids: set[str] = set()
         updated_edge_ids: set[str] = set()
@@ -549,11 +550,11 @@ class RollbackSubsystem(NamespaceProxy):
                     removed_node_id=node_id,
                 )
                 if edge_deleted or (new_edge is None):
-                    self._e.backend.edge_delete(ids=[eid])
-                    self._e.backend.edge_endpoints_delete(where={"edge_id": eid})
+                    run_awaitable_blocking(self._e.backend.edge_delete(ids=[eid]))
+                    run_awaitable_blocking(self._e.backend.edge_endpoints_delete(where={"edge_id": eid}))
                     removed_edge_ids.add(eid)
                 else:
-                    self._e.backend.edge_update(
+                    run_awaitable_blocking(self._e.backend.edge_update(
                         ids=[eid],
                         documents=[new_edge.model_dump_json(field_mode="backend")],
                         metadatas=[
@@ -577,9 +578,9 @@ class RollbackSubsystem(NamespaceProxy):
                                 }
                             )
                         ],
-                    )
+                    ))
                     self._e.write.index_edge_refs(new_edge)
-                    self._e.backend.edge_endpoints_delete(where={"edge_id": eid})
+                    run_awaitable_blocking(self._e.backend.edge_endpoints_delete(where={"edge_id": eid}))
                     ep_ids, ep_docs, ep_metas = [], [], []
                     for role, node_ids in (
                         ("src", new_edge.source_ids or []),
@@ -587,9 +588,9 @@ class RollbackSubsystem(NamespaceProxy):
                     ):
                         for nid in node_ids:
                             ep_id = f"{eid}::{role}::{nid}"
-                            node_doc = self._e.backend.node_get(
+                            node_doc = run_awaitable_blocking(self._e.backend.node_get(
                                 ids=[nid], include=["documents"]
-                            )
+                            ))
                             if node_doc is None:
                                 raise Exception(f"node_doc for {nid} is lost")
                             per_doc_id = None
@@ -613,26 +614,26 @@ class RollbackSubsystem(NamespaceProxy):
                             ep_docs.append(json.dumps(meta_ep))
                             ep_metas.append(meta_ep)
                     if ep_ids:
-                        self._e.backend.edge_endpoints_add(
+                        run_awaitable_blocking(self._e.backend.edge_endpoints_add(
                             ids=ep_ids,
                             documents=ep_docs,
                             metadatas=ep_metas,
                             embeddings=[
                                 self._e._iterative_defensive_emb(d) for d in ep_docs
                             ],
-                        )
+                        ))
                     updated_edge_ids.add(eid)
                 continue
 
             new_src = [x for x in (e.source_ids or []) if x != node_id]
             new_tgt = [x for x in (e.target_ids or []) if x != node_id]
             if not new_src or not new_tgt:
-                self._e.backend.edge_delete(ids=[eid])
-                self._e.backend.edge_endpoints_delete(where={"edge_id": eid})
+                run_awaitable_blocking(self._e.backend.edge_delete(ids=[eid]))
+                run_awaitable_blocking(self._e.backend.edge_endpoints_delete(where={"edge_id": eid}))
                 removed_edge_ids.add(eid)
             else:
                 e.source_ids, e.target_ids = new_src, new_tgt
-                self._e.backend.edge_update(
+                run_awaitable_blocking(self._e.backend.edge_update(
                     ids=[eid],
                     documents=[e.model_dump_json(field_mode="backend")],
                     metadatas=[
@@ -656,10 +657,10 @@ class RollbackSubsystem(NamespaceProxy):
                             }
                         )
                     ],
-                )
-                self._e.backend.edge_endpoints_delete(
+                ))
+                run_awaitable_blocking(self._e.backend.edge_endpoints_delete(
                     where={"$and": [{"edge_id": eid}, {"node_id": node_id}]}
-                )
+                ))
                 updated_edge_ids.add(eid)
                 self._e.write.index_edge_refs(e)
 

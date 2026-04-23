@@ -17,6 +17,7 @@ from ..models import (
     PureGraph,
     Span,
 )
+from ..async_compat import run_awaitable_blocking
 from ..utils.aliasing import _is_alias, _is_new_edge, _is_new_node, _is_uuid
 from ..utils.refs import merge_refs
 from .base import NamespaceProxy
@@ -74,27 +75,43 @@ class PersistSubsystem(NamespaceProxy):
     ):
         self.resolve_llm_ids(alias_key, parsed, alias_book=alias_book)
 
-        batch_node_ids = {n.id for n in parsed.nodes}
-        batch_edge_ids = {e.id for e in parsed.edges}
+        batch_node_ids = {str(n.id) for n in parsed.nodes if n.id is not None}
+        batch_edge_ids = {str(e.id) for e in parsed.edges if e.id is not None}
 
         need_nodes, need_edges = set(), set()
         for e in parsed.edges:
-            need_nodes.update(e.source_ids or [])
-            need_nodes.update(e.target_ids or [])
+            need_nodes.update(str(x) for x in (e.source_ids or []) if x is not None)
+            need_nodes.update(str(x) for x in (e.target_ids or []) if x is not None)
             if getattr(e, "source_edge_ids", None):
-                need_edges.update(e.source_edge_ids or [])
+                need_edges.update(
+                    str(x) for x in (e.source_edge_ids or []) if x is not None
+                )
             if getattr(e, "target_edge_ids", None):
-                need_edges.update(e.target_edge_ids or [])
+                need_edges.update(
+                    str(x) for x in (e.target_edge_ids or []) if x is not None
+                )
 
         need_nodes -= batch_node_ids
         need_edges -= batch_edge_ids
 
         missing_nodes, missing_edges = set(), set()
         if need_nodes:
-            got = set(self._e.backend.node_get(ids=list(need_nodes)).get("ids") or [])
+            got = set(
+                run_awaitable_blocking(
+                    self._e.backend.node_get(ids=list(need_nodes))
+                ).get("ids")
+                or []
+            )
+            got = {str(x) for x in got if x is not None}
             missing_nodes = need_nodes - got
         if need_edges:
-            got = set(self._e.backend.edge_get(ids=list(need_edges)).get("ids") or [])
+            got = set(
+                run_awaitable_blocking(
+                    self._e.backend.edge_get(ids=list(need_edges))
+                ).get("ids")
+                or []
+            )
+            got = {str(x) for x in got if x is not None}
             missing_edges = need_edges - got
 
         if missing_nodes or missing_edges:
@@ -125,6 +142,11 @@ class PersistSubsystem(NamespaceProxy):
             book = alias_book
         alias_to_real = book.alias_to_real
 
+        def _looks_like_batch_local_node(token: str | None) -> bool:
+            return bool(token) and (
+                _is_new_node(token) or str(token).startswith("ne:")
+            )
+
         def de_alias(x: str) -> str:
             if not x:
                 return x
@@ -140,7 +162,7 @@ class PersistSubsystem(NamespaceProxy):
                 n.id = str(uuid.uuid4())
                 continue
 
-            if _is_new_node(token):
+            if _looks_like_batch_local_node(token):
                 rid = nn2uuid.get(token)
                 if rid is None:
                     rid = str(uuid.uuid4())
@@ -170,7 +192,7 @@ class PersistSubsystem(NamespaceProxy):
             out: list[str] = []
             for x in xs:
                 if kind == "node":
-                    if _is_new_node(x):
+                    if _looks_like_batch_local_node(x):
                         rid = nn2uuid.get(x)
                         if not rid:
                             raise ValueError(f"Unknown temp node id: {x}")
@@ -250,25 +272,35 @@ class PersistSubsystem(NamespaceProxy):
         """
         need_nodes = set((edge.source_ids or []) + (edge.target_ids or []))
         if need_nodes:
-            got = set(self._e.backend.node_get(ids=list(need_nodes)).get("ids") or [])
+            got = set(
+                run_awaitable_blocking(
+                    self._e.backend.node_get(ids=list(need_nodes))
+                ).get("ids")
+                or []
+            )
             if got != need_nodes:
                 raise ValueError(f"Missing node endpoints: {sorted(need_nodes - got)}")
 
         for attr in ("source_edge_ids", "target_edge_ids"):
             ids = getattr(edge, attr, None) or []
             if ids:
-                got = set(self._e.backend.edge_get(ids=ids).get("ids") or [])
+                got = set(
+                    run_awaitable_blocking(self._e.backend.edge_get(ids=ids)).get(
+                        "ids"
+                    )
+                    or []
+                )
                 if got != set(ids):
                     raise ValueError(
                         f"Missing edge endpoints in {attr}: {sorted(set(ids) - got)}"
                     )
 
     def exists_node(self, rid: str) -> bool:
-        g = self._e.backend.node_get(ids=[rid])
+        g = run_awaitable_blocking(self._e.backend.node_get(ids=[rid]))
         return (g.get("ids") or [None])[0] == rid
 
     def exists_edge(self, rid: str) -> bool:
-        g = self._e.backend.edge_get(ids=[rid])
+        g = run_awaitable_blocking(self._e.backend.edge_get(ids=[rid]))
         return (g.get("ids") or [None])[0] == rid
 
     def exists_any(self, rid: str) -> bool:
@@ -280,12 +312,12 @@ class PersistSubsystem(NamespaceProxy):
     def select_doc_context(
         self, doc_id: str, max_nodes: int = 200, max_edges: int = 400
     ):
-        nodes = self._e.backend.node_get(
+        nodes = run_awaitable_blocking(self._e.backend.node_get(
             where={"doc_id": doc_id}, include=["documents"]
-        )
-        edges = self._e.backend.edge_get(
+        ))
+        edges = run_awaitable_blocking(self._e.backend.edge_get(
             where={"doc_id": doc_id}, include=["documents"]
-        )
+        ))
 
         node_items = []
         for i, (nid, ndoc) in enumerate(
@@ -332,7 +364,7 @@ class PersistSubsystem(NamespaceProxy):
             if kind == "node":
                 ln: Node = obj
                 if mode == "skip-if-exists":
-                    got = self._e.backend.node_get(ids=[ln.id])
+                    got = run_awaitable_blocking(self._e.backend.node_get(ids=[ln.id]))
                     if got.get("ids"):
                         node_ids.append(ln.id)
                         continue
@@ -356,7 +388,7 @@ class PersistSubsystem(NamespaceProxy):
             elif kind == "edge":
                 le: Edge = obj
                 if mode == "skip-if-exists":
-                    got = self._e.backend.edge_get(ids=[le.id])
+                    got = run_awaitable_blocking(self._e.backend.edge_get(ids=[le.id]))
                     if got.get("ids"):
                         edge_ids.append(le.id)
                         continue
@@ -422,7 +454,7 @@ class PersistSubsystem(NamespaceProxy):
                 )
                 ln.mentions = self.dealias_span(ln.mentions, document.id)
                 if mode == "skip-if-exists":
-                    got = self._e.backend.node_get(ids=[ln.id])
+                    got = run_awaitable_blocking(self._e.backend.node_get(ids=[ln.id]))
                     if got.get("ids"):
                         node_ids.append(ln.id)
                         continue
@@ -456,7 +488,7 @@ class PersistSubsystem(NamespaceProxy):
                 )
                 le.mentions = self.dealias_span(le.mentions, document.id)
                 if mode == "skip-if-exists":
-                    got = self._e.backend.edge_get(ids=[le.id])
+                    got = run_awaitable_blocking(self._e.backend.edge_get(ids=[le.id]))
                     if got.get("ids"):
                         edge_ids.append(le.id)
                         continue
@@ -524,7 +556,7 @@ class PersistSubsystem(NamespaceProxy):
                                 f"Incorrect span occur in grounding {str(g)} span {str(sp)}"
                             )
                 if mode == "skip-if-exists":
-                    got = self._e.backend.node_get(ids=[ln.id])
+                    got = run_awaitable_blocking(self._e.backend.node_get(ids=[ln.id]))
                     if got.get("ids"):
                         node_ids.append(ln.id)
                         continue
@@ -551,7 +583,7 @@ class PersistSubsystem(NamespaceProxy):
                                 f"Incorrect span occur in grounding {str(g)} span {str(sp)}"
                             )
                 if mode == "skip-if-exists":
-                    got = self._e.backend.edge_get(ids=[le.id])
+                    got = run_awaitable_blocking(self._e.backend.edge_get(ids=[le.id]))
                     if got.get("ids"):
                         edge_ids.append(le.id)
                         continue
@@ -583,9 +615,9 @@ class PersistSubsystem(NamespaceProxy):
                 ln: Node = obj
                 if self.exists_node(rid):
                     if ln.mentions:
-                        prior = self._e.backend.node_get(
+                        prior = run_awaitable_blocking(self._e.backend.node_get(
                             ids=[rid], include=["documents", "metadatas"]
-                        )
+                        ))
                         prior_meta = (prior.get("metadatas") or [None])[0] or {}
                         prior_mentions = cast(str, prior_meta.get("mentions"))
                         merged_list, merged_json = merge_refs(
@@ -601,7 +633,7 @@ class PersistSubsystem(NamespaceProxy):
                         for sp in mentions.spans:
                             span_validator.validate_span(span=sp)
                         n.mentions = [mentions]
-                        self._e.backend.node_update(
+                        run_awaitable_blocking(self._e.backend.node_update(
                             ids=[rid],
                             documents=[n.model_dump_json(field_mode="backend")],
                             metadatas=[
@@ -614,7 +646,7 @@ class PersistSubsystem(NamespaceProxy):
                                     "references": merged_json,
                                 }
                             ],
-                        )
+                        ))
                         self._e.write.index_node_docs(n)
                     continue
 
@@ -627,9 +659,9 @@ class PersistSubsystem(NamespaceProxy):
                 le: Edge = obj
                 if self.exists_edge(rid):
                     if le.mentions:
-                        prior = self._e.backend.edge_get(
+                        prior = run_awaitable_blocking(self._e.backend.edge_get(
                             ids=[rid], include=["documents", "metadatas"]
-                        )
+                        ))
                         prior_meta = (prior.get("metadatas") or [None])[0] or {}
                         prior_mentions = cast(str, prior_meta.get("mentions"))
                         merged_list, merged_json = merge_refs(
@@ -645,7 +677,7 @@ class PersistSubsystem(NamespaceProxy):
                         for sp in mentions.spans:
                             span_validator.validate_span(span=sp)
                         e.mentions = [mentions]
-                        self._e.backend.edge_update(
+                        run_awaitable_blocking(self._e.backend.edge_update(
                             ids=[rid],
                             documents=[e.model_dump_json(field_mode="backend")],
                             metadatas=[
@@ -658,7 +690,7 @@ class PersistSubsystem(NamespaceProxy):
                                     "references": merged_json,
                                 }
                             ],
-                        )
+                        ))
                         self._e.write.maybe_reindex_edge_refs(e)
                     continue
 
@@ -719,9 +751,9 @@ class PersistSubsystem(NamespaceProxy):
                 if repair_backend and op in ("ADD", "REPLACE"):
                     try:
                         if ek == "node":
-                            self._e.backend.node_delete(ids=[str(eid)])
+                            run_awaitable_blocking(self._e.backend.node_delete(ids=[str(eid)]))
                         elif ek == "edge":
-                            self._e.backend.edge_delete(ids=[str(eid)])
+                            run_awaitable_blocking(self._e.backend.edge_delete(ids=[str(eid)]))
                     except Exception:
                         pass
 

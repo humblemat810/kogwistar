@@ -42,6 +42,7 @@ class _Owner:
         self.run_registry = object()
         self.answer_runner = lambda req: {}
         self.runtime_runner = lambda req: {}
+        self.default_runtime_kind = "sync"
         self._workflow_history_lock = threading.Lock()
 
     def _knowledge_engine(self):

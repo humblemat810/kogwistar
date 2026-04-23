@@ -7,11 +7,8 @@ from kogwistar.conversation.models import (
     ConversationEdge,
     ConversationNode,
 )
-from kogwistar.engine_core.models import (
-    Grounding,
-    MentionVerification,
-    Span,
-)
+from kogwistar.engine_core.models import Grounding
+from tests._helpers.graph_builders import mk_document_span as _mk_span
 from tests.conftest import _make_engine_pair
 from typing import TYPE_CHECKING
 
@@ -43,26 +40,6 @@ pytestmark = pytest.mark.parametrize(
     ],
     indirect=True,
 )
-
-
-def _mk_span(doc_id: str) -> Span:
-    return Span(
-        collection_page_url="N/A",
-        document_page_url="N/A",
-        doc_id=doc_id,
-        insertion_method="test",
-        page_number=1,
-        start_char=0,
-        end_char=1,
-        excerpt="x",
-        context_before="",
-        context_after="",
-        chunk_id=None,
-        source_cluster_id=None,
-        verification=MentionVerification(
-            method="human", is_verified=True, score=1.0, notes="test"
-        ),
-    )
 
 
 def _mk_turn(

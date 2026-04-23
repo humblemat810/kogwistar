@@ -13,7 +13,7 @@ from kogwistar.conversation.models import (
     RetrievalResult,
 )
 from kogwistar.id_provider import stable_id
-from kogwistar.engine_core.models import Span, Grounding
+from kogwistar.engine_core.models import Grounding, Span
 from kogwistar.conversation.conversation_orchestrator import (
     ConversationOrchestrator,
     get_id_for_conversation_turn,
@@ -27,6 +27,7 @@ from kogwistar.conversation.agentic_answering import (
 from kogwistar.llm_tasks.contracts import SummarizeContextTaskResult
 
 from tests.conftest import _make_engine_pair  # reuse canonical engine fixture builder
+from tests._helpers.graph_builders import mk_conversation_span as _mk_span
 
 from tests._helpers.conv_view import (
     ConvGraphView,
@@ -47,14 +48,6 @@ BACKEND_PARAMS_REAL = [
     pytest.param("chroma", id="chroma", marks=pytest.mark.ci_full),
     pytest.param("pg", id="pg", marks=pytest.mark.ci_full),
 ]
-
-
-def _mk_span(doc_id: str) -> Span:
-    sp = Span.from_dummy_for_conversation()
-    sp.doc_id = doc_id
-    return sp
-
-
 def _semantic_view(view: ConvGraphView) -> ConvGraphView:
     """Normalize backend-specific IDs so fake-vs-real parity checks compare structure."""
     return ConvGraphView(

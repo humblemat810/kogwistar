@@ -10,39 +10,21 @@ from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.server.auth_middleware import claims_ctx
 from kogwistar.server.chat_service import ChatRunService
 from kogwistar.server.run_registry import RunRegistry
+from tests._helpers.engine_factories import FakeEmbeddingFunction
 from tests._helpers.fake_backend import build_fake_backend
+from tests._helpers.server_fixtures import build_engine_triplet
 
 
 pytestmark = pytest.mark.server
-
-
-class FakeEmbeddingFunction:
-    def __call__(self, input):  # noqa: A002
-        return [[0.0, 0.0, 0.0] for _ in input]
-
 
 @pytest.fixture()
 def service_triplet():
     root = Path(".tmp_repair_tests") / str(uuid.uuid4())
     root.mkdir(parents=True, exist_ok=True)
     try:
-        ef = FakeEmbeddingFunction()
-        knowledge = GraphKnowledgeEngine(
-            persist_directory=str(root / "kg"),
-            kg_graph_type="knowledge",
-            embedding_function=ef,
-            backend_factory=build_fake_backend,
-        )
-        conversation = GraphKnowledgeEngine(
-            persist_directory=str(root / "conversation"),
-            kg_graph_type="conversation",
-            embedding_function=ef,
-            backend_factory=build_fake_backend,
-        )
-        workflow = GraphKnowledgeEngine(
-            persist_directory=str(root / "workflow"),
-            kg_graph_type="workflow",
-            embedding_function=ef,
+        knowledge, conversation, workflow = build_engine_triplet(
+            root=root,
+            embedding_function=FakeEmbeddingFunction(dim=3),
             backend_factory=build_fake_backend,
         )
         service = ChatRunService(

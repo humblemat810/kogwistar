@@ -19,6 +19,7 @@ from kogwistar.engine_core.models import Grounding, Span# noqa: E402
 from kogwistar.engine_core.postgres_backend import PgVectorBackend# noqa: E402
 from kogwistar.id_provider import stable_id# noqa: E402
 from kogwistar.llm_tasks.contracts import SummarizeContextTaskResult# noqa: E402
+from tests._helpers.graph_builders import mk_conversation_span as _mk_span  # noqa: E402
 from tests.conftest import (  # noqa: E402
     _install_conversation_policy,
     _is_missing_pgvector_extension,
@@ -36,14 +37,6 @@ class _AsyncSmokeEmbeddingFunction:
 
     def __call__(self, documents_or_texts):
         return [[0.0, 0.0, 0.0] for _ in documents_or_texts]
-
-
-def _mk_span(doc_id: str) -> Span:
-    span = Span.from_dummy_for_conversation()
-    span.doc_id = doc_id
-    return span
-
-
 def _noop_filtering_callback(*_args, **_kwargs):
     from kogwistar.conversation.models import FilteringResult
 

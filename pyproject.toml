@@ -108,6 +108,10 @@ markers = [
   "core: core engine tests",
   "workflow: workflow-layer tests",
   "conversation: conversation-layer tests",
+  "runtime: runtime engine and parity suites",
+  "runtime_async: async runtime contracts",
+  "runtime_sync: sync runtime contracts",
+  "runtime_bridge_parity: bridge parity contract",
   "manual: manual smoke tests that require a live service",
   "e2e: end-to-end tests against real services",
 ]

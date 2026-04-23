@@ -11,7 +11,8 @@ from joblib import Memory
 from kogwistar.conversation.agentic_answering import AnswerWithCitations
 from kogwistar.conversation.conversation_orchestrator import ConversationOrchestrator
 from kogwistar.llm_tasks import AnswerWithCitationsTaskResult, LLMTaskSet
-from tests.conftest import _make_engine_pair, _make_workflow_engine, _to_stable_key
+from tests.conftest import _make_engine_pair, _make_workflow_engine
+from tests.conftest import _to_stable_key
 from kogwistar.id_provider import stable_id
 from kogwistar.engine_core.models import Node, Grounding, Span
 

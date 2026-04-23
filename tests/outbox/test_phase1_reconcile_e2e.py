@@ -1,6 +1,7 @@
 import time
 import time
 import pathlib
+import sqlite3
 
 import pytest
 pytestmark = pytest.mark.ci_full
@@ -16,61 +17,37 @@ from kogwistar.engine_core.engine_postgres_meta import (
 )
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
-from kogwistar.engine_core.models import Node, Edge, Grounding, Span
+from kogwistar.engine_core.models import Node, Edge
 from tests.conftest import FakeEmbeddingFunction
+from tests._helpers.meta_job_state import set_index_job_state
 from tests._helpers.fake_backend import InMemoryBackend, build_fake_backend
+from tests._helpers.graph_builders import build_entity_node, build_relationship_edge
 
 # Reuse raw helpers to avoid duplicating Chroma plumbing.
 # from tests.conftest import add_node_raw, add_edge_raw
-
-
-def _mk_span(doc_id: str) -> Span:
-    sp = Span.from_dummy_for_document()
-    sp.doc_id = doc_id
-    return sp
-
 
 EMBEDDING_DIM = 3
 TEST_EMBEDDING = FakeEmbeddingFunction(dim=EMBEDDING_DIM)
 
 
 def _mk_node(node_id: str, *, doc_id: str) -> Node:
-
-    node = Node(
-        id=node_id,
-        label=f"Node {node_id}",
-        type="entity",
-        summary=f"Summary {node_id}",
+    node = build_entity_node(
+        node_id=node_id,
         doc_id=doc_id,
-        mentions=[Grounding(spans=[_mk_span(doc_id)])],
-        metadata={"level_from_root": 0, "entity_type": "kg_entity"},
         embedding=[0.1] * EMBEDDING_DIM,
-        level_from_root=0,
-        domain_id=None,
-        canonical_entity_id=None,
-        properties=None,
     )
     return node
 
 
 def _mk_edge(edge_id: str, *, src: str, tgt: str, doc_id: str) -> Edge:
-    return Edge(
-        id=edge_id,
-        label=f"Edge {edge_id}",
-        type="relationship",
-        summary=f"Summary {edge_id}",
-        relation="related_to",
-        source_ids=[src],
-        target_ids=[tgt],
+    return build_relationship_edge(
+        edge_id=edge_id,
+        src=src,
+        tgt=tgt,
+        doc_id=doc_id,
+        embedding=[0.1] * EMBEDDING_DIM,
         source_edge_ids=None,
         target_edge_ids=None,
-        doc_id=doc_id,
-        mentions=[Grounding(spans=[_mk_span(doc_id)])],
-        metadata={"level_from_root": 0, "entity_type": "kg_relation"},
-        embedding=[0.1] * EMBEDDING_DIM,
-        domain_id=None,
-        canonical_entity_id=None,
-        properties=None,
     )
 
 
@@ -151,14 +128,22 @@ def _make_job_runnable_now(eng: GraphKnowledgeEngine, job_id: str) -> None:
                     ),
                     {"job_id": job_id},
                 )
-            else:
+            elif isinstance(txn, sqlite3.Connection):
                 now = int(time.time())
-                job = txn.state.index_jobs.get(str(job_id))
-                if job is not None:
-                    job.status = "PENDING"
-                    job.lease_until = None
-                    job.next_run_at = now
-                    job.updated_at = now
+                txn.execute(
+                    "UPDATE index_jobs SET status='PENDING', lease_until=NULL, next_run_at=?, updated_at=? WHERE job_id=?",
+                    (now, now, job_id),
+                )
+            else:
+                set_index_job_state(
+                    eng.meta_sqlite,
+                    txn,
+                    job_id=str(job_id),
+                    status="PENDING",
+                    lease_until=None,
+                    next_run_at=int(time.time()),
+                    updated_at=int(time.time()),
+                )
 
 
 def test_reconcile_builds_all_joins_from_raw_entities(e2e_engine: GraphKnowledgeEngine):
@@ -334,18 +319,35 @@ def test_stuck_doing_job_is_stealable_after_lease_expiry(
         elif hasattr(eng.meta_sqlite, "_debug_force_job_lease"):
             # Fake/in-memory meta uses a transaction view, not a DB connection.
             with eng.meta_sqlite.transaction() as txn:
-                job = txn.state.index_jobs.get(jid)
-                if job is not None:
-                    job.status = "DOING"
-                    job.lease_until = 0
-                    job.updated_at = int(time.time())
+                set_index_job_state(
+                    eng.meta_sqlite,
+                    txn,
+                    job_id=jid,
+                    status="DOING",
+                    lease_until=0,
+                    updated_at=int(time.time()),
+                )
         else:
             with eng.meta_sqlite.transaction() as conn:
-                # SQLite
-                conn.execute(
-                    "UPDATE index_jobs SET status='DOING', lease_until=?, updated_at=? WHERE job_id=?",
-                    (time.time() - 10.0, time.time(), jid),
-                )
+                if isinstance(conn, sqlite3.Connection):
+                    set_index_job_state(
+                        eng.meta_sqlite,
+                        conn,
+                        job_id=jid,
+                        status="DOING",
+                        lease_until=int(time.time()) - 10,
+                        updated_at=int(time.time()),
+                    )
+                else:
+                    # SQLite-like in-memory fallback.
+                    set_index_job_state(
+                        eng.meta_sqlite,
+                        conn,
+                        job_id=jid,
+                        status="DOING",
+                        lease_until=int(time.time()) - 10,
+                        updated_at=int(time.time()),
+                    )
 
     eng.reconcile_indexes(max_jobs=10, lease_seconds=5)
 

@@ -8,10 +8,19 @@ from typing import cast
 import sys
 import pathlib
 from tests._kg_factories import kg_document
+from tests._helpers.embeddings import build_test_embedding_function
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 
-pytestmark = pytest.mark.ci_full
+pytestmark = pytest.mark.manual
+
+
+def _test_embedding_function():
+    dim = int(os.getenv("KOGWISTAR_TEST_EMBEDDING_DIM", "384"))
+    kind = str(
+        os.getenv("KOGWISTAR_TEST_EMBEDDING_KIND", "lexical_hash")
+    ).strip().lower()
+    return build_test_embedding_function(kind, dim=dim)
 
 
 @pytest.fixture(scope="module")
@@ -19,7 +28,8 @@ def engine() -> GraphKnowledgeEngine:
     return GraphKnowledgeEngine(
         default_task_provider_config=DefaultTaskProviderConfig(
             gemini_model_name="models/gemini-2.5-flash",
-        )
+        ),
+        embedding_function=_test_embedding_function(),
     )
 
 

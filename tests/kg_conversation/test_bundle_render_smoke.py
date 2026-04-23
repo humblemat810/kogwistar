@@ -1,9 +1,10 @@
 import pytest
 pytestmark = pytest.mark.ci_full
 from pathlib import Path
+from tests.graph_seed_helpers import seed_kg_and_conversation_bundle_for_backend
 
 
-def test_bundle_contains_d3_rendering_logic(tmp_path, seeded_kg_and_conversation):
+def test_bundle_contains_d3_rendering_logic(tmp_path, request):
     """
     Smoke test only.
 
@@ -12,7 +13,12 @@ def test_bundle_contains_d3_rendering_logic(tmp_path, seeded_kg_and_conversation
     - Do NOT execute JavaScript.
     - Do NOT validate visual correctness.
     """
-    kg_engine, conv_engine, *_ = seeded_kg_and_conversation
+    kg_engine, conv_engine, *_ = seed_kg_and_conversation_bundle_for_backend(
+        backend_kind="fake",
+        tmp_path=tmp_path,
+        request=request,
+        legacy_bundle=True,
+    )
     from kogwistar.utils.kge_debug_dump import dump_paired_bundles
 
     template_html = Path("kogwistar/templates/d3.html").read_text(

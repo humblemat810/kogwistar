@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
 from contextlib import contextmanager
 
 import pytest
@@ -8,9 +9,19 @@ from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
+from jose import jwt
 
+from kogwistar.server.auth_middleware import (
+    JWTProtectMiddleware,
+    claims_ctx,
+    get_current_role,
+    get_current_subject,
+    set_auth_app,
+)
 from kogwistar.server.mcp_tools import MCPRoleMiddleware
 import kogwistar.server_mcp_with_admin as server
+
+pytestmark = pytest.mark.ci
 
 
 @pytest.mark.asyncio
@@ -65,7 +76,7 @@ def _patched_stream_route(app: FastAPI, path: str):
 
 
 def test_mcp_role_middleware_allows_real_app_streaming_routes():
-    app = server.app
+    app = importlib.reload(server).app
     with _patched_stream_route(app, "/__test__/stream"):
         with TestClient(app) as client:
             with client.stream("GET", "/__test__/stream") as resp:
@@ -76,3 +87,69 @@ def test_mcp_role_middleware_allows_real_app_streaming_routes():
                 ]
 
     assert lines == ["first", "second"]
+
+
+def test_jwt_protect_middleware_preserves_claims_context(monkeypatch):
+    monkeypatch.setenv("JWT_ALG", "HS256")
+    monkeypatch.setenv("JWT_SECRET", "test-secret")
+    monkeypatch.setenv("JWT_ISS", "local")
+
+    app = FastAPI()
+    set_auth_app(app)
+    app.add_middleware(JWTProtectMiddleware)
+
+    @app.get("/probe")
+    def probe():
+        claims = claims_ctx.get() or {}
+        return {
+            "role": get_current_role(),
+            "subject": get_current_subject(),
+            "claims_role": claims.get("role"),
+            "claims_sub": claims.get("sub"),
+        }
+
+    token = jwt.encode(
+        {"sub": "tester", "role": "rw", "ns": "workflow", "iss": "local"},
+        "test-secret",
+        algorithm="HS256",
+    )
+
+    with TestClient(app) as client:
+        resp = client.get("/probe", headers={"Authorization": f"Bearer {token}"})
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {
+        "role": "rw",
+        "subject": "tester",
+        "claims_role": "rw",
+        "claims_sub": "tester",
+    }
+
+
+def test_jwt_protect_middleware_uses_frozen_app_jwt_secret(monkeypatch):
+    monkeypatch.setenv("JWT_ALG", "HS256")
+    monkeypatch.setenv("JWT_SECRET", "first-secret")
+    monkeypatch.setenv("JWT_ISS", "local")
+
+    app = FastAPI()
+    set_auth_app(app)
+    app.add_middleware(JWTProtectMiddleware)
+
+    @app.get("/probe")
+    def probe():
+        claims = claims_ctx.get() or {}
+        return {"role": claims.get("role"), "subject": claims.get("sub")}
+
+    token = jwt.encode(
+        {"sub": "tester", "role": "rw", "ns": "workflow", "iss": "local"},
+        "first-secret",
+        algorithm="HS256",
+    )
+
+    monkeypatch.setenv("JWT_SECRET", "second-one")
+
+    with TestClient(app) as client:
+        resp = client.get("/probe", headers={"Authorization": f"Bearer {token}"})
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"role": "rw", "subject": "tester"}

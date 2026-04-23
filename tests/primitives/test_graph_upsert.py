@@ -6,6 +6,18 @@ pytest.importorskip("fastmcp")
 
 from fastapi.testclient import TestClient
 
+from tests._helpers.embeddings import ConstantEmbeddingFunction
+from tests._helpers.fake_backend import build_fake_backend
+
+
+def _rw_headers(client: TestClient) -> dict[str, str]:
+    resp = client.post(
+        "/auth/dev-token",
+        json={"username": "tester", "role": "rw", "ns": "docs,conversation,workflow"},
+    )
+    resp.raise_for_status()
+    return {"Authorization": f"Bearer {resp.json()['token']}"}
+
 # Import your FastAPI app
 
 DOC_ID = "pytest-doc-upsert-1"
@@ -15,9 +27,21 @@ def test_graph_upsert_llm_batch_with_references():
     # clean slate (best-effort)
 
     from kogwistar.server_mcp_with_admin import app
+    from kogwistar.engine_core.engine import GraphKnowledgeEngine
+    import kogwistar.server_mcp_with_admin as server
 
     client = TestClient(app)
-    client.delete(f"/admin/doc/{DOC_ID}")
+    headers = _rw_headers(client)
+
+    fake_engine = GraphKnowledgeEngine(
+        persist_directory="./.tmp_pytest/graph_upsert_fake",
+        kg_graph_type="knowledge",
+        embedding_function=ConstantEmbeddingFunction(dim=8),
+        backend_factory=build_fake_backend,
+    )
+    server.engine._value = fake_engine
+
+    client.delete(f"/admin/doc/{DOC_ID}", headers=headers)
 
     payload = {
         "doc_id": DOC_ID,
@@ -38,8 +62,8 @@ def test_graph_upsert_llm_batch_with_references():
                         "insertion_method": "test_manual_insert",
                         "start_page": 1,
                         "end_page": 1,
-                        "start_char": 0,
-                        "end_char": 24,
+                        "start_char": 18,
+                        "end_char": 42,
                         "excerpt": "Alice contracts with Bob",
                     }
                 ],
@@ -57,8 +81,8 @@ def test_graph_upsert_llm_batch_with_references():
                         "insertion_method": "test_manual_insert",
                         "start_page": 1,
                         "end_page": 1,
-                        "start_char": 21,
-                        "end_char": 24,
+                        "start_char": 39,
+                        "end_char": 42,
                         "excerpt": "Bob",
                     }
                 ],
@@ -83,8 +107,8 @@ def test_graph_upsert_llm_batch_with_references():
                         "insertion_method": "test_manual_insert",
                         "start_page": 1,
                         "end_page": 1,
-                        "start_char": 0,
-                        "end_char": 30,
+                        "start_char": 18,
+                        "end_char": 42,
                         "excerpt": "Alice contracts with Bob",
                     }
                 ],
@@ -107,8 +131,8 @@ def test_graph_upsert_llm_batch_with_references():
                         "insertion_method": "test_manual_insert",
                         "start_page": 1,
                         "end_page": 1,
-                        "start_char": 31,
-                        "end_char": 60,
+                        "start_char": 55,
+                        "end_char": 69,
                         "excerpt": "penalty clause",
                     }
                 ],
@@ -117,7 +141,7 @@ def test_graph_upsert_llm_batch_with_references():
     }
 
     # upsert batch
-    r = client.post("/api/graph/upsert", json=payload)
+    r = client.post("/api/graph/upsert", json=payload, headers=headers)
     assert r.status_code == 200, r.text
     data = r.json()
     assert data["document_id"] == DOC_ID
@@ -127,7 +151,7 @@ def test_graph_upsert_llm_batch_with_references():
     assert len(data["edge_ids"]) >= 2
 
     # minimal smoke test of viz JSON (ensures persistence + endpoints tables are coherent)
-    viz = client.get(f"/api/viz/d3.json?doc_id={DOC_ID}&mode=reify")
+    viz = client.get(f"/api/viz/d3.json?doc_id={DOC_ID}&mode=reify", headers=headers)
     assert viz.status_code == 200
     g = viz.json()
     assert "nodes" in g and "links" in g

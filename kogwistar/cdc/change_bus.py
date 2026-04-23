@@ -94,24 +94,24 @@ class FastAPIChangeSink:
             pass
 
     def _run(self):
-        session = requests.Session()
         url = f"{self.endpoint}/ingest"
-        while True:
-            ev = self.q.get()
-            ctx = ev.pop("_log_ctx", None) or {}
-            try:
-                with bind_log_context(
-                    engine_type=ctx.get("engine_type"),
-                    engine_id=ctx.get("engine_id"),
-                    conversation_id=ctx.get("conversation_id"),
-                    workflow_run_id=ctx.get("workflow_run_id"),
-                    step_id=ctx.get("step_id"),
+        with requests.Session() as session:
+            while True:
+                ev = self.q.get()
+                ctx = ev.pop("_log_ctx", None) or {}
+                try:
+                    with bind_log_context(
+                        engine_type=ctx.get("engine_type"),
+                        engine_id=ctx.get("engine_id"),
+                        conversation_id=ctx.get("conversation_id"),
+                        workflow_run_id=ctx.get("workflow_run_id"),
+                        step_id=ctx.get("step_id"),
+                    ):
+                        session.post(url, json=ev, timeout=2.5)
+                except (
+                    requests.exceptions.ConnectTimeout,
+                    requests.exceptions.ConnectionError,
                 ):
-                    session.post(url, json=ev, timeout=2.5)
-            except (
-                requests.exceptions.ConnectTimeout,
-                requests.exceptions.ConnectionError,
-            ):
-                pass
-            except Exception:
-                raise
+                    pass
+                except Exception:
+                    raise

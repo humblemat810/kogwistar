@@ -11,7 +11,7 @@ import pytest
 
 from kogwistar.typing_interfaces import EmbeddingFunctionLike
 
-pytestmark = pytest.mark.core
+pytestmark = [pytest.mark.core, pytest.mark.runtime]
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine # noqa E402
 from kogwistar.engine_core.postgres_backend import PgVectorBackend # noqa E402
@@ -29,26 +29,14 @@ from kogwistar.runtime.models import ( # noqa E402
     WorkflowNode, # noqa E402
 ) # noqa E402
 from kogwistar.runtime.runtime import WorkflowRuntime # noqa E402
+from tests._helpers.engine_factories import FakeEmbeddingFunction # noqa E402
 from tests._helpers.fake_backend import build_fake_backend # noqa E402
 from tests.conftest import _is_missing_pgvector_extension # noqa E402
 from tests.core._async_chroma_real import ( # noqa E402
     make_real_async_chroma_backend, # noqa E402
     real_chroma_server, # noqa E402
 ) # noqa E402
-
-
-class FakeEmbeddingFunction:
-    @staticmethod
-    def name() -> str:
-        return "default"
-
-    def __init__(self, dim: int = 8):
-        self._dim = dim
-        self.is_legacy = False
-
-    def __call__(self, input):
-        return [[0.01] * self._dim for _ in input]
-
+from kogwistar.engine_core.async_compat import run_awaitable_blocking # noqa E402
 
 def _span() -> Span:
     return Span(
@@ -168,6 +156,20 @@ async def _drop_schema_async(async_sa_engine, schema: str) -> None:
 @asynccontextmanager
 async def _async_runtime_engine_pair(backend_kind: str, request, tmp_path):
     embedding_function = _AsyncFakeEmbeddingFunction3D()
+
+    class _SyncBackendBridge:
+        def __init__(self, backend):
+            self._backend = backend
+
+        def __getattr__(self, name: str):
+            attr = getattr(self._backend, name)
+            if callable(attr):
+                def _call(*args, **kwargs):
+                    return run_awaitable_blocking(attr(*args, **kwargs))
+
+                return _call
+            return attr
+
     if backend_kind == "chroma":
         pytest.importorskip("chromadb")
         server = request.getfixturevalue("real_chroma_server")
@@ -182,13 +184,13 @@ async def _async_runtime_engine_pair(backend_kind: str, request, tmp_path):
             persist_directory=str(server.persist_dir),
             kg_graph_type="workflow",
             embedding_function=embedding_function,
-            backend_factory=lambda _engine: wf_backend,
+            backend_factory=lambda _engine: _SyncBackendBridge(wf_backend),
         )
         conv_engine = GraphKnowledgeEngine(
             persist_directory=str(server.persist_dir),
             kg_graph_type="conversation",
             embedding_function=embedding_function,
-            backend_factory=lambda _engine: conv_backend,
+            backend_factory=lambda _engine: _SyncBackendBridge(conv_backend),
         )
         yield wf_engine, conv_engine
         return
@@ -221,13 +223,13 @@ async def _async_runtime_engine_pair(backend_kind: str, request, tmp_path):
                 persist_directory=str(tmp_path / "async_wf_terminal"),
                 kg_graph_type="workflow",
                 embedding_function=embedding_function,
-                backend=wf_backend,
+                backend_factory=lambda _engine: _SyncBackendBridge(wf_backend),
             )
             conv_engine = GraphKnowledgeEngine(
                 persist_directory=str(tmp_path / "async_conv_terminal"),
                 kg_graph_type="conversation",
                 embedding_function=embedding_function,
-                backend=conv_backend,
+                backend_factory=lambda _engine: _SyncBackendBridge(conv_backend),
             )
             yield wf_engine, conv_engine
         finally:
@@ -498,3 +500,75 @@ async def test_runtime_persists_completed_terminal_for_leaf_node_async_backends(
         assert isinstance(completed[0], WorkflowCompletedNode)
         meta = completed[0].metadata or {}
         assert meta.get("last_processed_node_id") == f"wf_step|{result.run_id}|1"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backend_kind", ASYNC_BACKEND_PARAMS)
+async def test_runtime_persists_failed_terminal_for_leaf_node_async_backends(
+    backend_kind, request, tmp_path
+):
+    async with _async_runtime_engine_pair(backend_kind, request, tmp_path) as (
+        workflow_engine,
+        conversation_engine,
+    ):
+        workflow_id = "wf_runtime_leaf_failed_terminal_async"
+        conversation_id = "conv_runtime_leaf_failed_terminal_async"
+        start = _wf_node(
+            workflow_id=workflow_id, node_id="wf|start", op="start", start=True
+        )
+        leaf = _wf_node(workflow_id=workflow_id, node_id="wf|leaf", op="leaf")
+        await asyncio.to_thread(workflow_engine.write.add_node, start)
+        await asyncio.to_thread(workflow_engine.write.add_node, leaf)
+        await asyncio.to_thread(
+            workflow_engine.write.add_edge,
+            _wf_edge(
+                workflow_id=workflow_id,
+                edge_id="wf|start->leaf",
+                src=start.safe_get_id(),
+                dst=leaf.safe_get_id(),
+            ),
+        )
+
+        def resolve_step(op: str):
+            def _fn(ctx):
+                return RunFailure(
+                    conversation_node_id=None,
+                    state_update=[("a", {"failed_op": op})],
+                    errors=["boom"],
+                )
+
+            return _fn
+
+        runtime = WorkflowRuntime(
+            workflow_engine=workflow_engine,
+            conversation_engine=conversation_engine,
+            step_resolver=resolve_step,
+            predicate_registry={},
+            checkpoint_every_n_steps=1,
+            max_workers=1,
+        )
+        result = await asyncio.to_thread(
+            runtime.run,
+            workflow_id=workflow_id,
+            conversation_id=conversation_id,
+            turn_node_id="turn-leaf",
+            initial_state={},
+        )
+
+        assert result.status == "failure"
+        failed = await asyncio.to_thread(
+            conversation_engine.get_nodes,
+            where={
+                "$and": [
+                    {"entity_type": "workflow_failed"},
+                    {"run_id": result.run_id},
+                ]
+            },
+            limit=10,
+        )
+        assert len(failed) == 1
+        assert isinstance(failed[0], WorkflowFailedNode)
+        meta = failed[0].metadata or {}
+        assert meta.get("accepted_step_seq") == 0
+        assert meta.get("last_processed_node_id") == f"wf_step|{result.run_id}|0"
+        assert meta.get("errors") == ["boom"]

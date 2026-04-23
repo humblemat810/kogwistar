@@ -40,6 +40,7 @@ Index/materialization collections (non-vector):
 """
 
 import asyncio
+import threading
 import sys
 from dataclasses import dataclass
 from contextlib import asynccontextmanager, contextmanager
@@ -51,6 +52,7 @@ import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 from sqlalchemy.dialects import postgresql as psql
 
+from .async_compat import run_awaitable_blocking
 from ..utils.embedding_vectors import normalize_embedding_rows, normalize_embedding_vector
 
 try:
@@ -65,6 +67,40 @@ else:
 
 Json = Dict[str, Any]
 JSONB = psql.JSONB
+
+
+class _AwaitableValue:
+    def __init__(self, value: Any):
+        self._value = value
+
+    def __await__(self):
+        async def _done():
+            return self._value
+
+        return _done().__await__()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._value, name)
+
+    def __bool__(self) -> bool:
+        return bool(self._value)
+
+    def __repr__(self) -> str:
+        return repr(self._value)
+
+
+class _AwaitableDict(dict):
+    def __await__(self):
+        async def _done():
+            return self
+
+        return _done().__await__()
+
+
+def _awaitable_result(value: Any) -> Any:
+    if isinstance(value, dict):
+        return _AwaitableDict(value)
+    return _AwaitableValue(value)
 
 
 _pg_uow_conn: contextvars.ContextVar[Any | None] = contextvars.ContextVar(
@@ -93,14 +129,40 @@ def _run_coro_sync(coro):
                 asyncio.get_running_loop()
             except RuntimeError:
                 return runner.run(coro)
-            return coro
+            box: dict[str, Any] = {}
+
+            def _worker() -> None:
+                try:
+                    box["result"] = _run_coro_sync(coro)
+                except BaseException as exc:  # pragma: no cover - thread ferry
+                    box["error"] = exc
+
+            thread = threading.Thread(target=_worker, daemon=True)
+            thread.start()
+            thread.join()
+            if "error" in box:
+                raise box["error"]
+            return box.get("result")
         finally:
             runner.close()
     try:
         asyncio.get_running_loop()
     except RuntimeError:
         return asyncio.run(coro)
-    return coro
+    box: dict[str, Any] = {}
+
+    def _worker() -> None:
+        try:
+            box["result"] = _run_coro_sync(coro)
+        except BaseException as exc:  # pragma: no cover - thread ferry
+            box["error"] = exc
+
+    thread = threading.Thread(target=_worker, daemon=True)
+    thread.start()
+    thread.join()
+    if "error" in box:
+        raise box["error"]
+    return box.get("result")
 
 
 class PostgresUnitOfWork:
@@ -184,7 +246,7 @@ class PgCollectionFacade:
         self._s = spec
 
     def _call_async(self, fn):
-        return _run_coro_sync(self._b._run_in_async_txn(fn))
+        return fn()
 
     def add(
         self,
@@ -198,7 +260,7 @@ class PgCollectionFacade:
             embeddings = None
         if self._b._is_async_engine:
             return self._call_async(
-                lambda: self._b._upsert(
+                lambda: self._b._upsert_async(
                     self._t,
                     ids=ids,
                     documents=documents,
@@ -206,13 +268,13 @@ class PgCollectionFacade:
                     embeddings=embeddings,
                 )
             )
-        self._b._upsert(
+        return _awaitable_result(self._b._upsert(
             self._t,
             ids=ids,
             documents=documents,
             metadatas=metadatas,
             embeddings=embeddings,
-        )
+        ))
 
     def upsert(
         self,
@@ -222,7 +284,7 @@ class PgCollectionFacade:
         metadatas: Sequence[Json],
         embeddings: Optional[Sequence[Sequence[float]]] = None,
     ) -> None:
-        self.add(
+        return self.add(
             ids=ids, documents=documents, metadatas=metadatas, embeddings=embeddings
         )
 
@@ -237,22 +299,22 @@ class PgCollectionFacade:
         include = include or ["documents", "metadatas"]
         if self._b._is_async_engine:
             return self._call_async(
-                lambda: self._b._get_flat(
+                lambda: self._b._get_flat_async(
                     self._t, ids=ids, where=where, include=include, limit=limit
                 )
             )
-        return self._b._get_flat(
+        return _awaitable_result(self._b._get_flat(
             self._t, ids=ids, where=where, include=include, limit=limit
-        )
+        ))
 
     def delete(
         self, *, ids: Optional[Sequence[str]] = None, where: Optional[Json] = None
     ) -> None:
         if self._b._is_async_engine:
             return self._call_async(
-                lambda: self._b._delete(self._t, ids=ids, where=where)
+                lambda: self._b._delete_async(self._t, ids=ids, where=where)
             )
-        self._b._delete(self._t, ids=ids, where=where)
+        return _awaitable_result(self._b._delete(self._t, ids=ids, where=where))
 
     def query(
         self,
@@ -268,7 +330,7 @@ class PgCollectionFacade:
                 raise ValueError("query_embeddings is required for vector collections")
             if self._b._is_async_engine:
                 return self._call_async(
-                    lambda: self._b._query_vector(
+                    lambda: self._b._query_vector_async(
                         self._t,
                         query_embeddings=query_embeddings,
                         n_results=n_results,
@@ -276,24 +338,24 @@ class PgCollectionFacade:
                         include=include,
                     )
                 )
-            return self._b._query_vector(
+            return _awaitable_result(self._b._query_vector(
                 self._t,
                 query_embeddings=query_embeddings,
                 n_results=n_results,
                 where=where,
                 include=include,
-            )
+            ))
 
         include = include or ["documents", "metadatas"]
         if self._b._is_async_engine:
             return self._call_async(
-                lambda: self._b._query_nonvector(
+                lambda: self._b._query_nonvector_async(
                     self._t, where=where, n_results=n_results, include=include
                 )
             )
-        return self._b._query_nonvector(
+        return _awaitable_result(self._b._query_nonvector(
             self._t, where=where, n_results=n_results, include=include
-        )
+        ))
 
     def update(
         self,
@@ -313,7 +375,7 @@ class PgCollectionFacade:
             embeddings = None
         if self._b._is_async_engine:
             return self._call_async(
-                lambda: self._b._update_doc_meta_embedding_merge(
+                lambda: self._b._update_doc_meta_embedding_merge_async(
                     self._t,
                     ids=ids,
                     documents=documents,
@@ -321,13 +383,13 @@ class PgCollectionFacade:
                     embeddings=embeddings,
                 )
             )
-        self._b._update_doc_meta_embedding_merge(
+        return _awaitable_result(self._b._update_doc_meta_embedding_merge(
             self._t,
             ids=ids,
             documents=documents,
             metadatas=metadatas,
             embeddings=embeddings,
-        )
+        ))
 
 
 # ----------------------------
@@ -771,6 +833,8 @@ class PgVectorBackend:
         )
 
         self._init_facades()
+        if self._is_async_engine:
+            self._install_async_passthroughs()
 
         self._md = md
         self.ensure_schema()
@@ -803,6 +867,16 @@ class PgVectorBackend:
             yield active
             return
         with self.engine.begin() as conn:
+            yield conn
+
+    @asynccontextmanager
+    async def _async_conn(self):
+        """Yield active async connection without falling back to sync bridge."""
+        active = get_active_conn()
+        if isinstance(active, AsyncConnection):
+            yield active
+            return
+        async with self.engine.begin() as conn:
             yield conn
 
     def _ensure_schema_sync(self, conn: sa.Connection) -> None:
@@ -913,6 +987,42 @@ class PgVectorBackend:
             ]
         return out
 
+    async def _get_flat_async(
+        self,
+        table: sa.Table,
+        *,
+        ids: Optional[Sequence[str]],
+        where: Optional[Json],
+        include: List[str],
+        limit: int,
+    ) -> Dict[str, Any]:
+        has_embedding = "embedding" in table.c
+        cols = [table.c.id, table.c.document, table.c.metadata]
+        if has_embedding:
+            cols.append(table.c.embedding)
+
+        q = sa.select(*cols).limit(int(limit))
+        if ids is not None:
+            q = q.where(table.c.id.in_(list(ids)))
+        if where:
+            q = q.where(
+                where_jsonb(table.c.metadata, where, numeric_keys=self.numeric_keys)
+            )
+
+        async with self._async_conn() as conn:
+            rows = (await conn.execute(q)).fetchall()
+
+        out: Dict[str, Any] = {"ids": [r.id for r in rows]}
+        if "documents" in include:
+            out["documents"] = [r.document for r in rows]
+        if "metadatas" in include:
+            out["metadatas"] = [dict(r.metadata or {}) for r in rows]
+        if "embeddings" in include and has_embedding:
+            out["embeddings"] = [
+                normalize_embedding_vector(r.embedding) for r in rows
+            ]
+        return out
+
     def _delete(
         self, table: sa.Table, *, ids: Optional[Sequence[str]], where: Optional[Json]
     ) -> None:
@@ -925,6 +1035,19 @@ class PgVectorBackend:
             )
         with self._conn() as conn:
             conn.execute(stmt)
+
+    async def _delete_async(
+        self, table: sa.Table, *, ids: Optional[Sequence[str]], where: Optional[Json]
+    ) -> None:
+        stmt = sa.delete(table)
+        if ids is not None:
+            stmt = stmt.where(table.c.id.in_(list(ids)))
+        if where:
+            stmt = stmt.where(
+                where_jsonb(table.c.metadata, where, numeric_keys=self.numeric_keys)
+            )
+        async with self._async_conn() as conn:
+            await conn.execute(stmt)
 
     def _upsert(
         self,
@@ -974,6 +1097,55 @@ class PgVectorBackend:
 
         with self._conn() as conn:
             conn.execute(stmt)
+
+    async def _upsert_async(
+        self,
+        table: sa.Table,
+        *,
+        ids: Sequence[str],
+        documents: Sequence[str],
+        metadatas: Sequence[Json],
+        embeddings: Optional[Sequence[Sequence[float]]] = None,
+    ) -> None:
+        if embeddings is not None and len(embeddings) != len(ids):
+            raise ValueError("embeddings length must match ids length")
+
+        if embeddings is not None:
+            for i, e in enumerate(embeddings):
+                if e is None:
+                    continue
+                e = normalize_embedding_vector(e, allow_none=False) or []
+                if len(e) != self.embedding_dim:
+                    raise ValueError(
+                        f"embedding dim mismatch at index {i}: got {len(e)}, expected {self.embedding_dim}"
+                    )
+
+        rows: List[Dict[str, Any]] = []
+        for i, _id in enumerate(ids):
+            row: Dict[str, Any] = {
+                "id": _id,
+                "document": documents[i] if i < len(documents) else None,
+                "metadata": metadatas[i] if i < len(metadatas) else {},
+            }
+            if embeddings is not None and "embedding" in table.c:
+                row["embedding"] = normalize_embedding_vector(
+                    embeddings[i], allow_none=False
+                )
+            rows.append(row)
+
+        stmt = psql.insert(table).values(rows)
+        set_map: Dict[str, Any] = {
+            "document": stmt.excluded.document,
+            "metadata": stmt.excluded.metadata,
+            "updated_at": sa.func.now(),
+        }
+        if "embedding" in table.c:
+            set_map["embedding"] = stmt.excluded.embedding
+
+        stmt = stmt.on_conflict_do_update(index_elements=[table.c.id], set_=set_map)
+
+        async with self._async_conn() as conn:
+            await conn.execute(stmt)
 
     def _query_vector(
         self,
@@ -1035,6 +1207,78 @@ class PgVectorBackend:
                 )
                 rows = conn.execute(q, {"qv": list(qv)}).fetchall()
 
+                ids_out.append([r.id for r in rows])
+                docs_out.append([r.document for r in rows])
+                metas_out.append([dict(r.metadata or {}) for r in rows])
+                dists_out.append([float(r.distance) for r in rows])
+                if want_embeddings:
+                    embs_out.append(
+                        [
+                            normalize_embedding_vector(r.embedding, allow_none=False) or []
+                            for r in rows
+                        ]
+                    )
+
+        out: Dict[str, Any] = {"ids": ids_out}
+        if "documents" in include:
+            out["documents"] = docs_out
+        if "metadatas" in include:
+            out["metadatas"] = metas_out
+        if "distances" in include:
+            out["distances"] = dists_out
+        if want_embeddings:
+            out["embeddings"] = embs_out
+        return out
+
+    async def _query_vector_async(
+        self,
+        table: sa.Table,
+        *,
+        query_embeddings: Sequence[Sequence[float]],
+        n_results: int,
+        where: Optional[Json],
+        include: List[str],
+    ) -> Dict[str, Any]:
+        query_embeddings = cast(
+            Sequence[Sequence[float]],
+            normalize_embedding_rows(query_embeddings, allow_empty=False),
+        )
+        if not query_embeddings:
+            raise ValueError("query_embeddings is required")
+        if "embedding" not in table.c:
+            raise TypeError("vector query requested for a table without embedding")
+
+        ids_out: List[List[str]] = []
+        docs_out: List[List[Optional[str]]] = []
+        metas_out: List[List[Json]] = []
+        dists_out: List[List[float]] = []
+
+        op_map = {"cosine": "<=>", "l2": "<->", "ip": "<#>"}
+        op = op_map[self.distance]
+        qv_param = sa.bindparam("qv", type_=Vector(self.embedding_dim))
+        distance_expr = sa.cast(table.c.embedding.op(op)(qv_param), sa.Float).label(
+            "distance"
+        )
+        want_embeddings = "embeddings" in include
+        if want_embeddings:
+            embs_out: List[List[float]] = []
+
+        async with self._async_conn() as conn:
+            for qv in query_embeddings:
+                cols = [table.c.id, table.c.document, table.c.metadata, distance_expr]
+                if want_embeddings:
+                    cols.append(table.c.embedding)
+                q = sa.select(*cols).where(table.c.embedding.is_not(None))
+                if where:
+                    q = q.where(
+                        where_jsonb(
+                            table.c.metadata, where, numeric_keys=self.numeric_keys
+                        )
+                    )
+                q = q.order_by(distance_expr.asc(), table.c.id.asc()).limit(
+                    int(n_results)
+                )
+                rows = (await conn.execute(q, {"qv": list(qv)})).fetchall()
                 ids_out.append([r.id for r in rows])
                 docs_out.append([r.document for r in rows])
                 metas_out.append([dict(r.metadata or {}) for r in rows])
@@ -1130,6 +1374,63 @@ class PgVectorBackend:
                 stmt = sa.update(table).where(table.c.id == _id).values(**values)
                 conn.execute(stmt, params)
 
+    async def _update_doc_meta_embedding_merge_async(
+        self,
+        table: sa.Table,
+        *,
+        ids: Sequence[str],
+        documents: Optional[Sequence[Optional[str]]] = None,
+        metadatas: Optional[Sequence[Json]] = None,
+        embeddings: Optional[Sequence[Sequence[float]]] = None,
+    ) -> None:
+        if documents is None and metadatas is None and embeddings is None:
+            return
+
+        if documents is not None and len(documents) != len(ids):
+            raise ValueError("documents length must match ids length")
+        if metadatas is not None and len(metadatas) != len(ids):
+            raise ValueError("metadatas length must match ids length")
+        if embeddings is not None and len(embeddings) != len(ids):
+            raise ValueError("embeddings length must match ids length")
+
+        if embeddings is not None and "embedding" in table.c:
+            for i, e in enumerate(embeddings):
+                if e is None:
+                    continue
+                e = normalize_embedding_vector(e, allow_none=False) or []
+                if len(e) != self.embedding_dim:
+                    raise ValueError(
+                        f"embedding dim mismatch at index {i}: got {len(e)}, expected {self.embedding_dim}"
+                    )
+
+        patch_text = sa.bindparam("patch_text", type_=sa.Text)
+        merged_expr = table.c.metadata
+        if metadatas is not None:
+            merged_expr = table.c.metadata.op("||")(sa.cast(patch_text, JSONB))
+
+        async with self._async_conn() as conn:
+            for i, _id in enumerate(ids):
+                values: Dict[str, Any] = {"updated_at": sa.func.now()}
+                params: Dict[str, Any] = {}
+
+                if documents is not None:
+                    values["document"] = documents[i]
+
+                if metadatas is not None:
+                    values["metadata"] = merged_expr
+                    params["patch_text"] = json.dumps(metadatas[i])
+
+                if embeddings is not None and "embedding" in table.c:
+                    e = embeddings[i]
+                    values["embedding"] = (
+                        normalize_embedding_vector(e, allow_none=False)
+                        if e is not None
+                        else None
+                    )
+
+                stmt = sa.update(table).where(table.c.id == _id).values(**values)
+                await conn.execute(stmt, params)
+
     def _update_doc_and_metadata_merge(
         self,
         table: sa.Table,
@@ -1182,6 +1483,30 @@ class PgVectorBackend:
             out["distances"] = [[0.0 for _ in out["ids"][0]]]
         return out
 
+    async def _query_nonvector_async(
+        self,
+        table: sa.Table,
+        *,
+        where: Optional[Json],
+        n_results: int,
+        include: List[str],
+    ) -> Dict[str, Any]:
+        flat = await self._get_flat_async(
+            table,
+            ids=None,
+            where=where,
+            include=["documents", "metadatas"],
+            limit=int(n_results),
+        )
+        out: Dict[str, Any] = {"ids": [flat.get("ids", [])]}
+        if "documents" in include:
+            out["documents"] = [flat.get("documents", [])]
+        if "metadatas" in include:
+            out["metadatas"] = [flat.get("metadatas", [])]
+        if "distances" in include:
+            out["distances"] = [[0.0 for _ in out["ids"][0]]]
+        return out
+
     # ----------------------------
     # Collections (facades)
     # ----------------------------
@@ -1207,6 +1532,77 @@ class PgVectorBackend:
         self._edge_refs_c = PgCollectionFacade(self, self.edge_refs, nv)
         self._node_docs_c = PgCollectionFacade(self, self.node_docs, nv)
         self._node_refs_c = PgCollectionFacade(self, self.node_refs, nv)
+
+    def _install_async_passthroughs(self) -> None:
+        """Expose async-engine collection methods as eager awaitable results.
+
+        Public backend methods must behave like Chroma collections: sync call
+        sites should receive immediate dict/None-shaped results, while async
+        call sites can still `await` the same returned object. We execute the
+        async SQL work to completion here and wrap the value so both styles work.
+        """
+
+        def _bind(name: str):
+            original = getattr(self, name)
+
+            def _sync_wrapper(*args, **kwargs):
+                if get_active_conn() is not None:
+                    return original(*args, **kwargs)
+                return _awaitable_result(_run_coro_sync(original(*args, **kwargs)))
+
+            setattr(self, name, _sync_wrapper)
+
+        for name in (
+            "node_add",
+            "node_upsert",
+            "node_get",
+            "node_delete",
+            "node_query",
+            "node_update",
+            "edge_add",
+            "edge_upsert",
+            "edge_get",
+            "edge_delete",
+            "edge_query",
+            "edge_update",
+            "document_add",
+            "document_upsert",
+            "document_get",
+            "document_delete",
+            "document_query",
+            "document_update",
+            "domain_add",
+            "domain_upsert",
+            "domain_get",
+            "domain_delete",
+            "domain_query",
+            "domain_update",
+            "edge_endpoints_add",
+            "edge_endpoints_upsert",
+            "edge_endpoints_get",
+            "edge_endpoints_query",
+            "edge_endpoints_update",
+            "edge_endpoints_delete",
+            "edge_refs_add",
+            "edge_refs_upsert",
+            "edge_refs_get",
+            "edge_refs_query",
+            "edge_refs_update",
+            "edge_refs_delete",
+            "node_docs_add",
+            "node_docs_upsert",
+            "node_docs_get",
+            "node_docs_query",
+            "node_docs_update",
+            "node_docs_delete",
+            "node_refs_add",
+            "node_refs_upsert",
+            "node_refs_get",
+            "node_refs_query",
+            "node_refs_update",
+            "node_refs_delete",
+        ):
+            _bind(name)
 
     # ----------------------------
     # Nodes

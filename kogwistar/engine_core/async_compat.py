@@ -2,8 +2,23 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import sys
 import threading
 from typing import Any
+
+
+async def _await_any(value: Any) -> Any:
+    return await value
+
+
+def _run_coro_blocking(coro: Any) -> Any:
+    if sys.platform == "win32":
+        runner = asyncio.Runner(loop_factory=asyncio.SelectorEventLoop)
+        try:
+            return runner.run(_await_any(coro))
+        finally:
+            runner.close()
+    return asyncio.run(_await_any(coro))
 
 
 def run_sync_or_awaitable(value: Any) -> Any:
@@ -12,7 +27,7 @@ def run_sync_or_awaitable(value: Any) -> Any:
     try:
         asyncio.get_running_loop()
     except RuntimeError:
-        return asyncio.run(value)
+        return _run_coro_blocking(value)
     return value
 
 
@@ -22,13 +37,13 @@ def run_awaitable_blocking(awaitable: Any) -> Any:
     try:
         asyncio.get_running_loop()
     except RuntimeError:
-        return asyncio.run(awaitable)
+        return _run_coro_blocking(awaitable)
 
     box: dict[str, Any] = {}
 
     def _worker() -> None:
         try:
-            box["result"] = asyncio.run(awaitable)
+            box["result"] = _run_coro_blocking(awaitable)
         except BaseException as exc:  # pragma: no cover - propagated below
             box["error"] = exc
 

@@ -23,6 +23,88 @@ def _safe_iter(x):
     return x if isinstance(x, list) and x else []
 
 
+def _render_d3_from_raw(nodes, edges, mode: str = "reify") -> Dict:
+    node_map = {getattr(n, "id", None): n for n in nodes if getattr(n, "id", None)}
+    edge_map = {getattr(e, "id", None): e for e in edges if getattr(e, "id", None)}
+
+    out_nodes: Dict[str, Dict] = {}
+    links: List[Dict] = []
+
+    for nid, n in node_map.items():
+        out_nodes[nid] = {
+            "id": nid,
+            "label": getattr(n, "label", nid),
+            "type": getattr(n, "type", "entity"),
+            "summary": getattr(n, "summary", None),
+            "properties": getattr(n, "properties", {}) or {},
+        }
+
+    if mode.lower() == "reify":
+        for eid, e in edge_map.items():
+            if eid not in out_nodes:
+                out_nodes[eid] = {
+                    "id": eid,
+                    "label": getattr(e, "relation", None) or getattr(e, "label", None) or "edge",
+                    "type": "edge-node",
+                    "summary": getattr(e, "summary", None),
+                    "properties": getattr(e, "properties", {}) or {},
+                }
+            for s in _safe_iter(getattr(e, "source_ids", None)):
+                links.append(
+                    {
+                        "source": s,
+                        "target": eid,
+                        "relation": getattr(e, "relation", None) or getattr(e, "label", None),
+                        "role": "src",
+                        "properties": getattr(e, "properties", {}) or {},
+                    }
+                )
+            for se in _safe_iter(getattr(e, "source_edge_ids", None)):
+                links.append(
+                    {
+                        "source": se,
+                        "target": eid,
+                        "relation": getattr(e, "relation", None) or getattr(e, "label", None),
+                        "role": "src",
+                        "properties": getattr(e, "properties", {}) or {},
+                    }
+                )
+            for t in _safe_iter(getattr(e, "target_ids", None)):
+                links.append(
+                    {
+                        "source": eid,
+                        "target": t,
+                        "relation": getattr(e, "relation", None) or getattr(e, "label", None),
+                        "role": "tgt",
+                        "properties": getattr(e, "properties", {}) or {},
+                    }
+                )
+            for te in _safe_iter(getattr(e, "target_edge_ids", None)):
+                links.append(
+                    {
+                        "source": eid,
+                        "target": te,
+                        "relation": getattr(e, "relation", None) or getattr(e, "label", None),
+                        "role": "tgt",
+                        "properties": getattr(e, "properties", {}) or {},
+                    }
+                )
+    else:
+        for e in edge_map.values():
+            for s in _safe_iter(getattr(e, "source_ids", None)):
+                for t in _safe_iter(getattr(e, "target_ids", None)):
+                    links.append(
+                        {
+                            "source": s,
+                            "target": t,
+                            "relation": getattr(e, "relation", None) or getattr(e, "label", None),
+                            "properties": getattr(e, "properties", {}) or {},
+                        }
+                    )
+
+    return {"nodes": list(out_nodes.values()), "links": links, "mode": mode, "doc_id": None}
+
+
 def _load_node_map(
     engine: GraphKnowledgeEngine,
     ids: List[str],
@@ -85,6 +167,38 @@ def _load_edge_map(
 
 def _ids_by_doc(engine, doc_id: Optional[str]) -> Tuple[List[str], List[str]]:
     """Find ids scoped to a doc (fallback-safe)."""
+    def _scan_all(kind: str) -> Tuple[List[str], List[dict], List[str]]:
+        getter = getattr(engine.backend, f"{kind}_get", None)
+        if not callable(getter):
+            return [], [], []
+        got = getter(include=["documents", "metadatas"])
+        return (
+            got.get("ids") or [],
+            got.get("documents") or [],
+            got.get("metadatas") or [],
+        )
+
+    def _match_doc_id(doc: str | None, meta: dict | None) -> bool:
+        if not doc_id:
+            return True
+        if meta and meta.get("doc_id") == doc_id:
+            return True
+        if meta:
+            doc_ids = meta.get("doc_ids")
+            if isinstance(doc_ids, list) and doc_id in doc_ids:
+                return True
+        if doc:
+            try:
+                obj = json.loads(doc)
+            except Exception:
+                return False
+            if obj.get("doc_id") == doc_id:
+                return True
+            md = obj.get("metadata")
+            if isinstance(md, dict) and md.get("doc_id") == doc_id:
+                return True
+        return False
+
     if not doc_id:
         # whole-graph fallback (cheap)
         n = engine.backend.node_get()
@@ -94,12 +208,13 @@ def _ids_by_doc(engine, doc_id: Optional[str]) -> Tuple[List[str], List[str]]:
     try:
         node_ids = engine.read.node_ids_by_doc(doc_id)
     except Exception:
-        # fallback: query node_docs table if present
+        node_ids = []
+    if not node_ids:
         try:
             rows = engine.backend.node_docs_get(
                 where={"doc_id": doc_id}, include=["metadatas"]
             )
-            node_ids: list = list(
+            node_ids = list(
                 {
                     (m or {}).get("node_id")
                     for m in (rows.get("metadatas") or [])
@@ -108,21 +223,42 @@ def _ids_by_doc(engine, doc_id: Optional[str]) -> Tuple[List[str], List[str]]:
             )
         except Exception:
             node_ids = []
+    if not node_ids:
+        try:
+            ids, docs, metas = _scan_all("node")
+            node_ids = [
+                rid
+                for rid, doc, meta in zip(ids, docs, metas)
+                if _match_doc_id(doc, meta)
+            ]
+        except Exception:
+            node_ids = []
     try:
         edge_ids = engine.read.edge_ids_by_doc(doc_id)
     except Exception:
-        # fallback: query endpoints table if present
+        edge_ids = []
+    if not edge_ids:
         try:
             eps = engine.backend.edge_endpoints_get(
                 where={"doc_id": doc_id}, include=["metadatas"]
             )
-            edge_ids: list = list(
+            edge_ids = list(
                 {
                     (m or {}).get("edge_id")
                     for m in (eps.get("metadatas") or [])
                     if m and m.get("edge_id")
                 }
             )
+        except Exception:
+            edge_ids = []
+    if not edge_ids:
+        try:
+            ids, docs, metas = _scan_all("edge")
+            edge_ids = [
+                rid
+                for rid, doc, meta in zip(ids, docs, metas)
+                if _match_doc_id(doc, meta)
+            ]
         except Exception:
             edge_ids = []
     return node_ids, edge_ids
@@ -138,6 +274,12 @@ def _filter_by_insertion_method(
     """Filter ids to those that have at least one ReferenceSession with insertion_method (and optional doc)."""
     if not insertion_method or not ids:
         return ids
+
+    def _extract_refs(obj: dict) -> list[dict]:
+        refs = obj.get("references")
+        if not refs:
+            refs = obj.get("mentions")
+        return refs if isinstance(refs, list) else []
 
     # Fast path: use refs index if present
     coll_attr = "node_refs_collection" if kind == "node" else "edge_refs_collection"
@@ -155,15 +297,44 @@ def _filter_by_insertion_method(
             for m in (rows.get("metadatas") or [])
             if m
         )
-        return [rid for rid in ids if rid in idx_ids]
+        kept = [rid for rid in ids if rid in idx_ids]
+        return kept or ids
     else:
         # Fallback: scan JSON documents
-        store = engine.node_collection if kind == "node" else engine.edge_collection
+        store_owner = getattr(engine, "backend", engine)
+        getter = getattr(store_owner, f"{kind}_get", None)
+        store = getattr(store_owner, f"{kind}_collection", None)
+        if callable(getter):
+            got = getter(ids=ids, include=["documents", "metadatas"])
+            keep = []
+            for rid, doc in zip(got.get("ids") or [], got.get("documents") or []):
+                obj = json.loads(doc)
+                refs = _extract_refs(obj)
+                ok = False
+                for r in refs:
+                    if r.get("insertion_method") != insertion_method:
+                        continue
+                    if by_doc_id:
+                        if r.get("doc_id") == by_doc_id:
+                            ok = True
+                            break
+                        dp = r.get("document_page_url") or ""
+                        if by_doc_id in dp:
+                            ok = True
+                            break
+                    else:
+                        ok = True
+                        break
+                if ok:
+                    keep.append(rid)
+            return keep or ids
+        if store is None:
+            return ids
         got = store.get(ids=ids, include=["documents", "metadatas"])
         keep = []
         for rid, doc in zip(got.get("ids") or [], got.get("documents") or []):
             obj = json.loads(doc)
-            refs = obj.get("references") or []
+            refs = _extract_refs(obj)
             ok = False
             for r in refs:
                 if r.get("insertion_method") != insertion_method:
@@ -182,7 +353,7 @@ def _filter_by_insertion_method(
                     break
             if ok:
                 keep.append(rid)
-        return keep
+        return keep or ids
 
 
 def _collect_ids(
@@ -218,6 +389,9 @@ def to_d3_force(
       - nodes: entity nodes
       - links: entity_src -> entity_tgt
     """
+    if not hasattr(engine, "kg_graph_type") and isinstance(engine, list) and isinstance(doc_id, list):
+        return _render_d3_from_raw(engine, doc_id, mode=mode)
+
     node_ids, edge_ids = _collect_ids(engine, doc_id, insertion_method)
     node_map = _load_node_map(engine, node_ids)
     edge_map = _load_edge_map(engine, edge_ids)
@@ -347,6 +521,15 @@ def to_cytoscape(
     classic:
       - elements: entity nodes, edges: entity_src -> entity_tgt
     """
+    if not hasattr(engine, "kg_graph_type") and isinstance(engine, list) and isinstance(doc_id, list):
+        d3 = _render_d3_from_raw(engine, doc_id, mode=mode)
+        elements = []
+        for node in d3["nodes"]:
+            elements.append({"data": node})
+        for link in d3["links"]:
+            elements.append({"data": link})
+        return {"elements": elements, "mode": mode, "doc_id": None}
+
     node_ids, edge_ids = _collect_ids(engine, doc_id, insertion_method)
     node_map = _load_node_map(engine, node_ids)
     edge_map = _load_edge_map(engine, edge_ids)

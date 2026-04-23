@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import pathlib
 import threading
@@ -245,6 +246,7 @@ class _RunExecutionService(_BaseComponent):
         priority_class: str = "foreground",
         token_budget: int | None = None,
         time_budget_ms: int | None = None,
+        runtime_kind: str | None = None,
     ) -> dict[str, Any]:
         workflow_id = str(workflow_id or "").strip()
         if not workflow_id:
@@ -307,6 +309,7 @@ class _RunExecutionService(_BaseComponent):
             time_budget_ms=time_budget_ms,
             capabilities=tuple(self._owner._effective_capabilities()),
             capability_subject=self._owner._capability_subject(),
+            runtime_kind=str(runtime_kind or self._owner.default_runtime_kind or "sync"),
         )
         sched = self._owner.scheduler.submit(
             run_id=run_id,
@@ -401,6 +404,7 @@ class _RunExecutionService(_BaseComponent):
     def _default_runtime_runner(self, req: RuntimeRunRequest) -> dict[str, Any]:
         from kogwistar.conversation.resolvers import default_resolver
         from kogwistar.runtime.budget import StateBackedBudgetLedger
+        from kogwistar.runtime.async_runtime import AsyncWorkflowRuntime
         from kogwistar.runtime.runtime import WorkflowRuntime
 
         def predicate_always(_workflow_info, _state, _last_result):
@@ -438,22 +442,46 @@ class _RunExecutionService(_BaseComponent):
             deps.setdefault("budget_ledger", StateBackedBudgetLedger(budget_state))
         initial_state["_deps"] = deps
 
-        runtime = WorkflowRuntime(
-            workflow_engine=req.workflow_engine,
-            conversation_engine=req.conversation_engine,
-            step_resolver=default_resolver,
-            predicate_registry={"always": predicate_always},
-            checkpoint_every_n_steps=1,
-            max_workers=1,
-            cancel_requested=lambda _rid: req.is_cancel_requested(),
-        )
-        run_result = runtime.run(
-            workflow_id=req.workflow_id,
-            conversation_id=req.conversation_id,
-            turn_node_id=req.turn_node_id,
-            initial_state=initial_state,
-            run_id=req.run_id,
-        )
+        runtime_kind = str(
+            getattr(req, "runtime_kind", "") or self._owner.default_runtime_kind or "sync"
+        ).strip().lower()
+        if runtime_kind == "async":
+            runtime = AsyncWorkflowRuntime(
+                workflow_engine=req.workflow_engine,
+                conversation_engine=req.conversation_engine,
+                step_resolver=default_resolver,
+                predicate_registry={"always": predicate_always},
+                checkpoint_every_n_steps=1,
+                max_workers=1,
+                cancel_requested=lambda _rid: req.is_cancel_requested(),
+                experimental_native_scheduler=True,
+            )
+            run_result = asyncio.run(
+                runtime.run(
+                    workflow_id=req.workflow_id,
+                    conversation_id=req.conversation_id,
+                    turn_node_id=req.turn_node_id,
+                    initial_state=initial_state,
+                    run_id=req.run_id,
+                )
+            )
+        else:
+            runtime = WorkflowRuntime(
+                workflow_engine=req.workflow_engine,
+                conversation_engine=req.conversation_engine,
+                step_resolver=default_resolver,
+                predicate_registry={"always": predicate_always},
+                checkpoint_every_n_steps=1,
+                max_workers=1,
+                cancel_requested=lambda _rid: req.is_cancel_requested(),
+            )
+            run_result = runtime.run(
+                workflow_id=req.workflow_id,
+                conversation_id=req.conversation_id,
+                turn_node_id=req.turn_node_id,
+                initial_state=initial_state,
+                run_id=req.run_id,
+            )
         final_state = self._json_safe(
             dict(getattr(run_result, "final_state", {}) or {})
         )
@@ -470,6 +498,7 @@ class _RunExecutionService(_BaseComponent):
         from kogwistar.conversation.resolvers import default_resolver
         from kogwistar.runtime.budget import StateBackedBudgetLedger
         from kogwistar.runtime.models import RunFailure, RunSuccess, RunSuspended
+        from kogwistar.runtime.async_runtime import AsyncWorkflowRuntime
         from kogwistar.runtime.runtime import WorkflowRuntime
 
         def predicate_always(_workflow_info, _state, _last_result):
@@ -513,7 +542,10 @@ class _RunExecutionService(_BaseComponent):
         if budget_state:
             deps.setdefault("budget_ledger", StateBackedBudgetLedger(budget_state))
         initial_state["_deps"] = deps
-        runtime = WorkflowRuntime(
+        runtime_kind = str(
+            getattr(req, "runtime_kind", "") or self._owner.default_runtime_kind or "sync"
+        ).strip().lower()
+        runtime_kwargs = dict(
             workflow_engine=req.workflow_engine,
             conversation_engine=req.conversation_engine,
             step_resolver=default_resolver,
@@ -522,6 +554,13 @@ class _RunExecutionService(_BaseComponent):
             max_workers=1,
             cancel_requested=lambda _rid: req.is_cancel_requested(),
         )
+        if runtime_kind == "async":
+            runtime = AsyncWorkflowRuntime(
+                **runtime_kwargs,
+                experimental_native_scheduler=True,
+            )
+        else:
+            runtime = WorkflowRuntime(**runtime_kwargs)
         kind = str(req.client_result.get("status") or "success")
         model_map = {
             "success": RunSuccess,

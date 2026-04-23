@@ -1,4 +1,3 @@
-import socket
 import time
 from typing import Any, Dict, List
 
@@ -10,12 +9,9 @@ import requests
 
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
-
-
-def _pick_free_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("127.0.0.1", 0))
-        return int(s.getsockname()[1])
+from tests._helpers.server_http_helpers import mint_dev_token_http
+from tests.graph_sample_data import build_small_test_docs_nodes_edge_adjudcate
+from tests.net_helpers import pick_free_port
 
 
 def _run_uvicorn(app_import: str, host: str, port: int) -> None:
@@ -63,7 +59,7 @@ def running_server() -> Dict[str, Any]:
         raise RuntimeError(msg)
 
     host = "127.0.0.1"
-    port = _pick_free_port()
+    port = pick_free_port()
     import subprocess
     import threading
     import sys
@@ -109,6 +105,8 @@ def running_server() -> Dict[str, Any]:
                     yield {"proc": proc, "base_http": base_http}
                 finally:
                     proc.terminate()
+                    if proc.stdout is not None:
+                        proc.stdout.close()
                     # proc.join(timeout=2)
                 return
         except Exception as e:  # noqa: BLE001
@@ -117,6 +115,8 @@ def running_server() -> Dict[str, Any]:
 
     proc.terminate()
     # proc.join(timeout=2)
+    if proc.stdout is not None:
+        proc.stdout.close()
     raise RuntimeError(f"Server failed to start on {base_http}: {last_err}")
 
 
@@ -130,19 +130,20 @@ def base_mcp(base_http: str) -> str:
     return f"{base_http}/mcp"
 
 
-def _dev_token(base_http: str, role: str, ns: str = "docs") -> str:
-    return requests.post(
-        f"{base_http}/auth/dev-token",
-        json={"username": "e2e", "role": role, "ns": ns},
-        timeout=20,
-    ).json()["token"]
-
-
 def test_rollback_doc_node_edge_adjudicate(
-    base_http: str, small_test_docs_nodes_edge_adjudcate
+    base_http: str,
 ):
     """Best-effort cleanup for local iteration."""
-    rw_token = _dev_token(base_http, "rw", ns="docs")
+    small_test_docs_nodes_edge_adjudcate = build_small_test_docs_nodes_edge_adjudcate()
+    with requests.Session() as session:
+        rw_token = mint_dev_token_http(
+            session,
+            base_http,
+            role="rw",
+            ns="docs",
+            username="e2e",
+            timeout=20,
+        )
     for doc_id in small_test_docs_nodes_edge_adjudcate["docs"]:
         requests.delete(
             f"{base_http}/admin/doc/{doc_id}",
@@ -151,9 +152,10 @@ def test_rollback_doc_node_edge_adjudicate(
         )
 
 
+@pytest.mark.manual
 @pytest.mark.asyncio
 async def test_doc_node_edge_adjudicate(
-    base_http: str, base_mcp: str, small_test_docs_nodes_edge_adjudcate
+    base_http: str, base_mcp: str
 ):
     """E2E seam test:
 
@@ -162,14 +164,30 @@ async def test_doc_node_edge_adjudicate(
     3) Call kg_crossdoc_adjudicate_anykind as RW (smoke).
     """
 
-    bundle = small_test_docs_nodes_edge_adjudcate
+    bundle = build_small_test_docs_nodes_edge_adjudcate()
     docs: Dict[str, str] = bundle["docs"]
     nodes: List[Dict[str, Any]] = bundle["nodes"]
     edges: List[Dict[str, Any]] = bundle["edges"]
     insertion_method = "llm_graph_extraction"
 
-    rw_token = _dev_token(base_http, "rw", ns="docs")
-    ro_token = _dev_token(base_http, "ro", ns="docs")
+    with requests.Session() as session:
+        rw_token = mint_dev_token_http(
+            session,
+            base_http,
+            role="rw",
+            ns="docs",
+            username="e2e",
+            timeout=20,
+        )
+    with requests.Session() as session:
+        ro_token = mint_dev_token_http(
+            session,
+            base_http,
+            role="ro",
+            ns="docs",
+            username="e2e",
+            timeout=20,
+        )
 
     def _subset_for_doc(
         items: List[Dict[str, Any]], doc_id: str

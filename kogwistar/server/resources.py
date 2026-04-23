@@ -177,6 +177,7 @@ def _build_chat_service() -> ChatRunService:
     runtime_runner_factory = _import_override_from_env(
         "KOGWISTAR_TEST_RUNTIME_RUNNER_IMPORT"
     )
+    default_runtime_kind = str(os.getenv("KOGWISTAR_RUNTIME_KIND") or "sync").strip().lower()
     answer_runner = answer_runner_factory() if answer_runner_factory else None
     runtime_runner = runtime_runner_factory() if runtime_runner_factory else None
     return ChatRunService(
@@ -186,6 +187,7 @@ def _build_chat_service() -> ChatRunService:
         run_registry=run_registry.get(),
         answer_runner=answer_runner,
         runtime_runner=runtime_runner,
+        default_runtime_kind=default_runtime_kind,
     )
 
 

@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, List
 
+from .runtime import apply_state_update_inplace
+
 State = Dict[str, Any]
 
 
@@ -34,24 +36,7 @@ def _apply_state_update(state: State, state_update: List[Any]) -> None:
       ('u', {k: v}) -> overwrite state[k] = v
       ('e', {k: [..]}) -> extend list at state[k] with iterable
     """
-    for item in state_update or []:
-        if not (isinstance(item, (list, tuple)) and len(item) == 2):
-            continue
-        op, payload = item[0], item[1]
-        if not isinstance(payload, dict):
-            continue
-
-        if op == "a":
-            for k, v in payload.items():
-                state.setdefault(k, []).append(v)
-
-        elif op == "u":
-            for k, v in payload.items():
-                state[k] = v
-
-        elif op == "e":
-            for k, v in payload.items():
-                state.setdefault(k, []).extend(v if isinstance(v, list) else list(v))
+    apply_state_update_inplace(state, state_update, None)
 
 
 def replay_to(*, conversation_engine: Any, run_id: str, target_step_seq: int) -> State:

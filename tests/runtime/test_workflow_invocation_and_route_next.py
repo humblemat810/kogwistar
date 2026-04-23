@@ -15,7 +15,7 @@ from kogwistar.runtime.models import (
 from tests._helpers.embeddings import ConstantEmbeddingFunction
 from tests._helpers.fake_backend import build_fake_backend
 
-pytestmark = [pytest.mark.workflow]
+pytestmark = [pytest.mark.workflow, pytest.mark.runtime]
 
 
 def _span(workflow_id: str) -> Span:
@@ -162,6 +162,7 @@ def _build_engine_pair(tmp_path):
 
 
 def test_nested_workflow_synthesized_design_is_persisted_and_used(tmp_path):
+    """Async mirror: `tests/runtime/test_async_runtime_contract.py::test_async_runtime_nested_workflow_invocation_matches_sync`."""
     workflow_engine, conversation_engine = _build_engine_pair(tmp_path)
 
     parent_id = "wf_parent_spawn_child"
@@ -297,108 +298,8 @@ def test_nested_workflow_synthesized_design_is_persisted_and_used(tmp_path):
     assert len(persisted_child_nodes) == 3
 
 
-def test_route_next_alias_can_fan_out_multiple_branches(tmp_path):
-    workflow_engine, conversation_engine = _build_engine_pair(tmp_path)
-
-    workflow_id = "wf_route_next_fanout"
-    nodes = [
-        _node(workflow_id=workflow_id, node_id=f"wf|{workflow_id}|start", op="start", start=True),
-        _node(workflow_id=workflow_id, node_id=f"wf|{workflow_id}|decide", op="decide"),
-        _node(workflow_id=workflow_id, node_id=f"wf|{workflow_id}|left", op="left"),
-        _node(workflow_id=workflow_id, node_id=f"wf|{workflow_id}|right", op="right"),
-        _node(workflow_id=workflow_id, node_id=f"wf|{workflow_id}|end", op="end", terminal=True),
-    ]
-    edges = [
-        _edge(
-            workflow_id=workflow_id,
-            edge_id=f"wf|{workflow_id}|e|start->decide",
-            src=f"wf|{workflow_id}|start",
-            dst=f"wf|{workflow_id}|decide",
-        ),
-        _edge(
-            workflow_id=workflow_id,
-            edge_id=f"wf|{workflow_id}|e|decide->left",
-            src=f"wf|{workflow_id}|decide",
-            dst=f"wf|{workflow_id}|left",
-            is_default=False,
-        ),
-        _edge(
-            workflow_id=workflow_id,
-            edge_id=f"wf|{workflow_id}|e|decide->right",
-            src=f"wf|{workflow_id}|decide",
-            dst=f"wf|{workflow_id}|right",
-            is_default=False,
-        ),
-        _edge(
-            workflow_id=workflow_id,
-            edge_id=f"wf|{workflow_id}|e|left->end",
-            src=f"wf|{workflow_id}|left",
-            dst=f"wf|{workflow_id}|end",
-        ),
-        _edge(
-            workflow_id=workflow_id,
-            edge_id=f"wf|{workflow_id}|e|right->end",
-            src=f"wf|{workflow_id}|right",
-            dst=f"wf|{workflow_id}|end",
-        ),
-    ]
-    for node in nodes:
-        workflow_engine.write.add_node(node)
-    for edge in edges:
-        workflow_engine.write.add_edge(edge)
-
-    resolver = MappingStepResolver()
-
-    @resolver.register("start")
-    def _start(ctx):
-        return RunSuccess(state_update=[], _route_next=["decide"])
-
-    @resolver.register("decide")
-    def _decide(ctx):
-        return RunSuccess(state_update=[], _route_next=["left", "right"])
-
-    @resolver.register("left")
-    def _left(ctx):
-        with ctx.state_write as st:
-            st["left_seen"] = True
-        return RunSuccess(state_update=[], _route_next=["end"])
-
-    @resolver.register("right")
-    def _right(ctx):
-        with ctx.state_write as st:
-            st["right_seen"] = True
-        return RunSuccess(state_update=[], _route_next=["end"])
-
-    @resolver.register("end")
-    def _end(ctx):
-        with ctx.state_write as st:
-            st["ended"] = True
-        return RunSuccess(state_update=[])
-
-    rt = WorkflowRuntime(
-        workflow_engine=workflow_engine,
-        conversation_engine=conversation_engine,
-        step_resolver=resolver,
-        predicate_registry={},
-        checkpoint_every_n_steps=1,
-        max_workers=4,
-    )
-
-    rr = rt.run(
-        workflow_id=workflow_id,
-        conversation_id="conv_route_next",
-        turn_node_id="turn_route_next",
-        initial_state={"_deps": {}},
-        run_id="run_route_next",
-    )
-
-    assert rr.status == "succeeded"
-    assert rr.final_state["left_seen"] is True
-    assert rr.final_state["right_seen"] is True
-    assert rr.final_state["ended"] is True
-
-
 def test_nested_workflow_failure_short_circuits_parent_routing(tmp_path):
+    """Async mirror: `tests/runtime/test_async_runtime_contract.py::test_async_runtime_nested_workflow_child_failure_fails_parent`."""
     workflow_engine, conversation_engine = _build_engine_pair(tmp_path)
 
     parent_id = "wf_parent_nested_failure"

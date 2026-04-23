@@ -15,19 +15,7 @@ from kogwistar.engine_core.engine_postgres_meta import (
 )
 from kogwistar.engine_core.postgres_backend import PgVectorBackend
 from kogwistar.server.run_registry import RunRegistry
-
-
-class FakeEmbeddingFunction:
-    @staticmethod
-    def name() -> str:
-        return "default"
-
-    def __init__(self, dim: int = 3):
-        self._dim = dim
-        self.is_legacy = False
-
-    def __call__(self, inputs):
-        return [[0.01] * self._dim for _ in inputs]
+from tests._helpers.embeddings import ConstantEmbeddingFunction
 
 
 def test_pg_meta_store_workflow_projection_and_server_run_tables(sa_engine, pg_schema):
@@ -45,7 +33,7 @@ def test_pg_meta_store_workflow_projection_and_server_run_tables(sa_engine, pg_s
         workflow_engine = GraphKnowledgeEngine(
             persist_directory=str(root / "pg_workflow_meta"),
             kg_graph_type="workflow",
-            embedding_function=FakeEmbeddingFunction(dim=3),
+            embedding_function=ConstantEmbeddingFunction(dim=3),
             backend=backend,
         )
         meta = workflow_engine.meta_sqlite

@@ -14,6 +14,8 @@ from kogwistar.conversation.conversation_state_contracts import (
     WorkflowStateModel,
 )
 
+pytestmark = [pytest.mark.ci, pytest.mark.runtime]
+
 
 def test_budget_ledger_debit_and_remaining() -> None:
     ledger = BudgetLedger(total=10)

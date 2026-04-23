@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from typing import Tuple
 
 import sqlalchemy as sa
+from sqlalchemy.ext.asyncio import create_async_engine
 
 from .postgres_backend import (
     AsyncPostgresUnitOfWork,
@@ -62,7 +63,6 @@ def build_postgres_backend(
 def build_async_postgres_backend(
     cfg: EnginePostgresConfig,
 ) -> Tuple[PgVectorBackend, AsyncPostgresUnitOfWork]:
-    from sqlalchemy.ext.asyncio import create_async_engine
 
     max_workers = 4
     engine = create_async_engine(

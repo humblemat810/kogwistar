@@ -1,4 +1,5 @@
 from __future__ import annotations
+import asyncio
 import functools
 import warnings
 
@@ -310,3 +311,48 @@ def _deps(ctx: StepContext) -> Dict[str, Any]:
             "StepContext.state['_deps'] must be a dict of injected dependencies"
         )
     return deps
+
+
+class AsyncMappingStepResolver(MappingStepResolver):
+    """Async-friendly resolver wrapper.
+
+    - Keeps same registry surface as MappingStepResolver.
+    - `resolve_async(op)` always returns an async callable.
+    - Sync handlers run inline on the async event loop unless the handler
+      itself chooses to spawn threads.
+    """
+
+    def resolve_async(self, op: str):
+        raw = self.handlers.get(op) or self.default
+        if raw is None:
+            raise KeyError(f"No step handler registered for op={op!r}")
+
+        async def _wrapped(ctx: StepContext) -> StepRunResult:
+            try:
+                if inspect.iscoroutinefunction(raw):
+                    out = await raw(ctx)
+                else:
+                    out = raw(ctx)
+                out = self._maybe_execute_sandboxed(op=op, ctx=ctx, out=out)
+                if getattr(out, "update", None) is not None:
+                    global _LEGACY_UPDATE_WARNING_EMITTED
+                    if not _LEGACY_UPDATE_WARNING_EMITTED:
+                        warnings.warn(
+                            "legacy update detected, use state_update if you need to append list state multiple times",
+                            RuntimeWarning,
+                            stacklevel=2,
+                        )
+                        _LEGACY_UPDATE_WARNING_EMITTED = True
+                if isinstance(out, (RunSuccess, RunFailure, RunSuspended)):
+                    return out
+                raise TypeError("Resolver must return StepRunResult")
+            except Exception as e:
+                import traceback
+
+                return RunFailure(
+                    conversation_node_id=ctx.state_view.get("workflow_node_id"),
+                    state_update=[("a", {"op_log": str(e)})],
+                    errors=[str(e), traceback.format_exc()],
+                )
+
+        return _wrapped

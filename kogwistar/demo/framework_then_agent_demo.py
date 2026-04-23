@@ -425,7 +425,7 @@ class PlanActObserveFramework:
                     ),
                     ("a", {"execution_history": event}),
                 ],
-                next_step_names=[],
+                _route_next=[],
             )
 
         @resolver.register("approve")
@@ -655,7 +655,7 @@ class PlanActObserveNoApprovalFramework(PlanActObserveFramework):
                     ),
                     ("a", {"execution_history": event}),
                 ],
-                next_step_names=[],
+                _route_next=[],
             )
 
         @resolver.register("act")

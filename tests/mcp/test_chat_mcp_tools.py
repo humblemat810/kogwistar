@@ -27,20 +27,9 @@ from kogwistar.server.chat_service import (
     RuntimeRunRequest,
 )
 from kogwistar.server.run_registry import RunRegistry
+from tests._helpers.engine_factories import FakeEmbeddingFunction
 from tests._helpers.fake_backend import build_fake_backend
-
-
-class FakeEmbeddingFunction:
-    @staticmethod
-    def name() -> str:
-        return "default"
-
-    def __init__(self, dim: int = 8):
-        self._dim = dim
-        self.is_legacy = False
-
-    def __call__(self, input):
-        return [[0.01] * self._dim for _ in input]
+from tests._helpers.server_fixtures import build_engine_triplet
 
 
 class _FixedResource:
@@ -60,25 +49,10 @@ def engine_triplet():
     root.mkdir(parents=True, exist_ok=True)
     try:
         ef = FakeEmbeddingFunction()
-        yield (
-            GraphKnowledgeEngine(
-                persist_directory=str(root / "kg"),
-                kg_graph_type="knowledge",
-                embedding_function=ef,
-                backend_factory=build_fake_backend,
-            ),
-            GraphKnowledgeEngine(
-                persist_directory=str(root / "conversation"),
-                kg_graph_type="conversation",
-                embedding_function=ef,
-                backend_factory=build_fake_backend,
-            ),
-            GraphKnowledgeEngine(
-                persist_directory=str(root / "workflow"),
-                kg_graph_type="workflow",
-                embedding_function=ef,
-                backend_factory=build_fake_backend,
-            ),
+        yield build_engine_triplet(
+            root=root,
+            embedding_function=ef,
+            backend_factory=build_fake_backend,
         )
     finally:
         shutil.rmtree(root, ignore_errors=True)

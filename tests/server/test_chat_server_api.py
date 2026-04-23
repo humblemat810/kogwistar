@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import shutil
 import time
 import uuid
@@ -15,9 +16,10 @@ pytest.importorskip("fastmcp")
 pytest.importorskip("sqlalchemy")
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
+from .auth_env import TEST_JWT_ALG, TEST_JWT_SECRET
 
-os.environ.setdefault("JWT_SECRET", "dev-secret")
-os.environ.setdefault("JWT_ALG", "HS256")
+os.environ.setdefault("JWT_SECRET", TEST_JWT_SECRET)
+os.environ.setdefault("JWT_ALG", TEST_JWT_ALG)
 
 import kogwistar.server_mcp_with_admin as server
 from kogwistar.conversation.agentic_answering_design import DEBUG_RAG_WORKFLOW_ID
@@ -25,6 +27,7 @@ from kogwistar.conversation.models import ConversationNode
 from kogwistar.conversation.service import ConversationService
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.models import Grounding, Node, Span
+from kogwistar.runtime.runtime import RunResult
 from kogwistar.runtime.design import load_workflow_design
 from kogwistar.runtime.models import (
     WorkflowCancelledNode,
@@ -39,21 +42,13 @@ from kogwistar.server.chat_service import (
     RuntimeRunRequest,
 )
 from kogwistar.server.run_registry import RunRegistry
+from tests._helpers.engine_factories import FakeEmbeddingFunction
+from tests._helpers.server_fixtures import build_engine_triplet
+from tests._helpers.server_http_helpers import token_header
 
 pytestmark = pytest.mark.ci_full
 
-
-class FakeEmbeddingFunction:
-    @staticmethod
-    def name() -> str:
-        return "default"
-
-    def __init__(self, dim: int = 8):
-        self._dim = dim
-        self.is_legacy = False
-
-    def __call__(self, input):
-        return [[0.01] * self._dim for _ in input]
+_token_header = token_header
 
 
 class _FixedResource:
@@ -73,23 +68,7 @@ def engine_triplet():
     root.mkdir(parents=True, exist_ok=True)
     try:
         ef = FakeEmbeddingFunction()
-        yield (
-            GraphKnowledgeEngine(
-                persist_directory=str(root / "kg"),
-                kg_graph_type="knowledge",
-                embedding_function=ef,
-            ),
-            GraphKnowledgeEngine(
-                persist_directory=str(root / "conversation"),
-                kg_graph_type="conversation",
-                embedding_function=ef,
-            ),
-            GraphKnowledgeEngine(
-                persist_directory=str(root / "workflow"),
-                kg_graph_type="workflow",
-                embedding_function=ef,
-            ),
-        )
+        yield build_engine_triplet(root=root, embedding_function=ef)
     finally:
         shutil.rmtree(root, ignore_errors=True)
 
@@ -132,23 +111,6 @@ def _configure_server(
         server.app.router, "lifespan_context", _noop_lifespan, raising=False
     )
     return service, registry
-
-
-def _token_header(
-    client: TestClient,
-    *,
-    role: str,
-    ns: str,
-    username: str = "tester",
-    capabilities: str | None = None,
-) -> dict[str, str]:
-    payload = {"username": username, "role": role, "ns": ns}
-    if capabilities is not None:
-        payload["capabilities"] = capabilities
-    resp = client.post("/auth/dev-token", json=payload)
-    resp.raise_for_status()
-    token = resp.json()["token"]
-    return {"Authorization": f"Bearer {token}"}
 
 
 def _wait_for_status(
@@ -224,7 +186,7 @@ def test_document_upsert_tree_uses_document_graph_extraction_entrypoint(
     )
 
     with TestClient(server.app) as client:
-        headers = _token_header(client, role="rw", ns="docs,conversation,workflow")
+        headers = token_header(client, role="rw", ns="docs,conversation,workflow")
         resp = client.post(
             "/api/document.upsert_tree",
             json={
@@ -434,6 +396,209 @@ def _runtime_cancel_runner(req: RuntimeRunRequest) -> dict:
             raise RunCancelledError()
         time.sleep(0.02)
     raise AssertionError("Expected runtime workflow to be cancelled")
+
+
+def test_workflow_run_submit_accepts_runtime_kind_and_defaults_to_sync(
+    monkeypatch, engine_triplet
+):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    captured: list[str] = []
+
+    def _runtime_runner(req: RuntimeRunRequest) -> dict[str, object]:
+        captured.append(str(getattr(req, "runtime_kind", "")))
+        return {
+            "workflow_status": "succeeded",
+            "final_state": {"runtime_kind": getattr(req, "runtime_kind", "")},
+        }
+
+    service, _registry = _configure_server(
+        monkeypatch,
+        engine,
+        conversation_engine,
+        workflow_engine,
+        _debug_rag_runner,
+        runtime_runner=_runtime_runner,
+    )
+
+    with TestClient(server.app) as client:
+        headers = _token_header(client, role="rw", ns="workflow,conversation")
+        conv = client.post(
+            "/api/conversations",
+            json={"user_id": "runtime-kind-user"},
+            headers=headers,
+        )
+        assert conv.status_code == 200, conv.text
+        conversation_id = str(conv.json()["conversation_id"])
+
+        async_resp = client.post(
+            "/api/workflow/runs",
+            json={
+                "workflow_id": "wf.runtime.kind.async",
+                "conversation_id": conversation_id,
+                "initial_state": {},
+                "runtime_kind": "async",
+            },
+            headers=headers,
+        )
+        assert async_resp.status_code == 202, async_resp.text
+        async_run_id = str(async_resp.json()["run_id"])
+        _wait_for_status(
+            client,
+            async_run_id,
+            headers,
+            {"succeeded"},
+            path_template="/api/workflow/runs/{run_id}",
+        )
+
+        default_resp = client.post(
+            "/api/workflow/runs",
+            json={
+                "workflow_id": "wf.runtime.kind.sync",
+                "conversation_id": conversation_id,
+                "initial_state": {},
+            },
+            headers=headers,
+        )
+        assert default_resp.status_code == 202, default_resp.text
+        default_run_id = str(default_resp.json()["run_id"])
+        _wait_for_status(
+            client,
+            default_run_id,
+            headers,
+            {"succeeded"},
+            path_template="/api/workflow/runs/{run_id}",
+        )
+
+    assert captured == ["async", "sync"]
+    assert service is not None
+
+
+def test_default_runtime_runner_uses_async_or_sync_runtime_by_kind(
+    monkeypatch, engine_triplet
+):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    from kogwistar.server.run_registry import RunRegistry
+
+    registry = RunRegistry(conversation_engine.meta_sqlite)
+    service = ChatRunService(
+        get_knowledge_engine=lambda: engine,
+        get_conversation_engine=lambda: conversation_engine,
+        get_workflow_engine=lambda: workflow_engine,
+        run_registry=registry,
+        answer_runner=_debug_rag_runner,
+    )
+
+    calls: list[str] = []
+
+    class _FakeSyncRuntime:
+        def __init__(self, **kwargs):
+            calls.append("sync-init")
+            self.kwargs = kwargs
+
+        def run(self, **kwargs):
+            calls.append("sync-run")
+            return RunResult(
+                run_id=str(kwargs.get("run_id") or "run-sync"),
+                final_state={"selected_runtime": "sync"},
+                mq=queue.Queue(),
+                status="succeeded",
+            )
+
+    class _FakeAsyncRuntime:
+        def __init__(self, **kwargs):
+            calls.append("async-init")
+            self.kwargs = kwargs
+
+        async def run(self, **kwargs):
+            calls.append("async-run")
+            return RunResult(
+                run_id=str(kwargs.get("run_id") or "run-async"),
+                final_state={"selected_runtime": "async"},
+                mq=queue.Queue(),
+                status="succeeded",
+            )
+
+    monkeypatch.setattr(
+        "kogwistar.runtime.runtime.WorkflowRuntime", _FakeSyncRuntime
+    )
+    monkeypatch.setattr(
+        "kogwistar.runtime.async_runtime.AsyncWorkflowRuntime", _FakeAsyncRuntime
+    )
+
+    async_req = RuntimeRunRequest(
+        run_id="run-async",
+        workflow_id="wf.runtime.kind.async",
+        conversation_id="conv-async",
+        turn_node_id="turn-async",
+        user_id="user-1",
+        initial_state={},
+        knowledge_engine=engine,
+        conversation_engine=conversation_engine,
+        workflow_engine=workflow_engine,
+        registry=registry,
+        publish=lambda *args, **kwargs: {"ok": True},
+        is_cancel_requested=lambda: False,
+        runtime_kind="async",
+    )
+    sync_req = RuntimeRunRequest(
+        run_id="run-sync",
+        workflow_id="wf.runtime.kind.sync",
+        conversation_id="conv-sync",
+        turn_node_id="turn-sync",
+        user_id="user-1",
+        initial_state={},
+        knowledge_engine=engine,
+        conversation_engine=conversation_engine,
+        workflow_engine=workflow_engine,
+        registry=registry,
+        publish=lambda *args, **kwargs: {"ok": True},
+        is_cancel_requested=lambda: False,
+        runtime_kind="",
+    )
+
+    async_out = service._run_execution._default_runtime_runner(async_req)
+    sync_out = service._run_execution._default_runtime_runner(sync_req)
+    async_default_service = ChatRunService(
+        get_knowledge_engine=lambda: engine,
+        get_conversation_engine=lambda: conversation_engine,
+        get_workflow_engine=lambda: workflow_engine,
+        run_registry=registry,
+        answer_runner=_debug_rag_runner,
+        default_runtime_kind="async",
+    )
+    blank_default_req = RuntimeRunRequest(
+        run_id="run-blank",
+        workflow_id="wf.runtime.kind.blank",
+        conversation_id="conv-blank",
+        turn_node_id="turn-blank",
+        user_id="user-1",
+        initial_state={},
+        knowledge_engine=engine,
+        conversation_engine=conversation_engine,
+        workflow_engine=workflow_engine,
+        registry=registry,
+        publish=lambda *args, **kwargs: {"ok": True},
+        is_cancel_requested=lambda: False,
+        runtime_kind="",
+    )
+    blank_out = async_default_service._run_execution._default_runtime_runner(
+        blank_default_req
+    )
+
+    assert async_out["workflow_status"] == "succeeded"
+    assert async_out["final_state"]["selected_runtime"] == "async"
+    assert sync_out["workflow_status"] == "succeeded"
+    assert sync_out["final_state"]["selected_runtime"] == "sync"
+    assert blank_out["workflow_status"] == "succeeded"
+    assert blank_out["final_state"]["selected_runtime"] == "async"
+    assert calls[:6] == [
+        "async-init",
+        "async-run",
+        "sync-init",
+        "sync-run",
+        "async-init",
+        "async-run",
+    ]
 
 
 def _seed_step(
@@ -1113,9 +1278,13 @@ def test_view_layer_hardening_endpoints(monkeypatch, engine_triplet):
             role="assistant",
             turn_index=1,
             conversation_id="conv-tools",
-            mentions=[],
+            mentions=[Grounding(spans=[Span.from_dummy_for_conversation()])],
             properties={"tool_name": "list_transcript"},
-            metadata={"entity_type": "tool_call", "tool_name": "list_transcript"},
+            metadata={
+                "entity_type": "tool_call",
+                "tool_name": "list_transcript",
+                "level_from_root": 0,
+            },
             domain_id=None,
             canonical_entity_id=None,
         )
@@ -1131,9 +1300,13 @@ def test_view_layer_hardening_endpoints(monkeypatch, engine_triplet):
             role="tool",
             turn_index=1,
             conversation_id="conv-tools",
-            mentions=[],
+            mentions=[Grounding(spans=[Span.from_dummy_for_conversation()])],
             properties={"tool_name": "list_transcript", "result_json": "[]"},
-            metadata={"entity_type": "tool_result", "tool_name": "list_transcript"},
+            metadata={
+                "entity_type": "tool_result",
+                "tool_name": "list_transcript",
+                "level_from_root": 0,
+            },
             domain_id=None,
             canonical_entity_id=None,
         )
@@ -2369,6 +2542,7 @@ def test_runtime_loader_uses_only_active_branch_nodes_and_edges(
     assert edge_old_id not in edge_ids
 
 
+@pytest.mark.ci
 def test_runtime_design_snapshot_restore_matches_full_replay(
     monkeypatch, engine_triplet
 ):

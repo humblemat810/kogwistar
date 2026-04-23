@@ -5,12 +5,9 @@ import importlib
 import json
 import os
 import sqlite3
-import subprocess
-import sys
 import time
 import threading
 import uuid
-import socket
 from collections import defaultdict
 from contextlib import contextmanager
 from pathlib import Path
@@ -35,21 +32,17 @@ from kogwistar.runtime.runtime import WorkflowRuntime  # noqa: E402
 from kogwistar.server.auth_middleware import claims_ctx  # noqa: E402
 from kogwistar.server.chat_service import AnswerRunRequest  # noqa: E402
 from kogwistar.server.chat_service import RuntimeRunRequest  # noqa: E402
+from tests._helpers.engine_factories import FakeEmbeddingFunction  # noqa: E402
+from tests._helpers.server_http_helpers import decode_bearer_claims  # noqa: E402
+from tests._helpers.server_http_helpers import register_looping_sleep_workflow_http  # noqa: E402
+from tests._helpers.server_http_helpers import token_header  # noqa: E402
+from tests._helpers.server_http_helpers import token_header_http  # noqa: E402
+from tests._helpers.server_process_harness import count_cdc_oplog_entries  # noqa: E402
+from tests._helpers.server_process_harness import real_server_base_url  # noqa: E402
+from tests._helpers.server_process_harness import start_cdc_bridge  # noqa: E402
+from tests._helpers.server_process_harness import wait_for_cdc_oplog_entries  # noqa: E402
 
 pytestmark = pytest.mark.ci_full
-
-
-class FakeEmbeddingFunction:
-    @staticmethod
-    def name() -> str:
-        return "default"
-
-    def __init__(self, dim: int = 3):
-        self._dim = dim
-        self.is_legacy = False
-
-    def __call__(self, input):
-        return [[0.01] * self._dim for _ in input]
 
 
 @pytest.fixture(params=["chroma", "pg"], ids=["chroma-async", "pg-async"])
@@ -66,16 +59,21 @@ def _reload_real_server_app(
 ):
     debug_dir = Path.cwd() / ".tmp_runtime_sse_debug"
     debug_log = debug_dir / f"{backend_kind}.jsonl"
+    auth_debug_log = debug_dir / f"{backend_kind}.auth.jsonl"
     if debug_log.exists():
         debug_log.unlink()
+    if auth_debug_log.exists():
+        auth_debug_log.unlink()
 
     monkeypatch.setenv("GKE_PERSIST_DIRECTORY", str(tmp_path / "server-data"))
     monkeypatch.setenv("GKE_INDEX_DIR", str(tmp_path / "index"))
     monkeypatch.setenv("AUTH_MODE", "dev")
     monkeypatch.setenv("JWT_ALG", "HS256")
     monkeypatch.setenv("JWT_SECRET", "kogwistar-test-secret")
+    monkeypatch.setenv("KOGWISTAR_AUTH_DEBUG_PROBE", "1")
+    monkeypatch.setenv("KOGWISTAR_AUTH_DEBUG_LOG", str(auth_debug_log))
     monkeypatch.setenv("KOGWISTAR_RUNTIME_SSE_DEBUG_LOG", str(debug_log))
-    bridge_endpoint = _start_cdc_bridge(
+    bridge_endpoint = start_cdc_bridge(
         monkeypatch=monkeypatch,
         backend_kind=backend_kind,
         tmp_path=tmp_path,
@@ -97,6 +95,7 @@ def _reload_real_server_app(
         monkeypatch.setenv("GKE_BACKEND", "pg")
         monkeypatch.setenv("GKE_PG_ASYNC", "1")
         monkeypatch.setenv("GKE_PG_URL", str(pg_dsn))
+        monkeypatch.setenv("KOGWISTAR_TEST_EMBEDDING_DIM", "384")
     else:
         raise ValueError(f"unknown backend_kind: {backend_kind!r}")
 
@@ -123,29 +122,6 @@ def _claims(role: str, ns: str, sub: str | None = None):
         yield
     finally:
         claims_ctx.reset(token)
-
-
-def _token_header(
-    client: TestClient, *, role: str, ns: str, username: str = "tester"
-) -> dict[str, str]:
-    resp = client.post(
-        "/auth/dev-token",
-        json={"username": username, "role": role, "ns": ns},
-    )
-    resp.raise_for_status()
-    return {"Authorization": f"Bearer {resp.json()['token']}"}
-
-
-def _token_header_http(
-    session, base_url: str, *, role: str, ns: str, username: str = "tester"
-) -> dict[str, str]:
-    resp = session.post(
-        f"{base_url}/auth/dev-token",
-        json={"username": username, "role": role, "ns": ns},
-        timeout=10.0,
-    )
-    resp.raise_for_status()
-    return {"Authorization": f"Bearer {resp.json()['token']}"}
 
 
 def _make_slow_answer_runner(
@@ -294,159 +270,6 @@ def _make_looping_sleep_runtime_runner():
         }
 
     return _runner
-
-
-def _register_looping_sleep_workflow(
-    client: TestClient,
-    *,
-    workflow_id: str,
-    headers: dict[str, str],
-    designer_id: str = "tester",
-) -> None:
-    start_id = f"wf|{workflow_id}|start"
-    sleep_id = f"wf|{workflow_id}|sleep"
-    end_id = f"wf|{workflow_id}|end"
-
-    for payload in (
-        {
-            "designer_id": designer_id,
-            "node_id": start_id,
-            "label": "Start",
-            "op": "start",
-            "start": True,
-        },
-        {
-            "designer_id": designer_id,
-            "node_id": sleep_id,
-            "label": "Sleep",
-            "op": "sleep",
-        },
-        {
-            "designer_id": designer_id,
-            "node_id": end_id,
-            "label": "End",
-            "op": "end",
-            "terminal": True,
-        },
-    ):
-        resp = client.post(f"/api/workflow/design/{workflow_id}/nodes", json=payload, headers=headers)
-        resp.raise_for_status()
-
-    for payload in (
-        {
-            "designer_id": designer_id,
-            "edge_id": f"wf|{workflow_id}|e|start_sleep",
-            "src": start_id,
-            "dst": sleep_id,
-            "relation": "wf_next",
-            "is_default": True,
-        },
-        {
-            "designer_id": designer_id,
-            "edge_id": f"wf|{workflow_id}|e|sleep_end",
-            "src": sleep_id,
-            "dst": end_id,
-            "relation": "wf_next",
-            "predicate": "always_false",
-            "priority": 0,
-        },
-        {
-            "designer_id": designer_id,
-            "edge_id": f"wf|{workflow_id}|e|sleep_sleep",
-            "src": sleep_id,
-            "dst": sleep_id,
-            "relation": "wf_next",
-            "is_default": True,
-            "priority": 1,
-        },
-    ):
-        resp = client.post(f"/api/workflow/design/{workflow_id}/edges", json=payload, headers=headers)
-        resp.raise_for_status()
-
-
-def _register_looping_sleep_workflow_http(
-    session,
-    base_url: str,
-    *,
-    workflow_id: str,
-    headers: dict[str, str],
-    designer_id: str = "tester",
-) -> None:
-    start_id = f"wf|{workflow_id}|start"
-    sleep_id = f"wf|{workflow_id}|sleep"
-    end_id = f"wf|{workflow_id}|end"
-
-    for payload in (
-        {
-            "designer_id": designer_id,
-            "node_id": start_id,
-            "label": "Start",
-            "op": "start",
-            "start": True,
-        },
-        {
-            "designer_id": designer_id,
-            "node_id": sleep_id,
-            "label": "Sleep",
-            "op": "sleep",
-        },
-        {
-            "designer_id": designer_id,
-            "node_id": end_id,
-            "label": "End",
-            "op": "end",
-            "terminal": True,
-        },
-    ):
-        resp = session.post(
-            f"{base_url}/api/workflow/design/{workflow_id}/nodes",
-            json=payload,
-            headers=headers,
-            timeout=20.0,
-        )
-        assert resp.ok, (
-            f"workflow node upsert failed for workflow_id={workflow_id}: "
-            f"status={resp.status_code} body={resp.text}"
-        )
-
-    for payload in (
-        {
-            "designer_id": designer_id,
-            "edge_id": f"wf|{workflow_id}|e|start_sleep",
-            "src": start_id,
-            "dst": sleep_id,
-            "relation": "wf_next",
-            "is_default": True,
-        },
-        {
-            "designer_id": designer_id,
-            "edge_id": f"wf|{workflow_id}|e|sleep_end",
-            "src": sleep_id,
-            "dst": end_id,
-            "relation": "wf_next",
-            "predicate": "always_false",
-            "priority": 0,
-        },
-        {
-            "designer_id": designer_id,
-            "edge_id": f"wf|{workflow_id}|e|sleep_sleep",
-            "src": sleep_id,
-            "dst": sleep_id,
-            "relation": "wf_next",
-            "is_default": True,
-            "priority": 1,
-        },
-    ):
-        resp = session.post(
-            f"{base_url}/api/workflow/design/{workflow_id}/edges",
-            json=payload,
-            headers=headers,
-            timeout=20.0,
-        )
-        assert resp.ok, (
-            f"workflow edge upsert failed for workflow_id={workflow_id}: "
-            f"status={resp.status_code} body={resp.text}"
-        )
 
 
 def _stream_sse_events(
@@ -799,268 +622,6 @@ def _post_json_with_case_log(
     return resp
 
 
-def _pick_free_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.bind(("127.0.0.1", 0))
-        return int(sock.getsockname()[1])
-
-
-def _start_cdc_bridge(
-    *,
-    monkeypatch: pytest.MonkeyPatch | None,
-    backend_kind: str,
-    tmp_path: Path,
-    request: pytest.FixtureRequest,
-) -> str:
-    host = "127.0.0.1"
-    port = _pick_free_port()
-    oplog_file = tmp_path / f"{backend_kind}.cdc_oplog.jsonl"
-    log_file = Path.cwd() / ".tmp_runtime_sse_debug" / f"{backend_kind}.cdc_bridge.log"
-    log_file.parent.mkdir(parents=True, exist_ok=True)
-    if log_file.exists():
-        log_file.unlink()
-
-    cmd = [
-        sys.executable,
-        "-m",
-        "kogwistar.cdc.change_bridge",
-        "--host",
-        host,
-        "--port",
-        str(port),
-        "--oplog-file",
-        str(oplog_file),
-        "--reset-oplog",
-        "--log-level",
-        "warning",
-    ]
-    log_buf: list[str] = []
-    proc = subprocess.Popen(
-        cmd,
-        cwd=str(Path(__file__).resolve().parents[2]),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-    )
-
-    def _reader() -> None:
-        if proc.stdout is None:
-            return
-        for line in proc.stdout:
-            stripped = line.rstrip()
-            log_buf.append(stripped)
-            try:
-                with log_file.open("a", encoding="utf-8") as fh:
-                    fh.write(stripped + "\n")
-            except Exception:
-                pass
-
-    t = threading.Thread(target=_reader, daemon=True)
-    t.start()
-
-    def _cleanup() -> None:
-        if proc.poll() is None:
-            proc.terminate()
-            try:
-                proc.wait(timeout=15.0)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait(timeout=15.0)
-        t.join(timeout=5.0)
-
-    request.addfinalizer(_cleanup)
-
-    endpoint = f"http://{host}:{port}"
-    deadline = time.time() + 30.0
-    last_err: Exception | None = None
-    with requests.Session() as session:
-        while time.time() < deadline:
-            if proc.poll() is not None:
-                raise RuntimeError(
-                    "CDC bridge exited before becoming healthy.\n"
-                    f"exit={proc.returncode}\n"
-                    + "\n".join(log_buf[-80:])
-                )
-            try:
-                health = session.get(f"{endpoint}/openapi.json", timeout=1.5)
-                if health.ok:
-                    if monkeypatch is not None:
-                        monkeypatch.setenv("CDC_PUBLISH_ENDPOINT", endpoint)
-                    return endpoint
-            except Exception as exc:  # noqa: BLE001
-                last_err = exc
-            time.sleep(0.2)
-
-    raise RuntimeError(
-        f"CDC bridge at {endpoint} did not become healthy.\n"
-        f"last_error={last_err!r}\n"
-        f"log_tail=\n" + "\n".join(log_buf[-80:])
-    )
-
-
-def _wait_for_cdc_oplog_entries(oplog_file: Path, *, min_entries: int = 1, timeout_s: float = 20.0) -> int:
-    deadline = time.time() + timeout_s
-    last_error: Exception | None = None
-    while time.time() < deadline:
-        if oplog_file.exists():
-            try:
-                with oplog_file.open("r", encoding="utf-8") as fh:
-                    line_count = sum(1 for line in fh if line.strip())
-                entry_count = max(0, line_count - 1)
-                if entry_count >= min_entries:
-                    return entry_count
-            except Exception as exc:  # noqa: BLE001
-                last_error = exc
-        time.sleep(0.1)
-    raise AssertionError(
-        f"CDC oplog did not record {min_entries} entries in time: {oplog_file}\n"
-        f"last_error={last_error!r}"
-    )
-
-
-def _count_cdc_oplog_entries(oplog_file: Path) -> int:
-    if not oplog_file.exists():
-        return 0
-    with oplog_file.open("r", encoding="utf-8") as fh:
-        line_count = sum(1 for line in fh if line.strip())
-    return max(0, line_count - 1)
-
-
-@contextmanager
-def _real_server_base_url(
-    *,
-    backend_kind: str,
-    tmp_path: Path,
-    request: pytest.FixtureRequest,
-    runtime_runner_import: str | None = None,
-):
-    import requests
-
-    port = _pick_free_port()
-    host = "127.0.0.1"
-    base_url = f"http://{host}:{port}"
-
-    debug_dir = Path.cwd() / ".tmp_runtime_sse_debug"
-    debug_log = debug_dir / f"{backend_kind}.jsonl"
-    server_log = debug_dir / f"{backend_kind}-server.log"
-    if debug_log.exists():
-        debug_log.unlink()
-    if server_log.exists():
-        server_log.unlink()
-
-    env = os.environ.copy()
-    env["GKE_PERSIST_DIRECTORY"] = str(tmp_path / "server-data")
-    env["GKE_INDEX_DIR"] = str(tmp_path / "index")
-    env["AUTH_MODE"] = "dev"
-    env["JWT_ALG"] = "HS256"
-    env["JWT_SECRET"] = "kogwistar-test-secret"
-    env["KOGWISTAR_RUNTIME_SSE_DEBUG_LOG"] = str(debug_log)
-    if runtime_runner_import:
-        env["KOGWISTAR_TEST_RUNTIME_RUNNER_IMPORT"] = str(runtime_runner_import)
-    env["CDC_PUBLISH_ENDPOINT"] = _start_cdc_bridge(
-        monkeypatch=None,
-        backend_kind=backend_kind,
-        tmp_path=tmp_path,
-        request=request,
-    )
-    if backend_kind == "chroma":
-        pytest.importorskip("chromadb")
-        chroma_server = request.getfixturevalue("real_chroma_server")
-        env["GKE_BACKEND"] = "chroma"
-        env["GKE_CHROMA_ASYNC"] = "1"
-        env["GKE_CHROMA_HOST"] = str(chroma_server.host)
-        env["GKE_CHROMA_PORT"] = str(chroma_server.port)
-    elif backend_kind == "pg":
-        pg_dsn = request.getfixturevalue("pg_dsn")
-        if not pg_dsn:
-            pytest.skip("async pg fixtures are unavailable in this environment")
-        env["GKE_BACKEND"] = "pg"
-        env["GKE_PG_ASYNC"] = "1"
-        env["GKE_PG_URL"] = str(pg_dsn)
-    else:
-        raise ValueError(f"unknown backend_kind: {backend_kind!r}")
-
-    port_file = tmp_path / f"{backend_kind}.port"
-    env["PORT"] = str(port)
-    env["HOST"] = host
-
-    cmd = [
-        sys.executable,
-        "-m",
-        "uvicorn",
-        "kogwistar.server_mcp_with_admin:app",
-        "--host",
-        host,
-        "--port",
-        str(port),
-        "--log-level",
-        "warning",
-    ]
-    log_buf: list[str] = []
-    proc = subprocess.Popen(
-        cmd,
-        cwd=str(Path(__file__).resolve().parents[2]),
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-    )
-
-    def _reader() -> None:
-        if proc.stdout is None:
-            return
-        for line in proc.stdout:
-            stripped = line.rstrip()
-            log_buf.append(stripped)
-            try:
-                with server_log.open("a", encoding="utf-8") as fh:
-                    fh.write(stripped + "\n")
-            except Exception:
-                pass
-
-    t = threading.Thread(target=_reader, daemon=True)
-    t.start()
-
-    try:
-        deadline = time.time() + 90.0
-        last_err: Exception | None = None
-        ready = False
-        with requests.Session() as session:
-            while time.time() < deadline:
-                if proc.poll() is not None:
-                    joined = "\n".join(log_buf)
-                    raise RuntimeError(
-                        f"server exited before becoming healthy (exit={proc.returncode}).\n{joined}"
-                    )
-                try:
-                    health = session.get(f"{base_url}/health", timeout=1.5)
-                except Exception as exc:  # noqa: BLE001
-                    last_err = exc
-                    time.sleep(0.25)
-                    continue
-                if health.ok:
-                    ready = True
-                    break
-                time.sleep(0.25)
-        if not ready:
-            raise RuntimeError(
-                f"server at {base_url} did not become healthy.\n"
-                f"last_error={last_err!r}\n"
-                f"log_tail=\n" + "\n".join(log_buf[-80:])
-            )
-        port_file.write_text(str(port), encoding="utf-8")
-        yield base_url
-    finally:
-        if proc.poll() is None:
-            proc.terminate()
-            try:
-                proc.wait(timeout=15.0)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait(timeout=15.0)
-        t.join(timeout=5.0)
-
-
 def test_chat_rest_events_poll_sees_live_updates_for_async_backends(
     monkeypatch, async_backend_kind, tmp_path, request
 ):
@@ -1077,8 +638,8 @@ def test_chat_rest_events_poll_sees_live_updates_for_async_backends(
     )
 
     with TestClient(server_mod.app) as client:
-        rw_headers = _token_header(client, role="rw", ns="conversation")
-        ro_headers = _token_header(client, role="ro", ns="conversation")
+        rw_headers = token_header(client, role="rw", ns="conversation")
+        ro_headers = token_header(client, role="ro", ns="conversation")
 
         created = client.post(
             "/api/conversations", json={"user_id": f"u-{async_backend_kind}"}, headers=rw_headers
@@ -1146,7 +707,7 @@ async def test_mcp_run_events_sees_live_updates_for_async_backends(
     )
 
     with TestClient(server_mod.app) as client:
-        rw_headers = _token_header(client, role="rw", ns="conversation")
+        rw_headers = token_header(client, role="rw", ns="conversation")
         created = client.post(
             "/api/conversations", json={"user_id": f"u-{async_backend_kind}"}, headers=rw_headers
         )
@@ -1205,7 +766,7 @@ async def test_mcp_run_events_sees_live_updates_for_async_backends(
 async def test_workflow_runtime_sse_cancel_after_sleep_ticks_for_async_backends(
     monkeypatch, async_backend_kind, tmp_path, request
 ):
-    with _real_server_base_url(
+    with real_server_base_url(
         backend_kind=async_backend_kind,
         tmp_path=tmp_path,
         request=request,
@@ -1215,9 +776,18 @@ async def test_workflow_runtime_sse_cancel_after_sleep_ticks_for_async_backends(
     ) as base_url, requests.Session() as api_session, requests.Session() as sse_session:
         debug_log_path = Path.cwd() / ".tmp_runtime_sse_debug" / f"{async_backend_kind}.jsonl"
         cdc_oplog = tmp_path / f"{async_backend_kind}.cdc_oplog.jsonl"
-        conv_rw = _token_header_http(api_session, base_url, role="rw", ns="conversation")
-        wf_rw = _token_header_http(api_session, base_url, role="rw", ns="workflow")
-        wf_ro = _token_header_http(api_session, base_url, role="ro", ns="workflow")
+        conv_rw = token_header_http(api_session, base_url, role="rw", ns="conversation")
+        wf_rw = token_header_http(
+            api_session,
+            base_url,
+            role="rw",
+            ns="workflow",
+            capabilities=(
+                "workflow.design.write,write_graph,spawn_process,"
+                "workflow.run.write,workflow.run.read,project_view,read_graph"
+            ),
+        )
+        wf_ro = token_header_http(api_session, base_url, role="ro", ns="workflow")
 
         created = api_session.post(
             f"{base_url}/api/conversations",
@@ -1227,11 +797,15 @@ async def test_workflow_runtime_sse_cancel_after_sleep_ticks_for_async_backends(
         )
         assert created.status_code == 200, created.text
         conversation_id = str(created.json()["conversation_id"])
-        _wait_for_cdc_oplog_entries(cdc_oplog, min_entries=1, timeout_s=20.0)
+        wait_for_cdc_oplog_entries(cdc_oplog, min_entries=1, timeout_s=20.0)
 
         workflow_id = f"wf.runtime.sleep.loop.{async_backend_kind}.{uuid.uuid4().hex}"
-        _register_looping_sleep_workflow_http(
-            api_session, base_url, workflow_id=workflow_id, headers=wf_rw
+        register_looping_sleep_workflow_http(
+            api_session,
+            base_url,
+            workflow_id=workflow_id,
+            headers=wf_rw,
+            on_error=lambda payload: _append_case_debug_log(debug_log_path, payload),
         )
 
         submitted = api_session.post(
@@ -1331,10 +905,10 @@ async def test_manual_async_server_streams_busy_answer_run_events():
 
     with requests.Session() as api_session, requests.Session() as sse_session:
         _wait_for_manual_health(api_session, base_url, timeout_s=5.0)
-        conv_rw = _token_header_http(api_session, base_url, role="rw", ns="conversation")
-        conv_ro = _token_header_http(api_session, base_url, role="ro", ns="conversation")
+        conv_rw = token_header_http(api_session, base_url, role="rw", ns="conversation")
+        conv_ro = token_header_http(api_session, base_url, role="ro", ns="conversation")
 
-        cdc_before = _count_cdc_oplog_entries(cdc_oplog)
+        cdc_before = count_cdc_oplog_entries(cdc_oplog)
 
         created = _post_json_with_case_log(
             api_session,
@@ -1355,7 +929,7 @@ async def test_manual_async_server_streams_busy_answer_run_events():
             timeout_s=30.0,
         )
 
-        cdc_after_create = _wait_for_cdc_oplog_entries(
+        cdc_after_create = wait_for_cdc_oplog_entries(
             cdc_oplog, min_entries=cdc_before + 1, timeout_s=30.0
         )
         assert cdc_after_create >= cdc_before + 1
@@ -1454,7 +1028,7 @@ async def test_manual_async_server_streams_busy_answer_run_events():
         assert "run.completed" in event_names
         assert event_names.index("run.started") < event_names.index("run.completed")
 
-        cdc_after_run = _wait_for_cdc_oplog_entries(
+        cdc_after_run = wait_for_cdc_oplog_entries(
             cdc_oplog, min_entries=cdc_after_create + 1, timeout_s=60.0
         )
         assert cdc_after_run > cdc_after_create

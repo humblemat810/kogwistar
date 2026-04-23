@@ -119,8 +119,8 @@ def _document_rollback(engine, *, fake_backend: bool) -> None:
     )
     engine.node_collection.delete(where={"doc_id": doc.id})
 
-    if fake_backend:
-        engine.llm_tasks = _fake_llm_tasks()
+    # Rollback behavior should be deterministic; keep extraction local for both backends.
+    engine.llm_tasks = _fake_llm_tasks()
 
     def ingest_with_doc_with_llm(docd):
         doc_obj = Document.model_validate(docd)
@@ -158,8 +158,8 @@ def _batch_document_rollback(engine, *, fake_backend: bool) -> None:
         for i in range(3)
     ]
 
-    if fake_backend:
-        engine.llm_tasks = _fake_llm_tasks()
+    # Rollback behavior should be deterministic; keep extraction local for both backends.
+    engine.llm_tasks = _fake_llm_tasks()
 
     for doc in docs:
         assert engine.ingest_document_with_llm(doc) is not None

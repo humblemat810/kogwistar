@@ -44,6 +44,21 @@ def _render_template_html(template_html: str, *, context: dict) -> str:
     tmpl = env.from_string(template_html)
     html = tmpl.render(**context)
 
+    # Support minimal templates that hard-code `null` placeholders instead of
+    # Jinja variables. This keeps the tests small and keeps CLI/debug output
+    # working with older bundle shells.
+    replacements = {
+        "window.__EMBEDDED_DATA__ = null;": f"window.__EMBEDDED_DATA__ = {context['embedded_data']};",
+        "window.__BUNDLE_META__ = null;": (
+            f"window.__BUNDLE_META__ = {context['bundle_meta']};"
+            if context.get("bundle_meta") is not None
+            else "window.__BUNDLE_META__ = null;"
+        ),
+    }
+    for needle, repl in replacements.items():
+        if needle in html:
+            html = html.replace(needle, repl)
+
     # Guard against the exact regression: leaking Jinja into bundle artifacts.
     if "{{" in html or "{%" in html:
         raise RuntimeError(
@@ -70,10 +85,11 @@ def dump_d3_bundle(
     embed_empty: bool = False,
 ) -> Path:
     if engine_type is None:
-        engine_type = engine.kg_graph_type
-    if engine and engine_type != engine.kg_graph_type:
+        engine_type = getattr(engine, "kg_graph_type", None)
+    engine_graph_type = getattr(engine, "kg_graph_type", None)
+    if engine and engine_graph_type is not None and engine_type != engine_graph_type:
         raise Exception(
-            f"argument engine_type {engine_type} disagree with engine kg_graph_type = {engine.kg_graph_type}"
+            f"argument engine_type {engine_type} disagree with engine kg_graph_type = {engine_graph_type}"
         )
     if not engine_type and not engine:
         raise ValueError("either engine type or engine required")
@@ -189,6 +205,11 @@ def dump_paired_bundles(
     return bundle_meta
 
 
+def _engine_graph_type(engine, fallback: str | None = None):
+    graph_type = getattr(engine, "kg_graph_type", None)
+    return graph_type if graph_type is not None else fallback
+
+
 def _cmd_one(args: argparse.Namespace) -> None:
     engine = build_engine(
         persist_dir=Path(args.persist_dir), graph_type=args.graph_type
@@ -196,7 +217,7 @@ def _cmd_one(args: argparse.Namespace) -> None:
     template_html = Path(args.template).read_text(encoding="utf-8")
     os.makedirs(str(Path(args.out).parent), exist_ok=True)
     dump_d3_bundle(
-        engine_type=engine.kg_graph_type,
+        engine_type=_engine_graph_type(engine, args.graph_type),
         engine=engine,
         template_html=template_html,
         out_html=Path(args.out),

@@ -7,35 +7,21 @@ pytestmark = pytest.mark.core
 
 from kogwistar.engine_core.chroma_backend import ChromaBackend
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
-from kogwistar.engine_core.models import Node, Grounding, Span
+from kogwistar.engine_core.models import Node
 from tests._helpers.fake_backend import InMemoryBackend, build_fake_backend
+from tests._helpers.meta_job_state import set_index_job_state
 from tests.conftest import FakeEmbeddingFunction
+from tests._helpers.graph_builders import build_entity_node
 
 
 EMBEDDING_DIM = 3
 TEST_EMBEDDING = FakeEmbeddingFunction(dim=EMBEDDING_DIM)
 
-
-def _mk_span(doc_id: str) -> Span:
-    sp = Span.from_dummy_for_document()
-    sp.doc_id = doc_id
-    return sp
-
-
 def _mk_node(node_id: str, *, doc_id: str) -> Node:
-    return Node(
-        id=node_id,
-        label=f"Node {node_id}",
-        type="entity",
-        summary=f"Summary {node_id}",
+    return build_entity_node(
+        node_id=node_id,
         doc_id=doc_id,
-        mentions=[Grounding(spans=[_mk_span(doc_id)])],
-        metadata={"level_from_root": 0, "entity_type": "kg_entity"},
         embedding=[0.1] * EMBEDDING_DIM,
-        level_from_root=0,
-        domain_id=None,
-        canonical_entity_id=None,
-        properties=None,
     )
 
 
@@ -201,12 +187,14 @@ def test_phase2_enqueue_while_doing_creates_new_pending(
                     {"secs": 60, "job_id": jid1},
                 )
             else:
-                now = int(time.time())
-                job = txn.state.index_jobs.get(str(jid1))
-                if job is not None:
-                    job.status = "DOING"
-                    job.lease_until = now + 60
-                    job.updated_at = now
+                set_index_job_state(
+                    eng.meta_sqlite,
+                    txn,
+                    job_id=str(jid1),
+                    status="DOING",
+                    lease_until=int(time.time()) + 60,
+                    updated_at=int(time.time()),
+                )
 
     # Enqueue again while J1 is DOING.
     jid2 = eng.enqueue_index_job(
