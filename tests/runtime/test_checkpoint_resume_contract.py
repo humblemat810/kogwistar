@@ -11,6 +11,8 @@ from kogwistar.runtime.replay import _apply_state_update
 from kogwistar.runtime.runtime import WorkflowRuntime
 from kogwistar.runtime.replay import load_checkpoint, replay_to
 
+pytestmark = [pytest.mark.ci, pytest.mark.runtime]
+
 
 class _DummyRead:
     def __init__(self, nodes):

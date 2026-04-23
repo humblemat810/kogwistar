@@ -12,6 +12,8 @@ from kogwistar.runtime.runtime import StepContext, WorkflowRuntime
 from tests._helpers.embeddings import ConstantEmbeddingFunction
 from tests._helpers.fake_backend import build_fake_backend
 
+pytestmark = [pytest.mark.ci, pytest.mark.runtime]
+
 
 def _dummy_grounding() -> Grounding:
     sp = Span(

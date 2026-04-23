@@ -22,6 +22,8 @@ from tests.conftest import (
 )
 from tests.core._async_chroma_real import make_real_async_chroma_backend, real_chroma_server
 
+pytestmark = [pytest.mark.ci, pytest.mark.runtime]
+
 
 SYNC_BACKEND_PARAMS = [
     pytest.param("fake", id="memory-sync", marks=pytest.mark.ci),

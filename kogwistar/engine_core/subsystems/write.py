@@ -372,7 +372,7 @@ class WriteSubsystem(NamespaceProxy, WriteLike):
         )
 
     def add_domain(self, domain: Domain):
-        self._e.backend.domain_add(
+        run_awaitable_blocking(self._e.backend.domain_add(
             ids=[domain.id],
             documents=[domain.model_dump_json()],
             metadatas=[
@@ -389,13 +389,13 @@ class WriteSubsystem(NamespaceProxy, WriteLike):
                     allow_none=False,
                 )
             ],
-        )
+        ))
 
     # Index/metadata helpers
     def index_node_docs(self, node: Node) -> list[str]:
         doc_ids = extract_doc_ids_from_refs(node.mentions)
 
-        self._e.backend.node_docs_delete(where={"node_id": node.id})
+        run_awaitable_blocking(self._e.backend.node_docs_delete(where={"node_id": node.id}))
         if doc_ids:
             ids: list[str] = []
             docs: list[str] = []
@@ -406,21 +406,21 @@ class WriteSubsystem(NamespaceProxy, WriteLike):
                 ids.append(rid)
                 docs.append(json.dumps(row))
                 metas.append(row)
-            self._e.backend.node_docs_add(
+            run_awaitable_blocking(self._e.backend.node_docs_add(
                 ids=ids,
                 documents=docs,
                 metadatas=metas,
                 embeddings=[self._e.embed.iterative_defensive_emb(d) for d in docs],
-            )
+            ))
 
-        current = self._e.backend.node_get(ids=[node.id], include=["metadatas"])
+        current = run_awaitable_blocking(self._e.backend.node_get(ids=[node.id], include=["metadatas"]))
         cur_meta = (current.get("metadatas") or [None])[0] or {}
         new_doc_ids_json = json.dumps(doc_ids)
         if cur_meta.get("doc_ids") != new_doc_ids_json:
-            self._e.backend.node_update(
+            run_awaitable_blocking(self._e.backend.node_update(
                 ids=[node.id],
                 metadatas=[{"doc_ids": new_doc_ids_json}],
-            )
+            ))
 
         return doc_ids
 
@@ -454,12 +454,12 @@ class WriteSubsystem(NamespaceProxy, WriteLike):
                 metas.append(row)
 
         if ids:
-            self._e.backend.node_refs_add(
+            run_awaitable_blocking(self._e.backend.node_refs_add(
                 ids=ids,
                 documents=docs,
                 metadatas=metas,
                 embeddings=[self._e._iterative_defensive_emb(str(d)) for d in docs],
-            )
+            ))
         return ids
 
     def index_edge_refs(self, *args, **kwargs):
@@ -491,12 +491,12 @@ class WriteSubsystem(NamespaceProxy, WriteLike):
             metas.append(row)
 
         if ids:
-            self._e.backend.edge_refs_add(
+            run_awaitable_blocking(self._e.backend.edge_refs_add(
                 ids=ids,
                 documents=docs,
                 metadatas=metas,
                 embeddings=[self._e._iterative_defensive_emb(str(d)) for d in docs],
-            )
+            ))
         return ids
 
     def fanout_endpoints_rows(self, edge: Edge, doc_id: str | None):
@@ -511,7 +511,7 @@ class WriteSubsystem(NamespaceProxy, WriteLike):
         def _maybe_doc_for_edge(eid: str) -> str | None:
             if doc_id is not None:
                 return doc_id
-            meta = self._e.backend.edge_get(ids=[eid], include=["metadatas"])
+            meta = run_awaitable_blocking(self._e.backend.edge_get(ids=[eid], include=["metadatas"]))
             metadata = meta.get("metadatas")
             if metadata and metadata[0]:
                 if isinstance(metadata[0].get("doc_id"), str):
@@ -523,7 +523,7 @@ class WriteSubsystem(NamespaceProxy, WriteLike):
         def _per_node_doc(nid: str) -> str | None:
             if doc_id is not None:
                 return doc_id
-            meta = self._e.backend.node_get(ids=[nid], include=["metadatas"])
+            meta = run_awaitable_blocking(self._e.backend.node_get(ids=[nid], include=["metadatas"]))
             metadata = meta.get("metadatas")
             if metadata and metadata[0]:
                 if isinstance(metadata[0].get("doc_id"), str):
@@ -587,18 +587,18 @@ class WriteSubsystem(NamespaceProxy, WriteLike):
 
     def delete_edge_ref_rows(self, *args, **kwargs):
         edge_id = args[0] if args else kwargs["edge_id"]
-        got = self._e.backend.edge_refs_get(where={"edge_id": edge_id}, include=[])
+        got = run_awaitable_blocking(self._e.backend.edge_refs_get(where={"edge_id": edge_id}, include=[]))
         ids = got.get("ids") or []
         if ids:
-            self._e.backend.edge_refs_delete(ids=ids)
+            run_awaitable_blocking(self._e.backend.edge_refs_delete(ids=ids))
         return None
 
     def delete_node_ref_rows(self, *args, **kwargs):
         node_id = args[0] if args else kwargs["node_id"]
-        got = self._e.backend.node_refs_get(where={"node_id": node_id}, include=[])
+        got = run_awaitable_blocking(self._e.backend.node_refs_get(where={"node_id": node_id}, include=[]))
         ids = got.get("ids") or []
         if ids:
-            self._e.backend.node_refs_delete(ids=ids)
+            run_awaitable_blocking(self._e.backend.node_refs_delete(ids=ids))
         return None
 
     def maybe_reindex_edge_refs(self, edge: Edge, *, force: bool = False) -> None:
@@ -610,15 +610,15 @@ class WriteSubsystem(NamespaceProxy, WriteLike):
         the drift short-circuit.
         """
         new_fp = _refs_fingerprint(edge.mentions or [])
-        meta = self._e.backend.edge_get(ids=[edge.safe_get_id()], include=["metadatas"])
+        meta = run_awaitable_blocking(self._e.backend.edge_get(ids=[edge.safe_get_id()], include=["metadatas"]))
         old_fp = None
         metadatas = meta.get("metadatas")
         if metadatas and metadatas[0]:
             old_fp = metadatas[0].get("edge_refs_fp")
 
-        got = self._e.backend.edge_refs_get(
+        got = run_awaitable_blocking(self._e.backend.edge_refs_get(
             where={"edge_id": edge.id}, include=["documents"]
-        )
+        ))
         current_rows = got.get("documents") or []
         current_doc_ids = {json.loads(d).get("doc_id") for d in current_rows}
         expect_doc_ids = {getattr(r, "doc_id", None) for r in (edge.mentions or [])}
@@ -626,9 +626,9 @@ class WriteSubsystem(NamespaceProxy, WriteLike):
         docset_ok = current_doc_ids == expect_doc_ids
 
         if force or (new_fp != old_fp) or (not count_ok) or (not docset_ok):
-            self._e.backend.edge_update(
+            run_awaitable_blocking(self._e.backend.edge_update(
                 ids=[edge.safe_get_id()], metadatas=[{"edge_refs_fp": new_fp}]
-            )
+            ))
             self.index_edge_refs(edge)
 
     def maybe_reindex_node_refs(self, node: Node, *, force: bool = False) -> None:
@@ -640,15 +640,15 @@ class WriteSubsystem(NamespaceProxy, WriteLike):
         optimization and always reindexes.
         """
         new_fp = _refs_fingerprint(node.mentions or [])
-        meta = self._e.backend.node_get(ids=[node.id], include=["metadatas"])
+        meta = run_awaitable_blocking(self._e.backend.node_get(ids=[node.id], include=["metadatas"]))
         old_fp = None
         metadatas = meta.get("metadatas")
         if metadatas and metadatas[0]:
             old_fp = metadatas[0].get("node_refs_fp")
 
-        got = self._e.backend.node_refs_get(
+        got = run_awaitable_blocking(self._e.backend.node_refs_get(
             where={"node_id": node.id}, include=["documents"]
-        )
+        ))
         current_rows = got.get("documents") or []
         current_doc_ids = {json.loads(d).get("doc_id") for d in current_rows}
         expect_doc_ids = {getattr(r, "doc_id", None) for r in (node.mentions or [])}
@@ -656,16 +656,16 @@ class WriteSubsystem(NamespaceProxy, WriteLike):
         docset_ok = current_doc_ids == expect_doc_ids
 
         if force or (new_fp != old_fp) or (not count_ok) or (not docset_ok):
-            self._e.backend.node_update(
+            run_awaitable_blocking(self._e.backend.node_update(
                 ids=[node.id], metadatas=[{"node_refs_fp": new_fp}]
-            )
+            ))
             self.index_node_refs(node)
 
     def prune_node_refs_for_doc(self, node_id: str, doc_id: str) -> bool:
         """Remove references to doc_id from node; delete node_docs link; refresh denormalized meta."""
-        got = self._e.backend.node_get(
+        got = run_awaitable_blocking(self._e.backend.node_get(
             ids=[node_id], include=["documents", "metadatas"]
-        )
+        ))
         docs = got.get("documents")
         if not (docs and docs[0]):
             return False
@@ -679,25 +679,25 @@ class WriteSubsystem(NamespaceProxy, WriteLike):
 
         changed = len(node.mentions or []) != before
         if changed:
-            self._e.backend.node_update(
+            run_awaitable_blocking(self._e.backend.node_update(
                 ids=[node_id], documents=[node.model_dump_json(field_mode="backend")]
-            )
-            self._e.backend.node_docs_delete(
+            ))
+            run_awaitable_blocking(self._e.backend.node_docs_delete(
                 where={"$and": [{"node_id": node_id}, {"doc_id": doc_id}]}
-            )
+            ))
             self.index_node_docs(node)
         return changed
 
     def rebuild_edge_refs_for_doc(self, doc_id: str) -> int:
-        eps = self._e.backend.edge_endpoints_get(
+        eps = run_awaitable_blocking(self._e.backend.edge_endpoints_get(
             where={"doc_id": doc_id}, include=["documents"]
-        )
+        ))
         edge_ids = list(
             {json.loads(d)["edge_id"] for d in (eps.get("documents") or [])}
         )
         if not edge_ids:
             return 0
-        got = self._e.backend.edge_get(ids=edge_ids, include=["documents"])
+        got = run_awaitable_blocking(self._e.backend.edge_get(ids=edge_ids, include=["documents"]))
         cnt = 0
         for js in got.get("documents") or []:
             e = Edge.model_validate_json(js)
@@ -706,10 +706,10 @@ class WriteSubsystem(NamespaceProxy, WriteLike):
         return cnt
 
     def rebuild_all_edge_refs(self) -> int:
-        got = self._e.backend.edge_get()
+        got = run_awaitable_blocking(self._e.backend.edge_get())
         total = 0
         for eid in got.get("ids") or []:
-            edges = self._e.backend.edge_get(ids=[eid], include=["documents"])
+            edges = run_awaitable_blocking(self._e.backend.edge_get(ids=[eid], include=["documents"]))
             if edge_docs := edges.get("documents"):
                 e = Edge.model_validate_json(edge_docs[0])
                 self.index_edge_refs(e)
@@ -719,22 +719,22 @@ class WriteSubsystem(NamespaceProxy, WriteLike):
     def rebuild_node_refs_for_doc(self, doc_id: str) -> int:
         node_ids = []
         if hasattr(self._e, "node_docs_collection"):
-            rows = self._e.backend.node_docs_get(
+            rows = run_awaitable_blocking(self._e.backend.node_docs_get(
                 where={"doc_id": doc_id}, include=["documents"]
-            )
+            ))
             node_ids = list(
                 {json.loads(d)["node_id"] for d in (rows.get("documents") or [])}
             )
         else:
-            got = self._e.backend.node_get(
+            got = run_awaitable_blocking(self._e.backend.node_get(
                 where={"doc_id": doc_id}, include=["documents"]
-            )
+            ))
             node_ids = list(got.get("ids") or [])
 
         if not node_ids:
             return 0
 
-        got = self._e.backend.node_get(ids=node_ids, include=["documents"])
+        got = run_awaitable_blocking(self._e.backend.node_get(ids=node_ids, include=["documents"]))
         cnt = 0
         for js in got.get("documents") or []:
             n = Node.model_validate_json(js)
@@ -743,10 +743,10 @@ class WriteSubsystem(NamespaceProxy, WriteLike):
         return cnt
 
     def rebuild_all_node_refs(self) -> int:
-        got = self._e.backend.node_get()
+        got = run_awaitable_blocking(self._e.backend.node_get())
         total = 0
         for nid in got.get("ids") or []:
-            doc = self._e.backend.node_get(ids=[nid], include=["documents"])
+            doc = run_awaitable_blocking(self._e.backend.node_get(ids=[nid], include=["documents"]))
             if nod_docs := doc.get("documents"):
                 n = Node.model_validate_json(nod_docs[0])
                 self.index_node_refs(n)
@@ -756,7 +756,9 @@ class WriteSubsystem(NamespaceProxy, WriteLike):
     def delete_edges_by_ids(self, edge_ids: list[str]):
         if not edge_ids:
             return
-        self._e.backend.edge_delete(ids=edge_ids)
-        self._e.backend.edge_endpoints_delete(
-            where=cast(dict[str, object], {"edge_id": {"$in": edge_ids}})
+        run_awaitable_blocking(self._e.backend.edge_delete(ids=edge_ids))
+        run_awaitable_blocking(
+            self._e.backend.edge_endpoints_delete(
+                where=cast(dict[str, object], {"edge_id": {"$in": edge_ids}})
+            )
         )

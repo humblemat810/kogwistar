@@ -12,7 +12,7 @@ from kogwistar.maintenance.grouped_artifacts import write_grouped_versioned_arti
 from tests._helpers.fake_backend import build_fake_backend
 
 
-pytestmark = pytest.mark.ci
+pytestmark = [pytest.mark.ci, pytest.mark.runtime]
 
 
 def _make_engine() -> tuple[GraphKnowledgeEngine, Path]:

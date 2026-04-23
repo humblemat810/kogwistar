@@ -517,11 +517,12 @@ def _is_manual_test_explicitly_selected(
     return False
 
 
-_AREA_MARKERS = {"core", "workflow", "conversation"}
+_AREA_MARKERS = {"core", "workflow", "conversation", "runtime"}
 _LIGHTWEIGHT_CI_MARKEXPR_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _CORE_DIRS = {"cdc", "core", "ingestions", "outbox", "pg_sql", "primitives"}
 _CONVERSATION_DIRS = {"kg_conversation", "mcp", "wisdom"}
 _WORKFLOW_DIRS = {"runtime", "workflow"}
+_RUNTIME_DIRS = {"runtime"}
 _LIGHTWEIGHT_CI_DIR_BLOCKERS = {
     "cdc",
     "ingestions",
@@ -643,18 +644,35 @@ def _primary_test_dir(item: pytest.Item) -> str | None:
 
 
 def _infer_area_markers(item: pytest.Item) -> list[pytest.MarkDecorator]:
-    if _has_marker(item, _AREA_MARKERS):
-        return []
-
     parts = set(_item_path_parts(item))
     primary_dir = _primary_test_dir(item)
     markers: list[pytest.MarkDecorator] = []
-    if parts & _WORKFLOW_DIRS:
+    if parts & _WORKFLOW_DIRS and not _has_marker(item, {"workflow"}):
         markers.append(pytest.mark.workflow)
-    if parts & _CONVERSATION_DIRS:
+    if parts & _CONVERSATION_DIRS and not _has_marker(item, {"conversation"}):
         markers.append(pytest.mark.conversation)
-    if not markers and (parts & _CORE_DIRS or primary_dir is None):
+    if parts & _RUNTIME_DIRS and not _has_marker(item, {"runtime"}):
+        markers.append(pytest.mark.runtime)
+    if not markers and (parts & _CORE_DIRS or primary_dir is None) and not _has_marker(
+        item, {"core"}
+    ):
         markers.append(pytest.mark.core)
+    return markers
+
+
+def _infer_runtime_submarkers(item: pytest.Item) -> list[pytest.MarkDecorator]:
+    parts = set(_item_path_parts(item))
+    if "runtime" not in parts:
+        return []
+
+    name = pathlib.Path(str(item.fspath)).name
+    markers: list[pytest.MarkDecorator] = []
+    if "async_runtime" in name and not _has_marker(item, {"runtime_async"}):
+        markers.append(pytest.mark.runtime_async)
+    if "sync_runtime" in name and not _has_marker(item, {"runtime_sync"}):
+        markers.append(pytest.mark.runtime_sync)
+    if "parity_bridge" in name and not _has_marker(item, {"runtime_bridge_parity"}):
+        markers.append(pytest.mark.runtime_bridge_parity)
     return markers
 
 
@@ -669,6 +687,8 @@ def pytest_collection_modifyitems(
     )
     for item in items:
         for marker in _infer_area_markers(item):
+            item.add_marker(marker)
+        for marker in _infer_runtime_submarkers(item):
             item.add_marker(marker)
         if "manual" in item.keywords and not _is_manual_test_explicitly_selected(
             config, item

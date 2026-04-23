@@ -30,6 +30,8 @@ from kogwistar.engine_core.models import Grounding, MentionVerification, Span
 from tests._helpers.embeddings import ConstantEmbeddingFunction
 from tests._helpers.fake_backend import build_fake_backend
 
+pytestmark = [pytest.mark.ci, pytest.mark.runtime, pytest.mark.runtime_bridge_parity]
+
 pytestmark = [pytest.mark.ci]
 
 

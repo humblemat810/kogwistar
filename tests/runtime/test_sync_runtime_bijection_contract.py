@@ -16,7 +16,7 @@ from kogwistar.runtime.runtime import (
     apply_state_update_inplace,
 )
 
-pytestmark = [pytest.mark.ci]
+pytestmark = [pytest.mark.ci, pytest.mark.runtime, pytest.mark.runtime_sync]
 
 
 def test_sync_runtime_default_ops_equal():

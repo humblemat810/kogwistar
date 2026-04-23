@@ -1312,7 +1312,7 @@ class GraphKnowledgeEngine:
         if backend_factory is not None:
             if backend is not None:
                 raise ValueError("Backend factory and backend can only either be specified")
-            self.backend = _BackendCallBridge(backend_factory(self))
+            self.backend = backend_factory(self)
             if not hasattr(self, "meta_sqlite"):
                 self.meta_sqlite = EngineSQLite(
                     pathlib.Path(persist_directory or "./chroma_db"), "meta.sqlite"
@@ -1373,7 +1373,7 @@ class GraphKnowledgeEngine:
                 "edge_refs"
             )
             # Backend adapter (Phase 1: Chroma)
-            self.backend: StorageBackend = _BackendCallBridge(ChromaBackend(
+            self.backend: StorageBackend = ChromaBackend(
                 node_index_collection=self.node_index_collection,
                 node_collection=self.node_collection,
                 edge_collection=self.edge_collection,
@@ -1383,7 +1383,7 @@ class GraphKnowledgeEngine:
                 node_docs_collection=self.node_docs_collection,
                 node_refs_collection=self.node_refs_collection,
                 edge_refs_collection=self.edge_refs_collection,
-            ))
+            )
             self.meta_sqlite = EngineSQLite(
                 pathlib.Path(persist_directory or "./chroma_db"), "meta.sqlite"
             )
@@ -1395,7 +1395,7 @@ class GraphKnowledgeEngine:
                 raise Exception("unreacheable")
             else:
                 backend2: PgVectorBackend = backend  # let static checker happy
-            self.backend: StorageBackend = _BackendCallBridge(backend)
+            self.backend: StorageBackend = backend
             meta_postgre = EnginePostgresMetaStore(
                 engine=backend2.engine, schema=backend2.schema
             )
@@ -1593,7 +1593,7 @@ class GraphKnowledgeEngine:
 
     def check_document_exist(self, document_id: str | list[str]):
         doc_ids = [document_id] if type(document_id) is str else document_id
-        got = self.backend.document_get(ids=doc_ids, include=[])
+        got = run_awaitable_blocking(self.backend.document_get(ids=doc_ids, include=[]))
         return set(got["ids"]).union(set(document_id))
 
     def _fetch_document_text(self, document_id: str) -> str:
@@ -1724,10 +1724,10 @@ class GraphKnowledgeEngine:
         return self.read.list_edges_with_ref_filter(doc_id, where=where)
 
     def nodes_by_ids(self, node_ids):
-        return self.backend.node_get(ids=node_ids)
+        return run_awaitable_blocking(self.backend.node_get(ids=node_ids))
 
     def edges_by_ids(self, edge_ids):
-        return self.backend.edge_get(ids=edge_ids)
+        return run_awaitable_blocking(self.backend.edge_get(ids=edge_ids))
 
     def nodes_by_doc(self, doc_id: str, *, where: Optional[dict] = None) -> list[str]:
         return self.read.nodes_by_doc(doc_id, where=where)
@@ -1754,10 +1754,14 @@ class GraphKnowledgeEngine:
     # Vector queries
     # ----------------------------
     def vector_search_nodes(self, embedding: List[float], top_k: int = 5):
-        return self.backend.node_query(query_embeddings=[embedding], n_results=top_k)
+        return run_awaitable_blocking(
+            self.backend.node_query(query_embeddings=[embedding], n_results=top_k)
+        )
 
     def vector_search_edges(self, embedding: List[float], top_k: int = 5):
-        return self.backend.edge_query(query_embeddings=[embedding], n_results=top_k)
+        return run_awaitable_blocking(
+            self.backend.edge_query(query_embeddings=[embedding], n_results=top_k)
+        )
 
     def _choose_anchor(self, node_ids: list[str]) -> str:
         return self.adjudicate.choose_anchor(node_ids)

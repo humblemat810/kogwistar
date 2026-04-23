@@ -20,7 +20,7 @@ from kogwistar.runtime.runtime import (
 )
 import queue
 
-pytestmark = [pytest.mark.ci]
+pytestmark = [pytest.mark.ci, pytest.mark.runtime, pytest.mark.runtime_async]
 
 
 class _DummyCtx:

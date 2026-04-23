@@ -15,7 +15,7 @@ from kogwistar.runtime.models import (
 from tests._helpers.embeddings import ConstantEmbeddingFunction
 from tests._helpers.fake_backend import build_fake_backend
 
-pytestmark = [pytest.mark.workflow]
+pytestmark = [pytest.mark.workflow, pytest.mark.runtime]
 
 
 def _span(workflow_id: str) -> Span:

@@ -3,7 +3,7 @@ import asyncio
 import threading
 
 import pytest
-pytestmark = pytest.mark.core
+pytestmark = [pytest.mark.core, pytest.mark.runtime]
 import json
 from pathlib import Path
 import uuid

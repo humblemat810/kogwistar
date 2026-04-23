@@ -7,7 +7,7 @@ import re
 
 import pytest
 
-pytestmark = [pytest.mark.ci]
+pytestmark = [pytest.mark.ci, pytest.mark.runtime, pytest.mark.runtime_bridge_parity]
 
 
 SYNC_MODULE = "tests.runtime.test_sync_runtime_bijection_contract"

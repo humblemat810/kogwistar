@@ -1,6 +1,6 @@
 from __future__ import annotations
 import pytest
-pytestmark = pytest.mark.core
+pytestmark = [pytest.mark.core, pytest.mark.runtime]
 
 import shutil
 import uuid

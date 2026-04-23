@@ -5,7 +5,7 @@ import multiprocessing as mp
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 import pytest
-pytestmark = pytest.mark.core
+pytestmark = [pytest.mark.core, pytest.mark.runtime]
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.models import Span, Grounding

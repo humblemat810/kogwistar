@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Optional, Tuple
 
+from ..async_compat import run_awaitable_blocking
 from ...llm_tasks import ExtractGraphTaskRequest
 
 from ..models import (
@@ -86,8 +87,8 @@ class IngestSubsystem(NamespaceProxy):
         res["raw"] = raw
 
         if auto_adjudicate:
-            data = self._e.backend.node_get(
-                where={"doc_id": doc_id}, include=["documents"]
+            data = run_awaitable_blocking(
+                self._e.backend.node_get(where={"doc_id": doc_id}, include=["documents"])
             )
             buckets = {}
             for ndoc in data.get("documents") or []:

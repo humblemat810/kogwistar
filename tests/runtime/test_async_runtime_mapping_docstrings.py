@@ -5,7 +5,7 @@ import inspect
 
 import pytest
 
-pytestmark = [pytest.mark.ci]
+pytestmark = [pytest.mark.ci, pytest.mark.runtime, pytest.mark.runtime_async]
 
 
 MAPPINGS = [

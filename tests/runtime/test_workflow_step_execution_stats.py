@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 import pytest
 
-pytestmark = pytest.mark.core
+pytestmark = [pytest.mark.core, pytest.mark.runtime]
 
 from kogwistar.workflow.analytics import summarize_workflow_step_execution_stats
 

@@ -13,7 +13,7 @@ from kogwistar.runtime.replay import _apply_state_update
 from kogwistar.runtime.models import RunFailure, RunSuccess
 from kogwistar.runtime.runtime import RunResult, StepContext, WorkflowRuntime
 
-pytestmark = [pytest.mark.ci]
+pytestmark = [pytest.mark.ci, pytest.mark.runtime, pytest.mark.runtime_async]
 
 
 def test_async_runtime_default_ops_equal():

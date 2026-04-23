@@ -7,6 +7,7 @@ import json
 import math
 from typing import Any, List, Literal, Type, cast
 
+from ..async_compat import run_awaitable_blocking
 from ...id_provider import stable_id
 from ...extraction import BaseDocValidator
 from ...llm_tasks import ExtractGraphTaskRequest
@@ -719,14 +720,18 @@ class ExtractSubsystem(NamespaceProxy, ExtractLike):
         return [self.dealias_one_grounding(r, real_doc_id) for r in mentions]
 
     def fetch_document_text(self, document_id: str) -> str:
-        got = self._e.backend.document_get(ids=[document_id], include=["documents"])
+        got = run_awaitable_blocking(
+            self._e.backend.document_get(ids=[document_id], include=["documents"])
+        )
         if got and got.get("documents"):
             docs = got.get("documents")
             if docs:
                 return docs[0] or ""
             raise Exception("document lost")
-        got = self._e.backend.document_get(
-            where={"doc_id": document_id}, include=["documents"]
+        got = run_awaitable_blocking(
+            self._e.backend.document_get(
+                where={"doc_id": document_id}, include=["documents"]
+            )
         )
         if got and got.get("documents"):
             docs = got.get("documents")

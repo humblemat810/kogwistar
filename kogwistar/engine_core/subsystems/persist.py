@@ -551,7 +551,7 @@ class PersistSubsystem(NamespaceProxy):
                                 f"Incorrect span occur in grounding {str(g)} span {str(sp)}"
                             )
                 if mode == "skip-if-exists":
-                    got = self._e.backend.node_get(ids=[ln.id])
+                    got = run_awaitable_blocking(self._e.backend.node_get(ids=[ln.id]))
                     if got.get("ids"):
                         node_ids.append(ln.id)
                         continue
@@ -578,7 +578,7 @@ class PersistSubsystem(NamespaceProxy):
                                 f"Incorrect span occur in grounding {str(g)} span {str(sp)}"
                             )
                 if mode == "skip-if-exists":
-                    got = self._e.backend.edge_get(ids=[le.id])
+                    got = run_awaitable_blocking(self._e.backend.edge_get(ids=[le.id]))
                     if got.get("ids"):
                         edge_ids.append(le.id)
                         continue
@@ -628,7 +628,7 @@ class PersistSubsystem(NamespaceProxy):
                         for sp in mentions.spans:
                             span_validator.validate_span(span=sp)
                         n.mentions = [mentions]
-                        self._e.backend.node_update(
+                        run_awaitable_blocking(self._e.backend.node_update(
                             ids=[rid],
                             documents=[n.model_dump_json(field_mode="backend")],
                             metadatas=[
@@ -641,7 +641,7 @@ class PersistSubsystem(NamespaceProxy):
                                     "references": merged_json,
                                 }
                             ],
-                        )
+                        ))
                         self._e.write.index_node_docs(n)
                     continue
 
@@ -672,7 +672,7 @@ class PersistSubsystem(NamespaceProxy):
                         for sp in mentions.spans:
                             span_validator.validate_span(span=sp)
                         e.mentions = [mentions]
-                        self._e.backend.edge_update(
+                        run_awaitable_blocking(self._e.backend.edge_update(
                             ids=[rid],
                             documents=[e.model_dump_json(field_mode="backend")],
                             metadatas=[
@@ -685,7 +685,7 @@ class PersistSubsystem(NamespaceProxy):
                                     "references": merged_json,
                                 }
                             ],
-                        )
+                        ))
                         self._e.write.maybe_reindex_edge_refs(e)
                     continue
 
@@ -746,9 +746,9 @@ class PersistSubsystem(NamespaceProxy):
                 if repair_backend and op in ("ADD", "REPLACE"):
                     try:
                         if ek == "node":
-                            self._e.backend.node_delete(ids=[str(eid)])
+                            run_awaitable_blocking(self._e.backend.node_delete(ids=[str(eid)]))
                         elif ek == "edge":
-                            self._e.backend.edge_delete(ids=[str(eid)])
+                            run_awaitable_blocking(self._e.backend.edge_delete(ids=[str(eid)]))
                     except Exception:
                         pass
 

@@ -11,7 +11,7 @@ import pytest
 
 from kogwistar.typing_interfaces import EmbeddingFunctionLike
 
-pytestmark = pytest.mark.core
+pytestmark = [pytest.mark.core, pytest.mark.runtime]
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine # noqa E402
 from kogwistar.engine_core.postgres_backend import PgVectorBackend # noqa E402

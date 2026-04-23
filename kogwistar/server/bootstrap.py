@@ -236,6 +236,8 @@ def build_graph_engine(
                 )
             )
 
+            from kogwistar.engine_core.chroma_backend import AsyncChromaBackend
+
             def _make_backend(_engine: GraphKnowledgeEngine) -> ChromaBackend:
                 collections = {
                     "node_index": run_awaitable_blocking(
@@ -287,7 +289,7 @@ def build_graph_engine(
                         client.get_or_create_collection(name="edge_refs")
                     ),
                 }
-                return ChromaBackend(
+                return AsyncChromaBackend(
                     node_index_collection=collections["node_index"],
                     node_collection=collections["node"],
                     edge_collection=collections["edge"],
