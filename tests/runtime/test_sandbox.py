@@ -1,5 +1,6 @@
 import pytest
 pytestmark = [pytest.mark.ci_full, pytest.mark.runtime]
+import importlib.util
 import subprocess
 from unittest.mock import MagicMock, patch
 from kogwistar.runtime.sandbox import (
@@ -14,6 +15,9 @@ from kogwistar.runtime.sandbox import (
 from kogwistar.runtime.resolvers import MappingStepResolver
 from kogwistar.runtime.models import RunSuccess, RunFailure
 from kogwistar.runtime.runtime import StepContext
+
+
+HAS_BOTO3 = importlib.util.find_spec("boto3") is not None
 
 
 def test_local_sandbox_basic():
@@ -79,7 +83,12 @@ def test_sandbox_factory(sandbox_type, config, expected_class):
                 json=lambda: {"status": "success", "state_update": []}, status_code=200
             ),
         ),
-        (LambdaSandbox, "boto3.client", MagicMock()),
+        pytest.param(
+            LambdaSandbox,
+            "boto3.client",
+            MagicMock(),
+            marks=pytest.mark.skipif(not HAS_BOTO3, reason="boto3 not installed"),
+        ),
         (
             CloudFunctionSandbox,
             "requests.post",

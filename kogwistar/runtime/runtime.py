@@ -2928,6 +2928,7 @@ class WorkflowRuntime(BaseRuntime):
             properties={},
             metadata={
                 "entity_type": "workflow_run",
+                "doc_id": f"wf_run|{run_id}",
                 "workflow_id": workflow_id,
                 "workflow_version": "v1",
                 "run_id": run_id,

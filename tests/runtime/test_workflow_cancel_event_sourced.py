@@ -242,18 +242,13 @@ def test_runtime_event_sourced_cancel_reconciles_and_replay_is_stable(backend_ki
         assert run_result.status == "cancelled"
         assert run_result.final_state.get("op_log") == ["trigger_cancel"]
 
-        cancel_req_nodes = conversation_engine.get_nodes(
-            where={
-                "$and": [{"entity_type": "workflow_cancel_request"}, {"run_id": run_id}]
-            },
-            limit=10,
-        )
+        cancel_req_id = f"wf_cancel_req|{run_id}"
+        cancel_req_nodes = conversation_engine.read.get_nodes(ids=[cancel_req_id])
         assert len(cancel_req_nodes) == 1
+        assert str(cancel_req_nodes[0].id) == cancel_req_id
 
-        cancel_nodes = conversation_engine.get_nodes(
-            where={"$and": [{"entity_type": "workflow_cancelled"}, {"run_id": run_id}]},
-            limit=10,
-        )
+        cancel_node_id = f"wf_cancelled|{run_id}"
+        cancel_nodes = conversation_engine.read.get_nodes(ids=[cancel_node_id])
         assert len(cancel_nodes) == 1
         cancel_meta = cancel_nodes[0].metadata or {}
         assert int(cancel_meta.get("accepted_step_seq", -1)) == 0
