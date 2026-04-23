@@ -139,10 +139,19 @@ DEFAULT_CAPABILITIES: frozenset[str] = frozenset()
 
 
 # Context var to expose claims in any handler/tool
-claims_ctx: contextvars.ContextVar[dict | None] = contextvars.ContextVar(
-    "claims", default=None
-)
-current_role: ContextVar[str] = ContextVar("current_role", default=Role.RO.value)
+_existing_claims_ctx = globals().get("claims_ctx")
+if isinstance(_existing_claims_ctx, contextvars.ContextVar):
+    claims_ctx = _existing_claims_ctx
+else:
+    claims_ctx: contextvars.ContextVar[dict | None] = contextvars.ContextVar(
+        "claims", default=None
+    )
+
+_existing_current_role = globals().get("current_role")
+if isinstance(_existing_current_role, ContextVar):
+    current_role = _existing_current_role
+else:
+    current_role: ContextVar[str] = ContextVar("current_role", default=Role.RO.value)
 
 
 def _extract_bearer(scope: Scope) -> str | None:
