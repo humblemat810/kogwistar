@@ -8,7 +8,6 @@ from typing import Any
 
 import pytest
 import requests
-from jose import jwt
 
 from kogwistar.conversation.agentic_answering_design import (
     AGENTIC_ANSWERING_WORKFLOW_ID,
@@ -18,6 +17,11 @@ from kogwistar.conversation.agentic_answering_design import (
     build_agentic_answering_frontend_payload,
 )
 from kogwistar.runtime.models import WorkflowDesignArtifact
+from tests._helpers.server_http_helpers import auth_header_from_token
+from tests._helpers.server_http_helpers import decode_token_subject
+from tests._helpers.server_http_helpers import mint_dev_token_http
+from tests._helpers.server_wait_helpers import wait_for_health as _wait_for_health
+from tests._helpers.server_wait_helpers import wait_for_run_terminal as _wait_for_run_terminal
 from tests._helpers.span_consistent_seed import build_span_consistent_debug_rag_seed
 
 pytest.importorskip("fastapi")
@@ -31,71 +35,23 @@ def _manual_base_url() -> str:
     return os.environ.get("KOGWISTAR_MANUAL_BASE_URL", "http://127.0.0.1:28110")
 
 
-def _wait_for_health(
-    session: requests.Session, base_url: str, timeout_s: float = 5.0
-) -> None:
-    deadline = time.time() + timeout_s
-    last_error: Exception | None = None
-    while time.time() < deadline:
-        try:
-            resp = session.get(f"{base_url}/health", timeout=1.0)
-            if resp.ok:
-                return
-        except Exception as exc:  # noqa: BLE001
-            last_error = exc
-        time.sleep(0.25)
-    raise RuntimeError(
-        f"Manual server at {base_url} is not healthy. "
-        f"Start `knowledge-mcp` first or set KOGWISTAR_MANUAL_BASE_URL. "
-        f"Last error: {last_error}"
-    )
-
-
 def _dev_token(
     session: requests.Session, base_url: str, *, role: str, ns: str = "conversation"
 ) -> tuple[str, str]:
     username = "manual-e2e"
-    resp = session.post(
-        f"{base_url}/auth/dev-token",
-        json={"username": username, "role": role, "ns": ns},
-        timeout=10.0,
+    token = mint_dev_token_http(
+        session,
+        base_url,
+        role=role,
+        ns=ns,
+        username=username,
     )
-    resp.raise_for_status()
-    token = str(resp.json()["token"])
-    subject = str(jwt.get_unverified_claims(token).get("sub") or username)
+    subject = decode_token_subject(token, default=username)
     return token, subject
 
 
 def _auth_headers(token: str) -> dict[str, str]:
-    return {"Authorization": f"Bearer {token}"}
-
-
-def _wait_for_run_terminal(
-    session: requests.Session,
-    base_url: str,
-    run_id: str,
-    headers: dict[str, str],
-    *,
-    timeout_s: float = 120.0,
-) -> dict[str, Any]:
-    deadline = time.time() + timeout_s
-    while time.time() < deadline:
-        try:
-            resp = session.get(
-                f"{base_url}/api/runs/{run_id}",
-                headers=headers,
-                timeout=(20.0, 10000.0),
-            )
-            resp.raise_for_status()
-            payload = resp.json()
-            if payload.get("status") in {"succeeded", "failed", "cancelled"}:
-                return payload
-
-        except requests.RequestException:
-            if time.time() >= deadline:
-                raise
-        time.sleep(0.5)
-    raise AssertionError(f"Run {run_id} did not reach a terminal status within {timeout_s}s")
+    return auth_header_from_token(token)
 
 
 def _node_op(node: dict[str, Any]) -> str:

@@ -8,53 +8,13 @@ from pathlib import Path
 
 from kogwistar.conversation.service import ConversationService
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
-from kogwistar.engine_core.models import (
-    Grounding,
-    MentionVerification,
-    Span,
-)
 from kogwistar.id_provider import stable_id
 from kogwistar.runtime.models import RunSuccess, WorkflowEdge, WorkflowNode
 from kogwistar.runtime.replay import replay_to
 from kogwistar.runtime.runtime import WorkflowRuntime
+from tests._helpers.engine_factories import FakeEmbeddingFunction
 from tests._helpers.fake_backend import build_fake_backend
-
-
-class FakeEmbeddingFunction:
-    @staticmethod
-    def name() -> str:
-        return "default"
-
-    def __init__(self, dim: int = 8):
-        self._dim = dim
-        self.is_legacy = False
-
-    def __call__(self, input):
-        return [[0.01] * self._dim for _ in input]
-
-
-def _span() -> Span:
-    return Span(
-        collection_page_url="test",
-        document_page_url="test",
-        doc_id="test",
-        insertion_method="test",
-        page_number=1,
-        start_char=0,
-        end_char=4,
-        excerpt="test",
-        context_before="",
-        context_after="",
-        chunk_id=None,
-        source_cluster_id=None,
-        verification=MentionVerification(
-            method="human", is_verified=True, score=1.0, notes="test"
-        ),
-    )
-
-
-def _g() -> Grounding:
-    return Grounding(spans=[_span()])
+from tests._helpers.workflow_builders import build_workflow_edge, build_workflow_node
 
 
 def _wf_node(
@@ -65,26 +25,13 @@ def _wf_node(
     start: bool = False,
     terminal: bool = False,
 ) -> WorkflowNode:
-    return WorkflowNode(
-        id=node_id,
+    return build_workflow_node(
+        workflow_id=workflow_id,
+        node_id=node_id,
+        op=op,
         label=node_id.split("|")[-1],
-        type="entity",
-        doc_id=node_id,
-        summary=op,
-        mentions=[_g()],
-        properties={},
-        metadata={
-            "entity_type": "workflow_node",
-            "workflow_id": workflow_id,
-            "wf_op": op,
-            "wf_start": start,
-            "wf_terminal": terminal,
-            "wf_version": "v1",
-        },
-        domain_id=None,
-        canonical_entity_id=None,
-        level_from_root=0,
-        embedding=None,
+        start=start,
+        terminal=terminal,
     )
 
 
@@ -98,29 +45,14 @@ def _wf_edge(
     priority: int = 100,
     is_default: bool = True,
 ) -> WorkflowEdge:
-    return WorkflowEdge(
-        id=edge_id,
-        source_ids=[src],
-        target_ids=[dst],
-        relation="wf_next",
-        label="wf_next",
-        type="relationship",
-        summary="next",
-        doc_id=workflow_id,
-        mentions=[_g()],
-        properties={},
-        metadata={
-            "entity_type": "workflow_edge",
-            "workflow_id": workflow_id,
-            "wf_priority": priority,
-            "wf_is_default": is_default,
-            "wf_predicate": predicate,
-            "wf_multiplicity": "one",
-        },
-        source_edge_ids=[],
-        target_edge_ids=[],
-        domain_id=None,
-        canonical_entity_id=None,
+    return build_workflow_edge(
+        workflow_id=workflow_id,
+        edge_id=edge_id,
+        src=src,
+        dst=dst,
+        predicate=predicate,
+        priority=priority,
+        is_default=is_default,
     )
 
 

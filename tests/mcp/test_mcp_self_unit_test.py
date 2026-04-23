@@ -9,6 +9,8 @@ import requests
 
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
+from tests._helpers.server_http_helpers import mint_dev_token_http
+from tests.graph_sample_data import build_small_test_docs_nodes_edge_adjudcate
 from tests.net_helpers import pick_free_port
 
 
@@ -128,19 +130,20 @@ def base_mcp(base_http: str) -> str:
     return f"{base_http}/mcp"
 
 
-def _dev_token(base_http: str, role: str, ns: str = "docs") -> str:
-    return requests.post(
-        f"{base_http}/auth/dev-token",
-        json={"username": "e2e", "role": role, "ns": ns},
-        timeout=20,
-    ).json()["token"]
-
-
 def test_rollback_doc_node_edge_adjudicate(
-    base_http: str, small_test_docs_nodes_edge_adjudcate
+    base_http: str,
 ):
     """Best-effort cleanup for local iteration."""
-    rw_token = _dev_token(base_http, "rw", ns="docs")
+    small_test_docs_nodes_edge_adjudcate = build_small_test_docs_nodes_edge_adjudcate()
+    with requests.Session() as session:
+        rw_token = mint_dev_token_http(
+            session,
+            base_http,
+            role="rw",
+            ns="docs",
+            username="e2e",
+            timeout=20,
+        )
     for doc_id in small_test_docs_nodes_edge_adjudcate["docs"]:
         requests.delete(
             f"{base_http}/admin/doc/{doc_id}",
@@ -152,7 +155,7 @@ def test_rollback_doc_node_edge_adjudicate(
 @pytest.mark.manual
 @pytest.mark.asyncio
 async def test_doc_node_edge_adjudicate(
-    base_http: str, base_mcp: str, small_test_docs_nodes_edge_adjudcate
+    base_http: str, base_mcp: str
 ):
     """E2E seam test:
 
@@ -161,14 +164,30 @@ async def test_doc_node_edge_adjudicate(
     3) Call kg_crossdoc_adjudicate_anykind as RW (smoke).
     """
 
-    bundle = small_test_docs_nodes_edge_adjudcate
+    bundle = build_small_test_docs_nodes_edge_adjudcate()
     docs: Dict[str, str] = bundle["docs"]
     nodes: List[Dict[str, Any]] = bundle["nodes"]
     edges: List[Dict[str, Any]] = bundle["edges"]
     insertion_method = "llm_graph_extraction"
 
-    rw_token = _dev_token(base_http, "rw", ns="docs")
-    ro_token = _dev_token(base_http, "ro", ns="docs")
+    with requests.Session() as session:
+        rw_token = mint_dev_token_http(
+            session,
+            base_http,
+            role="rw",
+            ns="docs",
+            username="e2e",
+            timeout=20,
+        )
+    with requests.Session() as session:
+        ro_token = mint_dev_token_http(
+            session,
+            base_http,
+            role="ro",
+            ns="docs",
+            username="e2e",
+            timeout=20,
+        )
 
     def _subset_for_doc(
         items: List[Dict[str, Any]], doc_id: str

@@ -7,9 +7,10 @@ import pytest
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.engine_postgres_meta import EnginePostgresMetaStore
-from kogwistar.engine_core.models import Grounding, Node, Span
+from kogwistar.engine_core.models import Node
 from kogwistar.server.run_registry import RunRegistry
 from tests._kg_factories import kg_document
+from tests._helpers.graph_builders import build_entity_node
 from tests.core._async_chroma_real import (
     make_real_async_chroma_backend,
     make_real_async_chroma_uow,
@@ -32,26 +33,14 @@ class _AsyncEmbeddingFunction:
             vectors.append([base, base + 1.0, base + 2.0])
         return vectors
 
-
-def _mk_span(doc_id: str) -> Span:
-    span = Span.from_dummy_for_conversation()
-    span.doc_id = doc_id
-    return span
-
-
 def _mk_node(*, node_id: str, doc_id: str, summary: str) -> Node:
-    return Node(
-        id=node_id,
-        label=node_id,
-        type="entity",
-        summary=summary,
+    return build_entity_node(
+        node_id=node_id,
         doc_id=doc_id,
-        mentions=[Grounding(spans=[_mk_span(doc_id)])],
-        metadata={"entity_type": "concept", "level_from_root": 0},
+        label=node_id,
+        summary=summary,
+        entity_type="concept",
         embedding=None,
-        level_from_root=0,
-        domain_id=None,
-        canonical_entity_id=None,
         properties=None,
     )
 

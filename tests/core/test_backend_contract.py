@@ -3,8 +3,14 @@ from __future__ import annotations
 import pytest
 
 from kogwistar.conversation.models import ConversationEdge, ConversationNode, ConversationRole
-from kogwistar.engine_core.models import Edge, Grounding, Node, Span
+from kogwistar.engine_core.models import Edge, Grounding, Node
+from kogwistar.id_provider import stable_id
 from kogwistar.server.run_registry import RunRegistry
+from tests._helpers.graph_builders import (
+    build_entity_node,
+    build_relationship_edge,
+    mk_conversation_grounding,
+)
 from tests.conftest import _make_engine_pair
 from tests.core._async_chroma_real import (
     make_real_async_chroma_backend,
@@ -23,13 +29,6 @@ BACKEND_PARAMS = [
     pytest.param("pg", id="pg", marks=pytest.mark.ci_full),
 ]
 
-
-def _mk_span(doc_id: str) -> Span:
-    span = Span.from_dummy_for_conversation()
-    span.doc_id = doc_id
-    return span
-
-
 def _mk_node(
     *,
     node_id: str,
@@ -37,18 +36,13 @@ def _mk_node(
     entity_type: str,
     embedding: list[float],
 ) -> Node:
-    return Node(
-        id=node_id,
-        label=node_id,
-        type="entity",
-        summary=node_id,
+    return build_entity_node(
+        node_id=node_id,
         doc_id=doc_id,
-        mentions=[Grounding(spans=[_mk_span(doc_id)])],
-        metadata={"entity_type": entity_type, "level_from_root": 0},
+        label=node_id,
+        summary=node_id,
+        entity_type=entity_type,
         embedding=embedding,
-        level_from_root=0,
-        domain_id=None,
-        canonical_entity_id=None,
         properties=None,
     )
 
@@ -61,23 +55,19 @@ def _mk_edge(
     doc_id: str,
     relation: str = "related_to",
 ) -> Edge:
-    return Edge(
-        id=edge_id,
+    return build_relationship_edge(
+        edge_id=edge_id,
+        src=src,
+        tgt=tgt,
+        doc_id=doc_id,
         label=edge_id,
-        type="relationship",
         summary=edge_id,
         relation=relation,
-        source_ids=[src],
-        target_ids=[tgt],
+        entity_type="relationship",
+        embedding=[0.0, 0.0, 1.0],
+        properties=None,
         source_edge_ids=[],
         target_edge_ids=[],
-        doc_id=doc_id,
-        mentions=[Grounding(spans=[_mk_span(doc_id)])],
-        metadata={"entity_type": "relationship", "level_from_root": 0},
-        embedding=[0.0, 0.0, 1.0],
-        domain_id=None,
-        canonical_entity_id=None,
-        properties=None,
     )
 
 def _mk_turn(
@@ -94,7 +84,7 @@ def _mk_turn(
         label=turn_id,
         type="entity",
         summary=f"{role}:{turn_index}",
-        mentions=[Grounding(spans=[_mk_span(doc_id)])],
+        mentions=[mk_conversation_grounding(doc_id)],
         doc_id=doc_id,
         metadata={
             "entity_type": f"{role}_turn",
@@ -122,11 +112,13 @@ def _mk_next_turn_edge(
 ) -> ConversationEdge:
     doc_id = f"conv:{conversation_id}"
     return ConversationEdge(
-        id=None,
+        id=str(
+            stable_id("conversation.edge", conversation_id, "next_turn", src, tgt)
+        ),
         label="next_turn",
         type="relationship",
         summary="Sequential flow",
-        mentions=[Grounding(spans=[_mk_span(doc_id)])],
+        mentions=[mk_conversation_grounding(doc_id)],
         doc_id=doc_id,
         source_ids=[src],
         target_ids=[tgt],
@@ -146,11 +138,13 @@ def _mk_dependency_edge(
 ) -> ConversationEdge:
     doc_id = f"conv:{conversation_id}"
     return ConversationEdge(
-        id=None,
+        id=str(
+            stable_id("conversation.edge", conversation_id, "depends_on", src, tgt)
+        ),
         label="depends_on",
         type="relationship",
         summary="Dependency",
-        mentions=[Grounding(spans=[_mk_span(doc_id)])],
+        mentions=[mk_conversation_grounding(doc_id)],
         doc_id=doc_id,
         source_ids=[src],
         target_ids=[tgt],

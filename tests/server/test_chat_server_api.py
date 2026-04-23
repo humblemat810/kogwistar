@@ -42,21 +42,13 @@ from kogwistar.server.chat_service import (
     RuntimeRunRequest,
 )
 from kogwistar.server.run_registry import RunRegistry
+from tests._helpers.engine_factories import FakeEmbeddingFunction
+from tests._helpers.server_fixtures import build_engine_triplet
+from tests._helpers.server_http_helpers import token_header
 
 pytestmark = pytest.mark.ci_full
 
-
-class FakeEmbeddingFunction:
-    @staticmethod
-    def name() -> str:
-        return "default"
-
-    def __init__(self, dim: int = 384):
-        self._dim = dim
-        self.is_legacy = False
-
-    def __call__(self, input):
-        return [[0.01] * self._dim for _ in input]
+_token_header = token_header
 
 
 class _FixedResource:
@@ -76,23 +68,7 @@ def engine_triplet():
     root.mkdir(parents=True, exist_ok=True)
     try:
         ef = FakeEmbeddingFunction()
-        yield (
-            GraphKnowledgeEngine(
-                persist_directory=str(root / "kg"),
-                kg_graph_type="knowledge",
-                embedding_function=ef,
-            ),
-            GraphKnowledgeEngine(
-                persist_directory=str(root / "conversation"),
-                kg_graph_type="conversation",
-                embedding_function=ef,
-            ),
-            GraphKnowledgeEngine(
-                persist_directory=str(root / "workflow"),
-                kg_graph_type="workflow",
-                embedding_function=ef,
-            ),
-        )
+        yield build_engine_triplet(root=root, embedding_function=ef)
     finally:
         shutil.rmtree(root, ignore_errors=True)
 
@@ -135,23 +111,6 @@ def _configure_server(
         server.app.router, "lifespan_context", _noop_lifespan, raising=False
     )
     return service, registry
-
-
-def _token_header(
-    client: TestClient,
-    *,
-    role: str,
-    ns: str,
-    username: str = "tester",
-    capabilities: str | None = None,
-) -> dict[str, str]:
-    payload = {"username": username, "role": role, "ns": ns}
-    if capabilities is not None:
-        payload["capabilities"] = capabilities
-    resp = client.post("/auth/dev-token", json=payload)
-    resp.raise_for_status()
-    token = resp.json()["token"]
-    return {"Authorization": f"Bearer {token}"}
 
 
 def _wait_for_status(
@@ -227,7 +186,7 @@ def test_document_upsert_tree_uses_document_graph_extraction_entrypoint(
     )
 
     with TestClient(server.app) as client:
-        headers = _token_header(client, role="rw", ns="docs,conversation,workflow")
+        headers = token_header(client, role="rw", ns="docs,conversation,workflow")
         resp = client.post(
             "/api/document.upsert_tree",
             json={

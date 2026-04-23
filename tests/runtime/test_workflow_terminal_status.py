@@ -29,6 +29,7 @@ from kogwistar.runtime.models import ( # noqa E402
     WorkflowNode, # noqa E402
 ) # noqa E402
 from kogwistar.runtime.runtime import WorkflowRuntime # noqa E402
+from tests._helpers.engine_factories import FakeEmbeddingFunction # noqa E402
 from tests._helpers.fake_backend import build_fake_backend # noqa E402
 from tests.conftest import _is_missing_pgvector_extension # noqa E402
 from tests.core._async_chroma_real import ( # noqa E402
@@ -36,20 +37,6 @@ from tests.core._async_chroma_real import ( # noqa E402
     real_chroma_server, # noqa E402
 ) # noqa E402
 from kogwistar.engine_core.async_compat import run_awaitable_blocking # noqa E402
-
-
-class FakeEmbeddingFunction:
-    @staticmethod
-    def name() -> str:
-        return "default"
-
-    def __init__(self, dim: int = 8):
-        self._dim = dim
-        self.is_legacy = False
-
-    def __call__(self, input):
-        return [[0.01] * self._dim for _ in input]
-
 
 def _span() -> Span:
     return Span(

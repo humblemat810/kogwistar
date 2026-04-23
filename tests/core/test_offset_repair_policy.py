@@ -9,25 +9,9 @@ import pytest
 pytestmark = pytest.mark.ci
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
-
-class EmbeddingFunction:  # type: ignore
-    @staticmethod
-    def name() -> str:
-        return "default"
-
-Embeddings = list[list[float]]  # type: ignore
+from tests._helpers.embeddings import ConstantEmbeddingFunction
 
 
-class FakeEmbeddingFunction(EmbeddingFunction):
-    @staticmethod
-    def name() -> str:
-        return "default"
-
-    def __init__(self, dim: int = 384):
-        self._dim = dim
-
-    def __call__(self, input: Sequence[str]) -> Embeddings:
-        return [[0.01] * self._dim for _ in input]
 class FakeBackend:
     def __init__(self, engine):
         self._engine = engine
@@ -56,8 +40,8 @@ def engine():
     eng = GraphKnowledgeEngine(
         persist_directory=str(persist_dir),
         embedding_cache_path=str(persist_dir / "emb_cache"),
-        embedding_function=FakeEmbeddingFunction(),
-        backend_factory = FakeBackend
+        embedding_function=ConstantEmbeddingFunction(),
+        backend_factory=FakeBackend,
     )
     try:
         yield eng

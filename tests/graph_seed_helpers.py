@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Optional, Sequence
 
 from kogwistar.conversation.models import ConversationEdge, ConversationNode
@@ -508,3 +509,145 @@ def seed_conversation_graph(
         "summary_id": summ.id,
         "kg_ref_id": kg_ref_node.id,
     }
+
+
+def seed_kg_and_conversation_bundle(
+    *,
+    kg_engine: GraphKnowledgeEngine,
+    conversation_engine: GraphKnowledgeEngine,
+    kg_doc_id: str = "D_KG_001",
+    user_id: str = "U_TEST",
+    conversation_id: str = "CONV_TEST_001",
+    start_node_id: str = "CONV_START_001",
+) -> tuple[
+    GraphKnowledgeEngine,
+    GraphKnowledgeEngine,
+    dict[str, Any],
+    dict[str, Any],
+    Path,
+    Path,
+]:
+    kg_seed = seed_kg_graph(kg_engine=kg_engine, kg_doc_id=kg_doc_id)
+    conv_seed = seed_conversation_graph(
+        conversation_engine=conversation_engine,
+        user_id=user_id,
+        conversation_id=conversation_id,
+        start_node_id=start_node_id,
+        kg_seed=kg_seed,
+    )
+    kg_dir = Path(getattr(kg_engine, "persist_directory", "./kg"))
+    conv_dir = Path(getattr(conversation_engine, "persist_directory", "./conv"))
+    return kg_engine, conversation_engine, kg_seed, conv_seed, kg_dir, conv_dir
+
+
+def seed_kg_and_conversation_bundle_for_backend(
+    *,
+    backend_kind: str,
+    tmp_path: Path,
+    request: Any | None = None,
+    kg_doc_id: str = "KG_DOC",
+    user_id: str = "U_TEST",
+    conversation_id: str = "CONV_TEST_001",
+    start_node_id: str = "CONV_START_001",
+    dim: int = 3,
+    legacy_bundle: bool = False,
+):
+    from tests.conftest import _make_engine_pair
+
+    if backend_kind == "pg":
+        if request is None:
+            raise ValueError("request is required for pg backend setup")
+        sa_engine = request.getfixturevalue("sa_engine")
+        pg_schema = request.getfixturevalue("pg_schema")
+    else:
+        sa_engine = None
+        pg_schema = None
+
+    kg_engine, conv_engine = _make_engine_pair(
+        backend_kind=backend_kind,
+        tmp_path=tmp_path,
+        sa_engine=sa_engine,
+        pg_schema=pg_schema,
+        dim=dim,
+    )
+    if legacy_bundle:
+        t0_text = "show me what happened in the graph engine"
+
+        def _span():
+            return Span(
+                collection_page_url="test",
+                document_page_url="test",
+                doc_id="seed",
+                insertion_method="pytest-seed",
+                page_number=1,
+                start_char=0,
+                end_char=1,
+                excerpt=t0_text,
+                context_before="",
+                context_after="",
+                chunk_id=None,
+                source_cluster_id=None,
+                verification=MentionVerification(
+                    method="human", is_verified=True, score=1.0, notes="seed"
+                ),
+            )
+
+        g = Grounding(spans=[_span()])
+
+        def _node(i: str, emb):
+            return Node(
+                id=i,
+                label=i,
+                type="entity",
+                doc_id="KG_DOC",
+                summary=i,
+                mentions=[g],
+                properties={},
+                metadata={"name": i},
+                domain_id=None,
+                canonical_entity_id=None,
+                embedding=emb,
+                level_from_root=0,
+            )
+
+        kg_engine.write.add_node(_node("A", [1.0, 0.0, 0.0]))
+        kg_engine.write.add_node(_node("B", [0.9, 0.1, 0.0]))
+        kg_engine.write.add_node(_node("C", [0.0, 1.0, 0.0]))
+
+        conv_n = ConversationNode(
+            id="conv|turn|1",
+            label="turn1",
+            type="entity",
+            doc_id="CONV_DOC",
+            summary="turn1",
+            mentions=[g],
+            properties={"refers_to_id": "A"},
+            domain_id=None,
+            canonical_entity_id=None,
+            metadata={
+                "entity_type": "conversation_turn",
+                "level_from_root": 0,
+                "in_conversation_chain": True,
+            },
+            role="user",  # type: ignore
+            turn_index=0,
+            conversation_id=conversation_id,
+            embedding=[0.0, 2.1, 0.18],
+            level_from_root=0,
+        )
+        conv_engine.write.add_node(conv_n)
+        kg_dir = Path(getattr(kg_engine, "persist_directory", str(tmp_path / "kg")))
+        conv_dir = Path(
+            getattr(conv_engine, "persist_directory", str(tmp_path / "conv"))
+        )
+        kg_seed = {"node_ids": ["A", "B", "C"]}
+        conv_seed = {"node_ids": ["conv|turn|1"]}
+        return kg_engine, conv_engine, kg_seed, conv_seed, kg_dir, conv_dir
+    return seed_kg_and_conversation_bundle(
+        kg_engine=kg_engine,
+        conversation_engine=conv_engine,
+        kg_doc_id=kg_doc_id,
+        user_id=user_id,
+        conversation_id=conversation_id,
+        start_node_id=start_node_id,
+    )

@@ -36,33 +36,6 @@ class FakeConversationEngine:
         return self._tail
 
 
-from typing import Sequence, Callable
-from chromadb.utils.embedding_functions import EmbeddingFunction
-from chromadb.api.types import Embeddings
-
-
-class FakeEmbeddingFunction(EmbeddingFunction):
-    @staticmethod
-    def name() -> str:
-        return "default"
-
-    def __init__(self, model_name: str = "all-minilm:l6-v2", dim=3):
-
-        def ef(prompts: Sequence[str]) -> Embeddings:
-            res: Embeddings = []
-            for p in prompts:
-                # Boundary: ollama types are weak -> cast once.
-                r = [0.01] * dim
-
-                res.append(r)
-            return res
-
-        self._emb: Callable[[Sequence[str]], Embeddings] = ef
-
-    def __call__(self, documents_or_texts: Sequence[str]) -> Embeddings:
-        return self._emb(documents_or_texts)
-
-
 # def _make_engine_pair(*, backend_kind: str, tmp_path, sa_engine, pg_schema, dim: int = 3):
 #     """
 #     Build (kg_engine, conv_engine) for either chroma or the pg-backed path.

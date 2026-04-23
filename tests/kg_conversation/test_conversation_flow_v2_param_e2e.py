@@ -8,8 +8,6 @@ from joblib import Memory
 
 pytest.importorskip("chromadb")
 pytest.importorskip("langchain_core")
-from chromadb.utils.embedding_functions import EmbeddingFunction
-from chromadb.api.types import Embeddings
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage
@@ -41,8 +39,9 @@ from kogwistar.engine_core.models import (
     Node,
     Span,
     Grounding,
-    MentionVerification,
 )
+from tests._helpers.engine_factories import FakeEmbeddingFunction
+from tests._helpers.graph_builders import mk_excerpt_span as _mk_span
 
 pytestmark = [
     pytest.mark.conversation,
@@ -62,18 +61,6 @@ R = TypeVar("R")
 
 def cached(memory: Memory, fn: Callable[P, R], *args, **kwargs) -> Callable[P, R]:
     return cast(Callable[P, R], memory.cache(fn, *args, **kwargs))
-
-
-class FakeEmbeddingFunction(EmbeddingFunction):
-    @staticmethod
-    def name() -> str:
-        return "default"
-
-    def __init__(self, dim: int = 8):
-        self._dim = dim
-
-    def __call__(self, documents_or_texts: Sequence[str]) -> Embeddings:
-        return cast(Embeddings, [[0.01] * self._dim for _ in documents_or_texts])
 
 
 class DeterministicLLM(BaseChatModel):
@@ -313,26 +300,6 @@ def _make_engine(
         return engine
 
     raise ValueError(f"unknown backend_kind: {backend_kind!r}")
-
-
-def _mk_span(excerpt: str) -> Span:
-    return Span(
-        doc_id="D:test",
-        chunk_id=None,
-        source_cluster_id=None,
-        verification=MentionVerification(
-            method="human", is_verified=True, score=1.0, notes="test"
-        ),
-        collection_page_url="url",
-        document_page_url="url",
-        insertion_method="test",
-        page_number=1,
-        start_char=0,
-        end_char=len(excerpt),
-        excerpt=excerpt,
-        context_before="",
-        context_after="",
-    )
 
 
 def add_knowledge_apple(kg: GraphKnowledgeEngine, *, dim: int) -> dict[str, Any]:

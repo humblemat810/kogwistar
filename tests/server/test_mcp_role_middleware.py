@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
 from contextlib import contextmanager
 
 import pytest
@@ -75,7 +76,7 @@ def _patched_stream_route(app: FastAPI, path: str):
 
 
 def test_mcp_role_middleware_allows_real_app_streaming_routes():
-    app = server.app
+    app = importlib.reload(server).app
     with _patched_stream_route(app, "/__test__/stream"):
         with TestClient(app) as client:
             with client.stream("GET", "/__test__/stream") as resp:

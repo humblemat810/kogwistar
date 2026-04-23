@@ -5,56 +5,35 @@ import pytest
 pytestmark = pytest.mark.ci_full
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
-from kogwistar.engine_core.models import Node, Edge, Grounding, Span
+from kogwistar.engine_core.models import Node, Edge
 from tests.conftest import FakeEmbeddingFunction
+from tests._helpers.graph_builders import build_entity_node, build_relationship_edge
 
 EMBEDDING_DIM = 3
 TEST_EMBEDDING = FakeEmbeddingFunction(dim=EMBEDDING_DIM)
 
-
-def _mk_span(doc_id: str) -> Span:
-    sp = Span.from_dummy_for_document()
-    sp.doc_id = doc_id
-    return sp
-
-
 def _mk_node(node_id: str, *, doc_id: str, label: str) -> Node:
-    return Node(
-        id=node_id,
-        label=label,
-        type="entity",
-        summary=f"Summary {node_id}",
+    return build_entity_node(
+        node_id=node_id,
         doc_id=doc_id,
-        mentions=[Grounding(spans=[_mk_span(doc_id)])],
-        metadata={"level_from_root": 0, "entity_type": "kg_entity"},
+        label=label,
         embedding=[0.1] * EMBEDDING_DIM,
-        level_from_root=0,
-        domain_id=None,
-        canonical_entity_id=None,
-        properties=None,
     )
 
 
 def _mk_edge(
     edge_id: str, *, doc_id: str, label: str, source_id: str, target_id: str
 ) -> Edge:
-    return Edge(
-        id=edge_id,
+    return build_relationship_edge(
+        edge_id=edge_id,
+        src=source_id,
+        tgt=target_id,
+        doc_id=doc_id,
         label=label,
-        type="relationship",
-        summary=f"Summary {edge_id}",
-        relation="related_to",
-        source_ids=[source_id],
-        target_ids=[target_id],
+        entity_type="kg_edge",
+        embedding=[0.1] * EMBEDDING_DIM,
         source_edge_ids=[],
         target_edge_ids=[],
-        doc_id=doc_id,
-        mentions=[Grounding(spans=[_mk_span(doc_id)])],
-        metadata={"level_from_root": 0, "entity_type": "kg_edge"},
-        embedding=[0.1] * EMBEDDING_DIM,
-        domain_id=None,
-        canonical_entity_id=None,
-        properties=None,
     )
 
 
