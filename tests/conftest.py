@@ -881,6 +881,7 @@ from tests._helpers.engine_factories import (
     FakeEmbeddingFunction,
     FakeStructuredRunnable,
     _is_missing_pgvector_extension,
+    _install_conversation_policy,
     _make_async_engine,
     _make_engine_pair,
     _make_workflow_engine,
