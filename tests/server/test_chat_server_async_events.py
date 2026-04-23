@@ -18,6 +18,7 @@ from typing import Any
 
 import pytest
 import requests
+from jose import jwt
 
 pytest_plugins = ["tests.core._async_chroma_real"]
 pytest.importorskip("fastapi")
@@ -66,14 +67,19 @@ def _reload_real_server_app(
 ):
     debug_dir = Path.cwd() / ".tmp_runtime_sse_debug"
     debug_log = debug_dir / f"{backend_kind}.jsonl"
+    auth_debug_log = debug_dir / f"{backend_kind}.auth.jsonl"
     if debug_log.exists():
         debug_log.unlink()
+    if auth_debug_log.exists():
+        auth_debug_log.unlink()
 
     monkeypatch.setenv("GKE_PERSIST_DIRECTORY", str(tmp_path / "server-data"))
     monkeypatch.setenv("GKE_INDEX_DIR", str(tmp_path / "index"))
     monkeypatch.setenv("AUTH_MODE", "dev")
     monkeypatch.setenv("JWT_ALG", "HS256")
     monkeypatch.setenv("JWT_SECRET", "kogwistar-test-secret")
+    monkeypatch.setenv("KOGWISTAR_AUTH_DEBUG_PROBE", "1")
+    monkeypatch.setenv("KOGWISTAR_AUTH_DEBUG_LOG", str(auth_debug_log))
     monkeypatch.setenv("KOGWISTAR_RUNTIME_SSE_DEBUG_LOG", str(debug_log))
     bridge_endpoint = _start_cdc_bridge(
         monkeypatch=monkeypatch,
@@ -138,15 +144,31 @@ def _token_header(
 
 
 def _token_header_http(
-    session, base_url: str, *, role: str, ns: str, username: str = "tester"
+    session,
+    base_url: str,
+    *,
+    role: str,
+    ns: str,
+    username: str = "tester",
+    capabilities: str | None = None,
 ) -> dict[str, str]:
-    resp = session.post(
-        f"{base_url}/auth/dev-token",
-        json={"username": username, "role": role, "ns": ns},
-        timeout=10.0,
-    )
+    payload = {"username": username, "role": role, "ns": ns}
+    if capabilities is not None:
+        payload["capabilities"] = capabilities
+    resp = session.post(f"{base_url}/auth/dev-token", json=payload, timeout=10.0)
     resp.raise_for_status()
     return {"Authorization": f"Bearer {resp.json()['token']}"}
+
+
+def _decode_bearer_claims(headers: dict[str, str]) -> dict[str, Any]:
+    auth = headers.get("Authorization", "")
+    token = auth.split(" ", 1)[1].strip() if auth.startswith("Bearer ") else ""
+    if not token:
+        return {}
+    try:
+        return dict(jwt.get_unverified_claims(token))
+    except Exception:  # noqa: BLE001
+        return {"_decode_error": True}
 
 
 def _make_slow_answer_runner(
@@ -302,6 +324,7 @@ def _register_looping_sleep_workflow(
     *,
     workflow_id: str,
     headers: dict[str, str],
+    debug_log_path: Path | None = None,
     designer_id: str = "tester",
 ) -> None:
     start_id = f"wf|{workflow_id}|start"
@@ -331,6 +354,19 @@ def _register_looping_sleep_workflow(
         },
     ):
         resp = client.post(f"/api/workflow/design/{workflow_id}/nodes", json=payload, headers=headers)
+        if not resp.ok:
+            _append_case_debug_log(
+                debug_log_path,
+                {
+                    "stage": "workflow_design_node_upsert_fail",
+                    "workflow_id": workflow_id,
+                    "endpoint": f"/api/workflow/design/{workflow_id}/nodes",
+                    "status_code": resp.status_code,
+                    "response_text": resp.text[:500],
+                    "headers_claims": _decode_bearer_claims(headers),
+                    "payload": payload,
+                },
+            )
         resp.raise_for_status()
 
     for payload in (
@@ -362,6 +398,19 @@ def _register_looping_sleep_workflow(
         },
     ):
         resp = client.post(f"/api/workflow/design/{workflow_id}/edges", json=payload, headers=headers)
+        if not resp.ok:
+            _append_case_debug_log(
+                debug_log_path,
+                {
+                    "stage": "workflow_design_edge_upsert_fail",
+                    "workflow_id": workflow_id,
+                    "endpoint": f"/api/workflow/design/{workflow_id}/edges",
+                    "status_code": resp.status_code,
+                    "response_text": resp.text[:500],
+                    "headers_claims": _decode_bearer_claims(headers),
+                    "payload": payload,
+                },
+            )
         resp.raise_for_status()
 
 
@@ -371,6 +420,7 @@ def _register_looping_sleep_workflow_http(
     *,
     workflow_id: str,
     headers: dict[str, str],
+    debug_log_path: Path | None = None,
     designer_id: str = "tester",
 ) -> None:
     start_id = f"wf|{workflow_id}|start"
@@ -405,6 +455,19 @@ def _register_looping_sleep_workflow_http(
             headers=headers,
             timeout=20.0,
         )
+        if not resp.ok:
+            _append_case_debug_log(
+                debug_log_path,
+                {
+                    "stage": "workflow_design_node_upsert_fail",
+                    "workflow_id": workflow_id,
+                    "endpoint": f"/api/workflow/design/{workflow_id}/nodes",
+                    "status_code": resp.status_code,
+                    "response_text": resp.text[:500],
+                    "headers_claims": _decode_bearer_claims(headers),
+                    "payload": payload,
+                },
+            )
         assert resp.ok, (
             f"workflow node upsert failed for workflow_id={workflow_id}: "
             f"status={resp.status_code} body={resp.text}"
@@ -868,6 +931,8 @@ def _start_cdc_bridge(
                 proc.kill()
                 proc.wait(timeout=15.0)
         t.join(timeout=5.0)
+        if proc.stdout is not None:
+            proc.stdout.close()
 
     request.addfinalizer(_cleanup)
 
@@ -877,6 +942,8 @@ def _start_cdc_bridge(
     with requests.Session() as session:
         while time.time() < deadline:
             if proc.poll() is not None:
+                if proc.stdout is not None:
+                    proc.stdout.close()
                 raise RuntimeError(
                     "CDC bridge exited before becoming healthy.\n"
                     f"exit={proc.returncode}\n"
@@ -892,6 +959,8 @@ def _start_cdc_bridge(
                 last_err = exc
             time.sleep(0.2)
 
+    if proc.stdout is not None:
+        proc.stdout.close()
     raise RuntimeError(
         f"CDC bridge at {endpoint} did not become healthy.\n"
         f"last_error={last_err!r}\n"
@@ -1030,6 +1099,8 @@ def _real_server_base_url(
         with requests.Session() as session:
             while time.time() < deadline:
                 if proc.poll() is not None:
+                    if proc.stdout is not None:
+                        proc.stdout.close()
                     joined = "\n".join(log_buf)
                     raise RuntimeError(
                         f"server exited before becoming healthy (exit={proc.returncode}).\n{joined}"
@@ -1045,6 +1116,8 @@ def _real_server_base_url(
                     break
                 time.sleep(0.25)
         if not ready:
+            if proc.stdout is not None:
+                proc.stdout.close()
             raise RuntimeError(
                 f"server at {base_url} did not become healthy.\n"
                 f"last_error={last_err!r}\n"
@@ -1061,6 +1134,8 @@ def _real_server_base_url(
                 proc.kill()
                 proc.wait(timeout=15.0)
         t.join(timeout=5.0)
+        if proc.stdout is not None:
+            proc.stdout.close()
 
 
 def test_chat_rest_events_poll_sees_live_updates_for_async_backends(
@@ -1218,7 +1293,16 @@ async def test_workflow_runtime_sse_cancel_after_sleep_ticks_for_async_backends(
         debug_log_path = Path.cwd() / ".tmp_runtime_sse_debug" / f"{async_backend_kind}.jsonl"
         cdc_oplog = tmp_path / f"{async_backend_kind}.cdc_oplog.jsonl"
         conv_rw = _token_header_http(api_session, base_url, role="rw", ns="conversation")
-        wf_rw = _token_header_http(api_session, base_url, role="rw", ns="workflow")
+        wf_rw = _token_header_http(
+            api_session,
+            base_url,
+            role="rw",
+            ns="workflow",
+            capabilities=(
+                "workflow.design.write,write_graph,spawn_process,"
+                "workflow.run.write,workflow.run.read,project_view,read_graph"
+            ),
+        )
         wf_ro = _token_header_http(api_session, base_url, role="ro", ns="workflow")
 
         created = api_session.post(
@@ -1233,7 +1317,11 @@ async def test_workflow_runtime_sse_cancel_after_sleep_ticks_for_async_backends(
 
         workflow_id = f"wf.runtime.sleep.loop.{async_backend_kind}.{uuid.uuid4().hex}"
         _register_looping_sleep_workflow_http(
-            api_session, base_url, workflow_id=workflow_id, headers=wf_rw
+            api_session,
+            base_url,
+            workflow_id=workflow_id,
+            headers=wf_rw,
+            debug_log_path=debug_log_path,
         )
 
         submitted = api_session.post(

@@ -2591,6 +2591,158 @@ def test_resume_run_can_resuspend_same_token_with_updated_payload(
     assert latest_result.get("resume_payload", {}).get("message") == "second pause"
 
 
+@pytest.mark.parametrize(
+    "backend_kind",
+    [
+        pytest.param("fake", id="fake", marks=pytest.mark.ci_full),
+        pytest.param("chroma", id="chroma", marks=pytest.mark.ci_full),
+        pytest.param("pg", id="pg", marks=pytest.mark.ci_full),
+    ],
+)
+def test_workflow_suspend_with_join_waiter_returns_suspended_when_idle(
+    tmp_path, request, backend_kind
+):
+    """Async mirror: `tests/runtime/test_async_runtime_contract.py::test_async_runtime_suspend_with_join_waiter_returns_suspended_when_idle`."""
+    from contextlib import contextmanager
+
+    @contextmanager
+    def _engine_pair():
+        if backend_kind in {"fake", "chroma"}:
+            wf_engine = _make_engine(
+                tmp_path / f"wf_{backend_kind}",
+                graph_type="workflow",
+                backend_kind=backend_kind,
+            )
+            conv_engine = _make_engine(
+                tmp_path / f"conv_{backend_kind}",
+                graph_type="conversation",
+                backend_kind=backend_kind,
+            )
+            yield wf_engine, conv_engine
+            return
+
+        if backend_kind == "pg":
+            sa = pytest.importorskip("sqlalchemy")
+            sa_engine = request.getfixturevalue("sa_engine")
+            if sa_engine is None:
+                pytest.skip("pg fixtures are unavailable")
+            base_schema = f"join_suspend_{uuid.uuid4().hex}"
+            wf_schema = f"{base_schema}_wf"
+            conv_schema = f"{base_schema}_conv"
+            try:
+                try:
+                    wf_backend = PgVectorBackend(
+                        engine=sa_engine, embedding_dim=3, schema=wf_schema
+                    )
+                    conv_backend = PgVectorBackend(
+                        engine=sa_engine, embedding_dim=3, schema=conv_schema
+                    )
+                except Exception as exc:
+                    if _is_missing_pgvector_extension(exc):
+                        pytest.skip(f"pg backend unavailable: {exc}")
+                    raise
+                wf_engine = GraphKnowledgeEngine(
+                    persist_directory=str(tmp_path / "wf_pg_meta"),
+                    kg_graph_type="workflow",
+                    embedding_function=FakeEmbeddingFunction(dim=3),
+                    backend=wf_backend,
+                )
+                conv_engine = GraphKnowledgeEngine(
+                    persist_directory=str(tmp_path / "conv_pg_meta"),
+                    kg_graph_type="conversation",
+                    embedding_function=FakeEmbeddingFunction(dim=3),
+                    backend=conv_backend,
+                )
+                yield wf_engine, conv_engine
+            finally:
+                with sa_engine.begin() as conn:
+                    conn.execute(sa.text(f'DROP SCHEMA IF EXISTS "{wf_schema}" CASCADE'))
+                    conn.execute(sa.text(f'DROP SCHEMA IF EXISTS "{conv_schema}" CASCADE'))
+            return
+
+        raise ValueError(f"unsupported backend_kind: {backend_kind}")
+
+    wf_id = "join_waiter_suspend_idle_sync"
+    seen: list[str] = []
+    resolver = MappingStepResolver()
+
+    @resolver.register("start_op")
+    def _start(_ctx: StepContext):
+        seen.append("start")
+        return RunSuccess(conversation_node_id=None, state_update=[])
+
+    @resolver.register("light_op")
+    def _light(_ctx: StepContext):
+        seen.append("light")
+        return RunSuccess(conversation_node_id=None, state_update=[])
+
+    @resolver.register("pause_op")
+    def _pause(_ctx: StepContext):
+        seen.append("pause")
+        return RunSuspended(
+            conversation_node_id=None,
+            resume_payload={
+                "type": "recoverable_error",
+                "op": "pause_op",
+                "category": "budget_pinned",
+                "message": "sibling branch paused",
+                "errors": ["paused"],
+            },
+        )
+
+    @resolver.register("join_op")
+    def _join(_ctx: StepContext):
+        seen.append("join")
+        raise AssertionError("join must not execute while sibling token is suspended")
+
+    @resolver.register("end_op")
+    def _end(_ctx: StepContext):
+        seen.append("end")
+        return RunSuccess(conversation_node_id=None, state_update=[])
+
+    with _engine_pair() as (wf_engine, conv_engine):
+        _create_node(wf_engine, wf_id, "start", "start_op", start=True, fanout=True)
+        _create_node(wf_engine, wf_id, "a_light", "light_op")
+        _create_node(wf_engine, wf_id, "z_pause", "pause_op")
+        _create_node(wf_engine, wf_id, "join", "join_op", wf_join=True)
+        _create_node(wf_engine, wf_id, "end", "end_op", terminal=True)
+        _create_edge(wf_engine, wf_id, "start", "a_light")
+        _create_edge(wf_engine, wf_id, "start", "z_pause")
+        _create_edge(wf_engine, wf_id, "a_light", "join")
+        _create_edge(wf_engine, wf_id, "z_pause", "join")
+        _create_edge(wf_engine, wf_id, "join", "end")
+
+        run_id = f"run_{uuid.uuid4().hex}"
+        out = WorkflowRuntime(
+            workflow_engine=wf_engine,
+            conversation_engine=conv_engine,
+            step_resolver=resolver,
+            predicate_registry={},
+            checkpoint_every_n_steps=1,
+            max_workers=1,
+        ).run(
+            workflow_id=wf_id,
+            conversation_id="conv_join_waiter_suspend_sync",
+            turn_node_id="turn_1",
+            initial_state={
+                "conversation_id": "conv_join_waiter_suspend_sync",
+                "user_id": "user_1",
+                "turn_node_id": "turn_1",
+                "turn_index": 0,
+                "role": "user",
+                "user_text": "",
+                "mem_id": "mem_1",
+            },  # type: ignore[arg-type]
+            run_id=run_id,
+        )
+
+    rt_join = out.final_state.get("_rt_join", {})
+    assert out.status == "suspended"
+    assert seen == ["start", "light", "pause"]
+    assert rt_join.get("suspended", [])[0][0] == "z_pause"
+    assert rt_join.get("join_waiters", {}).get("join")
+
+
 @pytest.mark.parametrize("backend_kind", BACKEND_PARAMS)
 def test_sandbox_recoverable_error_can_suspend_then_resume_success(
     tmp_path, backend_kind

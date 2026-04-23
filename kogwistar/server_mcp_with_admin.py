@@ -3,6 +3,7 @@
 """ server_mcp_with_admin.py
 mcp and fast rest api server for conversation service, add node edge, parsing service with authorization authentication
 """
+import asyncio
 import json
 import logging
 import os
@@ -48,6 +49,7 @@ from kogwistar.server.auth_middleware import (
     get_jwt_aud,
     get_jwt_iss,
     get_jwt_secret,
+    get_app_jwt_settings,
     get_current_subject,
     get_current_user_id,
     require_capability,
@@ -82,6 +84,25 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 request_logger = logging.getLogger("kogwistar.request")
+
+
+def _ensure_windows_selector_event_loop_policy() -> None:
+    if os.name != "nt":
+        return
+    if str(os.getenv("GKE_PG_ASYNC") or "").strip().lower() not in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        return
+    current = asyncio.get_event_loop_policy()
+    if isinstance(current, asyncio.WindowsSelectorEventLoopPolicy):
+        return
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
+
+_ensure_windows_selector_event_loop_policy()
 
 def _configure_console_logging() -> None:
     level_name = (
@@ -331,9 +352,13 @@ async def dev_token(request: Request):
     inp = DevTokenInp.model_validate((await request.json()))
     if inp.role not in ROLE_ORDER:
         raise HTTPException(400, f"role must be one of {list(ROLE_ORDER)}")
-    jwt_secret = get_jwt_secret()
+    jwt_settings = get_app_jwt_settings(request.app)
+    jwt_secret = jwt_settings.get("secret")
     if not jwt_secret:
         raise HTTPException(status_code=500, detail="JWT secret is not configured")
+    from kogwistar.server.auth_middleware import _auth_probe, _secret_fingerprint
+
+    _auth_probe("jwt_mint_secret", **_secret_fingerprint(jwt_secret))
     payload = {
         "sub": inp.username,
         "ns": inp.ns,
@@ -341,11 +366,11 @@ async def dev_token(request: Request):
         "capabilities": inp.capabilities,
         "iat": int(time.time()),
         "exp": int((datetime.now(timezone.utc) + timedelta(hours=4)).timestamp()),
-        "iss": get_jwt_iss() or "local",
-        "aud": get_jwt_aud() or None,
+        "iss": jwt_settings.get("iss") or "local",
+        "aud": jwt_settings.get("aud") or None,
     }
     payload = {k: v for k, v in payload.items() if v is not None}
-    token = jwt.encode(payload, jwt_secret, algorithm=get_jwt_alg())
+    token = jwt.encode(payload, jwt_secret, algorithm=str(jwt_settings.get("alg") or "HS256"))
     return {"token": token}
 
 def _designer_resolver_candidates(service: Any) -> list[Any]:
@@ -927,32 +952,41 @@ class DocumentUpsertResult(BaseModel):
 
 @app.post("/api/document")
 def document_upsert(inp: DocumentUpsert, response_model=DocumentUpsertResult):
-    eng = engine.get()
-    if inp.doc_type == "text":
-        doc = Document(
-            id=inp.doc_id,
-            content=inp.content,
-            type=inp.doc_type,
-            metadata={},  # if you want
-            embeddings=None,  # REQUIRED by Pydantic because Field(...)
-            source_map=None,  # REQUIRED by Pydantic because Field(...)
-            domain_id=None,
-            processed=False,
-        )
-    elif inp.doc_type == "ocr":
-        ocr_doc_dict = json.loads(inp.content)
-        doc = Document.from_ocr(
-            id=inp.doc_id, ocr_content=ocr_doc_dict, type=inp.doc_type
-        )
-    else:
-        raise Exception(f"Unrecognised doc type{inp.doc_type}")
+    try:
+        eng = engine.get()
+        if inp.doc_type == "text":
+            doc = Document(
+                id=inp.doc_id,
+                content=inp.content,
+                type=inp.doc_type,
+                metadata={},  # if you want
+                embeddings=None,  # REQUIRED by Pydantic because Field(...)
+                source_map=None,  # REQUIRED by Pydantic because Field(...)
+                domain_id=None,
+                processed=False,
+            )
+        elif inp.doc_type == "ocr":
+            ocr_doc_dict = json.loads(inp.content)
+            doc = Document.from_ocr(
+                id=inp.doc_id, ocr_content=ocr_doc_dict, type=inp.doc_type
+            )
+        else:
+            raise Exception(f"Unrecognised doc type{inp.doc_type}")
 
-    if doc.metadata is None:
-        doc.metadata = {"insertion_method": inp.insertion_method}
-    else:
-        doc.metadata["insertion_method"] = inp.insertion_method
-    eng.write.add_document(doc)
-    return DocumentUpsertResult(status="ok")
+        if doc.metadata is None:
+            doc.metadata = {"insertion_method": inp.insertion_method}
+        else:
+            doc.metadata["insertion_method"] = inp.insertion_method
+        eng.write.add_document(doc)
+        return DocumentUpsertResult(status="ok")
+    except Exception as e:
+        logger.exception(
+            "POST /api/document failed doc_id=%s doc_type=%s insertion_method=%s",
+            inp.doc_id,
+            inp.doc_type,
+            inp.insertion_method,
+        )
+        raise internal_http_error(e)
 
 @app.post("/api/document.upsert_tree", response_model=DocumentGraphUpsertResult)
 def document_upsert_tree(payload: DocumentGraphUpsert):

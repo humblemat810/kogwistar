@@ -1,6 +1,7 @@
 # tests/conftest.py
 from __future__ import annotations
 import shutil
+import hashlib
 import uuid
 import json
 import os
@@ -8,9 +9,11 @@ import re
 import asyncio
 import pathlib
 import tempfile
+import sys
 from _pytest.monkeypatch import MonkeyPatch
 from typing import Any, cast
 import dataclasses
+from .auth_env import TEST_JWT_ALG, TEST_JWT_SECRET, ensure_test_jwt_env
 
 try:
     import sitecustomize  # type: ignore  # pragma: no cover
@@ -18,8 +21,10 @@ except Exception:  # pragma: no cover - local env may not provide it
     sitecustomize = None  # type: ignore
 _TEST_ENV = MonkeyPatch()
 _TEST_ENV.setenv("ANONYMIZED_TELEMETRY", "FALSE")
-_TEST_ENV.setenv("JWT_SECRET", "dev-secret")
-_TEST_ENV.setenv("JWT_ALG", "HS256")
+# Preserve any caller-provided JWT settings. This avoids clobbering server
+# subprocess env when it imports tests.conftest indirectly through test helpers.
+_TEST_ENV.setenv("JWT_SECRET", os.environ.get("JWT_SECRET", TEST_JWT_SECRET))
+_TEST_ENV.setenv("JWT_ALG", os.environ.get("JWT_ALG", TEST_JWT_ALG))
 try:
     import sqlalchemy as sa
 
@@ -29,7 +34,6 @@ except Exception:  # pragma: no cover - optional for non-pg test subsets
     has_sa = False
 
 
-import sys
 try:
     from dotenv import load_dotenv
 except Exception:  # pragma: no cover - optional in minimal CI environments
@@ -158,11 +162,6 @@ import logging
 
 logging.captureWarnings(True)
 
-import importlib.util
-print("DEBUG sys.path =", sys.path)
-print("DEBUG find_spec(kogwistar) =", importlib.util.find_spec("kogwistar"))
-print("DEBUG find_spec(kogwistar.utils) =", importlib.util.find_spec("kogwistar.utils"))
-print("DEBUG existing sys.modules['kogwistar'] =", sys.modules.get("kogwistar"))
 from kogwistar.utils.log import EngineLogManager
 
 logger = logging.getLogger(__name__)
@@ -749,17 +748,28 @@ def pytest_configure(config):
     )
     temp_root.mkdir(parents=True, exist_ok=True)
     config.option.basetemp = str(temp_root)
+
+
+@pytest.fixture(autouse=True)
+def _per_test_engine_logging(request: pytest.FixtureRequest):
+    worker_id = os.environ.get("PYTEST_XDIST_WORKER", "gw0")
+    test_slug = re.sub(r"[^A-Za-z0-9._-]+", "_", request.node.name)[:80]
+    test_hash = hashlib.sha1(request.node.nodeid.encode("utf-8")).hexdigest()[:12]
+    base_dir = Path(".logs/test") / worker_id / f"{test_slug}_{test_hash}"
+
+    EngineLogManager.reset()
     EngineLogManager.configure(
-        # EngineLogConfig(
-        base_dir=Path(".logs/test"),
+        base_dir=base_dir,
         app_name="gke_test",
         level=logging.DEBUG,
-        enable_files=True,  # <-- ENABLE FILE LOGGING
+        enable_files=True,
         enable_sqlite=False,
-        # mode="prod",              # <-- NOT pytest
         enable_jsonl=True,
-        # )
     )
+    try:
+        yield
+    finally:
+        EngineLogManager.reset()
 
 
 def pytest_unconfigure(config):
@@ -796,8 +806,7 @@ def mcp_admin_server(tmp_path: Path) -> Iterator[dict[str, Any]]:
     env["MCP_CHROMA_DIR_CONVERSATION"] = str(data_root / "conversation")
     env["MCP_CHROMA_DIR_WORKFLOW"] = str(data_root / "workflow")
     env["MCP_CHROMA_DIR_WISDOM"] = str(data_root / "wisdom")
-    env.setdefault("JWT_SECRET", "dev-secret")
-    env.setdefault("JWT_ALG", "HS256")
+    ensure_test_jwt_env(env)
 
     cmd = [
         sys.executable,
@@ -853,6 +862,8 @@ def mcp_admin_server(tmp_path: Path) -> Iterator[dict[str, Any]]:
         except Exception:  # noqa: BLE001
             proc.kill()
             proc.wait(timeout=5)
+        if proc.stdout is not None:
+            proc.stdout.close()
         joined = "\n".join(log_buf)
         raise RuntimeError(
             f"MCP server did not become healthy at {base_http}: {last_err}\n{joined}"
@@ -873,6 +884,8 @@ def mcp_admin_server(tmp_path: Path) -> Iterator[dict[str, Any]]:
             except Exception:  # noqa: BLE001
                 proc.kill()
                 proc.wait(timeout=5)
+        if proc.stdout is not None:
+            proc.stdout.close()
 
 
 from tests._helpers.embeddings import (
@@ -890,9 +903,114 @@ except Exception:  # pragma: no cover - allow collection without the engine stac
 FakeEmbeddingFunction = ConstantEmbeddingFunction
 
 
+class _SubprocessSemanticEmbeddingFunction:
+    """Deterministic embedder for server subprocesses.
+
+    It focuses on salient JSON/text fields instead of raw backend JSON noise so
+    vector search sees enough signal to separate unrelated nodes/edges.
+    """
+
+    def __init__(self, dim: int = 384):
+        self._dim = dim
+
+    @staticmethod
+    def name() -> str:
+        return "default"
+
+    def _field_text(self, payload: Any) -> str:
+        parts: list[str] = []
+        if isinstance(payload, dict):
+            for key in ("label", "summary", "relation", "type", "doc_id"):
+                val = payload.get(key)
+                if val:
+                    parts.append(str(val))
+            props = payload.get("properties")
+            if isinstance(props, dict):
+                for key in ("signature_text", "name", "description"):
+                    val = props.get(key)
+                    if val:
+                        parts.append(str(val))
+            mentions = payload.get("mentions") or []
+            for mention in mentions:
+                spans = mention.get("spans") if isinstance(mention, dict) else None
+                for span in spans or []:
+                    if not isinstance(span, dict):
+                        continue
+                    for key in ("excerpt", "context_before", "context_after"):
+                        val = span.get(key)
+                        if val:
+                            parts.append(str(val))
+        return " ".join(parts).strip()
+
+    def __call__(self, input):
+        import hashlib
+        import json as _json
+        import math
+        import re as _re
+
+        vectors: list[list[float]] = []
+        token_re = _re.compile(r"[a-z0-9_]+")
+        stopwords = {
+            "a",
+            "an",
+            "and",
+            "as",
+            "at",
+            "by",
+            "for",
+            "from",
+            "in",
+            "is",
+            "it",
+            "of",
+            "on",
+            "or",
+            "that",
+            "the",
+            "their",
+            "these",
+            "this",
+            "to",
+            "with",
+        }
+        for raw in input:
+            text = str(raw or "")
+            try:
+                payload = _json.loads(text)
+                if isinstance(payload, dict):
+                    text = self._field_text(payload)
+            except Exception:
+                pass
+            vec = [0.0] * self._dim
+            tokens = token_re.findall(text.lower())
+            for tok in tokens:
+                if len(tok) < 3 or tok in stopwords:
+                    continue
+                # Two hashes per token: one index, one sign. Helps spread nearby
+                # texts without collapsing everything into the same bucket.
+                idx = int(hashlib.sha256(tok.encode("utf-8")).hexdigest()[:8], 16) % self._dim
+                sign = -1.0 if int(hashlib.md5(tok.encode("utf-8")).hexdigest()[:2], 16) % 2 else 1.0
+                vec[idx] += sign
+            norm = math.sqrt(sum(x * x for x in vec)) or 1.0
+            vectors.append([x / norm for x in vec])
+        return vectors
+
+
 def build_default_test_embedding_function():
-    dim = int(os.getenv("KOGWISTAR_TEST_EMBEDDING_DIM", "8"))
-    return FakeEmbeddingFunction(dim=dim)
+    dim = int(os.getenv("KOGWISTAR_TEST_EMBEDDING_DIM", "384"))
+    kind = str(os.getenv("KOGWISTAR_TEST_EMBEDDING_KIND", "lexical_hash")).strip().lower()
+    if kind in {"real", "provider", "default"}:
+        try:
+            from chromadb.utils.embedding_functions import DefaultEmbeddingFunction
+
+            return DefaultEmbeddingFunction()
+        except Exception:
+            pass
+    if kind in {"lexical", "lexical_hash", "hash", "tutorial"}:
+        from tests._helpers.embeddings import build_test_embedding_function
+
+        return build_test_embedding_function("lexical_hash", dim=dim)
+    return _SubprocessSemanticEmbeddingFunction(dim=dim)
 
 
 _TEST_ENV.setenv(

@@ -2,7 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import hashlib
+import json
+import logging
 import os
+import threading
+import traceback
+from pathlib import Path
 from contextvars import ContextVar
 from enum import Enum
 from typing import TYPE_CHECKING
@@ -15,11 +21,10 @@ except ModuleNotFoundError:
         return False
 
 
-from fastapi import HTTPException, Request
+from fastapi import HTTPException
 from fastapi.responses import JSONResponse
 from jose import JWTError, jwt
-from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.types import Scope
+from starlette.types import Receive, Scope, Send
 
 from kogwistar.shortids import run_id_scope
 
@@ -28,10 +33,65 @@ if TYPE_CHECKING:
 
 
 load_dotenv()
+logger = logging.getLogger(__name__)
+_auth_app = None
+
+
+def _runtime_env_jwt_settings() -> dict[str, str | None]:
+    settings = {
+        "alg": os.getenv("JWT_ALG", "HS256"),
+        "secret": os.getenv("JWT_SECRET"),
+        "iss": os.getenv("JWT_ISS"),
+        "aud": os.getenv("JWT_AUD"),
+    }
+    _auth_probe(
+        "jwt_env_snapshot",
+        **_secret_fingerprint(settings.get("secret")),
+        alg=settings.get("alg"),
+        iss=settings.get("iss"),
+        aud=settings.get("aud"),
+    )
+    return settings
+
+
+def _resolve_stateful_app(app):
+    current = app
+    seen: set[int] = set()
+    for _ in range(8):
+        if current is None:
+            return None
+        ident = id(current)
+        if ident in seen:
+            return None
+        seen.add(ident)
+        if getattr(current, "state", None) is not None:
+            return current
+        current = getattr(current, "app", None)
+    return None
+
+
+def get_app_jwt_settings(app=None) -> dict[str, str | None]:
+    target = _resolve_stateful_app(app if app is not None else _auth_app)
+    state = getattr(target, "state", None)
+    if state is None:
+        return _runtime_env_jwt_settings()
+    settings = getattr(state, "auth_jwt_settings", None)
+    if not isinstance(settings, dict):
+        settings = _runtime_env_jwt_settings()
+        state.auth_jwt_settings = settings
+        _auth_probe(
+            "jwt_app_settings_frozen",
+            app_type=type(target).__name__ if target is not None else None,
+            **_secret_fingerprint(settings.get("secret")),
+            alg=settings.get("alg"),
+            iss=settings.get("iss"),
+            aud=settings.get("aud"),
+        )
+    return settings
 
 # --- JWT config (env-driven) ---
 def get_jwt_alg() -> str:
-    return os.getenv("JWT_ALG", "HS256")
+    return str(os.getenv("JWT_ALG", "HS256"))
 
 
 def get_jwt_secret() -> str | None:
@@ -85,27 +145,123 @@ claims_ctx: contextvars.ContextVar[dict | None] = contextvars.ContextVar(
 current_role: ContextVar[str] = ContextVar("current_role", default=Role.RO.value)
 
 
-def _extract_bearer(request: Request) -> str | None:
-    auth = request.headers.get("authorization") or request.headers.get("Authorization")
+def _extract_bearer(scope: Scope) -> str | None:
+    headers = {k.decode().lower(): v.decode() for k, v in scope.get("headers", [])}
+    auth = headers.get("authorization")
     if not auth or not auth.lower().startswith("bearer "):
         return None
     return auth.split(" ", 1)[1].strip()
 
 
-def verify_jwt(token: str) -> dict:
+def _auth_debug_probe_enabled() -> bool:
+    return str(os.getenv("KOGWISTAR_AUTH_DEBUG_PROBE", "0")).strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _auth_debug_log_path() -> Path | None:
+    raw = str(os.getenv("KOGWISTAR_AUTH_DEBUG_LOG", "")).strip()
+    if not raw:
+        return None
+    return Path(raw)
+
+
+def _append_auth_debug_log(record: dict) -> None:
+    path = _auth_debug_log_path()
+    if path is None:
+        return
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(record, ensure_ascii=False, default=str))
+            fh.write("\n")
+    except Exception:  # noqa: BLE001
+        logger.exception("auth probe write failed")
+
+
+def _auth_probe(event: str, **extra) -> None:
+    if not _auth_debug_probe_enabled():
+        return
+    payload = {
+        "event": event,
+        "pid": os.getpid(),
+        "thread": threading.get_ident(),
+        **extra,
+    }
+    try:
+        stack = traceback.extract_stack(limit=12)
+        payload["caller"] = {
+            "file": stack[-2].filename if len(stack) >= 2 else None,
+            "line": stack[-2].lineno if len(stack) >= 2 else None,
+            "fn": stack[-2].name if len(stack) >= 2 else None,
+        }
+        payload["stack"] = [
+            {
+                "file": frame.filename,
+                "line": frame.lineno,
+                "fn": frame.name,
+            }
+            for frame in stack[-8:]
+        ]
+    except Exception:  # noqa: BLE001
+        payload["caller"] = {"file": None, "line": None, "fn": None}
+        payload["stack"] = ["<stack unavailable>"]
+    _append_auth_debug_log(payload)
+    logger.warning(json.dumps(payload, ensure_ascii=False, default=str))
+
+
+def _secret_fingerprint(secret: str | None) -> dict[str, object]:
+    if not secret:
+        return {"secret_present": False}
+    digest = hashlib.sha256(secret.encode("utf-8")).hexdigest()
+    return {
+        "secret_present": True,
+        "secret_len": len(secret),
+        "secret_fp": digest[:12],
+    }
+
+
+def set_claims_ctx(claims: dict | None):
+    token = claims_ctx.set(claims)
+    _auth_probe("claims_set", claims=claims)
+    return token
+
+
+def reset_claims_ctx(token) -> None:
+    claims_ctx.reset(token)
+    _auth_probe("claims_reset", claims=claims_ctx.get())
+
+
+def set_current_role(role: str):
+    token = current_role.set(role)
+    _auth_probe("current_role_set", role=role)
+    return token
+
+
+def reset_current_role(token) -> None:
+    current_role.reset(token)
+    _auth_probe("current_role_reset", role=current_role.get())
+
+
+def verify_jwt(token: str, jwt_settings: dict[str, str | None] | None = None) -> dict:
     """
     Validates a JWT and returns claims. Works for HS256 or RS256 depending on env.
     - HS256: set JWT_ALG=HS256 and JWT_SECRET=<shared secret>
     - RS256: set JWT_ALG=RS256 and JWT_SECRET=<PEM public key string>
     Optionally set JWT_ISS and/or JWT_AUD for issuer/audience checks.
     """
-    jwt_alg = get_jwt_alg()
-    jwt_secret = get_jwt_secret()
-    jwt_iss = get_jwt_iss()
-    jwt_aud = get_jwt_aud()
+    settings = jwt_settings or _runtime_env_jwt_settings()
+    jwt_alg = str(settings.get("alg") or "HS256")
+    jwt_secret = settings.get("secret")
+    jwt_iss = settings.get("iss")
+    jwt_aud = settings.get("aud")
     if not jwt_secret:
         raise HTTPException(status_code=500, detail="JWT secret is not configured")
     try:
+        _auth_probe("jwt_verify_secret", **_secret_fingerprint(jwt_secret))
         options = {"verify_aud": bool(jwt_aud)}
         claims = jwt.decode(
             token,
@@ -120,17 +276,24 @@ def verify_jwt(token: str) -> dict:
         raise HTTPException(status_code=401, detail=f"Invalid token: {e}")
 
 
-def _decode_role_from_headers(scope: Scope) -> str:
+def _decode_role_from_headers(
+    scope: Scope, jwt_settings: dict[str, str | None] | None = None
+) -> str:
     try:
         headers = {k.decode().lower(): v.decode() for k, v in scope.get("headers", [])}
         auth = headers.get("authorization", "")
         if not auth.startswith("Bearer "):
             return Role.RO.value
         token = auth.split(" ", 1)[1]
-        jwt_secret = get_jwt_secret()
+        settings = jwt_settings or _runtime_env_jwt_settings()
+        jwt_secret = settings.get("secret")
         if not jwt_secret:
             return Role.RO.value
-        payload = jwt.decode(token, jwt_secret, algorithms=[get_jwt_alg()])
+        payload = jwt.decode(
+            token,
+            jwt_secret,
+            algorithms=[str(settings.get("alg") or "HS256")],
+        )
         role = payload.get("role", Role.RO.value)
         return role if role in (Role.RO.value, Role.RW.value) else Role.RO.value
     except Exception:
@@ -187,49 +350,103 @@ class DevStreamGuardMiddleware:
             raise
 
 
-class JWTProtectMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next):
+class JWTProtectMiddleware:
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send):
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
         # IMPORTANT: some /api endpoints enforce auth via require_role()/require_ns(),
         # which read from claims_ctx. So we must populate claims_ctx whenever a
         # bearer token is present, not only for PROTECTED_PREFIXES.
-        if claims_ctx.get() is not None:
-            return await call_next(request)
-
-        path = request.url.path
+        path = str(scope.get("path") or "")
         is_protected = any(path.startswith(p) for p in PROTECTED_PREFIXES)
-        token = _extract_bearer(request)
+        token = _extract_bearer(scope)
+        _auth_probe(
+            "jwt_request_seen",
+            path=path,
+            has_token=bool(token),
+            token_len=len(token or ""),
+            token_head=(token or "")[:12],
+            token_tail=(token or "")[-12:] if token else "",
+            is_protected=is_protected,
+        )
 
         if not token:
+            if claims_ctx.get() is not None:
+                await self.app(scope, receive, send)
+                return
             if is_protected:
-                return JSONResponse({"detail": "Missing bearer token"}, status_code=401)
-            return await call_next(request)
+                await JSONResponse({"detail": "Missing bearer token"}, status_code=401)(
+                    scope, receive, send
+                )
+                return
+            await self.app(scope, receive, send)
+            return
+
+        jwt_settings = get_app_jwt_settings(scope.get("app"))
 
         try:
-            claims = verify_jwt(token)
+            claims = verify_jwt(token, jwt_settings)
         except HTTPException as e:
             # If endpoint isn't globally protected, treat invalid token as anonymous.
             # Handlers that require auth will still reject via require_role/ns.
+            _auth_probe(
+                "jwt_invalid",
+                path=path,
+                is_protected=is_protected,
+                status_code=e.status_code,
+                detail=str(e.detail),
+                token_len=len(token),
+                token_head=token[:12],
+                token_tail=token[-12:],
+            )
             if is_protected:
-                return JSONResponse({"detail": e.detail}, status_code=e.status_code)
-            return await call_next(request)
+                await JSONResponse({"detail": e.detail}, status_code=e.status_code)(
+                    scope, receive, send
+                )
+                return
+            await self.app(scope, receive, send)
+            return
 
-        request.state.claims = claims
-        token_ = claims_ctx.set(claims)
+        scope.setdefault("state", {})["claims"] = claims
+        token_ = set_claims_ctx(claims)
         try:
+            _auth_probe(
+                "jwt_claims_set",
+                path=path,
+                claims=claims,
+                current_role=current_role.get(),
+            )
             with run_id_scope(token):
-                return await call_next(request)
+                await self.app(scope, receive, send)
         finally:
-            claims_ctx.reset(token_)
+            reset_claims_ctx(token_)
 
 
 def get_current_role() -> str:
     claims = claims_ctx.get() or {}
-    return (claims.get("role") or DEFAULT_ROLE).lower()
+    role = str(claims.get("role") or "").strip().lower()
+    if role in ROLE_ORDER:
+        return role
+    current = str(current_role.get() or "").strip().lower()
+    if current in ROLE_ORDER:
+        return current
+    return DEFAULT_ROLE
 
 
 def require_role(min_role: str = "ro"):
     user_role = get_current_role()
     if ROLE_ORDER.get(user_role, 0) < ROLE_ORDER.get(min_role, 0):
+        _auth_probe(
+            "require_role_denied",
+            min_role=min_role,
+            user_role=user_role,
+            current_role=current_role.get(),
+            claims=claims_ctx.get() or {},
+        )
         raise HTTPException(
             status_code=403,
             detail=f"Forbidden: requires role '{min_role}', you have '{user_role}'",
@@ -458,12 +675,10 @@ def require_capability(expected: set[str] | str):
     )
 
 
-_auth_app = None
-
-
 def set_auth_app(app) -> None:
     global _auth_app
     _auth_app = app
+    get_app_jwt_settings(app)
 
 
 def require_workflow_access(workflow_id: str, required_role: str = "ro"):

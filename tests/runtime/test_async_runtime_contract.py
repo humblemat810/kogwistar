@@ -12,7 +12,7 @@ from kogwistar.runtime import (
     MappingStepResolver,
 )
 from kogwistar.runtime.async_runtime import _as_sync_step_fn, _SyncResolverAdapter
-from kogwistar.runtime.models import RunFailure, RunSuccess
+from kogwistar.runtime.models import RunFailure, RunSuccess, RunSuspended
 from kogwistar.runtime.runtime import (
     RunResult,
     StepContext,
@@ -1410,6 +1410,7 @@ def test_async_runtime_native_scheduler_persists_pending_token_parent_links_on_c
     assert pending[1][3] == pending[0][2]
 
 
+@pytest.mark.ci_full
 @pytest.mark.parametrize("terminal_case", ["success", "failure"])
 def test_async_runtime_side_by_side_node_edge_and_terminal_parity(terminal_case):
     """Sync mirror: node/edge parity in `tests/workflow/test_workflow_join.py` and `tests/workflow/test_workflow_native_update.py`."""
@@ -1637,6 +1638,7 @@ def test_async_runtime_side_by_side_node_edge_and_terminal_parity(terminal_case)
     assert isinstance(async_terminal[0], WorkflowCompletedNode if terminal_case == "success" else WorkflowFailedNode)
 
 
+@pytest.mark.ci_full
 @pytest.mark.parametrize("client_status", ["success", "failure"])
 def test_async_runtime_suspend_and_resume_roundtrip(client_status):
     """Sync mirror: `tests/runtime/test_workflow_suspend_resume.py` roundtrip cases."""
@@ -1783,6 +1785,7 @@ def test_async_runtime_suspend_and_resume_roundtrip(client_status):
         )
 
 
+@pytest.mark.ci_full
 def test_async_runtime_nested_workflow_invocation_matches_sync():
     """Sync mirror: `tests/runtime/test_workflow_invocation_and_route_next.py::test_nested_workflow_synthesized_design_is_persisted_and_used`."""
     from pathlib import Path
@@ -1945,6 +1948,7 @@ def test_async_runtime_nested_workflow_invocation_matches_sync():
     assert sync_out.final_state["child_result"]["child_value"] == 7
 
 
+@pytest.mark.ci_full
 def test_async_runtime_nested_workflow_child_failure_fails_parent():
     """Sync mirror: `tests/runtime/test_workflow_invocation_and_route_next.py` nested workflow failure semantics; also `tests/runtime/test_workflow_cancel_event_sourced.py`."""
     from pathlib import Path
@@ -2107,6 +2111,7 @@ def test_async_runtime_nested_workflow_child_failure_fails_parent():
     assert sync_out.final_state == async_out.final_state
 
 
+@pytest.mark.ci_full
 def test_async_runtime_parent_cancellation_propagates_to_child():
     """Sync mirror: `tests/runtime/test_workflow_suspend_resume.py` cancellation propagation; also `tests/runtime/test_workflow_cancel_event_sourced.py`."""
     from pathlib import Path
@@ -2334,6 +2339,7 @@ def test_async_runtime_native_scheduler_cancel_idempotent_terminal_persistence(m
 
 
 def test_async_runtime_resume_run_is_not_supported():
+    """Sync mirror: tests/runtime/test_checkpoint_resume_contract.py::test_replay_to_is_read_only_and_does_not_append_new_history is intentionally unsupported in async runtime."""
     rt = AsyncWorkflowRuntime(
         workflow_engine=object(),
         conversation_engine=object(),
@@ -2357,6 +2363,7 @@ def test_async_runtime_resume_run_is_not_supported():
 
 
 def test_async_runtime_run_with_resume_markers_is_not_supported():
+    """Sync mirror: tests/runtime/test_workflow_suspend_resume.py::test_resume_run_can_resuspend_same_token_with_updated_payload is intentionally unsupported in async runtime."""
     rt = AsyncWorkflowRuntime(
         workflow_engine=object(),
         conversation_engine=object(),
@@ -2601,6 +2608,7 @@ def test_async_runtime_native_scheduler_applies_completed_tasks_in_step_order(mo
     assert out1.final_state == out2.final_state
 
 
+@pytest.mark.ci_full
 @pytest.mark.asyncio
 async def test_async_runtime_native_scheduler_emits_trace_events_with_expected_metadata(monkeypatch):
     """Sync mirror: `tests/runtime/test_trace_sink_parallel_nested_minimal.py` trace event shape; also `tests/workflow/test_tracing_e2e.py`."""
@@ -2732,6 +2740,7 @@ async def test_async_runtime_native_scheduler_emits_trace_events_with_expected_m
     assert int(completed["duration_ms"]) >= 0
 
 
+@pytest.mark.ci_full
 @pytest.mark.asyncio
 async def test_async_runtime_native_scheduler_trace_emitter_failure_is_best_effort(monkeypatch):
     class _FailingEmitter:
@@ -2816,6 +2825,7 @@ async def test_async_runtime_native_scheduler_trace_emitter_failure_is_best_effo
     assert out.final_state["ok"] is True
 
 
+@pytest.mark.ci_full
 @pytest.mark.asyncio
 async def test_async_runtime_native_scheduler_nested_invocation_reuses_trace_emitter(monkeypatch):
     seen: list[tuple[str, bool]] = []
@@ -2928,3 +2938,248 @@ async def test_async_runtime_native_scheduler_nested_invocation_reuses_trace_emi
     assert out.status == "succeeded"
     assert out.final_state["done"] is True
     assert seen == [("spawn", True), ("child", True)]
+
+
+@pytest.mark.ci_full
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "backend_kind",
+    [
+        pytest.param("fake", id="fake", marks=pytest.mark.ci_full),
+        pytest.param("chroma", id="chroma", marks=pytest.mark.ci_full),
+        pytest.param("pg", id="pg", marks=pytest.mark.ci_full),
+    ],
+)
+async def test_async_runtime_suspend_with_join_waiter_returns_suspended_when_idle(
+    tmp_path, request, backend_kind
+):
+    """Sync mirror: `tests/runtime/test_workflow_suspend_resume.py::test_workflow_suspend_with_join_waiter_returns_suspended_when_idle`."""
+    from contextlib import contextmanager
+    import uuid
+
+    from kogwistar.engine_core.engine import GraphKnowledgeEngine
+    from kogwistar.engine_core.models import Grounding, Span
+    from kogwistar.engine_core.postgres_backend import PgVectorBackend
+    from kogwistar.runtime.models import WorkflowEdge, WorkflowNode
+    from tests._helpers.fake_backend import build_fake_backend
+    from tests.conftest import FakeEmbeddingFunction, _is_missing_pgvector_extension
+
+    def _g():
+        return Grounding(spans=[Span.from_dummy_for_conversation()])
+
+    def _node(node_id: str, op: str, *, start=False, fanout=False, join=False, terminal=False):
+        return WorkflowNode(
+            id=node_id,
+            label=node_id,
+            type="entity",
+            doc_id=node_id,
+            summary=op,
+            mentions=[_g()],
+            properties={},
+            metadata={
+                "entity_type": "workflow_node",
+                "workflow_id": "join_waiter_suspend_idle_async",
+                "wf_op": op,
+                "wf_start": start,
+                "wf_terminal": terminal,
+                "wf_version": "v1",
+                "wf_fanout": fanout,
+                "wf_join": join,
+            },
+            domain_id=None,
+            canonical_entity_id=None,
+            level_from_root=0,
+            embedding=None,
+        )
+
+    def _edge(src: str, dst: str):
+        return WorkflowEdge(
+            id=f"{src}->{dst}",
+            source_ids=[src],
+            target_ids=[dst],
+            relation="wf_next",
+            label="wf_next",
+            type="relationship",
+            summary="next",
+            doc_id=f"{src}->{dst}",
+            mentions=[_g()],
+            properties={},
+            metadata={
+                "entity_type": "workflow_edge",
+                "workflow_id": "join_waiter_suspend_idle_async",
+                "wf_priority": 100,
+                "wf_is_default": True,
+                "wf_predicate": None,
+                "wf_multiplicity": "one",
+            },
+            source_edge_ids=[],
+            target_edge_ids=[],
+            domain_id=None,
+            canonical_entity_id=None,
+        )
+
+    @contextmanager
+    def _engine_pair():
+        if backend_kind == "fake":
+            wf_engine = GraphKnowledgeEngine(
+                persist_directory=str(tmp_path / "wf_fake"),
+                kg_graph_type="workflow",
+                embedding_function=FakeEmbeddingFunction(dim=3),
+                backend_factory=build_fake_backend,
+            )
+            conv_engine = GraphKnowledgeEngine(
+                persist_directory=str(tmp_path / "conv_fake"),
+                kg_graph_type="conversation",
+                embedding_function=FakeEmbeddingFunction(dim=3),
+                backend_factory=build_fake_backend,
+            )
+            yield wf_engine, conv_engine
+            return
+
+        if backend_kind == "chroma":
+            pytest.importorskip("chromadb")
+            wf_engine = GraphKnowledgeEngine(
+                persist_directory=str(tmp_path / "wf_chroma"),
+                kg_graph_type="workflow",
+                embedding_function=FakeEmbeddingFunction(dim=3),
+            )
+            conv_engine = GraphKnowledgeEngine(
+                persist_directory=str(tmp_path / "conv_chroma"),
+                kg_graph_type="conversation",
+                embedding_function=FakeEmbeddingFunction(dim=3),
+            )
+            yield wf_engine, conv_engine
+            return
+
+        if backend_kind == "pg":
+            sa = pytest.importorskip("sqlalchemy")
+            sa_engine = request.getfixturevalue("sa_engine")
+            if sa_engine is None:
+                pytest.skip("pg fixtures are unavailable")
+            base_schema = f"join_suspend_async_{uuid.uuid4().hex}"
+            wf_schema = f"{base_schema}_wf"
+            conv_schema = f"{base_schema}_conv"
+            try:
+                try:
+                    wf_backend = PgVectorBackend(
+                        engine=sa_engine, embedding_dim=3, schema=wf_schema
+                    )
+                    conv_backend = PgVectorBackend(
+                        engine=sa_engine, embedding_dim=3, schema=conv_schema
+                    )
+                except Exception as exc:
+                    if _is_missing_pgvector_extension(exc):
+                        pytest.skip(f"pg backend unavailable: {exc}")
+                    raise
+                wf_engine = GraphKnowledgeEngine(
+                    persist_directory=str(tmp_path / "wf_pg_meta"),
+                    kg_graph_type="workflow",
+                    embedding_function=FakeEmbeddingFunction(dim=3),
+                    backend=wf_backend,
+                )
+                conv_engine = GraphKnowledgeEngine(
+                    persist_directory=str(tmp_path / "conv_pg_meta"),
+                    kg_graph_type="conversation",
+                    embedding_function=FakeEmbeddingFunction(dim=3),
+                    backend=conv_backend,
+                )
+                yield wf_engine, conv_engine
+            finally:
+                with sa_engine.begin() as conn:
+                    conn.execute(sa.text(f'DROP SCHEMA IF EXISTS "{wf_schema}" CASCADE'))
+                    conn.execute(sa.text(f'DROP SCHEMA IF EXISTS "{conv_schema}" CASCADE'))
+            return
+
+        raise ValueError(f"unsupported backend_kind: {backend_kind}")
+
+    seen: list[str] = []
+
+    def _resolver(op: str):
+        async def _start(_ctx):
+            seen.append("start")
+            return RunSuccess(conversation_node_id=None, state_update=[])
+
+        async def _light(_ctx):
+            seen.append("light")
+            return RunSuccess(conversation_node_id=None, state_update=[])
+
+        async def _pause(_ctx):
+            seen.append("pause")
+            return RunSuspended(
+                conversation_node_id=None,
+                resume_payload={
+                    "type": "recoverable_error",
+                    "op": "pause_op",
+                    "category": "budget_pinned",
+                    "message": "sibling branch paused",
+                    "errors": ["paused"],
+                },
+            )
+
+        async def _join(_ctx):
+            seen.append("join")
+            raise AssertionError("join must not execute while sibling token is suspended")
+
+        async def _end(_ctx):
+            seen.append("end")
+            return RunSuccess(conversation_node_id=None, state_update=[])
+
+        return {
+            "start_op": _start,
+            "light_op": _light,
+            "pause_op": _pause,
+            "join_op": _join,
+            "end_op": _end,
+        }[op]
+
+    wf_id = "join_waiter_suspend_idle_async"
+    with _engine_pair() as (wf_engine, conv_engine):
+        for node in (
+            _node("start", "start_op", start=True, fanout=True),
+            _node("a_light", "light_op"),
+            _node("z_pause", "pause_op"),
+            _node("join", "join_op", join=True),
+            _node("end", "end_op", terminal=True),
+        ):
+            wf_engine.write.add_node(node)
+        for edge in (
+            _edge("start", "a_light"),
+            _edge("start", "z_pause"),
+            _edge("a_light", "join"),
+            _edge("z_pause", "join"),
+            _edge("join", "end"),
+        ):
+            wf_engine.write.add_edge(edge)
+
+        out = await asyncio.wait_for(
+            AsyncWorkflowRuntime(
+                workflow_engine=wf_engine,
+                conversation_engine=conv_engine,
+                step_resolver=_resolver,
+                predicate_registry={},
+                checkpoint_every_n_steps=1,
+                max_workers=1,
+                experimental_native_scheduler=True,
+            ).run(
+                workflow_id=wf_id,
+                conversation_id="conv_join_waiter_suspend_async",
+                turn_node_id="turn_1",
+                initial_state={
+                    "conversation_id": "conv_join_waiter_suspend_async",
+                    "user_id": "user_1",
+                    "turn_node_id": "turn_1",
+                    "turn_index": 0,
+                    "role": "user",
+                    "user_text": "",
+                    "mem_id": "mem_1",
+                },
+                run_id=f"run_{uuid.uuid4().hex}",
+            ),
+            timeout=10,
+        )
+
+    rt_join = out.final_state.get("_rt_join", {})
+    assert out.status == "suspended"
+    assert seen == ["start", "light", "pause"]
+    assert rt_join.get("suspended", [])[0][0] == "z_pause"
+    assert rt_join.get("join_waiters", {}).get("join")

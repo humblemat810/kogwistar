@@ -43,7 +43,7 @@ MAPPINGS = [
         "tests.runtime.test_checkpoint_resume_contract",
         "test_replay_to_is_read_only_and_does_not_append_new_history",
         "tests.runtime.test_async_runtime_contract",
-        "test_async_runtime_resume_run_delegates_to_sync_resume",
+        "test_async_runtime_resume_run_is_not_supported",
     ),
     (
         "tests.runtime.test_workflow_suspend_resume",
@@ -67,7 +67,7 @@ MAPPINGS = [
         "tests.runtime.test_workflow_suspend_resume",
         "test_resume_run_can_resuspend_same_token_with_updated_payload",
         "tests.runtime.test_async_runtime_contract",
-        "test_async_runtime_run_with_resume_markers_delegates_to_sync_run",
+        "test_async_runtime_run_with_resume_markers_is_not_supported",
     ),
     (
         "tests.runtime.test_workflow_suspend_resume",

@@ -137,7 +137,7 @@ jobs:
             --log-disable=urllib3
             --log-disable=urllib3.connectionpool
             --show-capture=no
-        run: python -m pytest -m ci -q
+        run: python -m pytest -m "ci and not ci_full" -q
 
   lint:
     if: github.event_name != 'schedule' && (github.event_name != 'workflow_dispatch' || inputs.full == false)

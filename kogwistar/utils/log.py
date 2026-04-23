@@ -288,7 +288,41 @@ class EngineLogManager:
     _config: Optional[EngineLogConfig] = None
     _loggers: Dict[str, logging.Logger] = {}
 
+    @classmethod
+    def reset(cls) -> None:
+        """Close and remove handlers we own, then clear cached loggers.
+
+        Test harnesses use this to rebind file logging to a fresh directory per
+        test so Windows never has multiple workers rotating the same file.
+        """
+        root = logging.getLogger()
+        for handler in list(root.handlers):
+            if not getattr(handler, "_kogwistar_owned", False):
+                continue
+            with contextlib.suppress(Exception):
+                handler.flush()
+            with contextlib.suppress(Exception):
+                handler.close()
+            with contextlib.suppress(Exception):
+                root.removeHandler(handler)
+
+        for logger in list(cls._loggers.values()):
+            for handler in list(logger.handlers):
+                if not getattr(handler, "_kogwistar_owned", False):
+                    continue
+                with contextlib.suppress(Exception):
+                    handler.flush()
+                with contextlib.suppress(Exception):
+                    handler.close()
+                with contextlib.suppress(Exception):
+                    logger.removeHandler(handler)
+
+        cls._loggers.clear()
+        cls._config = None
+
+    @classmethod
     def configure(
+        cls,
         *,
         base_dir: Path,
         app_name: str = "gke",
@@ -308,7 +342,20 @@ class EngineLogManager:
         root = logging.getLogger()
         root.setLevel(level)
 
-        if root.handlers:
+        cls._config = EngineLogConfig(
+            base_dir=base_dir,
+            app_name=app_name,
+            level=level,
+            enable_files=enable_files,
+            max_bytes=max_bytes,
+            backup_count=backup_count,
+            enable_sqlite=enable_sqlite,
+            sqlite_db_path=sqlite_db_path,
+            enable_jsonl=enable_jsonl,
+        )
+        cls._configured = True
+
+        if any(getattr(h, "_kogwistar_owned", False) for h in root.handlers):
             return  # avoid duplicate install
 
         base_dir.mkdir(parents=True, exist_ok=True)
@@ -328,6 +375,7 @@ class EngineLogManager:
             sh.setLevel(level)
             sh.setFormatter(formatter)
             sh.addFilter(ContextFilter())
+            sh._kogwistar_owned = True  # type: ignore[attr-defined]
             root.addHandler(sh)
 
         if not enable_files:
@@ -343,6 +391,7 @@ class EngineLogManager:
         all_log.setLevel(level)
         all_log.setFormatter(formatter)
         all_log.addFilter(ContextFilter())
+        all_log._kogwistar_owned = True  # type: ignore[attr-defined]
         root.addHandler(all_log)
 
         # ---- Per-engine routing ----
@@ -361,6 +410,7 @@ class EngineLogManager:
             h.setFormatter(formatter)
             h.addFilter(ContextFilter())
             h.addFilter(engine_filter)
+            h._kogwistar_owned = True  # type: ignore[attr-defined]
             root.addHandler(h)
 
             if enable_jsonl:
@@ -374,6 +424,7 @@ class EngineLogManager:
                 j.setFormatter(JsonlFormatter())
                 j.addFilter(ContextFilter())
                 j.addFilter(engine_filter)
+                j._kogwistar_owned = True  # type: ignore[attr-defined]
                 root.addHandler(j)
 
         # ---- SQLite (optional) ----
@@ -381,6 +432,7 @@ class EngineLogManager:
             sqlite_handler = SQLiteHandler(str(sqlite_db_path))
             sqlite_handler.setLevel(level)
             sqlite_handler.addFilter(ContextFilter())
+            sqlite_handler._kogwistar_owned = True  # type: ignore[attr-defined]
             root.addHandler(sqlite_handler)
 
     @classmethod
@@ -421,6 +473,7 @@ class EngineLogManager:
             )
             fh.setFormatter(logging.Formatter(fmt))
             fh.addFilter(ContextFilter())
+            fh._kogwistar_owned = True  # type: ignore[attr-defined]
             logger.addHandler(fh)
 
             jsonl_path = base_dir / f"{cfg.app_name}.{engine_type}.jsonl"
@@ -433,6 +486,7 @@ class EngineLogManager:
             jh.setLevel(cfg.level)
             jh.setFormatter(JsonlFormatter())
             jh.addFilter(ContextFilter())
+            jh._kogwistar_owned = True  # type: ignore[attr-defined]
             logger.addHandler(jh)
         # Attach your existing SQLiteHandler if enabled
         if cfg.enable_sqlite and cfg.sqlite_db_path is not None:
@@ -446,6 +500,7 @@ class EngineLogManager:
                     )  # uses your existing class
                     sqlite_handler.setLevel(cfg.level)
                     sqlite_handler.addFilter(ContextFilter())
+                    sqlite_handler._kogwistar_owned = True  # type: ignore[attr-defined]
                     logger.addHandler(sqlite_handler)
                 except Exception:
                     # Never let logging setup crash the app

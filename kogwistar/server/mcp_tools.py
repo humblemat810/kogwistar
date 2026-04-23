@@ -48,12 +48,15 @@ from kogwistar.server.auth_middleware import (
     _decode_role_from_headers,
     _normalize_namespaces,
     current_role,
+    get_app_jwt_settings,
     get_current_namespaces,
     get_current_role,
     get_current_subject,
     get_current_user_id,
+    reset_current_role,
     require_role,
     require_workflow_access,
+    set_current_role,
 )
 from kogwistar.server.chat_mcp import (
     build_conversation_mcp,
@@ -108,13 +111,15 @@ class MCPRoleMiddleware:
         if scope.get("type") != "http":
             return await self.app(scope, receive, send)
 
-        token = current_role.set(_decode_role_from_headers(scope))
+        token = set_current_role(
+            _decode_role_from_headers(scope, get_app_jwt_settings(scope.get("app")))
+        )
         path = str(scope.get("path") or "")
         if not path.startswith("/mcp"):
             try:
                 await self.app(scope, receive, send)
             finally:
-                current_role.reset(token)
+                reset_current_role(token)
             return
 
         started = {}
@@ -172,7 +177,7 @@ class MCPRoleMiddleware:
         try:
             await self.app(scope, receive, _send)
         finally:
-            current_role.reset(token)
+            reset_current_role(token)
 
 
 def _tool_name_candidates(name: str) -> list[str]:

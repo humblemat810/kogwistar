@@ -19,13 +19,12 @@ class DebugEventProducer:
             pass
 
     def _run(self) -> None:
-        session = requests.Session()
         endpoint = f"{self.bridge_url}/ingest"
-
-        while True:
-            ev = self.q.get()
-            try:
-                session.post(endpoint, json=ev, timeout=0.5)
-            except Exception:
-                # bridge down → drop event
-                pass
+        with requests.Session() as session:
+            while True:
+                ev = self.q.get()
+                try:
+                    session.post(endpoint, json=ev, timeout=0.5)
+                except Exception:
+                    # bridge down → drop event
+                    pass

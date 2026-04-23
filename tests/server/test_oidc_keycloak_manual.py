@@ -20,6 +20,7 @@ from sqlalchemy.orm import sessionmaker
 
 from kogwistar.server.auth.db import create_auth_engine
 from kogwistar.server.auth.models import ExternalIdentity, User
+from .auth_env import TEST_JWT_SECRET
 from tests.server.oidc_test_support import oidc_provider_json, oidc_seed_json
 
 
@@ -108,7 +109,7 @@ def manual_oidc_server(
             redirect_uri="http://localhost:28110/api/auth/callback",
             issuer=keycloak_container["issuer"],
         ),
-        "JWT_SECRET": "dev-secret",
+        "JWT_SECRET": TEST_JWT_SECRET,
         "GKE_BACKEND": "chroma",
         "GKE_PERSIST_DIRECTORY": str((data_root / "gke-data").resolve()),
         "ANONYMIZED_TELEMETRY": "FALSE",
@@ -171,6 +172,8 @@ def manual_oidc_server(
         except Exception:  # noqa: BLE001
             proc.kill()
             proc.wait(timeout=5.0)
+        if proc.stdout is not None:
+            proc.stdout.close()
         raise RuntimeError(
             f"OIDC app server did not become healthy at {base_url}: {last_error}\n{joined}"
         )
@@ -192,6 +195,8 @@ def manual_oidc_server(
             except Exception:  # noqa: BLE001
                 proc.kill()
                 proc.wait(timeout=5.0)
+        if proc.stdout is not None:
+            proc.stdout.close()
 
 
 def test_oidc_keycloak_browser_manual(

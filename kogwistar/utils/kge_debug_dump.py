@@ -70,10 +70,11 @@ def dump_d3_bundle(
     embed_empty: bool = False,
 ) -> Path:
     if engine_type is None:
-        engine_type = engine.kg_graph_type
-    if engine and engine_type != engine.kg_graph_type:
+        engine_type = getattr(engine, "kg_graph_type", None)
+    engine_graph_type = getattr(engine, "kg_graph_type", None)
+    if engine and engine_graph_type is not None and engine_type != engine_graph_type:
         raise Exception(
-            f"argument engine_type {engine_type} disagree with engine kg_graph_type = {engine.kg_graph_type}"
+            f"argument engine_type {engine_type} disagree with engine kg_graph_type = {engine_graph_type}"
         )
     if not engine_type and not engine:
         raise ValueError("either engine type or engine required")

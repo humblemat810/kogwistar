@@ -7,11 +7,12 @@ import pytest
 import requests
 from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
+from .auth_env import TEST_JWT_ALG, TEST_JWT_SECRET
 
 pytestmark = pytest.mark.ci_full
 
-JWT_SECRET = os.getenv("JWT_SECRET", "dev-secret")
-JWT_ALG = os.getenv("JWT_ALG", "HS256")
+JWT_SECRET = os.getenv("JWT_SECRET", TEST_JWT_SECRET)
+JWT_ALG = os.getenv("JWT_ALG", TEST_JWT_ALG)
 
 WRITE_TOOLS = {
     "kg_extract",

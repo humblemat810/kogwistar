@@ -16,9 +16,10 @@ pytest.importorskip("fastmcp")
 pytest.importorskip("sqlalchemy")
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
+from .auth_env import TEST_JWT_ALG, TEST_JWT_SECRET
 
-os.environ.setdefault("JWT_SECRET", "dev-secret")
-os.environ.setdefault("JWT_ALG", "HS256")
+os.environ.setdefault("JWT_SECRET", TEST_JWT_SECRET)
+os.environ.setdefault("JWT_ALG", TEST_JWT_ALG)
 
 import kogwistar.server_mcp_with_admin as server
 from kogwistar.conversation.agentic_answering_design import DEBUG_RAG_WORKFLOW_ID
@@ -50,7 +51,7 @@ class FakeEmbeddingFunction:
     def name() -> str:
         return "default"
 
-    def __init__(self, dim: int = 8):
+    def __init__(self, dim: int = 384):
         self._dim = dim
         self.is_legacy = False
 
@@ -1318,9 +1319,13 @@ def test_view_layer_hardening_endpoints(monkeypatch, engine_triplet):
             role="assistant",
             turn_index=1,
             conversation_id="conv-tools",
-            mentions=[],
+            mentions=[Grounding(spans=[Span.from_dummy_for_conversation()])],
             properties={"tool_name": "list_transcript"},
-            metadata={"entity_type": "tool_call", "tool_name": "list_transcript"},
+            metadata={
+                "entity_type": "tool_call",
+                "tool_name": "list_transcript",
+                "level_from_root": 0,
+            },
             domain_id=None,
             canonical_entity_id=None,
         )
@@ -1336,9 +1341,13 @@ def test_view_layer_hardening_endpoints(monkeypatch, engine_triplet):
             role="tool",
             turn_index=1,
             conversation_id="conv-tools",
-            mentions=[],
+            mentions=[Grounding(spans=[Span.from_dummy_for_conversation()])],
             properties={"tool_name": "list_transcript", "result_json": "[]"},
-            metadata={"entity_type": "tool_result", "tool_name": "list_transcript"},
+            metadata={
+                "entity_type": "tool_result",
+                "tool_name": "list_transcript",
+                "level_from_root": 0,
+            },
             domain_id=None,
             canonical_entity_id=None,
         )

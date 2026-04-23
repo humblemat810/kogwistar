@@ -557,6 +557,11 @@ class ChatRunService:
         )
 
     def cancel_run(self, run_id: str) -> dict[str, Any]:
+        run = self.run_registry.get_run(run_id)
+        if run is None:
+            raise KeyError(f"Unknown run_id: {run_id}")
+        if run.get("terminal"):
+            return run
         self._require_capability(
             "workflow.run.write",
             ["workflow.run.write"],
@@ -1349,9 +1354,16 @@ class ChatRunService:
         engine = self._conversation_engine()
         nodes: list[Any] = []
         for entity_type in ("tool_call", "tool_result"):
-            where: dict[str, Any] = {"entity_type": entity_type}
+            where: dict[str, Any]
             if conversation_id:
-                where["conversation_id"] = str(conversation_id)
+                where = {
+                    "$and": [
+                        {"entity_type": entity_type},
+                        {"conversation_id": str(conversation_id)},
+                    ]
+                }
+            else:
+                where = {"entity_type": entity_type}
             nodes.extend(engine.read.get_nodes(where=where, limit=int(limit)))
         items: list[dict[str, Any]] = []
         for node in nodes[: int(limit)]:

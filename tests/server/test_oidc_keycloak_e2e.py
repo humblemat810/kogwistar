@@ -10,9 +10,10 @@ pytest.importorskip("fastmcp")
 pytest.importorskip("sqlalchemy")
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import sessionmaker
+from .auth_env import TEST_JWT_ALG, TEST_JWT_SECRET
 
-os.environ.setdefault("JWT_SECRET", "dev-secret")
-os.environ.setdefault("JWT_ALG", "HS256")
+os.environ.setdefault("JWT_SECRET", TEST_JWT_SECRET)
+os.environ.setdefault("JWT_ALG", TEST_JWT_ALG)
 
 import kogwistar.server_mcp_with_admin as server
 from kogwistar.server.auth.db import create_auth_engine, init_auth_db

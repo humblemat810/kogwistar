@@ -13,6 +13,7 @@ from ..id_provider import stable_id
 from .models import RunFailure, StepRunResult, WorkflowState
 from .executor import TerminalStatus, WorkflowExecutor
 from .base_runtime import BaseRuntime, apply_state_update_inplace, validate_initial_state
+from .telemetry import TraceContext
 from .runtime import (
     RunResult,
     StepContext,
@@ -299,6 +300,38 @@ class AsyncWorkflowRuntime(BaseRuntime, WorkflowExecutor):
             predicate_registry=self._predicate_registry,
             resolver=self._raw_step_resolver,
         )
+        wf_run_root_node: Any | None = None
+        persist_workflow_run = getattr(self._sync_runtime, "_persist_workflow_run", None)
+        if callable(persist_workflow_run):
+            try:
+                wf_run_root_node = persist_workflow_run(
+                    conversation_id=str(conversation_id),
+                    workflow_id=str(workflow_id),
+                    run_id=str(run_id),
+                    turn_node_id=str(turn_node_id),
+                    status="running",
+                )
+            except Exception:
+                wf_run_root_node = None
+        trace_emitter = getattr(self._sync_runtime, "emitter", None)
+        emit_event = getattr(trace_emitter, "emit", None) if trace_emitter is not None else None
+        if callable(emit_event):
+            try:
+                emit_event(
+                    type="workflow_run_started",
+                    ctx=TraceContext(
+                        run_id=str(run_id),
+                        token_id=str(run_id),
+                        step_seq=0,
+                        node_id=str(getattr(start, "id", "start")),
+                        attempt=1,
+                        conversation_id=str(conversation_id),
+                        turn_node_id=str(turn_node_id),
+                    ),
+                    payload={"workflow_id": str(workflow_id)},
+                )
+            except Exception:
+                pass
 
         join_merge_nodes: set[str] = set()
         join_waiters: dict[str, list[tuple[int, str, str | None]]] = {}
@@ -433,7 +466,7 @@ class AsyncWorkflowRuntime(BaseRuntime, WorkflowExecutor):
                     0,
                     start_mask,
                     str(start.id),
-                    str(uuid.uuid4()),
+                    str(run_id),
                     None,
                 )
             ]
@@ -447,8 +480,12 @@ class AsyncWorkflowRuntime(BaseRuntime, WorkflowExecutor):
         failure_errors: list[str] = []
         last_processed_node_id: str | None = None
         accepted_step_seq = -1
-        last_exec_node: Any | None = None
+        last_exec_node: Any | None = wf_run_root_node
         cancel_requested = _CANCEL_REQUESTED_CTX.get() or self.cancel_requested
+        ready_completed: list[
+            tuple[int, int, int, str, str, str | None, StepRunResult, float]
+        ] = []
+        next_apply_step_seq = 0
 
         def _cancel_requested() -> bool:
             return bool(cancel_requested and cancel_requested(str(run_id)))
@@ -619,6 +656,251 @@ class AsyncWorkflowRuntime(BaseRuntime, WorkflowExecutor):
             tasks.clear()
             inflight_records.clear()
 
+        async def _apply_completed_result(
+            item: tuple[int, int, int, str, str, str | None, StepRunResult, float]
+        ) -> None:
+            nonlocal status, failure_errors, last_processed_node_id
+            nonlocal accepted_step_seq, last_exec_node, run_suspended, dispatch_seq
+
+            _launch_seq, _step_seq, mask, node_id, token_id, parent_token_id, out, _completed_at = item
+            if not node_id:
+                return
+            accepted_step_seq = max(accepted_step_seq, int(_step_seq))
+            last_processed_node_id = str(node_id)
+            step_exec_node: Any | None = last_exec_node
+            child_failed = False
+
+            invocations = list(getattr(out, "workflow_invocations", []) or [])
+            for invocation in invocations:
+                child_result = await self._run_workflow_invocation_async(
+                    invocation=invocation,
+                    parent_state=state,
+                    conversation_id=str(conversation_id),
+                    turn_node_id=str(turn_node_id),
+                    parent_run_id=str(run_id),
+                    cache_dir=cache_dir,
+                )
+                child_status = str(getattr(child_result, "status", None))
+                if child_status != "succeeded":
+                    if child_status == "cancelled" and _cancel_requested():
+                        status = "cancelled"
+                        failure_errors = ["Run cancelled"]
+                        out = RunFailure(
+                            conversation_node_id=None,
+                            status="failure",
+                            errors=["Run cancelled"],
+                            state_update=[],
+                        )
+                    else:
+                        status = "failure"
+                        failure_errors = [
+                            "Nested workflow "
+                            f"{getattr(invocation, 'workflow_id', '')!r} "
+                            f"returned status {child_status!r}"
+                        ]
+                        out = RunFailure(
+                            conversation_node_id=None,
+                            status="failure",
+                            errors=list(failure_errors),
+                            state_update=[],
+                        )
+                    pending.clear()
+                    await _cancel_and_drain_inflight(inflight)
+                    child_failed = True
+                    break
+                self._apply_workflow_invocation_result(
+                    state=state,
+                    invocation=invocation,
+                    child_result=child_result,
+                )
+            if status != "succeeded":
+                _persist_rt_join_snapshot()
+                step_exec_node = _persist_step_exec_compat(
+                    conversation_id=str(conversation_id),
+                    workflow_id=str(workflow_id),
+                    run_id=str(run_id),
+                    step_seq=int(_step_seq),
+                    workflow_node_id=str(node_id),
+                    op=str(nodes[node_id].op),
+                    status=(
+                        "suspended"
+                        if getattr(out, "status", None) == "suspended"
+                        else "failure"
+                        if getattr(out, "status", None) == "failure"
+                        else "ok"
+                    ),
+                    duration_ms=0,
+                    result=out,
+                    state=state,
+                    token_id=str(token_id),
+                    parent_token_id=parent_token_id,
+                    join_mask=int(mask),
+                    last_exec_node=last_exec_node,
+                )
+                if child_failed:
+                    _maybe_persist_checkpoint(
+                        step_seq=int(_step_seq),
+                        state=state,
+                        last_exec_node=step_exec_node,
+                    )
+                return
+
+            _apply_run_result(state, out)
+
+            step_exec_node = _persist_step_exec_compat(
+                conversation_id=str(conversation_id),
+                workflow_id=str(workflow_id),
+                run_id=str(run_id),
+                step_seq=int(_step_seq),
+                workflow_node_id=str(node_id),
+                op=str(nodes[node_id].op),
+                status=(
+                    "suspended"
+                    if getattr(out, "status", None) == "suspended"
+                    else "failure"
+                    if getattr(out, "status", None) == "failure"
+                    else "ok"
+                ),
+                duration_ms=0,
+                result=out,
+                state=state,
+                token_id=str(token_id),
+                parent_token_id=parent_token_id,
+                join_mask=int(mask),
+                last_exec_node=last_exec_node,
+            )
+            last_exec_node = step_exec_node
+
+            if getattr(out, "status", None) == "failure":
+                status = "failure"
+                failure_errors = [str(err) for err in (getattr(out, "errors", []) or [])]
+                pending.clear()
+                await _cancel_and_drain_inflight(inflight)
+                _dec(int(mask))
+                _persist_rt_join_snapshot()
+                _maybe_persist_checkpoint(
+                    step_seq=int(_step_seq),
+                    state=state,
+                    last_exec_node=step_exec_node,
+                )
+                return
+
+            if getattr(out, "status", None) == "suspended":
+                run_suspended = True
+                wait_reason = getattr(out, "wait_reason", None)
+                if wait_reason:
+                    state["wait_reason"] = str(wait_reason)
+                suspended_tokens[str(token_id)] = (str(node_id), int(mask), str(token_id), parent_token_id)
+                _persist_rt_join_snapshot()
+                _maybe_persist_checkpoint(
+                    step_seq=int(_step_seq),
+                    state=state,
+                    last_exec_node=step_exec_node,
+                )
+                return
+
+            md = getattr(nodes[node_id], "metadata", {}) or {}
+            if bool(md.get("wf_terminal", False)):
+                _dec(int(mask))
+                _persist_rt_join_snapshot()
+                _maybe_persist_checkpoint(
+                    step_seq=int(_step_seq),
+                    state=state,
+                    last_exec_node=step_exec_node,
+                )
+                return
+
+            next_edges = self._select_next_edges(
+                nodes[node_id],
+                list(adj.get(node_id, [])),
+                state,
+                out,
+                self._predicate_registry,
+                nodes=nodes,
+            )
+            if not next_edges:
+                _dec(int(mask))
+                _persist_rt_join_snapshot()
+                _maybe_persist_checkpoint(
+                    step_seq=int(_step_seq),
+                    state=state,
+                    last_exec_node=step_exec_node,
+                )
+                return
+
+            prioritize_next = str(node_id) in join_merge_nodes
+            for idx, e in enumerate(next_edges):
+                dst = str((getattr(e, "target_ids", None) or [None])[0])
+                if not dst:
+                    continue
+
+                next_token = token_id if idx == 0 else str(uuid.uuid4())
+                next_parent = None if idx == 0 else token_id
+                next_mask = int(may_reach_join.get(dst, 0))
+                prioritize_dispatch = bool(prioritize_next)
+
+                if idx > 0:
+                    try:
+                        mq.put_nowait(
+                            {
+                                "type": "token.spawn",
+                                "parent_token_id": str(token_id),
+                                "child_token_id": str(next_token),
+                                "from_node_id": str(node_id),
+                                "to_node_id": str(dst),
+                            }
+                        )
+                    except queue.Full:
+                        pass
+
+                if idx == 0:
+                    leaving = int(mask) & ~int(next_mask)
+                    if leaving:
+                        _dec(leaving)
+                    gained = int(next_mask) & ~int(mask)
+                    if gained:
+                        _inc(gained)
+                else:
+                    _inc(int(next_mask))
+
+                if dst in join_merge_nodes:
+                    join_bit = _bit_for_join(dst)
+                    if int(next_mask) & join_bit:
+                        _dec(join_bit)
+                        next_mask = _mask_without_join(int(next_mask), dst)
+                    waiters = join_waiters.setdefault(dst, [])
+                    waiters.append((int(next_mask), str(next_token), next_parent))
+                    _persist_rt_join_snapshot()
+                    join_idx = join_pos.get(dst)
+                    if join_idx is None or join_outstanding[join_idx] != 0:
+                        continue
+                    merged_mask = int(waiters[0][0])
+                    next_token, next_parent = waiters[0][1], waiters[0][2]
+                    for wm, _tok, _parent in waiters:
+                        _dec(int(wm))
+                    for wm, _tok, _parent in waiters[1:]:
+                        merged_mask &= int(wm)
+                    _inc(int(merged_mask))
+                    waiters.clear()
+                    next_mask = int(merged_mask)
+                    prioritize_dispatch = True
+                    _persist_rt_join_snapshot()
+
+                dispatch_seq += 1
+                pending_item = (
+                    dispatch_seq,
+                    int(next_mask),
+                    str(dst),
+                    str(next_token),
+                    next_parent,
+                )
+                if prioritize_dispatch:
+                    pending.insert(0, pending_item)
+                else:
+                    pending.append(pending_item)
+
+            _persist_rt_join_snapshot()
+
         while pending or inflight:
             if _cancel_requested():
                 status = "cancelled"
@@ -679,247 +961,19 @@ class AsyncWorkflowRuntime(BaseRuntime, WorkflowExecutor):
                     )
                     break
 
-            completed.sort(key=lambda item: float(item[7]))
+            # Merge in dispatch order, not completion order.
+            # Keeps shared-state updates deterministic when sibling tasks finish out of order.
+            completed.sort(key=lambda item: (int(item[1]), int(item[0])))
+            ready_completed.extend(completed)
+            ready_completed.sort(key=lambda item: (int(item[1]), int(item[0])))
 
-            for item in completed:
-                _launch_seq, _step_seq, mask, node_id, token_id, parent_token_id, out, _completed_at = item
-                if not node_id:
-                    continue
-                accepted_step_seq = max(accepted_step_seq, int(_step_seq))
-                last_processed_node_id = str(node_id)
-                step_exec_node: Any | None = last_exec_node
-                child_failed = False
-
-                invocations = list(getattr(out, "workflow_invocations", []) or [])
-                for invocation in invocations:
-                    child_result = await self._run_workflow_invocation_async(
-                        invocation=invocation,
-                        parent_state=state,
-                        conversation_id=str(conversation_id),
-                        turn_node_id=str(turn_node_id),
-                        parent_run_id=str(run_id),
-                        cache_dir=cache_dir,
-                    )
-                    child_status = str(getattr(child_result, "status", None))
-                    if child_status != "succeeded":
-                        if child_status == "cancelled" and _cancel_requested():
-                            status = "cancelled"
-                            failure_errors = ["Run cancelled"]
-                            out = RunFailure(
-                                conversation_node_id=None,
-                                status="failure",
-                                errors=["Run cancelled"],
-                                state_update=[],
-                            )
-                        else:
-                            status = "failure"
-                            failure_errors = [
-                                "Nested workflow "
-                                f"{getattr(invocation, 'workflow_id', '')!r} "
-                                f"returned status {child_status!r}"
-                            ]
-                            out = RunFailure(
-                                conversation_node_id=None,
-                                status="failure",
-                                errors=list(failure_errors),
-                                state_update=[],
-                            )
-                        pending.clear()
-                        await _cancel_and_drain_inflight(inflight)
-                        child_failed = True
-                        break
-                    self._apply_workflow_invocation_result(
-                        state=state,
-                        invocation=invocation,
-                        child_result=child_result,
-                    )
+            while ready_completed and int(ready_completed[0][1]) == next_apply_step_seq:
+                item = ready_completed.pop(0)
+                await _apply_completed_result(item)
+                next_apply_step_seq += 1
                 if status != "succeeded":
-                    _persist_rt_join_snapshot()
-                    step_exec_node = _persist_step_exec_compat(
-                        conversation_id=str(conversation_id),
-                        workflow_id=str(workflow_id),
-                        run_id=str(run_id),
-                        step_seq=int(_step_seq),
-                        workflow_node_id=str(node_id),
-                        op=str(nodes[node_id].op),
-                        status=(
-                            "suspended"
-                            if getattr(out, "status", None) == "suspended"
-                            else "failure"
-                            if getattr(out, "status", None) == "failure"
-                            else "ok"
-                        ),
-                        duration_ms=0,
-                        result=out,
-                        state=state,
-                        token_id=str(token_id),
-                        parent_token_id=parent_token_id,
-                        join_mask=int(mask),
-                        last_exec_node=last_exec_node,
-                    )
-                    if child_failed:
-                        _maybe_persist_checkpoint(
-                            step_seq=int(_step_seq),
-                            state=state,
-                            last_exec_node=step_exec_node,
-                        )
+                    ready_completed.clear()
                     break
-
-                _apply_run_result(state, out)
-
-                step_exec_node = _persist_step_exec_compat(
-                    conversation_id=str(conversation_id),
-                    workflow_id=str(workflow_id),
-                    run_id=str(run_id),
-                    step_seq=int(_step_seq),
-                    workflow_node_id=str(node_id),
-                    op=str(nodes[node_id].op),
-                    status=(
-                        "suspended"
-                        if getattr(out, "status", None) == "suspended"
-                        else "failure"
-                        if getattr(out, "status", None) == "failure"
-                        else "ok"
-                    ),
-                    duration_ms=0,
-                    result=out,
-                    state=state,
-                    token_id=str(token_id),
-                    parent_token_id=parent_token_id,
-                    join_mask=int(mask),
-                    last_exec_node=last_exec_node,
-                )
-                last_exec_node = step_exec_node
-
-                if getattr(out, "status", None) == "failure":
-                    status = "failure"
-                    failure_errors = [str(err) for err in (getattr(out, "errors", []) or [])]
-                    pending.clear()
-                    await _cancel_and_drain_inflight(inflight)
-                    _dec(int(mask))
-                    _persist_rt_join_snapshot()
-                    _maybe_persist_checkpoint(
-                        step_seq=int(_step_seq),
-                        state=state,
-                        last_exec_node=step_exec_node,
-                    )
-                    break
-
-                if getattr(out, "status", None) == "suspended":
-                    run_suspended = True
-                    wait_reason = getattr(out, "wait_reason", None)
-                    if wait_reason:
-                        state["wait_reason"] = str(wait_reason)
-                    suspended_tokens[str(token_id)] = (str(node_id), int(mask), str(token_id), parent_token_id)
-                    _persist_rt_join_snapshot()
-                    _maybe_persist_checkpoint(
-                        step_seq=int(_step_seq),
-                        state=state,
-                        last_exec_node=step_exec_node,
-                    )
-                    continue
-
-                md = getattr(nodes[node_id], "metadata", {}) or {}
-                if bool(md.get("wf_terminal", False)):
-                    _dec(int(mask))
-                    _persist_rt_join_snapshot()
-                    _maybe_persist_checkpoint(
-                        step_seq=int(_step_seq),
-                        state=state,
-                        last_exec_node=step_exec_node,
-                    )
-                    continue
-
-                next_edges = self._select_next_edges(
-                    nodes[node_id],
-                    list(adj.get(node_id, [])),
-                    state,
-                    out,
-                    self._predicate_registry,
-                    nodes=nodes,
-                )
-                if not next_edges:
-                    _dec(int(mask))
-                    _persist_rt_join_snapshot()
-                    _maybe_persist_checkpoint(
-                        step_seq=int(_step_seq),
-                        state=state,
-                        last_exec_node=step_exec_node,
-                    )
-                    continue
-
-                prioritize_next = str(node_id) in join_merge_nodes
-                for idx, e in enumerate(next_edges):
-                    dst = str((getattr(e, "target_ids", None) or [None])[0])
-                    if not dst:
-                        continue
-
-                    next_token = token_id if idx == 0 else str(uuid.uuid4())
-                    next_parent = None if idx == 0 else token_id
-                    next_mask = int(may_reach_join.get(dst, 0))
-                    prioritize_dispatch = bool(prioritize_next)
-
-                    if idx > 0:
-                        try:
-                            mq.put_nowait(
-                                {
-                                    "type": "token.spawn",
-                                    "parent_token_id": str(token_id),
-                                    "child_token_id": str(next_token),
-                                    "from_node_id": str(node_id),
-                                    "to_node_id": str(dst),
-                                }
-                            )
-                        except queue.Full:
-                            pass
-
-                    if idx == 0:
-                        leaving = int(mask) & ~int(next_mask)
-                        if leaving:
-                            _dec(leaving)
-                        gained = int(next_mask) & ~int(mask)
-                        if gained:
-                            _inc(gained)
-                    else:
-                        _inc(int(next_mask))
-
-                    if dst in join_merge_nodes:
-                        join_bit = _bit_for_join(dst)
-                        if int(next_mask) & join_bit:
-                            _dec(join_bit)
-                            next_mask = _mask_without_join(int(next_mask), dst)
-                        waiters = join_waiters.setdefault(dst, [])
-                        waiters.append((int(next_mask), str(next_token), next_parent))
-                        _persist_rt_join_snapshot()
-                        join_idx = join_pos.get(dst)
-                        if join_idx is None or join_outstanding[join_idx] != 0:
-                            continue
-                        merged_mask = int(waiters[0][0])
-                        next_token, next_parent = waiters[0][1], waiters[0][2]
-                        for wm, _tok, _parent in waiters:
-                            _dec(int(wm))
-                        for wm, _tok, _parent in waiters[1:]:
-                            merged_mask &= int(wm)
-                        _inc(int(merged_mask))
-                        waiters.clear()
-                        next_mask = int(merged_mask)
-                        prioritize_dispatch = True
-                        _persist_rt_join_snapshot()
-
-                    dispatch_seq += 1
-                    pending_item = (
-                        dispatch_seq,
-                        int(next_mask),
-                        str(dst),
-                        str(next_token),
-                        next_parent,
-                    )
-                    if prioritize_dispatch:
-                        pending.insert(0, pending_item)
-                    else:
-                        pending.append(pending_item)
-
-                _persist_rt_join_snapshot()
             _maybe_persist_checkpoint(
                 step_seq=int(accepted_step_seq if accepted_step_seq >= 0 else 0),
                 state=state,

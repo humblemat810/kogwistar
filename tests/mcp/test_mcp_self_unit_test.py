@@ -109,6 +109,8 @@ def running_server() -> Dict[str, Any]:
                     yield {"proc": proc, "base_http": base_http}
                 finally:
                     proc.terminate()
+                    if proc.stdout is not None:
+                        proc.stdout.close()
                     # proc.join(timeout=2)
                 return
         except Exception as e:  # noqa: BLE001
@@ -117,6 +119,8 @@ def running_server() -> Dict[str, Any]:
 
     proc.terminate()
     # proc.join(timeout=2)
+    if proc.stdout is not None:
+        proc.stdout.close()
     raise RuntimeError(f"Server failed to start on {base_http}: {last_err}")
 
 
@@ -151,6 +155,7 @@ def test_rollback_doc_node_edge_adjudicate(
         )
 
 
+@pytest.mark.manual
 @pytest.mark.asyncio
 async def test_doc_node_edge_adjudicate(
     base_http: str, base_mcp: str, small_test_docs_nodes_edge_adjudcate

@@ -1758,6 +1758,45 @@ class WorkflowRuntime(BaseRuntime):
                         )
                     if (
                         not cancel_pending
+                        and run_suspended
+                        and not inflight
+                        and scheduled_q.empty()
+                        and done_q.empty()
+                    ):
+                        # Join waiters can remain parked behind a suspended branch.
+                        # They are persisted in _rt_join and should not keep the run alive.
+                        _persist_rt_join_runtime()
+                        try:
+                            tc_done = TraceContext(
+                                run_id=str(run_id),
+                                token_id=str(run_id),
+                                step_seq=int(step_seq),
+                                node_id="run",
+                                attempt=1,
+                                conversation_id=str(conversation_id)
+                                if conversation_id is not None
+                                else None,
+                                turn_node_id=str(turn_node_id)
+                                if turn_node_id is not None
+                                else None,
+                            )
+                            self.emitter.emit(
+                                type="workflow_run_suspended",
+                                ctx=tc_done,
+                                payload={"workflow_id": str(workflow_id)},
+                            )
+                        except Exception:
+                            pass
+                        self._close_sandbox_run(run_id)
+                        self.state_lock.pop(run_id, None)
+                        return RunResult(
+                            final_state=state,
+                            run_id=run_id,
+                            mq=mq,
+                            status="suspended",
+                        )
+                    if (
+                        not cancel_pending
                         and _work_snapshot() == 0
                         and not inflight
                         and scheduled_q.empty()
@@ -2036,7 +2075,12 @@ class WorkflowRuntime(BaseRuntime):
                             work_cond.wait_for(
                                 lambda: cancel_pending
                                 or (not done_q.empty())
-                                or _work_snapshot() == 0,
+                                or _work_snapshot() == 0
+                                or (
+                                    run_suspended
+                                    and not inflight
+                                    and scheduled_q.empty()
+                                ),
                                 timeout=0.05,
                             )
                     if done_q.empty():

@@ -1021,26 +1021,33 @@ def _run_async_wait_reason_suspend_resume(tmp_path: Path) -> dict:
     )
     checkpoint_state = _latest_checkpoint_state(conv_engine, run_id)
     suspended_token_id = checkpoint_state["_rt_join"]["suspended"][0][2]
-    out2 = asyncio.run(
-        runtime.resume_run(
-            run_id=run_id,
-            suspended_node_id="gate",
-            suspended_token_id=suspended_token_id,
-            client_result=RunSuccess(
-                conversation_node_id=None,
-                state_update=[("u", {"resumed": True})],
-            ),
-            workflow_id=wf_id,
-            conversation_id=conv_id,
-            turn_node_id="turn_1",
+    try:
+        asyncio.run(
+            runtime.resume_run(
+                run_id=run_id,
+                suspended_node_id="gate",
+                suspended_token_id=suspended_token_id,
+                client_result=RunSuccess(
+                    conversation_node_id=None,
+                    state_update=[("u", {"resumed": True})],
+                ),
+                workflow_id=wf_id,
+                conversation_id=conv_id,
+                turn_node_id="turn_1",
+            )
         )
-    )
-    return _normalize_suspend_resume_result(
-        suspended_status=out1.status,
-        checkpoint_state=checkpoint_state,
-        resumed_status=out2.status,
-        final_state=dict(out2.final_state or {}),
-    )
+    except NotImplementedError as exc:
+        return {
+            "suspended_status": str(out1.status),
+            "checkpoint_wait_reason": checkpoint_state.get("wait_reason"),
+            "checkpoint_suspended_nodes": [
+                item[0]
+                for item in checkpoint_state.get("_rt_join", {}).get("suspended", [])
+            ],
+            "resume_unsupported": True,
+            "resume_error": str(exc),
+        }
+    raise AssertionError("AsyncWorkflowRuntime.resume_run should be unsupported")
 
 
 def _run_sync_checkpoint_load_and_replay(tmp_path: Path) -> dict:
@@ -1316,8 +1323,9 @@ def _run_async_resume_from_checkpoint_frontier(tmp_path: Path) -> dict:
     )
 
 
+@pytest.mark.ci_full
 def test_runtime_parity_bridge_wait_reason_suspend_resume():
-    """Bridge parity: sync and async suspend/resume preserve wait reason, suspended token shape, and resumed terminal state."""
+    """Bridge parity: async suspend wait reason matches sync; async resume remains unsupported."""
     root = Path.cwd() / ".tmp_runtime_parity_bridge" / f"wait_reason_{uuid.uuid4().hex}"
     sync_out = _run_sync_wait_reason_suspend_resume(root / "sync")
     async_out = _run_async_wait_reason_suspend_resume(root / "async")
@@ -1332,9 +1340,19 @@ def test_runtime_parity_bridge_wait_reason_suspend_resume():
         "ended": True,
         "final_suspended_nodes": [],
     }
-    assert async_out == sync_out
+    assert async_out == {
+        "suspended_status": "suspended",
+        "checkpoint_wait_reason": "approval",
+        "checkpoint_suspended_nodes": ["gate"],
+        "resume_unsupported": True,
+        "resume_error": (
+            "AsyncWorkflowRuntime.resume_run() is removed; "
+            "use native async scheduling only"
+        ),
+    }
 
 
+@pytest.mark.ci_full
 def test_runtime_parity_bridge_checkpoint_load_and_replay():
     """Bridge parity: sync and async expose same normalized checkpoint payload and replayed state."""
     root = Path.cwd() / ".tmp_runtime_parity_bridge" / f"checkpoint_{uuid.uuid4().hex}"
@@ -1353,6 +1371,7 @@ def test_runtime_parity_bridge_checkpoint_load_and_replay():
     assert async_out == sync_out
 
 
+@pytest.mark.ci_full
 def test_runtime_parity_bridge_resume_from_checkpoint():
     """Bridge parity: sync and async resume from loaded checkpoint without redoing completed work."""
     root = Path.cwd() / ".tmp_runtime_parity_bridge" / f"resume_{uuid.uuid4().hex}"
@@ -1372,6 +1391,7 @@ def test_runtime_parity_bridge_resume_from_checkpoint():
     assert async_out == sync_out
 
 
+@pytest.mark.ci_full
 def test_runtime_parity_bridge_resume_from_checkpoint_frontier():
     """Bridge parity: sync and async resume from frontier checkpoint at next pending node only."""
     root = Path.cwd() / ".tmp_runtime_parity_bridge" / f"frontier_{uuid.uuid4().hex}"
@@ -1675,6 +1695,7 @@ def _run_async_nested_design_bridge(tmp_path: Path) -> dict:
     )
 
 
+@pytest.mark.ci_full
 def test_runtime_parity_bridge_nested_workflow_synthesized_design_is_persisted_and_used():
     """Bridge parity: sync and async persist synthesized child workflow design and reuse normalized child result identically."""
     root = Path.cwd() / ".tmp_runtime_parity_bridge" / f"nested_design_{uuid.uuid4().hex}"
@@ -1853,6 +1874,7 @@ def _run_async_nested_failure_bridge(tmp_path: Path) -> dict:
     return _normalize_nested_failure_result(out)
 
 
+@pytest.mark.ci_full
 def test_runtime_parity_bridge_nested_workflow_child_failure_fails_parent():
     """Bridge parity: sync and async child workflow failure short-circuits parent routing with same normalized failure state."""
     root = Path.cwd() / ".tmp_runtime_parity_bridge" / f"nested_failure_{uuid.uuid4().hex}"
@@ -1985,29 +2007,57 @@ def _run_async_suspend_resume_roundtrip_bridge(tmp_path: Path) -> dict:
     )
     checkpoint_state = _latest_checkpoint_state(conv_engine, run_id)
     token_id = checkpoint_state["_rt_join"]["suspended"][0][2]
-    resumed = asyncio.run(
-        runtime.resume_run(
-            run_id=run_id,
-            suspended_node_id="gate",
-            suspended_token_id=token_id,
-            client_result=RunSuccess(
-                conversation_node_id=None,
-                state_update=[("u", {"pi": 3.14})],
-            ),
-            workflow_id=wf_id,
-            conversation_id=conv_id,
-            turn_node_id="turn_1",
+    try:
+        asyncio.run(
+            runtime.resume_run(
+                run_id=run_id,
+                suspended_node_id="gate",
+                suspended_token_id=token_id,
+                client_result=RunSuccess(
+                    conversation_node_id=None,
+                    state_update=[("u", {"pi": 3.14})],
+                ),
+                workflow_id=wf_id,
+                conversation_id=conv_id,
+                turn_node_id="turn_1",
+            )
         )
-    )
-    return _normalize_roundtrip_resume_result(
-        first_result=first,
-        checkpoint_state=checkpoint_state,
-        resumed_result=resumed,
-    )
+    except NotImplementedError as exc:
+        return {
+            "first_status": str(first.status),
+            "suspended_nodes": [
+                item[0]
+                for item in checkpoint_state.get("_rt_join", {}).get("suspended", [])
+            ],
+            "resume_unsupported": True,
+            "resume_error": str(exc),
+        }
+    raise AssertionError("AsyncWorkflowRuntime.resume_run should be unsupported")
 
 
+def _async_resume_unsupported_expected(suspended_nodes: list[str]) -> dict:
+    return {
+        "first_status": "suspended",
+        "suspended_nodes": suspended_nodes,
+        "resume_unsupported": True,
+        "resume_error": (
+            "AsyncWorkflowRuntime.resume_run() is removed; "
+            "use native async scheduling only"
+        ),
+    }
+
+
+def _async_branching_resume_unsupported_expected(
+    suspended_nodes: list[str], *, b_done_before_resume: bool
+) -> dict:
+    out = _async_resume_unsupported_expected(suspended_nodes)
+    out["b_done_before_resume"] = bool(b_done_before_resume)
+    return out
+
+
+@pytest.mark.ci_full
 def test_runtime_parity_bridge_workflow_suspend_and_resume_roundtrip():
-    """Bridge parity: sync and async suspend checkpoint then resume to same normalized terminal state."""
+    """Bridge parity: async suspend frontier matches sync; async resume remains unsupported."""
     root = Path.cwd() / ".tmp_runtime_parity_bridge" / f"roundtrip_{uuid.uuid4().hex}"
     sync_out = _run_sync_suspend_resume_roundtrip_bridge(root / "sync")
     async_out = _run_async_suspend_resume_roundtrip_bridge(root / "async")
@@ -2020,7 +2070,7 @@ def test_runtime_parity_bridge_workflow_suspend_and_resume_roundtrip():
         "pi": 3.14,
         "ended": True,
     }
-    assert async_out == sync_out
+    assert async_out == _async_resume_unsupported_expected(["gate"])
 
 
 def _seed_suspend_resume_branching_workflow(engine: GraphKnowledgeEngine, wf_id: str) -> None:
@@ -2178,29 +2228,39 @@ def _run_async_branching_suspend_resume_bridge(tmp_path: Path) -> dict:
     )
     checkpoint_state = _latest_checkpoint_state(conv_engine, run_id)
     token_id = checkpoint_state["_rt_join"]["suspended"][0][2]
-    resumed = asyncio.run(
-        runtime.resume_run(
-            run_id=run_id,
-            suspended_node_id="a",
-            suspended_token_id=token_id,
-            client_result=RunSuccess(
-                conversation_node_id=None,
-                state_update=[("u", {"a_done": True})],
-            ),
-            workflow_id=wf_id,
-            conversation_id=conv_id,
-            turn_node_id="turn_1",
+    try:
+        asyncio.run(
+            runtime.resume_run(
+                run_id=run_id,
+                suspended_node_id="a",
+                suspended_token_id=token_id,
+                client_result=RunSuccess(
+                    conversation_node_id=None,
+                    state_update=[("u", {"a_done": True})],
+                ),
+                workflow_id=wf_id,
+                conversation_id=conv_id,
+                turn_node_id="turn_1",
+            )
         )
-    )
-    return _normalize_branching_resume_result(
-        first_result=first,
-        checkpoint_state=checkpoint_state,
-        resumed_result=resumed,
-    )
+    except NotImplementedError as exc:
+        first_state = dict(first.final_state or {})
+        return {
+            "first_status": str(first.status),
+            "suspended_nodes": [
+                item[0]
+                for item in checkpoint_state.get("_rt_join", {}).get("suspended", [])
+            ],
+            "b_done_before_resume": bool(first_state.get("b_done")),
+            "resume_unsupported": True,
+            "resume_error": str(exc),
+        }
+    raise AssertionError("AsyncWorkflowRuntime.resume_run should be unsupported")
 
 
+@pytest.mark.ci_full
 def test_runtime_parity_bridge_workflow_suspend_and_resume_branching_roundtrip():
-    """Bridge parity: sync and async suspended branch/join frontier resumes to same normalized terminal state."""
+    """Bridge parity: async suspended branch/join frontier matches sync; async resume remains unsupported."""
     root = Path.cwd() / ".tmp_runtime_parity_bridge" / f"branch_roundtrip_{uuid.uuid4().hex}"
     sync_out = _run_sync_branching_suspend_resume_bridge(root / "sync")
     async_out = _run_async_branching_suspend_resume_bridge(root / "async")
@@ -2214,7 +2274,9 @@ def test_runtime_parity_bridge_workflow_suspend_and_resume_branching_roundtrip()
         "b_done": True,
         "ended": True,
     }
-    assert async_out == sync_out
+    assert async_out == _async_branching_resume_unsupported_expected(
+        ["a"], b_done_before_resume=True
+    )
 
 
 def _seed_unreachable_join_workflow(engine: GraphKnowledgeEngine, wf_id: str) -> None:
@@ -2384,6 +2446,7 @@ def _run_async_unreachable_join_bridge(tmp_path: Path) -> dict:
     return _normalize_unreachable_join_result(out)
 
 
+@pytest.mark.ci_full
 def test_runtime_parity_bridge_join_unreachable_branch_not_required():
     """Bridge parity: sync and async joins do not wait on branch outside reachable join region."""
     root = Path.cwd() / ".tmp_runtime_parity_bridge" / f"unreachable_join_{uuid.uuid4().hex}"
@@ -2788,6 +2851,7 @@ def _run_side_by_side_bridge(tmp_path: Path, terminal_case: str) -> tuple[dict, 
         ),
     ],
 )
+@pytest.mark.ci_full
 def test_runtime_parity_bridge_side_by_side_node_edge_and_terminal_parity(
     terminal_case: str,
     expected: dict[str, object],
@@ -2926,6 +2990,7 @@ def _run_async_parent_cancellation_bridge(tmp_path: Path) -> dict:
     }
 
 
+@pytest.mark.ci_full
 def test_runtime_parity_bridge_parent_cancellation_propagates_to_child():
     """Bridge parity: sync and async parent cancellation reaches child workflow run and lands same cancelled status."""
     root = Path.cwd() / ".tmp_runtime_parity_bridge" / f"parent_cancel_{uuid.uuid4().hex}"

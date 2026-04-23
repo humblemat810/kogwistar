@@ -7,6 +7,8 @@
     "python-envs.defaultEnvManager": "ms-python.python:venv",
     "python-envs.defaultPackageManager": "ms-python.python:pip",
     "python.analysis.extraPaths": [
+        ".",
+        "./tests",
         "./kogwistar"
     ]
 }
