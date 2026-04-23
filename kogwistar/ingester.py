@@ -315,20 +315,15 @@ class BaseDocumentGraphIngestor:
     ) -> str:
         node_id = f"docnode:{doc_id}"
         if not self.engine.persist.exists_node(node_id):
-            from kogwistar.engine_core.models import Node, Span
+            from kogwistar.engine_core.models import Node
 
             embeddings = self.engine.backend.document_get(
-                doc_id, include=["embeddings"]
+                ids=[doc_id], include=["embeddings"]
             )["embeddings"][0]
             ref = self._ref(
                 doc_id=doc_id,
                 excerpt=None,
-                span=Span(
-                    start_page=1,
-                    end_page=len(leaves),
-                    start_char=0,
-                    end_char=len(leaves[-1].text),
-                ),
+                span=GroundingSpan.from_dummy_for_document(),
             )
             n = Node(
                 id=node_id,
@@ -675,7 +670,11 @@ class BaseDocumentGraphIngestor:
     ) -> List[Node]:
         nodes: List[Node] = []
         for i, leaf in enumerate(leaves, start=1):
-            leaf_json = json.loads(leaf.text)
+            leaf_text = leaf.text.lstrip("\ufeff") if isinstance(leaf.text, str) else leaf.text
+            try:
+                leaf_json = json.loads(leaf_text)
+            except json.JSONDecodeError:
+                leaf_json = {"text": leaf_text}
             try:
                 embedding_text = leaf_json.get("text")
                 if embedding_text is None:
@@ -815,6 +814,9 @@ class BaseDocumentGraphIngestor:
     ):
         "this document graph does not enfoce multi headed edge"
 
+        span = GroundingSpan.from_dummy_for_document()
+        span.doc_id = doc_id
+
         # forward
         e1 = Edge(
             id=f"edge:{uuid.uuid4() if self.use_uuid else str(f'({src}::{relation}::{tgt})')}",
@@ -826,13 +828,7 @@ class BaseDocumentGraphIngestor:
             summary=f"{relation}: {src} → {tgt}",
             source_edge_ids=[],
             target_edge_ids=[],
-            mentions=[
-                self._ref(
-                    doc_id,
-                    GroundingSpan(start_page=1, end_page=1, start_char=0, end_char=1),
-                    excerpt=None,
-                )
-            ],
+            mentions=[self._ref(doc_id, span, excerpt=None)],
             doc_id=doc_id,
         )
         # reverse (distinct relation name)
@@ -846,13 +842,7 @@ class BaseDocumentGraphIngestor:
             summary=f"{reverse_relation}: {tgt} → {src}",
             source_edge_ids=[],
             target_edge_ids=[],
-            mentions=[
-                self._ref(
-                    doc_id,
-                    GroundingSpan(start_page=1, end_page=1, start_char=0, end_char=1),
-                    excerpt=None,
-                )
-            ],
+            mentions=[self._ref(doc_id, span, excerpt=None)],
             doc_id=doc_id,
         )
         if not self.engine.persist.exists_edge(e1.id):
@@ -863,15 +853,32 @@ class BaseDocumentGraphIngestor:
     def _ref(
         self, doc_id: str, span: GroundingSpan, *, excerpt: Optional[str]
     ) -> GroundingSpan:
+        start_page = getattr(span, "start_page", None)
+        end_page = getattr(span, "end_page", None)
+        page_number = getattr(span, "page_number", None)
+        if start_page is None:
+            start_page = page_number if page_number is not None else 1
+        if end_page is None:
+            end_page = page_number if page_number is not None else start_page
+
+        start_char = getattr(span, "start_char", None)
+        if start_char is None:
+            start_char = 0
+        end_char = getattr(span, "end_char", None)
+        if end_char is None:
+            end_char = max(int(start_char) + 1, 1)
+
+        insertion_method = getattr(span, "insertion_method", None) or "document_ingestion"
+
         return GroundingSpan(
             doc_id=doc_id,
             collection_page_url=f"document_collection/{doc_id}",
             document_page_url=f"document/{doc_id}",
-            start_page=span.start_page,
-            end_page=span.end_page,
-            start_char=span.start_char,
-            end_char=span.end_char,
-            insertion_method="document_ingestion",
+            start_page=int(start_page),
+            end_page=int(end_page),
+            start_char=int(start_char),
+            end_char=int(end_char),
+            insertion_method=str(insertion_method),
             excerpt=excerpt,
         )
 

@@ -121,8 +121,10 @@ def stable_uuid(*parts: object) -> str:
 
 class _SimpleTmpPathFactory:
     def __init__(self) -> None:
+        base_root = _TEST_ROOT / ".tmp_pytest"
+        base_root.mkdir(parents=True, exist_ok=True)
         self._base = pathlib.Path(
-            tempfile.mkdtemp(prefix="kogwistar_pytest_", dir=tempfile.gettempdir())
+            tempfile.mkdtemp(prefix="kogwistar_pytest_", dir=str(base_root))
         )
 
     def mktemp(self, name: str, numbered: bool = True) -> pathlib.Path:
@@ -419,6 +421,31 @@ def _start_postgres_container(image: str):
     pg = postgres_container_cls(image)
     pg.start()
     return pg
+
+
+def _stop_postgres_container_best_effort(pg, image: str, timeout_s: int = 10) -> None:
+    import threading
+
+    err: list[BaseException] = []
+
+    def _stop() -> None:
+        try:
+            pg.stop()
+        except BaseException as exc:  # pragma: no cover - teardown best effort
+            err.append(exc)
+
+    t = threading.Thread(target=_stop, name="pg-container-stop", daemon=True)
+    t.start()
+    t.join(timeout_s)
+    if t.is_alive():
+        logger.warning(
+            "Timed out stopping pg test container image=%s after %ss; leaving best-effort teardown",
+            image,
+            timeout_s,
+        )
+        return
+    if err:
+        logger.exception("Failed to stop pg test container image=%s", image, exc_info=err[0])
 
 
 def pytest_addoption(parser):
@@ -1260,7 +1287,7 @@ def pg_container() -> Iterator[Optional["PostgresContainer"]]:
             return
         try:
             logger.info("Stopping pg test container image=%s", image)
-            pg.stop()
+            _stop_postgres_container_best_effort(pg, image)
         except Exception:
             logger.exception("Failed to stop pg test container image=%s", image)
 

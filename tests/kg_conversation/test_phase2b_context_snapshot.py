@@ -39,8 +39,10 @@ def _mk_span(doc_id: str) -> Span:
 
 @pytest.mark.parametrize("backend_kind", ["chroma", "pg"])
 def test_summary_creates_context_snapshot_before_llm_call(
-    backend_kind, tmp_path, sa_engine, pg_schema, monkeypatch
+    backend_kind, tmp_path, request, monkeypatch
 ):
+    sa_engine = request.getfixturevalue("sa_engine") if backend_kind == "pg" else None
+    pg_schema = request.getfixturevalue("pg_schema") if backend_kind == "pg" else None
     kg, conv = _make_engine_pair(
         backend_kind=backend_kind,
         tmp_path=tmp_path,
@@ -49,6 +51,8 @@ def test_summary_creates_context_snapshot_before_llm_call(
         dim=3,
         use_fake=True,
     )
+    kg._phase1_enable_index_jobs = False
+    conv._phase1_enable_index_jobs = False
     conv.tool_call_id_factory = stable_id
     orch = ConversationOrchestrator(
         conversation_engine=conv,
@@ -132,8 +136,10 @@ def test_summary_creates_context_snapshot_before_llm_call(
 
 @pytest.mark.parametrize("backend_kind", ["chroma", "pg"])
 def test_answer_flow_creates_context_snapshots_and_edges(
-    backend_kind, tmp_path, sa_engine, pg_schema, monkeypatch
+    backend_kind, tmp_path, request, monkeypatch
 ):
+    sa_engine = request.getfixturevalue("sa_engine") if backend_kind == "pg" else None
+    pg_schema = request.getfixturevalue("pg_schema") if backend_kind == "pg" else None
     kg, conv = _make_engine_pair(
         backend_kind=backend_kind,
         tmp_path=tmp_path,
@@ -142,6 +148,8 @@ def test_answer_flow_creates_context_snapshots_and_edges(
         dim=3,
         use_fake=True,
     )
+    kg._phase1_enable_index_jobs = False
+    conv._phase1_enable_index_jobs = False
 
     conversation_id = "c2"
     user_id = "u2"
@@ -301,8 +309,10 @@ def test_answer_flow_creates_context_snapshots_and_edges(
 
 @pytest.mark.parametrize("backend_kind", ["chroma", "pg"])
 def test_persist_context_snapshot_allows_empty_used_node_ids(
-    backend_kind, tmp_path, sa_engine, pg_schema
+    backend_kind, tmp_path, request
 ):
+    sa_engine = request.getfixturevalue("sa_engine") if backend_kind == "pg" else None
+    pg_schema = request.getfixturevalue("pg_schema") if backend_kind == "pg" else None
     kg, conv = _make_engine_pair(
         backend_kind=backend_kind,
         tmp_path=tmp_path,
@@ -311,6 +321,8 @@ def test_persist_context_snapshot_allows_empty_used_node_ids(
         dim=3,
         use_fake=True,
     )
+    kg._phase1_enable_index_jobs = False
+    conv._phase1_enable_index_jobs = False
     svc = ConversationService.from_engine(conversation_engine=conv, knowledge_engine=kg)
 
     view = PromptContext(

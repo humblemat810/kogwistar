@@ -889,7 +889,7 @@ def api_graph_upsert_llm(inp: GraphUpsertLLMIn):
             source_map=None,
             metadata=None,
             domain_id=None,
-            processed=None,
+            processed=False,
         ),
         parsed=parsed,
         mode="append",

@@ -37,6 +37,7 @@ from kogwistar.runtime.budget_adapters import adapt_budget_events
 
 from .design import validate_workflow_design, Predicate
 from .serialize import try_serialize_with_ref
+from ..engine_core.async_compat import run_awaitable_blocking
 from .base_runtime import (
     BaseRuntime,
     RESERVED_PREFIXES,
@@ -2211,6 +2212,8 @@ class WorkflowRuntime(BaseRuntime):
                             state["wait_reason"] = str(wait_reason)
                         _persist_rt_join_runtime()
                         _checkpoint_current_step()
+                        # Token is parked, not active work anymore.
+                        _work_done(1)
 
                         # Emit specific suspension payload for client ingestion
                         if hasattr(run_result, "resume_payload"):
@@ -2577,7 +2580,7 @@ class WorkflowRuntime(BaseRuntime):
     def _conversation_node_exists(self, node_id: str) -> bool:
         backend = self._conversation_backend()
         if backend is not None:
-            existing = backend.node_get(ids=[node_id], include=[])
+            existing = run_awaitable_blocking(backend.node_get(ids=[node_id], include=[]))
             return bool(existing.get("ids"))
 
         try:
@@ -2593,7 +2596,7 @@ class WorkflowRuntime(BaseRuntime):
     def _conversation_edge_exists(self, edge_id: str) -> bool:
         backend = self._conversation_backend()
         if backend is not None:
-            existing = backend.edge_get(ids=[edge_id], include=[])
+            existing = run_awaitable_blocking(backend.edge_get(ids=[edge_id], include=[]))
             return bool(existing.get("ids"))
 
         try:

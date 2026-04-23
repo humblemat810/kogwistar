@@ -52,6 +52,7 @@ import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 from sqlalchemy.dialects import postgresql as psql
 
+from .async_compat import run_awaitable_blocking
 from ..utils.embedding_vectors import normalize_embedding_rows, normalize_embedding_vector
 
 try:
@@ -66,6 +67,40 @@ else:
 
 Json = Dict[str, Any]
 JSONB = psql.JSONB
+
+
+class _AwaitableValue:
+    def __init__(self, value: Any):
+        self._value = value
+
+    def __await__(self):
+        async def _done():
+            return self._value
+
+        return _done().__await__()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._value, name)
+
+    def __bool__(self) -> bool:
+        return bool(self._value)
+
+    def __repr__(self) -> str:
+        return repr(self._value)
+
+
+class _AwaitableDict(dict):
+    def __await__(self):
+        async def _done():
+            return self
+
+        return _done().__await__()
+
+
+def _awaitable_result(value: Any) -> Any:
+    if isinstance(value, dict):
+        return _AwaitableDict(value)
+    return _AwaitableValue(value)
 
 
 _pg_uow_conn: contextvars.ContextVar[Any | None] = contextvars.ContextVar(
@@ -233,13 +268,13 @@ class PgCollectionFacade:
                     embeddings=embeddings,
                 )
             )
-        self._b._upsert(
+        return _awaitable_result(self._b._upsert(
             self._t,
             ids=ids,
             documents=documents,
             metadatas=metadatas,
             embeddings=embeddings,
-        )
+        ))
 
     def upsert(
         self,
@@ -249,7 +284,7 @@ class PgCollectionFacade:
         metadatas: Sequence[Json],
         embeddings: Optional[Sequence[Sequence[float]]] = None,
     ) -> None:
-        self.add(
+        return self.add(
             ids=ids, documents=documents, metadatas=metadatas, embeddings=embeddings
         )
 
@@ -268,9 +303,9 @@ class PgCollectionFacade:
                     self._t, ids=ids, where=where, include=include, limit=limit
                 )
             )
-        return self._b._get_flat(
+        return _awaitable_result(self._b._get_flat(
             self._t, ids=ids, where=where, include=include, limit=limit
-        )
+        ))
 
     def delete(
         self, *, ids: Optional[Sequence[str]] = None, where: Optional[Json] = None
@@ -279,7 +314,7 @@ class PgCollectionFacade:
             return self._call_async(
                 lambda: self._b._delete_async(self._t, ids=ids, where=where)
             )
-        self._b._delete(self._t, ids=ids, where=where)
+        return _awaitable_result(self._b._delete(self._t, ids=ids, where=where))
 
     def query(
         self,
@@ -303,13 +338,13 @@ class PgCollectionFacade:
                         include=include,
                     )
                 )
-            return self._b._query_vector(
+            return _awaitable_result(self._b._query_vector(
                 self._t,
                 query_embeddings=query_embeddings,
                 n_results=n_results,
                 where=where,
                 include=include,
-            )
+            ))
 
         include = include or ["documents", "metadatas"]
         if self._b._is_async_engine:
@@ -318,9 +353,9 @@ class PgCollectionFacade:
                     self._t, where=where, n_results=n_results, include=include
                 )
             )
-        return self._b._query_nonvector(
+        return _awaitable_result(self._b._query_nonvector(
             self._t, where=where, n_results=n_results, include=include
-        )
+        ))
 
     def update(
         self,
@@ -348,13 +383,13 @@ class PgCollectionFacade:
                     embeddings=embeddings,
                 )
             )
-        self._b._update_doc_meta_embedding_merge(
+        return _awaitable_result(self._b._update_doc_meta_embedding_merge(
             self._t,
             ids=ids,
             documents=documents,
             metadatas=metadatas,
             embeddings=embeddings,
-        )
+        ))
 
 
 # ----------------------------
@@ -798,6 +833,8 @@ class PgVectorBackend:
         )
 
         self._init_facades()
+        if self._is_async_engine:
+            self._install_async_passthroughs()
 
         self._md = md
         self.ensure_schema()
@@ -1495,6 +1532,77 @@ class PgVectorBackend:
         self._edge_refs_c = PgCollectionFacade(self, self.edge_refs, nv)
         self._node_docs_c = PgCollectionFacade(self, self.node_docs, nv)
         self._node_refs_c = PgCollectionFacade(self, self.node_refs, nv)
+
+    def _install_async_passthroughs(self) -> None:
+        """Expose async-engine collection methods as eager awaitable results.
+
+        Public backend methods must behave like Chroma collections: sync call
+        sites should receive immediate dict/None-shaped results, while async
+        call sites can still `await` the same returned object. We execute the
+        async SQL work to completion here and wrap the value so both styles work.
+        """
+
+        def _bind(name: str):
+            original = getattr(self, name)
+
+            def _sync_wrapper(*args, **kwargs):
+                if get_active_conn() is not None:
+                    return original(*args, **kwargs)
+                return _awaitable_result(_run_coro_sync(original(*args, **kwargs)))
+
+            setattr(self, name, _sync_wrapper)
+
+        for name in (
+            "node_add",
+            "node_upsert",
+            "node_get",
+            "node_delete",
+            "node_query",
+            "node_update",
+            "edge_add",
+            "edge_upsert",
+            "edge_get",
+            "edge_delete",
+            "edge_query",
+            "edge_update",
+            "document_add",
+            "document_upsert",
+            "document_get",
+            "document_delete",
+            "document_query",
+            "document_update",
+            "domain_add",
+            "domain_upsert",
+            "domain_get",
+            "domain_delete",
+            "domain_query",
+            "domain_update",
+            "edge_endpoints_add",
+            "edge_endpoints_upsert",
+            "edge_endpoints_get",
+            "edge_endpoints_query",
+            "edge_endpoints_update",
+            "edge_endpoints_delete",
+            "edge_refs_add",
+            "edge_refs_upsert",
+            "edge_refs_get",
+            "edge_refs_query",
+            "edge_refs_update",
+            "edge_refs_delete",
+            "node_docs_add",
+            "node_docs_upsert",
+            "node_docs_get",
+            "node_docs_query",
+            "node_docs_update",
+            "node_docs_delete",
+            "node_refs_add",
+            "node_refs_upsert",
+            "node_refs_get",
+            "node_refs_query",
+            "node_refs_update",
+            "node_refs_delete",
+        ):
+            _bind(name)
 
     # ----------------------------
     # Nodes

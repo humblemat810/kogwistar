@@ -23,6 +23,88 @@ def _safe_iter(x):
     return x if isinstance(x, list) and x else []
 
 
+def _render_d3_from_raw(nodes, edges, mode: str = "reify") -> Dict:
+    node_map = {getattr(n, "id", None): n for n in nodes if getattr(n, "id", None)}
+    edge_map = {getattr(e, "id", None): e for e in edges if getattr(e, "id", None)}
+
+    out_nodes: Dict[str, Dict] = {}
+    links: List[Dict] = []
+
+    for nid, n in node_map.items():
+        out_nodes[nid] = {
+            "id": nid,
+            "label": getattr(n, "label", nid),
+            "type": getattr(n, "type", "entity"),
+            "summary": getattr(n, "summary", None),
+            "properties": getattr(n, "properties", {}) or {},
+        }
+
+    if mode.lower() == "reify":
+        for eid, e in edge_map.items():
+            if eid not in out_nodes:
+                out_nodes[eid] = {
+                    "id": eid,
+                    "label": getattr(e, "relation", None) or getattr(e, "label", None) or "edge",
+                    "type": "edge-node",
+                    "summary": getattr(e, "summary", None),
+                    "properties": getattr(e, "properties", {}) or {},
+                }
+            for s in _safe_iter(getattr(e, "source_ids", None)):
+                links.append(
+                    {
+                        "source": s,
+                        "target": eid,
+                        "relation": getattr(e, "relation", None) or getattr(e, "label", None),
+                        "role": "src",
+                        "properties": getattr(e, "properties", {}) or {},
+                    }
+                )
+            for se in _safe_iter(getattr(e, "source_edge_ids", None)):
+                links.append(
+                    {
+                        "source": se,
+                        "target": eid,
+                        "relation": getattr(e, "relation", None) or getattr(e, "label", None),
+                        "role": "src",
+                        "properties": getattr(e, "properties", {}) or {},
+                    }
+                )
+            for t in _safe_iter(getattr(e, "target_ids", None)):
+                links.append(
+                    {
+                        "source": eid,
+                        "target": t,
+                        "relation": getattr(e, "relation", None) or getattr(e, "label", None),
+                        "role": "tgt",
+                        "properties": getattr(e, "properties", {}) or {},
+                    }
+                )
+            for te in _safe_iter(getattr(e, "target_edge_ids", None)):
+                links.append(
+                    {
+                        "source": eid,
+                        "target": te,
+                        "relation": getattr(e, "relation", None) or getattr(e, "label", None),
+                        "role": "tgt",
+                        "properties": getattr(e, "properties", {}) or {},
+                    }
+                )
+    else:
+        for e in edge_map.values():
+            for s in _safe_iter(getattr(e, "source_ids", None)):
+                for t in _safe_iter(getattr(e, "target_ids", None)):
+                    links.append(
+                        {
+                            "source": s,
+                            "target": t,
+                            "relation": getattr(e, "relation", None) or getattr(e, "label", None),
+                            "properties": getattr(e, "properties", {}) or {},
+                        }
+                    )
+
+    return {"nodes": list(out_nodes.values()), "links": links, "mode": mode, "doc_id": None}
+
+
 def _load_node_map(
     engine: GraphKnowledgeEngine,
     ids: List[str],
@@ -218,6 +300,9 @@ def to_d3_force(
       - nodes: entity nodes
       - links: entity_src -> entity_tgt
     """
+    if not hasattr(engine, "kg_graph_type") and isinstance(engine, list) and isinstance(doc_id, list):
+        return _render_d3_from_raw(engine, doc_id, mode=mode)
+
     node_ids, edge_ids = _collect_ids(engine, doc_id, insertion_method)
     node_map = _load_node_map(engine, node_ids)
     edge_map = _load_edge_map(engine, edge_ids)
@@ -347,6 +432,15 @@ def to_cytoscape(
     classic:
       - elements: entity nodes, edges: entity_src -> entity_tgt
     """
+    if not hasattr(engine, "kg_graph_type") and isinstance(engine, list) and isinstance(doc_id, list):
+        d3 = _render_d3_from_raw(engine, doc_id, mode=mode)
+        elements = []
+        for node in d3["nodes"]:
+            elements.append({"data": node})
+        for link in d3["links"]:
+            elements.append({"data": link})
+        return {"elements": elements, "mode": mode, "doc_id": None}
+
     node_ids, edge_ids = _collect_ids(engine, doc_id, insertion_method)
     node_map = _load_node_map(engine, node_ids)
     edge_map = _load_edge_map(engine, edge_ids)

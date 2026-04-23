@@ -326,9 +326,11 @@ class MemoryRetriever:
             "owner_agent_id": effective_agent,
             "agent_id": effective_agent,
             "shared_scope": effective_visibility == "shared",
-            "shared_with": list(shared_values),
-            "shared_with_agents": list(shared_agent_values),
         }
+        if shared_values:
+            edge_acl_metadata["shared_with"] = list(shared_values)
+        if shared_agent_values:
+            edge_acl_metadata["shared_with_agents"] = list(shared_agent_values)
         mem_node_id = mem_id  # or str(uuid.uuid4())
         mem_node = ConversationNode(
             id=mem_node_id,
@@ -360,12 +362,14 @@ class MemoryRetriever:
                 "owner_agent_id": effective_agent,
                 "agent_id": effective_agent,
                 "shared_scope": effective_visibility == "shared",
-                "shared_with": list(shared_values),
-                "shared_with_agents": list(shared_agent_values),
             },
             domain_id=None,
             canonical_entity_id=None,
         )
+        if shared_values:
+            mem_node.metadata["shared_with"] = list(shared_values)
+        if shared_agent_values:
+            mem_node.metadata["shared_with_agents"] = list(shared_agent_values)
 
         self.conversation_engine.write.add_node(mem_node)
         record_acl = getattr(self.conversation_engine, "record_acl", None)

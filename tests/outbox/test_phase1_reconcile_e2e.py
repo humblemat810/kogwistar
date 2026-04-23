@@ -1,6 +1,7 @@
 import time
 import time
 import pathlib
+import sqlite3
 
 import pytest
 pytestmark = pytest.mark.ci_full
@@ -18,6 +19,7 @@ from kogwistar.engine_core.engine_postgres_meta import (
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.models import Node, Edge, Grounding, Span
 from tests.conftest import FakeEmbeddingFunction
+from tests._helpers.meta_job_state import set_index_job_state
 from tests._helpers.fake_backend import InMemoryBackend, build_fake_backend
 
 # Reuse raw helpers to avoid duplicating Chroma plumbing.
@@ -151,14 +153,22 @@ def _make_job_runnable_now(eng: GraphKnowledgeEngine, job_id: str) -> None:
                     ),
                     {"job_id": job_id},
                 )
-            else:
+            elif isinstance(txn, sqlite3.Connection):
                 now = int(time.time())
-                job = txn.state.index_jobs.get(str(job_id))
-                if job is not None:
-                    job.status = "PENDING"
-                    job.lease_until = None
-                    job.next_run_at = now
-                    job.updated_at = now
+                txn.execute(
+                    "UPDATE index_jobs SET status='PENDING', lease_until=NULL, next_run_at=?, updated_at=? WHERE job_id=?",
+                    (now, now, job_id),
+                )
+            else:
+                set_index_job_state(
+                    eng.meta_sqlite,
+                    txn,
+                    job_id=str(job_id),
+                    status="PENDING",
+                    lease_until=None,
+                    next_run_at=int(time.time()),
+                    updated_at=int(time.time()),
+                )
 
 
 def test_reconcile_builds_all_joins_from_raw_entities(e2e_engine: GraphKnowledgeEngine):
@@ -334,18 +344,35 @@ def test_stuck_doing_job_is_stealable_after_lease_expiry(
         elif hasattr(eng.meta_sqlite, "_debug_force_job_lease"):
             # Fake/in-memory meta uses a transaction view, not a DB connection.
             with eng.meta_sqlite.transaction() as txn:
-                job = txn.state.index_jobs.get(jid)
-                if job is not None:
-                    job.status = "DOING"
-                    job.lease_until = 0
-                    job.updated_at = int(time.time())
+                set_index_job_state(
+                    eng.meta_sqlite,
+                    txn,
+                    job_id=jid,
+                    status="DOING",
+                    lease_until=0,
+                    updated_at=int(time.time()),
+                )
         else:
             with eng.meta_sqlite.transaction() as conn:
-                # SQLite
-                conn.execute(
-                    "UPDATE index_jobs SET status='DOING', lease_until=?, updated_at=? WHERE job_id=?",
-                    (time.time() - 10.0, time.time(), jid),
-                )
+                if isinstance(conn, sqlite3.Connection):
+                    set_index_job_state(
+                        eng.meta_sqlite,
+                        conn,
+                        job_id=jid,
+                        status="DOING",
+                        lease_until=int(time.time()) - 10,
+                        updated_at=int(time.time()),
+                    )
+                else:
+                    # SQLite-like in-memory fallback.
+                    set_index_job_state(
+                        eng.meta_sqlite,
+                        conn,
+                        job_id=jid,
+                        status="DOING",
+                        lease_until=int(time.time()) - 10,
+                        updated_at=int(time.time()),
+                    )
 
     eng.reconcile_indexes(max_jobs=10, lease_seconds=5)
 

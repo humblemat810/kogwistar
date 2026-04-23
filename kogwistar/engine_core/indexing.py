@@ -7,6 +7,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, TYPE_CHECKING
 
+from .async_compat import run_awaitable_blocking
 from .models import Node, Edge, Span, Grounding
 
 if TYPE_CHECKING:
@@ -303,12 +304,17 @@ class IndexingSubsystem:
                 return obj.model_copy(deep=True)
             return obj
 
+        def _backend_call(fn, *args, **kwargs):
+            return run_awaitable_blocking(fn(*args, **kwargs))
+
         def _actual_payload() -> list[Any]:
             if entity_kind == "node":
                 if index_kind == "node_docs":
                     started = time.perf_counter()
-                    got = self.engine.backend.node_docs_get(
-                        where={"node_id": entity_id}, include=["metadatas"]
+                    got = _backend_call(
+                        self.engine.backend.node_docs_get,
+                        where={"node_id": entity_id},
+                        include=["metadatas"],
                     )
                     _emit("apply.node_docs.actual_payload_get", started)
                     doc_ids = [
@@ -319,8 +325,10 @@ class IndexingSubsystem:
                     return sorted(doc_ids)
                 if index_kind == "node_refs":
                     started = time.perf_counter()
-                    got = self.engine.backend.node_refs_get(
-                        where={"node_id": entity_id}, include=["metadatas"]
+                    got = _backend_call(
+                        self.engine.backend.node_refs_get,
+                        where={"node_id": entity_id},
+                        include=["metadatas"],
                     )
                     _emit("apply.node_refs.actual_payload_get", started)
                     payload = []
@@ -342,8 +350,10 @@ class IndexingSubsystem:
             elif entity_kind == "edge":
                 if index_kind == "edge_refs":
                     started = time.perf_counter()
-                    got = self.engine.backend.edge_refs_get(
-                        where={"edge_id": entity_id}, include=["metadatas"]
+                    got = _backend_call(
+                        self.engine.backend.edge_refs_get,
+                        where={"edge_id": entity_id},
+                        include=["metadatas"],
                     )
                     _emit("apply.edge_refs.actual_payload_get", started)
                     payload = []
@@ -364,8 +374,10 @@ class IndexingSubsystem:
                     return _stable_sort_dicts(payload)
                 if index_kind == "edge_endpoints":
                     started = time.perf_counter()
-                    got = self.engine.backend.edge_endpoints_get(
-                        where={"edge_id": entity_id}, include=["metadatas"]
+                    got = _backend_call(
+                        self.engine.backend.edge_endpoints_get,
+                        where={"edge_id": entity_id},
+                        include=["metadatas"],
                     )
                     _emit("apply.edge_endpoints.actual_payload_get", started)
                     payload = []
@@ -405,7 +417,10 @@ class IndexingSubsystem:
             if index_kind == "node_docs":
                 if op == "DELETE":
                     started = time.perf_counter()
-                    self.engine.backend.node_docs_delete(where={"node_id": entity_id})
+                    _backend_call(
+                        self.engine.backend.node_docs_delete,
+                        where={"node_id": entity_id},
+                    )
                     _emit("apply.node_docs.delete", started)
                     if callable(set_applied):
                         started = time.perf_counter()
@@ -419,8 +434,10 @@ class IndexingSubsystem:
                     return
 
                 started = time.perf_counter()
-                got = self.engine.backend.node_get(
-                    ids=[entity_id], include=["documents", "metadatas"]
+                got = _backend_call(
+                    self.engine.backend.node_get,
+                    ids=[entity_id],
+                    include=["documents", "metadatas"],
                 )
                 _emit("apply.node_docs.base_get", started)
                 docs = got.get("documents") or []
@@ -437,7 +454,10 @@ class IndexingSubsystem:
                 started = time.perf_counter()
                 if _is_tombstoned(meta0):
                     _emit("apply.node_docs.tombstone_check", started)
-                    self.engine.backend.node_docs_delete(where={"node_id": entity_id})
+                    _backend_call(
+                        self.engine.backend.node_docs_delete,
+                        where={"node_id": entity_id},
+                    )
                     if callable(set_applied):
                         started = time.perf_counter()
                         set_applied(
@@ -495,8 +515,10 @@ class IndexingSubsystem:
                     return
 
                 started = time.perf_counter()
-                got = self.engine.backend.node_get(
-                    ids=[entity_id], include=["documents", "metadatas"]
+                got = _backend_call(
+                    self.engine.backend.node_get,
+                    ids=[entity_id],
+                    include=["documents", "metadatas"],
                 )
                 _emit("apply.node_refs.base_get", started)
                 docs = got.get("documents") or []
@@ -594,8 +616,10 @@ class IndexingSubsystem:
                     return
 
                 started = time.perf_counter()
-                got = self.engine.backend.edge_get(
-                    ids=[entity_id], include=["documents", "metadatas"]
+                got = _backend_call(
+                    self.engine.backend.edge_get,
+                    ids=[entity_id],
+                    include=["documents", "metadatas"],
                 )
                 _emit("apply.edge_refs.base_get", started)
                 docs = got.get("documents") or []
@@ -676,14 +700,16 @@ class IndexingSubsystem:
             if index_kind == "edge_endpoints":
                 if op == "DELETE":
                     started = time.perf_counter()
-                    got = self.engine.backend.edge_endpoints_get(
-                        where={"edge_id": entity_id}, include=[]
+                    got = _backend_call(
+                        self.engine.backend.edge_endpoints_get,
+                        where={"edge_id": entity_id},
+                        include=[],
                     )
                     _emit("apply.edge_endpoints.delete_lookup", started)
                     ids = got.get("ids") or []
                     if ids:
                         started = time.perf_counter()
-                        self.engine.backend.edge_endpoints_delete(ids=ids)
+                        _backend_call(self.engine.backend.edge_endpoints_delete, ids=ids)
                         _emit("apply.edge_endpoints.delete", started)
                     if callable(set_applied):
                         started = time.perf_counter()
@@ -697,8 +723,10 @@ class IndexingSubsystem:
                     return
 
                 started = time.perf_counter()
-                got = self.engine.backend.edge_get(
-                    ids=[entity_id], include=["documents", "metadatas"]
+                got = _backend_call(
+                    self.engine.backend.edge_get,
+                    ids=[entity_id],
+                    include=["documents", "metadatas"],
                 )
                 _emit("apply.edge_endpoints.base_get", started)
                 docs = got.get("documents") or []
@@ -718,13 +746,15 @@ class IndexingSubsystem:
                 started = time.perf_counter()
                 if _is_tombstoned(meta0):
                     _emit("apply.edge_endpoints.tombstone_check", started)
-                    got2 = self.engine.backend.edge_endpoints_get(
-                        where={"edge_id": entity_id}, include=[]
+                    got2 = _backend_call(
+                        self.engine.backend.edge_endpoints_get,
+                        where={"edge_id": entity_id},
+                        include=[],
                     )
                     delete_lookup_started = time.perf_counter()
                     ids2 = got2.get("ids") or []
                     if ids2:
-                        self.engine.backend.edge_endpoints_delete(ids=ids2)
+                        _backend_call(self.engine.backend.edge_endpoints_delete, ids=ids2)
                     _emit("apply.edge_endpoints.delete_existing", delete_lookup_started)
                     if callable(set_applied):
                         started = time.perf_counter()
@@ -759,8 +789,10 @@ class IndexingSubsystem:
                     _emit("apply.edge_endpoints.actual_fp_check", started)
 
                 started = time.perf_counter()
-                existing = self.engine.backend.edge_endpoints_get(
-                    where={"edge_id": entity_id}, include=["metadatas"]
+                existing = _backend_call(
+                    self.engine.backend.edge_endpoints_get,
+                    where={"edge_id": entity_id},
+                    include=["metadatas"],
                 )
                 _emit("apply.edge_endpoints.existing_get", started)
                 existing_ids = {
@@ -770,14 +802,15 @@ class IndexingSubsystem:
                 stale_ids = sorted(existing_ids - desired_ids)
                 if stale_ids:
                     started = time.perf_counter()
-                    self.engine.backend.edge_endpoints_delete(ids=stale_ids)
+                    _backend_call(self.engine.backend.edge_endpoints_delete, ids=stale_ids)
                     _emit("apply.edge_endpoints.delete_stale", started)
 
                 ep_ids = [r["id"] for r in rows]
                 ep_docs = [json.dumps(r) for r in rows]
                 ep_metas = rows
                 started = time.perf_counter()
-                self.engine.backend.edge_endpoints_upsert(
+                _backend_call(
+                    self.engine.backend.edge_endpoints_upsert,
                     ids=ep_ids,
                     documents=ep_docs,
                     metadatas=ep_metas,

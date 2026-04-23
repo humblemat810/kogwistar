@@ -16,6 +16,7 @@ import sqlalchemy as sa  # noqa: E402
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine # noqa: E402
 from kogwistar.engine_core.engine_postgres_meta import EnginePostgresMetaStore# noqa: E402
+from tests._helpers.meta_job_state import set_index_job_state # noqa: E402
 from tests.conftest import _make_async_engine # noqa: E402
 from typing import Any # noqa: E402
 
@@ -254,9 +255,13 @@ def test_phase2_enqueue_while_doing_creates_new_pending_async(
                     {"secs": 60, "job_id": jid1},
                 )
             else:
-                conn.execute(
-                    "UPDATE index_jobs SET status='DOING', lease_until=?, updated_at=? WHERE job_id=?",
-                    (time.time() + 60.0, time.time(), jid1),
+                set_index_job_state(
+                    eng.meta_sqlite,
+                    conn,
+                    job_id=str(jid1),
+                    status="DOING",
+                    lease_until=int(time.time()) + 60,
+                    updated_at=int(time.time()),
                 )
 
     jid2 = eng.enqueue_index_job(
