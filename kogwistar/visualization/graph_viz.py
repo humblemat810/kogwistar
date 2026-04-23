@@ -297,7 +297,8 @@ def _filter_by_insertion_method(
             for m in (rows.get("metadatas") or [])
             if m
         )
-        return [rid for rid in ids if rid in idx_ids]
+        kept = [rid for rid in ids if rid in idx_ids]
+        return kept or ids
     else:
         # Fallback: scan JSON documents
         store_owner = getattr(engine, "backend", engine)

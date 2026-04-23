@@ -307,7 +307,9 @@ def _backend_update_record_lifecycle(
     upd_fn = getattr(backend, f"{kind}_update", None)
     if get_fn is None or upd_fn is None:
         raise AttributeError(f"backend missing {kind}_get/{kind}_update")
-    got = get_fn(ids=[record_id], include=["documents", "metadatas", "embeddings"])
+    got = run_awaitable_blocking(
+        get_fn(ids=[record_id], include=["documents", "metadatas", "embeddings"])
+    )
     ids = got.get("ids") or []
     if not ids:
         return False
@@ -324,11 +326,13 @@ def _backend_update_record_lifecycle(
 
     new_meta = _merge_meta(meta if isinstance(meta, dict) else {}, lifecycle_patch)
     doc = json.dumps(base, ensure_ascii=False)
-    upd_fn(
+    run_awaitable_blocking(
+        upd_fn(
         ids=[record_id],
         documents=[json.dumps(base, ensure_ascii=False)],
         metadatas=[new_meta],
         embeddings=[embedding],
+        )
     )
     return True
 

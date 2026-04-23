@@ -5,6 +5,7 @@ import pytest
 pytestmark = pytest.mark.ci_full
 import requests
 from joblib import Memory
+from tests._helpers.embeddings import build_test_embedding_function
 
 # Project imports (adjust if your package name/layout differs)
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
@@ -18,6 +19,13 @@ from kogwistar.ingester import (
 # ----------------------------
 _CACHE_DIR = os.getenv("INGESTER_TEST_CACHE", ".ingester_test_cache")
 memory = Memory(_CACHE_DIR, verbose=0)
+
+
+def _test_embedding_function():
+    dim = int(os.getenv("KOGWISTAR_TEST_EMBEDDING_DIM", "384"))
+    kind = str(os.getenv("KOGWISTAR_TEST_EMBEDDING_KIND", "lexical_hash")).strip().lower()
+    ef = build_test_embedding_function(kind, dim=dim)
+    return ef
 
 
 @memory.cache
@@ -105,9 +113,11 @@ def test_sidecar_ingester_on_long_document(
 
     # 2) Engine in a temporary, isolated Chroma directory
     persist_dir = tmp_path / "db"
-    persist_dir = os.path.join(".", "doc_chroma")
     os.makedirs(persist_dir, exist_ok=True)
-    engine = GraphKnowledgeEngine(persist_directory=str(persist_dir))
+    engine = GraphKnowledgeEngine(
+        persist_directory=str(persist_dir),
+        embedding_function=_test_embedding_function(),
+    )
 
     # 3) Side-car ingester uses local Ollama by default; Azure is manual-only.
     if provider_kind == "ollama":

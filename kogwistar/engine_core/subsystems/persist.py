@@ -142,6 +142,11 @@ class PersistSubsystem(NamespaceProxy):
             book = alias_book
         alias_to_real = book.alias_to_real
 
+        def _looks_like_batch_local_node(token: str | None) -> bool:
+            return bool(token) and (
+                _is_new_node(token) or str(token).startswith("ne:")
+            )
+
         def de_alias(x: str) -> str:
             if not x:
                 return x
@@ -157,7 +162,7 @@ class PersistSubsystem(NamespaceProxy):
                 n.id = str(uuid.uuid4())
                 continue
 
-            if _is_new_node(token):
+            if _looks_like_batch_local_node(token):
                 rid = nn2uuid.get(token)
                 if rid is None:
                     rid = str(uuid.uuid4())
@@ -187,7 +192,7 @@ class PersistSubsystem(NamespaceProxy):
             out: list[str] = []
             for x in xs:
                 if kind == "node":
-                    if _is_new_node(x):
+                    if _looks_like_batch_local_node(x):
                         rid = nn2uuid.get(x)
                         if not rid:
                             raise ValueError(f"Unknown temp node id: {x}")

@@ -763,9 +763,9 @@ class ExtractSubsystem(NamespaceProxy, ExtractLike):
             else:
                 raise ValueError("Unreachable")
 
-        if doc_type == "text":
+        if doc_type in {"text", "text/plain", "text_chunked"}:
             return PlainTextDocSpanValidator()
-        if doc_type == "ocr_document":
+        if doc_type in {"ocr_document", "ocr"}:
             return OcrDocSpanValidator()
         raise ValueError(f"No validator associated with document type {doc_type}")
 
