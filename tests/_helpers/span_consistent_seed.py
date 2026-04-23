@@ -5,7 +5,7 @@ from typing import Any
 
 from kogwistar.engine_core.models import Document, Edge, GraphExtractionWithIDs, Node
 
-from tests.conftest import mk_grounding, mk_span
+from tests.graph_seed_helpers import mk_grounding, mk_span
 
 
 @dataclass

@@ -1,4 +1,3 @@
-import socket
 import time
 from typing import Any, Dict, List
 
@@ -10,12 +9,7 @@ import requests
 
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
-
-
-def _pick_free_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("127.0.0.1", 0))
-        return int(s.getsockname()[1])
+from tests.net_helpers import pick_free_port
 
 
 def _run_uvicorn(app_import: str, host: str, port: int) -> None:
@@ -63,7 +57,7 @@ def running_server() -> Dict[str, Any]:
         raise RuntimeError(msg)
 
     host = "127.0.0.1"
-    port = _pick_free_port()
+    port = pick_free_port()
     import subprocess
     import threading
     import sys

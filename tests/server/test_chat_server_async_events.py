@@ -10,7 +10,6 @@ import sys
 import time
 import threading
 import uuid
-import socket
 from collections import defaultdict
 from contextlib import contextmanager
 from pathlib import Path
@@ -19,6 +18,7 @@ from typing import Any
 import pytest
 import requests
 from jose import jwt
+from tests.net_helpers import pick_free_port
 
 pytest_plugins = ["tests.core._async_chroma_real"]
 pytest.importorskip("fastapi")
@@ -863,12 +863,6 @@ def _post_json_with_case_log(
     return resp
 
 
-def _pick_free_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.bind(("127.0.0.1", 0))
-        return int(sock.getsockname()[1])
-
-
 def _start_cdc_bridge(
     *,
     monkeypatch: pytest.MonkeyPatch | None,
@@ -877,7 +871,7 @@ def _start_cdc_bridge(
     request: pytest.FixtureRequest,
 ) -> str:
     host = "127.0.0.1"
-    port = _pick_free_port()
+    port = pick_free_port()
     oplog_file = tmp_path / f"{backend_kind}.cdc_oplog.jsonl"
     log_file = Path.cwd() / ".tmp_runtime_sse_debug" / f"{backend_kind}.cdc_bridge.log"
     log_file.parent.mkdir(parents=True, exist_ok=True)
@@ -1006,7 +1000,7 @@ def _real_server_base_url(
 ):
     import requests
 
-    port = _pick_free_port()
+    port = pick_free_port()
     host = "127.0.0.1"
     base_url = f"http://{host}:{port}"
 

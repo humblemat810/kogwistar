@@ -14,6 +14,8 @@ from _pytest.monkeypatch import MonkeyPatch
 from typing import Any, cast
 import dataclasses
 from .auth_env import TEST_JWT_ALG, TEST_JWT_SECRET, ensure_test_jwt_env
+from .graph_sample_data import build_small_test_docs_nodes_edge_adjudcate
+from .net_helpers import pick_free_port
 
 try:
     import sitecustomize  # type: ignore  # pragma: no cover
@@ -776,14 +778,6 @@ def pytest_unconfigure(config):
     _TEST_ENV.undo()
 
 
-def _pick_free_port() -> int:
-    import socket
-
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.bind(("127.0.0.1", 0))
-        return int(sock.getsockname()[1])
-
-
 @pytest.fixture(scope="function")
 def mcp_admin_server(tmp_path: Path) -> Iterator[dict[str, Any]]:
     """Start server_mcp_with_admin with isolated per-test data directories."""
@@ -795,7 +789,7 @@ def mcp_admin_server(tmp_path: Path) -> Iterator[dict[str, Any]]:
     import requests
 
     host = "127.0.0.1"
-    port = _pick_free_port()
+    port = pick_free_port()
     base_http = f"http://{host}:{port}"
     base_mcp = f"{base_http}/mcp"
 
@@ -1939,6 +1933,8 @@ def small_test_docs_nodes_edge_adjudcate():
     """
     sample llm extracted tripples emulating data from llm graph extraction with insertion_method = "llm_graph_extraction"
     """
+    return build_small_test_docs_nodes_edge_adjudcate()
+
     # ---------- 0) Documents (exact strings you provided) ----------
     docs = {
         "DOC_A": (
