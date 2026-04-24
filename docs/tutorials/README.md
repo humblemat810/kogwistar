@@ -3,6 +3,11 @@
 Use [docs/LEARNING_PATH.md](../LEARNING_PATH.md) as the main entrypoint. This page is the execution-oriented index: numbered learning-path docs, script-backed ladders, VS Code section-run companions, and legacy ladders that intentionally follow a different depth/pathway.
 
 - Environment variables: [docs/environment-variables.md](../environment-variables.md)
+- Lane messaging contract: [23 Lane Messaging Contract](./23_lane_messaging_contract.md)
+- Async runtime ladder: [Runtime Ladder Overview](./runtime-ladder-overview.md)
+- ACL / visibility path: [16 Leakage Prevention with Model Slicing](./16_leakage_prevention_with_model_slicing.md)
+- New ACL tutorial: [24 ACL Visibility and Auditing](./24_acl_visibility_tutorial.md)
+- New async runtime tutorial: [25 Async Runtime Basics](./25_async_runtime_tutorial.md)
 
 ## Learning Path Docs
 
@@ -28,6 +33,9 @@ Use [docs/LEARNING_PATH.md](../LEARNING_PATH.md) as the main entrypoint. This pa
 - [20 Generic Named Projection Meta Layer](./20_generic_named_projection_meta_layer.md)
 - [21 Retrieval Approaches Comparison](./21_rag_retrieval_comparison.md)
 - [22 Retrieval Approaches Comparison, KG Semantics Edition](./22_rag_retrieval_comparison_kg_semantics.md) - persisted KG rewrite with memory/chroma backend selection
+- [23 Lane Messaging Contract](./23_lane_messaging_contract.md)
+- [24 ACL Visibility and Auditing](./24_acl_visibility_tutorial.md)
+- [25 Async Runtime Basics](./25_async_runtime_tutorial.md)
 
 ## VS Code Companion Files
 
@@ -49,6 +57,8 @@ Open these in VS Code and use Run Cell / Run Above / Run Below for notebook-like
 - `scripts/tutorial_sections/20_generic_named_projection_meta_layer.py`
 - `scripts/tutorial_sections/21_rag_retrieval_comparison.py`
 - `scripts/tutorial_sections/22_rag_retrieval_comparison_kg_semantics.py`
+- `scripts/tutorial_sections/24_acl_visibility_tutorial.py`
+- `scripts/tutorial_sections/25_async_runtime_tutorial.py`
 
 ## RAG Ladder: Simple RAG -> Reinforced RAG
 

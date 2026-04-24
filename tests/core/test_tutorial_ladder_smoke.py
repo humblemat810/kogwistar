@@ -402,3 +402,33 @@ def test_tutorial_section_15_historical_smoke():
     assert out.get("checkpoint_pass") is True
     assert "N_SUGAR_OLD" in (out.get("then_ids") or [])
     assert "N_SUGAR_NEW" in (out.get("now_ids") or [])
+
+
+def test_tutorial_section_24_acl_visibility_smoke():
+    result = _run_allow_fail(
+        ["scripts/tutorial_sections/24_acl_visibility_tutorial.py"],
+        timeout=60,
+    )
+    assert result.returncode == 0, (
+        f"ACL tutorial script failed.\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    )
+    out = _extract_last_json(result.stdout)
+    assert out.get("ro_probe", {}).get("role") == "ro"
+    assert out.get("ro_write_status") == 403
+    assert out.get("rw_write_status") == 200
+    assert out.get("rw_write_body", {}).get("ok") is True
+
+
+def test_tutorial_section_25_async_runtime_smoke():
+    result = _run_allow_fail(
+        ["scripts/tutorial_sections/25_async_runtime_tutorial.py"],
+        timeout=60,
+    )
+    assert result.returncode == 0, (
+        f"Async runtime tutorial script failed.\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    )
+    out = _extract_last_json(result.stdout)
+    assert out.get("runtime_class") == "AsyncWorkflowRuntime"
+    assert out.get("sync_runtime_class") == "WorkflowRuntime"
+    assert out.get("step_context_type") == "StepContext"
+    assert "RunSuccess" in str(out.get("step_result_type"))

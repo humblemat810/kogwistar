@@ -4,18 +4,19 @@
 </p>
 
 <h1 align="center">Kogwistar</h1>
-
-<h4 align="center">AI substrate for security, governance, provenance, and reusable agent execution</h4>
+<h4 align="center">Execution = Memory = Knowledge = Workflow = Governance(Openclaw Ok!) = Access control </h4>
+<h4 align="center"> (all as graphs (hyper-graphs)) </h4>
+<h4 align="center">Graph-native substrate for conversation, workflow, provenance, and MCP/REST tooling with fine grained access control. </h4>
 
 <p align="center">
-Graph / Hypergraph-Native security, governance, memory, and observability substrate for AI systems
+Graph / Hypergraph-native substrate for memory, workflow, provenance, replay, and auth-aware agent systems
 </p>
 <p align="center">
-Build security-aware agent backplanes, governance semantics layers, knowledge graphs,
-workflow runtimes, conversation memory, and provenance systems as a single substrate.
+Build graph-backed agent systems with conversation memory, workflow runtimes, provenance, replay,
+and policy seams in one substrate.
 </p>
 <p align="center">
-Open-source substrate and harness for AI agent systems.
+Open-source substrate and harness for graph-backed AI systems.
 </p>
 <p align="center">
   <img src="https://img.shields.io/github/stars/humblemat810/kogwistar?style=flat-square"/>
@@ -25,15 +26,15 @@ Open-source substrate and harness for AI agent systems.
 </p>
 <p align="center">
   <b>The Substrate and implementation for Karpathy's **LLM Knowledge Base** has been already here for long. With all the foundation substrate
-  implemented, an implementation that link the susbtrate compoenent together is under construction in https://github.com/humblemat810/kogwistar-llm-wiki</b>
+  implemented, an implementation that link the susbtrate compoenent together is completed in https://github.com/humblemat810/kogwistar-llm-wiki</b>
 </p>
-`kogwistar` is a graph-native substrate for governed agent execution with memory and execution.
+`kogwistar` is a graph-native Operating System kernal for AI, providing substrate primitives for governed agent execution with memory, workflow, provenance, replay, and MCP/REST surfaces, with fully supported governance and access control: OIDC, ACL, namespace, RBAC. All in one using simple base core primitives: Nodes and Edges connected as hypergraphs.
 
 ## What This Is
 
-- A substrate for storing knowledge, conversations, workflows, and provenance in the same graph-oriented model.
-- A runnable harness for executing workflows and replaying history.
-- A security- and governance-aware foundation for building agent systems with inspectable history and traceable answers.
+- A substrate for storing knowledge, conversations, workflows, provenance, spans, and receipts in one graph-oriented model with full fine grained access control.
+- A runnable harness for workflow execution, replay, resume, and evented projection.
+- A security- and governance-aware foundation with auth, RBAC/namespaces, and policy seams for agent systems.
 
 ## What This Is Not
 
@@ -84,9 +85,9 @@ See [docs/graph_native_artifact_demo.md](docs/graph_native_artifact_demo.md) for
 
 If you want the closer agent-loop comparison, the older [framework_then_agent_demo](docs/framework_then_agent_demo.md) remains available as a companion example.
 
-Today the repo implements graph memory and query, workflow design/runtime, governance-oriented patterns, provenance and replay-oriented surfaces, CDC/event-oriented patterns, and self-hostable development paths.
+Today the repo implements graph memory and query, workflow design/runtime, provenance and replay-oriented surfaces, evented/CDC-style patterns, MCP/REST tooling, and self-hostable development paths.
 
-This repo is a substrate with reusable building blocks for replayability, provenance tracking, security boundaries, governance semantics, and projection along the authoritative evented path.
+This repo is a substrate with reusable building blocks for replayability, provenance tracking, auth boundaries, governance semantics, and projection along the authoritative evented path.
 
 ## Mental Model In Pseudocode
 
@@ -152,6 +153,10 @@ If you want the closer agent-loop comparison, the older [framework_then_agent_de
 - Author notes, build context, and design history: [docs/author-notes.md](docs/author-notes.md)
 - Runtime rationale: [kogwistar/docs/ARD-custom-runtime-rationale.md](kogwistar/docs/ARD-custom-runtime-rationale.md)
 - Local conversation walkthrough: [docs/tutorials/conversation-pipeline-basics.md](docs/tutorials/conversation-pipeline-basics.md)
+- Async runtime tutorial ladder: [docs/tutorials/runtime-ladder-overview.md](docs/tutorials/runtime-ladder-overview.md)
+- ACL / visibility tutorial path: [docs/tutorials/16_leakage_prevention_with_model_slicing.md](docs/tutorials/16_leakage_prevention_with_model_slicing.md) and [docs/visibility_viewing_auditing.md](docs/visibility_viewing_auditing.md)
+- New ACL notebook tutorial: [scripts/tutorial_sections/24_acl_visibility_tutorial.py](scripts/tutorial_sections/24_acl_visibility_tutorial.py)
+- New async runtime notebook tutorial: [scripts/tutorial_sections/25_async_runtime_tutorial.py](scripts/tutorial_sections/25_async_runtime_tutorial.py)
 
 - Roadmap and research direction: [docs/roadmap.md](docs/roadmap.md)
 
@@ -159,17 +164,17 @@ If you want the closer agent-loop comparison, the older [framework_then_agent_de
 
 ## Core Features
 
-- Graph/hypergraph-oriented memory and query surfaces. 
-- Knowledge can go outdated. Trace available knowledge/graph status back in any time.
+- Graph/hypergraph-oriented memory and query surfaces.
+- Knowledge, conversation, workflow, and provenance all live in same graph model.
 - Workflow design stored as graph structure, with runtime, replay, and event-oriented execution seams.
-- Support conversation execution events stored as hypergraph/graph
-- CDC-oriented graph updates and replay workflows. (Observability is FREE, NOT freemium!)
-- Provenance-heavy first class primitives with lifecycle-aware and temporal retrieval support.
-- Multiple storage backends, including Chroma and PostgreSQL/pgvector paths. With dual-store eventual consistency or transactional atomicity.
-- MCP/ REST tooling surface for graph query, extraction, and admin operations.
+- Conversation execution events stored as graph artifacts.
+- CDC-oriented graph updates and replay workflows.
+- Provenance-first primitives with lifecycle-aware and temporal retrieval support.
+- Multiple storage backends, including Chroma and PostgreSQL/pgvector paths, with dual-store eventual consistency or transactional atomicity.
+- MCP and REST tooling for graph query, extraction, and admin operations.
 - Visualization helpers for D3 payloads.
-- Security- and governance-oriented primitives, including RBAC/namespaces, privacy guards for LLM paths, slice guards to prevent data leakage, and workflow seams that can host policy/approval logic.
-- Since everything is node and each node has provenance and embeddings, besides graph algorithms, you can trace provenence down everything and semantically search trace logs, design nodes, conversation nodes. Future conversation can semantically search past history for wisdom.
+- Security and governance primitives, including RBAC/namespaces, privacy guards for LLM paths, slice guards to prevent data leakage, and workflow seams that can host policy or approval logic.
+- Nodes carry provenance and embeddings, so graph search can trace source spans, design nodes, and conversation nodes back to stored history.
 
 ## How This Differs
 
@@ -177,17 +182,17 @@ If you want the closer agent-loop comparison, the older [framework_then_agent_de
 - Unlike workflow-first frameworks, it treats provenance, replay, and event history (event source) as part of the core data model rather than secondary runtime features.
 - Unlike memory-only agent stacks, it can also act as the substrate beneath a policy, approval, and governance semantics layer.
 - It can support multiple product layers on top of the same core, from application-facing chat surfaces to deeper governance backplanes.
-- Compared with local/self-hosted agent products, it emphasizes graph-native memory and workflow design seams more than channel breadth or app-registry breadth.
+- Compared with local/self-hosted agent products, it emphasizes graph-native memory, replay, and workflow design seams more than channel breadth or app-registry breadth.
 - It spans retrieval, memory, runtime, and provenance concerns together, so it maps less cleanly to a single existing OSS category.
 
 ## Application Best Fit
 
-- A strong base platform for building audit-heavy systems, ranging from local personal agents to scalable AI backends.
-- A strong substrate for governed agent systems where tool execution, approvals, receipts, and replayable history all matter.
+- A base platform for audit-heavy systems, from local personal agents to AI backends.
+- A substrate for governed agent systems where tool execution, approvals, receipts, and replayable history matter.
 - Best suited for use cases where provenance, replay, lifecycle-aware retrieval, and workflow history matter.
-- Designed to run efficiently on normal local machines (via SQLite/Chroma or lightweight Docker with PostgreSQL/pgvector).
-- A foundation repo, not yet a finished enterprise product.
-- Personal use that require robustness and stability.
+- Designed to run on normal local machines via SQLite/Chroma or lightweight Docker with PostgreSQL/pgvector.
+- A foundation repo, not a finished enterprise product.
+- Personal use that needs robustness and stability.
 - Collect data for future AI wisdom on what and how to do things.
 
 ## Security Support
