@@ -23,6 +23,7 @@ from ..workers.index_job_worker import IndexJobWorker
 from ..utils.log import bind_log_context
 from .indexing import IndexingSubsystem
 from .jobs import JobQueueSubsystem
+from .recovery import RecoverySubsystem
 from .subsystems import (
     ACLSubsystem,
     ACLAwareReadSubsystem,
@@ -1247,6 +1248,7 @@ class GraphKnowledgeEngine:
         self.cache_dir = cache_dir or self.persist_directory
         self.indexing = IndexingSubsystem(self)
         self.jobs = JobQueueSubsystem(self)
+        self.recovery = RecoverySubsystem(self)
 
         self._uow_ctx_conn: contextvars.ContextVar[object | None] = (
             contextvars.ContextVar("gke_uow_conn", default=None)

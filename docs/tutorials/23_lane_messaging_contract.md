@@ -40,11 +40,13 @@ before acking it, the row can be claimed again after its lease expires. Worker
 handlers must therefore be idempotent.
 
 Projection rows are rebuildable from authoritative graph/entity-event truth via
-`engine.repair_lane_message_projection(...)`. The engine does not currently run a
-time-windowed automatic lane-message reprojection after every crash; operators or
-startup code must call the repair API when projected rows are suspected missing or
-stale. Existing entity-event replay can repair backend projections, while lane
-projection repair specifically rematerializes the lane-message serving view.
+`engine.repair_lane_message_projection(...)`. Daemons should call
+`engine.recovery.recover_startup(...)` before polling after restart; that core
+coordinator safely repairs missing lane-message projection rows and reports queue,
+lane, checkpoint, run-history, dead-letter, daemon-health, and app-output state.
+The engine still does not promise exactly-once delivery or automatic resume of
+every checkpoint. Resume is policy-gated and at-least-once handlers must remain
+idempotent.
 
 ```mermaid
 flowchart TD
