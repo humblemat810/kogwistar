@@ -91,6 +91,8 @@ class AsyncWorkflowRuntime(BaseRuntime, WorkflowExecutor):
         events: Any | None = None,
         sink: Any | None = None,
         cancel_requested: Callable[[str], bool] | None = None,
+        lane_message_sender: Callable[..., Any] | None = None,
+        lane_message_event_sink: Callable[[dict[str, Any]], Any] | None = None,
         fast_trace_persistence: bool | None = None,
         experimental_native_scheduler: bool = True,
     ) -> None:
@@ -104,6 +106,8 @@ class AsyncWorkflowRuntime(BaseRuntime, WorkflowExecutor):
         self.conversation_engine = conversation_engine
         self.max_workers = max_workers
         self.cancel_requested = cancel_requested
+        self.lane_message_sender = lane_message_sender
+        self.lane_message_event_sink = lane_message_event_sink
         self.experimental_native_scheduler = bool(experimental_native_scheduler)
         if not self.experimental_native_scheduler:
             raise ValueError("AsyncWorkflowRuntime only supports the native async scheduler")
@@ -121,6 +125,8 @@ class AsyncWorkflowRuntime(BaseRuntime, WorkflowExecutor):
             events=events,
             sink=sink,
             cancel_requested=cancel_requested,
+            lane_message_sender=lane_message_sender,
+            lane_message_event_sink=lane_message_event_sink,
             fast_trace_persistence=fast_trace_persistence,
         )
         # Contract anchors for tests/docs: async runtime reuses sync runtime context/result shape.
@@ -509,6 +515,8 @@ class AsyncWorkflowRuntime(BaseRuntime, WorkflowExecutor):
                 turn_node_id=str(turn_node_id),
                 state=state,
                 message_queue=mq,
+                lane_message_sender=getattr(self._sync_runtime, "lane_message_sender", None),
+                lane_message_event_sink=getattr(self._sync_runtime, "lane_message_event_sink", None),
                 events=trace_emitter,
                 cache_dir=cache_dir,
             )

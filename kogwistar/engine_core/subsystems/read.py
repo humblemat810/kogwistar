@@ -57,12 +57,23 @@ class ReadSubsystem(NamespaceProxy, ReadLike):
         if not node_type:
             node_type = default_node_type_for_graph_kind(self._e.kg_graph_type)
 
-        got = run_awaitable_blocking(self._e.backend.node_get(
-            ids=ids,
-            include=include,
-            where=where,
-            limit=limit,
-        ))
+        try:
+            got = run_awaitable_blocking(self._e.backend.node_get(
+                ids=ids,
+                include=include,
+                where=where,
+                limit=limit,
+            ))
+        except Exception:
+            if "embeddings" not in include:
+                raise
+            fallback_include = [item for item in include if item != "embeddings"]
+            got = run_awaitable_blocking(self._e.backend.node_get(
+                ids=ids,
+                include=fallback_include,
+                where=where,
+                limit=limit,
+            ))
         nodes = self.nodes_from_single_or_id_query_result(got, node_type=node_type)
         nodes = self._e._resolve_redirect_chain(
             initial_items=nodes,
@@ -91,12 +102,23 @@ class ReadSubsystem(NamespaceProxy, ReadLike):
         if not edge_type:
             edge_type = default_edge_type_for_graph_kind(self._e.kg_graph_type)
 
-        got = run_awaitable_blocking(self._e.backend.edge_get(
-            ids=ids,
-            include=include,
-            where=where,
-            limit=limit,
-        ))
+        try:
+            got = run_awaitable_blocking(self._e.backend.edge_get(
+                ids=ids,
+                include=include,
+                where=where,
+                limit=limit,
+            ))
+        except Exception:
+            if "embeddings" not in include:
+                raise
+            fallback_include = [item for item in include if item != "embeddings"]
+            got = run_awaitable_blocking(self._e.backend.edge_get(
+                ids=ids,
+                include=fallback_include,
+                where=where,
+                limit=limit,
+            ))
         edges = self.edges_from_single_or_id_query_result(
             got, edge_type=edge_type, include=include
         )

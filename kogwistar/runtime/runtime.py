@@ -310,7 +310,38 @@ class StepContext:
             raise RuntimeError(
                 "lane message sender not configured; durable cross-lane delivery unavailable"
             )
-        return sender(**kwargs)
+        result = sender(**kwargs)
+        sink = self.lane_message_event_sink
+        if callable(sink):
+            message_id = getattr(result, "message_id", None)
+            if not message_id and isinstance(result, dict):
+                message_id = result.get("message_id")
+            try:
+                sink(
+                    {
+                        "event_type": "worker.requested",
+                        "run_id": str(kwargs.get("run_id") or self.run_id),
+                        "message_id": str(message_id or ""),
+                        "conversation_id": str(
+                            kwargs.get("conversation_id") or self.conversation_id or ""
+                        ),
+                        "inbox_id": str(kwargs.get("inbox_id") or ""),
+                        "sender_id": str(kwargs.get("sender_id") or ""),
+                        "recipient_id": str(kwargs.get("recipient_id") or ""),
+                        "msg_type": str(kwargs.get("msg_type") or ""),
+                        "status": "pending",
+                        "correlation_id": kwargs.get("correlation_id"),
+                        "step_id": kwargs.get("step_id"),
+                        "workflow_id": self.workflow_id,
+                        "workflow_node_id": self.workflow_node_id,
+                        "step_seq": int(self.step_seq),
+                    }
+                )
+            except Exception:
+                logging.getLogger(__name__).exception(
+                    "lane message event sink failed: run_id=%s", self.run_id
+                )
+        return result
 
     def emit_lane_message_event(self, event: dict[str, Json]) -> None:
         sink = self.lane_message_event_sink
@@ -450,6 +481,8 @@ class WorkflowRuntime(BaseRuntime):
         events: EventEmitter | None = None,
         sink: SQLiteEventSink | None = None,
         cancel_requested: Callable[[str], bool] | None = None,
+        lane_message_sender: Callable[..., Any] | None = None,
+        lane_message_event_sink: Callable[[dict[str, Json]], Any] | None = None,
         fast_trace_persistence: bool | None = None,
     ) -> None:
         from kogwistar.engine_core.engine import GraphKnowledgeEngine
@@ -463,6 +496,12 @@ class WorkflowRuntime(BaseRuntime):
         self.checkpoint_every_n_steps = max(1, int(checkpoint_every_n_steps))
         self.max_workers = max_workers
         self.cancel_requested = cancel_requested
+        self.lane_message_sender = lane_message_sender
+        if self.lane_message_sender is None:
+            default_sender = getattr(conversation_engine, "send_lane_message", None)
+            if callable(default_sender):
+                self.lane_message_sender = default_sender
+        self.lane_message_event_sink = lane_message_event_sink
         if fast_trace_persistence is None:
             self.fast_trace_persistence = (
                 str(getattr(conversation_engine, "backend_kind", "")).lower() == "memory"
@@ -1581,6 +1620,8 @@ class WorkflowRuntime(BaseRuntime):
                                 else None,
                                 state=state,
                                 message_queue=mq,
+                                lane_message_sender=self.lane_message_sender,
+                                lane_message_event_sink=self.lane_message_event_sink,
                                 events=self.emitter,
                                 cache_dir=cache_dir,
                             )

@@ -937,6 +937,11 @@ class GraphKnowledgeEngine:
 
         return LaneMessagingService(self).list_projected(*args, **kwargs)
 
+    def repair_lane_message_projection(self, *args, **kwargs):
+        from kogwistar.messaging import LaneMessagingService
+
+        return LaneMessagingService(self).repair_projection(*args, **kwargs)
+
     def enqueue_index_jobs_for_node(self, node_id: str, *, op: str) -> None:
         return self.indexing.enqueue_index_jobs_for_node(node_id, op=op)
 

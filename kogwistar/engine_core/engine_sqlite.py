@@ -1129,6 +1129,14 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
                 ),
             )
 
+    def clear_projected_lane_messages(self, namespace: str) -> int:
+        with self.transaction() as conn:
+            cur = conn.execute(
+                "DELETE FROM projected_lane_messages WHERE namespace = ?",
+                (str(namespace),),
+            )
+            return int(cur.rowcount or 0)
+
     def list_projected_lane_messages(
         self,
         *,

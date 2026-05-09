@@ -550,6 +550,16 @@ class InMemoryMetaStore(LaneMessageMetaStoreMixin):
             out.append(row.as_row())
         return out
 
+    def clear_projected_lane_messages(self, namespace: str) -> int:
+        target = str(namespace)
+        with self.transaction() as txn:
+            deleted = 0
+            for message_id, row in list(txn.state.lane_messages.items()):
+                if row.namespace == target:
+                    txn.state.lane_messages.pop(message_id, None)
+                    deleted += 1
+            return deleted
+
     def get_index_applied_fingerprint(
         self, *, namespace: str = "default", coalesce_key: str
     ) -> Optional[str]:

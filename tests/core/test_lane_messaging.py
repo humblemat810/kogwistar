@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import shutil
 import uuid
 from pathlib import Path
@@ -47,11 +48,14 @@ def test_send_lane_message_creates_graph_objects_and_projection():
             assert messages[0].metadata["status"] == "pending"
             assert messages[0].metadata["conversation_id"] == "conv-demo"
             assert messages[0].metadata["purpose"] == "maintenance"
-            acl_context = messages[0].metadata["acl_context"]
+            acl_context = json.loads(messages[0].metadata["acl_context_json"])
             assert acl_context["purpose"] == "lane_message"
             assert acl_context["source_graph"] == "conversation"
             assert acl_context["source_entity_id"] == result.message_id
             assert acl_context["visibility"] == "private"
+            assert json.loads(messages[0].metadata["payload_json"]) == {
+                "request_node_id": "req-1"
+            }
 
             anchors = engine.read.get_nodes(where={"artifact_kind": "lane_inbox"})
             assert len(anchors) == 1
@@ -66,6 +70,37 @@ def test_send_lane_message_creates_graph_objects_and_projection():
             assert projected[0].status == "pending"
             assert projected[0].seq == 1
             assert projected[0].conversation_seq == 1
+    finally:
+        shutil.rmtree(test_db_dir, ignore_errors=True)
+
+
+def test_send_lane_message_preserves_trace_fields_without_requiring_trace_nodes():
+    engine, test_db_dir = _make_engine()
+    namespace = "ws:demo:conv:bg"
+
+    try:
+        with scoped_namespace(engine, namespace):
+            result = engine.send_lane_message(
+                conversation_id="conv-demo",
+                inbox_id="inbox:worker:runtime",
+                sender_id="lane:foreground",
+                recipient_id="lane:worker:runtime",
+                msg_type="request.runtime",
+                payload={"request_node_id": "req-1"},
+                run_id="run-missing-trace-node",
+                step_id="0",
+            )
+
+            messages = engine.read.get_nodes(where={"artifact_kind": "lane_message"})
+            projected = engine.list_projected_lane_messages(
+                inbox_id="inbox:worker:runtime"
+            )
+            assert [str(node.id) for node in messages] == [result.message_id]
+            assert messages[0].metadata["run_id"] == "run-missing-trace-node"
+            assert messages[0].metadata["step_id"] == "0"
+            assert len(projected) == 1
+            assert projected[0].run_id == "run-missing-trace-node"
+            assert projected[0].step_id == "0"
     finally:
         shutil.rmtree(test_db_dir, ignore_errors=True)
 

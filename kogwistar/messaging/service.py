@@ -16,7 +16,11 @@ from kogwistar.server.auth_middleware import (
     require_security_scope_access,
 )
 
-from .models import LaneMessageSendResult, ProjectedLaneMessageRow
+from .models import (
+    LaneMessageProjectionRepairResult,
+    LaneMessageSendResult,
+    ProjectedLaneMessageRow,
+)
 
 
 def _now_epoch() -> int:
@@ -55,6 +59,76 @@ def _infer_message_purpose(msg_type: str, purpose: str | None) -> str:
     if "maintenance" in lowered or "repair" in lowered or "rebuild" in lowered:
         return "maintenance"
     return "user_visible"
+
+
+def _decode_json_dict(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    if not isinstance(value, str) or not value:
+        return {}
+    try:
+        decoded = json.loads(value)
+    except Exception:
+        return {}
+    return dict(decoded) if isinstance(decoded, dict) else {}
+
+
+def _compact_json(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+
+def _lane_record_from_payload(
+    payload: dict[str, Any],
+    *,
+    namespace: str,
+    entity_id: str | None,
+    order: int,
+) -> dict[str, Any] | None:
+    metadata = payload.get("metadata")
+    if not isinstance(metadata, dict):
+        return None
+    if str(metadata.get("artifact_kind") or "") != "lane_message":
+        return None
+    metadata_namespace = str(metadata.get("namespace") or namespace)
+    if metadata_namespace != str(namespace):
+        return None
+    message_id = str(payload.get("id") or entity_id or "").strip()
+    inbox_id = str(metadata.get("inbox_id") or "").strip()
+    conversation_id = str(metadata.get("conversation_id") or "").strip()
+    recipient_id = str(metadata.get("recipient_id") or "").strip()
+    sender_id = str(metadata.get("sender_id") or "").strip()
+    msg_type = str(metadata.get("msg_type") or "").strip()
+    if not all([message_id, inbox_id, conversation_id, recipient_id, sender_id, msg_type]):
+        return None
+    payload_json = _compact_json(metadata.get("payload_json"))
+    if payload_json is None:
+        payload_json = _compact_json(metadata.get("payload"))
+    error_json = _compact_json(metadata.get("error_json"))
+    if error_json is None:
+        error_json = _compact_json(metadata.get("error"))
+    return {
+        "order": int(order),
+        "message_id": message_id,
+        "namespace": metadata_namespace,
+        "purpose": str(metadata.get("purpose") or "user_visible"),
+        "inbox_id": inbox_id,
+        "conversation_id": conversation_id,
+        "recipient_id": recipient_id,
+        "sender_id": sender_id,
+        "msg_type": msg_type,
+        "status": str(metadata.get("status") or "pending"),
+        "created_at": int(order),
+        "available_at": int(order),
+        "run_id": metadata.get("run_id"),
+        "step_id": metadata.get("step_id"),
+        "correlation_id": metadata.get("correlation_id"),
+        "payload_json": payload_json,
+        "error_json": error_json,
+    }
 
 
 class LaneMessagingService:
@@ -205,21 +279,30 @@ class LaneMessagingService:
                     conversation_id=conversation_id,
                 )
             if run_id:
-                self._add_semantic_edge(
-                    edge_id=str(stable_id("lane_message_edge", message_id, "about_run", run_id)),
-                    source_id=message_id,
-                    target_id=run_id,
-                    relation="about_run",
-                    conversation_id=conversation_id,
+                run_target_id = self._first_existing_node_id(
+                    [str(run_id), f"wf_run|{run_id}"]
                 )
+                if run_target_id:
+                    self._add_semantic_edge(
+                        edge_id=str(stable_id("lane_message_edge", message_id, "about_run", run_target_id)),
+                        source_id=message_id,
+                        target_id=run_target_id,
+                        relation="about_run",
+                        conversation_id=conversation_id,
+                    )
             if step_id:
-                self._add_semantic_edge(
-                    edge_id=str(stable_id("lane_message_edge", message_id, "about_step", step_id)),
-                    source_id=message_id,
-                    target_id=step_id,
-                    relation="about_step",
-                    conversation_id=conversation_id,
-                )
+                step_candidates = [str(step_id)]
+                if run_id is not None:
+                    step_candidates.append(f"wf_step|{run_id}|{step_id}")
+                step_target_id = self._first_existing_node_id(step_candidates)
+                if step_target_id:
+                    self._add_semantic_edge(
+                        edge_id=str(stable_id("lane_message_edge", message_id, "about_step", step_target_id)),
+                        source_id=message_id,
+                        target_id=step_target_id,
+                        relation="about_step",
+                        conversation_id=conversation_id,
+                    )
 
         project = getattr(self.engine.meta_sqlite, "project_lane_message", None)
         if callable(project):
@@ -261,15 +344,23 @@ class LaneMessagingService:
         namespace = str(getattr(self.engine, "namespace", "default") or "default")
         now_iso = _now_iso()
         with scoped_namespace(self.engine, namespace):
-            current = self.engine.backend.node_get(
-                ids=[message_id],
-                include=["documents", "metadatas", "embeddings"],
-            )
+            try:
+                current = self.engine.backend.node_get(
+                    ids=[message_id],
+                    include=["documents", "metadatas", "embeddings"],
+                )
+            except Exception:
+                current = self.engine.backend.node_get(
+                    ids=[message_id],
+                    include=["documents", "metadatas"],
+                )
             docs = current.get("documents") or []
             if not docs or not docs[0]:
                 return
             node = Node.model_validate_json(docs[0])
-            node.metadata = dict(node.metadata or {})
+            metadatas = current.get("metadatas") or []
+            existing_metadata = metadatas[0] if metadatas else {}
+            node.metadata = dict(existing_metadata or node.metadata or {})
             node.metadata["status"] = str(status)
             node.metadata["updated_at"] = now_iso
             if error is not None:
@@ -399,6 +490,160 @@ class LaneMessagingService:
         rows = list_fn(namespace=namespace, inbox_id=inbox_id, status=status, purpose=purpose)
         return [row for row in rows if self._row_visible(row)]
 
+    def repair_projection(
+        self,
+        *,
+        namespace: str | None = None,
+        rebuild: bool = False,
+    ) -> LaneMessageProjectionRepairResult:
+        target_namespace = str(namespace or getattr(self.engine, "namespace", "default") or "default")
+        records = self._lane_projection_records_from_events(target_namespace)
+        if not records:
+            records = self._lane_projection_records_from_graph(target_namespace)
+        meta = self.engine.meta_sqlite
+        if rebuild:
+            clear = getattr(meta, "clear_projected_lane_messages", None)
+            if not callable(clear):
+                raise AttributeError("metastore missing clear_projected_lane_messages")
+            clear(target_namespace)
+            existing_ids: set[str] = set()
+        else:
+            existing_ids = {
+                row.message_id for row in self._list_projected_rows_for_repair(target_namespace)
+            }
+        repaired_count = 0
+        skipped_count = 0
+        project = getattr(meta, "project_lane_message", None)
+        if not callable(project):
+            raise AttributeError("metastore missing project_lane_message")
+        for record in records:
+            message_id = str(record["message_id"])
+            if message_id in existing_ids:
+                skipped_count += 1
+                continue
+            project(
+                message_id=message_id,
+                namespace=target_namespace,
+                purpose=str(record["purpose"]),
+                inbox_id=str(record["inbox_id"]),
+                conversation_id=str(record["conversation_id"]),
+                recipient_id=str(record["recipient_id"]),
+                sender_id=str(record["sender_id"]),
+                msg_type=str(record["msg_type"]),
+                status=str(record["status"]),
+                created_at=int(record["created_at"]),
+                available_at=int(record["available_at"]),
+                run_id=record["run_id"],
+                step_id=record["step_id"],
+                correlation_id=record["correlation_id"],
+                payload_json=record["payload_json"],
+                error_json=record["error_json"],
+            )
+            existing_ids.add(message_id)
+            repaired_count += 1
+        return LaneMessageProjectionRepairResult(
+            namespace=target_namespace,
+            scanned_count=len(records),
+            repaired_count=repaired_count,
+            skipped_count=skipped_count,
+            rebuilt=bool(rebuild),
+        )
+
+    def _list_projected_rows_for_repair(self, namespace: str) -> list[ProjectedLaneMessageRow]:
+        list_fn = getattr(self.engine.meta_sqlite, "list_projected_lane_messages", None)
+        if not callable(list_fn):
+            return []
+        try:
+            return list_fn(namespace=str(namespace), limit=100_000)
+        except TypeError:
+            return list_fn(namespace=str(namespace))
+
+    def _lane_projection_records_from_events(self, namespace: str) -> list[dict[str, Any]]:
+        iter_events = getattr(self.engine.meta_sqlite, "iter_entity_events", None)
+        if not callable(iter_events):
+            return []
+        records_by_id: dict[str, dict[str, Any]] = {}
+        try:
+            events = iter_events(namespace=str(namespace), from_seq=1)
+            for event in events:
+                seq, entity_kind, entity_id, op, payload_json = event[:5]
+                if str(entity_kind) != "node" or str(op) not in {"ADD", "REPLACE"}:
+                    continue
+                payload = _decode_json_dict(payload_json)
+                record = _lane_record_from_payload(
+                    payload,
+                    namespace=str(namespace),
+                    entity_id=str(entity_id),
+                    order=int(seq),
+                )
+                if record is None:
+                    continue
+                existing = records_by_id.get(str(record["message_id"]))
+                if existing is not None:
+                    record["order"] = existing["order"]
+                    record["created_at"] = existing["created_at"]
+                    record["available_at"] = existing["available_at"]
+                records_by_id[str(record["message_id"])] = record
+        except Exception:
+            return []
+        refreshed: list[dict[str, Any]] = []
+        for record in records_by_id.values():
+            current = self._lane_projection_record_from_node(
+                message_id=str(record["message_id"]),
+                namespace=str(namespace),
+                order=int(record["order"]),
+            )
+            refreshed.append(current or record)
+        return sorted(refreshed, key=lambda item: (int(item["order"]), str(item["message_id"])))
+
+    def _lane_projection_records_from_graph(self, namespace: str) -> list[dict[str, Any]]:
+        with scoped_namespace(self.engine, namespace):
+            nodes = self.engine.read.get_nodes(where={"artifact_kind": "lane_message"}, limit=100_000)
+        records: list[dict[str, Any]] = []
+        for index, node in enumerate(nodes, start=1):
+            payload = node.model_dump(field_mode="backend", exclude={"embedding"})
+            metadata = dict(getattr(node, "metadata", {}) or {})
+            payload["metadata"] = metadata
+            record = _lane_record_from_payload(
+                payload,
+                namespace=str(namespace),
+                entity_id=str(getattr(node, "id", "") or ""),
+                order=index,
+            )
+            if record is not None:
+                record["_fallback_sort"] = (
+                    str(metadata.get("created_at") or ""),
+                    str(getattr(node, "id", "") or ""),
+                )
+                records.append(record)
+        records.sort(key=lambda item: item.get("_fallback_sort") or ("", ""))
+        for index, record in enumerate(records, start=1):
+            record["order"] = index
+            record["created_at"] = index
+            record["available_at"] = index
+            record.pop("_fallback_sort", None)
+        return records
+
+    def _lane_projection_record_from_node(
+        self,
+        *,
+        message_id: str,
+        namespace: str,
+        order: int,
+    ) -> dict[str, Any] | None:
+        nodes = self.engine.read.get_nodes(ids=[str(message_id)])
+        if not nodes:
+            return None
+        node = nodes[0]
+        payload = node.model_dump(field_mode="backend", exclude={"embedding"})
+        payload["metadata"] = dict(getattr(node, "metadata", {}) or {})
+        return _lane_record_from_payload(
+            payload,
+            namespace=str(namespace),
+            entity_id=str(message_id),
+            order=int(order),
+        )
+
     def _row_visible(self, row: ProjectedLaneMessageRow) -> bool:
         nodes = self.engine.read.get_nodes(ids=[row.message_id])
         if not nodes:
@@ -502,6 +747,18 @@ class LaneMessagingService:
             },
         )
         self.engine.write.add_edge(edge)
+
+    def _first_existing_node_id(self, candidate_ids: list[str]) -> str | None:
+        for candidate_id in candidate_ids:
+            if not candidate_id:
+                continue
+            try:
+                nodes = self.engine.read.get_nodes(ids=[str(candidate_id)])
+            except Exception:
+                nodes = []
+            if nodes:
+                return str(candidate_id)
+        return None
 
 
 __all__ = ["LaneMessagingService"]

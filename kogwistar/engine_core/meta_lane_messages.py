@@ -37,6 +37,9 @@ class LaneMessageMetaStoreMixin:
     def _lane_message_now_epoch() -> int:
         return int(time.time())
 
+    def clear_projected_lane_messages(self, namespace: str) -> int:
+        raise NotImplementedError
+
     def project_lane_message(
         self,
         *,
@@ -216,6 +219,7 @@ class LaneMessageMetaStoreMixin:
         purpose: str | None = None,
         inbox_id: str | None = None,
         status: str | None = None,
+        limit: int = 1000,
     ) -> list[ProjectedLaneMessageRow]:
         rows = self._lane_message_list_rows(
             namespace=str(namespace),
@@ -223,7 +227,7 @@ class LaneMessageMetaStoreMixin:
             inbox_id=inbox_id,
             status=status,
         )
-        return sorted(rows, key=lambda item: (item.seq, item.created_at))
+        return sorted(rows, key=lambda item: (item.seq, item.created_at))[: int(limit)]
 
 
 __all__ = ["LaneMessageMetaStoreMixin"]

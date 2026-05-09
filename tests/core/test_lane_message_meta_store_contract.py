@@ -129,6 +129,49 @@ def test_lane_message_projection_rebuild_is_backend_parity(tmp_path):
         assert all(isinstance(row, ProjectedLaneMessageRow) for row in rows)
 
 
+def test_clear_projected_lane_messages_is_lane_specific_and_namespace_scoped(tmp_path):
+    in_memory = InMemoryMetaStore()
+    sqlite = _sqlite_meta(tmp_path)
+    for meta in (in_memory, sqlite):
+        meta.project_lane_message(
+            message_id="msg-a",
+            namespace="ns-a",
+            inbox_id="inbox:worker:index",
+            conversation_id="conv-1",
+            recipient_id="lane:worker:index",
+            sender_id="lane:foreground",
+            msg_type="request.index",
+            status="pending",
+            created_at=1,
+            available_at=1,
+            run_id=None,
+            step_id=None,
+            correlation_id="corr-a",
+            payload_json='{"entity_id":"n-a"}',
+        )
+        meta.project_lane_message(
+            message_id="msg-b",
+            namespace="ns-b",
+            inbox_id="inbox:worker:index",
+            conversation_id="conv-1",
+            recipient_id="lane:worker:index",
+            sender_id="lane:foreground",
+            msg_type="request.index",
+            status="pending",
+            created_at=1,
+            available_at=1,
+            run_id=None,
+            step_id=None,
+            correlation_id="corr-b",
+            payload_json='{"entity_id":"n-b"}',
+        )
+
+        assert meta.clear_projected_lane_messages("ns-a") == 1
+        assert meta.list_projected_lane_messages(namespace="ns-a") == []
+        rows_b = meta.list_projected_lane_messages(namespace="ns-b")
+        assert [row.message_id for row in rows_b] == ["msg-b"]
+
+
 def test_lane_message_metastore_classes_share_common_mixin():
     assert issubclass(InMemoryMetaStore, LaneMessageMetaStoreMixin)
     assert issubclass(EngineSQLite, LaneMessageMetaStoreMixin)

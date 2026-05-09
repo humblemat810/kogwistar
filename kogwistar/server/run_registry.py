@@ -235,3 +235,36 @@ class RunRegistryTraceBridge:
                     "status": "cancelling",
                 },
             )
+
+
+class RunRegistryLaneMessageEventSink:
+    """Mirror durable lane-message events into the run-registry event stream."""
+
+    _KNOWN_EVENT_TYPES = {
+        "worker.requested",
+        "worker.claimed",
+        "worker.progress",
+        "worker.result",
+        "worker.failed",
+    }
+
+    def __init__(self, *, registry: RunRegistry, run_id: str) -> None:
+        self.registry = registry
+        self.run_id = str(run_id)
+
+    def __call__(self, event: dict[str, Any]) -> None:
+        self.emit(event)
+
+    def emit(self, event: dict[str, Any]) -> None:
+        if str(event.get("run_id") or "") != self.run_id:
+            return
+        event_type = str(event.get("event_type") or "worker.requested")
+        if event_type not in self._KNOWN_EVENT_TYPES:
+            event_type = "worker.progress"
+        payload = {
+            key: value
+            for key, value in dict(event).items()
+            if key not in {"event_type"}
+        }
+        payload.setdefault("run_id", self.run_id)
+        self.registry.append_event(self.run_id, event_type, payload)

@@ -42,7 +42,17 @@ class LaneMessageSendResult:
     recipient_anchor_id: str
 
 
+@dataclass(frozen=True)
+class LaneMessageProjectionRepairResult:
+    namespace: str
+    scanned_count: int
+    repaired_count: int
+    skipped_count: int
+    rebuilt: bool
+
+
 __all__ = [
     "ProjectedLaneMessageRow",
     "LaneMessageSendResult",
+    "LaneMessageProjectionRepairResult",
 ]

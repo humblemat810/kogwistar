@@ -41,7 +41,7 @@ from kogwistar.server.chat_service import (
     RunCancelledError,
     RuntimeRunRequest,
 )
-from kogwistar.server.run_registry import RunRegistry
+from kogwistar.server.run_registry import RunRegistry, RunRegistryLaneMessageEventSink
 from tests._helpers.engine_factories import FakeEmbeddingFunction
 from tests._helpers.server_fixtures import build_engine_triplet
 from tests._helpers.server_http_helpers import token_header
@@ -386,6 +386,31 @@ def _runtime_success_runner(req: RuntimeRunRequest) -> dict:
             "workflow_id": req.workflow_id,
             "echo_state": dict(req.initial_state),
         },
+    }
+
+
+def _runtime_lane_message_runner(req: RuntimeRunRequest) -> dict:
+    sink = RunRegistryLaneMessageEventSink(registry=req.registry, run_id=req.run_id)
+    sink(
+        {
+            "event_type": "worker.requested",
+            "run_id": req.run_id,
+            "message_id": "msg:server-runtime-lane",
+            "conversation_id": req.conversation_id,
+            "inbox_id": "inbox:worker:runtime",
+            "sender_id": "lane:foreground",
+            "recipient_id": "lane:worker:runtime",
+            "msg_type": "request.runtime",
+            "status": "pending",
+            "correlation_id": "corr:server-runtime-lane",
+            "step_id": "0",
+            "workflow_node_id": "wf.runtime.lane:send",
+            "step_seq": 0,
+        }
+    )
+    return {
+        "workflow_status": "succeeded",
+        "final_state": {"workflow_id": req.workflow_id},
     }
 
 
@@ -1162,6 +1187,74 @@ def test_runtime_rest_submit_and_sse(monkeypatch, engine_triplet):
         assert "run.stage" in names
         assert "reasoning.summary" in names
         assert names[-1] == "run.completed"
+
+
+def test_workflow_run_lane_message_lifecycle_streams_through_registry_sse(
+    monkeypatch, engine_triplet
+):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _configure_server(
+        monkeypatch,
+        engine,
+        conversation_engine,
+        workflow_engine,
+        _success_runner,
+        runtime_runner=_runtime_lane_message_runner,
+    )
+    with TestClient(server.app) as client:
+        conv_rw = _token_header(client, role="rw", ns="conversation")
+        conv_ro = _token_header(client, role="ro", ns="conversation")
+        wf_rw = _token_header(client, role="rw", ns="workflow")
+        wf_ro = _token_header(client, role="ro", ns="workflow")
+
+        created = client.post(
+            "/api/conversations",
+            json={"user_id": "u-runtime-lane"},
+            headers=conv_rw,
+        )
+        created.raise_for_status()
+        conversation_id = created.json()["conversation_id"]
+
+        submit = client.post(
+            "/api/workflow/runs",
+            json={
+                "workflow_id": "wf.runtime.lane",
+                "conversation_id": conversation_id,
+                "initial_state": {},
+            },
+            headers=wf_rw,
+        )
+        assert submit.status_code == 202
+        run_id = submit.json()["run_id"]
+        _wait_for_status(
+            client,
+            run_id,
+            wf_ro,
+            {"succeeded"},
+            path_template="/api/workflow/runs/{run_id}",
+        )
+
+        polled = client.get(
+            f"/api/runs/{run_id}/events/poll?after_seq=0&limit=50",
+            headers=conv_ro,
+        )
+        polled.raise_for_status()
+        polled_names = [event["event_type"] for event in polled.json()["events"]]
+        assert "worker.requested" in polled_names
+
+        sse_events = _collect_sse_events(
+            client,
+            run_id,
+            wf_ro,
+            path_template="/api/workflow/runs/{run_id}/events",
+        )
+        worker_payloads = [
+            payload for name, payload in sse_events if name == "worker.requested"
+        ]
+        assert worker_payloads
+        assert worker_payloads[0]["message_id"] == "msg:server-runtime-lane"
+        assert worker_payloads[0]["inbox_id"] == "inbox:worker:runtime"
+        assert worker_payloads[0]["status"] == "pending"
 
 
 def test_runtime_resource_snapshot_reports_pressure(monkeypatch, engine_triplet):

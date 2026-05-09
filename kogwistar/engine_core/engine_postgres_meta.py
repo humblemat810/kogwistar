@@ -1119,6 +1119,15 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
                 },
             )
 
+    def clear_projected_lane_messages(self, namespace: str) -> int:
+        table = f"{self.schema}.projected_lane_messages"
+        with self.transaction() as conn:
+            result = conn.execute(
+                sa.text(f"DELETE FROM {table} WHERE namespace = :namespace"),
+                {"namespace": str(namespace)},
+            )
+            return int(result.rowcount or 0)
+
     def list_projected_lane_messages(
         self,
         *,
