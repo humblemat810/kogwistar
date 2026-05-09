@@ -22,6 +22,7 @@ from .storage_backend import NoopUnitOfWork, StorageBackend
 from ..workers.index_job_worker import IndexJobWorker
 from ..utils.log import bind_log_context
 from .indexing import IndexingSubsystem
+from .jobs import JobQueueSubsystem
 from .subsystems import (
     ACLSubsystem,
     ACLAwareReadSubsystem,
@@ -1240,6 +1241,7 @@ class GraphKnowledgeEngine:
         self.offset_repair_scorer: OffsetRepairScorer | None = offset_repair_scorer
         self.cache_dir = cache_dir or self.persist_directory
         self.indexing = IndexingSubsystem(self)
+        self.jobs = JobQueueSubsystem(self)
 
         self._uow_ctx_conn: contextvars.ContextVar[object | None] = (
             contextvars.ContextVar("gke_uow_conn", default=None)

@@ -115,6 +115,12 @@ class LaneMessagingService:
                 visibility="shared" if shared_flag else "private",
                 owner_id=sender_id,
             )
+            acl_context_json = json.dumps(
+                acl_context.to_dict(),
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            payload_json = json.dumps(payload, sort_keys=True, separators=(",", ":"))
 
             message_node = Node(
                 id=message_id,
@@ -140,8 +146,8 @@ class LaneMessagingService:
                     "shared_inbox": bool(shared_inbox),
                     "visibility": "shared" if shared_flag else "private",
                     "purpose": effective_purpose,
-                    "acl_context": acl_context.to_dict(),
-                    "payload": payload,
+                    "acl_context_json": acl_context_json,
+                    "payload_json": payload_json,
                     "created_at": created_at,
                     "updated_at": created_at,
                     "completed_at": None,
@@ -232,7 +238,7 @@ class LaneMessagingService:
                 run_id=run_id,
                 step_id=step_id,
                 correlation_id=correlation,
-                payload_json=json.dumps(payload, sort_keys=True, separators=(",", ":")),
+                payload_json=payload_json,
                 error_json=None,
             )
 
@@ -267,7 +273,11 @@ class LaneMessagingService:
             node.metadata["status"] = str(status)
             node.metadata["updated_at"] = now_iso
             if error is not None:
-                node.metadata["error"] = error
+                node.metadata["error_json"] = json.dumps(
+                    error,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
             if completed or str(status) in {"completed", "failed", "cancelled"}:
                 node.metadata["completed_at"] = now_iso
 
