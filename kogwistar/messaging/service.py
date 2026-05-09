@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import time
 import uuid
+from contextlib import nullcontext
 from typing import Any
 
 from kogwistar.engine_core.engine import scoped_namespace
@@ -173,7 +174,11 @@ class LaneMessagingService:
         now_epoch = _now_epoch()
         created_at = _now_iso()
 
-        with scoped_namespace(self.engine, namespace):
+        unit_of_work = getattr(self.engine, "unit_of_work", None) or getattr(
+            self.engine, "uow", None
+        )
+        uow_context = unit_of_work() if callable(unit_of_work) else nullcontext()
+        with uow_context, scoped_namespace(self.engine, namespace):
             anchors = self._ensure_anchor_nodes(
                 conversation_id=conversation_id,
                 inbox_id=inbox_id,
@@ -304,26 +309,26 @@ class LaneMessagingService:
                         conversation_id=conversation_id,
                     )
 
-        project = getattr(self.engine.meta_sqlite, "project_lane_message", None)
-        if callable(project):
-            project(
-                message_id=message_id,
-                namespace=namespace,
-                purpose=effective_purpose,
-                inbox_id=inbox_id,
-                conversation_id=conversation_id,
-                recipient_id=recipient_id,
-                sender_id=sender_id,
-                msg_type=msg_type,
-                status="pending",
-                created_at=now_epoch,
-                available_at=now_epoch,
-                run_id=run_id,
-                step_id=step_id,
-                correlation_id=correlation,
-                payload_json=payload_json,
-                error_json=None,
-            )
+            project = getattr(self.engine.meta_sqlite, "project_lane_message", None)
+            if callable(project):
+                project(
+                    message_id=message_id,
+                    namespace=namespace,
+                    purpose=effective_purpose,
+                    inbox_id=inbox_id,
+                    conversation_id=conversation_id,
+                    recipient_id=recipient_id,
+                    sender_id=sender_id,
+                    msg_type=msg_type,
+                    status="pending",
+                    created_at=now_epoch,
+                    available_at=now_epoch,
+                    run_id=run_id,
+                    step_id=step_id,
+                    correlation_id=correlation,
+                    payload_json=payload_json,
+                    error_json=None,
+                )
 
         return LaneMessageSendResult(
             message_id=message_id,
@@ -343,7 +348,11 @@ class LaneMessagingService:
     ) -> None:
         namespace = str(getattr(self.engine, "namespace", "default") or "default")
         now_iso = _now_iso()
-        with scoped_namespace(self.engine, namespace):
+        unit_of_work = getattr(self.engine, "unit_of_work", None) or getattr(
+            self.engine, "uow", None
+        )
+        uow_context = unit_of_work() if callable(unit_of_work) else nullcontext()
+        with uow_context, scoped_namespace(self.engine, namespace):
             try:
                 current = self.engine.backend.node_get(
                     ids=[message_id],

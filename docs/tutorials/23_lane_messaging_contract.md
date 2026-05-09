@@ -19,6 +19,33 @@ It focuses on the core substrate only and avoids app-specific details.
 - Concrete stores provide storage primitives only.
 - `meta_sqlite` is the abstraction slot name, not the semantic owner.
 
+## Transaction And Crash Semantics
+
+`send_lane_message(...)` enters the engine unit of work when the engine exposes one
+(`engine.uow()` today, with `engine.unit_of_work()` also supported by the service).
+The message node, semantic edges, entity events, and projected lane-message row are
+written inside that boundary.
+
+The strength of that boundary depends on the active backend:
+
+- Postgres-backed storage can participate in the engine unit of work.
+- SQLite metastore operations share the active metastore transaction.
+- Chroma-backed graph writes use a no-op backend unit of work, so metastore rollback
+  cannot undo a graph write that already reached Chroma.
+- In-memory storage preserves API parity for tests and local runs, but has no crash
+  persistence promise.
+
+Delivery is at-least-once. If a worker crashes after claiming a projected row and
+before acking it, the row can be claimed again after its lease expires. Worker
+handlers must therefore be idempotent.
+
+Projection rows are rebuildable from authoritative graph/entity-event truth via
+`engine.repair_lane_message_projection(...)`. The engine does not currently run a
+time-windowed automatic lane-message reprojection after every crash; operators or
+startup code must call the repair API when projected rows are suspected missing or
+stale. Existing entity-event replay can repair backend projections, while lane
+projection repair specifically rematerializes the lane-message serving view.
+
 ```mermaid
 flowchart TD
   E[Entity event] --> M[Message node]

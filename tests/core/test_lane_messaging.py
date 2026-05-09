@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import shutil
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -101,6 +102,48 @@ def test_send_lane_message_preserves_trace_fields_without_requiring_trace_nodes(
             assert len(projected) == 1
             assert projected[0].run_id == "run-missing-trace-node"
             assert projected[0].step_id == "0"
+    finally:
+        shutil.rmtree(test_db_dir, ignore_errors=True)
+
+
+def test_send_lane_message_projects_inside_engine_unit_of_work(monkeypatch):
+    engine, test_db_dir = _make_engine()
+    namespace = "ws:demo:conv:bg"
+    state = {"depth": 0, "entered": 0}
+    original_project = engine.meta_sqlite.project_lane_message
+
+    @contextmanager
+    def _unit_of_work():
+        state["entered"] += 1
+        state["depth"] += 1
+        try:
+            yield
+        finally:
+            state["depth"] -= 1
+
+    def _project_lane_message(**kwargs):
+        assert state["depth"] > 0
+        return original_project(**kwargs)
+
+    monkeypatch.setattr(engine, "uow", _unit_of_work)
+    monkeypatch.setattr(engine.meta_sqlite, "project_lane_message", _project_lane_message)
+
+    try:
+        with scoped_namespace(engine, namespace):
+            result = engine.send_lane_message(
+                conversation_id="conv-demo",
+                inbox_id="inbox:worker:uow",
+                sender_id="lane:foreground",
+                recipient_id="lane:worker:uow",
+                msg_type="request.uow",
+                payload={"request_node_id": "req-1"},
+            )
+
+            projected = engine.list_projected_lane_messages(
+                inbox_id="inbox:worker:uow"
+            )
+            assert state["entered"] >= 1
+            assert [row.message_id for row in projected] == [result.message_id]
     finally:
         shutil.rmtree(test_db_dir, ignore_errors=True)
 
