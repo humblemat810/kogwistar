@@ -24,6 +24,7 @@ from ..utils.log import bind_log_context
 from .indexing import IndexingSubsystem
 from .jobs import JobQueueSubsystem
 from .recovery import RecoverySubsystem
+from .service_health import ServiceHealthRegistry
 from .subsystems import (
     ACLSubsystem,
     ACLAwareReadSubsystem,
@@ -1249,6 +1250,7 @@ class GraphKnowledgeEngine:
         self.indexing = IndexingSubsystem(self)
         self.jobs = JobQueueSubsystem(self)
         self.recovery = RecoverySubsystem(self)
+        self.service_health = ServiceHealthRegistry(self)
 
         self._uow_ctx_conn: contextvars.ContextVar[object | None] = (
             contextvars.ContextVar("gke_uow_conn", default=None)

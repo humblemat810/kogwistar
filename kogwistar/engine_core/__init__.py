@@ -20,6 +20,13 @@ from kogwistar.engine_core.recovery import (
     ResumePolicy,
     RunRecoveryState,
 )
+from kogwistar.engine_core.service_health import (
+    SERVICE_HEALTH_PROJECTION_NAMESPACE,
+    ServiceDefinition,
+    ServiceHealthRepairResult,
+    ServiceHealthRegistry,
+    ServiceInstanceHealth,
+)
 from kogwistar.engine_core.subsystems import (
     AdjudicateSubsystem,
     EmbedSubsystem,
@@ -68,6 +75,11 @@ __all__ = [
     "RecoverySurface",
     "ResumePolicy",
     "RunRecoveryState",
+    "SERVICE_HEALTH_PROJECTION_NAMESPACE",
+    "ServiceDefinition",
+    "ServiceHealthRepairResult",
+    "ServiceHealthRegistry",
+    "ServiceInstanceHealth",
     "LifecycleSubsystem",
     "PgVectorBackend",
     "PgVectorConfig",

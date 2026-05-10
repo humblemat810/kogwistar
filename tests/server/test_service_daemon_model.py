@@ -256,6 +256,44 @@ def test_service_declaration_health_disable_and_projection_rebuild(
         assert rebuilt["enabled"] is False
 
 
+def test_service_healthy_heartbeat_clears_previous_last_error(monkeypatch, engine_triplet):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service, _registry = _configure_server(
+        monkeypatch,
+        engine,
+        conversation_engine,
+        workflow_engine,
+        _runtime_success_runner,
+        runtime_runner=_runtime_success_runner,
+    )
+
+    with _service_claims():
+        service.declare_service(
+            service_id="svc.error.demo",
+            service_kind="worker",
+            target_kind="workflow",
+            target_ref="wf.service.error",
+            target_config={},
+            enabled=True,
+            heartbeat_ttl_ms=60_000,
+        )
+
+        failed = service.record_service_heartbeat(
+            "svc.error.demo",
+            instance_id="inst-1",
+            payload={"last_error": "boom"},
+        )
+        assert failed["last_error"] == "boom"
+
+        healthy = service.record_service_heartbeat(
+            "svc.error.demo",
+            instance_id="inst-1",
+            payload={"beat": 2},
+        )
+        assert healthy["health_status"] == "healthy"
+        assert healthy["last_error"] is None
+
+
 def test_service_restart_policy_respects_backoff_and_max_restarts(
     monkeypatch, engine_triplet
 ):
@@ -578,7 +616,7 @@ def test_service_runtime_api_round_trip(monkeypatch, engine_triplet):
         )
         events.raise_for_status()
         names = [evt["event_type"] for evt in events.json()["events"]]
-        assert "service.heartbeat" in names
+        assert "service.heartbeat" not in names
         assert "service.triggered" in names
 
 

@@ -182,6 +182,10 @@ class RecoverySubsystem:
     ) -> RecoveryReport:
         policy = resume_policy or ResumePolicy()
         normalized = self._dedupe_namespaces(namespaces)
+        registry = getattr(self.engine, "service_health", None)
+        repair_service_health = getattr(registry, "repair_projection", None)
+        if callable(repair_service_health):
+            repair_service_health(workspace_id=workspace_id)
         repaired = self.repair_lane_projections(list(normalized))
         report = self._build_report(
             workspace_id=workspace_id,
@@ -373,13 +377,17 @@ class RecoverySubsystem:
             else []
         )
         dead_letters = tuple(self._dead_letters(queues, lane_rows, run_history))
-        daemon_health = tuple(self._daemon_health(app_surfaces or []))
+        daemon_health = tuple(
+            self._daemon_health(app_surfaces or [])
+            + self._service_health(workspace_id=workspace_id)
+        )
         findings = tuple(
             self._findings(
                 queues=queues,
                 lane_rows=lane_rows,
                 checkpoints=checkpoints,
                 run_history=run_history,
+                daemon_health=daemon_health,
                 app_surfaces=tuple(app_surfaces or ()),
             )
         )
@@ -549,6 +557,7 @@ class RecoverySubsystem:
         lane_rows: tuple[LaneRecoveryState, ...],
         checkpoints: tuple[CheckpointRecoveryState, ...],
         run_history: tuple[RunRecoveryState, ...],
+        daemon_health: tuple[DaemonHealthState, ...],
         app_surfaces: tuple[RecoverySurface | OutputReconciliationState, ...],
     ) -> list[RecoveryFinding]:
         del run_history
@@ -583,6 +592,20 @@ class RecoverySubsystem:
                         details={"run_id": checkpoint.run_id},
                     )
                 )
+        for state in daemon_health:
+            if state.observed_state in {"stale", "degraded", "failed", "error"}:
+                findings.append(
+                    RecoveryFinding(
+                        severity="warning",
+                        surface="service_health",
+                        message="service health needs operator attention",
+                        details={
+                            "service_id": state.daemon_id,
+                            "observed_state": state.observed_state,
+                            **dict(state.details or {}),
+                        },
+                    )
+                )
         for surface in app_surfaces:
             if getattr(surface, "status", "") in {"missing", "drift", "error"}:
                 findings.append(
@@ -597,6 +620,31 @@ class RecoverySubsystem:
                     )
                 )
         return findings
+
+    def _service_health(self, *, workspace_id: str) -> list[DaemonHealthState]:
+        registry = getattr(self.engine, "service_health", None)
+        list_services = getattr(registry, "list_services", None)
+        if not callable(list_services):
+            return []
+        out: list[DaemonHealthState] = []
+        now_ms = int(time.time() * 1000)
+        for payload in list_services(workspace_id=workspace_id, limit=10_000):
+            last_seen = self._optional_int(payload.get("last_seen_ms"))
+            ttl = int(payload.get("heartbeat_ttl_ms", 60_000) or 60_000)
+            observed = str(payload.get("status") or "unknown")
+            if last_seen is not None and now_ms - last_seen > ttl:
+                observed = "stale"
+            out.append(
+                DaemonHealthState(
+                    daemon_id=str(payload.get("service_id") or ""),
+                    desired_state="running",
+                    observed_state=observed,
+                    last_heartbeat_at=last_seen,
+                    restart_count=None,
+                    details=dict(payload),
+                )
+            )
+        return out
 
     def _daemon_health(
         self, app_surfaces: list[RecoverySurface | OutputReconciliationState]

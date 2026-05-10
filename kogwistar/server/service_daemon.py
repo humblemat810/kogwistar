@@ -211,12 +211,43 @@ class ServiceSupervisor:
         instance_id: str,
         payload: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        self._append_event(
-            service_id=service_id,
-            event_type="service.heartbeat",
-            payload={"instance_id": instance_id, **dict(payload or {})},
+        projection_payload = self._projection_payload(service_id)
+        if projection_payload is None:
+            self._rebuild_projection(service_id)
+            projection_payload = self._projection_payload(service_id)
+        if projection_payload is None:
+            raise KeyError(f"Unknown service_id: {service_id}")
+        now = _now_ms()
+        previous_health = str(projection_payload.get("health_status") or "")
+        previous_error = projection_payload.get("last_error")
+        heartbeat_payload = dict(payload or {})
+        last_error = heartbeat_payload.get("last_error")
+        projection_payload.update(
+            {
+                "instance_id": str(instance_id),
+                "last_heartbeat_ms": now,
+                "lifecycle_status": "healthy",
+                "health_status": "healthy",
+                "updated_at_ms": now,
+            }
         )
-        self._rebuild_projection(service_id)
+        projection_payload["last_error"] = None if last_error is None else str(last_error)
+        if previous_health in {"degraded", "failed", "stopped"}:
+            self._append_event(
+                service_id=service_id,
+                event_type="service.healthy",
+                payload={"health_status": "healthy", "instance_id": instance_id},
+            )
+        if previous_error != projection_payload.get("last_error") and projection_payload.get("last_error"):
+            self._append_event(
+                service_id=service_id,
+                event_type="service.error_changed",
+                payload={
+                    "instance_id": instance_id,
+                    "last_error": projection_payload.get("last_error"),
+                },
+            )
+        self._store_projection_payload(service_id, projection_payload)
         return self.get_service(service_id)
 
     def trigger_service(

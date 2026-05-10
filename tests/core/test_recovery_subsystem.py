@@ -270,3 +270,48 @@ def test_recovery_report_combines_operator_surfaces(tmp_path):
     assert {action.action_kind for action in report.actions} == {
         "repair_lane_projection"
     }
+
+
+def test_recovery_startup_repairs_missing_service_health_projection_but_inspect_does_not(tmp_path):
+    engine = _engine(tmp_path)
+    engine.service_health.declare_service(
+        service_id="svc.demo",
+        service_kind="maintenance_daemon",
+        owner_app="demo-app",
+        deterministic=False,
+        llm_assisted=True,
+        workspace_id="demo",
+        namespace="ws:demo:ops",
+    )
+    engine.service_health.start_instance(
+        service_id="svc.demo",
+        workspace_id="demo",
+        namespace="ws:demo:ops",
+        instance_id="inst-1",
+    )
+    engine.meta_sqlite.clear_named_projection(
+        "service_health",
+        "demo|ws:demo:ops|svc.demo",
+    )
+
+    inspected = engine.recovery.inspect(
+        workspace_id="demo",
+        namespaces=["ws:demo:ops"],
+    )
+    assert not inspected.daemon_health
+    assert engine.service_health.get_service(
+        "svc.demo",
+        workspace_id="demo",
+        namespace="ws:demo:ops",
+    ) is None
+
+    recovered = engine.recovery.recover_startup(
+        workspace_id="demo",
+        namespaces=["ws:demo:ops"],
+    )
+    assert any(item.daemon_id == "svc.demo" for item in recovered.daemon_health)
+    assert engine.service_health.get_service(
+        "svc.demo",
+        workspace_id="demo",
+        namespace="ws:demo:ops",
+    ) is not None
