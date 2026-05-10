@@ -17,7 +17,7 @@ If the README uses terms like `substrate`, `harness`, `projection`, or `replay`,
 
 - Beginner / evaluator: start at Tutorials 01-04 if you want quick proof the repo is real.
 - Builder / integrator: continue with Tutorials 05-09 and 11-12 if you need to build on it.
-- Advanced / contributor: finish with Tutorials 10, 13, 14, 15, 18, 19, and 20 if you need replay, invariants, lifecycle audit, nested runtime orchestration, encoded governance boundaries, or reusable projection substrates.
+- Advanced / contributor: finish with Tutorials 10, 13, 14, 15, 18, 19, 20, 23, 24, 25, and 26 if you need replay, invariants, lifecycle audit, nested runtime orchestration, reusable projection substrates, lane messaging, recovery visibility, and durable operational state.
 
 ## Recommended Order
 
@@ -41,6 +41,12 @@ If the README uses terms like `substrate`, `harness`, `projection`, or `replay`,
 18. [18 Nested Workflow Invocation](./tutorials/18_nested_workflow_invocation.md)
 19. [19 Build Artifact Governance Workflow](./tutorials/19_build_artifact_governance_workflow.md)
 20. [20 Generic Named Projection Meta Layer](./tutorials/20_generic_named_projection_meta_layer.md)
+21. [21 Retrieval Approaches Comparison](./tutorials/21_rag_retrieval_comparison.md)
+22. [22 Retrieval Approaches Comparison, KG Semantics Edition](./tutorials/22_rag_retrieval_comparison_kg_semantics.md)
+23. [23 Lane Messaging Contract](./tutorials/23_lane_messaging_contract.md)
+24. [24 ACL Visibility and Auditing](./tutorials/24_acl_visibility_tutorial.md)
+25. [25 Async Runtime Basics](./tutorials/25_async_runtime_tutorial.md)
+26. [26 Recovery and Durable Operational State](./tutorials/26_recovery_and_durable_operational_state.md)
 
 ## How To Use The Tutorials
 

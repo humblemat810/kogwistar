@@ -112,4 +112,4 @@ Async runtime changes execution style, not workflow meaning.
 
 ## Next Tutorial
 
-Continue with [Runtime Level 0: WorkflowRuntime Basics](./runtime-level-0-basics.md) or [Runtime Level 2: Pause and Resume](./runtime-level-2-pause-resume.md).
+Continue with [26 Recovery and Durable Operational State](./26_recovery_and_durable_operational_state.md), or revisit [Runtime Level 0: WorkflowRuntime Basics](./runtime-level-0-basics.md) and [Runtime Level 2: Pause and Resume](./runtime-level-2-pause-resume.md).

@@ -8,6 +8,7 @@ Use [docs/LEARNING_PATH.md](../LEARNING_PATH.md) as the main entrypoint. This pa
 - ACL / visibility path: [16 Leakage Prevention with Model Slicing](./16_leakage_prevention_with_model_slicing.md)
 - New ACL tutorial: [24 ACL Visibility and Auditing](./24_acl_visibility_tutorial.md)
 - New async runtime tutorial: [25 Async Runtime Basics](./25_async_runtime_tutorial.md)
+- Recovery / durable operational state: [26 Recovery and Durable Operational State](./26_recovery_and_durable_operational_state.md)
 
 ## Learning Path Docs
 
@@ -36,6 +37,7 @@ Use [docs/LEARNING_PATH.md](../LEARNING_PATH.md) as the main entrypoint. This pa
 - [23 Lane Messaging Contract](./23_lane_messaging_contract.md)
 - [24 ACL Visibility and Auditing](./24_acl_visibility_tutorial.md)
 - [25 Async Runtime Basics](./25_async_runtime_tutorial.md)
+- [26 Recovery and Durable Operational State](./26_recovery_and_durable_operational_state.md)
 
 ## VS Code Companion Files
 
@@ -59,6 +61,7 @@ Open these in VS Code and use Run Cell / Run Above / Run Below for notebook-like
 - `scripts/tutorial_sections/22_rag_retrieval_comparison_kg_semantics.py`
 - `scripts/tutorial_sections/24_acl_visibility_tutorial.py`
 - `scripts/tutorial_sections/25_async_runtime_tutorial.py`
+- `scripts/tutorial_sections/26_recovery_and_durable_operational_state.py`
 
 ## RAG Ladder: Simple RAG -> Reinforced RAG
 

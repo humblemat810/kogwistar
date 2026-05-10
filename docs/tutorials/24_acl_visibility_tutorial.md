@@ -38,7 +38,7 @@ Without that split, visibility leaks into execution and audit becomes ambiguous.
 
 - [Visibility / Viewing / Auditing](../visibility_viewing_auditing.md)
 - [Leakage Prevention with Model Slicing](./16_leakage_prevention_with_model_slicing.md)
-- [OAuth / ACL design notes](../ARD-0015-oauth.md)
+- [OAuth / ACL design notes](../../kogwistar/docs/ARD-0015-oauth.md)
 
 ## Run or Inspect
 

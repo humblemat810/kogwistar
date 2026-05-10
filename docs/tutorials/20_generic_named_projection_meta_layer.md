@@ -25,6 +25,10 @@ This is the reusable pattern for projections in this repo:
 
 Workflow design remains one compatibility consumer of this substrate, but the bridge-governance example shows the abstraction is not workflow-only.
 
+Service health latest-state rows follow the same pattern: sparse lifecycle facts
+remain authoritative, while the current operator-facing health view lives in a
+durable named projection that can be rebuilt when missing.
+
 ## Run or Inspect
 
 Run the companion script from the repo root:

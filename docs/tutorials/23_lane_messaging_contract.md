@@ -48,6 +48,9 @@ The engine still does not promise exactly-once delivery or automatic resume of
 every checkpoint. Resume is policy-gated and at-least-once handlers must remain
 idempotent.
 
+For the operator-facing recovery walkthrough, see
+[26 Recovery and Durable Operational State](./26_recovery_and_durable_operational_state.md).
+
 ```mermaid
 flowchart TD
   E[Entity event] --> M[Message node]
