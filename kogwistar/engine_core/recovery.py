@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from ..messaging.models import LaneMessageProjectionRepairResult
+from .service_health import ServiceHealthRepairResult
 
 
 TERMINAL_RUN_STATUSES = {"succeeded", "failed", "cancelled", "completed"}
@@ -110,6 +111,7 @@ class RunRecoveryState:
     run_id: str
     status: str
     terminal: bool
+    namespace: str | None = None
     workflow_id: str | None = None
     conversation_id: str | None = None
     last_event_type: str | None = None
@@ -182,10 +184,11 @@ class RecoverySubsystem:
     ) -> RecoveryReport:
         policy = resume_policy or ResumePolicy()
         normalized = self._dedupe_namespaces(namespaces)
+        service_health_repairs = self._repair_service_health(
+            workspace_id=workspace_id,
+            namespaces=normalized,
+        )
         registry = getattr(self.engine, "service_health", None)
-        repair_service_health = getattr(registry, "repair_projection", None)
-        if callable(repair_service_health):
-            repair_service_health(workspace_id=workspace_id)
         repaired = self.repair_lane_projections(list(normalized))
         report = self._build_report(
             workspace_id=workspace_id,
@@ -193,6 +196,7 @@ class RecoverySubsystem:
             app_surfaces=app_surfaces,
             resume_policy=policy,
             repaired_lane_projections=tuple(repaired),
+            repaired_service_health=service_health_repairs,
         )
         actions = list(report.actions)
         findings = list(report.findings)
@@ -299,7 +303,12 @@ class RecoverySubsystem:
         self, *, namespace: str, workspace_id: str
     ) -> list[CheckpointRecoveryState]:
         del workspace_id
-        nodes = self._checkpoint_nodes(namespace)
+        try:
+            nodes = self._checkpoint_nodes(namespace)
+        except Exception as exc:
+            if self._is_recoverable_checkpoint_lookup_error(exc):
+                return []
+            raise
         latest_by_run: dict[str, Any] = {}
         for node in nodes:
             md = dict(getattr(node, "metadata", {}) or {})
@@ -318,14 +327,23 @@ class RecoverySubsystem:
     def inspect_run_history(
         self, *, namespace: str, workspace_id: str
     ) -> list[RunRecoveryState]:
-        del namespace, workspace_id
         meta = getattr(self.engine, "meta_sqlite", None)
         list_runs = getattr(meta, "list_server_runs", None)
         list_events = getattr(meta, "list_server_run_events", None)
         if not callable(list_runs):
             return []
         out: list[RunRecoveryState] = []
-        for run in list_runs(limit=10_000):
+        query_kwargs: dict[str, Any] = {"limit": 10_000}
+        if namespace:
+            query_kwargs["conversation_id"] = str(namespace)
+        try:
+            runs = list_runs(**query_kwargs)
+        except TypeError:
+            runs = list_runs(limit=10_000)
+        for run in runs:
+            conversation_id = self._optional_str(run.get("conversation_id"))
+            if conversation_id != str(namespace):
+                continue
             events = list_events(str(run.get("run_id")), after_seq=0, limit=10_000) if callable(list_events) else []
             last_event = events[-1] if events else None
             worker_count = sum(
@@ -340,6 +358,7 @@ class RecoverySubsystem:
                     status=status,
                     terminal=bool(run.get("terminal"))
                     or status in TERMINAL_RUN_STATUSES,
+                    namespace=conversation_id,
                     workflow_id=self._optional_str(run.get("workflow_id")),
                     conversation_id=self._optional_str(run.get("conversation_id")),
                     last_event_type=None
@@ -361,21 +380,36 @@ class RecoverySubsystem:
         app_surfaces: list[RecoverySurface | OutputReconciliationState] | None,
         resume_policy: ResumePolicy,
         repaired_lane_projections: tuple[LaneMessageProjectionRepairResult, ...],
+        repaired_service_health: tuple[RecoveryAction, ...] = (),
     ) -> RecoveryReport:
         queues = tuple(self.inspect_queues(list(namespaces)))
         lane_rows = tuple(self.inspect_lane_rows(list(namespaces)))
-        checkpoints = tuple(
-            state
-            for namespace in namespaces
-            for state in self.inspect_checkpoints(
-                namespace=namespace, workspace_id=workspace_id
-            )
-        )
-        run_history = tuple(
-            self.inspect_run_history(namespace=namespaces[0], workspace_id=workspace_id)
-            if namespaces
-            else []
-        )
+        checkpoint_states: list[CheckpointRecoveryState] = []
+        checkpoint_findings: list[RecoveryFinding] = []
+        for namespace in namespaces:
+            try:
+                checkpoint_states.extend(
+                    self.inspect_checkpoints(namespace=namespace, workspace_id=workspace_id)
+                )
+            except Exception as exc:
+                checkpoint_findings.append(
+                    RecoveryFinding(
+                        severity="error",
+                        surface="checkpoints",
+                        message="checkpoint inspection failed",
+                        details={
+                            "namespace": namespace,
+                            "workspace_id": workspace_id,
+                            "error": f"{type(exc).__name__}: {exc}",
+                        },
+                    )
+                )
+        checkpoints = tuple(checkpoint_states)
+        run_history_map: dict[str, RunRecoveryState] = {}
+        for namespace in namespaces:
+            for state in self.inspect_run_history(namespace=namespace, workspace_id=workspace_id):
+                run_history_map.setdefault(state.run_id, state)
+        run_history = tuple(run_history_map.values())
         dead_letters = tuple(self._dead_letters(queues, lane_rows, run_history))
         daemon_health = tuple(
             self._daemon_health(app_surfaces or [])
@@ -391,6 +425,8 @@ class RecoverySubsystem:
                 app_surfaces=tuple(app_surfaces or ()),
             )
         )
+        findings = tuple(list(findings) + checkpoint_findings)
+        actions = tuple(list(self._repair_actions(repaired_lane_projections)) + list(repaired_service_health))
         return RecoveryReport(
             workspace_id=str(workspace_id),
             namespaces=namespaces,
@@ -402,7 +438,7 @@ class RecoverySubsystem:
             dead_letters=dead_letters,
             daemon_health=daemon_health,
             app_surfaces=tuple(app_surfaces or ()),
-            actions=tuple(self._repair_actions(repaired_lane_projections)),
+            actions=actions,
             findings=findings,
             resume_policy=resume_policy,
         )
@@ -468,11 +504,10 @@ class RecoverySubsystem:
 
             with scoped_namespace(self.engine, str(namespace)):
                 return list(get_nodes(where=where, limit=10_000))
-        except Exception:
-            try:
-                return list(get_nodes(where=where, limit=10_000))
-            except Exception:
+        except Exception as exc:
+            if self._is_recoverable_checkpoint_lookup_error(exc):
                 return []
+            raise
 
     def _checkpoint_state(self, *, namespace: str, node: Any) -> CheckpointRecoveryState:
         md = dict(getattr(node, "metadata", {}) or {})
@@ -692,6 +727,50 @@ class RecoverySubsystem:
             for item in repaired
         ]
 
+    def _repair_service_health(
+        self,
+        *,
+        workspace_id: str,
+        namespaces: tuple[str, ...],
+    ) -> tuple[RecoveryAction, ...]:
+        registry = getattr(self.engine, "service_health", None)
+        repair = getattr(registry, "repair_projection", None)
+        if not callable(repair):
+            return ()
+        repaired: list[RecoveryAction] = []
+        result = repair(workspace_id=workspace_id)
+        repaired_ids = tuple(getattr(result, "repaired_service_ids", ()) or ())
+        if not repaired_ids and int(getattr(result, "repaired_count", 0) or 0) <= 0:
+            return ()
+        services_by_id: dict[str, dict[str, Any]] = {}
+        list_services = getattr(registry, "list_services", None)
+        if callable(list_services):
+            try:
+                for payload in list_services(workspace_id=workspace_id, limit=10_000):
+                    if isinstance(payload, dict) and str(payload.get("service_id") or ""):
+                        services_by_id[str(payload["service_id"])] = dict(payload)
+            except Exception:
+                services_by_id = {}
+        for service_id in repaired_ids:
+            payload = services_by_id.get(str(service_id))
+            repaired.append(
+                RecoveryAction(
+                    action_kind="repair_service_health_projection",
+                    surface="service_health",
+                    status="completed",
+                    details={
+                        "workspace_id": workspace_id,
+                        "namespace": None if not isinstance(payload, dict) else payload.get("namespace"),
+                        "service_id": service_id,
+                        "status": None if not isinstance(payload, dict) else payload.get("status"),
+                        "repaired_count": int(getattr(result, "repaired_count", 0) or 0),
+                        "skipped_count": int(getattr(result, "skipped_count", 0) or 0),
+                        "rebuilt_from_sparse_lifecycle": True,
+                    },
+                )
+            )
+        return tuple(repaired)
+
     @staticmethod
     def _dedupe_namespaces(namespaces: list[str]) -> tuple[str, ...]:
         out: list[str] = []
@@ -730,6 +809,17 @@ class RecoverySubsystem:
             return int(md.get("step_seq", -1))
         except Exception:
             return -1
+
+    @staticmethod
+    def _is_recoverable_checkpoint_lookup_error(exc: Exception) -> bool:
+        current: Exception | None = exc
+        seen: set[int] = set()
+        while current is not None and id(current) not in seen:
+            seen.add(id(current))
+            if "Missing Embeddings" in str(current):
+                return True
+            current = current.__cause__ or current.__context__
+        return False
 
     @staticmethod
     def _replace(report: RecoveryReport, **changes: Any) -> RecoveryReport:

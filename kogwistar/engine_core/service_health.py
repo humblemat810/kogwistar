@@ -58,6 +58,7 @@ class ServiceHealthRepairResult:
     scanned_count: int
     repaired_count: int
     skipped_count: int
+    repaired_service_ids: tuple[str, ...] = ()
 
 
 class ServiceHealthRegistry:
@@ -358,6 +359,7 @@ class ServiceHealthRegistry:
         scanned = 0
         repaired = 0
         skipped = 0
+        repaired_service_ids: list[str] = []
         rebuilt: dict[str, dict[str, Any]] = {}
         for node in events:
             payload = self._event_payload(node)
@@ -393,6 +395,7 @@ class ServiceHealthRegistry:
             existing = self._get_projection_payload_by_key(key)
             if existing is None:
                 repaired += 1
+                repaired_service_ids.append(str(repaired_service_id))
             self._store(
                 repaired_service_id,
                 payload,
@@ -406,6 +409,7 @@ class ServiceHealthRegistry:
             scanned_count=scanned,
             repaired_count=repaired,
             skipped_count=skipped,
+            repaired_service_ids=tuple(repaired_service_ids),
         )
 
     def _merge_definition(

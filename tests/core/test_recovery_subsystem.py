@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from kogwistar.engine_core import (
     GraphKnowledgeEngine,
     OutputReconciliationState,
@@ -160,13 +162,21 @@ def test_recovery_inspect_reports_queue_lane_dead_letter_and_run_surfaces(tmp_pa
     registry = RunRegistry(engine.meta_sqlite)
     registry.create_run(
         run_id="run-1",
-        conversation_id="conv-run",
+        conversation_id=lane_ns,
         workflow_id="wf-run",
         user_id=None,
         user_turn_node_id="turn-1",
         status="running",
     )
     registry.append_event("run-1", "worker.requested", {"message_id": msg.message_id})
+    registry.create_run(
+        run_id="run-2",
+        conversation_id="ws:demo:other",
+        workflow_id="wf-run",
+        user_id=None,
+        user_turn_node_id="turn-2",
+        status="running",
+    )
 
     report = engine.recovery.inspect(
         workspace_id="demo",
@@ -188,8 +198,78 @@ def test_recovery_inspect_reports_queue_lane_dead_letter_and_run_surfaces(tmp_pa
     assert report.lane_rows[0].message_id == msg.message_id
     assert report.lane_rows[0].expired_lease is True
     assert {item.surface for item in report.dead_letters} == {"queue"}
+    assert [item.run_id for item in report.run_history] == ["run-1"]
+    assert report.run_history[0].namespace == lane_ns
     assert report.run_history[0].last_event_type == "worker.requested"
     assert any(f.surface == "projection_manifest" for f in report.findings)
+
+
+def test_recovery_run_history_scopes_by_namespace_and_dedupes_across_namespaces(tmp_path):
+    engine = _engine(tmp_path)
+    ns_a = "ws:demo:conv:bg"
+    ns_b = "ws:demo:conv:fg"
+    registry = RunRegistry(engine.meta_sqlite)
+    registry.create_run(
+        run_id="run-a",
+        conversation_id=ns_a,
+        workflow_id="wf-a",
+        user_id=None,
+        user_turn_node_id="turn-a",
+        status="running",
+    )
+    registry.append_event("run-a", "worker.requested", {"source": "a"})
+    registry.create_run(
+        run_id="run-b",
+        conversation_id=ns_b,
+        workflow_id="wf-b",
+        user_id=None,
+        user_turn_node_id="turn-b",
+        status="running",
+    )
+    registry.append_event("run-b", "worker.requested", {"source": "b"})
+    registry.create_run(
+        run_id="run-x",
+        conversation_id="ws:demo:other",
+        workflow_id="wf-x",
+        user_id=None,
+        user_turn_node_id="turn-x",
+        status="running",
+    )
+
+    scoped = engine.recovery.inspect(workspace_id="demo", namespaces=[ns_a])
+    assert [item.run_id for item in scoped.run_history] == ["run-a"]
+    assert scoped.run_history[0].namespace == ns_a
+
+    combined = engine.recovery.recover_startup(
+        workspace_id="demo",
+        namespaces=[ns_a, ns_b],
+    )
+    assert [item.run_id for item in combined.run_history] == ["run-a", "run-b"]
+    assert {item.namespace for item in combined.run_history} == {ns_a, ns_b}
+
+
+def test_recovery_checkpoint_fallback_is_narrow_and_surfaces_unrelated_errors(tmp_path, monkeypatch):
+    engine = _engine(tmp_path)
+    namespace = "ws:demo:conv:bg"
+
+    def _recoverable(**kwargs):
+        raise Exception("Missing Embeddings")
+
+    def _unrelated(**kwargs):
+        raise Exception("acl boom")
+
+    monkeypatch.setattr(engine.read, "get_nodes", _recoverable)
+    assert engine.recovery.inspect_checkpoints(namespace=namespace, workspace_id="demo") == []
+
+    monkeypatch.setattr(engine.read, "get_nodes", _unrelated)
+    with pytest.raises(Exception, match="acl boom"):
+        engine.recovery.inspect_checkpoints(namespace=namespace, workspace_id="demo")
+
+    report = engine.recovery.inspect(workspace_id="demo", namespaces=[namespace])
+    assert any(
+        finding.surface == "checkpoints" and "acl boom" in str(finding.details.get("error", ""))
+        for finding in report.findings
+    )
 
 
 def test_recovery_classifies_checkpoints_and_auto_resume_is_policy_gated(tmp_path):
@@ -299,6 +379,7 @@ def test_recovery_startup_repairs_missing_service_health_projection_but_inspect_
         namespaces=["ws:demo:ops"],
     )
     assert not inspected.daemon_health
+    assert not [action for action in inspected.actions if action.surface == "service_health"]
     assert engine.service_health.get_service(
         "svc.demo",
         workspace_id="demo",
@@ -310,6 +391,14 @@ def test_recovery_startup_repairs_missing_service_health_projection_but_inspect_
         namespaces=["ws:demo:ops"],
     )
     assert any(item.daemon_id == "svc.demo" for item in recovered.daemon_health)
+    service_health_actions = [
+        action
+        for action in recovered.actions
+        if action.surface == "service_health"
+    ]
+    assert service_health_actions
+    assert service_health_actions[0].details["service_id"] == "svc.demo"
+    assert service_health_actions[0].details["status"] == "starting"
     assert engine.service_health.get_service(
         "svc.demo",
         workspace_id="demo",
