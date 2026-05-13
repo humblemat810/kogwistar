@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import time
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
@@ -411,4 +412,138 @@ def test_lane_message_sample_integration_pins_stable_contract():
             after_ack = service.list_projected(inbox_id="inbox:worker:integration")
             assert after_ack[0].status == "completed"
     finally:
+        shutil.rmtree(test_db_dir, ignore_errors=True)
+
+
+def test_send_lane_message_idempotency_key_reuses_existing_message_and_projection():
+    engine, test_db_dir = _make_engine()
+    namespace = "ws:demo:conv:bg"
+    token = claims_ctx.set({"storage_ns": namespace})
+
+    try:
+        with scoped_namespace(engine, namespace):
+            first = engine.send_lane_message(
+                conversation_id="conv-demo",
+                inbox_id="inbox:worker:maintenance",
+                sender_id="lane:foreground",
+                recipient_id="lane:worker:maintenance",
+                msg_type="request.maintenance",
+                payload={"request_node_id": "req-1"},
+                idempotency_key="idem:maintenance:req-1",
+            )
+            engine.meta_sqlite.clear_projected_lane_messages(namespace)
+            assert engine.list_projected_lane_messages(
+                inbox_id="inbox:worker:maintenance"
+            ) == []
+
+            second = engine.send_lane_message(
+                conversation_id="conv-demo",
+                inbox_id="inbox:worker:maintenance",
+                sender_id="lane:foreground",
+                recipient_id="lane:worker:maintenance",
+                msg_type="request.maintenance",
+                payload={"request_node_id": "req-1"},
+                idempotency_key="idem:maintenance:req-1",
+            )
+
+            assert second.message_id == first.message_id
+            messages = engine.read.get_nodes(where={"artifact_kind": "lane_message"})
+            assert len(messages) == 1
+            projected = engine.list_projected_lane_messages(
+                inbox_id="inbox:worker:maintenance"
+            )
+            assert len(projected) == 1
+            assert projected[0].message_id == first.message_id
+    finally:
+        claims_ctx.reset(token)
+        shutil.rmtree(test_db_dir, ignore_errors=True)
+
+
+def test_send_lane_message_idempotency_key_rejects_shape_conflict():
+    engine, test_db_dir = _make_engine()
+    namespace = "ws:demo:conv:bg"
+    token = claims_ctx.set({"storage_ns": namespace})
+
+    try:
+        with scoped_namespace(engine, namespace):
+            engine.send_lane_message(
+                conversation_id="conv-demo",
+                inbox_id="inbox:worker:maintenance",
+                sender_id="lane:foreground",
+                recipient_id="lane:worker:maintenance",
+                msg_type="request.maintenance",
+                payload={"request_node_id": "req-1"},
+                idempotency_key="idem:maintenance:req-1",
+            )
+            with pytest.raises(ValueError, match="lane message idempotency conflict"):
+                engine.send_lane_message(
+                    conversation_id="conv-demo",
+                    inbox_id="inbox:worker:maintenance",
+                    sender_id="lane:foreground",
+                    recipient_id="lane:worker:maintenance",
+                    msg_type="request.maintenance",
+                    payload={"request_node_id": "req-2"},
+                    idempotency_key="idem:maintenance:req-1",
+                )
+    finally:
+        claims_ctx.reset(token)
+        shutil.rmtree(test_db_dir, ignore_errors=True)
+
+
+def test_lane_message_lookup_supports_newest_first_and_time_filters():
+    engine, test_db_dir = _make_engine()
+    namespace = "ws:demo:conv:bg"
+    token = claims_ctx.set({"storage_ns": namespace})
+
+    try:
+        with scoped_namespace(engine, namespace):
+            first = engine.send_lane_message(
+                conversation_id="conv-demo",
+                inbox_id="inbox:foreground",
+                sender_id="lane:worker",
+                recipient_id="lane:foreground",
+                msg_type="reply.maintenance.completed",
+                payload={"result": "first"},
+                correlation_id="corr-1",
+            )
+            time.sleep(1)
+            second = engine.send_lane_message(
+                conversation_id="conv-demo",
+                inbox_id="inbox:foreground",
+                sender_id="lane:worker",
+                recipient_id="lane:foreground",
+                msg_type="reply.maintenance.completed",
+                payload={"result": "second"},
+                correlation_id="corr-2",
+                reply_to=first.message_id,
+            )
+
+            newest = engine.list_projected_lane_messages(
+                inbox_id="inbox:foreground",
+                newest_first=True,
+                limit=1,
+            )
+            assert [row.message_id for row in newest] == [second.message_id]
+
+            later = engine.list_projected_lane_messages(
+                inbox_id="inbox:foreground",
+                created_at_gte=newest[0].created_at,
+            )
+            assert [row.message_id for row in later] == [second.message_id]
+
+            reply_rows = engine.list_projected_lane_messages(
+                inbox_id="inbox:foreground",
+                reply_to_message_id=first.message_id,
+            )
+            assert [row.message_id for row in reply_rows] == [second.message_id]
+
+            found = engine.find_lane_messages(
+                namespace=namespace,
+                correlation_id="corr-2",
+                newest_first=True,
+                limit=1,
+            )
+            assert [str(node.id) for node in found] == [second.message_id]
+    finally:
+        claims_ctx.reset(token)
         shutil.rmtree(test_db_dir, ignore_errors=True)

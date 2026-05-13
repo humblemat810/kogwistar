@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from kogwistar.messaging.models import (
+        LaneMessageLookup,
         LaneMessageProjectionRepairResult,
         LaneMessageSendResult,
         ProjectedLaneMessageRow,
@@ -13,6 +14,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "LaneMessagingService",
+    "LaneMessageLookup",
     "LaneMessageProjectionRepairResult",
     "LaneMessageSendResult",
     "ProjectedLaneMessageRow",
@@ -20,6 +22,7 @@ __all__ = [
 
 _EXPORTS = {
     "LaneMessagingService": "kogwistar.messaging.service",
+    "LaneMessageLookup": "kogwistar.messaging.models",
     "LaneMessageProjectionRepairResult": "kogwistar.messaging.models",
     "LaneMessageSendResult": "kogwistar.messaging.models",
     "ProjectedLaneMessageRow": "kogwistar.messaging.models",

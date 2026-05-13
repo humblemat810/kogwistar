@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import json
 import time
 import uuid
@@ -18,6 +19,7 @@ from kogwistar.server.auth_middleware import (
 )
 
 from .models import (
+    LaneMessageLookup,
     LaneMessageProjectionRepairResult,
     LaneMessageSendResult,
     ProjectedLaneMessageRow,
@@ -80,6 +82,34 @@ def _compact_json(value: Any) -> str | None:
     if isinstance(value, str):
         return value
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+
+def _coerce_lane_datetime(value: datetime | int | float | str | None) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+    if isinstance(value, (int, float)):
+        return datetime.fromtimestamp(float(value), tz=timezone.utc)
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        if text.endswith("Z"):
+            return datetime.fromisoformat(text.replace("Z", "+00:00"))
+        return datetime.fromisoformat(text)
+    except Exception:
+        try:
+            return datetime.fromtimestamp(float(text), tz=timezone.utc)
+        except Exception:
+            return None
+
+
+def _coerce_lane_epoch(value: datetime | int | float | str | None) -> int | None:
+    dt = _coerce_lane_datetime(value)
+    if dt is not None:
+        return int(dt.timestamp())
+    return None
 
 
 def _lane_record_from_payload(
@@ -154,6 +184,8 @@ class LaneMessagingService:
         security_scope: str | None = None,
         shared_scope: bool = False,
         shared_inbox: bool = False,
+        idempotency_key: str | None = None,
+        idempotency_lookup: LaneMessageLookup | None = None,
     ) -> LaneMessageSendResult:
         claims = claims_ctx.get() or {}
         namespace = str(
@@ -169,10 +201,74 @@ class LaneMessagingService:
             shared=shared_flag,
             action="send message into",
         )
-        message_id = f"msg:{uuid.uuid4()}"
-        correlation = correlation_id or f"corr:{uuid.uuid4()}"
+        correlation = (
+            correlation_id
+            or (str(idempotency_key) if idempotency_key is not None else None)
+            or f"corr:{uuid.uuid4()}"
+        )
         now_epoch = _now_epoch()
         created_at = _now_iso()
+        payload_json = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+
+        lookup = self._resolve_idempotency_lookup(
+            namespace=namespace,
+            conversation_id=conversation_id,
+            inbox_id=inbox_id,
+            sender_id=sender_id,
+            recipient_id=recipient_id,
+            msg_type=msg_type,
+            correlation_id=correlation,
+            reply_to_message_id=reply_to,
+            idempotency_key=idempotency_key,
+            provided=idempotency_lookup,
+        )
+        if idempotency_key:
+            existing = self.find_messages(
+                namespace=lookup.namespace,
+                inbox_id=lookup.inbox_id,
+                conversation_id=lookup.conversation_id,
+                status=lookup.status,
+                purpose=lookup.purpose,
+                msg_type=lookup.msg_type,
+                sender_id=lookup.sender_id,
+                recipient_id=lookup.recipient_id,
+                correlation_id=lookup.correlation_id,
+                reply_to_message_id=lookup.reply_to_message_id,
+                idempotency_key=lookup.idempotency_key,
+                created_at_gte=lookup.created_at_gte,
+                created_at_lte=lookup.created_at_lte,
+                available_at_gte=lookup.available_at_gte,
+                available_at_lte=lookup.available_at_lte,
+                limit=max(int(lookup.limit or 1), 1),
+                newest_first=True,
+            )
+            if existing:
+                existing_node = existing[0]
+                existing_metadata = dict(getattr(existing_node, "metadata", {}) or {})
+                self._validate_idempotent_message(
+                    metadata=existing_metadata,
+                    conversation_id=conversation_id,
+                    inbox_id=inbox_id,
+                    sender_id=sender_id,
+                    recipient_id=recipient_id,
+                    msg_type=msg_type,
+                    reply_to=reply_to,
+                    correlation_id=correlation,
+                    payload_json=payload_json,
+                    run_id=run_id,
+                    step_id=step_id,
+                    purpose=effective_purpose,
+                )
+                self._ensure_projected_row_for_node(existing_node, namespace=namespace)
+                return self._result_for_existing_message(
+                    conversation_id=conversation_id,
+                    inbox_id=inbox_id,
+                    sender_id=sender_id,
+                    recipient_id=recipient_id,
+                    message_id=str(existing_node.id),
+                )
+
+        message_id = f"msg:{uuid.uuid4()}"
 
         unit_of_work = getattr(self.engine, "unit_of_work", None) or getattr(
             self.engine, "uow", None
@@ -199,8 +295,6 @@ class LaneMessagingService:
                 sort_keys=True,
                 separators=(",", ":"),
             )
-            payload_json = json.dumps(payload, sort_keys=True, separators=(",", ":"))
-
             message_node = Node(
                 id=message_id,
                 label=f"lane_message:{msg_type}",
@@ -227,6 +321,7 @@ class LaneMessagingService:
                     "purpose": effective_purpose,
                     "acl_context_json": acl_context_json,
                     "payload_json": payload_json,
+                    "idempotency_key": idempotency_key,
                     "created_at": created_at,
                     "updated_at": created_at,
                     "completed_at": None,
@@ -486,6 +581,18 @@ class LaneMessagingService:
         inbox_id: str | None = None,
         status: str | None = None,
         purpose: str | None = None,
+        conversation_id: str | None = None,
+        msg_type: str | None = None,
+        sender_id: str | None = None,
+        recipient_id: str | None = None,
+        correlation_id: str | None = None,
+        reply_to_message_id: str | None = None,
+        created_at_gte: datetime | int | float | str | None = None,
+        created_at_lte: datetime | int | float | str | None = None,
+        available_at_gte: datetime | int | float | str | None = None,
+        available_at_lte: datetime | int | float | str | None = None,
+        limit: int = 1000,
+        newest_first: bool = False,
     ) -> list[ProjectedLaneMessageRow]:
         list_fn = getattr(self.engine.meta_sqlite, "list_projected_lane_messages", None)
         if not callable(list_fn):
@@ -496,8 +603,108 @@ class LaneMessagingService:
             or getattr(self.engine, "namespace", "default")
             or "default"
         )
-        rows = list_fn(namespace=namespace, inbox_id=inbox_id, status=status, purpose=purpose)
+        rows = list_fn(
+            namespace=namespace,
+            inbox_id=inbox_id,
+            status=status,
+            purpose=purpose,
+            conversation_id=conversation_id,
+            msg_type=msg_type,
+            sender_id=sender_id,
+            recipient_id=recipient_id,
+            correlation_id=correlation_id,
+            created_at_gte=_coerce_lane_epoch(created_at_gte),
+            created_at_lte=_coerce_lane_epoch(created_at_lte),
+            available_at_gte=_coerce_lane_epoch(available_at_gte),
+            available_at_lte=_coerce_lane_epoch(available_at_lte),
+            limit=int(limit),
+            newest_first=bool(newest_first),
+        )
+        if reply_to_message_id is not None:
+            matching_ids = {
+                str(node.id)
+                for node in self.find_messages(
+                    namespace=namespace,
+                    reply_to_message_id=reply_to_message_id,
+                    limit=max(int(limit), 100),
+                    newest_first=bool(newest_first),
+                )
+            }
+            rows = [row for row in rows if row.message_id in matching_ids]
         return [row for row in rows if self._row_visible(row)]
+
+    def find_messages(
+        self,
+        *,
+        namespace: str | None = None,
+        inbox_id: str | None = None,
+        conversation_id: str | None = None,
+        status: str | None = None,
+        purpose: str | None = None,
+        msg_type: str | None = None,
+        sender_id: str | None = None,
+        recipient_id: str | None = None,
+        correlation_id: str | None = None,
+        reply_to_message_id: str | None = None,
+        available_at_gte: datetime | int | float | str | None = None,
+        available_at_lte: datetime | int | float | str | None = None,
+        idempotency_key: str | None = None,
+        created_at_gte: datetime | int | float | str | None = None,
+        created_at_lte: datetime | int | float | str | None = None,
+        limit: int = 100,
+        newest_first: bool = False,
+    ) -> list[Node]:
+        target_namespace = str(namespace or getattr(self.engine, "namespace", "default") or "default")
+        lower = _coerce_lane_datetime(created_at_gte)
+        upper = _coerce_lane_datetime(created_at_lte)
+        lower_available = _coerce_lane_datetime(available_at_gte)
+        upper_available = _coerce_lane_datetime(available_at_lte)
+        with scoped_namespace(self.engine, target_namespace):
+            nodes = self.engine.read.get_nodes(where={"artifact_kind": "lane_message"}, limit=100_000)
+        matched: list[Node] = []
+        for node in nodes:
+            metadata = dict(getattr(node, "metadata", {}) or {})
+            if str(metadata.get("namespace") or target_namespace) != target_namespace:
+                continue
+            if inbox_id is not None and str(metadata.get("inbox_id") or "") != str(inbox_id):
+                continue
+            if conversation_id is not None and str(metadata.get("conversation_id") or "") != str(conversation_id):
+                continue
+            if status is not None and str(metadata.get("status") or "") != str(status):
+                continue
+            if purpose is not None and str(metadata.get("purpose") or "") != str(purpose):
+                continue
+            if msg_type is not None and str(metadata.get("msg_type") or "") != str(msg_type):
+                continue
+            if sender_id is not None and str(metadata.get("sender_id") or "") != str(sender_id):
+                continue
+            if recipient_id is not None and str(metadata.get("recipient_id") or "") != str(recipient_id):
+                continue
+            if correlation_id is not None and str(metadata.get("correlation_id") or "") != str(correlation_id):
+                continue
+            if reply_to_message_id is not None and str(metadata.get("reply_to_message_id") or "") != str(reply_to_message_id):
+                continue
+            if idempotency_key is not None and str(metadata.get("idempotency_key") or "") != str(idempotency_key):
+                continue
+            created_at = _coerce_lane_datetime(metadata.get("created_at"))
+            if lower is not None and (created_at is None or created_at < lower):
+                continue
+            if upper is not None and (created_at is None or created_at > upper):
+                continue
+            available_at = _coerce_lane_datetime(metadata.get("available_at") or metadata.get("created_at"))
+            if lower_available is not None and (available_at is None or available_at < lower_available):
+                continue
+            if upper_available is not None and (available_at is None or available_at > upper_available):
+                continue
+            matched.append(node)
+        matched.sort(
+            key=lambda node: (
+                _coerce_lane_datetime((getattr(node, "metadata", {}) or {}).get("created_at")) or datetime.min.replace(tzinfo=timezone.utc),
+                str(getattr(node, "id", "")),
+            ),
+            reverse=bool(newest_first),
+        )
+        return matched[: int(limit)]
 
     def repair_projection(
         self,
@@ -653,6 +860,151 @@ class LaneMessagingService:
             order=int(order),
         )
 
+    def _resolve_idempotency_lookup(
+        self,
+        *,
+        namespace: str,
+        conversation_id: str,
+        inbox_id: str,
+        sender_id: str,
+        recipient_id: str,
+        msg_type: str,
+        correlation_id: str,
+        reply_to_message_id: str | None,
+        idempotency_key: str | None,
+        provided: LaneMessageLookup | None,
+    ) -> LaneMessageLookup:
+        base = {
+            "namespace": str(namespace),
+            "conversation_id": str(conversation_id),
+            "inbox_id": str(inbox_id),
+            "sender_id": str(sender_id),
+            "recipient_id": str(recipient_id),
+            "msg_type": str(msg_type),
+            "correlation_id": str(correlation_id),
+            "reply_to_message_id": None if reply_to_message_id is None else str(reply_to_message_id),
+            "idempotency_key": None if idempotency_key is None else str(idempotency_key),
+            "limit": 1,
+            "newest_first": True,
+        }
+        if provided is None:
+            return LaneMessageLookup(**base)
+        merged = {
+            "namespace": provided.namespace if provided.namespace is not None else base["namespace"],
+            "inbox_id": provided.inbox_id if provided.inbox_id is not None else base["inbox_id"],
+            "conversation_id": provided.conversation_id if provided.conversation_id is not None else base["conversation_id"],
+            "status": provided.status,
+            "purpose": provided.purpose,
+            "msg_type": provided.msg_type if provided.msg_type is not None else base["msg_type"],
+            "sender_id": provided.sender_id if provided.sender_id is not None else base["sender_id"],
+            "recipient_id": provided.recipient_id if provided.recipient_id is not None else base["recipient_id"],
+            "correlation_id": provided.correlation_id if provided.correlation_id is not None else base["correlation_id"],
+            "reply_to_message_id": (
+                provided.reply_to_message_id
+                if provided.reply_to_message_id is not None
+                else base["reply_to_message_id"]
+            ),
+            "idempotency_key": provided.idempotency_key if provided.idempotency_key is not None else base["idempotency_key"],
+            "created_at_gte": provided.created_at_gte,
+            "created_at_lte": provided.created_at_lte,
+            "available_at_gte": provided.available_at_gte,
+            "available_at_lte": provided.available_at_lte,
+            "limit": max(int(provided.limit or 1), 1),
+            "newest_first": True,
+        }
+        return LaneMessageLookup(**merged)
+
+    def _validate_idempotent_message(
+        self,
+        *,
+        metadata: dict[str, Any],
+        conversation_id: str,
+        inbox_id: str,
+        sender_id: str,
+        recipient_id: str,
+        msg_type: str,
+        reply_to: str | None,
+        correlation_id: str,
+        payload_json: str,
+        run_id: str | None,
+        step_id: str | None,
+        purpose: str,
+    ) -> None:
+        expected = {
+            "conversation_id": str(conversation_id),
+            "inbox_id": str(inbox_id),
+            "sender_id": str(sender_id),
+            "recipient_id": str(recipient_id),
+            "msg_type": str(msg_type),
+            "reply_to_message_id": None if reply_to is None else str(reply_to),
+            "correlation_id": str(correlation_id),
+            "payload_json": str(payload_json),
+            "run_id": None if run_id is None else str(run_id),
+            "step_id": None if step_id is None else str(step_id),
+            "purpose": str(purpose),
+        }
+        for key, expected_value in expected.items():
+            actual = metadata.get(key)
+            actual_value = None if actual is None else str(actual)
+            comparison_value = None if expected_value is None else str(expected_value)
+            if actual_value != comparison_value:
+                raise ValueError(
+                    f"lane message idempotency conflict for {key}: expected {comparison_value!r}, got {actual_value!r}"
+                )
+
+    def _ensure_projected_row_for_node(self, node: Node, *, namespace: str) -> None:
+        message_id = str(getattr(node, "id", "") or "")
+        if not message_id:
+            return
+        get_row = getattr(self.engine.meta_sqlite, "_lane_message_get_row", None)
+        if callable(get_row) and get_row(message_id=message_id) is not None:
+            return
+        record = self._lane_projection_record_from_node(
+            message_id=message_id,
+            namespace=str(namespace),
+            order=1,
+        )
+        if record is None:
+            return
+        project = getattr(self.engine.meta_sqlite, "project_lane_message", None)
+        if not callable(project):
+            return
+        project(
+            message_id=message_id,
+            namespace=str(namespace),
+            purpose=str(record["purpose"]),
+            inbox_id=str(record["inbox_id"]),
+            conversation_id=str(record["conversation_id"]),
+            recipient_id=str(record["recipient_id"]),
+            sender_id=str(record["sender_id"]),
+            msg_type=str(record["msg_type"]),
+            status=str(record["status"]),
+            created_at=int(record["created_at"]),
+            available_at=int(record["available_at"]),
+            run_id=record["run_id"],
+            step_id=record["step_id"],
+            correlation_id=record["correlation_id"],
+            payload_json=record["payload_json"],
+            error_json=record["error_json"],
+        )
+
+    def _result_for_existing_message(
+        self,
+        *,
+        conversation_id: str,
+        inbox_id: str,
+        sender_id: str,
+        recipient_id: str,
+        message_id: str,
+    ) -> LaneMessageSendResult:
+        return LaneMessageSendResult(
+            message_id=str(message_id),
+            conversation_anchor_id=str(stable_id("lane_message_conversation", conversation_id)),
+            inbox_anchor_id=str(stable_id("lane_message_inbox", inbox_id)),
+            sender_anchor_id=str(stable_id("lane_message_actor", sender_id)),
+            recipient_anchor_id=str(stable_id("lane_message_actor", recipient_id)),
+        )
+
     def _row_visible(self, row: ProjectedLaneMessageRow) -> bool:
         nodes = self.engine.read.get_nodes(ids=[row.message_id])
         if not nodes:
@@ -726,6 +1078,9 @@ class LaneMessagingService:
             ),
         }
         for node in anchors.values():
+            existing = self.engine.read.get_nodes(ids=[str(node.id)])
+            if existing:
+                continue
             self.engine.write.add_node(node)
         return anchors
 

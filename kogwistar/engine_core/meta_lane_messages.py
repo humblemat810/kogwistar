@@ -30,6 +30,15 @@ class LaneMessageMetaStoreMixin:
         inbox_id: str | None = None,
         conversation_id: str | None = None,
         status: str | None = None,
+        msg_type: str | None = None,
+        sender_id: str | None = None,
+        recipient_id: str | None = None,
+        correlation_id: str | None = None,
+        reply_to_message_id: str | None = None,
+        created_at_gte: int | None = None,
+        created_at_lte: int | None = None,
+        available_at_gte: int | None = None,
+        available_at_lte: int | None = None,
     ) -> list[ProjectedLaneMessageRow]:
         raise NotImplementedError
 
@@ -218,16 +227,38 @@ class LaneMessageMetaStoreMixin:
         namespace: str = "default",
         purpose: str | None = None,
         inbox_id: str | None = None,
+        conversation_id: str | None = None,
         status: str | None = None,
+        msg_type: str | None = None,
+        sender_id: str | None = None,
+        recipient_id: str | None = None,
+        correlation_id: str | None = None,
+        reply_to_message_id: str | None = None,
+        created_at_gte: int | None = None,
+        created_at_lte: int | None = None,
+        available_at_gte: int | None = None,
+        available_at_lte: int | None = None,
         limit: int = 1000,
+        newest_first: bool = False,
     ) -> list[ProjectedLaneMessageRow]:
         rows = self._lane_message_list_rows(
             namespace=str(namespace),
             purpose=purpose,
             inbox_id=inbox_id,
+            conversation_id=conversation_id,
             status=status,
+            msg_type=msg_type,
+            sender_id=sender_id,
+            recipient_id=recipient_id,
+            correlation_id=correlation_id,
+            reply_to_message_id=reply_to_message_id,
+            created_at_gte=created_at_gte,
+            created_at_lte=created_at_lte,
+            available_at_gte=available_at_gte,
+            available_at_lte=available_at_lte,
         )
-        return sorted(rows, key=lambda item: (item.seq, item.created_at))[: int(limit)]
+        ordered = sorted(rows, key=lambda item: (item.created_at, item.seq, item.message_id), reverse=bool(newest_first))
+        return ordered[: int(limit)]
 
 
 __all__ = ["LaneMessageMetaStoreMixin"]

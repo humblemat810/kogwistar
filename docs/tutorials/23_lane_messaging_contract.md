@@ -18,6 +18,8 @@ It focuses on the core substrate only and avoids app-specific details.
 - Projection truth lives in the metastore abstraction.
 - Concrete stores provide storage primitives only.
 - `meta_sqlite` is the abstraction slot name, not the semantic owner.
+- Idempotent reuse checks graph truth first and repairs the projected serving row
+  only when the graph node already exists but the serving row is missing.
 
 ## Transaction And Crash Semantics
 
@@ -63,6 +65,30 @@ flowchart TD
 
 ## Example
 
+Normal happy path:
+
+- app sends a durable lane message
+- core writes the graph node and projected serving row
+- worker claims the projected row
+- worker finishes and sends a reply
+- a repeated send with the same `idempotency_key` reuses the existing graph node
+- if the serving row was lost, the reused send re-projects it from graph truth
+
+```mermaid
+sequenceDiagram
+  participant App as App
+  participant Engine as Engine core
+  participant Meta as Projected rows
+  participant Worker as Worker
+
+  App->>Engine: send_message(..., idempotency_key=K)
+  Engine->>Engine: search lane_message graph truth
+  Engine->>Meta: project_lane_message(...)
+  Worker->>Meta: claim_pending(...)
+  Worker->>Engine: send_message(reply..., idempotency_key=R)
+  Note over Engine: repeated K or R returns the same message_id
+```
+
 ```python
 from kogwistar.engine_core.engine import GraphKnowledgeEngine, scoped_namespace
 
@@ -88,6 +114,11 @@ with scoped_namespace(engine, "ws:demo:conv:bg"):
         claimed_by="worker-1",
     )
 ```
+
+Useful query helpers for the convergent path:
+
+- `engine.find_lane_messages(...)`
+- `engine.list_projected_lane_messages(..., newest_first=True, created_at_gte=..., created_at_lte=...)`
 
 ## Observability
 

@@ -939,6 +939,11 @@ class GraphKnowledgeEngine:
 
         return LaneMessagingService(self).list_projected(*args, **kwargs)
 
+    def find_lane_messages(self, *args, **kwargs):
+        from kogwistar.messaging import LaneMessagingService
+
+        return LaneMessagingService(self).find_messages(*args, **kwargs)
+
     def repair_lane_message_projection(self, *args, **kwargs):
         from kogwistar.messaging import LaneMessagingService
 

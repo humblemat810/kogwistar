@@ -1143,20 +1143,60 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
         namespace: str = "default",
         purpose: str | None = None,
         inbox_id: str | None = None,
+        conversation_id: str | None = None,
         status: str | None = None,
+        msg_type: str | None = None,
+        sender_id: str | None = None,
+        recipient_id: str | None = None,
+        correlation_id: str | None = None,
+        reply_to_message_id: str | None = None,
+        created_at_gte: int | None = None,
+        created_at_lte: int | None = None,
+        available_at_gte: int | None = None,
+        available_at_lte: int | None = None,
         limit: int = 1000,
+        newest_first: bool = False,
     ) -> list[ProjectedLaneMessageRow]:
         where: list[str] = ["namespace = ?"]
         params: list[Any] = [str(namespace)]
+        _ = reply_to_message_id
         if purpose is not None:
             where.append("purpose = ?")
             params.append(str(purpose))
         if inbox_id is not None:
             where.append("inbox_id = ?")
             params.append(str(inbox_id))
+        if conversation_id is not None:
+            where.append("conversation_id = ?")
+            params.append(str(conversation_id))
         if status is not None:
             where.append("status = ?")
             params.append(str(status))
+        if msg_type is not None:
+            where.append("msg_type = ?")
+            params.append(str(msg_type))
+        if sender_id is not None:
+            where.append("sender_id = ?")
+            params.append(str(sender_id))
+        if recipient_id is not None:
+            where.append("recipient_id = ?")
+            params.append(str(recipient_id))
+        if correlation_id is not None:
+            where.append("correlation_id = ?")
+            params.append(str(correlation_id))
+        if created_at_gte is not None:
+            where.append("created_at >= ?")
+            params.append(int(created_at_gte))
+        if created_at_lte is not None:
+            where.append("created_at <= ?")
+            params.append(int(created_at_lte))
+        if available_at_gte is not None:
+            where.append("available_at >= ?")
+            params.append(int(available_at_gte))
+        if available_at_lte is not None:
+            where.append("available_at <= ?")
+            params.append(int(available_at_lte))
+        order_dir = "DESC" if newest_first else "ASC"
         with self.connect() as conn:
             rows = conn.execute(
                 f"""
@@ -1167,7 +1207,7 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
                        inbox_tail_message_id, conversation_tail_message_id
                 FROM projected_lane_messages
                 WHERE {' AND '.join(where)}
-                ORDER BY inbox_id ASC, seq ASC, created_at ASC
+                ORDER BY created_at {order_dir}, seq {order_dir}, message_id {order_dir}
                 LIMIT ?
                 """,
                 tuple(params + [int(limit)]),
