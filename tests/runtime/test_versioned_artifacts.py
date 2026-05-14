@@ -104,10 +104,72 @@ def test_write_versioned_artifact_redirects_old_ids_to_new_active_version():
         assert result.artifact_id == "alice-v2"
         assert result.created_at_ms == active[0].metadata["created_at_ms"]
         assert result.replaced_ids == ("alice-v1",)
+        assert result.wrote_new_artifact is True
         assert [node.id for node in active] == ["alice-v2"]
         assert [node.id for node in redirected] == ["alice-v2"]
         assert old_all[0].metadata["lifecycle_status"] == "tombstoned"
         assert old_all[0].metadata["redirect_to_id"] == "alice-v2"
+    finally:
+        shutil.rmtree(test_db_dir, ignore_errors=True)
+
+
+def test_write_versioned_artifact_short_circuits_when_same_artifact_is_active():
+    engine, test_db_dir = _make_engine()
+    namespace = "ws:demo:kg:derived"
+
+    try:
+        with scoped_namespace(engine, namespace):
+            engine.write.add_node(
+                Node(
+                    id="alice-v1",
+                    label="Alice",
+                    type="entity",
+                    summary="active",
+                    mentions=_mentions(),
+                    metadata={
+                        "workspace_id": "demo",
+                        "artifact_kind": "derived_knowledge",
+                        "label": "Alice",
+                        "created_at_ms": 111,
+                    },
+                )
+            )
+
+        result = write_versioned_artifact(
+            engine,
+            namespace=namespace,
+            match_where={
+                "workspace_id": "demo",
+                "artifact_kind": "derived_knowledge",
+                "label": "Alice",
+            },
+            build_node=lambda existing, created_at_ms: Node(
+                id="alice-v1",
+                label="Alice",
+                type="entity",
+                summary="active",
+                mentions=_mentions(),
+                metadata={
+                    "workspace_id": "demo",
+                    "artifact_kind": "derived_knowledge",
+                    "label": "Alice",
+                    "created_at_ms": created_at_ms,
+                    "replaces_ids": [str(node.id) for node in existing],
+                },
+            ),
+            replace_existing=True,
+        )
+
+        with scoped_namespace(engine, namespace):
+            active = engine.read.get_nodes(
+                where={"artifact_kind": "derived_knowledge", "label": "Alice"}
+            )
+
+        assert result.artifact_id == "alice-v1"
+        assert result.created_at_ms == 111
+        assert result.replaced_ids == ()
+        assert result.wrote_new_artifact is False
+        assert [node.id for node in active] == ["alice-v1"]
     finally:
         shutil.rmtree(test_db_dir, ignore_errors=True)
 
