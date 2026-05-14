@@ -11,6 +11,10 @@ if TYPE_CHECKING:
     from .engine import GraphKnowledgeEngine
 
 
+class DurableQueueUnavailableError(RuntimeError):
+    """Raised when an app-critical durable queue capability is not available."""
+
+
 @dataclass(frozen=True, slots=True)
 class JobQueueItem:
     job_id: str
@@ -30,6 +34,26 @@ class JobQueueSubsystem:
 
     def __init__(self, engine: "GraphKnowledgeEngine") -> None:
         self.engine = engine
+
+    def require_available(self, *, enqueue: bool = False, claim: bool = False) -> None:
+        required: list[str] = []
+        if enqueue:
+            required.append("enqueue_index_job")
+        if claim:
+            required.append("claim_index_jobs")
+        if not required:
+            raise ValueError("require_available() needs at least one capability check")
+
+        missing = [
+            name
+            for name in required
+            if getattr(self.engine.meta_sqlite, name, None) is None
+        ]
+        if missing:
+            raise DurableQueueUnavailableError(
+                "Durable queue support is required but unavailable: "
+                + ", ".join(sorted(missing))
+            )
 
     def enqueue(
         self,
