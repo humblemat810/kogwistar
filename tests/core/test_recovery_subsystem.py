@@ -404,3 +404,51 @@ def test_recovery_startup_repairs_missing_service_health_projection_but_inspect_
         workspace_id="demo",
         namespace="ws:demo:ops",
     ) is not None
+
+
+def test_recovery_startup_surfaces_service_health_metadata_read_failures(tmp_path, monkeypatch):
+    engine = _engine(tmp_path)
+    engine.service_health.declare_service(
+        service_id="svc.demo",
+        service_kind="maintenance_daemon",
+        owner_app="demo-app",
+        deterministic=False,
+        llm_assisted=True,
+        workspace_id="demo",
+        namespace="ws:demo:ops",
+    )
+    engine.service_health.start_instance(
+        service_id="svc.demo",
+        workspace_id="demo",
+        namespace="ws:demo:ops",
+        instance_id="inst-1",
+    )
+    engine.meta_sqlite.clear_named_projection(
+        "service_health",
+        "demo|ws:demo:ops|svc.demo",
+    )
+
+    monkeypatch.setattr(
+        engine.service_health,
+        "list_services",
+        lambda **kwargs: (_ for _ in ()).throw(RuntimeError("metadata read exploded")),
+    )
+
+    recovered = engine.recovery.recover_startup(
+        workspace_id="demo",
+        namespaces=["ws:demo:ops"],
+    )
+
+    service_health_actions = [
+        action
+        for action in recovered.actions
+        if action.surface == "service_health"
+    ]
+    assert service_health_actions
+    assert service_health_actions[0].details["service_id"] == "svc.demo"
+    assert service_health_actions[0].details["status"] is None
+    assert any(
+        finding.surface == "service_health"
+        and finding.message == "service health metadata read failed after repair"
+        for finding in recovered.findings
+    )

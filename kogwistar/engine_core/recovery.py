@@ -184,7 +184,7 @@ class RecoverySubsystem:
     ) -> RecoveryReport:
         policy = resume_policy or ResumePolicy()
         normalized = self._dedupe_namespaces(namespaces)
-        service_health_repairs = self._repair_service_health(
+        service_health_repairs, service_health_findings = self._repair_service_health(
             workspace_id=workspace_id,
             namespaces=normalized,
         )
@@ -199,7 +199,7 @@ class RecoverySubsystem:
             repaired_service_health=service_health_repairs,
         )
         actions = list(report.actions)
-        findings = list(report.findings)
+        findings = list(report.findings) + list(service_health_findings)
         resume_actions, resume_findings = self._maybe_resume(report.checkpoints, policy)
         actions.extend(resume_actions)
         findings.extend(resume_findings)
@@ -411,9 +411,12 @@ class RecoverySubsystem:
                 run_history_map.setdefault(state.run_id, state)
         run_history = tuple(run_history_map.values())
         dead_letters = tuple(self._dead_letters(queues, lane_rows, run_history))
+        service_health_states, service_health_findings = self._service_health(
+            workspace_id=workspace_id
+        )
         daemon_health = tuple(
             self._daemon_health(app_surfaces or [])
-            + self._service_health(workspace_id=workspace_id)
+            + list(service_health_states)
         )
         findings = tuple(
             self._findings(
@@ -425,7 +428,7 @@ class RecoverySubsystem:
                 app_surfaces=tuple(app_surfaces or ()),
             )
         )
-        findings = tuple(list(findings) + checkpoint_findings)
+        findings = tuple(list(findings) + checkpoint_findings + list(service_health_findings))
         actions = tuple(list(self._repair_actions(repaired_lane_projections)) + list(repaired_service_health))
         return RecoveryReport(
             workspace_id=str(workspace_id),
@@ -656,14 +659,34 @@ class RecoverySubsystem:
                 )
         return findings
 
-    def _service_health(self, *, workspace_id: str) -> list[DaemonHealthState]:
+    def _service_health(
+        self,
+        *,
+        workspace_id: str,
+    ) -> tuple[tuple[DaemonHealthState, ...], tuple[RecoveryFinding, ...]]:
         registry = getattr(self.engine, "service_health", None)
         list_services = getattr(registry, "list_services", None)
         if not callable(list_services):
-            return []
+            return (), ()
         out: list[DaemonHealthState] = []
+        findings: list[RecoveryFinding] = []
         now_ms = int(time.time() * 1000)
-        for payload in list_services(workspace_id=workspace_id, limit=10_000):
+        try:
+            payloads = list_services(workspace_id=workspace_id, limit=10_000)
+        except Exception as exc:
+            findings.append(
+                RecoveryFinding(
+                    severity="error",
+                    surface="service_health",
+                    message="service health inspection failed",
+                    details={
+                        "workspace_id": workspace_id,
+                        "error": f"{type(exc).__name__}: {exc}",
+                    },
+                )
+            )
+            return (), tuple(findings)
+        for payload in payloads:
             last_seen = self._optional_int(payload.get("last_seen_ms"))
             ttl = int(payload.get("heartbeat_ttl_ms", 60_000) or 60_000)
             observed = str(payload.get("status") or "unknown")
@@ -679,7 +702,7 @@ class RecoverySubsystem:
                     details=dict(payload),
                 )
             )
-        return out
+        return tuple(out), tuple(findings)
 
     def _daemon_health(
         self, app_surfaces: list[RecoverySurface | OutputReconciliationState]
@@ -732,16 +755,17 @@ class RecoverySubsystem:
         *,
         workspace_id: str,
         namespaces: tuple[str, ...],
-    ) -> tuple[RecoveryAction, ...]:
+    ) -> tuple[tuple[RecoveryAction, ...], tuple[RecoveryFinding, ...]]:
         registry = getattr(self.engine, "service_health", None)
         repair = getattr(registry, "repair_projection", None)
         if not callable(repair):
-            return ()
+            return (), ()
         repaired: list[RecoveryAction] = []
+        findings: list[RecoveryFinding] = []
         result = repair(workspace_id=workspace_id)
         repaired_ids = tuple(getattr(result, "repaired_service_ids", ()) or ())
         if not repaired_ids and int(getattr(result, "repaired_count", 0) or 0) <= 0:
-            return ()
+            return (), ()
         services_by_id: dict[str, dict[str, Any]] = {}
         list_services = getattr(registry, "list_services", None)
         if callable(list_services):
@@ -749,8 +773,19 @@ class RecoverySubsystem:
                 for payload in list_services(workspace_id=workspace_id, limit=10_000):
                     if isinstance(payload, dict) and str(payload.get("service_id") or ""):
                         services_by_id[str(payload["service_id"])] = dict(payload)
-            except Exception:
+            except Exception as exc:
                 services_by_id = {}
+                findings.append(
+                    RecoveryFinding(
+                        severity="error",
+                        surface="service_health",
+                        message="service health metadata read failed after repair",
+                        details={
+                            "workspace_id": workspace_id,
+                            "error": f"{type(exc).__name__}: {exc}",
+                        },
+                    )
+                )
         for service_id in repaired_ids:
             payload = services_by_id.get(str(service_id))
             repaired.append(
@@ -769,7 +804,7 @@ class RecoverySubsystem:
                     },
                 )
             )
-        return tuple(repaired)
+        return tuple(repaired), tuple(findings)
 
     @staticmethod
     def _dedupe_namespaces(namespaces: list[str]) -> tuple[str, ...]:
