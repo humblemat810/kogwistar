@@ -99,6 +99,24 @@ Service-health repair works by rebuilding durable latest-state rows from sparse 
 
 Neither path turns projections into primary truth. The repair logic exists precisely because projections are allowed to be disposable.
 
+Heartbeat updates may refresh the latest-state projection while the system is
+running, but repair reconstructs `last_seen_ms` only from persisted lifecycle
+facts. That means repaired freshness is intentionally coarse.
+
+If the original latest-state row is lost, exact heartbeat freshness cannot be
+reconstructed unless those heartbeat observations were themselves persisted as
+authoritative truth.
+
+Operators should read repaired service state this way:
+
+- repaired `status` is the last durable status view
+- repaired `last_seen_ms` is the best available persisted observation time
+- a repaired healthy status with an old `last_seen_ms` means freshness is
+  uncertain or stale, not that the service is freshly healthy right now
+- an immediate post-repair stale classification can be valid visibility output,
+  not proof that fresh heartbeats were absent after the last persisted
+  lifecycle fact
+
 ## Lease Redelivery
 
 Recovery is not exactly-once processing.

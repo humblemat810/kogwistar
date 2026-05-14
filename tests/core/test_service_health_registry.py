@@ -224,7 +224,7 @@ def test_service_health_repair_rebuilds_missing_projection_from_sparse_truth(tmp
         workspace_id="demo",
         namespace="ws:demo:ops",
         instance_id="inst-1",
-        started_at_ms=123,
+        started_at_ms=35,
     )
     engine.service_health.heartbeat(
         service_id="svc.demo",
@@ -253,3 +253,96 @@ def test_service_health_repair_rebuilds_missing_projection_from_sparse_truth(tmp
     assert repaired is not None
     assert repaired["status"] == "degraded"
     assert repaired["last_error"] == "boom"
+    assert int(repaired["last_seen_ms"]) >= 123
+
+
+def test_service_health_repair_uses_latest_persisted_lifecycle_timestamp(tmp_path, monkeypatch):
+    engine = _engine(tmp_path)
+    timeline = iter([10, 20, 30, 40, 50, 60, 70])
+    monkeypatch.setattr(
+        "kogwistar.engine_core.service_health._now_ms",
+        lambda: next(timeline),
+    )
+
+    engine.service_health.declare_service(
+        service_id="svc.demo",
+        service_kind="maintenance_daemon",
+        owner_app="demo-app",
+        deterministic=False,
+        llm_assisted=True,
+        workspace_id="demo",
+        namespace="ws:demo:ops",
+    )
+    engine.service_health.start_instance(
+        service_id="svc.demo",
+        workspace_id="demo",
+        namespace="ws:demo:ops",
+        instance_id="inst-1",
+        started_at_ms=35,
+    )
+    engine.service_health.heartbeat(
+        service_id="svc.demo",
+        workspace_id="demo",
+        namespace="ws:demo:ops",
+        instance_id="inst-1",
+        status="degraded",
+        last_error="boom",
+    )
+    engine.meta_sqlite.clear_named_projection(
+        SERVICE_HEALTH_PROJECTION_NAMESPACE,
+        "demo|ws:demo:ops|svc.demo",
+    )
+
+    repaired = engine.service_health.repair_projection(
+        workspace_id="demo",
+        namespace="ws:demo:ops",
+    )
+    payload = engine.service_health.get_service(
+        "svc.demo",
+        workspace_id="demo",
+        namespace="ws:demo:ops",
+    )
+
+    assert repaired.repaired_count == 1
+    assert payload is not None
+    assert payload["status"] == "degraded"
+    assert payload["last_error"] == "boom"
+    assert payload["started_at_ms"] == 35
+    assert payload["last_seen_ms"] == 70
+
+
+def test_service_health_repair_keeps_last_seen_ms_monotonic_across_replayed_events(tmp_path):
+    engine = _engine(tmp_path)
+    engine.service_health.declare_service(
+        service_id="svc.demo",
+        service_kind="maintenance_daemon",
+        owner_app="demo-app",
+        deterministic=False,
+        llm_assisted=True,
+        workspace_id="demo",
+        namespace="ws:demo:ops",
+    )
+
+    payload: dict[str, object] = {}
+    engine.service_health._apply_event_payload(
+        payload,
+        event_type="service.instance_started",
+        payload={"instance_id": "inst-1", "started_at_ms": 500, "status": "starting"},
+        event_ts_ms=300,
+    )
+    engine.service_health._apply_event_payload(
+        payload,
+        event_type="service.degraded",
+        payload={"instance_id": "inst-1", "status": "degraded"},
+        event_ts_ms=200,
+    )
+    engine.service_health._apply_event_payload(
+        payload,
+        event_type="service.error_changed",
+        payload={"instance_id": "inst-1", "last_error": "boom"},
+        event_ts_ms=150,
+    )
+
+    assert payload["status"] == "degraded"
+    assert payload["last_error"] == "boom"
+    assert payload["last_seen_ms"] == 500

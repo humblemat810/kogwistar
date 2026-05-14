@@ -371,8 +371,14 @@ class ServiceHealthRegistry:
             if service_id is not None and event_service_id != str(service_id):
                 continue
             event_type = str(node.metadata.get("service_event_type") or "")
+            event_ts_ms = _optional_int(node.metadata.get("ts_ms"))
             service_payload = rebuilt.setdefault(event_service_id, {})
-            self._apply_event_payload(service_payload, event_type=event_type, payload=payload)
+            self._apply_event_payload(
+                service_payload,
+                event_type=event_type,
+                payload=payload,
+                event_ts_ms=event_ts_ms,
+            )
         for repaired_service_id, payload in rebuilt.items():
             event_workspace = self._coalesce_scope(workspace_id, payload.get("workspace_id"))
             event_namespace = self._coalesce_scope(namespace, payload.get("namespace"))
@@ -623,6 +629,7 @@ class ServiceHealthRegistry:
         *,
         event_type: str,
         payload: dict[str, Any],
+        event_ts_ms: int | None,
     ) -> None:
         if event_type in {"service.registered", "service.config_changed"}:
             definition = payload.get("definition")
@@ -640,26 +647,44 @@ class ServiceHealthRegistry:
             service_payload["instance_id"] = payload.get("instance_id")
             service_payload["started_at_ms"] = payload.get("started_at_ms")
             service_payload["status"] = payload.get("status") or "starting"
-            service_payload["last_seen_ms"] = payload.get("started_at_ms")
+            ServiceHealthRegistry._advance_last_seen_ms(
+                service_payload,
+                _max_optional_int(
+                    payload.get("started_at_ms"),
+                    event_ts_ms,
+                ),
+            )
             return
         if event_type == "service.error_changed":
             service_payload["instance_id"] = payload.get("instance_id", service_payload.get("instance_id"))
             service_payload["last_error"] = payload.get("last_error")
+            ServiceHealthRegistry._advance_last_seen_ms(service_payload, event_ts_ms)
             return
         if event_type == "service.recovered":
             service_payload["instance_id"] = payload.get("instance_id", service_payload.get("instance_id"))
             service_payload["status"] = payload.get("status") or "healthy"
             service_payload["last_error"] = None
+            ServiceHealthRegistry._advance_last_seen_ms(service_payload, event_ts_ms)
             return
         if event_type == "service.stopped":
             service_payload["instance_id"] = payload.get("instance_id", service_payload.get("instance_id"))
             service_payload["status"] = payload.get("status") or "stopped"
             service_payload["last_error"] = payload.get("last_error")
+            ServiceHealthRegistry._advance_last_seen_ms(service_payload, event_ts_ms)
             return
         if event_type in {"service.stale", "service.failed", "service.degraded"}:
             service_payload["instance_id"] = payload.get("instance_id", service_payload.get("instance_id"))
             service_payload["status"] = payload.get("status") or event_type.removeprefix("service.")
+            ServiceHealthRegistry._advance_last_seen_ms(service_payload, event_ts_ms)
             return
+
+    @staticmethod
+    def _advance_last_seen_ms(service_payload: dict[str, Any], observed_at_ms: Any) -> None:
+        observed = _optional_int(observed_at_ms)
+        if observed is None:
+            return
+        current = _optional_int(service_payload.get("last_seen_ms"))
+        service_payload["last_seen_ms"] = observed if current is None else max(current, observed)
 
     @staticmethod
     def _coalesce_scope(primary: Any, fallback: Any) -> str | None:
@@ -677,6 +702,12 @@ def _optional_int(value: Any) -> int | None:
         return int(value)
     except Exception:
         return None
+
+
+def _max_optional_int(*values: Any) -> int | None:
+    nums = [_optional_int(value) for value in values]
+    valid = [value for value in nums if value is not None]
+    return max(valid) if valid else None
 
 
 def _host_name() -> str | None:
