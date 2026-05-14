@@ -3064,6 +3064,7 @@ class WorkflowRuntime(BaseRuntime):
         # from kogwistar.models import WorkflowStepExecNode, Grounding, Span  # adjust import path
 
         result_json = try_serialize_with_ref(result)
+        workspace_id = str(state.get("workspace_id") or "").strip()
 
         excerpt = (
             f"{dict(step=step_seq, op=op, status=status, duration_ms=duration_ms)}"
@@ -3107,6 +3108,8 @@ class WorkflowRuntime(BaseRuntime):
                 # "tail_turn_index": state["prev_turn_meta_summary"]["tail_turn_index"]
             },
         )
+        if workspace_id:
+            n.metadata["workspace_id"] = workspace_id
         with self._trace_write_mode():
             self.conversation_engine.write.add_node(n)
             if result.conversation_node_id:
