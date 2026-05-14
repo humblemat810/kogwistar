@@ -14,12 +14,15 @@ Truth split:
 - graph/entity event = authoritative message truth
 - metastore projection = serving state
 - concrete store = storage primitive only
+- sender and recipient anchors are lane-local `lane_anchor` nodes in graph truth
+- those anchors are routing/provenance helpers, not a universal actor or participant registry
 
 Hard concepts:
 
 - `prev / next / tail` are cache-like pointers, not truth
 - if pointer rows vanish or drift, rebuild from graph truth
 - worker reads projection, not raw graph, for hot path
+- lane sender/recipient anchors stay durable and lane-local even when projections are repaired
 
 ```mermaid
 flowchart TB

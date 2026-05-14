@@ -275,7 +275,7 @@ class LaneMessagingService:
         )
         uow_context = unit_of_work() if callable(unit_of_work) else nullcontext()
         with uow_context, scoped_namespace(self.engine, namespace):
-            anchors = self._ensure_anchor_nodes(
+            anchor_nodes = self._ensure_anchor_nodes(
                 conversation_id=conversation_id,
                 inbox_id=inbox_id,
                 sender_id=sender_id,
@@ -343,30 +343,30 @@ class LaneMessagingService:
                 )
 
             self._add_semantic_edge(
-                edge_id=str(stable_id("lane_message_edge", message_id, "in_conversation", anchors["conversation"].id)),
+                edge_id=str(stable_id("lane_message_edge", message_id, "in_conversation", anchor_nodes["conversation"].id)),
                 source_id=message_id,
-                target_id=str(anchors["conversation"].id),
+                target_id=str(anchor_nodes["conversation"].id),
                 relation="in_conversation",
                 conversation_id=conversation_id,
             )
             self._add_semantic_edge(
-                edge_id=str(stable_id("lane_message_edge", message_id, "in_inbox", anchors["inbox"].id)),
+                edge_id=str(stable_id("lane_message_edge", message_id, "in_inbox", anchor_nodes["inbox"].id)),
                 source_id=message_id,
-                target_id=str(anchors["inbox"].id),
+                target_id=str(anchor_nodes["inbox"].id),
                 relation="in_inbox",
                 conversation_id=conversation_id,
             )
             self._add_semantic_edge(
-                edge_id=str(stable_id("lane_message_edge", message_id, "sent_by", anchors["sender"].id)),
+                edge_id=str(stable_id("lane_message_edge", message_id, "sent_by", anchor_nodes["sender"].id)),
                 source_id=message_id,
-                target_id=str(anchors["sender"].id),
+                target_id=str(anchor_nodes["sender"].id),
                 relation="sent_by",
                 conversation_id=conversation_id,
             )
             self._add_semantic_edge(
-                edge_id=str(stable_id("lane_message_edge", message_id, "sent_to", anchors["recipient"].id)),
+                edge_id=str(stable_id("lane_message_edge", message_id, "sent_to", anchor_nodes["recipient"].id)),
                 source_id=message_id,
-                target_id=str(anchors["recipient"].id),
+                target_id=str(anchor_nodes["recipient"].id),
                 relation="sent_to",
                 conversation_id=conversation_id,
             )
@@ -427,10 +427,10 @@ class LaneMessagingService:
 
         return LaneMessageSendResult(
             message_id=message_id,
-            conversation_anchor_id=str(anchors["conversation"].id),
-            inbox_anchor_id=str(anchors["inbox"].id),
-            sender_anchor_id=str(anchors["sender"].id),
-            recipient_anchor_id=str(anchors["recipient"].id),
+            conversation_anchor_id=str(anchor_nodes["conversation"].id),
+            inbox_anchor_id=str(anchor_nodes["inbox"].id),
+            sender_anchor_id=str(anchor_nodes["sender"].id),
+            recipient_anchor_id=str(anchor_nodes["recipient"].id),
         )
 
     def update_message_status(
@@ -1001,8 +1001,8 @@ class LaneMessagingService:
             message_id=str(message_id),
             conversation_anchor_id=str(stable_id("lane_message_conversation", conversation_id)),
             inbox_anchor_id=str(stable_id("lane_message_inbox", inbox_id)),
-            sender_anchor_id=str(stable_id("lane_message_actor", sender_id)),
-            recipient_anchor_id=str(stable_id("lane_message_actor", recipient_id)),
+            sender_anchor_id=self._anchor_node_id(sender_id),
+            recipient_anchor_id=self._anchor_node_id(recipient_id),
         )
 
     def _row_visible(self, row: ProjectedLaneMessageRow) -> bool:
@@ -1023,7 +1023,7 @@ class LaneMessagingService:
         sender_id: str,
         recipient_id: str,
     ) -> dict[str, Node]:
-        anchors = {
+        anchor_nodes = {
             "conversation": Node(
                 id=str(stable_id("lane_message_conversation", conversation_id)),
                 label=f"lane_conversation:{conversation_id}",
@@ -1051,38 +1051,38 @@ class LaneMessagingService:
                 },
             ),
             "sender": Node(
-                id=str(stable_id("lane_message_actor", sender_id)),
-                label=f"lane_actor:{sender_id}",
+                id=self._anchor_node_id(sender_id),
+                label=f"lane_anchor:{sender_id}",
                 type="entity",
-                summary=f"Lane actor anchor for {sender_id}",
+                summary=f"Lane sender anchor for {sender_id}",
                 mentions=[_message_span(conversation_id, insertion_method="lane_anchor", excerpt=sender_id)],
                 metadata={
-                    "artifact_kind": "lane_actor",
-                    "actor_id": sender_id,
-                    "kind": "lane_actor",
+                    "artifact_kind": "lane_anchor",
+                    "anchor_id": sender_id,
+                    "kind": "lane_anchor",
                     "in_conversation_chain": False,
                 },
             ),
             "recipient": Node(
-                id=str(stable_id("lane_message_actor", recipient_id)),
-                label=f"lane_actor:{recipient_id}",
+                id=self._anchor_node_id(recipient_id),
+                label=f"lane_anchor:{recipient_id}",
                 type="entity",
-                summary=f"Lane actor anchor for {recipient_id}",
+                summary=f"Lane recipient anchor for {recipient_id}",
                 mentions=[_message_span(conversation_id, insertion_method="lane_anchor", excerpt=recipient_id)],
                 metadata={
-                    "artifact_kind": "lane_actor",
-                    "actor_id": recipient_id,
-                    "kind": "lane_actor",
+                    "artifact_kind": "lane_anchor",
+                    "anchor_id": recipient_id,
+                    "kind": "lane_anchor",
                     "in_conversation_chain": False,
                 },
             ),
         }
-        for node in anchors.values():
+        for node in anchor_nodes.values():
             existing = self.engine.read.get_nodes(ids=[str(node.id)])
             if existing:
                 continue
             self.engine.write.add_node(node)
-        return anchors
+        return anchor_nodes
 
     def _add_semantic_edge(
         self,
@@ -1123,6 +1123,12 @@ class LaneMessagingService:
             if nodes:
                 return str(candidate_id)
         return None
+
+    def _anchor_node_id(self, entity_id: str) -> str:
+        # Prefer the new anchor prefix, but reuse legacy ids if older graphs already have them.
+        new_id = str(stable_id("lane_message_anchor", entity_id))
+        legacy_id = str(stable_id("lane_message_actor", entity_id))
+        return self._first_existing_node_id([new_id, legacy_id]) or new_id
 
 
 __all__ = ["LaneMessagingService"]

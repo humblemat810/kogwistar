@@ -20,6 +20,8 @@ It focuses on the core substrate only and avoids app-specific details.
 - `meta_sqlite` is the abstraction slot name, not the semantic owner.
 - Idempotent reuse checks graph truth first and repairs the projected serving row
   only when the graph node already exists but the serving row is missing.
+- Sender and recipient ids are represented as lane sender/recipient anchors in
+  graph truth, stored as `lane_anchor` nodes.
 
 ## Transaction And Crash Semantics
 
@@ -136,6 +138,7 @@ The contract is exposed through query surfaces such as:
 - Do not rely on raw graph scans for inbox consumption.
 - Do not treat linked lists as the only source of truth.
 - Do not wrap the same contract in multiple semantic layers.
+- Do not confuse lane sender/recipient anchors with a general actor registry.
 
 ```mermaid
 sequenceDiagram

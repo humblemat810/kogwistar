@@ -167,7 +167,11 @@ class LaneMessageMetaStoreMixin:
 
     def ack_projected_lane_message(self, *, message_id: str, claimed_by: str) -> None:
         row = self._lane_message_get_row(message_id=str(message_id))
-        if row is None or (row.claimed_by is not None and row.claimed_by != str(claimed_by)):
+        if row is None:
+            return
+        if row.status in {"completed", "failed", "cancelled", "dead-letter"}:
+            return
+        if row.claimed_by is not None and row.claimed_by != str(claimed_by):
             return
         self._lane_message_update_row(
             row=replace(
@@ -187,7 +191,11 @@ class LaneMessageMetaStoreMixin:
         delay_seconds: int = 0,
     ) -> None:
         row = self._lane_message_get_row(message_id=str(message_id))
-        if row is None or (row.claimed_by is not None and row.claimed_by != str(claimed_by)):
+        if row is None:
+            return
+        if row.status in {"completed", "failed", "cancelled", "dead-letter"}:
+            return
+        if row.claimed_by is not None and row.claimed_by != str(claimed_by):
             return
         self._lane_message_update_row(
             row=replace(
