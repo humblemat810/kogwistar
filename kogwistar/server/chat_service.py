@@ -1418,8 +1418,8 @@ class ChatRunService:
                     if str(getattr(row, "conversation_id", "") or "") == str(conversation_id)
                 ]
             for row in projected_rows[: int(limit)]:
-                nodes = engine.read.get_nodes(ids=[row.message_id], limit=1)
-                md = dict(getattr(nodes[0], "metadata", {}) or {}) if nodes else {}
+                metadatas = engine.read.get_node_metadatas(ids=[row.message_id], limit=1)
+                md = dict(metadatas[0] or {}) if metadatas else {}
                 if not can_access_security_scope(
                     str(md.get("security_scope") or ""),
                     shared=bool(md.get("shared_scope") or md.get("shared_inbox")),

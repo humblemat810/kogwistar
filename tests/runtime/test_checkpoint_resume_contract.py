@@ -18,6 +18,9 @@ class _DummyRead:
     def __init__(self, nodes):
         self._nodes = nodes
 
+    def get_node_metadatas(self, *args, **kwargs):
+        return [dict(getattr(node, "metadata", {}) or {}) for node in self.get_nodes(*args, **kwargs)]
+
     def get_nodes(self, *args, **kwargs):
         nodes = list(self._nodes)
         ids = kwargs.get("ids")

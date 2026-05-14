@@ -7,6 +7,7 @@ from typing import (
     List,
     Optional,
     Protocol,
+    Sequence,
     Union,
     runtime_checkable,
     TYPE_CHECKING,
@@ -158,6 +159,32 @@ class EmbeddingFunctionLike(Protocol):
 
 class ReadLike(Protocol):
     def get_document(self, doc_id: str) -> EngineDoc: ...
+
+    def node_exists(
+        self,
+        ids: Sequence[str] | None = None,
+        where: Dict[str, Any] | None = None,
+    ) -> bool: ...
+
+    def edge_exists(
+        self,
+        ids: Sequence[str] | None = None,
+        where: Dict[str, Any] | None = None,
+    ) -> bool: ...
+
+    def get_node_metadatas(
+        self,
+        ids: Sequence[str] | None = None,
+        where: Dict[str, Any] | None = None,
+        limit: int | None = 200,
+    ) -> list[dict[str, Any]]: ...
+
+    def get_edge_metadatas(
+        self,
+        ids: Sequence[str] | None = None,
+        where: Dict[str, Any] | None = None,
+        limit: int | None = 400,
+    ) -> list[dict[str, Any]]: ...
 
     def node_ids_by_doc(
         self,

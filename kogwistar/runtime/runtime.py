@@ -2669,14 +2669,12 @@ class WorkflowRuntime(BaseRuntime):
             return bool(existing.get("ids"))
 
         try:
-            nodes = self.conversation_engine.read.get_nodes()
-        except TypeError:
-            nodes = self.conversation_engine.read.get_nodes(where=None, limit=10_000)
+            return bool(self.conversation_engine.read.node_exists(ids=[node_id]))
         except Exception:
             nodes = getattr(self.conversation_engine, "nodes", [])
-        return any(
-            str(getattr(node, "id", "") or "") == node_id for node in (nodes or [])
-        )
+            return any(
+                str(getattr(node, "id", "") or "") == node_id for node in (nodes or [])
+            )
 
     def _conversation_edge_exists(self, edge_id: str) -> bool:
         backend = self._conversation_backend()
@@ -2685,14 +2683,12 @@ class WorkflowRuntime(BaseRuntime):
             return bool(existing.get("ids"))
 
         try:
-            edges = self.conversation_engine.read.get_edges()
-        except TypeError:
-            edges = self.conversation_engine.read.get_edges(where=None, limit=10_000)
+            return bool(self.conversation_engine.read.edge_exists(ids=[edge_id]))
         except Exception:
             edges = getattr(self.conversation_engine, "edges", [])
-        return any(
-            str(getattr(edge, "id", "") or "") == edge_id for edge in (edges or [])
-        )
+            return any(
+                str(getattr(edge, "id", "") or "") == edge_id for edge in (edges or [])
+            )
 
     def _persist_cancelled_terminal(
         self,

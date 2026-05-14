@@ -40,6 +40,96 @@ class ReadSubsystem(NamespaceProxy, ReadLike):
     def __init__(self, engine) -> None:
         super().__init__(engine)
 
+    def _node_get_raw(
+        self,
+        *,
+        ids: Sequence[str] | None = None,
+        where=None,
+        limit: int | None = 200,
+        include: list[str] | None = None,
+    ) -> dict[str, Any]:
+        if include is None:
+            include = ["documents", "embeddings", "metadatas"]
+        return run_awaitable_blocking(self._e.backend.node_get(
+            ids=ids,
+            include=include,
+            where=where,
+            limit=limit,
+        ))
+
+    def _edge_get_raw(
+        self,
+        *,
+        ids: Sequence[str] | None = None,
+        where=None,
+        limit: int | None = 400,
+        include: list[str] | None = None,
+    ) -> dict[str, Any]:
+        if include is None:
+            include = ["documents", "embeddings", "metadatas"]
+        return run_awaitable_blocking(self._e.backend.edge_get(
+            ids=ids,
+            include=include,
+            where=where,
+            limit=limit,
+        ))
+
+    def node_exists(
+        self,
+        ids: Sequence[str] | None = None,
+        where=None,
+    ) -> bool:
+        got = self._node_get_raw(
+            ids=ids,
+            where=where,
+            limit=1 if ids is None else None,
+            include=["metadatas"],
+        )
+        return bool(got.get("ids"))
+
+    def edge_exists(
+        self,
+        ids: Sequence[str] | None = None,
+        where=None,
+    ) -> bool:
+        got = self._edge_get_raw(
+            ids=ids,
+            where=where,
+            limit=1 if ids is None else None,
+            include=["metadatas"],
+        )
+        return bool(got.get("ids"))
+
+    def get_node_metadatas(
+        self,
+        ids: Sequence[str] | None = None,
+        where=None,
+        limit: int | None = 200,
+    ) -> list[dict[str, Any]]:
+        got = self._node_get_raw(
+            ids=ids,
+            where=where,
+            limit=limit,
+            include=["metadatas"],
+        )
+        metadatas = got.get("metadatas") or []
+        return [dict(meta) for meta in metadatas if isinstance(meta, dict)]
+
+    def get_edge_metadatas(
+        self,
+        ids: Sequence[str] | None = None,
+        where=None,
+        limit: int | None = 400,
+    ) -> list[dict[str, Any]]:
+        got = self._edge_get_raw(
+            ids=ids,
+            where=where,
+            limit=limit,
+            include=["metadatas"],
+        )
+        metadatas = got.get("metadatas") or []
+        return [dict(meta) for meta in metadatas if isinstance(meta, dict)]
+
     # Canonical read API
     def get_nodes(
         self,
@@ -58,22 +148,22 @@ class ReadSubsystem(NamespaceProxy, ReadLike):
             node_type = default_node_type_for_graph_kind(self._e.kg_graph_type)
 
         try:
-            got = run_awaitable_blocking(self._e.backend.node_get(
+            got = self._node_get_raw(
                 ids=ids,
                 include=include,
                 where=where,
                 limit=limit,
-            ))
+            )
         except Exception:
             if "embeddings" not in include:
                 raise
             fallback_include = [item for item in include if item != "embeddings"]
-            got = run_awaitable_blocking(self._e.backend.node_get(
+            got = self._node_get_raw(
                 ids=ids,
                 include=fallback_include,
                 where=where,
                 limit=limit,
-            ))
+            )
         nodes = self.nodes_from_single_or_id_query_result(got, node_type=node_type)
         nodes = self._e._resolve_redirect_chain(
             initial_items=nodes,
@@ -103,22 +193,22 @@ class ReadSubsystem(NamespaceProxy, ReadLike):
             edge_type = default_edge_type_for_graph_kind(self._e.kg_graph_type)
 
         try:
-            got = run_awaitable_blocking(self._e.backend.edge_get(
+            got = self._edge_get_raw(
                 ids=ids,
                 include=include,
                 where=where,
                 limit=limit,
-            ))
+            )
         except Exception:
             if "embeddings" not in include:
                 raise
             fallback_include = [item for item in include if item != "embeddings"]
-            got = run_awaitable_blocking(self._e.backend.edge_get(
+            got = self._edge_get_raw(
                 ids=ids,
                 include=fallback_include,
                 where=where,
                 limit=limit,
-            ))
+            )
         edges = self.edges_from_single_or_id_query_result(
             got, edge_type=edge_type, include=include
         )
