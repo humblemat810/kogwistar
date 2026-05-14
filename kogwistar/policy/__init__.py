@@ -15,6 +15,7 @@ class PromotionContext:
     auto_accept_threshold: float
     default_accept_threshold: float = 0.95
     metadata: Mapping[str, Any] = field(default_factory=dict)
+    promotion_approved: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,16 +90,15 @@ class KnowledgeLifecyclePolicy(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class DefaultPromotionPolicy:
-    """Conservative promotion default: only auto-promote explicit sync requests."""
+    """Conservative promotion default: only auto-promote explicit approvals."""
 
     default_accept_threshold: float = 0.95
 
     def decide(self, context: PromotionContext) -> PromotionDecision:
-        mode = str(context.promotion_mode or "").strip().lower()
-        if mode != "sync":
+        if not bool(context.promotion_approved):
             return PromotionDecision(
                 should_promote=False,
-                reason="promotion_mode is not sync",
+                reason="promotion was not explicitly approved",
             )
         if float(context.auto_accept_threshold) > float(self.default_accept_threshold):
             return PromotionDecision(
@@ -107,9 +107,9 @@ class DefaultPromotionPolicy:
             )
         return PromotionDecision(
             should_promote=True,
-            reason="sync promotion accepted by default policy",
+            reason="explicit promotion approval accepted by default policy",
             metadata={
-                "promotion_mode": mode,
+                "promotion_approved": bool(context.promotion_approved),
                 "auto_accept_threshold": float(context.auto_accept_threshold),
                 "default_accept_threshold": float(self.default_accept_threshold),
             },

@@ -14,32 +14,38 @@ from kogwistar.policy import (
 )
 
 
-def test_default_promotion_policy_requires_sync_and_threshold():
+def test_default_promotion_policy_requires_explicit_approval_and_threshold():
     policy = DefaultPromotionPolicy()
 
     pending = policy.decide(
         PromotionContext(
             promotion_mode="pending",
             auto_accept_threshold=0.2,
+            promotion_approved=False,
         )
     )
     assert not pending.should_promote
+    assert pending.reason == "promotion was not explicitly approved"
 
     promoted = policy.decide(
         PromotionContext(
-            promotion_mode="sync",
+            promotion_mode="pending",
             auto_accept_threshold=0.9,
+            promotion_approved=True,
         )
     )
     assert promoted.should_promote
+    assert promoted.reason == "explicit promotion approval accepted by default policy"
 
     blocked = policy.decide(
         PromotionContext(
-            promotion_mode="sync",
+            promotion_mode="pending",
             auto_accept_threshold=0.99,
+            promotion_approved=True,
         )
     )
     assert not blocked.should_promote
+    assert blocked.reason == "auto_accept_threshold is above the default accept threshold"
 
 
 def test_default_visibility_and_projection_policy_are_conservative():
