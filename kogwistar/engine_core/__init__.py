@@ -22,7 +22,7 @@ from kogwistar.engine_core.recovery import (
 )
 from kogwistar.engine_core.service_health import (
     SERVICE_HEALTH_PROJECTION_NAMESPACE,
-    ServiceDefinition,
+    ServiceHealthDefinition,
     ServiceHealthRepairResult,
     ServiceHealthRegistry,
     ServiceInstanceHealth,
@@ -76,7 +76,7 @@ __all__ = [
     "ResumePolicy",
     "RunRecoveryState",
     "SERVICE_HEALTH_PROJECTION_NAMESPACE",
-    "ServiceDefinition",
+    "ServiceHealthDefinition",
     "ServiceHealthRepairResult",
     "ServiceHealthRegistry",
     "ServiceInstanceHealth",

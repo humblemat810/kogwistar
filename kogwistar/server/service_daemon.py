@@ -44,7 +44,7 @@ class ServiceTriggerSpec(BaseModel):
     cooldown_ms: int = 0
 
 
-class ServiceDefinition(BaseModel):
+class WorkflowServiceDefinition(BaseModel):
     service_id: str = Field(min_length=1)
     service_kind: str = "service"
     target_kind: str = "workflow"
@@ -151,7 +151,7 @@ class ServiceSupervisor:
     ) -> dict[str, Any]:
         now = _now_ms()
         scope = self.scope_snapshot()
-        definition = ServiceDefinition(
+        definition = WorkflowServiceDefinition(
             service_id=service_id,
             service_kind=service_kind,
             target_kind=target_kind,
@@ -659,7 +659,7 @@ class ServiceSupervisor:
             self._store_projection_payload(service_id, payload)
             return
 
-    def _append_definition(self, definition: ServiceDefinition) -> None:
+    def _append_definition(self, definition: WorkflowServiceDefinition) -> None:
         now = _now_ms()
         properties = {
             "service_id": definition.service_id,
@@ -731,7 +731,7 @@ class ServiceSupervisor:
         )
         self._workflow_engine().write.add_node(node)
 
-    def _latest_definition(self, service_id: str) -> ServiceDefinition | None:
+    def _latest_definition(self, service_id: str) -> WorkflowServiceDefinition | None:
         nodes = self._workflow_engine().read.get_nodes(
             where={
                 "$and": [
@@ -767,7 +767,7 @@ class ServiceSupervisor:
         }
         if not payload:
             return None
-        return ServiceDefinition.model_validate(payload)
+        return WorkflowServiceDefinition.model_validate(payload)
 
     def _all_service_ids(self) -> list[str]:
         nodes = self._workflow_engine().read.get_nodes(
@@ -791,7 +791,7 @@ class ServiceSupervisor:
                 self._rebuild_projection(service_id)
 
     def _matching_trigger_spec(
-        self, *, definition: ServiceDefinition, trigger_type: str
+        self, *, definition: WorkflowServiceDefinition, trigger_type: str
     ) -> dict[str, Any] | None:
         for spec in definition.trigger_specs:
             payload = spec.model_dump(mode="python")

@@ -1,6 +1,7 @@
 # Service Daemon Model
 
-`Slice 10` makes long-running agents and workers behave like managed services.
+`Slice 10` makes workflow-backed services behave like managed services while
+keeping narrow service-health visibility separate.
 
 ## Core Shape
 
@@ -9,15 +10,23 @@ service_definition truth
   -> service_event truth
   -> service_registry projection
   -> operator view / process table
+
+service_health_definition truth
+  -> service_health_event truth
+  -> service_health projection
+  -> operator health view
 ```
 
 ## Main Rules
 
-- `service_definition` is authoritative truth.
+- `workflow_service_definition` is authoritative truth for supervisor-managed services.
+- `service_health_definition` is authoritative truth for durable latest service health.
 - `service_event` records lifecycle, heartbeat, trigger, and restart facts.
+- `service_health_event` records sparse lifecycle facts for health repair.
 - `meta_sqlite` stores latest projection only.
 - `workflow_run` remains child execution truth.
-- service supervision lives above backend semantics.
+- workflow service supervision lives above backend semantics.
+- service health records durable latest state, not scheduling or restart policy.
 
 ## Trigger Types
 

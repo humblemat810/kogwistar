@@ -24,7 +24,7 @@ def _now_ms() -> int:
 
 
 @dataclass(frozen=True, slots=True)
-class ServiceDefinition:
+class ServiceHealthDefinition:
     service_id: str
     namespace: str
     service_kind: str
@@ -89,7 +89,7 @@ class ServiceHealthRegistry:
     ) -> dict[str, Any]:
         now = _now_ms()
         ns = str(namespace or getattr(self.engine, "namespace", "default") or "default")
-        definition = ServiceDefinition(
+        definition = ServiceHealthDefinition(
             service_id=str(service_id),
             namespace=ns,
             service_kind=str(service_kind),
@@ -415,7 +415,7 @@ class ServiceHealthRegistry:
     def _merge_definition(
         self,
         existing: dict[str, Any] | None,
-        definition: ServiceDefinition,
+        definition: ServiceHealthDefinition,
         *,
         now_ms: int,
     ) -> dict[str, Any]:
@@ -433,7 +433,7 @@ class ServiceHealthRegistry:
         return payload
 
     @staticmethod
-    def _definition_payload(definition: ServiceDefinition) -> dict[str, Any]:
+    def _definition_payload(definition: ServiceHealthDefinition) -> dict[str, Any]:
         return {
             "service_id": definition.service_id,
             "workspace_id": definition.workspace_id,
@@ -688,7 +688,7 @@ def _host_name() -> str | None:
 
 __all__ = [
     "SERVICE_HEALTH_PROJECTION_NAMESPACE",
-    "ServiceDefinition",
+    "ServiceHealthDefinition",
     "ServiceHealthRepairResult",
     "ServiceHealthRegistry",
     "ServiceInstanceHealth",

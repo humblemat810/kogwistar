@@ -38,6 +38,9 @@ def test_service_health_declare_writes_sparse_truth_and_latest_state(tmp_path):
     assert [node.metadata["service_event_type"] for node in events] == [
         "service.registered"
     ]
+    assert engine.meta_sqlite.list_named_projections("service_registry") == []
+    assert not engine.read.get_nodes(where={"entity_type": "service_definition"})
+    assert not engine.read.get_nodes(where={"entity_type": "service_event"})
 
 
 def test_service_health_repeated_declare_converges_latest_state(tmp_path):
