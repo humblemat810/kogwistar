@@ -41,6 +41,7 @@ def canonicalize_evidence_pack_digest(
     payload["edge_ids"] = sorted(
         str(edge_id) for edge_id in payload.get("edge_ids") or [] if str(edge_id)
     )
+    payload.pop("evidence_pack_hash", None)
     return payload
 
 

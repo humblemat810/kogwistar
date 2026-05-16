@@ -21,6 +21,8 @@ def test_evidence_pack_digest_hash_is_stable_for_reordered_ids():
         max_total_chars=512,
         source="alpha",
     )
+    a.evidence_pack_hash = "stored-hash"
+    b.evidence_pack_hash = "different-stored-hash"
 
     assert evidence_pack_digest_hash(a) == evidence_pack_digest_hash(b)
     assert a.model_dump()["source"] == "alpha"
