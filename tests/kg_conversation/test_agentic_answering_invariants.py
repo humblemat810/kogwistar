@@ -318,7 +318,9 @@ def test_evidence_pack_digest_includes_edges_if_supported() -> None:
     keeps edges as non-evidence, delete this test.
     """
     from kogwistar.conversation.models import EvidencePackDigest  # type: ignore
+    from kogwistar.provenance import EvidencePackDigest as CoreEvidencePackDigest
 
+    assert EvidencePackDigest is CoreEvidencePackDigest
     d = EvidencePackDigest(
         node_ids=["N1"],
         edge_ids=["E1"],
