@@ -481,6 +481,8 @@ class ReadSubsystem(NamespaceProxy, ReadLike):
         docs: list[str] = cast(list[str], got.get("documents"))
         if docs is None:
             raise Exception("Missing docs")
+        if len(docs) == 0:
+            return []
 
         embs = got.get("embeddings")
         if embs is None:
@@ -516,6 +518,8 @@ class ReadSubsystem(NamespaceProxy, ReadLike):
         docs: list[str] = cast(list[str], got.get("documents"))
         if docs is None and "documents" in include:
             raise Exception("Missing docs")
+        if docs is not None and len(docs) == 0:
+            return []
 
         embs = got.get("embeddings")
         if embs is None:
