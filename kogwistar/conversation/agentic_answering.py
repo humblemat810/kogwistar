@@ -59,6 +59,11 @@ from ..engine_core.models import (
 from ..runtime.models import StepRunResult
 from ..utils.cache_paths import joblib_cache_path
 from ..utils.embedding_vectors import normalize_embedding_vector
+from kogwistar.logical_refs import (
+    LogicalRef,
+    build_reference_edge_payload,
+    build_reference_node_payload,
+)
 
 BaseM = TypeVar("BaseM", bound=BaseModel)
 
@@ -1474,27 +1479,30 @@ class AgenticAnsweringAgent:
             }
             sh = snapshot_hash(snap)
             node = ConversationNode(
-                id=pid,
-                label=f"Ref {meta.get('label') or kg_node_id}",
-                type="reference_pointer",
-                summary=str(meta.get("summary") or ""),
+                **build_reference_node_payload(
+                    logical_ref=LogicalRef(
+                        target_namespace="kg",
+                        target_kind="node",
+                        target_id=kg_node_id,
+                    ),
+                    pointer_kind="kg_node",
+                    pointer_id=pid,
+                    label=f"Ref {meta.get('label') or kg_node_id}",
+                    summary=str(meta.get("summary") or ""),
+                    extra_properties={
+                        "snapshot_hash": sh,
+                        "entity_type": "knowledge_reference",
+                    },
+                    extra_metadata={
+                        "level_from_root": 0,
+                        "entity_type": "knowledge_reference",
+                        "in_conversation_chain": False,
+                    },
+                ),
                 conversation_id=conversation_id,
                 role="system",  # type: ignore
                 turn_index=None,
-                properties={
-                    "target_namespace": "kg",
-                    "refers_to_collection": "nodes",
-                    # "target_kind": "node",
-                    "target_id": kg_node_id,
-                    "snapshot_hash": sh,
-                    "entity_type": "knowledge_reference",
-                },
                 mentions=[Grounding(spans=[provenance_span])],
-                metadata={
-                    "level_from_root": 0,
-                    "entity_type": "knowledge_reference",
-                    "in_conversation_chain": False,
-                },
                 domain_id=None,
                 canonical_entity_id=None,
             )
@@ -1595,29 +1603,33 @@ class AgenticAnsweringAgent:
             ]
 
             edge = ConversationEdge(
-                id=peid,
-                source_ids=conv_src_ids,
-                target_ids=conv_tgt_ids,
-                relation=str(meta.get("relation") or meta.get("type") or "kg_edge"),
-                label=str(meta.get("label") or "kg_edge"),
-                type="relationship",
-                summary=str(meta.get("summary") or ""),
+                **build_reference_edge_payload(
+                    logical_ref=LogicalRef(
+                        target_namespace="kg",
+                        target_kind="edge",
+                        target_id=kg_edge_id,
+                    ),
+                    pointer_kind="kg_edge",
+                    pointer_id=peid,
+                    source_ids=conv_src_ids,
+                    target_ids=conv_tgt_ids,
+                    relation=str(meta.get("relation") or meta.get("type") or "kg_edge"),
+                    label=str(meta.get("label") or "kg_edge"),
+                    summary=str(meta.get("summary") or ""),
+                    extra_properties={
+                        "is_pointer": True,
+                        "entity_type": "knowledge_reference_edge",
+                    },
+                    extra_metadata={
+                        "entity_type": "knowledge_reference_edge",
+                        "tail_turn_index": prev_turn_meta_summary.tail_turn_index,
+                    },
+                ),
                 doc_id=f"conv:{conversation_id}",
                 mentions=[Grounding(spans=[provenance_span])],
                 domain_id=None,
                 canonical_entity_id=None,
-                properties={
-                    "is_pointer": True,
-                    "refers_to_collection": "edges",
-                    "refers_to_entity_id": kg_edge_id,
-                    "target_namespace": "kg",
-                    "entity_type": "knowledge_reference_edge",
-                },
                 embedding=None,
-                metadata={
-                    "entity_type": "knowledge_reference_edge",
-                    "tail_turn_index": prev_turn_meta_summary.tail_turn_index,
-                },
                 source_edge_ids=[],
                 target_edge_ids=[],
             )

@@ -143,6 +143,7 @@ document, but not yet fully complete.
 - First pin of a pointer node is immutable.
 - Re-pin is a no-op.
 - Usage is represented via edges only.
+- Only explicit `reference_pointer` nodes are treated as pointer artifacts.
 
 ## 4.3 Chain-Only Summary Counters
 

@@ -12,6 +12,10 @@ from kogwistar.conversation.agentic_answering import snapshot_hash
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from .models import KnowledgeRetrievalResult
 from kogwistar.id_provider import stable_id
+from kogwistar.logical_refs import (
+    LogicalRef,
+    build_reference_node_payload,
+)
 
 from .models import ConversationNode, FilteringResult, MetaFromLastSummary
 from ..engine_core.models import Grounding, Span
@@ -244,32 +248,35 @@ class KnowledgeRetriever:
             }
             sh = snapshot_hash(snap)
             # Phase-1 invariant: do NOT mutate tail_turn_index for sidecar pins
+            pointer_id = str(stable_id("knowledge_pin_node", turn_node_id, kg.safe_get_id()))
             ptr_node = ConversationNode(
-                id=None
-                or str(stable_id("knowledge_pin_node", turn_node_id, kg.safe_get_id())),
-                label=f"Ref: {kg_meta.get('label') or getattr(kg, 'label', None)}",
-                type="reference_pointer",
+                **build_reference_node_payload(
+                    logical_ref=LogicalRef(
+                        target_namespace="kg",
+                        target_kind="node",
+                        target_id=str(kg.id),
+                    ),
+                    pointer_kind="kg_node",
+                    pointer_id=pointer_id,
+                    label=f"Ref: {kg_meta.get('label') or getattr(kg, 'label', None)}",
+                    summary=summary,
+                    extra_properties={
+                        "entity_type": "knowledge_reference",
+                        "snapshot_hash": sh,
+                    },
+                    extra_metadata={
+                        "entity_type": "knowledge_reference",
+                        "level_from_root": 0,
+                        "snapshot_hash": sh,
+                        "in_conversation_chain": False,
+                    },
+                ),
                 doc_id=None,
-                summary=summary,
                 role="system",  # type: ignore
                 turn_index=turn_index,
                 conversation_id=conversation_id,
                 user_id=user_id,
                 mentions=[Grounding(spans=[self_span])],
-                properties={
-                    "target_namespace": "kg",
-                    "refers_to_collection": "nodes",
-                    "refers_to_id": kg.id,
-                    "entity_type": "knowledge_reference",
-                    "snapshot_hash": sh,
-                },
-                metadata={
-                    "target_namespace": "kg",
-                    "entity_type": "knowledge_reference",
-                    "level_from_root": 0,
-                    "snapshot_hash": sh,
-                    "in_conversation_chain": False,
-                },
                 domain_id=None,
                 canonical_entity_id=None,
             )
@@ -319,26 +326,30 @@ class KnowledgeRetriever:
             # ptr_id = str(uuid.uuid4())
             # Phase-1 invariant: do NOT mutate tail_turn_index for sidecar pins
             ptr_node = ConversationNode(
-                id=None,
-                label=f"Ref: {kg_meta.get('label') or getattr(kg, 'label', None)}",
-                type="reference_pointer",
+                **build_reference_node_payload(
+                    logical_ref=LogicalRef(
+                        target_namespace="kg",
+                        target_kind="edge",
+                        target_id=str(kg.id),
+                    ),
+                    pointer_kind="kg_edge",
+                    label=f"Ref: {kg_meta.get('label') or getattr(kg, 'label', None)}",
+                    summary=summary,
+                    extra_properties={
+                        "entity_type": "knowledge_reference",
+                    },
+                    extra_metadata={
+                        "entity_type": "knowledge_reference",
+                        "level_from_root": 0,
+                        "in_conversation_chain": False,
+                    },
+                ),
                 doc_id=None,
-                summary=summary,
                 role="system",  # type: ignore
                 turn_index=turn_index,
                 conversation_id=conversation_id,
                 user_id=user_id,
                 mentions=[Grounding(spans=[self_span])],
-                properties={
-                    "refers_to_collection": "edges",
-                    "refers_to_id": kg.id,
-                    "entity_type": "knowledge_reference",
-                },
-                metadata={
-                    "entity_type": "knowledge_reference",
-                    "level_from_root": 0,
-                    "in_conversation_chain": False,
-                },
                 domain_id=None,
                 canonical_entity_id=None,
             )
