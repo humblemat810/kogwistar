@@ -486,8 +486,8 @@ class ReadSubsystem(NamespaceProxy, ReadLike):
 
         embs = got.get("embeddings")
         if embs is None:
-            raise Exception("Missing Embeddings")
-        embs = cast(list[list[float]], embs)
+            embs = [None] * len(docs)
+        embs = cast(list[list[float] | None], embs)
 
         metadatas = cast(list[dict[str, Any]], got.get("metadatas"))
         if metadatas is None:
@@ -523,8 +523,8 @@ class ReadSubsystem(NamespaceProxy, ReadLike):
 
         embs = got.get("embeddings")
         if embs is None:
-            raise Exception("Missing Embeddings")
-        embs = cast(list[list[float]], embs)
+            embs = [None] * len(docs or [])
+        embs = cast(list[list[float] | None], embs)
 
         metadatas = cast(list[dict[str, Any]], got.get("metadatas"))
         if metadatas is None:
