@@ -29,6 +29,10 @@ from kogwistar.runtime.models import ( # noqa E402
     WorkflowNode, # noqa E402
 ) # noqa E402
 from kogwistar.runtime.runtime import WorkflowRuntime # noqa E402
+from kogwistar.runtime.projections import ( # noqa E402
+    workflow_checkpoint_latest_projection_namespace, # noqa E402
+    workflow_run_status_projection_namespace, # noqa E402
+) # noqa E402
 from tests._helpers.engine_factories import FakeEmbeddingFunction # noqa E402
 from tests._helpers.fake_backend import build_fake_backend # noqa E402
 from tests.conftest import _is_missing_pgvector_extension # noqa E402
@@ -331,6 +335,19 @@ def test_runtime_persists_completed_terminal_for_leaf_node(backend_kind):
         assert isinstance(completed[0], WorkflowCompletedNode)
         meta = completed[0].metadata or {}
         assert meta.get("last_processed_node_id") == f"wf_step|{result.run_id}|1"
+        checkpoint_projection = conversation_engine.meta_sqlite.get_named_projection(
+            workflow_checkpoint_latest_projection_namespace(conversation_id),
+            result.run_id,
+        )
+        assert checkpoint_projection is not None
+        assert checkpoint_projection["payload"]["node_id"] == f"wf_ckpt|{result.run_id}|1"
+        run_status_projection = conversation_engine.meta_sqlite.get_named_projection(
+            workflow_run_status_projection_namespace(conversation_id),
+            result.run_id,
+        )
+        assert run_status_projection is not None
+        assert run_status_projection["payload"]["status"] == "completed"
+        assert run_status_projection["payload"]["terminal"] is True
     finally:
         shutil.rmtree(root, ignore_errors=True)
 

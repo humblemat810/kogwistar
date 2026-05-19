@@ -37,6 +37,11 @@ from kogwistar.runtime.budget_adapters import adapt_budget_events
 
 from .design import validate_workflow_design, Predicate
 from .serialize import try_serialize_with_ref
+from .projections import (
+    WORKFLOW_RUNTIME_PROJECTION_SCHEMA_VERSION,
+    workflow_checkpoint_latest_projection_namespace,
+    workflow_run_status_projection_namespace,
+)
 from ..engine_core.async_compat import run_awaitable_blocking
 from .base_runtime import (
     BaseRuntime,
@@ -742,24 +747,16 @@ class WorkflowRuntime(BaseRuntime):
         1. A checkpoint exists for the suspended state.
         2. The suspended step was saved in _rt_join_snapshot as pending with mask logic intact.
         """
-        # Load the latest checkpoint for the run to reconstruct initial_state
-        ckpts = self.conversation_engine.read.get_nodes(
-            where={
-                "$and": [
-                    {"entity_type": "workflow_checkpoint"},
-                    {"run_id": str(run_id)},
-                ]
-            },
-            # limit=1,
-            # we want the most recent
+        # Load the latest checkpoint for the run to reconstruct initial_state.
+        # Runtime-maintained named projections are the serving path; graph scans
+        # are retained for older stores and projection repair scenarios.
+        latest_ckpt = self._latest_checkpoint_for_run(
+            conversation_id=conversation_id,
+            run_id=str(run_id),
         )
-        # Checkpoints might not come perfectly ordered, so we sort them
-        if not ckpts:
+        if latest_ckpt is None:
             raise ValueError(f"Cannot resume run {run_id}: no checkpoints found.")
 
-        latest_ckpt = max(
-            ckpts, key=lambda c: int(getattr(c, "metadata", {}).get("step_seq", -1))
-        )
         initial_state_raw = getattr(latest_ckpt, "metadata", {}).get("state_json", {})
         initial_state: WorkflowState
         if isinstance(initial_state_raw, str):
@@ -2690,6 +2687,128 @@ class WorkflowRuntime(BaseRuntime):
                 str(getattr(edge, "id", "") or "") == edge_id for edge in (edges or [])
             )
 
+    def _latest_checkpoint_for_run(
+        self,
+        *,
+        conversation_id: str,
+        run_id: str,
+    ) -> WorkflowCheckpointNode | None:
+        meta = getattr(self.conversation_engine, "meta_sqlite", None)
+        get_projection = getattr(meta, "get_named_projection", None)
+        if callable(get_projection):
+            row = get_projection(
+                workflow_checkpoint_latest_projection_namespace(conversation_id),
+                str(run_id),
+            )
+            payload = dict((row or {}).get("payload") or {}) if row else {}
+            node_id = str(payload.get("node_id") or "")
+            if node_id:
+                nodes = self.conversation_engine.read.get_nodes(ids=[node_id], limit=1)
+                if nodes:
+                    return cast(WorkflowCheckpointNode, nodes[0])
+
+        ckpts = self.conversation_engine.read.get_nodes(
+            where={
+                "$and": [
+                    {"entity_type": "workflow_checkpoint"},
+                    {"run_id": str(run_id)},
+                ]
+            },
+        )
+        if not ckpts:
+            return None
+        return cast(
+            WorkflowCheckpointNode,
+            max(
+                ckpts,
+                key=lambda c: int(getattr(c, "metadata", {}).get("step_seq", -1)),
+            ),
+        )
+
+    def _replace_runtime_projection(
+        self,
+        *,
+        namespace: str,
+        key: str,
+        payload: dict[str, Any],
+        materialization_status: str = "ready",
+    ) -> None:
+        meta = getattr(self.conversation_engine, "meta_sqlite", None)
+        replace = getattr(meta, "replace_named_projection", None)
+        if not callable(replace):
+            return
+        latest_seq = 0
+        latest = getattr(meta, "get_latest_entity_event_seq", None)
+        if callable(latest):
+            try:
+                latest_seq = int(
+                    latest(
+                        namespace=str(
+                            getattr(self.conversation_engine, "namespace", "default")
+                            or "default"
+                        )
+                    )
+                    or 0
+                )
+            except Exception:
+                latest_seq = 0
+        replace(
+            namespace=namespace,
+            key=str(key),
+            payload=payload,
+            last_authoritative_seq=latest_seq,
+            last_materialized_seq=latest_seq,
+            projection_schema_version=WORKFLOW_RUNTIME_PROJECTION_SCHEMA_VERSION,
+            materialization_status=materialization_status,
+        )
+
+    def _replace_checkpoint_latest_projection(
+        self,
+        *,
+        conversation_id: str,
+        workflow_id: str,
+        run_id: str,
+        step_seq: int,
+        node_id: str,
+    ) -> None:
+        self._replace_runtime_projection(
+            namespace=workflow_checkpoint_latest_projection_namespace(conversation_id),
+            key=str(run_id),
+            payload={
+                "entity_type": "workflow_checkpoint",
+                "run_id": str(run_id),
+                "workflow_id": str(workflow_id),
+                "conversation_id": str(conversation_id),
+                "step_seq": int(step_seq),
+                "node_id": str(node_id),
+            },
+        )
+
+    def _replace_run_status_projection(
+        self,
+        *,
+        conversation_id: str,
+        workflow_id: str,
+        run_id: str,
+        status: str,
+        node_id: str,
+        accepted_step_seq: int,
+    ) -> None:
+        self._replace_runtime_projection(
+            namespace=workflow_run_status_projection_namespace(conversation_id),
+            key=str(run_id),
+            payload={
+                "run_id": str(run_id),
+                "workflow_id": str(workflow_id),
+                "conversation_id": str(conversation_id),
+                "status": str(status),
+                "terminal": str(status) in {"completed", "failed", "cancelled"},
+                "terminal_node_id": str(node_id),
+                "accepted_step_seq": int(accepted_step_seq),
+            },
+            materialization_status=str(status),
+        )
+
     def _persist_cancelled_terminal(
         self,
         *,
@@ -2702,6 +2821,14 @@ class WorkflowRuntime(BaseRuntime):
     ) -> str:
         node_id = f"wf_cancelled|{run_id}"
         if self._conversation_node_exists(node_id):
+            self._replace_run_status_projection(
+                conversation_id=conversation_id,
+                workflow_id=workflow_id,
+                run_id=run_id,
+                status="cancelled",
+                node_id=node_id,
+                accepted_step_seq=accepted_step_seq,
+            )
             return node_id
 
         req_node_id = None if not cancel_info else str(cancel_info.get("node_id") or "")
@@ -2807,6 +2934,14 @@ class WorkflowRuntime(BaseRuntime):
                         run_id=run_id,
                     )
                     self.conversation_engine.write.add_edge(cancelled_at_edge)
+            self._replace_run_status_projection(
+                conversation_id=conversation_id,
+                workflow_id=workflow_id,
+                run_id=run_id,
+                status="cancelled",
+                node_id=node_id,
+                accepted_step_seq=accepted_step_seq,
+            )
         return node_id
 
     def _persist_completed_terminal(
@@ -2820,6 +2955,14 @@ class WorkflowRuntime(BaseRuntime):
     ) -> str:
         node_id = f"wf_completed|{run_id}"
         if self._conversation_node_exists(node_id):
+            self._replace_run_status_projection(
+                conversation_id=conversation_id,
+                workflow_id=workflow_id,
+                run_id=run_id,
+                status="completed",
+                node_id=node_id,
+                accepted_step_seq=accepted_step_seq,
+            )
             return node_id
 
         excerpt = (
@@ -2876,6 +3019,14 @@ class WorkflowRuntime(BaseRuntime):
                         run_id=run_id,
                     )
                     self.conversation_engine.write.add_edge(edge)
+            self._replace_run_status_projection(
+                conversation_id=conversation_id,
+                workflow_id=workflow_id,
+                run_id=run_id,
+                status="completed",
+                node_id=node_id,
+                accepted_step_seq=accepted_step_seq,
+            )
         return node_id
 
     def _persist_failed_terminal(
@@ -2890,6 +3041,14 @@ class WorkflowRuntime(BaseRuntime):
     ) -> str:
         node_id = f"wf_failed|{run_id}"
         if self._conversation_node_exists(node_id):
+            self._replace_run_status_projection(
+                conversation_id=conversation_id,
+                workflow_id=workflow_id,
+                run_id=run_id,
+                status="failed",
+                node_id=node_id,
+                accepted_step_seq=accepted_step_seq,
+            )
             return node_id
 
         safe_errors = [str(err) for err in (errors or [])]
@@ -2975,6 +3134,14 @@ class WorkflowRuntime(BaseRuntime):
                         run_id=run_id,
                     )
                     self.conversation_engine.write.add_edge(failed_at_edge)
+            self._replace_run_status_projection(
+                conversation_id=conversation_id,
+                workflow_id=workflow_id,
+                run_id=run_id,
+                status="failed",
+                node_id=node_id,
+                accepted_step_seq=accepted_step_seq,
+            )
         return node_id
 
     def _persist_workflow_run(
@@ -3192,7 +3359,6 @@ class WorkflowRuntime(BaseRuntime):
                     },
                 )
                 self.conversation_engine.write.add_edge(e)
-
             if result.conversation_node_id:
                 content = f"{n.safe_get_id()} created {result.conversation_node_id} durign execution"
                 self_span = Span(
@@ -3330,3 +3496,10 @@ class WorkflowRuntime(BaseRuntime):
                     },
                 )
                 self.conversation_engine.write.add_edge(e)
+            self._replace_checkpoint_latest_projection(
+                conversation_id=conversation_id,
+                workflow_id=workflow_id,
+                run_id=run_id,
+                step_seq=step_seq,
+                node_id=str(n.id),
+            )

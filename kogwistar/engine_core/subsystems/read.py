@@ -79,10 +79,11 @@ class ReadSubsystem(NamespaceProxy, ReadLike):
         ids: Sequence[str] | None = None,
         where=None,
     ) -> bool:
+        limit = 1 if ids is None else max(1, len(ids))
         got = self._node_get_raw(
             ids=ids,
             where=where,
-            limit=1 if ids is None else None,
+            limit=limit,
             include=["metadatas"],
         )
         return bool(got.get("ids"))
@@ -92,10 +93,11 @@ class ReadSubsystem(NamespaceProxy, ReadLike):
         ids: Sequence[str] | None = None,
         where=None,
     ) -> bool:
+        limit = 1 if ids is None else max(1, len(ids))
         got = self._edge_get_raw(
             ids=ids,
             where=where,
-            limit=1 if ids is None else None,
+            limit=limit,
             include=["metadatas"],
         )
         return bool(got.get("ids"))

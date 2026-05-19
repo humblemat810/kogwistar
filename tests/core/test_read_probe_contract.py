@@ -157,6 +157,28 @@ def test_probe_reads_work_without_embeddings(tmp_path, monkeypatch):
     assert engine.read.get_edge_metadatas(ids=["probe-edge"]) == [{"entity_type": "probe", "kind": "edge"}]
 
 
+def test_probe_id_existence_uses_numeric_limit(tmp_path, monkeypatch):
+    engine = _engine(tmp_path)
+    seen_limits: list[int | None] = []
+
+    async def node_get(*, ids=None, where=None, limit=None, include=None):
+        del where, include
+        seen_limits.append(limit)
+        return {"ids": [str(item) for item in ids or []], "documents": [], "metadatas": [], "embeddings": None}
+
+    async def edge_get(*, ids=None, where=None, limit=None, include=None):
+        del where, include
+        seen_limits.append(limit)
+        return {"ids": [str(item) for item in ids or []], "documents": [], "metadatas": [], "embeddings": None}
+
+    monkeypatch.setattr(engine.backend, "node_get", node_get)
+    monkeypatch.setattr(engine.backend, "edge_get", edge_get)
+
+    assert engine.read.node_exists(ids=["probe-node-a", "probe-node-b"]) is True
+    assert engine.read.edge_exists(ids=["probe-edge-a", "probe-edge-b"]) is True
+    assert seen_limits == [2, 2]
+
+
 def test_hydrated_reads_remain_unchanged(tmp_path):
     engine = _engine(tmp_path)
     node = _node(

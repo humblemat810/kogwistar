@@ -7,6 +7,10 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from ..messaging.models import LaneMessageProjectionRepairResult
+from ..runtime.projections import (
+    workflow_checkpoint_latest_projection_namespace,
+    workflow_run_status_projection_namespace,
+)
 from .service_health import ServiceHealthRepairResult
 
 
@@ -300,9 +304,21 @@ class RecoverySubsystem:
         return states
 
     def inspect_checkpoints(
-        self, *, namespace: str, workspace_id: str
+        self,
+        *,
+        namespace: str,
+        workspace_id: str,
+        terminal_run_ids: set[str] | None = None,
     ) -> list[CheckpointRecoveryState]:
         del workspace_id
+        if terminal_run_ids is None:
+            terminal_run_ids = self._terminal_run_ids(namespace)
+        projected = self._checkpoint_states_from_projection(
+            namespace=namespace,
+            terminal_run_ids=terminal_run_ids,
+        )
+        if projected:
+            return projected
         try:
             nodes = self._checkpoint_nodes(namespace)
         except Exception as exc:
@@ -317,7 +333,11 @@ class RecoverySubsystem:
             if previous is None or self._step_seq(node) > self._step_seq(previous):
                 latest_by_run[run_id] = node
         return [
-            self._checkpoint_state(namespace=namespace, node=node)
+            self._checkpoint_state(
+                namespace=namespace,
+                node=node,
+                terminal_run_ids=terminal_run_ids,
+            )
             for node in sorted(
                 latest_by_run.values(),
                 key=lambda n: (str((getattr(n, "metadata", {}) or {}).get("run_id")), self._step_seq(n)),
@@ -386,10 +406,17 @@ class RecoverySubsystem:
         lane_rows = tuple(self.inspect_lane_rows(list(namespaces)))
         checkpoint_states: list[CheckpointRecoveryState] = []
         checkpoint_findings: list[RecoveryFinding] = []
+        terminal_run_ids_by_namespace: dict[str, set[str]] = {}
         for namespace in namespaces:
             try:
+                terminal_run_ids = self._terminal_run_ids(namespace)
+                terminal_run_ids_by_namespace[namespace] = terminal_run_ids
                 checkpoint_states.extend(
-                    self.inspect_checkpoints(namespace=namespace, workspace_id=workspace_id)
+                    self.inspect_checkpoints(
+                        namespace=namespace,
+                        workspace_id=workspace_id,
+                        terminal_run_ids=terminal_run_ids,
+                    )
                 )
             except Exception as exc:
                 checkpoint_findings.append(
@@ -426,6 +453,9 @@ class RecoverySubsystem:
                 run_history=run_history,
                 daemon_health=daemon_health,
                 app_surfaces=tuple(app_surfaces or ()),
+                terminal_run_ids=set().union(*terminal_run_ids_by_namespace.values())
+                if terminal_run_ids_by_namespace
+                else set(),
             )
         )
         findings = tuple(list(findings) + checkpoint_findings + list(service_health_findings))
@@ -512,9 +542,52 @@ class RecoverySubsystem:
                 return []
             raise
 
-    def _checkpoint_state(self, *, namespace: str, node: Any) -> CheckpointRecoveryState:
+    def _checkpoint_states_from_projection(
+        self,
+        *,
+        namespace: str,
+        terminal_run_ids: set[str],
+    ) -> list[CheckpointRecoveryState]:
+        meta = getattr(self.engine, "meta_sqlite", None)
+        list_projection = getattr(meta, "list_named_projections", None)
+        if not callable(list_projection):
+            return []
+        out: list[CheckpointRecoveryState] = []
+        for row in list_projection(workflow_checkpoint_latest_projection_namespace(namespace)):
+            payload = dict((row or {}).get("payload") or {})
+            run_id = str(payload.get("run_id") or (row or {}).get("key") or "")
+            if not run_id:
+                continue
+            status = self._optional_str(payload.get("status") or payload.get("run_status"))
+            terminal = bool(payload.get("terminal")) or run_id in terminal_run_ids
+            out.append(
+                CheckpointRecoveryState(
+                    run_id=run_id,
+                    namespace=str(namespace),
+                    workflow_id=self._optional_str(payload.get("workflow_id")),
+                    conversation_id=self._optional_str(
+                        payload.get("conversation_id") or namespace
+                    ),
+                    latest_step_seq=int(payload.get("step_seq") or 0),
+                    classification="terminal" if terminal else "interrupted_unknown",
+                    restartable=bool(payload.get("restartable")),
+                    resume_marker=bool(payload.get("resume_marker")),
+                    node_id=str(payload.get("node_id") or ""),
+                    status=status,
+                )
+            )
+        return sorted(out, key=lambda item: (item.run_id, item.latest_step_seq))
+
+    def _checkpoint_state(
+        self,
+        *,
+        namespace: str,
+        node: Any,
+        terminal_run_ids: set[str] | None = None,
+    ) -> CheckpointRecoveryState:
         md = dict(getattr(node, "metadata", {}) or {})
         status = self._optional_str(md.get("status") or md.get("run_status"))
+        run_id = str(md.get("run_id") or getattr(node, "id", ""))
         restartable = bool(
             md.get("restartable")
             or md.get("auto_resume")
@@ -528,6 +601,8 @@ class RecoverySubsystem:
         )
         suspended = bool(md.get("suspended") or md.get("manual_suspend"))
         terminal = bool(md.get("terminal")) or (status in TERMINAL_CHECKPOINT_STATUSES)
+        if terminal_run_ids and run_id in terminal_run_ids:
+            terminal = True
         if terminal:
             classification = "terminal"
         elif suspended and not restartable:
@@ -537,7 +612,7 @@ class RecoverySubsystem:
         else:
             classification = "interrupted_unknown"
         return CheckpointRecoveryState(
-            run_id=str(md.get("run_id") or getattr(node, "id", "")),
+            run_id=run_id,
             namespace=str(namespace),
             workflow_id=self._optional_str(md.get("workflow_id")),
             conversation_id=self._optional_str(md.get("conversation_id")),
@@ -597,9 +672,11 @@ class RecoverySubsystem:
         run_history: tuple[RunRecoveryState, ...],
         daemon_health: tuple[DaemonHealthState, ...],
         app_surfaces: tuple[RecoverySurface | OutputReconciliationState, ...],
+        terminal_run_ids: set[str] | None = None,
     ) -> list[RecoveryFinding]:
         del run_history
         findings: list[RecoveryFinding] = []
+        terminal_run_ids = terminal_run_ids or set()
         for job in queues:
             if job.expired_lease:
                 findings.append(
@@ -621,7 +698,7 @@ class RecoverySubsystem:
                     )
                 )
         for checkpoint in checkpoints:
-            if checkpoint.classification == "interrupted_unknown":
+            if checkpoint.classification == "interrupted_unknown" and checkpoint.run_id not in terminal_run_ids:
                 findings.append(
                     RecoveryFinding(
                         severity="warning",
@@ -805,6 +882,50 @@ class RecoverySubsystem:
                 )
             )
         return tuple(repaired), tuple(findings)
+
+    def _terminal_run_ids(self, namespace: str) -> set[str]:
+        meta = getattr(self.engine, "meta_sqlite", None)
+        list_projection = getattr(meta, "list_named_projections", None)
+        if callable(list_projection):
+            terminal_run_ids: set[str] = set()
+            for row in list_projection(workflow_run_status_projection_namespace(namespace)):
+                payload = dict((row or {}).get("payload") or {})
+                run_id = self._optional_str(payload.get("run_id") or (row or {}).get("key"))
+                status = self._optional_str(payload.get("status"))
+                if run_id and (bool(payload.get("terminal")) or status in TERMINAL_RUN_STATUSES):
+                    terminal_run_ids.add(run_id)
+            if terminal_run_ids:
+                return terminal_run_ids
+
+        read = getattr(self.engine, "read", None)
+        get_nodes = getattr(read, "get_nodes", None)
+        if not callable(get_nodes):
+            return set()
+        terminal_run_ids: set[str] = set()
+        try:
+            from .engine import scoped_namespace
+
+            with scoped_namespace(self.engine, str(namespace)):
+                for entity_type in ("workflow_completed", "workflow_failed", "workflow_cancelled"):
+                    try:
+                        nodes = get_nodes(
+                            where={"entity_type": entity_type},
+                            limit=10_000,
+                        )
+                    except Exception as exc:
+                        if self._is_recoverable_checkpoint_lookup_error(exc):
+                            continue
+                        raise
+                    for node in nodes:
+                        md = dict(getattr(node, "metadata", {}) or {})
+                        run_id = self._optional_str(md.get("run_id"))
+                        if run_id:
+                            terminal_run_ids.add(run_id)
+        except Exception as exc:
+            if self._is_recoverable_checkpoint_lookup_error(exc):
+                return set()
+            raise
+        return terminal_run_ids
 
     @staticmethod
     def _dedupe_namespaces(namespaces: list[str]) -> tuple[str, ...]:

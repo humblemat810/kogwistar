@@ -13,7 +13,12 @@ from kogwistar.engine_core import (
 from kogwistar.engine_core.engine import scoped_namespace
 from kogwistar.engine_core.in_memory_backend import build_in_memory_backend
 from kogwistar.engine_core.models import Grounding, Span
-from kogwistar.runtime.models import WorkflowCheckpointNode
+from kogwistar.runtime.models import WorkflowCheckpointNode, WorkflowCompletedNode
+from kogwistar.runtime.projections import (
+    WORKFLOW_RUNTIME_PROJECTION_SCHEMA_VERSION,
+    workflow_checkpoint_latest_projection_namespace,
+    workflow_run_status_projection_namespace,
+)
 from kogwistar.server.auth_middleware import claims_ctx
 from kogwistar.server.run_registry import RunRegistry
 
@@ -323,6 +328,103 @@ def test_recovery_classifies_checkpoints_and_auto_resume_is_policy_gated(tmp_pat
         for action in resumed_report.actions
         if action.action_kind == "resume_run"
     ] == ["restartable"]
+
+
+def test_recovery_suppresses_unknown_checkpoint_warning_once_run_is_terminal(tmp_path):
+    engine = _engine(tmp_path)
+    namespace = "ws:demo:conv:bg"
+    with scoped_namespace(engine, namespace):
+        engine.write.add_node(_checkpoint(run_id="done", step_seq=1))
+        engine.write.add_node(
+            WorkflowCompletedNode(
+                id="wf_completed|done",
+                label="Workflow completed",
+                type="entity",
+                doc_id="wf_completed|done",
+                summary="workflow completed run_id=done accepted_step_seq=1",
+                mentions=[Grounding(spans=[Span.from_dummy_for_conversation()])],
+                properties={"entity_type": "workflow_completed"},
+                metadata={
+                    "entity_type": "workflow_completed",
+                    "workflow_id": "wf-done",
+                    "run_id": "done",
+                    "conversation_id": namespace,
+                    "accepted_step_seq": 1,
+                    "level_from_root": 0,
+                },
+                level_from_root=0,
+                domain_id=None,
+                canonical_entity_id=None,
+                embedding=None,
+            )
+        )
+
+    inspected = engine.recovery.inspect_checkpoints(namespace=namespace, workspace_id="demo")
+    assert inspected[0].classification == "terminal"
+
+    report = engine.recovery.inspect(workspace_id="demo", namespaces=[namespace])
+    assert not any(
+        finding.surface == "checkpoints"
+        and finding.message == "interrupted workflow checkpoint needs operator policy"
+        for finding in report.findings
+    )
+
+
+def test_recovery_uses_runtime_named_projections_before_graph_scans(tmp_path, monkeypatch):
+    engine = _engine(tmp_path)
+    namespace = "ws:demo:conv:bg"
+    latest_seq = engine.meta_sqlite.get_latest_entity_event_seq(namespace=namespace)
+    engine.meta_sqlite.replace_named_projection(
+        workflow_checkpoint_latest_projection_namespace(namespace),
+        "done",
+        {
+            "entity_type": "workflow_checkpoint",
+            "run_id": "done",
+            "workflow_id": "wf-done",
+            "conversation_id": namespace,
+            "step_seq": 7,
+            "node_id": "wf_ckpt|done|7",
+        },
+        last_authoritative_seq=latest_seq,
+        last_materialized_seq=latest_seq,
+        projection_schema_version=WORKFLOW_RUNTIME_PROJECTION_SCHEMA_VERSION,
+        materialization_status="ready",
+    )
+    engine.meta_sqlite.replace_named_projection(
+        workflow_run_status_projection_namespace(namespace),
+        "done",
+        {
+            "run_id": "done",
+            "workflow_id": "wf-done",
+            "conversation_id": namespace,
+            "status": "completed",
+            "terminal": True,
+            "terminal_node_id": "wf_completed|done",
+            "accepted_step_seq": 7,
+        },
+        last_authoritative_seq=latest_seq,
+        last_materialized_seq=latest_seq,
+        projection_schema_version=WORKFLOW_RUNTIME_PROJECTION_SCHEMA_VERSION,
+        materialization_status="completed",
+    )
+    monkeypatch.setattr(
+        engine.read,
+        "get_nodes",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("recovery should use runtime named projections")
+        ),
+    )
+
+    report = engine.recovery.inspect(workspace_id="demo", namespaces=[namespace])
+
+    assert [(item.run_id, item.latest_step_seq, item.classification) for item in report.checkpoints] == [
+        ("done", 7, "terminal")
+    ]
+    assert not [
+        finding
+        for finding in report.findings
+        if finding.surface == "checkpoints"
+    ]
 
 
 def test_recovery_report_combines_operator_surfaces(tmp_path):
