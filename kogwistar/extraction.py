@@ -1,5 +1,3 @@
-from dataclasses import dataclass
-
 import re
 import unicodedata
 
@@ -11,20 +9,12 @@ from kogwistar.engine_core.models import (
 from kogwistar.typing_interfaces import EngineLike
 from typing import Optional, List, Iterable, Callable
 
-try:
-    # pip install rapidfuzz
-    from rapidfuzz import fuzz as rfuzz
-except Exception:  # pragma: no cover
-    rfuzz = None
-
-import difflib
-
-
-@dataclass(frozen=True)
-class FuzzyHit:
-    start: int
-    end: int
-    score: float
+from .utils.fuzzy_offsets import (
+    FuzzyHit,
+    FuzzySpanHit,
+    find_best_fuzzy_span,
+    fuzzy_find_best_spans,
+)
 
 
 # ---------- exact matching ----------
@@ -86,132 +76,6 @@ def _get_doc(
             else:
                 doc = engine.read.get_document(doc_id)
     return doc
-
-
-# -----------------------------
-# Helpers: fuzzy match + nearest
-# -----------------------------
-
-
-def _len_based_threshold(n: int) -> int:
-    """
-    Sensible thresholds:
-    - short strings: require very high similarity
-    - long strings: allow a bit more noise
-    """
-    if n <= 8:
-        return 95
-    if n <= 20:
-        return 92
-    if n <= 60:
-        return 88
-    if n <= 120:
-        return 85
-    return 82
-
-
-def _choose_fuzzy_scorer(target: str) -> Callable[[str, str], float]:
-    """
-    Choose a scorer:
-    - For spans (contiguous substrings), partial_ratio is usually best.
-    - token_sort_ratio can help if whitespace/token order weirdness exists, but spans are contiguous,
-      so we use it only when target has lots of whitespace.
-    """
-    n = len(target)
-    whitespace_heavy = target.count(" ") >= max(3, n // 10)
-
-    if rfuzz:
-        if whitespace_heavy and n <= 80:
-            return rfuzz.token_sort_ratio
-        return rfuzz.partial_ratio if n >= 20 else rfuzz.ratio
-
-    # Fallback via difflib: return 0..100 similar to rapidfuzz
-    def difflib_ratio(a: str, b: str) -> float:
-        return difflib.SequenceMatcher(None, a, b).ratio() * 100.0
-
-    # For fallback, partial-like behavior is approximated by comparing same-length windows, so ratio is fine.
-    return difflib_ratio
-
-
-def fuzzy_find_best_spans(
-    haystack: str,
-    target: str,
-    orig_start: int,
-    *,
-    max_hits: int = 20,
-    scan_band: Optional[int] = None,
-) -> List[FuzzyHit]:
-    """
-    Return up to `max_hits` candidate spans (start,end,score) with score >= threshold,
-    preferring hits near orig_start.
-
-    Strategy (fast + simple, no heavy indexing):
-    - If scan_band is provided, only scan within [orig_start - band, orig_start + band]
-    - Sliding windows around target length +/- deltas
-    - Step size scales with target length
-    """
-    if not target:
-        return []
-
-    n = len(target)
-    threshold = _len_based_threshold(n)
-    scorer = _choose_fuzzy_scorer(target)
-
-    # scanning band: limit work for large docs
-    if scan_band is None:
-        scan_band = max(2000, n * 50)  # decent default
-
-    lo = max(0, orig_start - scan_band)
-    hi = min(len(haystack), orig_start + scan_band)
-
-    region = haystack[lo:hi]
-    region_offset = lo
-
-    # Candidate window lengths: allow small drift (OCR / whitespace / punctuation)
-    deltas = [0]
-    if n >= 20:
-        deltas += [max(1, n // 20), -max(1, n // 20)]  # +/- 5%
-    if n >= 60:
-        deltas += [max(2, n // 10), -max(2, n // 10)]  # +/- 10%
-
-    # Step size: tradeoff accuracy vs speed
-    step = 1 if n <= 40 else max(2, n // 25)  # ~4% of length for longer targets
-
-    hits: List[FuzzyHit] = []
-    for delta in deltas:
-        win = n + delta
-        if win <= 0:
-            continue
-
-        # Slide across region
-        for i in range(0, max(0, len(region) - win + 1), step):
-            chunk = region[i : i + win]
-            score = float(scorer(chunk, target))
-            if score >= threshold:
-                start = region_offset + i
-                end = start + win
-                hits.append(FuzzyHit(start=start, end=end, score=score))
-
-    if not hits:
-        return []
-
-    # Sort:
-    # 1) higher score
-    # 2) nearer to orig_start
-    # 3) shorter span if tie (prefer minimal drift)
-    hits.sort(key=lambda h: (-h.score, abs(h.start - orig_start), (h.end - h.start)))
-
-    # Deduplicate near-identical hits (same start) keeping best score
-    dedup: List[FuzzyHit] = []
-    seen_starts = set()
-    for h in hits:
-        if h.start in seen_starts:
-            continue
-        seen_starts.add(h.start)
-        dedup.append(h)
-        if len(dedup) >= max_hits:
-            break
-    return dedup
 
 
 import json
