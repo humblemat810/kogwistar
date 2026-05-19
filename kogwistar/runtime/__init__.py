@@ -145,6 +145,7 @@ _EXPORTS = {
 
 _SUBMODULE_EXPORTS = {
     "async_runtime": "kogwistar.runtime.async_runtime",
+    "runtime": "kogwistar.runtime.runtime",
 }
 
 

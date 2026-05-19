@@ -485,11 +485,11 @@ def test_sync_runtime_step_context_send_lane_message_delegates_to_sender(tmp_pat
     assert calls and calls[0]["msg_type"] == "request.demo"
 
 
-def test_sync_runtime_resolver_send_lane_message_uses_conversation_engine(
+def test_sync_runtime_resolver_send_lane_message_reaches_sync_mirror(
     tmp_path, monkeypatch
 ):
     """Async mirror: `tests/runtime/test_async_runtime_bijection_contract.py::test_async_runtime_resolver_send_lane_message_reaches_sync_mirror`.
-    New sync runtime coverage for durable lane-message sender wiring.
+    New sync mirror for durable lane-message sender wiring.
     """
     workflow_id = "wf-sync-lane-runtime"
     _patch_single_step_design(monkeypatch, workflow_id=workflow_id, op="send_lane")
@@ -551,7 +551,7 @@ def test_sync_runtime_resolver_send_lane_message_appends_run_registry_event(
     tmp_path, monkeypatch
 ):
     """Async mirror: `tests/runtime/test_async_runtime_bijection_contract.py::test_async_runtime_resolver_send_lane_message_appends_run_registry_event`.
-    New sync runtime coverage for lane-message lifecycle mirroring.
+    New sync mirror for lane-message lifecycle mirroring.
     """
     workflow_id = "wf-sync-lane-registry"
     run_id = "run-runtime-sync-registry"
@@ -620,8 +620,8 @@ def test_sync_runtime_resolver_send_lane_message_appends_run_registry_event(
 def test_sync_runtime_resolver_send_lane_message_requires_runtime_sender(
     tmp_path, monkeypatch
 ):
-    """Async mirror: `tests/runtime/test_async_runtime_bijection_contract.py::test_async_runtime_resolver_send_lane_message_reaches_sync_mirror`.
-    New sync runtime coverage for the missing runtime sender path.
+    """Async mirror: `tests/runtime/test_async_runtime_bijection_contract.py::test_async_runtime_resolver_send_lane_message_requires_runtime_sender`.
+    New sync mirror for the missing runtime sender path.
     """
     workflow_id = "wf-sync-lane-missing"
     _patch_single_step_design(monkeypatch, workflow_id=workflow_id, op="send_lane")

@@ -704,7 +704,7 @@ def test_async_runtime_resolver_send_lane_message_reaches_sync_mirror(
     tmp_path, monkeypatch
 ):
     """Sync mirror: `tests/runtime/test_sync_runtime_bijection_contract.py::test_sync_runtime_resolver_send_lane_message_uses_conversation_engine`.
-    New async runtime coverage for durable lane-message sender wiring.
+    New async mirror for durable lane-message sender wiring.
     """
     workflow_id = "wf-async-lane-runtime"
     _patch_single_step_design(monkeypatch, workflow_id=workflow_id, op="send_lane")
@@ -768,7 +768,7 @@ def test_async_runtime_resolver_send_lane_message_appends_run_registry_event(
     tmp_path, monkeypatch
 ):
     """Sync mirror: `tests/runtime/test_sync_runtime_bijection_contract.py::test_sync_runtime_resolver_send_lane_message_appends_run_registry_event`.
-    New async runtime coverage for lane-message lifecycle mirroring.
+    New async mirror for lane-message lifecycle mirroring.
     """
     workflow_id = "wf-async-lane-registry"
     run_id = "run-runtime-async-registry"
@@ -834,6 +834,54 @@ def test_async_runtime_resolver_send_lane_message_appends_run_registry_event(
     assert payload["status"] == "pending"
     assert payload["workflow_node_id"] == f"wf|{workflow_id}|send"
     assert payload["step_seq"] == 0
+
+
+def test_async_runtime_resolver_send_lane_message_requires_runtime_sender(
+    tmp_path, monkeypatch
+):
+    """Sync mirror: `tests/runtime/test_sync_runtime_bijection_contract.py::test_sync_runtime_resolver_send_lane_message_requires_runtime_sender`.
+    New async mirror for the missing runtime sender path.
+    """
+    workflow_id = "wf-async-lane-missing"
+    _patch_single_step_design(monkeypatch, workflow_id=workflow_id, op="send_lane")
+    conversation_engine = _lane_runtime_engine(tmp_path / "conv")
+    conversation_engine.send_lane_message = None
+    resolver = AsyncMappingStepResolver()
+
+    @resolver.register("send_lane")
+    async def _send(ctx):
+        await ctx.send_lane_message(
+            conversation_id="conv-runtime",
+            inbox_id="inbox:worker:runtime",
+            sender_id="lane:foreground:runtime",
+            recipient_id="lane:worker:runtime",
+            msg_type="request.runtime",
+            payload={},
+        )
+        return RunSuccess(conversation_node_id=None, state_update=[])
+
+    runtime = AsyncWorkflowRuntime(
+        workflow_engine=object(),
+        conversation_engine=conversation_engine,
+        step_resolver=resolver,
+        predicate_registry={},
+        trace=False,
+    )
+
+    out = asyncio.run(
+        runtime.run(
+            workflow_id=workflow_id,
+            conversation_id="conv-runtime",
+            turn_node_id="turn-runtime",
+            initial_state={},
+            run_id="run-runtime-missing",
+        )
+    )
+
+    assert out.status == "failure"
+    assert "lane message sender not configured" in "\n".join(
+        str(item) for item in out.final_state.get("op_log", [])
+    )
 
 
 def test_async_runtime_step_context_send_lane_message_requires_sender(tmp_path):
