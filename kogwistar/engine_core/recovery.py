@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+
+
 """Core restart-recovery coordination and operator visibility surfaces."""
 
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any, Callable, TYPE_CHECKING
+if TYPE_CHECKING:
+    from kogwistar.engine_core.engine import GraphKnowledgeEngine
 
 from ..messaging.models import LaneMessageProjectionRepairResult
 from ..runtime.projections import (
@@ -175,7 +179,7 @@ class RecoverySubsystem:
     resume needs an explicit policy plus a caller-provided resume hook.
     """
 
-    def __init__(self, engine: Any) -> None:
+    def __init__(self, engine: GraphKnowledgeEngine) -> None:
         self.engine = engine
 
     def recover_startup(
@@ -229,7 +233,7 @@ class RecoverySubsystem:
         self, namespaces: list[str]
     ) -> list[LaneMessageProjectionRepairResult]:
         results: list[LaneMessageProjectionRepairResult] = []
-        repair = getattr(self.engine, "repair_lane_message_projection", None)
+        repair = self.engine.repair_lane_message_projection
         if not callable(repair):
             return results
         for namespace in self._dedupe_namespaces(namespaces):
@@ -237,7 +241,7 @@ class RecoverySubsystem:
         return results
 
     def inspect_queues(self, namespaces: list[str]) -> list[QueueRecoveryState]:
-        list_jobs = getattr(getattr(self.engine, "meta_sqlite", None), "list_index_jobs", None)
+        list_jobs = self.engine.meta_sqlite.list_index_jobs
         if not callable(list_jobs):
             return []
         now = int(time.time())
@@ -267,11 +271,8 @@ class RecoverySubsystem:
         return states
 
     def inspect_lane_rows(self, namespaces: list[str]) -> list[LaneRecoveryState]:
-        list_rows = getattr(
-            getattr(self.engine, "meta_sqlite", None),
-            "list_projected_lane_messages",
-            None,
-        )
+        list_rows = self.engine.meta_sqlite.list_projected_lane_messages
+
         if not callable(list_rows):
             return []
         now = int(time.time())
@@ -347,9 +348,9 @@ class RecoverySubsystem:
     def inspect_run_history(
         self, *, namespace: str, workspace_id: str
     ) -> list[RunRecoveryState]:
-        meta = getattr(self.engine, "meta_sqlite", None)
-        list_runs = getattr(meta, "list_server_runs", None)
-        list_events = getattr(meta, "list_server_run_events", None)
+        meta = self.engine.meta_sqlite
+        list_runs = meta.list_server_runs
+        list_events = meta.list_server_run_events
         if not callable(list_runs):
             return []
         out: list[RunRecoveryState] = []
@@ -527,8 +528,8 @@ class RecoverySubsystem:
         return actions, findings
 
     def _checkpoint_nodes(self, namespace: str) -> list[Any]:
-        read = getattr(self.engine, "read", None)
-        get_nodes = getattr(read, "get_nodes", None)
+        read = self.engine.read
+        get_nodes = read.get_nodes
         if not callable(get_nodes):
             return []
         where = {"entity_type": "workflow_checkpoint"}
@@ -548,8 +549,8 @@ class RecoverySubsystem:
         namespace: str,
         terminal_run_ids: set[str],
     ) -> list[CheckpointRecoveryState]:
-        meta = getattr(self.engine, "meta_sqlite", None)
-        list_projection = getattr(meta, "list_named_projections", None)
+        
+        list_projection = self.engine.meta_sqlite.list_named_projections
         if not callable(list_projection):
             return []
         out: list[CheckpointRecoveryState] = []
@@ -741,8 +742,8 @@ class RecoverySubsystem:
         *,
         workspace_id: str,
     ) -> tuple[tuple[DaemonHealthState, ...], tuple[RecoveryFinding, ...]]:
-        registry = getattr(self.engine, "service_health", None)
-        list_services = getattr(registry, "list_services", None)
+        
+        list_services = self.engine.service_health.list_services
         if not callable(list_services):
             return (), ()
         out: list[DaemonHealthState] = []
@@ -833,8 +834,8 @@ class RecoverySubsystem:
         workspace_id: str,
         namespaces: tuple[str, ...],
     ) -> tuple[tuple[RecoveryAction, ...], tuple[RecoveryFinding, ...]]:
-        registry = getattr(self.engine, "service_health", None)
-        repair = getattr(registry, "repair_projection", None)
+        registry = self.engine.service_health
+        repair = registry.repair_projection
         if not callable(repair):
             return (), ()
         repaired: list[RecoveryAction] = []
@@ -844,7 +845,7 @@ class RecoverySubsystem:
         if not repaired_ids and int(getattr(result, "repaired_count", 0) or 0) <= 0:
             return (), ()
         services_by_id: dict[str, dict[str, Any]] = {}
-        list_services = getattr(registry, "list_services", None)
+        list_services = registry.list_services
         if callable(list_services):
             try:
                 for payload in list_services(workspace_id=workspace_id, limit=10_000):
@@ -884,8 +885,8 @@ class RecoverySubsystem:
         return tuple(repaired), tuple(findings)
 
     def _terminal_run_ids(self, namespace: str) -> set[str]:
-        meta = getattr(self.engine, "meta_sqlite", None)
-        list_projection = getattr(meta, "list_named_projections", None)
+        meta = self.engine.meta_sqlite
+        list_projection = meta.list_named_projections
         if callable(list_projection):
             terminal_run_ids: set[str] = set()
             for row in list_projection(workflow_run_status_projection_namespace(namespace)):
@@ -897,8 +898,7 @@ class RecoverySubsystem:
             if terminal_run_ids:
                 return terminal_run_ids
 
-        read = getattr(self.engine, "read", None)
-        get_nodes = getattr(read, "get_nodes", None)
+        get_nodes = self.engine.read.get_nodes
         if not callable(get_nodes):
             return set()
         terminal_run_ids: set[str] = set()
@@ -968,7 +968,7 @@ class RecoverySubsystem:
 
     @staticmethod
     def _is_recoverable_checkpoint_lookup_error(exc: Exception) -> bool:
-        current: Exception | None = exc
+        current: BaseException | None = exc
         seen: set[int] = set()
         while current is not None and id(current) not in seen:
             seen.add(id(current))
