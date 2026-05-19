@@ -23,7 +23,7 @@ from .chat_service_shared import (
     RuntimeResumeRequest,
     _BaseComponent,
 )
-from .run_registry import RunRegistryTraceBridge
+from .run_registry import RunRegistryLaneMessageEventSink, RunRegistryTraceBridge
 
 
 class _RunExecutionService(_BaseComponent):
@@ -445,6 +445,10 @@ class _RunExecutionService(_BaseComponent):
         runtime_kind = str(
             getattr(req, "runtime_kind", "") or self._owner.default_runtime_kind or "sync"
         ).strip().lower()
+        lane_event_sink = RunRegistryLaneMessageEventSink(
+            registry=req.registry,
+            run_id=req.run_id,
+        )
         if runtime_kind == "async":
             runtime = AsyncWorkflowRuntime(
                 workflow_engine=req.workflow_engine,
@@ -454,6 +458,7 @@ class _RunExecutionService(_BaseComponent):
                 checkpoint_every_n_steps=1,
                 max_workers=1,
                 cancel_requested=lambda _rid: req.is_cancel_requested(),
+                lane_message_event_sink=lane_event_sink,
                 experimental_native_scheduler=True,
             )
             run_result = asyncio.run(
@@ -474,6 +479,7 @@ class _RunExecutionService(_BaseComponent):
                 checkpoint_every_n_steps=1,
                 max_workers=1,
                 cancel_requested=lambda _rid: req.is_cancel_requested(),
+                lane_message_event_sink=lane_event_sink,
             )
             run_result = runtime.run(
                 workflow_id=req.workflow_id,
@@ -553,6 +559,10 @@ class _RunExecutionService(_BaseComponent):
             checkpoint_every_n_steps=1,
             max_workers=1,
             cancel_requested=lambda _rid: req.is_cancel_requested(),
+            lane_message_event_sink=RunRegistryLaneMessageEventSink(
+                registry=req.registry,
+                run_id=req.run_id,
+            ),
         )
         if runtime_kind == "async":
             runtime = AsyncWorkflowRuntime(

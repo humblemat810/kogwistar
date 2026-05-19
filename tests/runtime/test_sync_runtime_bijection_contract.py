@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import json
 import queue
 from dataclasses import dataclass
 
 import pytest
 
 from kogwistar.conversation.resolvers import default_resolver
+from kogwistar.engine_core import GraphKnowledgeEngine
+from kogwistar.engine_core.in_memory_backend import build_in_memory_backend
 from kogwistar.runtime import MappingStepResolver
 from kogwistar.runtime.models import RunSuccess
+from kogwistar.server.run_registry import RunRegistry, RunRegistryLaneMessageEventSink
 from kogwistar.runtime.runtime import (
     RunResult,
     RouteDecision,
@@ -17,6 +21,38 @@ from kogwistar.runtime.runtime import (
 )
 
 pytestmark = [pytest.mark.ci, pytest.mark.runtime, pytest.mark.runtime_sync]
+
+
+@dataclass
+class _RuntimeLaneNode:
+    id: str
+    op: str
+    metadata: dict
+    terminal: bool = True
+
+    def safe_get_id(self) -> str:
+        return self.id
+
+
+def _lane_runtime_engine(tmp_path):
+    return GraphKnowledgeEngine(
+        persist_directory=str(tmp_path),
+        kg_graph_type="conversation",
+        backend_factory=build_in_memory_backend,
+    )
+
+
+def _patch_single_step_design(monkeypatch, *, workflow_id: str, op: str) -> None:
+    node = _RuntimeLaneNode(
+        id=f"wf|{workflow_id}|send",
+        op=op,
+        metadata={"wf_terminal": True, "wf_start": True},
+    )
+
+    def _validate(*, workflow_engine, workflow_id, predicate_registry, resolver):
+        return node, {node.id: node}, {node.id: []}
+
+    monkeypatch.setattr("kogwistar.runtime.runtime.validate_workflow_design", _validate)
 
 
 def test_sync_runtime_default_ops_equal():
@@ -447,6 +483,184 @@ def test_sync_runtime_step_context_send_lane_message_delegates_to_sender(tmp_pat
 
     assert result == {"message_id": "msg-1"}
     assert calls and calls[0]["msg_type"] == "request.demo"
+
+
+def test_sync_runtime_resolver_send_lane_message_reaches_sync_mirror(
+    tmp_path, monkeypatch
+):
+    """Async mirror: `tests/runtime/test_async_runtime_bijection_contract.py::test_async_runtime_resolver_send_lane_message_reaches_sync_mirror`.
+    New sync mirror for durable lane-message sender wiring.
+    """
+    workflow_id = "wf-sync-lane-runtime"
+    _patch_single_step_design(monkeypatch, workflow_id=workflow_id, op="send_lane")
+    conversation_engine = _lane_runtime_engine(tmp_path / "conv")
+    resolver = MappingStepResolver()
+
+    @resolver.register("send_lane")
+    def _send(ctx):
+        sent = ctx.send_lane_message(
+            conversation_id="conv-runtime",
+            inbox_id="inbox:worker:runtime",
+            sender_id="lane:foreground:runtime",
+            recipient_id="lane:worker:runtime",
+            msg_type="request.runtime",
+            payload={"from_resolver": True, "workflow_node_id": ctx.workflow_node_id},
+            run_id=ctx.run_id,
+            step_id=str(ctx.step_seq),
+            correlation_id="corr:runtime-sync",
+        )
+        return RunSuccess(
+            conversation_node_id=None,
+            state_update=[("u", {"lane_message_id": sent.message_id})],
+        )
+
+    runtime = WorkflowRuntime(
+        workflow_engine=object(),
+        conversation_engine=conversation_engine,
+        step_resolver=resolver,
+        predicate_registry={},
+        trace=False,
+    )
+
+    out = runtime.run(
+        workflow_id=workflow_id,
+        conversation_id="conv-runtime",
+        turn_node_id="turn-runtime",
+        initial_state={},
+        run_id="run-runtime-sync",
+    )
+
+    rows = conversation_engine.list_projected_lane_messages(
+        inbox_id="inbox:worker:runtime"
+    )
+    lane_nodes = conversation_engine.read.get_nodes(
+        where={"artifact_kind": "lane_message", "msg_type": "request.runtime"}
+    )
+    assert out.status == "succeeded"
+    assert len(rows) == 1
+    assert rows[0].message_id == out.final_state["lane_message_id"]
+    assert rows[0].correlation_id == "corr:runtime-sync"
+    assert json.loads(rows[0].payload_json or "{}") == {
+        "from_resolver": True,
+        "workflow_node_id": f"wf|{workflow_id}|send",
+    }
+    assert [str(node.id) for node in lane_nodes] == [rows[0].message_id]
+
+
+def test_sync_runtime_resolver_send_lane_message_appends_run_registry_event(
+    tmp_path, monkeypatch
+):
+    """Async mirror: `tests/runtime/test_async_runtime_bijection_contract.py::test_async_runtime_resolver_send_lane_message_appends_run_registry_event`.
+    New sync mirror for lane-message lifecycle mirroring.
+    """
+    workflow_id = "wf-sync-lane-registry"
+    run_id = "run-runtime-sync-registry"
+    _patch_single_step_design(monkeypatch, workflow_id=workflow_id, op="send_lane")
+    conversation_engine = _lane_runtime_engine(tmp_path / "conv")
+    registry = RunRegistry(conversation_engine.meta_sqlite)
+    registry.create_run(
+        run_id=run_id,
+        conversation_id="conv-runtime",
+        workflow_id=workflow_id,
+        user_id=None,
+        user_turn_node_id="turn-runtime",
+    )
+    resolver = MappingStepResolver()
+
+    @resolver.register("send_lane")
+    def _send(ctx):
+        sent = ctx.send_lane_message(
+            conversation_id="conv-runtime",
+            inbox_id="inbox:worker:runtime",
+            sender_id="lane:foreground:runtime",
+            recipient_id="lane:worker:runtime",
+            msg_type="request.runtime",
+            payload={"from_resolver": True},
+            run_id=ctx.run_id,
+            step_id=str(ctx.step_seq),
+            correlation_id="corr:runtime-sync-registry",
+        )
+        return RunSuccess(
+            conversation_node_id=None,
+            state_update=[("u", {"lane_message_id": sent.message_id})],
+        )
+
+    runtime = WorkflowRuntime(
+        workflow_engine=object(),
+        conversation_engine=conversation_engine,
+        step_resolver=resolver,
+        predicate_registry={},
+        trace=False,
+        lane_message_event_sink=RunRegistryLaneMessageEventSink(
+            registry=registry,
+            run_id=run_id,
+        ),
+    )
+
+    out = runtime.run(
+        workflow_id=workflow_id,
+        conversation_id="conv-runtime",
+        turn_node_id="turn-runtime",
+        initial_state={},
+        run_id=run_id,
+    )
+
+    events = registry.list_events(run_id)
+    assert out.status == "succeeded"
+    assert [event["event_type"] for event in events] == ["worker.requested"]
+    payload = events[0]["payload"]
+    assert payload["message_id"] == out.final_state["lane_message_id"]
+    assert payload["conversation_id"] == "conv-runtime"
+    assert payload["inbox_id"] == "inbox:worker:runtime"
+    assert payload["status"] == "pending"
+    assert payload["workflow_node_id"] == f"wf|{workflow_id}|send"
+    assert payload["step_seq"] == 0
+
+
+def test_sync_runtime_resolver_send_lane_message_requires_runtime_sender(
+    tmp_path, monkeypatch
+):
+    """Async mirror: `tests/runtime/test_async_runtime_bijection_contract.py::test_async_runtime_resolver_send_lane_message_requires_runtime_sender`.
+    New sync mirror for the missing runtime sender path.
+    """
+    workflow_id = "wf-sync-lane-missing"
+    _patch_single_step_design(monkeypatch, workflow_id=workflow_id, op="send_lane")
+    conversation_engine = _lane_runtime_engine(tmp_path / "conv")
+    conversation_engine.send_lane_message = None
+    resolver = MappingStepResolver()
+
+    @resolver.register("send_lane")
+    def _send(ctx):
+        ctx.send_lane_message(
+            conversation_id="conv-runtime",
+            inbox_id="inbox:worker:runtime",
+            sender_id="lane:foreground:runtime",
+            recipient_id="lane:worker:runtime",
+            msg_type="request.runtime",
+            payload={},
+        )
+        return RunSuccess(conversation_node_id=None, state_update=[])
+
+    runtime = WorkflowRuntime(
+        workflow_engine=object(),
+        conversation_engine=conversation_engine,
+        step_resolver=resolver,
+        predicate_registry={},
+        trace=False,
+    )
+
+    out = runtime.run(
+        workflow_id=workflow_id,
+        conversation_id="conv-runtime",
+        turn_node_id="turn-runtime",
+        initial_state={},
+        run_id="run-runtime-missing",
+    )
+
+    assert out.status == "failure"
+    assert "lane message sender not configured" in "\n".join(
+        str(item) for item in out.final_state.get("op_log", [])
+    )
 
 
 def test_sync_runtime_step_context_send_lane_message_requires_sender(tmp_path):

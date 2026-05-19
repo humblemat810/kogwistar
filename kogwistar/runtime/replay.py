@@ -13,10 +13,10 @@ def load_checkpoint(*, conversation_engine: Any, run_id: str, step_seq: int) -> 
     Load a workflow checkpoint state snapshot from conversation_engine.
     """
     ckpt_id = f"wf_ckpt|{run_id}|{step_seq}"
-    nodes = conversation_engine.read.get_nodes(ids=[ckpt_id], limit=1)
-    if not nodes:
+    metadatas = conversation_engine.read.get_node_metadatas(ids=[ckpt_id], limit=1)
+    if not metadatas:
         raise KeyError(f"Checkpoint not found: {ckpt_id}")
-    md = nodes[0].metadata or {}
+    md = metadatas[0] or {}
     if md.get("entity_type") != "workflow_checkpoint":
         raise ValueError("Node is not a workflow_checkpoint")
     schema_version = int(md.get("checkpoint_schema_version") or 0)

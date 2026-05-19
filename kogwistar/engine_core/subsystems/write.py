@@ -103,6 +103,8 @@ class WriteSubsystem(NamespaceProxy, WriteLike):
         base_metadata.update(
             strip_none(
                 {
+                    "workspace_id": md.get("workspace_id"),
+                    "namespace": md.get("namespace"),
                     "char_distance_from_last_summary": md.get(
                         "char_distance_from_last_summary"
                     ),

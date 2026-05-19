@@ -532,7 +532,17 @@ class InMemoryMetaStore(LaneMessageMetaStoreMixin):
         inbox_id: str | None = None,
         status: str | None = None,
         conversation_id: str | None = None,
+        msg_type: str | None = None,
+        sender_id: str | None = None,
+        recipient_id: str | None = None,
+        correlation_id: str | None = None,
+        reply_to_message_id: str | None = None,
+        created_at_gte: int | None = None,
+        created_at_lte: int | None = None,
+        available_at_gte: int | None = None,
+        available_at_lte: int | None = None,
     ) -> list[ProjectedLaneMessageRow]:
+        _ = reply_to_message_id
         with self._lock:
             rows = list(self._state.lane_messages.values())
         out: list[ProjectedLaneMessageRow] = []
@@ -547,8 +557,34 @@ class InMemoryMetaStore(LaneMessageMetaStoreMixin):
                 continue
             if status is not None and row.status != str(status):
                 continue
+            if msg_type is not None and row.msg_type != str(msg_type):
+                continue
+            if sender_id is not None and row.sender_id != str(sender_id):
+                continue
+            if recipient_id is not None and row.recipient_id != str(recipient_id):
+                continue
+            if correlation_id is not None and row.correlation_id != str(correlation_id):
+                continue
+            if created_at_gte is not None and int(row.created_at) < int(created_at_gte):
+                continue
+            if created_at_lte is not None and int(row.created_at) > int(created_at_lte):
+                continue
+            if available_at_gte is not None and int(row.available_at) < int(available_at_gte):
+                continue
+            if available_at_lte is not None and int(row.available_at) > int(available_at_lte):
+                continue
             out.append(row.as_row())
         return out
+
+    def clear_projected_lane_messages(self, namespace: str) -> int:
+        target = str(namespace)
+        with self.transaction() as txn:
+            deleted = 0
+            for message_id, row in list(txn.state.lane_messages.items()):
+                if row.namespace == target:
+                    txn.state.lane_messages.pop(message_id, None)
+                    deleted += 1
+            return deleted
 
     def get_index_applied_fingerprint(
         self, *, namespace: str = "default", coalesce_key: str

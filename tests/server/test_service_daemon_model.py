@@ -256,6 +256,44 @@ def test_service_declaration_health_disable_and_projection_rebuild(
         assert rebuilt["enabled"] is False
 
 
+def test_service_healthy_heartbeat_clears_previous_last_error(monkeypatch, engine_triplet):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service, _registry = _configure_server(
+        monkeypatch,
+        engine,
+        conversation_engine,
+        workflow_engine,
+        _runtime_success_runner,
+        runtime_runner=_runtime_success_runner,
+    )
+
+    with _service_claims():
+        service.declare_service(
+            service_id="svc.error.demo",
+            service_kind="worker",
+            target_kind="workflow",
+            target_ref="wf.service.error",
+            target_config={},
+            enabled=True,
+            heartbeat_ttl_ms=60_000,
+        )
+
+        failed = service.record_service_heartbeat(
+            "svc.error.demo",
+            instance_id="inst-1",
+            payload={"last_error": "boom"},
+        )
+        assert failed["last_error"] == "boom"
+
+        healthy = service.record_service_heartbeat(
+            "svc.error.demo",
+            instance_id="inst-1",
+            payload={"beat": 2},
+        )
+        assert healthy["health_status"] == "healthy"
+        assert healthy["last_error"] is None
+
+
 def test_service_restart_policy_respects_backoff_and_max_restarts(
     monkeypatch, engine_triplet
 ):
@@ -578,8 +616,54 @@ def test_service_runtime_api_round_trip(monkeypatch, engine_triplet):
         )
         events.raise_for_status()
         names = [evt["event_type"] for evt in events.json()["events"]]
-        assert "service.heartbeat" in names
+        assert "service.heartbeat" not in names
         assert "service.triggered" in names
+
+
+def test_supervisor_flow_does_not_touch_service_health_projection(monkeypatch, engine_triplet):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service, _registry = _configure_server(
+        monkeypatch,
+        engine,
+        conversation_engine,
+        workflow_engine,
+        _runtime_success_runner,
+        runtime_runner=_runtime_success_runner,
+    )
+    created = _create_conversation(service)
+    _build_minimal_workflow(service, workflow_id="wf.service.boundary")
+    _attach_fake_service_spawn(service, statuses=["succeeded"])
+
+    assert conversation_engine.meta_sqlite.list_named_projections("service_health") == []
+    assert not conversation_engine.read.get_nodes(where={"entity_type": "service_health_event"})
+
+    with _service_claims():
+        service.declare_service(
+            service_id="svc.boundary.demo",
+            service_kind="daemon",
+            target_kind="workflow",
+            target_ref="wf.service.boundary",
+            target_config={"conversation_id": created["conversation_id"]},
+            enabled=True,
+            autostart=True,
+        )
+        service.record_service_heartbeat(
+            "svc.boundary.demo",
+            instance_id="inst-1",
+            payload={"beat": 1},
+        )
+        service.trigger_service(
+            "svc.boundary.demo",
+            trigger_type="external event",
+            payload={},
+        )
+        service.service_supervisor.tick()
+
+    assert conversation_engine.meta_sqlite.list_named_projections("service_health") == []
+    assert not conversation_engine.read.get_nodes(where={"entity_type": "service_health_event"})
+    assert workflow_engine.meta_sqlite.list_named_projections("service_registry")
+    assert workflow_engine.read.get_nodes(where={"entity_type": "service_definition"})
+    assert workflow_engine.read.get_nodes(where={"entity_type": "service_event"})
 
 
 def test_service_operator_dashboard_round_trip(monkeypatch, engine_triplet):

@@ -17,6 +17,28 @@ The project is broad enough that weak testing would make every architectural cla
 - Inspect `tests/core/test_tutorial_docs_integrity.py` for docs and learning-path integrity.
 - Inspect parity and replay-oriented suites under `tests/kg_conversation/` and `tests/outbox/`.
 
+## Local Pytest Cache Pitfall
+
+On Windows, if pytest reaches `100% passed` and then hangs until timeout, check
+the cache path before debugging the code under test. A stale or unwritable
+`.pytest_cache`, or an unwritable override such as `-o cache_dir=C:\tmp\...`,
+can make an otherwise passing run fail operationally at shutdown.
+
+This repo configures a local ignored cache directory:
+
+```ini
+cache_dir = .pytest-local-cache
+```
+
+For a quick diagnostic run, disable the cache provider:
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest <test-target> -q -p no:cacheprovider
+```
+
+Do not treat pytest cache as test semantics. Tests should pass without it; cache
+state is only runner convenience such as node IDs and last-failed data.
+
 ## Inspect The Result
 
 - Notice the preference for invariant assertions over brittle snapshot prose.

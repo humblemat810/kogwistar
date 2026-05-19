@@ -8,6 +8,7 @@ class VersionedArtifactWriteResult:
     artifact_id: str
     created_at_ms: int
     replaced_ids: tuple[str, ...]
+    wrote_new_artifact: bool = True
 
 
 @dataclass(frozen=True, slots=True)

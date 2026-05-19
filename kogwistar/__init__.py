@@ -6,6 +6,8 @@ from importlib import import_module
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from kogwistar.provenance import EvidencePackDigest, evidence_pack_digest_hash
+
 __version__ = "0.2.4"
 
 if TYPE_CHECKING:
@@ -15,6 +17,7 @@ if TYPE_CHECKING:
     from kogwistar.conversation.service import ConversationService
     from kogwistar.engine_core.engine import GraphKnowledgeEngine
     from kogwistar.engine_core.models import Document, Edge, Grounding, Node, Span
+    from kogwistar.provenance import EvidencePackDigest
     from kogwistar.llm_tasks import (
         DefaultTaskProviderConfig,
         LLMTaskSet,
@@ -36,6 +39,8 @@ __all__ = [
     "Document",
     "Span",
     "Grounding",
+    "EvidencePackDigest",
+    "evidence_pack_digest_hash",
     "shortids",
     "list_submodules",
 ]

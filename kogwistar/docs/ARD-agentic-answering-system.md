@@ -241,10 +241,29 @@ Knowledge and tool results used by the agent must be:
 
 All projections are based on **logical references**, not backend collections.
 
+The reference contract is intentionally narrow:
+
+- a logical ref targets exactly one object in v1
+- a node counts as a ref only when it explicitly marks itself as one
+- `reference_pointer` is the canonical node-shaped reference artifact
+- edge-shaped proxy refs are allowed when graph topology must remain traversable
+- ordinary nodes or edges with overlapping fields are not refs unless they
+  opt in explicitly
+
 #### LogicalRef fields
-- `namespace` (e.g. `kg`, `trace`, `tool`)
-- `kind` (`node`, `edge`, `artifact`)
-- `id` (stable within namespace)
+- `target_namespace` (e.g. `kg`, `trace`, `tool`)
+- `target_kind` (`node`, `edge`, `artifact`)
+- `target_id` (stable within target namespace)
+
+`target_namespace` describes the semantic target domain or graph space, not a
+storage backend and not an engine implementation detail.
+
+#### Reference contract
+- Only explicit pointer artifacts count as refs.
+- `reference_pointer` is the canonical node-shaped reference artifact.
+- Edge references may use edge-shaped proxies when topology must remain traversable.
+- A node or edge with similar fields is not a ref unless it explicitly marks
+  itself as one.
 
 ---
 
@@ -253,9 +272,13 @@ All projections are based on **logical references**, not backend collections.
 Projection creates **pointer nodes** in the caller graph.
 
 #### Pointer Node Properties
+- `is_pointer`
+- `pointer_kind`
 - `target_namespace`
 - `target_kind`
 - `target_id`
+- `refers_to_collection`
+- `refers_to_id`
 - optional backend hints (non-identity)
 
 ---

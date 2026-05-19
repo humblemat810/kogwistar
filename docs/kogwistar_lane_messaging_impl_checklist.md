@@ -132,7 +132,9 @@ Suggested minimum properties:
 }
 ```
 
-#### Optional lane actor nodes
+#### Optional lane anchor nodes
+
+These are lane sender/recipient anchors, not a universal actor registry.
 
 Examples:
 
@@ -149,8 +151,8 @@ Required:
 
 - `message --in_conversation--> conversation`
 - `message --in_inbox--> inbox`
-- `message --sent_by--> actor`
-- `message --sent_to--> actor`
+- `message --sent_by--> anchor`
+- `message --sent_to--> anchor`
 
 Useful:
 

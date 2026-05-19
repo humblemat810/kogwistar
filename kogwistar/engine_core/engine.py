@@ -22,6 +22,9 @@ from .storage_backend import NoopUnitOfWork, StorageBackend
 from ..workers.index_job_worker import IndexJobWorker
 from ..utils.log import bind_log_context
 from .indexing import IndexingSubsystem
+from .jobs import JobQueueSubsystem
+from .recovery import RecoverySubsystem
+from .service_health import ServiceHealthRegistry
 from .subsystems import (
     ACLSubsystem,
     ACLAwareReadSubsystem,
@@ -936,6 +939,16 @@ class GraphKnowledgeEngine:
 
         return LaneMessagingService(self).list_projected(*args, **kwargs)
 
+    def find_lane_messages(self, *args, **kwargs):
+        from kogwistar.messaging import LaneMessagingService
+
+        return LaneMessagingService(self).find_messages(*args, **kwargs)
+
+    def repair_lane_message_projection(self, *args, **kwargs):
+        from kogwistar.messaging import LaneMessagingService
+
+        return LaneMessagingService(self).repair_projection(*args, **kwargs)
+
     def enqueue_index_jobs_for_node(self, node_id: str, *, op: str) -> None:
         return self.indexing.enqueue_index_jobs_for_node(node_id, op=op)
 
@@ -1240,6 +1253,9 @@ class GraphKnowledgeEngine:
         self.offset_repair_scorer: OffsetRepairScorer | None = offset_repair_scorer
         self.cache_dir = cache_dir or self.persist_directory
         self.indexing = IndexingSubsystem(self)
+        self.jobs = JobQueueSubsystem(self)
+        self.recovery = RecoverySubsystem(self)
+        self.service_health = ServiceHealthRegistry(self)
 
         self._uow_ctx_conn: contextvars.ContextVar[object | None] = (
             contextvars.ContextVar("gke_uow_conn", default=None)

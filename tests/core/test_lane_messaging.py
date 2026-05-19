@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import json
 import shutil
+import time
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
 
+from kogwistar.engine_core.models import Grounding, Node, Span
 from kogwistar.engine_core.engine import GraphKnowledgeEngine, scoped_namespace
+from kogwistar.id_provider import stable_id
 from kogwistar.messaging.service import LaneMessagingService
 from kogwistar.server.auth_middleware import claims_ctx
 from tests._helpers.fake_backend import build_fake_backend
@@ -24,6 +29,41 @@ def _make_engine() -> tuple[GraphKnowledgeEngine, Path]:
         kg_graph_type="conversation",
     )
     return engine, test_db_dir
+
+
+def _lane_anchor_span(conversation_id: str, excerpt: str) -> Span:
+    return Span(
+        collection_page_url=f"conversation/{conversation_id}",
+        document_page_url=f"conversation/{conversation_id}",
+        doc_id=f"conv:{conversation_id}",
+        insertion_method="lane_anchor",
+        page_number=1,
+        start_char=0,
+        end_char=1,
+        excerpt=excerpt,
+        context_before="",
+        context_after="",
+        chunk_id=None,
+        source_cluster_id=None,
+    )
+
+
+def _legacy_lane_actor_anchor_node(
+    *, anchor_node_id: str, anchor_entity_id: str, conversation_id: str
+) -> Node:
+    return Node(
+        id=anchor_node_id,
+        label=f"lane_actor:{anchor_entity_id}",
+        type="entity",
+        summary=f"Lane actor anchor for {anchor_entity_id}",
+        mentions=[Grounding(spans=[_lane_anchor_span(conversation_id, anchor_entity_id)])],
+        metadata={
+            "artifact_kind": "lane_actor",
+            "actor_id": anchor_entity_id,
+            "kind": "lane_actor",
+            "in_conversation_chain": False,
+        },
+    )
 
 
 def test_send_lane_message_creates_graph_objects_and_projection():
@@ -47,11 +87,14 @@ def test_send_lane_message_creates_graph_objects_and_projection():
             assert messages[0].metadata["status"] == "pending"
             assert messages[0].metadata["conversation_id"] == "conv-demo"
             assert messages[0].metadata["purpose"] == "maintenance"
-            acl_context = messages[0].metadata["acl_context"]
+            acl_context = json.loads(messages[0].metadata["acl_context_json"])
             assert acl_context["purpose"] == "lane_message"
             assert acl_context["source_graph"] == "conversation"
             assert acl_context["source_entity_id"] == result.message_id
             assert acl_context["visibility"] == "private"
+            assert json.loads(messages[0].metadata["payload_json"]) == {
+                "request_node_id": "req-1"
+            }
 
             anchors = engine.read.get_nodes(where={"artifact_kind": "lane_inbox"})
             assert len(anchors) == 1
@@ -66,6 +109,147 @@ def test_send_lane_message_creates_graph_objects_and_projection():
             assert projected[0].status == "pending"
             assert projected[0].seq == 1
             assert projected[0].conversation_seq == 1
+
+            sender_anchor_id = str(stable_id("lane_message_anchor", "lane:foreground"))
+            recipient_anchor_id = str(stable_id("lane_message_anchor", "lane:worker:maintenance"))
+            anchor_nodes = engine.read.get_nodes(where={"artifact_kind": "lane_anchor"})
+            assert {str(node.id) for node in anchor_nodes} == {
+                sender_anchor_id,
+                recipient_anchor_id,
+            }
+            assert {node.metadata["anchor_id"] for node in anchor_nodes} == {
+                "lane:foreground",
+                "lane:worker:maintenance",
+            }
+            assert all(node.label.startswith("lane_anchor:") for node in anchor_nodes)
+            assert engine.read.get_nodes(where={"artifact_kind": "lane_actor"}) == []
+            assert result.sender_anchor_id == sender_anchor_id
+            assert result.recipient_anchor_id == recipient_anchor_id
+    finally:
+        shutil.rmtree(test_db_dir, ignore_errors=True)
+
+
+def test_send_lane_message_preserves_trace_fields_without_requiring_trace_nodes():
+    engine, test_db_dir = _make_engine()
+    namespace = "ws:demo:conv:bg"
+
+    try:
+        with scoped_namespace(engine, namespace):
+            result = engine.send_lane_message(
+                conversation_id="conv-demo",
+                inbox_id="inbox:worker:runtime",
+                sender_id="lane:foreground",
+                recipient_id="lane:worker:runtime",
+                msg_type="request.runtime",
+                payload={"request_node_id": "req-1"},
+                run_id="run-missing-trace-node",
+                step_id="0",
+            )
+
+            messages = engine.read.get_nodes(where={"artifact_kind": "lane_message"})
+            projected = engine.list_projected_lane_messages(
+                inbox_id="inbox:worker:runtime"
+            )
+            assert [str(node.id) for node in messages] == [result.message_id]
+            assert messages[0].metadata["run_id"] == "run-missing-trace-node"
+            assert messages[0].metadata["step_id"] == "0"
+            assert len(projected) == 1
+            assert projected[0].run_id == "run-missing-trace-node"
+            assert projected[0].step_id == "0"
+    finally:
+        shutil.rmtree(test_db_dir, ignore_errors=True)
+
+
+def test_send_lane_message_reuses_legacy_lane_actor_anchor_nodes():
+    engine, test_db_dir = _make_engine()
+    namespace = "ws:demo:conv:bg"
+
+    try:
+        legacy_sender_node_id = str(stable_id("lane_message_actor", "lane:foreground"))
+        legacy_recipient_node_id = str(stable_id("lane_message_actor", "lane:worker:legacy"))
+        with scoped_namespace(engine, namespace):
+            engine.write.add_node(
+                _legacy_lane_actor_anchor_node(
+                    anchor_node_id=legacy_sender_node_id,
+                    anchor_entity_id="lane:foreground",
+                    conversation_id="conv-legacy",
+                )
+            )
+            engine.write.add_node(
+                _legacy_lane_actor_anchor_node(
+                    anchor_node_id=legacy_recipient_node_id,
+                    anchor_entity_id="lane:worker:legacy",
+                    conversation_id="conv-legacy",
+                )
+            )
+
+            result = engine.send_lane_message(
+                conversation_id="conv-legacy",
+                inbox_id="inbox:worker:legacy",
+                sender_id="lane:foreground",
+                recipient_id="lane:worker:legacy",
+                msg_type="request.legacy",
+                payload={"request_node_id": "req-legacy"},
+            )
+
+            assert result.sender_anchor_id == legacy_sender_node_id
+            assert result.recipient_anchor_id == legacy_recipient_node_id
+
+            anchor_nodes = engine.read.get_nodes(where={"artifact_kind": "lane_anchor"})
+            assert anchor_nodes == []
+
+            legacy_anchor_nodes = engine.read.get_nodes(where={"artifact_kind": "lane_actor"})
+            assert {str(node.id) for node in legacy_anchor_nodes} == {
+                legacy_sender_node_id,
+                legacy_recipient_node_id,
+            }
+
+            sent_by_edges = engine.read.get_edges(where={"relation": "sent_by"})
+            sent_to_edges = engine.read.get_edges(where={"relation": "sent_to"})
+            assert [edge.target_ids[0] for edge in sent_by_edges] == [legacy_sender_node_id]
+            assert [edge.target_ids[0] for edge in sent_to_edges] == [legacy_recipient_node_id]
+    finally:
+        shutil.rmtree(test_db_dir, ignore_errors=True)
+
+
+def test_send_lane_message_projects_inside_engine_unit_of_work(monkeypatch):
+    engine, test_db_dir = _make_engine()
+    namespace = "ws:demo:conv:bg"
+    state = {"depth": 0, "entered": 0}
+    original_project = engine.meta_sqlite.project_lane_message
+
+    @contextmanager
+    def _unit_of_work():
+        state["entered"] += 1
+        state["depth"] += 1
+        try:
+            yield
+        finally:
+            state["depth"] -= 1
+
+    def _project_lane_message(**kwargs):
+        assert state["depth"] > 0
+        return original_project(**kwargs)
+
+    monkeypatch.setattr(engine, "uow", _unit_of_work)
+    monkeypatch.setattr(engine.meta_sqlite, "project_lane_message", _project_lane_message)
+
+    try:
+        with scoped_namespace(engine, namespace):
+            result = engine.send_lane_message(
+                conversation_id="conv-demo",
+                inbox_id="inbox:worker:uow",
+                sender_id="lane:foreground",
+                recipient_id="lane:worker:uow",
+                msg_type="request.uow",
+                payload={"request_node_id": "req-1"},
+            )
+
+            projected = engine.list_projected_lane_messages(
+                inbox_id="inbox:worker:uow"
+            )
+            assert state["entered"] >= 1
+            assert [row.message_id for row in projected] == [result.message_id]
     finally:
         shutil.rmtree(test_db_dir, ignore_errors=True)
 
@@ -333,4 +517,138 @@ def test_lane_message_sample_integration_pins_stable_contract():
             after_ack = service.list_projected(inbox_id="inbox:worker:integration")
             assert after_ack[0].status == "completed"
     finally:
+        shutil.rmtree(test_db_dir, ignore_errors=True)
+
+
+def test_send_lane_message_idempotency_key_reuses_existing_message_and_projection():
+    engine, test_db_dir = _make_engine()
+    namespace = "ws:demo:conv:bg"
+    token = claims_ctx.set({"storage_ns": namespace})
+
+    try:
+        with scoped_namespace(engine, namespace):
+            first = engine.send_lane_message(
+                conversation_id="conv-demo",
+                inbox_id="inbox:worker:maintenance",
+                sender_id="lane:foreground",
+                recipient_id="lane:worker:maintenance",
+                msg_type="request.maintenance",
+                payload={"request_node_id": "req-1"},
+                idempotency_key="idem:maintenance:req-1",
+            )
+            engine.meta_sqlite.clear_projected_lane_messages(namespace)
+            assert engine.list_projected_lane_messages(
+                inbox_id="inbox:worker:maintenance"
+            ) == []
+
+            second = engine.send_lane_message(
+                conversation_id="conv-demo",
+                inbox_id="inbox:worker:maintenance",
+                sender_id="lane:foreground",
+                recipient_id="lane:worker:maintenance",
+                msg_type="request.maintenance",
+                payload={"request_node_id": "req-1"},
+                idempotency_key="idem:maintenance:req-1",
+            )
+
+            assert second.message_id == first.message_id
+            messages = engine.read.get_nodes(where={"artifact_kind": "lane_message"})
+            assert len(messages) == 1
+            projected = engine.list_projected_lane_messages(
+                inbox_id="inbox:worker:maintenance"
+            )
+            assert len(projected) == 1
+            assert projected[0].message_id == first.message_id
+    finally:
+        claims_ctx.reset(token)
+        shutil.rmtree(test_db_dir, ignore_errors=True)
+
+
+def test_send_lane_message_idempotency_key_rejects_shape_conflict():
+    engine, test_db_dir = _make_engine()
+    namespace = "ws:demo:conv:bg"
+    token = claims_ctx.set({"storage_ns": namespace})
+
+    try:
+        with scoped_namespace(engine, namespace):
+            engine.send_lane_message(
+                conversation_id="conv-demo",
+                inbox_id="inbox:worker:maintenance",
+                sender_id="lane:foreground",
+                recipient_id="lane:worker:maintenance",
+                msg_type="request.maintenance",
+                payload={"request_node_id": "req-1"},
+                idempotency_key="idem:maintenance:req-1",
+            )
+            with pytest.raises(ValueError, match="lane message idempotency conflict"):
+                engine.send_lane_message(
+                    conversation_id="conv-demo",
+                    inbox_id="inbox:worker:maintenance",
+                    sender_id="lane:foreground",
+                    recipient_id="lane:worker:maintenance",
+                    msg_type="request.maintenance",
+                    payload={"request_node_id": "req-2"},
+                    idempotency_key="idem:maintenance:req-1",
+                )
+    finally:
+        claims_ctx.reset(token)
+        shutil.rmtree(test_db_dir, ignore_errors=True)
+
+
+def test_lane_message_lookup_supports_newest_first_and_time_filters():
+    engine, test_db_dir = _make_engine()
+    namespace = "ws:demo:conv:bg"
+    token = claims_ctx.set({"storage_ns": namespace})
+
+    try:
+        with scoped_namespace(engine, namespace):
+            first = engine.send_lane_message(
+                conversation_id="conv-demo",
+                inbox_id="inbox:foreground",
+                sender_id="lane:worker",
+                recipient_id="lane:foreground",
+                msg_type="reply.maintenance.completed",
+                payload={"result": "first"},
+                correlation_id="corr-1",
+            )
+            time.sleep(1)
+            second = engine.send_lane_message(
+                conversation_id="conv-demo",
+                inbox_id="inbox:foreground",
+                sender_id="lane:worker",
+                recipient_id="lane:foreground",
+                msg_type="reply.maintenance.completed",
+                payload={"result": "second"},
+                correlation_id="corr-2",
+                reply_to=first.message_id,
+            )
+
+            newest = engine.list_projected_lane_messages(
+                inbox_id="inbox:foreground",
+                newest_first=True,
+                limit=1,
+            )
+            assert [row.message_id for row in newest] == [second.message_id]
+
+            later = engine.list_projected_lane_messages(
+                inbox_id="inbox:foreground",
+                created_at_gte=newest[0].created_at,
+            )
+            assert [row.message_id for row in later] == [second.message_id]
+
+            reply_rows = engine.list_projected_lane_messages(
+                inbox_id="inbox:foreground",
+                reply_to_message_id=first.message_id,
+            )
+            assert [row.message_id for row in reply_rows] == [second.message_id]
+
+            found = engine.find_lane_messages(
+                namespace=namespace,
+                correlation_id="corr-2",
+                newest_first=True,
+                limit=1,
+            )
+            assert [str(node.id) for node in found] == [second.message_id]
+    finally:
+        claims_ctx.reset(token)
         shutil.rmtree(test_db_dir, ignore_errors=True)

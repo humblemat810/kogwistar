@@ -218,8 +218,8 @@ Recommended edges:
 
 - `message --in_conversation--> conversation`
 - `message --in_inbox--> inbox`
-- `message --sent_by--> participant`
-- `message --sent_to--> participant`
+- `message --sent_by--> lane anchor`
+- `message --sent_to--> lane anchor`
 - `message --reply_to--> message`
 - `message --about_run--> run`
 - `message --about_step--> step`

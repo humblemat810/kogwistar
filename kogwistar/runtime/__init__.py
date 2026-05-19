@@ -65,6 +65,7 @@ if TYPE_CHECKING:
         StepContext,
         WorkflowRuntime,
     )
+    from kogwistar.runtime.sinks import JsonlEventSink
 
 __all__ = [
     "BasePredicate",
@@ -101,6 +102,7 @@ __all__ = [
     "RunResult",
     "StepContext",
     "WorkflowRuntime",
+    "JsonlEventSink",
 ]
 
 _EXPORTS = {
@@ -138,10 +140,12 @@ _EXPORTS = {
     "RunResult": "kogwistar.runtime.runtime",
     "StepContext": "kogwistar.runtime.runtime",
     "WorkflowRuntime": "kogwistar.runtime.runtime",
+    "JsonlEventSink": "kogwistar.runtime.sinks",
 }
 
 _SUBMODULE_EXPORTS = {
     "async_runtime": "kogwistar.runtime.async_runtime",
+    "runtime": "kogwistar.runtime.runtime",
 }
 
 

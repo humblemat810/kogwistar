@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 
@@ -42,7 +43,39 @@ class LaneMessageSendResult:
     recipient_anchor_id: str
 
 
+@dataclass(frozen=True)
+class LaneMessageProjectionRepairResult:
+    namespace: str
+    scanned_count: int
+    repaired_count: int
+    skipped_count: int
+    rebuilt: bool
+
+
+@dataclass(frozen=True)
+class LaneMessageLookup:
+    namespace: str | None = None
+    inbox_id: str | None = None
+    conversation_id: str | None = None
+    status: str | None = None
+    purpose: str | None = None
+    msg_type: str | None = None
+    sender_id: str | None = None
+    recipient_id: str | None = None
+    correlation_id: str | None = None
+    reply_to_message_id: str | None = None
+    idempotency_key: str | None = None
+    created_at_gte: datetime | int | float | str | None = None
+    created_at_lte: datetime | int | float | str | None = None
+    available_at_gte: int | None = None
+    available_at_lte: int | None = None
+    limit: int = 100
+    newest_first: bool = False
+
+
 __all__ = [
+    "LaneMessageLookup",
     "ProjectedLaneMessageRow",
     "LaneMessageSendResult",
+    "LaneMessageProjectionRepairResult",
 ]

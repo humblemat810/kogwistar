@@ -38,6 +38,7 @@ NUMBERED_DOCS = [
     TUTORIALS_DIR / "20_generic_named_projection_meta_layer.md",
     TUTORIALS_DIR / "24_acl_visibility_tutorial.md",
     TUTORIALS_DIR / "25_async_runtime_tutorial.md",
+    TUTORIALS_DIR / "26_recovery_and_durable_operational_state.md",
 ]
 
 LEGACY_LEVEL_DOCS = [
@@ -69,6 +70,7 @@ COMPANION_FILES = [
     SECTIONS_DIR / "20_generic_named_projection_meta_layer.py",
     SECTIONS_DIR / "24_acl_visibility_tutorial.py",
     SECTIONS_DIR / "25_async_runtime_tutorial.py",
+    SECTIONS_DIR / "26_recovery_and_durable_operational_state.py",
 ]
 
 REQUIRED_TEMPLATE_HEADINGS = [

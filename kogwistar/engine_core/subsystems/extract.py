@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from copy import deepcopy
-import difflib
 import importlib
 import json
 import math
@@ -21,6 +20,11 @@ from ..models import (
     Node,
     Span,
 )
+from ...fuzzy_offsets import (
+    default_offset_repair_scorer as _shared_default_offset_repair_scorer,
+    find_best_fuzzy_span as _shared_find_best_fuzzy_span,
+    offset_repair_threshold as _shared_offset_repair_threshold,
+)
 from ..types import (
     ExtractionSchemaMode,
     OffsetMismatchPolicy,
@@ -30,14 +34,6 @@ from ..types import (
 from ..utils.aliasing import AliasBook, base62_to_uuid, uuid_to_base62
 from .base import NamespaceProxy
 from ...typing_interfaces import ExtractLike
-
-# Optional: RapidFuzz
-try:
-    from rapidfuzz import fuzz
-
-    _HAS_RAPIDFUZZ = True
-except Exception:
-    _HAS_RAPIDFUZZ = False
 
 
 class ExtractSubsystem(NamespaceProxy, ExtractLike):
@@ -112,15 +108,7 @@ class ExtractSubsystem(NamespaceProxy, ExtractLike):
 
     @staticmethod
     def _offset_repair_threshold(excerpt_len: int) -> float:
-        if excerpt_len <= 8:
-            return 95.0
-        if excerpt_len <= 20:
-            return 92.0
-        if excerpt_len <= 60:
-            return 88.0
-        if excerpt_len <= 120:
-            return 85.0
-        return 82.0
+        return _shared_offset_repair_threshold(excerpt_len)
 
     @staticmethod
     def _clip_offset_excerpt(text: str, *, max_chars: int = 80) -> str:
@@ -153,11 +141,7 @@ class ExtractSubsystem(NamespaceProxy, ExtractLike):
         return max(0.0, score)
 
     def default_offset_repair_scorer(self, candidate: str, excerpt: str) -> float:
-        if not excerpt:
-            return 0.0
-        if _HAS_RAPIDFUZZ:
-            return float(fuzz.partial_ratio(candidate, excerpt))
-        return float(difflib.SequenceMatcher(None, candidate, excerpt).ratio() * 100.0)
+        return _shared_default_offset_repair_scorer(candidate, excerpt)
 
     def resolve_offset_repair_scorer(
         self,
@@ -240,60 +224,15 @@ class ExtractSubsystem(NamespaceProxy, ExtractLike):
         origin_start: int,
         scorer: OffsetRepairScorer,
     ) -> tuple[int, int, float] | None:
-        if not excerpt:
+        hit = _shared_find_best_fuzzy_span(
+            content=content,
+            excerpt=excerpt,
+            origin_start=origin_start,
+            scorer=scorer,
+        )
+        if hit is None:
             return None
-        excerpt_len = len(excerpt)
-        if excerpt_len == 0:
-            return None
-
-        scan_band = max(2000, excerpt_len * 50)
-        lo = max(0, origin_start - scan_band)
-        hi = min(len(content), origin_start + scan_band)
-        region = content[lo:hi]
-        if not region:
-            return None
-
-        deltas = [0]
-        if excerpt_len >= 20:
-            delta_5 = max(1, excerpt_len // 20)
-            deltas.extend([delta_5, -delta_5])
-        if excerpt_len >= 60:
-            delta_10 = max(2, excerpt_len // 10)
-            deltas.extend([delta_10, -delta_10])
-
-        step = 1 if excerpt_len <= 40 else max(2, excerpt_len // 25)
-        threshold = self._offset_repair_threshold(excerpt_len)
-        best: tuple[int, int, float] | None = None
-
-        for delta in deltas:
-            width = excerpt_len + delta
-            if width <= 0 or width > len(region):
-                continue
-            max_i = len(region) - width
-            for i in range(0, max_i + 1, step):
-                cand = region[i : i + width]
-                score = self._coerce_offset_score(scorer(cand, excerpt))
-                if score < threshold:
-                    continue
-                start = lo + i
-                end = start + width
-                if best is None:
-                    best = (start, end, score)
-                    continue
-                prev_start, prev_end, prev_score = best
-                prev_dist = abs(prev_start - origin_start)
-                cur_dist = abs(start - origin_start)
-                prev_len = prev_end - prev_start
-                cur_len = end - start
-                if (score > prev_score) or (
-                    score == prev_score
-                    and (
-                        cur_dist < prev_dist
-                        or (cur_dist == prev_dist and cur_len < prev_len)
-                    )
-                ):
-                    best = (start, end, score)
-        return best
+        return (hit.start, hit.end, hit.score)
 
     def to_canonical_extraction_for_mode(
         self,

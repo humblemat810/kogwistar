@@ -1406,28 +1406,67 @@ class ChatRunService:
             items.extend(self.run_registry.list_events(str(run_id), limit=limit))
         if conversation_id:
             engine = self._conversation_engine()
-            nodes = engine.read.get_nodes(
-                where={
-                    "$and": [
-                        {"artifact_kind": "lane_message"},
-                        {"conversation_id": str(conversation_id)},
-                    ]
-                },
-                limit=int(limit),
-            )
-            for node in nodes:
-                md = dict(getattr(node, "metadata", {}) or {})
+            list_fn = getattr(getattr(engine, "meta_sqlite", None), "list_projected_lane_messages", None)
+            projected_rows = []
+            if callable(list_fn):
+                projected_rows = [
+                    row
+                    for row in list_fn(
+                        namespace=self._scope_snapshot()["storage_namespace"],
+                        limit=int(limit),
+                    )
+                    if str(getattr(row, "conversation_id", "") or "") == str(conversation_id)
+                ]
+            for row in projected_rows[: int(limit)]:
+                metadatas = engine.read.get_node_metadatas(ids=[row.message_id], limit=1)
+                md = dict(metadatas[0] or {}) if metadatas else {}
+                if not can_access_security_scope(
+                    str(md.get("security_scope") or ""),
+                    shared=bool(md.get("shared_scope") or md.get("shared_inbox")),
+                ):
+                    continue
                 items.append(
                     {
-                        "event_type": f"worker.{str(md.get('status') or 'unknown')}",
-                        "message_id": str(getattr(node, "id", "") or ""),
-                        "conversation_id": str(md.get("conversation_id") or ""),
-                        "inbox_id": str(md.get("inbox_id") or ""),
-                        "status": str(md.get("status") or ""),
-                        "msg_type": str(md.get("msg_type") or ""),
-                        "correlation_id": md.get("correlation_id"),
+                        "event_type": f"worker.{str(row.status or 'unknown')}",
+                        "message_id": str(row.message_id),
+                        "conversation_id": str(row.conversation_id),
+                        "inbox_id": str(row.inbox_id),
+                        "recipient_id": str(row.recipient_id),
+                        "sender_id": str(row.sender_id),
+                        "status": str(row.status),
+                        "msg_type": str(row.msg_type),
+                        "seq": int(row.seq),
+                        "conversation_seq": int(row.conversation_seq),
+                        "claimed_by": row.claimed_by,
+                        "retry_count": int(row.retry_count),
+                        "run_id": row.run_id,
+                        "step_id": row.step_id,
+                        "correlation_id": row.correlation_id,
                     }
                 )
+            if not projected_rows:
+                nodes = engine.read.get_nodes(
+                    where={
+                        "$and": [
+                            {"artifact_kind": "lane_message"},
+                            {"conversation_id": str(conversation_id)},
+                        ]
+                    },
+                    limit=int(limit),
+                )
+                for node in nodes:
+                    md = dict(getattr(node, "metadata", {}) or {})
+                    items.append(
+                        {
+                            "event_type": f"worker.{str(md.get('status') or 'unknown')}",
+                            "message_id": str(getattr(node, "id", "") or ""),
+                            "conversation_id": str(md.get("conversation_id") or ""),
+                            "inbox_id": str(md.get("inbox_id") or ""),
+                            "status": str(md.get("status") or ""),
+                            "msg_type": str(md.get("msg_type") or ""),
+                            "correlation_id": md.get("correlation_id"),
+                        }
+                    )
         return {"items": items[: int(limit)], "total": len(items)}
 
 

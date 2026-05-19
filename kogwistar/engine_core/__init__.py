@@ -3,7 +3,30 @@
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.engine_sqlite import EngineSQLite, IndexJobRow
 from kogwistar.engine_core.indexing import IndexingSubsystem
+from kogwistar.engine_core.jobs import JobQueueItem, JobQueueSubsystem
 from kogwistar.engine_core.lifecycle import LifecycleSubsystem
+from kogwistar.engine_core.recovery import (
+    CheckpointRecoveryState,
+    DaemonHealthState,
+    DeadLetterRecoveryState,
+    LaneRecoveryState,
+    OutputReconciliationState,
+    QueueRecoveryState,
+    RecoveryAction,
+    RecoveryFinding,
+    RecoveryReport,
+    RecoverySubsystem,
+    RecoverySurface,
+    ResumePolicy,
+    RunRecoveryState,
+)
+from kogwistar.engine_core.service_health import (
+    SERVICE_HEALTH_PROJECTION_NAMESPACE,
+    ServiceHealthDefinition,
+    ServiceHealthRepairResult,
+    ServiceHealthRegistry,
+    ServiceInstanceHealth,
+)
 from kogwistar.engine_core.subsystems import (
     AdjudicateSubsystem,
     EmbedSubsystem,
@@ -37,6 +60,26 @@ __all__ = [
     "EngineSQLite",
     "IndexJobRow",
     "IndexingSubsystem",
+    "JobQueueItem",
+    "JobQueueSubsystem",
+    "CheckpointRecoveryState",
+    "DaemonHealthState",
+    "DeadLetterRecoveryState",
+    "LaneRecoveryState",
+    "OutputReconciliationState",
+    "QueueRecoveryState",
+    "RecoveryAction",
+    "RecoveryFinding",
+    "RecoveryReport",
+    "RecoverySubsystem",
+    "RecoverySurface",
+    "ResumePolicy",
+    "RunRecoveryState",
+    "SERVICE_HEALTH_PROJECTION_NAMESPACE",
+    "ServiceHealthDefinition",
+    "ServiceHealthRepairResult",
+    "ServiceHealthRegistry",
+    "ServiceInstanceHealth",
     "LifecycleSubsystem",
     "PgVectorBackend",
     "PgVectorConfig",

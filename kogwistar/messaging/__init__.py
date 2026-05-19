@@ -4,17 +4,26 @@ from importlib import import_module
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from kogwistar.messaging.models import LaneMessageSendResult, ProjectedLaneMessageRow
+    from kogwistar.messaging.models import (
+        LaneMessageLookup,
+        LaneMessageProjectionRepairResult,
+        LaneMessageSendResult,
+        ProjectedLaneMessageRow,
+    )
     from kogwistar.messaging.service import LaneMessagingService
 
 __all__ = [
     "LaneMessagingService",
+    "LaneMessageLookup",
+    "LaneMessageProjectionRepairResult",
     "LaneMessageSendResult",
     "ProjectedLaneMessageRow",
 ]
 
 _EXPORTS = {
     "LaneMessagingService": "kogwistar.messaging.service",
+    "LaneMessageLookup": "kogwistar.messaging.models",
+    "LaneMessageProjectionRepairResult": "kogwistar.messaging.models",
     "LaneMessageSendResult": "kogwistar.messaging.models",
     "ProjectedLaneMessageRow": "kogwistar.messaging.models",
 }

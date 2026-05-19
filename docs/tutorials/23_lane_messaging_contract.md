@@ -18,6 +18,42 @@ It focuses on the core substrate only and avoids app-specific details.
 - Projection truth lives in the metastore abstraction.
 - Concrete stores provide storage primitives only.
 - `meta_sqlite` is the abstraction slot name, not the semantic owner.
+- Idempotent reuse checks graph truth first and repairs the projected serving row
+  only when the graph node already exists but the serving row is missing.
+- Sender and recipient ids are represented as lane sender/recipient anchors in
+  graph truth, stored as `lane_anchor` nodes.
+
+## Transaction And Crash Semantics
+
+`send_lane_message(...)` enters the engine unit of work when the engine exposes one
+(`engine.uow()` today, with `engine.unit_of_work()` also supported by the service).
+The message node, semantic edges, entity events, and projected lane-message row are
+written inside that boundary.
+
+The strength of that boundary depends on the active backend:
+
+- Postgres-backed storage can participate in the engine unit of work.
+- SQLite metastore operations share the active metastore transaction.
+- Chroma-backed graph writes use a no-op backend unit of work, so metastore rollback
+  cannot undo a graph write that already reached Chroma.
+- In-memory storage preserves API parity for tests and local runs, but has no crash
+  persistence promise.
+
+Delivery is at-least-once. If a worker crashes after claiming a projected row and
+before acking it, the row can be claimed again after its lease expires. Worker
+handlers must therefore be idempotent.
+
+Projection rows are rebuildable from authoritative graph/entity-event truth via
+`engine.repair_lane_message_projection(...)`. Daemons should call
+`engine.recovery.recover_startup(...)` before polling after restart; that core
+coordinator safely repairs missing lane-message projection rows and reports queue,
+lane, checkpoint, run-history, dead-letter, daemon-health, and app-output state.
+The engine still does not promise exactly-once delivery or automatic resume of
+every checkpoint. Resume is policy-gated and at-least-once handlers must remain
+idempotent.
+
+For the operator-facing recovery walkthrough, see
+[26 Recovery and Durable Operational State](./26_recovery_and_durable_operational_state.md).
 
 ```mermaid
 flowchart TD
@@ -30,6 +66,30 @@ flowchart TD
 ```
 
 ## Example
+
+Normal happy path:
+
+- app sends a durable lane message
+- core writes the graph node and projected serving row
+- worker claims the projected row
+- worker finishes and sends a reply
+- a repeated send with the same `idempotency_key` reuses the existing graph node
+- if the serving row was lost, the reused send re-projects it from graph truth
+
+```mermaid
+sequenceDiagram
+  participant App as App
+  participant Engine as Engine core
+  participant Meta as Projected rows
+  participant Worker as Worker
+
+  App->>Engine: send_message(..., idempotency_key=K)
+  Engine->>Engine: search lane_message graph truth
+  Engine->>Meta: project_lane_message(...)
+  Worker->>Meta: claim_pending(...)
+  Worker->>Engine: send_message(reply..., idempotency_key=R)
+  Note over Engine: repeated K or R returns the same message_id
+```
 
 ```python
 from kogwistar.engine_core.engine import GraphKnowledgeEngine, scoped_namespace
@@ -57,6 +117,11 @@ with scoped_namespace(engine, "ws:demo:conv:bg"):
     )
 ```
 
+Useful query helpers for the convergent path:
+
+- `engine.find_lane_messages(...)`
+- `engine.list_projected_lane_messages(..., newest_first=True, created_at_gte=..., created_at_lte=...)`
+
 ## Observability
 
 The contract is exposed through query surfaces such as:
@@ -73,6 +138,7 @@ The contract is exposed through query surfaces such as:
 - Do not rely on raw graph scans for inbox consumption.
 - Do not treat linked lists as the only source of truth.
 - Do not wrap the same contract in multiple semantic layers.
+- Do not confuse lane sender/recipient anchors with a general actor registry.
 
 ```mermaid
 sequenceDiagram
