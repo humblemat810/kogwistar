@@ -14,6 +14,7 @@ import json
 from .engine_core.engine import GraphKnowledgeEngine
 from .engine_core.models import Document, Edge, Span as GroundingSpan
 from .engine_core.models import Node
+from .llm_structured_output import build_structured_output_runnable
 from .utils.embedding_vectors import normalize_embedding_vector
 
 # --- relation name constants (optional but handy) ---
@@ -129,14 +130,14 @@ class BaseDocumentGraphIngestor:
             verbose=0,
         )
         # prepare structured-output chains once to make cache keys stable
-        self._coerce_summarized_one_chain = self.llm.with_structured_output(
-            FinalSummariseResponse, include_raw=True
+        self._coerce_summarized_one_chain = build_structured_output_runnable(
+            self.llm, FinalSummariseResponse, include_raw=True
         )
-        self._summarize_chain = self.llm.with_structured_output(
-            SummarizeResponse, include_raw=True
+        self._summarize_chain = build_structured_output_runnable(
+            self.llm, SummarizeResponse, include_raw=True
         )
-        self._group_chain = self.llm.with_structured_output(
-            GroupResponse, include_raw=True
+        self._group_chain = build_structured_output_runnable(
+            self.llm, GroupResponse, include_raw=True
         )
 
         # Wrap LLM calls with joblib to cache by pure-string inputs
