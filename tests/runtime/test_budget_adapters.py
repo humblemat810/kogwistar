@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from kogwistar.runtime.budget_adapters import adapt_budget_events
+from kogwistar.runtime.budget import BudgetEvent
+from kogwistar.runtime.budget_adapters import adapt_budget_events, summarize_budget_events
 
 pytestmark = [pytest.mark.ci, pytest.mark.runtime]
 
@@ -19,3 +20,20 @@ def test_generic_usage_adapter_maps_usage_to_canonical_events() -> None:
 
 def test_generic_usage_adapter_ignores_non_usage_payloads() -> None:
     assert adapt_budget_events({"x": 1}, run_id="run-1") == []
+
+
+def test_summarize_budget_events_tracks_mixed_runtime_events() -> None:
+    summary = summarize_budget_events(
+        [
+            BudgetEvent(run_id="run-1", source="generic-usage", kind="token", amount=5, unit="input_tokens"),
+            BudgetEvent(run_id="run-1", source="generic-usage", kind="token", amount=7, unit="output_tokens"),
+            BudgetEvent(run_id="run-1", source="generic-usage", kind="cost", amount=1.5, unit="total_cost"),
+            BudgetEvent(run_id="run-1", source="runtime", kind="debit", amount=2, unit="ms"),
+        ]
+    )
+    assert summary["input_tokens"] == 5
+    assert summary["output_tokens"] == 7
+    assert summary["total_tokens"] == 12
+    assert summary["total_cost"] == 1.5
+    assert summary["time_ms"] == 2
+    assert summary["event_count"] == 4

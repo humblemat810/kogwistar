@@ -6,6 +6,7 @@ from importlib import import_module
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from kogwistar.runtime.budget_adapters import summarize_budget_events
     from kogwistar.runtime.contract import (
         BasePredicate,
         WorkflowEdgeInfo,
@@ -103,6 +104,7 @@ __all__ = [
     "StepContext",
     "WorkflowRuntime",
     "JsonlEventSink",
+    "summarize_budget_events",
 ]
 
 _EXPORTS = {
@@ -141,6 +143,7 @@ _EXPORTS = {
     "StepContext": "kogwistar.runtime.runtime",
     "WorkflowRuntime": "kogwistar.runtime.runtime",
     "JsonlEventSink": "kogwistar.runtime.sinks",
+    "summarize_budget_events": "kogwistar.runtime.budget_adapters",
 }
 
 _SUBMODULE_EXPORTS = {

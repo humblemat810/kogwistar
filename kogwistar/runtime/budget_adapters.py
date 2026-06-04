@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
@@ -56,4 +57,43 @@ def adapt_budget_events(
         if adapter.can_adapt(source):
             return adapter.adapt(source, run_id=run_id, scope=scope)
     return []
+
+
+def summarize_budget_events(events: list[BudgetEvent]) -> dict[str, Any]:
+    input_tokens = 0
+    output_tokens = 0
+    total_tokens = 0
+    total_cost = 0.0
+    time_ms = 0
+    event_counts: Counter[str] = Counter()
+    by_unit: Counter[str] = Counter()
+    for event in events:
+        kind = str(getattr(event, "kind", "unknown"))
+        unit = str(getattr(event, "unit", ""))
+        amount = getattr(event, "amount", 0)
+        event_counts[kind] += 1
+        if unit:
+            by_unit[unit] += 1
+        if kind in {"debit", "token"} and unit == "input_tokens":
+            input_tokens += int(amount or 0)
+            total_tokens += int(amount or 0)
+        elif kind in {"debit", "token"} and unit == "output_tokens":
+            output_tokens += int(amount or 0)
+            total_tokens += int(amount or 0)
+        elif kind in {"debit", "token"} and unit == "total_tokens":
+            total_tokens += int(amount or 0)
+        elif kind == "cost" or unit == "total_cost":
+            total_cost += float(amount or 0.0)
+        elif unit == "ms":
+            time_ms += int(amount or 0)
+    return {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": total_tokens,
+        "total_cost": round(total_cost, 6),
+        "time_ms": time_ms,
+        "event_count": len(events),
+        "event_counts": dict(event_counts),
+        "by_unit": dict(by_unit),
+    }
 

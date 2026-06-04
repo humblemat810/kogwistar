@@ -1147,7 +1147,7 @@ class WorkflowRuntime(BaseRuntime):
         *,
         workflow_id: str,
         conversation_id: str,
-        turn_node_id: str,  # parent run may trigger another run in a node
+        turn_node_id: str | None = None,  # parent run may trigger another run in a node
         initial_state: WorkflowState,
         run_id: Optional[str] = None,
         cache_dir = None,
