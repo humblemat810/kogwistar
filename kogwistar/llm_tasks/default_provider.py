@@ -6,6 +6,7 @@ from typing import Literal, Mapping, Sequence
 
 from pydantic import BaseModel
 
+from ..llm_structured_output import build_structured_output_runnable
 from .contracts import (
     AdjudicateBatchTaskRequest,
     AdjudicateBatchTaskResult,
@@ -50,7 +51,7 @@ class _Runner:
         messages: Sequence[tuple[str, str]],
         schema: type[BaseModel],
         variables: Mapping[str, object],
-        prefer_json_schema: bool = False,
+        prefer_json_schema: bool = True,
     ) -> tuple[object | None, object | None, object | None]:
         raise NotImplementedError
 
@@ -73,7 +74,7 @@ class _MissingRunner(_Runner):
         messages: Sequence[tuple[str, str]],
         schema: type[BaseModel],
         variables: Mapping[str, object],
-        prefer_json_schema: bool = False,
+        prefer_json_schema: bool = True,
     ) -> tuple[object | None, object | None, object | None]:
         _ = (messages, schema, variables, prefer_json_schema)
         raise ProviderDependencyError(self._message)
@@ -98,7 +99,7 @@ class _LangChainRunner(_Runner):
         messages: Sequence[tuple[str, str]],
         schema: type[BaseModel],
         variables: Mapping[str, object],
-        prefer_json_schema: bool = False,
+        prefer_json_schema: bool = True,
     ) -> tuple[object | None, object | None, object | None]:
         try:
             from langchain_core.prompts import ChatPromptTemplate
@@ -108,17 +109,12 @@ class _LangChainRunner(_Runner):
             ) from e
 
         prompt = ChatPromptTemplate.from_messages(list(messages))
-        if prefer_json_schema:
-            try:
-                structured = self._model.with_structured_output(
-                    schema, method="json_schema", include_raw=True
-                )
-            except TypeError:
-                structured = self._model.with_structured_output(
-                    schema, include_raw=True
-                )
-        else:
-            structured = self._model.with_structured_output(schema, include_raw=True)
+        structured = build_structured_output_runnable(
+            self._model,
+            schema,
+            include_raw=True,
+            prefer_json_schema=prefer_json_schema,
+        )
         result = (prompt | structured).invoke(dict(variables))
 
         if isinstance(result, dict):
@@ -231,9 +227,9 @@ def _extract_schema_for_mode(schema_mode: str) -> tuple[type[BaseModel], bool]:
     )
 
     if schema_mode == "full":
-        return LLMGraphExtraction["llm"], False
+        return LLMGraphExtraction["llm"], True
     if schema_mode == "lean":
-        return LLMGraphExtraction["llm_in"], False
+        return LLMGraphExtraction["llm_in"], True
     if schema_mode == "flattened_lean":
         return AssocFlattenedLLMGraphExtraction["llm_in"], True
     if schema_mode == "flattened_full":

@@ -6,6 +6,13 @@ from importlib import import_module
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from kogwistar.runtime.budget_adapters import summarize_budget_events
+    from kogwistar.runtime.retry import (
+        RetryAttemptRecord,
+        RetryExhaustedError,
+        RetryResult,
+        retry_with_context,
+    )
     from kogwistar.runtime.contract import (
         BasePredicate,
         WorkflowEdgeInfo,
@@ -103,6 +110,11 @@ __all__ = [
     "StepContext",
     "WorkflowRuntime",
     "JsonlEventSink",
+    "summarize_budget_events",
+    "RetryAttemptRecord",
+    "RetryExhaustedError",
+    "RetryResult",
+    "retry_with_context",
 ]
 
 _EXPORTS = {
@@ -141,6 +153,11 @@ _EXPORTS = {
     "StepContext": "kogwistar.runtime.runtime",
     "WorkflowRuntime": "kogwistar.runtime.runtime",
     "JsonlEventSink": "kogwistar.runtime.sinks",
+    "summarize_budget_events": "kogwistar.runtime.budget_adapters",
+    "RetryAttemptRecord": "kogwistar.runtime.retry",
+    "RetryExhaustedError": "kogwistar.runtime.retry",
+    "RetryResult": "kogwistar.runtime.retry",
+    "retry_with_context": "kogwistar.runtime.retry",
 }
 
 _SUBMODULE_EXPORTS = {

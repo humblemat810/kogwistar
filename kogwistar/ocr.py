@@ -34,6 +34,7 @@ from pydantic import (
     Field,
     model_validator,
 )
+from .llm_structured_output import build_structured_output_runnable
 
 if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel
@@ -293,7 +294,7 @@ def get_first_round_response(
     usage_metadata,
 ):
 
-    chain = llm.with_structured_output(RawOCRResponse, include_raw=True)
+    chain = build_structured_output_runnable(llm, RawOCRResponse, include_raw=True)
     before_parse = chain.steps[0]
     after_parse = chain.steps[1]
     raw_response = before_parse.invoke(messages, config={"callbacks": [cb]})
@@ -319,7 +320,7 @@ def get_first_round_response(
 
         ocr_draft_response = cast(
             OCRDraftResponse | None,
-            llm.with_structured_output(OCRDraftResponse).invoke(messages),
+            build_structured_output_runnable(llm, OCRDraftResponse, include_raw=True).invoke(messages),
         )
         if (
             (ocr_draft_response is not None)
@@ -335,7 +336,7 @@ def get_first_round_response(
         )
         response_with_raw = cast(
             dict[str, RawOCRResponse],
-            llm.with_structured_output(RawOCRResponse, include_raw=True).invoke(
+            build_structured_output_runnable(llm, RawOCRResponse, include_raw=True).invoke(
                 [sys_message, img_message]
             ),
         )
@@ -499,7 +500,7 @@ def final_resort(
 
     ocr_meta_response: OCRMetaResponse | None = cast(
         OCRMetaResponse | None,
-        llm.with_structured_output(OCRMetaResponse).invoke(messages[:2]),
+        build_structured_output_runnable(llm, OCRMetaResponse, include_raw=True).invoke(messages[:2]),
     )
     if ocr_meta_response is None:
         raise Exception(
@@ -515,7 +516,7 @@ def final_resort(
     try:
         response2: RawOCRResponseMetaless | None = cast(
             RawOCRResponseMetaless | None,
-            llm.with_structured_output(RawOCRResponseMetaless).invoke(
+            build_structured_output_runnable(llm, RawOCRResponseMetaless, include_raw=True).invoke(
                 messages[:2] + metadata
             ),
         )
@@ -530,7 +531,7 @@ def final_resort(
         try:
             response3: TextBoxResponse | None = cast(
                 TextBoxResponse | None,
-                llm.with_structured_output(TextBoxResponse).invoke(messages[:2]),
+                build_structured_output_runnable(llm, TextBoxResponse, include_raw=True).invoke(messages[:2]),
             )
             if response3 is None:
                 has_error = True
@@ -909,8 +910,8 @@ def refine_table_ocr(response_dict, llm: BaseChatModel, cb, error_messages):
 
             temp: dict = cast(
                 dict,
-                llm.with_structured_output(
-                    schema=OCRRefineResponse, include_raw=True
+                build_structured_output_runnable(
+                    llm, OCRRefineResponse, include_raw=True
                 ).invoke(messages, config={"callbacks": [cb]}),
             )
             (raw, oc_refined_result, parsing_error) = (
