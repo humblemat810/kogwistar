@@ -53,6 +53,8 @@ A concrete example is [`humblemat810/cloistar`](https://github.com/humblemat810/
 
 At a lighter layer, [`humblemat810/kogwistar-chat`](https://github.com/humblemat810/kogwistar-chat) shows the same substrate supporting an application-facing chat experience. Taken together, these examples show that Kogwistar can support multiple layers of implementation, from higher-level application surfaces down to deeper governance and security semantics.
 
+Another related example is [`humblemat810/kogwistar-tokensafe`](https://github.com/humblemat810/kogwistar-tokensafe), the MonkeyGuard / ModelKeyGuard repo, which also uses Kogwistar primitives for token-safe and guarded execution patterns.
+
 ## Glossary
 
 - `substrate`: the shared graph-oriented foundation for knowledge, conversation, memory, workflow, execution, and provenance.
@@ -148,6 +150,7 @@ If you want the closer agent-loop comparison, the older [framework_then_agent_de
 - Standalone setup then run simple flow in 2 minutes. (no frontend integration): [QUICKSTART.md](QUICKSTART.md)
 - Application-layer example on top of this substrate: [`humblemat810/kogwistar-chat`](https://github.com/humblemat810/kogwistar-chat)
 - OpenClaw governance example built on this substrate: [`humblemat810/cloistar`](https://github.com/humblemat810/cloistar)
+- Token-safe / guard-pattern example using the same primitives: [`humblemat810/kogwistar-tokensafe`](https://github.com/humblemat810/kogwistar-tokensafe)
 
 - Detailed comparison with adjacent products/frameworks: [docs/llm-generated-comparison.md](docs/llm-generated-comparison.md)
 - Author notes, build context, and design history: [docs/author-notes.md](docs/author-notes.md)
